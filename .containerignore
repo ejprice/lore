@@ -1,0 +1,22 @@
+# Keep the lore image build context lean and deterministic: exclude local
+# virtualenvs, caches, and build artifacts that COPY would otherwise pull into
+# the image (bloating layers and risking host-specific state leaking in).
+# The Containerfile installs the workspace from source against the pinned
+# uv.lock, so none of these are needed at build time.
+.venv/
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+*.egg-info/
+**/*.egg-info/
+build/
+dist/
+.git/
+.idea/
+.vscode/

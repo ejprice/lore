@@ -1,0 +1,71 @@
+[project]
+name = "lore-workspace"
+version = "0.0.0"
+requires-python = ">=3.14"
+license = "GPL-3.0-or-later"
+# Root is a virtual/non-package workspace root — no source distribution.
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["lorescribe", "loresigil", "loremaster"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.17",
+    "ruff",
+    "pytest",
+    "pytest-asyncio",
+    "types-defusedxml",
+    "types-PyYAML",
+]
+
+# ---------------------------------------------------------------------------
+# Ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 110
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+# ---------------------------------------------------------------------------
+# Mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.14"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+disallow_any_unimported = true
+# ``loremaster/tests`` is on the path so the shared test-helper module
+# (``_extension_helpers``) — imported as a plain top-level module under
+# ``--import-mode=importlib`` (see loremaster/tests/conftest.py) — resolves
+# statically for mypy as well as at runtime.
+mypy_path = "lorescribe:loresigil:loremaster:loremaster/tests"
+explicit_package_bases = true
+namespace_packages = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+warn_untyped_fields = true
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--import-mode=importlib"
+# Let importlib mode resolve the installed namespace packages (loresigil,
+# lorescribe, …) instead of shadowing them with the on-disk distribution dirs,
+# so test modules can import the package submodules under test.
+consider_namespace_packages = true
+testpaths = [
+    "lorescribe/tests",
+    "loresigil/tests",
+    "loremaster/tests",
+]

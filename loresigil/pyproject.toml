@@ -1,0 +1,23 @@
+[project]
+name = "loresigil"
+version = "0.1.0"
+requires-python = ">=3.14"
+license = "GPL-3.0-or-later"
+description = "Voyage AI embedding and tokenization for the lore project."
+# voyage4_tokenizer.json sha256: c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539
+# Source: voyageai/voyage-4-nano (byte-identical to voyage-4-large) from HF cache.
+dependencies = [
+    "httpx>=0.28",
+    "pydantic>=2.13",
+    "tokenizers>=0.23",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["loresigil"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"loresigil/data" = "loresigil/data"

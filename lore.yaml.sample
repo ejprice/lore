@@ -1,0 +1,71 @@
+# lore.yaml.sample — annotated template for a per-project lore RAG.
+#
+# Copy to `lore.yaml` in your project root and customize the fields marked
+# CUSTOMIZE. The real `lore.yaml` is GITIGNORED — it is per-project / per-deploy
+# and may carry host-specific paths. Secrets are NEVER inlined: only `*_env`
+# references to environment variables (resolved at runtime from --env-file).
+#
+# Deploy: see README.md + the Containerfile header for the verified `podman run`
+# command, or use the `lore-deploy` skill (idempotent setup / start / stop / status).
+
+schema_version: 1
+
+# --- project identity -------------------------------------------------------
+project:
+  slug: my_project          # CUSTOMIZE — Qdrant collection = lore_<slug>, container = lore-<slug>
+  root: .                   # project root (the live root below is mounted at /workspace)
+
+# --- embedder (self-hosted TEI voyage-4-nano; the embedder is config-swappable) ---
+embedding:
+  backend: tei
+  base_url: http://localhost:8080         # CUSTOMIZE — your TEI endpoint (voyage-4-nano)
+  endpoint: /embed
+  model: voyageai/voyage-4-nano
+  dim: 2048                 # MUST equal the probe + the collection size, or startup refuses
+  truncate: false           # server runs --auto-truncate false: over-limit → hard 422 (never silently cut)
+  max_input_tokens: 8192
+  max_batch_texts: 32
+  concurrency: 2
+  connect_timeout_s: 5
+  api_key_env: LORE_TEI_KEY               # env-var NAME only — never the value
+  tokenizer: voyage-4-nano
+
+# --- vector store (Qdrant) --------------------------------------------------
+qdrant: {url: http://127.0.0.1:16333, api_key_env: QDRANT__SERVICE__API_KEY}   # CUSTOMIZE url
+
+# --- source roots / tiers ---------------------------------------------------
+# Prefer an EXPLICIT live root. `path: /workspace` is the project mount inside the
+# container. `watch: live` = inotify; `watch: static` = a version-stamped batch tier
+# (needs `source` + `version` + a registered SourceProvider).
+roots:
+  - tier: my_project        # CUSTOMIZE
+    watch: live
+    path: /workspace
+    include: ["src/**/*.py", "**/*.md"]   # CUSTOMIZE — the code/docs to index
+
+# Top-level include mirrors the live root's globs (consumed by the walk predicates).
+include: ["src/**/*.py", "**/*.md"]       # CUSTOMIZE to match the root above
+
+exclude_dirs: [.git, .venv, __pycache__, .pytest_cache, .claude, data]
+exclude_globs: ["**/*.json", "uv.lock", "**/*.parquet"]
+
+# --- extension → chunker map ------------------------------------------------
+chunkers:
+  ".py": {chunker: python_ast}
+  ".md": {chunker: markdown}
+  # ".sql": {chunker: sql, dialect: postgres}
+  # ".xml": {chunker: xml}
+
+# --- live watch -------------------------------------------------------------
+watcher: {enabled: true, observer: inotify, debounce_ms: 1500, reconcile_interval_s: 600}
+
+# --- server -----------------------------------------------------------------
+server: {host: 127.0.0.1, path: /mcp, port: 9200}   # CUSTOMIZE — a free port per project
+
+# --- optional: structured logging (defaults shown; LORE_LOG_LEVEL overrides level) ---
+# logging: {level: INFO, format: json}    # format: json | keyvalue
+
+# --- optional: Bearer-key auth (networked multi-dev; omit → localhost no-auth) ---
+# auth:
+#   enabled: true
+#   keys: [{name: dev1, key_env: LORE_MY_PROJECT_KEY}]   # rotatable named keys, *_env only
