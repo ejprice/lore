@@ -69,10 +69,11 @@ RUN uv pip install --system \
 RUN useradd -r -s /bin/false lore
 USER lore
 
-# The MCP server binds inside the container; with --network=host the port is
-# the host port from lore.yaml's `server.port`. Documented for clarity only —
-# --network=host ignores published ports.
-EXPOSE 9201
+# No EXPOSE: the server binds 127.0.0.1:<server.port> from lore.yaml, and the
+# containers run with --network=host, which ignores published/exposed ports. A
+# hardcoded EXPOSE only made `podman ps` show the same `<n>/tcp` for EVERY
+# container regardless of its real port (e.g. lore-lore serves 9202), falsely
+# implying a port collision.
 
 # LORE_CONFIG is injected at run time and points at the bind-mounted lore.yaml.
 # A sane default keeps the entrypoint declarative; the run invocation overrides
