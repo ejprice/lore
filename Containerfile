@@ -82,19 +82,13 @@ ENV LORE_CONFIG=/workspace/lore.yaml
 # ---------------------------------------------------------------------------
 # Entrypoint — the always-the-same MCP server process.
 #
-# NOTE (server interface assumption, flagged for the orchestrator): at build
-# time of this artifact `loremaster.server` is a COMPOSITION skeleton —
-# `LoreServer.run()` raises NotImplementedError and there is no
-# `loremaster/__main__.py`, so `python -m loremaster.server` is NOT yet
-# runnable. This entrypoint targets the DESIGNED interface (plan §"Container +
-# deploy skill": entrypoint `python -m loremaster.server`). When the parallel
-# server build lands, it must expose one of:
-#   * `python -m loremaster.server`  (a __main__ that reads LORE_CONFIG and
-#     serves FastMCP streamable-http on config.server host/port/path), OR
-#   * a console script — reconcile this CMD with whatever it ships.
-# The batch indexer entrypoint that DOES exist today — `python -m
-# loremaster.index --config <lore.yaml>` — is invoked by the skill's `setup`
-# (cold index) and on each `start` (delta-reconcile), independent of this CMD.
+# `python -m loremaster.server` reads LORE_CONFIG, configures structured logging,
+# runs the embedder probe-gate, and serves the FastMCP streamable-http app via
+# uvicorn on config.server host/port/path (the heavy startup — probe-gate /
+# reconcile / watcher — runs once per process, shared across MCP sessions).
+# The batch indexer is a SEPARATE entrypoint — `python -m loremaster.index
+# --config <lore.yaml>` — invoked by the skill's `setup` (cold index) and each
+# `start` (delta-reconcile), independent of this CMD.
 # ---------------------------------------------------------------------------
 CMD ["python", "-m", "loremaster.server"]
 
