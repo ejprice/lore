@@ -837,6 +837,127 @@ class TestToolAnnotations:
         assert tools["lore_save_memory"].annotations is not None
 
 
+# Item 2: the named output fields each tool's published outputSchema must carry.
+# A wrapper returning the real pydantic model (a scalar model, or list[Model]) makes
+# FastMCP derive a FIELD-LEVEL outputSchema; a wrapper returning list[dict[str, Any]]
+# publishes an opaque ``additionalProperties: true`` (no field names) — the regression
+# this pins. Each value is field names that MUST be discoverable in the schema (either
+# top-level ``properties`` for a scalar-model tool, or under ``$defs`` for a
+# list-wrapped one). ``lore_save_memory`` returns a bare str (the id) — no model — so
+# it is excluded (a str has no fields to name).
+_TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
+    "lore_search_code": {"formatted", "chunk_key", "detail_level", "stale", "score"},
+    "lore_read_file": {"tier", "path", "line_start", "line_end", "text"},
+    "lore_get_symbol": {"qualified_name", "chunk_type", "tier", "file_path", "source"},
+    "lore_recall_memory": {"text", "metadata", "refs", "score"},
+    "lore_reindex": {"files_indexed", "files_failed", "files_skipped"},
+    "lore_index_status": {"files_indexed", "files_failed", "files_skipped"},
+    "lore_what_imports": {"qualified_name", "kind", "file_path", "tier"},
+    "lore_blast_radius": {"qualified_name", "kind", "file_path", "tier"},
+    "lore_tests_for": {"qualified_name", "kind", "file_path", "tier"},
+}
+
+
+def _schema_field_names(schema: dict[str, Any]) -> set[str]:
+    """Collect every property name a tool's outputSchema names, transitively.
+
+    Gathers the schema's own ``properties`` keys plus the ``properties`` keys of
+    every model under ``$defs`` (a list-wrapped return publishes the element model
+    in ``$defs`` and only a ``result`` array at top level). This is how a consumer
+    discovers the actual fields; an opaque ``additionalProperties: true`` object
+    contributes NONE of them, so the set stays empty for the regression case.
+    """
+    names: set[str] = set(schema.get("properties", {}).keys())
+    for definition in schema.get("$defs", {}).values():
+        names.update(definition.get("properties", {}).keys())
+    return names
+
+
+class TestToolOutputSchemas:
+    """Every tool publishes a NON-opaque, field-level outputSchema + structuredContent.
+
+    The mcp-builder standard: a tool's structured output must carry a real schema so
+    the consumer sees the field shape, not an opaque ``additionalProperties: true``
+    object. The fix is to annotate each wrapper with its real pydantic return type
+    (``-> list[SearchResult]`` / ``-> FileSpan`` / ``-> IndexSummary`` …) and return
+    the model instance(s); FastMCP then derives a field-level outputSchema and emits
+    structuredContent matching it. These assertions pin the named fields (mutation:
+    revert one wrapper to ``list[dict[str, Any]]`` ⇒ its field set empties ⇒ fail).
+    """
+
+    async def _tools_by_name(self, tmp_path: Path) -> dict[str, Any]:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        return {tool.name: tool for tool in await mcp.list_tools()}
+
+    async def test_each_tool_publishes_a_field_level_output_schema(
+        self, tmp_path: Path
+    ) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        for name, expected_fields in _TOOL_OUTPUT_FIELDS.items():
+            schema = tools[name].outputSchema
+            assert schema is not None, f"{name} must publish an outputSchema"
+            published = _schema_field_names(schema)
+            missing = expected_fields - published
+            assert not missing, (
+                f"{name}'s outputSchema must name its result fields (not an opaque "
+                f"additionalProperties:true object); missing {missing} — got {published}"
+            )
+
+    async def test_no_tool_publishes_an_opaque_object_output(self, tmp_path: Path) -> None:
+        # The regression guard: a list[dict[str, Any]] return publishes a
+        # ``result`` array whose items are ``additionalProperties: true`` (an opaque
+        # object). No model-returning tool may do that.
+        tools = await self._tools_by_name(tmp_path)
+        for name in _TOOL_OUTPUT_FIELDS:
+            schema = tools[name].outputSchema or {}
+            result_prop = schema.get("properties", {}).get("result", {})
+            items = result_prop.get("items", {}) if isinstance(result_prop, dict) else {}
+            assert items.get("additionalProperties") is not True, (
+                f"{name} publishes an opaque additionalProperties:true item — it must "
+                f"return a real pydantic model so the element schema is field-level"
+            )
+
+    async def test_live_call_returns_structured_content_with_fields(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> None:
+        # A live call through the FastMCP tool surface must emit structuredContent
+        # whose payload carries the model's named fields — proof the model instance
+        # (not a stringified blob) reaches the consumer with its schema.
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        mcp = build_mcp_server(LoreServer(config))
+        try:
+            # index_status: a scalar IndexSummary — structuredContent is the model dict.
+            status_tool = mcp._tool_manager.get_tool("lore_index_status")  # noqa: SLF001
+            _content, structured = await status_tool.run(
+                {},
+                context=_FakeToolContext(ctx),
+                convert_result=True,
+            )
+            assert isinstance(structured, dict)
+            assert "files_indexed" in structured
+            # search_code: a list[SearchResult] — wrapped under ``result`` with the
+            # SearchResult fields on each element.
+            search_tool = mcp._tool_manager.get_tool("lore_search_code")  # noqa: SLF001
+            _content2, structured2 = await search_tool.run(
+                {"query": "champion routing", "k": 10},
+                context=_FakeToolContext(ctx),
+                convert_result=True,
+            )
+            assert isinstance(structured2, dict) and "result" in structured2
+            assert structured2["result"], "expected at least one hit"
+            assert "formatted" in structured2["result"][0]
+        finally:
+            await ctx.aclose()
+
+
 class TestActionableErrors:
     """Consumer-facing errors suggest a next step (the actionable-error standard)."""
 
@@ -948,6 +1069,7 @@ class TestToolBehaviourEndToEnd:
         assert symbol.file_path == "pkg/extra.py"
 
 
+
 class _FakeRequestContext:
     """A stand-in for the MCP request context exposing the lifespan AppContext."""
 
@@ -960,8 +1082,8 @@ class _FakeToolContext:
 
     The registered tool wrappers read ``context.request_context.lifespan_context``;
     this minimal double lets a test drive the REAL ``@mcp.tool`` wrapper body
-    (including its ``.model_dump()`` serialisation) without standing up the full
-    streamable-http session machinery.
+    through the tool manager (including FastMCP's structured-content serialisation)
+    without standing up the full streamable-http session machinery.
     """
 
     def __init__(self, app_context: AppContext) -> None:
@@ -972,11 +1094,14 @@ class TestRegisteredToolWrappers:
     """Drive the REGISTERED FastMCP tool wrappers (not the handlers) — fix #3.
 
     The end-to-end tests above call the :class:`AppContext` HANDLERS directly, so
-    the ``@mcp.tool``-decorated wrapper bodies in ``_register_tools`` (their
-    ``.model_dump()`` serialisation) had zero coverage. These drive the registered
-    tool functions through the FastMCP tool manager against a real-indexed corpus,
-    asserting the SERIALISED shape — a wrapper that returned the raw pydantic
-    object instead of ``.model_dump()`` fails here.
+    the ``@mcp.tool``-decorated wrapper bodies in ``_register_tools`` had zero
+    coverage. These drive the registered tool functions through the FastMCP tool
+    manager against a real-indexed corpus. Since Item 2 the wrappers RETURN the real
+    pydantic model instance(s) (not ``.model_dump()``), and FastMCP derives the
+    field-level outputSchema + structuredContent from the model — so these drive
+    ``Tool.run(..., convert_result=True)`` (the live serialisation path) and assert
+    the STRUCTURED content's shape. A wrapper annotated ``list[dict[str, Any]]``
+    again would publish an opaque schema (caught in ``TestToolOutputSchemas``).
     """
 
     @pytest_asyncio.fixture()
@@ -998,41 +1123,55 @@ class TestRegisteredToolWrappers:
             await ctx.aclose()
 
     @staticmethod
-    async def _call(mcp: Any, name: str, ctx: AppContext, /, **kwargs: Any) -> Any:
-        """Invoke a registered tool's wrapper fn with a fake lifespan Context."""
+    async def _structured(mcp: Any, name: str, ctx: AppContext, /, **kwargs: Any) -> Any:
+        """Run a registered tool through FastMCP and return its structuredContent.
+
+        ``Tool.run(convert_result=True)`` returns ``(unstructured, structured)`` when
+        the tool has an output schema — the structured half is the model-derived
+        dict the consumer receives. Driving the real run path proves the wrapper
+        returns a model FastMCP can serialise into structuredContent.
+        """
         tool = mcp._tool_manager.get_tool(name)  # noqa: SLF001 - test-only introspection
-        return await tool.fn(_FakeToolContext(ctx), **kwargs)
+        _unstructured, structured = await tool.run(
+            kwargs, context=_FakeToolContext(ctx), convert_result=True
+        )
+        return structured
 
-    async def test_search_code_wrapper_returns_serialised_dicts(
+    async def test_search_code_wrapper_yields_structured_list(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        out = await self._call(mcp, "lore_search_code", ctx, query="champion routing", k=10)
-        # The wrapper must return a list of PLAIN dicts (.model_dump()'d), not
-        # SearchResult objects — and each carries the base citation fields.
-        assert isinstance(out, list) and out
-        assert all(isinstance(item, dict) for item in out)
-        assert any("[SOURCE:" in item["formatted"] for item in out)
-        assert any("pkg/router.py" in item["formatted"] for item in out)
+        structured = await self._structured(
+            mcp, "lore_search_code", ctx, query="champion routing", k=10
+        )
+        # A list[SearchResult] is wrapped under ``result``; each element carries the
+        # SearchResult fields (NOT an opaque blob).
+        assert isinstance(structured, dict) and structured["result"]
+        items = structured["result"]
+        assert all(isinstance(item, dict) for item in items)
+        assert any("[SOURCE:" in item["formatted"] for item in items)
+        assert any("pkg/router.py" in item["formatted"] for item in items)
 
-    async def test_get_symbol_wrapper_returns_serialised_dict(
+    async def test_get_symbol_wrapper_yields_structured_model(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        out = await self._call(mcp, "lore_get_symbol", ctx, qualified_name="champion_routing")
-        # A PLAIN dict, not a ResolvedSymbol — proving the wrapper's .model_dump().
-        assert isinstance(out, dict)
-        assert out["qualified_name"] == "champion_routing"
-        assert out["file_path"] == "pkg/router.py"
+        structured = await self._structured(
+            mcp, "lore_get_symbol", ctx, qualified_name="champion_routing"
+        )
+        # A scalar ResolvedSymbol — structuredContent is the model dict directly.
+        assert isinstance(structured, dict)
+        assert structured["qualified_name"] == "champion_routing"
+        assert structured["file_path"] == "pkg/router.py"
 
-    async def test_index_status_wrapper_returns_serialised_dict(
+    async def test_index_status_wrapper_yields_structured_model(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        out = await self._call(mcp, "lore_index_status", ctx)
-        assert isinstance(out, dict)
-        assert out["files_indexed"] >= 1
-        assert out["files_failed"] == 0
+        structured = await self._structured(mcp, "lore_index_status", ctx)
+        assert isinstance(structured, dict)
+        assert structured["files_indexed"] >= 1
+        assert structured["files_failed"] == 0
 
 
 # --------------------------------------------------------------------------- #

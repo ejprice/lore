@@ -68,18 +68,33 @@ from loremaster.extension import (
     ToolSpec,
 )
 
+# The consumer-visible tool RETURN models, imported at RUNTIME (not just under
+# TYPE_CHECKING): each built-in tool wrapper is annotated with its real model
+# return type so FastMCP derives a FIELD-LEVEL outputSchema + structuredContent
+# (mcp-builder structured-output standard). FastMCP resolves a wrapper's return
+# annotation via ``get_type_hints`` at registration time, so these names MUST live
+# in this module's runtime namespace — a TYPE_CHECKING-only import would resolve to
+# nothing and silently fall back to an opaque schema. None of these modules import
+# ``server`` at runtime (only under TYPE_CHECKING), so the import is acyclic.
+from loremaster.graph import GraphNode
+from loremaster.index.indexer import IndexSummary
+from loremaster.memory.store import RecalledMemory
+from loremaster.read_file import FileSpan
+from loremaster.search import SearchResult
+from loremaster.symbols import ResolvedSymbol
+
 if TYPE_CHECKING:
     from loresigil.base import Embedder
 
-    from loremaster.graph import CodeGraph, GraphNode
-    from loremaster.index.indexer import Indexer, IndexSummary
+    from loremaster.graph import CodeGraph
+    from loremaster.index.indexer import Indexer
     from loremaster.index.manifest import Manifest
     from loremaster.index.reconcile import ReconcileEngine
-    from loremaster.memory.store import MemoryStore, RecalledMemory
-    from loremaster.read_file import FileSpan, ReadFileTool
-    from loremaster.search import SearchPipeline, SearchResult
+    from loremaster.memory.store import MemoryStore
+    from loremaster.read_file import ReadFileTool
+    from loremaster.search import SearchPipeline
     from loremaster.store.qdrant import QdrantStore
-    from loremaster.symbols import ResolvedSymbol, SymbolTool
+    from loremaster.symbols import SymbolTool
 
 # The parent-context ``state`` key under which the per-extension lifespan-state
 # namespaces live (fix B / §A1.10). ``ctx.state[_EXTENSION_STATE_KEY][name]`` is
@@ -1585,11 +1600,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = "auto",
-    ) -> list[dict[str, Any]]:
-        results = await _app_context(context).search_code(
+    ) -> list[SearchResult]:
+        return await _app_context(context).search_code(
             query, k, filters, wait_for_fresh=wait_for_fresh, detail_level=detail_level
         )
-        return [r.model_dump() for r in results]
 
     @mcp.tool(
         name="lore_read_file",
@@ -1643,9 +1657,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
-    ) -> dict[str, Any]:
-        span = await _app_context(context).read_file(tier, path, line_start, line_end)
-        return span.model_dump()
+    ) -> FileSpan:
+        return await _app_context(context).read_file(tier, path, line_start, line_end)
 
     @mcp.tool(
         name="lore_get_symbol",
@@ -1674,9 +1687,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ],
-    ) -> dict[str, Any]:
-        symbol = await _app_context(context).get_symbol(qualified_name)
-        return symbol.model_dump()
+    ) -> ResolvedSymbol:
+        return await _app_context(context).get_symbol(qualified_name)
 
     @mcp.tool(
         name="lore_save_memory",
@@ -1746,8 +1758,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = _DEFAULT_RECALL_K,
-    ) -> list[dict[str, Any]]:
-        return [m.model_dump() for m in await _app_context(context).recall_memory(query, k)]
+    ) -> list[RecalledMemory]:
+        return await _app_context(context).recall_memory(query, k)
 
     @mcp.tool(
         name="lore_reindex",
@@ -1772,9 +1784,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
-    ) -> dict[str, Any]:
-        summary = await _app_context(context).reindex(tier)
-        return summary.model_dump()
+    ) -> IndexSummary:
+        return await _app_context(context).reindex(tier)
 
     @mcp.tool(
         name="lore_index_status",
@@ -1787,9 +1798,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
-    async def index_status(context: Context[Any, AppContext, Any]) -> dict[str, Any]:
-        status = await _app_context(context).index_status()
-        return status.model_dump()
+    async def index_status(context: Context[Any, AppContext, Any]) -> IndexSummary:
+        return await _app_context(context).index_status()
 
     @mcp.tool(
         name="lore_what_imports",
@@ -1812,8 +1822,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ],
-    ) -> list[dict[str, Any]]:
-        return [n.model_dump() for n in await _app_context(context).what_imports(target)]
+    ) -> list[GraphNode]:
+        return await _app_context(context).what_imports(target)
 
     @mcp.tool(
         name="lore_blast_radius",
@@ -1858,9 +1868,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = _DEFAULT_BLAST_MAX_RESULTS,
-    ) -> list[dict[str, Any]]:
-        nodes = await _app_context(context).blast_radius(target, depth, max_results)
-        return [n.model_dump() for n in nodes]
+    ) -> list[GraphNode]:
+        return await _app_context(context).blast_radius(target, depth, max_results)
 
     @mcp.tool(
         name="lore_tests_for",
@@ -1884,8 +1893,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ],
-    ) -> list[dict[str, Any]]:
-        return [n.model_dump() for n in await _app_context(context).tests_for(symbol_or_file)]
+    ) -> list[GraphNode]:
+        return await _app_context(context).tests_for(symbol_or_file)
 
     # After the ten built-ins, register the extension-contributed seam-3 tools.
     _register_extension_tools(mcp, server)
