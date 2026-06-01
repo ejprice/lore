@@ -1876,22 +1876,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     _register_extension_tools(mcp, server)
 
 
-# The declarative ``ToolSpec.input_schema`` is "a small descriptive mapping the
-# server build translates" (not a JSON Schema dialect): field name → a short type
-# name. This maps those names to the Python annotation FastMCP introspects into
-# the registered tool's ``inputSchema``. An unrecognised name falls back to ``str``
-# (the safe, permissive default for a free-form descriptor) rather than failing —
-# the mapping is intentionally forgiving, since the schema is descriptive.
-_INPUT_SCHEMA_TYPES: dict[str, type] = {
-    "str": str,
-    "string": str,
-    "int": int,
-    "integer": int,
-    "float": float,
-    "number": float,
-    "bool": bool,
-    "boolean": bool,
-}
+# The parameter name FastMCP reserves to inject the request :class:`Context` on the
+# registered tool wrapper. A ToolSpec handler that ALSO declares a parameter named
+# this would collide with the injected one (a cryptic FastMCP-internal "duplicate
+# parameter name" crash); the registration path refuses it loudly instead.
+_RESERVED_TOOL_PARAM = "context"
 
 
 def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
@@ -1944,23 +1933,57 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
         mcp.add_tool(wrapper, name=spec.name, description=spec.description)
 
 
+# The parameter kinds an extension tool handler may declare and have faithfully
+# republished. ``*args`` / ``**kwargs`` / positional-only cannot be modelled as a
+# named, typed JSON-schema property, so a handler using them is refused loudly
+# rather than published with a wrong (or silently dropped) schema.
+_SUPPORTED_PARAM_KINDS = frozenset(
+    {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+)
+
+
 def _extension_tool_wrapper(spec: ToolSpec) -> Callable[..., Awaitable[Any]]:
     """Build the FastMCP tool function for an extension :class:`ToolSpec`.
 
-    The returned async function carries a SIGNATURE derived from
-    :attr:`ToolSpec.input_schema` (one typed parameter per declared input, plus the
-    FastMCP ``context`` parameter), so FastMCP introspects it into the registered
-    tool's ``inputSchema`` — the consumer sees the declared args. Its body fetches
-    the live :class:`AppContext`, resolves the handler bound to the RUNTIME context
-    (:meth:`AppContext.extension_tool_handler`), and invokes it with the call's
-    declared arguments (awaiting a coroutine handler, returning a sync one's value).
+    The published ``inputSchema`` MUST match what the handler actually accepts —
+    silently telling a consumer the wrong type or a wrong required-set is the worst
+    MCP failure class. The handler's own signature is the single source of truth, so
+    this introspects :attr:`ToolSpec.handler` and threads each parameter's real
+    annotation + default + kind onto the wrapper's constructed signature:
+
+    * a parameter WITH a default publishes as NOT required (the consumer may omit
+      it; the handler supplies the default);
+    * a parameter WITHOUT a default stays required;
+    * the real annotation is preserved, so container/complex types
+      (``list[str]`` → ``array``, ``dict`` → ``object``, a pydantic model → its
+      schema) publish their correct JSON-schema type rather than collapsing to
+      ``string``.
+
+    The ``input_schema`` mapping on the spec is now SUPPLEMENTAL description only
+    (its keys/values no longer drive type or optionality) — the live signature wins.
+
+    Fail-loud (never silently coerce):
+
+    * a parameter named :data:`_RESERVED_TOOL_PARAM` collides with the injected
+      request ``context`` → raise (a clear error, not FastMCP's cryptic internal
+      "duplicate parameter name");
+    * an UN-annotated parameter would be silently published as ``string`` → raise
+      (FastMCP defaults a bare param to ``type: string``, the silent-wrong-schema
+      hazard);
+    * a ``*args`` / ``**kwargs`` / positional-only parameter cannot be modelled as a
+      named JSON-schema property → raise.
 
     Args:
         spec: The declarative tool spec to wrap.
 
     Returns:
         An async function suitable for :meth:`FastMCP.add_tool`, whose signature
-        reflects ``spec.input_schema``.
+        mirrors the handler's so the published schema matches what it accepts.
+
+    Raises:
+        ValueError: If the handler declares a reserved ``context`` parameter, an
+            un-annotated parameter, or an unsupported parameter kind — each message
+            names the offending :class:`ToolSpec` and field.
     """
 
     async def _tool(context: Context[Any, AppContext, Any], **kwargs: Any) -> Any:
@@ -1970,29 +1993,51 @@ def _extension_tool_wrapper(spec: ToolSpec) -> Callable[..., Awaitable[Any]]:
             return await result
         return result
 
-    # Build the explicit signature FastMCP introspects: the leading ``context``
-    # parameter (FastMCP injects the request Context here, NOT a consumer-visible
-    # arg) followed by one typed keyword parameter per declared input. Annotations
-    # are real type objects (not strings), so ``inspect.signature(..., eval_str=
-    # True)`` resolves them with no NameError risk.
+    # The leading ``context`` parameter (FastMCP injects the request Context here,
+    # NOT a consumer-visible arg), then one parameter PER HANDLER PARAMETER —
+    # annotation + default + kind carried verbatim so the published schema matches.
     parameters: list[inspect.Parameter] = [
         inspect.Parameter(
-            "context",
+            _RESERVED_TOOL_PARAM,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             annotation=Context,
         )
     ]
-    annotations: dict[str, Any] = {"context": Context, "return": Any}
-    for field_name, type_descriptor in spec.input_schema.items():
-        annotation = _INPUT_SCHEMA_TYPES.get(str(type_descriptor).lower(), str)
+    annotations: dict[str, Any] = {_RESERVED_TOOL_PARAM: Context, "return": Any}
+    handler_signature = inspect.signature(spec.handler)
+    for param in handler_signature.parameters.values():
+        if param.name == _RESERVED_TOOL_PARAM:
+            raise ValueError(
+                f"extension tool {spec.name!r} handler declares a parameter named "
+                f"{_RESERVED_TOOL_PARAM!r}, which is reserved for the injected request "
+                f"context; rename that handler parameter."
+            )
+        if param.kind not in _SUPPORTED_PARAM_KINDS:
+            raise ValueError(
+                f"extension tool {spec.name!r} handler parameter {param.name!r} has "
+                f"unsupported kind {param.kind.description!r}; an extension tool's inputs "
+                f"must be named, typed parameters (no *args/**kwargs/positional-only) so "
+                f"the published schema can faithfully describe them."
+            )
+        if param.annotation is inspect.Parameter.empty:
+            raise ValueError(
+                f"extension tool {spec.name!r} handler parameter {param.name!r} has no type "
+                f"annotation; an un-annotated parameter would be silently published as a "
+                f"string in the tool's input schema. Annotate it so the consumer sees the "
+                f"correct type."
+            )
+        # KEYWORD_ONLY on the wrapper so FastMCP/pydantic builds named properties
+        # regardless of the handler's original positional/keyword kind; the default
+        # (present or absent) is what drives required vs optional in the schema.
         parameters.append(
             inspect.Parameter(
-                field_name,
+                param.name,
                 inspect.Parameter.KEYWORD_ONLY,
-                annotation=annotation,
+                annotation=param.annotation,
+                default=param.default,
             )
         )
-        annotations[field_name] = annotation
+        annotations[param.name] = param.annotation
     _tool.__signature__ = inspect.Signature(parameters)  # type: ignore[attr-defined]
     _tool.__annotations__ = annotations
     _tool.__name__ = spec.name

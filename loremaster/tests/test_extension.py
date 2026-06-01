@@ -32,9 +32,15 @@ import pytest
 import pytest_asyncio
 from _extension_helpers import (
     BUILTIN_COLLISION_NAME,
+    SCHEMA_TOOL_FACTOR_DEFAULT,
     CollidingExtension,
     CounterExtension,
     FakeExtension,
+    IsolationExtensionA,
+    IsolationExtensionB,
+    ReservedContextArgExtension,
+    SchemaShapesExtension,
+    UnannotatedArgExtension,
     minimal_config,
 )
 from loremaster.extension import (
@@ -564,3 +570,170 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
         server = LoreServer(config).register_extension(CollidingExtension())
         with pytest.raises(ValueError, match=BUILTIN_COLLISION_NAME):
             build_mcp_server(server)
+
+    async def test_two_extensions_with_the_same_tool_name_raises(
+        self, tmp_path: Path
+    ) -> None:
+        # The collision guard covers EXTENSION-vs-EXTENSION too, not just vs a
+        # built-in: two extensions contributing the same tool name must raise at
+        # registration (the second cannot silently shadow the first). The audit
+        # flagged this as untested-but-working — lock it.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        # Two CounterExtension-like extensions both contribute ``bump_counter``;
+        # register two distinct extensions whose tools collide on a name.
+        server = (
+            LoreServer(config)
+            .register_extension(CounterExtension())
+            .register_extension(_DuplicateBumpExtension())
+        )
+        with pytest.raises(ValueError, match="bump_counter"):
+            build_mcp_server(server)
+
+    async def test_optional_arg_is_not_required_and_invocable_without_it(
+        self, tmp_path: Path, qdrant: Any
+    ) -> None:
+        # CONTRACT GAP #1 (optionality lost). The handler declares
+        # ``factor: int = SCHEMA_TOOL_FACTOR_DEFAULT``; the published inputSchema
+        # must therefore NOT list ``factor`` in ``required`` (a required scalar with
+        # no default stays required), AND the tool must be invocable WITHOUT
+        # ``factor`` — the handler supplies its default. RED today: ``factor`` is
+        # wrongly published as required (every arg is KEYWORD_ONLY with no default).
+        from loremaster.server import LoreServer, build_mcp_server
+
+        live = tmp_path / "live"
+        live.mkdir()
+        slug = self._slug()
+        config = _server_config(slug, live)
+        server = LoreServer(config).register_extension(SchemaShapesExtension())
+        mcp = build_mcp_server(server)
+
+        tools = await mcp.list_tools()
+        echo = next(t for t in tools if t.name == "echo_shapes")
+        required = set(echo.inputSchema.get("required", []))
+        # The no-default scalar/containers stay required; the defaulted one does not.
+        assert "required" in required
+        assert "factor" not in required, (
+            "an arg with a handler default must publish as NOT required"
+        )
+
+        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        try:
+            tool = mcp._tool_manager.get_tool("echo_shapes")  # noqa: SLF001
+            # Invoke WITHOUT ``factor`` — the handler's default must apply.
+            result = await tool.fn(
+                _FakeToolContext(ctx),
+                required="r",
+                items=["a", "b"],
+                mapping={"k": 1},
+            )
+            assert result["factor"] == SCHEMA_TOOL_FACTOR_DEFAULT
+            assert result["items"] == ["a", "b"]
+        finally:
+            await ctx.aclose()
+
+    async def test_non_scalar_args_publish_correct_json_schema_types(
+        self, tmp_path: Path
+    ) -> None:
+        # CONTRACT GAP #2 (non-scalar collapse to string). A ``list[str]`` arg must
+        # publish ``type: array`` and a ``dict[str, int]`` arg ``type: object`` — NOT
+        # silently ``type: string``. RED today: both collapse to string.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        server = LoreServer(config).register_extension(SchemaShapesExtension())
+        mcp = build_mcp_server(server)
+
+        tools = await mcp.list_tools()
+        echo = next(t for t in tools if t.name == "echo_shapes")
+        props = echo.inputSchema["properties"]
+        assert props["items"]["type"] == "array", "list[str] must publish as array, not string"
+        assert props["items"]["items"]["type"] == "string"
+        assert props["mapping"]["type"] == "object", "dict must publish as object, not string"
+        # The required scalar is still a plain string.
+        assert props["required"]["type"] == "string"
+
+    async def test_reserved_context_arg_raises_a_clear_error(self, tmp_path: Path) -> None:
+        # An arg named ``context`` collides with FastMCP's injected request Context.
+        # Registration must raise a CLEAR error naming the offending ToolSpec — never
+        # the cryptic internal "duplicate parameter name" crash.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        server = LoreServer(config).register_extension(ReservedContextArgExtension())
+        with pytest.raises(ValueError, match="uses_context"):
+            build_mcp_server(server)
+
+    async def test_unannotated_arg_fails_loud_not_silent_string(
+        self, tmp_path: Path
+    ) -> None:
+        # An un-annotated handler param would silently publish as ``type: string``
+        # (the silent-wrong-schema bug class). Registration must FAIL LOUD naming
+        # the offending ToolSpec + field instead of coercing.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        server = LoreServer(config).register_extension(UnannotatedArgExtension())
+        with pytest.raises(ValueError, match="mystery"):
+            build_mcp_server(server)
+
+    async def test_cross_extension_tool_state_is_isolated(
+        self, tmp_path: Path, qdrant: Any
+    ) -> None:
+        # Two extensions, each with its OWN private lifespan state + a tool reading
+        # it. One extension's tool must see ONLY its own sentinel and NEVER the
+        # sibling's key (fix B isolation, exercised through the live tool surface).
+        # The audit flagged cross-extension isolation as untested-on-the-tool-path.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        live = tmp_path / "live"
+        live.mkdir()
+        slug = self._slug()
+        config = _server_config(slug, live)
+        server = (
+            LoreServer(config)
+            .register_extension(IsolationExtensionA())
+            .register_extension(IsolationExtensionB())
+        )
+        mcp = build_mcp_server(server)
+        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        try:
+            tool_a = mcp._tool_manager.get_tool("read_state_a")  # noqa: SLF001
+            tool_b = mcp._tool_manager.get_tool("read_state_b")  # noqa: SLF001
+            out_a = await tool_a.fn(_FakeToolContext(ctx))
+            out_b = await tool_b.fn(_FakeToolContext(ctx))
+            # Each sees its own sentinel...
+            assert out_a["own"] == "alpha"
+            assert out_b["own"] == "beta"
+            # ...and NEVER the sibling's key (no state bleed across extensions).
+            assert out_a["saw_sibling"] is False
+            assert out_b["saw_sibling"] is False
+        finally:
+            await ctx.aclose()
+
+
+class _DuplicateBumpExtension(Extension):
+    """A second extension that re-uses ``bump_counter`` to force an ext-vs-ext clash."""
+
+    @property
+    def name(self) -> str:
+        return "duplicate_bumper"
+
+    def tools(self, ctx: ExtensionContext) -> list[ToolSpec]:
+        def _also_bump(count: int = 1) -> int:
+            return count
+
+        return [
+            ToolSpec(
+                name="bump_counter",
+                handler=_also_bump,
+                description="A colliding second bump tool.",
+                input_schema={"count": "int"},
+                output_schema={"total": "int"},
+            )
+        ]
