@@ -581,7 +581,12 @@ class TestAppContextLifespan:
 # --------------------------------------------------------------------------- #
 # Tool registration + end-to-end tool behaviour
 # --------------------------------------------------------------------------- #
-_EXPECTED_TOOLS = {
+# The ten built-in tools, each carrying the mandatory ``lore_`` service prefix
+# (mcp-builder: a service prefix so tools disambiguate across many connected MCP
+# servers). The bare (un-prefixed) names they were renamed FROM — no built-in may
+# publish a bare name on the wire.
+_TOOL_PREFIX = "lore_"
+_BARE_TOOL_NAMES = {
     "search_code",
     "read_file",
     "get_symbol",
@@ -593,10 +598,11 @@ _EXPECTED_TOOLS = {
     "blast_radius",
     "tests_for",
 }
+_EXPECTED_TOOLS = {f"{_TOOL_PREFIX}{name}" for name in _BARE_TOOL_NAMES}
 
 
 class TestToolRegistration:
-    """All ten MCP tools are registered on the FastMCP app."""
+    """All ten MCP tools are registered on the FastMCP app, each ``lore_``-prefixed."""
 
     async def test_all_ten_tools_registered(self, tmp_path: Path) -> None:
         slug = _slug()
@@ -605,6 +611,23 @@ class TestToolRegistration:
         tools = await mcp.list_tools()
         names = {t.name for t in tools}
         assert _EXPECTED_TOOLS <= names
+
+    async def test_all_built_in_tools_carry_the_lore_prefix(self, tmp_path: Path) -> None:
+        # mcp-builder insists (3x) on a service prefix so tools disambiguate across
+        # the many MCP servers a consumer connects at once. Every built-in must
+        # publish its ``lore_``-prefixed name, and NONE may still publish a bare one.
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        names = {t.name for t in await mcp.list_tools()}
+        assert _EXPECTED_TOOLS <= names, (
+            f"every built-in must be {_TOOL_PREFIX}-prefixed; missing: "
+            f"{_EXPECTED_TOOLS - names}"
+        )
+        leaked = _BARE_TOOL_NAMES & names
+        assert not leaked, (
+            f"no built-in may publish a bare (un-prefixed) tool name; leaked: {leaked}"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -615,20 +638,20 @@ class TestToolRegistration:
 # must carry ``readOnlyHint=True``. ``save_memory`` and ``reindex`` are the two
 # mutating tools and must NOT be marked read-only.
 _READ_ONLY_TOOLS = {
-    "search_code",
-    "read_file",
-    "get_symbol",
-    "recall_memory",
-    "index_status",
-    "what_imports",
-    "blast_radius",
-    "tests_for",
+    "lore_search_code",
+    "lore_read_file",
+    "lore_get_symbol",
+    "lore_recall_memory",
+    "lore_index_status",
+    "lore_what_imports",
+    "lore_blast_radius",
+    "lore_tests_for",
 }
-_MUTATING_TOOLS = {"save_memory", "reindex"}
+_MUTATING_TOOLS = {"lore_save_memory", "lore_reindex"}
 
 # Tools that take NO consumer-facing parameters (so there are no per-field
-# descriptions to assert). ``index_status`` is parameterless.
-_PARAMETERLESS_TOOLS = {"index_status"}
+# descriptions to assert). ``lore_index_status`` is parameterless.
+_PARAMETERLESS_TOOLS = {"lore_index_status"}
 
 
 class TestServerInstructions:
@@ -723,14 +746,14 @@ class TestToolDescriptions:
         # get_symbol = EXACT definition; search_code = semantic. The descriptions
         # must draw that distinction so a consumer picks the right one.
         tools = await self._tools_by_name(tmp_path)
-        assert "exact" in tools["get_symbol"].description.lower()
-        assert "semantic" in tools["search_code"].description.lower()
+        assert "exact" in tools["lore_get_symbol"].description.lower()
+        assert "semantic" in tools["lore_search_code"].description.lower()
 
     async def test_what_imports_vs_blast_radius_disambiguated(self, tmp_path: Path) -> None:
         # what_imports = DIRECT importers; blast_radius = TRANSITIVE closure.
         tools = await self._tools_by_name(tmp_path)
-        assert "direct" in tools["what_imports"].description.lower()
-        assert "transitive" in tools["blast_radius"].description.lower()
+        assert "direct" in tools["lore_what_imports"].description.lower()
+        assert "transitive" in tools["lore_blast_radius"].description.lower()
 
 
 class TestToolInputFieldDescriptions:
@@ -768,7 +791,7 @@ class TestToolInputFieldDescriptions:
         # The qualified_name description must convey it accepts BOTH a
         # module-qualified dotted name AND a bare identity.
         tools = await self._tools_by_name(tmp_path)
-        description = tools["get_symbol"].inputSchema["properties"]["qualified_name"][
+        description = tools["lore_get_symbol"].inputSchema["properties"]["qualified_name"][
             "description"
         ].lower()
         assert "bare" in description
@@ -811,7 +834,7 @@ class TestToolAnnotations:
         # save_memory dedups by deterministic id, but a NEW note text creates a new
         # point — it is a write, not a read; do not advertise it idempotent.
         tools = await self._tools_by_name(tmp_path)
-        assert tools["save_memory"].annotations is not None
+        assert tools["lore_save_memory"].annotations is not None
 
 
 class TestActionableErrors:
@@ -984,7 +1007,7 @@ class TestRegisteredToolWrappers:
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        out = await self._call(mcp, "search_code", ctx, query="champion routing", k=10)
+        out = await self._call(mcp, "lore_search_code", ctx, query="champion routing", k=10)
         # The wrapper must return a list of PLAIN dicts (.model_dump()'d), not
         # SearchResult objects — and each carries the base citation fields.
         assert isinstance(out, list) and out
@@ -996,7 +1019,7 @@ class TestRegisteredToolWrappers:
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        out = await self._call(mcp, "get_symbol", ctx, qualified_name="champion_routing")
+        out = await self._call(mcp, "lore_get_symbol", ctx, qualified_name="champion_routing")
         # A PLAIN dict, not a ResolvedSymbol — proving the wrapper's .model_dump().
         assert isinstance(out, dict)
         assert out["qualified_name"] == "champion_routing"
@@ -1006,7 +1029,7 @@ class TestRegisteredToolWrappers:
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        out = await self._call(mcp, "index_status", ctx)
+        out = await self._call(mcp, "lore_index_status", ctx)
         assert isinstance(out, dict)
         assert out["files_indexed"] >= 1
         assert out["files_failed"] == 0

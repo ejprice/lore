@@ -708,45 +708,48 @@ _INSTRUCTIONS = (
     "lookalike. Results are summarised value objects, NEVER raw store dumps.\n"
     "\n"
     "WHEN TO USE WHICH TOOL:\n"
-    "- search_code(query, ...): semantic, memory-boosted search across code + docs. "
-    "Your default entry point when you don't already know the exact name/path. Returns "
-    "ranked, cited hits.\n"
-    "- get_symbol(qualified_name): the EXACT stored definition + on-disk location of a "
-    "named Python symbol (class / method / function). Use this — NOT search_code — when "
-    "you know the name and want the authoritative definition (it is collision-correct, "
-    "not a fuzzy ranked guess).\n"
-    "- read_file(tier, path, ...): the EXACT on-disk text of a file span with a "
-    "[SOURCE:...] header. Use after a search/get_symbol hit to read surrounding context.\n"
-    "- what_imports(target): the DIRECT importers of a module (one reverse import edge).\n"
-    "- blast_radius(target, ...): the TRANSITIVE reverse-dependency closure (bounded "
-    "depth + result cap) — 'what could a change here break?'. Reach for blast_radius "
-    "(transitive) over what_imports (direct) when you need the ripple, not just the "
-    "neighbours.\n"
-    "- tests_for(symbol_or_file): the test nodes covering a symbol or file.\n"
-    "- index_status(): the freshness/health roll-up (indexed / in-flight / failed "
+    "- lore_search_code(query, ...): semantic, memory-boosted search across code + "
+    "docs. Your default entry point when you don't already know the exact name/path. "
+    "Returns ranked, cited hits.\n"
+    "- lore_get_symbol(qualified_name): the EXACT stored definition + on-disk location "
+    "of a named Python symbol (class / method / function). Use this — NOT "
+    "lore_search_code — when you know the name and want the authoritative definition "
+    "(it is collision-correct, not a fuzzy ranked guess).\n"
+    "- lore_read_file(tier, path, ...): the EXACT on-disk text of a file span with a "
+    "[SOURCE:...] header. Use after a lore_search_code / lore_get_symbol hit to read "
+    "surrounding context.\n"
+    "- lore_what_imports(target): the DIRECT importers of a module (one reverse import "
+    "edge).\n"
+    "- lore_blast_radius(target, ...): the TRANSITIVE reverse-dependency closure "
+    "(bounded depth + result cap) — 'what could a change here break?'. Reach for "
+    "lore_blast_radius (transitive) over lore_what_imports (direct) when you need the "
+    "ripple, not just the neighbours.\n"
+    "- lore_tests_for(symbol_or_file): the test nodes covering a symbol or file.\n"
+    "- lore_index_status(): the freshness/health roll-up (indexed / in-flight / failed "
     "counts) read straight from the manifest — zero embeds, cheap.\n"
-    "- reindex(tier=None): force a whole-tier reconcile sweep (or all tiers). The "
+    "- lore_reindex(tier=None): force a whole-tier reconcile sweep (or all tiers). The "
     "heavy 'make everything current now' hammer — not a per-file wait.\n"
-    "- save_memory(text, ...) / recall_memory(query, ...): the project-memory store "
-    "(see MEMORY below).\n"
+    "- lore_save_memory(text, ...) / lore_recall_memory(query, ...): the project-memory "
+    "store (see MEMORY below).\n"
     "\n"
-    "CITATIONS: every search_code / read_file result carries a [SOURCE:file:line] "
-    "citation plus a stable 'Key:' line (the chunk key) and a fenced source block. "
-    "Echo the [SOURCE:...] citation when you quote code, and pass a 'Key:' value back "
-    "to save_memory to pin a correction to a specific chunk.\n"
+    "CITATIONS: every lore_search_code / lore_read_file result carries a "
+    "[SOURCE:file:line] citation plus a stable 'Key:' line (the chunk key) and a fenced "
+    "source block. Echo the [SOURCE:...] citation when you quote code, and pass a "
+    "'Key:' value back to lore_save_memory to pin a correction to a specific chunk.\n"
     "\n"
     "FRESHNESS / READ-YOUR-WRITES: a live inotify watcher re-indexes an edited file "
     "within ~seconds of a save — the normal freshness path. A periodic reconcile sweep "
     "(default ~10 min) is ONLY the backstop for events the watcher missed (downtime, "
     "queue overflow), not the edit-to-fresh latency. If you edit a file and "
     "IMMEDIATELY query it, you can race the embed window: pass "
-    "search_code(..., wait_for_fresh=True) — it bounded-waits for the in-flight file(s) "
-    "matching your path filter, then serves fresh (or stale-flagged on timeout; it "
-    "never hangs). Use reindex(tier=...) only to force a whole tier current; for the "
-    "edit-then-query case wait_for_fresh is the right, cheaper tool.\n"
+    "lore_search_code(..., wait_for_fresh=True) — it bounded-waits for the in-flight "
+    "file(s) matching your path filter, then serves fresh (or stale-flagged on timeout; "
+    "it never hangs). Use lore_reindex(tier=...) only to force a whole tier current; "
+    "for the edit-then-query case wait_for_fresh is the right, cheaper tool.\n"
     "\n"
-    "MEMORY: save_memory / recall_memory is PROJECT-SCOPED memory about THIS repository "
-    "— embedded and semantically recalled, SHARED across every agent working this "
+    "MEMORY: lore_save_memory / lore_recall_memory is PROJECT-SCOPED memory about THIS "
+    "repository — embedded and semantically recalled, SHARED across every agent working "
+    "this "
     "project, and it SURVIVES restarts (it persists in a dedicated collection). Use it "
     "for durable facts and corrections about this codebase (e.g. 'the order total lives "
     "in models/sale.py, not where it looks'). This is DISTINCT from your own global / "
@@ -1516,14 +1519,15 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     """
 
     @mcp.tool(
+        name="lore_search_code",
         description=(
             "Semantic, memory-boosted search across THIS project's indexed code and "
             "docs. Your default entry point when you don't already know the exact "
             "symbol name or file path: it ranks by meaning, not by string match. "
             "Returns summarised, [SOURCE:file:line]-cited hits (each with a stable "
             "Key:), never a raw dump. For the EXACT definition of a name you already "
-            "know, prefer get_symbol; to read surrounding lines, follow up with "
-            "read_file."
+            "know, prefer lore_get_symbol; to read surrounding lines, follow up with "
+            "lore_read_file."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1588,12 +1592,14 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         return [r.model_dump() for r in results]
 
     @mcp.tool(
+        name="lore_read_file",
         description=(
             "Read the EXACT on-disk text of a file span with a [SOURCE:tier:path:"
             "start-end] provenance header — the anti-hallucination way to quote real "
-            "lines. Reach for this after a search_code / get_symbol hit to read the "
-            "surrounding context. Path is workspace-relative and containment-guarded "
-            "(a '../' traversal, absolute path, or escaping symlink is rejected)."
+            "lines. Reach for this after a lore_search_code / lore_get_symbol hit to "
+            "read the surrounding context. Path is workspace-relative and "
+            "containment-guarded (a '../' traversal, absolute path, or escaping "
+            "symlink is rejected)."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1642,13 +1648,14 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         return span.model_dump()
 
     @mcp.tool(
+        name="lore_get_symbol",
         description=(
             "Resolve a Python symbol name to its EXACT stored definition + on-disk "
-            "location (file_path / line span / tier). Use this — NOT search_code — "
-            "when you know the name and want the authoritative definition: it is "
+            "location (file_path / line span / tier). Use this — NOT lore_search_code "
+            "— when you know the name and want the authoritative definition: it is "
             "collision-correct (a module-qualified name resolves the RIGHT file when "
-            "the bare name exists in several), where search_code is a fuzzy ranked "
-            "guess. Scoped to class / method / function chunks; raises a clean "
+            "the bare name exists in several), where lore_search_code is a fuzzy "
+            "ranked guess. Scoped to class / method / function chunks; raises a clean "
             "not-found (naming the symbol) if nothing matches."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
@@ -1672,12 +1679,13 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         return symbol.model_dump()
 
     @mcp.tool(
+        name="lore_save_memory",
         description=(
             "Persist a durable note to THIS project's shared memory store; returns "
             "its deterministic id. Use it to record a lasting fact or correction "
             "about this codebase — it is embedded, semantically recalled by "
-            "recall_memory, SHARED across every agent on this project, and survives "
-            "restarts. Re-saving the same text dedups (same id). This is the "
+            "lore_recall_memory, SHARED across every agent on this project, and "
+            "survives restarts. Re-saving the same text dedups (same id). This is the "
             "project's shared notebook, distinct from your own cross-project memory."
         ),
         annotations=_SAVE_MEMORY_ANNOTATIONS,
@@ -1708,11 +1716,12 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         return await _app_context(context).save_memory(text, metadata=metadata)
 
     @mcp.tool(
+        name="lore_recall_memory",
         description=(
             "Recall the nearest saved project-memory notes for a query — the read "
-            "side of save_memory. Returns summarised notes (text + metadata + refs + "
-            "score) from THIS project's shared, restart-surviving memory. Query it "
-            "early when you want prior corrections or durable facts about this "
+            "side of lore_save_memory. Returns summarised notes (text + metadata + "
+            "refs + score) from THIS project's shared, restart-surviving memory. Query "
+            "it early when you want prior corrections or durable facts about this "
             "codebase before you start searching the code itself."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
@@ -1741,13 +1750,14 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         return [m.model_dump() for m in await _app_context(context).recall_memory(query, k)]
 
     @mcp.tool(
+        name="lore_reindex",
         description=(
             "Force a reconcile sweep that re-indexes any changed files NOW and "
             "returns the freshness summary. This is the heavy 'make everything "
             "current' hammer over a whole tier (or all tiers) — NOT a per-file wait. "
             "You rarely need it: the live watcher keeps the index fresh on save. For "
             "the edit-then-immediately-query case, prefer "
-            "search_code(..., wait_for_fresh=True), which is cheaper and targeted."
+            "lore_search_code(..., wait_for_fresh=True), which is cheaper and targeted."
         ),
         annotations=_REINDEX_ANNOTATIONS,
     )
@@ -1767,11 +1777,13 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         return summary.model_dump()
 
     @mcp.tool(
+        name="lore_index_status",
         description=(
             "Return the index freshness + health roll-up (files indexed / in-flight "
             "/ failed counts) read straight from the manifest — zero embeds, cheap. "
             "Use it to check whether the index is current and healthy before "
-            "trusting a search, or to confirm a reindex settled. Takes no arguments."
+            "trusting a search, or to confirm a lore_reindex settled. Takes no "
+            "arguments."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1780,11 +1792,12 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         return status.model_dump()
 
     @mcp.tool(
+        name="lore_what_imports",
         description=(
             "Return the DIRECT importers of a target module — the modules one "
             "reverse import edge away. Use it to answer 'who imports this?'. For the "
             "full TRANSITIVE ripple (importers of importers, bounded), use "
-            "blast_radius instead."
+            "lore_blast_radius instead."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1803,12 +1816,13 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         return [n.model_dump() for n in await _app_context(context).what_imports(target)]
 
     @mcp.tool(
+        name="lore_blast_radius",
         description=(
             "Return the bounded TRANSITIVE reverse-dependency closure of a symbol or "
             "module — everything that could be affected if you change it, following "
             "reverse edges up to 'depth' hops (capped at 'max_results'). Answers "
-            "'what could a change here break?'. Use this over what_imports when you "
-            "need the ripple, not just the immediate importers."
+            "'what could a change here break?'. Use this over lore_what_imports when "
+            "you need the ripple, not just the immediate importers."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1849,6 +1863,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         return [n.model_dump() for n in nodes]
 
     @mcp.tool(
+        name="lore_tests_for",
         description=(
             "Return the test nodes related to a symbol or file (via graph edges and "
             "a naming heuristic). Use it to find the tests covering code you're about "

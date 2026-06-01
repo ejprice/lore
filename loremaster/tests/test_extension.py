@@ -370,17 +370,19 @@ class TestFakeExtensionRoundTrips:
 _DIM = 2048
 
 # The ten built-in tools (the seam-3 wiring must be purely ADDITIVE to these).
+# Each carries the mandatory ``lore_`` service prefix; extension tools do NOT (an
+# extension owns its own tool names — only the built-ins are prefixed).
 _BUILTIN_TOOLS = {
-    "search_code",
-    "read_file",
-    "get_symbol",
-    "save_memory",
-    "recall_memory",
-    "reindex",
-    "index_status",
-    "what_imports",
-    "blast_radius",
-    "tests_for",
+    "lore_search_code",
+    "lore_read_file",
+    "lore_get_symbol",
+    "lore_save_memory",
+    "lore_recall_memory",
+    "lore_reindex",
+    "lore_index_status",
+    "lore_what_imports",
+    "lore_blast_radius",
+    "lore_tests_for",
 }
 
 
