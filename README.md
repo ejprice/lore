@@ -40,6 +40,25 @@ A [`uv`](https://docs.astral.sh/uv/)-workspace monorepo (Python 3.14+):
 `search_code` · `read_file` · `get_symbol` · `what_imports` · `blast_radius` ·
 `tests_for` · `save_memory` · `recall_memory` · `reindex` · `index_status`
 
+### Freshness & read-your-writes
+
+The inotify watcher re-indexes an edited file within ~seconds; a periodic reconcile
+sweep (default ~10 min) is the backstop for any events the watcher missed (not the
+normal freshness path). If an agent edits a file and *immediately* re-queries, use
+`search_code(..., wait_for_fresh=True)` — it bounded-waits for in-flight files before
+returning (and serves stale-with-a-flag on timeout, never hangs). `reindex(tier=...)`
+forces a full tier reconcile.
+
+### lore memory vs. your assistant's memory
+
+`save_memory` / `recall_memory` is **project-scoped, embedded, semantically recalled,
+and shared across every agent working that project** (and it survives container
+restarts). Use it for facts and corrections any agent on *this project* should retrieve
+— "the champion curve is served from `get_forecast_v2`, not the backtest." That is
+distinct from an assistant's own cross-project/global memory (e.g. Claude Code's), which
+holds *your* working context across all your work. Rule of thumb: a durable fact about
+**this repo** → lore memory; a fact about **how you work** → the assistant's memory.
+
 ## Quickstart
 
 **Prerequisites:** a [Qdrant](https://qdrant.tech) instance, an embedding backend (a
