@@ -50,15 +50,24 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def _tool(live_root: Path, snapshot_root: Path) -> ReadFileTool:
+def _tool(
+    live_root: Path,
+    snapshot_root: Path,
+    *,
+    known_tiers: set[str] | None = None,
+) -> ReadFileTool:
     """Build a ReadFileTool wired to a live root + a snapshot layout.
 
     The live tier (``custom``) reads from ``live_root``; every other (static)
     tier resolves through the ``SnapshotLayout`` over ``snapshot_root``.
+    ``known_tiers`` is the set of CONFIGURED tier names (so an unknown tier can be
+    told apart from a missing file); defaults to the live + the canonical static
+    tier this module exercises.
     """
     return ReadFileTool(
         live_roots={_LIVE_TIER: live_root},
         snapshot_layout=SnapshotLayout(snapshot_root),
+        known_tiers=known_tiers if known_tiers is not None else {_LIVE_TIER, _STATIC_TIER, "pip"},
     )
 
 
@@ -306,3 +315,97 @@ class TestFileSpanValueObject:
         assert span.path == "a.py"
         assert span.line_start == 1
         assert span.line_end == 3
+
+
+class TestErrorDisambiguation:
+    """The three failure modes are DISTINCT, actionable messages (Item 6).
+
+    Today read_file conflates unknown-tier / missing-file / containment-rejection
+    into one vague message. Each must instead carry its OWN clear, actionable text:
+    an unknown tier LISTS the configured tiers; a genuinely-missing file says "not
+    found in tier X" + a next step; a containment rejection names the guard. The
+    containment guard behaviour is UNCHANGED — only the messaging improves — so the
+    traversal-still-blocked assertions below stay non-vacuous (a real secret one
+    level up is NOT served).
+    """
+
+    def test_unknown_tier_lists_the_configured_tiers(self, tmp_path: Path) -> None:
+        live_root = tmp_path / "checkout"
+        _write(live_root / "a.py", _LIVE_SOURCE)
+        tool = _tool(live_root, tmp_path / "snap", known_tiers={_LIVE_TIER, _STATIC_TIER})
+        with pytest.raises(ReadFileError) as exc_info:
+            tool.read_file("no_such_tier", "whatever.py")
+        message = str(exc_info.value)
+        assert "no_such_tier" in message, "the error must name the bad tier"
+        assert "tier" in message.lower()
+        # It LISTS the configured tiers so the caller can correct the typo.
+        assert _LIVE_TIER in message and _STATIC_TIER in message
+
+    def test_missing_file_says_not_found_in_tier_with_next_step(
+        self, tmp_path: Path
+    ) -> None:
+        # A KNOWN tier (live) but the file is absent (and NOT a traversal) — a
+        # distinct "not found in tier X" message that points at a next step.
+        live_root = tmp_path / "checkout"
+        live_root.mkdir()
+        tool = _tool(live_root, tmp_path / "snap")
+        with pytest.raises(ReadFileError) as exc_info:
+            tool.read_file(_LIVE_TIER, "absent.py")
+        message = str(exc_info.value)
+        assert "absent.py" in message
+        assert "not found" in message.lower()
+        assert _LIVE_TIER in message
+        # A next step (reindex / search_code / verify the path) is suggested.
+        assert any(hint in message.lower() for hint in ("reindex", "search_code", "verify", "check")), (
+            "a missing-file error must point the caller at a next step"
+        )
+        # The message must NOT pretend it might be a containment rejection (the
+        # conflated old text). This is what makes the disambiguation real.
+        assert "containment" not in message.lower()
+
+    def test_missing_static_file_says_not_found_in_tier(self, tmp_path: Path) -> None:
+        # A KNOWN static tier whose file is absent — distinct "not found" message,
+        # not an unknown-tier or containment one.
+        snapshot_root = tmp_path / "snap"
+        layout = SnapshotLayout(snapshot_root)
+        layout.materialization_dir(_STATIC_TIER).mkdir(parents=True)
+        tool = _tool(tmp_path / "checkout", snapshot_root)
+        with pytest.raises(ReadFileError) as exc_info:
+            tool.read_file(_STATIC_TIER, "gone.py")
+        message = str(exc_info.value)
+        assert "gone.py" in message
+        assert "not found" in message.lower()
+        assert _STATIC_TIER in message
+        assert "containment" not in message.lower()
+
+    def test_live_containment_rejection_has_its_own_message_and_still_blocks(
+        self, tmp_path: Path
+    ) -> None:
+        # A ../ traversal on a known live tier gets the CONTAINMENT message — and
+        # the secret one level up is STILL not served (the guard is unchanged; this
+        # assertion is non-vacuous because the secret exists and would leak if the
+        # guard regressed).
+        live_root = tmp_path / "checkout"
+        _write(live_root / "ok.py", _LIVE_SOURCE)
+        _write(tmp_path / "secret.py", "SECRET = 1\n")
+        tool = _tool(live_root, tmp_path / "snap")
+        with pytest.raises(ReadFileError) as exc_info:
+            tool.read_file(_LIVE_TIER, "../secret.py")
+        message = str(exc_info.value)
+        assert "containment" in message.lower() or "traversal" in message.lower(), (
+            "a traversal rejection must carry the containment-specific message"
+        )
+        # The secret's CONTENT must never appear in the error (no leak).
+        assert "SECRET = 1" not in message
+
+    def test_static_containment_rejection_has_its_own_message(self, tmp_path: Path) -> None:
+        snapshot_root = tmp_path / "snap"
+        layout = SnapshotLayout(snapshot_root)
+        layout.materialization_dir(_STATIC_TIER).mkdir(parents=True)
+        _write(snapshot_root / "secret.py", "SECRET = 1\n")
+        tool = _tool(tmp_path / "checkout", snapshot_root)
+        with pytest.raises(ReadFileError) as exc_info:
+            tool.read_file(_STATIC_TIER, "../secret.py")
+        message = str(exc_info.value)
+        assert "containment" in message.lower() or "traversal" in message.lower()
+        assert "SECRET = 1" not in message
