@@ -1251,7 +1251,12 @@ async def build_app_context(
         for root in config.effective_roots
         if root.path is not None
     }
-    read_file_tool = ReadFileTool(live_roots=live_roots, snapshot_layout=snapshot_layout)
+    # Every configured tier (live + static) is "known", so read_file can tell an
+    # unknown-tier typo apart from a known tier whose file is merely missing.
+    known_tiers = {root.tier for root in config.effective_roots}
+    read_file_tool = ReadFileTool(
+        live_roots=live_roots, snapshot_layout=snapshot_layout, known_tiers=known_tiers
+    )
     symbol_tool = SymbolTool(store=store)
 
     watcher = LiveWatcher(
