@@ -95,6 +95,11 @@ class ReadFileTool:
         snapshot_layout: The :class:`~loremaster.source.snapshot.SnapshotLayout`
             over the snapshot root; every tier NOT in ``live_roots`` is treated
             as static and resolved through it (reusing its audited C4 resolver).
+        known_tiers: The CONFIGURED tier names — used ONLY to disambiguate an
+            error: an unknown tier (a typo, not in this set) raises a message that
+            LISTS the configured tiers, distinct from a known tier whose file is
+            merely missing. The live tiers are always treated as known. ``None``
+            ⇒ only the live tiers are known.
     """
 
     def __init__(
@@ -102,9 +107,16 @@ class ReadFileTool:
         *,
         live_roots: dict[str, Path],
         snapshot_layout: SnapshotLayout,
+        known_tiers: set[str] | None = None,
     ) -> None:
         self._live_roots = {tier: Path(root) for tier, root in live_roots.items()}
         self._snapshot_layout = snapshot_layout
+        # The CONFIGURED tier names — the authority that tells an UNKNOWN tier (a
+        # typo) apart from a known tier whose file is merely missing. Defaults to
+        # the live tiers (the only tiers a bare tool knows for certain); a live
+        # tier is always known. ``None`` ⇒ just the live tiers.
+        self._known_tiers: set[str] = set(known_tiers) if known_tiers is not None else set()
+        self._known_tiers.update(self._live_roots)
 
     def read_file(
         self,
@@ -146,25 +158,73 @@ class ReadFileTool:
         A live tier is contained against its live root via the SAME
         :meth:`SnapshotLayout.contained_path` the static resolver uses (never a
         reimplementation); a static tier delegates wholesale to
-        :meth:`SnapshotLayout.resolve`. Any containment rejection or miss raises
-        :class:`ReadFileError`.
+        :meth:`SnapshotLayout.resolve`. The C4 containment behaviour is identical;
+        only the FAILURE messaging is disambiguated into three distinct, actionable
+        kinds (Item 6):
+
+        * **unknown tier** — ``tier`` is not a configured tier → an error LISTING
+          the configured tiers (so a typo is correctable);
+        * **containment rejection** — ``path`` is an absolute path, a ``../``
+          traversal, or an escaping symlink → its own clear message (the guard
+          still BLOCKS it — nothing is served);
+        * **missing file** — a known tier and a contained path, but no such file
+          → "not found in tier X" with a next step.
+
+        Raises:
+            ReadFileError: One of the three disambiguated kinds above.
         """
+        if tier not in self._known_tiers:
+            raise self._unknown_tier_error(tier)
         live_root = self._live_roots.get(tier)
         if live_root is not None:
             safe = SnapshotLayout.contained_path(live_root, path)
-            if safe is None or not safe.is_file():
-                raise ReadFileError(
-                    f"file {path!r} not found in live tier {tier!r} "
-                    f"(missing or rejected by the containment guard)"
-                )
+            if safe is None:
+                raise self._containment_error(tier, path)
+            if not safe.is_file():
+                raise self._missing_file_error(tier, path)
             return safe
+        # A KNOWN static tier. ``resolve`` returns None for BOTH a containment
+        # rejection and a genuine miss; decompose to tell them apart. If NO tier
+        # location even yields a contained candidate (every location rejected the
+        # path), it is a containment rejection; otherwise the path was contained
+        # but no location holds the file — a miss.
         resolved = self._snapshot_layout.resolve(tier, path)
-        if resolved is None or not resolved.is_file():
-            raise ReadFileError(
-                f"file {path!r} not found in tier {tier!r} "
-                f"(missing, unknown tier, or rejected by the containment guard)"
-            )
-        return resolved
+        if resolved is not None and resolved.is_file():
+            return resolved
+        contained_anywhere = any(
+            SnapshotLayout.contained_path(base, path) is not None
+            for base in self._snapshot_layout.tier_locations(tier)
+        )
+        if not contained_anywhere:
+            raise self._containment_error(tier, path)
+        raise self._missing_file_error(tier, path)
+
+    def _unknown_tier_error(self, tier: str) -> ReadFileError:
+        """An unknown-tier error that LISTS the configured tiers (a correctable typo)."""
+        valid = ", ".join(repr(name) for name in sorted(self._known_tiers))
+        return ReadFileError(
+            f"unknown tier {tier!r}; this project's configured tiers are: {valid}. "
+            f"Check for a typo — the tier is the first field of a [SOURCE:tier:...] "
+            f"citation."
+        )
+
+    @staticmethod
+    def _missing_file_error(tier: str, path: str) -> ReadFileError:
+        """A genuinely-missing-file error naming the tier + a next step (no path leak)."""
+        return ReadFileError(
+            f"file {path!r} not found in tier {tier!r}. Verify the path (it is "
+            f"tier-relative), or run reindex / search_code to locate the current "
+            f"file — the index may be ahead of or behind this path."
+        )
+
+    @staticmethod
+    def _containment_error(tier: str, path: str) -> ReadFileError:
+        """A containment-rejection error — its own clear message (never a path leak)."""
+        return ReadFileError(
+            f"path {path!r} in tier {tier!r} is rejected by the containment guard "
+            f"(an absolute path, a '../' traversal, or an escaping symlink). Pass a "
+            f"tier-relative path that stays within the tier root."
+        )
 
     @staticmethod
     def _resolve_span(

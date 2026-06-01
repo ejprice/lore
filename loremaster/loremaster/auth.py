@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import hmac
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, Iterable, MutableMapping
 from typing import Any
+from urllib.parse import urlsplit
 
 from loremaster.config import AuthConfig, resolve_secret
 
@@ -48,6 +49,7 @@ __all__ = [
     "ApiKeyVerifier",
     "AuthVerifier",
     "BearerAuthMiddleware",
+    "OriginValidationMiddleware",
     "build_api_key_verifier",
     "hmac",
 ]
@@ -69,6 +71,17 @@ _WWW_AUTHENTICATE = b'Bearer realm="loremaster"'
 _HTTP_SCOPE_TYPE = "http"
 _UNAUTHORIZED_STATUS = 401
 _UNAUTHORIZED_BODY = b"Unauthorized"
+
+# Origin (DNS-rebinding) defense for the local streamable-HTTP mode.
+_ORIGIN_HEADER = b"origin"
+_FORBIDDEN_STATUS = 403
+_FORBIDDEN_ORIGIN_BODY = b"Forbidden: disallowed Origin"
+# The loopback hostnames a local request legitimately originates from. A browser
+# tricked by DNS rebinding into POSTing to 127.0.0.1 carries the ATTACKER's origin
+# host (e.g. evil.example.com), so allowing only loopback (+ explicitly configured)
+# origins is the defense — while an ABSENT Origin (a non-browser local client such
+# as Claude Code or curl) is allowed so the no-auth localhost default is unbroken.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class AuthVerifier(ABC):
@@ -245,3 +258,100 @@ class BearerAuthMiddleware:
             }
         )
         await send({"type": "http.response.body", "body": _UNAUTHORIZED_BODY})
+
+
+class OriginValidationMiddleware:
+    """ASGI middleware enforcing an Origin allow-list (DNS-rebinding defense).
+
+    The mcp-builder standard calls for Origin-header validation on a local
+    streamable-HTTP server: a browser tricked by DNS rebinding into POSTing to the
+    loopback bind carries the ATTACKER's site as its ``Origin``, so validating that
+    header blocks the cross-origin write a same-origin policy would otherwise miss
+    (the server binds 127.0.0.1, but the browser still reaches it).
+
+    The policy, tuned to NOT break the no-auth localhost default for legitimate
+    local clients:
+
+    * **Absent Origin → ALLOWED.** A non-browser local client (Claude Code, curl,
+      the Messages-API MCP connector) sends no ``Origin`` — it is not the
+      DNS-rebinding vector and must pass, or the default single-user mode breaks.
+    * **Loopback Origin → ALLOWED.** ``localhost`` / ``127.0.0.1`` / ``[::1]`` (any
+      scheme/port) is a same-machine browser request.
+    * **Configured extra Origin → ALLOWED.** An explicitly trusted origin (a web UI
+      host) the operator adds.
+    * **Any other Origin → 403,** before the wrapped app runs (fail closed). The
+      Origin value is matched on its scheme://host[:port] form only.
+
+    Non-HTTP scopes (the ASGI ``lifespan``) pass straight through — only HTTP
+    requests are gated.
+
+    Args:
+        app: The wrapped ASGI application (the MCP streamable-http app, or the
+            Bearer middleware in front of it).
+        allowed_origins: Extra exact ``scheme://host[:port]`` origins to allow in
+            addition to loopback (e.g. a trusted web UI host). Defaults to none.
+    """
+
+    def __init__(
+        self, app: _ASGIApp, allowed_origins: Iterable[str] | None = None
+    ) -> None:
+        self._app = app
+        self._allowed_origins: frozenset[str] = frozenset(allowed_origins or ())
+
+    async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
+        """Gate an HTTP request on its Origin; pass non-HTTP scopes through."""
+        if scope.get("type") != _HTTP_SCOPE_TYPE:
+            await self._app(scope, receive, send)
+            return
+        origin = self._origin(scope)
+        if not self._is_allowed(origin):
+            await self._reject(send)
+            return
+        await self._app(scope, receive, send)
+
+    @staticmethod
+    def _origin(scope: _Scope) -> str | None:
+        """Return the request's ``Origin`` header value, or ``None`` if absent."""
+        headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
+        for name, value in headers:
+            if name.lower() == _ORIGIN_HEADER:
+                return value.decode("latin-1")
+        return None
+
+    def _is_allowed(self, origin: str | None) -> bool:
+        """Decide whether ``origin`` may proceed (absent / loopback / configured).
+
+        Args:
+            origin: The presented ``Origin`` header value, or ``None`` if absent.
+
+        Returns:
+            ``True`` for an absent Origin, a loopback host, or an explicitly
+            configured origin; ``False`` otherwise.
+        """
+        if not origin:
+            return True
+        if origin in self._allowed_origins:
+            return True
+        # Match on the host of the scheme://host[:port] form: a loopback host is a
+        # same-machine browser request. ``urlsplit`` parses the port off for us.
+        # A malformed bracketed-IPv6 Origin (e.g. ``http://[::1]@evil.com`` or
+        # ``http://[::1].evil.com``) makes ``.hostname`` RAISE ValueError on
+        # Python 3.14; FAIL CLOSED (treat it as disallowed → a clean 403) rather
+        # than letting the exception escape __call__ as a 500/dropped connection.
+        try:
+            hostname = urlsplit(origin).hostname
+        except ValueError:
+            return False
+        return hostname in _LOOPBACK_HOSTS
+
+    @staticmethod
+    async def _reject(send: _Send) -> None:
+        """Send a ``403`` rejecting a disallowed Origin (the request is not served)."""
+        await send(
+            {
+                "type": "http.response.start",
+                "status": _FORBIDDEN_STATUS,
+                "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+            }
+        )
+        await send({"type": "http.response.body", "body": _FORBIDDEN_ORIGIN_BODY})

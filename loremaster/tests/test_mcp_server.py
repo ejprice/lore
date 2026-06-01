@@ -581,7 +581,12 @@ class TestAppContextLifespan:
 # --------------------------------------------------------------------------- #
 # Tool registration + end-to-end tool behaviour
 # --------------------------------------------------------------------------- #
-_EXPECTED_TOOLS = {
+# The ten built-in tools, each carrying the mandatory ``lore_`` service prefix
+# (mcp-builder: a service prefix so tools disambiguate across many connected MCP
+# servers). The bare (un-prefixed) names they were renamed FROM — no built-in may
+# publish a bare name on the wire.
+_TOOL_PREFIX = "lore_"
+_BARE_TOOL_NAMES = {
     "search_code",
     "read_file",
     "get_symbol",
@@ -593,10 +598,11 @@ _EXPECTED_TOOLS = {
     "blast_radius",
     "tests_for",
 }
+_EXPECTED_TOOLS = {f"{_TOOL_PREFIX}{name}" for name in _BARE_TOOL_NAMES}
 
 
 class TestToolRegistration:
-    """All ten MCP tools are registered on the FastMCP app."""
+    """All ten MCP tools are registered on the FastMCP app, each ``lore_``-prefixed."""
 
     async def test_all_ten_tools_registered(self, tmp_path: Path) -> None:
         slug = _slug()
@@ -605,6 +611,23 @@ class TestToolRegistration:
         tools = await mcp.list_tools()
         names = {t.name for t in tools}
         assert _EXPECTED_TOOLS <= names
+
+    async def test_all_built_in_tools_carry_the_lore_prefix(self, tmp_path: Path) -> None:
+        # mcp-builder insists (3x) on a service prefix so tools disambiguate across
+        # the many MCP servers a consumer connects at once. Every built-in must
+        # publish its ``lore_``-prefixed name, and NONE may still publish a bare one.
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        names = {t.name for t in await mcp.list_tools()}
+        assert _EXPECTED_TOOLS <= names, (
+            f"every built-in must be {_TOOL_PREFIX}-prefixed; missing: "
+            f"{_EXPECTED_TOOLS - names}"
+        )
+        leaked = _BARE_TOOL_NAMES & names
+        assert not leaked, (
+            f"no built-in may publish a bare (un-prefixed) tool name; leaked: {leaked}"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -615,20 +638,20 @@ class TestToolRegistration:
 # must carry ``readOnlyHint=True``. ``save_memory`` and ``reindex`` are the two
 # mutating tools and must NOT be marked read-only.
 _READ_ONLY_TOOLS = {
-    "search_code",
-    "read_file",
-    "get_symbol",
-    "recall_memory",
-    "index_status",
-    "what_imports",
-    "blast_radius",
-    "tests_for",
+    "lore_search_code",
+    "lore_read_file",
+    "lore_get_symbol",
+    "lore_recall_memory",
+    "lore_index_status",
+    "lore_what_imports",
+    "lore_blast_radius",
+    "lore_tests_for",
 }
-_MUTATING_TOOLS = {"save_memory", "reindex"}
+_MUTATING_TOOLS = {"lore_save_memory", "lore_reindex"}
 
 # Tools that take NO consumer-facing parameters (so there are no per-field
-# descriptions to assert). ``index_status`` is parameterless.
-_PARAMETERLESS_TOOLS = {"index_status"}
+# descriptions to assert). ``lore_index_status`` is parameterless.
+_PARAMETERLESS_TOOLS = {"lore_index_status"}
 
 
 class TestServerInstructions:
@@ -723,14 +746,14 @@ class TestToolDescriptions:
         # get_symbol = EXACT definition; search_code = semantic. The descriptions
         # must draw that distinction so a consumer picks the right one.
         tools = await self._tools_by_name(tmp_path)
-        assert "exact" in tools["get_symbol"].description.lower()
-        assert "semantic" in tools["search_code"].description.lower()
+        assert "exact" in tools["lore_get_symbol"].description.lower()
+        assert "semantic" in tools["lore_search_code"].description.lower()
 
     async def test_what_imports_vs_blast_radius_disambiguated(self, tmp_path: Path) -> None:
         # what_imports = DIRECT importers; blast_radius = TRANSITIVE closure.
         tools = await self._tools_by_name(tmp_path)
-        assert "direct" in tools["what_imports"].description.lower()
-        assert "transitive" in tools["blast_radius"].description.lower()
+        assert "direct" in tools["lore_what_imports"].description.lower()
+        assert "transitive" in tools["lore_blast_radius"].description.lower()
 
 
 class TestToolInputFieldDescriptions:
@@ -768,11 +791,101 @@ class TestToolInputFieldDescriptions:
         # The qualified_name description must convey it accepts BOTH a
         # module-qualified dotted name AND a bare identity.
         tools = await self._tools_by_name(tmp_path)
-        description = tools["get_symbol"].inputSchema["properties"]["qualified_name"][
+        description = tools["lore_get_symbol"].inputSchema["properties"]["qualified_name"][
             "description"
         ].lower()
         assert "bare" in description
         assert "dotted" in description or "qualified" in description
+
+
+class TestInputParamConstraints:
+    """Input params publish their value constraints + reject bad values (Items 4, 5).
+
+    Item 4: ``lore_search_code(detail_level=...)`` must publish a Literal enum
+    (auto/summary/source) so a bad value is REJECTED at validation, not silently
+    accepted then filtered to empty. Item 5: the numeric params (``k``, ``depth``,
+    ``max_results``) must carry a ``minimum`` (>= 1) so a zero/negative is
+    schema-rejected. The rejection probe validates the tool's arg model directly —
+    isolating arg-validation from the handler, so a refusal proves the SCHEMA
+    rejected the value (non-vacuous: a valid value still validates).
+    """
+
+    async def _tools_by_name(self, tmp_path: Path) -> dict[str, Any]:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        return {tool.name: tool for tool in await mcp.list_tools()}
+
+    async def _server(self, tmp_path: Path) -> Any:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        return build_mcp_server(LoreServer(config))
+
+    def _arg_model(self, mcp: Any, name: str) -> Any:
+        """The pydantic model FastMCP validates a tool's call arguments against.
+
+        Validating this directly is the NON-VACUOUS rejection probe: it isolates
+        arg-validation from the handler, so a rejection proves the SCHEMA refused
+        the value (not that a missing lifespan context crashed the handler body).
+        """
+        return mcp._tool_manager.get_tool(name).fn_metadata.arg_model  # noqa: SLF001
+
+    # -- Item 4: detail_level Literal enum ---------------------------------- #
+
+    async def test_detail_level_publishes_enum_constraint(self, tmp_path: Path) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        prop = tools["lore_search_code"].inputSchema["properties"]["detail_level"]
+        assert prop.get("enum") == ["auto", "summary", "source"], (
+            "detail_level must publish the Literal enum so a bad value is rejected, "
+            "not silently filtered to empty"
+        )
+
+    async def test_invalid_detail_level_is_rejected_good_value_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        from pydantic import ValidationError
+
+        mcp = await self._server(tmp_path)
+        model = self._arg_model(mcp, "lore_search_code")
+        # A value outside the Literal is rejected at arg-validation. A bare-str
+        # param would instead ACCEPT it (then silently filter to an empty result).
+        with pytest.raises(ValidationError):
+            model.model_validate({"query": "x", "detail_level": "bogus"})
+        # A valid Literal member is accepted — the rejection is value-specific, not
+        # a blanket failure (non-vacuous).
+        model.model_validate({"query": "x", "detail_level": "summary"})
+
+    # -- Item 5: ge= bounds on numeric params ------------------------------- #
+
+    async def test_numeric_params_publish_minimum(self, tmp_path: Path) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        # k on search_code + recall_memory, depth + max_results on blast_radius all
+        # carry a minimum of 1 (a count/depth below 1 is meaningless).
+        search_k = tools["lore_search_code"].inputSchema["properties"]["k"]
+        recall_k = tools["lore_recall_memory"].inputSchema["properties"]["k"]
+        depth = tools["lore_blast_radius"].inputSchema["properties"]["depth"]
+        max_results = tools["lore_blast_radius"].inputSchema["properties"]["max_results"]
+        assert search_k.get("minimum") == 1
+        assert recall_k.get("minimum") == 1
+        assert depth.get("minimum") == 1
+        assert max_results.get("minimum") == 1
+
+    async def test_zero_or_negative_numeric_is_rejected_good_value_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        from pydantic import ValidationError
+
+        mcp = await self._server(tmp_path)
+        search_model = self._arg_model(mcp, "lore_search_code")
+        blast_model = self._arg_model(mcp, "lore_blast_radius")
+        # k=0 (search) and depth=-1 (blast_radius) are schema-rejected at validation.
+        with pytest.raises(ValidationError):
+            search_model.model_validate({"query": "x", "k": 0})
+        with pytest.raises(ValidationError):
+            blast_model.model_validate({"target": "x", "depth": -1})
+        # A positive value passes — the bound rejects below-1, not all values.
+        search_model.model_validate({"query": "x", "k": 1})
+        blast_model.model_validate({"target": "x", "depth": 1})
 
 
 class TestToolAnnotations:
@@ -811,7 +924,128 @@ class TestToolAnnotations:
         # save_memory dedups by deterministic id, but a NEW note text creates a new
         # point — it is a write, not a read; do not advertise it idempotent.
         tools = await self._tools_by_name(tmp_path)
-        assert tools["save_memory"].annotations is not None
+        assert tools["lore_save_memory"].annotations is not None
+
+
+# Item 2: the named output fields each tool's published outputSchema must carry.
+# A wrapper returning the real pydantic model (a scalar model, or list[Model]) makes
+# FastMCP derive a FIELD-LEVEL outputSchema; a wrapper returning list[dict[str, Any]]
+# publishes an opaque ``additionalProperties: true`` (no field names) — the regression
+# this pins. Each value is field names that MUST be discoverable in the schema (either
+# top-level ``properties`` for a scalar-model tool, or under ``$defs`` for a
+# list-wrapped one). ``lore_save_memory`` returns a bare str (the id) — no model — so
+# it is excluded (a str has no fields to name).
+_TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
+    "lore_search_code": {"formatted", "chunk_key", "detail_level", "stale", "score"},
+    "lore_read_file": {"tier", "path", "line_start", "line_end", "text"},
+    "lore_get_symbol": {"qualified_name", "chunk_type", "tier", "file_path", "source"},
+    "lore_recall_memory": {"text", "metadata", "refs", "score"},
+    "lore_reindex": {"files_indexed", "files_failed", "files_skipped"},
+    "lore_index_status": {"files_indexed", "files_failed", "files_skipped"},
+    "lore_what_imports": {"qualified_name", "kind", "file_path", "tier"},
+    "lore_blast_radius": {"qualified_name", "kind", "file_path", "tier"},
+    "lore_tests_for": {"qualified_name", "kind", "file_path", "tier"},
+}
+
+
+def _schema_field_names(schema: dict[str, Any]) -> set[str]:
+    """Collect every property name a tool's outputSchema names, transitively.
+
+    Gathers the schema's own ``properties`` keys plus the ``properties`` keys of
+    every model under ``$defs`` (a list-wrapped return publishes the element model
+    in ``$defs`` and only a ``result`` array at top level). This is how a consumer
+    discovers the actual fields; an opaque ``additionalProperties: true`` object
+    contributes NONE of them, so the set stays empty for the regression case.
+    """
+    names: set[str] = set(schema.get("properties", {}).keys())
+    for definition in schema.get("$defs", {}).values():
+        names.update(definition.get("properties", {}).keys())
+    return names
+
+
+class TestToolOutputSchemas:
+    """Every tool publishes a NON-opaque, field-level outputSchema + structuredContent.
+
+    The mcp-builder standard: a tool's structured output must carry a real schema so
+    the consumer sees the field shape, not an opaque ``additionalProperties: true``
+    object. The fix is to annotate each wrapper with its real pydantic return type
+    (``-> list[SearchResult]`` / ``-> FileSpan`` / ``-> IndexSummary`` …) and return
+    the model instance(s); FastMCP then derives a field-level outputSchema and emits
+    structuredContent matching it. These assertions pin the named fields (mutation:
+    revert one wrapper to ``list[dict[str, Any]]`` ⇒ its field set empties ⇒ fail).
+    """
+
+    async def _tools_by_name(self, tmp_path: Path) -> dict[str, Any]:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        return {tool.name: tool for tool in await mcp.list_tools()}
+
+    async def test_each_tool_publishes_a_field_level_output_schema(
+        self, tmp_path: Path
+    ) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        for name, expected_fields in _TOOL_OUTPUT_FIELDS.items():
+            schema = tools[name].outputSchema
+            assert schema is not None, f"{name} must publish an outputSchema"
+            published = _schema_field_names(schema)
+            missing = expected_fields - published
+            assert not missing, (
+                f"{name}'s outputSchema must name its result fields (not an opaque "
+                f"additionalProperties:true object); missing {missing} — got {published}"
+            )
+
+    async def test_no_tool_publishes_an_opaque_object_output(self, tmp_path: Path) -> None:
+        # The regression guard: a list[dict[str, Any]] return publishes a
+        # ``result`` array whose items are ``additionalProperties: true`` (an opaque
+        # object). No model-returning tool may do that.
+        tools = await self._tools_by_name(tmp_path)
+        for name in _TOOL_OUTPUT_FIELDS:
+            schema = tools[name].outputSchema or {}
+            result_prop = schema.get("properties", {}).get("result", {})
+            items = result_prop.get("items", {}) if isinstance(result_prop, dict) else {}
+            assert items.get("additionalProperties") is not True, (
+                f"{name} publishes an opaque additionalProperties:true item — it must "
+                f"return a real pydantic model so the element schema is field-level"
+            )
+
+    async def test_live_call_returns_structured_content_with_fields(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> None:
+        # A live call through the FastMCP tool surface must emit structuredContent
+        # whose payload carries the model's named fields — proof the model instance
+        # (not a stringified blob) reaches the consumer with its schema.
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        mcp = build_mcp_server(LoreServer(config))
+        try:
+            # index_status: a scalar IndexSummary — structuredContent is the model dict.
+            status_tool = mcp._tool_manager.get_tool("lore_index_status")  # noqa: SLF001
+            _content, structured = await status_tool.run(
+                {},
+                context=_FakeToolContext(ctx),
+                convert_result=True,
+            )
+            assert isinstance(structured, dict)
+            assert "files_indexed" in structured
+            # search_code: a list[SearchResult] — wrapped under ``result`` with the
+            # SearchResult fields on each element.
+            search_tool = mcp._tool_manager.get_tool("lore_search_code")  # noqa: SLF001
+            _content2, structured2 = await search_tool.run(
+                {"query": "champion routing", "k": 10},
+                context=_FakeToolContext(ctx),
+                convert_result=True,
+            )
+            assert isinstance(structured2, dict) and "result" in structured2
+            assert structured2["result"], "expected at least one hit"
+            assert "formatted" in structured2["result"][0]
+        finally:
+            await ctx.aclose()
 
 
 class TestActionableErrors:
@@ -925,6 +1159,61 @@ class TestToolBehaviourEndToEnd:
         assert symbol.file_path == "pkg/extra.py"
 
 
+class TestReindexTierValidation:
+    """``reindex(tier=...)`` validates the tier — a typo must fail loud (Item 3).
+
+    Today an unknown ``tier`` is SILENTLY ignored (the sweep runs over all roots
+    regardless), so a typo reports false success. The fix validates ``tier`` against
+    the configured tiers (``config.effective_roots``): an unknown value raises a
+    clear error NAMING the valid tiers; a real tier (or ``None`` = all) proceeds.
+    Mutation: drop the validation ⇒ ``tier='bogus'`` no longer raises.
+    """
+
+    @pytest_asyncio.fixture()
+    async def indexed_context(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> AsyncIterator[AppContext]:
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)  # declares the live tier "custom"
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            yield ctx
+        finally:
+            await ctx.aclose()
+
+    async def test_unknown_tier_raises_naming_the_valid_tiers(
+        self, indexed_context: AppContext
+    ) -> None:
+        from loremaster.server import ReindexTierError
+
+        with pytest.raises(ReindexTierError) as exc_info:
+            await indexed_context.reindex(tier="bogus")
+        message = str(exc_info.value)
+        assert "bogus" in message, "the error must name the bad tier the caller gave"
+        # The configured tier ("custom") must be named so the caller can correct.
+        assert "custom" in message, "the error must name the valid tier(s)"
+
+    async def test_known_tier_reindexes(self, indexed_context: AppContext) -> None:
+        # A real tier proceeds (and brings a new file in that tier current).
+        live = indexed_context._config.effective_roots[0].path  # noqa: SLF001
+        assert live is not None
+        (Path(live) / "pkg" / "scoped.py").write_text(
+            "def scoped_added_symbol():\n    return 11\n", encoding="utf-8"
+        )
+        await indexed_context.reindex(tier="custom")
+        symbol = await indexed_context.get_symbol("scoped_added_symbol")
+        assert symbol.file_path == "pkg/scoped.py"
+
+    async def test_reindex_all_still_works(self, indexed_context: AppContext) -> None:
+        # tier=None still means all — the unscoped sweep is unchanged.
+        summary = await indexed_context.reindex()
+        assert summary.files_failed == 0
+
+
 class _FakeRequestContext:
     """A stand-in for the MCP request context exposing the lifespan AppContext."""
 
@@ -937,8 +1226,8 @@ class _FakeToolContext:
 
     The registered tool wrappers read ``context.request_context.lifespan_context``;
     this minimal double lets a test drive the REAL ``@mcp.tool`` wrapper body
-    (including its ``.model_dump()`` serialisation) without standing up the full
-    streamable-http session machinery.
+    through the tool manager (including FastMCP's structured-content serialisation)
+    without standing up the full streamable-http session machinery.
     """
 
     def __init__(self, app_context: AppContext) -> None:
@@ -949,11 +1238,14 @@ class TestRegisteredToolWrappers:
     """Drive the REGISTERED FastMCP tool wrappers (not the handlers) — fix #3.
 
     The end-to-end tests above call the :class:`AppContext` HANDLERS directly, so
-    the ``@mcp.tool``-decorated wrapper bodies in ``_register_tools`` (their
-    ``.model_dump()`` serialisation) had zero coverage. These drive the registered
-    tool functions through the FastMCP tool manager against a real-indexed corpus,
-    asserting the SERIALISED shape — a wrapper that returned the raw pydantic
-    object instead of ``.model_dump()`` fails here.
+    the ``@mcp.tool``-decorated wrapper bodies in ``_register_tools`` had zero
+    coverage. These drive the registered tool functions through the FastMCP tool
+    manager against a real-indexed corpus. Since Item 2 the wrappers RETURN the real
+    pydantic model instance(s) (not ``.model_dump()``), and FastMCP derives the
+    field-level outputSchema + structuredContent from the model — so these drive
+    ``Tool.run(..., convert_result=True)`` (the live serialisation path) and assert
+    the STRUCTURED content's shape. A wrapper annotated ``list[dict[str, Any]]``
+    again would publish an opaque schema (caught in ``TestToolOutputSchemas``).
     """
 
     @pytest_asyncio.fixture()
@@ -975,41 +1267,55 @@ class TestRegisteredToolWrappers:
             await ctx.aclose()
 
     @staticmethod
-    async def _call(mcp: Any, name: str, ctx: AppContext, /, **kwargs: Any) -> Any:
-        """Invoke a registered tool's wrapper fn with a fake lifespan Context."""
+    async def _structured(mcp: Any, name: str, ctx: AppContext, /, **kwargs: Any) -> Any:
+        """Run a registered tool through FastMCP and return its structuredContent.
+
+        ``Tool.run(convert_result=True)`` returns ``(unstructured, structured)`` when
+        the tool has an output schema — the structured half is the model-derived
+        dict the consumer receives. Driving the real run path proves the wrapper
+        returns a model FastMCP can serialise into structuredContent.
+        """
         tool = mcp._tool_manager.get_tool(name)  # noqa: SLF001 - test-only introspection
-        return await tool.fn(_FakeToolContext(ctx), **kwargs)
+        _unstructured, structured = await tool.run(
+            kwargs, context=_FakeToolContext(ctx), convert_result=True
+        )
+        return structured
 
-    async def test_search_code_wrapper_returns_serialised_dicts(
+    async def test_search_code_wrapper_yields_structured_list(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        out = await self._call(mcp, "search_code", ctx, query="champion routing", k=10)
-        # The wrapper must return a list of PLAIN dicts (.model_dump()'d), not
-        # SearchResult objects — and each carries the base citation fields.
-        assert isinstance(out, list) and out
-        assert all(isinstance(item, dict) for item in out)
-        assert any("[SOURCE:" in item["formatted"] for item in out)
-        assert any("pkg/router.py" in item["formatted"] for item in out)
+        structured = await self._structured(
+            mcp, "lore_search_code", ctx, query="champion routing", k=10
+        )
+        # A list[SearchResult] is wrapped under ``result``; each element carries the
+        # SearchResult fields (NOT an opaque blob).
+        assert isinstance(structured, dict) and structured["result"]
+        items = structured["result"]
+        assert all(isinstance(item, dict) for item in items)
+        assert any("[SOURCE:" in item["formatted"] for item in items)
+        assert any("pkg/router.py" in item["formatted"] for item in items)
 
-    async def test_get_symbol_wrapper_returns_serialised_dict(
+    async def test_get_symbol_wrapper_yields_structured_model(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        out = await self._call(mcp, "get_symbol", ctx, qualified_name="champion_routing")
-        # A PLAIN dict, not a ResolvedSymbol — proving the wrapper's .model_dump().
-        assert isinstance(out, dict)
-        assert out["qualified_name"] == "champion_routing"
-        assert out["file_path"] == "pkg/router.py"
+        structured = await self._structured(
+            mcp, "lore_get_symbol", ctx, qualified_name="champion_routing"
+        )
+        # A scalar ResolvedSymbol — structuredContent is the model dict directly.
+        assert isinstance(structured, dict)
+        assert structured["qualified_name"] == "champion_routing"
+        assert structured["file_path"] == "pkg/router.py"
 
-    async def test_index_status_wrapper_returns_serialised_dict(
+    async def test_index_status_wrapper_yields_structured_model(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        out = await self._call(mcp, "index_status", ctx)
-        assert isinstance(out, dict)
-        assert out["files_indexed"] >= 1
-        assert out["files_failed"] == 0
+        structured = await self._structured(mcp, "lore_index_status", ctx)
+        assert isinstance(structured, dict)
+        assert structured["files_indexed"] >= 1
+        assert structured["files_failed"] == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -1277,6 +1583,64 @@ class TestAuthWiring:
         mcp = build_mcp_server(LoreServer(config))
         app = build_asgi_app(mcp, config)
         assert isinstance(app, BearerAuthMiddleware)
+
+
+class TestOriginWiring:
+    """build_asgi_app always applies the Origin (DNS-rebinding) guard (Item 7).
+
+    The local streamable-HTTP server must validate the Origin header regardless of
+    whether Bearer auth is configured — a DNS-rebinding browser request carries an
+    attacker Origin even when the no-auth localhost default is in effect. So the
+    assembled app must reject a disallowed Origin (403) and allow an absent /
+    loopback one, with OR without auth.
+    """
+
+    async def test_no_auth_app_rejects_disallowed_origin(self, tmp_path: Path) -> None:
+        from test_auth import _drive  # the shared ASGI driver
+
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")  # no auth block
+        mcp = build_mcp_server(LoreServer(config))
+        app = build_asgi_app(mcp, config)
+        # A cross-origin browser request is rejected at the edge (the DNS-rebinding
+        # defense) even with no Bearer auth.
+        response = await _drive(app, [(b"origin", b"http://evil.example.com")])
+        assert response["status"] == 403
+
+    async def test_no_auth_app_is_origin_guarded(self, tmp_path: Path) -> None:
+        # With no auth, the assembled app is the Origin guard (so a local
+        # non-browser client with no Origin reaches the inner MCP app — the
+        # no-auth localhost default is preserved; the absent/loopback-allowed
+        # behaviour is exercised against the middleware directly in test_auth).
+        from loremaster.auth import OriginValidationMiddleware
+
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        app = build_asgi_app(mcp, config)
+        assert isinstance(app, OriginValidationMiddleware)
+
+    async def test_auth_app_still_rejects_disallowed_origin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from test_auth import _drive
+
+        monkeypatch.setenv("LORE_KEY_DEV", "dev-secret")
+        slug = _slug()
+        config = _config(
+            slug,
+            tmp_path / "live",
+            auth={"enabled": True, "keys": [{"name": "dev", "key_env": "LORE_KEY_DEV"}]},
+        )
+        mcp = build_mcp_server(LoreServer(config))
+        app = build_asgi_app(mcp, config)
+        # Even WITH a valid Bearer key, a disallowed Origin is rejected (403) — the
+        # DNS-rebinding guard runs alongside auth, not instead of it.
+        response = await _drive(
+            app,
+            [(b"origin", b"http://evil.example.com"), (b"authorization", b"Bearer dev-secret")],
+        )
+        assert response["status"] == 403
 
 
 # Imported here so the auth-wiring tests above can reference it; defined in the

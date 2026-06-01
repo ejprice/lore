@@ -39,6 +39,7 @@ the realistic greedy forms, not a pathologically path-specific predicate.)
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -67,18 +68,33 @@ from loremaster.extension import (
     ToolSpec,
 )
 
+# The consumer-visible tool RETURN models, imported at RUNTIME (not just under
+# TYPE_CHECKING): each built-in tool wrapper is annotated with its real model
+# return type so FastMCP derives a FIELD-LEVEL outputSchema + structuredContent
+# (mcp-builder structured-output standard). FastMCP resolves a wrapper's return
+# annotation via ``get_type_hints`` at registration time, so these names MUST live
+# in this module's runtime namespace — a TYPE_CHECKING-only import would resolve to
+# nothing and silently fall back to an opaque schema. None of these modules import
+# ``server`` at runtime (only under TYPE_CHECKING), so the import is acyclic.
+from loremaster.graph import GraphNode
+from loremaster.index.indexer import IndexSummary
+from loremaster.memory.store import RecalledMemory
+from loremaster.read_file import FileSpan
+from loremaster.search import DetailSelector, SearchResult
+from loremaster.symbols import ResolvedSymbol
+
 if TYPE_CHECKING:
     from loresigil.base import Embedder
 
-    from loremaster.graph import CodeGraph, GraphNode
-    from loremaster.index.indexer import Indexer, IndexSummary
+    from loremaster.graph import CodeGraph
+    from loremaster.index.indexer import Indexer
     from loremaster.index.manifest import Manifest
     from loremaster.index.reconcile import ReconcileEngine
-    from loremaster.memory.store import MemoryStore, RecalledMemory
-    from loremaster.read_file import FileSpan, ReadFileTool
-    from loremaster.search import SearchPipeline, SearchResult
+    from loremaster.memory.store import MemoryStore
+    from loremaster.read_file import ReadFileTool
+    from loremaster.search import SearchPipeline
     from loremaster.store.qdrant import QdrantStore
-    from loremaster.symbols import ResolvedSymbol, SymbolTool
+    from loremaster.symbols import SymbolTool
 
 # The parent-context ``state`` key under which the per-extension lifespan-state
 # namespaces live (fix B / §A1.10). ``ctx.state[_EXTENSION_STATE_KEY][name]`` is
@@ -411,6 +427,29 @@ class LoreServer:
             specs.extend(ext.tools(ctx))
         return specs
 
+    def extension_tool_specs(self, ctx: ExtensionContext) -> list[ToolSpec]:
+        """Collect every extension's tool specs, each over its CHILD context (fix B).
+
+        Like :meth:`tool_specs`, but each extension's ``tools`` is called with
+        THAT extension's per-extension child context (the same private ``state``
+        namespace its lifespan hooks populate, via :meth:`_child_context`) rather
+        than the shared parent context. This is the context-correct collection the
+        live FastMCP server build registers: a tool handler that reads ``ctx.state``
+        sees the namespace its own ``on_startup`` seeded — not a sibling's, and not
+        the bare parent state.
+
+        Args:
+            ctx: The parent runtime extension context (carries every namespace).
+
+        Returns:
+            The concatenated tool specs, in registration order, each handler bound
+            to its extension's child context.
+        """
+        specs: list[ToolSpec] = []
+        for ext in self._extensions:
+            specs.extend(ext.tools(self._child_context(ctx, ext)))
+        return specs
+
     # -- resolved behaviour hooks ------------------------------------------
 
     def format_result(self, result: ScoredPoint, ctx: ExtensionContext) -> str | None:
@@ -663,6 +702,17 @@ _DEFAULT_BLAST_MAX_RESULTS = 50
 # Default ``k`` for the search/recall tools when the caller does not specify one.
 _DEFAULT_SEARCH_K = 8
 _DEFAULT_RECALL_K = 5
+
+# Lower/upper bounds the numeric tool params publish (mcp-builder: constrain inputs
+# at the schema, so a zero/negative or absurd value is rejected at validation rather
+# than producing a confusing empty/over-large result). A count or hop-depth below 1
+# is meaningless; the upper caps keep a single call's result + traversal bounded so a
+# typo (k=100000) cannot blow the context budget.
+_MIN_COUNT = 1
+_MAX_SEARCH_K = 100
+_MAX_RECALL_K = 100
+_MAX_BLAST_DEPTH = 25
+_MAX_BLAST_MAX_RESULTS = 500
 # The memory collection's slug suffix → ``lore_<slug>_memory``.
 _MEMORY_SLUG_SUFFIX = "_memory"
 
@@ -684,45 +734,48 @@ _INSTRUCTIONS = (
     "lookalike. Results are summarised value objects, NEVER raw store dumps.\n"
     "\n"
     "WHEN TO USE WHICH TOOL:\n"
-    "- search_code(query, ...): semantic, memory-boosted search across code + docs. "
-    "Your default entry point when you don't already know the exact name/path. Returns "
-    "ranked, cited hits.\n"
-    "- get_symbol(qualified_name): the EXACT stored definition + on-disk location of a "
-    "named Python symbol (class / method / function). Use this — NOT search_code — when "
-    "you know the name and want the authoritative definition (it is collision-correct, "
-    "not a fuzzy ranked guess).\n"
-    "- read_file(tier, path, ...): the EXACT on-disk text of a file span with a "
-    "[SOURCE:...] header. Use after a search/get_symbol hit to read surrounding context.\n"
-    "- what_imports(target): the DIRECT importers of a module (one reverse import edge).\n"
-    "- blast_radius(target, ...): the TRANSITIVE reverse-dependency closure (bounded "
-    "depth + result cap) — 'what could a change here break?'. Reach for blast_radius "
-    "(transitive) over what_imports (direct) when you need the ripple, not just the "
-    "neighbours.\n"
-    "- tests_for(symbol_or_file): the test nodes covering a symbol or file.\n"
-    "- index_status(): the freshness/health roll-up (indexed / in-flight / failed "
+    "- lore_search_code(query, ...): semantic, memory-boosted search across code + "
+    "docs. Your default entry point when you don't already know the exact name/path. "
+    "Returns ranked, cited hits.\n"
+    "- lore_get_symbol(qualified_name): the EXACT stored definition + on-disk location "
+    "of a named Python symbol (class / method / function). Use this — NOT "
+    "lore_search_code — when you know the name and want the authoritative definition "
+    "(it is collision-correct, not a fuzzy ranked guess).\n"
+    "- lore_read_file(tier, path, ...): the EXACT on-disk text of a file span with a "
+    "[SOURCE:...] header. Use after a lore_search_code / lore_get_symbol hit to read "
+    "surrounding context.\n"
+    "- lore_what_imports(target): the DIRECT importers of a module (one reverse import "
+    "edge).\n"
+    "- lore_blast_radius(target, ...): the TRANSITIVE reverse-dependency closure "
+    "(bounded depth + result cap) — 'what could a change here break?'. Reach for "
+    "lore_blast_radius (transitive) over lore_what_imports (direct) when you need the "
+    "ripple, not just the neighbours.\n"
+    "- lore_tests_for(symbol_or_file): the test nodes covering a symbol or file.\n"
+    "- lore_index_status(): the freshness/health roll-up (indexed / in-flight / failed "
     "counts) read straight from the manifest — zero embeds, cheap.\n"
-    "- reindex(tier=None): force a whole-tier reconcile sweep (or all tiers). The "
+    "- lore_reindex(tier=None): force a whole-tier reconcile sweep (or all tiers). The "
     "heavy 'make everything current now' hammer — not a per-file wait.\n"
-    "- save_memory(text, ...) / recall_memory(query, ...): the project-memory store "
-    "(see MEMORY below).\n"
+    "- lore_save_memory(text, ...) / lore_recall_memory(query, ...): the project-memory "
+    "store (see MEMORY below).\n"
     "\n"
-    "CITATIONS: every search_code / read_file result carries a [SOURCE:file:line] "
-    "citation plus a stable 'Key:' line (the chunk key) and a fenced source block. "
-    "Echo the [SOURCE:...] citation when you quote code, and pass a 'Key:' value back "
-    "to save_memory to pin a correction to a specific chunk.\n"
+    "CITATIONS: every lore_search_code / lore_read_file result carries a "
+    "[SOURCE:file:line] citation plus a stable 'Key:' line (the chunk key) and a fenced "
+    "source block. Echo the [SOURCE:...] citation when you quote code, and pass a "
+    "'Key:' value back to lore_save_memory to pin a correction to a specific chunk.\n"
     "\n"
     "FRESHNESS / READ-YOUR-WRITES: a live inotify watcher re-indexes an edited file "
     "within ~seconds of a save — the normal freshness path. A periodic reconcile sweep "
     "(default ~10 min) is ONLY the backstop for events the watcher missed (downtime, "
     "queue overflow), not the edit-to-fresh latency. If you edit a file and "
     "IMMEDIATELY query it, you can race the embed window: pass "
-    "search_code(..., wait_for_fresh=True) — it bounded-waits for the in-flight file(s) "
-    "matching your path filter, then serves fresh (or stale-flagged on timeout; it "
-    "never hangs). Use reindex(tier=...) only to force a whole tier current; for the "
-    "edit-then-query case wait_for_fresh is the right, cheaper tool.\n"
+    "lore_search_code(..., wait_for_fresh=True) — it bounded-waits for the in-flight "
+    "file(s) matching your path filter, then serves fresh (or stale-flagged on timeout; "
+    "it never hangs). Use lore_reindex(tier=...) only to force a whole tier current; "
+    "for the edit-then-query case wait_for_fresh is the right, cheaper tool.\n"
     "\n"
-    "MEMORY: save_memory / recall_memory is PROJECT-SCOPED memory about THIS repository "
-    "— embedded and semantically recalled, SHARED across every agent working this "
+    "MEMORY: lore_save_memory / lore_recall_memory is PROJECT-SCOPED memory about THIS "
+    "repository — embedded and semantically recalled, SHARED across every agent working "
+    "this "
     "project, and it SURVIVES restarts (it persists in a dedicated collection). Use it "
     "for durable facts and corrections about this codebase (e.g. 'the order total lives "
     "in models/sale.py, not where it looks'). This is DISTINCT from your own global / "
@@ -756,6 +809,16 @@ class ProbeGateError(RuntimeError):
     The message carries a remediation hint (what was observed vs expected, and —
     for a collection mismatch — that the index was left INTACT, never
     auto-recreated). The server must NOT come up when this is raised.
+    """
+
+
+class ReindexTierError(ValueError):
+    """Raised when ``reindex(tier=...)`` is given a tier the project does not declare.
+
+    Subclasses :class:`ValueError` (a bad argument value). The message NAMES the
+    offending tier AND the valid tiers, so a typo (which would otherwise be
+    silently ignored — a false-success sweep over every tier) is caught and
+    remediable. ``tier=None`` (reindex all) never raises.
     """
 
 
@@ -920,11 +983,52 @@ class AppContext:
         Runs under the watcher's single-writer lock so it never races a live
         event's ``index_file`` — the read-your-writes / forced-refresh escape
         hatch. With no watcher running (the test path), reconciles directly.
+
+        A given ``tier`` is VALIDATED against the project's configured tiers
+        first: an unknown value raises :class:`ReindexTierError` naming the bad
+        tier and the valid ones (a typo would otherwise be silently ignored — a
+        sweep over every tier reporting false success). ``tier=None`` means all.
+
+        Args:
+            tier: Limit the sweep to one configured source tier, or ``None`` for
+                every tier.
+
+        Returns:
+            The :class:`~loremaster.index.indexer.IndexSummary` for the sweep.
+
+        Raises:
+            ReindexTierError: If ``tier`` is given but is not a configured tier.
         """
+        self._validate_tier(tier)
         if self.watcher is not None and self.watcher_started:
             await self.watcher.run_sweep()
             return self.indexer.index_status()
         return await self.reconcile_engine.reconcile()
+
+    def _validate_tier(self, tier: str | None) -> None:
+        """Reject a ``tier`` the project does not declare (fail loud on a typo).
+
+        ``None`` (reindex all) is always valid. Otherwise ``tier`` must match one
+        of the configured tiers (:attr:`~loremaster.config.LoreConfig.effective_roots`,
+        which synthesises the single-tree default tier when ``roots:`` is empty);
+        an unknown value raises :class:`ReindexTierError` naming the valid tiers.
+
+        Args:
+            tier: The requested tier, or ``None``.
+
+        Raises:
+            ReindexTierError: If ``tier`` is not ``None`` and is not configured.
+        """
+        if tier is None:
+            return
+        valid_tiers = [root.tier for root in self._config.effective_roots]
+        if tier not in valid_tiers:
+            valid = ", ".join(repr(name) for name in valid_tiers)
+            raise ReindexTierError(
+                f"unknown tier {tier!r}; reindex accepts only a configured tier "
+                f"({valid}) or None (all tiers). Check for a typo, or omit the tier "
+                f"to reconcile everything."
+            )
 
     async def index_status(self) -> IndexSummary:
         """Return the freshness roll-up read purely from the manifest (zero embeds)."""
@@ -946,6 +1050,52 @@ class AppContext:
     async def tests_for(self, symbol_or_file: str) -> list[GraphNode]:
         """Return the test nodes related to a symbol or file."""
         return self.code_graph.tests_for(symbol_or_file)
+
+    # -- extension tools (seam 3) ------------------------------------------
+
+    @property
+    def extension_ctx(self) -> ExtensionContext | None:
+        """The RUNTIME :class:`ExtensionContext` the lifespan built over live services.
+
+        Set once the startup hooks ran (so an extension's per-extension lifespan
+        ``state`` is reachable through it). A seam-3 extension tool's registered
+        wrapper resolves its handler against THIS context — the real embedder /
+        store / manifest, not the composition placeholder — so a future
+        external-connection extension's handler can reach an extension-owned
+        resource stashed at startup.
+        """
+        return self._extension_ctx
+
+    def extension_tool_handler(self, name: str) -> Callable[..., Any]:
+        """Resolve the named extension tool's handler, bound to the RUNTIME context.
+
+        Re-derives the extension tool specs over the live runtime
+        :class:`ExtensionContext` (each extension's ``tools`` called with ITS
+        per-extension child context, fix B — so the handler closes over the same
+        private ``state`` namespace its lifespan hooks populate) and returns the
+        handler whose tool ``name`` matches. The registered FastMCP wrapper calls
+        this at invocation time, so the handler always closes over the live
+        services, not a build-time placeholder.
+
+        Args:
+            name: The extension tool name to resolve.
+
+        Returns:
+            The matching :attr:`ToolSpec.handler` callable, bound to the runtime
+            context.
+
+        Raises:
+            RuntimeError: If the runtime context is not yet set (called before the
+                lifespan startup), or no registered extension tool has ``name``.
+        """
+        if self._extension_ctx is None:  # pragma: no cover - defensive
+            raise RuntimeError(
+                f"extension tool {name!r} invoked before the runtime context was built"
+            )
+        for spec in self._server.extension_tool_specs(self._extension_ctx):
+            if spec.name == name:
+                return spec.handler
+        raise RuntimeError(f"no registered extension tool named {name!r}")  # pragma: no cover
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -1101,7 +1251,12 @@ async def build_app_context(
         for root in config.effective_roots
         if root.path is not None
     }
-    read_file_tool = ReadFileTool(live_roots=live_roots, snapshot_layout=snapshot_layout)
+    # Every configured tier (live + static) is "known", so read_file can tell an
+    # unknown-tier typo apart from a known tier whose file is merely missing.
+    known_tiers = {root.tier for root in config.effective_roots}
+    read_file_tool = ReadFileTool(
+        live_roots=live_roots, snapshot_layout=snapshot_layout, known_tiers=known_tiers
+    )
     symbol_tool = SymbolTool(store=store)
 
     watcher = LiveWatcher(
@@ -1292,7 +1447,7 @@ class _ProcessLifespanGuard:
 
 
 def build_mcp_server(server: LoreServer) -> Any:
-    """Construct the FastMCP server: lifespan + the ten registered MCP tools.
+    """Construct the FastMCP server: lifespan + the ten built-ins + extension tools.
 
     The lifespan builds the live :class:`AppContext` from config (the real
     embedder via :func:`~loremaster.embedding.make_embedder_from_config`, a real
@@ -1385,7 +1540,7 @@ def build_mcp_server(server: LoreServer) -> Any:
         port=config.server.port,
         streamable_http_path=config.server.path,
     )
-    _register_tools(mcp)
+    _register_tools(mcp, server)
     return mcp
 
 
@@ -1417,32 +1572,44 @@ _REINDEX_ANNOTATIONS = ToolAnnotations(
 )
 
 
-def _register_tools(mcp: FastMCP) -> None:
-    """Register the ten MCP tools on ``mcp``, each delegating to an AppContext handler.
+def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
+    """Register the ten built-in MCP tools, then the extension-contributed tools.
 
-    Kept separate so the registration list is one readable place. Every tool pulls
-    the live :class:`AppContext` off the request's lifespan context and calls the
-    matching handler; the handler's pydantic return value is serialised to a plain
-    dict/list (a filtered/summarised shape — never a raw store dump, the Anthropic
-    token-efficiency rule).
+    Kept separate so the registration list is one readable place. Every built-in
+    tool pulls the live :class:`AppContext` off the request's lifespan context and
+    calls the matching handler; the handler's pydantic return value is serialised
+    to a plain dict/list (a filtered/summarised shape — never a raw store dump, the
+    Anthropic token-efficiency rule).
 
-    Each tool carries (mcp-builder standard): a BEHAVIORAL description (what it
-    returns, when to reach for it, how it differs from its neighbour), a
+    Each built-in tool carries (mcp-builder standard): a BEHAVIORAL description
+    (what it returns, when to reach for it, how it differs from its neighbour), a
     per-parameter input-schema description via :class:`pydantic.Field` (constraints
     + an example where useful), and :class:`~mcp.types.ToolAnnotations` (read-only
     vs mutating). The consumer-facing ``instructions`` block (:data:`_INSTRUCTIONS`)
     carries the cross-tool model (freshness, citations, memory stance).
+
+    After the ten built-ins, every registered :class:`Extension`'s seam-3
+    :class:`ToolSpec`\\ s are registered as real FastMCP tools
+    (:func:`_register_extension_tools`) — purely additive, with a name-collision
+    guard so an extension tool can never silently shadow a built-in or another
+    extension's tool.
+
+    Args:
+        mcp: The FastMCP server to register tools on.
+        server: The composed :class:`LoreServer` whose extensions contribute the
+            seam-3 tools.
     """
 
     @mcp.tool(
+        name="lore_search_code",
         description=(
             "Semantic, memory-boosted search across THIS project's indexed code and "
             "docs. Your default entry point when you don't already know the exact "
             "symbol name or file path: it ranks by meaning, not by string match. "
             "Returns summarised, [SOURCE:file:line]-cited hits (each with a stable "
             "Key:), never a raw dump. For the EXACT definition of a name you already "
-            "know, prefer get_symbol; to read surrounding lines, follow up with "
-            "read_file."
+            "know, prefer lore_get_symbol; to read surrounding lines, follow up with "
+            "lore_read_file."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1461,10 +1628,13 @@ def _register_tools(mcp: FastMCP) -> None:
         k: Annotated[
             int,
             Field(
+                ge=_MIN_COUNT,
+                le=_MAX_SEARCH_K,
                 description=(
-                    f"Maximum number of hits to return (default {_DEFAULT_SEARCH_K}). "
-                    "Raise it for a broad survey, lower it to conserve context."
-                )
+                    f"Maximum number of hits to return (default {_DEFAULT_SEARCH_K}, "
+                    f"min {_MIN_COUNT}, max {_MAX_SEARCH_K}). Raise it for a broad "
+                    "survey, lower it to conserve context."
+                ),
             ),
         ] = _DEFAULT_SEARCH_K,
         filters: Annotated[
@@ -1491,28 +1661,29 @@ def _register_tools(mcp: FastMCP) -> None:
             ),
         ] = False,
         detail_level: Annotated[
-            str,
+            DetailSelector,
             Field(
                 description=(
                     "Which chunk granularity to return: 'auto' (default — both), "
                     "'summary' (signatures / imports / headings only), or 'source' "
-                    "(bodies / statements only)."
+                    "(bodies / statements only). Only these three values are accepted."
                 )
             ),
         ] = "auto",
-    ) -> list[dict[str, Any]]:
-        results = await _app_context(context).search_code(
+    ) -> list[SearchResult]:
+        return await _app_context(context).search_code(
             query, k, filters, wait_for_fresh=wait_for_fresh, detail_level=detail_level
         )
-        return [r.model_dump() for r in results]
 
     @mcp.tool(
+        name="lore_read_file",
         description=(
             "Read the EXACT on-disk text of a file span with a [SOURCE:tier:path:"
             "start-end] provenance header — the anti-hallucination way to quote real "
-            "lines. Reach for this after a search_code / get_symbol hit to read the "
-            "surrounding context. Path is workspace-relative and containment-guarded "
-            "(a '../' traversal, absolute path, or escaping symlink is rejected)."
+            "lines. Reach for this after a lore_search_code / lore_get_symbol hit to "
+            "read the surrounding context. Path is workspace-relative and "
+            "containment-guarded (a '../' traversal, absolute path, or escaping "
+            "symlink is rejected)."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1556,18 +1727,18 @@ def _register_tools(mcp: FastMCP) -> None:
                 )
             ),
         ] = None,
-    ) -> dict[str, Any]:
-        span = await _app_context(context).read_file(tier, path, line_start, line_end)
-        return span.model_dump()
+    ) -> FileSpan:
+        return await _app_context(context).read_file(tier, path, line_start, line_end)
 
     @mcp.tool(
+        name="lore_get_symbol",
         description=(
             "Resolve a Python symbol name to its EXACT stored definition + on-disk "
-            "location (file_path / line span / tier). Use this — NOT search_code — "
-            "when you know the name and want the authoritative definition: it is "
+            "location (file_path / line span / tier). Use this — NOT lore_search_code "
+            "— when you know the name and want the authoritative definition: it is "
             "collision-correct (a module-qualified name resolves the RIGHT file when "
-            "the bare name exists in several), where search_code is a fuzzy ranked "
-            "guess. Scoped to class / method / function chunks; raises a clean "
+            "the bare name exists in several), where lore_search_code is a fuzzy "
+            "ranked guess. Scoped to class / method / function chunks; raises a clean "
             "not-found (naming the symbol) if nothing matches."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
@@ -1586,17 +1757,17 @@ def _register_tools(mcp: FastMCP) -> None:
                 )
             ),
         ],
-    ) -> dict[str, Any]:
-        symbol = await _app_context(context).get_symbol(qualified_name)
-        return symbol.model_dump()
+    ) -> ResolvedSymbol:
+        return await _app_context(context).get_symbol(qualified_name)
 
     @mcp.tool(
+        name="lore_save_memory",
         description=(
             "Persist a durable note to THIS project's shared memory store; returns "
             "its deterministic id. Use it to record a lasting fact or correction "
             "about this codebase — it is embedded, semantically recalled by "
-            "recall_memory, SHARED across every agent on this project, and survives "
-            "restarts. Re-saving the same text dedups (same id). This is the "
+            "lore_recall_memory, SHARED across every agent on this project, and "
+            "survives restarts. Re-saving the same text dedups (same id). This is the "
             "project's shared notebook, distinct from your own cross-project memory."
         ),
         annotations=_SAVE_MEMORY_ANNOTATIONS,
@@ -1627,11 +1798,12 @@ def _register_tools(mcp: FastMCP) -> None:
         return await _app_context(context).save_memory(text, metadata=metadata)
 
     @mcp.tool(
+        name="lore_recall_memory",
         description=(
             "Recall the nearest saved project-memory notes for a query — the read "
-            "side of save_memory. Returns summarised notes (text + metadata + refs + "
-            "score) from THIS project's shared, restart-surviving memory. Query it "
-            "early when you want prior corrections or durable facts about this "
+            "side of lore_save_memory. Returns summarised notes (text + metadata + "
+            "refs + score) from THIS project's shared, restart-surviving memory. Query "
+            "it early when you want prior corrections or durable facts about this "
             "codebase before you start searching the code itself."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
@@ -1651,22 +1823,26 @@ def _register_tools(mcp: FastMCP) -> None:
         k: Annotated[
             int,
             Field(
+                ge=_MIN_COUNT,
+                le=_MAX_RECALL_K,
                 description=(
-                    f"Maximum number of notes to return (default {_DEFAULT_RECALL_K})."
-                )
+                    f"Maximum number of notes to return (default {_DEFAULT_RECALL_K}, "
+                    f"min {_MIN_COUNT}, max {_MAX_RECALL_K})."
+                ),
             ),
         ] = _DEFAULT_RECALL_K,
-    ) -> list[dict[str, Any]]:
-        return [m.model_dump() for m in await _app_context(context).recall_memory(query, k)]
+    ) -> list[RecalledMemory]:
+        return await _app_context(context).recall_memory(query, k)
 
     @mcp.tool(
+        name="lore_reindex",
         description=(
             "Force a reconcile sweep that re-indexes any changed files NOW and "
             "returns the freshness summary. This is the heavy 'make everything "
             "current' hammer over a whole tier (or all tiers) — NOT a per-file wait. "
             "You rarely need it: the live watcher keeps the index fresh on save. For "
             "the edit-then-immediately-query case, prefer "
-            "search_code(..., wait_for_fresh=True), which is cheaper and targeted."
+            "lore_search_code(..., wait_for_fresh=True), which is cheaper and targeted."
         ),
         annotations=_REINDEX_ANNOTATIONS,
     )
@@ -1681,29 +1857,30 @@ def _register_tools(mcp: FastMCP) -> None:
                 )
             ),
         ] = None,
-    ) -> dict[str, Any]:
-        summary = await _app_context(context).reindex(tier)
-        return summary.model_dump()
+    ) -> IndexSummary:
+        return await _app_context(context).reindex(tier)
 
     @mcp.tool(
+        name="lore_index_status",
         description=(
             "Return the index freshness + health roll-up (files indexed / in-flight "
             "/ failed counts) read straight from the manifest — zero embeds, cheap. "
             "Use it to check whether the index is current and healthy before "
-            "trusting a search, or to confirm a reindex settled. Takes no arguments."
+            "trusting a search, or to confirm a lore_reindex settled. Takes no "
+            "arguments."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
-    async def index_status(context: Context[Any, AppContext, Any]) -> dict[str, Any]:
-        status = await _app_context(context).index_status()
-        return status.model_dump()
+    async def index_status(context: Context[Any, AppContext, Any]) -> IndexSummary:
+        return await _app_context(context).index_status()
 
     @mcp.tool(
+        name="lore_what_imports",
         description=(
             "Return the DIRECT importers of a target module — the modules one "
             "reverse import edge away. Use it to answer 'who imports this?'. For the "
             "full TRANSITIVE ripple (importers of importers, bounded), use "
-            "blast_radius instead."
+            "lore_blast_radius instead."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1718,16 +1895,17 @@ def _register_tools(mcp: FastMCP) -> None:
                 )
             ),
         ],
-    ) -> list[dict[str, Any]]:
-        return [n.model_dump() for n in await _app_context(context).what_imports(target)]
+    ) -> list[GraphNode]:
+        return await _app_context(context).what_imports(target)
 
     @mcp.tool(
+        name="lore_blast_radius",
         description=(
             "Return the bounded TRANSITIVE reverse-dependency closure of a symbol or "
             "module — everything that could be affected if you change it, following "
             "reverse edges up to 'depth' hops (capped at 'max_results'). Answers "
-            "'what could a change here break?'. Use this over what_imports when you "
-            "need the ripple, not just the immediate importers."
+            "'what could a change here break?'. Use this over lore_what_imports when "
+            "you need the ripple, not just the immediate importers."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -1746,28 +1924,34 @@ def _register_tools(mcp: FastMCP) -> None:
         depth: Annotated[
             int,
             Field(
+                ge=_MIN_COUNT,
+                le=_MAX_BLAST_DEPTH,
                 description=(
                     f"Maximum number of reverse-edge hops to follow (default "
-                    f"{_DEFAULT_BLAST_DEPTH}). Higher = a wider ripple; bounded to "
-                    "keep the result from blowing up the context budget."
-                )
+                    f"{_DEFAULT_BLAST_DEPTH}, min {_MIN_COUNT}, max "
+                    f"{_MAX_BLAST_DEPTH}). Higher = a wider ripple; bounded to keep "
+                    "the result from blowing up the context budget."
+                ),
             ),
         ] = _DEFAULT_BLAST_DEPTH,
         max_results: Annotated[
             int,
             Field(
+                ge=_MIN_COUNT,
+                le=_MAX_BLAST_MAX_RESULTS,
                 description=(
                     f"Hard cap on the number of nodes returned (default "
-                    f"{_DEFAULT_BLAST_MAX_RESULTS}), so a pathological fan-out stays "
+                    f"{_DEFAULT_BLAST_MAX_RESULTS}, min {_MIN_COUNT}, max "
+                    f"{_MAX_BLAST_MAX_RESULTS}), so a pathological fan-out stays "
                     "bounded."
-                )
+                ),
             ),
         ] = _DEFAULT_BLAST_MAX_RESULTS,
-    ) -> list[dict[str, Any]]:
-        nodes = await _app_context(context).blast_radius(target, depth, max_results)
-        return [n.model_dump() for n in nodes]
+    ) -> list[GraphNode]:
+        return await _app_context(context).blast_radius(target, depth, max_results)
 
     @mcp.tool(
+        name="lore_tests_for",
         description=(
             "Return the test nodes related to a symbol or file (via graph edges and "
             "a naming heuristic). Use it to find the tests covering code you're about "
@@ -1788,26 +1972,217 @@ def _register_tools(mcp: FastMCP) -> None:
                 )
             ),
         ],
-    ) -> list[dict[str, Any]]:
-        return [n.model_dump() for n in await _app_context(context).tests_for(symbol_or_file)]
+    ) -> list[GraphNode]:
+        return await _app_context(context).tests_for(symbol_or_file)
+
+    # After the ten built-ins, register the extension-contributed seam-3 tools.
+    _register_extension_tools(mcp, server)
+
+
+# The parameter name FastMCP reserves to inject the request :class:`Context` on the
+# registered tool wrapper. A ToolSpec handler that ALSO declares a parameter named
+# this would collide with the injected one (a cryptic FastMCP-internal "duplicate
+# parameter name" crash); the registration path refuses it loudly instead.
+_RESERVED_TOOL_PARAM = "context"
+
+
+def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
+    """Register each extension's seam-3 :class:`ToolSpec` as a live FastMCP tool.
+
+    For every :class:`ToolSpec` an extension contributes (collected over the
+    composition context purely for its STATIC metadata — name / description /
+    input schema), a FastMCP tool is registered whose:
+
+    * **parameters** are derived from :attr:`ToolSpec.input_schema` (translated via
+      :func:`_extension_tool_wrapper` into a typed signature FastMCP introspects),
+      so the consumer sees the declared args; and
+    * **body**, at invocation time, fetches the live :class:`AppContext` off the
+      request's lifespan context, resolves the handler bound to the RUNTIME
+      :class:`ExtensionContext` (real embedder / store / manifest, plus the
+      per-extension lifespan ``state``), and invokes it with the call's arguments.
+
+    The handler is resolved at CALL time (not captured here) precisely because the
+    runtime context does not exist until the lifespan startup runs — registering a
+    thin wrapper now and binding the live handler later threads the runtime context
+    through cleanly without blocking the later resource-channel seam.
+
+    **Name-collision guard.** A tool whose name already exists on ``mcp`` — a
+    built-in or an earlier extension's tool — raises a :class:`ValueError` at
+    registration rather than silently shadowing it (FastMCP's own ``add_tool``
+    would merely warn and keep the first registration, a silent shadow).
+
+    Args:
+        mcp: The FastMCP server (the ten built-ins are already registered).
+        server: The composed :class:`LoreServer` whose extensions contribute tools.
+
+    Raises:
+        ValueError: If an extension tool name collides with an already-registered
+            tool (a built-in or another extension's tool).
+    """
+    # Enumerate the specs over the COMPOSITION context for their static metadata
+    # (names / descriptions / input schemas do not depend on the runtime ctx; only
+    # the handler closure does, and that is resolved per-call against the live
+    # AppContext). A placeholder store handle suffices — the metadata pass never
+    # invokes the handler or the placeholder tokenizer.
+    composition_ctx = server.extension_context(store=None)
+    for spec in server.tool_specs(composition_ctx):
+        if mcp._tool_manager.get_tool(spec.name) is not None:  # noqa: SLF001
+            raise ValueError(
+                f"extension tool {spec.name!r} collides with an already-registered tool; "
+                f"refusing to shadow it on the MCP surface (rename the extension tool — a "
+                f"tool name must be unique across the ten built-ins and every extension)."
+            )
+        wrapper = _extension_tool_wrapper(spec)
+        mcp.add_tool(wrapper, name=spec.name, description=spec.description)
+
+
+# The parameter kinds an extension tool handler may declare and have faithfully
+# republished. ``*args`` / ``**kwargs`` / positional-only cannot be modelled as a
+# named, typed JSON-schema property, so a handler using them is refused loudly
+# rather than published with a wrong (or silently dropped) schema.
+_SUPPORTED_PARAM_KINDS = frozenset(
+    {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+)
+
+
+def _extension_tool_wrapper(spec: ToolSpec) -> Callable[..., Awaitable[Any]]:
+    """Build the FastMCP tool function for an extension :class:`ToolSpec`.
+
+    The published ``inputSchema`` MUST match what the handler actually accepts —
+    silently telling a consumer the wrong type or a wrong required-set is the worst
+    MCP failure class. The handler's own signature is the single source of truth, so
+    this introspects :attr:`ToolSpec.handler` and threads each parameter's real
+    annotation + default + kind onto the wrapper's constructed signature:
+
+    * a parameter WITH a default publishes as NOT required (the consumer may omit
+      it; the handler supplies the default);
+    * a parameter WITHOUT a default stays required;
+    * the real annotation is preserved, so container/complex types
+      (``list[str]`` → ``array``, ``dict`` → ``object``, a pydantic model → its
+      schema) publish their correct JSON-schema type rather than collapsing to
+      ``string``.
+
+    The ``input_schema`` mapping on the spec is now SUPPLEMENTAL description only
+    (its keys/values no longer drive type or optionality) — the live signature wins.
+
+    Fail-loud (never silently coerce):
+
+    * a parameter named :data:`_RESERVED_TOOL_PARAM` collides with the injected
+      request ``context`` → raise (a clear error, not FastMCP's cryptic internal
+      "duplicate parameter name");
+    * an UN-annotated parameter would be silently published as ``string`` → raise
+      (FastMCP defaults a bare param to ``type: string``, the silent-wrong-schema
+      hazard);
+    * a ``*args`` / ``**kwargs`` / positional-only parameter cannot be modelled as a
+      named JSON-schema property → raise.
+
+    Args:
+        spec: The declarative tool spec to wrap.
+
+    Returns:
+        An async function suitable for :meth:`FastMCP.add_tool`, whose signature
+        mirrors the handler's so the published schema matches what it accepts.
+
+    Raises:
+        ValueError: If the handler declares a reserved ``context`` parameter, an
+            un-annotated parameter, or an unsupported parameter kind — each message
+            names the offending :class:`ToolSpec` and field.
+    """
+
+    async def _tool(context: Context[Any, AppContext, Any], **kwargs: Any) -> Any:
+        handler = _app_context(context).extension_tool_handler(spec.name)
+        result = handler(**kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    # The leading ``context`` parameter (FastMCP injects the request Context here,
+    # NOT a consumer-visible arg), then one parameter PER HANDLER PARAMETER —
+    # annotation + default + kind carried verbatim so the published schema matches.
+    parameters: list[inspect.Parameter] = [
+        inspect.Parameter(
+            _RESERVED_TOOL_PARAM,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=Context,
+        )
+    ]
+    annotations: dict[str, Any] = {_RESERVED_TOOL_PARAM: Context, "return": Any}
+    handler_signature = inspect.signature(spec.handler)
+    for param in handler_signature.parameters.values():
+        if param.name == _RESERVED_TOOL_PARAM:
+            raise ValueError(
+                f"extension tool {spec.name!r} handler declares a parameter named "
+                f"{_RESERVED_TOOL_PARAM!r}, which is reserved for the injected request "
+                f"context; rename that handler parameter."
+            )
+        if param.kind not in _SUPPORTED_PARAM_KINDS:
+            raise ValueError(
+                f"extension tool {spec.name!r} handler parameter {param.name!r} has "
+                f"unsupported kind {param.kind.description!r}; an extension tool's inputs "
+                f"must be named, typed parameters (no *args/**kwargs/positional-only) so "
+                f"the published schema can faithfully describe them."
+            )
+        if param.annotation is inspect.Parameter.empty:
+            raise ValueError(
+                f"extension tool {spec.name!r} handler parameter {param.name!r} has no type "
+                f"annotation; an un-annotated parameter would be silently published as a "
+                f"string in the tool's input schema. Annotate it so the consumer sees the "
+                f"correct type."
+            )
+        # KEYWORD_ONLY on the wrapper so FastMCP/pydantic builds named properties
+        # regardless of the handler's original positional/keyword kind; the default
+        # (present or absent) is what drives required vs optional in the schema.
+        parameters.append(
+            inspect.Parameter(
+                param.name,
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=param.annotation,
+                default=param.default,
+            )
+        )
+        annotations[param.name] = param.annotation
+    _tool.__signature__ = inspect.Signature(parameters)  # type: ignore[attr-defined]
+    _tool.__annotations__ = annotations
+    _tool.__name__ = spec.name
+    _tool.__doc__ = spec.description
+    return _tool
 
 
 def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
-    """Assemble the streamable-http ASGI app, Bearer-gated when auth is enabled.
+    """Assemble the streamable-http ASGI app: Origin-guarded, Bearer-gated if auth.
 
-    The single place the served app is built and (conditionally) gated: when an
-    ``auth`` block is configured AND enabled (D9/D11), the streamable-http app is
-    wrapped in :class:`~loremaster.auth.BearerAuthMiddleware` over the configured
-    named-key set; otherwise it is returned ungated (the no-auth localhost mode).
+    The single place the served app is built and gated. Two layers wrap the
+    streamable-http app:
+
+    * **Origin (DNS-rebinding) guard — ALWAYS on (D11/mcp-builder).** The local
+      streamable-HTTP server binds loopback, but a browser tricked by DNS rebinding
+      still reaches it carrying an attacker ``Origin``; the
+      :class:`~loremaster.auth.OriginValidationMiddleware` rejects any non-loopback,
+      non-configured Origin with 403 while ALLOWING an absent Origin (a non-browser
+      local client) and loopback — so the no-auth localhost default is unbroken.
+    * **Bearer auth — when an enabled ``auth`` block is configured (D9/D11).** The
+      app is additionally wrapped in
+      :class:`~loremaster.auth.BearerAuthMiddleware` over the configured named-key
+      set; Bearer is the OUTERMOST layer so a request is authenticated, then
+      Origin-checked, then served.
 
     Args:
         mcp: The FastMCP server (its ``streamable_http_app`` is the inner app).
-        config: The project config (its ``auth`` block decides the gating).
+        config: The project config (its ``auth`` block decides the Bearer gating;
+            ``server.host`` provides the loopback bind the Origin guard defends).
 
     Returns:
-        The ASGI app to serve (the raw streamable-http app, or the gated wrapper).
+        The ASGI app to serve: ``Origin(app)`` (no auth) or
+        ``Bearer(Origin(app))`` (auth enabled).
     """
-    app = mcp.streamable_http_app()
+    from loremaster.auth import OriginValidationMiddleware
+
+    app: Any = mcp.streamable_http_app()
+    # The Origin guard runs for every deployment (DNS-rebinding defense), with the
+    # configured server bind's own origin implicitly covered by the loopback allow
+    # (the local single-user deploy binds 127.0.0.1). Extra trusted origins can be
+    # threaded here in a future config knob; loopback + absent is the secure default.
+    app = OriginValidationMiddleware(app)
     if config.auth is not None and config.auth.enabled:
         from loremaster.auth import BearerAuthMiddleware, build_api_key_verifier
 
