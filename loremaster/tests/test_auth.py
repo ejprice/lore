@@ -317,3 +317,93 @@ class TestBearerAuthMiddleware:
 
         await app({"type": "lifespan"}, receive, send)
         assert seen == ["lifespan"]
+
+
+class TestOriginValidationMiddleware:
+    """Origin allow-list (DNS-rebinding defense) for the local streamable-HTTP mode.
+
+    The mcp-builder standard calls for Origin-header validation on local
+    streamable-HTTP servers (a browser tricked by DNS rebinding into POSTing to
+    127.0.0.1 carries an attacker Origin; a non-browser client like Claude Code
+    carries none). The middleware ALLOWS a request with no Origin (legitimate local
+    clients) or a loopback / configured Origin, and REJECTS any other Origin with
+    403 — before the wrapped app runs — without breaking the no-auth localhost
+    default.
+    """
+
+    @pytest.mark.asyncio
+    async def test_absent_origin_is_allowed(self) -> None:
+        # A non-browser local client (Claude Code, curl) sends no Origin — it must
+        # pass through, so the no-auth localhost default is not broken.
+        from loremaster.auth import OriginValidationMiddleware
+
+        inner = _RecordingApp()
+        app = OriginValidationMiddleware(inner)
+        response = await _drive(app, [])
+        assert response["status"] == 200
+        assert inner.called is True
+
+    @pytest.mark.asyncio
+    async def test_loopback_origin_is_allowed(self) -> None:
+        from loremaster.auth import OriginValidationMiddleware
+
+        inner = _RecordingApp()
+        app = OriginValidationMiddleware(inner)
+        for origin in (
+            b"http://localhost",
+            b"http://localhost:9233",
+            b"http://127.0.0.1:9233",
+            b"https://127.0.0.1",
+            b"http://[::1]:9233",
+        ):
+            inner.called = False
+            response = await _drive(app, [(b"origin", origin)])
+            assert response["status"] == 200, f"loopback origin {origin!r} must pass"
+            assert inner.called is True
+
+    @pytest.mark.asyncio
+    async def test_disallowed_origin_is_403(self) -> None:
+        # A cross-origin browser request (the DNS-rebinding attack vector) is
+        # rejected with 403 and the inner app never runs.
+        from loremaster.auth import OriginValidationMiddleware
+
+        inner = _RecordingApp()
+        app = OriginValidationMiddleware(inner)
+        response = await _drive(app, [(b"origin", b"http://evil.example.com")])
+        assert response["status"] == 403
+        assert inner.called is False
+
+    @pytest.mark.asyncio
+    async def test_configured_extra_origin_is_allowed(self) -> None:
+        # An explicitly-allowed extra origin (a trusted web UI host) passes, while
+        # an un-listed one is still rejected.
+        from loremaster.auth import OriginValidationMiddleware
+
+        inner = _RecordingApp()
+        app = OriginValidationMiddleware(inner, allowed_origins=["https://lore.internal"])
+        ok = await _drive(app, [(b"origin", b"https://lore.internal")])
+        assert ok["status"] == 200
+        inner.called = False
+        bad = await _drive(app, [(b"origin", b"https://other.internal")])
+        assert bad["status"] == 403
+        assert inner.called is False
+
+    @pytest.mark.asyncio
+    async def test_non_http_scope_passes_through_untouched(self) -> None:
+        from loremaster.auth import OriginValidationMiddleware
+
+        seen: list[str] = []
+
+        async def _lifespan_app(scope: Any, receive: Any, send: Any) -> None:
+            seen.append(scope["type"])
+
+        app = OriginValidationMiddleware(_lifespan_app)
+
+        async def receive() -> MutableMapping[str, Any]:
+            return {"type": "lifespan.startup"}
+
+        async def send(message: MutableMapping[str, Any]) -> None:
+            pass
+
+        await app({"type": "lifespan"}, receive, send)
+        assert seen == ["lifespan"]

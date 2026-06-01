@@ -2149,21 +2149,40 @@ def _extension_tool_wrapper(spec: ToolSpec) -> Callable[..., Awaitable[Any]]:
 
 
 def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
-    """Assemble the streamable-http ASGI app, Bearer-gated when auth is enabled.
+    """Assemble the streamable-http ASGI app: Origin-guarded, Bearer-gated if auth.
 
-    The single place the served app is built and (conditionally) gated: when an
-    ``auth`` block is configured AND enabled (D9/D11), the streamable-http app is
-    wrapped in :class:`~loremaster.auth.BearerAuthMiddleware` over the configured
-    named-key set; otherwise it is returned ungated (the no-auth localhost mode).
+    The single place the served app is built and gated. Two layers wrap the
+    streamable-http app:
+
+    * **Origin (DNS-rebinding) guard — ALWAYS on (D11/mcp-builder).** The local
+      streamable-HTTP server binds loopback, but a browser tricked by DNS rebinding
+      still reaches it carrying an attacker ``Origin``; the
+      :class:`~loremaster.auth.OriginValidationMiddleware` rejects any non-loopback,
+      non-configured Origin with 403 while ALLOWING an absent Origin (a non-browser
+      local client) and loopback — so the no-auth localhost default is unbroken.
+    * **Bearer auth — when an enabled ``auth`` block is configured (D9/D11).** The
+      app is additionally wrapped in
+      :class:`~loremaster.auth.BearerAuthMiddleware` over the configured named-key
+      set; Bearer is the OUTERMOST layer so a request is authenticated, then
+      Origin-checked, then served.
 
     Args:
         mcp: The FastMCP server (its ``streamable_http_app`` is the inner app).
-        config: The project config (its ``auth`` block decides the gating).
+        config: The project config (its ``auth`` block decides the Bearer gating;
+            ``server.host`` provides the loopback bind the Origin guard defends).
 
     Returns:
-        The ASGI app to serve (the raw streamable-http app, or the gated wrapper).
+        The ASGI app to serve: ``Origin(app)`` (no auth) or
+        ``Bearer(Origin(app))`` (auth enabled).
     """
-    app = mcp.streamable_http_app()
+    from loremaster.auth import OriginValidationMiddleware
+
+    app: Any = mcp.streamable_http_app()
+    # The Origin guard runs for every deployment (DNS-rebinding defense), with the
+    # configured server bind's own origin implicitly covered by the loopback allow
+    # (the local single-user deploy binds 127.0.0.1). Extra trusted origins can be
+    # threaded here in a future config knob; loopback + absent is the secure default.
+    app = OriginValidationMiddleware(app)
     if config.auth is not None and config.auth.enabled:
         from loremaster.auth import BearerAuthMiddleware, build_api_key_verifier
 

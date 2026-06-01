@@ -1585,6 +1585,64 @@ class TestAuthWiring:
         assert isinstance(app, BearerAuthMiddleware)
 
 
+class TestOriginWiring:
+    """build_asgi_app always applies the Origin (DNS-rebinding) guard (Item 7).
+
+    The local streamable-HTTP server must validate the Origin header regardless of
+    whether Bearer auth is configured — a DNS-rebinding browser request carries an
+    attacker Origin even when the no-auth localhost default is in effect. So the
+    assembled app must reject a disallowed Origin (403) and allow an absent /
+    loopback one, with OR without auth.
+    """
+
+    async def test_no_auth_app_rejects_disallowed_origin(self, tmp_path: Path) -> None:
+        from test_auth import _drive  # the shared ASGI driver
+
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")  # no auth block
+        mcp = build_mcp_server(LoreServer(config))
+        app = build_asgi_app(mcp, config)
+        # A cross-origin browser request is rejected at the edge (the DNS-rebinding
+        # defense) even with no Bearer auth.
+        response = await _drive(app, [(b"origin", b"http://evil.example.com")])
+        assert response["status"] == 403
+
+    async def test_no_auth_app_is_origin_guarded(self, tmp_path: Path) -> None:
+        # With no auth, the assembled app is the Origin guard (so a local
+        # non-browser client with no Origin reaches the inner MCP app — the
+        # no-auth localhost default is preserved; the absent/loopback-allowed
+        # behaviour is exercised against the middleware directly in test_auth).
+        from loremaster.auth import OriginValidationMiddleware
+
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        app = build_asgi_app(mcp, config)
+        assert isinstance(app, OriginValidationMiddleware)
+
+    async def test_auth_app_still_rejects_disallowed_origin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from test_auth import _drive
+
+        monkeypatch.setenv("LORE_KEY_DEV", "dev-secret")
+        slug = _slug()
+        config = _config(
+            slug,
+            tmp_path / "live",
+            auth={"enabled": True, "keys": [{"name": "dev", "key_env": "LORE_KEY_DEV"}]},
+        )
+        mcp = build_mcp_server(LoreServer(config))
+        app = build_asgi_app(mcp, config)
+        # Even WITH a valid Bearer key, a disallowed Origin is rejected (403) — the
+        # DNS-rebinding guard runs alongside auth, not instead of it.
+        response = await _drive(
+            app,
+            [(b"origin", b"http://evil.example.com"), (b"authorization", b"Bearer dev-secret")],
+        )
+        assert response["status"] == 403
+
+
 # Imported here so the auth-wiring tests above can reference it; defined in the
 # server module as the single place the streamable-http app is assembled + gated.
 from loremaster.server import build_asgi_app  # noqa: E402
