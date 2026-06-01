@@ -43,7 +43,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 from lorescribe.javascript import JavascriptChunker
 from lorescribe.markdown import MarkdownChunker
@@ -54,7 +54,8 @@ from lorescribe.stylesheet import StylesheetChunker
 from lorescribe.text import TextChunker
 from lorescribe.xml_generic import XmlChunker
 from mcp.server.fastmcp import Context, FastMCP
-from pydantic import BaseModel
+from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
 from qdrant_client.models import ScoredPoint
 
 from loremaster.config import WATCH_STATIC, LoreConfig, load_config
@@ -664,6 +665,70 @@ _DEFAULT_SEARCH_K = 8
 _DEFAULT_RECALL_K = 5
 # The memory collection's slug suffix → ``lore_<slug>_memory``.
 _MEMORY_SLUG_SUFFIX = "_memory"
+
+
+# The in-band consumer guidance the FastMCP server advertises to the connecting
+# agent (mcp-builder: a substantial, behavioral ``instructions`` block). This is
+# the consumer's single source of truth — what lore is, when to reach for which
+# tool, the citation convention, the freshness / read-your-writes model, and the
+# project-memory stance — so a consumer needs zero out-of-band documentation. The
+# odoo-code server proves the pattern (rich behavioral instructions delivered
+# in-band); this is its generic-RAG analog. Edited here ⇒ keep the substring
+# contracts in ``test_mcp_server.py::TestServerInstructions`` green.
+_INSTRUCTIONS = (
+    "lore is a PER-PROJECT semantic RAG over THIS repository's code and docs, plus a "
+    "durable project-memory store. It indexes the project's source (Python, Markdown, "
+    "SQL, XML, JS, CSS, text), keeps a manifest of per-file freshness, and builds an "
+    "import/definition/test graph. Use it instead of guessing: it returns the EXACT, "
+    "cited source on disk so you quote real code rather than recalling a plausible "
+    "lookalike. Results are summarised value objects, NEVER raw store dumps.\n"
+    "\n"
+    "WHEN TO USE WHICH TOOL:\n"
+    "- search_code(query, ...): semantic, memory-boosted search across code + docs. "
+    "Your default entry point when you don't already know the exact name/path. Returns "
+    "ranked, cited hits.\n"
+    "- get_symbol(qualified_name): the EXACT stored definition + on-disk location of a "
+    "named Python symbol (class / method / function). Use this — NOT search_code — when "
+    "you know the name and want the authoritative definition (it is collision-correct, "
+    "not a fuzzy ranked guess).\n"
+    "- read_file(tier, path, ...): the EXACT on-disk text of a file span with a "
+    "[SOURCE:...] header. Use after a search/get_symbol hit to read surrounding context.\n"
+    "- what_imports(target): the DIRECT importers of a module (one reverse import edge).\n"
+    "- blast_radius(target, ...): the TRANSITIVE reverse-dependency closure (bounded "
+    "depth + result cap) — 'what could a change here break?'. Reach for blast_radius "
+    "(transitive) over what_imports (direct) when you need the ripple, not just the "
+    "neighbours.\n"
+    "- tests_for(symbol_or_file): the test nodes covering a symbol or file.\n"
+    "- index_status(): the freshness/health roll-up (indexed / in-flight / failed "
+    "counts) read straight from the manifest — zero embeds, cheap.\n"
+    "- reindex(tier=None): force a whole-tier reconcile sweep (or all tiers). The "
+    "heavy 'make everything current now' hammer — not a per-file wait.\n"
+    "- save_memory(text, ...) / recall_memory(query, ...): the project-memory store "
+    "(see MEMORY below).\n"
+    "\n"
+    "CITATIONS: every search_code / read_file result carries a [SOURCE:file:line] "
+    "citation plus a stable 'Key:' line (the chunk key) and a fenced source block. "
+    "Echo the [SOURCE:...] citation when you quote code, and pass a 'Key:' value back "
+    "to save_memory to pin a correction to a specific chunk.\n"
+    "\n"
+    "FRESHNESS / READ-YOUR-WRITES: a live inotify watcher re-indexes an edited file "
+    "within ~seconds of a save — the normal freshness path. A periodic reconcile sweep "
+    "(default ~10 min) is ONLY the backstop for events the watcher missed (downtime, "
+    "queue overflow), not the edit-to-fresh latency. If you edit a file and "
+    "IMMEDIATELY query it, you can race the embed window: pass "
+    "search_code(..., wait_for_fresh=True) — it bounded-waits for the in-flight file(s) "
+    "matching your path filter, then serves fresh (or stale-flagged on timeout; it "
+    "never hangs). Use reindex(tier=...) only to force a whole tier current; for the "
+    "edit-then-query case wait_for_fresh is the right, cheaper tool.\n"
+    "\n"
+    "MEMORY: save_memory / recall_memory is PROJECT-SCOPED memory about THIS repository "
+    "— embedded and semantically recalled, SHARED across every agent working this "
+    "project, and it SURVIVES restarts (it persists in a dedicated collection). Use it "
+    "for durable facts and corrections about this codebase (e.g. 'the order total lives "
+    "in models/sale.py, not where it looks'). This is DISTINCT from your own global / "
+    "cross-project assistant memory: lore-memory is the project's shared notebook, not "
+    "your personal one."
+)
 
 
 def configure_logging_from_config(config: LoreConfig) -> None:
@@ -1314,12 +1379,7 @@ def build_mcp_server(server: LoreServer) -> Any:
 
     mcp: FastMCP = FastMCP(
         name=f"lore-{config.project.slug}",
-        instructions=(
-            "Per-project code+docs RAG. Use search_code for semantic lookup, "
-            "get_symbol/read_file for exact source, the graph tools (what_imports/"
-            "blast_radius/tests_for) for dependencies, and save_memory/recall_memory "
-            "for durable project notes."
-        ),
+        instructions=_INSTRUCTIONS,
         lifespan=_lifespan,
         host=config.server.host,
         port=config.server.port,
@@ -1334,6 +1394,29 @@ def _app_context(context: Context[Any, AppContext, Any]) -> AppContext:
     return context.request_context.lifespan_context
 
 
+# Tool annotations (mcp-builder: set readOnlyHint / idempotentHint / openWorldHint
+# appropriately so a host can reason about a tool before calling it). Every lore
+# tool is read-only EXCEPT save_memory (persists a note) and reindex (mutates the
+# index state). openWorldHint is False throughout: lore queries THIS project's own
+# closed index, not an open external world. The read tools are idempotent (same
+# args → same observable result, modulo a live edit re-indexing underneath).
+_READ_ONLY_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True, idempotentHint=True, openWorldHint=False
+)
+# save_memory writes (a new note text creates a new point), so not read-only and
+# not idempotent — re-saving the SAME text dedups by deterministic id, but a new
+# text is a new write, so we do not advertise idempotency.
+_SAVE_MEMORY_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
+)
+# reindex mutates index state (it re-embeds changed files into the store) but is
+# non-destructive and idempotent over an unchanged tree (re-running settles to the
+# same indexed state). Not read-only — it writes vectors.
+_REINDEX_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False
+)
+
+
 def _register_tools(mcp: FastMCP) -> None:
     """Register the ten MCP tools on ``mcp``, each delegating to an AppContext handler.
 
@@ -1342,85 +1425,369 @@ def _register_tools(mcp: FastMCP) -> None:
     matching handler; the handler's pydantic return value is serialised to a plain
     dict/list (a filtered/summarised shape — never a raw store dump, the Anthropic
     token-efficiency rule).
+
+    Each tool carries (mcp-builder standard): a BEHAVIORAL description (what it
+    returns, when to reach for it, how it differs from its neighbour), a
+    per-parameter input-schema description via :class:`pydantic.Field` (constraints
+    + an example where useful), and :class:`~mcp.types.ToolAnnotations` (read-only
+    vs mutating). The consumer-facing ``instructions`` block (:data:`_INSTRUCTIONS`)
+    carries the cross-tool model (freshness, citations, memory stance).
     """
 
-    @mcp.tool(description="Memory-boosted semantic code/docs search; returns cited, summarised hits.")
+    @mcp.tool(
+        description=(
+            "Semantic, memory-boosted search across THIS project's indexed code and "
+            "docs. Your default entry point when you don't already know the exact "
+            "symbol name or file path: it ranks by meaning, not by string match. "
+            "Returns summarised, [SOURCE:file:line]-cited hits (each with a stable "
+            "Key:), never a raw dump. For the EXACT definition of a name you already "
+            "know, prefer get_symbol; to read surrounding lines, follow up with "
+            "read_file."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
     async def search_code(
         context: Context[Any, AppContext, Any],
-        query: str,
-        k: int = _DEFAULT_SEARCH_K,
-        filters: dict[str, str] | None = None,
-        wait_for_fresh: bool = False,
-        detail_level: str = "auto",
+        query: Annotated[
+            str,
+            Field(
+                description=(
+                    "Natural-language description of what you're looking for "
+                    "(e.g. 'where the order total is computed'). Meaning-ranked, so "
+                    "phrase it as intent, not an exact identifier."
+                )
+            ),
+        ],
+        k: Annotated[
+            int,
+            Field(
+                description=(
+                    f"Maximum number of hits to return (default {_DEFAULT_SEARCH_K}). "
+                    "Raise it for a broad survey, lower it to conserve context."
+                )
+            ),
+        ] = _DEFAULT_SEARCH_K,
+        filters: Annotated[
+            dict[str, str] | None,
+            Field(
+                description=(
+                    "Optional server-side payload filters to scope the search, "
+                    "e.g. {'tier': 'custom'} or {'path': 'pkg/router.py'}. A 'path' "
+                    "(or 'file_path') filter is also what wait_for_fresh waits on. "
+                    "Omit for an unscoped search."
+                )
+            ),
+        ] = None,
+        wait_for_fresh: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Read-your-writes flush: when True, bounded-wait for the in-flight "
+                    "file(s) matching your path filter to finish indexing before "
+                    "searching (serves stale-flagged on timeout, never hangs). Set "
+                    "True right after editing a file you're about to query; needs a "
+                    "'path' filter to know what to wait on."
+                )
+            ),
+        ] = False,
+        detail_level: Annotated[
+            str,
+            Field(
+                description=(
+                    "Which chunk granularity to return: 'auto' (default — both), "
+                    "'summary' (signatures / imports / headings only), or 'source' "
+                    "(bodies / statements only)."
+                )
+            ),
+        ] = "auto",
     ) -> list[dict[str, Any]]:
         results = await _app_context(context).search_code(
             query, k, filters, wait_for_fresh=wait_for_fresh, detail_level=detail_level
         )
         return [r.model_dump() for r in results]
 
-    @mcp.tool(description="Read an exact file span from a tier (containment-guarded).")
+    @mcp.tool(
+        description=(
+            "Read the EXACT on-disk text of a file span with a [SOURCE:tier:path:"
+            "start-end] provenance header — the anti-hallucination way to quote real "
+            "lines. Reach for this after a search_code / get_symbol hit to read the "
+            "surrounding context. Path is workspace-relative and containment-guarded "
+            "(a '../' traversal, absolute path, or escaping symlink is rejected)."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
     async def read_file(
         context: Context[Any, AppContext, Any],
-        tier: str,
-        path: str,
-        line_start: int | None = None,
-        line_end: int | None = None,
+        tier: Annotated[
+            str,
+            Field(
+                description=(
+                    "The source tier (root) the file lives in, as named in the "
+                    "project config — e.g. a live tier like 'custom' for the watched "
+                    "workspace, or a static tier (community / enterprise / pip / "
+                    "stdlib). It is the 'tier' shown in a [SOURCE:tier:...] citation."
+                )
+            ),
+        ],
+        path: Annotated[
+            str,
+            Field(
+                description=(
+                    "Tier-relative path of the file (e.g. 'pkg/router.py'). "
+                    "Workspace-relative and containment-guarded — never an absolute "
+                    "path or a '../' escape."
+                )
+            ),
+        ],
+        line_start: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "First line to read, 1-based inclusive. Omit to start at line 1."
+                )
+            ),
+        ] = None,
+        line_end: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "Last line to read, 1-based inclusive. Omit to read to EOF; an "
+                    "end past EOF is clamped (a tolerant 'from line N onward' read)."
+                )
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         span = await _app_context(context).read_file(tier, path, line_start, line_end)
         return span.model_dump()
 
-    @mcp.tool(description="Resolve a qualified Python name to its exact stored definition.")
+    @mcp.tool(
+        description=(
+            "Resolve a Python symbol name to its EXACT stored definition + on-disk "
+            "location (file_path / line span / tier). Use this — NOT search_code — "
+            "when you know the name and want the authoritative definition: it is "
+            "collision-correct (a module-qualified name resolves the RIGHT file when "
+            "the bare name exists in several), where search_code is a fuzzy ranked "
+            "guess. Scoped to class / method / function chunks; raises a clean "
+            "not-found (naming the symbol) if nothing matches."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
     async def get_symbol(
-        context: Context[Any, AppContext, Any], qualified_name: str
+        context: Context[Any, AppContext, Any],
+        qualified_name: Annotated[
+            str,
+            Field(
+                description=(
+                    "A Python dotted name — either MODULE-QUALIFIED "
+                    "(e.g. 'loremaster.config.LoreConfig' or "
+                    "'loremaster.symbols.SymbolTool.get_symbol') or a BARE identity "
+                    "(e.g. 'LoreConfig', 'SymbolTool.get_symbol'). Module-qualify it "
+                    "to disambiguate a name that collides across files."
+                )
+            ),
+        ],
     ) -> dict[str, Any]:
         symbol = await _app_context(context).get_symbol(qualified_name)
         return symbol.model_dump()
 
-    @mcp.tool(description="Save a durable project-memory note; returns its id.")
+    @mcp.tool(
+        description=(
+            "Persist a durable note to THIS project's shared memory store; returns "
+            "its deterministic id. Use it to record a lasting fact or correction "
+            "about this codebase — it is embedded, semantically recalled by "
+            "recall_memory, SHARED across every agent on this project, and survives "
+            "restarts. Re-saving the same text dedups (same id). This is the "
+            "project's shared notebook, distinct from your own cross-project memory."
+        ),
+        annotations=_SAVE_MEMORY_ANNOTATIONS,
+    )
     async def save_memory(
         context: Context[Any, AppContext, Any],
-        text: str,
-        metadata: dict[str, Any] | None = None,
+        text: Annotated[
+            str,
+            Field(
+                description=(
+                    "The note to remember — a durable fact or correction about this "
+                    "project (e.g. 'the discount logic lives in pricing/rules.py, not "
+                    "sale.py'). Make it self-contained so a future recall is useful."
+                )
+            ),
+        ],
+        metadata: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description=(
+                    "Optional structured metadata stored alongside the note "
+                    "(e.g. {'topic': 'pricing'}). Pass a chunk Key: here to pin the "
+                    "note to a specific indexed chunk. Omit if none."
+                )
+            ),
+        ] = None,
     ) -> str:
         return await _app_context(context).save_memory(text, metadata=metadata)
 
-    @mcp.tool(description="Recall the nearest saved project-memory notes for a query.")
+    @mcp.tool(
+        description=(
+            "Recall the nearest saved project-memory notes for a query — the read "
+            "side of save_memory. Returns summarised notes (text + metadata + refs + "
+            "score) from THIS project's shared, restart-surviving memory. Query it "
+            "early when you want prior corrections or durable facts about this "
+            "codebase before you start searching the code itself."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
     async def recall_memory(
-        context: Context[Any, AppContext, Any], query: str, k: int = _DEFAULT_RECALL_K
+        context: Context[Any, AppContext, Any],
+        query: Annotated[
+            str,
+            Field(
+                description=(
+                    "Natural-language description of the fact you're trying to recall "
+                    "(e.g. 'where does pricing live'). Semantically matched against "
+                    "saved notes."
+                )
+            ),
+        ],
+        k: Annotated[
+            int,
+            Field(
+                description=(
+                    f"Maximum number of notes to return (default {_DEFAULT_RECALL_K})."
+                )
+            ),
+        ] = _DEFAULT_RECALL_K,
     ) -> list[dict[str, Any]]:
         return [m.model_dump() for m in await _app_context(context).recall_memory(query, k)]
 
-    @mcp.tool(description="Force a reconcile sweep (optionally one tier); returns the freshness summary.")
+    @mcp.tool(
+        description=(
+            "Force a reconcile sweep that re-indexes any changed files NOW and "
+            "returns the freshness summary. This is the heavy 'make everything "
+            "current' hammer over a whole tier (or all tiers) — NOT a per-file wait. "
+            "You rarely need it: the live watcher keeps the index fresh on save. For "
+            "the edit-then-immediately-query case, prefer "
+            "search_code(..., wait_for_fresh=True), which is cheaper and targeted."
+        ),
+        annotations=_REINDEX_ANNOTATIONS,
+    )
     async def reindex(
-        context: Context[Any, AppContext, Any], tier: str | None = None
+        context: Context[Any, AppContext, Any],
+        tier: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Limit the sweep to one source tier (e.g. 'custom'). Omit (None) "
+                    "to reconcile every tier."
+                )
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         summary = await _app_context(context).reindex(tier)
         return summary.model_dump()
 
-    @mcp.tool(description="Index freshness + health roll-up (indexed/failed counts).")
+    @mcp.tool(
+        description=(
+            "Return the index freshness + health roll-up (files indexed / in-flight "
+            "/ failed counts) read straight from the manifest — zero embeds, cheap. "
+            "Use it to check whether the index is current and healthy before "
+            "trusting a search, or to confirm a reindex settled. Takes no arguments."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
     async def index_status(context: Context[Any, AppContext, Any]) -> dict[str, Any]:
         status = await _app_context(context).index_status()
         return status.model_dump()
 
-    @mcp.tool(description="Module nodes that import a target (reverse import edge).")
+    @mcp.tool(
+        description=(
+            "Return the DIRECT importers of a target module — the modules one "
+            "reverse import edge away. Use it to answer 'who imports this?'. For the "
+            "full TRANSITIVE ripple (importers of importers, bounded), use "
+            "blast_radius instead."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
     async def what_imports(
-        context: Context[Any, AppContext, Any], target: str
+        context: Context[Any, AppContext, Any],
+        target: Annotated[
+            str,
+            Field(
+                description=(
+                    "The imported module's dotted path (e.g. 'pkg.router') or an "
+                    "importable name. Returns the modules that import it directly."
+                )
+            ),
+        ],
     ) -> list[dict[str, Any]]:
         return [n.model_dump() for n in await _app_context(context).what_imports(target)]
 
-    @mcp.tool(description="Bounded reverse-dependency transitive closure of a symbol.")
+    @mcp.tool(
+        description=(
+            "Return the bounded TRANSITIVE reverse-dependency closure of a symbol or "
+            "module — everything that could be affected if you change it, following "
+            "reverse edges up to 'depth' hops (capped at 'max_results'). Answers "
+            "'what could a change here break?'. Use this over what_imports when you "
+            "need the ripple, not just the immediate importers."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
     async def blast_radius(
         context: Context[Any, AppContext, Any],
-        target: str,
-        depth: int = _DEFAULT_BLAST_DEPTH,
-        max_results: int = _DEFAULT_BLAST_MAX_RESULTS,
+        target: Annotated[
+            str,
+            Field(
+                description=(
+                    "The symbol or module to start from — a dotted name "
+                    "(e.g. 'pkg.router.ChampionRouter' or 'pkg.router'). Traversal "
+                    "follows reverse-dependency edges outward from here."
+                )
+            ),
+        ],
+        depth: Annotated[
+            int,
+            Field(
+                description=(
+                    f"Maximum number of reverse-edge hops to follow (default "
+                    f"{_DEFAULT_BLAST_DEPTH}). Higher = a wider ripple; bounded to "
+                    "keep the result from blowing up the context budget."
+                )
+            ),
+        ] = _DEFAULT_BLAST_DEPTH,
+        max_results: Annotated[
+            int,
+            Field(
+                description=(
+                    f"Hard cap on the number of nodes returned (default "
+                    f"{_DEFAULT_BLAST_MAX_RESULTS}), so a pathological fan-out stays "
+                    "bounded."
+                )
+            ),
+        ] = _DEFAULT_BLAST_MAX_RESULTS,
     ) -> list[dict[str, Any]]:
         nodes = await _app_context(context).blast_radius(target, depth, max_results)
         return [n.model_dump() for n in nodes]
 
-    @mcp.tool(description="Test nodes related to a symbol or file (edge + name heuristic).")
+    @mcp.tool(
+        description=(
+            "Return the test nodes related to a symbol or file (via graph edges and "
+            "a naming heuristic). Use it to find the tests covering code you're about "
+            "to change, or to locate where a behavior is exercised. Returns a "
+            "well-formed (possibly empty) list — never an error when nothing matches."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
     async def tests_for(
-        context: Context[Any, AppContext, Any], symbol_or_file: str
+        context: Context[Any, AppContext, Any],
+        symbol_or_file: Annotated[
+            str,
+            Field(
+                description=(
+                    "A symbol's dotted name (e.g. 'pkg.router.ChampionRouter') or a "
+                    "tier-relative file path (e.g. 'pkg/router.py') whose tests you "
+                    "want."
+                )
+            ),
+        ],
     ) -> list[dict[str, Any]]:
         return [n.model_dump() for n in await _app_context(context).tests_for(symbol_or_file)]
 
