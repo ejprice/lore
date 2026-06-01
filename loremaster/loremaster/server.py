@@ -39,6 +39,7 @@ the realistic greedy forms, not a pathologically path-specific predicate.)
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -409,6 +410,29 @@ class LoreServer:
         specs: list[ToolSpec] = []
         for ext in self._extensions:
             specs.extend(ext.tools(ctx))
+        return specs
+
+    def extension_tool_specs(self, ctx: ExtensionContext) -> list[ToolSpec]:
+        """Collect every extension's tool specs, each over its CHILD context (fix B).
+
+        Like :meth:`tool_specs`, but each extension's ``tools`` is called with
+        THAT extension's per-extension child context (the same private ``state``
+        namespace its lifespan hooks populate, via :meth:`_child_context`) rather
+        than the shared parent context. This is the context-correct collection the
+        live FastMCP server build registers: a tool handler that reads ``ctx.state``
+        sees the namespace its own ``on_startup`` seeded — not a sibling's, and not
+        the bare parent state.
+
+        Args:
+            ctx: The parent runtime extension context (carries every namespace).
+
+        Returns:
+            The concatenated tool specs, in registration order, each handler bound
+            to its extension's child context.
+        """
+        specs: list[ToolSpec] = []
+        for ext in self._extensions:
+            specs.extend(ext.tools(self._child_context(ctx, ext)))
         return specs
 
     # -- resolved behaviour hooks ------------------------------------------
@@ -947,6 +971,52 @@ class AppContext:
         """Return the test nodes related to a symbol or file."""
         return self.code_graph.tests_for(symbol_or_file)
 
+    # -- extension tools (seam 3) ------------------------------------------
+
+    @property
+    def extension_ctx(self) -> ExtensionContext | None:
+        """The RUNTIME :class:`ExtensionContext` the lifespan built over live services.
+
+        Set once the startup hooks ran (so an extension's per-extension lifespan
+        ``state`` is reachable through it). A seam-3 extension tool's registered
+        wrapper resolves its handler against THIS context — the real embedder /
+        store / manifest, not the composition placeholder — so a future
+        external-connection extension's handler can reach an extension-owned
+        resource stashed at startup.
+        """
+        return self._extension_ctx
+
+    def extension_tool_handler(self, name: str) -> Callable[..., Any]:
+        """Resolve the named extension tool's handler, bound to the RUNTIME context.
+
+        Re-derives the extension tool specs over the live runtime
+        :class:`ExtensionContext` (each extension's ``tools`` called with ITS
+        per-extension child context, fix B — so the handler closes over the same
+        private ``state`` namespace its lifespan hooks populate) and returns the
+        handler whose tool ``name`` matches. The registered FastMCP wrapper calls
+        this at invocation time, so the handler always closes over the live
+        services, not a build-time placeholder.
+
+        Args:
+            name: The extension tool name to resolve.
+
+        Returns:
+            The matching :attr:`ToolSpec.handler` callable, bound to the runtime
+            context.
+
+        Raises:
+            RuntimeError: If the runtime context is not yet set (called before the
+                lifespan startup), or no registered extension tool has ``name``.
+        """
+        if self._extension_ctx is None:  # pragma: no cover - defensive
+            raise RuntimeError(
+                f"extension tool {name!r} invoked before the runtime context was built"
+            )
+        for spec in self._server.extension_tool_specs(self._extension_ctx):
+            if spec.name == name:
+                return spec.handler
+        raise RuntimeError(f"no registered extension tool named {name!r}")  # pragma: no cover
+
     # -- lifecycle ---------------------------------------------------------
 
     async def aclose(self) -> None:
@@ -1292,7 +1362,7 @@ class _ProcessLifespanGuard:
 
 
 def build_mcp_server(server: LoreServer) -> Any:
-    """Construct the FastMCP server: lifespan + the ten registered MCP tools.
+    """Construct the FastMCP server: lifespan + the ten built-ins + extension tools.
 
     The lifespan builds the live :class:`AppContext` from config (the real
     embedder via :func:`~loremaster.embedding.make_embedder_from_config`, a real
@@ -1385,7 +1455,7 @@ def build_mcp_server(server: LoreServer) -> Any:
         port=config.server.port,
         streamable_http_path=config.server.path,
     )
-    _register_tools(mcp)
+    _register_tools(mcp, server)
     return mcp
 
 
@@ -1417,21 +1487,32 @@ _REINDEX_ANNOTATIONS = ToolAnnotations(
 )
 
 
-def _register_tools(mcp: FastMCP) -> None:
-    """Register the ten MCP tools on ``mcp``, each delegating to an AppContext handler.
+def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
+    """Register the ten built-in MCP tools, then the extension-contributed tools.
 
-    Kept separate so the registration list is one readable place. Every tool pulls
-    the live :class:`AppContext` off the request's lifespan context and calls the
-    matching handler; the handler's pydantic return value is serialised to a plain
-    dict/list (a filtered/summarised shape — never a raw store dump, the Anthropic
-    token-efficiency rule).
+    Kept separate so the registration list is one readable place. Every built-in
+    tool pulls the live :class:`AppContext` off the request's lifespan context and
+    calls the matching handler; the handler's pydantic return value is serialised
+    to a plain dict/list (a filtered/summarised shape — never a raw store dump, the
+    Anthropic token-efficiency rule).
 
-    Each tool carries (mcp-builder standard): a BEHAVIORAL description (what it
-    returns, when to reach for it, how it differs from its neighbour), a
+    Each built-in tool carries (mcp-builder standard): a BEHAVIORAL description
+    (what it returns, when to reach for it, how it differs from its neighbour), a
     per-parameter input-schema description via :class:`pydantic.Field` (constraints
     + an example where useful), and :class:`~mcp.types.ToolAnnotations` (read-only
     vs mutating). The consumer-facing ``instructions`` block (:data:`_INSTRUCTIONS`)
     carries the cross-tool model (freshness, citations, memory stance).
+
+    After the ten built-ins, every registered :class:`Extension`'s seam-3
+    :class:`ToolSpec`\\ s are registered as real FastMCP tools
+    (:func:`_register_extension_tools`) — purely additive, with a name-collision
+    guard so an extension tool can never silently shadow a built-in or another
+    extension's tool.
+
+    Args:
+        mcp: The FastMCP server to register tools on.
+        server: The composed :class:`LoreServer` whose extensions contribute the
+            seam-3 tools.
     """
 
     @mcp.tool(
@@ -1790,6 +1871,178 @@ def _register_tools(mcp: FastMCP) -> None:
         ],
     ) -> list[dict[str, Any]]:
         return [n.model_dump() for n in await _app_context(context).tests_for(symbol_or_file)]
+
+    # After the ten built-ins, register the extension-contributed seam-3 tools.
+    _register_extension_tools(mcp, server)
+
+
+# The parameter name FastMCP reserves to inject the request :class:`Context` on the
+# registered tool wrapper. A ToolSpec handler that ALSO declares a parameter named
+# this would collide with the injected one (a cryptic FastMCP-internal "duplicate
+# parameter name" crash); the registration path refuses it loudly instead.
+_RESERVED_TOOL_PARAM = "context"
+
+
+def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
+    """Register each extension's seam-3 :class:`ToolSpec` as a live FastMCP tool.
+
+    For every :class:`ToolSpec` an extension contributes (collected over the
+    composition context purely for its STATIC metadata — name / description /
+    input schema), a FastMCP tool is registered whose:
+
+    * **parameters** are derived from :attr:`ToolSpec.input_schema` (translated via
+      :func:`_extension_tool_wrapper` into a typed signature FastMCP introspects),
+      so the consumer sees the declared args; and
+    * **body**, at invocation time, fetches the live :class:`AppContext` off the
+      request's lifespan context, resolves the handler bound to the RUNTIME
+      :class:`ExtensionContext` (real embedder / store / manifest, plus the
+      per-extension lifespan ``state``), and invokes it with the call's arguments.
+
+    The handler is resolved at CALL time (not captured here) precisely because the
+    runtime context does not exist until the lifespan startup runs — registering a
+    thin wrapper now and binding the live handler later threads the runtime context
+    through cleanly without blocking the later resource-channel seam.
+
+    **Name-collision guard.** A tool whose name already exists on ``mcp`` — a
+    built-in or an earlier extension's tool — raises a :class:`ValueError` at
+    registration rather than silently shadowing it (FastMCP's own ``add_tool``
+    would merely warn and keep the first registration, a silent shadow).
+
+    Args:
+        mcp: The FastMCP server (the ten built-ins are already registered).
+        server: The composed :class:`LoreServer` whose extensions contribute tools.
+
+    Raises:
+        ValueError: If an extension tool name collides with an already-registered
+            tool (a built-in or another extension's tool).
+    """
+    # Enumerate the specs over the COMPOSITION context for their static metadata
+    # (names / descriptions / input schemas do not depend on the runtime ctx; only
+    # the handler closure does, and that is resolved per-call against the live
+    # AppContext). A placeholder store handle suffices — the metadata pass never
+    # invokes the handler or the placeholder tokenizer.
+    composition_ctx = server.extension_context(store=None)
+    for spec in server.tool_specs(composition_ctx):
+        if mcp._tool_manager.get_tool(spec.name) is not None:  # noqa: SLF001
+            raise ValueError(
+                f"extension tool {spec.name!r} collides with an already-registered tool; "
+                f"refusing to shadow it on the MCP surface (rename the extension tool — a "
+                f"tool name must be unique across the ten built-ins and every extension)."
+            )
+        wrapper = _extension_tool_wrapper(spec)
+        mcp.add_tool(wrapper, name=spec.name, description=spec.description)
+
+
+# The parameter kinds an extension tool handler may declare and have faithfully
+# republished. ``*args`` / ``**kwargs`` / positional-only cannot be modelled as a
+# named, typed JSON-schema property, so a handler using them is refused loudly
+# rather than published with a wrong (or silently dropped) schema.
+_SUPPORTED_PARAM_KINDS = frozenset(
+    {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+)
+
+
+def _extension_tool_wrapper(spec: ToolSpec) -> Callable[..., Awaitable[Any]]:
+    """Build the FastMCP tool function for an extension :class:`ToolSpec`.
+
+    The published ``inputSchema`` MUST match what the handler actually accepts —
+    silently telling a consumer the wrong type or a wrong required-set is the worst
+    MCP failure class. The handler's own signature is the single source of truth, so
+    this introspects :attr:`ToolSpec.handler` and threads each parameter's real
+    annotation + default + kind onto the wrapper's constructed signature:
+
+    * a parameter WITH a default publishes as NOT required (the consumer may omit
+      it; the handler supplies the default);
+    * a parameter WITHOUT a default stays required;
+    * the real annotation is preserved, so container/complex types
+      (``list[str]`` → ``array``, ``dict`` → ``object``, a pydantic model → its
+      schema) publish their correct JSON-schema type rather than collapsing to
+      ``string``.
+
+    The ``input_schema`` mapping on the spec is now SUPPLEMENTAL description only
+    (its keys/values no longer drive type or optionality) — the live signature wins.
+
+    Fail-loud (never silently coerce):
+
+    * a parameter named :data:`_RESERVED_TOOL_PARAM` collides with the injected
+      request ``context`` → raise (a clear error, not FastMCP's cryptic internal
+      "duplicate parameter name");
+    * an UN-annotated parameter would be silently published as ``string`` → raise
+      (FastMCP defaults a bare param to ``type: string``, the silent-wrong-schema
+      hazard);
+    * a ``*args`` / ``**kwargs`` / positional-only parameter cannot be modelled as a
+      named JSON-schema property → raise.
+
+    Args:
+        spec: The declarative tool spec to wrap.
+
+    Returns:
+        An async function suitable for :meth:`FastMCP.add_tool`, whose signature
+        mirrors the handler's so the published schema matches what it accepts.
+
+    Raises:
+        ValueError: If the handler declares a reserved ``context`` parameter, an
+            un-annotated parameter, or an unsupported parameter kind — each message
+            names the offending :class:`ToolSpec` and field.
+    """
+
+    async def _tool(context: Context[Any, AppContext, Any], **kwargs: Any) -> Any:
+        handler = _app_context(context).extension_tool_handler(spec.name)
+        result = handler(**kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    # The leading ``context`` parameter (FastMCP injects the request Context here,
+    # NOT a consumer-visible arg), then one parameter PER HANDLER PARAMETER —
+    # annotation + default + kind carried verbatim so the published schema matches.
+    parameters: list[inspect.Parameter] = [
+        inspect.Parameter(
+            _RESERVED_TOOL_PARAM,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=Context,
+        )
+    ]
+    annotations: dict[str, Any] = {_RESERVED_TOOL_PARAM: Context, "return": Any}
+    handler_signature = inspect.signature(spec.handler)
+    for param in handler_signature.parameters.values():
+        if param.name == _RESERVED_TOOL_PARAM:
+            raise ValueError(
+                f"extension tool {spec.name!r} handler declares a parameter named "
+                f"{_RESERVED_TOOL_PARAM!r}, which is reserved for the injected request "
+                f"context; rename that handler parameter."
+            )
+        if param.kind not in _SUPPORTED_PARAM_KINDS:
+            raise ValueError(
+                f"extension tool {spec.name!r} handler parameter {param.name!r} has "
+                f"unsupported kind {param.kind.description!r}; an extension tool's inputs "
+                f"must be named, typed parameters (no *args/**kwargs/positional-only) so "
+                f"the published schema can faithfully describe them."
+            )
+        if param.annotation is inspect.Parameter.empty:
+            raise ValueError(
+                f"extension tool {spec.name!r} handler parameter {param.name!r} has no type "
+                f"annotation; an un-annotated parameter would be silently published as a "
+                f"string in the tool's input schema. Annotate it so the consumer sees the "
+                f"correct type."
+            )
+        # KEYWORD_ONLY on the wrapper so FastMCP/pydantic builds named properties
+        # regardless of the handler's original positional/keyword kind; the default
+        # (present or absent) is what drives required vs optional in the schema.
+        parameters.append(
+            inspect.Parameter(
+                param.name,
+                inspect.Parameter.KEYWORD_ONLY,
+                annotation=param.annotation,
+                default=param.default,
+            )
+        )
+        annotations[param.name] = param.annotation
+    _tool.__signature__ = inspect.Signature(parameters)  # type: ignore[attr-defined]
+    _tool.__annotations__ = annotations
+    _tool.__name__ = spec.name
+    _tool.__doc__ = spec.description
+    return _tool
 
 
 def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:

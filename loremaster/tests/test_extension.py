@@ -23,11 +23,26 @@ seam by seam, against a do-nothing subclass — and separately assert that a
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Literal
 
 import pytest
-from _extension_helpers import FakeExtension, minimal_config
+import pytest_asyncio
+from _extension_helpers import (
+    BUILTIN_COLLISION_NAME,
+    SCHEMA_TOOL_FACTOR_DEFAULT,
+    CollidingExtension,
+    CounterExtension,
+    FakeExtension,
+    IsolationExtensionA,
+    IsolationExtensionB,
+    ReservedContextArgExtension,
+    SchemaShapesExtension,
+    UnannotatedArgExtension,
+    minimal_config,
+)
 from loremaster.extension import (
     Extension,
     ExtensionContext,
@@ -335,3 +350,390 @@ class TestFakeExtensionRoundTrips:
             ext.classify_detail("unknown_to_fake"),
         }
         assert levels == {"summary", "source", None}
+
+
+# --------------------------------------------------------------------------- #
+# Seam 3 LIVE-SERVER wiring: an extension's ToolSpec reaches the MCP surface.
+# --------------------------------------------------------------------------- #
+# The bug this suite pins: ``LoreServer.tool_specs(ctx)`` collects an extension's
+# seam-3 tools as value objects (the composition tests above prove that), but the
+# FastMCP server build never registered them — ``_register_tools`` hardcoded only
+# the ten built-ins and ignored the server's extension tools. So an extension's
+# tools reached the live MCP surface NOWHERE. These tests drive the REAL
+# ``build_mcp_server`` + a live ``build_app_context`` (the same path
+# ``test_mcp_server.py`` uses) and assert an extension tool (a) APPEARS in
+# ``tools/list`` alongside the ten built-ins, (b) exposes its declared input
+# schema, and (c) is INVOCABLE end-to-end through the FastMCP tool dispatch with
+# the handler closing over the RUNTIME ExtensionContext — not merely callable as a
+# bare ``spec.handler()`` (the vacuous version the composition tests already pass).
+
+_DIM = 2048
+
+# The ten built-in tools (the seam-3 wiring must be purely ADDITIVE to these).
+_BUILTIN_TOOLS = {
+    "search_code",
+    "read_file",
+    "get_symbol",
+    "save_memory",
+    "recall_memory",
+    "reindex",
+    "index_status",
+    "what_imports",
+    "blast_radius",
+    "tests_for",
+}
+
+
+def _server_config(slug: str, live_path: Path) -> Any:
+    """A valid :class:`LoreConfig` for a live ``build_app_context`` (dim 2048)."""
+    from loremaster.config import LoreConfig
+
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "project": {"slug": slug, "root": "."},
+        "embedding": {
+            "backend": "tei",
+            "base_url": "http://localhost:8080",
+            "endpoint": "/embed",
+            "model": "voyageai/voyage-4-nano",
+            "dim": _DIM,
+            "truncate": False,
+            "max_input_tokens": 8192,
+            "max_batch_texts": 32,
+            "concurrency": 2,
+            "connect_timeout_s": 5,
+            "api_key_env": "LORE_TEI_KEY",
+            "tokenizer": "voyage-4-nano",
+        },
+        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
+        "roots": [
+            {"tier": "custom", "watch": "live", "path": str(live_path), "include": ["**/*.py"]}
+        ],
+        "include": [],
+        "exclude_dirs": [".git"],
+        "exclude_globs": [],
+        "chunkers": {".py": {"chunker": "python_ast"}},
+        "watcher": {
+            "enabled": True,
+            "observer": "inotify",
+            "debounce_ms": 1500,
+            "reconcile_interval_s": 600,
+        },
+        "server": {"host": "127.0.0.1", "path": "/mcp", "port": 9234},
+    }
+    return LoreConfig.model_validate(payload)
+
+
+class _FakeRequestContext:
+    """A stand-in MCP request context exposing the lifespan :class:`AppContext`."""
+
+    def __init__(self, app_context: Any) -> None:
+        self.lifespan_context = app_context
+
+
+class _FakeToolContext:
+    """A stand-in FastMCP ``Context`` whose ``request_context`` carries the AppContext.
+
+    A registered extension-tool wrapper reads the live AppContext off the request
+    context (to reach the RUNTIME ``ExtensionContext`` the handler closes over);
+    this minimal double drives the real wrapper body without standing up the full
+    streamable-http session machinery — the same approach ``test_mcp_server.py``
+    uses for the built-in wrappers.
+    """
+
+    def __init__(self, app_context: Any) -> None:
+        self.request_context = _FakeRequestContext(app_context)
+
+
+class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
+    """An extension's seam-3 ToolSpec is registered as a live, invocable MCP tool."""
+
+    @pytest_asyncio.fixture()
+    async def qdrant(self) -> AsyncIterator[Any]:
+        """A real Qdrant client with exact-name (concurrency-safe) teardown."""
+        from conftest import QDRANT_URL, _qdrant_api_key
+        from qdrant_client import AsyncQdrantClient
+
+        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
+        created: list[str] = []
+        client._lore_created = created  # type: ignore[attr-defined]
+        try:
+            yield client
+        finally:
+            for name in created:
+                for candidate in (name, f"{name}_memory"):
+                    if await client.collection_exists(candidate):
+                        await client.delete_collection(candidate)
+            await client.close()
+
+    @staticmethod
+    def _slug() -> str:
+        return f"test_{uuid.uuid4().hex}"
+
+    async def _live_context(self, *, server: Any, qdrant: Any, tmp_path: Path) -> Any:
+        """Build a live :class:`AppContext` over the server (real Qdrant, fake embedder)."""
+        from loremaster.server import build_app_context
+
+        slug = server.config.project.slug
+        qdrant._lore_created.append(f"lore_{slug}")
+        qdrant._lore_created.append(f"lore_{slug}_memory")
+        return await build_app_context(
+            server=server,
+            embedder=FakeEmbedder(dim=_DIM),
+            qdrant_client=qdrant,
+            manifest_path=tmp_path / "m.db",
+            graph_path=tmp_path / "graph.db",
+            snapshot_root=tmp_path / "snap",
+            start_tasks=False,
+        )
+
+    async def test_extension_tool_appears_in_tools_list_with_the_ten_builtins(
+        self, tmp_path: Path
+    ) -> None:
+        # RED today: the extension's ``bump_counter`` tool is collected by
+        # ``server.tool_specs`` but NEVER registered, so it is absent from the live
+        # ``tools/list``. The ten built-ins are present either way.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        server = LoreServer(config).register_extension(CounterExtension())
+        mcp = build_mcp_server(server)
+
+        tools = await mcp.list_tools()
+        names = {t.name for t in tools}
+        # Purely additive: the ten built-ins are untouched.
+        assert _BUILTIN_TOOLS <= names
+        # The extension tool now rides alongside them on the live surface.
+        assert "bump_counter" in names
+
+    async def test_extension_tool_exposes_its_declared_input_schema(
+        self, tmp_path: Path
+    ) -> None:
+        # The ToolSpec.input_schema ({"count": "int"}) must be translated into the
+        # registered tool's parameters so the MCP consumer sees the ``count`` arg.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        server = LoreServer(config).register_extension(CounterExtension())
+        mcp = build_mcp_server(server)
+
+        tools = await mcp.list_tools()
+        bump = next(t for t in tools if t.name == "bump_counter")
+        # The declared ``count`` input is visible on the tool's input schema.
+        assert "count" in bump.inputSchema.get("properties", {})
+
+    async def test_extension_tool_is_invocable_end_to_end_with_runtime_ctx(
+        self, tmp_path: Path, qdrant: Any
+    ) -> None:
+        # The real end-to-end proof (not the vacuous ``spec.handler()`` direct call):
+        # drive the REGISTERED FastMCP wrapper against a LIVE AppContext and get the
+        # handler's result back. The handler closes over the RUNTIME
+        # ExtensionContext, whose per-extension state namespace the ``on_startup``
+        # hook seeded — so the returned total reflects that live state.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        live = tmp_path / "live"
+        live.mkdir()
+        slug = self._slug()
+        config = _server_config(slug, live)
+        ext = CounterExtension()
+        server = LoreServer(config).register_extension(ext)
+        mcp = build_mcp_server(server)
+        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        try:
+            tool = mcp._tool_manager.get_tool("bump_counter")  # noqa: SLF001
+            assert tool is not None
+            # Call the registered wrapper through a fake lifespan Context, exactly as
+            # the live streamable-http dispatch would. The runtime ctx's per-extension
+            # state was seeded to 100 by on_startup, so a +5 bump returns 105 — proof
+            # the handler closed over the RUNTIME context, not a placeholder.
+            result = await tool.fn(_FakeToolContext(ctx), count=5)
+            assert result == ext.on_startup_seed() + 5
+            # A second call accumulates on the SAME live state (105 → 108).
+            again = await tool.fn(_FakeToolContext(ctx), count=3)
+            assert again == ext.on_startup_seed() + 5 + 3
+        finally:
+            await ctx.aclose()
+
+    async def test_extension_tool_name_colliding_with_a_builtin_raises(
+        self, tmp_path: Path
+    ) -> None:
+        # An extension tool must not silently shadow a built-in (or be shadowed by
+        # it). Registering a tool under a built-in name raises a clear error at
+        # build time, naming the offending tool.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        server = LoreServer(config).register_extension(CollidingExtension())
+        with pytest.raises(ValueError, match=BUILTIN_COLLISION_NAME):
+            build_mcp_server(server)
+
+    async def test_two_extensions_with_the_same_tool_name_raises(
+        self, tmp_path: Path
+    ) -> None:
+        # The collision guard covers EXTENSION-vs-EXTENSION too, not just vs a
+        # built-in: two extensions contributing the same tool name must raise at
+        # registration (the second cannot silently shadow the first). The audit
+        # flagged this as untested-but-working — lock it.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        # Two CounterExtension-like extensions both contribute ``bump_counter``;
+        # register two distinct extensions whose tools collide on a name.
+        server = (
+            LoreServer(config)
+            .register_extension(CounterExtension())
+            .register_extension(_DuplicateBumpExtension())
+        )
+        with pytest.raises(ValueError, match="bump_counter"):
+            build_mcp_server(server)
+
+    async def test_optional_arg_is_not_required_and_invocable_without_it(
+        self, tmp_path: Path, qdrant: Any
+    ) -> None:
+        # CONTRACT GAP #1 (optionality lost). The handler declares
+        # ``factor: int = SCHEMA_TOOL_FACTOR_DEFAULT``; the published inputSchema
+        # must therefore NOT list ``factor`` in ``required`` (a required scalar with
+        # no default stays required), AND the tool must be invocable WITHOUT
+        # ``factor`` — the handler supplies its default. RED today: ``factor`` is
+        # wrongly published as required (every arg is KEYWORD_ONLY with no default).
+        from loremaster.server import LoreServer, build_mcp_server
+
+        live = tmp_path / "live"
+        live.mkdir()
+        slug = self._slug()
+        config = _server_config(slug, live)
+        server = LoreServer(config).register_extension(SchemaShapesExtension())
+        mcp = build_mcp_server(server)
+
+        tools = await mcp.list_tools()
+        echo = next(t for t in tools if t.name == "echo_shapes")
+        required = set(echo.inputSchema.get("required", []))
+        # The no-default scalar/containers stay required; the defaulted one does not.
+        assert "required" in required
+        assert "factor" not in required, (
+            "an arg with a handler default must publish as NOT required"
+        )
+
+        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        try:
+            tool = mcp._tool_manager.get_tool("echo_shapes")  # noqa: SLF001
+            # Invoke WITHOUT ``factor`` — the handler's default must apply.
+            result = await tool.fn(
+                _FakeToolContext(ctx),
+                required="r",
+                items=["a", "b"],
+                mapping={"k": 1},
+            )
+            assert result["factor"] == SCHEMA_TOOL_FACTOR_DEFAULT
+            assert result["items"] == ["a", "b"]
+        finally:
+            await ctx.aclose()
+
+    async def test_non_scalar_args_publish_correct_json_schema_types(
+        self, tmp_path: Path
+    ) -> None:
+        # CONTRACT GAP #2 (non-scalar collapse to string). A ``list[str]`` arg must
+        # publish ``type: array`` and a ``dict[str, int]`` arg ``type: object`` — NOT
+        # silently ``type: string``. RED today: both collapse to string.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        server = LoreServer(config).register_extension(SchemaShapesExtension())
+        mcp = build_mcp_server(server)
+
+        tools = await mcp.list_tools()
+        echo = next(t for t in tools if t.name == "echo_shapes")
+        props = echo.inputSchema["properties"]
+        assert props["items"]["type"] == "array", "list[str] must publish as array, not string"
+        assert props["items"]["items"]["type"] == "string"
+        assert props["mapping"]["type"] == "object", "dict must publish as object, not string"
+        # The required scalar is still a plain string.
+        assert props["required"]["type"] == "string"
+
+    async def test_reserved_context_arg_raises_a_clear_error(self, tmp_path: Path) -> None:
+        # An arg named ``context`` collides with FastMCP's injected request Context.
+        # Registration must raise a CLEAR error naming the offending ToolSpec — never
+        # the cryptic internal "duplicate parameter name" crash.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        server = LoreServer(config).register_extension(ReservedContextArgExtension())
+        with pytest.raises(ValueError, match="uses_context"):
+            build_mcp_server(server)
+
+    async def test_unannotated_arg_fails_loud_not_silent_string(
+        self, tmp_path: Path
+    ) -> None:
+        # An un-annotated handler param would silently publish as ``type: string``
+        # (the silent-wrong-schema bug class). Registration must FAIL LOUD naming
+        # the offending ToolSpec + field instead of coercing.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        slug = self._slug()
+        config = _server_config(slug, tmp_path / "live")
+        server = LoreServer(config).register_extension(UnannotatedArgExtension())
+        with pytest.raises(ValueError, match="mystery"):
+            build_mcp_server(server)
+
+    async def test_cross_extension_tool_state_is_isolated(
+        self, tmp_path: Path, qdrant: Any
+    ) -> None:
+        # Two extensions, each with its OWN private lifespan state + a tool reading
+        # it. One extension's tool must see ONLY its own sentinel and NEVER the
+        # sibling's key (fix B isolation, exercised through the live tool surface).
+        # The audit flagged cross-extension isolation as untested-on-the-tool-path.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        live = tmp_path / "live"
+        live.mkdir()
+        slug = self._slug()
+        config = _server_config(slug, live)
+        server = (
+            LoreServer(config)
+            .register_extension(IsolationExtensionA())
+            .register_extension(IsolationExtensionB())
+        )
+        mcp = build_mcp_server(server)
+        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        try:
+            tool_a = mcp._tool_manager.get_tool("read_state_a")  # noqa: SLF001
+            tool_b = mcp._tool_manager.get_tool("read_state_b")  # noqa: SLF001
+            out_a = await tool_a.fn(_FakeToolContext(ctx))
+            out_b = await tool_b.fn(_FakeToolContext(ctx))
+            # Each sees its own sentinel...
+            assert out_a["own"] == "alpha"
+            assert out_b["own"] == "beta"
+            # ...and NEVER the sibling's key (no state bleed across extensions).
+            assert out_a["saw_sibling"] is False
+            assert out_b["saw_sibling"] is False
+        finally:
+            await ctx.aclose()
+
+
+class _DuplicateBumpExtension(Extension):
+    """A second extension that re-uses ``bump_counter`` to force an ext-vs-ext clash."""
+
+    @property
+    def name(self) -> str:
+        return "duplicate_bumper"
+
+    def tools(self, ctx: ExtensionContext) -> list[ToolSpec]:
+        def _also_bump(count: int = 1) -> int:
+            return count
+
+        return [
+            ToolSpec(
+                name="bump_counter",
+                handler=_also_bump,
+                description="A colliding second bump tool.",
+                input_schema={"count": "int"},
+                output_schema={"total": "int"},
+            )
+        ]
