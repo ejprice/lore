@@ -334,7 +334,14 @@ class OriginValidationMiddleware:
             return True
         # Match on the host of the scheme://host[:port] form: a loopback host is a
         # same-machine browser request. ``urlsplit`` parses the port off for us.
-        hostname = urlsplit(origin).hostname
+        # A malformed bracketed-IPv6 Origin (e.g. ``http://[::1]@evil.com`` or
+        # ``http://[::1].evil.com``) makes ``.hostname`` RAISE ValueError on
+        # Python 3.14; FAIL CLOSED (treat it as disallowed → a clean 403) rather
+        # than letting the exception escape __call__ as a 500/dropped connection.
+        try:
+            hostname = urlsplit(origin).hostname
+        except ValueError:
+            return False
         return hostname in _LOOPBACK_HOSTS
 
     @staticmethod

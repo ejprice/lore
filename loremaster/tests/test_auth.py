@@ -389,6 +389,52 @@ class TestOriginValidationMiddleware:
         assert inner.called is False
 
     @pytest.mark.asyncio
+    async def test_spoofed_loopback_origins_are_disallowed(self) -> None:
+        # Exact-host matching — NOT a substring/prefix match. An attacker origin
+        # that merely CONTAINS a loopback token (a subdomain, a trailing dot, or a
+        # userinfo trick where the real host follows ``@``) must be rejected 403.
+        # Locks the exact-match contract so a future refactor can't regress it into
+        # a substring match (each of these would wrongly pass under ``in``).
+        from loremaster.auth import OriginValidationMiddleware
+
+        inner = _RecordingApp()
+        app = OriginValidationMiddleware(inner)
+        for origin in (
+            b"http://localhost.evil.com",  # subdomain — real host is evil.com
+            b"http://127.0.0.1.evil.com",  # subdomain off the IP literal
+            b"http://localhost@evil.com",  # userinfo trick — real host is evil.com
+            b"http://localhost:1234@evil.com",  # userinfo with a port-looking label
+            b"http://localhost.",  # trailing-dot FQDN — not the bare loopback host
+        ):
+            inner.called = False
+            response = await _drive(app, [(b"origin", origin)])
+            assert response["status"] == 403, f"spoofed origin {origin!r} must be 403"
+            assert inner.called is False
+
+    @pytest.mark.asyncio
+    async def test_malformed_bracketed_ipv6_origin_is_403_not_500(self) -> None:
+        # A malformed bracketed-IPv6 Origin makes ``urlsplit(...).hostname`` RAISE
+        # ValueError on Python 3.14. An unguarded parse would let that propagate out
+        # of __call__ BEFORE the inner app — the client gets a 500/dropped
+        # connection, violating the "fail-closed 403" contract (and a trivial local
+        # DoS). The parse must be guarded so a malformed Origin is a clean 403, the
+        # inner app never reached.
+        from loremaster.auth import OriginValidationMiddleware
+
+        inner = _RecordingApp()
+        app = OriginValidationMiddleware(inner)
+        for origin in (
+            b"http://[::1]@evil.com",  # userinfo after a bracketed loopback literal
+            b"http://[::1].evil.com",  # invalid IPv6 URL (bracket then label)
+        ):
+            inner.called = False
+            response = await _drive(app, [(b"origin", origin)])
+            assert response["status"] == 403, (
+                f"malformed origin {origin!r} must fail closed to 403, not crash"
+            )
+            assert inner.called is False
+
+    @pytest.mark.asyncio
     async def test_non_http_scope_passes_through_untouched(self) -> None:
         from loremaster.auth import OriginValidationMiddleware
 
