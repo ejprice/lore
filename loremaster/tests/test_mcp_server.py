@@ -798,6 +798,7 @@ class TestToolInputFieldDescriptions:
         assert "dotted" in description or "qualified" in description
 
 
+
 class TestToolAnnotations:
     """Tool annotations are set correctly (readOnlyHint on the read tools, etc.).
 
@@ -1068,6 +1069,60 @@ class TestToolBehaviourEndToEnd:
         symbol = await indexed_context.get_symbol("freshly_added_symbol")
         assert symbol.file_path == "pkg/extra.py"
 
+
+class TestReindexTierValidation:
+    """``reindex(tier=...)`` validates the tier — a typo must fail loud (Item 3).
+
+    Today an unknown ``tier`` is SILENTLY ignored (the sweep runs over all roots
+    regardless), so a typo reports false success. The fix validates ``tier`` against
+    the configured tiers (``config.effective_roots``): an unknown value raises a
+    clear error NAMING the valid tiers; a real tier (or ``None`` = all) proceeds.
+    Mutation: drop the validation ⇒ ``tier='bogus'`` no longer raises.
+    """
+
+    @pytest_asyncio.fixture()
+    async def indexed_context(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> AsyncIterator[AppContext]:
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)  # declares the live tier "custom"
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            yield ctx
+        finally:
+            await ctx.aclose()
+
+    async def test_unknown_tier_raises_naming_the_valid_tiers(
+        self, indexed_context: AppContext
+    ) -> None:
+        from loremaster.server import ReindexTierError
+
+        with pytest.raises(ReindexTierError) as exc_info:
+            await indexed_context.reindex(tier="bogus")
+        message = str(exc_info.value)
+        assert "bogus" in message, "the error must name the bad tier the caller gave"
+        # The configured tier ("custom") must be named so the caller can correct.
+        assert "custom" in message, "the error must name the valid tier(s)"
+
+    async def test_known_tier_reindexes(self, indexed_context: AppContext) -> None:
+        # A real tier proceeds (and brings a new file in that tier current).
+        live = indexed_context._config.effective_roots[0].path  # noqa: SLF001
+        assert live is not None
+        (Path(live) / "pkg" / "scoped.py").write_text(
+            "def scoped_added_symbol():\n    return 11\n", encoding="utf-8"
+        )
+        await indexed_context.reindex(tier="custom")
+        symbol = await indexed_context.get_symbol("scoped_added_symbol")
+        assert symbol.file_path == "pkg/scoped.py"
+
+    async def test_reindex_all_still_works(self, indexed_context: AppContext) -> None:
+        # tier=None still means all — the unscoped sweep is unchanged.
+        summary = await indexed_context.reindex()
+        assert summary.files_failed == 0
 
 
 class _FakeRequestContext:

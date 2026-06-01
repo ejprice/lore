@@ -801,6 +801,16 @@ class ProbeGateError(RuntimeError):
     """
 
 
+class ReindexTierError(ValueError):
+    """Raised when ``reindex(tier=...)`` is given a tier the project does not declare.
+
+    Subclasses :class:`ValueError` (a bad argument value). The message NAMES the
+    offending tier AND the valid tiers, so a typo (which would otherwise be
+    silently ignored — a false-success sweep over every tier) is caught and
+    remediable. ``tier=None`` (reindex all) never raises.
+    """
+
+
 async def run_probe_gate(*, embedder: Embedder, store: QdrantStore, config: LoreConfig) -> int:
     """Probe the embedder and verify dim coherence before the server starts.
 
@@ -962,11 +972,52 @@ class AppContext:
         Runs under the watcher's single-writer lock so it never races a live
         event's ``index_file`` — the read-your-writes / forced-refresh escape
         hatch. With no watcher running (the test path), reconciles directly.
+
+        A given ``tier`` is VALIDATED against the project's configured tiers
+        first: an unknown value raises :class:`ReindexTierError` naming the bad
+        tier and the valid ones (a typo would otherwise be silently ignored — a
+        sweep over every tier reporting false success). ``tier=None`` means all.
+
+        Args:
+            tier: Limit the sweep to one configured source tier, or ``None`` for
+                every tier.
+
+        Returns:
+            The :class:`~loremaster.index.indexer.IndexSummary` for the sweep.
+
+        Raises:
+            ReindexTierError: If ``tier`` is given but is not a configured tier.
         """
+        self._validate_tier(tier)
         if self.watcher is not None and self.watcher_started:
             await self.watcher.run_sweep()
             return self.indexer.index_status()
         return await self.reconcile_engine.reconcile()
+
+    def _validate_tier(self, tier: str | None) -> None:
+        """Reject a ``tier`` the project does not declare (fail loud on a typo).
+
+        ``None`` (reindex all) is always valid. Otherwise ``tier`` must match one
+        of the configured tiers (:attr:`~loremaster.config.LoreConfig.effective_roots`,
+        which synthesises the single-tree default tier when ``roots:`` is empty);
+        an unknown value raises :class:`ReindexTierError` naming the valid tiers.
+
+        Args:
+            tier: The requested tier, or ``None``.
+
+        Raises:
+            ReindexTierError: If ``tier`` is not ``None`` and is not configured.
+        """
+        if tier is None:
+            return
+        valid_tiers = [root.tier for root in self._config.effective_roots]
+        if tier not in valid_tiers:
+            valid = ", ".join(repr(name) for name in valid_tiers)
+            raise ReindexTierError(
+                f"unknown tier {tier!r}; reindex accepts only a configured tier "
+                f"({valid}) or None (all tiers). Check for a typo, or omit the tier "
+                f"to reconcile everything."
+            )
 
     async def index_status(self) -> IndexSummary:
         """Return the freshness roll-up read purely from the manifest (zero embeds)."""
