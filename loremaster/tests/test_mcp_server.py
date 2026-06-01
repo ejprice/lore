@@ -799,13 +799,15 @@ class TestToolInputFieldDescriptions:
 
 
 class TestInputParamConstraints:
-    """Input params publish their value constraints + reject bad values (Item 4).
+    """Input params publish their value constraints + reject bad values (Items 4, 5).
 
     Item 4: ``lore_search_code(detail_level=...)`` must publish a Literal enum
     (auto/summary/source) so a bad value is REJECTED at validation, not silently
-    accepted then filtered to empty. The rejection probe validates the tool's arg
-    model directly — isolating arg-validation from the handler, so a refusal proves
-    the SCHEMA rejected the value (non-vacuous: a valid value still validates).
+    accepted then filtered to empty. Item 5: the numeric params (``k``, ``depth``,
+    ``max_results``) must carry a ``minimum`` (>= 1) so a zero/negative is
+    schema-rejected. The rejection probe validates the tool's arg model directly —
+    isolating arg-validation from the handler, so a refusal proves the SCHEMA
+    rejected the value (non-vacuous: a valid value still validates).
     """
 
     async def _tools_by_name(self, tmp_path: Path) -> dict[str, Any]:
@@ -852,6 +854,38 @@ class TestInputParamConstraints:
         # A valid Literal member is accepted — the rejection is value-specific, not
         # a blanket failure (non-vacuous).
         model.model_validate({"query": "x", "detail_level": "summary"})
+
+    # -- Item 5: ge= bounds on numeric params ------------------------------- #
+
+    async def test_numeric_params_publish_minimum(self, tmp_path: Path) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        # k on search_code + recall_memory, depth + max_results on blast_radius all
+        # carry a minimum of 1 (a count/depth below 1 is meaningless).
+        search_k = tools["lore_search_code"].inputSchema["properties"]["k"]
+        recall_k = tools["lore_recall_memory"].inputSchema["properties"]["k"]
+        depth = tools["lore_blast_radius"].inputSchema["properties"]["depth"]
+        max_results = tools["lore_blast_radius"].inputSchema["properties"]["max_results"]
+        assert search_k.get("minimum") == 1
+        assert recall_k.get("minimum") == 1
+        assert depth.get("minimum") == 1
+        assert max_results.get("minimum") == 1
+
+    async def test_zero_or_negative_numeric_is_rejected_good_value_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        from pydantic import ValidationError
+
+        mcp = await self._server(tmp_path)
+        search_model = self._arg_model(mcp, "lore_search_code")
+        blast_model = self._arg_model(mcp, "lore_blast_radius")
+        # k=0 (search) and depth=-1 (blast_radius) are schema-rejected at validation.
+        with pytest.raises(ValidationError):
+            search_model.model_validate({"query": "x", "k": 0})
+        with pytest.raises(ValidationError):
+            blast_model.model_validate({"target": "x", "depth": -1})
+        # A positive value passes — the bound rejects below-1, not all values.
+        search_model.model_validate({"query": "x", "k": 1})
+        blast_model.model_validate({"target": "x", "depth": 1})
 
 
 class TestToolAnnotations:

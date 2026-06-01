@@ -702,6 +702,17 @@ _DEFAULT_BLAST_MAX_RESULTS = 50
 # Default ``k`` for the search/recall tools when the caller does not specify one.
 _DEFAULT_SEARCH_K = 8
 _DEFAULT_RECALL_K = 5
+
+# Lower/upper bounds the numeric tool params publish (mcp-builder: constrain inputs
+# at the schema, so a zero/negative or absurd value is rejected at validation rather
+# than producing a confusing empty/over-large result). A count or hop-depth below 1
+# is meaningless; the upper caps keep a single call's result + traversal bounded so a
+# typo (k=100000) cannot blow the context budget.
+_MIN_COUNT = 1
+_MAX_SEARCH_K = 100
+_MAX_RECALL_K = 100
+_MAX_BLAST_DEPTH = 25
+_MAX_BLAST_MAX_RESULTS = 500
 # The memory collection's slug suffix → ``lore_<slug>_memory``.
 _MEMORY_SLUG_SUFFIX = "_memory"
 
@@ -1612,10 +1623,13 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         k: Annotated[
             int,
             Field(
+                ge=_MIN_COUNT,
+                le=_MAX_SEARCH_K,
                 description=(
-                    f"Maximum number of hits to return (default {_DEFAULT_SEARCH_K}). "
-                    "Raise it for a broad survey, lower it to conserve context."
-                )
+                    f"Maximum number of hits to return (default {_DEFAULT_SEARCH_K}, "
+                    f"min {_MIN_COUNT}, max {_MAX_SEARCH_K}). Raise it for a broad "
+                    "survey, lower it to conserve context."
+                ),
             ),
         ] = _DEFAULT_SEARCH_K,
         filters: Annotated[
@@ -1804,9 +1818,12 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         k: Annotated[
             int,
             Field(
+                ge=_MIN_COUNT,
+                le=_MAX_RECALL_K,
                 description=(
-                    f"Maximum number of notes to return (default {_DEFAULT_RECALL_K})."
-                )
+                    f"Maximum number of notes to return (default {_DEFAULT_RECALL_K}, "
+                    f"min {_MIN_COUNT}, max {_MAX_RECALL_K})."
+                ),
             ),
         ] = _DEFAULT_RECALL_K,
     ) -> list[RecalledMemory]:
@@ -1902,21 +1919,27 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         depth: Annotated[
             int,
             Field(
+                ge=_MIN_COUNT,
+                le=_MAX_BLAST_DEPTH,
                 description=(
                     f"Maximum number of reverse-edge hops to follow (default "
-                    f"{_DEFAULT_BLAST_DEPTH}). Higher = a wider ripple; bounded to "
-                    "keep the result from blowing up the context budget."
-                )
+                    f"{_DEFAULT_BLAST_DEPTH}, min {_MIN_COUNT}, max "
+                    f"{_MAX_BLAST_DEPTH}). Higher = a wider ripple; bounded to keep "
+                    "the result from blowing up the context budget."
+                ),
             ),
         ] = _DEFAULT_BLAST_DEPTH,
         max_results: Annotated[
             int,
             Field(
+                ge=_MIN_COUNT,
+                le=_MAX_BLAST_MAX_RESULTS,
                 description=(
                     f"Hard cap on the number of nodes returned (default "
-                    f"{_DEFAULT_BLAST_MAX_RESULTS}), so a pathological fan-out stays "
+                    f"{_DEFAULT_BLAST_MAX_RESULTS}, min {_MIN_COUNT}, max "
+                    f"{_MAX_BLAST_MAX_RESULTS}), so a pathological fan-out stays "
                     "bounded."
-                )
+                ),
             ),
         ] = _DEFAULT_BLAST_MAX_RESULTS,
     ) -> list[GraphNode]:
