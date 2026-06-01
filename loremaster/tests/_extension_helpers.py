@@ -290,3 +290,94 @@ class FakeExtension(Extension):
         if chunk_type == "fake_body":
             return "source"
         return None
+
+
+# The name an extension tool deliberately collides with — one of the ten
+# built-ins (the search tool). Registering a tool under this name must RAISE so an
+# extension can never silently shadow a built-in on the live MCP surface (seam-3
+# wiring guard).
+BUILTIN_COLLISION_NAME = "search_code"
+
+
+class CounterExtension(Extension):
+    """A single-seam :class:`Extension` contributing ONE tool that uses the ctx (seam 3).
+
+    Mirrors the seam-3 wiring deliverable's requirement that the registered MCP
+    tool's handler closes over the RUNTIME :class:`ExtensionContext` (real
+    embedder/store/manifest built in ``build_app_context``) and can reach its own
+    per-extension lifespan ``state`` namespace via
+    :meth:`~loremaster.server.LoreServer.extension_state`. The tool increments a
+    counter the ``on_startup`` hook seeded into that namespace, so a call that
+    returns the bumped value proves the handler ran against the live ctx — not a
+    composition placeholder. The declared ``count`` input is the amount to add, so
+    the registered tool's input schema must expose it.
+    """
+
+    # The per-extension ``state`` key the counter lives under (seeded at startup,
+    # bumped by every tool call) — proof the runtime ctx + state namespace flow in.
+    STATE_KEY = "counter_total"
+
+    @property
+    def name(self) -> str:
+        return "counter"
+
+    def on_startup_seed(self) -> int:
+        """The value ``on_startup`` seeds the counter at (a recognisable non-zero)."""
+        return 100
+
+    async def on_startup(self, ctx: ExtensionContext) -> None:
+        """Seed the per-extension state namespace the tool handler will bump."""
+        ctx.state[self.STATE_KEY] = self.on_startup_seed()
+
+    def tools(self, ctx: ExtensionContext) -> list[ToolSpec]:
+        """Contribute one counter tool whose handler closes over the runtime ``ctx``.
+
+        The handler reads/writes ``ctx.state`` — which, at runtime, is the
+        extension's private lifespan-state namespace — so a call's return value
+        reflects state the ``on_startup`` hook seeded: end-to-end proof the live
+        context (not a placeholder) reached the handler.
+        """
+
+        def _bump(count: int = 1) -> int:
+            current: int = ctx.state.get(self.STATE_KEY, 0)
+            total = current + count
+            ctx.state[self.STATE_KEY] = total
+            return total
+
+        return [
+            ToolSpec(
+                name="bump_counter",
+                handler=_bump,
+                description="Increment the extension's counter by ``count`` and return the total.",
+                input_schema={"count": "int"},
+                output_schema={"total": "int"},
+            )
+        ]
+
+
+class CollidingExtension(Extension):
+    """An :class:`Extension` whose tool name shadows a built-in — must be refused.
+
+    The seam-3 wiring guard: an extension tool that re-uses one of the ten
+    built-in names (here :data:`BUILTIN_COLLISION_NAME`) must raise a clear error
+    at registration rather than silently shadowing — or being shadowed by — the
+    built-in on the live MCP surface.
+    """
+
+    @property
+    def name(self) -> str:
+        return "collider"
+
+    def tools(self, ctx: ExtensionContext) -> list[ToolSpec]:
+        def _shadow() -> str:
+            return "shadow"
+
+        return [
+            ToolSpec(
+                name=BUILTIN_COLLISION_NAME,
+                handler=_shadow,
+                description="A tool that collides with a built-in name.",
+                input_schema={},
+                output_schema={"x": "str"},
+            )
+        ]
