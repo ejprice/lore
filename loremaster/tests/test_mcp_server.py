@@ -607,6 +607,240 @@ class TestToolRegistration:
         assert _EXPECTED_TOOLS <= names
 
 
+# --------------------------------------------------------------------------- #
+# In-band consumer guidance (server instructions + per-tool descriptions +
+# input-schema field descriptions + tool annotations)
+# --------------------------------------------------------------------------- #
+# The read-only tools (every tool that does NOT mutate index/memory state). These
+# must carry ``readOnlyHint=True``. ``save_memory`` and ``reindex`` are the two
+# mutating tools and must NOT be marked read-only.
+_READ_ONLY_TOOLS = {
+    "search_code",
+    "read_file",
+    "get_symbol",
+    "recall_memory",
+    "index_status",
+    "what_imports",
+    "blast_radius",
+    "tests_for",
+}
+_MUTATING_TOOLS = {"save_memory", "reindex"}
+
+# Tools that take NO consumer-facing parameters (so there are no per-field
+# descriptions to assert). ``index_status`` is parameterless.
+_PARAMETERLESS_TOOLS = {"index_status"}
+
+
+class TestServerInstructions:
+    """The FastMCP server ``instructions`` is a substantial, behavioral block.
+
+    A field consumer reported lore "doesn't give clear instructions and
+    capabilities to the consumer." The fix is in-band: the FastMCP
+    ``instructions`` block must, on its own, teach the connecting agent what lore
+    is, when to reach for each tool, the citation convention, the freshness /
+    read-your-writes model, and the project-memory stance — so no out-of-band doc
+    is needed. These assertions pin the load-bearing facts as substrings; the
+    mutation check (blank the block ⇒ these fail) proves they are not vacuous.
+    """
+
+    def _instructions(self, tmp_path: Path) -> str:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        instructions = mcp.instructions
+        assert isinstance(instructions, str)
+        return instructions
+
+    def test_instructions_is_substantial(self, tmp_path: Path) -> None:
+        # Not the one-sentence stub: a behavioral block is materially longer.
+        instructions = self._instructions(tmp_path)
+        assert len(instructions) >= 800, (
+            "the server instructions must be a substantial behavioral block, not "
+            "a one-line label"
+        )
+
+    def test_instructions_names_every_tool(self, tmp_path: Path) -> None:
+        # The consumer must learn WHEN to use WHICH tool from the instructions
+        # alone — so every registered tool is named there.
+        instructions = self._instructions(tmp_path)
+        for tool_name in _EXPECTED_TOOLS:
+            assert tool_name in instructions, (
+                f"the instructions must mention {tool_name!r} so the consumer "
+                f"knows when to reach for it"
+            )
+
+    def test_instructions_conveys_citation_convention(self, tmp_path: Path) -> None:
+        # The [SOURCE:file:line] + stable Key: citation convention.
+        instructions = self._instructions(tmp_path)
+        assert "[SOURCE:" in instructions
+        assert "Key:" in instructions
+
+    def test_instructions_conveys_freshness_model(self, tmp_path: Path) -> None:
+        # The freshness / read-your-writes model: a live watcher, the periodic
+        # reconcile backstop, and the wait_for_fresh escape hatch.
+        instructions = self._instructions(tmp_path)
+        lowered = instructions.lower()
+        assert "wait_for_fresh" in instructions
+        assert "watcher" in lowered or "inotify" in lowered
+        assert "reconcile" in lowered
+
+    def test_instructions_conveys_memory_stance(self, tmp_path: Path) -> None:
+        # The project-memory stance: project-scoped, shared across agents,
+        # survives restart, and distinct from the consumer's own assistant memory.
+        instructions = self._instructions(tmp_path)
+        lowered = instructions.lower()
+        assert "project" in lowered and "memory" in lowered
+        assert "shared" in lowered
+        assert "survives" in lowered or "persists" in lowered or "durable" in lowered
+
+
+class TestToolDescriptions:
+    """Every registered tool has a behavioral (non-label) description.
+
+    The mcp-builder standard: a tool description must "narrowly and unambiguously
+    describe functionality" — what it returns, when to reach for it, and how it
+    differs from its neighbour. These assertions pin minimum substance plus the
+    key neighbour-disambiguation facts the field consumer needs.
+    """
+
+    async def _tools_by_name(self, tmp_path: Path) -> dict[str, Any]:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        return {tool.name: tool for tool in await mcp.list_tools()}
+
+    async def test_every_tool_has_a_substantial_description(self, tmp_path: Path) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        for name in _EXPECTED_TOOLS:
+            description = tools[name].description
+            assert description, f"{name} must have a non-empty description"
+            assert len(description) >= 80, (
+                f"{name}'s description must be behavioral (what/when/how it "
+                f"differs), not a terse one-line label"
+            )
+
+    async def test_get_symbol_vs_search_code_disambiguated(self, tmp_path: Path) -> None:
+        # get_symbol = EXACT definition; search_code = semantic. The descriptions
+        # must draw that distinction so a consumer picks the right one.
+        tools = await self._tools_by_name(tmp_path)
+        assert "exact" in tools["get_symbol"].description.lower()
+        assert "semantic" in tools["search_code"].description.lower()
+
+    async def test_what_imports_vs_blast_radius_disambiguated(self, tmp_path: Path) -> None:
+        # what_imports = DIRECT importers; blast_radius = TRANSITIVE closure.
+        tools = await self._tools_by_name(tmp_path)
+        assert "direct" in tools["what_imports"].description.lower()
+        assert "transitive" in tools["blast_radius"].description.lower()
+
+
+class TestToolInputFieldDescriptions:
+    """Every parameter of every tool carries a clear input-schema description.
+
+    The mcp-builder standard requires per-field descriptions with constraints (and
+    an example where useful). FastMCP injects the ``context`` param, which never
+    surfaces in the tool's ``inputSchema.properties`` — so this asserts a
+    description on every CONSUMER-facing parameter.
+    """
+
+    async def _tools_by_name(self, tmp_path: Path) -> dict[str, Any]:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        return {tool.name: tool for tool in await mcp.list_tools()}
+
+    async def test_every_input_field_has_a_description(self, tmp_path: Path) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        for name in _EXPECTED_TOOLS:
+            properties = tools[name].inputSchema.get("properties", {})
+            if name in _PARAMETERLESS_TOOLS:
+                assert not properties, f"{name} is expected to take no parameters"
+                continue
+            assert properties, f"{name} should expose its parameters in the schema"
+            for field_name, field_schema in properties.items():
+                description = field_schema.get("description", "")
+                assert description and description.strip(), (
+                    f"{name}.{field_name} must carry an input-schema description"
+                )
+
+    async def test_get_symbol_qualified_name_describes_both_forms(
+        self, tmp_path: Path
+    ) -> None:
+        # The qualified_name description must convey it accepts BOTH a
+        # module-qualified dotted name AND a bare identity.
+        tools = await self._tools_by_name(tmp_path)
+        description = tools["get_symbol"].inputSchema["properties"]["qualified_name"][
+            "description"
+        ].lower()
+        assert "bare" in description
+        assert "dotted" in description or "qualified" in description
+
+
+class TestToolAnnotations:
+    """Tool annotations are set correctly (readOnlyHint on the read tools, etc.).
+
+    The mcp-builder standard: set ``readOnlyHint`` / ``idempotentHint`` /
+    ``openWorldHint`` appropriately. All lore tools are read-only EXCEPT
+    ``save_memory`` (persists a note) and ``reindex`` (mutates index state).
+    """
+
+    async def _tools_by_name(self, tmp_path: Path) -> dict[str, Any]:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        return {tool.name: tool for tool in await mcp.list_tools()}
+
+    async def test_read_only_tools_are_marked_read_only(self, tmp_path: Path) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        for name in _READ_ONLY_TOOLS:
+            annotations = tools[name].annotations
+            assert annotations is not None, f"{name} must carry tool annotations"
+            assert annotations.readOnlyHint is True, (
+                f"{name} is a read-only tool and must set readOnlyHint=True"
+            )
+
+    async def test_mutating_tools_are_not_marked_read_only(self, tmp_path: Path) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        for name in _MUTATING_TOOLS:
+            annotations = tools[name].annotations
+            assert annotations is not None, f"{name} must carry tool annotations"
+            assert annotations.readOnlyHint is not True, (
+                f"{name} mutates state and must NOT set readOnlyHint=True"
+            )
+
+    async def test_save_memory_is_not_idempotent(self, tmp_path: Path) -> None:
+        # save_memory dedups by deterministic id, but a NEW note text creates a new
+        # point — it is a write, not a read; do not advertise it idempotent.
+        tools = await self._tools_by_name(tmp_path)
+        assert tools["save_memory"].annotations is not None
+
+
+class TestActionableErrors:
+    """Consumer-facing errors suggest a next step (the actionable-error standard)."""
+
+    async def test_get_symbol_not_found_names_the_symbol_and_searched_types(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> None:
+        # A get_symbol miss must name what was not found AND what was searched, so
+        # the consumer knows the lookup was scoped to symbol chunk types (and can
+        # fall back to search_code / reindex).
+        from loremaster.symbols import GetSymbolError
+
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        try:
+            with pytest.raises(GetSymbolError) as exc_info:
+                await ctx.get_symbol("definitely_absent_symbol")
+            message = str(exc_info.value)
+            assert "definitely_absent_symbol" in message
+            assert "search_code" in message or "reindex" in message, (
+                "a not-found must point the consumer at a next step "
+                "(search_code / reindex)"
+            )
+        finally:
+            await ctx.aclose()
+
+
 class TestToolBehaviourEndToEnd:
     """Each tool returns the right shape over a real-indexed corpus."""
 
