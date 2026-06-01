@@ -80,7 +80,7 @@ from loremaster.graph import GraphNode
 from loremaster.index.indexer import IndexSummary
 from loremaster.memory.store import RecalledMemory
 from loremaster.read_file import FileSpan
-from loremaster.search import SearchResult
+from loremaster.search import DetailSelector, SearchResult
 from loremaster.symbols import ResolvedSymbol
 
 if TYPE_CHECKING:
@@ -1642,12 +1642,12 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             ),
         ] = False,
         detail_level: Annotated[
-            str,
+            DetailSelector,
             Field(
                 description=(
                     "Which chunk granularity to return: 'auto' (default — both), "
                     "'summary' (signatures / imports / headings only), or 'source' "
-                    "(bodies / statements only)."
+                    "(bodies / statements only). Only these three values are accepted."
                 )
             ),
         ] = "auto",

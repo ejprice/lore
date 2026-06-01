@@ -798,6 +798,61 @@ class TestToolInputFieldDescriptions:
         assert "dotted" in description or "qualified" in description
 
 
+class TestInputParamConstraints:
+    """Input params publish their value constraints + reject bad values (Item 4).
+
+    Item 4: ``lore_search_code(detail_level=...)`` must publish a Literal enum
+    (auto/summary/source) so a bad value is REJECTED at validation, not silently
+    accepted then filtered to empty. The rejection probe validates the tool's arg
+    model directly — isolating arg-validation from the handler, so a refusal proves
+    the SCHEMA rejected the value (non-vacuous: a valid value still validates).
+    """
+
+    async def _tools_by_name(self, tmp_path: Path) -> dict[str, Any]:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        return {tool.name: tool for tool in await mcp.list_tools()}
+
+    async def _server(self, tmp_path: Path) -> Any:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        return build_mcp_server(LoreServer(config))
+
+    def _arg_model(self, mcp: Any, name: str) -> Any:
+        """The pydantic model FastMCP validates a tool's call arguments against.
+
+        Validating this directly is the NON-VACUOUS rejection probe: it isolates
+        arg-validation from the handler, so a rejection proves the SCHEMA refused
+        the value (not that a missing lifespan context crashed the handler body).
+        """
+        return mcp._tool_manager.get_tool(name).fn_metadata.arg_model  # noqa: SLF001
+
+    # -- Item 4: detail_level Literal enum ---------------------------------- #
+
+    async def test_detail_level_publishes_enum_constraint(self, tmp_path: Path) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        prop = tools["lore_search_code"].inputSchema["properties"]["detail_level"]
+        assert prop.get("enum") == ["auto", "summary", "source"], (
+            "detail_level must publish the Literal enum so a bad value is rejected, "
+            "not silently filtered to empty"
+        )
+
+    async def test_invalid_detail_level_is_rejected_good_value_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        from pydantic import ValidationError
+
+        mcp = await self._server(tmp_path)
+        model = self._arg_model(mcp, "lore_search_code")
+        # A value outside the Literal is rejected at arg-validation. A bare-str
+        # param would instead ACCEPT it (then silently filter to an empty result).
+        with pytest.raises(ValidationError):
+            model.model_validate({"query": "x", "detail_level": "bogus"})
+        # A valid Literal member is accepted — the rejection is value-specific, not
+        # a blanket failure (non-vacuous).
+        model.model_validate({"query": "x", "detail_level": "summary"})
+
 
 class TestToolAnnotations:
     """Tool annotations are set correctly (readOnlyHint on the read tools, etc.).
