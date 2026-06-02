@@ -185,6 +185,18 @@ class LiveWatcher:
             root for root in self._config.effective_roots if root.watch == WATCH_LIVE
         ]
 
+    # -- single-writer lock ------------------------------------------------- #
+
+    @property
+    def writer_lock(self) -> asyncio.Lock:
+        """The SINGLE-writer lock live events AND the periodic sweep index under.
+
+        Exposed so a same-process write path that must not race the watcher (the
+        startup schema rebuild) can acquire the EXACT same lock — guaranteeing
+        ``index_file`` / ``reconcile`` / ``rebuild_all`` are mutually exclusive.
+        """
+        return self._lock
+
     # -- scheduling --------------------------------------------------------- #
 
     def watched_paths(self) -> list[str]:

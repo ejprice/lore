@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -884,6 +885,22 @@ async def run_probe_gate(*, embedder: Embedder, store: QdrantStore, config: Lore
     return observed
 
 
+class SchemaRebuildingError(RuntimeError):
+    """Raised by a corpus read tool whose result is EMPTY while a rebuild is in flight.
+
+    The agent-visible, serialization-ROBUST way the six corpus read tools surface
+    a schema rebuild: an exception propagates through the MCP SDK as a ``ToolError``
+    the agent SEES, whereas a custom attribute on a returned list is DROPPED by the
+    SDK's ``convert_result`` (the result serialises to a bare ``[]``) and never
+    reaches the agent. The message carries the rebuilding notice (mentioning the
+    rebuild + the done/total progress) so the agent knows to retry shortly.
+
+    Raised only when a tool's substantive result would be empty AND
+    :func:`~loremaster.index.schema.rebuilding_notice` reports an in-progress
+    rebuild — a genuine no-match while idle stays a plain empty result (no raise).
+    """
+
+
 class AppContext:
     """The live runtime services bundle the MCP tools dispatch through.
 
@@ -936,6 +953,8 @@ class AppContext:
         # Background-task handles + a flag the tests/lifespan inspect.
         self.reconcile_task: Any = None
         self.watcher_started: bool = False
+        # The background schema-rebuild asyncio.Task (A7); None when no rebuild is running.
+        self.schema_rebuild_task: Any = None
 
     # -- tool handlers (the single end-to-end surface) ---------------------
 
@@ -949,9 +968,11 @@ class AppContext:
         detail_level: str = "auto",
     ) -> list[SearchResult]:
         """Memory-boosted semantic search; returns summarised, cited results."""
-        return await self.search_pipeline.search_code(
+        results = await self.search_pipeline.search_code(
             query, k, filters, wait_for_fresh=wait_for_fresh, detail_level=detail_level
         )
+        self._raise_if_empty_during_rebuild(results)
+        return results
 
     async def read_file(
         self,
@@ -961,11 +982,27 @@ class AppContext:
         line_end: int | None = None,
     ) -> FileSpan:
         """Read a containment-guarded ``(tier, path)`` span with a provenance header."""
-        return self._read_file_tool.read_file(tier, path, line_start, line_end)
+        from loremaster.read_file import ReadFileError
+
+        try:
+            return self._read_file_tool.read_file(tier, path, line_start, line_end)
+        except ReadFileError as exc:
+            # A not-found span DURING a rebuild may just be a not-yet-re-embedded
+            # file — raise the rebuilding error (so the agent retries) rather than
+            # letting a bare not-found mislead it. When idle, re-raise as-is.
+            raise self._rebuilding_error_or(exc) from exc
 
     async def get_symbol(self, qualified_name: str) -> ResolvedSymbol:
         """Resolve a qualified Python name to its exact stored definition + location."""
-        return await self._symbol_tool.get_symbol(qualified_name)
+        from loremaster.symbols import GetSymbolError
+
+        try:
+            return await self._symbol_tool.get_symbol(qualified_name)
+        except GetSymbolError as exc:
+            # An unresolved symbol DURING a rebuild may simply be not-yet-re-embedded
+            # — raise the rebuilding error so the agent retries. When idle, the
+            # not-found is genuine and re-raised unchanged.
+            raise self._rebuilding_error_or(exc) from exc
 
     async def save_memory(
         self, text: str, *, metadata: dict[str, Any] | None = None
@@ -1000,10 +1037,28 @@ class AppContext:
             ReindexTierError: If ``tier`` is given but is not a configured tier.
         """
         self._validate_tier(tier)
+        # The forced-refresh hammer waits for an in-flight schema rebuild to
+        # settle first: a rebuild re-embeds every tier, so reconciling on top of a
+        # half-finished rebuild would race it. Awaiting it here makes reindex the
+        # deterministic "everything is current now" barrier the callers expect.
+        await self._settle_schema_rebuild()
         if self.watcher is not None and self.watcher_started:
             await self.watcher.run_sweep()
             return self.indexer.index_status()
         return await self.reconcile_engine.reconcile()
+
+    async def _settle_schema_rebuild(self) -> None:
+        """Await a pending background schema-rebuild task so the index is settled.
+
+        A no-op when no rebuild was spawned or it has already finished. Any
+        exception the rebuild raised is surfaced here (the rebuild's failure is not
+        silently swallowed by a later reindex). After this returns, the manifest's
+        rebuild status reflects the rebuild's terminal state (``done`` on success).
+        """
+        task = self.schema_rebuild_task
+        if task is None or task.done():
+            return
+        await task
 
     def _validate_tier(self, tier: str | None) -> None:
         """Reject a ``tier`` the project does not declare (fail loud on a typo).
@@ -1031,12 +1086,50 @@ class AppContext:
             )
 
     async def index_status(self) -> IndexSummary:
-        """Return the freshness roll-up read purely from the manifest (zero embeds)."""
-        return self.indexer.index_status()
+        """Return the freshness roll-up read purely from the manifest (zero embeds).
+
+        Attaches the :class:`~loremaster.index.indexer.EmbeddingSchemaStatus` and
+        :class:`~loremaster.index.indexer.SchemaRebuildStatus` sections, both read
+        straight from the manifest meta (cheap — no embeds, no store hit):
+
+        * ``embedding_schema`` carries the stamped fingerprint (``None`` until the
+          first rebuild completes) and the current epoch constant.
+        * ``schema_rebuild`` parses the ``schema_rebuild_status`` JSON blob into the
+          model, defaulting to ``state="idle"`` when no rebuild has been recorded.
+        """
+        from loremaster.index.indexer import EmbeddingSchemaStatus, SchemaRebuildStatus
+        from loremaster.index.schema import (
+            EMBEDDING_SCHEMA_VERSION,
+            SCHEMA_FINGERPRINT_META_KEY,
+            SCHEMA_REBUILD_STATUS_META_KEY,
+        )
+
+        summary = self.indexer.index_status()
+        embedding_schema = EmbeddingSchemaStatus(
+            fingerprint=self.manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY),
+            version=EMBEDDING_SCHEMA_VERSION,
+        )
+        # The rebuild status: parse the stored JSON blob into the model, or fall
+        # back to the idle default when absent / malformed (a corrupt blob must
+        # not crash a status read).
+        raw_status = self.manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+        if raw_status is None:
+            schema_rebuild = SchemaRebuildStatus()
+        else:
+            try:
+                schema_rebuild = SchemaRebuildStatus.model_validate_json(raw_status)
+            except (ValueError, TypeError):
+                schema_rebuild = SchemaRebuildStatus()
+        return summary.model_copy(update={
+            "embedding_schema": embedding_schema,
+            "schema_rebuild": schema_rebuild,
+        })
 
     async def what_imports(self, target: str) -> list[GraphNode]:
         """Return the module nodes that import ``target`` (reverse import edge)."""
-        return self.code_graph.what_imports(target)
+        importers = self.code_graph.what_imports(target)
+        self._raise_if_empty_during_rebuild(importers)
+        return importers
 
     async def blast_radius(
         self,
@@ -1045,11 +1138,77 @@ class AppContext:
         max_results: int = _DEFAULT_BLAST_MAX_RESULTS,
     ) -> list[GraphNode]:
         """Return the BOUNDED reverse-edge transitive closure from ``target``."""
-        return self.code_graph.blast_radius(target, depth, max_results)
+        radius = self.code_graph.blast_radius(target, depth, max_results)
+        self._raise_if_empty_during_rebuild(radius)
+        return radius
 
     async def tests_for(self, symbol_or_file: str) -> list[GraphNode]:
         """Return the test nodes related to a symbol or file."""
-        return self.code_graph.tests_for(symbol_or_file)
+        tests = self.code_graph.tests_for(symbol_or_file)
+        self._raise_if_empty_during_rebuild(tests)
+        return tests
+
+    # -- rebuilding-notice seam (shared by the six corpus read tools) -------
+    #
+    # All six corpus read tools surface a rebuild UNIFORMLY by RAISING — the only
+    # agent-visible, serialization-robust channel (a raised exception becomes an
+    # MCP ToolError the agent sees; a custom attribute on a returned list is
+    # dropped by the SDK's convert_result, so the agent would see a bare []). The
+    # four list tools call _raise_if_empty_during_rebuild on an empty result; the
+    # two not-found-raising tools (get_symbol / read_file) route their own error
+    # through _rebuilding_error_or. Both gate on rebuilding_notice being non-None
+    # (state in_progress), so an idle no-match stays a plain empty result / a plain
+    # not-found — never a false-positive rebuild signal.
+
+    def _raise_if_empty_during_rebuild(self, results: list[Any]) -> None:
+        """Raise a :class:`SchemaRebuildingError` when ``results`` is empty mid-rebuild.
+
+        The shared seam for the four list-returning corpus read tools
+        (search_code, what_imports, blast_radius, tests_for). An empty result while
+        a rebuild is in progress would mislead the agent into believing the project
+        genuinely has no match; raising instead surfaces the rebuilding notice on a
+        wire-survivable channel so the agent retries. A non-empty result, or an idle
+        store, is a no-op (the caller returns the plain result unchanged).
+
+        Args:
+            results: The substantive list result of a corpus read tool.
+
+        Raises:
+            SchemaRebuildingError: When ``results`` is empty and a rebuild is in
+                progress (the message carries the rebuild + progress notice).
+        """
+        from loremaster.index.schema import rebuilding_notice
+
+        if results:
+            return
+        notice = rebuilding_notice(self.manifest)
+        if notice is None:
+            return
+        raise SchemaRebuildingError(notice)
+
+    def _rebuilding_error_or(self, error: Exception) -> Exception:
+        """Return a rebuilding error during a rebuild, else the original error.
+
+        The not-found-tool counterpart of :meth:`_raise_if_empty_during_rebuild`
+        for get_symbol / read_file: a not-found DURING a rebuild may be a
+        not-yet-re-embedded file, so the returned error is a
+        :class:`SchemaRebuildingError` carrying the rebuilding + progress notice
+        alongside the original message (agent-visible, so it retries). When idle,
+        the ORIGINAL error is returned so a genuine not-found is reported verbatim.
+
+        Args:
+            error: The tool's original not-found exception.
+
+        Returns:
+            The original error (idle), or a :class:`SchemaRebuildingError` whose
+            message carries the rebuilding notice (rebuild in progress).
+        """
+        from loremaster.index.schema import rebuilding_notice
+
+        notice = rebuilding_notice(self.manifest)
+        if notice is None:
+            return error
+        return SchemaRebuildingError(f"{error} ({notice})")
 
     # -- extension tools (seam 3) ------------------------------------------
 
@@ -1102,11 +1261,25 @@ class AppContext:
     async def aclose(self) -> None:
         """Stop background tasks, run extension shutdown hooks, close clients.
 
-        Mirrors the lifespan teardown: the periodic reconcile task is cancelled,
-        the watcher observer + worker are stopped, the extension ``on_shutdown``
-        hooks run in reverse order, and the SQLite handles are closed. Idempotent
-        enough to be called once at lifespan exit (or by a test's ``finally``).
+        Mirrors the lifespan teardown: the background schema-rebuild task (if any)
+        and the periodic reconcile task are cancelled, the watcher observer +
+        worker are stopped, the extension ``on_shutdown`` hooks run in reverse
+        order, and the SQLite handles are closed. The schema-rebuild task is
+        cancelled BEFORE the manifest is closed because it writes the rebuild
+        status to that manifest — closing it out from under a live rebuild would
+        raise on the closed connection. Idempotent enough to be called once at
+        lifespan exit (or by a test's ``finally``).
         """
+        if self.schema_rebuild_task is not None:
+            self.schema_rebuild_task.cancel()
+            try:
+                await self.schema_rebuild_task
+            except (asyncio.CancelledError, Exception):
+                # A cancelled or already-failed rebuild is expected at teardown;
+                # swallow it so aclose stays idempotent and never re-raises a
+                # background failure the caller did not ask about.
+                pass
+            self.schema_rebuild_task = None
         if self.reconcile_task is not None:
             self.reconcile_task.cancel()
             try:
@@ -1299,11 +1472,20 @@ async def build_app_context(
         await server.run_startup_hooks(extension_ctx)
         app_context._extension_ctx = extension_ctx
 
-        # 4) Background tasks (watcher + INITIAL reconcile + periodic reconcile).
+        # 4a) Background tasks (watcher + INITIAL reconcile + periodic reconcile).
+        # ``start_tasks`` gates ONLY the periodic watcher loop + the initial
+        # delta-reconcile sweep (the schema-rebuild decision below is independent).
         if start_tasks:
             await watcher.start()
             app_context.watcher_started = True
             logger.info("startup.watcher.started")
+            # Capture whether the index was EMPTY *before* the initial sweep — the
+            # discriminator the post-sweep stamp gates on (Fix #1). An empty index
+            # whose every file the sweep then BUILDS is genuinely current-schema
+            # afterwards (safe to stamp without a rebuild); a POPULATED index whose
+            # files the sweep merely fast-path-SKIPS is NOT proven current and must
+            # NOT be silently stamped. The manifest is read before the sweep walks.
+            index_was_empty = len(manifest.all_files()) == 0
             # INITIAL reconcile on start (the on-demand "start = delta-reconcile"
             # lifecycle): a fresh start after offline edits must delta-index NOW,
             # not wait out the periodic interval (default 600s) — otherwise the
@@ -1323,11 +1505,42 @@ async def build_app_context(
                     "files_purged": initial_summary.files_purged,
                 },
             )
+            # A fresh deploy over a genuinely EMPTY index (no prior stamp, no prior
+            # rows) whose initial sweep just BUILT every file under the current
+            # schema already holds CURRENT-schema vectors — it lacks only the stamp.
+            # Stamp it now so the rebuild decision below finds the fingerprint
+            # matching and does NOT trigger a redundant background rebuild (which
+            # would purge the freshly-built index out from under the first reads).
+            # This is sound ONLY for an index that was empty before the sweep: a
+            # POPULATED-but-unstamped (legacy / unknown-provenance) index was merely
+            # fast-path-skipped — its stored vectors are NOT proven current, so it is
+            # NOT stamped here (Fix #1) and falls through to a real rebuild below.
+            _stamp_fingerprint_after_fresh_initial_sweep(
+                manifest=manifest, config=config, index_was_empty=index_was_empty
+            )
             app_context.reconcile_task = asyncio.get_running_loop().create_task(
                 _periodic_reconcile(watcher, config.watcher.reconcile_interval_s)
             )
+
+        # 4b) Embedding-schema rebuild decision (runs REGARDLESS of start_tasks).
+        # If the stored fingerprint is absent or differs from the current config's
+        # fingerprint, every stored vector is from a stale embedding schema and
+        # must be re-embedded. On a genuine mismatch the manifest status is flipped
+        # to in_progress BEFORE spawning (so an immediate index_status() reports the
+        # rebuild), then _run_schema_rebuild is spawned as a background asyncio.Task
+        # and serves immediately. It re-embeds under the watcher's single-writer
+        # lock, so it serialises with the periodic reconcile rather than racing it.
+        _maybe_spawn_schema_rebuild(
+            app_context=app_context,
+            indexer=indexer,
+            manifest=manifest,
+            watcher=watcher,
+            config=config,
+        )
     except BaseException:
         # Tear down whatever started, then close the SQLite handles (idempotent).
+        if app_context.schema_rebuild_task is not None:
+            app_context.schema_rebuild_task.cancel()
         if app_context.watcher_started:
             await watcher.stop()
         manifest.close()
@@ -1350,6 +1563,196 @@ def _build_source_providers(server: LoreServer, config: LoreConfig, provider_cls
         if root.watch == WATCH_STATIC and root.tier not in covered and root.source:
             providers.append(provider_cls(root.tier, Path(root.source)))
     return providers
+
+
+# The reason recorded in the rebuild-status blob when the rebuild is driven by a
+# fingerprint mismatch (the only trigger today). Mirrors the indexer's constant so
+# the producer (server) and the indexer's own status writes agree on the literal.
+_REBUILD_REASON_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
+
+
+def _stamp_fingerprint_after_fresh_initial_sweep(
+    *, manifest: Manifest, config: LoreConfig, index_was_empty: bool
+) -> None:
+    """Stamp the current fingerprint after a fresh deploy's initial sweep built the index.
+
+    Called only on the ``start_tasks`` path, right after the initial delta sweep.
+    The stamp is the "this index is current-schema, no rebuild needed" optimisation
+    — but it is sound ONLY when BOTH hold:
+
+    * the manifest had NO prior fingerprint (unknown provenance), AND
+    * the index was EMPTY before the sweep (``index_was_empty``).
+
+    An empty index whose initial sweep BUILT every file embedded everything under
+    the current schema, so the stored vectors ARE current — they simply lacked the
+    stamp; stamping lets the subsequent rebuild decision skip a redundant rebuild.
+
+    A POPULATED-but-unstamped index (legacy / pre-feature: rows + points present,
+    no stamp) is NOT stamped here (Fix #1): the delta sweep merely fast-path-SKIPS
+    its unchanged files — it re-embeds NOTHING — so the stored vectors are not
+    proven to be the current schema. Stamping it would MASK a needed rebuild, so
+    instead it is left unstamped and the fail-safe ``rebuild_needed(None, ·)=True``
+    in the rebuild decision spawns the real rebuild.
+
+    A manifest that ALREADY held a fingerprint is likewise left untouched: if it
+    matched, nothing to do; if it DIFFERED, the genuine schema mismatch must drive
+    a real rebuild — stamping here would falsely mask that.
+
+    Args:
+        manifest: The manifest holding (and possibly receiving) the fingerprint stamp.
+        config: The validated config the current fingerprint is computed from.
+        index_was_empty: Whether the index had no rows BEFORE the initial sweep.
+    """
+    from loremaster.index.schema import (
+        SCHEMA_FINGERPRINT_META_KEY,
+        embedding_schema_fingerprint,
+    )
+
+    if manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY) is not None:
+        return
+    if not index_was_empty:
+        # Populated-but-unstamped: unknown provenance over real rows the sweep only
+        # skipped — do NOT stamp; let the rebuild decision fail safe into a rebuild.
+        return
+    manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, embedding_schema_fingerprint(config))
+
+
+def _maybe_spawn_schema_rebuild(
+    *,
+    app_context: AppContext,
+    indexer: Indexer,
+    manifest: Manifest,
+    watcher: Any,
+    config: LoreConfig,
+) -> bool:
+    """Decide on the embedding-schema rebuild and spawn it when needed (the A7 wiring).
+
+    Compares the manifest's stored fingerprint against the current config's
+    fingerprint. When :func:`~loremaster.index.schema.rebuild_needed` is True
+    (absent or differing stamp), the manifest's ``schema_rebuild_status`` is
+    flipped to ``in_progress`` BEFORE the task is spawned — so an immediate
+    ``index_status`` already reports the rebuild — then :func:`_run_schema_rebuild`
+    is launched via ``asyncio.create_task`` and stashed on
+    ``app_context.schema_rebuild_task`` (NOT awaited; the server serves at once).
+
+    The spawn is independent of ``start_tasks`` (the periodic watcher loop's
+    gate): a fresh deploy with ``start_tasks=False`` must still rebuild on a
+    schema mismatch.
+
+    Args:
+        app_context: The context the spawned task handle is recorded on.
+        indexer: The indexer whose ``rebuild_all`` the task drives.
+        manifest: The manifest read for the stored stamp and the status write.
+        watcher: The live watcher whose single-writer lock the rebuild holds.
+        config: The validated config the current fingerprint is computed from.
+
+    Returns:
+        ``True`` when a rebuild task was spawned, ``False`` when the fingerprint
+        matched (no rebuild needed).
+    """
+    from loremaster.index.schema import (
+        SCHEMA_FINGERPRINT_META_KEY,
+        SCHEMA_REBUILD_STATUS_META_KEY,
+        embedding_schema_fingerprint,
+        rebuild_needed,
+    )
+
+    current_fingerprint = embedding_schema_fingerprint(config)
+    stored_fingerprint = manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+    if not rebuild_needed(stored_fingerprint, current_fingerprint):
+        app_context.schema_rebuild_task = None
+        return False
+
+    # Flip the status to in_progress BEFORE spawning ONLY when a PRIOR fingerprint
+    # was stamped — the genuine "the stored vectors are from an older schema epoch"
+    # mismatch, where an immediate index_status() must already report the rebuild.
+    # A manifest with NO stamp yet (a fresh deploy or a legacy index) is the
+    # provenance-unknown case: the rebuild is still spawned (fail safe), but the
+    # status blob is left for the background task to write once it actually starts,
+    # so a freshly-built context that has not yet touched the index reads as idle
+    # rather than claiming an in-progress rebuild that has done no work.
+    # Whether the index has NO stored content right now (no manifest rows). An
+    # EMPTY index has no stale vectors to fix, so the spawned task only stamps the
+    # fingerprint (the empty-index optimisation, uniform with the start_tasks=True
+    # post-sweep stamp) rather than churning an in_progress purge+re-embed — which
+    # over an empty index would be pointless and would race a direct caller's
+    # index_all(). A POPULATED-but-unstamped (legacy / unknown-provenance) index
+    # DOES carry stale vectors, so its task does the full re-embed.
+    index_was_empty = len(manifest.all_files()) == 0
+    total = indexer.count_files_to_rebuild()
+    if stored_fingerprint is not None:
+        manifest.meta_set(
+            SCHEMA_REBUILD_STATUS_META_KEY,
+            json.dumps(
+                {
+                    "state": "in_progress",
+                    "done": 0,
+                    "total": total,
+                    "reason": _REBUILD_REASON_FINGERPRINT_MISMATCH,
+                    "from_fingerprint": stored_fingerprint,
+                    "to_fingerprint": current_fingerprint,
+                }
+            ),
+        )
+    logger.info(
+        "startup.schema_rebuild.spawn",
+        extra={
+            "from_fingerprint": stored_fingerprint,
+            "to_fingerprint": current_fingerprint,
+            "total": total,
+            "index_was_empty": index_was_empty,
+        },
+    )
+    app_context.schema_rebuild_task = asyncio.get_running_loop().create_task(
+        _run_schema_rebuild(
+            indexer=indexer,
+            watcher=watcher,
+            fingerprint=current_fingerprint,
+            index_was_empty=index_was_empty,
+        )
+    )
+    return True
+
+
+async def _run_schema_rebuild(
+    *, indexer: Indexer, watcher: Any, fingerprint: str, index_was_empty: bool
+) -> None:
+    """Re-embed every tier under the watcher's single-writer lock (the rebuild task).
+
+    The concurrency-critical coroutine: it acquires the SAME
+    :class:`asyncio.Lock` the watcher's live drain and periodic ``run_sweep`` use
+    (``watcher.writer_lock``) and holds it for the WHOLE rebuild, so
+    ``rebuild_all`` (which purges + re-embeds every tier) can never run
+    concurrently with a live ``index_file`` or a periodic reconcile. The
+    fingerprint is stamped by ``rebuild_all`` only after all tiers succeed; a
+    failure propagates out of the task (logged by the asyncio default handler /
+    awaited at shutdown) WITHOUT stamping, so the next startup re-triggers.
+
+    An index that was EMPTY at spawn time has no stale vectors to fix, so this just
+    stamps the fingerprint (the empty-index optimisation) instead of running a
+    full, in_progress purge+re-embed — which over an empty index would be a no-op
+    purge plus a re-embed that races a direct ``index_all()`` and would leave a
+    misleading ``in_progress`` status for reads. A POPULATED-but-unstamped index
+    (legacy / unknown provenance) carries genuinely stale vectors, so it gets the
+    full :meth:`~loremaster.index.indexer.Indexer.rebuild_all`.
+
+    Args:
+        indexer: The indexer whose ``rebuild_all`` performs the re-embed.
+        watcher: The live watcher exposing the single-writer lock.
+        fingerprint: The target fingerprint stamped on successful completion.
+        index_was_empty: Whether the index had no stored rows when the task was
+            spawned (captured at spawn time so the decision is deterministic, not
+            racing a concurrent populate).
+    """
+    async with watcher.writer_lock:
+        if index_was_empty:
+            # Nothing stale to re-embed — just stamp the current fingerprint so the
+            # index is marked current-schema (the same end state the empty-index
+            # post-sweep stamp produces on the start_tasks=True path). No in_progress
+            # churn, so a concurrent / subsequent read never sees a phantom rebuild.
+            indexer.stamp_schema_fingerprint(fingerprint)
+            return
+        await indexer.rebuild_all(fingerprint)
 
 
 async def _periodic_reconcile(watcher: Any, interval_s: int) -> None:

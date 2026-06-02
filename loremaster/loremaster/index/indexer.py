@@ -44,12 +44,13 @@ tiers are untouched (the C1 primitive).
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 import time
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import httpx
 from lorescribe.models import Chunk, ChunkContext
@@ -66,6 +67,10 @@ from loremaster.index.manifest import (
 )
 from loremaster.index.paths import is_included, walked_dirs
 from loremaster.index.records import chunk_to_record, sha512_hex
+from loremaster.index.schema import (
+    SCHEMA_FINGERPRINT_META_KEY,
+    SCHEMA_REBUILD_STATUS_META_KEY,
+)
 from loremaster.source.snapshot import SnapshotLayout
 
 if TYPE_CHECKING:
@@ -90,6 +95,17 @@ STATE_SKIPPED = "skipped"
 
 # The manifest ``meta`` key prefix that stamps a static tier's built version.
 _TIER_VERSION_META_PREFIX = "tier_version:"
+
+# The schema-rebuild status state values written into the
+# ``schema_rebuild_status`` meta blob as ``rebuild_all`` progresses. ``done`` is
+# stamped ONLY after every tier completes successfully (the crash-safety contract).
+_REBUILD_STATE_IN_PROGRESS = "in_progress"
+_REBUILD_STATE_DONE = "done"
+
+# The reason recorded in the rebuild-status blob when the rebuild is driven by a
+# fingerprint mismatch (the only trigger today). Named so the server (the other
+# producer) and any consumer agree on the literal.
+_REBUILD_REASON_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
 
 
 logger = logging.getLogger(__name__)
@@ -147,6 +163,44 @@ class IndexOutcome(BaseModel):
     n_chunks: int
 
 
+
+class EmbeddingSchemaStatus(BaseModel):
+    """The embedding-schema fingerprint and epoch surfaced by ``index_status``.
+
+    Attributes:
+        fingerprint: The SHA-256 hex digest of the current embedding-schema
+            fields, or ``None`` when no fingerprint has been stamped yet.
+        version: The :data:`~loremaster.index.schema.EMBEDDING_SCHEMA_VERSION`
+            epoch constant in effect when the status was read.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: Optional[str] = None
+    version: int = 1
+
+
+class SchemaRebuildStatus(BaseModel):
+    """The in-progress / idle schema-rebuild status surfaced by ``index_status``.
+
+    Attributes:
+        state: ``"idle"``, ``"in_progress"``, or ``"done"``.
+        done: Files re-embedded so far (0 when idle or not yet started).
+        total: Total files to re-embed (0 when idle).
+        reason: Why the rebuild was triggered (empty string when idle).
+        from_fingerprint: The fingerprint being replaced, or ``None``.
+        to_fingerprint: The target fingerprint, or ``None``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: str = "idle"
+    done: int = 0
+    total: int = 0
+    reason: str = ""
+    from_fingerprint: Optional[str] = None
+    to_fingerprint: Optional[str] = None
+
 class IndexSummary(BaseModel):
     """A roll-up of an indexing run (also the ``index_status`` shape).
 
@@ -170,6 +224,8 @@ class IndexSummary(BaseModel):
     tiers_rebuilt: list[str]
     tiers_skipped: list[str]
     outcomes: list[IndexOutcome]
+    embedding_schema: Optional[EmbeddingSchemaStatus] = None
+    schema_rebuild: Optional[SchemaRebuildStatus] = None
 
 
 class Indexer:
@@ -662,6 +718,195 @@ class Indexer:
             rebuilt.extend(summary.tiers_rebuilt)
             skipped_tiers.extend(summary.tiers_skipped)
         return self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=skipped_tiers)
+
+
+    async def rebuild_all(self, fingerprint: str) -> IndexSummary:
+        """Re-embed EVERY tier from scratch and stamp the fingerprint on completion.
+
+        Mirrors :meth:`_index_static_tier`'s purge+rewalk, but UNCONDITIONALLY for
+        every effective root (live included): each tier's vectors and manifest
+        rows are deleted, so the subsequent walk's ``needs_reindex`` fast-path can
+        never short-circuit — every file is genuinely re-embedded (no skip).
+
+        Crash-safety contract: the fingerprint is stamped into the manifest meta
+        ONLY after ALL tiers complete successfully.  A mid-rebuild failure
+        propagates WITHOUT stamping, so the next startup still detects the
+        mismatch and re-triggers the rebuild (fail safe toward correctness).
+
+        As the rebuild progresses it keeps the ``schema_rebuild_status`` meta blob
+        current (``state=in_progress``, ``done``/``total`` file counts) so a
+        concurrent ``index_status`` / :func:`~loremaster.index.schema.rebuilding_notice`
+        reflects live progress; the state flips to ``done`` only on success.
+
+        This method does NOT acquire any writer lock — locking is the caller's job
+        (the startup ``_run_schema_rebuild`` holds the watcher's single-writer lock
+        for the whole rebuild so it never races the watcher / periodic reconcile).
+
+        Args:
+            fingerprint: The SHA-256 hex digest of the current embedding schema
+                (produced by :func:`~loremaster.index.schema.embedding_schema_fingerprint`).
+                Stamped into the manifest only after all tiers complete.
+
+        Returns:
+            The :class:`IndexSummary` for the full rebuild run.
+        """
+        roots = list(self._config.effective_roots)
+        # Total files to re-embed, counted up-front so the in-progress status
+        # carries a meaningful progress denominator from the first update. The
+        # purge below clears the manifest rows, so the count is taken before any
+        # deletion (it walks the on-disk trees, independent of manifest state).
+        total = sum(self._count_included_files(root) for root in roots)
+        self._write_rebuild_status(
+            state=_REBUILD_STATE_IN_PROGRESS, done=0, total=total,
+            fingerprint=fingerprint,
+        )
+
+        outcomes: list[IndexOutcome] = []
+        rebuilt: list[str] = []
+        done = 0
+        for root in roots:
+            # Purge this tier's vectors + manifest rows so the walk re-embeds every
+            # file (the deleted rows make ``needs_reindex`` return True — no skip).
+            # A static tier's snapshot is acquired first (mirrors _index_static_tier)
+            # so its materialisation dir exists for the walk.
+            self._acquire_static_snapshot(root)
+            await self._store.delete_by_tier(root.tier)
+            for stale in self._manifest.files_for_tier(root.tier):
+                self._manifest.delete(root.tier, stale.file_path)
+
+            base = self._tier_base(root.tier)
+            assert base is not None  # every effective root resolves a base
+            for outcome in await self._walk_and_index(root, base):
+                outcomes.append(outcome)
+                done += 1
+                # Live progress so index_status / rebuilding_notice reflect the
+                # rebuild as it advances (the stamp is withheld until the end).
+                self._write_rebuild_status(
+                    state=_REBUILD_STATE_IN_PROGRESS, done=done, total=total,
+                    fingerprint=fingerprint,
+                )
+            rebuilt.append(root.tier)
+
+        # ALL tiers succeeded → stamp the fingerprint and flip the status to done.
+        # Order matters: the fingerprint is the durable completion evidence; the
+        # status blob is the human/agent-facing roll-up.
+        self._manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, fingerprint)
+        self._write_rebuild_status(
+            state=_REBUILD_STATE_DONE, done=done, total=total, fingerprint=fingerprint,
+        )
+        return self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=[])
+
+    def stamp_schema_fingerprint(self, fingerprint: str) -> None:
+        """Stamp the embedding-schema fingerprint + mark the rebuild status done.
+
+        The empty-index fast path the startup task takes instead of a full
+        :meth:`rebuild_all`: an index with no stored vectors has nothing stale to
+        re-embed, so the only work is to record that the index is now current under
+        ``fingerprint``. Writes the same ``schema_rebuild_status`` ``done`` blob a
+        completed rebuild leaves (no ``in_progress`` phase), so a concurrent read
+        never observes a phantom rebuild for an empty index.
+
+        Args:
+            fingerprint: The current embedding-schema fingerprint to stamp.
+        """
+        self._manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, fingerprint)
+        self._write_rebuild_status(
+            state=_REBUILD_STATE_DONE, done=0, total=0, fingerprint=fingerprint,
+        )
+
+    def _acquire_static_snapshot(self, root: RootConfig) -> None:
+        """Materialise a STATIC tier's snapshot before the rebuild walk (no-op for live).
+
+        Mirrors the acquire step of :meth:`_index_static_tier` so the tier's
+        materialisation dir exists for :meth:`_walk_and_index`. A live tier walks
+        its on-disk path directly and needs no acquisition.
+
+        Args:
+            root: The tier's :class:`~loremaster.config.RootConfig`.
+        """
+        if root.watch == WATCH_LIVE:
+            return
+        provider = self._providers_by_tier.get(root.tier)
+        if provider is None:
+            raise KeyError(
+                f"static tier {root.tier!r} has no registered SourceProvider"
+            )
+        provider.acquire(root.tier, self._snapshot_layout.snapshot_root)
+
+    def count_files_to_rebuild(self) -> int:
+        """Total files a full rebuild would re-embed across every effective root.
+
+        The progress denominator the startup wiring stamps into the in-progress
+        rebuild status BEFORE the background rebuild begins, so an immediate
+        ``index_status`` reports a meaningful ``done``/``total``. Reuses the same
+        per-tier walk + include predicates :meth:`rebuild_all` re-embeds against.
+
+        Returns:
+            The number of included files under every effective root.
+        """
+        return sum(
+            self._count_included_files(root) for root in self._config.effective_roots
+        )
+
+    def _count_included_files(self, root: RootConfig) -> int:
+        """Count the files a tier's walk would index (the rebuild progress denominator).
+
+        Walks the tier's base with the SAME prune + include predicates
+        :meth:`_walk_and_index` uses, so the count matches what the rebuild
+        actually re-embeds. A static tier whose snapshot is not yet materialised
+        contributes 0 (its files are counted once the snapshot is acquired during
+        the rebuild loop — a conservative denominator, never an over-count).
+
+        Args:
+            root: The tier's :class:`~loremaster.config.RootConfig`.
+
+        Returns:
+            The number of included files under the tier's base.
+        """
+        base = self._tier_base(root.tier)
+        if base is None or not base.exists():
+            return 0
+        count = 0
+        for dirpath in walked_dirs(self._config, base):
+            for filename in sorted(os.listdir(dirpath)):
+                abs_path = Path(dirpath) / filename
+                if not abs_path.is_file():
+                    continue
+                rel = str(PurePosixPath(abs_path.relative_to(base).as_posix()))
+                if is_included(self._config, root, rel):
+                    count += 1
+        return count
+
+    def _write_rebuild_status(
+        self, *, state: str, done: int, total: int, fingerprint: str
+    ) -> None:
+        """Write the ``schema_rebuild_status`` meta blob (the live progress surface).
+
+        The blob shape matches exactly what ``build_app_context`` seeds and what
+        ``index_status`` / :func:`~loremaster.index.schema.rebuilding_notice` read
+        (clause 5: one source of truth). ``from_fingerprint`` is read back from the
+        currently-stamped fingerprint so the blob always names what is being
+        replaced; ``to_fingerprint`` is the target ``fingerprint``.
+
+        Args:
+            state: ``in_progress`` while running, ``done`` once complete.
+            done: Files re-embedded so far.
+            total: Total files to re-embed.
+            fingerprint: The target fingerprint being rebuilt toward.
+        """
+        self._manifest.meta_set(
+            SCHEMA_REBUILD_STATUS_META_KEY,
+            json.dumps(
+                {
+                    "state": state,
+                    "done": done,
+                    "total": total,
+                    "reason": _REBUILD_REASON_FINGERPRINT_MISMATCH,
+                    "from_fingerprint": self._manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY),
+                    "to_fingerprint": fingerprint,
+                }
+            ),
+        )
 
     def index_status(self) -> IndexSummary:
         """Return a freshness roll-up read PURELY from the manifest (zero embeds).
