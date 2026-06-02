@@ -35,6 +35,10 @@ def to_loresigil_config(config: EmbeddingConfig) -> LoresigilEmbeddingConfig:
     defaults). Secrets stay indirected: only ``api_key_env`` (the env-var name)
     crosses, never a key value.
 
+    The asymmetric prompt-name fields (``query_prompt_name`` /
+    ``document_prompt_name``) are passed through verbatim, including ``None``,
+    so the no-prompt default path is preserved byte-identically.
+
     Args:
         config: The validated loremaster embedding configuration.
 
@@ -51,6 +55,8 @@ def to_loresigil_config(config: EmbeddingConfig) -> LoresigilEmbeddingConfig:
         max_batch_texts=config.max_batch_texts,
         model=config.model,
         concurrency=config.concurrency,
+        query_prompt_name=config.query_prompt_name,
+        document_prompt_name=config.document_prompt_name,
     )
 
 

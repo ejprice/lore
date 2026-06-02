@@ -64,6 +64,11 @@ class EmbeddingConfig(BaseModel):
     dim: int = TEI_DEFAULT_DIM
     concurrency: int | None = None
 
+    # Asymmetric prompt-name fields (TEI only; both default to None so the
+    # current no-prompt wire shape is preserved unless explicitly configured).
+    query_prompt_name: str | None = None
+    document_prompt_name: str | None = None
+
 
 def _resolve_api_key(api_key_env: str) -> str:
     """Read the bearer key from the named env var, failing loud if unset/empty.
@@ -111,9 +116,12 @@ def make_embedder(config: EmbeddingConfig) -> Embedder:
             dim=config.dim,
             max_input_tokens=config.max_input_tokens,
             concurrency=config.concurrency or _TEI_DEFAULT_CONCURRENCY,
+            query_prompt_name=config.query_prompt_name,
+            document_prompt_name=config.document_prompt_name,
         )
 
     # The only remaining Literal value is voyage-cloud.
+    # Prompt name fields are TEI-only; the cloud call is left exactly as-is.
     return VoyageCloudEmbedder(
         api_key=api_key,
         api_url=config.api_url,

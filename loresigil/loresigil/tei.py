@@ -13,6 +13,11 @@ backoff, 422 sub-split backstop, ``isfinite`` quarantine). Over-length inputs ar
 **pre-split client-side** against the exact pinned tokenizer so the whole text is
 never sent to a 422 — the 422 path is only the runtime backstop. Requests are run
 through a bounded in-flight pool of 2 (the measured optimum).
+
+Asymmetric prompting: when ``query_prompt_name`` or ``document_prompt_name`` are
+configured, the corresponding ``"prompt_name"`` key is added to the POST body.
+When both are ``None`` (the default), the body is exactly ``{"inputs": [...]}``
+— byte-identical to the pre-feature behavior.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ import httpx
 
 from loresigil.base import Embedder, EmbedResult
 from loresigil.batching import build_batches, run_in_windows
-from loresigil.resilient import ResilientEmbedder, mean_pool, split_to_fit
+from loresigil.resilient import RequestFn, ResilientEmbedder, mean_pool, split_to_fit
 from loresigil.tokens import VoyageTokenCounter
 
 logger = logging.getLogger(__name__)
@@ -55,6 +60,8 @@ class TEIEmbedder(Embedder):
         concurrency: int = DEFAULT_CONCURRENCY,
         transport: httpx.AsyncBaseTransport | None = None,
         name: str = DEFAULT_NAME,
+        query_prompt_name: str | None = None,
+        document_prompt_name: str | None = None,
     ) -> None:
         """Configure the TEI embedder.
 
@@ -68,6 +75,12 @@ class TEIEmbedder(Embedder):
             transport: Optional httpx transport (an offline ``MockTransport`` in
                 tests); when ``None`` a real networked client is built.
             name: Stable model identifier.
+            query_prompt_name: When set, the ``"prompt_name"`` key is added to
+                the POST body for ``embed_query`` calls and ``probe()`` validation.
+                When ``None`` (default), no ``"prompt_name"`` key is sent.
+            document_prompt_name: When set, the ``"prompt_name"`` key is added
+                to the POST body for ``embed_documents`` calls. When ``None``
+                (default), no ``"prompt_name"`` key is sent.
         """
         self._base_url = base_url
         self._endpoint = endpoint
@@ -75,6 +88,8 @@ class TEIEmbedder(Embedder):
         self._max_input_tokens = max_input_tokens
         self._concurrency = concurrency
         self._name = name
+        self._query_prompt_name = query_prompt_name
+        self._document_prompt_name = document_prompt_name
         self._token_counter = VoyageTokenCounter()
         # The bearer token is baked into the client headers below; it is not
         # retained on the instance (needless secret surface).
@@ -84,8 +99,17 @@ class TEIEmbedder(Embedder):
             transport=transport,
             headers={"Authorization": f"Bearer {api_key}"},
         )
-        self._resilient = ResilientEmbedder(
-            request_fn=self._post_embed,
+        # Document and query paths use the same resilience strategy but different
+        # prompt names, so each gets its own request function — mirroring the
+        # VoyageCloudEmbedder._make_request_fn pattern exactly.
+        self._document_resilient = ResilientEmbedder(
+            request_fn=self._make_request_fn(document_prompt_name),
+            token_counter=self._token_counter,
+            max_input_tokens=max_input_tokens,
+            dim=dim,
+        )
+        self._query_resilient = ResilientEmbedder(
+            request_fn=self._make_request_fn(query_prompt_name),
             token_counter=self._token_counter,
             max_input_tokens=max_input_tokens,
             dim=dim,
@@ -111,23 +135,36 @@ class TEIEmbedder(Embedder):
         """voyage-4-nano vectors are L2-normalized."""
         return True
 
-    async def _post_embed(self, texts: list[str]) -> list[list[float]]:
-        """POST ``{"inputs": texts}`` to the native endpoint and parse the bare list.
+    def _make_request_fn(self, prompt_name: str | None) -> RequestFn:
+        """Build a request coroutine that optionally tags the body with ``prompt_name``.
+
+        When ``prompt_name`` is not None, the returned coroutine adds
+        ``"prompt_name": <value>`` to the JSON body alongside ``"inputs"``.
+        When ``prompt_name`` is None, the body is exactly ``{"inputs": [...]}``,
+        preserving byte-identical backward compatibility.
 
         Args:
-            texts: The batch of texts to embed.
+            prompt_name: The TEI prompt name to include, or ``None`` to omit it.
 
         Returns:
-            One vector per input (a bare ``[[...]]`` response).
-
-        Raises:
-            httpx.HTTPStatusError: On a non-2xx status (handled by the resilient
-                wrapper: 429/5xx retried, 422 sub-split).
+            A coroutine suitable for use as a ``RequestFn`` in a
+            :class:`~loresigil.resilient.ResilientEmbedder`.
         """
-        response = await self._client.post(self._endpoint, json={"inputs": texts})
-        response.raise_for_status()
-        vectors: list[list[float]] = response.json()
-        return vectors
+
+        async def request_fn(texts: list[str]) -> list[list[float]]:
+            """POST the embed request; optionally include prompt_name."""
+            body: dict[str, list[str] | str] = {"inputs": texts}
+            # Only include prompt_name when explicitly configured — a None value
+            # must NEVER appear as a key in the body (not even as null), since
+            # TEI would reject it as an unknown/null prompt name.
+            if prompt_name is not None:
+                body["prompt_name"] = prompt_name
+            response = await self._client.post(self._endpoint, json=body)
+            response.raise_for_status()
+            vectors: list[list[float]] = response.json()
+            return vectors
+
+        return request_fn
 
     def _presplit(self, texts: list[str]) -> tuple[list[str], list[int]]:
         """Pre-split any over-length input so the whole text is never sent.
@@ -148,18 +185,28 @@ class TEIEmbedder(Embedder):
                 owners.append(original_index)
         return pieces, owners
 
-    async def embed_documents(self, texts: list[str]) -> EmbedResult:
-        """Embed a batch of documents into an input-aligned :class:`EmbedResult`.
+    async def _embed_with(
+        self, texts: list[str], resilient: ResilientEmbedder
+    ) -> EmbedResult:
+        """Pre-split, batch-embed via ``resilient``, and mean-pool back to one vector per input.
 
-        Over-length inputs are pre-split, all pieces are token-aware-batched and
-        embedded through the resilient pool, then pieces are mean-pooled back to one
-        vector per original input.
+        This is the shared pipeline used by both ``embed_documents`` and
+        ``embed_query``, parameterized on the resilient wrapper so each path
+        uses its own prompt-name-carrying request function.
+
+        Args:
+            texts: The original inputs (may be over-length; pre-split handles them).
+            resilient: The :class:`~loresigil.resilient.ResilientEmbedder` to use
+                for the actual HTTP call (document or query variant).
+
+        Returns:
+            An :class:`EmbedResult` aligned 1:1 with ``texts``.
         """
         if not texts:
             return EmbedResult(vectors=[], dim=self._dim)
 
         pieces, owners = self._presplit(texts)
-        piece_vectors = await self._embed_pieces(pieces)
+        piece_vectors = await self._embed_pieces(pieces, resilient)
 
         # Reassemble: gather each original input's piece vectors, mean-pool them.
         grouped: list[list[list[float]]] = [[] for _ in texts]
@@ -179,8 +226,28 @@ class TEIEmbedder(Embedder):
                 vectors.append(mean_pool(grouped[original_index]))
         return EmbedResult(vectors=vectors, dim=self._dim)
 
-    async def _embed_pieces(self, pieces: list[str]) -> list[list[float] | None]:
-        """Token-aware-batch ``pieces`` and embed each batch through the resilient pool."""
+    async def embed_documents(self, texts: list[str]) -> EmbedResult:
+        """Embed a batch of documents into an input-aligned :class:`EmbedResult`.
+
+        Over-length inputs are pre-split, all pieces are token-aware-batched and
+        embedded through the resilient pool, then pieces are mean-pooled back to one
+        vector per original input. Uses the document resilient wrapper (which carries
+        ``document_prompt_name`` when configured).
+        """
+        return await self._embed_with(texts, self._document_resilient)
+
+    async def _embed_pieces(
+        self, pieces: list[str], resilient: ResilientEmbedder
+    ) -> list[list[float] | None]:
+        """Token-aware-batch ``pieces`` and embed each batch through ``resilient``.
+
+        Args:
+            pieces: The flat list of within-cap texts to embed.
+            resilient: The resilient wrapper to use for each batch call.
+
+        Returns:
+            One vector (or ``None``) per piece, positionally aligned.
+        """
         token_counts = self._token_counter.count_tokens(pieces)
         batches = build_batches(
             token_counts,
@@ -189,8 +256,9 @@ class TEIEmbedder(Embedder):
         )
 
         async def embed_batch(index_batch: list[int]) -> list[list[float] | None]:
+            """Embed one token-aware batch through the resilient wrapper."""
             batch_texts = [pieces[index] for index in index_batch]
-            return await self._resilient.embed_texts(batch_texts)
+            return await resilient.embed_texts(batch_texts)
 
         batch_results = await run_in_windows(batches, embed_batch, concurrency=self._concurrency)
 
@@ -204,11 +272,14 @@ class TEIEmbedder(Embedder):
     async def embed_query(self, text: str) -> list[float]:
         """Embed a single query string into one vector.
 
+        Uses the query resilient wrapper (which carries ``query_prompt_name`` when
+        configured).
+
         Raises:
             RuntimeError: If the query could not be embedded (the query path has no
                 ``None`` sentinel — a failed query is an error the caller must see).
         """
-        result = await self.embed_documents([text])
+        result = await self._embed_with([text], self._query_resilient)
         vector = result.vectors[0]
         if vector is None:
             raise RuntimeError(f"failed to embed query: {text[:80]!r}")
@@ -217,26 +288,63 @@ class TEIEmbedder(Embedder):
     async def probe(self) -> int:
         """Embed a sentinel and return the observed embedding dimension.
 
+        Validates configured prompt names at startup by calling the endpoint
+        DIRECTLY (bypassing the ResilientEmbedder, whose 422→sub-split handling
+        would otherwise silently null the corpus on a bad prompt). A 422 or any
+        non-2xx propagates so the startup gate refuses to start.
+
         Returns:
             The dimensionality of the vector the live endpoint returns.
 
         Raises:
-            Exception: If the endpoint is unreachable (the transport error
-                propagates so the startup gate refuses to start) or returns an
-                empty/malformed response (no vector to observe a dimension from).
+            Exception: If the endpoint is unreachable (transport error propagates
+                so the startup gate refuses to start), returns an empty/malformed
+                response, or rejects a configured prompt name with a non-2xx.
         """
-        try:
-            vectors = await self._post_embed([_PROBE_SENTINEL])
-        except Exception:
-            # The endpoint is unreachable (transport error) or refused; the gate
-            # turns this into a refuse-to-start. Log a count-free ERROR event (no
-            # URL, header, or response object — the bearer must never leak).
-            logger.error("embed.probe.unreachable")
-            raise
-        if not vectors:
-            logger.error("embed.probe.unreachable")
-            raise RuntimeError("probe: endpoint returned no embedding for the sentinel")
-        observed_dim = len(vectors[0])
+        # Collect the distinct prompt names to validate (None is skipped).
+        # We validate the query_prompt_name (or a plain no-prompt call if none
+        # are configured) and use that call to observe the dimension.
+        prompt_names_to_validate: set[str] = set()
+        if self._query_prompt_name is not None:
+            prompt_names_to_validate.add(self._query_prompt_name)
+        if self._document_prompt_name is not None:
+            prompt_names_to_validate.add(self._document_prompt_name)
+
+        observed_dim: int | None = None
+
+        if prompt_names_to_validate:
+            # Validate each distinct configured prompt name directly (not through
+            # the resilient wrapper, which would swallow 422s as over-length signals).
+            for prompt_name in prompt_names_to_validate:
+                try:
+                    vectors = await self._make_request_fn(prompt_name)([_PROBE_SENTINEL])
+                except Exception:
+                    logger.error("embed.probe.unreachable")
+                    raise
+                if not vectors:
+                    logger.error("embed.probe.unreachable")
+                    raise RuntimeError(
+                        f"probe: endpoint returned no embedding for sentinel with prompt {prompt_name!r}"
+                    )
+                # Capture dimension from the first successful probe response.
+                if observed_dim is None:
+                    observed_dim = len(vectors[0])
+        else:
+            # No prompts configured: plain probe call to observe dimension.
+            try:
+                vectors = await self._make_request_fn(None)([_PROBE_SENTINEL])
+            except Exception:
+                logger.error("embed.probe.unreachable")
+                raise
+            if not vectors:
+                logger.error("embed.probe.unreachable")
+                raise RuntimeError("probe: endpoint returned no embedding for the sentinel")
+            observed_dim = len(vectors[0])
+
+        # Every branch above either sets observed_dim from a successful probe or
+        # raises, so it is provably non-None here; assert it to satisfy the type
+        # checker without a blanket ``# type: ignore``.
+        assert observed_dim is not None
         logger.info("embed.probe.ok", extra={"observed_dim": observed_dim})
         return observed_dim
 

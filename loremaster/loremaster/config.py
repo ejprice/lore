@@ -89,6 +89,12 @@ class EmbeddingConfig(_StrictModel):
         tokenizer: The local tokenizer identifier used for exact token counts.
         truncate: Whether the backend truncates over-length inputs. With the
             self-hosted TEI backend this is ``False`` (over-limit → hard 422).
+        query_prompt_name: Optional TEI prompt name sent as ``"prompt_name"`` in
+            the POST body for ``embed_query`` calls. ``None`` (default) means no
+            ``"prompt_name"`` key is sent — backward-compatible opt-in.
+        document_prompt_name: Optional TEI prompt name sent as ``"prompt_name"``
+            in the POST body for ``embed_documents`` calls. ``None`` (default)
+            means no ``"prompt_name"`` key is sent — backward-compatible opt-in.
     """
 
     backend: Literal["tei", "voyage-cloud"]
@@ -103,6 +109,13 @@ class EmbeddingConfig(_StrictModel):
     api_key_env: str
     tokenizer: str
     truncate: bool
+
+    # Asymmetric prompt-name fields (TEI only). Both default to None so existing
+    # lore.yaml files without these keys continue to parse without error (the
+    # extra="forbid" guard on _StrictModel still rejects any unrecognised key
+    # not listed here — this is an explicit addition, not a relaxation).
+    query_prompt_name: str | None = None
+    document_prompt_name: str | None = None
 
 
 class QdrantConfig(_StrictModel):
