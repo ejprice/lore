@@ -191,7 +191,9 @@ class SearchPipeline:
             query: The natural-language search query.
             k: The maximum number of candidates to retrieve from the store.
             filters: Optional payload keyword filters (e.g. ``{"tier": ...}`` or
-                ``{"file_path": ...}``), applied server-side.
+                ``{"file_path": ...}``), applied server-side.  The public alias
+                ``"path"`` is accepted and translated to the canonical
+                ``"file_path"`` payload key before the store query.
             wait_for_fresh: When ``True``, bounded-wait for in-flight files
                 matching the query's path filter to reach ``indexed`` before
                 searching; on timeout, serve stale-with-warning (never hang).
@@ -209,7 +211,10 @@ class SearchPipeline:
             await self._wait_for_fresh(filters, wait_timeout_s)
 
         vector = await self._embedder.embed_query(query)
-        candidates = await self._store.search(vector, k, filters)
+        # Translate the public ``path`` alias to the canonical ``file_path``
+        # payload key BEFORE the store query so Qdrant's _build_filter sees the
+        # real field name (no point has a ``path`` payload field).
+        candidates = await self._store.search(vector, k, self._normalize_filters(filters))
 
         # Seam 4 (C3): extension candidate-augmentation then rerank (identity for
         # the bare generic server).
@@ -221,6 +226,57 @@ class SearchPipeline:
 
         results = [self._to_result(point, ctx) for point in candidates]
         return self._partition_by_detail(results, detail_level)
+
+    # -- filter normalisation ---------------------------------------------------
+
+    @staticmethod
+    def _normalize_filters(
+        filters: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        """Translate the public ``path`` alias to the canonical ``file_path`` key.
+
+        The store's ``_build_filter`` uses dict keys verbatim as Qdrant payload
+        field names, and no point carries a ``path`` field — only ``file_path``.
+        This helper returns a new dict with the alias translated so callers can
+        use either spelling without silently matching nothing.
+
+        Precedence: if BOTH ``path`` and ``file_path`` are present the explicit
+        canonical ``file_path`` wins and the alias is dropped. All other keys
+        (e.g. ``tier``) pass through untouched. A ``None`` or empty dict is
+        returned unchanged.
+
+        The canonical target is :data:`_PAYLOAD_FILE_PATH` — the field name
+        ``records.chunk_to_record`` actually stamps into every point — so the
+        translation is decoupled from the ORDER of :data:`_FILTER_FILE_PATH_KEYS`
+        (reordering that tuple, e.g. to surface ``path`` first, cannot silently
+        reintroduce the bug). The alias set is every recognised path-filter key
+        except the canonical one, keeping a single constant authoritative for
+        both the wait-scoping path (``_path_filter``) and this store-query path.
+        """
+        if not filters:
+            return filters
+
+        # The canonical payload field (what the indexer stamps); everything else
+        # in the recognised path-filter key set is an alias.  Aliases never reach
+        # the store — only the canonical field name does.
+        canonical = _PAYLOAD_FILE_PATH
+        aliases = {key for key in _FILTER_FILE_PATH_KEYS if key != canonical}
+
+        # Fast path: nothing to do when no alias key is present.
+        if not aliases.intersection(filters):
+            return filters
+
+        normalised: dict[str, str] = {}
+        for key, value in filters.items():
+            if key in aliases:
+                # Translate alias → canonical, but only when the caller did NOT
+                # also supply the canonical key explicitly (canonical wins).
+                if canonical not in filters:
+                    normalised[canonical] = value
+                # else: drop the alias — the explicit canonical key takes precedence.
+            else:
+                normalised[key] = value
+        return normalised
 
     # -- step 2: bounded read-your-writes wait ------------------------------
 

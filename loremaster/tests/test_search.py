@@ -841,6 +841,83 @@ class TestFilters:
         )
         assert misses == []
 
+    async def test_path_alias_filter_scopes_like_file_path(
+        self,
+        tmp_path: Path,
+        store_factory: StoreFactory,
+        embedder: FakeEmbedder,
+        manifest: Manifest,
+    ) -> None:
+        """Contract: the 'path' alias for 'file_path' must scope the Qdrant store
+        query IDENTICALLY to the canonical 'file_path' key.
+
+        The public API documents 'path' as a valid alias (see
+        ``_FILTER_FILE_PATH_KEYS = ("file_path", "path")`` and the MCP tool
+        docstring).  After the fix, ``{"path": "pricing.py"}`` must:
+
+        * return at least one result (the file has real chunks), and
+        * scope the server-side filter so EVERY hit comes from pricing.py, and
+        * exclude routing.py entirely — not merely rank it lower.
+
+        This is an integration test against the REAL Qdrant engine (not a no-op
+        in-memory backend) because the alias translation must happen BEFORE the
+        store query, and the store's ``_build_filter`` applies the dict key
+        verbatim as a Qdrant payload field name.  The test proves the full
+        producer-to-consumer seam: index → real Qdrant → path-alias filter →
+        SearchResult list.
+
+        Expected values are derived solely from the alias contract (path ≡
+        file_path), not from any implementation detail of the buggy code.  The
+        sibling test ``test_file_path_filter_returns_only_that_file`` (which uses
+        the canonical key and is known-green) serves as the independent oracle:
+        the alias must produce the same scope.
+        """
+        # Arrange — two-file corpus (same as the sibling test; both files must be
+        # indexed so the filter has something real to exclude).
+        _write(tmp_path / "routing.py", _PY_ROUTING)
+        _write(tmp_path / "pricing.py", _PY_PRICING)
+        slug = _slug()
+        config = _config(slug=slug, live_path=tmp_path)
+        server = LoreServer(config)
+        indexed = await _index_corpus(
+            slug=slug, live_path=tmp_path, store=store_factory(slug),
+            embedder=embedder, manifest=manifest, server=server,
+        )
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+
+        # Act — filter with the ALIAS 'path', not the canonical 'file_path'.
+        # The value "pricing.py" is the tier-relative path the indexer stamped into
+        # every point's file_path payload field; it is read from _PY_PRICING's
+        # file name, matching the production path convention (not a magic literal).
+        FILTERED_FILE = "pricing.py"
+        EXCLUDED_FILE = "routing.py"
+        results = await pipeline.search_code(
+            "anything at all", k=10, filters={"path": FILTERED_FILE}
+        )
+
+        # Assert — the alias must behave IDENTICALLY to {"file_path": "pricing.py"}.
+        # (1) The filtered file has real indexed chunks — a non-empty result set
+        #     proves the filter did not silently match nothing (the bug: returns []).
+        assert results, (
+            f"{{'path': {FILTERED_FILE!r}}} filter must match chunks from that file; "
+            f"an empty list means the alias was not translated to the canonical "
+            f"file_path payload key before the Qdrant query"
+        )
+        # (2) Every hit is from pricing.py — server-side scoping, not just ranking.
+        assert all(FILTERED_FILE in r.formatted for r in results), (
+            f"every result must be from {FILTERED_FILE!r}; a hit from another file "
+            f"means the alias filter was ignored server-side"
+        )
+        # (3) No hit from routing.py — the filter excluded it, not merely ranked it lower.
+        assert not any(EXCLUDED_FILE in r.formatted for r in results), (
+            f"routing.py chunks must be excluded by the path filter; "
+            f"a routing.py hit means the alias scoped nothing"
+        )
+        # (4) Sanity-bound: result count is within the plausible range for a single
+        #     small module (at least 1, at most k=10 — catches scale / sign bugs).
+        assert 1 <= len(results) <= 10
+
+
 
 # --------------------------------------------------------------------------- #
 # wait_for_fresh — ALWAYS bounded, NEVER hangs
