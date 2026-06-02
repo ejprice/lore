@@ -33,6 +33,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+
 # ---------------------------------------------------------------------------
 # Constants (no hardcoded magic scattered through the logic).
 # ---------------------------------------------------------------------------
@@ -59,6 +60,14 @@ DEFAULT_ENV_FILE = Path.home() / "docker" / "mcp" / "lore.env"
 
 _EXIT_OK = 0
 _EXIT_ERROR = 2
+
+# Printed to stdout whenever a container is freshly launched or recreated on a new
+# image so the operator knows to reconnect their MCP client (e.g. restart Claude Code
+# via `claude --continue`) to load the refreshed tool schemas.
+_MCP_RECONNECT_REMINDER = (
+    "ACTION REQUIRED: reconnect the MCP session so the refreshed tool schemas load. "
+    "Restart Claude Code (e.g. `claude --continue`) or re-attach your MCP client."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +98,63 @@ def _container_state(name: str) -> str | None:
 def _image_exists(image: str) -> bool:
     """Return whether the named image is present locally."""
     return _run(["podman", "image", "exists", image], check=False).returncode == 0
+
+
+def _container_image_id(name: str) -> str | None:
+    """Return the image ID baked into the running container, or ``None`` on failure.
+
+    Uses ``podman container inspect --format '{{.Image}}'`` which returns the
+    full SHA256 digest of the image the container was started from.  Returns
+    ``None`` whenever podman exits non-zero (container absent, podman not found,
+    etc.) so callers can distinguish "unknown" from a real digest.
+    """
+    result = _run(
+        ["podman", "container", "inspect", "--format", "{{.Image}}", name],
+        check=False,
+        capture=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _image_id(image: str) -> str | None:
+    """Return the current image ID for a tag, or ``None`` on failure.
+
+    Uses ``podman image inspect --format '{{.Id}}'`` which returns the SHA256
+    digest of the locally-tagged image.  Returns ``None`` whenever podman exits
+    non-zero (image absent, podman not found, etc.).
+    """
+    result = _run(
+        ["podman", "image", "inspect", "--format", "{{.Id}}", image],
+        check=False,
+        capture=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _container_on_current_image(name: str, image: str) -> bool:
+    """Fail-safe predicate: return False (stale) ONLY when both IDs are known AND differ.
+
+    The fail-safe direction is True (treat as current) whenever either ID is
+    undeterminable.  This prevents a spurious stop+rm+run when podman is
+    unavailable, the container is absent, or the image tag doesn't exist yet —
+    i.e. uncertainty must never trigger a destructive recreate.
+
+    Returns False (stale → recreate) iff:
+      - ``_container_image_id(name)`` is non-None, AND
+      - ``_image_id(image)`` is non-None, AND
+      - the two IDs differ.
+    In every other case returns True (treat as current — no recreate).
+    """
+    running_id = _container_image_id(name)
+    current_id = _image_id(image)
+    # Both IDs must be determinable to conclude staleness.
+    if running_id is None or current_id is None:
+        return True  # undeterminable → treat as current (fail-safe)
+    return running_id == current_id
 
 
 def _free_port(base: int) -> int:
@@ -345,23 +411,44 @@ def verb_setup(project: Path, env_file: Path) -> int:
 
 
 def verb_start(project: Path, env_file: Path) -> int:
-    """``start`` — launch the container (delta-reconcile) + merge .mcp.json (idempotent)."""
+    """``start`` — launch the container (delta-reconcile) + merge .mcp.json (idempotent).
+
+    Three paths based on the container's current state and image currency:
+    - RUNNING + current image  → no-op, re-merge .mcp.json (no reminder, nothing changed).
+    - RUNNING + stale image    → stop + rm + relaunch, re-merge .mcp.json, print reminder.
+    - NOT running              → standard launch path, re-merge .mcp.json, print reminder.
+    """
     config_path = project / "lore.yaml"
     slug = project.name
+    container_name = f"lore-{slug}"
     if not config_path.exists():
         print(f"start: no {config_path}; run `setup` first.", file=sys.stderr)
         return _EXIT_ERROR
 
-    state = _container_state(f"lore-{slug}")
+    state = _container_state(container_name)
     if state == "running":
-        print(f"start: lore-{slug} already running — no-op.")
-        # Still re-merge .mcp.json (cheap, idempotent) so wiring is current even
-        # when the container was started out-of-band or after a reboot — mirrors
-        # verb_setup's already-provisioned no-op branch.
-        _merge_mcp_from_config(project, slug, config_path)
-        return _EXIT_OK
+        if _container_on_current_image(container_name, IMAGE):
+            # Container is running on the current image — no recreate needed.
+            print(f"start: {container_name} already running — no-op.")
+            # Re-merge .mcp.json (cheap, idempotent) so wiring stays current even
+            # after a reboot or out-of-band container restart — mirrors verb_setup's
+            # already-provisioned no-op branch.
+            _merge_mcp_from_config(project, slug, config_path)
+            return _EXIT_OK
+        else:
+            # Container is running on a stale image (localhost/lore:latest was rebuilt).
+            # podman restart reloads the SAME baked image — only stop+rm+run picks up
+            # new code, so we perform the full recreate sequence.
+            print(f"start: {container_name} is running a stale image — recreating.")
+            _run(["podman", "stop", container_name], check=False)
+            _run(["podman", "rm", container_name], check=False)
+            _launch_container(project, config_path, env_file)
+            _merge_mcp_from_config(project, slug, config_path)
+            print(_MCP_RECONNECT_REMINDER)
+            return _EXIT_OK
+
     if state is not None:  # exists but not running (e.g. exited) — remove the stale one.
-        _run(["podman", "rm", "-f", f"lore-{slug}"], check=False)
+        _run(["podman", "rm", "-f", container_name], check=False)
 
     if not _image_exists(IMAGE):
         print(f"start: image {IMAGE} missing; run `setup` (which builds it).", file=sys.stderr)
@@ -378,7 +465,10 @@ def verb_start(project: Path, env_file: Path) -> int:
 
     _launch_container(project, config_path, env_file)
     port = _merge_mcp_from_config(project, slug, config_path)
-    print(f"start: lore-{slug} launched (delta-reconcile on startup) on port {port}.")
+    print(f"start: {container_name} launched (delta-reconcile on startup) on port {port}.")
+    # Always remind the operator to reconnect after a fresh launch so the MCP client
+    # picks up the live tool schemas from the newly-started server.
+    print(_MCP_RECONNECT_REMINDER)
     return _EXIT_OK
 
 
@@ -396,12 +486,27 @@ def verb_stop(project: Path) -> int:
 
 
 def verb_status(project: Path) -> int:
-    """``status`` — running/stopped + index freshness from the manifest."""
+    """``status`` — running/stopped + index freshness from the manifest.
+
+    For a running container, also reports whether it is on the current
+    ``localhost/lore:latest`` image or is running stale code.
+    """
     slug = project.name
-    state = _container_state(f"lore-{slug}")
+    container_name = f"lore-{slug}"
+    state = _container_state(container_name)
     manifest = MANIFEST_DIR / f"{slug}.db"
     running = state == "running"
-    print(f"status: lore-{slug} container = {state or 'absent'}")
+    print(f"status: {container_name} container = {state or 'absent'}")
+    if running:
+        # Report image currency so the operator can tell whether a `start` is needed
+        # to pick up a rebuilt localhost/lore:latest.
+        if _container_on_current_image(container_name, IMAGE):
+            print(f"status: {container_name} image: current")
+        else:
+            print(
+                f"status: {container_name} image: STALE — newer {IMAGE} exists; "
+                f"run `start` to recreate"
+            )
     if manifest.exists():
         counts = _manifest_counts(manifest)
         print(f"status: manifest {manifest} → {counts}")
