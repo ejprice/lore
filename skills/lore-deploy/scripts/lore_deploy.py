@@ -298,9 +298,7 @@ def verb_setup(project: Path, env_file: Path) -> int:
     if already:
         print(f"setup: {slug} already provisioned (config + manifest present) — no-op.")
         # Still re-merge the .mcp.json (cheap, idempotent) so wiring is current.
-        port = _read_config_field(config_path, "c.server.port")
-        mount = _read_config_field(config_path, "c.server.path")
-        _merge_mcp(project, slug, int(port), mount)
+        _merge_mcp_from_config(project, slug, config_path)
         return _EXIT_OK
 
     # 2. Scaffold lore.yaml (only if absent).
@@ -341,9 +339,7 @@ def verb_setup(project: Path, env_file: Path) -> int:
         return _EXIT_ERROR
 
     # 8. Merge .mcp.json.
-    port = _read_config_field(config_path, "c.server.port")
-    mount = _read_config_field(config_path, "c.server.path")
-    _merge_mcp(project, slug, int(port), mount)
+    _merge_mcp_from_config(project, slug, config_path)
     print(f"setup: {slug} provisioned. Run `start` to launch the server.")
     return _EXIT_OK
 
@@ -359,6 +355,10 @@ def verb_start(project: Path, env_file: Path) -> int:
     state = _container_state(f"lore-{slug}")
     if state == "running":
         print(f"start: lore-{slug} already running — no-op.")
+        # Still re-merge .mcp.json (cheap, idempotent) so wiring is current even
+        # when the container was started out-of-band or after a reboot — mirrors
+        # verb_setup's already-provisioned no-op branch.
+        _merge_mcp_from_config(project, slug, config_path)
         return _EXIT_OK
     if state is not None:  # exists but not running (e.g. exited) — remove the stale one.
         _run(["podman", "rm", "-f", f"lore-{slug}"], check=False)
@@ -377,9 +377,7 @@ def verb_start(project: Path, env_file: Path) -> int:
         return rc
 
     _launch_container(project, config_path, env_file)
-    port = _read_config_field(config_path, "c.server.port")
-    mount = _read_config_field(config_path, "c.server.path")
-    _merge_mcp(project, slug, int(port), mount)
+    port = _merge_mcp_from_config(project, slug, config_path)
     print(f"start: lore-{slug} launched (delta-reconcile on startup) on port {port}.")
     return _EXIT_OK
 
@@ -457,6 +455,21 @@ def _merge_mcp(project: Path, slug: str, port: int, mount_path: str) -> None:
          "--slug", slug, "--port", str(port), "--path", mount_path],
         check=False,
     )
+
+
+def _merge_mcp_from_config(project: Path, slug: str, config_path: Path) -> int:
+    """Read the server port + mount path from the config, then merge the .mcp.json entry.
+
+    Wraps the read-port / read-mount / :func:`_merge_mcp` triple that both
+    ``setup`` and ``start`` run on every code path (provisioned no-op, fresh
+    provision, already-running no-op, fresh launch). Keeps the wiring step in one
+    place so the no-auth localhost entry shape stays identical across all callers.
+    Returns the resolved port so a caller can report it without re-reading config.
+    """
+    port = _read_config_field(config_path, "c.server.port")
+    mount = _read_config_field(config_path, "c.server.path")
+    _merge_mcp(project, slug, int(port), mount)
+    return int(port)
 
 
 def _env_file_kv(env_file: Path) -> list[str]:
