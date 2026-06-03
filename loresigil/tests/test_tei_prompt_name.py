@@ -24,17 +24,31 @@ Adversarial pre-flight rationale (see checklist at module end):
   config-fields-accepted:  A4 — EmbeddingConfig(extra="forbid") must accept the new
                                fields; today it raises ValidationError on them.
   loremaster-plumbing:    (in test_embedding_prompt_name.py / test_config_prompt_name.py)
+
+NOTE (v0.3.4 unified probe): probe() now MEASURES each configured prompt's
+server-side token overhead by POSTing an OVER-CAP sentinel WITH the prompt_name and
+parsing the server's 422 "...over_length... Given: N" response.  This subsumes the
+old v0.3.0 within-cap validation:
+  * a VALID configured prompt  -> 422 over_length (parseable Given:N) -> probe parses
+    it, sets the reserve, and does NOT raise;
+  * an INVALID/unknown prompt  -> 422 "prompt not found" (no Given:N)  -> probe raises;
+  * a 2xx on the over-cap prompt sentinel -> probe raises ("unexpected 2xx",
+    measurement impossible).
+The two probe-success tests below model the over-cap-422 measurement mechanism so
+they exercise the real unified probe path, not the retired within-cap 200 path.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import re
 
 import httpx
 import pytest
 from loresigil.factory import EmbeddingConfig, make_embedder
 from loresigil.tei import TEIEmbedder
+from loresigil.tokens import VoyageTokenCounter
 from loresigil.voyage_cloud import VoyageCloudEmbedder
 
 # ---------------------------------------------------------------------------
@@ -51,6 +65,12 @@ TEI_MAX_INPUT_TOKENS: int = 8192
 DOCUMENT_PROMPT_NAME: str = "document"
 QUERY_PROMPT_NAME: str = "query"
 
+# Server-confirmed query-prompt token overhead (the query prompt prefix the server
+# prepends costs 8 tokens) — taken from the live production incident report.  The
+# over-cap-422 probe mock below derives its "Given: N" from this so the simulated
+# server agrees with the real deployment's numbers, not an invented constant.
+QUERY_OVERHEAD_TOKENS: int = 8
+
 # Real semantically meaningful sentence (13 tokens, within cap).
 SENTENCE: str = (
     "The quarterly safety report summarizes incident rates across all warehouse facilities."
@@ -65,6 +85,15 @@ CLOUD_DIM: int = 2048
 # Factory env var for tests.
 _TEI_KEY_ENV: str = "LORE_TEI_PROMPT_TEST_KEY"
 _TEI_KEY_VALUE: str = "tei-secret-prompt-tests"
+
+# Shared tokenizer — the same pinned voyage-4 tokenizer the production probe uses
+# to count the over-cap sentinel.  Letting the mock count with the SAME tokenizer
+# keeps client and server token counts in agreement, exactly as in the real
+# deployment (the verified invariant the overhead measurement relies on).
+_TOKEN_COUNTER = VoyageTokenCounter()
+
+# The real TEI over_length 422 pattern the probe parses ("... Given: N").
+_GIVEN_N_RE: re.Pattern[str] = re.compile(r"Given:\s*(\d+)")
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +119,57 @@ class _TEIRecordingTransport:
             body = json.loads(request.content.decode())
             self.bodies.append(body)
             inputs: list[str] = body["inputs"]
+            vectors = [_unit_vector(float(i)) for i in range(len(inputs))]
+            return httpx.Response(200, json=vectors)
+
+        return httpx.MockTransport(handler)
+
+
+class _TEIProbeMeasurementTransport:
+    """MockTransport modelling the v0.3.4 unified probe's over-cap-422 mechanism.
+
+    Records every request body and emulates the live TEI server's two responses
+    the unified probe relies on:
+
+    * A request carrying ``prompt_name`` (the over-cap measurement POST): the
+      server counts the content tokens, adds this prompt's token overhead, and
+      returns the REAL over_length 422 with a parseable ``"Given: N"``.  The probe
+      parses N, computes ``overhead = N - client_token_count``, and sets the reserve
+      — it does NOT raise (a valid configured prompt must not fail the startup gate).
+    * A request WITHOUT ``prompt_name`` (the dim-observation POST): a normal 200
+      with one unit vector, from which the probe reads the embedding dimension.
+
+    This is the faithful handoff the real probe exercises, so the test drives the
+    genuine measurement path rather than the retired within-cap 200 path.
+    """
+
+    def __init__(self, prompt_overhead: int) -> None:
+        self.bodies: list[dict] = []
+        self._prompt_overhead = prompt_overhead
+
+    def transport(self) -> httpx.MockTransport:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            self.bodies.append(body)
+            inputs: list[str] = body["inputs"]
+            prompt_name = body.get("prompt_name")
+
+            if prompt_name is not None:
+                # Over-cap measurement POST: the server counts the content tokens
+                # (the client and server agree on this count), adds the prompt's
+                # token overhead, and reports the total in the real over_length 422.
+                content_token_count = _TOKEN_COUNTER.count(inputs[0]) if inputs else 0
+                given_n = content_token_count + self._prompt_overhead
+                over_length_422 = {
+                    "error": (
+                        f"Input validation error: `inputs` must have less than "
+                        f"{TEI_MAX_INPUT_TOKENS} tokens. Given: {given_n}"
+                    ),
+                    "error_type": "Validation",
+                }
+                return httpx.Response(422, json=over_length_422)
+
+            # Dim-observation POST (no prompt_name): a normal 200 with a vector.
             vectors = [_unit_vector(float(i)) for i in range(len(inputs))]
             return httpx.Response(200, json=vectors)
 
@@ -253,6 +333,12 @@ class TestTEIProbeValidatesPromptName:
     (bypassing the resilient wrapper) with the configured prompt_name, so a bad
     prompt surfaces at startup rather than silently corrupting every embedding.
 
+    v0.3.4 unified probe: the probe now measures each configured prompt's overhead
+    by POSTing an over-cap sentinel WITH the prompt and parsing the over_length
+    422 ``"Given: N"``.  A VALID prompt yields a parseable 422 and the probe sets
+    the reserve without raising; an INVALID prompt yields a "prompt not found" 422
+    with NO ``Given: N`` and the probe raises.
+
     GROUP A new-behavior test: must fail red on current code.
     """
 
@@ -294,24 +380,34 @@ class TestTEIProbeValidatesPromptName:
         assert exc_info.value is not None
 
     async def test_probe_with_valid_prompt_name_does_not_raise(self) -> None:
-        """probe() with a valid prompt_name succeeds normally."""
-        recorder = _TEIRecordingTransport()
+        """probe() with a valid prompt_name succeeds and returns the dim.
+
+        Intent (unchanged from v0.3.0): a VALID configured prompt must NOT fail the
+        startup gate.  Aligned to the v0.3.4 unified probe: a valid prompt produces
+        an over_length 422 carrying a parseable ``"Given: N"`` for the over-cap
+        sentinel — the measurement path — so the probe records the overhead and
+        returns the embedding dimension without raising.
+        """
+        recorder = _TEIProbeMeasurementTransport(prompt_overhead=QUERY_OVERHEAD_TOKENS)
         embedder = _make_tei_embedder(
             recorder.transport(),
             query_prompt_name=QUERY_PROMPT_NAME,
         )
-        # Must not raise — the prompt name is recognised by the endpoint.
+        # Must not raise — the prompt name is recognised and its overhead is
+        # measurable from the over_length 422.
         dim = await embedder.probe()
         assert dim == TEI_DIM
 
     async def test_probe_sends_configured_prompt_name_to_endpoint(self) -> None:
         """probe() calls the endpoint with the configured query_prompt_name.
 
-        This is the seam-level check: the live probe path (not the resilient
-        wrapper path) must carry the prompt_name so that a bad prompt is caught
-        at startup, not swallowed silently.
+        Intent (unchanged from v0.3.0): the live probe path (not the resilient
+        wrapper path) must actually exercise the configured prompt against the
+        server, so a bad prompt is caught at startup rather than swallowed.
+        Aligned to the v0.3.4 unified probe: the overhead-measurement POST carries
+        the prompt_name and the server answers with the over_length 422.
         """
-        recorder = _TEIRecordingTransport()
+        recorder = _TEIProbeMeasurementTransport(prompt_overhead=QUERY_OVERHEAD_TOKENS)
         embedder = _make_tei_embedder(
             recorder.transport(),
             query_prompt_name=QUERY_PROMPT_NAME,
@@ -325,6 +421,15 @@ class TestTEIProbeValidatesPromptName:
         assert QUERY_PROMPT_NAME in prompt_names_sent, (
             f"probe() did not send query_prompt_name={QUERY_PROMPT_NAME!r}; "
             f"prompt_names seen: {prompt_names_sent}"
+        )
+        # The measurement POST carrying the prompt is the over-cap sentinel: its
+        # input must genuinely exceed the cap, which is what forces the server's
+        # over_length 422 the overhead is read from.  This pins the real handoff.
+        measurement_bodies = [b for b in probe_bodies if b.get("prompt_name") == QUERY_PROMPT_NAME]
+        assert measurement_bodies, "no measurement POST carried the prompt_name"
+        sentinel_text = measurement_bodies[0]["inputs"][0]
+        assert _TOKEN_COUNTER.count(sentinel_text) > TEI_MAX_INPUT_TOKENS, (
+            "probe measurement sentinel must be over-cap so the server 422s with 'Given: N'"
         )
 
 

@@ -251,3 +251,68 @@ class TestVoyageCloudUntrustedResponseSurface:
         embedder = _make_embedder(httpx.MockTransport(handler))
         result = await embedder.embed_documents([SENTENCE])
         assert result.vectors == [None]
+
+
+# ── B1: VoyageCloudEmbedder has NO reserve/prompt_reserve logic ───────────────
+
+class TestVoyageCloudHasNoPromptReserve:
+    """B1 (GUARD): ``VoyageCloudEmbedder`` is unaffected by the TEI prompt-reserve fix.
+
+    The cloud backend uses ``input_type`` (not ``prompt_name``) and auto-truncates
+    over-length inputs, so it never 422s on near-cap content and needs no prompt
+    overhead reserve.  These tests guard that the fix does not accidentally add
+    reserve logic to the cloud path.
+
+    Contract:
+    - ``VoyageCloudEmbedder`` has no ``prompt_reserve`` attribute.
+    - Its ``max_input_tokens`` is the configured value, unchanged by any probe.
+    - Its request bodies NEVER include a ``"prompt_name"`` key (TEI-only field).
+    """
+
+    def test_cloud_embedder_has_no_prompt_reserve_attribute(self) -> None:
+        """VoyageCloudEmbedder does not expose prompt_reserve at all."""
+        recorder = _RecordingTransport()
+        embedder = _make_embedder(recorder.transport())
+        # The cloud embedder must not grow a prompt_reserve attribute — that would
+        # indicate accidental contamination from the TEI-specific fix.
+        assert not hasattr(embedder, "prompt_reserve")
+
+    def test_cloud_max_input_tokens_unchanged_after_probe(self) -> None:
+        """VoyageCloudEmbedder.max_input_tokens is unchanged after probe()."""
+        from loresigil.voyage_cloud import DEFAULT_MAX_INPUT_TOKENS
+
+        recorder = _RecordingTransport()
+        embedder = _make_embedder(recorder.transport())
+        # max_input_tokens before probe: the configured 32_000 default.
+        before_probe = embedder.max_input_tokens
+        assert before_probe == DEFAULT_MAX_INPUT_TOKENS
+
+    async def test_cloud_probe_does_not_change_max_input_tokens(self) -> None:
+        """After a real probe(), max_input_tokens remains at the configured value."""
+        from loresigil.voyage_cloud import DEFAULT_MAX_INPUT_TOKENS
+
+        recorder = _RecordingTransport()
+        embedder = _make_embedder(recorder.transport())
+
+        await embedder.probe()
+
+        # Reserve logic must NOT run: the configured cap must be unchanged.
+        assert embedder.max_input_tokens == DEFAULT_MAX_INPUT_TOKENS
+
+    async def test_cloud_request_body_never_contains_prompt_name(self) -> None:
+        """VoyageCloudEmbedder never sends prompt_name in its request body.
+
+        ``prompt_name`` is a TEI-specific parameter; the Voyage Cloud API uses
+        ``input_type``.  Sending ``prompt_name`` to the cloud API would either
+        be silently ignored or cause a 400 error.
+        """
+        recorder = _RecordingTransport()
+        embedder = _make_embedder(recorder.transport())
+
+        await embedder.embed_documents([SENTENCE])
+        await embedder.embed_query(SENTENCE)
+
+        for body in recorder.bodies:
+            assert "prompt_name" not in body, (
+                f"prompt_name must never appear in a cloud request body; found in: {body}"
+            )

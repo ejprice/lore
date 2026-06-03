@@ -23,6 +23,7 @@ When both are ``None`` (the default), the body is exactly ``{"inputs": [...]}``
 from __future__ import annotations
 
 import logging
+import re
 
 import httpx
 
@@ -45,6 +46,18 @@ _MAX_BATCH_TEXTS: int = 32
 _REQUEST_TIMEOUT_S: float = 120.0
 # A tiny sentinel used by probe() to observe the live embedding dimension.
 _PROBE_SENTINEL: str = "probe"
+
+# The strict "less than" boundary guard: the server rejects totals of EXACTLY
+# max_input_tokens ("must have LESS THAN N tokens"), so reserve = overhead + 1.
+_STRICT_CAP_GUARD: int = 1
+
+# Word unit for building an over-cap sentinel during overhead measurement.
+# "hello " tokenizes as ~1 token per word (verified: 8193 repetitions = 8194 tokens),
+# so repeating it max_input_tokens+1 times reliably exceeds the cap in one shot.
+_SENTINEL_WORD_UNIT: str = "hello "
+
+# Regex to extract N from the server 422 body: "... Given: N"
+_GIVEN_N_RE: re.Pattern[str] = re.compile(r"Given:\s*(\d+)")
 
 
 class TEIEmbedder(Embedder):
@@ -91,6 +104,8 @@ class TEIEmbedder(Embedder):
         self._query_prompt_name = query_prompt_name
         self._document_prompt_name = document_prompt_name
         self._token_counter = VoyageTokenCounter()
+        # Reserve is 0 before probe() runs; probe() sets the measured value.
+        self._prompt_reserve: int = 0
         # The bearer token is baked into the client headers below; it is not
         # retained on the instance (needless secret surface).
         self._client = httpx.AsyncClient(
@@ -127,8 +142,24 @@ class TEIEmbedder(Embedder):
 
     @property
     def max_input_tokens(self) -> int:
-        """Hard per-input token cap (over it the server returns 422)."""
-        return self._max_input_tokens
+        """Effective per-input token budget (configured cap minus prompt reserve).
+
+        Before ``probe()`` runs, the reserve is 0 so this equals the configured
+        cap unchanged.  After ``probe()``, it is reduced by the measured reserve
+        so content + server-side prompt is strictly below the server cap.
+        """
+        return self._max_input_tokens - self._prompt_reserve
+
+    @property
+    def prompt_reserve(self) -> int:
+        """Tokens reserved for the server-side prompt overhead, measured by probe().
+
+        Zero before probe() is called.  After probe() this equals
+        max(overhead_per_configured_prompt) + 1, where the +1 absorbs the
+        server's strict "less than" boundary (a total of exactly max_input_tokens
+        is rejected).
+        """
+        return self._prompt_reserve
 
     @property
     def normalized(self) -> bool:
@@ -165,6 +196,79 @@ class TEIEmbedder(Embedder):
             return vectors
 
         return request_fn
+
+    def _build_over_cap_sentinel(self) -> str:
+        """Build a text whose client token count strictly exceeds max_input_tokens.
+
+        Uses a word unit that tokenizes at ~1 token per word so that
+        ``max_input_tokens + 1`` repetitions reliably exceeds the cap in a single
+        tokenization call.  A small refinement loop adjusts if the initial
+        estimate is slightly off (the tokenizer may merge or split differently).
+
+        Returns:
+            A string whose token count is > ``self._max_input_tokens``.
+        """
+        # Start with enough repetitions to reliably exceed the cap.
+        # _SENTINEL_WORD_UNIT tokenizes at ~1 token/word, so (cap+1) repetitions
+        # is a safe starting estimate that will always be at or above the cap.
+        repetitions = self._max_input_tokens + 1
+        sentinel = _SENTINEL_WORD_UNIT * repetitions
+        # Refinement: add more units if the tokenizer produces fewer tokens than
+        # expected (e.g. due to BPE merging across word boundaries).
+        while self._token_counter.count(sentinel) <= self._max_input_tokens:
+            # Add a batch of units to avoid an O(cap^2) worst-case loop.
+            sentinel += _SENTINEL_WORD_UNIT * (self._max_input_tokens // 4 + 1)
+        return sentinel
+
+    async def _measure_prompt_overhead(self, prompt_name: str) -> int:
+        """Measure the server-side token overhead for a single prompt name.
+
+        Sends an over-cap sentinel WITH the prompt name so the server is
+        guaranteed to 422.  Parses the integer N from the error body
+        ("... Given: N") and computes overhead = N - client_token_count.
+
+        The raw POST goes directly through ``self._client`` (not the resilient
+        wrapper) so the 422 reaches us instead of triggering the sub-split path.
+
+        Args:
+            prompt_name: The TEI prompt name to measure.
+
+        Returns:
+            The number of tokens the server adds beyond the client content count.
+
+        Raises:
+            RuntimeError: If the server returns 2xx (sentinel didn't force a 422,
+                so overhead cannot be measured), or the 422 body lacks the
+                parseable ``"Given: N"`` pattern.
+        """
+        sentinel = self._build_over_cap_sentinel()
+        client_token_count = self._token_counter.count(sentinel)
+
+        body: dict[str, object] = {"inputs": [sentinel], "prompt_name": prompt_name}
+        response = await self._client.post(self._endpoint, json=body)
+
+        if response.status_code != 422:
+            # A 2xx means the sentinel was under-cap with the prompt — we cannot
+            # determine the overhead.  Fail closed rather than assume reserve=0.
+            raise RuntimeError(
+                f"probe: expected HTTP 422 from over-cap sentinel with prompt "
+                f"{prompt_name!r} but got {response.status_code}; "
+                f"cannot measure prompt overhead"
+            )
+
+        # Parse the "Given: N" token count from the real server error format.
+        error_text = response.text
+        match = _GIVEN_N_RE.search(error_text)
+        if match is None:
+            raise RuntimeError(
+                f"probe: HTTP 422 body for prompt {prompt_name!r} does not "
+                f"contain the expected 'Given: N' pattern; "
+                f"cannot measure prompt overhead"
+            )
+
+        given_n = int(match.group(1))
+        overhead = given_n - client_token_count
+        return overhead
 
     def _presplit(self, texts: list[str]) -> tuple[list[str], list[int]]:
         """Pre-split any over-length input so the whole text is never sent.
@@ -286,65 +390,72 @@ class TEIEmbedder(Embedder):
         return vector
 
     async def probe(self) -> int:
-        """Embed a sentinel and return the observed embedding dimension.
+        """Measure prompt overhead (if prompts are configured) and return the embedding dimension.
 
         Validates configured prompt names at startup by calling the endpoint
         DIRECTLY (bypassing the ResilientEmbedder, whose 422→sub-split handling
-        would otherwise silently null the corpus on a bad prompt). A 422 or any
-        non-2xx propagates so the startup gate refuses to start.
+        would otherwise silently null the corpus on a bad prompt). A non-2xx or
+        any transport error propagates so the startup gate refuses to start.
+
+        For each configured prompt name, the overhead is measured by sending an
+        over-cap sentinel and parsing the server's 422 "Given: N" response.
+        The prompt reserve is set to ``max(overheads) + 1`` (the +1 absorbs the
+        strict "less than" boundary).  The effective ``max_input_tokens`` is
+        then reduced by the reserve and propagated to the resilient wrappers.
+
+        The embedding dimension is observed from a plain (no-prompt) sentinel call
+        that is guaranteed to return 200.
 
         Returns:
             The dimensionality of the vector the live endpoint returns.
 
         Raises:
-            Exception: If the endpoint is unreachable (transport error propagates
-                so the startup gate refuses to start), returns an empty/malformed
-                response, or rejects a configured prompt name with a non-2xx.
+            RuntimeError: If the endpoint is unreachable, returns an
+                empty/malformed response, the over-cap sentinel unexpectedly
+                returns 2xx, or the 422 body lacks a parseable ``"Given: N"``.
         """
-        # Collect the distinct prompt names to validate (None is skipped).
-        # We validate the query_prompt_name (or a plain no-prompt call if none
-        # are configured) and use that call to observe the dimension.
-        prompt_names_to_validate: set[str] = set()
-        if self._query_prompt_name is not None:
-            prompt_names_to_validate.add(self._query_prompt_name)
+        # Step 1: Measure overhead for each configured prompt name.
+        prompt_names_to_measure: list[tuple[str, str]] = []
         if self._document_prompt_name is not None:
-            prompt_names_to_validate.add(self._document_prompt_name)
+            prompt_names_to_measure.append(("document", self._document_prompt_name))
+        if self._query_prompt_name is not None:
+            prompt_names_to_measure.append(("query", self._query_prompt_name))
 
-        observed_dim: int | None = None
-
-        if prompt_names_to_validate:
-            # Validate each distinct configured prompt name directly (not through
-            # the resilient wrapper, which would swallow 422s as over-length signals).
-            for prompt_name in prompt_names_to_validate:
-                try:
-                    vectors = await self._make_request_fn(prompt_name)([_PROBE_SENTINEL])
-                except Exception:
-                    logger.error("embed.probe.unreachable")
-                    raise
-                if not vectors:
-                    logger.error("embed.probe.unreachable")
-                    raise RuntimeError(
-                        f"probe: endpoint returned no embedding for sentinel with prompt {prompt_name!r}"
-                    )
-                # Capture dimension from the first successful probe response.
-                if observed_dim is None:
-                    observed_dim = len(vectors[0])
-        else:
-            # No prompts configured: plain probe call to observe dimension.
+        overheads: list[int] = []
+        for _label, prompt_name in prompt_names_to_measure:
             try:
-                vectors = await self._make_request_fn(None)([_PROBE_SENTINEL])
+                overhead = await self._measure_prompt_overhead(prompt_name)
             except Exception:
                 logger.error("embed.probe.unreachable")
                 raise
-            if not vectors:
-                logger.error("embed.probe.unreachable")
-                raise RuntimeError("probe: endpoint returned no embedding for the sentinel")
-            observed_dim = len(vectors[0])
+            overheads.append(overhead)
 
-        # Every branch above either sets observed_dim from a successful probe or
-        # raises, so it is provably non-None here; assert it to satisfy the type
-        # checker without a blanket ``# type: ignore``.
-        assert observed_dim is not None
+        # Step 2: Compute and store the reserve.
+        if overheads:
+            self._prompt_reserve = max(overheads) + _STRICT_CAP_GUARD
+        else:
+            # No prompts configured — no overhead to reserve for.
+            self._prompt_reserve = 0
+
+        # Propagate the reduced effective cap to the resilient wrappers so the
+        # 422-backstop split_to_fit also targets the effective budget.
+        effective_cap = self.max_input_tokens  # reads self._max_input_tokens - self._prompt_reserve
+        self._document_resilient._max_input_tokens = effective_cap
+        self._query_resilient._max_input_tokens = effective_cap
+
+        # Step 3: Observe the embedding dimension via a plain (no-prompt) call.
+        # This call is guaranteed to 200 because we omit prompt_name; the dim
+        # observation is independent of the overhead measurement above.
+        try:
+            vectors = await self._make_request_fn(None)([_PROBE_SENTINEL])
+        except Exception:
+            logger.error("embed.probe.unreachable")
+            raise
+        if not vectors:
+            logger.error("embed.probe.unreachable")
+            raise RuntimeError("probe: endpoint returned no embedding for the sentinel")
+
+        observed_dim: int = len(vectors[0])
         logger.info("embed.probe.ok", extra={"observed_dim": observed_dim})
         return observed_dim
 
