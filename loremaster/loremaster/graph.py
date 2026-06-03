@@ -90,6 +90,8 @@ from lorescribe.python_ast import (
 )
 from pydantic import BaseModel, ConfigDict
 
+from loremaster.index.sqlite_resilient import open_resilient_sqlite
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
@@ -226,11 +228,18 @@ class CodeGraph:
     """
 
     def __init__(self, db_path: str) -> None:
-        """Open (or create) the graph database, enable WAL, ensure schema."""
-        # ``check_same_thread=False`` so the single-writer graph can be driven
-        # from the asyncio loop thread and a watcher thread under the caller's
-        # own lock — the same concurrency contract the manifest follows.
-        self._connection = sqlite3.connect(db_path, check_same_thread=False)
+        """Open (or create) the graph database, enable WAL, ensure schema.
+
+        The open is RESILIENT (FP-01 + FP-08): an absent parent dir is created
+        and a corrupt on-disk image is deleted and recreated, both via
+        :func:`~loremaster.index.sqlite_resilient.open_resilient_sqlite`. A
+        valid existing graph — including a zero-byte file — opens UNCHANGED.
+        """
+        # ``check_same_thread=False`` (inside the resilient helper) so the
+        # single-writer graph can be driven from the asyncio loop thread and a
+        # watcher thread under the caller's own lock — the same concurrency
+        # contract the manifest follows.
+        self._connection = open_resilient_sqlite(db_path)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA journal_mode = WAL")
         self._connection.executescript(_SCHEMA)
@@ -244,6 +253,29 @@ class CodeGraph:
     def close(self) -> None:
         """Close the underlying database connection."""
         self._connection.close()
+
+    def indexed_file_count(self) -> int:
+        """Return the number of distinct files the graph currently holds nodes for.
+
+        The graph's view of "how many files are live", across every tier. The
+        store-divergence reconcile compares it against the manifest's
+        ``indexed_file_count`` to detect a wiped/empty ``graph.db`` the manifest
+        still calls indexed (FP-04): a zero graph count over a positive manifest
+        count triggers a re-graph so ``what_imports`` / ``tests_for`` stop
+        silently returning nothing.
+
+        Returns:
+            The count of distinct ``(tier, file_path)`` files with graph nodes
+            (``0`` for a fresh or wiped graph).
+        """
+        # A file's identity in the graph is the same (tier, file_path) pair the
+        # node rows are scoped by (C1), so DISTINCT over that pair is the file
+        # count. A wiped graph (no node rows) yields 0 — the FP-04 trigger.
+        row = self._connection.execute(
+            "SELECT COUNT(DISTINCT tier || ? || file_path) AS n FROM nodes",
+            (_QUALIFIER_SEPARATOR,),
+        ).fetchone()
+        return int(row["n"])
 
     # -- naming helpers ----------------------------------------------------
 

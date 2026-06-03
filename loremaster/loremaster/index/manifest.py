@@ -34,6 +34,8 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from loremaster.index.sqlite_resilient import open_resilient_sqlite
+
 # The lifecycle states a file row may occupy.
 STATE_INDEXED = "indexed"
 STATE_DIRTY = "dirty"
@@ -103,14 +105,21 @@ class Manifest:
     def __init__(self, db_path: str) -> None:
         """Open (or create) the manifest database, enable WAL, ensure schema.
 
+        The open is RESILIENT (FP-01 + FP-08): an absent parent dir is created
+        and a corrupt on-disk image is deleted and recreated, both via
+        :func:`~loremaster.index.sqlite_resilient.open_resilient_sqlite`. A valid
+        existing manifest — including a zero-byte file — opens UNCHANGED; a
+        transient open fault (lock / disk-IO / read-only FS) fails closed.
+
         Args:
             db_path: The SQLite database path (a real file — WAL across
                 connections is meaningless for ``:memory:``).
         """
-        # ``check_same_thread=False`` so the single-writer manifest can be driven
-        # from the asyncio loop thread and a watcher thread under the caller's
-        # own ``asyncio.Lock`` (the loremaster concurrency contract).
-        self._connection = sqlite3.connect(db_path, check_same_thread=False)
+        # ``check_same_thread=False`` (inside the resilient helper) so the
+        # single-writer manifest can be driven from the asyncio loop thread and a
+        # watcher thread under the caller's own ``asyncio.Lock`` (the loremaster
+        # concurrency contract).
+        self._connection = open_resilient_sqlite(db_path)
         self._connection.row_factory = sqlite3.Row
         # WAL (D10): readers see a consistent committed snapshot and never block
         # the single writer. ``PRAGMA journal_mode`` is connection-persistent for
@@ -358,4 +367,105 @@ class Manifest:
                 ON CONFLICT(k) DO UPDATE SET v = excluded.v
                 """,
                 (key, value),
+            )
+
+    # -- store-divergence reconcile surface (idempotent startup, FP-02/03/04/10) --
+
+    def expected_chunks(self, tier: str | None = None) -> int:
+        """Return the total chunk count the manifest claims SHOULD be in the store.
+
+        The honest expectation the live Qdrant count is compared against: the sum
+        of ``n_chunks`` over the ``indexed`` file rows (scoped to ``tier`` when
+        given, otherwise the grand total across every tier). A live count below
+        this is a wiped/short collection (FP-02); above it is orphan over-count
+        (FP-03); both trigger a per-tier heal.
+
+        Args:
+            tier: The tier to total expected chunks for; ``None`` sums every tier.
+
+        Returns:
+            The expected chunk count (``0`` when nothing is indexed for the tier).
+        """
+        # COALESCE pins the SUM over an empty match set to 0 (SUM of no rows is
+        # NULL), so an un-indexed tier reports 0 rather than None. Only INDEXED
+        # rows count toward the expectation — a dirty/embedding/failed row has no
+        # live points to expect.
+        if tier is None:
+            row = self._connection.execute(
+                "SELECT COALESCE(SUM(n_chunks), 0) AS total FROM files WHERE state = ?",
+                (STATE_INDEXED,),
+            ).fetchone()
+        else:
+            row = self._connection.execute(
+                "SELECT COALESCE(SUM(n_chunks), 0) AS total FROM files "
+                "WHERE state = ? AND tier = ?",
+                (STATE_INDEXED, tier),
+            ).fetchone()
+        return int(row["total"])
+
+    def indexed_file_count(self, tier: str | None = None, suffix: str | None = None) -> int:
+        """Return the number of ``indexed`` file rows the manifest claims.
+
+        The manifest's view of "how many files are live", scoped to ``tier`` when
+        given (otherwise every tier) and, optionally, to files whose path ends in
+        ``suffix``. Compared against the GRAPH's row count to detect a wiped graph
+        the manifest still calls indexed (FP-04): a positive manifest count over a
+        zero graph count triggers a re-graph.
+
+        The ``suffix`` filter is what keeps the FP-04 graph check honest: only
+        ``.py`` files contribute to the code graph, so a docs-only corpus has a
+        legitimately-empty graph while its Markdown rows are indexed. Counting only
+        graph-ELIGIBLE (``.py``) indexed rows lets the reconcile tell a genuinely
+        wiped graph (Python files indexed, graph empty) apart from a corpus that is
+        simply graphless.
+
+        Args:
+            tier: The tier to count indexed files for; ``None`` counts every tier.
+            suffix: Restrict to files whose ``file_path`` ends with this suffix
+                (e.g. ``".py"``); ``None`` counts every extension. The suffix is
+                bound as a parameterised ``LIKE`` pattern (never interpolated into
+                the SQL text), so no caller value reaches the statement string.
+
+        Returns:
+            The indexed file-row count (``0`` when nothing matches).
+        """
+        # Build the predicate from bound parameters only — the SQL text is static
+        # per-branch and every value (tier, the LIKE pattern) is a placeholder, so
+        # nothing the caller passes is interpolated into the statement string.
+        clauses = ["state = ?"]
+        params: list[str] = [STATE_INDEXED]
+        if tier is not None:
+            clauses.append("tier = ?")
+            params.append(tier)
+        if suffix is not None:
+            clauses.append("file_path LIKE ?")
+            params.append(f"%{suffix}")
+        where = " AND ".join(clauses)
+        row = self._connection.execute(
+            f"SELECT COUNT(*) AS n FROM files WHERE {where}",  # noqa: S608 - static clauses, bound values
+            tuple(params),
+        ).fetchone()
+        return int(row["n"])
+
+    def reset_tier(self, tier: str) -> None:
+        """Mark every row for ``tier`` as needing re-index — the count-driven heal.
+
+        The fix for the mtime fast-path trap (FP-02): a wiped collection over
+        files whose mtime+size are unchanged would be fast-path-skipped by
+        :meth:`needs_reindex`. Resetting the tier's rows out of the ``indexed``
+        state forces the next sweep to re-embed them regardless of mtime, so the
+        COUNT divergence — not a file change — drives the rebuild. Tier-scoped:
+        sibling tiers' rows are untouched.
+
+        Args:
+            tier: The tier whose rows to mark for re-index.
+        """
+        # STATE_DIRTY is a non-``indexed`` state, so needs_reindex returns True
+        # for every reset row regardless of its unchanged mtime+size — the next
+        # sweep re-embeds it. The row itself is PRESERVED (only its state flips),
+        # so its chunk_ids / sha512 / size survive for the re-embed to overwrite.
+        with self._connection:
+            self._connection.execute(
+                "UPDATE files SET state = ?, updated_at = ? WHERE tier = ?",
+                (STATE_DIRTY, self._now(), tier),
             )

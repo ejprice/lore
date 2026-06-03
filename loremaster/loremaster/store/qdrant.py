@@ -306,6 +306,46 @@ class QdrantStore:
             f"lore expects a single unnamed vector."
         )
 
+    async def count_points(self, tier: str | None = None) -> int:
+        """Return the LIVE point count in the collection — the independent oracle.
+
+        Reads the SERVER's count, NEVER the manifest. This is the count the
+        store-divergence reconcile and the FP-10 empty-index decision must consult
+        instead of trusting the manifest (which is precisely what lies when the
+        collection is wiped). When ``tier`` is given the count is filtered on the
+        ``tier`` payload keyword index (the per-tier divergence check); ``None``
+        returns the grand total (the FP-10 empty check). Zero when the collection
+        is absent or empty.
+
+        Args:
+            tier: The tier to count points for (filtered on the ``tier`` payload
+                index); ``None`` returns the whole-collection total.
+
+        Returns:
+            The live point count from the server.
+        """
+        # An absent collection has nothing to count — the wiped-and-not-recreated
+        # shape — so report 0 rather than letting the count call 404.
+        if not await self._with_retry(
+            "collection_exists",
+            lambda: self._client.collection_exists(self._collection_name),
+        ):
+            return 0
+        # A tier scope filters on the SAME ``tier`` payload keyword index that
+        # delete_by_tier / search use (never a hand-copied key); ``None`` counts
+        # the whole collection (the FP-10 grand total).
+        count_filter = self._build_filter({_TIER_KEY: tier}) if tier is not None else None
+        result = await self._with_retry(
+            "count",
+            functools.partial(
+                self._client.count,
+                collection_name=self._collection_name,
+                count_filter=count_filter,
+                exact=True,
+            ),
+        )
+        return result.count
+
     async def upsert(self, records: Sequence[tuple[Record, list[float]]]) -> None:
         """Upsert ``(record, vector)`` pairs, batched to ``batch_size`` per call.
 
