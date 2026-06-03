@@ -50,7 +50,7 @@ import math
 import os
 import time
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import httpx
 from lorescribe.models import Chunk, ChunkContext
@@ -654,13 +654,29 @@ class Indexer:
         self.set_tier_version_stamp(root.tier, root.version)
         return self._summarize(outcomes, rebuilt=[root.tier], skipped_tiers=[])
 
-    async def _walk_and_index(self, root: RootConfig, base: Path) -> list[IndexOutcome]:
+    async def _walk_and_index(
+        self,
+        root: RootConfig,
+        base: Path,
+        on_file_indexed: Callable[[IndexOutcome], None] | None = None,
+    ) -> list[IndexOutcome]:
         """Walk ``base`` (pruning excluded dirs), index each included file.
 
         Applies the manifest mtime+size fast-path *before* reading a file — an
         unchanged ``indexed`` file is skipped without a read or an embed. A
         file's stored ``file_path`` is POSIX-relative to ``base`` (the tier's
         walk root), so it is tier-relative and resolvable by the snapshot layout.
+
+        Args:
+            root: The :class:`RootConfig` for this tier.
+            base: The filesystem root to walk (tier's materialisation dir).
+            on_file_indexed: Optional per-file callback invoked IMMEDIATELY after
+                each file is ACTUALLY indexed (i.e. after
+                :meth:`_index_chunks` returns its :class:`IndexOutcome`).
+                Skipped/fast-path files do NOT trigger this callback — only real
+                embeds do.  Defaults to ``None`` (no-op) so existing callers
+                (:meth:`_index_live_tier`, :meth:`_index_static_tier`) are
+                unaffected.
         """
         outcomes: list[IndexOutcome] = []
         for dirpath in walked_dirs(self._config, base):
@@ -692,6 +708,12 @@ class Indexer:
                     chunks=chunks, mtime_ns=stat.st_mtime_ns, size=stat.st_size,
                 )
                 outcomes.append(outcome)
+                # Notify the caller that this file has been indexed.  Called AFTER
+                # _index_chunks so the outcome is final before the callback fires.
+                # Skipped files intentionally do NOT trigger this (fast-path means
+                # no new embedding occurred — nothing to report as live progress).
+                if on_file_indexed is not None:
+                    on_file_indexed(outcome)
         return outcomes
 
     def _chunk_count(self, tier: str, path: str) -> int:
@@ -764,6 +786,24 @@ class Indexer:
         outcomes: list[IndexOutcome] = []
         rebuilt: list[str] = []
         done = 0
+
+        def _on_file_indexed(outcome: IndexOutcome) -> None:
+            """Increment the done counter and write the in-progress status per file.
+
+            Invoked by ``_walk_and_index`` IMMEDIATELY after each file's
+            ``_index_chunks`` call completes — so ``done`` advances DURING the
+            walk, not after all files finish.  This is the fix for the bug where
+            ``done`` stayed 0 until ``_walk_and_index`` returned the full list.
+            """
+            nonlocal done
+            done += 1
+            # Live progress so index_status / rebuilding_notice reflect the
+            # rebuild as it advances (the stamp is withheld until the end).
+            self._write_rebuild_status(
+                state=_REBUILD_STATE_IN_PROGRESS, done=done, total=total,
+                fingerprint=fingerprint,
+            )
+
         for root in roots:
             # Purge this tier's vectors + manifest rows so the walk re-embeds every
             # file (the deleted rows make ``needs_reindex`` return True — no skip).
@@ -776,15 +816,9 @@ class Indexer:
 
             base = self._tier_base(root.tier)
             assert base is not None  # every effective root resolves a base
-            for outcome in await self._walk_and_index(root, base):
-                outcomes.append(outcome)
-                done += 1
-                # Live progress so index_status / rebuilding_notice reflect the
-                # rebuild as it advances (the stamp is withheld until the end).
-                self._write_rebuild_status(
-                    state=_REBUILD_STATE_IN_PROGRESS, done=done, total=total,
-                    fingerprint=fingerprint,
-                )
+            outcomes.extend(
+                await self._walk_and_index(root, base, on_file_indexed=_on_file_indexed)
+            )
             rebuilt.append(root.tier)
 
         # ALL tiers succeeded → stamp the fingerprint and flip the status to done.

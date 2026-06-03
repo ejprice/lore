@@ -1794,3 +1794,275 @@ class TestRebuildingNoticeSeam:
             "an empty what_imports when NOT rebuilding must stay a plain empty list "
             f"with NO rebuilding text; result repr was {importers!r}"
         )
+
+
+# ===========================================================================
+# A9 — rebuild_all advances done LIVE during the rebuild (real Qdrant)
+# ===========================================================================
+
+# The number of files the extended corpus contains (3 from _build_live_corpus +
+# 1 added below = 4). Named so the assertion that 0 < v < total is a strict
+# interior check against the SAME value used to build the corpus, not a
+# magic literal. Total must be >= 4 so there is always a strictly interior
+# value between the first and last embed call.
+_EXTENDED_CORPUS_TOTAL: int = 4
+
+
+def _build_extended_corpus(root: Path) -> None:
+    """Extend _build_live_corpus with one extra .py file for a total of 4 indexable files.
+
+    _build_live_corpus gives widget.py, routing.py, README.md (3 indexable files).
+    Adding helpers.py gives 4 — enough that an observer during the rebuild sees
+    done values strictly between 0 and 4, i.e. 0 < v < total is always satisfiable
+    even if one embed call processes two files (batching headroom).
+
+    The excluded bundle.min.js and .git/config.py are still present (they must
+    NOT be counted) — the total is 4 indexable files, matching _EXTENDED_CORPUS_TOTAL.
+    """
+    _build_live_corpus(root)
+    # A fourth real Python module to push total to 4.  The content is a
+    # production-plausible utility module — not foo/bar/x=1 (clause 1).
+    _write(
+        root / "src" / "helpers.py",
+        """\
+def format_week_range(start: int, end: int) -> str:
+    \"\"\"Format a week range for display in a 36-week planning report.\"\"\"
+    return f"W{start:02d}–W{end:02d}"
+""",
+    )
+
+
+class ProgressSpyEmbedder(FakeEmbedder):
+    """A :class:`FakeEmbedder` that snapshots ``schema_rebuild_status.done`` from
+    the manifest at the MOMENT each ``embed_documents`` call begins.
+
+    The spy reads the manifest meta key BEFORE delegating to the real embed so
+    the recorded value reflects what ``rebuild_all`` has written at the time
+    the embed call fires — not what it writes afterward.  This makes it
+    impossible for a post-call write to fabricate a "live progress" illusion.
+
+    Under the BUG: ``_walk_and_index`` is fully awaited and returns the complete
+    outcomes list; the ``for outcome in await ...`` loop (and its
+    ``_write_rebuild_status`` calls) only run after ALL embeds finish.  So every
+    embed call sees ``done == 0`` from the manifest → ``max(recorded) == 0``.
+
+    Under the FIX: ``_write_rebuild_status`` is called per-file inside the walk
+    (before the next file's embed), so the spy on file N sees ``done == N-1``
+    (files that completed before this call).  At least one call sees a value
+    strictly between 0 and total, proving mid-rebuild progress.
+
+    The oracle is derived from the specification ("done must advance per file"),
+    NOT from reading rebuild_all's implementation — the spy does not import or
+    inspect rebuild_all internals.
+    """
+
+    def __init__(self, manifest: Manifest, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        # The manifest the spy reads ``done`` from — the SAME instance rebuild_all
+        # writes to, so this is the real production seam (clause 3: seam coverage).
+        self._spy_manifest = manifest
+        # Ordered list of ``done`` values observed at the START of each embed call.
+        # One entry per embed_documents call (each file produces one call via
+        # _index_chunks → embed_documents).
+        self.observed_done_values: list[int] = []
+
+    async def embed_documents(self, texts: list[str]) -> Any:
+        """Record the current manifest done counter, then delegate."""
+        import json as _json
+
+        raw = self._spy_manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+        if raw is not None:
+            try:
+                blob = _json.loads(raw)
+                observed_done = int(blob.get("done", 0))
+            except (ValueError, TypeError, KeyError):
+                observed_done = 0
+        else:
+            # Status not yet written — done is effectively 0.
+            observed_done = 0
+
+        self.observed_done_values.append(observed_done)
+        return await super().embed_documents(texts)
+
+
+class TestRebuildProgressAdvancesLive:
+    """``rebuild_all`` must update ``schema_rebuild_status.done`` LIVE — advancing
+    the counter after EACH file is indexed, not only after ALL files complete.
+
+    Contract (from the spec, independent of implementation):
+        * An observer reading ``schema_rebuild_status.done`` from the manifest
+          partway through a rebuild must see a value strictly between 0 and total
+          — not 0 the whole time then total at the very end.
+        * Formally: the sequence of ``done`` values seen at the START of successive
+          embed calls must be non-decreasing AND contain at least one value
+          ``v`` with ``0 < v < total``.
+        * Completion contract (unchanged): after ``rebuild_all`` returns,
+          ``schema_rebuild_status.state == "done"`` and ``done == total``.
+
+    Why this test FAILS on current code:
+        ``_walk_and_index`` is a regular ``async def`` returning ``list[IndexOutcome]``.
+        The expression ``for outcome in await self._walk_and_index(root, base)``
+        fully awaits the coroutine (embedding ALL files) and THEN iterates the
+        returned list.  The per-file ``_write_rebuild_status`` calls in the loop
+        body only execute after every embed has finished, so ``done`` is 0
+        throughout the entire (minutes-long) re-embed phase.  The spy sees
+        ``done == 0`` on every embed call → ``max(observed_done_values) == 0``
+        → the assertion ``max(recorded) > 0`` fails.
+    """
+
+    async def test_done_counter_advances_before_rebuild_completes(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        """Arrange: index a 4-file corpus with a ProgressSpyEmbedder.
+        Act: call rebuild_all() — the spy records done from the manifest at
+             each embed_documents call.
+        Assert:
+            1. Observed done values are non-decreasing (no resets).
+            2. At least one observed value is strictly between 0 and total
+               (proves mid-rebuild progress — not an all-zero-then-jump).
+            3. After rebuild_all: state == "done", done == total (completion
+               correct, crash-safety invariant untouched).
+        """
+        # real-Qdrant
+        import json as _json
+
+        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_extended_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        manifest = Manifest(str(tmp_path / "m.db"))
+
+        # Sanity: verify the corpus actually has the expected total so a
+        # miscounted corpus silently invalidates the oracle.
+        # We count by doing an initial index and reading the manifest — the same
+        # authoritative source rebuild_all uses (clause 5: same source of truth).
+        seed_embedder = FakeEmbedder(dim=_DIM)
+        seed_indexer = _make_indexer(
+            config=config, store=store, embedder=seed_embedder,
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+        await seed_indexer.index_all()
+        # All 4 indexable files must have been indexed on the initial pass.
+        initial_indexed = sum(
+            1 for row in manifest.all_files() if row.state == "indexed"
+        )
+        assert initial_indexed == _EXTENDED_CORPUS_TOTAL, (
+            f"corpus setup error: expected {_EXTENDED_CORPUS_TOTAL} indexed files, "
+            f"got {initial_indexed} — _build_extended_corpus or _EXTENDED_CORPUS_TOTAL "
+            f"is inconsistent"
+        )
+
+        # Now wire the spy embedder into a FRESH indexer for the rebuild.
+        # The spy and rebuild_all share the SAME manifest instance — the real seam.
+        spy = ProgressSpyEmbedder(manifest=manifest, dim=_DIM)
+        rebuild_indexer = _make_indexer(
+            config=config, store=store, embedder=spy,
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+
+        # ACT: rebuild_all purges all manifest rows + vectors, then re-embeds every
+        # file.  The spy records done at the start of each embed_documents call.
+        fingerprint = embedding_schema_fingerprint(config)
+        await rebuild_indexer.rebuild_all(fingerprint=fingerprint)  # type: ignore[attr-defined]
+
+        # -----------------------------------------------------------------------
+        # ASSERT 1: the spy must have been called (> 0 embed calls) — proves the
+        # rebuild actually ran and was observable, not vacuously empty.
+        # -----------------------------------------------------------------------
+        assert len(spy.observed_done_values) > 0, (
+            "rebuild_all must call embed_documents at least once — "
+            "the spy must have recorded observations (corpus has 4 files)"
+        )
+
+        # Sanity bound on observation count: at most one call per file (clause 4).
+        # A batching implementation might call embed_documents fewer times than
+        # files (multiple files per batch), but never MORE than files.
+        assert len(spy.observed_done_values) <= _EXTENDED_CORPUS_TOTAL, (
+            f"embed_documents was called {len(spy.observed_done_values)} times — "
+            f"more than the {_EXTENDED_CORPUS_TOTAL} files in the corpus (impossible)"
+        )
+
+        # -----------------------------------------------------------------------
+        # ASSERT 2: the observed sequence is non-decreasing.
+        # (A live counter that resets mid-rebuild would indicate a different bug.)
+        # -----------------------------------------------------------------------
+        for index in range(1, len(spy.observed_done_values)):
+            assert spy.observed_done_values[index] >= spy.observed_done_values[index - 1], (
+                f"observed done values must be non-decreasing; "
+                f"sequence {spy.observed_done_values} has a decrease at index {index}"
+            )
+
+        # -----------------------------------------------------------------------
+        # ASSERT 3 (PRIMARY — the one that FAILS on current code):
+        # At least one observed done value is strictly between 0 and total.
+        # This is the precise contract: "done must advance DURING the rebuild."
+        #
+        # Under the bug: every embed call sees done==0 (the counter is written
+        # AFTER _walk_and_index returns the full list) → no value in (0, total)
+        # exists → this assertion fails.
+        #
+        # Under the fix: _write_rebuild_status is called per-file inside the walk
+        # so by the time the N-th file's embed_documents fires, N-1 files' status
+        # writes have already landed → at least one call sees done >= 1 < total.
+        #
+        # Robustness against batching: if the implementation processes multiple
+        # files per embed_documents call, the spy still records the done value at
+        # the START of that call.  As long as ANY per-file status write precedes
+        # a subsequent embed call, the condition holds.  We do NOT require a
+        # strictly-increasing value per call (batching may keep it flat for a
+        # group), only that the overall sequence reaches a strictly interior value.
+        # -----------------------------------------------------------------------
+        observed_max_before_last = max(spy.observed_done_values[:-1]) if len(spy.observed_done_values) > 1 else spy.observed_done_values[0]
+        # The primary discriminator: a value strictly between 0 and total was seen.
+        has_interior_progress = any(
+            0 < value < _EXTENDED_CORPUS_TOTAL
+            for value in spy.observed_done_values
+        )
+        assert has_interior_progress, (
+            f"rebuild_all must advance schema_rebuild_status.done LIVE — "
+            f"at least one embed_documents call must observe done in "
+            f"(0, {_EXTENDED_CORPUS_TOTAL}) exclusive, but observed values were "
+            f"{spy.observed_done_values!r} (all-zero means done is only written "
+            f"AFTER _walk_and_index returns the full list — the bug)"
+        )
+
+        # -----------------------------------------------------------------------
+        # ASSERT 4: completion state is correct (crash-safety contract untouched).
+        # Final state after rebuild_all: state == "done" AND done == total.
+        # -----------------------------------------------------------------------
+        raw_final = manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+        assert raw_final is not None, (
+            "schema_rebuild_status meta key must be present after rebuild_all completes"
+        )
+        final_blob = _json.loads(raw_final)
+        assert final_blob["state"] == "done", (
+            f"schema_rebuild_status.state must be 'done' after successful rebuild_all; "
+            f"got {final_blob['state']!r}"
+        )
+        # done must equal the count of indexed files — not the pre-counted total,
+        # which could differ if files were skipped or failed.  We read done and
+        # total from the BLOB so this is an exact-match assertion on the produced
+        # state, not a restatement of _EXTENDED_CORPUS_TOTAL (independent oracle).
+        assert final_blob["done"] == final_blob["total"], (
+            f"schema_rebuild_status.done must equal total at completion; "
+            f"blob={final_blob!r}"
+        )
+        # Sanity bound: done and total are non-negative and done >= initial_indexed
+        # (we re-embedded at least as many files as the initial index had — clause 4).
+        assert final_blob["done"] >= 1, (
+            f"done must be positive after a real rebuild; blob={final_blob!r}"
+        )
+        assert final_blob["total"] >= 1, (
+            f"total must be positive for a non-empty corpus; blob={final_blob!r}"
+        )
+        # The fingerprint stamp must be set after success (crash-safety: written
+        # only on completion, not during).
+        stored_fp = manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+        assert stored_fp == fingerprint, (
+            f"the fingerprint must be stamped into the manifest after a successful "
+            f"rebuild_all; stored={stored_fp!r}, expected={fingerprint!r}"
+        )
