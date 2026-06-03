@@ -78,7 +78,7 @@ SCHEMA_REBUILD_STATUS_META_KEY = "schema_rebuild_status"
 
 # Expected EMBEDDING_SCHEMA_VERSION — a deliberate-change tripwire. Bumping the
 # epoch (which forces every index to rebuild) must update this pin in the same
-# commit, so an accidental epoch change fails loudly. Bumped to 2 in v0.4.2: the
+# commit, so an accidental epoch change fails loudly. Bumped to 2: the
 # python_ast chunker now sizes the composed embedding_text (header + source), so
 # chunk boundaries change for near-cap files and all indexes must rebuild.
 EXPECTED_SCHEMA_VERSION: int = 2
