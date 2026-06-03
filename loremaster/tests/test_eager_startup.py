@@ -470,13 +470,28 @@ class TestEagerLifespanComposition:
         # lifespan.startup (uvicorn aborts the process) and must NOT be cached — a
         # later startup retries and can succeed. Mirrors the guard's existing
         # no-cache-on-failure unit contract, lifted to the composition layer.
+        #
+        # FP-07 reconciliation: the PRODUCTION default is now a BOUNDED retry
+        # (_DEFAULT_EAGER_MAX_ATTEMPTS=5, _DEFAULT_EAGER_BACKOFF_BASE_S=2.0s), so a
+        # SINGLE transient blip (fail_acquire_times=1) under the production
+        # composition would RETRY and recover — which is exactly the FP-07 behaviour
+        # test_default_eager_lifespan_is_bounded_not_single_shot pins. This test's
+        # intent is the orthogonal "a build that genuinely fails its whole budget
+        # surfaces + does not wedge", so it drives a directly-built SINGLE-SHOT eager
+        # lifespan (max_attempts=1) — the original pre-FP-07 fail-closed semantics —
+        # with a zero backoff so the suite stays fast (the production 2.0s sleep is
+        # never incurred). The no-cache-on-failure recovery phase below then proves
+        # the failed build is not wedged.
         guard = _SpyGuard(fail_acquire_times=1)
         inner = _SpyInnerApp()
-        app = self._compose_with_spies(tmp_path, guard=guard, inner=inner)
+        app = _compose_eager_lifespan_with_retry(
+            guard=guard, inner=inner, max_attempts=1, backoff_base_s=0.0,
+        )
 
-        # First startup: the eager build raises. The failure must NOT be swallowed
-        # — either it propagates out of the lifespan call, or the app reports
-        # lifespan.startup.failed (uvicorn's signal to abort). Accept either.
+        # First startup: the eager build raises and (single-shot) is NOT retried, so
+        # the failure must surface. It must NOT be swallowed — either it propagates
+        # out of the lifespan call, or the app reports lifespan.startup.failed
+        # (uvicorn's signal to abort). Accept either.
         failed_signal = await _drive_startup_expecting_failure(app)
         assert failed_signal, (
             "a failed eager build must surface (raise out of startup or send "
@@ -877,10 +892,20 @@ class TestEagerBuildFailureMessageDoesNotLeakSecrets:
 
         lore_logger_name = server_module.logger.name  # "loremaster.server"
 
+        # FP-07 reconciliation: the production default eager lifespan now RETRIES a
+        # transient blip (_DEFAULT_EAGER_MAX_ATTEMPTS=5), so fail_acquire_times=1
+        # under the production composition would recover and never reach
+        # startup.failed — there would be no operator-facing message to harden. This
+        # test's intent (the startup.failed MESSAGE is operator-safe + detail logged)
+        # requires a build that genuinely reaches startup.failed, so it drives a
+        # directly-built SINGLE-SHOT eager lifespan (max_attempts=1, the original
+        # fail-closed semantics) with a zero backoff to keep the suite fast (the
+        # production 2.0s inter-attempt sleep is never incurred). The leak vector is
+        # unchanged: the (single) failing acquire raises the secret-bearing sentinel.
         guard = _LeakingSpyGuard(fail_acquire_times=1)
         inner = _SpyInnerApp()
-        app = TestEagerLifespanComposition._compose_with_spies(
-            tmp_path, guard=guard, inner=inner
+        app = _compose_eager_lifespan_with_retry(
+            guard=guard, inner=inner, max_attempts=1, backoff_base_s=0.0,
         )
 
         # Act: drive lifespan.startup; the eager build fails. Capture BOTH the
@@ -934,4 +959,229 @@ class TestEagerBuildFailureMessageDoesNotLeakSecrets:
             "the eager-build failure detail must be logged through loremaster's "
             "own logger (the redaction-backstopped sink) at ERROR — so hardening "
             "the ASGI message does not blind operators to WHY startup failed"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# FP-07 — eager startup retries the heavy build with bounded backoff
+# --------------------------------------------------------------------------- #
+# With eager startup, a TRANSIENT Qdrant/TEI outage at boot makes the eager build
+# raise -> lifespan.startup.failed -> uvicorn aborts -> the container EXITS (no
+# auto-retry). A brief dependency blip should not permanently down the container.
+# The fix: the eager startup retries the heavy build with BOUNDED backoff (N
+# attempts) before surfacing failure — so a build that fails K<N times then
+# succeeds comes up cleanly (no startup.failed), while a build failing ALL N
+# attempts still surfaces lifespan.startup.failed (fail-closed after exhausting
+# the retries).
+#
+# Contract surface: _EagerStartupLifespan accepts a bounded retry policy
+# (max_attempts N + a per-attempt backoff). For the test N is small and the
+# backoff is ZERO (parameterized) so the suite is not slow. The retry count is
+# asserted via the existing _SpyGuard.acquire_calls oracle — an independent
+# observation the production guard cannot satisfy by accident.
+
+# A small attempt budget for the tests — large enough to distinguish "retried"
+# from "single-shot" (>= 2 attempts), small enough to keep the failing-all case
+# fast. The PRODUCTION default attempt count is the impl's choice; the test pins
+# the retry BEHAVIOUR (fail K<N -> succeed; fail N -> surface) at an injected N.
+_TEST_MAX_ATTEMPTS = 3
+
+# Zero backoff so a test that exhausts all attempts does not sleep — the retry
+# LOGIC, not the wall-clock delay, is what the contract pins. (A non-zero default
+# in production is fine; the test injects zero to stay fast.)
+_TEST_ZERO_BACKOFF_S = 0.0
+
+
+def _compose_eager_lifespan_with_retry(
+    *,
+    guard: _SpyGuard,
+    inner: _SpyInnerApp,
+    max_attempts: int,
+    backoff_base_s: float,
+) -> Any:
+    """Construct the REAL ``_EagerStartupLifespan`` with an injected retry policy.
+
+    The retry-with-backoff lives in the eager-startup lifespan interceptor, so the
+    test drives that real object directly with spy collaborators (a spy guard whose
+    acquire fails a controlled number of times, a spy inner app) and an injected
+    small N + zero backoff. The assertions read the SPY's call counts — an oracle
+    independent of the impl (clause 2).
+    """
+    from loremaster.server import _EagerStartupLifespan
+
+    # The retry policy is threaded as keyword arguments the contract defines on the
+    # eager-lifespan interceptor (max_attempts + the per-attempt backoff seconds).
+    return _EagerStartupLifespan(
+        inner,
+        guard,
+        max_attempts=max_attempts,  # type: ignore[call-arg]
+        backoff_base_s=backoff_base_s,  # type: ignore[call-arg]
+    )
+
+
+class TestEagerStartupRetriesWithBackoff:
+    """The eager startup retries a transiently-failing heavy build before giving up.
+
+    Invariants (each with an oracle independent of the impl — the spy guard's
+    acquire-call count):
+        (a) a build that fails K < N times then SUCCEEDS -> startup completes
+            cleanly (no lifespan.startup.failed), and the eager lease ends up HELD;
+            the build was retried exactly K+1 times.
+        (b) a build that fails ALL N attempts -> lifespan.startup.failed is
+            surfaced (fail-closed), and the guard was acquired exactly N times
+            (the retry budget was exhausted, not exceeded, not single-shot).
+    """
+
+    async def test_transient_failure_then_success_starts_up_cleanly(
+        self,
+    ) -> None:
+        """A guard failing once then succeeding -> startup completes (retried).
+
+        Arrange: a spy guard whose FIRST acquire raises (a transient blip) then
+                 succeeds, wrapped in the real eager lifespan with N attempts + zero
+                 backoff.
+        Act: drive lifespan.startup only (the steady-running state).
+        Assert: startup reports ...complete (NOT ...failed); the build was retried
+                (acquire_calls == 2 == 1 fail + 1 success); the eager lease is HELD.
+        """
+        # A SINGLE transient failure, then success — fewer than the attempt budget.
+        transient_failures = 1
+        assert transient_failures < _TEST_MAX_ATTEMPTS, (
+            "test setup: the transient-failure count must be below the attempt budget "
+            "so the retry can recover"
+        )
+        guard = _SpyGuard(fail_acquire_times=transient_failures)
+        inner = _SpyInnerApp()
+        app = _compose_eager_lifespan_with_retry(
+            guard=guard, inner=inner,
+            max_attempts=_TEST_MAX_ATTEMPTS, backoff_base_s=_TEST_ZERO_BACKOFF_S,
+        )
+
+        # Drive startup only (leaves the eager lease HELD — the steady-running state).
+        await _drive_eager_startup(app)
+
+        # The build was RETRIED past the transient failure: one failed acquire + one
+        # successful acquire == 2 calls. A single-shot (no-retry) eager startup would
+        # have stopped at acquire_calls == 1 and surfaced failure.
+        expected_acquires = transient_failures + 1
+        assert guard.acquire_calls == expected_acquires, (
+            f"a transient eager-build failure must be RETRIED: expected "
+            f"{expected_acquires} acquire attempts (1 transient failure + 1 success), "
+            f"got {guard.acquire_calls} — a single-shot startup would abort the "
+            "container on a brief dependency blip (FP-07)"
+        )
+        # The retry SUCCEEDED, so the eager lease is held (the process is up).
+        assert guard.live_leases == 1, (
+            "after a successful retry the eager process-lifetime lease must be HELD "
+            f"(live_leases=1); got {guard.live_leases} — the container is up, not "
+            "wedged by the transient failure"
+        )
+
+    async def test_transient_failure_then_success_does_not_surface_failure(
+        self,
+    ) -> None:
+        """A retried-and-recovered startup must NOT report lifespan.startup.failed.
+
+        The behavioural complement of the acquire-count oracle: the
+        startup-failure SIGNAL uvicorn keys on must be ABSENT when the retry
+        recovers — otherwise uvicorn aborts the container despite the recovery.
+        """
+        guard = _SpyGuard(fail_acquire_times=1)  # one blip, then success
+        inner = _SpyInnerApp()
+        app = _compose_eager_lifespan_with_retry(
+            guard=guard, inner=inner,
+            max_attempts=_TEST_MAX_ATTEMPTS, backoff_base_s=_TEST_ZERO_BACKOFF_S,
+        )
+
+        # _drive_startup_expecting_failure returns True iff a failure surfaced
+        # (raise or lifespan.startup.failed). A recovered retry must return False.
+        failed = await _drive_startup_expecting_failure(app)
+        assert failed is False, (
+            "a transient eager-build failure that the retry RECOVERS from must NOT "
+            "surface lifespan.startup.failed — uvicorn must not abort the container "
+            "when the dependency blip cleared within the retry budget (FP-07)"
+        )
+
+    async def test_failing_all_attempts_surfaces_failure_after_exhausting_retries(
+        self,
+    ) -> None:
+        """A build failing EVERY attempt fails closed: startup.failed after N tries.
+
+        Arrange: a spy guard whose acquire ALWAYS fails (more failures than the
+                 attempt budget), wrapped in the real eager lifespan with N attempts.
+        Act: drive lifespan.startup.
+        Assert: a failure surfaces (fail-closed), and the guard was acquired
+                EXACTLY N times — the retry budget was exhausted, not exceeded.
+        """
+        # Always fail: more transient failures than the budget, so no attempt
+        # succeeds and the retries are exhausted.
+        always_fail = _TEST_MAX_ATTEMPTS + 5
+        guard = _SpyGuard(fail_acquire_times=always_fail)
+        inner = _SpyInnerApp()
+        app = _compose_eager_lifespan_with_retry(
+            guard=guard, inner=inner,
+            max_attempts=_TEST_MAX_ATTEMPTS, backoff_base_s=_TEST_ZERO_BACKOFF_S,
+        )
+
+        failed = await _drive_startup_expecting_failure(app)
+        assert failed, (
+            "an eager build that fails EVERY attempt must surface "
+            "lifespan.startup.failed (fail-closed) so uvicorn aborts — never a "
+            "silent green startup over a dead context after exhausting retries"
+        )
+
+        # The retry budget was EXHAUSTED, not exceeded: exactly N acquire attempts
+        # were made. This pins both ends — at least N (it retried, not single-shot)
+        # AND at most N (it stopped, no unbounded retry loop that never lets uvicorn
+        # abort a genuinely-down dependency).
+        assert guard.acquire_calls == _TEST_MAX_ATTEMPTS, (
+            f"a permanently-failing eager build must be attempted EXACTLY "
+            f"{_TEST_MAX_ATTEMPTS} times (the bounded retry budget) before failing "
+            f"closed; got {guard.acquire_calls} acquire attempts — more would be an "
+            "unbounded loop (the container never aborts a truly-down dependency), "
+            "fewer would be insufficient retry"
+        )
+        # Nothing leaked: every failed acquire rolled back, so no live lease lingers.
+        assert guard.live_leases == 0, (
+            "after exhausting all retries on a permanently-failing build the eager "
+            f"lease must NOT be held (live_leases=0); got {guard.live_leases}"
+        )
+
+    async def test_default_eager_lifespan_is_bounded_not_single_shot(
+        self,
+    ) -> None:
+        """build_asgi_app's composed eager lifespan retries (N > 1) by default.
+
+        The end-of-seam check: the PRODUCTION composition (build_mcp_server ->
+        build_asgi_app) must wire a BOUNDED retry policy with N > 1 attempts, not a
+        single-shot eager build. Drive the real composed app with a spy guard
+        substituted (so no live deps) whose acquire fails once then succeeds; the
+        default policy must retry past the single blip.
+
+        This pins that the fix reaches the PRODUCTION default — not only the
+        directly-constructed interceptor — so a real deployment actually gets the
+        retry (the producer side of the build_asgi_app seam).
+        """
+        from pathlib import Path
+        import tempfile
+
+        guard = _SpyGuard(fail_acquire_times=1)  # one transient blip
+        inner = _SpyInnerApp()
+        with tempfile.TemporaryDirectory() as tmp:
+            app = TestEagerLifespanComposition._compose_with_spies(
+                Path(tmp), guard=guard, inner=inner
+            )
+            await _drive_eager_startup(app)
+
+        # The DEFAULT composed lifespan retried past the single transient failure
+        # (acquire_calls >= 2) rather than aborting on the first (acquire_calls == 1).
+        assert guard.acquire_calls >= 2, (
+            "build_asgi_app's composed eager lifespan must retry a transient eager-"
+            "build failure by DEFAULT (a bounded N > 1 retry policy); it attempted "
+            f"the build {guard.acquire_calls}x — a single attempt means a brief boot-"
+            "time dependency blip permanently downs the container (FP-07 unfixed)"
+        )
+        assert guard.live_leases == 1, (
+            "the default retry must recover the single blip and HOLD the eager lease "
+            f"(live_leases=1); got {guard.live_leases}"
         )

@@ -79,6 +79,12 @@ _FILE_PATH_KEY = "file_path"
 # Default number of points per upsert request.
 _DEFAULT_BATCH_SIZE = 64
 
+# Default page size when scrolling EVERY point in a collection. A backfill
+# sweep (FP-06) pages the whole memory collection; a moderate page bounds the
+# per-call response size while keeping the round-trip count small for a typical
+# project's memory count.
+_DEFAULT_SCROLL_PAGE = 256
+
 
 class QdrantStore:
     """Async wrapper over a single ``lore_<slug>`` Qdrant collection (tiered).
@@ -440,6 +446,57 @@ class QdrantStore:
             ),
         )
         return list(points)
+
+    async def scroll_all(
+        self, page_size: int = _DEFAULT_SCROLL_PAGE
+    ) -> list[qmodels.Record]:
+        """Return EVERY point in the collection (payloads included), unfiltered.
+
+        Unlike :meth:`scroll` (a single bounded, FILTERED page), this pages the
+        WHOLE collection by following the scroll cursor until it is exhausted —
+        the primitive the FP-06 ledger backfill needs to read every pre-existing
+        memory point's payload. An ABSENT collection has nothing to scroll, so it
+        reports ``[]`` rather than letting the scroll call 404 (mirroring
+        :meth:`count_points`). Vectors are NOT fetched (the backfill re-embeds
+        from the payload's note text), keeping the response small.
+
+        Args:
+            page_size: The maximum points fetched per round-trip; the cursor is
+                followed across pages until the collection is exhausted.
+
+        Returns:
+            Every point in the collection (payloads included); ``[]`` when the
+            collection is absent or empty.
+        """
+        # An absent collection has nothing to scroll — the wiped-and-not-recreated
+        # shape — so report an empty list rather than letting the scroll 404.
+        if not await self._with_retry(
+            "collection_exists",
+            lambda: self._client.collection_exists(self._collection_name),
+        ):
+            return []
+        all_points: list[qmodels.Record] = []
+        # ``offset`` is Qdrant's opaque scroll cursor: ``None`` starts at the
+        # beginning, and each page returns the cursor for the NEXT page (``None``
+        # once the collection is exhausted).
+        offset: qmodels.ExtendedPointId | None = None
+        while True:
+            points, next_offset = await self._with_retry(
+                "scroll",
+                functools.partial(
+                    self._client.scroll,
+                    collection_name=self._collection_name,
+                    limit=page_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                ),
+            )
+            all_points.extend(points)
+            if next_offset is None:
+                break
+            offset = next_offset
+        return all_points
 
     async def delete_by_file(self, tier: str, file_path: str) -> None:
         """Purge every point matching ``(tier, file_path)`` exactly.

@@ -67,6 +67,7 @@ in-memory backend cannot represent.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -1602,4 +1603,571 @@ class TestEmptyDecisionReadsLiveCount:
             f"count_points() (total) must report the LIVE store count: a wiped "
             f"collection is 0 even though the manifest lists {manifest_files} files. "
             f"Got {total} — an empty? check grounded in the manifest is FP-10"
+        )
+
+
+# ===========================================================================
+# FIX 1 — graph-only heal EFFICIENCY (FP-04 follow-up)
+# ===========================================================================
+# Today a wiped graph over a HEALTHY collection (graph-only loss) heals by
+# delete_by_tier + reset_tier, which forces the subsequent sweep to do a FULL
+# VECTOR RE-EMBED of an intact collection just to rebuild the graph rows. That is
+# wasteful: the vectors were never lost. The fix pins a smarter heal — when the
+# graph is wiped but the LIVE point count AGREES with the manifest (collection
+# healthy, graph-only loss), the reconcile rebuilds the GRAPH ONLY (re-chunk +
+# re-graph each indexed .py file) WITHOUT re-embedding or purging the vectors. A
+# new indexer surface ``Indexer.rebuild_graph_only(tier) -> int`` does the per-file
+# _chunk + _refresh_graph (no embed, no upsert, no delete_by_tier).
+#
+# When the count ALSO diverged (collection wiped/short too), the existing
+# purge+reset full-rebuild path still applies (TestWipedCollectionHeals /
+# TestWipedGraphHeals) — that path rebuilds the graph anyway, so it is unchanged.
+
+
+def _make_graph_wired_indexer(
+    *,
+    config: LoreConfig,
+    store: QdrantStore,
+    embedder: Any,
+    manifest: Manifest,
+    code_graph: CodeGraph,
+    snapshot_root: Path,
+) -> Any:
+    """Wire a real :class:`Indexer` with the code graph injected — the PROD shape.
+
+    Mirrors the production builder at ``build_app_context`` (server.py:1481): the
+    SAME registry, source providers, config, snapshot root, AND ``code_graph``
+    that the reconcile's graph-only heal will drive. Grounding the fixture in the
+    production wiring (clause 5) means the test exercises the real ``_chunk`` +
+    ``_refresh_graph`` path, not a hand-rolled double.
+    """
+    from loremaster.index.indexer import Indexer
+    from loremaster.source.local_directory import LocalDirectorySourceProvider
+
+    server = LoreServer(config)
+    providers: list[Any] = list(server.source_providers)
+    for root in config.roots:
+        if root.watch == "static" and root.source is not None:
+            providers.append(LocalDirectorySourceProvider(root.tier, Path(root.source)))
+    return Indexer(
+        store=store,
+        embedder=embedder,
+        manifest=manifest,
+        registry=server.registry,
+        source_providers=providers,
+        config=config,
+        snapshot_root=snapshot_root,
+        code_graph=code_graph,
+    )
+
+
+def _wipe_graph_rows(graph_path: Path) -> int:
+    """Delete every graph node/edge row behind the manifest's back; return prior file count.
+
+    The graph-only divergence injector: clears the graph's ``nodes`` + ``edges``
+    tables (leaving the manifest + the vector collection intact). Uses the real
+    SQLite tables the production graph reads, so the fixture is grounded in the
+    actual DB (the same wipe ``TestWipedGraphHeals`` performs). Returns the
+    graph's indexed-file count BEFORE the wipe so a caller can assert the heal
+    restored it.
+    """
+    graph = CodeGraph(str(graph_path))
+    try:
+        prior = graph.indexed_file_count()
+        with graph.connection:
+            graph.connection.execute("DELETE FROM nodes")
+            graph.connection.execute("DELETE FROM edges")
+        return prior
+    finally:
+        graph.close()
+
+
+class TestGraphOnlyHealDoesNotReEmbed:
+    """A graph-only loss (healthy collection) re-graphs WITHOUT a vector re-embed.
+
+    THE EFFICIENCY WIN. When the graph is wiped but the live point count AGREES
+    with the manifest, the reconcile must rebuild the graph ONLY — no
+    ``delete_by_tier`` purge, no re-embed. Independent oracles, all read from the
+    LIVE store / graph, never the reconcile internals:
+        1. The graph repopulates (indexed-file count back to the seeded value) and
+           a real ``what_imports`` query returns edges again.
+        2. ``delete_by_tier`` is NEVER called for the tier (the spy records ZERO
+           purges) — the collection is not blown away.
+        3. ``count_points(tier)`` is UNCHANGED across the whole heal (no re-embed,
+           no orphaning) — the vectors are exactly the same set.
+    """
+
+    async def test_graph_only_loss_regraphs_without_purge_or_count_change(
+        self, divergence_harness: Any, tmp_path: Path
+    ) -> None:
+        """Arrange: seed a real index (collection + graph healthy). WIPE ONLY the
+                 graph rows, leaving the collection intact.
+        Act: run reconcile_store_divergence (bare) with a delete_by_tier SPY and the
+             real graph-wired Indexer wired in (the prod collaborator set).
+        Assert: graph healed (file count restored, what_imports hits) AND the spy
+                recorded ZERO purges AND count_points(tier) is unchanged.
+        """
+        # real-Qdrant
+        from conftest import QDRANT_URL, _qdrant_api_key
+
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)  # has .py files → graph genuinely populated
+        config = divergence_harness["config"](slug=slug, live_path=live)
+        manifest_path = tmp_path / "m.db"
+        graph_path = tmp_path / "graph.db"
+        snap = tmp_path / "snap"
+
+        # Step 1: seed a real, fully-healthy index (collection + graph), then close.
+        seed = await divergence_harness["build"](
+            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            snapshot_root=snap, start_tasks=True,
+        )
+        await seed.reindex(None)
+        await seed.aclose()
+
+        # The collection is healthy: live count == expected, both > 0. This is the
+        # precondition that makes a vector re-embed pure waste (clause 1: realistic
+        # healthy index, not a convenience shape).
+        manifest = Manifest(str(manifest_path))
+        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
+        manifest.close()
+        count_before = await _live_count(
+            slug=slug, tier=_LIVE_TIER, url=QDRANT_URL, api_key=_qdrant_api_key(),
+        )
+        assert count_before == expected and expected > 0, (
+            f"test setup: the seeded collection must be HEALTHY (live {count_before} "
+            f"== expected {expected} > 0) — a vector re-embed on a graph-only loss "
+            "must therefore be pure waste"
+        )
+
+        # Step 2: WIPE ONLY the graph rows (collection untouched) — the graph-only
+        # loss shape this fix optimises.
+        seeded_graph_files = _wipe_graph_rows(graph_path)
+        assert seeded_graph_files > 0, (
+            "test setup: the seed must have populated the graph (so the wipe is a "
+            "real loss, not a no-op)"
+        )
+
+        # Step 3: run the BARE reconcile with a delete_by_tier spy AND the real
+        # graph-wired indexer (the new collaborator the graph-only heal drives).
+        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
+        spy_store = DeleteByTierSpyStore(client=client, slug=slug)
+        divergence_harness["register"](slug)
+        manifest2 = Manifest(str(manifest_path))
+        graph2 = CodeGraph(str(graph_path))
+        indexer = _make_graph_wired_indexer(
+            config=config, store=spy_store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest2, code_graph=graph2, snapshot_root=snap,
+        )
+        try:
+            await spy_store.ensure_collection(_DIM)
+            from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+
+            # The NEW seam: the reconcile accepts the indexer so it can re-graph
+            # without re-embedding. The keyword is the contract; the impl wires it
+            # from build_app_context's already-constructed indexer.
+            await reconcile_store_divergence(  # type: ignore[misc]
+                store=spy_store,
+                manifest=manifest2,
+                code_graph=graph2,
+                config=config,
+                indexer=indexer,
+            )
+        finally:
+            manifest2.close()
+            graph2.close()
+            await client.close()
+
+        # ASSERT 2 (efficiency oracle): NO tier was purged. A graph-only loss over a
+        # healthy collection must NOT blow the vectors away.
+        assert spy_store.purged_tiers == [], (
+            "a graph-only loss over a HEALTHY collection must re-graph WITHOUT a "
+            f"vector purge; the reconcile called delete_by_tier on "
+            f"{spy_store.purged_tiers!r} — that forces a wasteful full re-embed of "
+            "an intact collection (the FP-04 follow-up the fix removes)"
+        )
+
+        # ASSERT 3 (efficiency oracle): the live count is UNCHANGED — no re-embed,
+        # no orphaning. The exact same vector set is still there.
+        count_after = await _live_count(
+            slug=slug, tier=_LIVE_TIER, url=QDRANT_URL, api_key=_qdrant_api_key(),
+        )
+        assert count_after == count_before, (
+            f"the graph-only heal must leave the vector collection UNTOUCHED: "
+            f"count_points({_LIVE_TIER}) was {count_before} before and {count_after} "
+            "after — a changed count means the heal re-embedded/purged an intact "
+            "collection (the waste this fix exists to remove)"
+        )
+
+        # ASSERT 1 (heal oracle): the graph repopulated and a real query hits again.
+        healed_graph = CodeGraph(str(graph_path))
+        healed_graph_files = healed_graph.indexed_file_count()
+        healed_graph.close()
+        assert healed_graph_files == seeded_graph_files, (
+            f"the graph-only heal must repopulate the graph: indexed-file count must "
+            f"return to {seeded_graph_files}; got {healed_graph_files}"
+        )
+
+        # what_imports('os') must find the importer again — proves the re-graph
+        # rebuilt real edges, not just node rows. Read via a throwaway graph-wired
+        # context so the query runs through the production graph API.
+        verify_graph = CodeGraph(str(graph_path))
+        try:
+            importers = verify_graph.what_imports(_REP_MODULE_IMPORT)
+        finally:
+            verify_graph.close()
+        assert len(importers) >= 1, (
+            f"after the graph-only heal, what_imports({_REP_MODULE_IMPORT!r}) must "
+            "return the importing module again — an empty graph returns nothing"
+        )
+
+
+class TestRebuildGraphOnlyIndexerMethod:
+    """``Indexer.rebuild_graph_only(tier)`` re-graphs a tier's .py files, no embed.
+
+    The new indexer primitive the graph-only heal drives. For each indexed file in
+    the tier it does ``_chunk`` + ``_refresh_graph`` — NO embed, NO upsert, NO
+    delete_by_tier. Oracles read the LIVE graph + the LIVE store count: the graph
+    repopulates (a real what_imports hit) and the vector count is unchanged.
+    """
+
+    async def test_rebuild_graph_only_repopulates_graph_without_touching_vectors(
+        self, divergence_harness: Any, tmp_path: Path
+    ) -> None:
+        """Arrange: seed a real index; WIPE ONLY the graph rows.
+        Act: call indexer.rebuild_graph_only(live_tier) directly.
+        Assert: returns the re-graphed file count (> 0) AND the graph repopulated
+                AND count_points(tier) unchanged AND no purge fired.
+        """
+        # real-Qdrant
+        from conftest import QDRANT_URL, _qdrant_api_key
+
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = divergence_harness["config"](slug=slug, live_path=live)
+        manifest_path = tmp_path / "m.db"
+        graph_path = tmp_path / "graph.db"
+        snap = tmp_path / "snap"
+
+        seed = await divergence_harness["build"](
+            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            snapshot_root=snap, start_tasks=True,
+        )
+        await seed.reindex(None)
+        await seed.aclose()
+
+        count_before = await _live_count(
+            slug=slug, tier=_LIVE_TIER, url=QDRANT_URL, api_key=_qdrant_api_key(),
+        )
+        assert count_before > 0, "test setup: the seed must produce >0 points"
+
+        seeded_graph_files = _wipe_graph_rows(graph_path)
+        assert seeded_graph_files > 0, "test setup: the seed must populate the graph"
+
+        # Drive the new primitive directly through a graph-wired indexer + a
+        # delete_by_tier spy so we can prove it neither embeds nor purges.
+        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
+        spy_store = DeleteByTierSpyStore(client=client, slug=slug)
+        divergence_harness["register"](slug)
+        manifest2 = Manifest(str(manifest_path))
+        graph2 = CodeGraph(str(graph_path))
+        indexer = _make_graph_wired_indexer(
+            config=config, store=spy_store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest2, code_graph=graph2, snapshot_root=snap,
+        )
+        try:
+            await spy_store.ensure_collection(_DIM)
+            # The NEW indexer surface under contract: re-graph the tier's .py files.
+            regraphed = await indexer.rebuild_graph_only(_LIVE_TIER)  # type: ignore[attr-defined]
+        finally:
+            manifest2.close()
+            graph2.close()
+            await client.close()
+
+        # Return-value oracle: the method reports how many files it re-graphed —
+        # the count of indexed graph-eligible (.py) files in the tier, > 0 for the
+        # widget/routing corpus. (Pure-logic count of the tier's .py rows; an exact
+        # equality to the prior graph file count is the independent oracle.)
+        assert regraphed == seeded_graph_files, (
+            f"rebuild_graph_only({_LIVE_TIER!r}) must re-graph every indexed .py file "
+            f"in the tier and report the count ({seeded_graph_files}); got {regraphed}"
+        )
+
+        # The graph repopulated (LIVE graph read).
+        healed_graph = CodeGraph(str(graph_path))
+        healed_graph_files = healed_graph.indexed_file_count()
+        try:
+            importers = healed_graph.what_imports(_REP_MODULE_IMPORT)
+        finally:
+            healed_graph.close()
+        assert healed_graph_files == seeded_graph_files, (
+            f"rebuild_graph_only must restore the graph file count to "
+            f"{seeded_graph_files}; got {healed_graph_files}"
+        )
+        assert len(importers) >= 1, (
+            f"rebuild_graph_only must rebuild real edges: what_imports("
+            f"{_REP_MODULE_IMPORT!r}) must hit again"
+        )
+
+        # No embed / no purge: the live vector count is byte-identical and the spy
+        # saw zero purges.
+        count_after = await _live_count(
+            slug=slug, tier=_LIVE_TIER, url=QDRANT_URL, api_key=_qdrant_api_key(),
+        )
+        assert count_after == count_before, (
+            f"rebuild_graph_only must NOT touch the vectors: count_points({_LIVE_TIER}) "
+            f"was {count_before}, now {count_after} — it must do _chunk + _refresh_graph "
+            "only (no embed, no upsert)"
+        )
+        assert spy_store.purged_tiers == [], (
+            f"rebuild_graph_only must NOT purge the collection; it called "
+            f"delete_by_tier on {spy_store.purged_tiers!r}"
+        )
+
+
+# ===========================================================================
+# FIX 2 — rebuilding-notice covers the divergence heal window (forward-safety)
+# ===========================================================================
+# The divergence heal purges/re-embeds (or graph-only re-graphs) but does NOT set
+# the schema_rebuild_status meta, so the read-tools' rebuilding-notice (which
+# raises SchemaRebuildingError on an empty result mid-rebuild) does NOT cover the
+# heal window — a read landing mid-heal sees a silent empty result rather than the
+# rebuilding signal. The fix: when reconcile_store_divergence HEALS a tier (purge
+# +reset OR graph-only), it sets the rebuild-status meta to ``in_progress`` for the
+# duration and CLEARS it (out of in_progress) on completion; a HEALTHY no-heal
+# reconcile leaves the meta untouched.
+#
+# The independent oracle is the SHARED rebuilding_notice() / SCHEMA_REBUILD_STATUS
+# _META_KEY the production read-tools consult (clause 5) — not a hand-copied
+# literal. A status-observing manifest captures the in_progress write the instant
+# the heal fires (the meta is cleared by the time the reconcile returns, so a
+# plain after-the-fact read cannot see the in-progress window).
+
+
+class _StatusObservingManifest(Manifest):
+    """A :class:`Manifest` that records every rebuild-status state the heal writes.
+
+    The heal sets the status to ``in_progress`` then clears it before returning, so
+    a plain post-reconcile read would only ever see the cleared state. This spy
+    captures the SEQUENCE of states written to ``SCHEMA_REBUILD_STATUS_META_KEY``
+    during the reconcile — the independent oracle for "did the heal open and close
+    the rebuilding window?" It observes a public ``meta_set``; it does not mirror
+    the reconcile internals (clause 2).
+    """
+
+    def __init__(self, db_path: str) -> None:
+        super().__init__(db_path)
+        # Ordered list of (state) values written to the rebuild-status key.
+        self.rebuild_status_states_written: list[str | None] = []
+
+    def meta_set(self, key: str, value: str) -> None:
+        from loremaster.index.schema import SCHEMA_REBUILD_STATUS_META_KEY
+
+        if key == SCHEMA_REBUILD_STATUS_META_KEY:
+            try:
+                parsed = json.loads(value)
+                state = parsed.get("state") if isinstance(parsed, dict) else None
+            except (ValueError, TypeError):
+                state = None
+            self.rebuild_status_states_written.append(state)
+        super().meta_set(key, value)
+
+
+def _rebuild_status_state(manifest_path: Path) -> str | None:
+    """Read the CURRENT rebuild-status ``state`` from the manifest meta, or None.
+
+    Reads ``SCHEMA_REBUILD_STATUS_META_KEY`` through the SAME parse the production
+    ``rebuilding_notice`` uses (clause 5: shared source of truth) and returns the
+    ``state`` field — ``in_progress`` / ``done`` / ``idle`` — or ``None`` when no
+    status is recorded or the blob is malformed.
+    """
+    from loremaster.index.schema import SCHEMA_REBUILD_STATUS_META_KEY
+
+    manifest = Manifest(str(manifest_path))
+    try:
+        raw = manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+    finally:
+        manifest.close()
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed.get("state")
+
+
+# The in_progress state value the production rebuilding_notice keys on — obtained
+# by exercising the shared rebuilding_notice() over a known in_progress blob would
+# be circular; instead we pin the literal the schema module already exports as the
+# contract value the heal must write. Read it from the shared parse helper above.
+_IN_PROGRESS_STATE = "in_progress"
+
+
+class TestDivergenceHealSetsRebuildingNotice:
+    """A divergence heal opens + closes the rebuilding-notice window; a no-op leaves it.
+
+    The forward-safety fix: while reconcile_store_divergence HEALS a tier, the
+    rebuild-status meta reads ``in_progress`` so a read tool landing mid-heal sees
+    the rebuilding signal (and raises SchemaRebuildingError on an empty result)
+    rather than a silent empty; the status is cleared (out of in_progress) on
+    completion. A HEALTHY no-heal reconcile must NOT touch the meta.
+    """
+
+    async def test_heal_writes_in_progress_then_clears_it(
+        self, divergence_harness: Any, tmp_path: Path
+    ) -> None:
+        """Arrange: seed a real index; WIPE the collection (a count divergence to heal).
+        Act: run reconcile_store_divergence with a status-observing manifest.
+        Assert: the heal WROTE an in_progress rebuild-status during the heal
+                (captured by the observer) AND the final state is NOT in_progress
+                (cleared on completion).
+        """
+        # real-Qdrant
+        from conftest import QDRANT_URL, _qdrant_api_key
+
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = divergence_harness["config"](slug=slug, live_path=live)
+        manifest_path = tmp_path / "m.db"
+        graph_path = tmp_path / "graph.db"
+        snap = tmp_path / "snap"
+
+        seed = await divergence_harness["build"](
+            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            snapshot_root=snap, start_tasks=True,
+        )
+        await seed.reindex(None)
+        await seed.aclose()
+
+        # WIPE the collection empty behind the manifest (the count divergence).
+        from qdrant_client import models as qmodels
+
+        mutator = divergence_harness["mutator_client"]
+        await mutator.delete_collection(f"lore_{slug}")
+        await mutator.create_collection(
+            collection_name=f"lore_{slug}",
+            vectors_config=qmodels.VectorParams(size=_DIM, distance=qmodels.Distance.COSINE),
+        )
+
+        # Run the reconcile with a status-OBSERVING manifest so the transient
+        # in_progress write is captured even though it is cleared before return.
+        from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+
+        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
+        spy = DeleteByTierSpyStore(client=client, slug=slug)
+        divergence_harness["register"](slug)
+        observing = _StatusObservingManifest(str(manifest_path))
+        g = CodeGraph(str(graph_path))
+        try:
+            await spy.ensure_collection(_DIM)
+            await reconcile_store_divergence(  # type: ignore[misc]
+                store=spy, manifest=observing, code_graph=g, config=config,
+            )
+            # Precondition sanity: the reconcile DID heal (it purged the wiped tier),
+            # so the rebuilding window SHOULD have been opened.
+            assert _LIVE_TIER in spy.purged_tiers, (
+                "test setup: a wiped tier must be purged by the heal; "
+                f"purged {spy.purged_tiers!r}"
+            )
+            states_written = list(observing.rebuild_status_states_written)
+        finally:
+            observing.close()
+            g.close()
+            await client.close()
+
+        # ASSERT 1 (independent oracle): the heal OPENED the rebuilding window — an
+        # in_progress status was written during the heal so a concurrent read tool
+        # sees the rebuilding signal rather than a silent empty result.
+        assert _IN_PROGRESS_STATE in states_written, (
+            "a divergence heal must set the schema_rebuild_status to 'in_progress' "
+            "for the heal window so the read-tools' rebuilding-notice covers it; the "
+            f"heal wrote states {states_written!r} — none of them in_progress (the "
+            "read landing mid-heal would see a silent empty, not the rebuilding signal)"
+        )
+
+        # ASSERT 2 (independent oracle): the window is CLOSED on completion — the
+        # final state is NOT in_progress, so a read AFTER the heal does not get a
+        # phantom rebuilding-notice for a finished heal.
+        final_state = _rebuild_status_state(manifest_path)
+        assert final_state != _IN_PROGRESS_STATE, (
+            "the divergence heal must CLEAR the rebuilding-notice on completion (out "
+            f"of in_progress); the final schema_rebuild_status state is {final_state!r} "
+            "— a heal that leaves in_progress set wedges every read into a phantom "
+            "rebuilding-notice"
+        )
+
+    async def test_healthy_no_heal_reconcile_leaves_rebuild_status_untouched(
+        self, divergence_harness: Any, tmp_path: Path
+    ) -> None:
+        """A reconcile that heals NOTHING (healthy index) must not write the meta.
+
+        Arrange: seed a genuinely-healthy index (no divergence).
+        Act: run reconcile_store_divergence with a status-observing manifest.
+        Assert: NO rebuild-status state was written (the no-op heal does not open a
+                phantom rebuilding window) AND no tier was purged.
+        """
+        # real-Qdrant
+        from conftest import QDRANT_URL, _qdrant_api_key
+
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = divergence_harness["config"](slug=slug, live_path=live)
+        manifest_path = tmp_path / "m.db"
+        graph_path = tmp_path / "graph.db"
+        snap = tmp_path / "snap"
+
+        seed = await divergence_harness["build"](
+            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            snapshot_root=snap, start_tasks=True,
+        )
+        await seed.reindex(None)
+        await seed.aclose()
+
+        # Sanity: the index is genuinely healthy (live == expected, > 0).
+        manifest = Manifest(str(manifest_path))
+        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
+        manifest.close()
+        live_now = await _live_count(
+            slug=slug, tier=_LIVE_TIER, url=QDRANT_URL, api_key=_qdrant_api_key(),
+        )
+        assert live_now == expected and expected > 0, (
+            f"test setup: the seeded index must be HEALTHY (live {live_now} == "
+            f"expected {expected} > 0) so the reconcile heals nothing"
+        )
+
+        from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+
+        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
+        spy = DeleteByTierSpyStore(client=client, slug=slug)
+        divergence_harness["register"](slug)
+        observing = _StatusObservingManifest(str(manifest_path))
+        g = CodeGraph(str(graph_path))
+        try:
+            await spy.ensure_collection(_DIM)
+            await reconcile_store_divergence(  # type: ignore[misc]
+                store=spy, manifest=observing, code_graph=g, config=config,
+            )
+            states_written = list(observing.rebuild_status_states_written)
+        finally:
+            observing.close()
+            g.close()
+            await client.close()
+
+        # ASSERT (independent oracle): a healthy no-heal reconcile must NOT write the
+        # rebuild-status meta at all — opening a rebuilding window with no work would
+        # wedge reads into a phantom notice on every clean boot.
+        assert spy.purged_tiers == [], (
+            f"test setup: a healthy index must not be purged; purged {spy.purged_tiers!r}"
+        )
+        assert states_written == [], (
+            "a HEALTHY no-heal reconcile must leave schema_rebuild_status UNTOUCHED; "
+            f"it wrote states {states_written!r} — a phantom rebuilding window on a "
+            "clean boot would make every read raise SchemaRebuildingError needlessly"
         )

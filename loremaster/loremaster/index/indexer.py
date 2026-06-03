@@ -101,6 +101,11 @@ _TIER_VERSION_META_PREFIX = "tier_version:"
 # stamped ONLY after every tier completes successfully (the crash-safety contract).
 _REBUILD_STATE_IN_PROGRESS = "in_progress"
 _REBUILD_STATE_DONE = "done"
+# The terminal FAILED state written when a background rebuild's underlying work
+# raises (FP-11). It replaces the otherwise-stuck ``in_progress`` so a dead
+# rebuild is reported as failed rather than a phantom perpetual in-progress; the
+# fingerprint is NOT stamped on failure, so the next startup re-triggers.
+_REBUILD_STATE_FAILED = "failed"
 
 # The reason recorded in the rebuild-status blob when the rebuild is driven by a
 # fingerprint mismatch (the only trigger today). Named so the server (the other
@@ -583,6 +588,30 @@ class Indexer:
             return self._snapshot_layout.materialization_dir(tier)
         return None
 
+    def _snapshot_materialized(self, tier: str) -> bool:
+        """True iff a static tier's snapshot materialisation dir is present + non-empty.
+
+        The fast-skip guard for :meth:`_index_static_tier` (FP-05): a matching
+        version stamp may short-circuit the tier ONLY when the snapshot it vouches
+        for is still on disk and actually holds files. A dir that is absent (a lost
+        volume) OR present-but-empty (a remounted-empty volume) serves no file —
+        ``read_file`` misses for every path — so both are treated as un-materialised
+        and force a re-acquire.
+
+        Args:
+            tier: The static tier to check.
+
+        Returns:
+            ``True`` when the materialisation dir exists and contains at least one
+            entry; ``False`` when it is absent or empty.
+        """
+        materialization_dir = self._snapshot_layout.materialization_dir(tier)
+        if not materialization_dir.is_dir():
+            return False
+        # ``any(iterdir())`` is True for a dir with at least one entry; an empty dir
+        # is as broken as an absent one for serving, so it fails the guard too.
+        return any(materialization_dir.iterdir())
+
     @staticmethod
     def _all_vectors_usable(vectors: list[list[float] | None]) -> bool:
         """True iff every vector is present (not ``None``) and fully finite.
@@ -630,8 +659,28 @@ class Indexer:
     async def _index_static_tier(self, root: RootConfig) -> IndexSummary:
         """Freshness-gate a static tier; acquire + rebuild + re-stamp on change."""
         assert root.version is not None  # validated by RootConfig
-        if self.tier_version_stamp(root.tier) == root.version:
-            # MATCH → skip with ZERO walk and zero acquisition.
+        # The version-stamp skip is an optimisation that ASSUMES the snapshot the
+        # stamp vouches for is still materialised. Three-way logic on a MATCHING
+        # stamp (FP-05):
+        #   * snapshot present + non-empty            → SKIP (the fast-path; the
+        #     served files are intact, regardless of manifest rows).
+        #   * snapshot absent/empty + tier HAS rows   → RE-ACQUIRE (the genuine
+        #     "built then lost the snapshot volume" case — the manifest/state dir
+        #     survived so indexed rows are still there, but the served files are
+        #     physically gone; re-materialise them).
+        #   * snapshot absent/empty + ZERO tier rows  → SKIP (a degenerate stamp-
+        #     only state — a version was stamped but nothing was ever built, so
+        #     there is nothing to serve and nothing to re-acquire).
+        # A stamp is only legitimately written after a real build (which produces
+        # both manifest rows AND a materialised snapshot), so "stamp + rows but no
+        # snapshot" is the lost-volume signature and "stamp + no rows" is the
+        # never-built signature.
+        if self.tier_version_stamp(root.tier) == root.version and (
+            self._snapshot_materialized(root.tier)
+            or self._manifest.indexed_file_count(tier=root.tier) == 0
+        ):
+            # MATCH + (present snapshot OR nothing ever built) → skip with ZERO
+            # walk and zero acquisition.
             logger.info("index.tier.skip", extra={"tier": root.tier})
             return self._summarize([], rebuilt=[], skipped_tiers=[root.tier])
 
@@ -848,6 +897,50 @@ class Indexer:
             state=_REBUILD_STATE_DONE, done=0, total=0, fingerprint=fingerprint,
         )
 
+    async def rebuild_graph_only(self, tier: str) -> int:
+        """Re-graph a tier's indexed ``.py`` files WITHOUT touching the vectors (FP-04 follow-up).
+
+        The graph-only heal primitive: when a tier's code graph was lost but its
+        vector collection is intact (the LIVE point count still agrees with the
+        manifest), the graph can be rebuilt from the on-disk source ALONE — no
+        re-embed, no upsert, no ``delete_by_tier`` purge of the healthy collection.
+        For each INDEXED file in the tier this reads the source, ``_chunk`` it, and
+        ``_refresh_graph`` it. Only ``.py`` files contribute graph nodes
+        (``_refresh_graph`` no-ops every non-Python path), so a re-chunk of the whole
+        tier rebuilds exactly the graph slice a full re-embed would have — at a
+        fraction of the cost, since the embedding step is skipped entirely.
+
+        Args:
+            tier: The tier whose graph slice to rebuild from its indexed files.
+
+        Returns:
+            The number of graph-eligible (``.py``) indexed files re-graphed — the
+            count the graph's own ``indexed_file_count`` returns after the heal.
+        """
+        base = self._tier_base(tier)
+        if base is None:
+            # A tier with no resolvable on-disk base has nothing to re-graph (no
+            # source to read); nothing was lost that this primitive can restore.
+            return 0
+        regraphed = 0
+        for row in self._manifest.files_for_tier(tier):
+            # Only INDEXED rows represent files whose graph slice should exist; a
+            # pending/failed row has no committed content to re-graph.
+            if row.state != STATE_INDEXED:
+                continue
+            # Only Python files produce graph nodes — skip the rest so the returned
+            # count matches the graph's indexed-file count (the test's oracle), and
+            # so a docs file is never read needlessly.
+            if not row.file_path.endswith(_PYTHON_SUFFIX):
+                continue
+            source = (base / row.file_path).read_text(encoding="utf-8")
+            chunks = self._chunk(row.file_path, source)
+            # _refresh_graph is the transactional, tier-scoped delete+rebuild of this
+            # file's slice — NO embed, NO upsert, NO delete_by_tier.
+            self._refresh_graph(tier, row.file_path, chunks)
+            regraphed += 1
+        return regraphed
+
     def _acquire_static_snapshot(self, root: RootConfig) -> None:
         """Materialise a STATIC tier's snapshot before the rebuild walk (no-op for live).
 
@@ -940,6 +1033,43 @@ class Indexer:
                     "to_fingerprint": fingerprint,
                 }
             ),
+        )
+
+    def mark_rebuild_failed(self, fingerprint: str) -> None:
+        """Settle the rebuild-status meta to ``failed`` after the rebuild's work raised (FP-11).
+
+        Called by the background rebuild task when ``rebuild_all`` (or the empty-
+        index stamp) raises. Rewrites the ``schema_rebuild_status`` blob to the
+        terminal :data:`_REBUILD_STATE_FAILED` state so ``index_status`` /
+        ``lore_index_status`` surface a dead rebuild instead of a perpetual
+        ``in_progress``. The current ``done``/``total`` progress is preserved from
+        the existing blob (best effort) so the failed surface keeps a meaningful
+        denominator; absent/malformed progress falls back to zero.
+
+        Crash-safety is UNCHANGED: this writes ONLY the status blob and never the
+        fingerprint stamp, so the next startup still detects the mismatch and
+        re-triggers the rebuild.
+
+        Args:
+            fingerprint: The target fingerprint the failed rebuild was building
+                toward (recorded as ``to_fingerprint`` in the status blob).
+        """
+        # Preserve whatever progress the in-progress phase reached so the failed
+        # surface keeps a meaningful done/total; a missing/malformed blob → zeros.
+        done = 0
+        total = 0
+        raw_status = self._manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+        if raw_status is not None:
+            try:
+                prior = json.loads(raw_status)
+                if isinstance(prior, dict):
+                    done = int(prior.get("done", 0))
+                    total = int(prior.get("total", 0))
+            except (ValueError, TypeError):
+                done = 0
+                total = 0
+        self._write_rebuild_status(
+            state=_REBUILD_STATE_FAILED, done=done, total=total, fingerprint=fingerprint,
         )
 
     def index_status(self) -> IndexSummary:

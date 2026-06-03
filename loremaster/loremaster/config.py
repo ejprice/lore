@@ -34,10 +34,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, PositiveInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    PositiveInt,
+    StringConstraints,
+    model_validator,
+)
 
 # Freshness policies a root may declare (D5). Typed as the exact string literals
 # so they satisfy ``RootConfig.watch: Literal["live", "static"]`` when used to
@@ -51,6 +57,23 @@ WATCH_STATIC: Literal["static"] = "static"
 # synthesised root must carry a concrete, non-empty tier.
 TIER_DEFAULT = "default"
 
+# The safe charset a project ``slug`` must match: lowercase alphanumerics plus
+# ``-`` / ``_``, starting with an alphanumeric, non-empty. The slug is f-string'd
+# straight into BOTH the ``lore_<slug>`` Qdrant collection name AND the on-disk
+# state-DB paths (``<slug>.db`` / ``<slug>.memory.db`` / ``<slug>.graph.db``), so
+# a traversal (``../etc``), a separator (``a/b``), whitespace, an uppercase, or a
+# leading separator is a path/collection hazard. Constraining it makes an
+# operator typo or a malicious value FAIL FAST at config load rather than
+# silently relocating the durable state outside the state dir.
+SLUG_PATTERN: str = r"^[a-z0-9][a-z0-9_-]*$"
+
+# An annotated ``str`` carrying the safe-charset constraint — mirrors the
+# ``PositiveInt`` annotated-type idiom already used for ``dim`` etc., so an
+# invalid slug raises a pydantic ``ValidationError`` at parse time exactly like
+# every other strict field on the model (both on direct ``ProjectConfig(...)``
+# construction and via ``LoreConfig.model_validate(...)``).
+SlugStr = Annotated[str, StringConstraints(pattern=SLUG_PATTERN)]
+
 
 class _StrictModel(BaseModel):
     """Base for every *known* config section: forbid unknown keys so typos fail."""
@@ -62,11 +85,17 @@ class ProjectConfig(_StrictModel):
     """Project identity.
 
     Attributes:
-        slug: The project identifier; drives the ``lore_<slug>`` collection name.
+        slug: The project identifier; drives the ``lore_<slug>`` collection name
+            AND the on-disk state-DB paths (``<slug>.db`` / ``<slug>.memory.db``
+            / ``<slug>.graph.db``). Constrained to the safe :data:`SLUG_PATTERN`
+            charset because it is interpolated straight into filesystem paths and
+            a Qdrant collection name: a traversal, separator, whitespace,
+            uppercase, or leading-separator slug is a path/collection hazard and
+            must be rejected at load, not silently written to the wrong place.
         root: The project root the include/exclude globs are resolved against.
     """
 
-    slug: str
+    slug: SlugStr
     root: str
 
 

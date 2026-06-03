@@ -2068,3 +2068,310 @@ class TestRebuildProgressAdvancesLive:
             f"the fingerprint must be stamped into the manifest after a successful "
             f"rebuild_all; stored={stored_fp!r}, expected={fingerprint!r}"
         )
+
+
+# ===========================================================================
+# A10 — FP-11: a FAILED background schema-rebuild must report ``failed``,
+#       never stick at ``in_progress`` forever.
+# ===========================================================================
+#
+# The bug: ``_run_schema_rebuild`` awaits ``indexer.rebuild_all(fingerprint)``.
+# ``rebuild_all`` writes ``schema_rebuild_status.state = "in_progress"`` as it
+# runs and flips it to ``"done"`` ONLY on success. If the underlying work raises
+# (e.g. the embedder fails mid-rebuild), the exception propagates out of the
+# background task and NOTHING ever rewrites the status — so the manifest is left
+# reading ``in_progress`` permanently, and ``index_status`` / lore_index_status
+# misreport a perpetual in-progress rebuild that is actually dead.
+#
+# The pin (a NEW terminal state — ``_REBUILD_STATE_FAILED`` / "failed" — that
+# the contract DEFINES, blind to how it is wired): when the background rebuild's
+# underlying work raises, after the task settles the rebuild-status meta reads
+# ``failed`` (and ``index_status`` surfaces ``state == "failed"``). A SUCCESSFUL
+# rebuild still ends ``done`` (the success path is untouched).
+#
+# These are GROUP A10 — RED until the failed-state wiring exists.
+
+# The terminal failed-state string the contract defines. Named so the assertion
+# reads against a single source of truth, not a bare literal scattered across
+# cases (clause 5). The implementation must converge on this exact value, which
+# is the human/agent-facing state the index_status / rebuilding consumers read.
+_REBUILD_STATE_FAILED_EXPECTED = "failed"
+
+
+def _read_rebuild_state(manifest_path: Path) -> str | None:
+    """Read ``schema_rebuild_status.state`` straight from the manifest meta.
+
+    The independent oracle for the rebuild's terminal state: reads the SAME JSON
+    blob the producer (``rebuild_all`` / the server's failed-state writer) and
+    the consumer (``index_status`` / ``rebuilding_notice``) agree on (clause 5).
+    Returns ``None`` when no status blob exists or it is malformed.
+    """
+    import json as _json
+
+    manifest = Manifest(str(manifest_path))
+    try:
+        raw = manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+    finally:
+        manifest.close()
+    if raw is None:
+        return None
+    try:
+        blob = _json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(blob, dict):
+        return None
+    state = blob.get("state")
+    return state if isinstance(state, str) else None
+
+
+class _BombEmbedder(FakeEmbedder):
+    """A :class:`FakeEmbedder` whose ``embed_documents`` ALWAYS raises.
+
+    Drives the background rebuild's underlying work to fail deterministically —
+    the real production failure mode (a TEI endpoint that is down / erroring mid-
+    rebuild). The raise happens inside ``rebuild_all`` → ``_walk_and_index`` →
+    ``_index_chunks`` → ``embed_documents``, the genuine seam where a rebuild
+    blows up, so the contract exercises the real handoff (clause 3), not a faked
+    exception injected above the indexer.
+    """
+
+    async def embed_documents(self, texts: list[str]) -> Any:
+        raise RuntimeError("simulated TEI failure during background schema rebuild")
+
+
+class TestFailedRebuildReportsFailed:
+    """FP-11 — a background rebuild whose work raises must settle to ``failed``.
+
+    Contract (from the requirement, independent of implementation):
+        * A background schema-rebuild that raises mid-flight must, after it
+          settles, leave ``schema_rebuild_status.state == "failed"`` in the
+          manifest — NOT ``"in_progress"`` (the perpetual-stuck bug).
+        * ``index_status()`` must surface that failed state to a caller (so
+          lore_index_status reflects it).
+        * The crash-safety fingerprint contract is UNCHANGED: a failed rebuild
+          does not stamp the fingerprint (the next startup re-triggers).
+        * A SUCCESSFUL rebuild is untouched: it still ends ``"done"``.
+    """
+
+    async def test_failed_background_rebuild_settles_to_failed_not_in_progress(
+        self, tmp_path: Path
+    ) -> None:
+        """Arrange: a populated index with a stale (mismatching) fingerprint so the
+                 startup spawns a real background rebuild; wire a BombEmbedder so
+                 the rebuild's embed step raises.
+        Act: build_app_context (spawns the rebuild), then SETTLE the task.
+        Assert: the manifest's rebuild-status state reads ``failed`` (NOT
+                ``in_progress``); the fingerprint is NOT advanced to current.
+        """
+        # real-Qdrant
+        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from conftest import QDRANT_URL, _qdrant_api_key
+
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        manifest_path = tmp_path / "m.db"
+
+        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
+        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
+        app_ctx: Any = None
+        try:
+            # Step 1: seed a POPULATED index (manifest rows + Qdrant points) with a
+            # GOOD embedder, then plant a STALE fingerprint so the next startup sees
+            # a genuine mismatch (populated + stamped-but-wrong → full re-embed, the
+            # only path that runs the in_progress purge+re-embed the bomb derails).
+            seed_ctx = await build_app_context(
+                server=LoreServer(config),
+                embedder=FakeEmbedder(dim=_DIM),
+                qdrant_client=qdrant_client,
+                manifest_path=manifest_path,
+                graph_path=tmp_path / "graph.db",
+                snapshot_root=tmp_path / "snap",
+                start_tasks=False,
+            )
+            await seed_ctx.reindex(None)
+            seed_status = await seed_ctx.index_status()
+            assert seed_status.files_indexed >= 1, (
+                "the seed build must populate the manifest with indexed rows"
+            )
+            await seed_ctx.aclose()
+
+            old_fp = "7" * 64  # 64-char hex; distinct from the current fingerprint
+            current_fp = embedding_schema_fingerprint(config)
+            assert old_fp != current_fp, "test setup: stale fp must differ from current"
+            seed_manifest = Manifest(str(manifest_path))
+            seed_manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, old_fp)
+            seed_manifest.close()
+
+            # Step 2: build the context with a BombEmbedder → the spawned rebuild's
+            # embed step raises. The startup spawns the rebuild task (stale fp over a
+            # populated index = a real mismatch).
+            app_ctx = await build_app_context(
+                server=LoreServer(config),
+                embedder=_BombEmbedder(dim=_DIM),
+                qdrant_client=qdrant_client,
+                manifest_path=manifest_path,
+                graph_path=tmp_path / "graph.db",
+                snapshot_root=tmp_path / "snap",
+                start_tasks=False,
+            )
+            rebuild_task = getattr(app_ctx, "schema_rebuild_task", None)
+            assert rebuild_task is not None, (
+                "a stale fingerprint over a populated index must spawn a background "
+                "rebuild task (the precondition for the failed-state contract)"
+            )
+
+            # Step 3: SETTLE the task — let the rebuild run to its (failing) terminal
+            # state. The exception is expected to propagate out of the task; we
+            # swallow it here because the CONTRACT is about the recorded STATE after
+            # the task settles, not about the exception object itself.
+            with pytest.raises(Exception):
+                await rebuild_task
+
+            # The terminal state must be ``failed`` — NOT stuck at in_progress.
+            settled_state = _read_rebuild_state(manifest_path)
+            assert settled_state == _REBUILD_STATE_FAILED_EXPECTED, (
+                "a background rebuild whose work raised must settle the rebuild "
+                f"status to {_REBUILD_STATE_FAILED_EXPECTED!r}, not leave it stuck; "
+                f"got {settled_state!r} (the bug leaves it at 'in_progress' forever)"
+            )
+
+            # Crash-safety unchanged: a failed rebuild does NOT advance the stamp to
+            # current, so the next startup re-triggers (the stamp holds the old fp).
+            final_manifest = Manifest(str(manifest_path))
+            stored_fp_after = final_manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+            final_manifest.close()
+            assert stored_fp_after != current_fp, (
+                "a FAILED rebuild must NOT stamp the current fingerprint (it would "
+                f"mask the still-needed rebuild); stamp after failure was "
+                f"{stored_fp_after!r}"
+            )
+
+        finally:
+            if app_ctx is not None:
+                await app_ctx.aclose()
+            for name in created_collections:
+                if await qdrant_client.collection_exists(name):
+                    await qdrant_client.delete_collection(name)
+            await qdrant_client.close()
+
+    async def test_index_status_surfaces_failed_state_after_failed_rebuild(
+        self, tmp_path: Path
+    ) -> None:
+        """``index_status()`` must surface the ``failed`` state (the consumer seam).
+
+        Independent of HOW the failed state is written, a caller reading
+        ``index_status()`` after a failed rebuild must see
+        ``schema_rebuild.state == "failed"``. We pre-seed the manifest with a
+        ``failed`` status blob (the shape the producer writes) and assert the
+        status tool reads it back faithfully — the producer↔consumer seam where a
+        new state value could be silently dropped (clause 3).
+        """
+        # real-Qdrant (index_status needs the AppContext + store)
+        import json
+
+        from conftest import QDRANT_URL, _qdrant_api_key
+
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        manifest_path = tmp_path / "m.db"
+
+        old_fp = "5" * 64
+        new_fp = "6" * 64
+        # Seed a FAILED rebuild-status blob — the exact shape the failed-state
+        # writer must produce (clause 5: same blob the producer writes).
+        manifest = Manifest(str(manifest_path))
+        manifest.meta_set(
+            SCHEMA_REBUILD_STATUS_META_KEY,
+            json.dumps(
+                {
+                    "state": _REBUILD_STATE_FAILED_EXPECTED,
+                    "done": 1,
+                    "total": 3,
+                    "reason": "fingerprint_mismatch",
+                    "from_fingerprint": old_fp,
+                    "to_fingerprint": new_fp,
+                }
+            ),
+        )
+        manifest.close()
+
+        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
+        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
+        app_ctx: Any = None
+        try:
+            app_ctx = await build_app_context(
+                server=LoreServer(config),
+                embedder=FakeEmbedder(dim=_DIM),
+                qdrant_client=qdrant_client,
+                manifest_path=manifest_path,
+                graph_path=tmp_path / "graph.db",
+                snapshot_root=tmp_path / "snap",
+                start_tasks=False,
+            )
+            status = await app_ctx.index_status()
+
+            assert hasattr(status, "schema_rebuild"), (
+                "index_status() result must have a 'schema_rebuild' attribute"
+            )
+            assert status.schema_rebuild.state == _REBUILD_STATE_FAILED_EXPECTED, (  # type: ignore[union-attr]
+                "index_status() must surface a 'failed' rebuild state faithfully so "
+                "lore_index_status reflects a dead rebuild instead of a phantom "
+                f"in-progress one; got {status.schema_rebuild.state!r}"  # type: ignore[union-attr]
+            )
+            # Sanity bound on the surfaced progress (clause 4): done/total are
+            # non-negative and done <= total even in the failed terminal state.
+            assert 0 <= status.schema_rebuild.done <= status.schema_rebuild.total  # type: ignore[union-attr]
+
+        finally:
+            if app_ctx is not None:
+                await app_ctx.aclose()
+            for name in created_collections:
+                if await qdrant_client.collection_exists(name):
+                    await qdrant_client.delete_collection(name)
+            await qdrant_client.close()
+
+    async def test_successful_rebuild_still_ends_done_not_failed(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        """The false-positive guard: a SUCCESSFUL rebuild still ends ``done``.
+
+        The failed-state wiring must not regress the happy path — a rebuild whose
+        work completes must leave ``state == "done"`` (and never ``"failed"``),
+        exactly as today. Drives ``rebuild_all`` directly with a GOOD embedder and
+        asserts the terminal state, so a fix that over-eagerly marks everything
+        failed is caught.
+        """
+        # real-Qdrant
+        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        manifest_path = tmp_path / "m.db"
+        manifest = Manifest(str(manifest_path))
+        indexer = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+
+        fingerprint = embedding_schema_fingerprint(config)
+        await indexer.rebuild_all(fingerprint=fingerprint)  # type: ignore[attr-defined]
+        manifest.close()
+
+        settled_state = _read_rebuild_state(manifest_path)
+        assert settled_state == "done", (
+            "a SUCCESSFUL rebuild must still end in the 'done' terminal state — "
+            f"the failed-state wiring must not regress the happy path; got "
+            f"{settled_state!r}"
+        )
+        assert settled_state != _REBUILD_STATE_FAILED_EXPECTED, (
+            "a successful rebuild must never be marked failed"
+        )

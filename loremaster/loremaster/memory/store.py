@@ -53,6 +53,12 @@ from loremaster.store.qdrant import QdrantStore
 # Default number of notes a recall returns when the caller does not specify ``k``.
 _DEFAULT_RECALL_K = 5
 
+# Page size for the FP-06 ledger backfill sweep over the memory collection. A
+# memory store holds far fewer points than a code collection, so a single
+# moderate page typically covers the whole collection in one round-trip while
+# the underlying ``scroll_all`` still follows the cursor if it does not.
+_BACKFILL_SCROLL_PAGE = 256
+
 # Payload keys. ``note_text`` is the recallable content; ``kind`` marks the point
 # as a memory (the generic, domain-neutral analog of correction.py's ``source``);
 # the rest carry the caller's metadata, the versioned refs, and a creation stamp.
@@ -113,6 +119,18 @@ class RecalledMemory(BaseModel):
     score: float
 
 
+class MemoryCollectionDimMismatchError(RuntimeError):
+    """Raised when a pre-existing memory collection has the WRONG vector size (FP-12).
+
+    Mirrors ``run_probe_gate``'s existing-collection refusal for the CODE
+    collection: a memory collection left at an old model's dim must NOT be used
+    silently (a wrong dim silently corrupts recall) and must NEVER be
+    auto-recreated (that would destroy the very memories the gate protects). The
+    message names the collection and both sizes so the operator can re-create it
+    deliberately or fix the config.
+    """
+
+
 class MemoryStore:
     """Durable, generic project memory over a dedicated ``lore_<slug>_memory`` collection.
 
@@ -154,8 +172,35 @@ class MemoryStore:
         return self._ledger
 
     async def ensure_ready(self) -> None:
-        """Create the memory collection at the embedder's dim (COSINE), idempotently."""
-        await self._store.ensure_collection(self._embedder.dim)
+        """Ensure the memory collection at the embedder's dim, REFUSING a wrong-dim one.
+
+        FP-12 memory-dim gate: a memory collection that ALREADY exists at a
+        vector size != the embedder's ``dim`` (e.g. left behind by an older
+        model) must NOT be used silently and must NEVER be auto-recreated —
+        mirroring ``run_probe_gate``'s existing-collection refusal for the code
+        collection. The embedder's ``dim`` is the source of truth here (it equals
+        ``config.embedding.dim`` once the probe gate has passed). A matching dim
+        or an ABSENT collection proceeds: the collection is created at the
+        embedder's dim (COSINE), idempotently. A mismatch raises and leaves the
+        wrong-dim collection INTACT.
+
+        Raises:
+            MemoryCollectionDimMismatchError: When the collection already exists
+                at a vector size that differs from the embedder's ``dim``.
+        """
+        expected_dim = self._embedder.dim
+        # Check the EXISTING collection's size BEFORE ensuring it: an absent
+        # collection reports ``None`` (create it); a mismatch refuses up front so
+        # ``ensure_collection`` never touches a wrong-dim collection.
+        existing_dim = await self._store.collection_dim()
+        if existing_dim is not None and existing_dim != expected_dim:
+            raise MemoryCollectionDimMismatchError(
+                f"existing memory collection {self.collection_name!r} has vector size "
+                f"{existing_dim} but the embedder dim is {expected_dim}; refusing to start "
+                f"and leaving the collection INTACT (never auto-recreated). Re-create it "
+                f"deliberately, or fix the model/config to match."
+            )
+        await self._store.ensure_collection(expected_dim)
 
     async def save_memory(
         self,
@@ -259,6 +304,60 @@ class MemoryStore:
         records = self._ledger.all_records()
         return await self._restore_records(records)
 
+    async def backfill_ledger_from_store(self) -> int:
+        """Capture pre-v0.3.6 Qdrant memories into the durable ledger (FP-06 backfill).
+
+        The write-through ledger only protects memories saved AFTER v0.3.6; a
+        memory written by an OLDER build lives only in Qdrant, so a wipe still
+        loses it. This closes the gap: scroll EVERY point in the memory
+        collection, reconstruct each memory's text / metadata / refs from its
+        payload, recompute the refs stamp via the SAME stamping the id folds in,
+        and record it under its existing (deterministic) point id — so a later
+        :meth:`restore_if_diverged` re-embeds it and a re-mint overwrites the
+        Qdrant point in place rather than duplicating.
+
+        Idempotent and no-op-friendly: a point ALREADY in the ledger is skipped
+        (membership by id), so the steady-state post-v0.3.6 boot records nothing
+        and a second pass adds nothing.
+
+        Returns:
+            The number of NEW ledger rows backfilled (``0`` when the ledger
+            already covers every store memory, or when no ledger is configured).
+        """
+        # No ledger ⇒ legacy Qdrant-only store: nothing durable to backfill into.
+        if self._ledger is None:
+            return 0
+
+        # Membership-by-id: only points NOT yet in the ledger are new rows, so a
+        # steady-state boot (every memory already recorded) records nothing and
+        # returns 0 — never re-recording (the no-op / idempotence guarantee).
+        existing_ids = {record.memory_id for record in self._ledger.all_records()}
+
+        points = await self._store.scroll_all(_BACKFILL_SCROLL_PAGE)
+        backfilled = 0
+        for point in points:
+            # The deterministic point id IS the ledger's natural key; recording
+            # under it keeps the two in lock-step (a later restore overwrites in
+            # place). Skip points the ledger already knows.
+            point_id = str(point.id)
+            if point_id in existing_ids:
+                continue
+            payload = point.payload or {}
+            text = payload.get(_PAYLOAD_NOTE_TEXT, "")
+            metadata = dict(payload.get(_PAYLOAD_METADATA, {}) or {})
+            refs = self._refs_from_payload(payload)
+            # Recompute the stamp from the payload's refs (NOT read back) so the
+            # row re-mints the SAME id the existing point was minted under.
+            refs_stamp = self._refs_stamp(refs)
+            self._ledger.record(
+                memory_id=point_id,
+                text=text,
+                metadata=metadata,
+                refs_stamp=refs_stamp,
+            )
+            backfilled += 1
+        return backfilled
+
     async def _restore_records(self, records: list[MemoryRecord]) -> int:
         """Re-embed every ledger record back into the memory collection.
 
@@ -305,15 +404,13 @@ class MemoryStore:
             _PAYLOAD_CREATED_AT: datetime.now(UTC).isoformat(),
         }
 
-    @staticmethod
-    def _to_recalled(payload: dict[str, Any], score: float) -> RecalledMemory:
+    @classmethod
+    def _to_recalled(cls, payload: dict[str, Any], score: float) -> RecalledMemory:
         """Map a stored payload + score into a summarised :class:`RecalledMemory`."""
-        raw_refs = payload.get(_PAYLOAD_REFS, []) or []
-        refs = [MemoryRef.model_validate(raw_ref) for raw_ref in raw_refs]
         return RecalledMemory(
             text=payload.get(_PAYLOAD_NOTE_TEXT, ""),
             metadata=dict(payload.get(_PAYLOAD_METADATA, {}) or {}),
-            refs=refs,
+            refs=cls._refs_from_payload(payload),
             score=score,
         )
 
@@ -360,6 +457,25 @@ class MemoryStore:
             chunk_key, _, version = piece.rpartition(_REF_FIELD_SEPARATOR)
             refs.append(MemoryRef(chunk_key=chunk_key, key_version=int(version)))
         return refs
+
+    @classmethod
+    def _refs_from_payload(cls, payload: dict[str, Any]) -> list[MemoryRef]:
+        """Reconstruct the versioned refs from a stored Qdrant memory payload.
+
+        The backfill reads the payload's ``refs`` (a list of
+        :class:`MemoryRef`-shaped dicts, the inverse of :meth:`_build_payload`'s
+        ``model_dump``) back into :class:`MemoryRef` objects, from which the
+        refs stamp is recomputed so the ledger row re-mints the SAME id the
+        existing point carries. A missing/empty ``refs`` key yields no refs.
+
+        Args:
+            payload: A stored Qdrant memory-point payload.
+
+        Returns:
+            The reconstructed versioned refs (empty when the payload has none).
+        """
+        raw_refs = payload.get(_PAYLOAD_REFS, []) or []
+        return [MemoryRef.model_validate(raw_ref) for raw_ref in raw_refs]
 
     @classmethod
     def _memory_id(cls, text: str, refs_stamp: str) -> str:

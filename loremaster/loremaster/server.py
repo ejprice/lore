@@ -1297,12 +1297,91 @@ class AppContext:
         self.code_graph.close()
 
 
+# The ``in_progress`` rebuild-status state value the read-tools' rebuilding-notice
+# keys on — shared with the schema module's vocabulary (clause 5: one literal for
+# the status blob across the producer and the consumers).
+_REBUILD_STATE_IN_PROGRESS = "in_progress"
+
+# The ``reason`` recorded in the divergence-heal status blob, distinguishing it from
+# the schema-rebuild's ``fingerprint_mismatch`` reason so an operator reading the
+# status during a heal sees WHY the rebuilding window is open.
+_HEAL_REBUILD_REASON = "store_divergence_heal"
+
+
+# The rebuild-status state the divergence heal restores the meta to on completion
+# when there was NO prior status blob (a fresh boot). It must be ANY value OTHER
+# than ``in_progress`` so the read-tools' rebuilding-notice reads idle once the heal
+# finishes — a heal that left ``in_progress`` set would wedge every read into a
+# phantom rebuilding-notice. ``done`` mirrors the terminal state a completed schema
+# rebuild leaves (clause 5: one vocabulary for the status blob).
+_HEAL_REBUILD_STATE_DONE = "done"
+
+
+def _open_rebuilding_window(manifest: Any) -> str | None:
+    """Open the divergence-heal rebuilding-notice window; return the PRIOR status blob.
+
+    Sets ``SCHEMA_REBUILD_STATUS_META_KEY`` to an ``in_progress`` blob so a read
+    landing mid-heal sees the rebuilding signal (the read-tools raise
+    ``SchemaRebuildingError`` on an empty result while a rebuild is in progress)
+    rather than a silent empty result. Returns the raw status blob that was present
+    BEFORE the heal so :func:`_restore_rebuilding_window` can put it back verbatim on
+    completion (the heal must not clobber a genuine prior rebuild's blob).
+
+    Args:
+        manifest: The manifest whose status meta the heal window writes through (the
+            same handle the read-tools consult — clause 5: one source of truth).
+
+    Returns:
+        The raw ``SCHEMA_REBUILD_STATUS_META_KEY`` value before the window opened, or
+        ``None`` when no status was recorded yet.
+    """
+    from loremaster.index.schema import SCHEMA_REBUILD_STATUS_META_KEY
+
+    prior: str | None = manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+    manifest.meta_set(
+        SCHEMA_REBUILD_STATUS_META_KEY,
+        json.dumps(
+            {
+                "state": _REBUILD_STATE_IN_PROGRESS,
+                "reason": _HEAL_REBUILD_REASON,
+            }
+        ),
+    )
+    return prior
+
+
+def _restore_rebuilding_window(manifest: Any, prior_status: str | None) -> None:
+    """Close the divergence-heal rebuilding-notice window (out of ``in_progress``).
+
+    Restores the status blob to exactly what it was before the heal opened the
+    window: a genuine prior rebuild's blob is put back verbatim; an absent prior
+    status becomes a terminal :data:`_HEAL_REBUILD_STATE_DONE` blob (NOT
+    ``in_progress``) so a read AFTER the heal does not get a phantom rebuilding
+    notice for a finished heal. Either way the final state is never ``in_progress``.
+
+    Args:
+        manifest: The manifest whose status meta the window is closed on.
+        prior_status: The raw status blob :func:`_open_rebuilding_window` captured
+            before the heal — restored verbatim when present.
+    """
+    from loremaster.index.schema import SCHEMA_REBUILD_STATUS_META_KEY
+
+    if prior_status is not None:
+        manifest.meta_set(SCHEMA_REBUILD_STATUS_META_KEY, prior_status)
+        return
+    manifest.meta_set(
+        SCHEMA_REBUILD_STATUS_META_KEY,
+        json.dumps({"state": _HEAL_REBUILD_STATE_DONE, "reason": _HEAL_REBUILD_REASON}),
+    )
+
+
 async def reconcile_store_divergence(
     *,
     store: Any,
     manifest: Any,
     code_graph: Any,
     config: Any,
+    indexer: Any | None = None,
 ) -> None:
     """Heal a corpus index whose LIVE store/graph diverged from the manifest.
 
@@ -1334,6 +1413,12 @@ async def reconcile_store_divergence(
             oracle for the FP-04 wiped-graph heal).
         config: The :class:`~loremaster.config.LoreConfig` enumerating the tiers
             to reconcile.
+        indexer: The :class:`~loremaster.index.indexer.Indexer` (graph-wired) the
+            graph-only heal drives — when the graph is wiped but the live point
+            count still AGREES with the manifest (collection healthy, graph-only
+            loss), the graph is rebuilt via ``indexer.rebuild_graph_only(tier)``
+            WITHOUT a vector purge or re-embed (the FP-04 follow-up efficiency win).
+            ``None`` falls back to the count-driven purge+reset path for that case.
     """
     # FP-04: a WIPED/EMPTY graph the manifest still calls indexed is a GLOBAL fact
     # (the graph's file count carries no tier filter). The graph is "wiped" only
@@ -1351,9 +1436,22 @@ async def reconcile_store_divergence(
         and manifest.indexed_file_count(suffix=PYTHON_SUFFIX) > 0
     )
 
-    # The divergence heal targets the LIVE corpus tiers only — a static tier's
-    # snapshot re-acquisition is a separate concern, and the partial-divergence
-    # contract requires a healthy sibling tier to be left strictly untouched.
+    # PASS 1 — PLAN the heal per LIVE tier WITHOUT mutating anything yet, so the
+    # rebuilding-notice window (below) is opened ONLY when there is real work. The
+    # heal targets the LIVE corpus tiers only — a static tier's snapshot
+    # re-acquisition is a separate concern, and the partial-divergence contract
+    # requires a healthy sibling tier to be left strictly untouched.
+    #
+    # Two heal shapes per tier:
+    #   * count_diverged (live count != expected): a wiped/short tier (FP-02) or an
+    #     orphan over-count (FP-03) — PURGE (delete_by_tier) + reset_tier so the
+    #     subsequent sweep re-embeds the REAL content (and rebuilds the graph too).
+    #   * graph-only loss (count AGREES but the graph is wiped): the vectors were
+    #     never lost, so re-graph from the on-disk source ALONE via the indexer's
+    #     rebuild_graph_only — NO purge, NO re-embed (the FP-04 follow-up win). When
+    #     no indexer is supplied this falls back to the count-driven purge+reset.
+    tiers_to_purge: list[str] = []
+    tiers_to_regraph: list[str] = []
     for root in config.effective_roots:
         if root.watch != WATCH_LIVE:
             continue
@@ -1368,25 +1466,59 @@ async def reconcile_store_divergence(
         expected = manifest.expected_chunks(tier)
         live = await store.count_points(tier)
         # ANY inequality is a heal trigger: a short count is a wiped/short tier
-        # (FP-02), an over-count is orphan leftovers (FP-03). A wiped (empty) graph
-        # over a healthy count still needs the tier reset so the sweep re-graphs.
+        # (FP-02), an over-count is orphan leftovers (FP-03).
         count_diverged = live != expected
-        if not count_diverged and not graph_wiped:
-            # HEALTHY: the live count agrees and the graph is whole — leave the
-            # tier strictly alone (the no-false-heal guard). A wasteful purge here
-            # would defeat the incremental startup the feature exists to provide.
-            continue
-        # HEAL = DETECT + TRIGGER, honestly. Purge the whole tier (clearing orphans
-        # and any wiped/partial remnant) and reset its rows out of ``indexed`` so
-        # the subsequent build_app_context sweep's ``needs_reindex`` returns True
-        # and re-embeds the REAL content + rebuilds the graph regardless of the
-        # unchanged mtime+size fast-path — the COUNT/graph divergence, not a file
-        # change, drives the rebuild. The reconcile upserts NOTHING: restoring the
-        # count is the sweep's job, never the reconcile's (a bare reconcile that
+        if count_diverged:
+            tiers_to_purge.append(tier)
+        elif graph_wiped and indexer is not None:
+            # Collection healthy (count agrees) but the graph was lost: re-graph
+            # WITHOUT touching the intact vectors. Requires the graph-wired indexer.
+            tiers_to_regraph.append(tier)
+        elif graph_wiped:
+            # No indexer to do the cheap graph-only re-graph — fall back to the
+            # count-driven full rebuild so a wiped graph still heals.
+            tiers_to_purge.append(tier)
+        # else HEALTHY: the live count agrees and the graph is whole — leave the
+        # tier strictly alone (the no-false-heal guard). A wasteful purge here would
+        # defeat the incremental startup the feature exists to provide.
+
+    if not tiers_to_purge and not tiers_to_regraph:
+        # No divergence anywhere — a HEALTHY no-heal reconcile leaves the schema
+        # rebuild-status meta strictly UNTOUCHED (no phantom rebuilding window on a
+        # clean boot would otherwise wedge every read into a needless notice).
+        return
+
+    # PASS 2 — open the rebuilding-notice window for the heal duration, do the work,
+    # then restore the prior status. A read landing mid-heal sees ``in_progress`` (so
+    # the read-tools' rebuilding-notice covers it) instead of a silent empty result;
+    # the status is restored to whatever it was before (idle/absent or a prior real
+    # rebuild's blob) on completion, so a finished heal leaves no phantom notice. The
+    # heal runs synchronously here, BEFORE _maybe_spawn_schema_rebuild, so it never
+    # collides with the background rebuild's own use of the same meta key.
+    prior_status = _open_rebuilding_window(manifest)
+    try:
+        # PURGE path (FP-02/FP-03/count-vs-mtime): purge the whole tier (clearing
+        # orphans and any wiped/partial remnant) and reset its rows out of
+        # ``indexed`` so the subsequent build_app_context sweep's ``needs_reindex``
+        # returns True and re-embeds the REAL content + rebuilds the graph regardless
+        # of the unchanged mtime+size fast-path — the COUNT/graph divergence, not a
+        # file change, drives the rebuild. The reconcile upserts NOTHING: restoring
+        # the count is the sweep's job, never the reconcile's (a bare reconcile that
         # re-seated fake points would read as 'healthy' after a crash-before-sweep
         # and reintroduce the blind-index bug undetectably).
-        await store.delete_by_tier(tier)
-        manifest.reset_tier(tier)
+        for tier in tiers_to_purge:
+            await store.delete_by_tier(tier)
+            manifest.reset_tier(tier)
+        # GRAPH-ONLY path (FP-04 follow-up): re-graph the tier's indexed .py files
+        # from disk WITHOUT a vector purge or re-embed — the collection is intact.
+        # tiers_to_regraph is only ever populated when an indexer was supplied (the
+        # planning pass gates on ``indexer is not None``), so this is non-None here.
+        if tiers_to_regraph:
+            assert indexer is not None
+            for tier in tiers_to_regraph:
+                await indexer.rebuild_graph_only(tier)
+    finally:
+        _restore_rebuilding_window(manifest, prior_status)
 
 
 async def build_app_context(
@@ -1495,6 +1627,11 @@ async def build_app_context(
         store=memory_store_handle, embedder=embedder, ledger=memory_ledger
     )
     await memory_store.ensure_ready()
+    # FP-06 backfill: capture any PRE-v0.3.6 memories (already in Qdrant but not
+    # in the ledger, written by an older build) into the durable ledger BEFORE
+    # restore, so they too are protected against a wipe. A no-op once the ledger
+    # already covers the store (the steady-state post-v0.3.6 boot).
+    await memory_store.backfill_ledger_from_store()
     # Rebuild a wiped/short memory collection from the durable ledger at boot
     # (a no-op when the collection and ledger already agree) — the headline
     # FP-06 'a Qdrant wipe loses zero memories' guarantee on process restart.
@@ -1595,7 +1732,11 @@ async def build_app_context(
             # manifest/graph are built, and before run_sweep, so the heal is
             # effective by the time the context is returned.
             await reconcile_store_divergence(
-                store=store, manifest=manifest, code_graph=code_graph, config=config
+                store=store,
+                manifest=manifest,
+                code_graph=code_graph,
+                config=config,
+                indexer=indexer,
             )
             # Capture whether the index was EMPTY *before* the initial sweep — the
             # discriminator the post-sweep stamp gates on (Fix #1). An empty index
@@ -1863,14 +2004,27 @@ async def _run_schema_rebuild(
             racing a concurrent populate).
     """
     async with watcher.writer_lock:
-        if index_was_empty:
-            # Nothing stale to re-embed — just stamp the current fingerprint so the
-            # index is marked current-schema (the same end state the empty-index
-            # post-sweep stamp produces on the start_tasks=True path). No in_progress
-            # churn, so a concurrent / subsequent read never sees a phantom rebuild.
-            indexer.stamp_schema_fingerprint(fingerprint)
-            return
-        await indexer.rebuild_all(fingerprint)
+        try:
+            if index_was_empty:
+                # Nothing stale to re-embed — just stamp the current fingerprint so
+                # the index is marked current-schema (the same end state the
+                # empty-index post-sweep stamp produces on the start_tasks=True
+                # path). No in_progress churn, so a concurrent / subsequent read
+                # never sees a phantom rebuild.
+                indexer.stamp_schema_fingerprint(fingerprint)
+                return
+            await indexer.rebuild_all(fingerprint)
+        except Exception:
+            # The rebuild's underlying work raised (e.g. a TEI endpoint down mid-
+            # rebuild). Settle the status to the terminal FAILED state so
+            # index_status / lore_index_status report a dead rebuild instead of a
+            # perpetual phantom in_progress (FP-11). The fingerprint is left
+            # UNSTAMPED (mark_rebuild_failed only touches the status blob), so the
+            # next startup re-detects the mismatch and re-triggers — crash-safety
+            # unchanged. Re-raise so the failure still propagates out of the task
+            # (logged / surfaced by _settle_schema_rebuild at the next reindex).
+            indexer.mark_rebuild_failed(fingerprint)
+            raise
 
 
 async def _periodic_reconcile(watcher: Any, interval_s: int) -> None:
@@ -2706,6 +2860,19 @@ _LIFESPAN_SHUTDOWN_COMPLETE = "lifespan.shutdown.complete"
 # logger (the redaction-backstopped lore sink) instead — see _drive_lifespan.
 _EAGER_BUILD_FAILED_MESSAGE = "eager startup build failed; see server logs"
 
+# FP-07 — bounded retry-with-backoff for the eager heavy build at process startup.
+# A TRANSIENT Qdrant/TEI outage at boot makes the eager build raise once ->
+# lifespan.startup.failed -> uvicorn aborts -> the container EXITS with no
+# auto-retry. A brief dependency blip should not permanently down the container, so
+# the eager startup retries the build up to ``_DEFAULT_EAGER_MAX_ATTEMPTS`` times
+# (> 1, so the default is BOUNDED, not single-shot), sleeping
+# ``_DEFAULT_EAGER_BACKOFF_BASE_S`` seconds between attempts. Failing EVERY attempt
+# still surfaces lifespan.startup.failed (fail-closed after exhausting the budget)
+# so uvicorn aborts a genuinely-down dependency rather than looping forever. These
+# are the PRODUCTION defaults; tests inject a tiny N + zero backoff to stay fast.
+_DEFAULT_EAGER_MAX_ATTEMPTS = 5
+_DEFAULT_EAGER_BACKOFF_BASE_S = 2.0
+
 
 class _EagerStartupLifespan:
     """ASGI lifespan-interceptor that runs loremaster's heavy build EAGERLY.
@@ -2727,7 +2894,14 @@ class _EagerStartupLifespan:
     OUTSIDE this interceptor (and the inner app's HTTP routing) is untouched.
     """
 
-    def __init__(self, inner: _ASGIApp, guard: Any | None) -> None:
+    def __init__(
+        self,
+        inner: _ASGIApp,
+        guard: Any | None,
+        *,
+        max_attempts: int = _DEFAULT_EAGER_MAX_ATTEMPTS,
+        backoff_base_s: float = _DEFAULT_EAGER_BACKOFF_BASE_S,
+    ) -> None:
         """Wrap the inner streamable app + (optionally) the eager lease guard.
 
         Args:
@@ -2737,9 +2911,21 @@ class _EagerStartupLifespan:
                 on the FastMCP object (via ``mcp._lore_eager_guard``), or ``None``.
                 Tolerated as ``None`` defensively — the inner lifespan still runs,
                 the eager lease is simply skipped (no heavy build hoisted).
+            max_attempts: The BOUNDED retry budget for the eager heavy build at
+                ``lifespan.startup`` (FP-07). A transient Qdrant/TEI blip is retried
+                up to this many times before failing closed; the production default
+                is ``_DEFAULT_EAGER_MAX_ATTEMPTS`` (> 1, so it is never single-shot).
+            backoff_base_s: Seconds slept between failed eager-build attempts. The
+                production default is ``_DEFAULT_EAGER_BACKOFF_BASE_S``; tests inject
+                zero so the suite never sleeps on a deliberately-failing build.
         """
         self._inner = inner
         self._guard = guard
+        # The bounded retry policy is honoured ONLY when there is a guard to retry
+        # against — a max_attempts below 1 is clamped to a single attempt so the
+        # eager build always runs at least once.
+        self._max_attempts = max(1, max_attempts)
+        self._backoff_base_s = backoff_base_s
 
     async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
         """Intercept only the ``lifespan`` scope; delegate everything else.
@@ -2803,27 +2989,37 @@ class _EagerStartupLifespan:
                 await send(inner_startup)
                 await inner_task
                 return
-            try:
-                # 2) Take the PROCESS-LIFETIME eager lease — the heavy build. Skipped
-                #    when no guard was surfaced (defensive), so the inner still runs.
-                if self._guard is not None:
-                    await self._guard.acquire()
-            except BaseException as exc:
-                # A failed eager build must surface so uvicorn aborts; nothing is
-                # cached (the guard rolls back), so a later startup retries. Tear the
-                # already-started inner lifespan back down before failing.
-                await self._shutdown_inner(inbox, outbox, inner_task)
-                # Log the REAL detail (with traceback) through the module logger,
-                # which is the redaction-backstopped lore sink, so operators still
-                # learn WHY startup failed. The ASGI message below stays a FIXED
-                # operator-safe phrase — never str(exc) — because uvicorn logs that
-                # message UNREDACTED at startup, so any secret-bearing exception
-                # text (e.g. a credentialed qdrant.url) must not reach it.
-                logger.error("eager startup build failed", exc_info=exc)
-                await send(
-                    {"type": _LIFESPAN_STARTUP_FAILED, "message": _EAGER_BUILD_FAILED_MESSAGE}
-                )
-                return
+            # 2) Take the PROCESS-LIFETIME eager lease — the heavy build. Skipped
+            #    when no guard was surfaced (defensive), so the inner still runs.
+            #    FP-07: a transient Qdrant/TEI outage at boot must not permanently
+            #    down the container, so the build is RETRIED with bounded backoff —
+            #    up to self._max_attempts acquires, sleeping self._backoff_base_s
+            #    between failures. A build that fails K < N times then succeeds comes
+            #    up cleanly; failing ALL N attempts surfaces lifespan.startup.failed
+            #    (fail-closed) so uvicorn aborts a genuinely-down dependency.
+            if self._guard is not None:
+                last_exc = await self._acquire_eager_lease_with_retry()
+                if last_exc is not None:
+                    # Every retry was exhausted — surface the failure so uvicorn
+                    # aborts; nothing is cached (the guard rolls each failed acquire
+                    # back), so a later startup retries. Tear the already-started
+                    # inner lifespan back down before failing.
+                    await self._shutdown_inner(inbox, outbox, inner_task)
+                    # Log the REAL detail (with traceback) through the module logger,
+                    # which is the redaction-backstopped lore sink, so operators
+                    # still learn WHY startup failed. The ASGI message below stays a
+                    # FIXED operator-safe phrase — never str(exc) — because uvicorn
+                    # logs that message UNREDACTED at startup, so any secret-bearing
+                    # exception text (e.g. a credentialed qdrant.url) must not reach
+                    # it.
+                    logger.error("eager startup build failed", exc_info=last_exc)
+                    await send(
+                        {
+                            "type": _LIFESPAN_STARTUP_FAILED,
+                            "message": _EAGER_BUILD_FAILED_MESSAGE,
+                        }
+                    )
+                    return
             # 3) Both the inner session manager and the eager build are up.
             await send({"type": _LIFESPAN_STARTUP_COMPLETE})
 
@@ -2854,6 +3050,50 @@ class _EagerStartupLifespan:
                     await inner_task
                 except asyncio.CancelledError:
                     pass
+
+    async def _acquire_eager_lease_with_retry(self) -> BaseException | None:
+        """Acquire the eager lease, retrying a transient failure with bounded backoff.
+
+        FP-07. Attempts ``self._guard.acquire()`` up to ``self._max_attempts``
+        times, sleeping ``self._backoff_base_s`` seconds between failures. Returns
+        ``None`` the instant an acquire SUCCEEDS (the eager lease is then held — the
+        heavy build ran). Returns the LAST exception when every attempt failed, so
+        the caller can surface ``lifespan.startup.failed`` (fail-closed) after the
+        budget is exhausted — never an unbounded retry loop that would stop uvicorn
+        ever aborting a genuinely-down dependency.
+
+        The guard's own no-cache-on-failure contract makes the retry safe: a failed
+        ``acquire`` rolls back without caching, so a subsequent attempt rebuilds
+        cleanly rather than re-serving a half-built context.
+
+        Returns:
+            ``None`` on success (lease held), or the last :class:`BaseException`
+            raised when all ``self._max_attempts`` attempts failed.
+        """
+        # The caller only invokes this helper when a guard was surfaced, so the
+        # guard is non-None here (mypy can't see the caller's guard-check).
+        assert self._guard is not None
+        last_exc: BaseException | None = None
+        for attempt in range(self._max_attempts):
+            try:
+                await self._guard.acquire()
+                return None
+            except BaseException as exc:  # noqa: BLE001 — surface any build failure
+                last_exc = exc
+                # Sleep between attempts ONLY when another attempt remains, so a
+                # final-attempt failure fails closed immediately. A zero backoff
+                # (the test policy) makes this a no-op delay.
+                if attempt + 1 < self._max_attempts:
+                    logger.warning(
+                        "eager startup build attempt failed; retrying",
+                        extra={
+                            "attempt": attempt + 1,
+                            "max_attempts": self._max_attempts,
+                        },
+                    )
+                    if self._backoff_base_s > 0:
+                        await asyncio.sleep(self._backoff_base_s)
+        return last_exc
 
     @staticmethod
     async def _shutdown_inner(
@@ -2904,7 +3144,16 @@ def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
     # eager lease through the guard build_mcp_server surfaced. HTTP scopes pass
     # straight through, so the Origin/Bearer wrapping below is untouched.
     eager_guard = getattr(mcp, "_lore_eager_guard", None)
-    app: Any = _EagerStartupLifespan(inner, eager_guard)
+    # FP-07: wire the PRODUCTION-default BOUNDED retry policy (N > 1 + a real
+    # backoff) so a brief boot-time Qdrant/TEI blip is retried rather than aborting
+    # the container on the first failure. Passed explicitly so the production
+    # composition's bounded-not-single-shot behaviour is unmistakable at the seam.
+    app: Any = _EagerStartupLifespan(
+        inner,
+        eager_guard,
+        max_attempts=_DEFAULT_EAGER_MAX_ATTEMPTS,
+        backoff_base_s=_DEFAULT_EAGER_BACKOFF_BASE_S,
+    )
     # The Origin guard runs for every deployment (DNS-rebinding defense), with the
     # configured server bind's own origin implicitly covered by the loopback allow
     # (the local single-user deploy binds 127.0.0.1). Extra trusted origins can be

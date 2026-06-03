@@ -63,7 +63,9 @@ How to run (worktree shadowing is REQUIRED — the venv lives in the sibling rep
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -74,6 +76,7 @@ import pytest
 # referencing them keeps the suite RED on *behaviour*, never on a missing symbol.
 from loremaster.graph import CodeGraph
 from loremaster.index.manifest import STATE_INDEXED, Manifest
+from loremaster.index.sqlite_resilient import open_resilient_sqlite
 
 # The real producer the indexer uses to derive graph chunks — grounds the
 # "subsequent write works" assertion in the production chunk path (clause 1/5).
@@ -1168,3 +1171,443 @@ class TestSqliteExceptionHierarchyIsTheBugSurface:
             "genuine corruption must raise a NON-operational DatabaseError — "
             "the signal that distinguishes it from a transient lock/IO blip"
         )
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 — the state dir created by the open must be owner-only (mode 0700)
+# ---------------------------------------------------------------------------
+#
+# ``open_resilient_sqlite`` materialises the database file's parent directory via
+# ``path.parent.mkdir(parents=True, exist_ok=True)`` (FP-01). Today that mkdir
+# uses the default mode, so the new dir lands world- and group-readable (0755
+# under a typical 022 umask). That state dir holds the manifest AND — critically —
+# the memory ledger ``<slug>.memory.db``, a plaintext SQLite file containing
+# user-authored memory TEXT (e.g. internal notes, paths, business rules). Anything
+# readable by other local users is an information-disclosure hole.
+#
+# Pinned end-state: a directory the open CREATES is created with mode 0o700
+# (owner read/write/execute only). The check is the canonical
+# ``stat.S_IMODE(os.stat(parent).st_mode) == 0o700``.
+#
+# IMPORTANT scoping — only a dir the open CREATES is asserted on:
+#   * An ALREADY-EXISTING dir's permissions are NOT forced. ``mkdir(exist_ok=True)``
+#     leaves an existing dir untouched, and chmod-on-existing would silently
+#     re-tighten an operator's deliberately-shared deployment dir (or a mount
+#     point) — a behaviour change beyond the security fix's remit. So the
+#     "existing dir is left alone" case is pinned as the complementary boundary,
+#     NOT as a 0700 assertion. The contract: tighten what we create, never
+#     re-permission what we inherit.
+#
+# These tests are BEHAVIOURALLY RED today: the default-mode mkdir yields 0755 (or
+# whatever ``0777 & ~umask`` gives), which ``== 0o700`` rejects. The oracle is the
+# requirement (owner-only), not the implementation's current mode (clause 2).
+# ---------------------------------------------------------------------------
+
+# The required owner-only permission bits for a state dir the open creates: rwx
+# for the owner, nothing for group/other. From the security requirement (a state
+# dir holding plaintext memory must not be world-readable), not from the code.
+_OWNER_ONLY_DIR_MODE: int = 0o700
+
+
+def _dir_mode(path: Path) -> int:
+    """Return the permission bits (``S_IMODE``) of ``path`` — the canonical check.
+
+    Strips the file-type bits so the comparison is against the raw rwx triplet,
+    exactly as the requirement states (``stat.S_IMODE(os.stat(dir).st_mode)``).
+    """
+    return stat.S_IMODE(os.stat(path).st_mode)
+
+
+class TestStateDirCreatedOwnerOnly:
+    """FIX 2: a state dir the resilient open CREATES is mode 0700 (owner-only).
+
+    ``open_resilient_sqlite`` mkdir's the db file's missing parent (FP-01). That
+    parent holds the plaintext memory ledger, so it must be created owner-only
+    (0o700), not world-readable. A dir that ALREADY exists is left untouched — the
+    fix tightens what it creates, it does not re-permission inherited dirs.
+    """
+
+    def test_created_parent_dir_is_mode_0700(self, tmp_path: Path) -> None:
+        """The leaf parent the open creates has owner-only permissions.
+
+        Arrange: a db path under a parent dir that does NOT yet exist.
+        Act: open the resilient sqlite over it (which mkdir's the parent).
+        Assert: the created parent dir is mode 0o700.
+        """
+        # A realistic state-dir layout + the real ``<slug>.db`` filename the server
+        # passes (clause 1/5: production-shaped path, not a placeholder).
+        state_dir = tmp_path / "state" / "lore"
+        db_path = state_dir / _MANIFEST_FILENAME
+        assert not state_dir.exists(), "fixture must start with an absent state dir"
+
+        connection = open_resilient_sqlite(str(db_path))
+        try:
+            assert state_dir.is_dir(), "the open must create the missing parent dir"
+            # Today this is 0o755 (default-mode mkdir) — RED. The requirement is
+            # owner-only so the plaintext memory ledger is not world-readable.
+            assert _dir_mode(state_dir) == _OWNER_ONLY_DIR_MODE, (
+                f"created state dir must be {_OWNER_ONLY_DIR_MODE:#o} (owner-only), "
+                f"got {_dir_mode(state_dir):#o} — plaintext memory must not be "
+                "group/world-readable"
+            )
+        finally:
+            connection.close()
+
+    def test_created_dir_grants_no_group_or_other_access(self, tmp_path: Path) -> None:
+        """No group/other permission bits are set on a created state dir.
+
+        A direct security-boundary assertion: the disclosure risk is ANY group/
+        other read or traversal bit. This pins the boundary independently of the
+        exact owner bits, so a future 'owner gets rw only' tweak still satisfies
+        the real invariant (nothing leaks to other local users).
+        """
+        state_dir = tmp_path / "state" / "lore"
+        db_path = state_dir / _MANIFEST_FILENAME
+
+        connection = open_resilient_sqlite(str(db_path))
+        try:
+            mode = _dir_mode(state_dir)
+            # The disclosure bits: group rwx + other rwx. None may be set.
+            group_and_other = mode & 0o077
+            assert group_and_other == 0, (
+                f"state dir leaks {group_and_other:#o} to group/other; the plaintext "
+                "memory ledger must be owner-only"
+            )
+        finally:
+            connection.close()
+
+    def test_memory_ledger_filename_parent_is_owner_only(self, tmp_path: Path) -> None:
+        """The MEMORY-LEDGER path's created parent is owner-only too.
+
+        The disclosure risk is specifically ``<slug>.memory.db`` (user-authored
+        memory text in plaintext SQLite). This drives the same open over the real
+        memory-ledger filename so the guard is anchored to the file that actually
+        carries the sensitive content (clause 1: the real at-risk artifact).
+        """
+        # The server names the memory ledger ``<slug>.memory.db`` alongside the
+        # manifest under the same state dir (clause 5: same naming convention).
+        state_dir = tmp_path / "state" / "lore"
+        memory_db_path = state_dir / f"{_SLUG}.memory.db"
+        assert not state_dir.exists(), "fixture must start with an absent state dir"
+
+        connection = open_resilient_sqlite(str(memory_db_path))
+        try:
+            assert _dir_mode(state_dir) == _OWNER_ONLY_DIR_MODE, (
+                "the memory-ledger's created parent dir must be owner-only — it "
+                "holds user-authored memory text in plaintext SQLite"
+            )
+        finally:
+            connection.close()
+
+    def test_nested_created_ancestors_are_all_owner_only(self, tmp_path: Path) -> None:
+        """Every ancestor dir the open CREATES (parents=True) is owner-only.
+
+        ``mkdir(parents=True)`` may create several missing ancestors at once. Each
+        one the open brings into being holds (or leads to) the state dir, so none
+        may be group/world-traversable — an exec bit on an intermediate dir is
+        enough to reach the leaf. Only ancestors UNDER tmp_path that did not exist
+        before are checked (tmp_path itself is pre-existing — see the existing-dir
+        boundary test for why inherited dirs are out of scope).
+        """
+        # Two missing levels: both ``deep`` and ``deep/state`` (and the leaf) are
+        # created by this single open.
+        leaf_dir = tmp_path / "deep" / "state" / "lore"
+        db_path = leaf_dir / _MANIFEST_FILENAME
+        created_ancestors = [tmp_path / "deep", tmp_path / "deep" / "state", leaf_dir]
+        for ancestor in created_ancestors:
+            assert not ancestor.exists(), "fixture: all target ancestors must be absent"
+
+        connection = open_resilient_sqlite(str(db_path))
+        try:
+            for ancestor in created_ancestors:
+                assert _dir_mode(ancestor) == _OWNER_ONLY_DIR_MODE, (
+                    f"created ancestor {ancestor} must be owner-only "
+                    f"({_OWNER_ONLY_DIR_MODE:#o}), got {_dir_mode(ancestor):#o}"
+                )
+        finally:
+            connection.close()
+
+    def test_existing_dir_permissions_are_not_forced(self, tmp_path: Path) -> None:
+        """An ALREADY-EXISTING state dir is left at its current mode (not re-tightened).
+
+        Scoping boundary: the fix tightens dirs it CREATES, it must NOT chmod a
+        dir it inherits — re-permissioning an operator's deliberately-shared mount
+        point or deploy dir is a behaviour change beyond the security fix. Here the
+        state dir pre-exists at a group-readable 0o755; after the open it must be
+        UNCHANGED (still 0o755), proving the open does not touch inherited perms.
+        """
+        state_dir = tmp_path / "state" / "lore"
+        # Pre-create the dir at a group-readable mode, defeating the umask with an
+        # explicit chmod so the starting mode is deterministic.
+        state_dir.mkdir(parents=True)
+        preexisting_mode = 0o755
+        state_dir.chmod(preexisting_mode)
+        assert _dir_mode(state_dir) == preexisting_mode, "fixture: dir starts at 0o755"
+
+        db_path = state_dir / _MANIFEST_FILENAME
+        connection = open_resilient_sqlite(str(db_path))
+        try:
+            # exist_ok=True leaves it untouched: the open must NOT re-permission it.
+            assert _dir_mode(state_dir) == preexisting_mode, (
+                "an already-existing state dir must be left at its current mode; "
+                "the fix tightens only dirs it CREATES, never inherited ones"
+            )
+        finally:
+            connection.close()
+
+
+# ---------------------------------------------------------------------------
+# SECURITY FIX — the DB FILE the open creates/opens must be owner-only (0o600)
+# ---------------------------------------------------------------------------
+#
+# The dir-0700 hardening above (TestStateDirCreatedOwnerOnly) tightens the
+# PARENT directory, but the database FILE itself is still created by
+# ``sqlite3.connect`` at the default ``0o666 & ~umask`` == 0o644 — WORLD-READABLE.
+# So the dir-0700 mode is the SOLE protection for the plaintext memory ledger
+# ``<slug>.memory.db`` and the manifest: if that dir mode is ever loosened (a
+# shared mount, an operator chmod, an inherited pre-existing dir the open is
+# scoped NOT to re-tighten), every byte of user-authored memory text is readable
+# by other local users. Defense-in-depth requires the FILE be owner-only too.
+#
+# Pinned end-state (from the security requirement, NOT the current 0o644 the impl
+# happens to produce — clause 2): after ``open_resilient_sqlite`` returns, the db
+# file is mode 0o600 (owner rw, nothing for group/other), on BOTH:
+#   * a FRESHLY-CREATED file (today 0o644 → RED), and
+#   * an EXISTING world-readable (0o644) HEALTHY file — the "tighten on next
+#     deploy" guarantee that retro-fixes files written by a prior 0o644 build,
+#     and which must NOT delete the healthy file or lose its data (today the open
+#     leaves the inherited 0o644 untouched → RED).
+#
+# The disclosure-bit boundary (``mode & 0o077 == 0``) is pinned independently of
+# the exact owner bits so a future "owner rw only" formulation still satisfies the
+# real invariant: nothing leaks to other local users. And the hardening is pinned
+# through the REAL production constructors (Manifest / CodeGraph / MemoryLedger),
+# not only the bare helper, so the guarantee covers the path the server runs
+# (clause 3/4: the production open seam, with the memory ledger as the at-risk
+# artifact).
+#
+# These mode assertions are BEHAVIOURALLY RED today: a default-mode connect yields
+# 0o644, which ``== 0o600`` and ``& 0o077 == 0`` both reject. They are NOT
+# structurally red — ``open_resilient_sqlite`` / ``Manifest`` / ``CodeGraph`` /
+# ``MemoryLedger`` all exist and import cleanly; only the FILE permission is wrong.
+# ---------------------------------------------------------------------------
+
+# The required owner-only permission bits for a DB FILE the open creates or opens:
+# owner read+write, nothing for group/other. From the security requirement (a
+# plaintext memory ledger / manifest must not be group/world-readable), NOT from
+# the implementation's current mode (clause 2: an independent oracle).
+_OWNER_ONLY_FILE_MODE: int = 0o600
+
+# A deliberately world-readable starting mode for the "tighten an existing file"
+# case — the exact 0o644 a prior default-mode ``sqlite3.connect`` build wrote to
+# disk (clause 1: the real artifact this deploy-time fix exists to retro-tighten).
+_WORLD_READABLE_FILE_MODE: int = 0o644
+
+
+def _file_mode(path: Path) -> int:
+    """Return the permission bits (``S_IMODE``) of the FILE at ``path``.
+
+    Strips the file-type bits so the comparison is the raw rwx triplet, exactly
+    as the requirement states (``stat.S_IMODE(os.stat(file).st_mode)``). The file
+    sibling of :func:`_dir_mode`, reused across every case in this class.
+    """
+    return stat.S_IMODE(os.stat(path).st_mode)
+
+
+def _make_world_readable_healthy_manifest(db_path: Path) -> None:
+    """Write a HEALTHY manifest with one real row, then ``chmod`` it world-readable.
+
+    Reproduces the production pre-condition this fix retro-tightens: a valid db
+    file left at 0o644 by a prior default-mode build, holding real data that MUST
+    survive the next (tightening) open. Uses the same production-shaped row as the
+    other healthy fixtures (clause 1/5).
+    """
+    _seed_healthy_manifest_row(db_path)
+    os.chmod(db_path, _WORLD_READABLE_FILE_MODE)
+    # Precondition guard: the fixture really starts world-readable, so a later
+    # 0o600 assertion proves the open TIGHTENED it (not that it was already tight).
+    assert _file_mode(db_path) == _WORLD_READABLE_FILE_MODE, (
+        "fixture must start at 0o644 (a prior default-mode build's world-readable file)"
+    )
+
+
+class TestDatabaseFilesAreOwnerOnly:
+    """SECURITY: a DB file the resilient open creates/opens is mode 0o600 (owner-only).
+
+    The dir-0700 hardening protects the directory; this guards the FILE. The
+    plaintext memory ledger ``<slug>.memory.db`` and the manifest must be owner-rw
+    only — never group/world-readable — on both a freshly created file and an
+    existing world-readable one (the deploy-time tighten guarantee). Pinned both at
+    the bare ``open_resilient_sqlite`` helper and through the real Manifest /
+    CodeGraph / MemoryLedger production constructors.
+    """
+
+    def test_freshly_created_db_file_is_mode_0600(self, tmp_path: Path) -> None:
+        """A brand-new db file the open creates has owner-only (0o600) permissions.
+
+        Arrange: a db path that does NOT yet exist.
+        Act: open the resilient sqlite over it (which creates the file).
+        Assert: the created file is mode 0o600.
+        """
+        state_dir = tmp_path / "state" / "lore"
+        db_path = state_dir / _MANIFEST_FILENAME
+        assert not db_path.exists(), "fixture must start with an absent db file"
+
+        connection = open_resilient_sqlite(str(db_path))
+        try:
+            assert db_path.is_file(), "the open must create the db file"
+            # Today this is 0o644 (default-mode sqlite3.connect under a 022 umask)
+            # — RED. The requirement is owner-only so the plaintext memory ledger /
+            # manifest is not group/world-readable.
+            assert _file_mode(db_path) == _OWNER_ONLY_FILE_MODE, (
+                f"freshly created db file must be {_OWNER_ONLY_FILE_MODE:#o} "
+                f"(owner-only), got {_file_mode(db_path):#o} — a plaintext DB file "
+                "must not be group/world-readable"
+            )
+        finally:
+            connection.close()
+
+    def test_freshly_created_db_file_grants_no_group_or_other_access(
+        self, tmp_path: Path
+    ) -> None:
+        """No group/other permission bits are set on a freshly created db file.
+
+        A direct security-boundary assertion pinned independently of the exact
+        owner bits: the disclosure risk is ANY group/other read bit, so a future
+        'owner rw only' tweak still satisfies the real invariant (nothing leaks to
+        other local users). This is the magnitude/sanity bound on the mode value —
+        it survives a reformulation that exact-equality on 0o600 would not.
+        """
+        db_path = tmp_path / "state" / "lore" / _MANIFEST_FILENAME
+
+        connection = open_resilient_sqlite(str(db_path))
+        try:
+            mode = _file_mode(db_path)
+            group_and_other = mode & 0o077  # group rwx + other rwx — none may be set
+            assert group_and_other == 0, (
+                f"db file leaks {group_and_other:#o} to group/other; a plaintext DB "
+                "file must be owner-only"
+            )
+        finally:
+            connection.close()
+
+    def test_existing_world_readable_healthy_db_is_tightened_to_0600_on_open(
+        self, tmp_path: Path
+    ) -> None:
+        """An existing 0o644 HEALTHY db is tightened to 0o600 on open — data intact.
+
+        THE deploy-time guarantee: a valid db file written world-readable by a
+        prior default-mode build is re-permissioned to owner-only on the next open,
+        WITHOUT being deleted and WITHOUT losing its data. The healthy-db-survives
+        contract (TestHealthyManifestSurvives) and this tighten contract must hold
+        together: the chmod must not trip the resilient open into a delete/recreate.
+
+        Arrange: a healthy manifest with one real row, chmod'd to 0o644.
+        Act: open it again via the bare resilient helper.
+        Assert: the file is now 0o600 AND its row survived (not recreated empty).
+        """
+        db_path = tmp_path / _MANIFEST_FILENAME
+        _make_world_readable_healthy_manifest(db_path)
+
+        connection = open_resilient_sqlite(str(db_path))
+        try:
+            # The file is the SAME inode tightened in place, not a recreated one —
+            # so its mode is now owner-only. Today the open leaves the inherited
+            # 0o644 untouched → RED.
+            assert _file_mode(db_path) == _OWNER_ONLY_FILE_MODE, (
+                f"an existing world-readable db must be tightened to "
+                f"{_OWNER_ONLY_FILE_MODE:#o} on open (the deploy-time fix), got "
+                f"{_file_mode(db_path):#o}"
+            )
+        finally:
+            connection.close()
+
+        # And the healthy data SURVIVED — the tighten must not have deleted the db.
+        # Read back through the production Manifest constructor (the consumer that
+        # interprets the bytes), proving the row is the SAME data, not a fresh empty
+        # ledger (the anti-regression seam: tighten ≠ delete-recreate).
+        reopened = Manifest(str(db_path))
+        try:
+            rows = reopened.all_files()
+            assert len(rows) == 1, (
+                "tightening an existing healthy db must NOT delete it — the row "
+                "must survive (the 0o600 chmod must not trip the resilient recreate)"
+            )
+            assert rows[0].file_path == _FILE_PATH
+            assert rows[0].sha512 == _SHA512
+            assert rows[0].chunk_ids == _CHUNK_IDS
+        finally:
+            reopened.close()
+
+    def test_manifest_constructor_yields_owner_only_db_file(self, tmp_path: Path) -> None:
+        """A db file created through the real ``Manifest(path)`` is 0o600.
+
+        Pins the hardening through the PRODUCTION open path, not only the bare
+        helper — Manifest.__init__ calls open_resilient_sqlite, so the server's
+        manifest db must land owner-only (clause 3/4: the real consumer seam).
+        """
+        manifest_path = tmp_path / "state" / "lore" / _MANIFEST_FILENAME
+
+        manifest = Manifest(str(manifest_path))
+        try:
+            assert _file_mode(manifest_path) == _OWNER_ONLY_FILE_MODE, (
+                f"a Manifest-created db file must be {_OWNER_ONLY_FILE_MODE:#o} "
+                f"(owner-only), got {_file_mode(manifest_path):#o}"
+            )
+        finally:
+            manifest.close()
+
+    def test_graph_constructor_yields_owner_only_db_file(self, tmp_path: Path) -> None:
+        """A db file created through the real ``CodeGraph(path)`` is 0o600.
+
+        The graph db carries the same open path; pinning it confirms the hardening
+        is in open_resilient_sqlite (shared by both constructors), not bolted onto
+        one caller (clause 3/4: the production open seam, second consumer).
+        """
+        graph_path = tmp_path / "state" / "lore" / _GRAPH_FILENAME
+
+        graph = CodeGraph(str(graph_path))
+        try:
+            assert _file_mode(graph_path) == _OWNER_ONLY_FILE_MODE, (
+                f"a CodeGraph-created db file must be {_OWNER_ONLY_FILE_MODE:#o} "
+                f"(owner-only), got {_file_mode(graph_path):#o}"
+            )
+        finally:
+            graph.close()
+
+    def test_memory_ledger_db_file_is_owner_only(self, tmp_path: Path) -> None:
+        """The MEMORY-LEDGER db file — the at-risk plaintext artifact — is 0o600.
+
+        ``<slug>.memory.db`` holds user-authored memory TEXT in plaintext SQLite —
+        the specific file whose world-readability is the disclosure hole this fix
+        closes. Drive the real MemoryLedger constructor over it and pin owner-only,
+        anchoring the guard to the file that actually carries the sensitive content
+        (clause 1/4: the real at-risk consumer).
+        """
+        from loremaster.memory.ledger import MemoryLedger
+
+        # The server names the memory ledger ``<slug>.memory.db`` (clause 5: same
+        # naming convention as the other harness tests in this file).
+        ledger_path = tmp_path / "state" / "lore" / f"{_SLUG}.memory.db"
+
+        ledger = MemoryLedger(str(ledger_path))
+        try:
+            # Write a production-shaped durable memory so the file holds real
+            # sensitive content (clause 1) — the very bytes that must not leak.
+            ledger.record(
+                memory_id=_MEMORY_ID,
+                text=_MEMORY_TEXT,
+                metadata=_MEMORY_METADATA,
+                refs_stamp=_MEMORY_REFS_STAMP,
+            )
+            assert _file_mode(ledger_path) == _OWNER_ONLY_FILE_MODE, (
+                f"the memory-ledger db must be {_OWNER_ONLY_FILE_MODE:#o} "
+                f"(owner-only) — it holds user-authored memory text in plaintext "
+                f"SQLite, got {_file_mode(ledger_path):#o}"
+            )
+            # Disclosure-bit boundary on the at-risk file specifically.
+            assert _file_mode(ledger_path) & 0o077 == 0, (
+                "the plaintext memory ledger must not grant any group/other access"
+            )
+        finally:
+            ledger.close()

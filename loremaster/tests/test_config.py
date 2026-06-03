@@ -32,7 +32,7 @@ from typing import Any
 
 import pytest
 import yaml
-from loremaster.config import LoreConfig, load_config, resolve_secret
+from loremaster.config import LoreConfig, ProjectConfig, load_config, resolve_secret
 from pydantic import ValidationError
 
 # The canonical tiered lore.yaml as a Python mapping. Kept inline (not a fixture
@@ -457,3 +457,158 @@ class TestResolveSecret:
         monkeypatch.setenv("LORE_TEI_KEY", "")
         with pytest.raises(KeyError):
             resolve_secret("LORE_TEI_KEY")
+
+
+# ---------------------------------------------------------------------------
+# FIX 1 — ProjectConfig.slug must be constrained to a safe charset
+# ---------------------------------------------------------------------------
+#
+# ``ProjectConfig.slug`` is the single value that drives BOTH the ``lore_<slug>``
+# Qdrant collection name AND the on-disk state paths the server constructs:
+# ``_DEFAULT_MANIFEST_DIR / f"{slug}.db"`` / ``f"{slug}.memory.db"`` /
+# ``f"{slug}.graph.db"`` (server.py ~2022-2023, _DEFAULT_MANIFEST_DIR ~2954).
+#
+# Today the field is a bare ``str`` — unconstrained. An operator typo or a
+# malicious config could put path-traversal (``../etc``), a separator (``a/b``),
+# whitespace (``Has Space``), uppercase (``UPPER``), an empty string, or a
+# leading separator (``-leading``) into the slug. Because the slug is f-string'd
+# straight into a filesystem path, ``../etc`` would relocate the state DBs OUTSIDE
+# the state dir, and a separator could collide / escape the collection namespace.
+# This is defense-in-depth: the config is operator-controlled, but a typo must
+# FAIL FAST at load time rather than silently writing the durable memory ledger
+# to the wrong place.
+#
+# The contract (from the requirement, NOT from any implementation): the slug must
+# match ``^[a-z0-9][a-z0-9_-]*$`` — lowercase alphanumerics plus ``-`` / ``_``,
+# not starting with a separator, non-empty. A valid slug is accepted; an invalid
+# one raises a pydantic ``ValidationError`` at config load (parsing time), exactly
+# like every other strict field on the model.
+#
+# These tests are BEHAVIOURALLY RED today: the unconstrained ``str`` accepts every
+# malicious value below without error. The assertions are accept-vs-reject
+# (independent of HOW the constraint is implemented — a regex, an annotated type,
+# a validator); they do not re-state any implementation formula (clause 2).
+# ---------------------------------------------------------------------------
+
+# The documented safe-charset contract for a slug. Stated here as the spec the
+# test verifies — NOT copied from the implementation (which does not yet exist).
+# Lowercase alnum + ``-``/``_``, must start with an alnum, non-empty.
+_SLUG_PATTERN: str = r"^[a-z0-9][a-z0-9_-]*$"
+
+# VALID slugs that MUST be accepted. Grounded in real lore deployments: ``lore``
+# (this repo's own slug), ``demand_intelligence`` (the canonical config above),
+# and a hyphen+underscore+digit mix proving the full permitted charset parses.
+_VALID_SLUGS: tuple[str, ...] = (
+    "lore",
+    "demand_intelligence",
+    "my-proj_2",
+)
+
+# INVALID slugs that MUST raise at load. Each is a realistic operator-typo or
+# attack input, annotated with the failure mode it exercises (the adversarial
+# pre-flight, encoded as data so every entry is a case, not a comment).
+_INVALID_SLUGS: dict[str, str] = {
+    "../etc": "path traversal — escapes the state dir, relocates the DBs",
+    "a/b": "embedded separator — escapes the slug into a subpath / collection",
+    "Has Space": "whitespace + a space — not a safe filename / collection token",
+    "UPPER": "uppercase — Qdrant collection names and the convention are lowercase",
+    "": "empty — yields a bare '.db' path and an 'lore_' collection",
+    "-leading": "leading separator — must start with an alphanumeric",
+}
+
+
+def _project_payload(slug: str) -> dict[str, Any]:
+    """A ``project`` section carrying ``slug`` over the canonical valid ``root``.
+
+    Built by mutating the canonical config's ``project`` block so the test drives
+    the SAME construction path production uses (clause 5: one source of truth),
+    varying ONLY the slug under test.
+    """
+    payload = _deep_copy_config()
+    payload["project"]["slug"] = slug
+    return payload
+
+
+class TestProjectSlugCharset:
+    """FIX 1: ``ProjectConfig.slug`` is constrained to a safe ``[a-z0-9_-]`` charset.
+
+    The slug drives the ``lore_<slug>`` collection name and the on-disk
+    ``<slug>.db`` / ``<slug>.memory.db`` / ``<slug>.graph.db`` paths. An
+    unconstrained slug containing ``/``, ``..``, whitespace, uppercase, or a
+    leading separator could relocate the durable state outside the state dir or
+    collide collection names. A valid slug parses; an invalid slug fails loudly
+    at config load (a pydantic ``ValidationError``), never silently.
+    """
+
+    @pytest.mark.parametrize("slug", _VALID_SLUGS)
+    def test_valid_slug_is_accepted(self, slug: str) -> None:
+        """A safe-charset slug constructs and round-trips unchanged.
+
+        Arrange: a ProjectConfig payload with a valid slug.
+        Act: construct the model directly.
+        Assert: it validates and preserves the slug verbatim.
+        """
+        config = ProjectConfig(slug=slug, root=".")
+        assert config.slug == slug
+
+    @pytest.mark.parametrize("slug", _VALID_SLUGS)
+    def test_valid_slug_matches_the_documented_pattern(self, slug: str) -> None:
+        """Sanity-check the fixture: every 'valid' slug truly satisfies the spec.
+
+        Independent of the implementation — this asserts the TEST DATA against the
+        published pattern so a future edit cannot smuggle an invalid value into
+        the accepted set (clause 2: guards the oracle, not the impl).
+        """
+        import re
+
+        assert re.match(_SLUG_PATTERN, slug), (
+            f"fixture error: {slug!r} is in _VALID_SLUGS but violates {_SLUG_PATTERN}"
+        )
+
+    @pytest.mark.parametrize(
+        "slug", list(_INVALID_SLUGS), ids=[s or "<empty>" for s in _INVALID_SLUGS]
+    )
+    def test_invalid_slug_raises_validation_error_directly(self, slug: str) -> None:
+        """An unsafe slug must fail loudly when ProjectConfig is constructed.
+
+        Arrange: a slug from the adversarial set (path traversal, separator,
+        whitespace, uppercase, empty, leading separator).
+        Act + Assert: constructing ProjectConfig raises a pydantic ValidationError.
+        """
+        with pytest.raises(ValidationError):
+            ProjectConfig(slug=slug, root=".")
+
+    @pytest.mark.parametrize(
+        "slug", list(_INVALID_SLUGS), ids=[s or "<empty>" for s in _INVALID_SLUGS]
+    )
+    def test_invalid_slug_fails_at_full_config_load(self, slug: str) -> None:
+        """The constraint fires through the WHOLE LoreConfig parse, not just the leaf.
+
+        The server validates the full config via ``LoreConfig.model_validate`` /
+        ``load_config`` at startup (the real entry seam, clause 3). An invalid slug
+        must abort that parse so a bad deploy never reaches the path-construction.
+        """
+        payload = _project_payload(slug)
+        with pytest.raises(ValidationError):
+            LoreConfig.model_validate(payload)
+
+    def test_path_traversal_slug_is_rejected_before_path_construction(self) -> None:
+        """The headline attack: ``../../etc/cron.d`` must never reach an f-string path.
+
+        A traversal slug is exactly what relocates ``<slug>.db`` outside the state
+        dir. This pins that the rejection happens at validation — the slug never
+        becomes a Path component (a direct security-boundary assertion, not a
+        generic 'is it valid' check).
+        """
+        traversal_slug = "../../etc/cron.d/lore"
+        with pytest.raises(ValidationError):
+            ProjectConfig(slug=traversal_slug, root=".")
+
+    def test_canonical_demand_intelligence_slug_still_parses_unchanged(self) -> None:
+        """Anti-regression: the existing canonical deploy slug must keep validating.
+
+        The whole canonical config (which uses ``demand_intelligence``) must still
+        parse after the constraint lands — the fix must not break a real deploy.
+        """
+        config = LoreConfig.model_validate(_CANONICAL_CONFIG)
+        assert config.project.slug == "demand_intelligence"

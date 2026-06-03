@@ -648,3 +648,411 @@ class TestLedgerResilientOpen:
         record = next(r for r in ledger.all_records() if r.memory_id == memory_id)
         # The second write wins (upsert), so the latest metadata is present.
         assert record.metadata.get("author") == "op"
+
+
+# =========================================================================== #
+# FOLLOW-UP FIXES (fix/followups) — extend the FP-06 durability suite.
+#
+# Two gaps the v0.3.6 write-through ledger left open, pinned here as NEW
+# contract before any implementation exists:
+#
+#   * FP-06 BACKFILL — the ledger only protects memories saved AFTER v0.3.6.
+#     A memory ALREADY in the Qdrant memory collection (saved by an older
+#     build) is NOT in the ledger, so a Qdrant wipe STILL loses it. The remedy:
+#     a boot-time ``MemoryStore.backfill_ledger_from_store()`` that reads every
+#     pre-existing memory point's payload and records it into the ledger, so a
+#     subsequent ``restore_if_diverged`` can rebuild it. Wired into
+#     build_app_context BEFORE ``restore_if_diverged``.
+#
+#   * FP-12 MEMORY-DIM GATE — the startup probe gate guards the CODE collection
+#     (``run_probe_gate``) but the MEMORY collection has NO dim gate: a
+#     pre-existing memory collection at a WRONG vector size (e.g. from an old
+#     model) is used SILENTLY. The remedy: ``MemoryStore.ensure_ready`` REFUSES
+#     (mirroring ``run_probe_gate``'s existing-collection-mismatch refusal),
+#     leaving the wrong-dim collection INTACT — never auto-recreated.
+#
+# INDEPENDENCE: behavioural expectations come from the operator's two-fix
+# requirement, not from any (not-yet-written) implementation. The seeded
+# payload shape, the deterministic ids, and the wrong-dim value are independent
+# oracles reconstructed from the documented convention — never read back from
+# the code under test.
+# =========================================================================== #
+
+import pytest
+from qdrant_client.models import PointStruct
+
+# --- The Qdrant memory-point payload shape, reconstructed INDEPENDENTLY ------
+# These mirror store.py's ``_build_payload`` (a VERIFIED FACT in the slice
+# brief: the payload carries ``note_text`` (the recallable prose), a ``kind``
+# marker, the caller ``metadata``, the versioned ``refs``, and a ``created_at``
+# stamp). They are reproduced here so the test can SEED a pre-v0.3.6 memory
+# point with the production payload shape WITHOUT reading the keys back from the
+# code under test (which would be tautological). The backfill MUST read these
+# exact keys to reconstruct the ledger row; a drift breaks loudly — the point.
+_PAYLOAD_NOTE_TEXT = "note_text"
+_PAYLOAD_KIND = "kind"
+_PAYLOAD_METADATA = "metadata"
+_PAYLOAD_REFS = "refs"
+_PAYLOAD_CREATED_AT = "created_at"
+_KIND_MEMORY = "memory"
+
+# A WRONG vector size for the memory-dim-gate case: an order-of-magnitude-ish
+# scale error a real old model would produce (1024 vs the production 2048),
+# the SAME wrong-dim value the code-collection probe-gate tests pin. Distinct
+# from ``_DIM`` so the gate has something unambiguous to refuse.
+_WRONG_DIM = 1024
+assert _WRONG_DIM != _DIM, "the wrong-dim fixture must differ from the real dim"
+
+
+def seed_payload(
+    text: str,
+    metadata: dict[str, Any] | None = None,
+    refs: list[MemoryRef] | None = None,
+) -> dict[str, Any]:
+    """Build a Qdrant memory-point payload in the PRODUCTION shape (pre-v0.3.6 seed).
+
+    Independent reconstruction of ``_build_payload``: ``note_text`` carries the
+    prose, ``kind`` marks it a memory, ``metadata`` and the versioned ``refs``
+    round-trip, and a ``created_at`` stamp is present. Used to upsert a memory
+    point DIRECTLY into Qdrant (never via ``save_memory``), so the ledger never
+    learns of it — faithfully simulating a memory written by an older build that
+    predates the write-through ledger. The backfill must reconstruct the ledger
+    row from exactly these keys.
+    """
+    resolved_refs = list(refs or ())
+    return {
+        _PAYLOAD_NOTE_TEXT: text,
+        _PAYLOAD_KIND: _KIND_MEMORY,
+        _PAYLOAD_METADATA: dict(metadata or {}),
+        _PAYLOAD_REFS: [ref.model_dump() for ref in resolved_refs],
+        # A real recorded-looking ISO stamp (not a convenience zero); the backfill
+        # must not depend on this field, but a production point always carries it.
+        _PAYLOAD_CREATED_AT: "2026-05-01T12:00:00+00:00",
+    }
+
+
+async def seed_memory_point_into_qdrant(
+    client: AsyncQdrantClient,
+    collection_name: str,
+    embedder: FakeEmbedder,
+    text: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+    refs: list[MemoryRef] | None = None,
+) -> str:
+    """Upsert one memory point DIRECTLY into Qdrant, bypassing the ledger entirely.
+
+    The pre-v0.3.6 seam: a memory that reached the Qdrant collection through an
+    OLDER build (no ledger write). The point id is the SAME convention-derived
+    ``uuid5`` the store would mint (so the backfill overwrites in place on a
+    later restore), the vector is the embedder's deterministic document vector
+    for the prose (so a recall after restore ranks it first), and the payload is
+    the production shape. Returns the seeded point id.
+    """
+    embed_result = await embedder.embed_documents([text])
+    vector = embed_result.vectors[0]
+    assert vector is not None, "the deterministic embedder must vectorise the seed prose"
+    memory_id = expected_memory_id(text, list(refs or ()))
+    await client.upsert(
+        collection_name=collection_name,
+        points=[
+            PointStruct(
+                id=memory_id,
+                vector=vector,
+                payload=seed_payload(text, metadata=metadata, refs=refs),
+            )
+        ],
+    )
+    return memory_id
+
+
+def make_store_with_fresh_ledger(
+    client: AsyncQdrantClient,
+    embedder: FakeEmbedder,
+    slug: str,
+    ledger_path: str,
+) -> MemoryStore:
+    """Build a tracked ledger-backed MemoryStore whose ledger starts EMPTY.
+
+    The pre-v0.3.6 simulation needs an EMPTY ledger over a memory collection
+    that ALREADY holds points (seeded directly). This is exactly ``make_store``
+    (same exact-name tracking, same keyword-only ``ledger=``) — named here only
+    to make the "ledger is empty, Qdrant is not" precondition legible at the
+    call site. The ledger path is a throwaway tmp file (count 0 on open).
+    """
+    return make_store(client, embedder, slug, ledger_path)
+
+
+@pytest_asyncio.fixture()
+async def pre_v036_store(
+    tracking_client: AsyncQdrantClient,
+    embedder: CountingEmbedder,
+    ledger_path: str,
+) -> MemoryStore:
+    """A MemoryStore whose Qdrant memory collection holds N pre-v0.3.6 memories.
+
+    Simulates the upgrade scenario the backfill exists for: the memory
+    collection already contains every note in ``MEMORY_NOTES``, seeded DIRECTLY
+    into Qdrant with the production payload shape and the deterministic id, while
+    the write-through ledger is still EMPTY (those memories predate it). The
+    collection exists at the correct ``_DIM`` (a healthy upgrade — only the
+    LEDGER is behind, not the vector size).
+    """
+    slug = _unique_slug()
+    store = make_store_with_fresh_ledger(tracking_client, embedder, slug, ledger_path)
+    await store.ensure_ready()
+    for note in MEMORY_NOTES:
+        await seed_memory_point_into_qdrant(
+            tracking_client, store.collection_name, embedder, note
+        )
+    return store
+
+
+class TestBackfillLedgerFromStore:
+    """FP-06 BACKFILL invariants 1, 3, 4 — pre-existing memories become ledger-backed.
+
+    The ledger only protected memories saved AFTER v0.3.6. ``backfill_ledger_from_store``
+    closes the gap: it reads every memory point already in Qdrant and records it
+    into the ledger (keyed on the SAME deterministic id, with the refs_stamp
+    recomputed from the payload's refs), so a later wipe is recoverable. Oracles:
+    the ledger row count, an independent round-trip of text + refs_stamp, the
+    convention-derived id match, idempotence, and a no-op return of 0 when the
+    ledger already covers the store.
+    """
+
+    async def test_backfill_populates_ledger_from_qdrant_with_matching_ids(
+        self, pre_v036_store: MemoryStore
+    ) -> None:
+        # PRECONDITION: Qdrant holds N memories, the ledger holds NONE (pre-v0.3.6).
+        ledger = pre_v036_store.ledger
+        assert ledger.count() == 0, "the pre-v0.3.6 ledger must start empty"
+
+        backfilled = await pre_v036_store.backfill_ledger_from_store()
+
+        # Every Qdrant memory is now ledger-backed, returned count == N.
+        assert backfilled == len(MEMORY_NOTES)
+        assert ledger.count() == len(MEMORY_NOTES)
+        # Each ledger row carries a note's prose AND is keyed on the SAME
+        # convention-derived id the store would mint, so a later restore
+        # overwrites the existing Qdrant point in place (no duplicate). The id is
+        # an INDEPENDENT oracle (uuid5 recomputed here, not read off the point).
+        records_by_id = {record.memory_id: record for record in ledger.all_records()}
+        for note in MEMORY_NOTES:
+            expected_id = expected_memory_id(note)
+            assert expected_id in records_by_id, f"backfill must record {note!r} under its uuid5 id"
+            assert records_by_id[expected_id].text == note
+
+    async def test_backfill_recomputes_refs_stamp_from_the_payload_refs(
+        self,
+        tracking_client: AsyncQdrantClient,
+        embedder: CountingEmbedder,
+        ledger_path: str,
+    ) -> None:
+        # A pre-v0.3.6 memory that POINTS AT a versioned chunk (the migration-safe
+        # correction case): the backfill must recompute the refs_stamp from the
+        # payload's ``refs`` via the same stamping the id folds in — otherwise the
+        # restored point gets a DIFFERENT id and duplicates on the next restore.
+        slug = _unique_slug()
+        store = make_store_with_fresh_ledger(tracking_client, embedder, slug, ledger_path)
+        await store.ensure_ready()
+        note = MEMORY_NOTES[0]
+        metadata = {"author": "operator", "topic": "keying-migration"}
+        await seed_memory_point_into_qdrant(
+            tracking_client,
+            store.collection_name,
+            embedder,
+            note,
+            metadata=metadata,
+            refs=[CORRECTION_REF],
+        )
+
+        await store.backfill_ledger_from_store()
+
+        record = next(r for r in store.ledger.all_records() if r.text == note)
+        # The refs_stamp equals the INDEPENDENTLY-computed stamp for the seeded
+        # ref — so the backfilled row re-mints the SAME id the seeded point has.
+        assert record.refs_stamp == expected_refs_stamp([CORRECTION_REF])
+        assert record.memory_id == expected_memory_id(note, [CORRECTION_REF])
+        # Caller metadata survives the round-trip through the payload into the row.
+        assert record.metadata["author"] == "operator"
+        assert record.metadata["topic"] == "keying-migration"
+
+    async def test_backfill_is_a_noop_when_ledger_already_covers_the_store(
+        self, memory_store: MemoryStore
+    ) -> None:
+        # When every Qdrant memory is ALREADY in the ledger (the post-v0.3.6
+        # steady state — saved through ``save_memory``), backfill must record
+        # NOTHING and return 0, so it is not re-run pointlessly on every boot.
+        for note in MEMORY_NOTES:
+            await memory_store.save_memory(note)
+        count_before = memory_store.ledger.count()
+        assert count_before == len(MEMORY_NOTES)
+
+        backfilled = await memory_store.backfill_ledger_from_store()
+
+        assert backfilled == 0, "backfill must be a no-op when the ledger already covers the store"
+        assert memory_store.ledger.count() == count_before
+
+    async def test_backfill_is_idempotent_second_call_adds_nothing(
+        self, pre_v036_store: MemoryStore
+    ) -> None:
+        # Backfilling twice must NOT multiply ledger rows: the deterministic id is
+        # the upsert key, so the second pass overwrites in place (count stays N).
+        first = await pre_v036_store.backfill_ledger_from_store()
+        count_after_first = pre_v036_store.ledger.count()
+        second = await pre_v036_store.backfill_ledger_from_store()
+
+        assert first == len(MEMORY_NOTES)
+        assert count_after_first == len(MEMORY_NOTES)
+        # The second pass sees the ledger already covering the store ⇒ records 0.
+        assert second == 0
+        assert pre_v036_store.ledger.count() == len(MEMORY_NOTES)
+
+
+class TestPreExistingMemorySurvivesWipeAfterBackfill:
+    """FP-06 BACKFILL invariant 2 (HEADLINE) — the gap closed: a pre-v0.3.6 memory survives a wipe.
+
+    Before backfill, a memory that only ever lived in Qdrant (older build) is
+    lost on a wipe — the ledger never knew it. After backfill, the SAME wipe is
+    fully recoverable. Oracle: seed Qdrant only → backfill → WIPE → restore →
+    the pre-existing memories are recalled back and the collection holds N points
+    (a direct server-side count, independent of any store method).
+    """
+
+    async def test_backfilled_pre_existing_memories_survive_a_full_wipe(
+        self,
+        pre_v036_store: MemoryStore,
+        tracking_client: AsyncQdrantClient,
+    ) -> None:
+        collection = pre_v036_store.collection_name
+        # Sanity: Qdrant holds N pre-v0.3.6 memories; the ledger is empty (they
+        # would be LOST on a wipe right now — this is the gap).
+        assert await count_points(tracking_client, collection) == len(MEMORY_NOTES)
+        assert pre_v036_store.ledger.count() == 0
+
+        # CLOSE THE GAP: backfill makes every pre-existing memory ledger-backed.
+        await pre_v036_store.backfill_ledger_from_store()
+        assert pre_v036_store.ledger.count() == len(MEMORY_NOTES)
+
+        # DISASTER: the Qdrant memory collection is wiped (fresh-volume loss).
+        await wipe_collection(tracking_client, collection, _DIM)
+        assert await count_points(tracking_client, collection) == 0
+
+        # RECOVERY: restore from the (now-backfilled) ledger.
+        restored = await pre_v036_store.restore_if_diverged()
+
+        # The pre-existing memories came back — the gap is closed.
+        assert restored == len(MEMORY_NOTES)
+        assert await count_points(tracking_client, collection) == len(MEMORY_NOTES)
+
+    async def test_a_backfilled_pre_existing_memory_is_recallable_after_a_wipe(
+        self,
+        pre_v036_store: MemoryStore,
+        tracking_client: AsyncQdrantClient,
+    ) -> None:
+        target = MEMORY_NOTES[2]
+
+        await pre_v036_store.backfill_ledger_from_store()
+        await wipe_collection(tracking_client, pre_v036_store.collection_name, _DIM)
+        await pre_v036_store.restore_if_diverged()
+
+        # The behavioural oracle: a recall of the pre-existing prose returns that
+        # exact text after the wipe. The seeded vector == the deterministic
+        # document vector, so a query equal to the note ranks it first.
+        recalled = await pre_v036_store.recall_memory(target, k=5)
+        assert recalled, "a backfilled pre-existing memory must be recallable after a wipe"
+        assert any(item.text == target for item in recalled)
+
+
+class TestMemoryCollectionDimGate:
+    """FP-12 — ``ensure_ready`` refuses a pre-existing memory collection at the WRONG dim.
+
+    The code-collection probe gate (``run_probe_gate``) refuses an existing
+    collection whose vector size != ``config.embedding.dim`` and leaves it
+    intact. The MEMORY collection had no such gate — a memory collection from an
+    old model (wrong vector size) was used silently. This pins the mirrored
+    refusal at the ``MemoryStore.ensure_ready`` seam (the embedder's ``dim`` is
+    the source of truth, == ``config.embedding.dim`` after the probe gate). A
+    matching or absent dim proceeds; a mismatch RAISES and leaves the collection
+    intact (never auto-recreated).
+    """
+
+    async def test_ensure_ready_refuses_a_pre_existing_wrong_dim_memory_collection(
+        self,
+        tracking_client: AsyncQdrantClient,
+        embedder: CountingEmbedder,
+        ledger_path: str,
+    ) -> None:
+        slug = _unique_slug()
+        store = make_store(tracking_client, embedder, slug, ledger_path)
+        # A pre-existing memory collection at the WRONG vector size (1024, not the
+        # embedder's 2048) — the "old model left a stale collection" scenario.
+        await tracking_client.create_collection(
+            collection_name=store.collection_name,
+            vectors_config=VectorParams(size=_WRONG_DIM, distance=Distance.COSINE),
+        )
+
+        # The gate must REFUSE rather than silently use the wrong-dim collection.
+        # The message names the mismatch (dim / size / collection) for remediation.
+        with pytest.raises(Exception, match="(?i)dim|size|collection"):
+            await store.ensure_ready()
+
+    async def test_refused_wrong_dim_memory_collection_is_left_intact(
+        self,
+        tracking_client: AsyncQdrantClient,
+        embedder: CountingEmbedder,
+        ledger_path: str,
+    ) -> None:
+        slug = _unique_slug()
+        store = make_store(tracking_client, embedder, slug, ledger_path)
+        await tracking_client.create_collection(
+            collection_name=store.collection_name,
+            vectors_config=VectorParams(size=_WRONG_DIM, distance=Distance.COSINE),
+        )
+
+        with pytest.raises(Exception):
+            await store.ensure_ready()
+
+        # NEVER auto-recreate: the wrong-dim collection still exists, unmodified,
+        # at its original size (mirroring run_probe_gate — operator fixes it
+        # deliberately rather than the server silently nuking memories).
+        assert await tracking_client.collection_exists(store.collection_name)
+        info = await tracking_client.get_collection(store.collection_name)
+        assert info.config.params.vectors.size == _WRONG_DIM  # type: ignore[union-attr]
+
+    async def test_ensure_ready_succeeds_on_a_matching_dim_memory_collection(
+        self,
+        tracking_client: AsyncQdrantClient,
+        embedder: CountingEmbedder,
+        ledger_path: str,
+    ) -> None:
+        slug = _unique_slug()
+        store = make_store(tracking_client, embedder, slug, ledger_path)
+        # A pre-existing memory collection at the CORRECT dim — a healthy restart.
+        await tracking_client.create_collection(
+            collection_name=store.collection_name,
+            vectors_config=VectorParams(size=_DIM, distance=Distance.COSINE),
+        )
+
+        # No raise: a matching dim proceeds, and a save round-trips as normal.
+        await store.ensure_ready()
+        returned_id = await store.save_memory(MEMORY_NOTES[0])
+        assert returned_id == expected_memory_id(MEMORY_NOTES[0])
+
+    async def test_ensure_ready_creates_the_collection_when_absent(
+        self,
+        tracking_client: AsyncQdrantClient,
+        embedder: CountingEmbedder,
+        ledger_path: str,
+    ) -> None:
+        slug = _unique_slug()
+        store = make_store(tracking_client, embedder, slug, ledger_path)
+        # No pre-existing collection at all (a fresh project): ensure_ready must
+        # CREATE it at the embedder's dim, not refuse.
+        assert not await tracking_client.collection_exists(store.collection_name)
+
+        await store.ensure_ready()
+
+        assert await tracking_client.collection_exists(store.collection_name)
+        info = await tracking_client.get_collection(store.collection_name)
+        assert info.config.params.vectors.size == _DIM  # type: ignore[union-attr]
