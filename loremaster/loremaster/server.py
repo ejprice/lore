@@ -43,7 +43,7 @@ import inspect
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, MutableMapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -1944,6 +1944,12 @@ def build_mcp_server(server: LoreServer) -> Any:
         streamable_http_path=config.server.path,
     )
     _register_tools(mcp, server)
+    # Surface the SAME process-lifespan guard on the returned server so the ASGI
+    # composition (build_asgi_app) can take the EAGER process-startup lease through
+    # it — running the heavy build once at uvicorn startup rather than lazily on the
+    # first session. Additive (an attribute), so the single-FastMCP return signature
+    # the ~25 callers depend on is unchanged.
+    mcp._lore_eager_guard = guard  # type: ignore[attr-defined]
     return mcp
 
 
@@ -2551,6 +2557,199 @@ def _extension_tool_wrapper(spec: ToolSpec) -> Callable[..., Awaitable[Any]]:
     return _tool
 
 
+# ASGI typing aliases for the eager-startup interceptor. An ASGI app is
+# ``(scope, receive, send) -> awaitable[None]`` and needs no Starlette import.
+# These are byte-for-byte identical to the ones in loremaster.auth, but kept
+# LOCAL on purpose rather than imported: auth's copies are module-PRIVATE
+# (underscore-prefixed), so reusing them would reach into another module's
+# private surface, and server.py deliberately imports auth only LAZILY inside
+# build_asgi_app — a module-level ``from loremaster.auth import _Scope, ...``
+# would add an eager import edge to dedup five trivial stdlib-typed lines. If a
+# shared ASGI-types home is ever wanted, promote them to a public module; that
+# is an API-surface (CONTRACT) decision, not this refactor's call.
+_Scope = MutableMapping[str, Any]
+_Message = MutableMapping[str, Any]
+_Receive = Callable[[], Awaitable[_Message]]
+_Send = Callable[[_Message], Awaitable[None]]
+_ASGIApp = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
+
+# ASGI lifespan protocol message types (server <- uvicorn / server -> uvicorn).
+_LIFESPAN_SCOPE = "lifespan"
+_LIFESPAN_STARTUP = "lifespan.startup"
+_LIFESPAN_STARTUP_COMPLETE = "lifespan.startup.complete"
+_LIFESPAN_STARTUP_FAILED = "lifespan.startup.failed"
+_LIFESPAN_SHUTDOWN = "lifespan.shutdown"
+_LIFESPAN_SHUTDOWN_COMPLETE = "lifespan.shutdown.complete"
+# Operator-safe FIXED message for an eager-build failure surfaced as the ASGI
+# lifespan.startup.failed event. WHY a constant and not str(exc): uvicorn logs
+# this message UNREDACTED at process startup, so a credentialed config (e.g.
+# qdrant.url user:pass@host surfacing in an HTTP-status exception) would leak
+# verbatim into the startup log. The real detail is logged through the module
+# logger (the redaction-backstopped lore sink) instead — see _drive_lifespan.
+_EAGER_BUILD_FAILED_MESSAGE = "eager startup build failed; see server logs"
+
+
+class _EagerStartupLifespan:
+    """ASGI lifespan-interceptor that runs loremaster's heavy build EAGERLY.
+
+    Today the heavy startup (probe gate -> initial reconcile -> schema self-heal ->
+    file watcher) runs in FastMCP's per-MCP-SESSION user lifespan, so a freshly
+    (re)started container does nothing heavy until the FIRST client connects — a
+    dead index that *looks* up. This wrapper hoists that build to the ASGI/uvicorn
+    PROCESS startup (the ``lifespan.startup`` event): it drives the inner streamable
+    app's own session-manager lifespan (so the server still serves) AND takes a
+    PROCESS-LIFETIME eager lease against the guard ``build_mcp_server`` surfaced — so
+    the heavy build runs ONCE at startup and the shared :class:`AppContext` survives
+    between sessions (no per-session build/teardown churn; every per-session lease
+    just reuses the eager one). On ``lifespan.shutdown`` it releases the eager lease
+    (-> AppContext + Qdrant client teardown) and exits the inner lifespan.
+
+    Only the ``lifespan`` scope is intercepted; every other scope (``http``) is
+    delegated straight to the inner app, so the Origin/Bearer wrapping that sits
+    OUTSIDE this interceptor (and the inner app's HTTP routing) is untouched.
+    """
+
+    def __init__(self, inner: _ASGIApp, guard: Any | None) -> None:
+        """Wrap the inner streamable app + (optionally) the eager lease guard.
+
+        Args:
+            inner: The inner streamable-http (Starlette) ASGI app — its own ASGI
+                lifespan starts/stops the session manager / task group.
+            guard: The :class:`_ProcessLifespanGuard` ``build_mcp_server`` surfaced
+                on the FastMCP object (via ``mcp._lore_eager_guard``), or ``None``.
+                Tolerated as ``None`` defensively — the inner lifespan still runs,
+                the eager lease is simply skipped (no heavy build hoisted).
+        """
+        self._inner = inner
+        self._guard = guard
+
+    async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
+        """Intercept only the ``lifespan`` scope; delegate everything else.
+
+        Non-lifespan scopes (HTTP) pass straight through to the inner app so this
+        interceptor never touches request routing — the security middleware wrapping
+        it stays in force verbatim.
+        """
+        if scope.get("type") != _LIFESPAN_SCOPE:
+            await self._inner(scope, receive, send)
+            return
+        await self._drive_lifespan(scope, receive, send)
+
+    async def _drive_lifespan(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
+        """Drive the ASGI lifespan protocol with the eager build composed in.
+
+        Runs the inner app's own lifespan in a background task (bridged by
+        per-direction message queues) so the eager lease can be sequenced AROUND it:
+        the inner session manager starts first, THEN the eager lease is taken (the
+        heavy build) before reporting startup complete; on shutdown the eager lease
+        is released BEFORE the inner lifespan exits, so the AppContext teardown never
+        outlives the session manager. A failed eager build is reported as
+        ``lifespan.startup.failed`` and nothing is cached (the guard does not cache
+        failures), so a later startup retries.
+        """
+        # Bridge queues: the inner app pulls its lifespan messages from inbox and
+        # pushes its replies to outbox; this coroutine sequences both.
+        inbox: asyncio.Queue[_Message] = asyncio.Queue()
+        outbox: asyncio.Queue[_Message] = asyncio.Queue()
+
+        async def inner_receive() -> _Message:
+            return await inbox.get()
+
+        async def inner_send(message: _Message) -> None:
+            await outbox.put(message)
+
+        # create_task (not ensure_future): this coroutine always runs under a live
+        # event loop, and the modern idiom returns a concrete asyncio.Task. The
+        # inner call is wrapped so its broad _ASGIApp Awaitable return is awaited as
+        # a coroutine (what create_task requires) without narrowing the alias.
+        async def _run_inner() -> None:
+            await self._inner(scope, inner_receive, inner_send)
+
+        inner_task: asyncio.Task[None] = asyncio.create_task(_run_inner())
+        try:
+            # The first lifespan message from uvicorn must be the startup event.
+            # A hard check (not an ``assert``): asserts are stripped under
+            # ``python -O``, and an out-of-protocol first message must surface as a
+            # real error rather than silently driving the inner startup over it.
+            message = await receive()
+            if message["type"] != _LIFESPAN_STARTUP:
+                raise RuntimeError(
+                    f"expected {_LIFESPAN_STARTUP} first, got {message['type']!r}"
+                )
+            # 1) Start the inner session-manager lifespan and await its reply.
+            await inbox.put({"type": _LIFESPAN_STARTUP})
+            inner_startup = await outbox.get()
+            if inner_startup["type"] == _LIFESPAN_STARTUP_FAILED:
+                # The inner app itself failed to start — relay the failure verbatim
+                # WITHOUT taking the eager lease, and do not report complete.
+                await send(inner_startup)
+                await inner_task
+                return
+            try:
+                # 2) Take the PROCESS-LIFETIME eager lease — the heavy build. Skipped
+                #    when no guard was surfaced (defensive), so the inner still runs.
+                if self._guard is not None:
+                    await self._guard.acquire()
+            except BaseException as exc:
+                # A failed eager build must surface so uvicorn aborts; nothing is
+                # cached (the guard rolls back), so a later startup retries. Tear the
+                # already-started inner lifespan back down before failing.
+                await self._shutdown_inner(inbox, outbox, inner_task)
+                # Log the REAL detail (with traceback) through the module logger,
+                # which is the redaction-backstopped lore sink, so operators still
+                # learn WHY startup failed. The ASGI message below stays a FIXED
+                # operator-safe phrase — never str(exc) — because uvicorn logs that
+                # message UNREDACTED at startup, so any secret-bearing exception
+                # text (e.g. a credentialed qdrant.url) must not reach it.
+                logger.error("eager startup build failed", exc_info=exc)
+                await send(
+                    {"type": _LIFESPAN_STARTUP_FAILED, "message": _EAGER_BUILD_FAILED_MESSAGE}
+                )
+                return
+            # 3) Both the inner session manager and the eager build are up.
+            await send({"type": _LIFESPAN_STARTUP_COMPLETE})
+
+            # Block until uvicorn signals shutdown. Hard check (asserts are stripped
+            # under ``python -O``): an out-of-protocol message here must error, not
+            # silently fall through into the shutdown-and-release path.
+            message = await receive()
+            if message["type"] != _LIFESPAN_SHUTDOWN:
+                raise RuntimeError(
+                    f"expected {_LIFESPAN_SHUTDOWN}, got {message['type']!r}"
+                )
+            # 4) Release the eager lease (-> teardown) BEFORE exiting the inner
+            #    lifespan, so the AppContext teardown does not outlive the session
+            #    manager unexpectedly.
+            if self._guard is not None:
+                await self._guard.release()
+            await self._shutdown_inner(inbox, outbox, inner_task)
+            await send({"type": _LIFESPAN_SHUTDOWN_COMPLETE})
+        finally:
+            # Never leak the inner lifespan task if this coroutine unwinds early
+            # (e.g. a test stops the handshake by raising from its send). Cancel it
+            # AND await its settling so the CancelledError is retrieved deterministically
+            # within this scope — leaving it to loop-teardown timing risks a
+            # "Task was destroyed but it is pending" warning.
+            if not inner_task.done():
+                inner_task.cancel()
+                try:
+                    await inner_task
+                except asyncio.CancelledError:
+                    pass
+
+    @staticmethod
+    async def _shutdown_inner(
+        inbox: asyncio.Queue[_Message],
+        outbox: asyncio.Queue[_Message],
+        inner_task: asyncio.Task[None],
+    ) -> None:
+        """Drive the inner app's lifespan shutdown and await its clean exit."""
+        await inbox.put({"type": _LIFESPAN_SHUTDOWN})
+        # Drain the inner shutdown reply so its lifespan_context fully exits.
+        await outbox.get()
+        await inner_task
+
+
 def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
     """Assemble the streamable-http ASGI app: Origin-guarded, Bearer-gated if auth.
 
@@ -2580,7 +2779,14 @@ def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
     """
     from loremaster.auth import OriginValidationMiddleware
 
-    app: Any = mcp.streamable_http_app()
+    inner: Any = mcp.streamable_http_app()
+    # The heavy build runs EAGERLY at process startup: wrap the inner streamable app
+    # in a lifespan-interceptor that, on lifespan.startup, both enters the inner
+    # session-manager lifespan (so the server serves) AND takes the process-lifetime
+    # eager lease through the guard build_mcp_server surfaced. HTTP scopes pass
+    # straight through, so the Origin/Bearer wrapping below is untouched.
+    eager_guard = getattr(mcp, "_lore_eager_guard", None)
+    app: Any = _EagerStartupLifespan(inner, eager_guard)
     # The Origin guard runs for every deployment (DNS-rebinding defense), with the
     # configured server bind's own origin implicitly covered by the loopback allow
     # (the local single-user deploy binds 127.0.0.1). Extra trusted origins can be
