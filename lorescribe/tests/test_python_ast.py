@@ -820,6 +820,376 @@ class TestDecoratedMethodLineSpan:
         assert plain.metadata["decorators"] == ["staticmethod"]
 
 
+class TestEmbeddingTextHeaderBudget:
+    """Every emitted chunk's ``embedding_text`` fits the embedder's hard cap.
+
+    This class pins the bug fixed in the header-budget patch: the oversize guard
+    in ``_emit_sized`` was sizing ``source_text`` against the cap, but the
+    embedder's real input is ``embedding_text = metadata_header + "\\n" + source_text``.
+    A unit whose ``source_text`` was exactly AT the cap would overflow it once
+    the header's tokens were included — producing an HTTP 422 from the embedder
+    and dropping the whole file from the index.
+
+    The contract: for ANY Python source and ANY ``max_input_tokens``, EVERY
+    chunk emitted by ``PythonAstChunker.chunk()`` must satisfy
+    ``ctx.count_tokens(chunk.embedding_text) <= ctx.max_input_tokens``.
+
+    Reference (independent oracle): the markdown chunker's
+    ``_enforce_token_cap`` already measures ``embedding_text`` (the composed
+    string), not ``source_text``. This test encodes the same rule for the
+    python_ast chunker.
+
+    Covered chunk types:
+    - ``imports`` chunk: header is ``"File: <path>"`` only (shortest header).
+    - ``method`` chunk: header is ``"File: <path>\\nClass: <C>\\nMethod: <m>"``
+      (longest header; largest overflow risk).
+    - ``function`` chunk: header is ``"File: <path>\\nFunction: <f>"``
+      (intermediate header length).
+
+    Design:
+    - CAP = 50 (small, deterministic — avoids 8192-token fixtures while keeping
+      the token arithmetic concrete and auditable without a running embedder).
+    - FILE_PATH = "loremaster/tests/test_mcp_server.py" — the actual production
+      file that triggered the 422. Its length makes the header 10 tokens, enough
+      to push a 50-token source to 60 tokens in the composed text.
+    - Token counter: ``approx_token_count`` from conftest (``max(1, len // 4)``),
+      the same callable the consumer injects in production.
+    - All ``source_text`` fixture sizes are derived from the requirement
+      (``count_tokens(source) == CAP``) and hand-verified, not from the
+      implementation's formula.
+
+    Fixture arithmetic (verified independently, see inline comments):
+
+    ``approx_token_count(text) = max(1, len(text) // 4)``
+
+    headers (from ``_build_metadata_header``; read off the implementation's
+    string-building logic, not from a run of the code):
+    - imports: ``"File: loremaster/tests/test_mcp_server.py"`` = 41 chars →
+      with separator ``\\n`` → 42 chars → ``42 // 4 = 10`` tokens overhead.
+    - method: ``"File: ...\\nClass: Processor\\nMethod: process"`` = 74 chars →
+      with separator → 75 chars → ``75 // 4 = 18`` tokens overhead.
+    - function: ``"File: ...\\nFunction: compute"`` = 59 chars → with separator
+      → 60 chars → ``60 // 4 = 15`` tokens overhead.
+
+    Source fixtures (200 chars each → ``200 // 4 = 50`` tokens = CAP):
+    - import block: 20 × ``"import os\\n"`` (10 chars each) = 200 chars.
+    - method source: ``"    def process(self):\\n"`` (23 chars) +
+      3 × (``"        " + "a"*50 + "\\n"``) (59 chars each) = 200 chars.
+    - function source: ``"def compute():\\n"`` (15 chars) +
+      5 × (``"    " + "b"*32 + "\\n"``) (37 chars each) = 200 chars.
+
+    These fixtures were chosen to make source_tokens == CAP exactly with no
+    rounding ambiguity (all lengths are multiples of 4).
+    """
+
+    # ------------------------------------------------------------------ #
+    # Production-realistic file path: the actual file that caused the 422. #
+    # ------------------------------------------------------------------ #
+    # "loremaster/tests/test_mcp_server.py" → header = "File: loremaster/tests/test_mcp_server.py"
+    # len("File: loremaster/tests/test_mcp_server.py\n") = 42 → 42//4 = 10 tokens overhead
+    HEADER_BUDGET_FILE_PATH: str = "loremaster/tests/test_mcp_server.py"
+
+    # Small, deterministic cap. Chosen so the fixture sources fit in 50 tokens
+    # and the composed embedding_text overflows by a concrete, auditable amount.
+    # Not a round power-of-two; intentionally sized to the fixture arithmetic.
+    HEADER_BUDGET_CAP: int = 50
+
+    # ------------------------------------------------------------------ #
+    # Source fixtures: each is exactly 200 chars → 50 tokens = CAP.      #
+    # Verified independently: len(fixture) == 200, len // 4 == 50.       #
+    # ------------------------------------------------------------------ #
+
+    # imports block: 20 lines of "import os\n" (10 chars each = 200 total).
+    # Realistic: "import os" is a genuine Python import statement, not filler.
+    _IMPORT_LINE: str = "import os\n"          # 10 chars
+    _IMPORT_LINE_COUNT: int = 20               # 20 × 10 = 200 chars = 50 tokens
+
+    # method source: 1 def line (23 chars) + 3 body lines (59 chars each).
+    # Body lines use "        " (8-space method indent) + 50 "a"s + "\n".
+    # 23 + 3×59 = 200 chars = 50 tokens. Indented 4 spaces (class body level).
+    _METHOD_DEF_LINE: str = "    def process(self):\n"    # 23 chars
+    _METHOD_BODY_LINE: str = "        " + "a" * 50 + "\n" # 59 chars
+    _METHOD_BODY_LINE_COUNT: int = 3                        # 3×59 = 177 chars
+
+    # function source: 1 def line (15 chars) + 5 body lines (37 chars each).
+    # 15 + 5×37 = 200 chars = 50 tokens. Top-level (no class indent).
+    _FUNC_DEF_LINE: str = "def compute():\n"              # 15 chars
+    _FUNC_BODY_LINE: str = "    " + "b" * 32 + "\n"       # 37 chars
+    _FUNC_BODY_LINE_COUNT: int = 5                          # 5×37 = 185 chars
+
+    @classmethod
+    def _import_source(cls) -> str:
+        """Return the imports block source: 200 chars, 50 tokens."""
+        return cls._IMPORT_LINE * cls._IMPORT_LINE_COUNT
+
+    @classmethod
+    def _method_source(cls) -> str:
+        """Return the method source: 200 chars, 50 tokens, indented for a class body."""
+        return cls._METHOD_DEF_LINE + cls._METHOD_BODY_LINE * cls._METHOD_BODY_LINE_COUNT
+
+    @classmethod
+    def _func_source(cls) -> str:
+        """Return the top-level function source: 200 chars, 50 tokens."""
+        return cls._FUNC_DEF_LINE + cls._FUNC_BODY_LINE * cls._FUNC_BODY_LINE_COUNT
+
+    @classmethod
+    def _build_full_source(cls) -> str:
+        """Compose a valid Python module containing all three unit types.
+
+        Structure:
+          <imports block>        ← 200 chars, imports chunk
+          <blank lines>
+          class Processor:       ← contains the method chunk
+              <method source>
+          <blank lines>
+          <function source>      ← function chunk
+        """
+        return (
+            cls._import_source()
+            + "\n\nclass Processor:\n"
+            + cls._method_source()
+            + "\n\n"
+            + cls._func_source()
+        )
+
+    @classmethod
+    def _make_header_budget_ctx(cls) -> ChunkContext:
+        """Build a ChunkContext using the production file path and the small cap."""
+        return ChunkContext(
+            slug=SAMPLE_SLUG,
+            file_path=cls.HEADER_BUDGET_FILE_PATH,
+            count_tokens=approx_token_count,
+            max_input_tokens=cls.HEADER_BUDGET_CAP,
+        )
+
+    def setup_method(self) -> None:
+        self.ctx = self._make_header_budget_ctx()
+        self.source = self._build_full_source()
+        self.chunks = PythonAstChunker().chunk(self.source, self.ctx)
+
+    # ------------------------------------------------------------------ #
+    # Precondition tests: verify the fixture properties independently,   #
+    # so a future refactor that silently changes fixture sizes is caught  #
+    # before it masks the main behavioural assertion.                     #
+    # ------------------------------------------------------------------ #
+
+    def test_fixture_import_source_is_exactly_at_cap(self) -> None:
+        """Import source is exactly CAP tokens — precondition for the overflow test."""
+        source = self._import_source()
+        # Independent check: len is a multiple of 4, so no floor-division rounding.
+        assert len(source) == self._IMPORT_LINE_COUNT * len(self._IMPORT_LINE)
+        assert approx_token_count(source) == self.HEADER_BUDGET_CAP
+
+    def test_fixture_method_source_is_exactly_at_cap(self) -> None:
+        """Method source is exactly CAP tokens — precondition for the overflow test."""
+        source = self._method_source()
+        assert approx_token_count(source) == self.HEADER_BUDGET_CAP
+
+    def test_fixture_func_source_is_exactly_at_cap(self) -> None:
+        """Function source is exactly CAP tokens — precondition for the overflow test."""
+        source = self._func_source()
+        assert approx_token_count(source) == self.HEADER_BUDGET_CAP
+
+    def test_fixture_source_is_valid_python(self) -> None:
+        """The combined source must be parseable — non-parseable source takes the window fallback."""
+        import ast
+        try:
+            ast.parse(self.source)
+        except SyntaxError as exc:
+            raise AssertionError(f"fixture source is not valid Python: {exc}") from exc
+
+    # ------------------------------------------------------------------ #
+    # Main contract: embedding_text of EVERY chunk fits the cap.         #
+    # On the buggy code (pre-fix), at least one chunk violates this      #
+    # assertion — the test FAILS.                                        #
+    # ------------------------------------------------------------------ #
+
+    def test_every_chunk_embedding_text_fits_cap_for_imports_unit(self) -> None:
+        """All imports chunk pieces have embedding_text <= cap (File-only header).
+
+        The imports header is ``"File: loremaster/tests/test_mcp_server.py"``
+        (10 tokens of overhead). With a source_text AT the cap, the composed
+        embedding_text = 60 tokens > 50 (cap). On buggy code this assertion
+        fails; after the fix the chunker splits the imports block so that each
+        piece's composed text fits.
+        """
+        import_chunks = chunks_by_type(self.chunks, "imports")
+        assert import_chunks, "expected at least one imports chunk"
+        for chunk in import_chunks:
+            # embedding_text is the REAL embedder input — the string the
+            # embedder hard-rejects with HTTP 422 if it exceeds the cap.
+            embedding_tokens = approx_token_count(chunk.embedding_text)
+            assert embedding_tokens <= self.HEADER_BUDGET_CAP, (
+                f"imports chunk (sub_ordinal={chunk.sub_ordinal}) embedding_text "
+                f"= {embedding_tokens} tokens, exceeds cap {self.HEADER_BUDGET_CAP}. "
+                f"header={repr(chunk.metadata_header)}"
+            )
+
+    def test_every_chunk_embedding_text_fits_cap_for_method_unit(self) -> None:
+        """All method chunk pieces have embedding_text <= cap (File+Class+Method header).
+
+        The method header is the longest of the three types (three lines:
+        File, Class, Method), contributing 18 tokens of overhead. This is the
+        highest-overflow-risk case: source_text AT the cap produces
+        embedding_text = 68 tokens (18 over). On buggy code this fails.
+        """
+        method_chunks = [
+            chunk for chunk in self.chunks
+            if chunk.chunk_type == "method" and chunk.identity == "Processor.process"
+        ]
+        assert method_chunks, "expected at least one Processor.process method chunk"
+        for chunk in method_chunks:
+            embedding_tokens = approx_token_count(chunk.embedding_text)
+            assert embedding_tokens <= self.HEADER_BUDGET_CAP, (
+                f"method chunk (sub_ordinal={chunk.sub_ordinal}) embedding_text "
+                f"= {embedding_tokens} tokens, exceeds cap {self.HEADER_BUDGET_CAP}. "
+                f"header={repr(chunk.metadata_header)}"
+            )
+
+    def test_every_chunk_embedding_text_fits_cap_for_function_unit(self) -> None:
+        """All function chunk pieces have embedding_text <= cap (File+Function header).
+
+        The function header contributes 15 tokens of overhead. source_text AT
+        the cap → embedding_text = 65 tokens (15 over). On buggy code this fails.
+        """
+        function_chunks = [
+            chunk for chunk in self.chunks
+            if chunk.chunk_type == "function" and chunk.identity == "compute"
+        ]
+        assert function_chunks, "expected at least one compute function chunk"
+        for chunk in function_chunks:
+            embedding_tokens = approx_token_count(chunk.embedding_text)
+            assert embedding_tokens <= self.HEADER_BUDGET_CAP, (
+                f"function chunk (sub_ordinal={chunk.sub_ordinal}) embedding_text "
+                f"= {embedding_tokens} tokens, exceeds cap {self.HEADER_BUDGET_CAP}. "
+                f"header={repr(chunk.metadata_header)}"
+            )
+
+    def test_every_emitted_chunk_embedding_text_fits_cap_exhaustive(self) -> None:
+        """The universal assertion: no chunk of any type has an overflowing embedding_text.
+
+        This is the single authoritative guard covering ALL chunk types the
+        chunker may emit for this source (imports, class, method, function).
+        The per-type tests above confirm the three targeted failure modes
+        individually; this test catches any residual overflow from a partial fix
+        that only corrects some code paths.
+        """
+        assert self.chunks, "expected at least one chunk"
+        violations = [
+            (chunk.chunk_type, chunk.identity, chunk.sub_ordinal,
+             approx_token_count(chunk.embedding_text))
+            for chunk in self.chunks
+            if approx_token_count(chunk.embedding_text) > self.HEADER_BUDGET_CAP
+        ]
+        assert not violations, (
+            f"Chunks whose embedding_text exceeds cap={self.HEADER_BUDGET_CAP}: "
+            + ", ".join(
+                f"{ct}:{identity}#{ordinal}={tokens}tok"
+                for ct, identity, ordinal, tokens in violations
+            )
+        )
+
+    # ------------------------------------------------------------------ #
+    # Post-split quality guards: the fix must not produce degenerate or  #
+    # uselessly tiny pieces.                                             #
+    # ------------------------------------------------------------------ #
+
+    def test_split_pieces_are_non_empty(self) -> None:
+        """Every piece emitted by the split has non-blank source_text.
+
+        A degenerate empty-string piece would be embeddable (0 tokens) but
+        useless, and a blank identity would be rejected by the Chunk model.
+        """
+        for chunk in self.chunks:
+            assert chunk.source_text.strip(), (
+                f"chunk {chunk.chunk_type}:{chunk.identity}#{chunk.sub_ordinal} "
+                f"has blank source_text"
+            )
+
+    def test_split_produces_at_least_two_pieces_per_overflowing_unit(self) -> None:
+        """Units that overflow with a header must split into >= 2 pieces.
+
+        If the fix causes a single 50-token source unit to emit as a single
+        piece, the piece's embedding_text still overflows. Splitting means the
+        chunker actually distributed the source across multiple sub-ordinal
+        chunks.
+        """
+        # imports: source_text=50 tokens, header overhead=10 → must split
+        import_pieces = chunks_by_type(self.chunks, "imports")
+        assert len(import_pieces) >= 2, (
+            f"imports block (source_text=CAP tokens, header overhead > 0) "
+            f"should split into >= 2 pieces after the header-budget fix, "
+            f"got {len(import_pieces)}"
+        )
+
+        # method: source_text=50 tokens, header overhead=18 → must split
+        method_pieces = [
+            chunk for chunk in self.chunks
+            if chunk.chunk_type == "method" and chunk.identity == "Processor.process"
+        ]
+        assert len(method_pieces) >= 2, (
+            f"Processor.process (source_text=CAP tokens, header overhead > 0) "
+            f"should split into >= 2 pieces after the header-budget fix, "
+            f"got {len(method_pieces)}"
+        )
+
+        # function: source_text=50 tokens, header overhead=15 → must split
+        function_pieces = [
+            chunk for chunk in self.chunks
+            if chunk.chunk_type == "function" and chunk.identity == "compute"
+        ]
+        assert len(function_pieces) >= 2, (
+            f"compute (source_text=CAP tokens, header overhead > 0) "
+            f"should split into >= 2 pieces after the header-budget fix, "
+            f"got {len(function_pieces)}"
+        )
+
+    def test_split_embedding_text_tokens_are_within_reasonable_range(self) -> None:
+        """Split pieces use the budget meaningfully: no piece is absurdly small.
+
+        A correct implementation packs each piece as full as possible — greedy
+        accumulation of lines until the NEXT line would push embedding_text over
+        the cap. The minimum useful piece is one import line (10 chars = 2 tokens
+        of source). We assert each piece uses at least 1 token of source so the
+        split is not pathological (e.g. one char per piece), and that each
+        piece's embedding_text is at most the cap.
+
+        This is a magnitude/sanity-bound check, not an exact equality assertion.
+        """
+        for chunk in self.chunks:
+            source_tokens = approx_token_count(chunk.source_text)
+            embedding_tokens = approx_token_count(chunk.embedding_text)
+            # Upper bound: the embedder's hard cap (no HTTP 422).
+            assert embedding_tokens <= self.HEADER_BUDGET_CAP, (
+                f"{chunk.chunk_type}:{chunk.identity}#{chunk.sub_ordinal}: "
+                f"embedding_text={embedding_tokens} > cap={self.HEADER_BUDGET_CAP}"
+            )
+            # Lower bound: at least 1 token of actual source content.
+            assert source_tokens >= 1, (
+                f"{chunk.chunk_type}:{chunk.identity}#{chunk.sub_ordinal}: "
+                f"source_text is effectively empty ({source_tokens} tokens)"
+            )
+
+    def test_sub_ordinals_are_contiguous_from_zero(self) -> None:
+        """Each split unit's sub_ordinals run 0, 1, 2, … without gaps or duplicates."""
+        for chunk_type, identity in [
+            ("imports", "imports"),
+            ("method", "Processor.process"),
+            ("function", "compute"),
+        ]:
+            pieces = [
+                chunk for chunk in self.chunks
+                if chunk.chunk_type == chunk_type and chunk.identity == identity
+            ]
+            if not pieces:
+                continue
+            sub_ordinals = [chunk.sub_ordinal for chunk in pieces]
+            assert sub_ordinals == list(range(len(pieces))), (
+                f"{chunk_type}:{identity} sub_ordinals {sub_ordinals} "
+                f"are not contiguous from 0"
+            )
+
+
 @pytest.mark.parametrize(
     "path,expected",
     [

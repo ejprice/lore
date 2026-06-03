@@ -22,10 +22,12 @@ splitter:
   chunker degrades to fixed-size sliding *line* windows with a small overlap,
   ``chunk_type == "python_window"`` and ``identity == "window#N"``.
 
-* **Oversize guard.** No emitted chunk's ``source_text`` may exceed
+* **Oversize guard.** No emitted chunk's ``embedding_text`` (the composed
+  ``metadata_header + "\\n" + source_text``) may exceed
   ``ctx.max_input_tokens`` as measured by ``ctx.count_tokens`` — the embedder
-  rejects (never truncates) over-length inputs. A unit whose body exceeds the
-  cap is sub-split into ``sub_ordinal``-stamped pieces, each at or below it.
+  rejects (never truncates) over-length inputs. A unit whose composed
+  embedding_text exceeds the cap is sub-split into ``sub_ordinal``-stamped
+  pieces, each whose COMPOSED embedding_text is at or below the cap.
 """
 
 from __future__ import annotations
@@ -119,7 +121,8 @@ class PythonAstChunker(Chunker):
 
         On a clean parse, emits the imports / class / method / function chunk
         set. On :class:`SyntaxError`, degrades to sliding-window chunks. Every
-        returned chunk's ``source_text`` is at or below ``ctx.max_input_tokens``.
+        returned chunk's ``embedding_text`` (composed header + source) is at or
+        below ``ctx.max_input_tokens``.
 
         Args:
             source: The full Python source text.
@@ -364,6 +367,20 @@ class PythonAstChunker(Chunker):
 
     # -- Sizing / oversize guard ------------------------------------------
 
+    @staticmethod
+    def _compose_embedding_text(metadata_header: str, source_text: str) -> str:
+        """Mirror :attr:`Chunk.embedding_text` so the cap is measured on the real embedder input.
+
+        Kept in lockstep with the model's composition rule (header, one newline,
+        source) so the token guard sizes exactly the string the embedder sees.
+        When the header is empty, returns the bare source (no leading newline).
+
+        This is the same composition rule as :meth:`MarkdownChunker._compose_embedding_text`.
+        """
+        if not metadata_header:
+            return source_text
+        return f"{metadata_header}\n{source_text}"
+
     def _emit_sized(
         self,
         *,
@@ -378,12 +395,20 @@ class PythonAstChunker(Chunker):
     ) -> list[Chunk]:
         """Emit one chunk, or several ``sub_ordinal``-stamped pieces if oversize.
 
-        A unit whose ``source_text`` exceeds ``ctx.max_input_tokens`` is split
-        on line boundaries into consecutive pieces, each at or below the cap,
-        all sharing ``identity`` and carrying ``sub_ordinal`` 0, 1, 2, …. Line
-        numbers on each piece reflect the slice it covers.
+        The cap is measured against the COMPOSED embedding_text
+        (``metadata_header + "\\n" + source_text``) — the exact string the
+        embedder sees — not against ``source_text`` alone. This mirrors the
+        markdown chunker's ``_enforce_token_cap`` and prevents header tokens
+        from pushing an at-cap source over the embedder's hard limit.
+
+        A unit whose composed text exceeds ``ctx.max_input_tokens`` is split on
+        line boundaries into consecutive pieces, each whose composed text is at
+        or below the cap, all sharing ``identity`` and carrying ``sub_ordinal``
+        0, 1, 2, …. Line numbers on each piece reflect the slice it covers.
         """
-        if ctx.count_tokens(source_text) <= ctx.max_input_tokens:
+        # Guard on the COMPOSED text (header + "\n" + source), not source alone.
+        composed = self._compose_embedding_text(metadata_header, source_text)
+        if ctx.count_tokens(composed) <= ctx.max_input_tokens:
             return [
                 Chunk(
                     chunk_type=chunk_type,
@@ -397,7 +422,7 @@ class PythonAstChunker(Chunker):
                 )
             ]
 
-        pieces = self._split_to_cap(source_text, ctx)
+        pieces = self._split_to_cap(source_text, metadata_header, ctx)
         chunks: list[Chunk] = []
         current_line = line_start
         for sub_ordinal, piece_text in enumerate(pieces):
@@ -425,26 +450,46 @@ class PythonAstChunker(Chunker):
         return chunks
 
     @staticmethod
-    def _split_to_cap(source_text: str, ctx: ChunkContext) -> list[str]:
-        """Split ``source_text`` on line boundaries into <= cap-token pieces.
+    def _split_to_cap(
+        source_text: str, metadata_header: str, ctx: ChunkContext
+    ) -> list[str]:
+        """Split ``source_text`` on line boundaries so each piece's COMPOSED embedding_text fits.
 
-        Greedy: accumulate whole lines until adding the next would exceed the
-        cap, then start a new piece. A single line that alone exceeds the cap
-        is character-sliced so the hard limit is still respected.
+        The cap is checked against ``metadata_header + "\\n" + piece`` (the
+        actual embedder input), not against ``piece`` alone. This ensures the
+        header's token overhead is subtracted from each piece's source budget.
+
+        Greedy: accumulate whole lines until adding the next would push the
+        composed text over the cap, then start a new piece. A single line whose
+        composed text alone exceeds the cap is character-sliced via
+        :meth:`_char_slice` (last resort — still header-aware).
+
+        Edge case (mirror markdown's degenerate handling): if the header alone
+        is at or above the cap, emit the smallest reasonable piece per line and
+        move on — do not infinite-loop or crash.
         """
-        cap = ctx.max_input_tokens
         raw_lines = source_text.splitlines(keepends=True)
         pieces: list[str] = []
         current = ""
         for line in raw_lines:
             candidate = current + line
-            if current and ctx.count_tokens(candidate) > cap:
+            # Check composed size of the candidate accumulation.
+            composed_candidate = PythonAstChunker._compose_embedding_text(
+                metadata_header, candidate
+            )
+            if current and ctx.count_tokens(composed_candidate) > ctx.max_input_tokens:
+                # Current accumulation is full — flush it and restart with this line.
                 pieces.append(current)
                 current = ""
                 candidate = line
-            if ctx.count_tokens(candidate) > cap and not current:
-                # Single line alone exceeds the cap: hard char-slice it.
-                pieces.extend(PythonAstChunker._char_slice(line, ctx))
+                composed_candidate = PythonAstChunker._compose_embedding_text(
+                    metadata_header, candidate
+                )
+            if ctx.count_tokens(composed_candidate) > ctx.max_input_tokens and not current:
+                # Single line alone overflows even with no accumulation: hard char-slice.
+                pieces.extend(
+                    PythonAstChunker._char_slice(line, metadata_header, ctx)
+                )
                 current = ""
                 continue
             current = candidate
@@ -453,21 +498,38 @@ class PythonAstChunker(Chunker):
         return pieces or [source_text]
 
     @staticmethod
-    def _char_slice(text: str, ctx: ChunkContext) -> list[str]:
-        """Character-slice ``text`` into <= cap-token pieces (last resort)."""
+    def _char_slice(text: str, metadata_header: str, ctx: ChunkContext) -> list[str]:
+        """Character-slice ``text`` into pieces whose COMPOSED embedding_text is <= cap.
+
+        This is the last-resort path for a single physical line that exceeds the
+        cap even without any accumulation. The cap is checked against the composed
+        text (header + piece), matching the same rule as ``_split_to_cap``.
+
+        Edge case (mirror markdown's degenerate handling): if an indivisible
+        piece still overflows (e.g. the header itself is at/above the cap), emit
+        the piece as-is rather than infinite-looping. Correctness for the normal
+        case takes priority; degenerate inputs are handled gracefully.
+        """
         cap = ctx.max_input_tokens
         pieces: list[str] = []
         start = 0
-        # Estimate a step from the observed chars-per-token ratio, clamped >= 1.
+        # Estimate a step from the observed chars-per-token ratio of the source
+        # text alone, clamped >= 1. The composed overhead is accounted for in the
+        # shrink loop below — the initial step is just a fast-path estimate.
         token_count = max(1, ctx.count_tokens(text))
         chars_per_token = max(1, len(text) // token_count)
         step = max(1, cap * chars_per_token)
         while start < len(text):
             end = start + step
             piece = text[start:end]
-            # Shrink until within cap (guards against ratio under-estimate).
-            while ctx.count_tokens(piece) > cap and len(piece) > 1:
+            composed = PythonAstChunker._compose_embedding_text(metadata_header, piece)
+            # Shrink until the COMPOSED text fits the cap, or until we cannot
+            # halve further (degenerate: emit as-is to avoid an infinite loop).
+            while ctx.count_tokens(composed) > cap and len(piece) > 1:
                 piece = piece[: len(piece) // 2]
+                composed = PythonAstChunker._compose_embedding_text(
+                    metadata_header, piece
+                )
             pieces.append(piece)
             start += len(piece)
         return pieces

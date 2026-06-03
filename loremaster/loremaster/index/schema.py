@@ -61,13 +61,21 @@ _STATE_IN_PROGRESS = "in_progress"
 # Schema epoch
 # ---------------------------------------------------------------------------
 
-EMBEDDING_SCHEMA_VERSION: int = 1
+EMBEDDING_SCHEMA_VERSION: int = 2
 """The current embedding-schema epoch.
 
 Increment this integer whenever a schema change requires that ALL existing
 indexes be rebuilt from scratch (e.g. a new vector dimension tier, a change to
 the canonical embedding-text format).  Client code that needs to store the epoch
 alongside the fingerprint reads this constant directly.
+
+Epoch history:
+* 1 — initial.
+* 2 — python_ast chunker now sizes the COMPOSED embedding_text (header + source)
+  against the token cap instead of source_text alone; near-cap units re-split, so
+  chunk boundaries change for files that previously overflowed (e.g. an oversize
+  imports/method whose header pushed it past the cap). Existing indexes must be
+  rebuilt so every file is re-chunked under the corrected sizing.
 """
 
 
