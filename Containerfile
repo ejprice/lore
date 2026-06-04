@@ -80,6 +80,15 @@ USER lore
 # it explicitly.
 ENV LORE_CONFIG=/workspace/lore.yaml
 
+# The lore release version, BAKED at image-build time from the host's git state
+# (`git describe --tags --always --dirty`) passed via `--build-arg LORE_VERSION`.
+# The server's `_resolve_version` reads this env and advertises it as the MCP
+# `serverInfo.version` (left unset, the SDK would advertise its OWN version). Placed
+# AFTER the heavy `uv pip install` layer so bumping the version never busts the
+# dependency cache. Defaults to `unknown` when the build-arg is omitted.
+ARG LORE_VERSION=unknown
+ENV LORE_VERSION=${LORE_VERSION}
+
 # ---------------------------------------------------------------------------
 # Entrypoint — the always-the-same MCP server process.
 #
@@ -94,8 +103,9 @@ ENV LORE_CONFIG=/workspace/lore.yaml
 CMD ["python", "-m", "loremaster.server"]
 
 # ---------------------------------------------------------------------------
-# Build:
-#   podman build -t localhost/lore:latest -f Containerfile .
+# Build (bake the version from git so the server advertises it):
+#   podman build --build-arg LORE_VERSION="$(git describe --tags --always --dirty)" \
+#       -t localhost/lore:latest -f Containerfile .
 # (run from the workspace root so the build context contains all three members.)
 #
 # Run (one container per project; never a per-project image):

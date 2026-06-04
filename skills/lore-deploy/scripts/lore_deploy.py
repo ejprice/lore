@@ -388,7 +388,8 @@ def verb_setup(project: Path, env_file: Path) -> int:
     # 6. Build the image if missing.
     if not _image_exists(IMAGE):
         print(f"setup: image {IMAGE} missing — build it from the lore workspace root "
-              f"(podman build -t {IMAGE} -f Containerfile .) before continuing.", file=sys.stderr)
+              f"(podman build --build-arg LORE_VERSION=\"$(git describe --tags --always --dirty)\" "
+              f"-t {IMAGE} -f Containerfile .) before continuing.", file=sys.stderr)
         return _EXIT_ERROR
 
     # 7. Cold-index (the expensive step, paid once).

@@ -39,6 +39,7 @@ the realistic greedy forms, not a pathologically path-specific predicate.)
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import inspect
 import json
 import logging
@@ -105,6 +106,38 @@ if TYPE_CHECKING:
 _EXTENSION_STATE_KEY = "__extension_state__"
 
 logger = logging.getLogger(__name__)
+
+# The env var the container build bakes `git describe --tags --always --dirty`
+# into at image-build time, and the installed distribution name the metadata
+# fallback resolves. Named so the producer↔consumer seam (image build → running
+# server) reads the SAME string in both places. ``UNKNOWN_VERSION`` is the
+# degrade-don't-crash sentinel when neither source yields a version.
+_LORE_VERSION_ENV = "LORE_VERSION"
+_LOREMASTER_DIST_NAME = "loremaster"
+UNKNOWN_VERSION = "unknown"
+
+
+def _resolve_version() -> str:
+    """The lore server version, baked at container-build time.
+
+    Precedence: the ``LORE_VERSION`` env (set from `git describe` in the image at
+    build time) wins; else the installed package metadata; else ``"unknown"``.
+    An empty ``LORE_VERSION`` falls through (a blank build-arg must not win).
+    """
+    baked = os.environ.get(_LORE_VERSION_ENV)
+    if baked:  # non-empty wins; an empty mis-bake falls through
+        return baked
+    try:
+        # Attribute access (not a bound local) so a monkeypatched
+        # ``importlib.metadata.version`` is honoured.
+        return importlib.metadata.version(_LOREMASTER_DIST_NAME)
+    except importlib.metadata.PackageNotFoundError:
+        # No installed dist (e.g. a bare source tree) — degrade, don't crash.
+        return UNKNOWN_VERSION
+
+
+# The module-level constant: the resolver's value for the import-time env.
+__version__ = _resolve_version()
 
 # The registry keys for the profile-driven chunkers, which are (re)constructed
 # with the accumulated profiles every time an extension is registered.
@@ -2216,6 +2249,11 @@ def build_mcp_server(server: LoreServer) -> Any:
         streamable_http_path=config.server.path,
     )
     _register_tools(mcp, server)
+    # FastMCP takes no ``version=`` kwarg; the low-level server it wraps carries
+    # the wire ``serverInfo.version`` (``create_initialization_options().server_version``).
+    # Left as None, the MCP SDK would advertise its OWN version — so set lore's
+    # here. Resolve at CONSTRUCTION time so an env baked after import is honoured.
+    mcp._mcp_server.version = _resolve_version()
     # Surface the SAME process-lifespan guard on the returned server so the ASGI
     # composition (build_asgi_app) can take the EAGER process-startup lease through
     # it — running the heavy build once at uvicorn startup rather than lazily on the

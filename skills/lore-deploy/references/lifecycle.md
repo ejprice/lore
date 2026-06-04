@@ -46,8 +46,9 @@ step needs manual intervention.
    indexes if absent. **STOP on a dim mismatch** between an existing collection
    and `config.dim` — never auto-recreate.
 6. **Build the image if missing.** `podman image exists localhost/lore:latest`
-   → if absent, `podman build -t localhost/lore:latest -f Containerfile .` from
-   the lore workspace root.
+   → if absent, `podman build --build-arg LORE_VERSION="$(git describe --tags --always --dirty)" -t localhost/lore:latest -f Containerfile .`
+   from the lore workspace root — the `--build-arg` bakes the git-derived version
+   the server advertises as `serverInfo.version`.
 7. **Cold-index.** Run the batch indexer ONCE:
    `python -m loremaster.index --config <lore.yaml>` (in-container or against
    the workspace venv). This is the expensive step paid once.
