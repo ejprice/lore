@@ -17,9 +17,13 @@ step needs manual intervention.
 - **Snapshot dir (static tiers only):** `~/docker/mcp/lore-snapshot/<tier>/…`,
   bind-mounted `:ro` at `/source`. A bare single-live-tree project (like
   demand_intelligence) declares no static roots and needs no `/source` mount.
-- **Secrets:** delivered via `--env-file <secrets.env>`. Required keys: the
-  embedder bearer (`api_key_env`, default `LORE_TEI_KEY`) and the Qdrant key
-  (`QDRANT__SERVICE__API_KEY`). When auth is enabled, also `LORE_<SLUG>_KEY`.
+- **Secrets:** delivered via `--env-file`. The default is **per-slug**:
+  `~/docker/mcp/lore-secrets/<slug>.env` (one file per project, resolved from the
+  project dir name when `--env-file` is omitted). An explicit `--env-file` is
+  honored verbatim. There is **no** shared project-agnostic `~/docker/mcp/lore.env`
+  — relying on one resolved to a missing file and `podman run` exited 125. Required
+  keys: the embedder bearer (`api_key_env`, default `LORE_TEI_KEY`) and the Qdrant
+  key (`QDRANT__SERVICE__API_KEY`). When auth is enabled, also `LORE_<SLUG>_KEY`.
 
 ## `setup` — once per project (idempotent; expensive parts no-op on re-run)
 
@@ -57,11 +61,24 @@ step needs manual intervention.
 
 ## `start` — launch for a working session (idempotent)
 
-1. **Already running?** `podman container exists lore-<slug>` and it is in the
-   `running` state → print `start: already running (no-op)` and exit 0.
-2. **Pre-flight:** hard-probe `/embed` (STOP if down/wrong dim); confirm the
-   collection exists (if not, tell the user to run `setup` first — do NOT
-   silently cold-build on `start`).
+1. **Already running + current image?** `lore-<slug>` is `running` AND its baked
+   image ID matches the current `localhost/lore:latest` tag → no-op, re-merge
+   `.mcp.json` (so wiring survives a reboot), and exit 0. No reconnect reminder —
+   nothing changed.
+1a. **Already running + STALE image?** `lore-<slug>` is `running` but its baked
+   image ID differs from the current tag (the image was rebuilt) → **recreate**.
+   `podman restart` reuses the same baked image, so only stop + rm + run picks up
+   the new code. **Validate-before-teardown (outage guard):** verify EVERY launch
+   precondition FIRST — the image is present (`podman image exists`) AND the
+   resolved env-file exists. If any fails, STOP with `_EXIT_ERROR` and leave the
+   running (stale) container **untouched** — a stale-but-serving container beats a
+   dead one. Only once the preconditions are known good: `podman stop` → `podman rm`
+   → relaunch. A relaunch (`podman run`) failure after teardown degrades gracefully
+   (loud on stderr, `_EXIT_ERROR`), never an uncaught exception. On success,
+   re-merge `.mcp.json` and print the MCP-reconnect reminder.
+2. **Pre-flight (not-running path):** hard-probe `/embed` (STOP if down/wrong dim);
+   confirm the collection exists (if not, tell the user to run `setup` first — do
+   NOT silently cold-build on `start`).
 3. **Launch the container** (see the run invocation below). On startup the
    server runs the **delta-reconcile**: walk included roots → mtime+size
    fast-path → re-index only the changed delta, purge deletions. No cold
@@ -80,7 +97,7 @@ podman run -d --name lore-<slug> \
   -v <project>:/workspace:ro \
   -v ~/.local/state/lore:/home/lore/.local/state/lore \
   [ -v <snapshot>:/source:ro ]            # only if lore.yaml declares a static root
-  --env-file <secrets.env> \
+  --env-file ~/docker/mcp/lore-secrets/<slug>.env \   # per-slug; explicit --env-file overrides
   -e LORE_CONFIG=/workspace/lore.yaml \
   localhost/lore:latest
 ```
@@ -131,3 +148,5 @@ podman run -d --name lore-<slug> \
 | missing/empty secret env var | STOP — name the variable. |
 | image missing on `start` | STOP — tell the user to run `setup` (which builds it). |
 | collection missing on `start` | STOP — tell the user to run `setup` (cold index). |
+| recreate precondition unmet (image or env-file missing on the stale-image path) | STOP — `_EXIT_ERROR`, leave the running container untouched (never tear down before validating). |
+| relaunch (`podman run`) fails after teardown on recreate | STOP — `_EXIT_ERROR`, loud on stderr; never propagate an uncaught `CalledProcessError`. |

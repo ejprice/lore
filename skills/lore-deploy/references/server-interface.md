@@ -70,6 +70,17 @@ When the deferred Bearer-key auth (D9/A1.12) is enabled, run
 and enable `auth` in `lore.yaml`. Confirm the mount path matches
 `config.server.path` (default `/mcp`).
 
+## 6. Secrets env-file (per-slug)
+
+The container's secrets (the embedder bearer `LORE_TEI_KEY`, the Qdrant key
+`QDRANT__SERVICE__API_KEY`, and — when auth is on — `LORE_<SLUG>_KEY`) are passed
+via `--env-file`. The path is **per-slug**: `~/docker/mcp/lore-secrets/<slug>.env`,
+one file per project, resolved from the project dir name when `--env-file` is
+omitted. An explicit `--env-file` is honored verbatim. There is **no** shared
+project-agnostic `~/docker/mcp/lore.env` — it never existed on-host, so depending
+on it resolved to a missing file and `podman run` exited 125 (verified: the
+demand_intelligence secrets live at `~/docker/mcp/lore-secrets/demand_intelligence.env`).
+
 ## 5. Cold-index vs. start-time reconcile
 
 `setup` cold-indexes via `python -m loremaster.index --config <lore.yaml>` (the

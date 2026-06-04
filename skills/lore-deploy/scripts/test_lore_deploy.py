@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import lore_deploy
@@ -674,4 +675,466 @@ class TestVerbStatusImageCurrency:
         # --- Assert ---
         assert return_code == lore_deploy._EXIT_OK, (
             f"verb_status must return _EXIT_OK for a stopped container; got {return_code}"
+        )
+
+
+# ===========================================================================
+# Defect B — destructive tear-down before validating (the production outage).
+# ===========================================================================
+#
+# The stale-image recreate branch in verb_start (the RUNNING + stale-image path)
+# issued `podman stop` + `podman rm` on the LIVE container BEFORE attempting the
+# relaunch, with NO precondition guards.  The fresh-launch path, by contrast,
+# checks `_image_exists(IMAGE)` and `env_file.exists()` FIRST and returns
+# _EXIT_ERROR if either fails.  So on the recreate path a missing env-file (the
+# Defect-A trigger) or an absent image destroyed the serving container and then
+# failed to relaunch -> total outage, surfaced as an uncaught CalledProcessError
+# (because _launch_container -> _run uses check=True).
+#
+# Contract pinned here (observable behavior; the spec, NOT the current body):
+#   - The recreate path VALIDATES every launch precondition (env-file present,
+#     image present) BEFORE any `podman stop`/`rm`.  A stale-but-serving
+#     container beats a dead one.
+#   - A failed precondition -> return _EXIT_ERROR and LEAVE THE RUNNING
+#     CONTAINER UNTOUCHED (no stop, no rm, no relaunch attempt).
+#   - A launch failure AFTER valid preconditions is reported loudly
+#     (_EXIT_ERROR, on stderr), never propagated as an uncaught exception.
+
+
+class _RecreatePathFixture:
+    """Reusable arrangement for the Defect-B recreate-path tests.
+
+    Wires verb_start into the RUNNING + stale-image branch using the SAME mock
+    seams the existing ``TestVerbStartStaleImageRecreateBehavior`` uses
+    (``_container_state`` -> "running", divergent ``_container_image_id`` vs
+    ``_image_id``), then records every ``_run`` invocation and every
+    ``_launch_container`` call so a test can assert on the issued podman commands
+    and on launch attempts.
+
+    Why a builder, not copy-paste: clauses 1 & 5 — the recreate-path tests share
+    one source of truth for the stale-detection wiring, the container-name
+    derivation, and the run/launch recorders, so a drift in the convention
+    (e.g. the ``lore-<slug>`` name format) cannot silently diverge across tests.
+    """
+
+    def __init__(self, monkeypatch, tmp_path, slug: str) -> None:
+        self.monkeypatch = monkeypatch
+        self.tmp_path = tmp_path
+        self.slug = slug
+        self.project = _make_project(tmp_path, slug)
+        self.container_name = f"lore-{slug}"
+        # Ordered transcript of every podman command verb_start issues through _run.
+        self.run_calls: list[list[str]] = []
+        # Every _launch_container invocation (the relaunch attempt).
+        self.launch_calls: list[tuple] = []
+        # An env-file path that, by default, DOES NOT exist on disk (the outage
+        # trigger).  Tests that need it present call .create_env_file().
+        self.env_file = tmp_path / f"{slug}.env"
+
+    def wire_running_and_stale(self) -> None:
+        """Put verb_start on the RUNNING + stale-image recreate branch."""
+        self.monkeypatch.setattr(lore_deploy, "_container_state", lambda name: "running")
+        # Divergent IDs => stale => recreate branch (matches the existing A1 test).
+        self.monkeypatch.setattr(
+            lore_deploy, "_container_image_id", lambda name: _RUNNING_IMAGE_ID
+        )
+        self.monkeypatch.setattr(
+            lore_deploy, "_image_id", lambda image: _CURRENT_IMAGE_ID
+        )
+        self.monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
+
+    def install_run_recorder(self) -> None:
+        """Record (and succeed) every podman command issued via _run."""
+
+        def _recording_run(cmd: list[str], **kwargs) -> object:
+            self.run_calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        self.monkeypatch.setattr(lore_deploy, "_run", _recording_run)
+
+    def install_launch_recorder(self) -> None:
+        """Record _launch_container calls without shelling out (default: succeeds)."""
+
+        def _recording_launch(proj, config_path, env_file) -> None:
+            self.launch_calls.append((proj, config_path, env_file))
+
+        self.monkeypatch.setattr(lore_deploy, "_launch_container", _recording_launch)
+
+    def install_failing_launch(self) -> None:
+        """Make _launch_container fail the way the real one does: a podman non-zero.
+
+        The real ``_launch_container`` calls ``_run(cmd)`` with the default
+        ``check=True``, so a non-zero ``podman run`` raises
+        ``subprocess.CalledProcessError``.  We reproduce that exact failure mode
+        (not a generic Exception) so the test pins the real seam.
+        """
+
+        def _failing_launch(proj, config_path, env_file) -> None:
+            self.launch_calls.append((proj, config_path, env_file))
+            raise subprocess.CalledProcessError(
+                returncode=125,  # podman's "container/run setup failed" exit code
+                cmd=["podman", "run", "-d", "--name", self.container_name, lore_deploy.IMAGE],
+            )
+
+        self.monkeypatch.setattr(lore_deploy, "_launch_container", _failing_launch)
+
+    def install_image_present(self, present: bool = True) -> None:
+        """Stub _image_exists for the launch-precondition guard."""
+        self.monkeypatch.setattr(lore_deploy, "_image_exists", lambda image: present)
+
+    def create_env_file(self) -> None:
+        """Materialise the env-file so the env-file precondition passes."""
+        self.env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
+
+    def stop_calls(self) -> list[list[str]]:
+        """podman stop commands targeting THIS container."""
+        return [c for c in self.run_calls if "stop" in c and self.container_name in c]
+
+    def rm_calls(self) -> list[list[str]]:
+        """podman rm commands targeting THIS container."""
+        return [c for c in self.run_calls if "rm" in c and self.container_name in c]
+
+
+class TestVerbStartRecreateValidatesBeforeTeardown:
+    """Contract: the stale-image recreate path must validate BEFORE it destroys.
+
+    This is the regression guard for the production outage.  The invariant is
+    'never tear down a live, serving container until every launch precondition
+    is known good'.  A stale-but-serving container is strictly better than a
+    dead one; a missing env-file or absent image must abort the recreate with
+    _EXIT_ERROR and leave the running container exactly as it was.
+    """
+
+    _SLUG = "demand_intelligence"  # a real on-host lore slug (see lore-secrets/)
+
+    # --- B1: the direct outage regression ---
+    def test_recreate_with_missing_env_file_does_not_remove_running_container(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """B1: RUNNING + stale image + env-file ABSENT -> abort with _EXIT_ERROR,
+        no stop, no rm, no launch.  The exact outage that occurred.
+
+        This case WOULD have caught the bug: the buggy body stops+removes the
+        live container, then _launch_container raises on the missing env-file.
+        """
+        # --- Arrange ---
+        fixture = _RecreatePathFixture(monkeypatch, tmp_path, self._SLUG)
+        fixture.wire_running_and_stale()
+        fixture.install_run_recorder()
+        fixture.install_launch_recorder()
+        fixture.install_image_present(True)  # image is fine; only the env-file is missing
+        # Deliberately DO NOT create the env-file — this is the outage trigger.
+        assert not fixture.env_file.exists(), "precondition: env-file must be absent for this case"
+
+        # --- Act ---
+        return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
+
+        # --- Assert ---
+        # The running container must survive an aborted recreate.
+        assert fixture.stop_calls() == [], (
+            f"recreate must NOT 'podman stop {fixture.container_name}' when a launch "
+            f"precondition (env-file) is unmet; run_calls={fixture.run_calls}"
+        )
+        assert fixture.rm_calls() == [], (
+            f"recreate must NOT 'podman rm {fixture.container_name}' when a launch "
+            f"precondition (env-file) is unmet; run_calls={fixture.run_calls}"
+        )
+        # No relaunch was even attempted.
+        assert fixture.launch_calls == [], (
+            f"recreate must NOT attempt _launch_container when a precondition is unmet; "
+            f"got {len(fixture.launch_calls)} attempt(s)"
+        )
+        # Loud failure, not silent success.
+        assert return_code == lore_deploy._EXIT_ERROR, (
+            f"recreate must return _EXIT_ERROR when the env-file is missing; got {return_code}"
+        )
+
+    # --- B2: the same invariant, image side of the precondition ---
+    def test_recreate_with_missing_image_does_not_remove_running_container(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """B2: RUNNING + stale-by-id + image ABSENT -> abort with _EXIT_ERROR,
+        no stop, no rm, no launch.
+
+        Scenario: the running container's image ID still resolves (it is baked
+        into the live container), but ``localhost/lore:latest`` no longer exists
+        as a tag (e.g. pruned mid-rebuild).  Tearing down here would strand the
+        project with neither a container nor an image to relaunch from.
+        """
+        # --- Arrange ---
+        fixture = _RecreatePathFixture(monkeypatch, tmp_path, self._SLUG)
+        fixture.wire_running_and_stale()
+        fixture.install_run_recorder()
+        fixture.install_launch_recorder()
+        fixture.create_env_file()           # env-file is fine ...
+        fixture.install_image_present(False)  # ... but the image tag is gone.
+
+        # --- Act ---
+        return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
+
+        # --- Assert ---
+        assert fixture.stop_calls() == [], (
+            f"recreate must NOT stop the live container when the image is absent; "
+            f"run_calls={fixture.run_calls}"
+        )
+        assert fixture.rm_calls() == [], (
+            f"recreate must NOT remove the live container when the image is absent; "
+            f"run_calls={fixture.run_calls}"
+        )
+        assert fixture.launch_calls == [], (
+            f"recreate must NOT attempt _launch_container when the image is absent; "
+            f"got {len(fixture.launch_calls)} attempt(s)"
+        )
+        assert return_code == lore_deploy._EXIT_ERROR, (
+            f"recreate must return _EXIT_ERROR when the image is absent; got {return_code}"
+        )
+
+    # --- B3: a launch failure after valid preconditions is reported, not raised ---
+    def test_recreate_launch_failure_is_reported_not_raised(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """B3: preconditions PASS but _launch_container fails (podman non-zero)
+        -> verb_start returns _EXIT_ERROR and is LOUD on stderr; no uncaught raise.
+
+        Even with all preconditions satisfied, a podman run can still fail at
+        runtime.  When it does after the tear-down, the recreate cannot keep the
+        old container alive, but it must still degrade gracefully: report the
+        failure (non-zero exit + stderr), never propagate a raw
+        CalledProcessError up to the dispatcher.
+        """
+        # --- Arrange ---
+        fixture = _RecreatePathFixture(monkeypatch, tmp_path, self._SLUG)
+        fixture.wire_running_and_stale()
+        fixture.install_run_recorder()
+        fixture.create_env_file()
+        fixture.install_image_present(True)
+        fixture.install_failing_launch()  # podman run -> CalledProcessError(125)
+
+        # --- Act (must NOT raise) ---
+        try:
+            return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
+        except subprocess.CalledProcessError as error:  # pragma: no cover - failure path
+            raise AssertionError(
+                "verb_start must NOT propagate an uncaught CalledProcessError when "
+                f"_launch_container fails on the recreate path; it raised: {error!r}"
+            )
+
+        # --- Assert ---
+        # A launch was attempted (preconditions were good).
+        assert len(fixture.launch_calls) == 1, (
+            f"recreate must attempt _launch_container exactly once when preconditions "
+            f"pass; got {len(fixture.launch_calls)} attempt(s)"
+        )
+        # Reported as a loud failure.
+        assert return_code == lore_deploy._EXIT_ERROR, (
+            f"a failed relaunch must surface as _EXIT_ERROR; got {return_code}"
+        )
+        captured = capsys.readouterr()
+        # The failure must be visible to the operator (Unix: loud on failure).
+        assert captured.err.strip(), (
+            "a failed relaunch on the recreate path must write a diagnostic to stderr "
+            "(loud on failure); stderr was empty"
+        )
+
+    # --- B4: ordering invariant, not mere presence ---
+    def test_recreate_happy_path_validates_before_teardown(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """B4: RUNNING + stale + all preconditions good -> the env-file/image checks
+        happen BEFORE the first stop/rm (ordering invariant), then stop+rm+relaunch.
+
+        Presence of guards is not enough: a guard placed AFTER the tear-down does
+        not prevent the outage.  This pins the ORDER — every precondition probe is
+        observed before any destructive podman command is issued.
+        """
+        # --- Arrange ---
+        fixture = _RecreatePathFixture(monkeypatch, tmp_path, self._SLUG)
+        fixture.wire_running_and_stale()
+        fixture.install_launch_recorder()
+        fixture.create_env_file()
+
+        # A single ordered transcript across BOTH precondition probes and podman
+        # commands, so we can assert that no probe occurs after the first teardown.
+        transcript: list[str] = []
+
+        def _recording_run(cmd: list[str], **kwargs) -> object:
+            # Tag stop/rm against THIS container as destructive teardown events.
+            if "stop" in cmd and fixture.container_name in cmd:
+                transcript.append("teardown:stop")
+            elif "rm" in cmd and fixture.container_name in cmd:
+                transcript.append("teardown:rm")
+            fixture.run_calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(lore_deploy, "_run", _recording_run)
+
+        # The env-file precondition is observed by wrapping Path.exists for OUR
+        # env-file only; the image precondition by wrapping _image_exists.  Both
+        # record into the same transcript so ordering is comparable.
+        real_exists = Path.exists
+
+        def _recording_exists(self_path: Path) -> bool:
+            result = real_exists(self_path)
+            if self_path == fixture.env_file:
+                transcript.append("check:env_file")
+            return result
+
+        monkeypatch.setattr(Path, "exists", _recording_exists)
+
+        def _recording_image_exists(image: str) -> bool:
+            transcript.append("check:image")
+            return True
+
+        monkeypatch.setattr(lore_deploy, "_image_exists", _recording_image_exists)
+
+        # --- Act ---
+        return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
+
+        # --- Assert ---
+        assert return_code == lore_deploy._EXIT_OK, (
+            f"a clean recreate (all preconditions good) must return _EXIT_OK; got {return_code}"
+        )
+        # The recreate actually happened (stop + rm + relaunch).
+        assert "teardown:stop" in transcript and "teardown:rm" in transcript, (
+            f"a clean recreate must stop and rm the stale container; transcript={transcript}"
+        )
+        assert len(fixture.launch_calls) == 1, (
+            f"a clean recreate must relaunch exactly once; got {len(fixture.launch_calls)}"
+        )
+        # ORDERING INVARIANT: at least one precondition check must precede the
+        # first destructive teardown event, and NO precondition check may occur
+        # after the first teardown (a guard after the kill cannot prevent the outage).
+        first_teardown_index = next(
+            i for i, event in enumerate(transcript) if event.startswith("teardown:")
+        )
+        checks_before = [e for e in transcript[:first_teardown_index] if e.startswith("check:")]
+        checks_after = [e for e in transcript[first_teardown_index:] if e.startswith("check:")]
+        assert checks_before, (
+            "at least one launch precondition (env-file/image) must be validated BEFORE "
+            f"the first teardown; transcript={transcript}"
+        )
+        assert not checks_after, (
+            "no launch precondition may be validated AFTER the first teardown — a guard "
+            f"placed after the stop/rm cannot prevent the outage; transcript={transcript}"
+        )
+
+
+# ===========================================================================
+# Defect A — per-slug secrets env-file resolution.
+# ===========================================================================
+#
+# The old DEFAULT_ENV_FILE was a single project-agnostic path
+# (~/docker/mcp/lore.env) that does NOT exist on this host.  Secrets actually
+# live per-project at ~/docker/mcp/lore-secrets/<slug>.env (verified on-host:
+# lore-secrets/demand_intelligence.env exists; lore.env does not).  Running
+# `start` without --env-file resolved to the missing file -> podman run exit 125.
+#
+# Contract pinned here (the spec, NOT the current argparse default):
+#   - The argparse --env-file default is None (so "unsupplied" is distinguishable
+#     from an explicit value).
+#   - When --env-file is unsupplied, the env-file resolves per-slug to
+#     ~/docker/mcp/lore-secrets/<slug>.env, where slug is the project name.
+#   - An explicit --env-file is honored verbatim.
+#
+# Seam pinned: ``lore_deploy._resolve_env_file(project, explicit)`` — the single
+# place that turns (project, maybe-explicit-path) into the concrete env-file
+# Path.  ``main()`` feeds it ``args.env_file`` (None when the flag is omitted).
+
+# The production secrets convention (shared source of truth, clause 5): derived
+# from Path.home() exactly as the spec documents, NOT a hand-copied literal that
+# could drift from the resolver.  These are the same anchors the host uses.
+_SECRETS_DIR = Path.home() / "docker" / "mcp" / "lore-secrets"
+# The pre-fix wrong default, asserted-against to prove it is no longer returned.
+_OLD_BAD_DEFAULT = Path.home() / "docker" / "mcp" / "lore.env"
+
+
+class TestEnvFileResolution:
+    """Contract: env-file resolves per-slug unless explicitly overridden.
+
+    Pins Defect-A behavior at its seam (``_resolve_env_file``) and at the CLI
+    surface (argparse default must be None).  Fixtures use a real on-host slug
+    (``demand_intelligence`` — see ~/docker/mcp/lore-secrets/) so the resolved
+    path is one that actually exists in production, not a synthetic stand-in.
+    """
+
+    # A real, on-host project slug (lore-secrets/demand_intelligence.env exists).
+    _REAL_SLUG = "demand_intelligence"
+
+    # --- A-fix 1: per-slug default ---
+    def test_env_file_defaults_to_per_slug_secrets_path(self, tmp_path) -> None:
+        """`--project .../demand_intelligence`, no `--env-file` -> resolves to
+        ~/docker/mcp/lore-secrets/demand_intelligence.env, NOT ~/docker/mcp/lore.env.
+
+        The expected path is built from the production convention
+        (``Path.home()/docker/mcp/lore-secrets/<slug>.env``), independent of the
+        resolver's own formula — so it would still hold if the implementation
+        were subtly wrong (e.g. dropped the ``lore-secrets`` segment).
+        """
+        assert hasattr(lore_deploy, "_resolve_env_file"), (
+            "lore_deploy._resolve_env_file seam is not yet defined; the implementer must "
+            "add a resolver that turns (project, explicit-or-None) into a concrete env-file."
+        )
+        project = tmp_path / self._REAL_SLUG
+        project.mkdir()
+
+        # explicit=None models an UNsupplied --env-file (argparse default must be None).
+        resolved = lore_deploy._resolve_env_file(project, None)
+
+        expected = _SECRETS_DIR / f"{self._REAL_SLUG}.env"
+        assert Path(resolved) == expected, (
+            f"unsupplied --env-file must resolve per-slug to {expected}; got {resolved}"
+        )
+        # And explicitly NOT the old project-agnostic path that triggered the outage.
+        assert Path(resolved) != _OLD_BAD_DEFAULT, (
+            f"resolved env-file must NOT be the old project-agnostic default "
+            f"{_OLD_BAD_DEFAULT} (the nonexistent file that caused exit 125)"
+        )
+
+    # --- A-fix 2: explicit override wins verbatim ---
+    def test_explicit_env_file_overrides_per_slug_default(self, tmp_path) -> None:
+        """An explicit --env-file is honored verbatim — no per-slug rewriting.
+
+        Operators sometimes point at a one-off secrets file; an explicit value
+        must pass through untouched, not get coerced back into the lore-secrets
+        directory.
+        """
+        assert hasattr(lore_deploy, "_resolve_env_file"), (
+            "lore_deploy._resolve_env_file seam is not yet defined"
+        )
+        project = tmp_path / self._REAL_SLUG
+        project.mkdir()
+
+        # A realistic operator-supplied override, distinct from the per-slug path.
+        explicit = tmp_path / "custom" / "alt-secrets.env"
+
+        resolved = lore_deploy._resolve_env_file(project, explicit)
+
+        assert Path(resolved) == explicit, (
+            f"an explicit --env-file must be honored verbatim; expected {explicit}, "
+            f"got {resolved}"
+        )
+        # The per-slug default must NOT override an explicit value.
+        assert Path(resolved) != _SECRETS_DIR / f"{self._REAL_SLUG}.env", (
+            "an explicit --env-file must NOT be rewritten to the per-slug default"
+        )
+
+    # --- A-fix 3: the CLI default must be None, not the old bad path ---
+    def test_argparse_env_file_default_is_none(self) -> None:
+        """The --env-file argparse default must be None (so 'unsupplied' is
+        distinguishable) and must NOT be the old nonexistent project-agnostic path.
+
+        If the default were a concrete path, the verb could never tell an
+        unsupplied flag from an explicit one, and the per-slug resolution could
+        not fire.
+        """
+        parser = lore_deploy._build_parser()
+        namespace = parser.parse_args(["start", "--project", "/tmp/demand_intelligence"])
+        assert namespace.env_file is None, (
+            f"--env-file argparse default must be None so the verb can resolve it "
+            f"per-slug; got default {namespace.env_file!r}"
+        )
+        # Guard against the specific regression: the old default string must be gone.
+        assert namespace.env_file != str(_OLD_BAD_DEFAULT), (
+            f"--env-file default must not be the old project-agnostic path "
+            f"{_OLD_BAD_DEFAULT} (Defect A)"
         )

@@ -904,3 +904,670 @@ class TestLockSerialization:
         assert alpha_row is not None and alpha_row.state == STATE_INDEXED
         routing_row = manifest.get("custom", "src/routing.py")
         assert routing_row is not None and routing_row.state == STATE_INDEXED
+
+# --------------------------------------------------------------------------- #
+# Scaling-fix additions (fix/watcher-scale-and-skill)
+# --------------------------------------------------------------------------- #
+# These extend the suite for the watch-strategy fix: ONE recursive watch per
+# LIVE ROOT instead of one non-recursive watch per directory (so N nested dirs
+# no longer cost N inotify *instances* — only N cheap inotify *watches* under a
+# single instance), plus a NEW kernel-overflow seam. The behavioural anchors
+# below come from the requirement + watchdog's own source, NOT from the current
+# per-dir implementation (which these tests must FAIL against).
+
+# A live root with MANY nested INCLUDED subdirs (the production shape:
+# demand_intelligence is ~7126 dirs under one root). Under the BROKEN per-dir
+# strategy each of these dirs becomes its own inotify instance; under the FIX
+# the whole root is one recursive watch = one instance. Six nested dirs is well
+# past the ">= 5" threshold the contract calls for while staying cheap.
+_NESTED_INCLUDED_SUBDIRS: tuple[str, ...] = (
+    "pkg",
+    "pkg/sub_a",
+    "pkg/sub_a/deep",
+    "pkg/sub_b",
+    "services",
+    "services/routing",
+)
+# An EXCLUDED subtree that the recursive watch now PHYSICALLY observes (it is a
+# child of the recursively-watched root) but that the event-time ``_resolve``
+# drop must still filter out. ``__pycache__`` is in the config's ``exclude_dirs``
+# — the same source of truth production prunes against (no hand-copied literal).
+_EXCLUDED_DIR_NAME = "__pycache__"
+
+
+def _build_wide_live_corpus(root: Path) -> None:
+    """A deeply-nested live tree: many INCLUDED package dirs + an EXCLUDED subtree.
+
+    Mirrors a real Python project's directory fan-out (the production failure
+    mode is a wide tree exhausting ``fs.inotify.max_user_instances``). Every
+    nested dir holds a real importable ``*.py`` so the included subtree is a
+    genuine indexing target, and an ``__pycache__`` subtree (a configured
+    ``exclude_dirs`` entry) holds a file that must NEVER be indexed despite the
+    recursive watch physically seeing it.
+    """
+    for rel in _NESTED_INCLUDED_SUBDIRS:
+        _write(
+            root / rel / "module.py",
+            f"def symbol_in_{rel.replace('/', '_')}():\n    return 1\n",
+        )
+    # An excluded subtree NESTED under an included dir — only the event-time
+    # ``_resolve`` drop (not schedule-time pruning, which is gone under the fix)
+    # can keep an edit here out of the index.
+    _write(
+        root / "pkg" / _EXCLUDED_DIR_NAME / "module.cpython-314.pyc.py",
+        "def compiled_artifact_marker():\n    return 1\n",
+    )
+
+
+def _live_root_count(config: LoreConfig) -> int:
+    """The number of LIVE roots — the production source of truth for the fix's
+    target emitter count (ONE recursive emitter per live root)."""
+    from loremaster.config import WATCH_LIVE
+
+    return sum(1 for root in config.effective_roots if root.watch == WATCH_LIVE)
+
+
+class _ReconcileSpy:
+    """Wraps a real :class:`ReconcileEngine`, recording every ``reconcile`` call.
+
+    Lets the kernel-overflow test assert the watcher triggered a reconcile in
+    response to an ``IN_Q_OVERFLOW`` signal WITHOUT relying on store/manifest
+    side effects (the file may already be indexed). The real reconcile still
+    runs (delegated), so the watcher's lock + engine wiring is exercised for
+    real — this is a spy, not a stub.
+    """
+
+    def __init__(self, inner: ReconcileEngine) -> None:
+        self._inner = inner
+        self.reconcile_calls = 0
+
+    async def reconcile(self) -> Any:
+        self.reconcile_calls += 1
+        return await self._inner.reconcile()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class _NoopStoreSentinel:
+    """A store that explodes if touched — proves ``build_observer`` is pure."""
+
+    def __getattr__(self, name: str) -> Any:  # pragma: no cover - never called
+        raise AssertionError(f"store.{name} touched during build_observer")
+
+
+class _NoopIndexerSentinel:
+    """An indexer that explodes if touched — proves ``build_observer`` is pure."""
+
+    def __getattr__(self, name: str) -> Any:  # pragma: no cover - never called
+        raise AssertionError(f"indexer.{name} touched during build_observer")
+
+
+class _NoopEngineSentinel:
+    """A reconcile engine that explodes if touched — ``build_observer`` is pure."""
+
+    def __getattr__(self, name: str) -> Any:  # pragma: no cover - never called
+        raise AssertionError(f"reconcile_engine.{name} touched during build_observer")
+
+
+# --------------------------------------------------------------------------- #
+# (1) One inotify INSTANCE per ROOT — the core scalability assertion
+# --------------------------------------------------------------------------- #
+class TestOneInotifyInstancePerRoot:
+    """The watcher schedules ONE recursive watch per LIVE ROOT, not one per dir.
+
+    THE collision-correct oracle (verified against watchdog 6.0.0's source):
+    ``BaseObserver.schedule()`` creates exactly ONE ``EventEmitter`` per distinct
+    ``ObservedWatch`` and adds it to ``observer.emitters``
+    (watchdog/observers/api.py:304-315). Each ``InotifyEmitter`` opens exactly
+    ONE inotify instance (one ``inotify_init`` fd) in ``on_thread_start``
+    (watchdog/observers/inotify.py:116-119 -> InotifyBuffer -> Inotify, one
+    ``inotify_init`` per object, inotify_c.py:147). So:
+
+      * per-dir NON-recursive scheduling  -> len(emitters) == number of dirs;
+      * one recursive watch per root       -> len(emitters) == number of roots.
+
+    Therefore ``len(observer.emitters)`` IS the count of inotify instances the
+    watcher will open — counted at SCHEDULE time, before any fd is opened
+    (``emitter._inotify`` is ``None`` until the observer thread starts), which is
+    why this test runs deterministically even when the host's
+    ``fs.inotify.max_user_instances`` pool is saturated. The expected value
+    (one-per-root) comes from the requirement, NOT the current code, so this
+    FAILS against the per-dir implementation (which yields len(emitters) == the
+    nested-dir count) and passes only for the fix.
+    """
+
+    async def test_emitter_count_equals_root_count_not_dir_count(
+        self, tmp_path: Path
+    ) -> None:
+        # Arrange: a single live root with MANY (>= 5) nested included subdirs.
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        # Only the watcher's SCHEDULING decision is under test here; the live
+        # collaborators are never touched while building the observer, so pass
+        # explode-on-touch sentinels (any access is a contract violation).
+        watcher = LiveWatcher(
+            indexer=_NoopIndexerSentinel(),  # type: ignore[arg-type]
+            manifest=manifest,
+            store=_NoopStoreSentinel(),  # type: ignore[arg-type]
+            config=config,
+            loop=asyncio.get_running_loop(),
+            reconcile_engine=_NoopEngineSentinel(),  # type: ignore[arg-type]
+        )
+
+        # Act: build the observer WITHOUT starting it (no inotify fd is opened —
+        # the new ``build_observer`` seam the fix introduces; ``start`` is
+        # specified to schedule via this same path).
+        observer = watcher.build_observer()  # type: ignore[attr-defined]
+
+        # Assert: exactly ONE emitter (== one inotify instance) per LIVE root —
+        # NOT one per nested dir. The corpus has >= 5 nested included subdirs, so
+        # the per-dir strategy would yield >= 6 emitters here.
+        expected_instances = _live_root_count(config)  # one recursive watch per root
+        assert expected_instances == 1  # this corpus has a single live root
+        assert len(observer.emitters) == expected_instances, (
+            f"watcher opened {len(observer.emitters)} inotify instances for "
+            f"{expected_instances} live root(s) — per-dir scheduling does not "
+            f"scale (N nested dirs would exhaust fs.inotify.max_user_instances)"
+        )
+        # And the single emitter's watch is RECURSIVE (so the one instance still
+        # covers every nested subdir via cheap per-dir inotify *watches*).
+        sole_watch = next(iter(observer.emitters)).watch
+        assert sole_watch.is_recursive is True
+        assert Path(sole_watch.path).resolve() == live.resolve()
+
+
+# --------------------------------------------------------------------------- #
+# (2) Live indexing still works under the recursive watch (nested INCLUDED dir)
+# --------------------------------------------------------------------------- #
+class TestRecursiveWatchStillIndexesNestedFile:
+    """An edit to a file in a NESTED included subdir is still detected + indexed.
+
+    Proves the move to ONE recursive watch per root did not break the live path:
+    a real write deep under the root (``services/routing/module.py``) is picked
+    up by the single recursive Observer and re-indexed through ``index_file`` —
+    new content searchable. Reuses the real-inotify edit->index assertion pattern.
+    """
+
+    async def test_nested_modify_event_reindexes_file(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        indexer = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+        nested_rel = "services/routing/module.py"
+        # Seed the index so this is an UPDATE under the recursive watch.
+        await indexer.index_file(
+            "custom", nested_rel,
+            (live / nested_rel).read_text(encoding="utf-8"),
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, manifest=manifest, store=store)
+        await watcher.start()
+        try:
+            # Write a NEW uniquely-named symbol DEEP in the nested subtree — the
+            # recursive watch must still observe it.
+            (live / nested_rel).write_text(
+                "def nested_recursive_marker(week):\n    return week\n",
+                encoding="utf-8",
+            )
+            assert await _wait_for_async(
+                lambda: _store_has_identity(store, nested_rel, "nested_recursive_marker")
+            )
+        finally:
+            await watcher.stop()
+
+
+# --------------------------------------------------------------------------- #
+# (3) Excluded subtree STILL filtered at EVENT time (regression guard)
+# --------------------------------------------------------------------------- #
+class TestRecursiveWatchStillFiltersExcludedSubtree:
+    """An edit under an EXCLUDED dir is NOT indexed, though now physically watched.
+
+    The fix moves pruning from SCHEDULE time (per-dir, excluded dirs never
+    scheduled) to EVENT time only (one recursive watch physically observes the
+    excluded subtree, and ``_resolve`` must drop its events). This is the
+    regression guard for that move: a write under the configured ``exclude_dirs``
+    entry ``__pycache__`` — which the recursive watch DOES see — must still yield
+    ZERO index work. The excluded dir name is read from the SAME config field
+    production prunes against, not a hand-copied literal.
+    """
+
+    async def test_event_under_recursively_watched_excluded_dir_does_no_index(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        # The excluded subtree must be one the config actually prunes (shared
+        # source of truth — clause 5), and one the recursive watch would see.
+        assert _EXCLUDED_DIR_NAME in config.exclude_dirs
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        inner = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+        indexer = RecordingIndexer(inner)
+        watcher = _make_watcher(config=config, indexer=indexer, manifest=manifest, store=store)
+
+        # A modify event for a file inside the recursively-watched EXCLUDED
+        # subtree (``pkg/__pycache__/...``). Driven through the handler seam so
+        # the contract is deterministic and independent of host inotify headroom.
+        excluded_abs = live / "pkg" / _EXCLUDED_DIR_NAME / "module.cpython-314.pyc.py"
+        watcher.on_modified_path(str(excluded_abs))
+        await watcher.drain()
+
+        # The event-time ``_resolve`` drop filtered it: zero index work, no row.
+        assert indexer.index_calls == []
+        assert (
+            manifest.get("custom", f"pkg/{_EXCLUDED_DIR_NAME}/module.cpython-314.pyc.py")
+            is None
+        )
+
+    async def test_nested_included_event_still_indexes_proving_filter_is_selective(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        """Control: a sibling INCLUDED nested file DOES index — the filter is
+        selective, not a blanket drop of everything under the recursive watch."""
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        inner = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+        indexer = RecordingIndexer(inner)
+        watcher = _make_watcher(config=config, indexer=indexer, manifest=manifest, store=store)
+
+        included_rel = "pkg/sub_a/deep/module.py"
+        watcher.on_modified_path(str(live / included_rel))
+        await watcher.drain()
+
+        # The included nested file WAS indexed (so the exclusion above is a real
+        # event-time filter decision, not a corpus artifact).
+        assert ("custom", included_rel) in indexer.index_calls
+        row = manifest.get("custom", included_rel)
+        assert row is not None and row.state == STATE_INDEXED
+
+
+# --------------------------------------------------------------------------- #
+# (4) Kernel IN_Q_OVERFLOW -> immediate tier reconcile (NEW signal)
+# --------------------------------------------------------------------------- #
+class TestKernelOverflowTriggersImmediateReconcile:
+    """A KERNEL inotify-queue overflow triggers an immediate reconcile.
+
+    This is DISTINCT from the existing internal bounded-``asyncio.Queue``
+    overflow (``watcher.in_q_overflow`` at watcher.py:369/418), which is already
+    recovered only at the NEXT periodic sweep. THIS is the kernel's own inotify
+    event-queue overflowing on a wide simultaneous burst — surfaced by the kernel
+    as a sentinel event with ``wd == -1`` and ``mask & IN_Q_OVERFLOW``
+    (``InotifyConstants.IN_Q_OVERFLOW == 0x4000``, inotify_c.py:53). watchdog
+    6.0.0 SILENTLY DROPS that sentinel — ``Inotify.read_events`` does
+    ``if wd == -1: continue`` (inotify_c.py:335) — so it NEVER reaches a
+    ``FileSystemEventHandler`` callback. The fix must therefore add a dedicated
+    handler seam the inotify backend calls on overflow; this contract names it
+    ``on_kernel_overflow(tier)`` and pins that it triggers an IMMEDIATE reconcile
+    of the affected tier (so a burst-overflow recovers in seconds, not only at
+    the periodic interval).
+
+    The test INJECTS the overflow signal into the new seam directly (per the
+    requirement — do NOT try to actually overflow the kernel queue) and asserts a
+    reconcile was invoked, via a spy on the real ``ReconcileEngine``.
+    """
+
+    def _build(
+        self, tmp_path: Path, store: QdrantStore, *, slug: str
+    ) -> tuple[LiveWatcher, _ReconcileSpy, Manifest, Path]:
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        indexer = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+        spy = _ReconcileSpy(
+            ReconcileEngine(indexer=indexer, manifest=manifest, store=store, config=config)
+        )
+        watcher = LiveWatcher(
+            indexer=indexer, manifest=manifest, store=store, config=config,
+            loop=asyncio.get_running_loop(),
+            reconcile_engine=spy,  # type: ignore[arg-type]
+        )
+        return watcher, spy, manifest, live
+
+    async def test_kernel_overflow_signal_invokes_tier_reconcile(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        slug = _slug()
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        watcher, spy, _manifest, _live = self._build(tmp_path, store, slug=slug)
+
+        # No periodic sweep has run; the reconcile count starts at zero.
+        assert spy.reconcile_calls == 0
+
+        # Inject the KERNEL overflow signal for the live tier (the seam the
+        # inotify backend will call when it reads the IN_Q_OVERFLOW sentinel).
+        await watcher.on_kernel_overflow("custom")  # type: ignore[attr-defined]
+
+        # A reconcile of the affected tier fired IMMEDIATELY (not deferred to the
+        # 600 s periodic interval) — exactly one, in direct response.
+        assert spy.reconcile_calls == 1
+
+    async def test_kernel_overflow_recovers_a_missed_file_promptly(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        """End-to-end: after an overflow signal, a file the kernel-dropped burst
+        would have missed is indexed by the immediate reconcile — not left stale
+        until the next periodic sweep."""
+        slug = _slug()
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        watcher, spy, manifest, live = self._build(tmp_path, store, slug=slug)
+
+        # A brand-new file that NO live event was delivered for (its event was
+        # lost in the kernel-queue overflow). Only a re-walking reconcile finds it.
+        missed_rel = "pkg/sub_b/burst_missed.py"
+        _write(live / missed_rel, "def burst_overflow_recovery_marker():\n    return 1\n")
+        assert manifest.get("custom", missed_rel) is None
+
+        # The kernel overflow signal arrives; the immediate reconcile re-walks and
+        # indexes the missed file.
+        await watcher.on_kernel_overflow("custom")  # type: ignore[attr-defined]
+
+        assert spy.reconcile_calls == 1  # the immediate reconcile actually ran
+        row = manifest.get("custom", missed_rel)
+        assert row is not None and row.state == STATE_INDEXED
+        assert await _store_has_identity(
+            store, missed_rel, "burst_overflow_recovery_marker"
+        )
+
+    async def test_kernel_overflow_reconcile_holds_the_single_writer_lock(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        """The overflow-driven reconcile takes the SAME single-writer lock the
+        drain + periodic sweep use — so it can never race a concurrent
+        ``index_file``. Proven by holding the lock and asserting the overflow
+        handler cannot complete its reconcile until the lock is released."""
+        slug = _slug()
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        watcher, spy, _manifest, _live = self._build(tmp_path, store, slug=slug)
+
+        # Hold the writer lock, then fire the overflow handler concurrently. If
+        # the handler reconciles UNDER the lock, it must block until we release.
+        await watcher.writer_lock.acquire()
+        task = asyncio.ensure_future(watcher.on_kernel_overflow("custom"))  # type: ignore[arg-type]
+        await asyncio.sleep(0.05)  # give the handler a chance to (try to) run
+        # Still blocked on the lock: no reconcile has completed yet.
+        assert spy.reconcile_calls == 0, (
+            "overflow reconcile ran without the single-writer lock — it can race "
+            "a concurrent index_file"
+        )
+        watcher.writer_lock.release()
+        await asyncio.wait_for(task, timeout=_SETTLE_TIMEOUT_S)
+        # Once the lock freed, the reconcile completed exactly once.
+        assert spy.reconcile_calls == 1
+
+# --------------------------------------------------------------------------- #
+# Kernel-overflow DETECTION guard (W1/W2 — no global mutation of watchdog state)
+# --------------------------------------------------------------------------- #
+# A fresh-context audit found the FIRST overflow-detection mechanism corrupted
+# watchdog's PROCESS-GLOBAL static parser:
+#   W1 — it captured ``Inotify._parse_event_buffer`` by plain attribute access
+#        (which strips the ``staticmethod`` descriptor, yielding the bare
+#        function) and restored THAT, so after one detection the class attribute
+#        was a plain function, no longer a ``staticmethod`` — corrupting EVERY
+#        other ``Inotify`` in the process.
+#   W2 — with one inotify buffer thread per live root, two threads' temporary
+#        swaps interleave, and a thread can "restore" another thread's
+#        ``_scanning_parser`` closure permanently into the global class attr.
+# The rework drops the global swap and scans the raw buffer IN THE SUBCLASS, with
+# NO shared-state mutation. These guards pin that: they exercise the detection
+# code path on a SYNTHETIC buffer (no real inotify fd — the host pool is
+# saturated and ``observer.start()`` would EMFILE) and assert the global parser
+# is never disturbed. They are RED against the swap impl, GREEN against the scan.
+
+import inspect as _inspect_for_overflow_guard
+import struct as _struct_for_overflow_guard
+
+from watchdog.observers.inotify_c import (
+    Inotify as _WatchdogInotify,
+    InotifyConstants as _WatchdogInotifyConstants,
+)
+from loremaster.index.watcher import _OverflowAwareInotify
+
+# Captured AT IMPORT TIME, before any test runs the detection path: the pristine
+# ``staticmethod`` descriptor object that watchdog ships. The no-mutation guard
+# asserts the class attribute is STILL this exact object (and still a
+# ``staticmethod``) after detection runs — an independent oracle that does not
+# restate the impl. Uses ``getattr_static`` so the descriptor is observed, not
+# the function it resolves to under normal attribute access.
+_PRISTINE_PARSE_EVENT_BUFFER = _inspect_for_overflow_guard.getattr_static(
+    _WatchdogInotify, "_parse_event_buffer"
+)
+
+# The detection SEAM the reworked subclass exposes (coordinate point for the
+# implementer): a PURE method that, given a raw inotify event buffer, detects the
+# kernel overflow sentinel and fires the injected ``on_overflow`` callback —
+# WITHOUT swapping ``Inotify._parse_event_buffer``. Asserted by name below.
+_DETECTION_SEAM_NAME = "scan_buffer_for_overflow"
+
+# The kernel's inotify-queue-overflow sentinel as the kernel delivers it: an
+# ``inotify_event`` header with NO watch descriptor (``wd == -1``) and the
+# ``IN_Q_OVERFLOW`` bit set, ``cookie == 0`` and ``len == 0`` (no name follows).
+# Packed in watchdog's own struct format (``Inotify._parse_event_buffer`` uses
+# ``struct.unpack_from("iIII", ...)`` then ``len`` name bytes — inotify_c.py),
+# so this is byte-for-byte what watchdog parses off the fd. Built from the
+# SHARED ``InotifyConstants`` (no hand-copied 0x4000 literal).
+_INOTIFY_HEADER_FORMAT = "iIII"  # wd(int32), mask(uint32), cookie(uint32), len(uint32)
+_NO_WATCH_DESCRIPTOR_SENTINEL = -1
+
+
+def _pack_inotify_event(wd: int, mask: int, *, cookie: int = 0, name: bytes = b"") -> bytes:
+    """Pack one ``inotify_event`` exactly as the kernel writes it to the fd.
+
+    Header (``iIII``) + ``len``-byte NUL-padded name, matching the stride
+    ``Inotify._parse_event_buffer`` reads (16-byte header then ``len`` bytes).
+    """
+    # The kernel NUL-terminates/pads the name; watchdog rstrips the NULs back off.
+    padded = name + b"\x00" if name else b""
+    return _struct_for_overflow_guard.pack(
+        _INOTIFY_HEADER_FORMAT, wd, mask, cookie, len(padded)
+    ) + padded
+
+
+def _overflow_sentinel_buffer() -> bytes:
+    """A raw buffer carrying ONLY the kernel ``IN_Q_OVERFLOW`` sentinel."""
+    return _pack_inotify_event(
+        _NO_WATCH_DESCRIPTOR_SENTINEL, _WatchdogInotifyConstants.IN_Q_OVERFLOW
+    )
+
+
+def _normal_modify_buffer() -> bytes:
+    """A raw buffer carrying a NORMAL file-modify event (no overflow bit set).
+
+    Used to prove the detector is SELECTIVE — it must fire ONLY on the sentinel,
+    not on every buffer. ``wd == 1`` (a real watch), ``IN_MODIFY`` mask, a real
+    filename — a production-shaped event a wide burst would actually carry.
+    """
+    return _pack_inotify_event(
+        1, _WatchdogInotifyConstants.IN_MODIFY, name=b"routing.py"
+    )
+
+
+class _OverflowCallbackSpy:
+    """Records every ``on_overflow`` invocation from the detection seam.
+
+    Injected as the subclass's overflow callback so the test asserts the kernel
+    sentinel was detected WITHOUT a real inotify fd / observer thread.
+    """
+
+    def __init__(self) -> None:
+        self.fired = 0
+
+    def __call__(self) -> None:
+        self.fired += 1
+
+
+def _build_overflow_aware_inotify_without_fd(
+    on_overflow: _OverflowCallbackSpy,
+) -> _OverflowAwareInotify:
+    """Construct an ``_OverflowAwareInotify`` whose detection seam can be driven
+    WITHOUT opening a real inotify fd.
+
+    The host inotify-instance pool is saturated, so ``Inotify.__init__`` (which
+    calls ``inotify_init``) would EMFILE. The detection seam under test is PURE —
+    it takes a raw ``bytes`` buffer and needs no fd — so this bypasses
+    ``__init__`` via ``__new__`` and wires only the overflow callback the seam
+    reads. (If the rework makes the seam a ``@staticmethod``/``@classmethod`` or a
+    free function taking the callback as an argument, the implementer should keep
+    the name ``scan_buffer_for_overflow`` and adjust this builder accordingly.)
+    """
+    instance = _OverflowAwareInotify.__new__(_OverflowAwareInotify)
+    instance._on_overflow = on_overflow  # type: ignore[attr-defined]
+    return instance
+
+
+class TestKernelOverflowDetectionDoesNotMutateGlobalParser:
+    """The overflow detector scans the raw buffer WITHOUT touching global state.
+
+    Closes the zero-coverage gap the audit flagged: the existing overflow tests
+    only inject into ``on_kernel_overflow`` directly, so the highest-risk code —
+    the buffer-scanning detection — had NO coverage. These drive the detection
+    seam (``scan_buffer_for_overflow``) on synthetic buffers (no fd) and pin both
+    its BEHAVIOUR (fires on the sentinel, ignores normal events) and its
+    NON-INTERFERENCE with watchdog's process-global ``Inotify._parse_event_buffer``
+    (the W1/W2 defect).
+    """
+
+    def test_detection_seam_exists_and_is_named(self) -> None:
+        """The reworked subclass exposes the pure detection seam by name.
+
+        Structural anchor so the implementer matches the coordinated seam name;
+        also a guard that the seam is a method ON the overflow-aware subclass
+        (where the raw buffer is available), not a free-floating helper.
+        """
+        assert hasattr(_OverflowAwareInotify, _DETECTION_SEAM_NAME), (
+            f"reworked _OverflowAwareInotify must expose a pure detection seam "
+            f"named {_DETECTION_SEAM_NAME!r} (a raw-buffer scanner that fires the "
+            f"overflow callback WITHOUT swapping Inotify._parse_event_buffer)"
+        )
+
+    def test_detection_fires_callback_on_overflow_sentinel(self) -> None:
+        """A buffer carrying the kernel sentinel fires the overflow callback.
+
+        Behavioural coverage of the detection itself (not just the downstream
+        ``on_kernel_overflow`` handler) — on a synthetic, fd-free buffer.
+        """
+        spy = _OverflowCallbackSpy()
+        inotify = _build_overflow_aware_inotify_without_fd(spy)
+        seam = getattr(inotify, _DETECTION_SEAM_NAME)
+
+        result = seam(_overflow_sentinel_buffer())
+
+        assert spy.fired == 1  # the overflow callback fired exactly once
+        # If the seam reports a bool, it must be truthy on the sentinel (a seam
+        # that only fires the callback may return None — accept either contract).
+        assert result is None or bool(result) is True
+
+    def test_detection_ignores_a_normal_event_buffer(self) -> None:
+        """A buffer with only a normal modify event does NOT fire the callback.
+
+        Proves selectivity: the detector keys on ``wd == -1`` & ``IN_Q_OVERFLOW``,
+        not on "any buffer arrived" — otherwise every event would trigger a full
+        tier reconcile.
+        """
+        spy = _OverflowCallbackSpy()
+        inotify = _build_overflow_aware_inotify_without_fd(spy)
+        seam = getattr(inotify, _DETECTION_SEAM_NAME)
+
+        result = seam(_normal_modify_buffer())
+
+        assert spy.fired == 0  # no overflow sentinel ⇒ no reconcile
+        assert result is None or bool(result) is False
+
+    def test_detection_does_not_strip_or_replace_global_static_parser(self) -> None:
+        """Running detection leaves ``Inotify._parse_event_buffer`` pristine.
+
+        THE W1/W2 regression guard. The original swap captured the parser by plain
+        attribute access (stripping the ``staticmethod`` descriptor) and restored
+        a bare function — so after one detection the process-global class
+        attribute was a plain function, corrupting every other ``Inotify``. This
+        asserts, via ``getattr_static`` (observes the descriptor, not its resolved
+        function), that after the detection runs the attribute is STILL a
+        ``staticmethod`` AND is the EXACT pristine object captured at import. RED
+        against the swap impl (which leaves a plain ``function`` there); GREEN once
+        detection scans the buffer in-subclass with no global mutation.
+        """
+        spy = _OverflowCallbackSpy()
+        inotify = _build_overflow_aware_inotify_without_fd(spy)
+        seam = getattr(inotify, _DETECTION_SEAM_NAME)
+
+        # Sanity: the global parser is pristine BEFORE we run detection.
+        before = _inspect_for_overflow_guard.getattr_static(
+            _WatchdogInotify, "_parse_event_buffer"
+        )
+        assert isinstance(before, staticmethod)
+        assert before is _PRISTINE_PARSE_EVENT_BUFFER
+
+        # Exercise the detection path (fires the callback — proves it actually ran).
+        seam(_overflow_sentinel_buffer())
+        assert spy.fired == 1
+
+        # The process-global static parser must be UNTOUCHED: still a staticmethod
+        # (W1 stripped it to a plain function) and still the exact pristine object
+        # (W2 would leave a leaked _scanning_parser closure here).
+        after = _inspect_for_overflow_guard.getattr_static(
+            _WatchdogInotify, "_parse_event_buffer"
+        )
+        assert isinstance(after, staticmethod), (
+            "Inotify._parse_event_buffer is no longer a staticmethod after "
+            "overflow detection — the global parser descriptor was stripped (W1)"
+        )
+        assert after is _PRISTINE_PARSE_EVENT_BUFFER, (
+            "Inotify._parse_event_buffer was replaced after overflow detection — "
+            "a wrapper/closure leaked into watchdog's process-global parser (W1/W2)"
+        )
+
+    def test_repeated_detection_never_mutates_global_parser(self) -> None:
+        """Idempotence/non-leak guard for W2's class of bug (no real threads).
+
+        The swap's restore was not reentrancy-safe: repeated/interleaved swaps
+        could leave a closure behind. This drives the detection seam N times and
+        asserts the global parser is STILL the pristine ``staticmethod`` every
+        time — a cheap, thread-free guard against accumulating global corruption.
+        """
+        spy = _OverflowCallbackSpy()
+        inotify = _build_overflow_aware_inotify_without_fd(spy)
+        seam = getattr(inotify, _DETECTION_SEAM_NAME)
+
+        iterations = 5
+        for _ in range(iterations):
+            seam(_overflow_sentinel_buffer())
+            current = _inspect_for_overflow_guard.getattr_static(
+                _WatchdogInotify, "_parse_event_buffer"
+            )
+            assert isinstance(current, staticmethod)
+            assert current is _PRISTINE_PARSE_EVENT_BUFFER
+
+        # Every iteration detected the sentinel; none corrupted global state.
+        assert spy.fired == iterations

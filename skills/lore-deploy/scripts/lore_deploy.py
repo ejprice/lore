@@ -55,8 +55,12 @@ CONTAINER_STATE_DIR = f"{CONTAINER_HOME}/.local/state/lore"
 
 # Free-port search for a fresh scaffold starts here (the plan's example port).
 DEFAULT_PORT_BASE = 9201
-# Default secret env-file location (mirrors odoo-code's ~/docker/mcp/.env).
-DEFAULT_ENV_FILE = Path.home() / "docker" / "mcp" / "lore.env"
+# Per-slug secrets live here: ``~/docker/mcp/lore-secrets/<slug>.env`` (one file per
+# project, NOT a single project-agnostic ``lore.env``). The old shared default did
+# not exist on-host, so an unsupplied ``--env-file`` resolved to a missing file and
+# ``podman run`` exited 125. The resolver below turns (project, maybe-explicit) into
+# the concrete per-slug path.
+LORE_SECRETS_DIR = Path.home() / "docker" / "mcp" / "lore-secrets"
 
 _EXIT_OK = 0
 _EXIT_ERROR = 2
@@ -187,6 +191,25 @@ def _loremaster_python() -> str:
         if candidate.exists():
             return str(candidate)
     return sys.executable
+
+
+def _resolve_env_file(project: Path, explicit: str | None) -> Path:
+    """Resolve the secrets env-file for ``project`` (per-slug unless overridden).
+
+    An explicit ``--env-file`` (any non-None value) is honored verbatim — the
+    operator may point at a one-off secrets file and it must pass through
+    untouched. When unsupplied (``explicit is None``), the file resolves
+    per-slug to ``~/docker/mcp/lore-secrets/<slug>.env`` where the slug is the
+    project directory name. This is the single seam that turns
+    (project, maybe-explicit) into the concrete env-file Path, called from
+    :func:`main` once the project is known — never at argparse time, so an
+    unsupplied flag (default ``None``) stays distinguishable from an explicit one.
+    """
+    if explicit is not None:
+        # Honor an operator-supplied path verbatim — no per-slug rewriting.
+        return Path(explicit)
+    slug = project.name
+    return LORE_SECRETS_DIR / f"{slug}.env"
 
 
 # ---------------------------------------------------------------------------
@@ -440,10 +463,46 @@ def verb_start(project: Path, env_file: Path) -> int:
             # Container is running on a stale image (localhost/lore:latest was rebuilt).
             # podman restart reloads the SAME baked image — only stop+rm+run picks up
             # new code, so we perform the full recreate sequence.
+            #
+            # OUTAGE GUARD (validate BEFORE teardown): a stale-but-serving container
+            # beats a dead one. Verify EVERY launch precondition (image present,
+            # env-file present) FIRST and bail with _EXIT_ERROR — leaving the running
+            # container UNTOUCHED — if any fails. Only after the preconditions are
+            # known good do we stop + rm + relaunch. A guard placed AFTER the stop/rm
+            # cannot prevent the outage, so the ORDER here is load-bearing.
+            if not _image_exists(IMAGE):
+                print(
+                    f"start: image {IMAGE} missing; refusing to recreate "
+                    f"{container_name} (leaving the running container untouched). "
+                    f"Run `setup` (which builds it).",
+                    file=sys.stderr,
+                )
+                return _EXIT_ERROR
+            if not env_file.exists():
+                print(
+                    f"start: secrets env-file {env_file} not found; refusing to "
+                    f"recreate {container_name} (leaving the running container "
+                    f"untouched).",
+                    file=sys.stderr,
+                )
+                return _EXIT_ERROR
+
             print(f"start: {container_name} is running a stale image — recreating.")
             _run(["podman", "stop", container_name], check=False)
             _run(["podman", "rm", container_name], check=False)
-            _launch_container(project, config_path, env_file)
+            # A podman run failure must degrade gracefully (loud on stderr, _EXIT_ERROR)
+            # rather than propagate a raw CalledProcessError up to the dispatcher —
+            # the old container is already gone, so an uncaught raise is the worst case.
+            try:
+                _launch_container(project, config_path, env_file)
+            except subprocess.CalledProcessError as error:
+                print(
+                    f"start: relaunch of {container_name} failed "
+                    f"(podman exit {error.returncode}); the stale container was "
+                    f"already removed — inspect podman logs and retry `start`.",
+                    file=sys.stderr,
+                )
+                return _EXIT_ERROR
             _merge_mcp_from_config(project, slug, config_path)
             print(_MCP_RECONNECT_REMINDER)
             return _EXIT_OK
@@ -629,8 +688,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Absolute path to the project directory (its name is the slug).",
     )
     parser.add_argument(
-        "--env-file", default=str(DEFAULT_ENV_FILE),
-        help=f"Secrets env-file (default: {DEFAULT_ENV_FILE}).",
+        "--env-file", default=None,
+        help=(
+            "Secrets env-file. Defaults per-slug to "
+            "~/docker/mcp/lore-secrets/<slug>.env when omitted; an explicit value "
+            "is honored verbatim."
+        ),
     )
     return parser
 
@@ -639,7 +702,9 @@ def main(argv: list[str] | None = None) -> int:
     """Dispatch a verb. Pre-checks podman availability for the container verbs."""
     args = _build_parser().parse_args(argv)
     project = Path(args.project).resolve()
-    env_file = Path(args.env_file)
+    # Resolve the env-file AFTER the project is known so an unsupplied --env-file
+    # (default None) resolves per-slug; an explicit value passes through verbatim.
+    env_file = _resolve_env_file(project, args.env_file)
 
     if not project.is_dir():
         print(f"lore_deploy: --project {project} is not a directory.", file=sys.stderr)
