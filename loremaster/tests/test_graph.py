@@ -62,7 +62,11 @@ from loremaster.graph import (
     KIND_FUNCTION,
     KIND_METHOD,
     KIND_MODULE,
+    REASON_NO_REFERENCES,
+    REASON_ONLY_REFERENCED_BY_TESTS,
     CodeGraph,
+    DeadCodeNode,
+    ReferenceSummary,
 )
 from lorescribe.models import Chunk, ChunkContext
 from lorescribe.python_ast import PythonAstChunker
@@ -1006,3 +1010,534 @@ class TestResolutionCachePoisoningGuard:
             assert "Base" not in inherits and "helper" not in calls
         finally:
             graph.close()
+
+
+# ---------------------------------------------------------------------------
+# Reference counter + dead/orphaned-code detector fixtures.
+#
+# THE CORE SEMANTIC RULE (load-bearing): a reference from a TEST file does NOT
+# count as a true reference. A symbol whose only consumers are its tests is DEAD.
+# Every count is split by the ORIGIN of the reference (the referencing file =
+# Ref.file_path): production (not a test path) vs test (is a test path). A node is
+# DEAD ⇔ production_references == 0; the (prod==0 AND test>0) case is its own
+# labelled reason ``only_referenced_by_tests``.
+#
+# Each fixture is authored here on disk so the TRUE reference counts are an
+# INDEPENDENT oracle, read off the source — never re-derived from the method.
+# ---------------------------------------------------------------------------
+
+# A library module exercised below: a `widget` helper called by a production
+# consumer AND by a test, plus a `lonely` helper called ONLY by a test, plus an
+# `orphan` helper nobody calls, plus a self-recursive `countdown`.
+REFLIB_SOURCE: str = textwrap.dedent(
+    '''\
+    """A small library with mixed reference profiles."""
+    from __future__ import annotations
+
+
+    def widget(value):
+        """Called from production AND from a test."""
+        return value + 1
+
+
+    def lonely(value):
+        """Called ONLY from a test — dead in production."""
+        return value - 1
+
+
+    def orphan(value):
+        """Called by nobody — truly dead."""
+        return value * 2
+
+
+    def countdown(value):
+        """Self-recursive: its only caller is itself."""
+        if value <= 0:
+            return 0
+        return countdown(value - 1)
+    '''
+)
+
+# A production consumer that calls `widget` (and only `widget`) from reflib.
+REFCONSUMER_SOURCE: str = textwrap.dedent(
+    '''\
+    """A production module consuming the library."""
+    from __future__ import annotations
+
+    from demo.reflib import widget
+
+
+    def run(value):
+        """A real production caller of ``widget``."""
+        return widget(value)
+    '''
+)
+
+# A test module exercising both `widget` and `lonely` — a TEST origin, so neither
+# of these references counts toward production.
+REFTEST_SOURCE: str = textwrap.dedent(
+    '''\
+    """Tests for the library."""
+    from __future__ import annotations
+
+    from demo.reflib import widget, lonely
+
+
+    def test_widget():
+        """Exercises widget (also called in production)."""
+        return widget(1)
+
+
+    def test_lonely():
+        """Exercises lonely (called ONLY here)."""
+        return lonely(1)
+    '''
+)
+
+REFLIB_PATH: str = "demo/reflib.py"
+REFCONSUMER_PATH: str = "demo/consumer.py"
+REFTEST_PATH: str = "tests/test_reflib.py"
+REFLIB_MODULE: str = "demo.reflib"
+REFCONSUMER_MODULE: str = "demo.consumer"
+REFTEST_MODULE: str = "tests.test_reflib"
+
+# Independent oracles — the TRUE FQNs of the library's symbols, read off source.
+FQN_WIDGET: str = "demo.reflib.widget"
+FQN_LONELY: str = "demo.reflib.lonely"
+FQN_ORPHAN: str = "demo.reflib.orphan"
+FQN_COUNTDOWN: str = "demo.reflib.countdown"
+FQN_RUN: str = "demo.consumer.run"
+
+
+def _write_reflib_project(root: Path) -> None:
+    """Materialise the reference-counter demo package on disk for astroid.
+
+    ``demo/`` is a real package holding ``reflib.py`` (the library) and
+    ``consumer.py`` (the production caller); ``tests/`` holds the test module that
+    references the library (a TEST-origin reference, which must NOT count as a true
+    reference).
+    """
+    (root / "demo").mkdir(parents=True, exist_ok=True)
+    (root / "demo" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "demo" / "reflib.py").write_text(REFLIB_SOURCE, encoding="utf-8")
+    (root / "demo" / "consumer.py").write_text(REFCONSUMER_SOURCE, encoding="utf-8")
+    (root / "tests").mkdir(parents=True, exist_ok=True)
+    (root / "tests" / "test_reflib.py").write_text(REFTEST_SOURCE, encoding="utf-8")
+
+
+@pytest.fixture()
+def reflib_graph(tmp_path):  # type: ignore[no-untyped-def]
+    """A resolution-enabled CodeGraph over the reference-counter demo package.
+
+    Yields ``(graph, project_root)`` with ALL three modules (library, production
+    consumer, test) already built, so the reference profile is fully populated:
+    ``widget`` has one production + one test reference, ``lonely`` has a test-only
+    reference, ``orphan`` has none, ``countdown`` has only its self-edge.
+    """
+    project_root = tmp_path / "project"
+    _write_reflib_project(project_root)
+    graph = CodeGraph(
+        str(tmp_path / "graph.kuzu"),
+        tier_roots={SAMPLE_TIER: project_root, OTHER_TIER: project_root},
+        project_roots=[project_root],
+    )
+    # Build through the REAL chunker, in the production indexer's order.
+    graph.build_file_graph(
+        SAMPLE_TIER, REFLIB_PATH, _chunk(REFLIB_PATH, REFLIB_SOURCE), module_name=REFLIB_MODULE
+    )
+    graph.build_file_graph(
+        SAMPLE_TIER,
+        REFCONSUMER_PATH,
+        _chunk(REFCONSUMER_PATH, REFCONSUMER_SOURCE),
+        module_name=REFCONSUMER_MODULE,
+    )
+    graph.build_file_graph(
+        SAMPLE_TIER, REFTEST_PATH, _chunk(REFTEST_PATH, REFTEST_SOURCE), module_name=REFTEST_MODULE
+    )
+    try:
+        yield graph, project_root
+    finally:
+        graph.close()
+
+
+class TestReferences:
+    """``references`` counts references TO a symbol, split by production vs test."""
+
+    def test_splits_production_and_test_references(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """``widget`` is referenced from production (consumer) AND from a test.
+
+        Independent oracle, read off the source: ``widget`` is referenced by two
+        DISTINCT production sources — the consumer MODULE (``import widget``) and the
+        function ``demo.consumer.run`` (``widget(value)`` call) — and two DISTINCT
+        test sources — the test MODULE (``import widget``) and ``test_widget`` (the
+        call). The crux is the production/test SPLIT and that production is non-zero
+        (alive); the count is the distinct referencing-source count per origin.
+        """
+        graph, _root = reflib_graph
+        summary = graph.references(FQN_WIDGET)
+        assert isinstance(summary, ReferenceSummary)
+        assert summary.qualified_name == FQN_WIDGET
+        assert summary.production_references == 2
+        assert summary.test_references == 2
+        # The load-bearing invariant: production is non-zero (widget is alive) and
+        # the two origins are split, never conflated.
+        assert summary.production_references > 0
+        assert summary.test_references > 0
+
+    def test_referencing_nodes_are_distinct(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """The ``referencing`` list holds the distinct referencing nodes (deduped).
+
+        Independent oracle: ``widget``'s referrers are ``demo.consumer.run`` and the
+        test's ``test_widget``; the production caller node must appear, exactly once.
+        """
+        graph, _root = reflib_graph
+        summary = graph.references(FQN_WIDGET)
+        referencing_names = [node.qualified_name for node in summary.referencing]
+        assert FQN_RUN in referencing_names
+        # No duplicate referencing node for the same source.
+        assert len(referencing_names) == len(set(referencing_names))
+
+    def test_unreferenced_symbol_is_empty_not_error(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """A symbol nobody references yields a zero summary, not an error.
+
+        ``orphan`` is called by nobody, so both counts are 0 and ``referencing`` is
+        empty — a valid, non-error result.
+        """
+        graph, _root = reflib_graph
+        summary = graph.references(FQN_ORPHAN)
+        assert summary.production_references == 0
+        assert summary.test_references == 0
+        assert summary.referencing == []
+
+    def test_self_reference_is_excluded(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """A self-recursive function's only caller is itself — that is NOT a reference.
+
+        ``countdown`` calls only itself; the self-edge (src_qname == target) is
+        excluded, so both reference counts are 0.
+        """
+        graph, _root = reflib_graph
+        summary = graph.references(FQN_COUNTDOWN)
+        assert summary.production_references == 0
+        assert summary.test_references == 0
+
+    def test_defines_edge_is_not_a_reference(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """The structural ``defines`` parent edge does NOT count as a reference.
+
+        ``orphan`` IS defined by its module (a ``defines`` edge points at it), yet it
+        has zero references — proving ``defines`` is excluded (counting it would make
+        nothing ever dead).
+        """
+        graph, _root = reflib_graph
+        # Sanity: a defines edge to orphan exists in the store.
+        assert FQN_ORPHAN in _refs(graph, EDGE_DEFINES, REFLIB_MODULE)
+        # Yet references() reports zero — defines is not counted.
+        assert graph.references(FQN_ORPHAN).production_references == 0
+        assert graph.references(FQN_ORPHAN).test_references == 0
+
+
+class TestDeadCode:
+    """``dead_code`` is the orphan sweep: nodes with zero PRODUCTION references."""
+
+    def test_reports_test_only_symbol_with_reason(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """A function called ONLY from a test is DEAD, reason ``only_referenced_by_tests``.
+
+        Independent oracle, read off the source: ``lonely`` is referenced ONLY from
+        the test file — by two distinct test sources (the test MODULE's ``import
+        lonely`` and ``test_lonely``'s call) and ZERO production sources. So it is
+        dead with reason ``only_referenced_by_tests`` and a non-zero test count.
+        """
+        graph, _root = reflib_graph
+        dead = graph.dead_code([SAMPLE_TIER])
+        by_name = {node.qualified_name: node for node in dead}
+        assert FQN_LONELY in by_name
+        lonely = by_name[FQN_LONELY]
+        assert isinstance(lonely, DeadCodeNode)
+        assert lonely.reason == REASON_ONLY_REFERENCED_BY_TESTS
+        assert lonely.test_references == 2  # the test module import + the test call
+
+    def test_orphan_symbol_has_no_references_reason(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """A function called by nobody is DEAD with reason ``no_references``."""
+        graph, _root = reflib_graph
+        dead = graph.dead_code([SAMPLE_TIER])
+        by_name = {node.qualified_name: node for node in dead}
+        assert FQN_ORPHAN in by_name
+        assert by_name[FQN_ORPHAN].reason == REASON_NO_REFERENCES
+        assert by_name[FQN_ORPHAN].test_references == 0
+
+    def test_excludes_symbol_with_production_caller(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """A function with a real production caller is NOT dead.
+
+        ``widget`` is called by ``demo.consumer.run`` (production), so despite also
+        being test-referenced it has production_references == 1 → alive → absent.
+        """
+        graph, _root = reflib_graph
+        dead_names = {node.qualified_name for node in graph.dead_code([SAMPLE_TIER])}
+        assert FQN_WIDGET not in dead_names
+
+    def test_self_recursive_function_is_dead(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """A recursive function with no other caller is DEAD (self-edge excluded).
+
+        ``countdown`` only calls itself; the self-edge does not count, so it has zero
+        production references → dead with reason ``no_references``.
+        """
+        graph, _root = reflib_graph
+        by_name = {node.qualified_name: node for node in graph.dead_code([SAMPLE_TIER])}
+        assert FQN_COUNTDOWN in by_name
+        assert by_name[FQN_COUNTDOWN].reason == REASON_NO_REFERENCES
+
+    def test_production_caller_keeps_run_alive(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """The production caller node ``run`` itself: nobody calls it, so it IS dead.
+
+        This is a deliberate cross-check that the sweep is symmetric — ``run`` is a
+        top-level production function that nothing references, so it is reported.
+        """
+        graph, _root = reflib_graph
+        dead_names = {node.qualified_name for node in graph.dead_code([SAMPLE_TIER])}
+        assert FQN_RUN in dead_names
+
+    def test_conservative_bare_reference_keeps_symbol_alive(self, tmp_path: Path) -> None:
+        """An un-inferable (bare, resolved=False) PRODUCTION reference keeps a symbol alive.
+
+        Independent oracle: a production module references a name astroid cannot
+        infer to an FQN, so the reference is stored as the bare name
+        (``resolved=False``). The conservative fallback must still count: the
+        referenced symbol is NOT dead. Here a production module calls a helper via a
+        dynamically-built alias astroid cannot follow, falling back to the bare name
+        matching the target's last segment.
+        """
+        project_root = tmp_path / "project"
+        (project_root / "pkg").mkdir(parents=True)
+        (project_root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        # The target lives here; its bare name is ``mystery_target``.
+        (project_root / "pkg" / "target.py").write_text(
+            textwrap.dedent(
+                '''\
+                """The target of an un-inferable production reference."""
+
+
+                def mystery_target(value):
+                    return value
+                '''
+            ),
+            encoding="utf-8",
+        )
+        # A PRODUCTION caller that references the bare name without an inferable
+        # import binding, so astroid falls back to the bare written name.
+        caller_source = textwrap.dedent(
+            '''\
+            """A production caller whose reference astroid cannot infer."""
+
+
+            def use(obj):
+                return obj.mystery_target(1)  # bare attribute call, un-inferable
+            '''
+        )
+        (project_root / "pkg" / "caller.py").write_text(caller_source, encoding="utf-8")
+        graph = CodeGraph(
+            str(tmp_path / "graph.kuzu"),
+            tier_roots={SAMPLE_TIER: project_root},
+            project_roots=[project_root],
+        )
+        try:
+            graph.build_file_graph(
+                SAMPLE_TIER,
+                "pkg/target.py",
+                _chunk("pkg/target.py", (project_root / "pkg" / "target.py").read_text()),
+                module_name="pkg.target",
+            )
+            graph.build_file_graph(
+                SAMPLE_TIER,
+                "pkg/caller.py",
+                _chunk("pkg/caller.py", caller_source),
+                module_name="pkg.caller",
+            )
+            # The bare production reference must count: the target stays alive.
+            summary = graph.references("pkg.target.mystery_target")
+            assert summary.production_references >= 1, (
+                f"bare production reference must count; got {summary!r}"
+            )
+            dead_names = {node.qualified_name for node in graph.dead_code([SAMPLE_TIER])}
+            assert "pkg.target.mystery_target" not in dead_names
+        finally:
+            graph.close()
+
+    def test_excludes_test_nodes_by_default(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """A test node is not dead just because nothing calls it — excluded by default.
+
+        ``test_lonely`` / ``test_widget`` are unreferenced functions in a test file;
+        by default they must NOT be reported (a test isn't dead because nothing
+        calls it).
+        """
+        graph, _root = reflib_graph
+        dead_paths = {node.file_path for node in graph.dead_code([SAMPLE_TIER])}
+        assert REFTEST_PATH not in dead_paths
+
+    def test_includes_test_nodes_with_flag(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """With ``include_tests=True`` the unreferenced test functions ARE reported."""
+        graph, _root = reflib_graph
+        dead_paths = {
+            node.file_path for node in graph.dead_code([SAMPLE_TIER], include_tests=True)
+        }
+        assert REFTEST_PATH in dead_paths
+
+    def test_excludes_dunder_methods_by_default(self, tmp_path: Path) -> None:
+        """A dunder method (``__*__``) is excluded by default (protocol-invoked).
+
+        Independent oracle: ``__init__`` is never called by an explicit call edge, so
+        it always looks orphaned; by default it must not be reported, but a plain
+        unreferenced method in the same class must be.
+        """
+        project_root = tmp_path / "project"
+        (project_root / "pkg").mkdir(parents=True)
+        (project_root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        source = textwrap.dedent(
+            '''\
+            """A class with a dunder and a plain unreferenced method."""
+
+
+            class Thing:
+                def __init__(self):
+                    self.value = 0
+
+                def plain_unused(self):
+                    return self.value
+            '''
+        )
+        (project_root / "pkg" / "thing.py").write_text(source, encoding="utf-8")
+        graph = CodeGraph(
+            str(tmp_path / "graph.kuzu"),
+            tier_roots={SAMPLE_TIER: project_root},
+            project_roots=[project_root],
+        )
+        try:
+            graph.build_file_graph(
+                SAMPLE_TIER, "pkg/thing.py", _chunk("pkg/thing.py", source),
+                module_name="pkg.thing",
+            )
+            default_names = {node.qualified_name for node in graph.dead_code([SAMPLE_TIER])}
+            assert "pkg.thing.Thing.__init__" not in default_names
+            # The plain unreferenced method IS reported by default (sanity).
+            assert "pkg.thing.Thing.plain_unused" in default_names
+            # With the flag, the dunder appears too.
+            with_flag = {
+                node.qualified_name
+                for node in graph.dead_code([SAMPLE_TIER], include_dunders=True)
+            }
+            assert "pkg.thing.Thing.__init__" in with_flag
+        finally:
+            graph.close()
+
+    def test_excludes_entry_modules_by_default(self, tmp_path: Path) -> None:
+        """``__main__`` and ``__init__`` package modules are excluded by default.
+
+        Independent oracle: a ``__main__`` module and an ``__init__`` package module
+        are never imported by dotted name, so they always look orphaned. By default
+        neither module node is reported; with ``include_entrypoints=True`` both are.
+        """
+        project_root = tmp_path / "project"
+        (project_root / "pkg").mkdir(parents=True)
+        (project_root / "pkg" / "__init__.py").write_text(
+            '"""The package init."""\n', encoding="utf-8"
+        )
+        (project_root / "pkg" / "__main__.py").write_text(
+            '"""The CLI entrypoint."""\n\n\ndef main():\n    return 0\n', encoding="utf-8"
+        )
+        graph = CodeGraph(
+            str(tmp_path / "graph.kuzu"),
+            tier_roots={SAMPLE_TIER: project_root},
+            project_roots=[project_root],
+        )
+        try:
+            graph.build_file_graph(
+                SAMPLE_TIER, "pkg/__init__.py",
+                _chunk("pkg/__init__.py", (project_root / "pkg" / "__init__.py").read_text()),
+                module_name="pkg",
+            )
+            graph.build_file_graph(
+                SAMPLE_TIER, "pkg/__main__.py",
+                _chunk("pkg/__main__.py", (project_root / "pkg" / "__main__.py").read_text()),
+                module_name="pkg.__main__",
+            )
+            default_modules = {
+                node.qualified_name
+                for node in graph.dead_code([SAMPLE_TIER])
+                if node.kind == KIND_MODULE
+            }
+            assert "pkg" not in default_modules  # the __init__ package module
+            assert "pkg.__main__" not in default_modules  # the __main__ module
+            with_flag = {
+                node.qualified_name
+                for node in graph.dead_code([SAMPLE_TIER], include_entrypoints=True)
+                if node.kind == KIND_MODULE
+            }
+            assert "pkg" in with_flag
+            assert "pkg.__main__" in with_flag
+        finally:
+            graph.close()
+
+    def test_scoped_to_passed_tiers(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """``dead_code`` only considers nodes in the passed tiers.
+
+        The fixture built everything under ``SAMPLE_TIER`` only. Asking for
+        ``OTHER_TIER`` (empty) yields no dead nodes; asking for ``SAMPLE_TIER``
+        yields the known dead set.
+        """
+        graph, _root = reflib_graph
+        assert graph.dead_code([OTHER_TIER]) == []
+        sample_names = {node.qualified_name for node in graph.dead_code([SAMPLE_TIER])}
+        assert FQN_ORPHAN in sample_names
+
+    def test_empty_tiers_returns_empty(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """An empty tiers list yields an empty result, not a crash."""
+        graph, _root = reflib_graph
+        assert graph.dead_code([]) == []
+
+    def test_respects_max_results_cap(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """The result is capped at ``max_results`` — the sweep cannot blow up.
+
+        The fixture has several dead nodes (orphan, lonely, countdown, run, …); a
+        cap of 1 must clamp the list to exactly one entry.
+        """
+        graph, _root = reflib_graph
+        assert len(graph.dead_code([SAMPLE_TIER], max_results=1)) == 1
+
+    def test_lifecycle_flip_on_rebuild(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """Removing the last production caller flips a symbol to dead; re-adding revives.
+
+        ``widget`` starts alive (production caller ``run``). Rebuild ``consumer.py``
+        to drop the call → ``widget`` becomes dead. Rebuild it back → ``widget`` is
+        alive again. The dead set must track the per-file rebuild both ways.
+        """
+        graph, project_root = reflib_graph
+        # Baseline: widget is alive (has a production caller).
+        assert FQN_WIDGET not in {n.qualified_name for n in graph.dead_code([SAMPLE_TIER])}
+
+        # Remove the production call by rebuilding consumer.py without it.
+        no_call_source = textwrap.dedent(
+            '''\
+            """The consumer no longer calls widget."""
+            from __future__ import annotations
+
+
+            def run(value):
+                """No longer references the library."""
+                return value
+            '''
+        )
+        (project_root / "demo" / "consumer.py").write_text(no_call_source, encoding="utf-8")
+        graph.build_file_graph(
+            SAMPLE_TIER, REFCONSUMER_PATH, _chunk(REFCONSUMER_PATH, no_call_source),
+            module_name=REFCONSUMER_MODULE,
+        )
+        # widget now has zero production references → dead, test-only.
+        after_removal = {n.qualified_name: n for n in graph.dead_code([SAMPLE_TIER])}
+        assert FQN_WIDGET in after_removal
+        assert after_removal[FQN_WIDGET].reason == REASON_ONLY_REFERENCED_BY_TESTS
+
+        # Re-add the production caller → widget alive again.
+        (project_root / "demo" / "consumer.py").write_text(REFCONSUMER_SOURCE, encoding="utf-8")
+        graph.build_file_graph(
+            SAMPLE_TIER, REFCONSUMER_PATH, _chunk(REFCONSUMER_PATH, REFCONSUMER_SOURCE),
+            module_name=REFCONSUMER_MODULE,
+        )
+        assert FQN_WIDGET not in {n.qualified_name for n in graph.dead_code([SAMPLE_TIER])}

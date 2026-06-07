@@ -141,6 +141,30 @@ _TESTS_DIR_NAME = "tests"
 # ``test_boot`` tests ``boot`` (the ``test_x`` ↔ ``x`` heuristic).
 _TEST_NAME_PREFIX = "test_"
 
+# The reference kinds that count as a TRUE reference TO a node (the structural
+# ``defines`` parent edge is DELIBERATELY excluded — counting it would make nothing
+# ever dead, since every node is ``defines``-pointed-at by its structural parent).
+_REFERENCE_KINDS: tuple[str, ...] = (EDGE_IMPORTS, EDGE_CALLS, EDGE_INHERITS)
+
+# Dead-code sweep bounds. The default caps a single sweep at a sane, reviewable
+# size; the hard ceiling guards against a pathological request (mirrors the
+# ``blast_radius`` max-results discipline).
+_DEFAULT_DEAD_CODE_MAX_RESULTS = 100
+_MAX_DEAD_CODE_MAX_RESULTS = 1000
+
+# The two reasons a node is reported dead, by its test-reference profile.
+REASON_NO_REFERENCES = "no_references"
+REASON_ONLY_REFERENCED_BY_TESTS = "only_referenced_by_tests"
+
+# A ``method`` whose bare name matches this glob is a dunder (``__init__`` /
+# ``__repr__`` / …): runtime/protocol-invoked, never an explicit call edge, so it
+# always looks orphaned. Excluded from the dead-code sweep unless asked for.
+_DUNDER_GLOB = "__*__"
+
+# The bare module name of a ``__main__`` entry module (a CLI entrypoint, run as a
+# script, never imported by dotted name → always looks orphaned).
+_MAIN_MODULE_NAME = "__main__"
+
 # Kùzu table names. CodeNode holds graph nodes; Ref holds reference records (the
 # edges-as-records design — see the module docstring for why Kùzu RELs are unfit).
 _NODE_TABLE = "CodeNode"
@@ -205,6 +229,62 @@ class GraphNode(BaseModel):
     file_path: str
     chunk_id: str | None
     tier: str
+
+
+class ReferenceSummary(BaseModel):
+    """The reference profile of one symbol, split by reference ORIGIN.
+
+    A reference from a TEST file does NOT count as a true reference, so the counts
+    are split by whether the referencing file (``Ref.file_path``) is a test path. A
+    symbol whose only consumers are its tests is DEAD (``production_references ==
+    0``).
+
+    Attributes:
+        qualified_name: The symbol the references point at.
+        production_references: Distinct references TO the symbol from NON-test
+            files (the count that decides liveness).
+        test_references: Distinct references TO the symbol from TEST files.
+        referencing: The distinct nodes that reference the symbol (every node whose
+            ``qualified_name`` is a referencing ``Ref.src_qname``), deduped.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    qualified_name: str
+    production_references: int
+    test_references: int
+    referencing: list[GraphNode]
+
+
+class DeadCodeNode(BaseModel):
+    """A node reported by the dead-code sweep: zero PRODUCTION references.
+
+    Carries the full :class:`GraphNode` shape plus the test-reference count and the
+    labelled reason it is considered dead.
+
+    Attributes:
+        id: The surrogate ``SERIAL`` row id (as :class:`GraphNode`).
+        kind: One of :data:`KIND_MODULE` / :data:`KIND_CLASS` /
+            :data:`KIND_METHOD` / :data:`KIND_FUNCTION`.
+        qualified_name: The dotted name of the dead symbol.
+        file_path: The tier-relative POSIX path the node was derived from.
+        chunk_id: The originating chunk's ``identity`` (``None`` for the module).
+        tier: The source tier the node belongs to.
+        test_references: The number of references TO the node from TEST files.
+        reason: :data:`REASON_ONLY_REFERENCED_BY_TESTS` when
+            ``test_references > 0``, else :data:`REASON_NO_REFERENCES`.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: int
+    kind: str
+    qualified_name: str
+    file_path: str
+    chunk_id: str | None
+    tier: str
+    test_references: int
+    reason: str
 
 
 class _NodeSpec(BaseModel):
@@ -982,3 +1062,259 @@ class CodeGraph:
         if _TESTS_DIR_NAME in path.parts:
             return True
         return any(fnmatch(path.name, glob) for glob in TEST_PATH_GLOBS)
+
+    # -- reference counting / dead-code detection --------------------------
+
+    def references(self, name: str) -> ReferenceSummary:
+        """Return the reference profile of the symbol ``name``, split by origin.
+
+        A reference TO ``name`` is a ``Ref`` row whose ``kind`` is a true reference
+        kind (:data:`_REFERENCE_KINDS` — ``imports`` / ``calls`` / ``inherits``, NOT
+        the structural ``defines`` parent edge), whose ``dst`` matches ``name`` by
+        exact qualified name OR by bare last segment (the conservative
+        unresolved/bare seam, mirroring :meth:`what_imports`), and whose
+        ``src_qname`` is not ``name`` itself (self-reference — e.g. recursion — is
+        not external use).
+
+        The matching references are split by ORIGIN: a reference from a TEST file
+        (``Ref.file_path`` is a test path) counts toward ``test_references``, every
+        other matching reference toward ``production_references``. A symbol with zero
+        references is a valid, non-error result (all-zero summary).
+
+        Args:
+            name: The qualified name of the symbol to profile.
+
+        Returns:
+            The :class:`ReferenceSummary` for ``name`` (counts split by origin plus
+            the distinct referencing nodes).
+        """
+        production_sources, test_sources = self._reference_sources(name)
+        referencing: list[GraphNode] = []
+        seen_node_ids: set[int] = set()
+        for source_name in production_sources | test_sources:
+            for node in self._nodes_by_qualified_name(source_name):
+                if node.id not in seen_node_ids:
+                    seen_node_ids.add(node.id)
+                    referencing.append(node)
+        return ReferenceSummary(
+            qualified_name=name,
+            production_references=len(production_sources),
+            test_references=len(test_sources),
+            referencing=referencing,
+        )
+
+    def _reference_sources(self, name: str) -> tuple[set[str], set[str]]:
+        """The distinct ``src_qname`` sets that reference ``name``, split by origin.
+
+        Returns ``(production_sources, test_sources)`` — the distinct referring
+        qualified names whose reference rows originate in a production file vs a test
+        file. Applies the true-reference-kind filter, the FQN-or-bare ``dst`` match,
+        and the self-reference exclusion. Splitting on the DISTINCT source (not the
+        raw row) means several call sites from the same caller count once.
+        """
+        bare = self._bare_name(name)
+        result = self._execute(
+            f"""
+            MATCH (r:{_REF_TABLE})
+            WHERE r.kind IN $reference_kinds
+              AND (r.dst = $name OR r.dst = $bare)
+              AND r.src_qname <> $name
+            RETURN DISTINCT r.src_qname AS src_qname, r.file_path AS file_path
+            """,
+            {
+                "reference_kinds": list(_REFERENCE_KINDS),
+                "name": name,
+                "bare": bare,
+            },
+        )
+        production_sources: set[str] = set()
+        test_sources: set[str] = set()
+        columns = result.get_column_names()
+        while result.has_next():
+            row = dict(zip(columns, self._row_values(result), strict=True))
+            source_name = str(row["src_qname"])
+            if self._is_test_path(str(row["file_path"])):
+                test_sources.add(source_name)
+            else:
+                production_sources.add(source_name)
+        return production_sources, test_sources
+
+    def dead_code(
+        self,
+        tiers: Sequence[str],
+        *,
+        include_tests: bool = False,
+        include_dunders: bool = False,
+        include_entrypoints: bool = False,
+        max_results: int = _DEFAULT_DEAD_CODE_MAX_RESULTS,
+    ) -> list[DeadCodeNode]:
+        """Return the dead/orphaned nodes in ``tiers`` — zero PRODUCTION references.
+
+        A node is DEAD ⇔ it has zero production references (regardless of how many
+        test references it has — a symbol whose only consumers are its tests is
+        dead). Each kept node becomes a :class:`DeadCodeNode` whose ``reason`` is
+        :data:`REASON_ONLY_REFERENCED_BY_TESTS` when it has test references, else
+        :data:`REASON_NO_REFERENCES`.
+
+        Candidate nodes are the ``CodeNode`` rows whose ``tier`` is in ``tiers``
+        (the caller passes the project's LIVE tiers). The following are excluded by
+        default, each re-includable via its flag, to suppress known non-dead false
+        positives:
+
+        * ``include_tests=False`` — exclude nodes whose OWN ``file_path`` is a test
+          path (a test isn't dead because nothing calls it).
+        * ``include_dunders=False`` — exclude ``method`` nodes whose bare name is a
+          dunder (``__*__``): runtime/protocol-invoked, never an explicit call edge.
+        * ``include_entrypoints=False`` — exclude ``module`` nodes that are package
+          / entry modules (a ``__main__`` module or an ``__init__`` package module),
+          which are not imported by dotted name and so always look orphaned.
+
+        Args:
+            tiers: The tiers whose nodes are swept (empty ⇒ empty result).
+            include_tests: Keep test-path nodes when ``True``.
+            include_dunders: Keep dunder methods when ``True``.
+            include_entrypoints: Keep package / entry modules when ``True``.
+            max_results: The hard cap on the number of dead nodes returned (clamped
+                to :data:`_MAX_DEAD_CODE_MAX_RESULTS`).
+
+        Returns:
+            Up to ``max_results`` :class:`DeadCodeNode` entries.
+        """
+        if not tiers or max_results <= 0:
+            return []
+        cap = min(max_results, _MAX_DEAD_CODE_MAX_RESULTS)
+
+        # One bulk pass over the reference rows builds a name → (prod, test) source
+        # index, so the per-candidate liveness check is an in-memory lookup rather
+        # than a query per node (avoids the N+1 the per-symbol ``references`` path
+        # would incur over a whole-tier sweep).
+        reference_index = self._reference_source_index()
+
+        dead: list[DeadCodeNode] = []
+        for node in self._candidate_nodes(tiers):
+            if self._is_excluded_candidate(
+                node,
+                include_tests=include_tests,
+                include_dunders=include_dunders,
+                include_entrypoints=include_entrypoints,
+            ):
+                continue
+            production_sources, test_sources = self._sources_for(node.qualified_name, reference_index)
+            if production_sources:
+                continue  # has a production reference → alive
+            reason = (
+                REASON_ONLY_REFERENCED_BY_TESTS if test_sources else REASON_NO_REFERENCES
+            )
+            dead.append(self._dead_code_node(node, len(test_sources), reason))
+            if len(dead) >= cap:
+                break
+        return dead
+
+    def _reference_source_index(self) -> dict[str, tuple[set[str], set[str]]]:
+        """Index every true reference's ``dst`` → its (production, test) source sets.
+
+        One pass over the ``Ref`` rows of the true reference kinds. A row contributes
+        its ``src_qname`` to the bucket keyed by its ``dst`` (a resolved FQN or a bare
+        fallback name), split by whether the row's ``file_path`` is a test path. A
+        per-symbol liveness check then looks the symbol up by BOTH its FQN and its
+        bare last segment (the same FQN-or-bare seam :meth:`_reference_sources` uses),
+        with the self-reference exclusion applied at lookup time.
+
+        Returns:
+            ``dst`` → ``(production_sources, test_sources)`` distinct ``src_qname``
+            sets.
+        """
+        result = self._execute(
+            f"""
+            MATCH (r:{_REF_TABLE}) WHERE r.kind IN $reference_kinds
+            RETURN DISTINCT r.dst AS dst, r.src_qname AS src_qname,
+                   r.file_path AS file_path
+            """,
+            {"reference_kinds": list(_REFERENCE_KINDS)},
+        )
+        index: dict[str, tuple[set[str], set[str]]] = {}
+        columns = result.get_column_names()
+        while result.has_next():
+            row = dict(zip(columns, self._row_values(result), strict=True))
+            dst = str(row["dst"])
+            production_sources, test_sources = index.setdefault(dst, (set(), set()))
+            target = test_sources if self._is_test_path(str(row["file_path"])) else production_sources
+            target.add(str(row["src_qname"]))
+        return index
+
+    @classmethod
+    def _sources_for(
+        cls, name: str, index: Mapping[str, tuple[set[str], set[str]]]
+    ) -> tuple[set[str], set[str]]:
+        """The (production, test) source sets that reference ``name`` from the index.
+
+        Matches the symbol by its exact qualified name AND its bare last segment (the
+        FQN-or-bare seam), unions the buckets, and drops the self-reference
+        (``src_qname == name``) — exactly the semantics of the per-symbol query, but
+        served from the pre-built index.
+        """
+        production_sources: set[str] = set()
+        test_sources: set[str] = set()
+        for key in (name, cls._bare_name(name)):
+            bucket = index.get(key)
+            if bucket is not None:
+                production_sources |= bucket[0]
+                test_sources |= bucket[1]
+        production_sources.discard(name)
+        test_sources.discard(name)
+        return production_sources, test_sources
+
+    def _candidate_nodes(self, tiers: Sequence[str]) -> list[GraphNode]:
+        """The ``CodeNode`` rows whose ``tier`` is in ``tiers`` (the sweep candidates)."""
+        return self._nodes_matching("n.tier IN $tiers", {"tiers": list(tiers)})
+
+    def _is_excluded_candidate(
+        self,
+        node: GraphNode,
+        *,
+        include_tests: bool,
+        include_dunders: bool,
+        include_entrypoints: bool,
+    ) -> bool:
+        """Whether a candidate node is excluded from the sweep by a default rule."""
+        if not include_tests and self._is_test_path(node.file_path):
+            return True
+        if (
+            not include_dunders
+            and node.kind == KIND_METHOD
+            and fnmatch(self._bare_name(node.qualified_name), _DUNDER_GLOB)
+        ):
+            return True
+        if (
+            not include_entrypoints
+            and node.kind == KIND_MODULE
+            and self._is_entry_module(node)
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _is_entry_module(node: GraphNode) -> bool:
+        """Whether a ``module`` node is a package / entry module (always orphan-looking).
+
+        ``True`` for a ``__main__`` module (a CLI entrypoint run as a script) and an
+        ``__init__`` package module (collapsed to its package qualified name) — both
+        identified from the node's ``file_path`` stem, which survives the qualified
+        name collapse that erases the ``__init__`` segment.
+        """
+        stem = PurePosixPath(node.file_path).stem
+        return stem in (_MAIN_MODULE_NAME, _INIT_STEM)
+
+    @staticmethod
+    def _dead_code_node(node: GraphNode, test_references: int, reason: str) -> DeadCodeNode:
+        """Build a :class:`DeadCodeNode` from a node plus its test-reference profile."""
+        return DeadCodeNode(
+            id=node.id,
+            kind=node.kind,
+            qualified_name=node.qualified_name,
+            file_path=node.file_path,
+            chunk_id=node.chunk_id,
+            tier=node.tier,
+            test_references=test_references,
+            reason=reason,
+        )
