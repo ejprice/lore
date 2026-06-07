@@ -1541,3 +1541,286 @@ class TestDeadCode:
             module_name=REFCONSUMER_MODULE,
         )
         assert FQN_WIDGET not in {n.qualified_name for n in graph.dead_code([SAMPLE_TIER])}
+
+
+# ===========================================================================
+# Module-node dead-code roll-up (the v0.4 dogfooding bug).
+#
+# References are SYMBOL-level: ``from pkg.helpers import build`` records an edge to
+# ``pkg.helpers.build``, NOT to the bare module ``pkg.helpers``. So the old rule —
+# "a MODULE is dead unless the bare module name is referenced" — wrongly flagged a
+# heavily-used module dead. The corrected rule: a MODULE node is dead only if
+# NEITHER it NOR ANY symbol it defines (a node whose qualified_name starts with
+# ``"<module>."``) has a production reference.
+#
+# These fixtures author a real on-disk package so astroid resolves the symbol-level
+# imports/calls in-project (the same machinery the resolved-edge tests use). Every
+# expected FQN, reason, and count is an INDEPENDENT oracle read straight off the
+# authored source below — never re-derived from the engine.
+# ===========================================================================
+
+# ``pkg.helpers`` — a USED module: its function ``build`` is imported and called by
+# the production module ``pkg.app``. The MODULE ``pkg.helpers`` is NEVER referenced
+# by its bare name; only its symbol is. Under the bug this module is wrongly dead.
+MODLIB_HELPERS_SOURCE: str = textwrap.dedent(
+    '''\
+    """A helper module whose SYMBOL (not its bare module name) is used."""
+    from __future__ import annotations
+
+
+    def build(value):
+        """Imported and called by the production app — keeps this module alive."""
+        return value + 1
+    '''
+)
+
+# ``pkg.orphan_mod`` — a FULLY orphaned module: neither it nor its single symbol
+# ``never_used`` is referenced by anyone (production OR test). Must STILL be dead.
+MODLIB_ORPHAN_SOURCE: str = textwrap.dedent(
+    '''\
+    """A module nobody references — neither it nor its symbol is used anywhere."""
+    from __future__ import annotations
+
+
+    def never_used(value):
+        """Called by nobody, anywhere."""
+        return value * 2
+    '''
+)
+
+# ``pkg.probe_mod`` — a module whose ONLY references (to its symbol ``probe``)
+# come from the test file. Must be dead with reason ``only_referenced_by_tests``.
+# (The module name deliberately does NOT match the ``test_*.py`` glob — naming it
+# ``test_*`` would make it a test-PATH node, excluded for a different reason and
+# masking the test-only-reference case under contract here.)
+MODLIB_TEST_ONLY_SOURCE: str = textwrap.dedent(
+    '''\
+    """A module exercised ONLY by the test suite — dead in production."""
+    from __future__ import annotations
+
+
+    def probe(value):
+        """Imported and called ONLY from the test module."""
+        return value - 1
+    '''
+)
+
+# ``pkg.a`` — the prefix-scoping victim: its symbol is NOT referenced. The only
+# nearby reference is to a DIFFERENT module ``pkg.ab``'s symbol. A trailing-dot
+# anchor must keep ``pkg.a`` dead (``pkg.a.`` does not prefix-match ``pkg.ab.X``).
+MODLIB_A_SOURCE: str = textwrap.dedent(
+    '''\
+    """Module pkg.a — its symbol is unreferenced; pkg.ab must not save it."""
+    from __future__ import annotations
+
+
+    def a_symbol(value):
+        """Referenced by nobody — pkg.a must stay dead."""
+        return value
+    '''
+)
+
+# ``pkg.ab`` — a sibling module whose symbol ``ab_symbol`` IS production-referenced
+# (by ``pkg.app``). Its liveness must NOT leak to ``pkg.a`` via a sloppy prefix.
+MODLIB_AB_SOURCE: str = textwrap.dedent(
+    '''\
+    """Module pkg.ab — its symbol IS used; pkg.ab is alive, pkg.a is not."""
+    from __future__ import annotations
+
+
+    def ab_symbol(value):
+        """Imported and called by the production app — keeps pkg.ab alive."""
+        return value + 10
+    '''
+)
+
+# ``pkg.app`` — the production consumer: imports + calls ``pkg.helpers.build`` and
+# ``pkg.ab.ab_symbol``. These are the only PRODUCTION references in the package.
+MODLIB_APP_SOURCE: str = textwrap.dedent(
+    '''\
+    """The production app — the source of the package's production references."""
+    from __future__ import annotations
+
+    from pkg.helpers import build
+    from pkg.ab import ab_symbol
+
+
+    def run(value):
+        """Calls the two used symbols (helpers.build, ab.ab_symbol)."""
+        return build(value) + ab_symbol(value)
+    '''
+)
+
+# ``tests/test_probe.py`` — the TEST consumer: imports + calls
+# ``pkg.probe_mod.probe`` and ONLY that. A test-origin reference, so it must not
+# count toward production but DOES count toward the module's test references.
+MODLIB_TEST_SOURCE: str = textwrap.dedent(
+    '''\
+    """Tests that exercise probe only (a test-origin reference)."""
+    from __future__ import annotations
+
+    from pkg.probe_mod import probe
+
+
+    def test_probe():
+        """Exercises probe — the only reference to pkg.probe_mod."""
+        return probe(1)
+    '''
+)
+
+# Tier-relative POSIX paths and importable module names (the indexer's view).
+MODLIB_HELPERS_PATH: str = "pkg/helpers.py"
+MODLIB_ORPHAN_PATH: str = "pkg/orphan_mod.py"
+MODLIB_TEST_ONLY_PATH: str = "pkg/probe_mod.py"
+MODLIB_A_PATH: str = "pkg/a.py"
+MODLIB_AB_PATH: str = "pkg/ab.py"
+MODLIB_APP_PATH: str = "pkg/app.py"
+MODLIB_TEST_PATH: str = "tests/test_probe.py"
+
+MODLIB_HELPERS_MODULE: str = "pkg.helpers"
+MODLIB_ORPHAN_MODULE: str = "pkg.orphan_mod"
+MODLIB_TEST_ONLY_MODULE: str = "pkg.probe_mod"
+MODLIB_A_MODULE: str = "pkg.a"
+MODLIB_AB_MODULE: str = "pkg.ab"
+MODLIB_APP_MODULE: str = "pkg.app"
+MODLIB_TEST_MODULE: str = "tests.test_probe"
+
+
+def _write_modlib_project(root: Path) -> None:
+    """Materialise the module-roll-up demo package on disk for astroid resolution.
+
+    ``pkg/`` is a real package whose modules have the reference profiles the
+    module-deadness rule must distinguish: a symbol-used module (``helpers``), a
+    fully-orphaned module (``orphan_mod``), a test-only module (``probe_mod``),
+    and a prefix-scoping pair (``a`` unreferenced, ``ab`` symbol-used).
+    """
+    (root / "pkg").mkdir(parents=True, exist_ok=True)
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "helpers.py").write_text(MODLIB_HELPERS_SOURCE, encoding="utf-8")
+    (root / "pkg" / "orphan_mod.py").write_text(MODLIB_ORPHAN_SOURCE, encoding="utf-8")
+    (root / "pkg" / "probe_mod.py").write_text(MODLIB_TEST_ONLY_SOURCE, encoding="utf-8")
+    (root / "pkg" / "a.py").write_text(MODLIB_A_SOURCE, encoding="utf-8")
+    (root / "pkg" / "ab.py").write_text(MODLIB_AB_SOURCE, encoding="utf-8")
+    (root / "pkg" / "app.py").write_text(MODLIB_APP_SOURCE, encoding="utf-8")
+    (root / "tests").mkdir(parents=True, exist_ok=True)
+    (root / "tests" / "test_probe.py").write_text(MODLIB_TEST_SOURCE, encoding="utf-8")
+
+
+@pytest.fixture()
+def modlib_graph(tmp_path):  # type: ignore[no-untyped-def]
+    """A resolution-enabled CodeGraph over the module-roll-up demo package.
+
+    Yields ``(graph, project_root)`` with all modules built through the REAL
+    chunker in the indexer's order, so the symbol-level reference profile is fully
+    populated and the module roll-up can be exercised end-to-end.
+    """
+    project_root = tmp_path / "project"
+    _write_modlib_project(project_root)
+    graph = CodeGraph(
+        str(tmp_path / "graph.kuzu"),
+        tier_roots={SAMPLE_TIER: project_root},
+        project_roots=[project_root],
+    )
+    for path, source, module in (
+        (MODLIB_HELPERS_PATH, MODLIB_HELPERS_SOURCE, MODLIB_HELPERS_MODULE),
+        (MODLIB_ORPHAN_PATH, MODLIB_ORPHAN_SOURCE, MODLIB_ORPHAN_MODULE),
+        (MODLIB_TEST_ONLY_PATH, MODLIB_TEST_ONLY_SOURCE, MODLIB_TEST_ONLY_MODULE),
+        (MODLIB_A_PATH, MODLIB_A_SOURCE, MODLIB_A_MODULE),
+        (MODLIB_AB_PATH, MODLIB_AB_SOURCE, MODLIB_AB_MODULE),
+        (MODLIB_APP_PATH, MODLIB_APP_SOURCE, MODLIB_APP_MODULE),
+        (MODLIB_TEST_PATH, MODLIB_TEST_SOURCE, MODLIB_TEST_MODULE),
+    ):
+        graph.build_file_graph(SAMPLE_TIER, path, _chunk(path, source), module_name=module)
+    try:
+        yield graph, project_root
+    finally:
+        graph.close()
+
+
+class TestDeadCodeModuleRollUp:
+    """A MODULE is dead only if neither it nor any symbol it defines is used.
+
+    The v0.4 dogfooding bug: references are symbol-level, so a module whose symbol
+    is used but whose bare name is not was wrongly reported dead. These cases pin
+    the corrected roll-up: union production/test sources across the module's own
+    references AND every defined symbol's references.
+    """
+
+    def test_module_with_referenced_symbol_is_not_dead(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
+        """The regression: a module whose SYMBOL has a production ref is NOT dead.
+
+        Independent oracle: ``pkg.helpers`` is never referenced by its bare module
+        name, but its symbol ``pkg.helpers.build`` is imported AND called by the
+        production module ``pkg.app`` (two production sources for the symbol). So the
+        MODULE must be alive — absent from the dead set — even though
+        ``references('pkg.helpers')`` on the bare name is zero.
+        """
+        graph, _root = modlib_graph
+        # Ground truth: the bare module name has zero references (the bug's trap)…
+        assert graph.references(MODLIB_HELPERS_MODULE).production_references == 0
+        # …yet its symbol is production-referenced.
+        assert graph.references("pkg.helpers.build").production_references >= 1
+        dead_modules = {
+            node.qualified_name
+            for node in graph.dead_code([SAMPLE_TIER])
+            if node.kind == KIND_MODULE
+        }
+        assert MODLIB_HELPERS_MODULE not in dead_modules
+
+    def test_fully_orphaned_module_is_dead(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
+        """A module whose neither self nor symbols are referenced is STILL dead.
+
+        Independent oracle: ``pkg.orphan_mod`` and its only symbol
+        ``never_used`` are referenced by nobody (production or test), so the module
+        must be reported dead with reason ``no_references`` and zero test references.
+        """
+        graph, _root = modlib_graph
+        by_name = {
+            node.qualified_name: node
+            for node in graph.dead_code([SAMPLE_TIER])
+            if node.kind == KIND_MODULE
+        }
+        assert MODLIB_ORPHAN_MODULE in by_name
+        orphan = by_name[MODLIB_ORPHAN_MODULE]
+        assert isinstance(orphan, DeadCodeNode)
+        assert orphan.reason == REASON_NO_REFERENCES
+        assert orphan.test_references == 0
+
+    def test_module_referenced_only_by_tests(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
+        """A module whose symbols are referenced ONLY by tests is dead, test-only.
+
+        Independent oracle: ``pkg.probe_mod``'s symbol ``probe`` is imported AND
+        called from the test module ``tests.test_probe`` — two DISTINCT test sources
+        (the test MODULE's import + ``test_probe``'s call) and ZERO production
+        sources. So the module is dead with reason ``only_referenced_by_tests`` and
+        ``test_references == 2`` (the unioned test-source count).
+        """
+        graph, _root = modlib_graph
+        by_name = {
+            node.qualified_name: node
+            for node in graph.dead_code([SAMPLE_TIER])
+            if node.kind == KIND_MODULE
+        }
+        assert MODLIB_TEST_ONLY_MODULE in by_name
+        test_only = by_name[MODLIB_TEST_ONLY_MODULE]
+        assert test_only.reason == REASON_ONLY_REFERENCED_BY_TESTS
+        assert test_only.test_references == 2
+
+    def test_module_prefix_scoping_uses_trailing_dot_anchor(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
+        """``pkg.a`` is NOT kept alive by a reference to ``pkg.ab``'s symbol.
+
+        Independent oracle: ``pkg.a``'s symbol ``a_symbol`` is unreferenced; the only
+        nearby use is ``pkg.ab.ab_symbol`` (production-referenced). A trailing-dot
+        anchor (``pkg.a.``) must NOT prefix-match ``pkg.ab.ab_symbol``, so ``pkg.a``
+        stays dead while its sibling ``pkg.ab`` is alive.
+        """
+        graph, _root = modlib_graph
+        dead_modules = {
+            node.qualified_name
+            for node in graph.dead_code([SAMPLE_TIER])
+            if node.kind == KIND_MODULE
+        }
+        # The victim stays dead — the sibling's liveness must not leak across.
+        assert MODLIB_A_MODULE in dead_modules
+        # The sibling whose symbol IS used is alive (the prefix is real for it).
+        assert MODLIB_AB_MODULE not in dead_modules

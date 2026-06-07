@@ -1182,11 +1182,18 @@ class CodeGraph:
     ) -> list[DeadCodeNode]:
         """Return the dead/orphaned nodes in ``tiers`` — zero PRODUCTION references.
 
-        A node is DEAD ⇔ it has zero production references (regardless of how many
-        test references it has — a symbol whose only consumers are its tests is
-        dead). Each kept node becomes a :class:`DeadCodeNode` whose ``reason`` is
-        :data:`REASON_ONLY_REFERENCED_BY_TESTS` when it has test references, else
-        :data:`REASON_NO_REFERENCES`.
+        A SYMBOL node (class / method / function) is DEAD ⇔ it has zero production
+        references (regardless of how many test references it has — a symbol whose
+        only consumers are its tests is dead). A MODULE node is DEAD ⇔ NEITHER the
+        module ITSELF NOR ANY symbol it DEFINES has a production reference: because
+        references are symbol-level (``from pkg.helpers import build`` records an
+        edge to ``pkg.helpers.build``, not to the bare module ``pkg.helpers``), a
+        module's liveness is the UNION of its own and its defined symbols' sources
+        (a defined symbol is one whose qualified name is dotted-prefix scoped under
+        ``"<module>."``). Each kept node becomes a :class:`DeadCodeNode` whose
+        ``reason`` is :data:`REASON_ONLY_REFERENCED_BY_TESTS` when the deciding
+        (unioned, for a module) source set has any test reference, else
+        :data:`REASON_NO_REFERENCES`; ``test_references`` is that unioned test count.
 
         Candidate nodes are the ``CodeNode`` rows whose ``tier`` is in ``tiers``
         (the caller passes the project's LIVE tiers). The following are excluded by
@@ -1222,8 +1229,14 @@ class CodeGraph:
         # would incur over a whole-tier sweep).
         reference_index = self._reference_source_index()
 
+        # The swept nodes, fetched ONCE. A module's defined symbols are derived from
+        # this same in-memory list (a dotted-prefix scan) so the module roll-up adds
+        # no query and no per-symbol lookup beyond the index already built.
+        candidates = self._candidate_nodes(tiers)
+        symbol_qualified_names = [node.qualified_name for node in candidates]
+
         dead: list[DeadCodeNode] = []
-        for node in self._candidate_nodes(tiers):
+        for node in candidates:
             if self._is_excluded_candidate(
                 node,
                 include_tests=include_tests,
@@ -1231,7 +1244,9 @@ class CodeGraph:
                 include_entrypoints=include_entrypoints,
             ):
                 continue
-            production_sources, test_sources = self._sources_for(node.qualified_name, reference_index)
+            production_sources, test_sources = self._liveness_sources(
+                node, reference_index, symbol_qualified_names
+            )
             if production_sources:
                 continue  # has a production reference → alive
             reason = (
@@ -1241,6 +1256,51 @@ class CodeGraph:
             if len(dead) >= cap:
                 break
         return dead
+
+    def _liveness_sources(
+        self,
+        node: GraphNode,
+        reference_index: Mapping[str, tuple[set[str], set[str]]],
+        symbol_qualified_names: Sequence[str],
+    ) -> tuple[set[str], set[str]]:
+        """The (production, test) source sets deciding ``node``'s liveness.
+
+        For a non-module node this is simply the sources referencing the node itself
+        (the symbol-level rule — unchanged). For a MODULE node it is the UNION of
+        the module's OWN references AND the references of every symbol it DEFINES —
+        a node whose qualified name is dotted-prefix scoped under ``"<module>."``
+        (its classes / functions / methods). Symbol-level references made the bare
+        module name look orphaned even when the module is heavily used through its
+        symbols; the roll-up fixes that while still reporting a genuinely orphaned
+        module (no production source across the module or any of its symbols).
+
+        Args:
+            node: The candidate node whose liveness is being decided.
+            reference_index: The pre-built ``dst`` → (production, test) source index.
+            symbol_qualified_names: Every swept node's qualified name (the in-memory
+                pool the module's defined-symbol set is scanned from).
+
+        Returns:
+            ``(production_sources, test_sources)`` — the unioned distinct source
+            sets; the node is dead iff ``production_sources`` is empty.
+        """
+        production_sources, test_sources = self._sources_for(
+            node.qualified_name, reference_index
+        )
+        if node.kind != KIND_MODULE:
+            return production_sources, test_sources
+        # Roll up every symbol the module DEFINES — a trailing-dot anchor keeps the
+        # match module-scoped so ``pkg.a`` does not swallow a sibling ``pkg.ab``.
+        defined_prefix = f"{node.qualified_name}{_QUALIFIER_SEPARATOR}"
+        for symbol_qualified_name in symbol_qualified_names:
+            if not symbol_qualified_name.startswith(defined_prefix):
+                continue
+            symbol_production, symbol_test = self._sources_for(
+                symbol_qualified_name, reference_index
+            )
+            production_sources |= symbol_production
+            test_sources |= symbol_test
+        return production_sources, test_sources
 
     def _reference_source_index(self) -> dict[str, tuple[set[str], set[str]]]:
         """Index every true reference's ``dst`` → its (production, test) source sets.
