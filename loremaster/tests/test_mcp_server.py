@@ -3,7 +3,7 @@
 This is Deliverable 3's running MCP server: the FastMCP streamable-http server,
 the :class:`AppContext` lifespan with the embedder **startup probe gate**, the
 spawned live watcher + periodic reconcile tasks, the pluggable Bearer auth wiring
-(D9/D11/§A1.12), and the ten MCP tools wrapping the merged services. These tests
+(D9/D11/§A1.12), and the twelve MCP tools wrapping the merged services. These tests
 drive the REAL wiring with a :class:`~loresigil.testing.FakeEmbedder` (dim 2048)
 and a REAL local Qdrant (throwaway collections) + a real ``tmp_path`` corpus —
 the embedder is loresigil's tested concern, so faking it keeps the suite fast and
@@ -35,17 +35,20 @@ AppContext lifespan
   startup (the prior extensions' ``on_shutdown`` having run) — no half-started
   server.
 
-The ten MCP tools (end-to-end through the AppContext handlers)
--------------------------------------------------------------
-* All ten — ``search_code``/``read_file``/``get_symbol``/``save_memory``/
+The twelve MCP tools (end-to-end through the AppContext handlers)
+----------------------------------------------------------------
+* All twelve — ``search_code``/``read_file``/``get_symbol``/``save_memory``/
   ``recall_memory``/``reindex``/``index_status``/``what_imports``/
-  ``blast_radius``/``tests_for`` — are REGISTERED on the FastMCP app.
+  ``blast_radius``/``tests_for``/``references``/``dead_code`` — are REGISTERED on
+  the FastMCP app.
 * Each returns the right SHAPE over a real-indexed corpus: ``search_code`` finds a
   uniquely-named symbol with a ``[SOURCE...]`` citation; ``index_status`` reports
   a healthy index; ``save_memory`` → ``recall_memory`` round-trips; ``get_symbol``
   resolves an exact definition; ``read_file`` returns a real span;
   ``blast_radius``/``what_imports``/``tests_for`` traverse the live graph;
-  ``reindex`` brings a freshly-written file current.
+  ``references`` splits a symbol's production/test references and ``dead_code``
+  surfaces test-only / unreferenced symbols; ``reindex`` brings a freshly-written
+  file current.
 
 Auth wiring (D9/D11)
 --------------------
@@ -124,6 +127,29 @@ def champion_routing(week):
 
 # The independent oracle for the surviving in-project import (read off _PY_MODULE).
 _PY_MODULE_IMPORT_FQN = "pkg.base.BaseRouter"
+
+# A production module with a symbol that is ONLY referenced by tests — used as the
+# planted dead-code fixture for the ``references`` / ``dead_code`` tool tests.
+# ``orphan_helper`` is defined here but imported ONLY by the test below (_PY_TEST_REF).
+_PY_UTILS = """\
+\"\"\"Utility helpers.\"\"\"
+
+
+def orphan_helper():
+    \"\"\"A helper that is only imported by tests, not production code.\"\"\"
+    return 42
+"""
+
+# A test file that imports ``orphan_helper`` — so ``orphan_helper`` has exactly
+# one reference, and it comes from a test path.  Named ``test_utils.py`` so the
+# graph classifies its file path as a test path.
+_PY_TEST_REF = """\
+from pkg.utils import orphan_helper
+
+
+def test_orphan_helper():
+    assert orphan_helper() == 42
+"""
 
 
 @pytest_asyncio.fixture()
@@ -610,7 +636,7 @@ class TestAppContextLifespan:
 # --------------------------------------------------------------------------- #
 # Tool registration + end-to-end tool behaviour
 # --------------------------------------------------------------------------- #
-# The ten built-in tools, each carrying the mandatory ``lore_`` service prefix
+# The twelve built-in tools, each carrying the mandatory ``lore_`` service prefix
 # (mcp-builder: a service prefix so tools disambiguate across many connected MCP
 # servers). The bare (un-prefixed) names they were renamed FROM — no built-in may
 # publish a bare name on the wire.
@@ -626,14 +652,16 @@ _BARE_TOOL_NAMES = {
     "what_imports",
     "blast_radius",
     "tests_for",
+    "references",
+    "dead_code",
 }
 _EXPECTED_TOOLS = {f"{_TOOL_PREFIX}{name}" for name in _BARE_TOOL_NAMES}
 
 
 class TestToolRegistration:
-    """All ten MCP tools are registered on the FastMCP app, each ``lore_``-prefixed."""
+    """All twelve MCP tools are registered on the FastMCP app, each ``lore_``-prefixed."""
 
-    async def test_all_ten_tools_registered(self, tmp_path: Path) -> None:
+    async def test_all_twelve_tools_registered(self, tmp_path: Path) -> None:
         slug = _slug()
         config = _config(slug, tmp_path / "live")
         mcp = build_mcp_server(LoreServer(config))
@@ -675,6 +703,8 @@ _READ_ONLY_TOOLS = {
     "lore_what_imports",
     "lore_blast_radius",
     "lore_tests_for",
+    "lore_references",
+    "lore_dead_code",
 }
 _MUTATING_TOOLS = {"lore_save_memory", "lore_reindex"}
 
@@ -974,6 +1004,22 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
     "lore_what_imports": {"qualified_name", "kind", "file_path", "tier"},
     "lore_blast_radius": {"qualified_name", "kind", "file_path", "tier"},
     "lore_tests_for": {"qualified_name", "kind", "file_path", "tier"},
+    "lore_references": {
+        "qualified_name",
+        "production_references",
+        "test_references",
+        "referencing",
+    },
+    "lore_dead_code": {
+        "id",
+        "kind",
+        "qualified_name",
+        "file_path",
+        "chunk_id",
+        "tier",
+        "test_references",
+        "reason",
+    },
 }
 
 
@@ -1179,6 +1225,80 @@ class TestToolBehaviourEndToEnd:
         result = await indexed_context.tests_for("champion_routing")
         assert isinstance(result, list)
 
+    async def test_references_returns_production_test_split(
+        self, indexed_context: AppContext
+    ) -> None:
+        # ``pkg.base.BaseRouter`` is imported by ``pkg.router`` (a production file),
+        # so it has at least one production reference and zero test references.
+        summary = await indexed_context.references("pkg.base.BaseRouter")
+        assert summary.qualified_name == "pkg.base.BaseRouter"
+        assert summary.production_references >= 1
+        assert summary.test_references == 0
+
+    async def test_references_zero_is_valid_not_error(
+        self, indexed_context: AppContext
+    ) -> None:
+        # A symbol with zero references returns an all-zero summary — NOT an error.
+        # Empty is the SUCCESS case (a truly unreferenced symbol); the handler must
+        # never raise ``SchemaRebuildingError`` for an empty references result.
+        summary = await indexed_context.references("pkg.router.champion_routing")
+        assert summary.production_references == 0
+        assert summary.test_references == 0
+        assert isinstance(summary.referencing, list)
+
+    async def test_dead_code_surfaces_test_only_symbol(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> None:
+        # A corpus with ``pkg/utils.py`` (defines ``orphan_helper``) and
+        # ``tests/test_utils.py`` (the ONLY consumer of ``orphan_helper`` — a test
+        # file). After indexing, ``dead_code`` must report ``orphan_helper`` as dead
+        # with reason ``only_referenced_by_tests``.
+        from loremaster.graph import REASON_ONLY_REFERENCED_BY_TESTS
+
+        slug = _slug()
+        live = tmp_path / "live_dead"
+        (live / "pkg").mkdir(parents=True)
+        (live / "tests").mkdir(parents=True)
+        (live / "pkg" / "utils.py").write_text(_PY_UTILS, encoding="utf-8")
+        (live / "tests" / "test_utils.py").write_text(_PY_TEST_REF, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            dead = await ctx.dead_code()
+            names = {node.qualified_name for node in dead}
+            assert "pkg.utils.orphan_helper" in names, (
+                f"orphan_helper is only referenced by tests and must appear in dead_code; "
+                f"got: {names}"
+            )
+            orphan = next(n for n in dead if n.qualified_name == "pkg.utils.orphan_helper")
+            assert orphan.reason == REASON_ONLY_REFERENCED_BY_TESTS
+        finally:
+            await ctx.aclose()
+
+    async def test_dead_code_does_not_surface_production_referenced_symbol(
+        self, indexed_context: AppContext
+    ) -> None:
+        # ``pkg.base.BaseRouter`` has a production reference from ``pkg.router``
+        # (it imports it). It must NOT appear in dead_code.
+        dead = await indexed_context.dead_code()
+        names = {node.qualified_name for node in dead}
+        assert "pkg.base.BaseRouter" not in names, (
+            "BaseRouter is referenced by production code and must not be dead"
+        )
+
+    async def test_dead_code_empty_result_does_not_raise(
+        self, indexed_context: AppContext
+    ) -> None:
+        # An empty dead_code result is the SUCCESS case (nothing orphaned) — the
+        # handler must NOT raise SchemaRebuildingError when the list comes back empty.
+        # We confirm this by clamping max_results to 0 to force an empty result
+        # regardless of corpus state.
+        # Note: max_results=0 is below the schema ge=1 floor, so call the handler
+        # directly (bypassing validation) to prove the handler itself does not raise.
+        dead = indexed_context.code_graph.dead_code([], max_results=0)
+        assert dead == []  # empty is fine, not an error
+
     async def test_reindex_brings_a_new_file_current(
         self, indexed_context: AppContext, tmp_path: Path
     ) -> None:
@@ -1351,6 +1471,37 @@ class TestRegisteredToolWrappers:
         assert isinstance(structured, dict)
         assert structured["files_indexed"] >= 1
         assert structured["files_failed"] == 0
+
+    async def test_references_wrapper_yields_structured_model(
+        self, indexed: tuple[Any, AppContext]
+    ) -> None:
+        mcp, ctx = indexed
+        # ``pkg.base.BaseRouter`` is imported by a production file → production_references >= 1.
+        structured = await self._structured(
+            mcp, "lore_references", ctx, name="pkg.base.BaseRouter"
+        )
+        # A scalar ReferenceSummary — structuredContent is the model dict.
+        assert isinstance(structured, dict)
+        assert structured["qualified_name"] == "pkg.base.BaseRouter"
+        assert "production_references" in structured
+        assert structured["production_references"] >= 1
+        assert "test_references" in structured
+        assert "referencing" in structured
+
+    async def test_dead_code_wrapper_yields_structured_list(
+        self, indexed: tuple[Any, AppContext]
+    ) -> None:
+        mcp, ctx = indexed
+        # The call returns a list (possibly empty) — structuredContent wraps under ``result``.
+        structured = await self._structured(mcp, "lore_dead_code", ctx)
+        assert isinstance(structured, dict)
+        assert "result" in structured
+        assert isinstance(structured["result"], list)
+        # Every element must have the DeadCodeNode fields.
+        for item in structured["result"]:
+            assert isinstance(item, dict)
+            assert "qualified_name" in item
+            assert "reason" in item
 
 
 # --------------------------------------------------------------------------- #

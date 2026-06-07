@@ -27,7 +27,7 @@ the seams contribute — see `lorescribe/EXTENDING.md`.
 >
 > **Scope note.** `extension.py`/`server.py` are the *composition contract* **and the
 > live server**. `LoreServer.run()` configures lore-namespace structured logging
-> (`LoggingConfig` / `LORE_LOG_LEVEL`), registers the ten MCP tools, runs the embedder
+> (`LoggingConfig` / `LORE_LOG_LEVEL`), registers the twelve MCP tools, runs the embedder
 > probe-gate, builds the ASGI app (Bearer-key auth enforced when `auth` is enabled,
 > else localhost no-auth), and serves the FastMCP streamable-http app via uvicorn.
 > The heavy startup (probe-gate → initial reconcile → watcher) and the extension
@@ -58,7 +58,7 @@ from loremaster.server import LoreServer
   the config slice is validated **first** (fail loud before mutating any registry
   state), then chunkers are registered under the [register guard](#the-register-guard-nit-1),
   then profiles + the remaining seams are collected.
-- **`run()`** configures structured logging, registers the ten MCP tools, runs the
+- **`run()`** configures structured logging, registers the twelve MCP tools, runs the
   embedder probe-gate, builds the ASGI app (Bearer auth when `auth` is enabled), and
   serves the FastMCP streamable-http app via uvicorn. Its heavy startup (probe-gate /
   initial reconcile / watcher) and the extension lifespan hooks (`on_startup` /

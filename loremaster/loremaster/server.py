@@ -78,9 +78,15 @@ from loremaster.extension import (
 # in this module's runtime namespace — a TYPE_CHECKING-only import would resolve to
 # nothing and silently fall back to an opaque schema. None of these modules import
 # ``server`` at runtime (only under TYPE_CHECKING), so the import is acyclic.
-from loremaster.graph import GraphNode
-from loremaster.index.indexer import IndexSummary
+from loremaster.graph import (
+    DEFAULT_DEAD_CODE_MAX_RESULTS,
+    MAX_DEAD_CODE_MAX_RESULTS,
+    DeadCodeNode,
+    GraphNode,
+    ReferenceSummary,
+)
 from loremaster.index.indexer import _PYTHON_SUFFIX as PYTHON_SUFFIX
+from loremaster.index.indexer import IndexSummary
 from loremaster.memory.store import RecalledMemory
 from loremaster.read_file import FileSpan
 from loremaster.search import DetailSelector, SearchResult
@@ -786,6 +792,14 @@ _INSTRUCTIONS = (
     "lore_blast_radius (transitive) over lore_what_imports (direct) when you need the "
     "ripple, not just the neighbours.\n"
     "- lore_tests_for(symbol_or_file): the test nodes covering a symbol or file.\n"
+    "- lore_references(name): the reference counter for ONE symbol — production vs test "
+    "reference count + who references it. A symbol with zero production references is "
+    "dead even if its tests still call it. Distinct from lore_what_imports (modules only) "
+    "/ lore_blast_radius (transitive ripple from a symbol outward).\n"
+    "- lore_dead_code(...): CANDIDATE dead/orphaned definitions in the project's live tiers "
+    "— zero production references (test-only consumers count as dead). A HEURISTIC detector, "
+    "not proof: dynamic dispatch, decorators, and public API used outside the tree can evade "
+    "it. By default excludes test nodes, dunder methods, and __main__/__init__ entrypoints.\n"
     "- lore_index_status(): the freshness/health roll-up (indexed / in-flight / failed "
     "counts) read straight from the manifest — zero embeds, cheap.\n"
     "- lore_reindex(tier=None): force a whole-tier reconcile sweep (or all tiers). The "
@@ -1181,6 +1195,47 @@ class AppContext:
         tests = self.code_graph.tests_for(symbol_or_file)
         self._raise_if_empty_during_rebuild(tests)
         return tests
+
+    async def references(self, name: str) -> ReferenceSummary:
+        """Return the reference profile of ``name``, split by production vs test origin.
+
+        Not wrapped in ``_raise_if_empty_during_rebuild``: an all-zero summary (a
+        symbol with zero references, or an unknown name) is the SUCCESS case for this
+        tool — it means the symbol is unreferenced, NOT that a rebuild masked a real
+        result. Raising on an empty ``referencing`` list would false-positive on
+        legitimately orphaned symbols.
+        """
+        return self.code_graph.references(name)
+
+    async def dead_code(
+        self,
+        *,
+        include_tests: bool = False,
+        include_dunders: bool = False,
+        include_entrypoints: bool = False,
+        max_results: int = DEFAULT_DEAD_CODE_MAX_RESULTS,
+    ) -> list[DeadCodeNode]:
+        """Return the candidate dead/orphaned nodes in the project's LIVE tiers.
+
+        Computes the live tiers from ``self._config.effective_roots`` (only
+        ``WATCH_LIVE`` tiers are swept — static-snapshot tiers are skipped). Then
+        delegates to ``CodeGraph.dead_code``.
+
+        Not wrapped in ``_raise_if_empty_during_rebuild``: an empty result is the
+        SUCCESS case for this tool — it means no dead code was found, NOT that a
+        rebuild masked real results. Raising on an empty list would falsely alarm
+        on a healthy codebase.
+        """
+        live_tiers = [
+            root.tier for root in self._config.effective_roots if root.watch == WATCH_LIVE
+        ]
+        return self.code_graph.dead_code(
+            live_tiers,
+            include_tests=include_tests,
+            include_dunders=include_dunders,
+            include_entrypoints=include_entrypoints,
+            max_results=max_results,
+        )
 
     # -- rebuilding-notice seam (shared by the six corpus read tools) -------
     #
@@ -2161,7 +2216,7 @@ class _ProcessLifespanGuard:
 
 
 def build_mcp_server(server: LoreServer) -> Any:
-    """Construct the FastMCP server: lifespan + the ten built-ins + extension tools.
+    """Construct the FastMCP server: lifespan + the twelve built-ins + extension tools.
 
     The lifespan builds the live :class:`AppContext` from config (the real
     embedder via :func:`~loremaster.embedding.make_embedder_from_config`, a real
@@ -2298,7 +2353,7 @@ _REINDEX_ANNOTATIONS = ToolAnnotations(
 
 
 def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
-    """Register the ten built-in MCP tools, then the extension-contributed tools.
+    """Register the twelve built-in MCP tools, then the extension-contributed tools.
 
     Kept separate so the registration list is one readable place. Every built-in
     tool pulls the live :class:`AppContext` off the request's lifespan context and
@@ -2313,7 +2368,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     vs mutating). The consumer-facing ``instructions`` block (:data:`_INSTRUCTIONS`)
     carries the cross-tool model (freshness, citations, memory stance).
 
-    After the ten built-ins, every registered :class:`Extension`'s seam-3
+    After the twelve built-ins, every registered :class:`Extension`'s seam-3
     :class:`ToolSpec`\\ s are registered as real FastMCP tools
     (:func:`_register_extension_tools`) — purely additive, with a name-collision
     guard so an extension tool can never silently shadow a built-in or another
@@ -2700,7 +2755,109 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     ) -> list[GraphNode]:
         return await _app_context(context).tests_for(symbol_or_file)
 
-    # After the ten built-ins, register the extension-contributed seam-3 tools.
+    @mcp.tool(
+        name="lore_references",
+        description=(
+            "Return the reference counter for ONE named symbol — how many times it is "
+            "referenced, split into PRODUCTION references (from non-test files, the count "
+            "that decides liveness) vs TEST references (from test files), plus the distinct "
+            "nodes that reference it. A symbol whose only consumers are its tests has zero "
+            "production references and is considered dead even though tests still call it. "
+            "Use this tool to check whether a specific symbol is live or orphaned. "
+            "Distinct from lore_what_imports (module-level importers only, not a per-symbol "
+            "count) and lore_blast_radius (transitive ripple outward from a symbol, not a "
+            "reference-count profile). Returns a well-formed result even when the symbol "
+            "has zero references — an empty referencing list is the success case, not an error."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    async def references(
+        context: Context[Any, AppContext, Any],
+        name: Annotated[
+            str,
+            Field(
+                description=(
+                    "The fully-qualified dotted name of the symbol to profile "
+                    "(e.g. 'pkg.router.ChampionRouter' or 'pkg.utils.helper'). "
+                    "Returns the split production/test reference counts and the "
+                    "distinct nodes that reference it."
+                )
+            ),
+        ],
+    ) -> ReferenceSummary:
+        return await _app_context(context).references(name)
+
+    @mcp.tool(
+        name="lore_dead_code",
+        description=(
+            "List CANDIDATE dead/orphaned definitions in the project's live tiers — "
+            "nodes with zero PRODUCTION references (a symbol whose only consumers are "
+            "its own tests is dead, reason 'only_referenced_by_tests'; one with no "
+            "consumers at all is reason 'no_references'). This is a HEURISTIC / "
+            "CANDIDATE detector, NOT proof of actual deadness: dynamic dispatch, "
+            "decorators, reflection, and symbols used by consumers outside the indexed "
+            "tree can evade it. By default excludes test nodes (their own test files), "
+            "dunder methods (__init__, __repr__, …), and __main__/__init__ entry modules "
+            "— these are always excluded to suppress known false positives; use the "
+            "include_* flags to include them. Use lore_references to investigate a "
+            "specific suspect symbol before removing it."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    async def dead_code(
+        context: Context[Any, AppContext, Any],
+        include_tests: Annotated[
+            bool,
+            Field(
+                description=(
+                    "When True, include nodes whose own file_path is a test file "
+                    "(test_*.py, *_test.py, or under a tests/ directory). Default False "
+                    "— test nodes are excluded because they are not dead by definition."
+                )
+            ),
+        ] = False,
+        include_dunders: Annotated[
+            bool,
+            Field(
+                description=(
+                    "When True, include method nodes whose bare name is a dunder "
+                    "(__init__, __repr__, __str__, …). Default False — dunders are "
+                    "runtime/protocol-invoked and never carry an explicit call edge."
+                )
+            ),
+        ] = False,
+        include_entrypoints: Annotated[
+            bool,
+            Field(
+                description=(
+                    "When True, include __main__ entry modules and __init__ package "
+                    "modules. Default False — these are run as scripts or imported by "
+                    "the Python import system, not by dotted-name import edges."
+                )
+            ),
+        ] = False,
+        max_results: Annotated[
+            int,
+            Field(
+                ge=_MIN_COUNT,
+                le=MAX_DEAD_CODE_MAX_RESULTS,
+                description=(
+                    f"Maximum number of dead nodes to return (default "
+                    f"{DEFAULT_DEAD_CODE_MAX_RESULTS}, min {_MIN_COUNT}, max "
+                    f"{MAX_DEAD_CODE_MAX_RESULTS}). Raise it for a broader sweep; "
+                    "lower it to keep the result set reviewable."
+                ),
+            ),
+        ] = DEFAULT_DEAD_CODE_MAX_RESULTS,
+    ) -> list[DeadCodeNode]:
+        return await _app_context(context).dead_code(
+            include_tests=include_tests,
+            include_dunders=include_dunders,
+            include_entrypoints=include_entrypoints,
+            max_results=max_results,
+        )
+
+    # After the twelve built-ins, register the extension-contributed seam-3 tools.
     _register_extension_tools(mcp, server)
 
 
@@ -2737,7 +2894,7 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
     would merely warn and keep the first registration, a silent shadow).
 
     Args:
-        mcp: The FastMCP server (the ten built-ins are already registered).
+        mcp: The FastMCP server (the twelve built-ins are already registered).
         server: The composed :class:`LoreServer` whose extensions contribute tools.
 
     Raises:
@@ -2755,7 +2912,7 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
             raise ValueError(
                 f"extension tool {spec.name!r} collides with an already-registered tool; "
                 f"refusing to shadow it on the MCP surface (rename the extension tool — a "
-                f"tool name must be unique across the ten built-ins and every extension)."
+                f"tool name must be unique across the twelve built-ins and every extension)."
             )
         wrapper = _extension_tool_wrapper(spec)
         mcp.add_tool(wrapper, name=spec.name, description=spec.description)

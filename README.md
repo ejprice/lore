@@ -18,7 +18,7 @@ directly.
 ## Why lore
 
 - 🔎 **Semantic search over code *and* docs** — ranked `[SOURCE:file:line]` citations with stable keys; summarized, never raw dumps.
-- 🧬 **A typed code graph** — `lore_what_imports` / `lore_blast_radius` ("who breaks if I change this?"), `lore_tests_for` (covering tests), `lore_get_symbol` (exact signature). Answers grounded in real edges, not vibes.
+- 🧬 **A typed code graph** — `lore_what_imports` / `lore_blast_radius` ("who breaks if I change this?"), `lore_tests_for` (covering tests), `lore_references` (per-symbol reference counter), `lore_dead_code` (candidate dead/orphaned definitions), `lore_get_symbol` (exact signature). Answers grounded in real edges, not vibes.
 - ⚡ **Always fresh** — an inotify watcher re-indexes on save (sub-second); a startup + periodic reconcile heals anything missed during downtime, tracked by a SHA-512 manifest.
 - 🧠 **Per-project memory** — `lore_save_memory` / `lore_recall_memory`, so corrections and notes survive across sessions.
 - 🧩 **One image, N projects** — a single container image, one config-driven container per project, each keyed to its own vector collection. Never a per-project image.
@@ -38,7 +38,8 @@ A [`uv`](https://docs.astral.sh/uv/)-workspace monorepo (Python 3.14+):
 ## MCP tools
 
 `lore_search_code` · `lore_read_file` · `lore_get_symbol` · `lore_what_imports` · `lore_blast_radius` ·
-`lore_tests_for` · `lore_save_memory` · `lore_recall_memory` · `lore_reindex` · `lore_index_status`
+`lore_tests_for` · `lore_references` · `lore_dead_code` · `lore_save_memory` · `lore_recall_memory` ·
+`lore_reindex` · `lore_index_status`
 
 ### Freshness & read-your-writes
 

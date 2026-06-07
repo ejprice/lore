@@ -149,8 +149,8 @@ _REFERENCE_KINDS: tuple[str, ...] = (EDGE_IMPORTS, EDGE_CALLS, EDGE_INHERITS)
 # Dead-code sweep bounds. The default caps a single sweep at a sane, reviewable
 # size; the hard ceiling guards against a pathological request (mirrors the
 # ``blast_radius`` max-results discipline).
-_DEFAULT_DEAD_CODE_MAX_RESULTS = 100
-_MAX_DEAD_CODE_MAX_RESULTS = 1000
+DEFAULT_DEAD_CODE_MAX_RESULTS = 100
+MAX_DEAD_CODE_MAX_RESULTS = 1000
 
 # The two reasons a node is reported dead, by its test-reference profile.
 REASON_NO_REFERENCES = "no_references"
@@ -1146,7 +1146,7 @@ class CodeGraph:
         include_tests: bool = False,
         include_dunders: bool = False,
         include_entrypoints: bool = False,
-        max_results: int = _DEFAULT_DEAD_CODE_MAX_RESULTS,
+        max_results: int = DEFAULT_DEAD_CODE_MAX_RESULTS,
     ) -> list[DeadCodeNode]:
         """Return the dead/orphaned nodes in ``tiers`` — zero PRODUCTION references.
 
@@ -1175,14 +1175,14 @@ class CodeGraph:
             include_dunders: Keep dunder methods when ``True``.
             include_entrypoints: Keep package / entry modules when ``True``.
             max_results: The hard cap on the number of dead nodes returned (clamped
-                to :data:`_MAX_DEAD_CODE_MAX_RESULTS`).
+                to :data:`MAX_DEAD_CODE_MAX_RESULTS`).
 
         Returns:
             Up to ``max_results`` :class:`DeadCodeNode` entries.
         """
         if not tiers or max_results <= 0:
             return []
-        cap = min(max_results, _MAX_DEAD_CODE_MAX_RESULTS)
+        cap = min(max_results, MAX_DEAD_CODE_MAX_RESULTS)
 
         # One bulk pass over the reference rows builds a name → (prod, test) source
         # index, so the per-candidate liveness check is an in-memory lookup rather

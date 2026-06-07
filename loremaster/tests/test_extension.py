@@ -358,18 +358,18 @@ class TestFakeExtensionRoundTrips:
 # The bug this suite pins: ``LoreServer.tool_specs(ctx)`` collects an extension's
 # seam-3 tools as value objects (the composition tests above prove that), but the
 # FastMCP server build never registered them — ``_register_tools`` hardcoded only
-# the ten built-ins and ignored the server's extension tools. So an extension's
+# the twelve built-ins and ignored the server's extension tools. So an extension's
 # tools reached the live MCP surface NOWHERE. These tests drive the REAL
 # ``build_mcp_server`` + a live ``build_app_context`` (the same path
 # ``test_mcp_server.py`` uses) and assert an extension tool (a) APPEARS in
-# ``tools/list`` alongside the ten built-ins, (b) exposes its declared input
+# ``tools/list`` alongside the twelve built-ins, (b) exposes its declared input
 # schema, and (c) is INVOCABLE end-to-end through the FastMCP tool dispatch with
 # the handler closing over the RUNTIME ExtensionContext — not merely callable as a
 # bare ``spec.handler()`` (the vacuous version the composition tests already pass).
 
 _DIM = 2048
 
-# The ten built-in tools (the seam-3 wiring must be purely ADDITIVE to these).
+# The twelve built-in tools (the seam-3 wiring must be purely ADDITIVE to these).
 # Each carries the mandatory ``lore_`` service prefix; extension tools do NOT (an
 # extension owns its own tool names — only the built-ins are prefixed).
 _BUILTIN_TOOLS = {
@@ -383,6 +383,8 @@ _BUILTIN_TOOLS = {
     "lore_what_imports",
     "lore_blast_radius",
     "lore_tests_for",
+    "lore_references",
+    "lore_dead_code",
 }
 
 
@@ -494,7 +496,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
     ) -> None:
         # RED today: the extension's ``bump_counter`` tool is collected by
         # ``server.tool_specs`` but NEVER registered, so it is absent from the live
-        # ``tools/list``. The ten built-ins are present either way.
+        # ``tools/list``. The twelve built-ins are present either way.
         from loremaster.server import LoreServer, build_mcp_server
 
         slug = self._slug()
@@ -504,7 +506,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
 
         tools = await mcp.list_tools()
         names = {t.name for t in tools}
-        # Purely additive: the ten built-ins are untouched.
+        # Purely additive: the twelve built-ins are untouched.
         assert _BUILTIN_TOOLS <= names
         # The extension tool now rides alongside them on the live surface.
         assert "bump_counter" in names
