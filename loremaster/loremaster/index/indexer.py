@@ -115,6 +115,48 @@ _REBUILD_REASON_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
 
 logger = logging.getLogger(__name__)
 
+
+def graph_roots(
+    config: LoreConfig, snapshot_root: Path
+) -> tuple[dict[str, str], list[str]]:
+    """Derive the ``(tier_roots, project_roots)`` the code-graph resolves against.
+
+    The SINGLE source of truth for wiring astroid resolution into a
+    :class:`~loremaster.graph.CodeGraph` at its construction sites (the CLI and the
+    server lifespan), so both build the same roots and the indexer's per-file
+    ``base`` resolution (:meth:`Indexer._tier_base`) and the graph's resolution
+    agree on where each tier's files live.
+
+    * ``tier_roots`` maps every effective tier to its on-disk base — a LIVE root's
+      declared ``path``, a STATIC tier's snapshot materialisation dir (the same
+      directory the indexer probed for the importable-name derivation).
+    * ``project_roots`` is the set of bases astroid adds to its search path and
+      uses to classify a reference in-project vs external. ALL tier bases are
+      included (a static vendored tree is still "in project" for its own internal
+      references; an import that resolves outside every base is the external noise
+      the keep/drop rule drops).
+
+    Args:
+        config: The validated project configuration (its ``effective_roots`` drive
+            the mapping — explicit roots or the synthesised single-tree root).
+        snapshot_root: The static-tier snapshot root (the base for static tiers'
+            materialisation dirs).
+
+    Returns:
+        A ``(tier_roots, project_roots)`` pair ready to pass to ``CodeGraph``.
+    """
+    layout = SnapshotLayout(snapshot_root)
+    tier_roots: dict[str, str] = {}
+    for root in config.effective_roots:
+        if root.watch == WATCH_LIVE and root.path is not None:
+            tier_roots[root.tier] = str(Path(root.path))
+        else:
+            tier_roots[root.tier] = str(layout.materialization_dir(root.tier))
+    # De-duplicate the bases (two tiers can share a root) while preserving order.
+    project_roots = list(dict.fromkeys(tier_roots.values()))
+    return tier_roots, project_roots
+
+
 # The reason string attached to an ``index.file.failed`` event. Kept generic (no
 # source text or vector data) — a permanently-failed/non-finite embed is the only
 # failure path here, so naming it is enough for an operator to triage.

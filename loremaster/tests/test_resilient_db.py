@@ -93,12 +93,12 @@ from lorescribe.python_ast import PythonAstChunker
 # Pulled from the SQLite file-format spec, not from any lore code (independent).
 _SQLITE_HEADER_MAGIC: bytes = b"SQLite format 3\x00"
 
-# The on-disk file names the SERVER passes (server.py ~1904-1905): the manifest
-# is ``<slug>.db`` and the graph ``<slug>.graph.db`` under the state dir. A
+# The on-disk file names the SERVER passes: the manifest is ``<slug>.db`` and the
+# graph ``<slug>.graph.kuzu`` (a single Kùzu DB file) under the state dir. A
 # realistic slug from a real lore.yaml deployment, not a ``foo`` placeholder.
 _SLUG: str = "lore-loremaster"
 _MANIFEST_FILENAME: str = f"{_SLUG}.db"
-_GRAPH_FILENAME: str = f"{_SLUG}.graph.db"
+_GRAPH_FILENAME: str = f"{_SLUG}.graph.kuzu"
 
 # Representative manifest file-row values, mirroring test_manifest.py exactly so
 # the "healthy DB survives" and "post-recovery write" rows are production-shaped
@@ -118,13 +118,23 @@ _N_CHUNKS: int = len(_CHUNK_IDS)
 # A real Python module the production PythonAstChunker splits into chunks — the
 # graph's input lives at the lorescribe→loremaster producer↔consumer seam.
 _GRAPH_TIER: str = "local"
+_GRAPH_MODULE: str = "demo.service"
 _GRAPH_FILE_PATH: str = "demo/service.py"
+
+# The in-project dependency the demo module imports a symbol FROM. Under the
+# RESOLVED edge contract a stdlib import (``json``) is dropped as external, so the
+# durable-edge assertions key on an IN-PROJECT import that survives resolution.
+_GRAPH_ERRORS_PATH: str = "demo/errors.py"
+_GRAPH_ERRORS_SOURCE: str = '"""Demo errors."""\n\n\nclass LoadError(Exception):\n    pass\n'
+# The independent oracle for the surviving import: the in-project symbol FQN.
+_GRAPH_IMPORT_FQN: str = "demo.errors.LoadError"
+
 _GRAPH_SOURCE: str = textwrap.dedent(
     '''\
     """A demo service module."""
     from __future__ import annotations
 
-    import json
+    from demo.errors import LoadError
 
 
     class IndexService:
@@ -132,7 +142,7 @@ _GRAPH_SOURCE: str = textwrap.dedent(
 
         def boot(self, path):
             """Boot the service from a config file."""
-            return json.loads(path)
+            raise LoadError(path)
     '''
 )
 
@@ -154,6 +164,86 @@ def _graph_chunks() -> list[Chunk]:
         max_input_tokens=_VOYAGE_MAX_INPUT_TOKENS,
     )
     return PythonAstChunker().chunk(_GRAPH_SOURCE, context)
+
+
+def _write_graph_project(root: Path) -> None:
+    """Materialise the demo package on disk so astroid resolves the in-project import.
+
+    Writes ``demo/__init__.py`` + ``demo/errors.py`` + ``demo/service.py`` under
+    ``root`` so ``from demo.errors import LoadError`` resolves IN-PROJECT to the
+    surviving import edge the durable-edge assertions key on.
+    """
+    (root / "demo").mkdir(parents=True, exist_ok=True)
+    (root / "demo" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "demo" / "errors.py").write_text(_GRAPH_ERRORS_SOURCE, encoding="utf-8")
+    (root / "demo" / "service.py").write_text(_GRAPH_SOURCE, encoding="utf-8")
+
+
+def _seed_graph_with_in_project_import(graph_path: Path, project_root: Path) -> None:
+    """Seed a CodeGraph at ``graph_path`` with one surviving RESOLVED import edge.
+
+    Writes the demo package under ``project_root`` and builds the service file with
+    resolution wired, so the graph carries the in-project ``demo.errors.LoadError``
+    import — the durable edge a healthy reopen / a transient blip must preserve.
+    """
+    _write_graph_project(project_root)
+    graph = CodeGraph(
+        str(graph_path),
+        tier_roots={_GRAPH_TIER: project_root},
+        project_roots=[project_root],
+    )
+    try:
+        graph.build_file_graph(
+            _GRAPH_TIER, _GRAPH_FILE_PATH, _graph_chunks(), module_name=_GRAPH_MODULE
+        )
+        assert graph.what_imports(_GRAPH_IMPORT_FQN), "seed must carry the in-project import edge"
+    finally:
+        graph.close()
+
+
+def _write_corrupt_kuzu(path: Path) -> int:
+    """Write a NON-EMPTY malformed Kùzu image at ``path`` and return its size.
+
+    A genuine Kùzu database is created (so the file has real on-disk structure),
+    then its head is clobbered with garbage so ``kuzu.Database`` reports it as "not
+    a valid Kuzu database file" on open — the realistic torn-write corruption,
+    distinct from an absent file. The caller asserts this fixture genuinely raises
+    before relying on the recovery contract.
+
+    Args:
+        path: The file path to write the corrupt image to.
+
+    Returns:
+        The size in bytes of the written corrupt image (always > 0).
+    """
+    import kuzu
+
+    database = kuzu.Database(str(path))
+    connection = kuzu.Connection(database)
+    connection.execute("CREATE NODE TABLE Seed(id SERIAL, v STRING, PRIMARY KEY(id))")
+    connection.execute("CREATE (s:Seed {v: 'real'})")
+    connection.close()
+    database.close()
+
+    original = bytearray(path.read_bytes())
+    # Clobber a generous head span so Kùzu's magic/header validation fails on open.
+    clobber = b"NOT-A-KUZU-DB\x00\xff\xfe" * 64
+    original[0 : len(clobber)] = clobber
+    path.write_bytes(bytes(original))
+    return path.stat().st_size
+
+
+def _assert_kuzu_raises_on_raw_open(path: Path) -> None:
+    """RED witness: prove ``path`` genuinely fails a raw ``kuzu.Database`` open.
+
+    Independent of any lore code — opens with ``kuzu`` directly and asserts the
+    corruption is real (the open raises ``RuntimeError``). Anchors the corruption
+    fixture so a later green on the resilient constructor means real recovery.
+    """
+    import kuzu
+
+    with pytest.raises(RuntimeError):
+        kuzu.Database(str(path))
 
 
 # ---------------------------------------------------------------------------
@@ -426,36 +516,39 @@ class TestCorruptManifestRecovers:
 
 
 class TestCorruptGraphRecovers:
-    """FP-08: a corrupt ``<slug>.graph.db`` must be deleted and recreated.
+    """FP-08: a corrupt ``<slug>.graph.kuzu`` must be deleted and recreated.
 
-    Same self-heal contract for the code-graph, which is fully rebuildable by a
-    reindex, so a fresh empty graph after recovery is correct.
+    Same self-heal contract for the Kùzu code-graph, which is fully rebuildable by
+    a reindex, so a fresh empty graph after recovery is correct. A corrupt Kùzu
+    file makes ``kuzu.Database`` raise ``RuntimeError`` on open (not a SQLite
+    ``DatabaseError``); the resilient open must catch it, delete the bad file, and
+    recreate a fresh empty database.
     """
 
     def test_corruption_fixture_genuinely_raises_on_raw_open(
         self, tmp_path: Path
     ) -> None:
-        """RED witness for the graph corruption fixture (clause 2 tautology guard)."""
+        """RED witness for the Kùzu corruption fixture (clause 2 tautology guard)."""
         corrupt_path = tmp_path / _GRAPH_FILENAME
-        size = _write_corrupt_sqlite(corrupt_path)
+        size = _write_corrupt_kuzu(corrupt_path)
         assert size > 0, "corruption fixture must be a NON-EMPTY malformed image"
-        _assert_raises_on_raw_open(corrupt_path)
+        _assert_kuzu_raises_on_raw_open(corrupt_path)
 
     def test_graph_open_over_corrupt_file_does_not_raise(
         self, tmp_path: Path
     ) -> None:
-        """Opening a CodeGraph over a corrupt file must recover, not raise."""
+        """Opening a CodeGraph over a corrupt Kùzu file must recover, not raise."""
         corrupt_path = tmp_path / _GRAPH_FILENAME
-        _write_corrupt_sqlite(corrupt_path)
-        _assert_raises_on_raw_open(corrupt_path)
+        _write_corrupt_kuzu(corrupt_path)
+        _assert_kuzu_raises_on_raw_open(corrupt_path)
 
         graph: CodeGraph | None = None
         try:
             graph = CodeGraph(str(corrupt_path))
-        except sqlite3.DatabaseError as error:
+        except RuntimeError as error:
             pytest.fail(
                 "CodeGraph over a corrupt file must delete-and-recreate, "
-                f"not raise DatabaseError: {error}"
+                f"not raise RuntimeError: {error}"
             )
         finally:
             if graph is not None:
@@ -467,27 +560,36 @@ class TestCorruptGraphRecovers:
         """After recovery the graph is empty and accepts a real per-file build.
 
         The "subsequent normal write works" guarantee, exercised through the
-        production producer↔consumer seam: real PythonAstChunker chunks → the
-        recreated graph's ``build_file_graph`` → a query that finds the symbol.
+        production producer↔consumer seam: a real on-disk package → real chunks →
+        the recreated graph's ``build_file_graph`` → a query that finds the symbol.
         """
         corrupt_path = tmp_path / _GRAPH_FILENAME
-        _write_corrupt_sqlite(corrupt_path)
+        _write_corrupt_kuzu(corrupt_path)
+        project_root = tmp_path / "project"
+        _write_graph_project(project_root)
 
-        graph = CodeGraph(str(corrupt_path))
+        graph = CodeGraph(
+            str(corrupt_path),
+            tier_roots={_GRAPH_TIER: project_root},
+            project_roots=[project_root],
+        )
         try:
             # Fresh empty graph after recovery (public query API, no row peeking).
-            assert graph.what_imports("json") == [], (
+            assert graph.what_imports(_GRAPH_IMPORT_FQN) == [], (
                 "a graph recreated from corruption must start empty"
             )
+            assert graph.indexed_file_count() == 0, "recovered graph must hold no files"
 
             # A subsequent normal write works end-to-end across the seam.
-            graph.build_file_graph(_GRAPH_TIER, _GRAPH_FILE_PATH, _graph_chunks())
+            graph.build_file_graph(
+                _GRAPH_TIER, _GRAPH_FILE_PATH, _graph_chunks(), module_name=_GRAPH_MODULE
+            )
 
-            # The demo module imports ``json`` — after the build, the reverse
-            # import edge must resolve (independent oracle: _GRAPH_SOURCE's own
-            # ``import json`` statement, not the graph's internal counts).
-            importers = graph.what_imports("json")
-            assert importers, "the post-recovery build must register the json import edge"
+            # The demo module imports the in-project ``demo.errors.LoadError`` — after
+            # the build, the reverse import edge must resolve (independent oracle:
+            # _GRAPH_SOURCE's own ``from demo.errors import LoadError`` statement).
+            importers = graph.what_imports(_GRAPH_IMPORT_FQN)
+            assert importers, "the post-recovery build must register the in-project import edge"
             assert any(node.file_path == _GRAPH_FILE_PATH for node in importers), (
                 "the importing module node must be the demo file we just built"
             )
@@ -553,18 +655,16 @@ class TestHealthyGraphSurvives:
     def test_reopening_a_healthy_graph_preserves_its_edges(
         self, tmp_path: Path
     ) -> None:
-        """A graph with a real import edge must reopen with that edge intact."""
+        """A graph with a real RESOLVED import edge must reopen with that edge intact."""
         graph_path = tmp_path / _GRAPH_FILENAME
+        project_root = tmp_path / "project"
+        _seed_graph_with_in_project_import(graph_path, project_root)
 
-        seed = CodeGraph(str(graph_path))
-        seed.build_file_graph(_GRAPH_TIER, _GRAPH_FILE_PATH, _graph_chunks())
-        # Sanity: the seed graph really did register the json import edge.
-        assert seed.what_imports("json"), "seed graph must have the json import edge"
-        seed.close()
-
+        # Reopen WITHOUT roots — the durable edge must already be on disk; the
+        # reopen must not recreate the db nor need resolution to surface it.
         reopened = CodeGraph(str(graph_path))
         try:
-            importers = reopened.what_imports("json")
+            importers = reopened.what_imports(_GRAPH_IMPORT_FQN)
             assert importers, (
                 "a healthy graph must reopen UNCHANGED — its import edge must "
                 "survive, the resilient open must NOT recreate a valid db"
@@ -992,34 +1092,49 @@ class TestTransientErrorDoesNotDeleteHealthyDatabase:
         finally:
             recovered.close()
 
-    def test_readonly_filesystem_propagates_and_does_not_delete_graph(
+    def test_transient_open_fault_propagates_and_does_not_delete_graph(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A read-only-FS OperationalError on a healthy CodeGraph must NOT nuke it.
+        """A TRANSIENT Kùzu open fault on a healthy graph must NOT nuke it.
 
-        The graph carries the same fail-closed contract: a transient probe fault
-        on a healthy graph must propagate and leave the file (and its edges)
-        intact. Exercised through the real lorescribe→loremaster chunk seam.
+        The Kùzu code-graph carries the same fail-closed contract as the SQLite
+        manifest: ``kuzu.Database`` raises a plain ``RuntimeError`` for BOTH
+        corruption AND transient faults (I/O error, permission, lock), so the
+        resilient open MUST only delete-and-recreate on a recognised corruption
+        signature and re-raise any other ``RuntimeError``. A transient blip on a
+        healthy graph must propagate and leave the file (and its RESOLVED edges)
+        intact — never deleted. Exercised through the real chunk→resolution seam.
         """
+        import loremaster.index.kuzu_resilient as kuzu_resilient
+
         graph_path = tmp_path / _GRAPH_FILENAME
-        seed = CodeGraph(str(graph_path))
-        seed.build_file_graph(_GRAPH_TIER, _GRAPH_FILE_PATH, _graph_chunks())
-        assert seed.what_imports("json"), "seed graph must carry the json import edge"
-        seed.close()
+        project_root = tmp_path / "project"
+        _seed_graph_with_in_project_import(graph_path, project_root)
+        size_before = graph_path.stat().st_size
 
-        injector = _IntegrityCheckFaultInjector(sqlite3.OperationalError(_READONLY_MESSAGE))
-        injector.install(monkeypatch)
+        # Inject a TRANSIENT (non-corruption) open fault: a RuntimeError whose
+        # message is NOT a corruption signature — the open must fail closed.
+        real_database = kuzu_resilient.kuzu.Database
 
-        with pytest.raises(sqlite3.OperationalError):
+        def _transient_database(*args: object, **kwargs: object) -> object:
+            raise RuntimeError("IO operation failed: permission denied")
+
+        monkeypatch.setattr(kuzu_resilient.kuzu, "Database", _transient_database)
+
+        with pytest.raises(RuntimeError, match="permission denied"):
             CodeGraph(str(graph_path))
 
-        assert graph_path.is_file(), (
-            "a transient readonly-FS OperationalError must NOT delete a healthy graph"
+        assert graph_path.exists(), (
+            "a transient (non-corruption) RuntimeError must NOT delete a healthy graph"
         )
+        assert graph_path.stat().st_size == size_before, (
+            "the healthy graph file must be byte-for-byte intact after a transient blip"
+        )
+        monkeypatch.setattr(kuzu_resilient.kuzu, "Database", real_database)
         monkeypatch.undo()
         recovered = CodeGraph(str(graph_path))
         try:
-            assert recovered.what_imports("json"), (
+            assert recovered.what_imports(_GRAPH_IMPORT_FQN), (
                 "the graph's import edge must SURVIVE a transient blip (not recreated empty)"
             )
         finally:

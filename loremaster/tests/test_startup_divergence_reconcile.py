@@ -125,19 +125,22 @@ _MEMORY_SUFFIX = "_memory"
 # meaningful). NOT foo/bar/x=1 (clause 1).
 # ---------------------------------------------------------------------------
 
-# A representative symbol whose presence in the store/graph after a heal proves
-# the re-embed + re-graph actually happened (the searchability oracle).
-_REP_MODULE_IMPORT = "os"  # widget.py imports os → what_imports("os") must find it
+# A representative IN-PROJECT import whose presence in the graph after a heal
+# proves the re-graph actually happened (the searchability oracle). Under the
+# RESOLVED edge contract a stdlib import is dropped, so the rep edge is the
+# in-project ``from src.routing import champion_routing`` — which resolves to the
+# symbol FQN ``src.routing.champion_routing`` (read straight off _PY_WIDGET).
+_REP_MODULE_IMPORT = "src.routing.champion_routing"
 
 _PY_WIDGET = """\
-import os
+from src.routing import champion_routing
 
 
 class Widget:
     \"\"\"A render widget.\"\"\"
 
     def render(self, value):
-        return os.linesep.join(str(value))
+        return champion_routing(value)
 
 
 def make_widget():
@@ -495,7 +498,7 @@ class TestWipedCollectionHeals:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Step 1: seed a real index through the prod path, then settle + close.
@@ -571,7 +574,7 @@ class TestWipedCollectionHeals:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
@@ -638,7 +641,7 @@ class TestOrphanOverCountHeals:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
@@ -732,7 +735,7 @@ class TestWipedGraphHeals:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
@@ -758,11 +761,11 @@ class TestWipedGraphHeals:
             "test setup: the seed must populate the graph with >0 files"
         )
         # WIPE the graph rows behind the manifest's back (the FP-04 divergence:
-        # graph empty, manifest + collection populated). Use the real SQLite tables
-        # the production graph reads, so the fixture is grounded in the actual DB.
-        with graph.connection:
-            graph.connection.execute("DELETE FROM nodes")
-            graph.connection.execute("DELETE FROM edges")
+        # graph empty, manifest + collection populated). Use the real Kùzu node
+        # tables the production graph reads (DETACH DELETE over CodeNode + Ref), so
+        # the fixture is grounded in the actual DB.
+        graph.connection.execute("MATCH (n:CodeNode) DETACH DELETE n")
+        graph.connection.execute("MATCH (r:Ref) DETACH DELETE r")
         wiped_graph_files = graph.indexed_file_count()  # type: ignore[attr-defined]
         graph.close()
         assert wiped_graph_files == 0, (
@@ -787,7 +790,8 @@ class TestWipedGraphHeals:
         )
 
         # ASSERT (independent oracle 2): a real graph QUERY returns edges again.
-        # widget.py imports ``os`` → what_imports('os') must find the module node.
+        # widget.py imports the in-project ``src.routing.champion_routing`` →
+        # what_imports of that resolved FQN must find the importing module node.
         importers = await restarted.what_imports(_REP_MODULE_IMPORT)
         assert len(importers) >= 1, (
             f"after healing a wiped graph, what_imports({_REP_MODULE_IMPORT!r}) must "
@@ -822,7 +826,7 @@ class TestNoFalseHealWhenHealthy:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Step 1: seed a genuinely healthy index, then close cleanly.
@@ -863,7 +867,7 @@ class TestNoFalseHealWhenHealthy:
 
             await spy_store.ensure_collection(_DIM)
             manifest2 = Manifest(str(manifest_path))
-            graph2 = CodeGraph(str(graph_path))
+            graph2 = _graph_with_roots(config, graph_path, snap)
             try:
                 await reconcile_store_divergence(  # type: ignore[misc]
                     store=spy_store,
@@ -920,7 +924,7 @@ class TestNoFalseHealWhenHealthy:
         _build_docs_only_corpus(live)  # ZERO .py files → graph legitimately empty
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Step 1: seed a genuinely healthy docs-only index, then close cleanly.
@@ -971,7 +975,7 @@ class TestNoFalseHealWhenHealthy:
 
             await spy_store.ensure_collection(_DIM)
             manifest2 = Manifest(str(manifest_path))
-            graph2 = CodeGraph(str(graph_path))
+            graph2 = _graph_with_roots(config, graph_path, snap)
             try:
                 await reconcile_store_divergence(  # type: ignore[misc]
                     store=spy_store,
@@ -1029,7 +1033,7 @@ class TestReconcileIdempotent:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Seed a real index, then close.
@@ -1147,7 +1151,7 @@ class TestPartialPerTierDivergence:
             slug=slug, live_path=live, static_source=static_src,
         )
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
@@ -1270,7 +1274,7 @@ class TestPartialPerTierDivergence:
             slug=slug, live_path=live, static_source=static_src,
         )
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
@@ -1362,7 +1366,7 @@ class TestReconcileDoesNotFabricatePoints:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Seed a real index, then close.
@@ -1480,7 +1484,7 @@ class TestCountVsMtimeInteraction:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
@@ -1562,7 +1566,7 @@ class TestEmptyDecisionReadsLiveCount:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
@@ -1624,6 +1628,25 @@ class TestEmptyDecisionReadsLiveCount:
 # TestWipedGraphHeals) — that path rebuilds the graph anyway, so it is unchanged.
 
 
+def _graph_with_roots(
+    config: LoreConfig, graph_path: Path, snapshot_root: Path
+) -> CodeGraph:
+    """A CodeGraph wired with the config's project roots (resolution enabled).
+
+    The graph-only heal re-graphs from disk through ``rebuild_graph_only``, which
+    needs the SAME astroid resolution the production-constructed graph has, so the
+    re-graphed import edges resolve (a rootless graph would emit only structural
+    ``defines`` and ``what_imports`` would find nothing). Uses the production
+    :func:`graph_roots` so the test graph resolves exactly as the server does.
+    """
+    from loremaster.index.indexer import graph_roots
+
+    tier_roots, project_roots = graph_roots(config, snapshot_root)
+    return CodeGraph(
+        str(graph_path), tier_roots=tier_roots, project_roots=project_roots
+    )
+
+
 def _make_graph_wired_indexer(
     *,
     config: LoreConfig,
@@ -1662,21 +1685,20 @@ def _make_graph_wired_indexer(
 
 
 def _wipe_graph_rows(graph_path: Path) -> int:
-    """Delete every graph node/edge row behind the manifest's back; return prior file count.
+    """Delete every graph node/ref row behind the manifest's back; return prior file count.
 
-    The graph-only divergence injector: clears the graph's ``nodes`` + ``edges``
-    tables (leaving the manifest + the vector collection intact). Uses the real
-    SQLite tables the production graph reads, so the fixture is grounded in the
-    actual DB (the same wipe ``TestWipedGraphHeals`` performs). Returns the
-    graph's indexed-file count BEFORE the wipe so a caller can assert the heal
-    restored it.
+    The graph-only divergence injector: clears the graph's ``CodeNode`` + ``Ref``
+    node tables (leaving the manifest + the vector collection intact). Uses the
+    real Kùzu node tables the production graph reads (DETACH DELETE), so the
+    fixture is grounded in the actual DB (the same wipe ``TestWipedGraphHeals``
+    performs). Returns the graph's indexed-file count BEFORE the wipe so a caller
+    can assert the heal restored it.
     """
     graph = CodeGraph(str(graph_path))
     try:
         prior = graph.indexed_file_count()
-        with graph.connection:
-            graph.connection.execute("DELETE FROM nodes")
-            graph.connection.execute("DELETE FROM edges")
+        graph.connection.execute("MATCH (n:CodeNode) DETACH DELETE n")
+        graph.connection.execute("MATCH (r:Ref) DETACH DELETE r")
         return prior
     finally:
         graph.close()
@@ -1715,7 +1737,7 @@ class TestGraphOnlyHealDoesNotReEmbed:
         _build_live_corpus(live)  # has .py files → graph genuinely populated
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Step 1: seed a real, fully-healthy index (collection + graph), then close.
@@ -1755,7 +1777,7 @@ class TestGraphOnlyHealDoesNotReEmbed:
         spy_store = DeleteByTierSpyStore(client=client, slug=slug)
         divergence_harness["register"](slug)
         manifest2 = Manifest(str(manifest_path))
-        graph2 = CodeGraph(str(graph_path))
+        graph2 = _graph_with_roots(config, graph_path, snap)
         indexer = _make_graph_wired_indexer(
             config=config, store=spy_store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest2, code_graph=graph2, snapshot_root=snap,
@@ -1848,7 +1870,7 @@ class TestRebuildGraphOnlyIndexerMethod:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
@@ -1872,7 +1894,7 @@ class TestRebuildGraphOnlyIndexerMethod:
         spy_store = DeleteByTierSpyStore(client=client, slug=slug)
         divergence_harness["register"](slug)
         manifest2 = Manifest(str(manifest_path))
-        graph2 = CodeGraph(str(graph_path))
+        graph2 = _graph_with_roots(config, graph_path, snap)
         indexer = _make_graph_wired_indexer(
             config=config, store=spy_store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest2, code_graph=graph2, snapshot_root=snap,
@@ -2035,7 +2057,7 @@ class TestDivergenceHealSetsRebuildingNotice:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
@@ -2120,7 +2142,7 @@ class TestDivergenceHealSetsRebuildingNotice:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.db"
+        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](

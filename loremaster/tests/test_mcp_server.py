@@ -89,10 +89,28 @@ _DIM = 2048
 
 # A real Python module with a uniquely-named symbol so search/get_symbol/graph
 # have something distinctive to find. Chunked for real through python_ast.
+# The router imports a stdlib module (``os``, dropped by the RESOLVED keep/drop
+# rule as external) AND an IN-PROJECT symbol (``pkg.base.BaseRouter``, kept as its
+# resolved FQN) so the graph carries a surviving, queryable import edge. ``import
+# os`` stays first so the read_file span assertion (line 1) is unchanged.
+_PY_BASE = """\
+\"\"\"The router base.\"\"\"
+
+
+class BaseRouter:
+    \"\"\"Common routing plumbing.\"\"\"
+
+    def lane(self):
+        return "lane"
+"""
+
 _PY_MODULE = """\
 import os
 
-class ChampionRouter:
+from pkg.base import BaseRouter
+
+
+class ChampionRouter(BaseRouter):
     \"\"\"Routes the 36-week curve champion.\"\"\"
 
     def route(self, week):
@@ -103,6 +121,9 @@ def champion_routing(week):
     \"\"\"Route the 36-week curve champion.\"\"\"
     return week * 2
 """
+
+# The independent oracle for the surviving in-project import (read off _PY_MODULE).
+_PY_MODULE_IMPORT_FQN = "pkg.base.BaseRouter"
 
 
 @pytest_asyncio.fixture()
@@ -201,7 +222,7 @@ async def _make_context(
         embedder=embedder or FakeEmbedder(dim=_DIM),
         qdrant_client=client,
         manifest_path=tmp_path / "m.db",
-        graph_path=tmp_path / "graph.db",
+        graph_path=tmp_path / "graph.kuzu",
         snapshot_root=tmp_path / "snap",
         start_tasks=start_tasks,
     )
@@ -432,7 +453,7 @@ class TestAppContextLifespan:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
-                graph_path=tmp_path / "graph.db",
+                graph_path=tmp_path / "graph.kuzu",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -458,8 +479,11 @@ class TestAppContextLifespan:
                 opened.append(self)
 
         class _TrackedGraph(graph_module.CodeGraph):
-            def __init__(self, db_path: str) -> None:
-                super().__init__(db_path)
+            def __init__(self, db_path: str, **kwargs: Any) -> None:
+                # Forward the resolution kwargs (tier_roots/project_roots) the
+                # production construction site now passes — the spy must mirror the
+                # real constructor signature, not the pre-resolution one.
+                super().__init__(db_path, **kwargs)
                 opened.append(self)
 
         # build_app_context imports these from their source modules at call time,
@@ -486,16 +510,21 @@ class TestAppContextLifespan:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
-                graph_path=tmp_path / "graph.db",
+                graph_path=tmp_path / "graph.kuzu",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
-        # Both SQLite handles were opened during the (aborted) build and must now
-        # be closed. A closed sqlite3 connection raises on use — that is the probe.
+        # Both DB handles were opened during the (aborted) build and must now be
+        # closed. A closed connection raises on use — that is the probe. The
+        # manifest is SQLite (``SELECT 1``); the graph is Kùzu (``RETURN 1`` — the
+        # valid trivial Cypher), so each is probed with its OWN dialect's no-op
+        # query (``SELECT 1`` is NOT valid Cypher and would raise even OPEN, making
+        # the probe meaningless for the Kùzu handle).
         assert len(opened) == 2, "manifest + graph should both have been opened"
         for handle in opened:
-            with pytest.raises(Exception):  # noqa: B017 - ProgrammingError on a closed conn
-                handle.connection.execute("SELECT 1")
+            probe = "RETURN 1" if isinstance(handle, _TrackedGraph) else "SELECT 1"
+            with pytest.raises(Exception):  # noqa: B017 - raises on a closed conn
+                handle.connection.execute(probe)
 
     async def test_startup_runs_an_initial_reconcile_so_offline_edits_index_now(
         self, tmp_path: Path, qdrant: AsyncQdrantClient
@@ -570,7 +599,7 @@ class TestAppContextLifespan:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
-                graph_path=tmp_path / "graph.db",
+                graph_path=tmp_path / "graph.kuzu",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=True,
             )
@@ -1018,6 +1047,7 @@ class TestToolOutputSchemas:
         slug = _slug()
         live = tmp_path / "live"
         (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
         ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
@@ -1086,6 +1116,7 @@ class TestToolBehaviourEndToEnd:
         slug = _slug()
         live = tmp_path / "live"
         (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
         ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
@@ -1130,7 +1161,9 @@ class TestToolBehaviourEndToEnd:
         assert any("pkg/router.py" in m.text for m in recalled)
 
     async def test_what_imports_traverses_graph(self, indexed_context: AppContext) -> None:
-        importers = await indexed_context.what_imports("os")
+        # The router imports the in-project ``pkg.base.BaseRouter`` (a stdlib
+        # import like ``os`` is dropped by the RESOLVED keep/drop rule).
+        importers = await indexed_context.what_imports(_PY_MODULE_IMPORT_FQN)
         assert any(n.qualified_name == "pkg.router" for n in importers)
 
     async def test_blast_radius_traverses_graph(self, indexed_context: AppContext) -> None:
@@ -1176,6 +1209,7 @@ class TestReindexTierValidation:
         slug = _slug()
         live = tmp_path / "live"
         (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)  # declares the live tier "custom"
         ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
@@ -1256,6 +1290,7 @@ class TestRegisteredToolWrappers:
         slug = _slug()
         live = tmp_path / "live"
         (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
         ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)

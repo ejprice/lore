@@ -60,7 +60,7 @@ TIER_DEFAULT = "default"
 # The safe charset a project ``slug`` must match: lowercase alphanumerics plus
 # ``-`` / ``_``, starting with an alphanumeric, non-empty. The slug is f-string'd
 # straight into BOTH the ``lore_<slug>`` Qdrant collection name AND the on-disk
-# state-DB paths (``<slug>.db`` / ``<slug>.memory.db`` / ``<slug>.graph.db``), so
+# state-DB paths (``<slug>.db`` / ``<slug>.memory.db`` / ``<slug>.graph.kuzu``), so
 # a traversal (``../etc``), a separator (``a/b``), whitespace, an uppercase, or a
 # leading separator is a path/collection hazard. Constraining it makes an
 # operator typo or a malicious value FAIL FAST at config load rather than
@@ -87,7 +87,7 @@ class ProjectConfig(_StrictModel):
     Attributes:
         slug: The project identifier; drives the ``lore_<slug>`` collection name
             AND the on-disk state-DB paths (``<slug>.db`` / ``<slug>.memory.db``
-            / ``<slug>.graph.db``). Constrained to the safe :data:`SLUG_PATTERN`
+            / ``<slug>.graph.kuzu``). Constrained to the safe :data:`SLUG_PATTERN`
             charset because it is interpolated straight into filesystem paths and
             a Qdrant collection name: a traversal, separator, whitespace,
             uppercase, or leading-separator slug is a path/collection hazard and

@@ -166,7 +166,7 @@ class TestCliBuildsCodeGraph:
         config_path = tmp_path / "lore.yaml"
         _write_lore_yaml(config_path=config_path, slug=slug, project_root=project_root)
         manifest_path = tmp_path / "state" / f"{slug}.db"
-        graph_path = tmp_path / "state" / f"{slug}.graph.db"
+        graph_path = tmp_path / "state" / f"{slug}.graph.kuzu"
 
         # Call _run directly (the real CLI wiring) — main() owns its own
         # asyncio.run(), which cannot nest inside this async test's loop.
@@ -189,17 +189,24 @@ class TestCliBuildsCodeGraph:
         assert graph_path.exists()
         graph = CodeGraph(str(graph_path))
         try:
-            node_count = graph.connection.execute(
-                "SELECT COUNT(*) AS c FROM nodes"
-            ).fetchone()["c"]
+            node_count = int(
+                graph.connection.execute("MATCH (n:CodeNode) RETURN count(n)").get_next()[0]
+            )
             assert node_count > 0, "cold index built NO graph nodes"
             # The module nodes for both files are present.
-            module_count = graph.connection.execute(
-                "SELECT COUNT(*) AS c FROM nodes WHERE kind = ?", (KIND_MODULE,)
-            ).fetchone()["c"]
+            module_count = int(
+                graph.connection.execute(
+                    "MATCH (n:CodeNode) WHERE n.kind = $kind RETURN count(n)",
+                    {"kind": KIND_MODULE},
+                ).get_next()[0]
+            )
             assert module_count >= 2
-            # The import edge is reachable via the reverse lookup: pkg.b imports pkg.a.
-            importers = {node.qualified_name for node in graph.what_imports("pkg.a")}
+            # The RESOLVED import edge is reachable via the reverse lookup: pkg.b's
+            # ``from pkg.a import compute_curve`` resolves in-project to the symbol
+            # FQN ``pkg.a.compute_curve``, so the module pkg.b imports it.
+            importers = {
+                node.qualified_name for node in graph.what_imports("pkg.a.compute_curve")
+            }
             assert "pkg.b" in importers
         finally:
             graph.close()
@@ -211,7 +218,7 @@ class TestCliBuildsCodeGraph:
         fake_embedder_cli: None,
     ) -> None:
         # With NO --graph, the CLI must build the graph at the SAME path the
-        # server reads: <manifest_dir>/<slug>.graph.db. A mismatch means the
+        # server reads: <manifest_dir>/<slug>.graph.kuzu. A mismatch means the
         # server serves an empty graph after a cold index.
         slug = _slug()
         store_factory(slug)
@@ -236,12 +243,15 @@ class TestCliBuildsCodeGraph:
         assert summary.files_failed == 0
         assert summary.files_indexed > 0
 
-        # The server-shared default path: alongside the manifest, <slug>.graph.db.
-        expected_graph_path = manifest_path.parent / f"{slug}.graph.db"
+        # The server-shared default path: alongside the manifest, <slug>.graph.kuzu.
+        expected_graph_path = manifest_path.parent / f"{slug}.graph.kuzu"
         assert expected_graph_path.exists(), "default graph path not written"
         graph = CodeGraph(str(expected_graph_path))
         try:
-            importers = {node.qualified_name for node in graph.what_imports("pkg.a")}
+            # pkg.b's resolved in-project import is the symbol FQN pkg.a.compute_curve.
+            importers = {
+                node.qualified_name for node in graph.what_imports("pkg.a.compute_curve")
+            }
             assert "pkg.b" in importers
         finally:
             graph.close()

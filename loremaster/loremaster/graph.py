@@ -1,99 +1,108 @@
-"""Typed code-graph — a SQLite side-structure derived from python_ast chunks.
+"""Typed code-graph — a KùzuDB side-structure with astroid-RESOLVED edges.
 
-This is Deliverable 3, the capability layer: a typed code-graph built as a
-SQLite SIDE-structure (there is NO new vector index — the graph lives alongside
-the manifest, not inside Qdrant). It is GENERIC over any Python AST chunks the
-lorescribe :class:`~lorescribe.python_ast.PythonAstChunker` emits — there is
-ZERO Odoo-specific handling. A watcher / reconcile pass keeps it fresh by
-rebuilding one file's slice transactionally (delete + rebuild), exactly the way
-the indexer refreshes a file's vector points.
+This is the capability layer: a typed code-graph built as a KùzuDB SIDE-structure
+(there is NO new vector index — the graph lives alongside the manifest, not inside
+Qdrant). It is GENERIC over any Python AST chunks the lorescribe
+:class:`~lorescribe.python_ast.PythonAstChunker` emits — there is ZERO
+Odoo-specific handling. A watcher / reconcile pass keeps it fresh by rebuilding
+one file's slice transactionally (delete + rebuild), exactly the way the indexer
+refreshes a file's vector points.
 
-Schema (two tables, real SQLite, WAL):
+**Why Kùzu, and why edges-as-records.** The store is a single Kùzu database file
+(``<slug>.graph.kuzu``). Kùzu's native RELs require BOTH endpoints to exist at
+create-time, which breaks two invariants the code-graph must hold:
 
-* ``nodes(id, kind, qualified_name, file_path, chunk_id, tier)`` — one row per
-  graph node. ``id`` is an autoincrement surrogate; the natural key is
-  ``(tier, file_path, qualified_name, kind)``. ``kind`` is one of
-  :data:`KIND_MODULE` / :data:`KIND_CLASS` / :data:`KIND_METHOD` /
-  :data:`KIND_FUNCTION`. ``qualified_name`` is the dotted name
-  (``demo.service``, ``demo.service.IndexService``,
-  ``demo.service.IndexService.boot``). ``chunk_id`` is the originating chunk's
-  ``identity`` (the within-file natural key) — ``NULL`` for the synthesised
-  module node, which has no chunk of its own.
-* ``edges(src, dst, kind)`` — one directed edge per row. ``kind`` is one of
-  :data:`EDGE_DEFINES` / :data:`EDGE_INHERITS` / :data:`EDGE_IMPORTS` /
-  :data:`EDGE_CALLS`. An edge also carries ``tier`` and ``file_path`` (the file
-  whose rebuild owns it) so a per-file rebuild can purge exactly its own edges
-  with no orphans and no collateral damage to sibling files/tiers.
+* **Order-independence.** A caller may be indexed before its callee (one file's
+  rebuild cannot wait for another's). A REL ``caller -> callee`` cannot be created
+  until ``callee`` exists.
+* **Collision-correctness.** The SAME fully-qualified name legitimately repeats
+  across files (two modules each defining ``Config``), so a node's identity is its
+  surrogate ``id``, not its qname — a REL keyed on qname would conflate them.
 
-**What each edge kind is derived from (and what it cannot be):**
+So references are stored as RECORDS in a second node table :data:`_REF_TABLE`
+carrying a STRING ``dst`` (the resolved FQN when the reference resolved in-project,
+else the bare written name). A reference "lands" on a target node when a ``Ref``
+record's ``dst`` equals that node's ``qualified_name`` (resolved edges) OR its bare
+last segment (the conservative unresolved fallback) — exactly the proven SQLite
+name-resolution seam, now with resolution PRECISION on top.
 
-* ``defines`` — FULLY derived from the chunk set's structure. The module node
-  ``defines`` every top-level class and top-level function; each class node
-  ``defines`` its own methods (via the ``method`` chunk's ``class_name``
-  metadata). ``dst`` is the fully-qualified node name.
-* ``inherits`` — FULLY derived from the ``class`` chunk's ``inherits`` metadata
-  list (the bare base names the AST captured as ``ast.Name`` bases). ``dst`` is
-  the bare base name (``BaseService``); a dotted base like ``ast.NodeVisitor``
-  is NOT captured by the chunker and so produces no edge — we never fabricate a
-  resolution we cannot prove. Read ONLY from ``class`` chunks: a ``method``
-  chunk also carries its class's ``inherits`` list (it is inherited context),
-  so reading it there would fabricate a spurious method→base edge.
-* ``imports`` — FULLY derived, but the imported names live ONLY in the
-  ``imports`` chunk's ``source_text`` (the chunker puts none in metadata), so
-  they are re-parsed from that source with ``ast``. ``dst`` is the imported
-  module / dotted name (``json``, ``pathlib``, ``demo.errors``). A
-  ``from x import y`` records ``x`` (the module pulled in); a bare ``import a.b``
-  records ``a.b``. ``__future__`` is skipped (a compiler directive, not a real
-  dependency).
-* ``calls`` — BEST-EFFORT, parsed from each ``method`` / ``function`` chunk's
-  ``source_text`` by walking ``ast.Call`` nodes. ``dst`` is the called NAME — a
-  bare ``Name`` func (``load_config``) or the trailing attribute of an
-  ``Attribute`` func (``loads`` from ``json.loads``). It is NOT resolved to a
-  defining node, because one file's chunk set cannot resolve a cross-module
-  callee; the call graph is a hint, not a proof. We do not guess at dynamic
-  dispatch, ``getattr`` calls, or calls assembled at runtime.
+Schema (two node tables):
 
-Query functions:
+* :data:`_NODE_TABLE` ``CodeNode(id, kind, qualified_name, file_path, chunk_id,
+  tier)`` — one row per graph node. ``id`` is a surrogate ``SERIAL`` primary key;
+  the natural key is ``(tier, file_path, kind, qualified_name)``. ``kind`` is one
+  of :data:`KIND_MODULE` / :data:`KIND_CLASS` / :data:`KIND_METHOD` /
+  :data:`KIND_FUNCTION`. ``chunk_id`` is the originating chunk's ``identity`` (the
+  synthesised module node has none, stored as an empty string).
+* :data:`_REF_TABLE` ``Ref(id, src_qname, dst, kind, resolved, tier, file_path)``
+  — one directed reference per row. ``kind`` is one of :data:`EDGE_DEFINES` /
+  :data:`EDGE_INHERITS` / :data:`EDGE_IMPORTS` / :data:`EDGE_CALLS`. ``resolved``
+  is ``True`` when ``dst`` is an astroid-inferred in-project FQN, ``False`` for the
+  bare-name fallback. ``(tier, file_path)`` is the owning file so a per-file
+  rebuild purges exactly its own records.
 
-* :meth:`CodeGraph.what_imports` — the reverse of the import edge: every module
-  node with an ``imports`` edge whose ``dst`` equals the target.
-* :meth:`CodeGraph.blast_radius` — the BOUNDED reverse-edge transitive closure.
-  Walks edges backwards from the target (an edge ``a -kind-> b`` means "a
-  depends on b", so b's dependents are the ``src`` of edges whose ``dst`` is b)
-  across ALL edge kinds, stopping at ``depth`` hops and clamping the result set
-  at ``max_results`` so a pathological fan-out cannot blow up. Frontier matching
-  spans the name-resolution seam: an edge ``dst`` may be a bare name
-  (``inherits`` / ``calls`` / ``imports``) or a qualified name (``defines``), so
-  a node is reached when an edge ``dst`` equals EITHER its qualified name OR its
-  bare last segment.
-* :meth:`CodeGraph.tests_for` — test nodes related to a symbol or file. A node
-  is a test node when its ``file_path`` matches a test glob
-  (:data:`TEST_PATH_GLOBS`). It is returned when EITHER it sits in a test file
-  with an edge into the target's file/symbol, OR the ``test_x`` ↔ ``x`` name
-  heuristic links it (a ``test_boot`` function is a test for symbol ``boot``).
+**What each edge kind is derived from (RESOLVED):**
+
+* ``defines`` — FULLY derived from the chunk set's structure (no astroid needed).
+  The module node ``defines`` every top-level class and top-level function; each
+  class node ``defines`` its own methods. ``dst`` is the fully-qualified node name;
+  ``resolved`` is ``True`` (structural defines are always exact).
+* ``inherits`` / ``imports`` / ``calls`` — derived from astroid INFERENCE via
+  :func:`lorescribe.astroid_parse.resolve_module`. The mapping rule per resolved
+  reference:
+
+  - ``(resolved and in_project)`` → KEEP, ``dst`` = the inferred FQN,
+    ``resolved=True``. (An in-project base is now its FQN ``demo.service.Base``,
+    NOT the bare ``Base`` the old stdlib-``ast`` engine stored — the deliberate
+    contract change.)
+  - ``(not resolved)`` → KEEP, ``dst`` = the bare written name, ``resolved=False``
+    (the conservative fallback so a reference astroid could not infer is never
+    silently dropped).
+  - ``(resolved and not in_project)`` → DROP (builtins / stdlib / third-party
+    noise — ``json``, ``pathlib.Path``, ``pydantic.BaseModel``).
+
+  Resolution needs the file ON DISK under the project roots; when the graph is
+  constructed without roots (the in-memory test seam) only structural ``defines``
+  edges are emitted, so the object still works without roots — production passes
+  them.
+
+Query methods:
+
+* :meth:`CodeGraph.what_imports` — module nodes with an ``imports`` reference whose
+  ``dst`` matches the target (by FQN or bare name).
+* :meth:`CodeGraph.blast_radius` — the BOUNDED reverse-reference transitive closure
+  across ALL reference kinds, capped at ``depth`` hops and ``max_results`` nodes.
+* :meth:`CodeGraph.tests_for` — test-path nodes related to a symbol/file via a
+  reference into it, plus the ``test_x`` ↔ ``x`` name heuristic.
 """
 
 from __future__ import annotations
 
-import ast
-import sqlite3
-import textwrap
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+import kuzu
+from lorescribe.astroid_parse import (
+    ParseError,
+    ResolvedBase,
+    ResolvedCall,
+    ResolvedImport,
+    ResolvedModule,
+    clear_resolution_cache,
+    resolve_module,
+)
 from lorescribe.python_ast import (
     CHUNK_TYPE_CLASS,
     CHUNK_TYPE_FUNCTION,
-    CHUNK_TYPE_IMPORTS,
     CHUNK_TYPE_METHOD,
 )
 from pydantic import BaseModel, ConfigDict
 
-from loremaster.index.sqlite_resilient import open_resilient_sqlite
+from loremaster.index.kuzu_resilient import open_resilient_kuzu
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Mapping, Sequence
 
     from lorescribe.models import Chunk
 
@@ -118,22 +127,13 @@ _PYTHON_SUFFIX = ".py"
 # The package-marker file. A directory containing this is an importable package;
 # the SHALLOWEST such directory in a file's path chain is the package TOP, and
 # everything to its left (a workspace-member / src dir) is NOT part of the
-# importable dotted path. This is how ``loremaster/loremaster/config.py`` (under
-# a repo root whose ``loremaster/`` member dir has no ``__init__.py``) resolves to
-# the importable ``loremaster.config`` rather than the doubled
-# ``loremaster.loremaster.config``.
+# importable dotted path.
 _PACKAGE_MARKER = "__init__.py"
 
 # The stem an ``__init__.py`` collapses to its package under.
 _INIT_STEM = "__init__"
 
-# Import statements naming this module are compiler directives, never real
-# dependencies, so they are not turned into ``imports`` edges.
-_FUTURE_MODULE = "__future__"
-
 # Globs (matched against the POSIX file path) that mark a node as a TEST node.
-# A path is a test if its basename matches ``test_*.py`` / ``*_test.py`` OR any
-# path segment is a ``tests`` directory. These mirror pytest's own discovery.
 TEST_PATH_GLOBS: tuple[str, ...] = ("test_*.py", "*_test.py")
 _TESTS_DIR_NAME = "tests"
 
@@ -141,40 +141,53 @@ _TESTS_DIR_NAME = "tests"
 # ``test_boot`` tests ``boot`` (the ``test_x`` ↔ ``x`` heuristic).
 _TEST_NAME_PREFIX = "test_"
 
-# Schema DDL. Executed idempotently on every open so a fresh and a reopened db
-# both arrive at the same schema. WAL is enabled (see __init__) so concurrent
-# readers (MCP graph lookups) never block the single writer (watcher/reconcile).
-# Edges carry (tier, file_path) so a per-file rebuild purges exactly its own.
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS nodes (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind           TEXT NOT NULL,
-    qualified_name TEXT NOT NULL,
-    file_path      TEXT NOT NULL,
-    chunk_id       TEXT,
-    tier           TEXT NOT NULL,
-    UNIQUE (tier, file_path, kind, qualified_name)
-);
-CREATE TABLE IF NOT EXISTS edges (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    src       TEXT NOT NULL,
-    dst       TEXT NOT NULL,
-    kind      TEXT NOT NULL,
-    tier      TEXT NOT NULL,
-    file_path TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_nodes_tier_file ON nodes (tier, file_path);
-CREATE INDEX IF NOT EXISTS idx_nodes_qname ON nodes (qualified_name);
-CREATE INDEX IF NOT EXISTS idx_edges_tier_file ON edges (tier, file_path);
-CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges (dst, kind);
-"""
+# Kùzu table names. CodeNode holds graph nodes; Ref holds reference records (the
+# edges-as-records design — see the module docstring for why Kùzu RELs are unfit).
+_NODE_TABLE = "CodeNode"
+_REF_TABLE = "Ref"
+
+# A SERIAL primary key cannot be NULL and a Kùzu STRING column has no NULL literal
+# in our INSERT path, so the synthesised module node (which has no originating
+# chunk) stores the empty string for ``chunk_id`` and is decoded back to ``None``.
+_NO_CHUNK_ID = ""
+
+# Schema DDL, executed idempotently on every open (CREATE ... IF NOT EXISTS) so a
+# fresh and a reopened db both arrive at the same schema. References are stored as
+# node-table RECORDS (not RELs) so an edge can be created before its endpoints
+# exist (order-independence) and a repeated FQN across files stays distinct
+# (collision-correctness) — see the module docstring.
+_SCHEMA_STATEMENTS: tuple[str, ...] = (
+    f"""
+    CREATE NODE TABLE IF NOT EXISTS {_NODE_TABLE}(
+        id SERIAL,
+        kind STRING,
+        qualified_name STRING,
+        file_path STRING,
+        chunk_id STRING,
+        tier STRING,
+        PRIMARY KEY(id)
+    )
+    """,
+    f"""
+    CREATE NODE TABLE IF NOT EXISTS {_REF_TABLE}(
+        id SERIAL,
+        src_qname STRING,
+        dst STRING,
+        kind STRING,
+        resolved BOOL,
+        tier STRING,
+        file_path STRING,
+        PRIMARY KEY(id)
+    )
+    """,
+)
 
 
 class GraphNode(BaseModel):
-    """A single decoded ``nodes`` row.
+    """A single decoded ``CodeNode`` row.
 
     Attributes:
-        id: The surrogate autoincrement row id.
+        id: The surrogate ``SERIAL`` row id.
         kind: One of :data:`KIND_MODULE` / :data:`KIND_CLASS` /
             :data:`KIND_METHOD` / :data:`KIND_FUNCTION`.
         qualified_name: The dotted name (``demo.service.IndexService.boot``).
@@ -205,77 +218,120 @@ class _NodeSpec(BaseModel):
 
 
 class _EdgeSpec(BaseModel):
-    """An intermediate edge-to-insert."""
+    """An intermediate reference-record-to-insert.
+
+    Attributes:
+        src: The referring node's qualified name.
+        dst: The referenced target — the resolved in-project FQN when
+            ``resolved``, else the bare written name (the conservative fallback).
+        kind: One of the four ``EDGE_*`` kinds.
+        resolved: ``True`` when ``dst`` is an astroid-inferred in-project FQN.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     src: str
     dst: str
     kind: str
+    resolved: bool
 
 
 class CodeGraph:
-    """A typed code-graph over Python AST chunks, backed by WAL SQLite.
+    """A typed code-graph over Python AST chunks, backed by KùzuDB.
 
-    The database path is configurable; pass a real file path (WAL across
-    connections is meaningless for ``:memory:``). The schema is created on
-    construction. Every mutation is tier- and file-scoped so a per-file rebuild
-    or delete never touches a sibling file or tier (the C1 discipline the
-    manifest already follows).
+    The database path is a single Kùzu file (a real path). The schema is created
+    on construction. Every mutation is tier- and file-scoped so a per-file rebuild
+    or delete never touches a sibling file or tier (the C1 discipline the manifest
+    already follows).
+
+    References are astroid-RESOLVED: in-project ``imports`` / ``inherits`` /
+    ``calls`` carry the inferred fully-qualified ``dst`` (and ``resolved=True``),
+    external resolved references are dropped, and an un-inferable reference falls
+    back to its bare written name (``resolved=False``). Resolution requires the
+    file on disk under the project roots, so the roots are supplied at
+    construction; without them the graph emits only structural ``defines`` edges.
 
     Args:
-        db_path: The SQLite database path (a real file).
+        db_path: The Kùzu database path (a single real file).
+        tier_roots: Optional mapping ``tier -> on-disk root`` the tier's
+            tier-relative file paths are relative to. Used to locate a file on
+            disk for astroid resolution. ``None`` ⇒ resolution is skipped.
+        project_roots: Optional list of project root directories astroid adds to
+            its search path and uses to classify a reference in-project vs
+            external. ``None`` ⇒ resolution is skipped.
     """
 
-    def __init__(self, db_path: str) -> None:
-        """Open (or create) the graph database, enable WAL, ensure schema.
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        tier_roots: Mapping[str, str | Path] | None = None,
+        project_roots: Sequence[str | Path] | None = None,
+    ) -> None:
+        """Open (or create) the graph database resiliently and ensure the schema.
 
-        The open is RESILIENT (FP-01 + FP-08): an absent parent dir is created
-        and a corrupt on-disk image is deleted and recreated, both via
-        :func:`~loremaster.index.sqlite_resilient.open_resilient_sqlite`. A
-        valid existing graph — including a zero-byte file — opens UNCHANGED.
+        The open is RESILIENT (FP-01 + FP-08 analogues): an absent parent dir is
+        created owner-only and a corrupt on-disk image is deleted and recreated,
+        both via :func:`~loremaster.index.kuzu_resilient.open_resilient_kuzu`. A
+        valid existing graph opens UNCHANGED — its records survive.
         """
-        # ``check_same_thread=False`` (inside the resilient helper) so the
-        # single-writer graph can be driven from the asyncio loop thread and a
-        # watcher thread under the caller's own lock — the same concurrency
-        # contract the manifest follows.
-        self._connection = open_resilient_sqlite(db_path)
-        self._connection.row_factory = sqlite3.Row
-        self._connection.execute("PRAGMA journal_mode = WAL")
-        self._connection.executescript(_SCHEMA)
-        self._connection.commit()
+        self._tier_roots: dict[str, str] = (
+            {tier: str(root) for tier, root in tier_roots.items()}
+            if tier_roots is not None
+            else {}
+        )
+        self._project_roots: list[str] = (
+            [str(root) for root in project_roots] if project_roots is not None else []
+        )
+        # Resolution is only attempted when BOTH a tier's root and the project
+        # roots are known — otherwise astroid cannot place the file on disk nor
+        # classify references, so we degrade to structural ``defines`` only.
+        self._resolution_enabled = bool(self._project_roots)
+
+        self._database = open_resilient_kuzu(db_path)
+        self._connection = kuzu.Connection(self._database)
+        for statement in _SCHEMA_STATEMENTS:
+            self._execute(statement)
 
     @property
-    def connection(self) -> sqlite3.Connection:
-        """The underlying SQLite connection (for diagnostics and tests)."""
+    def connection(self) -> kuzu.Connection:
+        """The underlying Kùzu connection (for diagnostics, tests, divergence-wipe)."""
         return self._connection
 
+    def _execute(
+        self, cypher: str, params: dict[str, object] | None = None
+    ) -> kuzu.QueryResult:
+        """Execute a SINGLE-statement Cypher query, narrowing the result type.
+
+        ``kuzu.Connection.execute`` is typed ``QueryResult | list[QueryResult]``
+        because a multi-statement string yields one result per statement; every
+        query this class issues is a single statement, so the list form never
+        occurs and is asserted away to keep the call sites strongly typed.
+        """
+        result = self._connection.execute(cypher, parameters=params or {})
+        assert isinstance(result, kuzu.QueryResult)  # noqa: S101 - single-statement invariant
+        return result
+
     def close(self) -> None:
-        """Close the underlying database connection."""
+        """Close the underlying database connection and database."""
         self._connection.close()
+        self._database.close()
 
     def indexed_file_count(self) -> int:
         """Return the number of distinct files the graph currently holds nodes for.
 
-        The graph's view of "how many files are live", across every tier. The
-        store-divergence reconcile compares it against the manifest's
-        ``indexed_file_count`` to detect a wiped/empty ``graph.db`` the manifest
-        still calls indexed (FP-04): a zero graph count over a positive manifest
-        count triggers a re-graph so ``what_imports`` / ``tests_for`` stop
-        silently returning nothing.
+        The graph's view of "how many files are live", across every tier — the
+        store-divergence reconcile compares it against the manifest to detect a
+        wiped/empty graph the manifest still calls indexed (FP-04). A wiped graph
+        (no node rows) yields ``0`` — the FP-04 trigger.
 
         Returns:
-            The count of distinct ``(tier, file_path)`` files with graph nodes
-            (``0`` for a fresh or wiped graph).
+            The count of distinct ``(tier, file_path)`` files with graph nodes.
         """
-        # A file's identity in the graph is the same (tier, file_path) pair the
-        # node rows are scoped by (C1), so DISTINCT over that pair is the file
-        # count. A wiped graph (no node rows) yields 0 — the FP-04 trigger.
-        row = self._connection.execute(
-            "SELECT COUNT(DISTINCT tier || ? || file_path) AS n FROM nodes",
-            (_QUALIFIER_SEPARATOR,),
-        ).fetchone()
-        return int(row["n"])
+        result = self._execute(
+            f"MATCH (n:{_NODE_TABLE}) RETURN count(DISTINCT [n.tier, n.file_path])"
+        )
+        return self._single_int(result)
 
     # -- naming helpers ----------------------------------------------------
 
@@ -283,9 +339,8 @@ class CodeGraph:
     def module_qualified_name(file_path: str) -> str:
         """Derive the dotted module name from a tier-relative POSIX path.
 
-        ``demo/service.py`` → ``demo.service``; an ``__init__.py`` collapses to
-        its package (``demo/__init__.py`` → ``demo``). The suffix is stripped and
-        the path separators become dots.
+        ``demo/service.py`` → ``demo.service``; an ``__init__.py`` collapses to its
+        package (``demo/__init__.py`` → ``demo``).
 
         Args:
             file_path: The tier-relative POSIX file path.
@@ -296,7 +351,7 @@ class CodeGraph:
         path = PurePosixPath(file_path)
         parts = list(path.parts)
         stem = path.stem
-        if stem == "__init__":
+        if stem == _INIT_STEM:
             parts = parts[:-1]
         else:
             parts[-1] = stem
@@ -306,32 +361,21 @@ class CodeGraph:
     def importable_module_name(base: Path, file_path: str) -> str:
         """Derive the TRUE importable dotted module name from an on-disk layout.
 
-        The fix for the split-brain module identity: :meth:`module_qualified_name`
-        joins EVERY segment of the tier-relative path, so a workspace-member
-        layout (``loremaster/loremaster/config.py`` under a repo root whose
-        ``loremaster/`` member dir has no ``__init__.py``) yields the DOUBLED,
-        non-importable ``loremaster.loremaster.config`` — which never matches the
-        ``imports``-edge ``dst`` strings (the real import ``loremaster.config``).
+        Strips leading path segments up to the top of the package: the SHALLOWEST
+        directory in ``file_path``'s chain that contains an ``__init__.py`` (probed
+        under ``base`` on disk) is the package top, and everything to its left is
+        dropped. ``loremaster/loremaster/config.py`` (under a repo root whose
+        ``loremaster/`` member dir has no ``__init__.py``) resolves to the
+        importable ``loremaster.config`` rather than the doubled
+        ``loremaster.loremaster.config``.
 
-        This resolver strips leading path segments up to the top of the package:
-        the SHALLOWEST directory in ``file_path``'s chain that contains an
-        ``__init__.py`` (probed under ``base`` on disk) is the package top, and
-        everything to its left is dropped. From the package top, ``/`` → ``.``,
-        the ``.py`` suffix is dropped, and an ``__init__.py`` collapses to its
-        package — yielding the importable dotted path
-        (``loremaster/loremaster/config.py`` → ``loremaster.config``).
-
-        Fallback (documented): if NO directory in the chain contains an
-        ``__init__.py`` — a namespace / ``src`` layout, or a path with no file on
-        disk (the direct ``index_file`` test seam) — nothing is stripped and the
-        full tier-relative path is joined, exactly as
-        :meth:`module_qualified_name` does. The derivation degrades gracefully
-        rather than crashing, and the bare-package and top-level-module cases fall
-        out of the same logic.
+        Fallback: if NO directory in the chain contains an ``__init__.py`` (a
+        namespace / ``src`` layout, or a path with no file on disk), nothing is
+        stripped and the full tier-relative path is joined, exactly as
+        :meth:`module_qualified_name` does.
 
         Args:
-            base: The tier's on-disk root that ``file_path`` is relative to (the
-                directory probed for ``__init__.py`` package markers).
+            base: The tier's on-disk root that ``file_path`` is relative to.
             file_path: The tier-relative POSIX file path.
 
         Returns:
@@ -339,11 +383,8 @@ class CodeGraph:
         """
         path = PurePosixPath(file_path)
         parts = list(path.parts)
-        # The directories in the chain, left → right (exclude the file itself).
         directories = parts[:-1]
 
-        # Find the SHALLOWEST directory that is a package (has __init__.py on
-        # disk). Everything left of it is a non-package member/src dir to strip.
         package_top_index: int | None = None
         for index in range(len(directories)):
             candidate_dir = base / PurePosixPath(*parts[: index + 1])
@@ -351,12 +392,9 @@ class CodeGraph:
                 package_top_index = index
                 break
 
-        # Fallback: no package marker anywhere → strip nothing (namespace/src
-        # layout, or a path with no file on disk). Matches module_qualified_name.
         start = package_top_index if package_top_index is not None else 0
         kept = parts[start:]
 
-        # Collapse __init__.py to its package; otherwise drop the .py suffix.
         if path.stem == _INIT_STEM:
             kept = kept[:-1]
         else:
@@ -378,51 +416,63 @@ class CodeGraph:
         *,
         module_name: str | None = None,
     ) -> None:
-        """Derive and store the nodes/edges for one file, transactionally.
+        """Derive and store the nodes/references for one file.
 
-        A per-file rebuild: the file's prior nodes and edges are deleted and the
-        freshly-derived set inserted inside ONE transaction, so a concurrent
-        reader never sees a half-applied graph and a removed symbol leaves no
-        orphan edge behind. The delete and the insert are both tier- and
+        A per-file rebuild: the file's prior nodes and references are deleted and
+        the freshly-derived set inserted, so a removed symbol leaves no orphan
+        reference behind. The delete and the insert are both tier- and
         file-scoped, so another tier's copy of the same path (C1) and sibling
         files are untouched.
 
         Args:
             tier: The source tier the file belongs to.
-            file_path: The tier-relative POSIX file path (still the tier-scoping
-                key for the node/edge rows — deletes and C1 isolation key on it).
+            file_path: The tier-relative POSIX file path (the tier-scoping key).
             chunks: The file's lorescribe AST chunks (any python_ast chunk set).
-            module_name: The module prefix every node/edge ``src`` is qualified
-                under. The indexer passes the TRUE importable dotted path (derived
-                from the on-disk package layout via
-                :meth:`importable_module_name`), so node names match the
-                ``imports``-edge ``dst`` strings. When ``None`` (direct in-memory
-                test calls with no filesystem behind ``file_path``), it falls back
-                to the pure path-join :meth:`module_qualified_name`.
+            module_name: The module prefix every node/reference ``src`` is
+                qualified under (the TRUE importable dotted path). ``None`` ⇒ the
+                pure path-join :meth:`module_qualified_name`.
         """
         module = module_name if module_name is not None else self.module_qualified_name(file_path)
-        nodes, edges = self._derive(module, chunks)
-        with self._connection:
-            self._delete_file_rows(tier, file_path)
-            for node in nodes:
-                self._connection.execute(
-                    """
-                    INSERT INTO nodes (kind, qualified_name, file_path, chunk_id, tier)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (node.kind, node.qualified_name, file_path, node.chunk_id, tier),
-                )
-            for edge in edges:
-                self._connection.execute(
-                    """
-                    INSERT INTO edges (src, dst, kind, tier, file_path)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (edge.src, edge.dst, edge.kind, tier, file_path),
-                )
+        nodes = self._derive_nodes(module, chunks)
+        edges = self._derive_edges(module, chunks, tier=tier, file_path=file_path)
+
+        self._delete_file_rows(tier, file_path)
+        for node in nodes:
+            self._execute(
+                f"""
+                CREATE (n:{_NODE_TABLE} {{
+                    kind: $kind, qualified_name: $qualified_name,
+                    file_path: $file_path, chunk_id: $chunk_id, tier: $tier
+                }})
+                """,
+                {
+                    "kind": node.kind,
+                    "qualified_name": node.qualified_name,
+                    "file_path": file_path,
+                    "chunk_id": node.chunk_id if node.chunk_id is not None else _NO_CHUNK_ID,
+                    "tier": tier,
+                },
+            )
+        for edge in edges:
+            self._execute(
+                f"""
+                CREATE (r:{_REF_TABLE} {{
+                    src_qname: $src, dst: $dst, kind: $kind,
+                    resolved: $resolved, tier: $tier, file_path: $file_path
+                }})
+                """,
+                {
+                    "src": edge.src,
+                    "dst": edge.dst,
+                    "kind": edge.kind,
+                    "resolved": edge.resolved,
+                    "tier": tier,
+                    "file_path": file_path,
+                },
+            )
 
     def delete_file_graph(self, tier: str, file_path: str) -> None:
-        """Remove every node and edge owned by ``(tier, file_path)``.
+        """Remove every node and reference owned by ``(tier, file_path)``.
 
         Tier-scoped: the same path's rows under other tiers survive (C1). Used by
         the watcher when a file is removed, and internally by the rebuild.
@@ -431,61 +481,46 @@ class CodeGraph:
             tier: The source tier the file belongs to.
             file_path: The tier-relative POSIX file path to purge.
         """
-        with self._connection:
-            self._delete_file_rows(tier, file_path)
+        self._delete_file_rows(tier, file_path)
 
     def _delete_file_rows(self, tier: str, file_path: str) -> None:
-        """Delete a file's nodes and edges (caller owns the transaction)."""
-        self._connection.execute(
-            "DELETE FROM nodes WHERE tier = ? AND file_path = ?", (tier, file_path)
+        """Delete a file's nodes and reference records (tier+file scoped)."""
+        params: dict[str, object] = {"tier": tier, "file_path": file_path}
+        self._execute(
+            f"MATCH (n:{_NODE_TABLE}) WHERE n.tier = $tier AND n.file_path = $file_path "
+            "DETACH DELETE n",
+            params,
         )
-        self._connection.execute(
-            "DELETE FROM edges WHERE tier = ? AND file_path = ?", (tier, file_path)
+        self._execute(
+            f"MATCH (r:{_REF_TABLE}) WHERE r.tier = $tier AND r.file_path = $file_path "
+            "DETACH DELETE r",
+            params,
         )
 
-    # -- derivation (pure: chunks → node/edge specs) -----------------------
+    # -- derivation: nodes (structural, no astroid) ------------------------
 
-    def _derive(
-        self, module: str, chunks: Sequence[Chunk]
-    ) -> tuple[list[_NodeSpec], list[_EdgeSpec]]:
-        """Derive the node and edge specs for a file from its AST chunks.
+    def _derive_nodes(self, module: str, chunks: Sequence[Chunk]) -> list[_NodeSpec]:
+        """Derive the node specs for a file from its AST chunks (structural).
 
-        Pure with respect to the database: takes the module qualified name and
-        the chunk set, returns the node/edge specs to insert. The module node is
-        synthesised (no chunk of its own); every other node maps to one chunk.
+        The module node is synthesised (no chunk of its own); every other node maps
+        to one chunk. Deduped on ``(kind, qualified_name)`` — a method reachable via
+        a conditional ``def`` can be chunked twice under the same qualified name.
         """
         nodes: list[_NodeSpec] = [
             _NodeSpec(kind=KIND_MODULE, qualified_name=module, chunk_id=None)
         ]
-        edges: list[_EdgeSpec] = []
-
         for chunk in chunks:
-            if chunk.chunk_type == CHUNK_TYPE_IMPORTS:
-                edges.extend(self._import_edges(module, chunk))
-            elif chunk.chunk_type == CHUNK_TYPE_CLASS:
+            if chunk.chunk_type == CHUNK_TYPE_CLASS:
                 nodes.append(self._class_node(module, chunk))
-                edges.extend(self._class_edges(module, chunk))
             elif chunk.chunk_type == CHUNK_TYPE_METHOD:
                 nodes.append(self._method_node(module, chunk))
-                edges.extend(self._method_edges(module, chunk))
             elif chunk.chunk_type == CHUNK_TYPE_FUNCTION:
                 nodes.append(self._function_node(module, chunk))
-                edges.extend(self._function_edges(module, chunk))
-            # Any other chunk_type (e.g. the syntax-error ``python_window``
-            # fallback) carries no derivable structure and is skipped — the
-            # graph degrades to "no edges for this file" rather than guessing.
-
-        return self._dedupe_nodes(nodes), edges
+        return self._dedupe_nodes(nodes)
 
     @staticmethod
     def _dedupe_nodes(nodes: list[_NodeSpec]) -> list[_NodeSpec]:
-        """Drop duplicate node specs (same kind + qualified_name), keeping the first.
-
-        A method reachable via a conditional ``def`` can be chunked twice (the
-        chunker disambiguates the *chunk* identity with ``#N``, but the symbol's
-        qualified name is the same), and the module node is synthesised once;
-        the UNIQUE constraint would otherwise abort the whole rebuild.
-        """
+        """Drop duplicate node specs (same kind + qualified_name), keeping the first."""
         seen: set[tuple[str, str]] = set()
         unique: list[_NodeSpec] = []
         for node in nodes:
@@ -495,8 +530,6 @@ class CodeGraph:
             seen.add(key)
             unique.append(node)
         return unique
-
-    # -- per-chunk-kind node builders --------------------------------------
 
     def _class_node(self, module: str, chunk: Chunk) -> _NodeSpec:
         """A ``class`` node, qualified ``module.ClassName``."""
@@ -523,205 +556,312 @@ class CodeGraph:
             chunk_id=chunk.identity,
         )
 
-    # -- per-chunk-kind edge builders --------------------------------------
+    # -- derivation: edges -------------------------------------------------
 
-    def _class_edges(self, module: str, chunk: Chunk) -> list[_EdgeSpec]:
-        """``module defines Class`` plus one ``Class inherits Base`` per base.
+    def _derive_edges(
+        self, module: str, chunks: Sequence[Chunk], *, tier: str, file_path: str
+    ) -> list[_EdgeSpec]:
+        """Derive the reference records: structural ``defines`` + RESOLVED refs.
 
-        ``inherits`` is read ONLY here (from the ``class`` chunk's ``inherits``
-        metadata), never from a ``method`` chunk, so a method does not fabricate
-        a spurious edge to its class's bases.
+        ``defines`` is structural (module→class/func, class→method) and always
+        emitted. ``imports`` / ``inherits`` / ``calls`` are obtained from astroid
+        :func:`resolve_module` and mapped per the keep/drop rule; they are emitted
+        only when the file can be located on disk under the project roots (the
+        resolution seam). Without roots the graph still works — it just carries
+        only the structural ``defines`` references.
         """
-        class_name = str(chunk.metadata["class_name"])
-        class_qualified = f"{module}{_QUALIFIER_SEPARATOR}{class_name}"
-        edges: list[_EdgeSpec] = [
-            _EdgeSpec(src=module, dst=class_qualified, kind=EDGE_DEFINES)
-        ]
-        for base in self._inherits_list(chunk):
-            # ``dst`` is the bare base name the AST captured; we do not invent a
-            # dotted resolution the chunker never proved.
-            edges.append(_EdgeSpec(src=class_qualified, dst=base, kind=EDGE_INHERITS))
+        edges: list[_EdgeSpec] = self._define_edges(module, chunks)
+        resolved = self._resolve(module, tier=tier, file_path=file_path)
+        if resolved is not None:
+            edges.extend(self._reference_edges(module, resolved))
         return edges
 
-    def _method_edges(self, module: str, chunk: Chunk) -> list[_EdgeSpec]:
-        """``Class defines method`` plus best-effort ``method calls callee``."""
-        class_name = str(chunk.metadata["class_name"])
-        method_name = str(chunk.metadata["method_name"])
-        class_qualified = f"{module}{_QUALIFIER_SEPARATOR}{class_name}"
-        method_qualified = f"{class_qualified}{_QUALIFIER_SEPARATOR}{method_name}"
-        edges: list[_EdgeSpec] = [
-            _EdgeSpec(src=class_qualified, dst=method_qualified, kind=EDGE_DEFINES)
-        ]
-        edges.extend(self._call_edges(method_qualified, chunk))
+    def _define_edges(self, module: str, chunks: Sequence[Chunk]) -> list[_EdgeSpec]:
+        """The structural ``defines`` references derived from the chunk set."""
+        edges: list[_EdgeSpec] = []
+        for chunk in chunks:
+            if chunk.chunk_type == CHUNK_TYPE_CLASS:
+                class_name = str(chunk.metadata["class_name"])
+                class_qualified = f"{module}{_QUALIFIER_SEPARATOR}{class_name}"
+                edges.append(self._defines(module, class_qualified))
+            elif chunk.chunk_type == CHUNK_TYPE_METHOD:
+                class_name = str(chunk.metadata["class_name"])
+                method_name = str(chunk.metadata["method_name"])
+                class_qualified = f"{module}{_QUALIFIER_SEPARATOR}{class_name}"
+                method_qualified = f"{class_qualified}{_QUALIFIER_SEPARATOR}{method_name}"
+                edges.append(self._defines(class_qualified, method_qualified))
+            elif chunk.chunk_type == CHUNK_TYPE_FUNCTION:
+                function_name = str(chunk.metadata["method_name"])
+                function_qualified = f"{module}{_QUALIFIER_SEPARATOR}{function_name}"
+                edges.append(self._defines(module, function_qualified))
         return edges
-
-    def _function_edges(self, module: str, chunk: Chunk) -> list[_EdgeSpec]:
-        """``module defines function`` plus best-effort ``function calls callee``."""
-        function_name = str(chunk.metadata["method_name"])
-        function_qualified = f"{module}{_QUALIFIER_SEPARATOR}{function_name}"
-        edges: list[_EdgeSpec] = [
-            _EdgeSpec(src=module, dst=function_qualified, kind=EDGE_DEFINES)
-        ]
-        edges.extend(self._call_edges(function_qualified, chunk))
-        return edges
-
-    # -- source re-parsing (imports + calls) -------------------------------
-
-    def _import_edges(self, module: str, chunk: Chunk) -> list[_EdgeSpec]:
-        """Re-parse the imports chunk's source into ``module imports target`` edges.
-
-        The chunker stores no import names in metadata, so the raw ``source_text``
-        is parsed with ``ast``. ``import a.b`` → ``a.b``; ``from x import y`` →
-        ``x`` (the module pulled in). ``__future__`` is skipped. An unparseable
-        fragment yields no edges (best-effort, never raises).
-        """
-        targets = self._parse_imported_modules(chunk.source_text)
-        return [
-            _EdgeSpec(src=module, dst=target, kind=EDGE_IMPORTS)
-            for target in self._unique_preserving_order(targets)
-        ]
-
-    def _call_edges(self, caller: str, chunk: Chunk) -> list[_EdgeSpec]:
-        """Best-effort ``caller calls callee`` edges from the chunk's source.
-
-        Walks ``ast.Call`` nodes in the chunk's source: a bare ``Name`` func
-        yields its id (``load_config``); an ``Attribute`` func yields the trailing
-        attribute (``loads`` from ``json.loads``). Not resolved to a node — the
-        call graph is a hint. Unparseable source yields no edges.
-        """
-        callees = self._parse_called_names(chunk.source_text)
-        return [
-            _EdgeSpec(src=caller, dst=callee, kind=EDGE_CALLS)
-            for callee in self._unique_preserving_order(callees)
-        ]
 
     @staticmethod
-    def _inherits_list(chunk: Chunk) -> list[str]:
-        """The base-class names from a class chunk's ``inherits`` metadata."""
-        raw = chunk.metadata.get("inherits", [])
-        if not isinstance(raw, list):
-            return []
-        return [str(base) for base in raw]
+    def _defines(src: str, dst: str) -> _EdgeSpec:
+        """A structural ``defines`` reference (always exact, ``resolved=True``)."""
+        return _EdgeSpec(src=src, dst=dst, kind=EDGE_DEFINES, resolved=True)
 
-    @staticmethod
-    def _parse_imported_modules(source_text: str) -> list[str]:
-        """Parse import statements into the module names they pull in.
+    def _resolve(
+        self, module: str, *, tier: str, file_path: str
+    ) -> ResolvedModule | None:
+        """Resolve a file's references via astroid, or ``None`` to skip resolution.
 
-        Best-effort: a fragment that does not parse cleanly yields ``[]`` rather
-        than raising — the imports chunk is real source, but a sub-split piece
-        could be a partial statement.
+        Returns ``None`` (structural-only graph) when resolution is disabled (no
+        project roots), the tier's on-disk base is unknown, the file is not on
+        disk, or astroid cannot parse it — in every such case the graph degrades to
+        structural ``defines`` only rather than fabricating or crashing.
         """
+        if not self._resolution_enabled:
+            return None
+        base = self._tier_roots.get(tier)
+        if base is None:
+            return None
+        absolute_path = Path(base) / PurePosixPath(file_path)
+        if not absolute_path.is_file():
+            return None
+        # Clear astroid's process-global manager cache BEFORE resolving so a dirty
+        # prior state cannot corrupt this resolution. The chunker (PythonAstChunker
+        # → parse_module → astroid.parse) populates the manager WITHOUT putting the
+        # project roots on the import search path, so a chunk-then-resolve sequence
+        # (exactly the indexer's order) would otherwise leave a half-built module in
+        # the cache and make a cross-module in-project reference infer to its bare
+        # name (resolved=False) instead of its FQN. A pre-clear gives resolution a
+        # clean manager + a fresh search-path mutation every time.
+        clear_resolution_cache()
         try:
-            tree = ast.parse(source_text)
-        except SyntaxError:
-            return []
-        modules: list[str] = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                modules.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                # ``from . import x`` (relative, no module) carries no target;
-                # ``from x import y`` records the module ``x``.
-                if node.module is not None and node.module != _FUTURE_MODULE:
-                    modules.append(node.module)
-        return [module for module in modules if module != _FUTURE_MODULE]
+            return resolve_module(
+                str(absolute_path),
+                project_roots=self._project_roots,
+                qualified_name=module,
+            )
+        except ParseError:
+            # An unparseable file yields no resolved references — the structural
+            # ``defines`` edges already derived from the chunks still stand.
+            return None
+        finally:
+            # Bound the cache AFTER resolving too, so one file's package cannot leak
+            # into the next file's resolution (or into a later chunker parse).
+            clear_resolution_cache()
 
-    @staticmethod
-    def _parse_called_names(source_text: str) -> list[str]:
-        """Parse the called names out of a function/method body, best-effort.
+    def _reference_edges(
+        self, module: str, resolved: ResolvedModule
+    ) -> list[_EdgeSpec]:
+        """Map a :class:`ResolvedModule`'s references to kept reference records.
 
-        A leading-indented method body does not parse on its own, so the source
-        is dedented first. An unparseable fragment yields ``[]``.
+        The reference ``src`` (and the src-side class/function/method FQNs) are
+        RE-BASED from astroid's own module name (:attr:`ResolvedModule.qualified_name`,
+        which degrades to the file PATH when astroid cannot place the file in a
+        package — e.g. a ``tests/`` dir with no ``__init__.py``) onto the caller's
+        importable ``module`` qname, so they MATCH the node qualified names (which
+        are built from ``module``). The ``dst`` of an in-project reference keeps
+        astroid's inferred FQN unchanged — it is resolved against the TARGET's
+        package, which production indexes with proper roots.
+
+        The keep/drop rule is applied uniformly to imports, class bases, and call
+        sites: keep ``(resolved and in_project)`` [dst = FQN] or ``(not resolved)``
+        [dst = bare name]; drop ``(resolved and not in_project)``.
         """
-        try:
-            tree = ast.parse(textwrap.dedent(source_text))
-        except SyntaxError:
-            return []
-        names: list[str] = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if isinstance(func, ast.Name):
-                names.append(func.id)
-            elif isinstance(func, ast.Attribute):
-                names.append(func.attr)
-        return names
+        astroid_module = resolved.qualified_name
+        edges: list[_EdgeSpec] = []
+
+        for imported in resolved.imports:
+            edge = self._reference_edge(module, imported, EDGE_IMPORTS)
+            if edge is not None:
+                edges.append(edge)
+
+        for resolved_class in resolved.classes:
+            class_src = self._rebase(resolved_class.qualified_name, astroid_module, module)
+            for base in resolved_class.inherits:
+                edge = self._reference_edge(class_src, base, EDGE_INHERITS)
+                if edge is not None:
+                    edges.append(edge)
+            for method in resolved_class.methods:
+                method_src = self._rebase(method.qualified_name, astroid_module, module)
+                edges.extend(self._call_edges(method_src, method.calls))
+
+        for function in resolved.functions:
+            function_src = self._rebase(function.qualified_name, astroid_module, module)
+            edges.extend(self._call_edges(function_src, function.calls))
+
+        return edges
 
     @staticmethod
-    def _unique_preserving_order(items: Iterable[str]) -> list[str]:
-        """De-duplicate ``items`` while preserving first-seen order."""
-        seen: set[str] = set()
-        unique: list[str] = []
-        for item in items:
-            if item in seen:
+    def _rebase(fqn: str, astroid_module: str, module: str) -> str:
+        """Re-base ``fqn`` from astroid's module prefix onto the importable ``module``.
+
+        ``resolve_module`` builds src-side FQNs off astroid's module name, which is
+        the file PATH when astroid cannot place the file in a package. Replacing
+        that prefix with the caller's importable ``module`` qname makes the src
+        names match the structurally-built node qualified names. An ``fqn`` that
+        does not carry the astroid prefix (already importable) is returned as-is.
+        """
+        if fqn == astroid_module:
+            return module
+        prefix = f"{astroid_module}{_QUALIFIER_SEPARATOR}"
+        if fqn.startswith(prefix):
+            return f"{module}{_QUALIFIER_SEPARATOR}{fqn[len(prefix):]}"
+        return fqn
+
+    def _call_edges(self, caller: str, calls: Sequence[ResolvedCall]) -> list[_EdgeSpec]:
+        """The kept ``calls`` references for one caller, deduped preserving order."""
+        edges: list[_EdgeSpec] = []
+        seen: set[tuple[str, bool]] = set()
+        for call in calls:
+            edge = self._reference_edge(caller, call, EDGE_CALLS)
+            if edge is None:
                 continue
-            seen.add(item)
-            unique.append(item)
-        return unique
+            key = (edge.dst, edge.resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.append(edge)
+        return edges
+
+    @staticmethod
+    def _reference_edge(
+        src: str,
+        reference: ResolvedImport | ResolvedBase | ResolvedCall,
+        kind: str,
+    ) -> _EdgeSpec | None:
+        """Apply the keep/drop rule to one resolved reference.
+
+        Returns the reference record to insert, or ``None`` when the reference is
+        ``(resolved and not in_project)`` — the dropped external noise.
+        """
+        if reference.resolved and not reference.in_project:
+            return None
+        # KEEP: an in-project resolved ref carries its inferred FQN; an unresolved
+        # ref carries its bare written ``target`` (the conservative fallback).
+        return _EdgeSpec(
+            src=src, dst=reference.target, kind=kind, resolved=reference.resolved
+        )
 
     # -- row decoding ------------------------------------------------------
 
     @staticmethod
-    def _row_to_node(row: sqlite3.Row) -> GraphNode:
-        """Decode a raw ``nodes`` row into a :class:`GraphNode`."""
+    def _row_to_node(row: Mapping[str, object]) -> GraphNode:
+        """Decode a Kùzu ``CodeNode`` row dict into a :class:`GraphNode`.
+
+        The synthesised module node's empty-string ``chunk_id`` is decoded back to
+        ``None`` (its on-the-wire representation, see :data:`_NO_CHUNK_ID`).
+        """
+        chunk_id = row["chunk_id"]
         return GraphNode(
-            id=row["id"],
-            kind=row["kind"],
-            qualified_name=row["qualified_name"],
-            file_path=row["file_path"],
-            chunk_id=row["chunk_id"],
-            tier=row["tier"],
+            id=int(str(row["id"])),
+            kind=str(row["kind"]),
+            qualified_name=str(row["qualified_name"]),
+            file_path=str(row["file_path"]),
+            chunk_id=None if chunk_id == _NO_CHUNK_ID else str(chunk_id),
+            tier=str(row["tier"]),
         )
+
+    @staticmethod
+    def _row_values(result: kuzu.QueryResult) -> list[object]:
+        """The next row as a positional ``list``.
+
+        ``kuzu.QueryResult.get_next`` is typed ``list[Any] | dict[str, Any]``; a
+        positional ``RETURN`` always yields the list form, so the dict branch (only
+        produced by the unused dict cursor) is coerced to its values to keep the
+        return total and strongly typed.
+        """
+        row = result.get_next()
+        return list(row.values()) if isinstance(row, dict) else list(row)
+
+    @staticmethod
+    def _single_int(result: kuzu.QueryResult) -> int:
+        """Return the first column of the first row as an ``int``, or ``0`` if empty."""
+        if result.has_next():
+            return int(str(CodeGraph._row_values(result)[0]))
+        return 0
+
+    def _nodes_matching(self, where: str, params: dict[str, object]) -> list[GraphNode]:
+        """Decode every ``CodeNode`` row satisfying a WHERE clause into GraphNodes."""
+        result = self._execute(
+            f"""
+            MATCH (n:{_NODE_TABLE}) WHERE {where}
+            RETURN n.id AS id, n.kind AS kind, n.qualified_name AS qualified_name,
+                   n.file_path AS file_path, n.chunk_id AS chunk_id, n.tier AS tier
+            """,
+            params,
+        )
+        return self._decode_node_rows(result)
+
+    @staticmethod
+    def _decode_node_rows(result: kuzu.QueryResult) -> list[GraphNode]:
+        """Decode an id/kind/qualified_name/file_path/chunk_id/tier result set."""
+        columns = result.get_column_names()
+        nodes: list[GraphNode] = []
+        while result.has_next():
+            row: dict[str, object] = dict(
+                zip(columns, CodeGraph._row_values(result), strict=True)
+            )
+            nodes.append(CodeGraph._row_to_node(row))
+        return nodes
 
     def _nodes_by_qualified_name(self, qualified_name: str) -> list[GraphNode]:
         """Every node (across tiers/files) whose qualified name matches exactly."""
-        rows = self._connection.execute(
-            "SELECT * FROM nodes WHERE qualified_name = ?", (qualified_name,)
-        ).fetchall()
-        return [self._row_to_node(row) for row in rows]
+        return self._nodes_matching(
+            "n.qualified_name = $qname", {"qname": qualified_name}
+        )
 
     # -- queries -----------------------------------------------------------
 
     def what_imports(self, target: str) -> list[GraphNode]:
         """Return the module nodes that import ``target``.
 
-        The reverse of the ``imports`` edge: every ``module`` node that is the
-        ``src`` of an ``imports`` edge whose ``dst`` equals ``target``.
+        The reverse of the ``imports`` reference: every ``module`` node that is the
+        ``src`` of an ``imports`` reference whose ``dst`` matches ``target`` across
+        the name-resolution seam, which is BIDIRECTIONAL so the resolution change
+        does not break either query style:
+
+        * ``dst == target`` — an exact match (a module import ``import pkg.a``
+          resolves to the module FQN ``pkg.a``, matched by a ``pkg.a`` query).
+        * ``dst ENDS WITH ".<bare(target)>"`` — a bare query reaches a RESOLVED
+          symbol FQN ``dst`` (a ``LoadError`` query reaches
+          ``demo.errors.LoadError``).
+        * ``dst == bare(target)`` — an FQN query reaches a bare unresolved ``dst``
+          fallback.
 
         Args:
-            target: The imported module / dotted name to find importers of
-                (``demo.errors``).
+            target: The imported module / dotted name to find importers of.
 
         Returns:
             The importing module nodes (empty if nobody imports the target).
         """
-        rows = self._connection.execute(
-            """
-            SELECT DISTINCT n.* FROM nodes n
-            JOIN edges e ON e.src = n.qualified_name AND e.tier = n.tier
-            WHERE e.kind = ? AND e.dst = ? AND n.kind = ?
+        bare = self._bare_name(target)
+        result = self._execute(
+            f"""
+            MATCH (n:{_NODE_TABLE}), (r:{_REF_TABLE})
+            WHERE n.kind = $module_kind AND r.kind = $imports_kind
+              AND r.src_qname = n.qualified_name AND r.tier = n.tier
+              AND (r.dst = $target OR r.dst ENDS WITH $dotted_bare OR r.dst = $bare)
+            RETURN DISTINCT n.id AS id, n.kind AS kind,
+                   n.qualified_name AS qualified_name, n.file_path AS file_path,
+                   n.chunk_id AS chunk_id, n.tier AS tier
             """,
-            (EDGE_IMPORTS, target, KIND_MODULE),
-        ).fetchall()
-        return [self._row_to_node(row) for row in rows]
+            {
+                "module_kind": KIND_MODULE,
+                "imports_kind": EDGE_IMPORTS,
+                "target": target,
+                "dotted_bare": f"{_QUALIFIER_SEPARATOR}{bare}",
+                "bare": bare,
+            },
+        )
+        return self._decode_node_rows(result)
 
     def blast_radius(self, target: str, depth: int, max_results: int) -> list[GraphNode]:
-        """Return the BOUNDED reverse-edge transitive closure from ``target``.
+        """Return the BOUNDED reverse-reference transitive closure from ``target``.
 
-        Everything that (transitively) depends on ``target``: walk edges
-        backwards (the dependents of a node are the ``src`` of edges whose ``dst``
-        is that node) across ALL edge kinds, breadth-first. Bounded two ways so a
-        pathological graph cannot blow up:
+        Everything that (transitively) depends on ``target``: walk references
+        backwards (the dependents of a node are the ``src`` of references whose
+        ``dst`` is that node) across ALL reference kinds, breadth-first. Bounded by
+        ``depth`` reverse hops and a hard ``max_results`` ceiling so a pathological
+        fan-out cannot blow up.
 
-        * ``depth`` caps the number of reverse hops from the target.
-        * ``max_results`` is a hard ceiling on the returned node count.
-
-        Frontier matching spans the name-resolution seam: an edge ``dst`` may be
-        a bare name (``inherits`` / ``calls`` / ``imports``) or a qualified name
-        (``defines``), so the next reverse hop follows any edge whose ``dst``
-        equals EITHER the frontier node's qualified name OR its bare last
-        segment.
+        Frontier matching spans the resolution seam: a reference ``dst`` may be a
+        bare name (unresolved fallback) or a qualified name (resolved / defines),
+        so the next reverse hop follows any reference whose ``dst`` equals EITHER
+        the frontier node's qualified name OR its bare last segment.
 
         Args:
             target: The qualified name to compute the blast radius of.
@@ -734,9 +874,6 @@ class CodeGraph:
         if depth < 0 or max_results <= 0:
             return []
 
-        # Frontier holds qualified names whose dependents we still need to find;
-        # ``found`` collects the qualified names of reached dependents (the
-        # target itself is excluded). Both are kept as names so cycles terminate.
         frontier: set[str] = {target}
         found: dict[str, GraphNode] = {}
         visited_frontier: set[str] = {target}
@@ -761,42 +898,43 @@ class CodeGraph:
     def _reverse_neighbours(self, frontier: set[str]) -> list[GraphNode]:
         """The dependent NODES one reverse hop back from any name in ``frontier``.
 
-        A name in the frontier is matched against an edge ``dst`` by its full
-        value AND by its bare last segment (the name-resolution seam), then the
-        edge's ``src`` is resolved to the node(s) bearing that qualified name.
+        A name in the frontier is matched against a reference ``dst`` by its full
+        value AND by its bare last segment (the resolution seam), then the
+        reference's ``src`` is resolved to the node(s) bearing that qualified name.
         """
         match_values: set[str] = set()
         for name in frontier:
             match_values.add(name)
             match_values.add(self._bare_name(name))
 
-        placeholders = ",".join("?" for _ in match_values)
-        rows = self._connection.execute(
-            f"SELECT DISTINCT src FROM edges WHERE dst IN ({placeholders})",  # noqa: S608
-            tuple(match_values),
-        ).fetchall()
+        result = self._execute(
+            f"MATCH (r:{_REF_TABLE}) WHERE r.dst IN $match_values "
+            "RETURN DISTINCT r.src_qname",
+            {"match_values": list(match_values)},
+        )
+        source_names: list[str] = []
+        while result.has_next():
+            source_names.append(str(self._row_values(result)[0]))
 
         neighbours: list[GraphNode] = []
-        for row in rows:
-            neighbours.extend(self._nodes_by_qualified_name(row["src"]))
+        for source_name in source_names:
+            neighbours.extend(self._nodes_by_qualified_name(source_name))
         return neighbours
 
     def tests_for(self, symbol_or_file: str) -> list[GraphNode]:
         """Return the test nodes related to ``symbol_or_file``.
 
         A node is a TEST node when its ``file_path`` matches a test glob
-        (:data:`TEST_PATH_GLOBS` or a ``tests/`` directory segment). A test node
-        is related to the target when EITHER:
+        (:data:`TEST_PATH_GLOBS` or a ``tests/`` directory segment). A test node is
+        related to the target when EITHER:
 
-        * it has an edge (any kind) whose ``dst`` matches the target by qualified
-          name or bare name, OR an ``imports`` edge to the target's module
-          (a test importing the module under test); OR
-        * the ``test_x`` ↔ ``x`` name heuristic links it: a ``test_boot`` node is
-          a test for any symbol whose bare name is ``boot``.
+        * it sits in a test file with a reference (any kind) whose ``dst`` matches
+          the target by qualified name or bare name; OR
+        * the ``test_x`` ↔ ``x`` name heuristic links it: a ``test_boot`` node is a
+          test for any symbol whose bare name is ``boot``.
 
         Args:
-            symbol_or_file: A qualified symbol name (``demo.service.X.boot``) or a
-                module name (``demo.service``).
+            symbol_or_file: A qualified symbol name or a module name.
 
         Returns:
             The related test nodes (de-duplicated by row id).
@@ -804,28 +942,32 @@ class CodeGraph:
         target_bare = self._bare_name(symbol_or_file)
         related: dict[int, GraphNode] = {}
 
-        # 1) Test nodes whose file has an edge to the target (by qualified or bare
-        #    name). A test file's edges all carry that file's (tier, file_path),
-        #    so an edge into the target marks the whole test file as related.
-        edge_rows = self._connection.execute(
-            """
-            SELECT DISTINCT n.* FROM nodes n
-            JOIN edges e ON e.tier = n.tier AND e.file_path = n.file_path
-            WHERE e.dst IN (?, ?)
+        # 1) Test nodes whose file has a reference to the target (by FQN or bare).
+        edge_result = self._execute(
+            f"""
+            MATCH (n:{_NODE_TABLE}), (r:{_REF_TABLE})
+            WHERE r.tier = n.tier AND r.file_path = n.file_path
+              AND r.dst IN $match_values
+            RETURN DISTINCT n.id AS id, n.kind AS kind,
+                   n.qualified_name AS qualified_name, n.file_path AS file_path,
+                   n.chunk_id AS chunk_id, n.tier AS tier
             """,
-            (symbol_or_file, target_bare),
-        ).fetchall()
-        for row in edge_rows:
-            node = self._row_to_node(row)
+            {"match_values": [symbol_or_file, target_bare]},
+        )
+        for node in self._decode_node_rows(edge_result):
             if self._is_test_path(node.file_path):
                 related[node.id] = node
 
-        # 2) The ``test_x`` ↔ ``x`` name heuristic: a test node whose bare name is
-        #    ``test_<target_bare>``. This catches a test that exercises a symbol
-        #    without a statically-visible edge to it.
+        # 2) The ``test_x`` ↔ ``x`` name heuristic.
         heuristic_name = f"{_TEST_NAME_PREFIX}{target_bare}"
-        for row in self._connection.execute("SELECT * FROM nodes").fetchall():
-            node = self._row_to_node(row)
+        all_result = self._execute(
+            f"""
+            MATCH (n:{_NODE_TABLE})
+            RETURN n.id AS id, n.kind AS kind, n.qualified_name AS qualified_name,
+                   n.file_path AS file_path, n.chunk_id AS chunk_id, n.tier AS tier
+            """
+        )
+        for node in self._decode_node_rows(all_result):
             if not self._is_test_path(node.file_path):
                 continue
             if self._bare_name(node.qualified_name) == heuristic_name:

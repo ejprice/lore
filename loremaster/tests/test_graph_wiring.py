@@ -34,9 +34,15 @@ The contract pinned here (each capable of failing on the unwired implementation)
 * **Tier scoping (C1).** Two tiers' copies of one path keep independent graph
   slices — rebuilding one tier's file does not touch the other's nodes.
 
-Real Qdrant (throwaway collections), a real :class:`CodeGraph` (a tmp_path SQLite
-file), a real ``tmp_path`` corpus chunked through the default registry, and a
-:class:`FakeEmbedder` — the same harness shape as ``test_indexer.py``.
+Real Qdrant (throwaway collections), a real :class:`CodeGraph` (a tmp_path Kùzu
+file wired with the tier's project roots so its ``imports``/``inherits``/``calls``
+edges are astroid-RESOLVED), a real ``tmp_path`` corpus chunked through the default
+registry, and a :class:`FakeEmbedder` — the same harness shape as ``test_indexer``.
+
+Because references are RESOLVED from the file ON DISK, the file-source tests write
+the source under the live root before indexing (so astroid can place it) and the
+``imports`` assertions key on an IN-PROJECT import (an external/stdlib import is
+dropped by the resolution keep/drop rule — the precision change).
 """
 
 from __future__ import annotations
@@ -50,7 +56,7 @@ from typing import Any
 import pytest_asyncio
 from loremaster.config import LoreConfig
 from loremaster.graph import KIND_FUNCTION, KIND_MODULE, CodeGraph
-from loremaster.index.indexer import Indexer
+from loremaster.index.indexer import Indexer, graph_roots
 from loremaster.index.manifest import STATE_FAILED, Manifest
 from loremaster.index.reconcile import ReconcileEngine
 from loremaster.index.watcher import LiveWatcher
@@ -62,21 +68,43 @@ from qdrant_client import AsyncQdrantClient
 
 _DIM = 2048
 
-# A real Python module the python_ast chunker splits into imports + class +
-# method + a top-level function — enough symbols to populate a real graph slice.
-_PY_MODULE = """\
-import os
+# An IN-PROJECT dependency the widget module imports a symbol from. Written to disk
+# beside the widget so astroid resolves the import in-project (a stdlib import like
+# ``os`` would resolve external and be DROPPED by the keep/drop rule).
+_BASE_MODULE = '''\
+"""The widget base."""
 
-class Widget:
-    \"\"\"A widget.\"\"\"
+
+class Base:
+    """A base widget."""
+
+    def tag(self):
+        return "base"
+'''
+_BASE_REL_PATH = "src/base.py"
+
+# A real Python module the python_ast chunker splits into imports + class + method
+# + a top-level function — enough symbols to populate a real graph slice. It
+# imports the in-project ``Base`` so the wired-in import edge survives resolution.
+_PY_MODULE = '''\
+"""The widget module."""
+from src.base import Base
+
+
+class Widget(Base):
+    """A widget."""
 
     def render(self, value):
-        return os.linesep.join(str(value))
+        return self.tag() + str(value)
 
 
 def make_widget():
     return Widget()
-"""
+'''
+
+# Independent oracle: the in-project import the widget module makes (the symbol FQN
+# ``from src.base import Base`` resolves to, read straight off _PY_MODULE).
+_WIDGET_IMPORT_FQN = "src.base.Base"
 
 
 @pytest_asyncio.fixture()
@@ -170,13 +198,57 @@ def _make_indexer(
     )
 
 
+def _make_graph(config: LoreConfig, snapshot_root: Path, graph_path: Path) -> CodeGraph:
+    """A CodeGraph wired with the config's project roots (resolution enabled).
+
+    Uses the production :func:`graph_roots` so the test graph resolves references
+    exactly as the server/CLI-constructed graph does — the same wiring the
+    production construction sites now apply.
+    """
+    tier_roots, project_roots = graph_roots(config, snapshot_root)
+    return CodeGraph(str(graph_path), tier_roots=tier_roots, project_roots=project_roots)
+
+
 def _qnames(graph: CodeGraph, tier: str, file_path: str) -> set[str]:
     """Return the set of qualified names the graph holds for ``(tier, file_path)``."""
-    rows = graph.connection.execute(
-        "SELECT qualified_name FROM nodes WHERE tier = ? AND file_path = ?",
-        (tier, file_path),
-    ).fetchall()
-    return {row["qualified_name"] for row in rows}
+    result = graph.connection.execute(
+        "MATCH (n:CodeNode) WHERE n.tier = $tier AND n.file_path = $file_path "
+        "RETURN n.qualified_name",
+        {"tier": tier, "file_path": file_path},
+    )
+    names: set[str] = set()
+    while result.has_next():
+        names.add(str(result.get_next()[0]))
+    return names
+
+
+def _all_qnames(graph: CodeGraph) -> set[str]:
+    """Return every qualified name in the graph (across tiers/files)."""
+    result = graph.connection.execute("MATCH (n:CodeNode) RETURN n.qualified_name")
+    names: set[str] = set()
+    while result.has_next():
+        names.add(str(result.get_next()[0]))
+    return names
+
+
+def _module_node_count(graph: CodeGraph) -> int:
+    """The count of ``module`` nodes in the graph."""
+    result = graph.connection.execute(
+        "MATCH (n:CodeNode) WHERE n.kind = $kind RETURN count(n)", {"kind": KIND_MODULE}
+    )
+    return int(result.get_next()[0])
+
+
+def _tier_function_qnames(graph: CodeGraph, tier: str) -> set[str]:
+    """The function-node qualified names scoped to one tier."""
+    result = graph.connection.execute(
+        "MATCH (n:CodeNode) WHERE n.tier = $tier AND n.kind = $kind RETURN n.qualified_name",
+        {"tier": tier, "kind": KIND_FUNCTION},
+    )
+    names: set[str] = set()
+    while result.has_next():
+        names.add(str(result.get_next()[0]))
+    return names
 
 
 class TestGraphWiring:
@@ -205,14 +277,20 @@ class TestGraphWiring:
         slug = _slug()
         store = store_factory(slug)
         await store.ensure_collection(_DIM)
-        config = _config(slug, tmp_path / "live")
+        live = tmp_path / "live"
+        # Write BOTH files on disk so astroid resolves the in-project import.
+        (live / "src").mkdir(parents=True)
+        (live / "src" / "base.py").write_text(_BASE_MODULE, encoding="utf-8")
+        (live / "src" / "widget.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)
         manifest = Manifest(str(tmp_path / "m.db"))
-        graph = CodeGraph(str(tmp_path / "graph.db"))
+        graph = _make_graph(config, tmp_path / "snap", tmp_path / "graph.kuzu")
         indexer = _make_indexer(
             config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest, snapshot_root=tmp_path / "snap", code_graph=graph,
         )
 
+        await indexer.index_file("custom", "src/base.py", _BASE_MODULE)
         await indexer.index_file("custom", "src/widget.py", _PY_MODULE)
 
         qnames = _qnames(graph, "custom", "src/widget.py")
@@ -221,8 +299,9 @@ class TestGraphWiring:
         assert "src.widget.Widget" in qnames
         assert "src.widget.Widget.render" in qnames
         assert "src.widget.make_widget" in qnames
-        # The query layer reaches the wired-in symbols.
-        importers = graph.what_imports("os")
+        # The query layer reaches the wired-in RESOLVED import edge: widget imports
+        # the in-project ``src.base.Base`` (a stdlib import would be dropped).
+        importers = graph.what_imports(_WIDGET_IMPORT_FQN)
         assert any(n.qualified_name == "src.widget" for n in importers)
 
     async def test_reindex_updates_graph_slice_transactionally(
@@ -233,7 +312,7 @@ class TestGraphWiring:
         await store.ensure_collection(_DIM)
         config = _config(slug, tmp_path / "live")
         manifest = Manifest(str(tmp_path / "m.db"))
-        graph = CodeGraph(str(tmp_path / "graph.db"))
+        graph = _make_graph(config, tmp_path / "snap", tmp_path / "graph.kuzu")
         indexer = _make_indexer(
             config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest, snapshot_root=tmp_path / "snap", code_graph=graph,
@@ -259,7 +338,7 @@ class TestGraphWiring:
         await store.ensure_collection(_DIM)
         config = _config(slug, tmp_path / "live")
         manifest = Manifest(str(tmp_path / "m.db"))
-        graph = CodeGraph(str(tmp_path / "graph.db"))
+        graph = _make_graph(config, tmp_path / "snap", tmp_path / "graph.kuzu")
         indexer = _make_indexer(
             config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest, snapshot_root=tmp_path / "snap", code_graph=graph,
@@ -281,7 +360,7 @@ class TestGraphWiring:
         await store.ensure_collection(_DIM)
         config = _config(slug, tmp_path / "live")
         manifest = Manifest(str(tmp_path / "m.db"))
-        graph = CodeGraph(str(tmp_path / "graph.db"))
+        graph = _make_graph(config, tmp_path / "snap", tmp_path / "graph.kuzu")
 
         # v1 indexes clean → a graph slice with gamma_marker.
         good = FakeEmbedder(dim=_DIM)
@@ -324,7 +403,7 @@ class TestGraphWiring:
         await store.ensure_collection(_DIM)
         config = _config(slug, tmp_path / "live")
         manifest = Manifest(str(tmp_path / "m.db"))
-        graph = CodeGraph(str(tmp_path / "graph.db"))
+        graph = _make_graph(config, tmp_path / "snap", tmp_path / "graph.kuzu")
         indexer = _make_indexer(
             config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest, snapshot_root=tmp_path / "snap", code_graph=graph,
@@ -334,11 +413,8 @@ class TestGraphWiring:
 
         # No nodes for the markdown file (no module node synthesised).
         assert _qnames(graph, "custom", "README.md") == set()
-        # And globally there is no node at all for it.
-        all_nodes = graph.connection.execute(
-            "SELECT COUNT(*) AS c FROM nodes WHERE kind = ?", (KIND_MODULE,)
-        ).fetchone()
-        assert all_nodes["c"] == 0
+        # And globally there is no module node at all for it.
+        assert _module_node_count(graph) == 0
 
     async def test_graph_slices_are_tier_scoped(
         self, tmp_path: Path, store_factory: Any
@@ -350,7 +426,7 @@ class TestGraphWiring:
         await store.ensure_collection(_DIM)
         config = _config(slug, tmp_path / "live")
         manifest = Manifest(str(tmp_path / "m.db"))
-        graph = CodeGraph(str(tmp_path / "graph.db"))
+        graph = _make_graph(config, tmp_path / "snap", tmp_path / "graph.kuzu")
         indexer = _make_indexer(
             config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest, snapshot_root=tmp_path / "snap", code_graph=graph,
@@ -368,13 +444,7 @@ class TestGraphWiring:
         assert "src.m.community_fn" in community_q  # sibling tier intact
 
         # The function nodes are scoped to their tiers — no cross-contamination.
-        community_funcs = {
-            n.qualified_name
-            for n in [graph._row_to_node(r) for r in graph.connection.execute(  # noqa: SLF001
-                "SELECT * FROM nodes WHERE tier = ? AND kind = ?", ("community", KIND_FUNCTION)
-            ).fetchall()]
-        }
-        assert community_funcs == {"src.m.community_fn"}
+        assert _tier_function_qnames(graph, "community") == {"src.m.community_fn"}
 
 
 class TestImportableModuleNaming:
@@ -442,7 +512,7 @@ class TestImportableModuleNaming:
         self._build_member_pkg(live)
         config = _config(slug, live)
         manifest = Manifest(str(tmp_path / "m.db"))
-        graph = CodeGraph(str(tmp_path / "graph.db"))
+        graph = _make_graph(config, tmp_path / "snap", tmp_path / "graph.kuzu")
         indexer = _make_indexer(
             config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest, snapshot_root=tmp_path / "snap", code_graph=graph,
@@ -456,12 +526,7 @@ class TestImportableModuleNaming:
         self, tmp_path: Path, store_factory: Any
     ) -> None:
         graph = await self._index_member_pkg(tmp_path, store_factory)
-        all_qnames = {
-            row["qualified_name"]
-            for row in graph.connection.execute(
-                "SELECT qualified_name FROM nodes"
-            ).fetchall()
-        }
+        all_qnames = _all_qnames(graph)
         # The TRUE importable names are present …
         assert "pkg.a" in all_qnames
         assert "pkg.a.Foo" in all_qnames
@@ -481,12 +546,8 @@ class TestImportableModuleNaming:
         # Querying pkg.a by its OWN canonical NODE name returns the SAME consumers
         # (the form-unification: the bug made this a silent empty false-negative,
         # because the node was named ``member.pkg.a`` and never matched ``pkg.a``).
-        node = graph.connection.execute(
-            "SELECT qualified_name FROM nodes WHERE kind = ? AND qualified_name = ?",
-            (KIND_MODULE, "pkg.a"),
-        ).fetchone()
-        assert node is not None  # the canonical node IS named pkg.a
-        by_canonical_name = {n.qualified_name for n in graph.what_imports(node["qualified_name"])}
+        assert "pkg.a" in _all_qnames(graph)  # the canonical node IS named pkg.a
+        by_canonical_name = {n.qualified_name for n in graph.what_imports("pkg.a")}
         assert by_canonical_name == by_import_string
 
     async def test_blast_radius_traverses_transitive_reverse_imports(
@@ -520,7 +581,7 @@ class TestImportableModuleNaming:
         )
         config = _config(slug, live)
         manifest = Manifest(str(tmp_path / "m.db"))
-        graph = CodeGraph(str(tmp_path / "graph.db"))
+        graph = _make_graph(config, tmp_path / "snap", tmp_path / "graph.kuzu")
         indexer = _make_indexer(
             config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest, snapshot_root=tmp_path / "snap", code_graph=graph,
@@ -549,7 +610,7 @@ class TestWatcherAndReconcilePurgeGraph:
         py.write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
         manifest = Manifest(str(tmp_path / "m.db"))
-        graph = CodeGraph(str(tmp_path / "graph.db"))
+        graph = _make_graph(config, tmp_path / "snap", tmp_path / "graph.kuzu")
         indexer = _make_indexer(
             config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest, snapshot_root=tmp_path / "snap", code_graph=graph,
@@ -585,7 +646,7 @@ class TestWatcherAndReconcilePurgeGraph:
         py.write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
         manifest = Manifest(str(tmp_path / "m.db"))
-        graph = CodeGraph(str(tmp_path / "graph.db"))
+        graph = _make_graph(config, tmp_path / "snap", tmp_path / "graph.kuzu")
         indexer = _make_indexer(
             config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
             manifest=manifest, snapshot_root=tmp_path / "snap", code_graph=graph,

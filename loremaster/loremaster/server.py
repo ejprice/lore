@@ -1591,7 +1591,7 @@ async def build_app_context(
         embedder: The active embedder (probed by the gate).
         qdrant_client: The async Qdrant client the stores share.
         manifest_path: SQLite manifest path.
-        graph_path: SQLite code-graph path.
+        graph_path: Kùzu code-graph path.
         snapshot_root: Static-tier snapshot root (also the read-file static base).
         start_tasks: When ``True``, start the watcher + periodic reconcile task.
 
@@ -1603,7 +1603,7 @@ async def build_app_context(
         Exception: Re-raises a failing extension ``on_startup`` (after unwinding).
     """
     from loremaster.graph import CodeGraph
-    from loremaster.index.indexer import Indexer
+    from loremaster.index.indexer import Indexer, graph_roots
     from loremaster.index.manifest import Manifest
     from loremaster.index.reconcile import ReconcileEngine
     from loremaster.index.watcher import LiveWatcher
@@ -1641,7 +1641,13 @@ async def build_app_context(
 
     # 2) Core services.
     manifest = Manifest(str(manifest_path))
-    code_graph = CodeGraph(str(graph_path))
+    # Wire astroid resolution into the code-graph: it resolves each tier's files on
+    # disk under these roots so in-project references become FQNs and external ones
+    # are dropped. Derived from the SAME effective roots the indexer walks.
+    graph_tier_roots, graph_project_roots = graph_roots(config, snapshot_root)
+    code_graph = CodeGraph(
+        str(graph_path), tier_roots=graph_tier_roots, project_roots=graph_project_roots
+    )
     providers = _build_source_providers(server, config, LocalDirectorySourceProvider)
     indexer = Indexer(
         store=store,
@@ -2207,7 +2213,7 @@ def build_mcp_server(server: LoreServer) -> Any:
                 embedder=make_embedder_from_config(config.embedding),
                 qdrant_client=client,
                 manifest_path=_DEFAULT_MANIFEST_DIR / f"{config.project.slug}.db",
-                graph_path=_DEFAULT_MANIFEST_DIR / f"{config.project.slug}.graph.db",
+                graph_path=_DEFAULT_MANIFEST_DIR / f"{config.project.slug}.graph.kuzu",
                 snapshot_root=_DEFAULT_SNAPSHOT_ROOT,
                 start_tasks=True,
             )

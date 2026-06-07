@@ -32,7 +32,7 @@ from loremaster.config import WATCH_STATIC, LoreConfig, load_config, resolve_sec
 from loremaster.embedding import make_embedder_from_config
 from loremaster.extension import SourceProvider
 from loremaster.graph import CodeGraph
-from loremaster.index.indexer import Indexer, IndexSummary
+from loremaster.index.indexer import Indexer, IndexSummary, graph_roots
 from loremaster.index.manifest import Manifest
 from loremaster.server import LoreServer
 from loremaster.source.local_directory import LocalDirectorySourceProvider
@@ -74,7 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Path to the SQLite code-graph the server reads "
-            "(default: alongside the manifest, ~/.local/state/lore/<slug>.graph.db)."
+            "(default: alongside the manifest, ~/.local/state/lore/<slug>.graph.kuzu)."
         ),
     )
     parser.add_argument(
@@ -114,19 +114,26 @@ async def _run(config: LoreConfig, args: argparse.Namespace) -> IndexSummary:
     manifest = Manifest(str(manifest_path))
 
     # The code-graph lives at the SAME shared path the server reads — alongside
-    # the manifest as ``<slug>.graph.db`` (both are bind-mounted into the
+    # the manifest as ``<slug>.graph.kuzu`` (both are bind-mounted into the
     # container). Building it here is what makes the graph tools (what_imports /
     # blast_radius / tests_for) non-empty after a cold ``python -m loremaster.index``.
     graph_path = (
         Path(args.graph)
         if args.graph
-        else manifest_path.parent / f"{config.project.slug}.graph.db"
+        else manifest_path.parent / f"{config.project.slug}.graph.kuzu"
     )
     graph_path.parent.mkdir(parents=True, exist_ok=True)
-    code_graph = CodeGraph(str(graph_path))
 
     snapshot_root = (
         Path(args.snapshot_root) if args.snapshot_root else _DEFAULT_SNAPSHOT_ROOT
+    )
+
+    # Wire astroid resolution: the graph resolves each tier's files on disk under
+    # these roots, classifying references in-project (kept, as FQNs) vs external
+    # (dropped). Derived from the SAME effective roots the indexer walks.
+    tier_roots, project_roots = graph_roots(config, snapshot_root)
+    code_graph = CodeGraph(
+        str(graph_path), tier_roots=tier_roots, project_roots=project_roots
     )
 
     embedder = make_embedder_from_config(config.embedding)
