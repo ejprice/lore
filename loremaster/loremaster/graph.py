@@ -901,6 +901,12 @@ class CodeGraph:
           ``demo.errors.LoadError``).
         * ``dst == bare(target)`` — an FQN query reaches a bare unresolved ``dst``
           fallback.
+        * ``dst STARTS WITH "<target>."`` — a MODULE query reaches a resolved
+          SYMBOL ``dst`` defined IN that module: ``from pkg.a import Foo`` resolves
+          in-project to the symbol ``pkg.a.Foo`` (the precise dst once the source
+          shadows any installed copy), which a ``pkg.a`` module query must still
+          find. The trailing dot keeps the prefix module-scoped so ``pkg.a`` does
+          not spuriously match a sibling module ``pkg.ab.X``.
 
         Args:
             target: The imported module / dotted name to find importers of.
@@ -914,7 +920,8 @@ class CodeGraph:
             MATCH (n:{_NODE_TABLE}), (r:{_REF_TABLE})
             WHERE n.kind = $module_kind AND r.kind = $imports_kind
               AND r.src_qname = n.qualified_name AND r.tier = n.tier
-              AND (r.dst = $target OR r.dst ENDS WITH $dotted_bare OR r.dst = $bare)
+              AND (r.dst = $target OR r.dst ENDS WITH $dotted_bare
+                   OR r.dst = $bare OR r.dst STARTS WITH $module_prefix)
             RETURN DISTINCT n.id AS id, n.kind AS kind,
                    n.qualified_name AS qualified_name, n.file_path AS file_path,
                    n.chunk_id AS chunk_id, n.tier AS tier
@@ -925,6 +932,7 @@ class CodeGraph:
                 "target": target,
                 "dotted_bare": f"{_QUALIFIER_SEPARATOR}{bare}",
                 "bare": bare,
+                "module_prefix": f"{target}{_QUALIFIER_SEPARATOR}",
             },
         )
         return self._decode_node_rows(result)
@@ -981,16 +989,40 @@ class CodeGraph:
         A name in the frontier is matched against a reference ``dst`` by its full
         value AND by its bare last segment (the resolution seam), then the
         reference's ``src`` is resolved to the node(s) bearing that qualified name.
+
+        A frontier name is ALSO matched against a resolved SYMBOL ``dst`` defined
+        in it — ``r.dst STARTS WITH "<name>."`` — but ONLY on an ``imports``
+        reference, so a MODULE frontier name reaches importers of a symbol FROM
+        that module (``from pkg.a import Foo`` records the import dst ``pkg.a.Foo``
+        once the source shadows any installed copy). The prefix arm is scoped to
+        ``imports`` because the ``defines`` edge already links a module to ALL its
+        symbols — applying the prefix to every kind would let a module frontier
+        name re-pull its whole symbol set in a single hop and overshoot the depth
+        bound. The trailing dot keeps the prefix module-scoped (``pkg.a`` does not
+        match a sibling ``pkg.ab.X``); a bare name (no separator) is excluded from
+        prefix matching to avoid a single-segment prefix swallowing unrelated
+        symbols.
         """
         match_values: set[str] = set()
+        module_prefixes: list[str] = []
         for name in frontier:
             match_values.add(name)
             match_values.add(self._bare_name(name))
+            if _QUALIFIER_SEPARATOR in name:
+                module_prefixes.append(f"{name}{_QUALIFIER_SEPARATOR}")
+
+        where = "r.dst IN $match_values"
+        params: dict[str, object] = {"match_values": list(match_values)}
+        for index, prefix in enumerate(module_prefixes):
+            key = f"prefix{index}"
+            where += f" OR (r.kind = $imports_kind AND r.dst STARTS WITH ${key})"
+            params[key] = prefix
+        if module_prefixes:
+            params["imports_kind"] = EDGE_IMPORTS
 
         result = self._execute(
-            f"MATCH (r:{_REF_TABLE}) WHERE r.dst IN $match_values "
-            "RETURN DISTINCT r.src_qname",
-            {"match_values": list(match_values)},
+            f"MATCH (r:{_REF_TABLE}) WHERE {where} RETURN DISTINCT r.src_qname",
+            params,
         )
         source_names: list[str] = []
         while result.has_next():

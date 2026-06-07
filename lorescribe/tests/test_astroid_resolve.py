@@ -77,6 +77,7 @@ from lorescribe.astroid_parse import (
     ResolvedImport,
     ResolvedModule,
     clear_resolution_cache,
+    reset_search_path_memo,
     resolve_module,
 )
 
@@ -222,8 +223,10 @@ def _clean_manager() -> object:
     leaks into the next and FQNs cross-contaminate.
     """
     clear_resolution_cache()
+    reset_search_path_memo()
     yield None
     clear_resolution_cache()
+    reset_search_path_memo()
 
 
 def _resolve_service(project: dict[str, object]) -> ResolvedModule:
@@ -555,3 +558,276 @@ class TestSeparableFromStructuralApi:
         module = parse_module("class A:\n    def m(self):\n        return 1\n")
         assert isinstance(module, ParsedModule)
         assert [c.name for c in module.classes] == ["A"]
+
+
+# --------------------------------------------------------------------------- #
+# Project source SHADOWS an installed copy of the same package.                 #
+#                                                                               #
+# In a real deployment the project's own packages can live in TWO places:      #
+# pip-INSTALLED in site-packages AND present as SOURCE under a project root.    #
+# With the uv-workspace NESTED shape (``<root>/<member>/<package>/…``) the      #
+# package lives one dir below the root, so adding the ROOT alone to the search  #
+# path does NOT expose the package — astroid resolves it to the INSTALLED copy  #
+# (outside ``project_roots``), so ``in_project`` comes out FALSE and the real   #
+# cross-module in-project reference is wrongly DROPPED. The fix puts the        #
+# package-PARENT dirs of the source ahead of site-packages so the source       #
+# shadows the installed copy and the reference classifies in-project.           #
+#                                                                               #
+# Oracle independence: the TRUE in-project FQN (``pkg.base.Thing``) is known    #
+# from the on-disk layout each fixture authors, not re-derived from the         #
+# resolver's logic. The "installed" copy is a SEPARATE on-disk tree placed on   #
+# ``sys.path`` — no real site-packages needed.                                  #
+# --------------------------------------------------------------------------- #
+
+
+def _write_pkg(pkg_dir: Path, *, thing_body: str) -> None:
+    """Author a ``pkg`` package with ``base.Thing`` and a cross-module ``service``.
+
+    ``base.py`` defines ``Thing`` (body parameterised so the source and the
+    "installed" copy are distinguishable); ``service.py`` imports it
+    cross-module and calls it, exactly the reference the bug drops.
+    """
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "__init__.py").write_text("")
+    (pkg_dir / "base.py").write_text(
+        textwrap.dedent(
+            f"""\
+            class Thing:
+                def run(self):
+                    {thing_body}
+            """
+        )
+    )
+    (pkg_dir / "service.py").write_text(
+        textwrap.dedent(
+            """\
+            from pkg.base import Thing
+
+            class Service:
+                def go(self):
+                    return Thing().run()
+            """
+        )
+    )
+
+
+@pytest.fixture
+def shadowed_topology(tmp_path: Path) -> Iterator[dict[str, object]]:
+    """A NESTED project layout plus a SEPARATE installed copy of the same ``pkg``.
+
+    Layout::
+
+        <tmp>/workspace/member/pkg/{__init__,base,service}.py   (project SOURCE)
+        <tmp>/site-packages/pkg/{__init__,base,service}.py      ("installed")
+
+    The project root passed to ``resolve_module`` is ``<tmp>/workspace`` — note
+    ``pkg`` lives one dir DEEPER (under ``member/``), the uv-workspace shape that
+    triggers the bug. The "installed" copy's parent is put directly on
+    ``sys.path`` (as a real site-packages would be), so astroid CAN resolve
+    ``pkg.*`` to it. Only the source copy lies under the project root.
+    """
+    workspace = tmp_path / "workspace"
+    member_pkg = workspace / "member" / "pkg"
+    _write_pkg(member_pkg, thing_body="return 'source'")
+
+    installed_root = tmp_path / "site-packages"
+    installed_pkg = installed_root / "pkg"
+    _write_pkg(installed_pkg, thing_body="return 'installed'")
+
+    sys.path.insert(0, str(installed_root))
+    try:
+        yield {
+            "project_root": workspace,
+            "service": member_pkg / "service.py",
+            "installed_root": installed_root,
+            "roots": (str(workspace),),
+        }
+    finally:
+        try:
+            sys.path.remove(str(installed_root))
+        except ValueError:
+            pass
+
+
+@pytest.fixture
+def flat_topology(tmp_path: Path) -> Iterator[dict[str, object]]:
+    """A FLAT project layout (``pkg`` directly under the root) + installed copy.
+
+    Here the package-parent dir IS the project root, so the fix must not regress
+    the case that already worked. An installed copy is still present on
+    ``sys.path`` to keep the shadowing pressure on.
+    """
+    workspace = tmp_path / "workspace"
+    pkg = workspace / "pkg"
+    _write_pkg(pkg, thing_body="return 'source'")
+
+    installed_root = tmp_path / "site-packages"
+    installed_pkg = installed_root / "pkg"
+    _write_pkg(installed_pkg, thing_body="return 'installed'")
+
+    sys.path.insert(0, str(installed_root))
+    try:
+        yield {
+            "project_root": workspace,
+            "service": pkg / "service.py",
+            "roots": (str(workspace),),
+        }
+    finally:
+        try:
+            sys.path.remove(str(installed_root))
+        except ValueError:
+            pass
+
+
+def _go_calls(module: ResolvedModule) -> list[ResolvedCall]:
+    for parsed_class in module.classes:
+        for method in parsed_class.methods:
+            if method.qualified_name.endswith("Service.go"):
+                return method.calls
+    raise AssertionError("Service.go not found")
+
+
+class TestProjectSourceShadowsInstalledCopy:
+    """Project SOURCE under a root must win over an installed same-named package.
+
+    The reference ``Thing().run()`` in ``service.py`` is the cross-module
+    in-project reference the bug drops: without shadowing, astroid resolves
+    ``pkg.base`` to the installed copy (outside the root) so ``in_project`` is
+    ``False`` and the reference is dropped per the keep/drop rule.
+    """
+
+    def test_nested_layout_in_project_ref_shadows_installed_copy(
+        self, shadowed_topology: dict[str, object]
+    ) -> None:
+        module = resolve_module(
+            str(shadowed_topology["service"]),
+            project_roots=shadowed_topology["roots"],  # type: ignore[arg-type]
+        )
+        run = next(c for c in _go_calls(module) if c.target.endswith("Thing.run"))
+        # The source copy under the root must win: in-project + source FQN kept.
+        assert run.resolved is True
+        assert run.in_project is True
+        assert run.target == "pkg.base.Thing.run"
+
+    def test_nested_layout_import_classified_in_project(
+        self, shadowed_topology: dict[str, object]
+    ) -> None:
+        module = resolve_module(
+            str(shadowed_topology["service"]),
+            project_roots=shadowed_topology["roots"],  # type: ignore[arg-type]
+        )
+        symbol = next(
+            (i for i in module.imports if i.target == "pkg.base.Thing"), None
+        )
+        assert symbol is not None
+        assert symbol.in_project is True
+        assert symbol.is_symbol is True
+
+    def test_flat_layout_in_project_ref_still_resolves(
+        self, flat_topology: dict[str, object]
+    ) -> None:
+        module = resolve_module(
+            str(flat_topology["service"]),
+            project_roots=flat_topology["roots"],  # type: ignore[arg-type]
+        )
+        run = next(c for c in _go_calls(module) if c.target.endswith("Thing.run"))
+        assert run.resolved is True
+        assert run.in_project is True
+        assert run.target == "pkg.base.Thing.run"
+
+    def test_parent_dirs_not_leaked_after_cache_clear(
+        self, shadowed_topology: dict[str, object]
+    ) -> None:
+        before = list(sys.path)
+        resolve_module(
+            str(shadowed_topology["service"]),
+            project_roots=shadowed_topology["roots"],  # type: ignore[arg-type]
+        )
+        clear_resolution_cache()
+        leaked = [p for p in sys.path if p not in before]
+        assert leaked == [], f"resolver leaked search-path entries: {leaked}"
+
+    def test_repeated_resolve_does_not_grow_search_path(
+        self, shadowed_topology: dict[str, object]
+    ) -> None:
+        # Without an explicit clear between calls (as a batch loop would do),
+        # the parent-dir inserts must be idempotent — no unbounded growth.
+        resolve_module(
+            str(shadowed_topology["service"]),
+            project_roots=shadowed_topology["roots"],  # type: ignore[arg-type]
+        )
+        after_first = list(sys.path)
+        for _ in range(5):
+            resolve_module(
+                str(shadowed_topology["service"]),
+                project_roots=shadowed_topology["roots"],  # type: ignore[arg-type]
+            )
+        assert sys.path == after_first, "repeated resolve grew the search path"
+
+    def test_in_project_ref_resolves_after_cache_clear(
+        self, shadowed_topology: dict[str, object]
+    ) -> None:
+        # The sole production consumer clears the cache BEFORE and AFTER each
+        # file (graph.py::_resolve). clear_resolution_cache wipes the tracked
+        # path entries — the parent-dir set must be RE-ESTABLISHED at the next
+        # resolve, so the reference still classifies in-project.
+        first = resolve_module(
+            str(shadowed_topology["service"]),
+            project_roots=shadowed_topology["roots"],  # type: ignore[arg-type]
+        )
+        clear_resolution_cache()
+        second = resolve_module(
+            str(shadowed_topology["service"]),
+            project_roots=shadowed_topology["roots"],  # type: ignore[arg-type]
+        )
+        for module in (first, second):
+            run = next(c for c in _go_calls(module) if c.target.endswith("Thing.run"))
+            assert run.in_project is True
+            assert run.target == "pkg.base.Thing.run"
+
+    def test_parent_dir_discovery_memoized_per_roots(
+        self, shadowed_topology: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The package-top FS-walk must run at most ONCE per distinct project_roots,
+        # not on every per-file resolve_module call (no per-call FS-walk blowup).
+        import lorescribe.astroid_parse as ap
+
+        calls: list[tuple[str, ...]] = []
+        original = ap._discover_package_parent_dirs
+
+        def spy(roots: tuple[str, ...]) -> frozenset[str]:
+            calls.append(roots)
+            return original(roots)
+
+        monkeypatch.setattr(ap, "_discover_package_parent_dirs", spy)
+
+        for _ in range(4):
+            resolve_module(
+                str(shadowed_topology["service"]),
+                project_roots=shadowed_topology["roots"],  # type: ignore[arg-type]
+            )
+        # 4 resolves of the same roots → the FS-walk discovery ran at most once.
+        assert len(calls) <= 1, f"FS-walk ran {len(calls)} times for one roots set"
+
+    def test_namespace_root_with_no_init_degrades_safely(
+        self, tmp_path: Path
+    ) -> None:
+        # A root with NO __init__.py anywhere (namespace / src layout): the
+        # parent-dir discovery must not crash and must fall back to adding the
+        # root itself so a flat module still resolves.
+        root = tmp_path / "ns"
+        (root / "thing").mkdir(parents=True)
+        (root / "thing" / "widget.py").write_text(
+            textwrap.dedent(
+                """\
+                class Widget:
+                    def shape(self):
+                        return 1
+                """
+            )
+        )
+        # Should resolve without raising; module qname derived by astroid.
+        module = resolve_module(
+            str(root / "thing" / "widget.py"), project_roots=[str(root)]
+        )
+        assert any(c.qualified_name.endswith("Widget") for c in module.classes)

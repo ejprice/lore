@@ -422,6 +422,33 @@ class ResolvedModule:
 # can undo the mutation and never permanently pollute the process search path.
 _ADDED_SEARCH_PATHS: list[str] = []
 
+# Memo of the search-path directories derived for a given set of project roots,
+# keyed by the absolute-roots tuple. Derivation walks the on-disk tree for
+# ``__init__.py`` package tops, so it MUST NOT run on every per-file resolve;
+# this cache makes it run once per distinct roots. It is INTENTIONALLY NOT
+# cleared by :func:`clear_resolution_cache` — the disk layout (and thus the
+# derived dirs) is stable across a resolution batch, while the ``sys.path``
+# mutation it drives is what gets undone. :func:`reset_search_path_memo` exists
+# for tests to reset this module-level state between cases.
+_PACKAGE_PARENT_DIR_MEMO: dict[tuple[str, ...], frozenset[str]] = {}
+
+# The package marker that makes a directory an importable Python package. Same
+# marker the downstream graph's importable-module-name walk keys on; replicated
+# here (not imported) because ``astroid_parse`` is the lower layer — the graph
+# depends on it, never the reverse.
+_PACKAGE_INIT_MARKER = "__init__.py"
+
+
+def reset_search_path_memo() -> None:
+    """Reset the package-parent-dir memo (test hook for module-level state).
+
+    The memo is process-global and deliberately survives
+    :func:`clear_resolution_cache`; tests that author throwaway on-disk
+    fixtures under the same absolute path between cases must reset it so a stale
+    entry cannot mask a fresh layout.
+    """
+    _PACKAGE_PARENT_DIR_MEMO.clear()
+
 
 def clear_resolution_cache() -> None:
     """Clear astroid's process-global cache and undo search-path mutation.
@@ -432,6 +459,10 @@ def clear_resolution_cache() -> None:
     leak into another's resolution. This empties that cache and removes any
     search-path entries :func:`resolve_module` added, restoring a clean slate so
     sequential resolutions cannot cross-contaminate.
+
+    The package-parent-dir memo is NOT cleared here: it caches a pure function of
+    the on-disk layout, so it stays valid across the batch and is re-applied to
+    ``sys.path`` on the next resolve even though this call removed the entries.
     """
     astroid.MANAGER.clear_cache()
     for entry in _ADDED_SEARCH_PATHS:
@@ -443,20 +474,84 @@ def clear_resolution_cache() -> None:
     _ADDED_SEARCH_PATHS.clear()
 
 
+def _discover_package_parent_dirs(absolute_roots: tuple[str, ...]) -> frozenset[str]:
+    """Derive the dirs that must be on ``sys.path`` for the project SOURCE to import.
+
+    For each top-level source package under a root, the directory that must be on
+    the search path is the PARENT of the package's top — the shallowest directory
+    in a chain that holds an :data:`_PACKAGE_INIT_MARKER`. Putting these parents
+    ahead of any installed copy lets the project's own source SHADOW a same-named
+    package in site-packages, so an in-project reference resolves to the source
+    under a root (``in_project=True``) instead of the installed copy.
+
+    The derivation is generic over layout — it never hardcodes the uv-workspace
+    shape:
+
+    * FLAT (``<root>/pkg/__init__.py``) → the package top is ``<root>/pkg`` and
+      its parent is ``<root>`` (already added as the root itself, so no-op).
+    * NESTED (``<root>/member/pkg/__init__.py``) → the package top is
+      ``<root>/member/pkg`` and its parent is ``<root>/member`` — the dir that
+      must be on the path for ``pkg`` to import, which adding ``<root>`` alone
+      does NOT cover. This is the bug case.
+
+    The walk descends a root only until it finds a package top on a branch, then
+    stops descending THAT branch (everything below the top is inside the package,
+    already importable via the recorded parent). The root itself is always
+    included so a namespace / ``src`` layout with no ``__init__.py`` anywhere
+    still resolves a flat module. Pure function of the on-disk layout — memoized
+    by :func:`_ensure_on_search_path`, never walked per-file.
+    """
+    parent_dirs: set[str] = set()
+    for absolute_root in absolute_roots:
+        # The root itself is always a valid search-path entry (flat packages,
+        # and the namespace-layout fallback).
+        parent_dirs.add(absolute_root)
+        for current_dir, subdir_names, file_names in os.walk(absolute_root):
+            if _PACKAGE_INIT_MARKER in file_names:
+                # ``current_dir`` is a package top (its parent holds no marker,
+                # else the walk would have stopped before reaching here). The
+                # PARENT is what must be importable; stop descending — deeper
+                # dirs are inside this package and need nothing new on the path.
+                parent_dirs.add(os.path.dirname(current_dir))
+                subdir_names.clear()
+    return frozenset(parent_dirs)
+
+
 def _ensure_on_search_path(project_roots: list[str] | tuple[str, ...]) -> None:
-    """Add each project root to ``sys.path`` so astroid resolves in-project refs.
+    """Put the project roots AND their package-parent dirs on ``sys.path``.
 
     astroid's manager imports referenced modules off the ordinary import search
-    path; without the roots on it, a cross-module in-project callee infers to
-    ``Uninferable``. Roots already present are left alone (so we never remove an
-    entry we did not add); newly added ones are tracked for
-    :func:`clear_resolution_cache` to undo.
+    path. Two kinds of entry are needed so cross-module in-project references
+    resolve to the project's own SOURCE rather than to an installed copy:
+
+    * each project root — the historic behaviour; and
+    * the package-parent dirs of the source under each root (see
+      :func:`_discover_package_parent_dirs`), so a NESTED layout (where the
+      package lives below the root) exposes the package and the source SHADOWS a
+      same-named installed package in site-packages.
+
+    The parent-dir derivation walks the tree, so it is memoized per
+    absolute-roots key — it runs once per distinct roots, not per resolved file.
+    Insertion is idempotent: an entry already on ``sys.path`` is left alone (so
+    repeated resolves never grow the path), and only entries this function newly
+    inserts are tracked for :func:`clear_resolution_cache` to undo — which keeps
+    the additions re-establishable on the next resolve after a cache clear.
     """
-    for root in project_roots:
-        absolute_root = os.path.abspath(root)
-        if absolute_root not in sys.path:
-            sys.path.insert(0, absolute_root)
-            _ADDED_SEARCH_PATHS.append(absolute_root)
+    absolute_roots = tuple(os.path.abspath(root) for root in project_roots)
+    search_dirs = _PACKAGE_PARENT_DIR_MEMO.get(absolute_roots)
+    if search_dirs is None:
+        search_dirs = _discover_package_parent_dirs(absolute_roots)
+        _PACKAGE_PARENT_DIR_MEMO[absolute_roots] = search_dirs
+    # Every project entry (each root and each package-parent dir) is inserted at
+    # the FRONT of ``sys.path``, so all of them precede any pre-existing
+    # site-packages entry — that is the only ordering invariant that matters:
+    # project SOURCE is found before an installed copy. Order AMONG the project
+    # entries is irrelevant (all classify in-project), so iterating the frozenset
+    # in arbitrary order is fine.
+    for directory in search_dirs:
+        if directory not in sys.path:
+            sys.path.insert(0, directory)
+            _ADDED_SEARCH_PATHS.append(directory)
 
 
 def _is_under_roots(file_path: str | None, project_roots: list[str] | tuple[str, ...]) -> bool:
