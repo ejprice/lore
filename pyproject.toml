@@ -48,6 +48,22 @@ mypy_path = "lorescribe:loresigil:loremaster:loremaster/tests"
 explicit_package_bases = true
 namespace_packages = true
 
+# astroid ships no type stubs and no ``py.typed`` marker, so under
+# ``disallow_any_unimported`` every astroid node would surface as a blocking
+# ``no-any-unimported`` error. ``astroid_parse`` is the single, deliberate
+# astroid boundary in the codebase — it reduces astroid nodes to fully-typed
+# value objects so nothing astroid-shaped escapes it — so the unimported-Any
+# relaxation is scoped to exactly that module rather than weakened globally.
+[[tool.mypy.overrides]]
+module = ["lorescribe.astroid_parse"]
+disallow_any_unimported = false
+
+# astroid itself has no stubs; let mypy follow it as untyped (its symbols
+# become ``Any``) so importing it is not a hard error inside the boundary module.
+[[tool.mypy.overrides]]
+module = ["astroid", "astroid.*"]
+follow_untyped_imports = true
+
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true

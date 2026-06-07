@@ -1,11 +1,15 @@
 """AST-based Python chunker for the lorescribe ingestion pipeline.
 
-:class:`PythonAstChunker` parses a Python source string with the stdlib
-``ast`` module and emits one :class:`~lorescribe.models.Chunk` per semantic
-unit: a single ``imports`` chunk, one ``class`` chunk per top-level class, one
+:class:`PythonAstChunker` parses a Python source string via the shared
+:mod:`lorescribe.astroid_parse` module (which uses **astroid**, not stdlib
+``ast``) and emits one :class:`~lorescribe.models.Chunk` per semantic unit: a
+single ``imports`` chunk, one ``class`` chunk per top-level class, one
 ``method`` chunk per method (including methods defined inside control flow such
 as ``if``/``else`` or ``try`` blocks within a class body), and one
-``function`` chunk per top-level function.
+``function`` chunk per top-level function. All structural facts (spans,
+decorators, base classes, method discovery) come from
+:func:`lorescribe.astroid_parse.parse_module`'s value objects, so this module
+never touches a raw parser node.
 
 Three invariants make this a *correctness* component rather than a best-effort
 splitter:
@@ -32,10 +36,15 @@ splitter:
 
 from __future__ import annotations
 
-import ast
-import warnings
 from pathlib import PurePosixPath
 
+from lorescribe.astroid_parse import (
+    ParsedClass,
+    ParsedFunction,
+    ParsedModule,
+    ParseError,
+    parse_module,
+)
 from lorescribe.base import Chunker
 from lorescribe.models import Chunk, ChunkContext
 
@@ -136,32 +145,43 @@ class PythonAstChunker(Chunker):
             return []
 
         try:
-            # SyntaxWarning (e.g. invalid escape sequences) is not a parse
-            # failure — suppress it so it does not pollute the caller's stream.
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", SyntaxWarning)
-                tree = ast.parse(source)
-        except SyntaxError:
+            parsed = parse_module(source)
+        except ParseError:
+            # Unparseable source cannot be walked — degrade to sliding windows.
+            # ``ParseError`` is the shared parser's own typed failure, so this
+            # module branches on it without importing stdlib ``ast`` or catching
+            # astroid's exceptions directly.
             return self._chunk_fallback(source, ctx)
 
         lines = source.splitlines(keepends=True)
         allocator = _IdentityAllocator()
         chunks: list[Chunk] = []
 
-        chunks.extend(self._build_imports_chunk(tree, lines, source, ctx, allocator))
+        chunks.extend(self._build_imports_chunk(parsed, lines, ctx, allocator))
 
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.ClassDef):
-                chunks.extend(self._chunk_class(node, lines, ctx, allocator))
-            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        # Emit top-level classes and functions in SOURCE order, not grouped by
+        # kind: the historic single-pass walk interleaved a class and a
+        # top-level function by their position in the module, so a file laid out
+        # ``class A / def f / class B`` must emit in that order. Top-level units
+        # never overlap, so sorting the merged set by 1-based ``line_start``
+        # reproduces source order exactly.
+        top_level_units: list[ParsedClass | ParsedFunction] = [
+            *parsed.classes,
+            *parsed.functions,
+        ]
+        top_level_units.sort(key=lambda unit: unit.line_start)
+        for unit in top_level_units:
+            if isinstance(unit, ParsedClass):
+                chunks.extend(self._chunk_class(unit, lines, ctx, allocator))
+            else:
                 chunks.extend(
                     self._chunk_function_like(
-                        node,
+                        unit,
                         lines,
                         ctx,
                         allocator,
                         chunk_type=CHUNK_TYPE_FUNCTION,
-                        base_identity=node.name,
+                        base_identity=unit.name,
                         class_name=None,
                         inherits=[],
                     )
@@ -173,9 +193,8 @@ class PythonAstChunker(Chunker):
 
     def _build_imports_chunk(
         self,
-        tree: ast.Module,
+        parsed: ParsedModule,
         lines: list[str],
-        source: str,
         ctx: ChunkContext,
         allocator: _IdentityAllocator,
     ) -> list[Chunk]:
@@ -184,16 +203,11 @@ class PythonAstChunker(Chunker):
         Returns an empty list when the module has no top-level imports, so a
         no-imports file never carries a blank imports chunk.
         """
-        import_nodes = [
-            node
-            for node in ast.iter_child_nodes(tree)
-            if isinstance(node, ast.Import | ast.ImportFrom)
-        ]
-        if not import_nodes:
+        if parsed.imports is None:
             return []
 
-        line_start = min(node.lineno for node in import_nodes)
-        line_end = max(node.end_lineno or node.lineno for node in import_nodes)
+        line_start = parsed.imports.line_start
+        line_end = parsed.imports.line_end
         import_source = "".join(lines[line_start - 1 : line_end])
         header = self._build_metadata_header(ctx, CHUNK_TYPE_IMPORTS)
         identity = allocator.allocate(CHUNK_TYPE_IMPORTS, IMPORTS_IDENTITY)
@@ -218,34 +232,35 @@ class PythonAstChunker(Chunker):
 
     def _chunk_class(
         self,
-        class_node: ast.ClassDef,
+        parsed_class: ParsedClass,
         lines: list[str],
         ctx: ChunkContext,
         allocator: _IdentityAllocator,
     ) -> list[Chunk]:
         """Emit a ``class`` header chunk plus a ``method`` chunk per method.
 
-        Methods are discovered by descending through the class body, including
-        those nested inside control-flow blocks (``if``/``else``, ``try``,
-        ``with``), so a conditionally-defined method is not lost.
+        Methods are discovered by :func:`lorescribe.astroid_parse.parse_module`
+        descending through the class body, including those nested inside
+        control-flow blocks (``if``/``else``, ``try``, ``with``), so a
+        conditionally-defined method is not lost.
         """
-        inherits = [base.id for base in class_node.bases if isinstance(base, ast.Name)]
-        decorators = self._decorator_names(class_node)
-        class_name = class_node.name
+        inherits = parsed_class.inherits
+        decorators = parsed_class.decorators
+        class_name = parsed_class.name
 
         chunks: list[Chunk] = []
 
-        # Walk the class body once: the method list both bounds the header (it
+        # The method list (already in source order) both bounds the header (it
         # ends just before the first method) and drives the per-method chunks.
-        methods = self._iter_methods(class_node)
+        methods = parsed_class.methods
 
         # Class header: the class line through the line before its first method
         # (or the whole class when it has no methods), trimmed of trailing blanks.
-        header_start = class_node.lineno
+        header_start = parsed_class.line_start
         if methods:
-            header_end = self._definition_start_line(methods[0]) - 1
+            header_end = methods[0].line_start - 1
         else:
-            header_end = class_node.end_lineno or class_node.lineno
+            header_end = parsed_class.line_end
         if header_end < header_start:
             header_end = header_start
         while header_end > header_start and lines[header_end - 1].strip() == "":
@@ -273,15 +288,15 @@ class PythonAstChunker(Chunker):
             )
         )
 
-        for method_node in methods:
+        for method in methods:
             chunks.extend(
                 self._chunk_function_like(
-                    method_node,
+                    method,
                     lines,
                     ctx,
                     allocator,
                     chunk_type=CHUNK_TYPE_METHOD,
-                    base_identity=f"{class_name}.{method_node.name}",
+                    base_identity=f"{class_name}.{method.name}",
                     class_name=class_name,
                     inherits=inherits,
                 )
@@ -289,47 +304,11 @@ class PythonAstChunker(Chunker):
 
         return chunks
 
-    @staticmethod
-    def _iter_methods(
-        class_node: ast.ClassDef,
-    ) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
-        """Return the class's methods in source order, descending into control flow.
-
-        A method may be a direct child of the class body or nested inside an
-        ``if``/``else``, ``try``, or ``with`` block (conditional definitions).
-        Nested classes are NOT descended into — their methods belong to the
-        nested class, not this one.
-        """
-        methods: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
-
-        def visit(body: list[ast.stmt]) -> None:
-            for stmt in body:
-                if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
-                    methods.append(stmt)
-                elif isinstance(stmt, ast.If):
-                    visit(stmt.body)
-                    visit(stmt.orelse)
-                elif isinstance(stmt, ast.Try):
-                    visit(stmt.body)
-                    for handler in stmt.handlers:
-                        visit(handler.body)
-                    visit(stmt.orelse)
-                    visit(stmt.finalbody)
-                elif isinstance(stmt, ast.With | ast.AsyncWith):
-                    visit(stmt.body)
-                # ast.ClassDef is intentionally skipped: nested-class methods
-                # are not this class's methods.
-
-        visit(class_node.body)
-        # Source order: control-flow recursion can interleave; sort by line.
-        methods.sort(key=lambda node: node.lineno)
-        return methods
-
     # -- Functions / methods (shared) -------------------------------------
 
     def _chunk_function_like(
         self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        function: ParsedFunction,
         lines: list[str],
         ctx: ChunkContext,
         allocator: _IdentityAllocator,
@@ -339,18 +318,23 @@ class PythonAstChunker(Chunker):
         class_name: str | None,
         inherits: list[str],
     ) -> list[Chunk]:
-        """Emit chunk(s) for one function or method, sub-splitting if oversize."""
-        decorators = self._decorator_names(node)
-        line_start = self._definition_start_line(node)
-        line_end = node.end_lineno or node.lineno
+        """Emit chunk(s) for one function or method, sub-splitting if oversize.
+
+        ``function`` is a :class:`~lorescribe.astroid_parse.ParsedFunction`
+        value object carrying the decorator-inclusive line span, decorator
+        names, and bare name — all already resolved by the shared parser.
+        """
+        decorators = function.decorators
+        line_start = function.line_start
+        line_end = function.line_end
         unit_source = "".join(lines[line_start - 1 : line_end])
         identity = allocator.allocate(chunk_type, base_identity)
         header = self._build_metadata_header(
-            ctx, chunk_type, class_name=class_name, method_name=node.name
+            ctx, chunk_type, class_name=class_name, method_name=function.name
         )
         metadata: dict[str, object] = {
             "class_name": class_name,
-            "method_name": node.name,
+            "method_name": function.name,
             "inherits": inherits,
             "decorators": decorators,
         }
@@ -579,36 +563,6 @@ class PythonAstChunker(Chunker):
         return chunks
 
     # -- Helpers ----------------------------------------------------------
-
-    @staticmethod
-    def _definition_start_line(
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> int:
-        """Return the first source line of a def, including any leading decorator.
-
-        A decorated definition's chunk should start at the first decorator, not
-        the ``def`` keyword, so the decorator travels with the unit.
-        """
-        if node.decorator_list:
-            return node.decorator_list[0].lineno
-        return node.lineno
-
-    @staticmethod
-    def _decorator_names(
-        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
-    ) -> list[str]:
-        """Extract decorator names (``classmethod``, ``api.depends``, ...)."""
-        names: list[str] = []
-        for decorator in node.decorator_list:
-            target = decorator.func if isinstance(decorator, ast.Call) else decorator
-            if isinstance(target, ast.Attribute):
-                if isinstance(target.value, ast.Name):
-                    names.append(f"{target.value.id}.{target.attr}")
-                else:
-                    names.append(target.attr)
-            elif isinstance(target, ast.Name):
-                names.append(target.id)
-        return names
 
     @staticmethod
     def _build_metadata_header(

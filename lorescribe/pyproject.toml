@@ -9,6 +9,7 @@ dependencies = [
     "langchain-text-splitters>=1.1",
     "sqlglot>=30.8",
     "defusedxml>=0.7.1",
+    "astroid>=4.1.2",
 ]
 
 [project.optional-dependencies]
