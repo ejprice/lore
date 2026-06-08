@@ -426,16 +426,6 @@ class TestVerbStartStaleImageRecreateBehavior:
         )
 
         # 4. Re-merge still happens (existing contract — the wiring no-op path).
-        #    Assert _read_config_field was queried for port (the merge step was reached).
-        port_queries = [
-            call_args for call_args in [
-                # _read_config_field was called; run_calls won't capture it (it's a
-                # separate stub), but the call to _merge_mcp_from_config is observable
-                # via run_calls: the real merge subprocess would appear there.
-                # Since _run is stubbed, no subprocess runs — so we assert on return
-                # code only (mcp.json write is covered by the dedicated existing test).
-            ]
-        ]
         # The .mcp.json write behavior is pinned by test_start_when_already_running_still_rewires_mcp_json.
         # Here we assert the return code alone confirms the wiring path was reached
         # (a short-circuit before merge would still return _EXIT_OK, but the dedicated

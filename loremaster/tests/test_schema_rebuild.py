@@ -45,9 +45,9 @@ import pytest_asyncio
 # the real config/manifest/indexer conventions (clause 5: shared source of truth).
 # ---------------------------------------------------------------------------
 from loremaster.config import LoreConfig
-from loremaster.index.manifest import Manifest
 from loremaster.index.indexer import Indexer
-from loremaster.server import AppContext, LoreServer, build_app_context
+from loremaster.index.manifest import Manifest
+from loremaster.server import LoreServer, build_app_context
 from loremaster.source.local_directory import LocalDirectorySourceProvider
 from loremaster.store.qdrant import QdrantStore
 from loresigil.testing import FakeEmbedder
@@ -297,8 +297,7 @@ class TestFingerprintDeterminism:
         Assert: the results are identical (deterministic, not random).
         """
         # offline — no Qdrant needed
-        from loremaster.index.schema import (  # type: ignore[import-not-found]
-            EMBEDDING_SCHEMA_VERSION,
+        from loremaster.index.schema import (
             embedding_schema_fingerprint,
         )
 
@@ -313,7 +312,7 @@ class TestFingerprintDeterminism:
     def test_fingerprint_is_a_64_char_hex_string(self, tmp_path: Path) -> None:
         """The fingerprint is a SHA-256 hex digest: exactly 64 lowercase hex chars."""
         # offline
-        from loremaster.index.schema import (  # type: ignore[import-not-found]
+        from loremaster.index.schema import (
             embedding_schema_fingerprint,
         )
 
@@ -329,7 +328,7 @@ class TestFingerprintDeterminism:
     def test_embedding_schema_version_is_positive_integer(self) -> None:
         """EMBEDDING_SCHEMA_VERSION is a positive integer (spec says start at 1)."""
         # offline
-        from loremaster.index.schema import (  # type: ignore[import-not-found]
+        from loremaster.index.schema import (
             EMBEDDING_SCHEMA_VERSION,
         )
 
@@ -357,7 +356,7 @@ class TestFingerprintSensitivity:
 
     def _base_fp(self, tmp_path: Path) -> str:
         """Baseline fingerprint from the production-canonical config."""
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         return embedding_schema_fingerprint(
             _config(slug="baseline", live_path=tmp_path / "live")
@@ -368,7 +367,7 @@ class TestFingerprintSensitivity:
     def test_model_change_flips_fingerprint(self, tmp_path: Path) -> None:
         """model field is in fingerprint scope."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
         # Use a different model that would have a different embedding space.
@@ -380,7 +379,7 @@ class TestFingerprintSensitivity:
     def test_dim_change_flips_fingerprint(self, tmp_path: Path) -> None:
         """dim field is in fingerprint scope."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
         # 1024 is a real production dim for smaller models.
@@ -392,7 +391,7 @@ class TestFingerprintSensitivity:
     def test_query_prompt_name_change_flips_fingerprint(self, tmp_path: Path) -> None:
         """query_prompt_name field is in fingerprint scope."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)  # query_prompt_name=None
         changed = embedding_schema_fingerprint(
@@ -407,7 +406,7 @@ class TestFingerprintSensitivity:
     def test_document_prompt_name_change_flips_fingerprint(self, tmp_path: Path) -> None:
         """document_prompt_name field is in fingerprint scope."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)  # document_prompt_name=None
         changed = embedding_schema_fingerprint(
@@ -422,7 +421,7 @@ class TestFingerprintSensitivity:
     def test_tokenizer_change_flips_fingerprint(self, tmp_path: Path) -> None:
         """tokenizer field is in fingerprint scope (determines chunk boundaries)."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
         changed = embedding_schema_fingerprint(
@@ -437,7 +436,7 @@ class TestFingerprintSensitivity:
     def test_max_input_tokens_change_flips_fingerprint(self, tmp_path: Path) -> None:
         """max_input_tokens field is in fingerprint scope (affects chunk size)."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
         # 4096 is a realistic alternative cap (some models support only half the max).
@@ -453,7 +452,7 @@ class TestFingerprintSensitivity:
     def test_truncate_change_flips_fingerprint(self, tmp_path: Path) -> None:
         """truncate field is in fingerprint scope (changes over-limit behaviour)."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)  # truncate=False (production default)
         changed = embedding_schema_fingerprint(
@@ -464,7 +463,7 @@ class TestFingerprintSensitivity:
     def test_endpoint_change_flips_fingerprint(self, tmp_path: Path) -> None:
         """endpoint field is in fingerprint scope (different endpoint → different model)."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
         changed = embedding_schema_fingerprint(
@@ -479,7 +478,7 @@ class TestFingerprintSensitivity:
     def test_chunkers_change_flips_fingerprint(self, tmp_path: Path) -> None:
         """chunkers mapping is in fingerprint scope (different chunker → different boundaries)."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
         # Remove the markdown chunker — a realistic config variation.
@@ -497,7 +496,7 @@ class TestFingerprintSensitivity:
     ) -> None:
         """Changing the chunker value for an existing extension flips the fingerprint."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
         # Switch .py from python_ast to a hypothetical plain-text chunker.
@@ -518,7 +517,7 @@ class TestFingerprintSensitivity:
     def test_concurrency_change_does_not_flip_fingerprint(self, tmp_path: Path) -> None:
         """concurrency is a runtime-only field; it does NOT affect stored vectors."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
         # concurrency=8 vs. baseline=2 — purely a throughput knob.
@@ -533,7 +532,7 @@ class TestFingerprintSensitivity:
     def test_server_port_change_does_not_flip_fingerprint(self, tmp_path: Path) -> None:
         """server.port is purely a network binding; it does NOT affect stored vectors."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
         unchanged = embedding_schema_fingerprint(
@@ -546,7 +545,7 @@ class TestFingerprintSensitivity:
     def test_qdrant_url_change_does_not_flip_fingerprint(self, tmp_path: Path) -> None:
         """qdrant.url is a connection detail; it does NOT affect the embedding schema."""
         # offline
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
         unchanged = embedding_schema_fingerprint(
@@ -578,7 +577,7 @@ class TestRebuildNeededDecision:
     def test_none_stored_means_rebuild_needed(self) -> None:
         """stored=None → rebuild (provenance unknown, fail safe)."""
         # offline
-        from loremaster.index.schema import rebuild_needed  # type: ignore[import-not-found]
+        from loremaster.index.schema import rebuild_needed
 
         # Use a realistic hex string (same length as an actual fingerprint).
         current_fp = "a" * 64
@@ -587,7 +586,7 @@ class TestRebuildNeededDecision:
     def test_matching_fingerprints_means_no_rebuild(self) -> None:
         """stored == current → no rebuild needed."""
         # offline
-        from loremaster.index.schema import rebuild_needed  # type: ignore[import-not-found]
+        from loremaster.index.schema import rebuild_needed
 
         same_fp = "b" * 64  # realistic 64-char hex string
         assert rebuild_needed(stored=same_fp, current=same_fp) is False
@@ -595,7 +594,7 @@ class TestRebuildNeededDecision:
     def test_differing_fingerprints_means_rebuild_needed(self) -> None:
         """stored != current → rebuild needed."""
         # offline
-        from loremaster.index.schema import rebuild_needed  # type: ignore[import-not-found]
+        from loremaster.index.schema import rebuild_needed
 
         old_fp = "a" * 64
         new_fp = "b" * 64
@@ -625,7 +624,7 @@ class TestForceRebuildReembeds:
         Assert: new embedder's total_embedded >= baseline; points present; stamp set.
         """
         # real-Qdrant
-        from loremaster.index.schema import (  # type: ignore[import-not-found]
+        from loremaster.index.schema import (
             embedding_schema_fingerprint,
         )
 
@@ -656,7 +655,7 @@ class TestForceRebuildReembeds:
             config=config, store=store, embedder=rebuild_embedder,
             manifest=manifest, snapshot_root=tmp_path / "snap",
         )
-        await rebuild_indexer.rebuild_all(  # type: ignore[attr-defined]
+        await rebuild_indexer.rebuild_all(
             fingerprint=embedding_schema_fingerprint(config)
         )
 
@@ -723,7 +722,7 @@ class TestFingerprintStampedOnlyAfterCompletion:
     ) -> None:
         """rebuild_all() sets the stamp on success — the completion evidence."""
         # real-Qdrant
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -741,7 +740,7 @@ class TestFingerprintStampedOnlyAfterCompletion:
         assert manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY) is None
 
         current_fp = embedding_schema_fingerprint(config)
-        await indexer.rebuild_all(fingerprint=current_fp)  # type: ignore[attr-defined]
+        await indexer.rebuild_all(fingerprint=current_fp)
 
         # The stamp is set after completion.
         assert manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY) == current_fp
@@ -757,7 +756,7 @@ class TestFingerprintStampedOnlyAfterCompletion:
         logic detects a mismatch and tries again.
         """
         # real-Qdrant
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -786,7 +785,7 @@ class TestFingerprintStampedOnlyAfterCompletion:
         )
 
         with pytest.raises(Exception):  # any exception from the failing embedder
-            await bomb_indexer.rebuild_all(fingerprint=current_fp)  # type: ignore[attr-defined]
+            await bomb_indexer.rebuild_all(fingerprint=current_fp)
 
         # The stamp must still hold the OLD fingerprint (not the new one).
         after_raise = manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
@@ -825,11 +824,11 @@ class TestIndexStatusReportsSchemaFields:
     ) -> None:
         """With a fingerprint stamped in the manifest, index_status includes it."""
         # real-Qdrant (needs AppContext.index_status() which needs the store)
-        from loremaster.index.schema import (  # type: ignore[import-not-found]
+        from conftest import QDRANT_URL, _qdrant_api_key
+        from loremaster.index.schema import (
             EMBEDDING_SCHEMA_VERSION,
             embedding_schema_fingerprint,
         )
-        from conftest import QDRANT_URL, _qdrant_api_key
 
         slug = _slug()
         live = tmp_path / "live"
@@ -881,8 +880,8 @@ class TestIndexStatusReportsSchemaFields:
         # real-Qdrant
         import json
 
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
         from conftest import QDRANT_URL, _qdrant_api_key
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -924,7 +923,8 @@ class TestIndexStatusReportsSchemaFields:
             assert hasattr(status, "schema_rebuild"), (
                 "index_status() result must have a 'schema_rebuild' attribute"
             )
-            rebuild = status.schema_rebuild  # type: ignore[union-attr]
+            rebuild = status.schema_rebuild
+            assert rebuild is not None, "schema_rebuild must be set during an in-progress rebuild"
             assert rebuild.state == "in_progress"
             assert rebuild.done == 2
             assert rebuild.total == 5
@@ -1011,8 +1011,8 @@ class TestStartupDecision:
         # real-Qdrant (needs collection creation)
         import json
 
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
         from conftest import QDRANT_URL, _qdrant_api_key
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -1047,11 +1047,11 @@ class TestStartupDecision:
                 "AppContext must expose 'schema_rebuild_task' so callers can "
                 "verify the spawn happened"
             )
-            assert app_ctx.schema_rebuild_task is not None, (  # type: ignore[union-attr]
+            assert app_ctx.schema_rebuild_task is not None, (
                 "build_app_context must create a background rebuild task when "
                 "the stored fingerprint differs from the current one"
             )
-            assert isinstance(app_ctx.schema_rebuild_task, asyncio.Task), (  # type: ignore[union-attr]
+            assert isinstance(app_ctx.schema_rebuild_task, asyncio.Task), (
                 "schema_rebuild_task must be an asyncio.Task (created via create_task)"
             )
 
@@ -1072,9 +1072,9 @@ class TestStartupDecision:
             assert status_blob.get("to_fingerprint") == current_fp
 
             # Cancel the task so it doesn't run past the test boundary.
-            app_ctx.schema_rebuild_task.cancel()  # type: ignore[union-attr]
+            app_ctx.schema_rebuild_task.cancel()
             try:
-                await app_ctx.schema_rebuild_task  # type: ignore[union-attr]
+                await app_ctx.schema_rebuild_task
             except (asyncio.CancelledError, Exception):
                 pass
 
@@ -1092,8 +1092,8 @@ class TestStartupDecision:
         Assert: schema_rebuild_task is None (no rebuild spawned).
         """
         # real-Qdrant
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
         from conftest import QDRANT_URL, _qdrant_api_key
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -1165,15 +1165,15 @@ class TestStartupDecision:
             assert hasattr(app_ctx, "schema_rebuild_task"), (
                 "AppContext must expose 'schema_rebuild_task'"
             )
-            assert app_ctx.schema_rebuild_task is not None, (  # type: ignore[union-attr]
+            assert app_ctx.schema_rebuild_task is not None, (
                 "a missing fingerprint must trigger a background rebuild task "
                 "(provenance unknown → fail safe toward correctness)"
             )
 
             # Cancel the task so it doesn't run past the test boundary.
-            app_ctx.schema_rebuild_task.cancel()  # type: ignore[union-attr]
+            app_ctx.schema_rebuild_task.cancel()
             try:
-                await app_ctx.schema_rebuild_task  # type: ignore[union-attr]
+                await app_ctx.schema_rebuild_task
             except (asyncio.CancelledError, Exception):
                 pass
 
@@ -1208,8 +1208,8 @@ class TestStartupDecision:
                 never treated as current).
         """
         # real-Qdrant
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
         from conftest import QDRANT_URL, _qdrant_api_key
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -1249,8 +1249,8 @@ class TestStartupDecision:
             # SQLite ``meta`` table (k TEXT PK) — grounding the fixture in the actual
             # DB the production code reads, not a hand-faked stand-in.
             manifest = Manifest(str(manifest_path))
-            with manifest._connection:  # type: ignore[attr-defined]
-                manifest._connection.execute(  # type: ignore[attr-defined]
+            with manifest._connection:
+                manifest._connection.execute(
                     "DELETE FROM meta WHERE k = ?", (SCHEMA_FINGERPRINT_META_KEY,)
                 )
             stored_before = manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
@@ -1339,8 +1339,8 @@ class TestStartupDecision:
                 (no separate rebuild task left in progress).
         """
         # real-Qdrant
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
         from conftest import QDRANT_URL, _qdrant_api_key
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -1539,7 +1539,7 @@ class TestRebuildingNoticeSeam:
         regression localises to the helper, not to each tool.
         """
         # offline — pure manifest read
-        from loremaster.index.schema import rebuilding_notice  # type: ignore[import-not-found]
+        from loremaster.index.schema import rebuilding_notice
 
         manifest_path = tmp_path / "m.db"
         _seed_in_progress_rebuild(
@@ -1565,7 +1565,7 @@ class TestRebuildingNoticeSeam:
     ) -> None:
         """A8 seam: ``rebuilding_notice(manifest)`` returns None when NOT rebuilding."""
         # offline — fresh manifest, no rebuild status → idle
-        from loremaster.index.schema import rebuilding_notice  # type: ignore[import-not-found]
+        from loremaster.index.schema import rebuilding_notice
 
         manifest = Manifest(str(tmp_path / "m.db"))
         assert rebuilding_notice(manifest) is None, (
@@ -1587,7 +1587,7 @@ class TestRebuildingNoticeSeam:
                 NOT on a pre-serialization attribute of a returned object.
         """
         # real-Qdrant
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -1642,15 +1642,15 @@ class TestRebuildingNoticeSeam:
         raise-based assertion in the sibling test is the primary contract.
         """
         # real-Qdrant
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         try:
-            from mcp.server.fastmcp.utilities.func_metadata import (  # type: ignore[import-not-found]
+            from mcp.server.fastmcp.utilities.func_metadata import (
                 _convert_to_content as convert_result,
             )
         except Exception:  # pragma: no cover - SDK layout differs
             try:
-                from mcp.server.fastmcp.server import (  # type: ignore[import-not-found]
+                from mcp.server.fastmcp.server import (  # type: ignore[attr-defined, no-redef]
                     _convert_to_content as convert_result,
                 )
             except Exception:
@@ -1742,7 +1742,7 @@ class TestRebuildingNoticeSeam:
         rebuilding + progress message, exactly like search_code.
         """
         # real-Qdrant
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -1928,7 +1928,7 @@ class TestRebuildProgressAdvancesLive:
         # real-Qdrant
         import json as _json
 
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -1969,7 +1969,7 @@ class TestRebuildProgressAdvancesLive:
         # ACT: rebuild_all purges all manifest rows + vectors, then re-embeds every
         # file.  The spy records done at the start of each embed_documents call.
         fingerprint = embedding_schema_fingerprint(config)
-        await rebuild_indexer.rebuild_all(fingerprint=fingerprint)  # type: ignore[attr-defined]
+        await rebuild_indexer.rebuild_all(fingerprint=fingerprint)
 
         # -----------------------------------------------------------------------
         # ASSERT 1: the spy must have been called (> 0 embed calls) — proves the
@@ -2018,7 +2018,6 @@ class TestRebuildProgressAdvancesLive:
         # strictly-increasing value per call (batching may keep it flat for a
         # group), only that the overall sequence reaches a strictly interior value.
         # -----------------------------------------------------------------------
-        observed_max_before_last = max(spy.observed_done_values[:-1]) if len(spy.observed_done_values) > 1 else spy.observed_done_values[0]
         # The primary discriminator: a value strictly between 0 and total was seen.
         has_interior_progress = any(
             0 < value < _EXTENDED_CORPUS_TOTAL
@@ -2165,8 +2164,8 @@ class TestFailedRebuildReportsFailed:
                 ``in_progress``); the fingerprint is NOT advanced to current.
         """
         # real-Qdrant
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
         from conftest import QDRANT_URL, _qdrant_api_key
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -2318,14 +2317,14 @@ class TestFailedRebuildReportsFailed:
             assert hasattr(status, "schema_rebuild"), (
                 "index_status() result must have a 'schema_rebuild' attribute"
             )
-            assert status.schema_rebuild.state == _REBUILD_STATE_FAILED_EXPECTED, (  # type: ignore[union-attr]
+            assert status.schema_rebuild.state == _REBUILD_STATE_FAILED_EXPECTED, (
                 "index_status() must surface a 'failed' rebuild state faithfully so "
                 "lore_index_status reflects a dead rebuild instead of a phantom "
-                f"in-progress one; got {status.schema_rebuild.state!r}"  # type: ignore[union-attr]
+                f"in-progress one; got {status.schema_rebuild.state!r}"
             )
             # Sanity bound on the surfaced progress (clause 4): done/total are
             # non-negative and done <= total even in the failed terminal state.
-            assert 0 <= status.schema_rebuild.done <= status.schema_rebuild.total  # type: ignore[union-attr]
+            assert 0 <= status.schema_rebuild.done <= status.schema_rebuild.total
 
         finally:
             if app_ctx is not None:
@@ -2347,7 +2346,7 @@ class TestFailedRebuildReportsFailed:
         failed is caught.
         """
         # real-Qdrant
-        from loremaster.index.schema import embedding_schema_fingerprint  # type: ignore[import-not-found]
+        from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
         live = tmp_path / "live"
@@ -2363,7 +2362,7 @@ class TestFailedRebuildReportsFailed:
         )
 
         fingerprint = embedding_schema_fingerprint(config)
-        await indexer.rebuild_all(fingerprint=fingerprint)  # type: ignore[attr-defined]
+        await indexer.rebuild_all(fingerprint=fingerprint)
         manifest.close()
 
         settled_state = _read_rebuild_state(manifest_path)

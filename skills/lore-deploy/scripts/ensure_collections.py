@@ -73,9 +73,8 @@ async def _ensure_one(client, slug: str, dim: int) -> None:  # type: ignore[no-u
 
 async def _run(config_path: str) -> int:
     """Wire the Qdrant client from the config and ensure both collections."""
-    from qdrant_client import AsyncQdrantClient
-
     from loremaster.config import load_config, resolve_secret
+    from qdrant_client import AsyncQdrantClient
 
     config = load_config(config_path)
     slug = config.project.slug

@@ -39,7 +39,9 @@ AMENDMENT 1 A1.11):
 from __future__ import annotations
 
 import asyncio
+import inspect as _inspect_for_overflow_guard
 import logging
+import struct as _struct_for_overflow_guard
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -51,13 +53,15 @@ from loremaster.config import LoreConfig
 from loremaster.index.indexer import Indexer, IndexOutcome
 from loremaster.index.manifest import STATE_INDEXED, Manifest
 from loremaster.index.reconcile import ReconcileEngine
-from loremaster.index.watcher import LiveWatcher
+from loremaster.index.watcher import LiveWatcher, _OverflowAwareInotify
 from loremaster.server import LoreServer
 from loremaster.source.local_directory import LocalDirectorySourceProvider
 from loremaster.store.qdrant import QdrantStore
 from loresigil.base import Embedder
 from loresigil.testing import FakeEmbedder
 from qdrant_client import AsyncQdrantClient
+from watchdog.observers.inotify_c import Inotify as _WatchdogInotify
+from watchdog.observers.inotify_c import InotifyConstants as _WatchdogInotifyConstants
 
 _DIM = 2048
 _TEI_BASE_URL = "http://tei.example:8080"
@@ -1061,7 +1065,7 @@ class TestOneInotifyInstancePerRoot:
         # Act: build the observer WITHOUT starting it (no inotify fd is opened —
         # the new ``build_observer`` seam the fix introduces; ``start`` is
         # specified to schedule via this same path).
-        observer = watcher.build_observer()  # type: ignore[attr-defined]
+        observer = watcher.build_observer()
 
         # Assert: exactly ONE emitter (== one inotify instance) per LIVE root —
         # NOT one per nested dir. The corpus has >= 5 nested included subdirs, so
@@ -1266,7 +1270,7 @@ class TestKernelOverflowTriggersImmediateReconcile:
 
         # Inject the KERNEL overflow signal for the live tier (the seam the
         # inotify backend will call when it reads the IN_Q_OVERFLOW sentinel).
-        await watcher.on_kernel_overflow("custom")  # type: ignore[attr-defined]
+        await watcher.on_kernel_overflow("custom")
 
         # A reconcile of the affected tier fired IMMEDIATELY (not deferred to the
         # 600 s periodic interval) — exactly one, in direct response.
@@ -1291,7 +1295,7 @@ class TestKernelOverflowTriggersImmediateReconcile:
 
         # The kernel overflow signal arrives; the immediate reconcile re-walks and
         # indexes the missed file.
-        await watcher.on_kernel_overflow("custom")  # type: ignore[attr-defined]
+        await watcher.on_kernel_overflow("custom")
 
         assert spy.reconcile_calls == 1  # the immediate reconcile actually ran
         row = manifest.get("custom", missed_rel)
@@ -1315,7 +1319,7 @@ class TestKernelOverflowTriggersImmediateReconcile:
         # Hold the writer lock, then fire the overflow handler concurrently. If
         # the handler reconciles UNDER the lock, it must block until we release.
         await watcher.writer_lock.acquire()
-        task = asyncio.ensure_future(watcher.on_kernel_overflow("custom"))  # type: ignore[arg-type]
+        task = asyncio.ensure_future(watcher.on_kernel_overflow("custom"))
         await asyncio.sleep(0.05)  # give the handler a chance to (try to) run
         # Still blocked on the lock: no reconcile has completed yet.
         assert spy.reconcile_calls == 0, (
@@ -1345,15 +1349,6 @@ class TestKernelOverflowTriggersImmediateReconcile:
 # code path on a SYNTHETIC buffer (no real inotify fd — the host pool is
 # saturated and ``observer.start()`` would EMFILE) and assert the global parser
 # is never disturbed. They are RED against the swap impl, GREEN against the scan.
-
-import inspect as _inspect_for_overflow_guard
-import struct as _struct_for_overflow_guard
-
-from watchdog.observers.inotify_c import (
-    Inotify as _WatchdogInotify,
-    InotifyConstants as _WatchdogInotifyConstants,
-)
-from loremaster.index.watcher import _OverflowAwareInotify
 
 # Captured AT IMPORT TIME, before any test runs the detection path: the pristine
 # ``staticmethod`` descriptor object that watchdog ships. The no-mutation guard
@@ -1443,7 +1438,7 @@ def _build_overflow_aware_inotify_without_fd(
     the name ``scan_buffer_for_overflow`` and adjust this builder accordingly.)
     """
     instance = _OverflowAwareInotify.__new__(_OverflowAwareInotify)
-    instance._on_overflow = on_overflow  # type: ignore[attr-defined]
+    instance._on_overflow = on_overflow
     return instance
 
 

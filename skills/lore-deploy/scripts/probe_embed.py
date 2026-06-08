@@ -151,7 +151,7 @@ def _observe_dim(base_url: str, endpoint: str, key: str, per_req_s: float) -> in
             vector = first.get("embedding")
     if not isinstance(vector, list) or not vector:
         print(
-            f"probe_embed: could not locate an embedding vector in the response shape.",
+            "probe_embed: could not locate an embedding vector in the response shape.",
             file=sys.stderr,
         )
         sys.exit(_EXIT_UNREACHABLE)

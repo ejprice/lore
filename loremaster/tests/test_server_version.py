@@ -55,10 +55,9 @@ import importlib.metadata
 from pathlib import Path
 from typing import Any
 
+import loremaster.server as server_module
 import pytest
 from loremaster.config import LoreConfig
-
-import loremaster.server as server_module
 from loremaster.server import LoreServer, build_mcp_server
 
 # --------------------------------------------------------------------------- #
@@ -164,7 +163,7 @@ def _advertised_version(mcp: Any) -> str:
     the real producer→consumer seam.
     """
     init_options = mcp._mcp_server.create_initialization_options()
-    return init_options.server_version
+    return str(init_options.server_version)
 
 
 @pytest.fixture()

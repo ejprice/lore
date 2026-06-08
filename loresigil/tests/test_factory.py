@@ -20,6 +20,8 @@ is the thing that hits the endpoint, and it is not called here.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from loresigil.base import Embedder
 from loresigil.factory import EmbeddingConfig, MissingApiKeyError, make_embedder
@@ -32,7 +34,11 @@ TEI_KEY_VALUE: str = "tei-secret-12345"
 CLOUD_KEY_VALUE: str = "voyage-secret-67890"
 
 # Mirrors the verified lore.yaml embedding block for the TEI backend.
-TEI_CONFIG_FIELDS: dict[str, object] = {
+# ``dict[str, Any]`` (not ``dict[str, object]``): these payloads are unpacked as
+# ``**kwargs`` into the typed ``EmbeddingConfig`` model, and ``object`` values do
+# not satisfy the model's concrete field types (Literal / str / int) under
+# pydantic-mypy's ``init_typed``; ``Any`` is the accurate type for a kwargs map.
+TEI_CONFIG_FIELDS: dict[str, Any] = {
     "backend": "tei",
     "base_url": "http://tei.example:8080",
     "endpoint": "/embed",
@@ -44,7 +50,7 @@ TEI_CONFIG_FIELDS: dict[str, object] = {
     "api_key_env": TEI_KEY_ENV,
 }
 
-CLOUD_CONFIG_FIELDS: dict[str, object] = {
+CLOUD_CONFIG_FIELDS: dict[str, Any] = {
     "backend": "voyage-cloud",
     "api_url": "https://api.voyageai.com/v1/embeddings",
     "model": "voyage-4-large",
@@ -66,7 +72,7 @@ class TestFactoryDispatch:
     """``make_embedder`` returns the right concrete class per backend."""
 
     def test_tei_backend_returns_tei_embedder(self) -> None:
-        config = EmbeddingConfig(**TEI_CONFIG_FIELDS)  # type: ignore[arg-type]
+        config = EmbeddingConfig(**TEI_CONFIG_FIELDS)
         embedder = make_embedder(config)
         assert isinstance(embedder, TEIEmbedder)
         assert isinstance(embedder, Embedder)
@@ -75,7 +81,7 @@ class TestFactoryDispatch:
         assert embedder.max_input_tokens == 8192
 
     def test_voyage_cloud_backend_returns_cloud_embedder(self) -> None:
-        config = EmbeddingConfig(**CLOUD_CONFIG_FIELDS)  # type: ignore[arg-type]
+        config = EmbeddingConfig(**CLOUD_CONFIG_FIELDS)
         embedder = make_embedder(config)
         assert isinstance(embedder, VoyageCloudEmbedder)
         assert isinstance(embedder, Embedder)
@@ -83,6 +89,8 @@ class TestFactoryDispatch:
 
     def test_unknown_backend_raises_value_error(self) -> None:
         # A typo'd / unsupported backend must fail loud, not silently default.
+        # The invalid literal is the POINT of the test (it must be rejected at
+        # runtime), so the static arg-type complaint is deliberately ignored.
         with pytest.raises(ValueError):
             EmbeddingConfig(backend="qdrant-magic", api_key_env=TEI_KEY_ENV)  # type: ignore[arg-type]
 

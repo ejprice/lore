@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 import yaml
+from conftest import kz_query, kz_row
 from loremaster.graph import KIND_MODULE, CodeGraph
 from loremaster.store.qdrant import QdrantStore
 from loresigil.testing import FakeEmbedder
@@ -190,15 +191,16 @@ class TestCliBuildsCodeGraph:
         graph = CodeGraph(str(graph_path))
         try:
             node_count = int(
-                graph.connection.execute("MATCH (n:CodeNode) RETURN count(n)").get_next()[0]
+                kz_row(kz_query(graph.connection, "MATCH (n:CodeNode) RETURN count(n)"))[0]
             )
             assert node_count > 0, "cold index built NO graph nodes"
             # The module nodes for both files are present.
             module_count = int(
-                graph.connection.execute(
+                kz_row(kz_query(
+                    graph.connection,
                     "MATCH (n:CodeNode) WHERE n.kind = $kind RETURN count(n)",
                     {"kind": KIND_MODULE},
-                ).get_next()[0]
+                ))[0]
             )
             assert module_count >= 2
             # The RESOLVED import edge is reachable via the reverse lookup: pkg.b's

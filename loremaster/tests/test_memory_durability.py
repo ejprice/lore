@@ -56,19 +56,38 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
+import pytest
 import pytest_asyncio
 
 # Reuse the inherited harness URL + key reader (NOT its global-sweep teardown).
 # ``conftest`` resolves as a top-level module because conftest.py inserts the
 # tests dir onto ``sys.path`` (see loremaster/tests/conftest.py).
 from conftest import QDRANT_URL, _qdrant_api_key
+from loremaster.memory.ledger import MemoryLedger
 from loremaster.memory.store import MemoryRef, MemoryStore
 from loremaster.store.qdrant import QdrantStore
+from loresigil.base import EmbedResult
 from loresigil.testing import FakeEmbedder
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import Distance, PointStruct, VectorParams
+
+
+def _ledger(store: MemoryStore) -> MemoryLedger:
+    """Assert the store has an active ledger and return it (type-narrowing helper).
+
+    ``MemoryStore.ledger`` is typed ``MemoryLedger | None`` because a store
+    constructed without a ledger path has no ledger.  All tests that call this
+    helper create their store WITH a ledger path, so the ``None`` branch is
+    structurally impossible — this helper documents and enforces that invariant
+    rather than scattering ``assert ... is not None`` across each call site.
+    """
+    ledger = store.ledger
+    assert ledger is not None, f"{store!r} was constructed without a ledger path"
+    return ledger
+
 
 # Production embedding dim per the owner directive (FakeEmbedder at 2048), the
 # SAME value the sibling memory suite pins — not a convenience dim.
@@ -168,13 +187,13 @@ class CountingEmbedder(FakeEmbedder):
         super().__init__(*args, **kwargs)
         self.documents_embedded = 0
 
-    async def embed_documents(self, texts: list[str]):  # type: ignore[override]
+    async def embed_documents(self, texts: list[str]) -> EmbedResult:
         self.documents_embedded += len(texts)
         return await super().embed_documents(texts)
 
 
-@pytest_asyncio.fixture()
-def ledger_path(tmp_path) -> str:
+@pytest.fixture()
+def ledger_path(tmp_path: Path) -> str:
     """A throwaway SQLite ledger db path on a tmp volume (alongside a fake manifest).
 
     Mirrors the production layout: the manifest lives at ``<slug>.db`` and the
@@ -312,7 +331,7 @@ class TestWriteThroughPersistsToLedger:
 
         # The durable copy exists, read off the ledger — NOT off Qdrant. One save
         # ⇒ exactly one ledger row (pure-count oracle, independent of the store).
-        ledger = memory_store.ledger
+        ledger = _ledger(memory_store)
         assert ledger.count() == 1
         records = ledger.all_records()
         assert any(record.text == note for record in records)
@@ -325,7 +344,7 @@ class TestWriteThroughPersistsToLedger:
 
         await memory_store.save_memory(note, metadata=metadata, refs=[CORRECTION_REF])
 
-        record = next(r for r in memory_store.ledger.all_records() if r.text == note)
+        record = next(r for r in _ledger(memory_store).all_records() if r.text == note)
         # Text + caller metadata survive verbatim; a superset is fine, but the
         # pairs we put in must come back unmangled (the restore re-embeds these).
         assert record.text == note
@@ -348,7 +367,7 @@ class TestWriteThroughPersistsToLedger:
         # in-place overwrite rather than a duplicate. (Independent oracle: the
         # uuid5 recomputed here from the documented convention.)
         assert returned_id == expected_memory_id(note)
-        record = next(r for r in memory_store.ledger.all_records() if r.text == note)
+        record = next(r for r in _ledger(memory_store).all_records() if r.text == note)
         assert record.memory_id == expected_memory_id(note)
 
 
@@ -373,7 +392,7 @@ class TestRestoreAfterQdrantWipe:
 
         # Sanity: before the wipe, Qdrant and the ledger agree.
         assert await count_points(tracking_client, collection) == saved_count
-        assert memory_store.ledger.count() == saved_count
+        assert _ledger(memory_store).count() == saved_count
 
         # DISASTER: the Qdrant memory collection is wiped (fresh-volume loss).
         await wipe_collection(tracking_client, collection, _DIM)
@@ -385,7 +404,7 @@ class TestRestoreAfterQdrantWipe:
         # Every memory came back: the headline "zero loss" guarantee.
         assert restored == saved_count
         assert await count_points(tracking_client, collection) == saved_count
-        assert memory_store.ledger.count() == saved_count
+        assert _ledger(memory_store).count() == saved_count
 
     async def test_a_wiped_memory_is_recallable_again_after_restore(
         self,
@@ -507,7 +526,7 @@ class TestWriteThroughSurvivesQdrantFailure:
 
         # DURABILITY: despite the Qdrant-side failure, the ledger kept the memory,
         # so a future restore can re-embed it. Zero loss is the guarantee.
-        records = store.ledger.all_records()
+        records = _ledger(store).all_records()
         assert any(record.text == doomed_note for record in records), (
             "write-through must persist the ledger row even when Qdrant upsert fails"
         )
@@ -534,7 +553,7 @@ class TestDeterminismNoDuplicatesOnRestore:
 
         # Same convention-derived id both times → one ledger row, one Qdrant point.
         assert first_id == second_id == expected_memory_id(note)
-        assert memory_store.ledger.count() == 1
+        assert _ledger(memory_store).count() == 1
         assert await count_points(tracking_client, memory_store.collection_name) == 1
 
     async def test_restore_does_not_create_duplicate_points(
@@ -554,7 +573,7 @@ class TestDeterminismNoDuplicatesOnRestore:
 
         # Exactly N points — no duplicates, no inflation past the ledger count.
         assert await count_points(tracking_client, collection) == len(MEMORY_NOTES)
-        assert memory_store.ledger.count() == len(MEMORY_NOTES)
+        assert _ledger(memory_store).count() == len(MEMORY_NOTES)
 
 
 class TestRecallSemanticsUnchanged:
@@ -604,7 +623,7 @@ class TestLedgerResilientOpen:
     fresh project's ledger is empty (count 0) — the inert-baseline case.
     """
 
-    def test_open_on_a_missing_parent_dir_does_not_crash(self, tmp_path) -> None:
+    def test_open_on_a_missing_parent_dir_does_not_crash(self, tmp_path: Path) -> None:
         from loremaster.memory.ledger import MemoryLedger
 
         # A path whose parent directory does not yet exist (fresh state volume).
@@ -614,7 +633,7 @@ class TestLedgerResilientOpen:
         # makes restore a no-op on first boot (count 0 == Qdrant count 0).
         assert ledger.count() == 0
 
-    def test_open_on_a_corrupt_ledger_file_recreates_it(self, tmp_path) -> None:
+    def test_open_on_a_corrupt_ledger_file_recreates_it(self, tmp_path: Path) -> None:
         from loremaster.memory.ledger import MemoryLedger
 
         # Pre-seed the path with garbage that is NOT a valid SQLite database.
@@ -633,7 +652,7 @@ class TestLedgerResilientOpen:
         )
         assert ledger.count() == 1
 
-    def test_record_is_idempotent_keyed_by_memory_id(self, tmp_path) -> None:
+    def test_record_is_idempotent_keyed_by_memory_id(self, tmp_path: Path) -> None:
         from loremaster.memory.ledger import MemoryLedger
 
         ledger = MemoryLedger(str(tmp_path / "lore_test.memory.db"))
@@ -677,9 +696,6 @@ class TestLedgerResilientOpen:
 # oracles reconstructed from the documented convention — never read back from
 # the code under test.
 # =========================================================================== #
-
-import pytest
-from qdrant_client.models import PointStruct
 
 # --- The Qdrant memory-point payload shape, reconstructed INDEPENDENTLY ------
 # These mirror store.py's ``_build_payload`` (a VERIFIED FACT in the slice
@@ -824,7 +840,7 @@ class TestBackfillLedgerFromStore:
         self, pre_v036_store: MemoryStore
     ) -> None:
         # PRECONDITION: Qdrant holds N memories, the ledger holds NONE (pre-v0.3.6).
-        ledger = pre_v036_store.ledger
+        ledger = _ledger(pre_v036_store)
         assert ledger.count() == 0, "the pre-v0.3.6 ledger must start empty"
 
         backfilled = await pre_v036_store.backfill_ledger_from_store()
@@ -868,7 +884,7 @@ class TestBackfillLedgerFromStore:
 
         await store.backfill_ledger_from_store()
 
-        record = next(r for r in store.ledger.all_records() if r.text == note)
+        record = next(r for r in _ledger(store).all_records() if r.text == note)
         # The refs_stamp equals the INDEPENDENTLY-computed stamp for the seeded
         # ref — so the backfilled row re-mints the SAME id the seeded point has.
         assert record.refs_stamp == expected_refs_stamp([CORRECTION_REF])
@@ -885,13 +901,13 @@ class TestBackfillLedgerFromStore:
         # NOTHING and return 0, so it is not re-run pointlessly on every boot.
         for note in MEMORY_NOTES:
             await memory_store.save_memory(note)
-        count_before = memory_store.ledger.count()
+        count_before = _ledger(memory_store).count()
         assert count_before == len(MEMORY_NOTES)
 
         backfilled = await memory_store.backfill_ledger_from_store()
 
         assert backfilled == 0, "backfill must be a no-op when the ledger already covers the store"
-        assert memory_store.ledger.count() == count_before
+        assert _ledger(memory_store).count() == count_before
 
     async def test_backfill_is_idempotent_second_call_adds_nothing(
         self, pre_v036_store: MemoryStore
@@ -899,14 +915,14 @@ class TestBackfillLedgerFromStore:
         # Backfilling twice must NOT multiply ledger rows: the deterministic id is
         # the upsert key, so the second pass overwrites in place (count stays N).
         first = await pre_v036_store.backfill_ledger_from_store()
-        count_after_first = pre_v036_store.ledger.count()
+        count_after_first = _ledger(pre_v036_store).count()
         second = await pre_v036_store.backfill_ledger_from_store()
 
         assert first == len(MEMORY_NOTES)
         assert count_after_first == len(MEMORY_NOTES)
         # The second pass sees the ledger already covering the store ⇒ records 0.
         assert second == 0
-        assert pre_v036_store.ledger.count() == len(MEMORY_NOTES)
+        assert _ledger(pre_v036_store).count() == len(MEMORY_NOTES)
 
 
 class TestPreExistingMemorySurvivesWipeAfterBackfill:
@@ -928,11 +944,11 @@ class TestPreExistingMemorySurvivesWipeAfterBackfill:
         # Sanity: Qdrant holds N pre-v0.3.6 memories; the ledger is empty (they
         # would be LOST on a wipe right now — this is the gap).
         assert await count_points(tracking_client, collection) == len(MEMORY_NOTES)
-        assert pre_v036_store.ledger.count() == 0
+        assert _ledger(pre_v036_store).count() == 0
 
         # CLOSE THE GAP: backfill makes every pre-existing memory ledger-backed.
         await pre_v036_store.backfill_ledger_from_store()
-        assert pre_v036_store.ledger.count() == len(MEMORY_NOTES)
+        assert _ledger(pre_v036_store).count() == len(MEMORY_NOTES)
 
         # DISASTER: the Qdrant memory collection is wiped (fresh-volume loss).
         await wipe_collection(tracking_client, collection, _DIM)

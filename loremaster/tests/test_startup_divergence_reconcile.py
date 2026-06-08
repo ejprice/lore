@@ -73,7 +73,6 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-import pytest
 import pytest_asyncio
 
 # ---------------------------------------------------------------------------
@@ -436,7 +435,7 @@ async def _live_count(*, slug: str, tier: str, url: str, api_key: str) -> int:
     client = AsyncQdrantClient(url=url, api_key=api_key)
     try:
         store = QdrantStore(client=client, slug=slug)
-        return await store.count_points(tier)  # type: ignore[attr-defined]
+        return await store.count_points(tier)
     finally:
         await client.close()
 
@@ -513,7 +512,7 @@ class TestWipedCollectionHeals:
         # the EXPECTED chunk count from the manifest (the manifest is honest about
         # what SHOULD be there — it is the LIVE store that will be wiped).
         manifest = Manifest(str(manifest_path))
-        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
+        expected = manifest.expected_chunks(_LIVE_TIER)
         manifest.close()
         assert expected > 0, (
             f"test setup: the seeded manifest must claim >0 chunks for {_LIVE_TIER!r}; "
@@ -652,7 +651,7 @@ class TestOrphanOverCountHeals:
         await seed.aclose()
 
         manifest = Manifest(str(manifest_path))
-        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
+        expected = manifest.expected_chunks(_LIVE_TIER)
         manifest.close()
         assert expected > 0, "test setup: the seed must produce >0 expected chunks"
 
@@ -749,14 +748,14 @@ class TestWipedGraphHeals:
         # (so the WIPE below is a real divergence, not a no-op). Both reads use the
         # NEW indexed_file_count surface.
         manifest = Manifest(str(manifest_path))
-        manifest_indexed = manifest.indexed_file_count()  # type: ignore[attr-defined]
+        manifest_indexed = manifest.indexed_file_count()
         manifest.close()
         assert manifest_indexed > 0, (
             "test setup: the manifest must claim >0 indexed files after the seed"
         )
 
         graph = CodeGraph(str(graph_path))
-        seeded_graph_files = graph.indexed_file_count()  # type: ignore[attr-defined]
+        seeded_graph_files = graph.indexed_file_count()
         assert seeded_graph_files > 0, (
             "test setup: the seed must populate the graph with >0 files"
         )
@@ -766,7 +765,7 @@ class TestWipedGraphHeals:
         # the fixture is grounded in the actual DB.
         graph.connection.execute("MATCH (n:CodeNode) DETACH DELETE n")
         graph.connection.execute("MATCH (r:Ref) DETACH DELETE r")
-        wiped_graph_files = graph.indexed_file_count()  # type: ignore[attr-defined]
+        wiped_graph_files = graph.indexed_file_count()
         graph.close()
         assert wiped_graph_files == 0, (
             f"test setup: the wiped graph must report 0 indexed files; got {wiped_graph_files}"
@@ -781,7 +780,7 @@ class TestWipedGraphHeals:
 
         # ASSERT (independent oracle 1): the LIVE graph is repopulated.
         healed_graph = CodeGraph(str(graph_path))
-        healed_graph_files = healed_graph.indexed_file_count()  # type: ignore[attr-defined]
+        healed_graph_files = healed_graph.indexed_file_count()
         healed_graph.close()
         assert healed_graph_files == seeded_graph_files, (
             f"a wiped graph the manifest calls indexed must be repopulated on restart: "
@@ -840,7 +839,7 @@ class TestNoFalseHealWhenHealthy:
         # Sanity (independent oracle): the live count already matches expected, so a
         # heal would be pure waste. Read both from the LIVE store + the manifest.
         manifest = Manifest(str(manifest_path))
-        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
+        expected = manifest.expected_chunks(_LIVE_TIER)
         manifest.close()
         live_now = await _live_count(
             slug=slug, tier=_LIVE_TIER, url=QDRANT_URL, api_key=_qdrant_api_key(),
@@ -863,13 +862,13 @@ class TestNoFalseHealWhenHealthy:
             # The contract: build_app_context accepts the store divergence reconcile
             # wiring; to spy the purge we call the reconcile step directly with the
             # SAME collaborators build_app_context wires, over the seeded DBs.
-            from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+            from loremaster.server import reconcile_store_divergence
 
             await spy_store.ensure_collection(_DIM)
             manifest2 = Manifest(str(manifest_path))
             graph2 = _graph_with_roots(config, graph_path, snap)
             try:
-                await reconcile_store_divergence(  # type: ignore[misc]
+                await reconcile_store_divergence(
                     store=spy_store,
                     manifest=manifest2,
                     code_graph=graph2,
@@ -941,8 +940,8 @@ class TestNoFalseHealWhenHealthy:
         # empty-graph-but-healthy shape the false-heal bug mis-classifies. A
         # zero-expected setup would make the test vacuous, so we pin expected > 0.
         manifest = Manifest(str(manifest_path))
-        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
-        manifest_indexed = manifest.indexed_file_count()  # type: ignore[attr-defined]
+        expected = manifest.expected_chunks(_LIVE_TIER)
+        manifest_indexed = manifest.indexed_file_count()
         manifest.close()
         live_now = await _live_count(
             slug=slug, tier=_LIVE_TIER, url=QDRANT_URL, api_key=_qdrant_api_key(),
@@ -957,7 +956,7 @@ class TestNoFalseHealWhenHealthy:
         )
 
         graph = CodeGraph(str(graph_path))
-        graph_files = graph.indexed_file_count()  # type: ignore[attr-defined]
+        graph_files = graph.indexed_file_count()
         graph.close()
         assert graph_files == 0, (
             f"test setup: a docs-only corpus must have a LEGITIMATELY EMPTY graph "
@@ -971,13 +970,13 @@ class TestNoFalseHealWhenHealthy:
         spy_store = DeleteByTierSpyStore(client=client, slug=slug)
         divergence_harness["register"](slug)
         try:
-            from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+            from loremaster.server import reconcile_store_divergence
 
             await spy_store.ensure_collection(_DIM)
             manifest2 = Manifest(str(manifest_path))
             graph2 = _graph_with_roots(config, graph_path, snap)
             try:
-                await reconcile_store_divergence(  # type: ignore[misc]
+                await reconcile_store_divergence(
                     store=spy_store,
                     manifest=manifest2,
                     code_graph=graph2,
@@ -1045,7 +1044,7 @@ class TestReconcileIdempotent:
         await seed.aclose()
 
         manifest = Manifest(str(manifest_path))
-        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
+        expected = manifest.expected_chunks(_LIVE_TIER)
         manifest.close()
         assert expected > 0, "test setup: the seed must produce >0 expected chunks"
 
@@ -1083,7 +1082,7 @@ class TestReconcileIdempotent:
 
         # SECOND reconcile over the now-really-healthy index, with a spy — it must
         # find the counts already agree and purge NOTHING (the idempotence oracle).
-        from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+        from loremaster.server import reconcile_store_divergence
 
         client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         spy = DeleteByTierSpyStore(client=client, slug=slug)
@@ -1091,7 +1090,7 @@ class TestReconcileIdempotent:
         g = CodeGraph(str(graph_path))
         try:
             await spy.ensure_collection(_DIM)
-            await reconcile_store_divergence(  # type: ignore[misc]
+            await reconcile_store_divergence(
                 store=spy, manifest=m, code_graph=g, config=config,
             )
         finally:
@@ -1162,8 +1161,8 @@ class TestPartialPerTierDivergence:
         await seed.aclose()
 
         manifest = Manifest(str(manifest_path))
-        expected_live = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
-        expected_static = manifest.expected_chunks(_STATIC_TIER)  # type: ignore[attr-defined]
+        expected_live = manifest.expected_chunks(_LIVE_TIER)
+        expected_static = manifest.expected_chunks(_STATIC_TIER)
         # Both tiers must start fully indexed (the precondition for "reset only
         # the live tier" being observable).
         live_rows_before = manifest.files_for_tier(_LIVE_TIER)
@@ -1203,7 +1202,7 @@ class TestPartialPerTierDivergence:
         )
 
         # Run the BARE reconcile with a spy so we can prove which tiers it purged.
-        from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+        from loremaster.server import reconcile_store_divergence
 
         client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         spy = DeleteByTierSpyStore(client=client, slug=slug)
@@ -1212,7 +1211,7 @@ class TestPartialPerTierDivergence:
         g = CodeGraph(str(graph_path))
         try:
             await spy.ensure_collection(_DIM)
-            await reconcile_store_divergence(  # type: ignore[misc]
+            await reconcile_store_divergence(
                 store=spy, manifest=m, code_graph=g, config=config,
             )
         finally:
@@ -1285,8 +1284,8 @@ class TestPartialPerTierDivergence:
         await seed.aclose()
 
         manifest = Manifest(str(manifest_path))
-        expected_live = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
-        expected_static = manifest.expected_chunks(_STATIC_TIER)  # type: ignore[attr-defined]
+        expected_live = manifest.expected_chunks(_LIVE_TIER)
+        expected_static = manifest.expected_chunks(_STATIC_TIER)
         manifest.close()
         assert expected_live > 0 and expected_static > 0
 
@@ -1378,7 +1377,7 @@ class TestReconcileDoesNotFabricatePoints:
         await seed.aclose()
 
         manifest = Manifest(str(manifest_path))
-        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
+        expected = manifest.expected_chunks(_LIVE_TIER)
         manifest.close()
         assert expected > 0, "test setup: the seed must produce >0 expected chunks"
 
@@ -1395,7 +1394,7 @@ class TestReconcileDoesNotFabricatePoints:
         # Run the BARE reconcile — NO build_app_context / sweep behind it. Its only
         # honest effect on the store is delete_by_tier (purge); it must NOT upsert
         # anything to fake the count.
-        from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+        from loremaster.server import reconcile_store_divergence
 
         client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         spy = DeleteByTierSpyStore(client=client, slug=slug)
@@ -1404,7 +1403,7 @@ class TestReconcileDoesNotFabricatePoints:
         g = CodeGraph(str(graph_path))
         try:
             await spy.ensure_collection(_DIM)
-            await reconcile_store_divergence(  # type: ignore[misc]
+            await reconcile_store_divergence(
                 store=spy, manifest=m, code_graph=g, config=config,
             )
         finally:
@@ -1495,7 +1494,7 @@ class TestCountVsMtimeInteraction:
         await seed.aclose()
 
         manifest = Manifest(str(manifest_path))
-        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
+        expected = manifest.expected_chunks(_LIVE_TIER)
         # Confirm the manifest rows are in the INDEXED state with unchanged
         # mtime+size — so needs_reindex would fast-path-skip them (the trap).
         rows = manifest.files_for_tier(_LIVE_TIER)
@@ -1597,7 +1596,7 @@ class TestEmptyDecisionReadsLiveCount:
         client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         try:
             store = QdrantStore(client=client, slug=slug)
-            total = await store.count_points()  # type: ignore[attr-defined]  # no tier filter → grand total
+            total = await store.count_points()  # no tier filter → grand total
         finally:
             await client.close()
 
@@ -1752,7 +1751,7 @@ class TestGraphOnlyHealDoesNotReEmbed:
         # precondition that makes a vector re-embed pure waste (clause 1: realistic
         # healthy index, not a convenience shape).
         manifest = Manifest(str(manifest_path))
-        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
+        expected = manifest.expected_chunks(_LIVE_TIER)
         manifest.close()
         count_before = await _live_count(
             slug=slug, tier=_LIVE_TIER, url=QDRANT_URL, api_key=_qdrant_api_key(),
@@ -1784,12 +1783,12 @@ class TestGraphOnlyHealDoesNotReEmbed:
         )
         try:
             await spy_store.ensure_collection(_DIM)
-            from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+            from loremaster.server import reconcile_store_divergence
 
             # The NEW seam: the reconcile accepts the indexer so it can re-graph
             # without re-embedding. The keyword is the contract; the impl wires it
             # from build_app_context's already-constructed indexer.
-            await reconcile_store_divergence(  # type: ignore[misc]
+            await reconcile_store_divergence(
                 store=spy_store,
                 manifest=manifest2,
                 code_graph=graph2,
@@ -1902,7 +1901,7 @@ class TestRebuildGraphOnlyIndexerMethod:
         try:
             await spy_store.ensure_collection(_DIM)
             # The NEW indexer surface under contract: re-graph the tier's .py files.
-            regraphed = await indexer.rebuild_graph_only(_LIVE_TIER)  # type: ignore[attr-defined]
+            regraphed = await indexer.rebuild_graph_only(_LIVE_TIER)
         finally:
             manifest2.close()
             graph2.close()
@@ -2079,7 +2078,7 @@ class TestDivergenceHealSetsRebuildingNotice:
 
         # Run the reconcile with a status-OBSERVING manifest so the transient
         # in_progress write is captured even though it is cleared before return.
-        from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+        from loremaster.server import reconcile_store_divergence
 
         client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         spy = DeleteByTierSpyStore(client=client, slug=slug)
@@ -2088,7 +2087,7 @@ class TestDivergenceHealSetsRebuildingNotice:
         g = CodeGraph(str(graph_path))
         try:
             await spy.ensure_collection(_DIM)
-            await reconcile_store_divergence(  # type: ignore[misc]
+            await reconcile_store_divergence(
                 store=spy, manifest=observing, code_graph=g, config=config,
             )
             # Precondition sanity: the reconcile DID heal (it purged the wiped tier),
@@ -2154,7 +2153,7 @@ class TestDivergenceHealSetsRebuildingNotice:
 
         # Sanity: the index is genuinely healthy (live == expected, > 0).
         manifest = Manifest(str(manifest_path))
-        expected = manifest.expected_chunks(_LIVE_TIER)  # type: ignore[attr-defined]
+        expected = manifest.expected_chunks(_LIVE_TIER)
         manifest.close()
         live_now = await _live_count(
             slug=slug, tier=_LIVE_TIER, url=QDRANT_URL, api_key=_qdrant_api_key(),
@@ -2164,7 +2163,7 @@ class TestDivergenceHealSetsRebuildingNotice:
             f"expected {expected} > 0) so the reconcile heals nothing"
         )
 
-        from loremaster.server import reconcile_store_divergence  # type: ignore[import-not-found]
+        from loremaster.server import reconcile_store_divergence
 
         client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         spy = DeleteByTierSpyStore(client=client, slug=slug)
@@ -2173,7 +2172,7 @@ class TestDivergenceHealSetsRebuildingNotice:
         g = CodeGraph(str(graph_path))
         try:
             await spy.ensure_collection(_DIM)
-            await reconcile_store_divergence(  # type: ignore[misc]
+            await reconcile_store_divergence(
                 store=spy, manifest=observing, code_graph=g, config=config,
             )
             states_written = list(observing.rebuild_status_states_written)

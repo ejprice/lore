@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from pathlib import Path
+from typing import Any
 
 from loremaster.index.records import (
     KEY_VERSION,
@@ -69,9 +70,9 @@ _REAL_FILE = (
 )
 
 
-def _make_chunk(**overrides: object) -> Chunk:
+def _make_chunk(**overrides: Any) -> Chunk:
     """Build a representative chunk with sensible defaults, overridable per test."""
-    base: dict[str, object] = {
+    base: dict[str, Any] = {
         "chunk_type": _CHUNK_TYPE,
         "source_text": "def bar(self): ...",
         "identity": _IDENTITY,
@@ -82,7 +83,7 @@ def _make_chunk(**overrides: object) -> Chunk:
         "metadata_header": "pkg.mod.Foo",
     }
     base.update(overrides)
-    return Chunk(**base)  # type: ignore[arg-type]
+    return Chunk(**base)
 
 
 def _chunk_real_file() -> list[Chunk]:

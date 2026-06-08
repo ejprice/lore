@@ -29,9 +29,49 @@ import sys
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest_asyncio
+from kuzu import Connection as KuzuConnection
+from kuzu import QueryResult
 from qdrant_client import AsyncQdrantClient
+
+
+def kz_query(
+    conn: KuzuConnection,
+    cypher: str,
+    params: dict[str, Any] | None = None,
+) -> QueryResult:
+    """Execute a single-statement Cypher query and narrow the result to ``QueryResult``.
+
+    ``kuzu.Connection.execute`` is typed ``QueryResult | list[QueryResult]``:
+    the ``list`` branch only occurs for multi-statement strings.  All test
+    helpers pass single-statement Cypher, so the assertion is always satisfied
+    at runtime and serves purely as a type-narrowing guard so mypy can see the
+    return type as ``QueryResult`` rather than the union.
+    """
+    result = conn.execute(cypher, params)
+    assert isinstance(result, QueryResult), (
+        f"kz_query expected a single QueryResult but got {type(result)!r}; "
+        "only single-statement Cypher is supported here."
+    )
+    return result
+
+
+def kz_row(result: QueryResult) -> list[Any]:
+    """Fetch the next row as a list, narrowing away the ``dict[str, Any]`` branch.
+
+    ``QueryResult.get_next()`` is typed ``list[Any] | dict[str, Any]``.  In the
+    default (list) row format, it always returns ``list[Any]``.  This wrapper
+    asserts the list branch so mypy can safely index the result by integer
+    position.
+    """
+    row = result.get_next()
+    assert isinstance(row, list), (
+        f"kz_row expected a list row but got {type(row)!r}"
+    )
+    return row
+
 
 # Make sibling test helper modules (e.g. ``_extension_helpers``) importable as
 # plain top-level modules under ``--import-mode=importlib``: that mode does NOT

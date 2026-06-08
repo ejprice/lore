@@ -910,8 +910,8 @@ class TestFilters:
         )
         # (3) No hit from routing.py — the filter excluded it, not merely ranked it lower.
         assert not any(EXCLUDED_FILE in r.formatted for r in results), (
-            f"routing.py chunks must be excluded by the path filter; "
-            f"a routing.py hit means the alias scoped nothing"
+            "routing.py chunks must be excluded by the path filter; "
+            "a routing.py hit means the alias scoped nothing"
         )
         # (4) Sanity-bound: result count is within the plausible range for a single
         #     small module (at least 1, at most k=10 — catches scale / sign bugs).

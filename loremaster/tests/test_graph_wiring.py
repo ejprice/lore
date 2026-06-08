@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest_asyncio
+from conftest import kz_query, kz_row
 from loremaster.config import LoreConfig
 from loremaster.graph import KIND_FUNCTION, KIND_MODULE, CodeGraph
 from loremaster.index.indexer import Indexer, graph_roots
@@ -211,43 +212,47 @@ def _make_graph(config: LoreConfig, snapshot_root: Path, graph_path: Path) -> Co
 
 def _qnames(graph: CodeGraph, tier: str, file_path: str) -> set[str]:
     """Return the set of qualified names the graph holds for ``(tier, file_path)``."""
-    result = graph.connection.execute(
+    result = kz_query(
+        graph.connection,
         "MATCH (n:CodeNode) WHERE n.tier = $tier AND n.file_path = $file_path "
         "RETURN n.qualified_name",
         {"tier": tier, "file_path": file_path},
     )
     names: set[str] = set()
     while result.has_next():
-        names.add(str(result.get_next()[0]))
+        names.add(str(kz_row(result)[0]))
     return names
 
 
 def _all_qnames(graph: CodeGraph) -> set[str]:
     """Return every qualified name in the graph (across tiers/files)."""
-    result = graph.connection.execute("MATCH (n:CodeNode) RETURN n.qualified_name")
+    result = kz_query(graph.connection, "MATCH (n:CodeNode) RETURN n.qualified_name")
     names: set[str] = set()
     while result.has_next():
-        names.add(str(result.get_next()[0]))
+        names.add(str(kz_row(result)[0]))
     return names
 
 
 def _module_node_count(graph: CodeGraph) -> int:
     """The count of ``module`` nodes in the graph."""
-    result = graph.connection.execute(
-        "MATCH (n:CodeNode) WHERE n.kind = $kind RETURN count(n)", {"kind": KIND_MODULE}
+    result = kz_query(
+        graph.connection,
+        "MATCH (n:CodeNode) WHERE n.kind = $kind RETURN count(n)",
+        {"kind": KIND_MODULE},
     )
-    return int(result.get_next()[0])
+    return int(kz_row(result)[0])
 
 
 def _tier_function_qnames(graph: CodeGraph, tier: str) -> set[str]:
     """The function-node qualified names scoped to one tier."""
-    result = graph.connection.execute(
+    result = kz_query(
+        graph.connection,
         "MATCH (n:CodeNode) WHERE n.tier = $tier AND n.kind = $kind RETURN n.qualified_name",
         {"tier": tier, "kind": KIND_FUNCTION},
     )
     names: set[str] = set()
     while result.has_next():
-        names.add(str(result.get_next()[0]))
+        names.add(str(kz_row(result)[0]))
     return names
 
 

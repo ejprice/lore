@@ -67,6 +67,7 @@ import pytest_asyncio
 from loremaster.config import LoreConfig
 from loremaster.server import (
     LoreServer,
+    _ProcessLifespanGuard,
     build_asgi_app,
     build_mcp_server,
 )
@@ -305,7 +306,7 @@ class TestEagerLifespanComposition:
     def _compose_with_spies(
         tmp_path: Path,
         *,
-        guard: _SpyGuard,
+        guard: _SpyGuard | _ProcessLifespanGuard,
         inner: _SpyInnerApp,
         auth: dict[str, Any] | None = None,
     ) -> Any:
@@ -321,9 +322,9 @@ class TestEagerLifespanComposition:
         mcp = build_mcp_server(LoreServer(config))
         # Substitute the eager guard the composition reads (the producer side of
         # the build_mcp_server → build_asgi_app seam) ...
-        mcp._lore_eager_guard = guard  # type: ignore[attr-defined]
+        mcp._lore_eager_guard = guard
         # ... and the inner streamable app the composition must still drive.
-        mcp.streamable_http_app = lambda: inner  # type: ignore[assignment]
+        mcp.streamable_http_app = lambda: inner
         return build_asgi_app(mcp, config)
 
     async def test_startup_builds_eagerly_before_any_session(self, tmp_path: Path) -> None:
@@ -368,8 +369,6 @@ class TestEagerLifespanComposition:
         # We model this with the REAL guard's refcount semantics via a spy that
         # only the FIRST live lease would build — here, the production guard is the
         # real subject. Substitute the REAL guard with a build-counting factory.
-        from loremaster.server import _ProcessLifespanGuard
-
         builds: list[int] = []
 
         class _Ctx:
@@ -1014,8 +1013,8 @@ def _compose_eager_lifespan_with_retry(
     return _EagerStartupLifespan(
         inner,
         guard,
-        max_attempts=max_attempts,  # type: ignore[call-arg]
-        backoff_base_s=backoff_base_s,  # type: ignore[call-arg]
+        max_attempts=max_attempts,
+        backoff_base_s=backoff_base_s,
     )
 
 
@@ -1162,8 +1161,8 @@ class TestEagerStartupRetriesWithBackoff:
         directly-constructed interceptor — so a real deployment actually gets the
         retry (the producer side of the build_asgi_app seam).
         """
-        from pathlib import Path
         import tempfile
+        from pathlib import Path
 
         guard = _SpyGuard(fail_acquire_times=1)  # one transient blip
         inner = _SpyInnerApp()

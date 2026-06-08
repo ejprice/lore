@@ -49,8 +49,9 @@ import logging
 import math
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING
 
 import httpx
 from lorescribe.models import Chunk, ChunkContext
@@ -223,7 +224,7 @@ class EmbeddingSchemaStatus(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    fingerprint: Optional[str] = None
+    fingerprint: str | None = None
     version: int = 1
 
 
@@ -245,8 +246,8 @@ class SchemaRebuildStatus(BaseModel):
     done: int = 0
     total: int = 0
     reason: str = ""
-    from_fingerprint: Optional[str] = None
-    to_fingerprint: Optional[str] = None
+    from_fingerprint: str | None = None
+    to_fingerprint: str | None = None
 
 class IndexSummary(BaseModel):
     """A roll-up of an indexing run (also the ``index_status`` shape).
@@ -271,8 +272,8 @@ class IndexSummary(BaseModel):
     tiers_rebuilt: list[str]
     tiers_skipped: list[str]
     outcomes: list[IndexOutcome]
-    embedding_schema: Optional[EmbeddingSchemaStatus] = None
-    schema_rebuild: Optional[SchemaRebuildStatus] = None
+    embedding_schema: EmbeddingSchemaStatus | None = None
+    schema_rebuild: SchemaRebuildStatus | None = None
 
 
 class Indexer:

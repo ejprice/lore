@@ -14,11 +14,12 @@ silently drop the prompt names).
 
 from __future__ import annotations
 
-import pytest
-from pydantic import ValidationError
+from typing import Any
 
+import pytest
 from loremaster.config import EmbeddingConfig
 from loremaster.embedding import to_loresigil_config
+from pydantic import ValidationError
 
 # ---------------------------------------------------------------------------
 # Shared fixture values — derived from the production lore.yaml shape.
@@ -32,7 +33,7 @@ DOCUMENT_PROMPT_NAME: str = "document"
 
 # A valid base loremaster EmbeddingConfig payload (mirrors _CANONICAL_CONFIG in
 # test_config.py so it stays aligned with the real schema).
-_BASE_EMBEDDING_FIELDS: dict = {
+_BASE_EMBEDDING_FIELDS: dict[str, Any] = {
     "backend": "tei",
     "base_url": "http://tei.example:8080",
     "endpoint": "/embed",
@@ -48,7 +49,7 @@ _BASE_EMBEDDING_FIELDS: dict = {
 }
 
 
-def _make_base_config(**overrides) -> EmbeddingConfig:
+def _make_base_config(**overrides: Any) -> EmbeddingConfig:
     """Construct a valid base loremaster EmbeddingConfig with optional overrides."""
     return EmbeddingConfig(**{**_BASE_EMBEDDING_FIELDS, **overrides})
 
@@ -70,12 +71,12 @@ class TestLoremasterEmbeddingConfigAcceptsPromptNames:
         # Today this raises:
         #   pydantic.ValidationError: extra inputs are not permitted [query_prompt_name]
         config = _make_base_config(query_prompt_name=QUERY_PROMPT_NAME)
-        assert config.query_prompt_name == QUERY_PROMPT_NAME  # type: ignore[attr-defined]
+        assert config.query_prompt_name == QUERY_PROMPT_NAME
 
     def test_accepts_document_prompt_name_field(self) -> None:
         """EmbeddingConfig with document_prompt_name='document' must not raise."""
         config = _make_base_config(document_prompt_name=DOCUMENT_PROMPT_NAME)
-        assert config.document_prompt_name == DOCUMENT_PROMPT_NAME  # type: ignore[attr-defined]
+        assert config.document_prompt_name == DOCUMENT_PROMPT_NAME
 
     def test_accepts_both_prompt_names_together(self) -> None:
         """Both fields may be set simultaneously."""
@@ -83,8 +84,8 @@ class TestLoremasterEmbeddingConfigAcceptsPromptNames:
             query_prompt_name=QUERY_PROMPT_NAME,
             document_prompt_name=DOCUMENT_PROMPT_NAME,
         )
-        assert config.query_prompt_name == QUERY_PROMPT_NAME  # type: ignore[attr-defined]
-        assert config.document_prompt_name == DOCUMENT_PROMPT_NAME  # type: ignore[attr-defined]
+        assert config.query_prompt_name == QUERY_PROMPT_NAME
+        assert config.document_prompt_name == DOCUMENT_PROMPT_NAME
 
     def test_prompt_names_default_to_none_when_absent(self) -> None:
         """Both fields default to None when not present (backward-compatible opt-in).
@@ -94,8 +95,8 @@ class TestLoremasterEmbeddingConfigAcceptsPromptNames:
         """
         config = _make_base_config()  # no prompt name fields
         # None means "don't send prompt_name" — current behavior, unchanged.
-        assert config.query_prompt_name is None  # type: ignore[attr-defined]
-        assert config.document_prompt_name is None  # type: ignore[attr-defined]
+        assert config.query_prompt_name is None
+        assert config.document_prompt_name is None
 
     def test_extra_unrelated_field_is_still_rejected(self) -> None:
         """Adding the new fields must NOT weaken the extra='forbid' guard.
@@ -104,7 +105,7 @@ class TestLoremasterEmbeddingConfigAcceptsPromptNames:
         even after query_prompt_name is added — the guard must remain tight.
         """
         with pytest.raises(ValidationError):
-            _make_base_config(retry_backoff=True)  # type: ignore[call-arg]
+            _make_base_config(retry_backoff=True)
 
 
 class TestToLoresigilConfigCarriesPromptNames:
@@ -122,14 +123,14 @@ class TestToLoresigilConfigCarriesPromptNames:
         loresigil_config = to_loresigil_config(loremaster_config)
 
         # The translated config must preserve the field, not drop it.
-        assert loresigil_config.query_prompt_name == QUERY_PROMPT_NAME  # type: ignore[attr-defined]
+        assert loresigil_config.query_prompt_name == QUERY_PROMPT_NAME
 
     def test_document_prompt_name_carried_to_loresigil_config(self) -> None:
         """document_prompt_name is present in the translated loresigil config."""
         loremaster_config = _make_base_config(document_prompt_name=DOCUMENT_PROMPT_NAME)
         loresigil_config = to_loresigil_config(loremaster_config)
 
-        assert loresigil_config.document_prompt_name == DOCUMENT_PROMPT_NAME  # type: ignore[attr-defined]
+        assert loresigil_config.document_prompt_name == DOCUMENT_PROMPT_NAME
 
     def test_both_prompt_names_carried_together(self) -> None:
         """Both fields cross the seam when both are set."""
@@ -139,8 +140,8 @@ class TestToLoresigilConfigCarriesPromptNames:
         )
         loresigil_config = to_loresigil_config(loremaster_config)
 
-        assert loresigil_config.query_prompt_name == QUERY_PROMPT_NAME  # type: ignore[attr-defined]
-        assert loresigil_config.document_prompt_name == DOCUMENT_PROMPT_NAME  # type: ignore[attr-defined]
+        assert loresigil_config.query_prompt_name == QUERY_PROMPT_NAME
+        assert loresigil_config.document_prompt_name == DOCUMENT_PROMPT_NAME
 
     def test_none_prompt_names_translated_as_none(self) -> None:
         """When prompt names are None (absent from config), the translated config also has None.
@@ -151,8 +152,8 @@ class TestToLoresigilConfigCarriesPromptNames:
         loremaster_config = _make_base_config()  # no prompt names
         loresigil_config = to_loresigil_config(loremaster_config)
 
-        assert loresigil_config.query_prompt_name is None  # type: ignore[attr-defined]
-        assert loresigil_config.document_prompt_name is None  # type: ignore[attr-defined]
+        assert loresigil_config.query_prompt_name is None
+        assert loresigil_config.document_prompt_name is None
 
     def test_existing_fields_are_still_translated_faithfully(self) -> None:
         """Adding prompt-name translation must not break any existing field mapping.

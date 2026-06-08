@@ -47,6 +47,14 @@ disallow_any_unimported = true
 mypy_path = "lorescribe:loresigil:loremaster:loremaster/tests"
 explicit_package_bases = true
 namespace_packages = true
+#
+# CANONICAL TYPECHECK — run ``scripts/typecheck.sh`` (NOT a single combined
+# ``mypy lorescribe loresigil loremaster``).  Each member owns a ``tests/``
+# directory; under ``explicit_package_bases`` all three map to the same
+# ``tests.*`` namespace, so passing all three members in ONE invocation trips a
+# spurious "Duplicate module named tests.conftest" error.  The runner issues one
+# mypy invocation PER member — each has a single ``tests/`` in scope, so there is
+# no collision and every member's src AND tests are actually type-checked.
 
 # astroid ships no type stubs and no ``py.typed`` marker, so under
 # ``disallow_any_unimported`` every astroid node would surface as a blocking

@@ -51,6 +51,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from conftest import kz_query, kz_row
 
 # Target module under contract.
 from loremaster.graph import (
@@ -250,25 +251,27 @@ def test_chunks() -> list[Chunk]:
 
 def _refs(graph: CodeGraph, kind: str, src: str) -> set[str]:
     """The ``dst`` set of ``Ref`` records of ``kind`` with ``src_qname == src``."""
-    result = graph.connection.execute(
+    result = kz_query(
+        graph.connection,
         "MATCH (r:Ref) WHERE r.kind = $kind AND r.src_qname = $src RETURN r.dst",
         {"kind": kind, "src": src},
     )
     dsts: set[str] = set()
     while result.has_next():
-        dsts.add(str(result.get_next()[0]))
+        dsts.add(str(kz_row(result)[0]))
     return dsts
 
 
 def _node_qnames(graph: CodeGraph, kind: str) -> set[str]:
     """The qualified-name set of ``CodeNode`` rows of ``kind``."""
-    result = graph.connection.execute(
+    result = kz_query(
+        graph.connection,
         "MATCH (n:CodeNode) WHERE n.kind = $kind RETURN n.qualified_name",
         {"kind": kind},
     )
     names: set[str] = set()
     while result.has_next():
-        names.add(str(result.get_next()[0]))
+        names.add(str(kz_row(result)[0]))
     return names
 
 
@@ -277,12 +280,12 @@ class TestSchemaAndConstruction:
 
     def test_creates_codenode_and_ref_tables(self, graph: CodeGraph) -> None:
         """A fresh graph has exactly the ``CodeNode`` and ``Ref`` node tables."""
-        result = graph.connection.execute("CALL show_tables() RETURN *")
+        result = kz_query(graph.connection, "CALL show_tables() RETURN *")
         columns = result.get_column_names()
         name_index = columns.index("name")
         names = set()
         while result.has_next():
-            names.add(str(result.get_next()[name_index]))
+            names.add(str(kz_row(result)[name_index]))
         assert {"CodeNode", "Ref"} <= names
 
     def test_codenode_table_has_documented_columns(self, graph: CodeGraph) -> None:
@@ -315,19 +318,19 @@ class TestSchemaAndConstruction:
         The divergence-reconcile wipe and the lifecycle close-probe both drive this
         property, so it must return a live connection that answers a trivial query.
         """
-        result = graph.connection.execute("RETURN 1 AS one")
+        result = kz_query(graph.connection, "RETURN 1 AS one")
         assert result.has_next()
-        assert int(result.get_next()[0]) == 1
+        assert int(kz_row(result)[0]) == 1
 
     @staticmethod
     def _column_names(graph: CodeGraph, table: str) -> set[str]:
         """The property-name set of a Kùzu node table, via ``CALL table_info``."""
-        result = graph.connection.execute(f"CALL table_info('{table}') RETURN *")
+        result = kz_query(graph.connection, f"CALL table_info('{table}') RETURN *")
         columns = result.get_column_names()
         name_index = columns.index("name")
         names: set[str] = set()
         while result.has_next():
-            names.add(str(result.get_next()[name_index]))
+            names.add(str(kz_row(result)[name_index]))
         return names
 
 
@@ -337,14 +340,15 @@ class TestBuildFileGraphNodes:
     def test_synthesises_a_module_node(self, graph: CodeGraph, app_chunks: list[Chunk]) -> None:
         """A file yields exactly one ``module`` node, qualified from its module name."""
         graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        result = graph.connection.execute(
+        result = kz_query(
+            graph.connection,
             "MATCH (n:CodeNode) WHERE n.kind = $kind "
             "RETURN n.qualified_name, n.tier, n.file_path",
             {"kind": KIND_MODULE},
         )
         rows = []
         while result.has_next():
-            rows.append(tuple(result.get_next()))
+            rows.append(tuple(kz_row(result)))
         assert len(rows) == 1
         assert rows[0] == (APP_MODULE, SAMPLE_TIER, APP_PATH)
 
@@ -607,11 +611,12 @@ class TestPerFileRebuildTransactional:
         graph.delete_file_graph(SAMPLE_TIER, APP_PATH)
         assert self._file_node_count(graph, SAMPLE_TIER, APP_PATH) == 0
         # And the file's own references are gone (its module/class/method srcs removed).
-        result = graph.connection.execute(
+        result = kz_query(
+            graph.connection,
             "MATCH (r:Ref) WHERE r.tier = $tier AND r.file_path = $file_path RETURN count(r)",
             {"tier": SAMPLE_TIER, "file_path": APP_PATH},
         )
-        assert int(result.get_next()[0]) == 0
+        assert int(kz_row(result)[0]) == 0
 
     def test_delete_is_tier_scoped(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
         """Deleting one tier's copy of a path leaves another tier's copy intact (C1)."""
@@ -625,12 +630,13 @@ class TestPerFileRebuildTransactional:
     @staticmethod
     def _file_node_count(graph: CodeGraph, tier: str, file_path: str) -> int:
         """The number of ``CodeNode`` rows for one ``(tier, file_path)``."""
-        result = graph.connection.execute(
+        result = kz_query(
+            graph.connection,
             "MATCH (n:CodeNode) WHERE n.tier = $tier AND n.file_path = $file_path "
             "RETURN count(n)",
             {"tier": tier, "file_path": file_path},
         )
-        return int(result.get_next()[0])
+        return int(kz_row(result)[0])
 
 
 class TestIndexedFileCount:
@@ -962,7 +968,7 @@ class TestResolutionCachePoisoningGuard:
 
     def test_cross_module_call_and_inherit_resolve_after_chunker_poisons_cache(
         self,
-        tmp_path,  # type: ignore[no-untyped-def]
+        tmp_path: Path,
     ) -> None:
         # A two-module in-project package: ``service`` INHERITS from and CALLS
         # ``base``. Cross-module inheritance/call inference is the cache-sensitive

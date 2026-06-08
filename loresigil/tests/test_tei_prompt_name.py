@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from typing import Any
 
 import httpx
 import pytest
@@ -112,7 +113,7 @@ class _TEIRecordingTransport:
     """httpx.MockTransport that records every request body (bare list response)."""
 
     def __init__(self) -> None:
-        self.bodies: list[dict] = []
+        self.bodies: list[dict[str, Any]] = []
 
     def transport(self) -> httpx.MockTransport:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -144,7 +145,7 @@ class _TEIProbeMeasurementTransport:
     """
 
     def __init__(self, prompt_overhead: int) -> None:
-        self.bodies: list[dict] = []
+        self.bodies: list[dict[str, Any]] = []
         self._prompt_overhead = prompt_overhead
 
     def transport(self) -> httpx.MockTransport:
@@ -180,7 +181,7 @@ class _CloudRecordingTransport:
     """httpx.MockTransport that records cloud request bodies (data-envelope response)."""
 
     def __init__(self) -> None:
-        self.bodies: list[dict] = []
+        self.bodies: list[dict[str, Any]] = []
 
     def transport(self) -> httpx.MockTransport:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -456,9 +457,9 @@ class TestFactoryPromptNameWiring:
             dim=TEI_DIM,
             max_input_tokens=TEI_MAX_INPUT_TOKENS,
             api_key_env=_TEI_KEY_ENV,
-            query_prompt_name=QUERY_PROMPT_NAME,  # type: ignore[call-arg]
+            query_prompt_name=QUERY_PROMPT_NAME,
         )
-        assert config.query_prompt_name == QUERY_PROMPT_NAME  # type: ignore[attr-defined]
+        assert config.query_prompt_name == QUERY_PROMPT_NAME
 
     def test_embedding_config_accepts_document_prompt_name(self) -> None:
         """EmbeddingConfig(extra='forbid') must accept document_prompt_name without error."""
@@ -469,9 +470,9 @@ class TestFactoryPromptNameWiring:
             dim=TEI_DIM,
             max_input_tokens=TEI_MAX_INPUT_TOKENS,
             api_key_env=_TEI_KEY_ENV,
-            document_prompt_name=DOCUMENT_PROMPT_NAME,  # type: ignore[call-arg]
+            document_prompt_name=DOCUMENT_PROMPT_NAME,
         )
-        assert config.document_prompt_name == DOCUMENT_PROMPT_NAME  # type: ignore[attr-defined]
+        assert config.document_prompt_name == DOCUMENT_PROMPT_NAME
 
     def test_embedding_config_prompt_names_default_to_none(self) -> None:
         """Both prompt name fields default to None (backward-compatible opt-in)."""
@@ -481,8 +482,8 @@ class TestFactoryPromptNameWiring:
             api_key_env=_TEI_KEY_ENV,
         )
         # None means "don't send prompt_name" — preserving the current no-prompt behavior.
-        assert config.query_prompt_name is None  # type: ignore[attr-defined]
-        assert config.document_prompt_name is None  # type: ignore[attr-defined]
+        assert config.query_prompt_name is None
+        assert config.document_prompt_name is None
 
     async def test_factory_threads_prompt_names_to_tei_embedder(
         self, monkeypatch: pytest.MonkeyPatch
@@ -503,8 +504,8 @@ class TestFactoryPromptNameWiring:
             dim=TEI_DIM,
             max_input_tokens=TEI_MAX_INPUT_TOKENS,
             api_key_env=_TEI_KEY_ENV,
-            query_prompt_name=QUERY_PROMPT_NAME,  # type: ignore[call-arg]
-            document_prompt_name=DOCUMENT_PROMPT_NAME,  # type: ignore[call-arg]
+            query_prompt_name=QUERY_PROMPT_NAME,
+            document_prompt_name=DOCUMENT_PROMPT_NAME,
         )
         embedder = make_embedder(config)
         assert isinstance(embedder, TEIEmbedder)

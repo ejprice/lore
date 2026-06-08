@@ -972,7 +972,7 @@ class _IntegrityCheckFaultInjector:
         """Patch ``sqlite3.connect`` AS THE IMPLEMENTATION MODULE references it."""
         import loremaster.index.sqlite_resilient as impl
 
-        real_connect = impl.sqlite3.connect
+        real_connect = impl.sqlite3.connect  # type: ignore[attr-defined]
         injector = self
 
         def _faulting_connect(*args: Any, **kwargs: Any) -> Any:
@@ -985,7 +985,7 @@ class _IntegrityCheckFaultInjector:
                 return proxy
             return real_connection
 
-        monkeypatch.setattr(impl.sqlite3, "connect", _faulting_connect)
+        monkeypatch.setattr(impl.sqlite3, "connect", _faulting_connect)  # type: ignore[attr-defined]
 
 
 def _seed_healthy_manifest_row(db_path: Path) -> None:
@@ -1114,12 +1114,12 @@ class TestTransientErrorDoesNotDeleteHealthyDatabase:
 
         # Inject a TRANSIENT (non-corruption) open fault: a RuntimeError whose
         # message is NOT a corruption signature — the open must fail closed.
-        real_database = kuzu_resilient.kuzu.Database
+        real_database = kuzu_resilient.kuzu.Database  # type: ignore[attr-defined]
 
         def _transient_database(*args: object, **kwargs: object) -> object:
             raise RuntimeError("IO operation failed: permission denied")
 
-        monkeypatch.setattr(kuzu_resilient.kuzu, "Database", _transient_database)
+        monkeypatch.setattr(kuzu_resilient.kuzu, "Database", _transient_database)  # type: ignore[attr-defined]
 
         with pytest.raises(RuntimeError, match="permission denied"):
             CodeGraph(str(graph_path))
@@ -1130,7 +1130,7 @@ class TestTransientErrorDoesNotDeleteHealthyDatabase:
         assert graph_path.stat().st_size == size_before, (
             "the healthy graph file must be byte-for-byte intact after a transient blip"
         )
-        monkeypatch.setattr(kuzu_resilient.kuzu, "Database", real_database)
+        monkeypatch.setattr(kuzu_resilient.kuzu, "Database", real_database)  # type: ignore[attr-defined]
         monkeypatch.undo()
         recovered = CodeGraph(str(graph_path))
         try:
