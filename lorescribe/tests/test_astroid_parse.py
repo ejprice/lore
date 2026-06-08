@@ -594,3 +594,57 @@ class TestRepeatedParsingIsStable:
         parse_module("class Other:\n    def m(self):\n        return 1\n", qualified_name="pkg.b")
         after = parse_module(REALISTIC_SOURCE)
         assert [c.name for c in baseline.classes] == [c.name for c in after.classes]
+
+
+class TestStructuralParseLeavesNoNegativeImportResidue:
+    """The structural parse MUST NOT poison astroid's shared import cache.
+
+    ``parse_module`` is the chunker's purely-STRUCTURAL parse: it reads a module's
+    top-level classes / functions / import span by name and never needs astroid to
+    RESOLVE an import. astroid's manager is a process-global borg, though, so if the
+    structural parse let astroid's brain transforms FOLLOW a ``from pkg.dep import X``
+    statement, that resolution would fail (the project roots are not on the search
+    path during chunking) and astroid would cache the FAILURE in its shared
+    ``_mod_file_cache`` as an ``AstroidImportError``. A later
+    :func:`lorescribe.astroid_parse.resolve_module` would then re-use that cached
+    NEGATIVE result and degrade the cross-module reference to its bare name.
+
+    This pins the no-poison property at the parser level: after the structural
+    parse, astroid's manager holds NO cached import FAILURE for the named
+    dependency. It is the unit-level guarantee that lets the graph drop its
+    per-file whole-cache wipe.
+    """
+
+    SOURCE_WITH_CROSS_MODULE_IMPORT: str = (
+        "from somepkg.dependency import Thing, helper\n\n\n"
+        "class Consumer(Thing):\n    def run(self):\n        return helper()\n"
+    )
+
+    def test_parse_does_not_cache_a_failed_import(self) -> None:
+        import astroid
+        from astroid.exceptions import AstroidImportError
+        from lorescribe.astroid_parse import clear_resolution_cache
+
+        # Start from a clean manager so the assertion sees only THIS parse's residue.
+        clear_resolution_cache()
+        try:
+            parse_module(
+                self.SOURCE_WITH_CROSS_MODULE_IMPORT,
+                qualified_name="somepkg.consumer",
+                path="somepkg/consumer.py",
+            )
+            # No entry in the shared module-file cache may be a cached IMPORT
+            # FAILURE — that negative cache is exactly the poison a downstream
+            # resolution would inherit. (A successful ModuleSpec would be fine;
+            # what must never appear is the cached AstroidImportError.)
+            failures = {
+                key: value
+                for key, value in astroid.MANAGER._mod_file_cache.items()
+                if isinstance(value, AstroidImportError)
+            }
+            assert failures == {}, (
+                "structural parse poisoned astroid's import cache with a cached "
+                f"failure (a later resolve would inherit it): {failures!r}"
+            )
+        finally:
+            clear_resolution_cache()

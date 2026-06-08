@@ -668,3 +668,58 @@ class TestWatcherAndReconcilePurgeGraph:
         summary = await engine.reconcile()
         assert summary.files_purged >= 1
         assert _qnames(graph, "custom", "src/gone.py") == set()
+
+
+class _ResetSpyGraph(CodeGraph):
+    """A CodeGraph that records each ``reset_resolution_cache`` call.
+
+    Used to pin the SWEEP-BOUNDARY contract: the indexer must reset astroid's warm
+    resolution cache once per full sweep (so the warm-across-files dependency cache
+    — the cold-build speed win — is bounded between sweeps, not per file).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.reset_calls = 0
+
+    def reset_resolution_cache(self) -> None:
+        self.reset_calls += 1
+        super().reset_resolution_cache()
+
+
+class TestSweepBoundaryResetsResolutionCache:
+    """The indexer resets astroid's warm cache ONCE at each full-sweep boundary."""
+
+    async def test_rebuild_graph_only_resets_resolution_cache_once(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        # A graph-only re-graph of a tier is a full sweep: it must reset the warm
+        # resolution cache exactly once (then keep it warm across the tier's files).
+        slug = _slug()
+        store = store_factory(slug)
+        live = tmp_path / "live"
+        (live / "src").mkdir(parents=True)
+        config = _config(slug, live)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        tier_roots, project_roots = graph_roots(config, tmp_path / "snap")
+        graph = _ResetSpyGraph(
+            str(tmp_path / "graph.kuzu"),
+            tier_roots=tier_roots,
+            project_roots=project_roots,
+        )
+        indexer = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap", code_graph=graph,
+        )
+        try:
+            # No indexed rows → 0 files re-graphed, but the sweep STILL resets once
+            # (the reset is a sweep-boundary primitive, independent of file count).
+            regraphed = await indexer.rebuild_graph_only("custom")
+            assert regraphed == 0
+            assert graph.reset_calls == 1, (
+                "rebuild_graph_only must reset the resolution cache exactly once per "
+                f"sweep; got {graph.reset_calls} resets"
+            )
+        finally:
+            manifest.close()
+            graph.close()

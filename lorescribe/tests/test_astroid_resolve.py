@@ -61,6 +61,7 @@ layout the test wrote — not re-derived from the resolver's own logic.
 
 from __future__ import annotations
 
+import os
 import sys
 import textwrap
 from collections.abc import Iterator
@@ -77,6 +78,7 @@ from lorescribe.astroid_parse import (
     ResolvedImport,
     ResolvedModule,
     clear_resolution_cache,
+    evict_resolved_file,
     reset_search_path_memo,
     resolve_module,
 )
@@ -831,3 +833,102 @@ class TestProjectSourceShadowsInstalledCopy:
             str(root / "thing" / "widget.py"), project_roots=[str(root)]
         )
         assert any(c.qualified_name.endswith("Widget") for c in module.classes)
+
+
+class TestEvictResolvedFileRefreshesEditedFile:
+    """``evict_resolved_file`` makes a re-resolve read an EDITED file fresh.
+
+    The graph keeps astroid's module cache WARM across a sweep (so each in-project
+    dependency is parsed ~once per sweep, not once per file). astroid caches a
+    module by name with NO mtime check, so without an eviction a re-resolve of an
+    EDITED file would silently return its STALE pre-edit AST. These tests pin the
+    lifecycle: DEGRADATION (a warm cache yields the old symbols) and RECOVERY
+    (evicting just that file re-reads it, while leaving its dependencies warm).
+    """
+
+    def _write(self, path: Path, body: str) -> None:
+        path.write_text(textwrap.dedent(body), encoding="utf-8")
+
+    def test_resolve_returns_stale_ast_without_eviction(self, tmp_path: Path) -> None:
+        # DEGRADATION: warm the cache on the original file, edit it, resolve again
+        # WITHOUT evicting -> astroid hands back the cached pre-edit module.
+        root = tmp_path / "src"
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        target = root / "pkg" / "mod.py"
+        self._write(target, """\
+            class Original:
+                def m(self):
+                    return 1
+            """)
+        first = resolve_module(str(target), project_roots=[str(root)])
+        assert [c.qualified_name.rsplit(".", 1)[-1] for c in first.classes] == ["Original"]
+
+        # Edit on disk: the class is renamed.
+        self._write(target, """\
+            class Renamed:
+                def m(self):
+                    return 1
+            """)
+        stale = resolve_module(str(target), project_roots=[str(root)])
+        # No eviction => astroid returns the cached pre-edit AST (still "Original").
+        assert [c.qualified_name.rsplit(".", 1)[-1] for c in stale.classes] == ["Original"]
+
+    def test_eviction_makes_resolve_read_the_edited_file(self, tmp_path: Path) -> None:
+        # RECOVERY: same edit, but evict the file first -> the new symbol surfaces.
+        root = tmp_path / "src"
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        target = root / "pkg" / "mod.py"
+        self._write(target, """\
+            class Original:
+                def m(self):
+                    return 1
+            """)
+        resolve_module(str(target), project_roots=[str(root)])  # warm the cache
+
+        self._write(target, """\
+            class Renamed:
+                def m(self):
+                    return 1
+            """)
+        evict_resolved_file(str(target))
+        fresh = resolve_module(str(target), project_roots=[str(root)])
+        assert [c.qualified_name.rsplit(".", 1)[-1] for c in fresh.classes] == ["Renamed"]
+
+    def test_eviction_leaves_dependency_cache_warm(self, tmp_path: Path) -> None:
+        # Evicting the TARGET must not evict its DEPENDENCY: a cross-module
+        # reference still resolves in-project after the target is evicted, proving
+        # the dependency module stayed in the warm cache (selective, not a wipe).
+        root = tmp_path / "src"
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        self._write(root / "pkg" / "base.py", """\
+            class Base:
+                def greet(self):
+                    return 1
+            """)
+        consumer = root / "pkg" / "consumer.py"
+        self._write(consumer, """\
+            from pkg.base import Base
+
+            class Consumer(Base):
+                def run(self):
+                    return self.greet()
+            """)
+        first = resolve_module(str(consumer), project_roots=[str(root)])
+        assert [b.target for b in first.classes[0].inherits] == ["pkg.base.Base"]
+
+        # Evict ONLY the consumer; base stays warm. Re-resolve still resolves the
+        # in-project base to its FQN (no re-poisoning, dependency reused).
+        evict_resolved_file(str(consumer))
+        again = resolve_module(str(consumer), project_roots=[str(root)])
+        assert [b.target for b in again.classes[0].inherits] == ["pkg.base.Base"]
+        # And base.py is still in astroid's cache (was NOT evicted).
+        import astroid
+
+        cached_files = {
+            os.path.abspath(getattr(m, "file", "") or "")
+            for m in astroid.MANAGER.astroid_cache.values()
+        }
+        assert os.path.abspath(str(root / "pkg" / "base.py")) in cached_files

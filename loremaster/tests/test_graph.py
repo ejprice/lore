@@ -48,6 +48,7 @@ files stays a distinct node — collision-correctness):
 from __future__ import annotations
 
 import textwrap
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -69,8 +70,29 @@ from loremaster.graph import (
     DeadCodeNode,
     ReferenceSummary,
 )
+from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_memo
 from lorescribe.models import Chunk, ChunkContext
 from lorescribe.python_ast import PythonAstChunker
+
+
+@pytest.fixture(autouse=True)
+def _reset_astroid_resolution_state() -> Iterator[None]:
+    """Reset astroid's process-global resolution state around EVERY graph test.
+
+    astroid's manager (module cache + import-spec caches) and this package's
+    ``sys.path`` / package-parent-dir memo are PROCESS-GLOBAL. Production bounds
+    them at sweep boundaries via :meth:`CodeGraph.reset_resolution_cache`; the
+    graph no longer wipes the cache per file (that was the O(files × deps)
+    cold-build cost this change removes). Without this autouse reset, one test's
+    throwaway ``tmp_path`` package would leak its warm cache / search-path entries
+    into the next test's resolution and cross-contaminate it. Resetting before AND
+    after each test keeps every case hermetic regardless of order or selection.
+    """
+    clear_resolution_cache()
+    reset_search_path_memo()
+    yield
+    clear_resolution_cache()
+    reset_search_path_memo()
 
 # ---------------------------------------------------------------------------
 # Real fixtures: production-realistic Python sources chunked via the REAL
@@ -947,34 +969,37 @@ class TestGenericNoOdoo:
 
 
 class TestResolutionCachePoisoningGuard:
-    """Resolution survives the chunker poisoning astroid's process-global cache.
+    """The chunker must NOT poison resolution — without any per-file cache wipe.
 
-    The real :class:`PythonAstChunker` calls astroid while chunking, populating the
-    process-global astroid ``MANAGER`` with context-poor module entries. If the
-    graph resolved a module WITHOUT first resetting that shared state, in-project
-    references would silently degrade from their FQN to the bare written name
-    (``resolved=False``) — which would later inflate false "dead code". The guard
-    is :meth:`CodeGraph.build_file_graph` clearing the resolution cache before it
-    resolves.
+    The real :class:`PythonAstChunker` parses with astroid while chunking, and
+    astroid's manager is a process-global borg. The OLD guard was a brute
+    whole-cache ``clear_resolution_cache()`` before AND after every file's resolve
+    — correct, but O(files × dependency-fanout): each clear threw away every
+    dependency module, forcing astroid to re-parse them for the next file. At Odoo
+    scale (30–50k files) that made the cold graph build take hours and blocked
+    server startup.
 
-    This pins the guard DETERMINISTICALLY in one test. The degradation only
-    manifests once MORE THAN ONE module has been chunked in the process, so a
-    single-module test cannot pin it; here several in-project modules are chunked
-    through the real chunker first (reproducing the production indexer's
-    chunk-everything-then-graph order) before the app module is graphed — so the
-    assertion fails if the clear-before-resolve guard is ever removed, regardless
-    of test ordering or selection.
+    The fix moves the guarantee UPSTREAM: the chunker's structural parse no longer
+    follows / resolves imports, so it leaves NO cached import FAILURE in astroid's
+    shared manager (pinned at the unit level by
+    ``TestStructuralParseLeavesNoNegativeImportResidue``). With the poison gone,
+    the graph drops the per-file whole-cache wipe and the dependency cache PERSISTS
+    across files within a sweep — parsed ~once per sweep, not once per file.
+
+    These tests pin the POST-FIX property DIRECTLY: a cross-module in-project
+    reference still resolves to its FQN after the real chunker has run over many
+    in-project modules — and it does so WITHOUT any per-file cache clear. They fail
+    if the chunker's structural parse ever starts poisoning the resolver again.
     """
 
-    def test_cross_module_call_and_inherit_resolve_after_chunker_poisons_cache(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        # A two-module in-project package: ``service`` INHERITS from and CALLS
-        # ``base``. Cross-module inheritance/call inference is the cache-sensitive
-        # path — it (unlike imports) degrades to bare names when the chunker has
-        # poisoned astroid's shared manager and the guard is absent.
-        root = tmp_path / "proj"
+    @staticmethod
+    def _write_two_module_pkg(root: Path) -> tuple[str, str]:
+        """A two-module in-project package: ``service`` INHERITS from + CALLS ``base``.
+
+        Cross-module inheritance/call inference is the cache-sensitive path — it
+        (unlike a plain import) is what degrades to bare names when the chunker
+        poisons astroid's shared manager. Returns ``(base_src, service_src)``.
+        """
         (root / "pkg").mkdir(parents=True)
         (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
         (root / "pkg" / "base.py").write_text(
@@ -988,6 +1013,14 @@ class TestResolutionCachePoisoningGuard:
         )
         base_src = (root / "pkg" / "base.py").read_text(encoding="utf-8")
         service_src = (root / "pkg" / "service.py").read_text(encoding="utf-8")
+        return base_src, service_src
+
+    def test_cross_module_call_and_inherit_resolve_after_chunker_poisons_cache(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        root = tmp_path / "proj"
+        base_src, service_src = self._write_two_module_pkg(root)
         graph = CodeGraph(
             str(tmp_path / "graph.kuzu"),
             tier_roots={SAMPLE_TIER: root},
@@ -995,7 +1028,7 @@ class TestResolutionCachePoisoningGuard:
         )
         try:
             # Production order: run the REAL chunker over BOTH modules first
-            # (poisoning the process-global astroid manager), THEN graph service.
+            # (the structural parse that USED to poison the manager), THEN graph.
             _chunk("pkg/base.py", base_src)
             _chunk("pkg/service.py", service_src)
             graph.build_file_graph(
@@ -1005,15 +1038,134 @@ class TestResolutionCachePoisoningGuard:
             inherits = _refs(graph, EDGE_INHERITS, "pkg.service.Service")
             calls = _refs(graph, EDGE_CALLS, "pkg.service.Service.run")
             # Cross-module references must carry the in-project FQN. The bare name is
-            # the degraded form that appears iff the clear-before-resolve guard is
-            # removed (verified: without the guard these become 'Base' / 'helper').
+            # the degraded form that appears iff the chunker poisons the resolver.
             assert "pkg.base.Base" in inherits, (
-                f"inherits degraded — cache guard failed; got {inherits!r}"
+                f"inherits degraded — chunker poisoned resolution; got {inherits!r}"
             )
             assert "pkg.base.helper" in calls, (
-                f"call degraded — cache guard failed; got {calls!r}"
+                f"call degraded — chunker poisoned resolution; got {calls!r}"
             )
             assert "Base" not in inherits and "helper" not in calls
+        finally:
+            graph.close()
+
+    def test_resolution_survives_without_a_per_file_cache_clear(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The FQN survives even if the per-file whole-cache wipe is a no-op.
+
+        This is the anti-regression that pins the fix's PROVENANCE: it neuters
+        :func:`clear_resolution_cache` (the per-file wipe) so the ONLY thing that
+        can keep resolution correct is the chunker NOT poisoning the manager. If a
+        future change reintroduces chunker poisoning, this fails even though the
+        old test (which still benefits from any incidental clears) might not.
+        """
+        import loremaster.graph as graph_module
+
+        monkeypatch.setattr(graph_module, "clear_resolution_cache", lambda: None)
+
+        root = tmp_path / "proj"
+        base_src, service_src = self._write_two_module_pkg(root)
+        graph = CodeGraph(
+            str(tmp_path / "graph.kuzu"),
+            tier_roots={SAMPLE_TIER: root},
+            project_roots=[root],
+        )
+        try:
+            _chunk("pkg/base.py", base_src)
+            _chunk("pkg/service.py", service_src)
+            graph.build_file_graph(
+                SAMPLE_TIER, "pkg/service.py", _chunk("pkg/service.py", service_src),
+                module_name="pkg.service",
+            )
+            inherits = _refs(graph, EDGE_INHERITS, "pkg.service.Service")
+            calls = _refs(graph, EDGE_CALLS, "pkg.service.Service.run")
+            assert "pkg.base.Base" in inherits, (
+                "with the per-file clear neutered, the chunker poisoned resolution; "
+                f"got {inherits!r}"
+            )
+            assert "pkg.base.helper" in calls, (
+                "with the per-file clear neutered, the chunker poisoned resolution; "
+                f"got {calls!r}"
+            )
+        finally:
+            graph.close()
+
+    def test_common_dependency_is_parsed_once_across_a_sweep(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A dependency shared by N files is parsed ~once per sweep, not once per file.
+
+        The performance invariant. ``N`` in-project consumers all inherit from one
+        common ``base`` module. Building all N file slices in one sweep must parse
+        ``base.py`` from disk AT MOST ONCE — the warm dependency cache is reused
+        across files. Under the OLD per-file whole-cache wipe this was ``N`` (the
+        clear threw ``base`` away between every file), so this test FAILS pre-fix
+        and PASSES post-fix.
+        """
+        import astroid.builder as astroid_builder
+
+        root = tmp_path / "proj"
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (root / "pkg" / "base.py").write_text(
+            "class Base:\n    def greet(self):\n        return 1\n", encoding="utf-8"
+        )
+        base_path = str(root / "pkg" / "base.py")
+        consumer_count = 5
+        for index in range(consumer_count):
+            (root / "pkg" / f"c{index}.py").write_text(
+                f"from pkg.base import Base\n\n\n"
+                f"class C{index}(Base):\n    def m(self):\n        return self.greet()\n",
+                encoding="utf-8",
+            )
+
+        # Spy on astroid building base.py FROM FILE — the expensive re-parse the
+        # per-file clear used to force. file_build is astroid's path->module parse.
+        base_parse_count = {"n": 0}
+        original_file_build = astroid_builder.AstroidBuilder.file_build
+
+        def counting_file_build(self, path, modname=None):  # type: ignore[no-untyped-def]
+            if path == base_path:
+                base_parse_count["n"] += 1
+            return original_file_build(self, path, modname)
+
+        graph = CodeGraph(
+            str(tmp_path / "graph.kuzu"),
+            tier_roots={SAMPLE_TIER: root},
+            project_roots=[root],
+        )
+        try:
+            # Chunk everything first (production order), then graph each consumer in
+            # one sweep. The dependency must be parsed from file at most once.
+            for index in range(consumer_count):
+                src = (root / "pkg" / f"c{index}.py").read_text(encoding="utf-8")
+                _chunk(f"pkg/c{index}.py", src)
+            astroid_builder.AstroidBuilder.file_build = counting_file_build  # type: ignore[method-assign]
+            try:
+                for index in range(consumer_count):
+                    src = (root / "pkg" / f"c{index}.py").read_text(encoding="utf-8")
+                    graph.build_file_graph(
+                        SAMPLE_TIER,
+                        f"pkg/c{index}.py",
+                        _chunk(f"pkg/c{index}.py", src),
+                        module_name=f"pkg.c{index}",
+                    )
+                    # Sanity: each consumer still resolves its base in-project.
+                    inherits = _refs(graph, EDGE_INHERITS, f"pkg.c{index}.C{index}")
+                    assert "pkg.base.Base" in inherits, (
+                        f"c{index} failed to resolve base in-project: {inherits!r}"
+                    )
+            finally:
+                astroid_builder.AstroidBuilder.file_build = original_file_build  # type: ignore[method-assign]
+            assert base_parse_count["n"] <= 1, (
+                "the common dependency was re-parsed once per file — the per-file "
+                f"cache wipe was not removed; parsed {base_parse_count['n']} times "
+                f"across {consumer_count} files (expected <= 1)"
+            )
         finally:
             graph.close()
 

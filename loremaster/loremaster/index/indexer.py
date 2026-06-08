@@ -583,6 +583,20 @@ class Indexer:
         module_name = self._importable_module_name(tier, path)
         self._code_graph.build_file_graph(tier, path, chunks, module_name=module_name)
 
+    def _reset_graph_resolution_cache(self) -> None:
+        """Bound astroid's resolution cache at a full-sweep boundary (if graph wired).
+
+        The graph keeps astroid's dependency cache WARM across the files of a sweep
+        (each in-project dependency is parsed ~once per sweep, not once per file —
+        the cold-build speed win). That cache is process-global, so to stop it
+        growing without limit across a long-lived server it is reset ONCE per full
+        sweep, at the start of :meth:`rebuild_all` / :meth:`rebuild_graph_only`.
+        A no-op when no graph is wired.
+        """
+        if self._code_graph is None:
+            return
+        self._code_graph.reset_resolution_cache()
+
     def _importable_module_name(self, tier: str, path: str) -> str | None:
         """Resolve the TRUE importable dotted module name for ``(tier, path)``.
 
@@ -770,6 +784,13 @@ class Indexer:
                 (:meth:`_index_live_tier`, :meth:`_index_static_tier`) are
                 unaffected.
         """
+        # A full-tier walk is a SWEEP: start it from a clean astroid resolution
+        # cache (then keep the cache warm across this tier's files so each in-project
+        # dependency is parsed ~once per sweep, not once per file). This is the one
+        # walk primitive every full index path funnels through — live, static, and
+        # the per-tier loop of ``rebuild_all`` — so resetting here bounds the warm
+        # cache at exactly each tier-sweep boundary.
+        self._reset_graph_resolution_cache()
         outcomes: list[IndexOutcome] = []
         for dirpath in walked_dirs(self._config, base):
             # ``walked_dirs`` prunes ``exclude_dirs`` at the os.walk level (the
@@ -865,6 +886,8 @@ class Indexer:
             The :class:`IndexSummary` for the full rebuild run.
         """
         roots = list(self._config.effective_roots)
+        # Note: the per-tier walk (``_walk_and_index``) resets the resolution cache
+        # at each tier-sweep boundary, so ``rebuild_all`` needs no extra reset here.
         # Total files to re-embed, counted up-front so the in-progress status
         # carries a meaningful progress denominator from the first update. The
         # purge below clears the manifest rows, so the count is taken before any
@@ -965,6 +988,9 @@ class Indexer:
             # A tier with no resolvable on-disk base has nothing to re-graph (no
             # source to read); nothing was lost that this primitive can restore.
             return 0
+        # Sweep boundary: re-graphing a whole tier is a full sweep, so start from a
+        # clean astroid cache and let it stay warm across this tier's files.
+        self._reset_graph_resolution_cache()
         regraphed = 0
         for row in self._manifest.files_for_tier(tier):
             # Only INDEXED rows represent files whose graph slice should exist; a

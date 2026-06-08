@@ -90,6 +90,7 @@ from lorescribe.astroid_parse import (
     ResolvedImport,
     ResolvedModule,
     clear_resolution_cache,
+    evict_resolved_file,
     resolve_module,
 )
 from lorescribe.python_ast import (
@@ -681,6 +682,26 @@ class CodeGraph:
         """A structural ``defines`` reference (always exact, ``resolved=True``)."""
         return _EdgeSpec(src=src, dst=dst, kind=EDGE_DEFINES, resolved=True)
 
+    def reset_resolution_cache(self) -> None:
+        """Drop astroid's process-global resolution cache at a SWEEP boundary.
+
+        :meth:`build_file_graph` deliberately does NOT clear astroid's cache per
+        file: within a build/sweep the in-project DEPENDENCY modules astroid parses
+        are REUSED across files, so each dependency is parsed ~once per sweep rather
+        than once per file (the old per-file clear made the cold build
+        O(files × dependency-fanout) — minutes for ~100 files, hours at Odoo scale,
+        and it blocked server-lifespan startup).
+
+        Persisting the cache is only safe because the chunker's structural parse no
+        longer poisons it (see :func:`lorescribe.astroid_parse.parse_module`'s
+        ``apply_transforms=False`` and the resolution poisoning-guard tests). The
+        cache is still BOUNDED — it must not grow without limit across a long-lived
+        process — so the indexer calls this ONCE at each full-sweep boundary
+        (``rebuild_all`` / ``rebuild_graph_only``) to reset it between sweeps. A
+        single watcher-event re-graph reuses the warm cache and does not reset it.
+        """
+        clear_resolution_cache()
+
     def _resolve(
         self, module: str, *, tier: str, file_path: str
     ) -> ResolvedModule | None:
@@ -690,6 +711,22 @@ class CodeGraph:
         project roots), the tier's on-disk base is unknown, the file is not on
         disk, or astroid cannot parse it — in every such case the graph degrades to
         structural ``defines`` only rather than fabricating or crashing.
+
+        astroid's cache is NOT cleared per file here. The chunker's structural parse
+        no longer poisons the shared manager (it parses with transforms off, so it
+        caches no failed import — see
+        :func:`lorescribe.astroid_parse.parse_module`), so a chunk-then-resolve
+        sequence keeps cross-module in-project references at their FQN without a
+        clean-slate wipe. Leaving the cache WARM lets every file in a sweep reuse
+        the dependency modules astroid already parsed — the speed win. The cache is
+        bounded instead at sweep boundaries by :meth:`reset_resolution_cache`.
+
+        Only THIS file is evicted from the warm cache before resolving (via
+        :func:`evict_resolved_file`), because astroid caches a module by name with
+        NO mtime check: re-graphing an EDITED file (a watcher event, or a file that
+        was already parsed as another file's dependency earlier in the sweep) would
+        otherwise resolve against the STALE pre-edit AST. Evicting just the target
+        guarantees it is read fresh while its dependencies stay warm.
         """
         if not self._resolution_enabled:
             return None
@@ -699,15 +736,9 @@ class CodeGraph:
         absolute_path = Path(base) / PurePosixPath(file_path)
         if not absolute_path.is_file():
             return None
-        # Clear astroid's process-global manager cache BEFORE resolving so a dirty
-        # prior state cannot corrupt this resolution. The chunker (PythonAstChunker
-        # → parse_module → astroid.parse) populates the manager WITHOUT putting the
-        # project roots on the import search path, so a chunk-then-resolve sequence
-        # (exactly the indexer's order) would otherwise leave a half-built module in
-        # the cache and make a cross-module in-project reference infer to its bare
-        # name (resolved=False) instead of its FQN. A pre-clear gives resolution a
-        # clean manager + a fresh search-path mutation every time.
-        clear_resolution_cache()
+        # Read THIS file fresh (defeats astroid's mtime-blind module cache) while
+        # leaving every dependency module warm for reuse across the sweep.
+        evict_resolved_file(str(absolute_path))
         try:
             return resolve_module(
                 str(absolute_path),
@@ -718,10 +749,6 @@ class CodeGraph:
             # An unparseable file yields no resolved references — the structural
             # ``defines`` edges already derived from the chunks still stand.
             return None
-        finally:
-            # Bound the cache AFTER resolving too, so one file's package cannot leak
-            # into the next file's resolution (or into a later chunker parse).
-            clear_resolution_cache()
 
     def _reference_edges(
         self, module: str, resolved: ResolvedModule

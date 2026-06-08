@@ -474,6 +474,47 @@ def clear_resolution_cache() -> None:
     _ADDED_SEARCH_PATHS.clear()
 
 
+def evict_resolved_file(path: str) -> None:
+    """Evict ONE file's cached astroid module so the next resolve re-parses it.
+
+    astroid's :meth:`AstroidManager.ast_from_file` returns a module cached by
+    ``(modname, filepath)`` with NO mtime check, so an EDITED file would otherwise
+    resolve against its STALE pre-edit AST for as long as the manager cache stays
+    warm. The cache is now kept warm across a sweep (the dependency-reuse speed
+    win), so the file actually being (re-)resolved must be evicted FIRST to
+    guarantee it is read fresh from disk — while every OTHER cached module (its
+    dependencies) is left untouched and reused.
+
+    This is the surgical, single-file counterpart to :func:`clear_resolution_cache`
+    (the whole-cache wipe used only at sweep boundaries). It removes whichever
+    cached module entry was built from ``path`` (matched by the module's ``file``
+    attribute, since the entry is keyed by dotted module name, not by path) and
+    drops any cached import-resolution result for that file's context so a stale
+    negative is never reused. A path not in the cache is a silent no-op.
+    """
+    absolute_path = os.path.abspath(path)
+    manager = astroid.MANAGER
+    stale_modnames = [
+        modname
+        for modname, module in manager.astroid_cache.items()
+        if os.path.abspath(getattr(module, "file", "") or "") == absolute_path
+    ]
+    for modname in stale_modnames:
+        manager.astroid_cache.pop(modname, None)
+    # Drop any per-context import-resolution entries anchored on this file, so a
+    # re-resolve of the freshly-read module re-derives them rather than inheriting
+    # a result computed against the stale AST.
+    stale_specs = [
+        key
+        for key in manager._mod_file_cache
+        if len(key) == 2
+        and key[1] is not None
+        and os.path.abspath(str(key[1])) == absolute_path
+    ]
+    for key in stale_specs:
+        manager._mod_file_cache.pop(key, None)
+
+
 def _discover_package_parent_dirs(absolute_roots: tuple[str, ...]) -> frozenset[str]:
     """Derive the dirs that must be on ``sys.path`` for the project SOURCE to import.
 
@@ -905,7 +946,25 @@ def parse_module(
     """
     module_name = qualified_name or ""
     try:
-        module_node = astroid.parse(source, module_name=module_name, path=path)
+        # apply_transforms=False is LOAD-BEARING, not an optimisation. astroid's
+        # manager is a process-global borg shared with :func:`resolve_module`. With
+        # the default transforms ON, astroid's brain plugins FOLLOW this module's
+        # ``from pkg.dep import X`` statements and try to RESOLVE them — but the
+        # chunker runs BEFORE any project root is on the search path, so that
+        # resolution FAILS and astroid caches the failure (an ``AstroidImportError``
+        # in its shared ``_mod_file_cache``, plus negative residue in its LRU/spec
+        # caches). A later resolve_module would then inherit that cached NEGATIVE
+        # result and degrade the cross-module reference to its bare name. This parse
+        # is purely STRUCTURAL — it reads only top-level classes / functions /
+        # import spans by name and never needs astroid to resolve an import — so the
+        # transforms are unnecessary here and turning them off leaves the resolver's
+        # cache un-poisoned. That is what lets the graph drop its per-file
+        # whole-cache wipe (an O(files × deps) cold-build cost) and instead keep a
+        # warm, PERSISTENT dependency cache across a sweep. (Verified equivalent
+        # structural output to the transformed parse across the project's source.)
+        module_node = astroid.parse(
+            source, module_name=module_name, path=path, apply_transforms=False
+        )
     except AstroidSyntaxError as exc:
         raise ParseError(str(exc)) from exc
 

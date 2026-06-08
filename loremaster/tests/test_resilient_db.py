@@ -67,6 +67,7 @@ import os
 import sqlite3
 import stat
 import textwrap
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -80,8 +81,34 @@ from loremaster.index.sqlite_resilient import open_resilient_sqlite
 
 # The real producer the indexer uses to derive graph chunks — grounds the
 # "subsequent write works" assertion in the production chunk path (clause 1/5).
+from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_memo
 from lorescribe.models import Chunk, ChunkContext
 from lorescribe.python_ast import PythonAstChunker
+
+
+@pytest.fixture(autouse=True)
+def _reset_astroid_resolution_state() -> Iterator[None]:
+    """Reset astroid's process-global resolution state around EVERY test here.
+
+    Several tests in this file build a RESOLUTION-enabled :class:`CodeGraph`
+    directly (the chunk→resolution seam) and assert the in-project import edge
+    survives. astroid's manager (module cache + import-spec caches) and this
+    package's ``sys.path`` / package-parent-dir memo are PROCESS-GLOBAL. Production
+    bounds them at SWEEP boundaries (the indexer resets once per full sweep via
+    :meth:`CodeGraph.reset_resolution_cache`) and the graph no longer wipes the
+    cache per file — so a graph built OUTSIDE a sweep, as these tests do, inherits
+    whatever residue an earlier test (e.g. the chunker's structural parse in
+    ``test_graph.py``) left in the shared manager. Without this autouse reset that
+    residue degrades the seed's cross-module resolution to a bare name and the
+    durable-edge assertion fails purely by test ORDER. Resetting before AND after
+    each test keeps every case hermetic regardless of order or selection.
+    """
+    clear_resolution_cache()
+    reset_search_path_memo()
+    yield
+    clear_resolution_cache()
+    reset_search_path_memo()
+
 
 # ---------------------------------------------------------------------------
 # Production-realistic constants — same conventions as test_manifest.py /
