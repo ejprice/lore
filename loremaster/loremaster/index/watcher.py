@@ -14,10 +14,16 @@ table):
   the LIVE roots ONLY, with ONE RECURSIVE watch per root (so a root with N nested
   dirs costs ONE inotify *instance* — one ``inotify_init`` fd — not N, which is
   what would exhaust ``fs.inotify.max_user_instances`` on a wide tree). STATIC
-  roots are frozen and are never scheduled. Excluded subtrees (``.venv`` /
-  ``.git`` / worktree copies) are no longer pruned at SCHEDULE time — the
-  recursive watch physically observes them — so the event-time :meth:`_resolve`
-  drop is the single mechanism that keeps their edits out of the index.
+  roots are frozen and are never scheduled. The recursive watch installs one
+  cheap per-dir inotify *watch* per IN-SCOPE directory, but excluded subtrees
+  (``.venv`` / ``.git`` / ``__pycache__`` / worktree copies) are PRUNED from that
+  enumeration — both at SETUP (:meth:`_OverflowAwareInotify._add_dir_watch`) and
+  for RUNTIME-created dirs — using the SAME ``exclude_dirs`` prune the indexer /
+  reconcile walk applies (:func:`loremaster.index.paths.walked_dirs`). So an
+  excluded subtree never consumes a watch (the idle-CPU fix: watching tens of
+  thousands of excluded dirs floods the kernel inotify queue and pins the reader
+  thread). The event-time :meth:`_resolve` drop remains the backstop for files
+  whose directory is in scope but the file itself is not (an excluded glob).
 * **Thread → loop hand-off.** The observer thread never touches asyncio state
   directly. Its event handler calls :meth:`asyncio.AbstractEventLoop.call_soon_threadsafe`
   to marshal each event onto the loop thread, where it lands in a coalescing
@@ -140,9 +146,59 @@ class _OverflowAwareInotify(Inotify):
         recursive: bool = False,
         event_mask: int | None = None,
         on_overflow: Callable[[], None] | None = None,
+        is_dir_excluded: Callable[[bytes], bool] | None = None,
     ) -> None:
+        # The exclusion predicate MUST be set before ``super().__init__`` runs:
+        # the parent's ``__init__`` calls ``_add_dir_watch`` (the recursive
+        # setup enumeration), which consults it to skip excluded subtrees.
+        self._is_dir_excluded = is_dir_excluded
         super().__init__(path, recursive=recursive, event_mask=event_mask)
         self._on_overflow = on_overflow
+
+    def _dir_is_excluded(self, path: bytes) -> bool:
+        """Whether ``path`` (an absolute dir path, bytes) is an excluded subtree.
+
+        Delegates to the injected ``is_dir_excluded`` predicate — the SAME
+        ``exclude_dirs`` prune :func:`loremaster.index.paths.walked_dirs` /
+        :meth:`LiveWatcher._resolve` apply, so the WATCH scope agrees with the
+        walk + event scope (no drift). ``None`` ⇒ no pruning (watch everything,
+        watchdog's default), which keeps the subclass usable without a predicate.
+        """
+        return self._is_dir_excluded is not None and self._is_dir_excluded(path)
+
+    def _add_dir_watch(self, path: bytes, mask: int, *, recursive: bool) -> None:
+        """Add the directory watch, PRUNING excluded subtrees from the descent.
+
+        watchdog's own ``_add_dir_watch`` enumerates EVERY directory under the
+        root and adds an inotify watch for each — including excluded subtrees
+        (``.venv`` / ``__pycache__`` / worktree copies), which on a wide tree
+        explodes to tens of thousands of watches that flood the kernel queue and
+        pin the reader thread at idle. This override prunes the ``os.walk`` in
+        place (``dirnames[:]``) against the injected exclusion predicate, exactly
+        as :func:`loremaster.index.paths.walked_dirs` does — so an excluded
+        directory subtree gets NO watch and is never descended, while every
+        in-scope directory is still watched. With no predicate it falls back to
+        watchdog's behaviour (watch every dir).
+        """
+        if not os.path.isdir(path):
+            raise OSError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), path)
+        self._add_watch(path, mask)
+        if not recursive:
+            return
+        for root, dirnames, _filenames in os.walk(path):
+            # Prune excluded subtrees IN PLACE so os.walk never descends them —
+            # the same in-place ``dirnames[:]`` prune the shared ``walked_dirs``
+            # helper applies (watch scope == walk scope).
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if not self._dir_is_excluded(os.path.join(root, name))
+            ]
+            for dirname in dirnames:
+                full_path = os.path.join(root, dirname)
+                if os.path.islink(full_path):
+                    continue
+                self._add_watch(full_path, mask)
 
     def scan_buffer_for_overflow(self, event_buffer: bytes) -> bool:
         """Detect the kernel ``IN_Q_OVERFLOW`` sentinel in a raw event buffer.
@@ -296,9 +352,14 @@ class _OverflowAwareInotify(Inotify):
                     self.is_recursive
                     and inotify_event.is_directory
                     and inotify_event.is_create
+                    and not self._dir_is_excluded(inotify_event.src_path)
                 ):
-                    # A new directory under a recursive watch needs its own watch
-                    # plus simulated create events for anything already inside it.
+                    # A new IN-SCOPE directory under a recursive watch needs its
+                    # own watch plus simulated create events for anything already
+                    # inside it. An excluded new dir (e.g. a freshly-materialised
+                    # ``__pycache__``) is skipped here — otherwise the setup-time
+                    # prune would be undone the moment the interpreter writes a
+                    # bytecode cache (the runtime mirror of the setup prune).
                     try:
                         self._add_watch(inotify_event.src_path, self._event_mask)
                     except OSError:
@@ -313,10 +374,20 @@ class _OverflowAwareInotify(Inotify):
         Mirrors watchdog's ``_recursive_simulate``: a freshly-created directory
         may already contain files/subdirs whose own kernel events were never
         delivered, so synthesise ``IN_CREATE`` events (and add watches for the
-        subdirs) to keep the recursive watch complete.
+        subdirs) to keep the recursive watch complete. Excluded subtrees beneath
+        the new dir are pruned in place (``dirnames[:]``) against the SAME
+        predicate the setup walk uses — so a new in-scope dir that happens to
+        contain a ``__pycache__`` does not re-introduce excluded-subtree watches.
         """
         events: list[InotifyEvent] = []
         for root, dirnames, filenames in os.walk(src_path):
+            # Prune excluded subtrees in place so os.walk never descends them and
+            # no watch is added for them (watch scope == walk scope).
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if not self._dir_is_excluded(os.path.join(root, name))
+            ]
             for dirname in dirnames:
                 with contextlib.suppress(OSError):
                     full_path = os.path.join(root, dirname)
@@ -360,6 +431,7 @@ class _OverflowAwareInotifyBuffer(InotifyBuffer):
         recursive: bool = False,
         event_mask: int | None = None,
         on_overflow: Callable[[], None] | None = None,
+        is_dir_excluded: Callable[[bytes], bool] | None = None,
     ) -> None:
         # Mirror ``InotifyBuffer.__init__`` but build the overflow-aware Inotify.
         # ``BaseThread.__init__`` (the grandparent) sets up the thread machinery;
@@ -376,6 +448,7 @@ class _OverflowAwareInotifyBuffer(InotifyBuffer):
             recursive=recursive,
             event_mask=event_mask,
             on_overflow=on_overflow,
+            is_dir_excluded=is_dir_excluded,
         )
         self.start()
 
@@ -384,13 +457,17 @@ class _OverflowAwareInotifyEmitter(InotifyEmitter):
     """An :class:`InotifyEmitter` that builds an overflow-aware inotify buffer.
 
     ``InotifyEmitter.on_thread_start`` hard-codes ``InotifyBuffer(...)``; this
-    override swaps in :class:`_OverflowAwareInotifyBuffer` and threads the
-    overflow callback through to the kernel-sentinel detection. The callback is
-    attached by :class:`_OverflowAwareObserver` at schedule time.
+    override swaps in :class:`_OverflowAwareInotifyBuffer` and threads BOTH the
+    overflow callback and the exclude-dir prune predicate through to the inotify
+    backend. Both are attached by :class:`_OverflowAwareObserver` at schedule
+    time (before the emitter thread starts).
     """
 
     #: Set by the observer before the emitter thread starts; ``None`` ⇒ no hook.
     on_overflow: Callable[[], None] | None = None
+    #: Set by the observer before the emitter thread starts; ``None`` ⇒ no prune
+    #: (watch every directory, watchdog's default).
+    is_dir_excluded: Callable[[bytes], bool] | None = None
 
     def on_thread_start(self) -> None:
         """Open the overflow-aware inotify buffer on the emitter thread."""
@@ -401,6 +478,7 @@ class _OverflowAwareInotifyEmitter(InotifyEmitter):
             recursive=self.watch.is_recursive,
             event_mask=event_mask,
             on_overflow=self.on_overflow,
+            is_dir_excluded=self.is_dir_excluded,
         )
 
 
@@ -410,14 +488,22 @@ class _OverflowAwareObserver(InotifyObserver):
     Uses :class:`_OverflowAwareInotifyEmitter` so a kernel ``IN_Q_OVERFLOW``
     sentinel is routed to the injected ``on_overflow`` callback (which marshals
     :meth:`LiveWatcher.on_kernel_overflow` onto the asyncio loop) instead of
-    being silently dropped.
+    being silently dropped, AND so the recursive watch prunes excluded subtrees
+    via the injected ``is_dir_excluded`` predicate (so a wide excluded subtree
+    never consumes an inotify watch per directory).
     """
 
-    def __init__(self, on_overflow: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        on_overflow: Callable[[], None] | None = None,
+        *,
+        is_dir_excluded: Callable[[bytes], bool] | None = None,
+    ) -> None:
         # Bypass ``InotifyObserver.__init__`` (which fixes the emitter class) and
         # register our overflow-aware emitter class with the base observer.
         BaseObserver.__init__(self, _OverflowAwareInotifyEmitter)
         self._on_overflow = on_overflow
+        self._is_dir_excluded = is_dir_excluded
 
     def schedule(
         self,
@@ -427,15 +513,19 @@ class _OverflowAwareObserver(InotifyObserver):
         recursive: bool = False,
         event_filter: list[type[FileSystemEvent]] | None = None,
     ) -> ObservedWatch:
-        """Schedule a watch, attaching the overflow callback to its emitter."""
+        """Schedule a watch, attaching the overflow callback + exclude predicate.
+
+        Both hooks are set on the freshly-created emitter BEFORE its thread
+        starts, so its inotify buffer surfaces the kernel sentinel AND prunes
+        excluded subtrees from the recursive watch.
+        """
         watch = super().schedule(
             event_handler, path, recursive=recursive, event_filter=event_filter
         )
-        # Attach the overflow hook to the freshly-created emitter for this watch
-        # so its inotify buffer surfaces the kernel sentinel.
         emitter = self._emitter_for_watch.get(watch)
         if isinstance(emitter, _OverflowAwareInotifyEmitter):
             emitter.on_overflow = self._on_overflow
+            emitter.is_dir_excluded = self._is_dir_excluded
         return watch
 
 
@@ -565,10 +655,15 @@ class LiveWatcher:
 
         Each LIVE root is scheduled as ONE RECURSIVE watch on its root path, so a
         root with N nested dirs costs ONE inotify *instance* (not N). The
-        ``exclude_dirs`` subtrees (``.venv`` / ``.git`` / worktree copies) are no
-        longer pruned here — the recursive watch physically observes them — so the
-        event-time :meth:`_resolve` drop is what keeps their edits out of the
-        index. STATIC roots are frozen and are absent entirely.
+        recursive watch installs one cheap per-dir inotify *watch* for every
+        IN-SCOPE directory under the root, but the ``exclude_dirs`` subtrees
+        (``.venv`` / ``.git`` / ``__pycache__`` / worktree copies) are PRUNED from
+        that enumeration (:meth:`_dir_excluded` mirrors
+        :func:`loremaster.index.paths.walked_dirs`), so an excluded subtree never
+        consumes a watch — the idle-CPU fix that stops a wide excluded tree from
+        flooding the kernel inotify queue. The event-time :meth:`_resolve` drop
+        remains the backstop for any file whose dir is in scope but the file is
+        not. STATIC roots are frozen and are absent entirely.
         """
         paths: list[str] = []
         for root in self._live_roots:
@@ -602,14 +697,43 @@ class LiveWatcher:
         return observer
 
     def _make_observer(self) -> BaseObserver:
-        """Build the overflow-aware Observer, wiring the kernel-overflow callback.
+        """Build the overflow-aware Observer, wiring the overflow + prune hooks.
 
-        The callback runs on the OBSERVER thread, so it marshals onto the asyncio
-        loop. An overflow signal can affect any watched root, so every live tier
-        is reconciled (the immediate recovery the periodic sweep would otherwise
-        defer to its interval).
+        The overflow callback runs on the OBSERVER thread, so it marshals onto
+        the asyncio loop. An overflow signal can affect any watched root, so
+        every live tier is reconciled (the immediate recovery the periodic sweep
+        would otherwise defer to its interval). The ``is_dir_excluded`` predicate
+        prunes excluded subtrees from the recursive watch enumeration, so a wide
+        ``exclude_dirs`` subtree never consumes an inotify watch per directory.
         """
-        return _OverflowAwareObserver(on_overflow=self._schedule_overflow_reconcile)
+        return _OverflowAwareObserver(
+            on_overflow=self._schedule_overflow_reconcile,
+            is_dir_excluded=self._dir_excluded,
+        )
+
+    def _dir_excluded(self, dir_path: bytes) -> bool:
+        """Whether an absolute directory path is an excluded subtree.
+
+        The WATCH-scope mirror of the indexer/reconcile walk's ``exclude_dirs``
+        prune (:func:`loremaster.index.paths.walked_dirs`, which drops any
+        directory whose NAME is in ``exclude_dirs`` at the ``os.walk`` level): a
+        directory is excluded iff any component of its path is in
+        ``config.exclude_dirs``. Reusing the SAME ``exclude_dirs`` set keeps the
+        watch scope, the walk scope, and the event-time :meth:`_resolve` scope in
+        agreement (no drift). Operates on ``bytes`` (inotify's path type).
+
+        Args:
+            dir_path: The absolute directory path (``bytes``) inotify is about to
+                watch.
+
+        Returns:
+            ``True`` iff the directory lies in an ``exclude_dirs`` subtree.
+        """
+        exclude_dir_names = set(self._config.exclude_dirs)
+        if not exclude_dir_names:
+            return False
+        parts = Path(os.fsdecode(dir_path)).parts
+        return any(part in exclude_dir_names for part in parts)
 
     def _schedule_overflow_reconcile(self) -> None:
         """Marshal a kernel-overflow-driven reconcile onto the loop (thread-safe).
@@ -915,10 +1039,12 @@ class LiveWatcher:
         Returns ``None`` when the path is under no live root, inside an excluded
         directory, or does not match the root's include / passes an exclude glob —
         the event-time mirror of the indexer's walk-level prune, so the watcher
-        and the reconcile sweep agree on exactly which files are in scope. With
-        the recursive-watch fix the observer now PHYSICALLY sees excluded subtrees
-        (they are no longer pruned at schedule time), so this event-time drop is
-        the single mechanism keeping their edits out of the index.
+        and the reconcile sweep agree on exactly which files are in scope.
+        Excluded subtrees are pruned at SCHEDULE time (``_add_dir_watch`` /
+        runtime new-dir add) so they receive no inotify watch; this event-time
+        check is the second line of defence (it still drops an in-scope-watched
+        edit that fails the include/exclude globs, and covers any event that
+        slips through before a runtime prune).
         """
         target = Path(abs_path)
         for root in self._live_roots:

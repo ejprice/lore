@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import inspect as _inspect_for_overflow_guard
 import logging
+import os
 import struct as _struct_for_overflow_guard
 import uuid
 from collections.abc import AsyncIterator
@@ -1566,3 +1567,288 @@ class TestKernelOverflowDetectionDoesNotMutateGlobalParser:
 
         # Every iteration detected the sentinel; none corrupted global state.
         assert spy.fired == iterations
+
+
+# --------------------------------------------------------------------------- #
+# Watch-SCOPE pruning: excluded subtrees get NO inotify watch
+# --------------------------------------------------------------------------- #
+# The idle-CPU fix: the recursive watch must NOT install an inotify watch per
+# directory across EXCLUDED subtrees (``.venv`` / ``__pycache__`` / worktree
+# copies). watchdog's recursive ``_add_dir_watch`` enumerates every dir under
+# the root and adds a watch for each — INCLUDING the excluded ones — so a tree
+# with a large excluded subtree (e.g. demand_intelligence's ~30k-file
+# ``.venv-lag-llama``) explodes to ~17k inotify watches, floods the kernel queue
+# (``watcher.kernel_overflow``), and pins the inotify reader thread at ~24% CPU
+# at idle. After the fix the watch set is bounded by the IN-SCOPE dir count, not
+# the total dir count: every excluded directory subtree gets NO watch, while
+# every in-scope directory (and any newly-created in-scope subdir) is still
+# watched and still delivers events. The exclusion predicate reused here is the
+# SAME ``exclude_dirs`` prune ``loremaster.index.paths.walked_dirs`` /
+# ``LiveWatcher._resolve`` apply — watch scope == walk scope == event scope.
+
+# A live root whose excluded subtree (``__pycache__``) is DEEP and WIDE, so the
+# per-dir recursive watch would install MANY watches there (the production
+# explosion in miniature). The in-scope tree stays small, so the post-fix watch
+# count is a small, bounded set the test can pin exactly.
+_EXCLUDED_NESTED_SUBDIRS: tuple[str, ...] = (
+    f"pkg/{_EXCLUDED_DIR_NAME}",
+    f"pkg/{_EXCLUDED_DIR_NAME}/nested_a",
+    f"pkg/{_EXCLUDED_DIR_NAME}/nested_a/deeper",
+    f"pkg/{_EXCLUDED_DIR_NAME}/nested_b",
+    f"services/{_EXCLUDED_DIR_NAME}",
+    f"services/{_EXCLUDED_DIR_NAME}/cache_inner",
+)
+
+
+def _build_corpus_with_big_excluded_subtree(root: Path) -> None:
+    """A wide INCLUDED tree plus a wide EXCLUDED (``__pycache__``) subtree.
+
+    The included tree is :data:`_NESTED_INCLUDED_SUBDIRS`; the excluded tree is
+    :data:`_EXCLUDED_NESTED_SUBDIRS` — many nested ``__pycache__`` dirs that the
+    per-dir recursive watch WOULD each install a watch for (the production
+    failure mode). Each excluded dir holds a real file so the dir physically
+    exists and ``os.walk`` would descend it absent the prune.
+    """
+    _build_wide_live_corpus(root)
+    for rel in _EXCLUDED_NESTED_SUBDIRS:
+        _write(root / rel / "artifact.pyc.py", "def excluded_artifact():\n    return 1\n")
+
+
+def _inotify_watched_dirs(watcher: LiveWatcher) -> set[Path]:
+    """The set of directories the watcher's RUNNING observer holds inotify watches for.
+
+    Reaches through the (single, recursive) emitter → its ``InotifyBuffer`` →
+    the backing ``Inotify`` instance's ``_wd_for_path`` map (path bytes → watch
+    descriptor) — the GROUND TRUTH of which directories actually consumed a
+    kernel inotify watch. Resolves each to a ``Path`` for comparison. Requires
+    the observer to have been started (so ``on_thread_start`` opened the
+    inotify instance); poll-wait on a non-empty result before asserting.
+    """
+    observer = watcher._observer
+    assert observer is not None, "observer not started"
+    watched: set[Path] = set()
+    for emitter in observer.emitters:
+        inotify_buffer = getattr(emitter, "_inotify", None)
+        if inotify_buffer is None:
+            continue
+        inotify = getattr(inotify_buffer, "_inotify", None)
+        if inotify is None:
+            continue
+        for path_bytes in inotify._wd_for_path:
+            watched.add(Path(os.fsdecode(path_bytes)).resolve())
+    return watched
+
+
+async def _wait_for(predicate: Any, timeout_s: float = _SETTLE_TIMEOUT_S) -> bool:
+    """Poll a SYNC predicate until true or timeout (the sync sibling of
+    :func:`_wait_for_async`)."""
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while asyncio.get_running_loop().time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.02)
+    return bool(predicate())
+
+
+class TestWatchScopeExcludesNoisySubtrees:
+    """The recursive watch installs inotify watches for IN-SCOPE dirs ONLY.
+
+    The core idle-CPU assertion: an excluded directory subtree
+    (``exclude_dirs``) gets NO inotify watch, so a tree with a large excluded
+    subtree installs only the few hundred real source-dir watches — not one per
+    dir across the whole tree. Inspected against the RUNNING observer's backing
+    ``Inotify._wd_for_path`` (the ground truth of consumed kernel watches), so
+    this fails pre-fix (watchdog's recursive ``_add_dir_watch`` watches every
+    dir, including the excluded subtree) and passes only once watch-scheduling
+    consults the SAME ``exclude_dirs`` prune the walk/event scope uses.
+    """
+
+    async def test_excluded_subtree_dirs_get_no_inotify_watch(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_corpus_with_big_excluded_subtree(live)
+        config = _config(slug=slug, live_path=live)
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        indexer = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, manifest=manifest, store=store)
+        await watcher.start()
+        try:
+            # The setup walk runs on the emitter thread; wait until at least the
+            # root watch is installed before inspecting the watch set.
+            assert await _wait_for(
+                lambda: live.resolve() in _inotify_watched_dirs(watcher)
+            )
+            watched = _inotify_watched_dirs(watcher)
+
+            # Every IN-SCOPE directory is watched (root + each included subdir).
+            assert live.resolve() in watched
+            for rel in _NESTED_INCLUDED_SUBDIRS:
+                assert (live / rel).resolve() in watched, (
+                    f"in-scope dir {rel!r} lost its watch"
+                )
+
+            # NO directory inside an EXCLUDED subtree is watched — neither the
+            # ``__pycache__`` dir itself nor any nested dir under it.
+            for rel in _EXCLUDED_NESTED_SUBDIRS:
+                assert (live / rel).resolve() not in watched, (
+                    f"excluded dir {rel!r} consumed an inotify watch — the watch "
+                    f"scope did not prune exclude_dirs"
+                )
+
+            # The watch count is bounded by the IN-SCOPE dir count (root + the
+            # included subdirs), NOT the total dir count (which includes the wide
+            # excluded subtree). Pre-fix this is total-dir-count; post-fix it is
+            # the small in-scope set.
+            in_scope_dir_count = 1 + len(_NESTED_INCLUDED_SUBDIRS)
+            assert len(watched) == in_scope_dir_count, (
+                f"watcher holds {len(watched)} inotify watches for "
+                f"{in_scope_dir_count} in-scope dirs — excluded subtrees were "
+                f"watched too"
+            )
+        finally:
+            await watcher.stop()
+
+    async def test_included_modify_still_indexes_under_pruned_watch(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        """Functional preservation: an edit to an in-scope file is still indexed.
+
+        Pruning excluded subtrees from the watch set must not cost any IN-SCOPE
+        coverage — a real write to a nested included file is still observed by
+        the (now exclusion-pruned) recursive watch and re-indexed via
+        ``index_file``, new content searchable. The real-inotify edit→index path.
+        """
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_corpus_with_big_excluded_subtree(live)
+        config = _config(slug=slug, live_path=live)
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        indexer = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+        nested_rel = "pkg/sub_a/deep/module.py"
+        await indexer.index_file(
+            "custom", nested_rel, (live / nested_rel).read_text(encoding="utf-8"),
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, manifest=manifest, store=store)
+        await watcher.start()
+        try:
+            (live / nested_rel).write_text(
+                "def pruned_watch_still_indexes(week):\n    return week\n",
+                encoding="utf-8",
+            )
+            assert await _wait_for_async(
+                lambda: _store_has_identity(
+                    store, nested_rel, "pruned_watch_still_indexes"
+                )
+            )
+        finally:
+            await watcher.stop()
+
+
+class TestRuntimeNewDirWatchScope:
+    """A NEW in-scope subdir is watched; a NEW excluded subdir is NOT.
+
+    The second watch-add path (runtime, not setup): watchdog adds a watch for
+    each newly-created directory under a recursive watch. The fix must apply the
+    SAME ``exclude_dirs`` prune there — a new in-scope subdir gets a watch (and
+    its files deliver events + index), a new excluded subdir gets NONE (so a
+    fresh ``__pycache__`` created at runtime never re-introduces the watch
+    explosion the setup prune removed).
+    """
+
+    async def test_new_in_scope_subdir_is_watched_and_indexes(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        indexer = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, manifest=manifest, store=store)
+        await watcher.start()
+        try:
+            assert await _wait_for(
+                lambda: live.resolve() in _inotify_watched_dirs(watcher)
+            )
+            # Create a brand-new INCLUDED subdir at runtime, then a file in it.
+            new_dir = live / "services" / "fresh_runtime_pkg"
+            new_dir.mkdir(parents=True)
+            new_file = new_dir / "module.py"
+            new_file.write_text(
+                "def runtime_new_dir_marker():\n    return 1\n", encoding="utf-8"
+            )
+            # The new dir got its own watch AND the file event indexed.
+            assert await _wait_for_async(
+                lambda: _store_has_identity(
+                    store, "services/fresh_runtime_pkg/module.py",
+                    "runtime_new_dir_marker",
+                )
+            )
+            assert new_dir.resolve() in _inotify_watched_dirs(watcher)
+        finally:
+            await watcher.stop()
+
+    async def test_new_excluded_subdir_gets_no_watch(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        """A runtime-created EXCLUDED subdir is never watched.
+
+        Creating a ``__pycache__`` at runtime (the common case: the first import
+        materialises it) must NOT install a watch — otherwise the setup-time
+        prune is undone the moment the interpreter writes a bytecode cache.
+        """
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        indexer = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, manifest=manifest, store=store)
+        await watcher.start()
+        try:
+            assert await _wait_for(
+                lambda: live.resolve() in _inotify_watched_dirs(watcher)
+            )
+            watched_before = _inotify_watched_dirs(watcher)
+            # Create a brand-new EXCLUDED subdir at runtime + a nested dir in it.
+            new_excluded = live / "services" / _EXCLUDED_DIR_NAME
+            (new_excluded / "inner").mkdir(parents=True)
+            (new_excluded / "artifact.pyc.py").write_text(
+                "def runtime_excluded_marker():\n    return 1\n", encoding="utf-8"
+            )
+            # Give the observer time to (not) react to the new dir.
+            await asyncio.sleep(0.3)
+            watched_after = _inotify_watched_dirs(watcher)
+
+            # Neither the new excluded dir nor its nested child is ever watched.
+            assert new_excluded.resolve() not in watched_after, (
+                "a runtime-created excluded dir consumed an inotify watch"
+            )
+            assert (new_excluded / "inner").resolve() not in watched_after
+            # And the watch set did not grow beyond what was there before (no
+            # excluded dir watches were added).
+            assert watched_after == watched_before
+        finally:
+            await watcher.stop()
