@@ -1337,6 +1337,96 @@ class TestKernelOverflowTriggersImmediateReconcile:
         # Once the lock freed, the reconcile completed exactly once.
         assert spy.reconcile_calls == 1
 
+
+# --------------------------------------------------------------------------- #
+# ``stop()`` must SETTLE any in-flight overflow-reconcile task, not just
+# ``_worker`` + the debounce timers
+# --------------------------------------------------------------------------- #
+class TestStopSettlesOverflowTasks:
+    """``stop()`` cancels-and-awaits EVERY task the watcher launched.
+
+    ``_launch_overflow_reconcile`` spawns ``on_kernel_overflow(tier)`` via
+    ``loop.create_task`` and previously kept no reference to it. ``stop()``
+    cancelled only ``_worker`` and the debounce timers, so an in-flight
+    overflow-reconcile task SURVIVED ``stop()``. On a teardown path where
+    ``manifest.close()`` runs right after ``stop()`` (the production ordering),
+    the orphaned task can later resume (once whatever it was blocked on frees
+    up) and touch the now-closed manifest — ``ProgrammingError: Cannot operate
+    on a closed database``, plus a "Task exception was never retrieved"
+    warning at GC time, for ANY startup/shutdown after ``watcher.start()``, not
+    only the eager-build-failure path where this was first observed.
+
+    The task is put in-flight DETERMINISTICALLY (no real kernel
+    ``IN_Q_OVERFLOW``, which is non-deterministic to force): the test holds the
+    single-writer lock itself, then launches the overflow-reconcile task via
+    the same seam ``_schedule_overflow_reconcile`` uses
+    (``_launch_overflow_reconcile``) — the freshly-created task immediately
+    blocks trying to acquire the STILL-HELD lock, exactly the technique
+    ``TestKernelOverflowTriggersImmediateReconcile`` already uses to prove the
+    handler takes the lock.
+    """
+
+    async def test_stop_settles_in_flight_overflow_reconcile_task(
+        self, tmp_path: Path, store_factory: Any
+    ) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        store = store_factory(slug)
+        await store.ensure_collection(_DIM)
+        manifest = Manifest(str(tmp_path / "m.db"))
+        indexer = _make_indexer(
+            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=manifest, snapshot_root=tmp_path / "snap",
+        )
+        engine = ReconcileEngine(
+            indexer=indexer, manifest=manifest, store=store, config=config
+        )
+        watcher = LiveWatcher(
+            indexer=indexer, manifest=manifest, store=store, config=config,
+            loop=asyncio.get_running_loop(), reconcile_engine=engine,
+        )
+
+        # Hold the single-writer lock so the launched overflow-reconcile task
+        # blocks IN-FLIGHT on the lock acquire, instead of racing a real kernel
+        # IN_Q_OVERFLOW (non-deterministic).
+        await watcher.writer_lock.acquire()
+        tasks_before = asyncio.all_tasks()
+        watcher._launch_overflow_reconcile("custom")
+        await asyncio.sleep(0)  # let the spawned task start and block on the lock
+        new_tasks = asyncio.all_tasks() - tasks_before
+        assert len(new_tasks) == 1, "expected exactly one spawned overflow task"
+        overflow_task = next(iter(new_tasks))
+        assert not overflow_task.done(), "overflow task should be blocked on the lock"
+
+        # ``stop()`` must settle (cancel-and-await) this task, not just
+        # ``_worker`` + timers — even with the lock STILL held by this test
+        # (mirroring the real race: ``stop()`` runs before whatever the task is
+        # blocked on frees up).
+        await watcher.stop()
+
+        assert overflow_task.done(), (
+            "an overflow-reconcile task launched via _launch_overflow_reconcile "
+            "survived stop() — it can later run against a closed manifest/store"
+        )
+        assert overflow_task.cancelled(), "stop() should CANCEL the settled task"
+
+        # The real shutdown ordering: manifest.close() runs AFTER watcher.stop().
+        # Release the lock (as production eventually does) and close the
+        # manifest — if the task had survived stop(), releasing the lock here
+        # would let it resume and hit the closed manifest.
+        watcher.writer_lock.release()
+        manifest.close()  # must not raise
+        await asyncio.sleep(0.05)  # give the loop a beat; nothing should fire
+
+        # The task stays cleanly cancelled — no lingering "Cannot operate on a
+        # closed database" swallowed inside it, and its exception (if any) was
+        # already retrieved by stop()'s await, so no "Task exception was never
+        # retrieved" warning can fire later at GC time.
+        assert overflow_task.cancelled()
+
+
 # --------------------------------------------------------------------------- #
 # Kernel-overflow DETECTION guard (W1/W2 — no global mutation of watchdog state)
 # --------------------------------------------------------------------------- #

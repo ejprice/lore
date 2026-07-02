@@ -631,6 +631,13 @@ class LiveWatcher:
         # The continuous background consumer (spun up by ``start``); ``None`` when
         # the watcher is driven purely on demand via ``drain`` (the test seam).
         self._worker: asyncio.Task[None] | None = None
+        # Kernel-overflow-driven reconcile tasks spawned by
+        # ``_launch_overflow_reconcile`` (fire-and-forget from the watcher's own
+        # point of view, but TRACKED here so ``stop()`` can settle every one of
+        # them). The set also keeps the standard "hold a reference so the task
+        # isn't GC'd mid-flight" guarantee; each task discards itself on
+        # completion via its done-callback.
+        self._overflow_tasks: set[asyncio.Task[None]] = set()
         self._debounce_s = self._config.watcher.debounce_ms / 1000.0
         self._live_roots: list[RootConfig] = [
             root for root in self._config.effective_roots if root.watch == WATCH_LIVE
@@ -753,8 +760,17 @@ class LiveWatcher:
 
         Runs on the loop thread (scheduled by :meth:`_schedule_overflow_reconcile`
         via ``call_soon_threadsafe``), so creating the task here is safe.
+
+        The task is added to :attr:`_overflow_tasks` (the standard "keep a
+        reference so it isn't GC'd + track it for shutdown" pattern) with a
+        done-callback that discards it once it completes, so :meth:`stop` can
+        cancel-and-await every in-flight overflow reconcile before returning —
+        otherwise the task can outlive ``stop()`` and later run against a
+        closed manifest/store during teardown.
         """
-        self._loop.create_task(self.on_kernel_overflow(tier))
+        task = self._loop.create_task(self.on_kernel_overflow(tier))
+        self._overflow_tasks.add(task)
+        task.add_done_callback(self._overflow_tasks.discard)
 
     async def start(self) -> None:
         """Schedule the Observer on the live roots and begin watching.
@@ -781,7 +797,15 @@ class LiveWatcher:
         )
 
     async def stop(self) -> None:
-        """Stop the Observer thread, the worker task, and any debounce timers."""
+        """Stop the Observer thread, the worker task, any debounce timers, and
+        every in-flight kernel-overflow reconcile task.
+
+        Settling the overflow tasks (not just ``_worker`` + timers) matters: a
+        caller that closes the manifest/store right after ``stop()`` (the
+        production shutdown ordering) would otherwise race an orphaned
+        overflow-reconcile task that survives ``stop()`` and later touches the
+        now-closed manifest.
+        """
         if self._observer is not None:
             self._observer.stop()
             self._observer.join()
@@ -796,7 +820,27 @@ class LiveWatcher:
         for timer in self._timers.values():
             timer.cancel()
         self._timers.clear()
+        await self._settle_overflow_tasks()
         logger.info("watcher.stop")
+
+    async def _settle_overflow_tasks(self) -> None:
+        """Cancel and await every tracked kernel-overflow reconcile task.
+
+        Ensures no watcher-spawned task is still pending once :meth:`stop`
+        returns — an orphaned task that outlives teardown could otherwise
+        resume against a closed manifest/store (``ProgrammingError: Cannot
+        operate on a closed database``) and, at GC time, log a "Task exception
+        was never retrieved" warning. ``CancelledError`` from the cancellation
+        itself is expected and suppressed; any other exception the reconcile
+        raised is still retrieved (by the ``await``) rather than silently lost.
+        """
+        tasks = list(self._overflow_tasks)
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self._overflow_tasks.clear()
 
     async def _worker_loop(self) -> None:
         """Continuously consume queued ops, each under the single lock.
