@@ -5,7 +5,9 @@
 a per-project SurrealDB database, exposing an async surface the loremaster callers
 already depend on (upsert / search / scroll / count / the three deletes) plus the
 hybrid retrieval and atomic per-file replace the unification adds. These tests
-run against the live 3.0.5 engine (see ``_surreal_harness``) because every
+run against a live engine (see ``_surreal_harness``) — originally verified on
+3.0.5, re-verified with no dialect deltas on 3.1.5, which is the documented
+floor going forward (matching Spectron's runtime floor) — because every
 behaviour that matters — HNSW filtered recall, BM25 rescue, ``search::rrf``
 fusion, cross-connection snapshot isolation — is a server-side property.
 

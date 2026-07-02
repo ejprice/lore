@@ -73,7 +73,8 @@ PRODUCTION_DIM = 2048
 # baking in the production default.
 NONDEFAULT_DIM = 512
 
-# The analyzer name the P0 spike verified on 3.0.5 (TOKENIZERS
+# The analyzer name the P0 spike verified on 3.0.5, re-verified with no dialect
+# deltas on 3.1.5 (the documented floor going forward — TOKENIZERS
 # blank,class,camel,punct FILTERS lowercase,ascii).
 ANALYZER_NAME = "code_ident"
 

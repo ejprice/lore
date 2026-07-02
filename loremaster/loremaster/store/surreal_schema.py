@@ -14,10 +14,11 @@ second application against an already-migrated database is a safe no-op, which i
 exactly what lets :meth:`SurrealStore.ensure_ready` run it unconditionally at
 startup.
 
-Dialect note (verified against the 3.0.5 engine the store targets): the FULLTEXT
-index clause is ``FULLTEXT ANALYZER <name> BM25`` (not the older ``SEARCH
-ANALYZER``), ``FLEXIBLE`` is written *after* ``TYPE`` on a field, and a domain
-constraint is a field-level ``ASSERT $value IN [...]``.
+Dialect note (verified against the 3.0.5 engine the store targets, and re-verified
+on 3.1.5 with no deltas — 3.1.x is the documented floor going forward): the
+FULLTEXT index clause is ``FULLTEXT ANALYZER <name> BM25`` (not the older
+``SEARCH ANALYZER``), ``FLEXIBLE`` is written *after* ``TYPE`` on a field, and a
+domain constraint is a field-level ``ASSERT $value IN [...]``.
 """
 
 from __future__ import annotations

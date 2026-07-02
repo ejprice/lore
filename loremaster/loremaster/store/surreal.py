@@ -12,7 +12,10 @@ Everything runs against a real SurrealDB server (``ws://…/rpc``) via the
 the snapshot isolation are all server-side properties, so there is no in-memory
 shortcut.
 
-Dialect facts this store is built on (verified against the 3.0.5 engine):
+Dialect facts this store is built on (verified against the 3.0.5 engine; re-verified
+byte-for-byte on 3.1.5 with no deltas — 3.1.x is the floor going forward, matching
+Spectron's runtime floor so a future self-hosted Spectron memory backend can share
+this server):
 
 * **Filtered KNN under-returns**, so each hybrid arm *overfetches* (``k`` scaled
   by :data:`_OVERFETCH_FACTOR`) inside the filtered subquery and the final ``k``

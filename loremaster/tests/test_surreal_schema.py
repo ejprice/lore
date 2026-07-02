@@ -9,7 +9,8 @@ configured embedding width it emits the SurrealDB DDL for lore's unified store
   into every HNSW index and never leaks a different width — the anti-hardcode
   guard. The expected width comes from the argument the test passed, never from
   re-reading the implementation.
-* **Behavioural (real 3.0.5 server):** the DDL APPLIES cleanly, applies again
+* **Behavioural (real server, 3.0.5 and 3.1.5 both verified — 3.1.x is the
+  documented floor going forward):** the DDL APPLIES cleanly, applies again
   IDEMPOTENTLY (``IF NOT EXISTS`` semantics), yields the specified tables /
   indexes / analyzer as observed via ``INFO FOR DB`` / ``INFO FOR TABLE``, a
   probe row round-trips per field-specified table, the ``code_ident`` analyzer
@@ -121,7 +122,7 @@ class TestConfiguredDimension:
 
 
 class TestSchemaAppliesToServer:
-    """The generated DDL applies to the live 3.0.5 engine and is idempotent."""
+    """The generated DDL applies to the live engine (3.1.x floor) and is idempotent."""
 
     async def test_ddl_applies_and_creates_every_planned_table(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
