@@ -59,11 +59,11 @@ TRACE_TABLE = "trace"
 COMMAND_TABLE = "command"
 
 # The plain SCHEMAFULL tables the plan requires to exist but that carry no
-# field-level probe in the P2 contract. ``trace`` is NOT here — it grows two
-# audited optional columns below — the rest are structural placeholders whose
-# fields land in a later phase.
+# field-level probe in the P2 contract. Neither ``trace`` nor ``meta`` are here
+# — ``trace`` grows two audited optional columns below, ``meta`` grows its
+# ``k``/``v`` fields (P3, the ``SurrealManifest`` port) — the rest are
+# structural placeholders whose fields land in a later phase.
 _STRUCTURAL_TABLES = (
-    META_TABLE,
     SNAPSHOT_TABLE,
     SNAPSHOT_ENTRY_TABLE,
     FINDING_TABLE,
@@ -179,6 +179,15 @@ def _plain_index(table: str, name: str, fields: tuple[str, ...]) -> str:
     return f"DEFINE INDEX IF NOT EXISTS {name} ON {table} FIELDS {', '.join(fields)}"
 
 
+def _unique_index(table: str, name: str, fields: tuple[str, ...]) -> str:
+    """A UNIQUE index over ``fields`` on ``table`` (idempotent).
+
+    Backs a key-uniqueness constraint the application layer relies on for an
+    upsert-by-key pattern (e.g. ``meta.k``) rather than a composite record id.
+    """
+    return f"DEFINE INDEX IF NOT EXISTS {name} ON {table} FIELDS {', '.join(fields)} UNIQUE"
+
+
 def _analyzer_statement(analyzer_name: str) -> str:
     """The ``DEFINE ANALYZER`` statement for the code-identifier tokenizer."""
     return (
@@ -218,6 +227,25 @@ def _file_statements() -> list[str]:
         _define_field(FILE_TABLE, "chunk_ids", "array<string>"),
         _define_field(FILE_TABLE, "state", "string", constraint=f"ASSERT $value IN [{allowed}]"),
         _define_field(FILE_TABLE, "updated_at", "datetime"),
+    ]
+
+
+def _meta_statements() -> list[str]:
+    """The ``meta`` key/value table (schema-fingerprint / rebuild-status stamps).
+
+    Ported from the SQLite manifest's ``meta(k PRIMARY KEY, v)`` table (P3, the
+    ``SurrealManifest`` port). SurrealDB's per-table SCHEMAFULL record id is a
+    single opaque value here (unlike ``file``'s composite ``[tier, file_path]``
+    id — a meta key isn't naturally the record id's shape), so ``k`` and ``v``
+    are ordinary fields and a UNIQUE index on ``k`` is what lets
+    ``SurrealManifest.meta_set`` upsert idempotently by key via
+    ``UPSERT meta SET k = $k, v = $v WHERE k = $k``.
+    """
+    return [
+        _define_table(META_TABLE),
+        _define_field(META_TABLE, "k", "string"),
+        _define_field(META_TABLE, "v", "string"),
+        _unique_index(META_TABLE, f"{META_TABLE}_k", ("k",)),
     ]
 
 
@@ -289,6 +317,27 @@ def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str
     statements += _file_text_statements()
     statements += _memory_statements(dim, analyzer_name)
     statements += _trace_statements()
+    statements += _meta_statements()
     # The remaining plan tables exist structurally; their fields land later.
     statements += [_define_table(table) for table in _STRUCTURAL_TABLES]
+    return ";\n".join(statements) + ";\n"
+
+
+def generate_manifest_ddl() -> str:
+    """Generate just the ``file`` + ``meta`` table DDL — the manifest's schema.
+
+    Unlike :func:`generate_ddl`, this slice carries no HNSW/FULLTEXT indexes
+    and needs no embedding width or analyzer, since neither ``file`` nor
+    ``meta`` carries a vector or free-text column. This lets
+    ``SurrealManifest`` — which owns no embedder configuration of its own,
+    unlike :class:`~loremaster.store.surreal.SurrealStore` — apply its own
+    schema slice independently. Every statement is ``IF NOT EXISTS``, so
+    applying the result twice (or applying :func:`generate_ddl` first, in
+    either order) is a safe no-op.
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string ready to hand to
+        a single SurrealDB ``query()`` call.
+    """
+    statements: list[str] = _file_statements() + _meta_statements()
     return ";\n".join(statements) + ";\n"

@@ -31,7 +31,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -156,6 +156,51 @@ async def run(
     the same pattern ``conftest.kz_query``/``kz_row`` use for the Kùzu union.
     """
     return await connection.query(statement, params)
+
+
+async def call_until_recovered[T](
+    op: Callable[[], Awaitable[T]],
+    healable_errors: tuple[type[BaseException], ...],
+    *,
+    attempts: int = 4,
+    label: str = "component",
+) -> T:
+    """Call ``op`` until it succeeds, swallowing ``healable_errors``.
+
+    The shared mid-life-connection-drop recovery probe both the store and the
+    manifest lifecycle tests use (degradation -> recovery, CLAUDE.md): proves
+    a self-healing component is NOT permanently wedged after a transient
+    connection failure — a healthy component heals within a few calls
+    (whether it retries transparently or surfaces one transient error then
+    reconnects), while a genuinely wedged component raises on EVERY attempt
+    and this exhausts, surfacing an ``AssertionError`` — the RED a missing
+    lifecycle test would otherwise miss.
+
+    Args:
+        op: The zero-argument operation to retry.
+        healable_errors: The exception types a transient, self-healing
+            failure may surface as. Caller-supplied (rather than hardcoded
+            here) because which types count as "healable" is specific to the
+            component under test (e.g. the store's vs. the manifest's own
+            typed connection-error wrapper).
+        attempts: The number of calls to attempt before giving up.
+        label: The component name used in the exhaustion message (e.g.
+            ``"store"`` / ``"manifest"``).
+
+    Returns:
+        ``op``'s successful return value.
+
+    Raises:
+        AssertionError: ``op`` failed on every attempt — the component never
+            recovered.
+    """
+    last: BaseException | None = None
+    for _ in range(attempts):
+        try:
+            return await op()
+        except healable_errors as error:
+            last = error
+    raise AssertionError(f"{label} never recovered within {attempts} calls: {last!r}")
 
 
 async def connect_admin(env: SurrealEnv) -> SurrealConnection:

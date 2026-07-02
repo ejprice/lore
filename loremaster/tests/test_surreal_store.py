@@ -50,6 +50,7 @@ from _surreal_harness import (
     TIER_A,
     TIER_B,
     SurrealEnv,
+    call_until_recovered,
     chunk_record,
     surreal_env,  # noqa: F401 - re-exported pytest fixture
     unit_vector,
@@ -794,23 +795,6 @@ async def _kill_socket(store: SurrealStore) -> None:
     await connection.close()
 
 
-async def _call_until_recovered[T](op: Callable[[], Awaitable[T]], attempts: int = 4) -> T:
-    """Call ``op`` until it succeeds, swallowing the transient drop errors.
-
-    Proves the store is NOT permanently wedged: a healthy store heals within a few
-    calls (whether GREEN retries transparently or surfaces one transient then
-    reconnects). A wedged store (the current bug) raises on EVERY attempt and this
-    exhausts — the RED that the missing lifecycle test would have caught.
-    """
-    last: BaseException | None = None
-    for _ in range(attempts):
-        try:
-            return await op()
-        except _HEALABLE_ERRORS as error:
-            last = error
-    raise AssertionError(f"store never recovered within {attempts} calls: {last!r}")
-
-
 class TestMidLifeConnectionRecovery:
     """A mid-life connection drop must self-heal — degradation → recovery (CLAUDE.md).
 
@@ -838,7 +822,7 @@ class TestMidLifeConnectionRecovery:
 
         # Recovery: heal within a bounded number of calls (never wedge) and return
         # the correct live count.
-        assert await _call_until_recovered(store.count) == 5
+        assert await call_until_recovered(store.count, _HEALABLE_ERRORS, label="store") == 5
         # And it STAYS healed — a further call also works (the handle was actually
         # replaced, not a one-off fluke).
         assert await store.count() == 5
@@ -864,7 +848,7 @@ class TestMidLifeConnectionRecovery:
                 query_vector=unit_vector(0, dim), query_text="PurchaseOrder", k=5
             )
 
-        recovered = await _call_until_recovered(_search)
+        recovered = await call_until_recovered(_search, _HEALABLE_ERRORS, label="store")
         assert any(candidate.key == target.point_id for candidate in recovered)
 
 
