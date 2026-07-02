@@ -77,17 +77,18 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-from surrealdb import (
-    AsyncEmbeddedSurrealConnection,
-    AsyncHttpSurrealConnection,
-    AsyncSurreal,
-    AsyncWsSurrealConnection,
-    RecordID,
-)
-from surrealdb.errors import SurrealError
+from surrealdb import AsyncSurreal, RecordID
 from websockets.exceptions import WebSocketException
 
 from loremaster.index.records import Record
+from loremaster.store._txn import (
+    _CONNECTION_ERRORS,
+    SurrealConnectionError,
+    SurrealStoreError,
+    _SurrealConnection,
+    execute_transaction,
+    is_connection_error,
+)
 from loremaster.store.candidate import Candidate, CandidateOrigin
 from loremaster.store.surreal_schema import (
     CHUNK_FILTER_KEYS,
@@ -99,11 +100,27 @@ from loremaster.store.surreal_schema import (
 
 logger = logging.getLogger(__name__)
 
-# ``AsyncSurreal`` is a factory returning one of these by URL scheme; this alias
-# is exactly its return union so the cached connection type-checks under strict.
-_SurrealConnection = (
-    AsyncEmbeddedSurrealConnection | AsyncHttpSurrealConnection | AsyncWsSurrealConnection
-)
+# The public surface. The connection/error vocabulary below is imported from
+# :mod:`loremaster.store._txn` (see the note under the imports); naming it in
+# ``__all__`` marks it as an EXPLICIT re-export so mypy-strict
+# (``no_implicit_reexport``) keeps the historical
+# ``from loremaster.store.surreal import …`` seam every caller and test uses.
+__all__ = [
+    "SurrealStore",
+    "SurrealStoreError",
+    "SurrealConnectionError",
+    "VectorDimensionError",
+    "_CONNECTION_ERRORS",
+    "_SurrealConnection",
+]
+
+# The connection/transport error vocabulary (:class:`SurrealStoreError`,
+# :class:`SurrealConnectionError`, :data:`_CONNECTION_ERRORS`,
+# :data:`_SurrealConnection`) and the shared transaction / error-classification
+# seams (:func:`execute_transaction`, :func:`is_connection_error`) live in
+# :mod:`loremaster.store._txn` so the store and the manifest raise/catch one
+# audited set — they are imported (and thereby re-exported) above; see that
+# module's docstring for why.
 
 # The signin credential keys the SDK expects.
 _SIGNIN_USER_KEY = "username"
@@ -183,22 +200,6 @@ _TABLE_SEPARATOR = ":"
 
 # Every hybrid hit is a fusion of both arms, so it is reported as ``fused``.
 _FUSED_ORIGIN: CandidateOrigin = "fused"
-
-# Connection/transport failures that mean "the server is unreachable or refused
-# us" — wrapped into :class:`SurrealConnectionError` so a caller sees a typed,
-# LOUD failure rather than a hang or a silent empty result. ``OSError`` covers
-# ``ConnectionRefusedError``; ``SurrealError`` covers auth rejection
-# (``NotAllowedError``) and a query over a reconnected-but-unauthenticated
-# socket; ``WebSocketException`` covers a broken/closed WS transport.
-_CONNECTION_ERRORS = (OSError, SurrealError, WebSocketException)
-
-
-class SurrealStoreError(RuntimeError):
-    """Base class for every error :class:`SurrealStore` raises."""
-
-
-class SurrealConnectionError(SurrealStoreError):
-    """The store could not reach or authenticate to the SurrealDB server."""
 
 
 class VectorDimensionError(SurrealStoreError):
@@ -318,6 +319,18 @@ class SurrealStore:
             await self._safe_close(self._connection)
             self._connection = None
 
+    async def _drop_connection(self, connection: _SurrealConnection) -> None:
+        """Drop the cached handle so the NEXT call reconnects (the self-heal).
+
+        The single place the mid-life self-heal is enacted: null the cached
+        handle FIRST so the next call reconnects even if the close below is a
+        no-op, then release the (now dead / unauthenticated) socket. Shared by
+        :meth:`_query` and the transaction seam (:func:`~loremaster.store._txn.
+        execute_transaction`, via the ``drop`` callback).
+        """
+        self._connection = None
+        await self._safe_close(connection)
+
     @staticmethod
     async def _safe_close(connection: _SurrealConnection) -> None:
         """Close ``connection``, swallowing an already-dead-socket failure."""
@@ -334,23 +347,31 @@ class SurrealStore:
         seam so the public methods stay strictly typed without union-narrowing
         noise (the same pattern the test harness uses).
 
-        This is also the store's single self-heal seam: on a connection-class
-        failure (the WS socket died mid-life) the cached handle is dropped so the
-        NEXT call transparently reconnects via :meth:`_ensure_connection`, and the
-        failure is surfaced as a typed, LOUD :class:`SurrealConnectionError` —
-        never a hang or a silent empty result.
+        This is also the store's single self-heal seam, and it CLASSIFIES a
+        failure (see :func:`~loremaster.store._txn.is_connection_error`): a
+        transport/socket/auth failure (the WS socket died mid-life) drops the
+        cached handle so the NEXT call transparently reconnects via
+        :meth:`_ensure_connection`, and is surfaced as a typed, LOUD
+        :class:`SurrealConnectionError`; a domain/schema/type rejection of the
+        write itself (an ``ASSERT`` violation, a type-coercion failure) is NOT a
+        connection fault — it keeps the healthy connection and surfaces as a
+        :class:`SurrealStoreError`. Either way it is LOUD, never a silent empty
+        result.
         """
         connection = await self._ensure_connection()
         try:
             return await connection.query(statement, params or {})
         except _CONNECTION_ERRORS as error:
-            # Drop the (now dead / unauthenticated) cached handle FIRST so the
-            # next call reconnects even if the close below is a no-op, then
-            # release the socket and surface a typed failure.
-            self._connection = None
-            await self._safe_close(connection)
-            raise SurrealConnectionError(
-                f"SurrealDB query failed against {self._url!r}: {error}"
+            if is_connection_error(error):
+                # A genuine transport/auth fault: self-heal and surface loudly.
+                await self._drop_connection(connection)
+                raise SurrealConnectionError(
+                    f"SurrealDB query failed against {self._url!r}: {error}"
+                ) from error
+            # A domain/schema rejection of the write — the connection is healthy
+            # and must not be thrown away for a fault that is not the transport's.
+            raise SurrealStoreError(
+                f"SurrealDB query rejected against {self._url!r}: {error}"
             ) from error
 
     # -- writes -------------------------------------------------------------
@@ -410,7 +431,11 @@ class SurrealStore:
         Deletes every existing chunk of ``(tier, file_path)`` and inserts the new
         ones inside ONE ``BEGIN … COMMIT`` block, so a concurrent reader on
         another connection only ever observes the complete pre- or post-replace
-        state — never an empty/partial window.
+        state — never an empty/partial window. Runs through the shared
+        :func:`~loremaster.store._txn.execute_transaction` (NOT a bare
+        ``self._query``), which inspects every statement's status and raises
+        :class:`SurrealStoreError` if the engine rolled the transaction back —
+        so a mid-transaction rejection can never be reported as a silent success.
 
         Args:
             tier: The tier whose copy of the file is being replaced.
@@ -419,6 +444,10 @@ class SurrealStore:
 
         Raises:
             VectorDimensionError: Any new vector is the wrong width (nothing runs).
+            SurrealConnectionError: The server is unreachable or the socket died.
+            SurrealStoreError: The transaction was rejected/rolled back
+                server-side (e.g. a type-coercion failure); nothing is left
+                half-applied.
         """
         self._validate_dimensions(records_with_vectors)
         tier_param, file_param = "__tier", "__file"
@@ -436,7 +465,13 @@ class SurrealStore:
                 f"UPSERT type::record('{CHUNK_TABLE}', ${id_param}) CONTENT ${content_param}"
             )
         statements.append("COMMIT")
-        await self._query(";\n".join(statements) + ";", params)
+        await execute_transaction(
+            ";\n".join(statements) + ";",
+            params,
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+        )
 
     # -- deletes ------------------------------------------------------------
 

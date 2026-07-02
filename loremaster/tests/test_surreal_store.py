@@ -549,6 +549,110 @@ class TestSnapshotIsolation:
         assert final == new_set
 
 
+class TestReplaceFile:
+    """The atomic per-file transaction (task #19): swap a file's chunks in ONE
+    ``BEGIN … COMMIT`` round trip, and — the hardening this task pins — never
+    report a silent false success when the engine rolls that transaction back.
+
+    Grounding (live 3.1.5 probes, since the ``chunk`` table carries no
+    field-level ``ASSERT`` the way ``file.state`` does): a bare ``query()``
+    call only inspects the FIRST statement's status (the ``BEGIN``, which
+    never itself fails) before deciding whether to raise — confirmed live
+    that a LATER statement's rejection rolls the WHOLE transaction back
+    server-side while ``query()`` returns ``None`` with **no exception at
+    all**. The deterministic in-transaction failure used below is a genuine
+    SCHEMAFULL TYPE-coercion rejection: ``sub_ordinal`` is declared ``int``
+    (``surreal_schema._CHUNK_FIELD_SPECS``), and handing it a string is
+    rejected server-side ("Couldn't coerce value for field `sub_ordinal`") —
+    verified live to roll back the DELETE too, not just the bad UPSERT.
+    """
+
+    async def test_replace_file_swaps_old_chunks_for_new_ones(self, store: SurrealStore) -> None:
+        # Regression: the plain happy path must keep working unchanged.
+        dim = PRODUCTION_DIM
+        path = "models/purchase_order.py"
+        old = [
+            chunk_record(tier=TIER_A, file_path=path, identity=f"Old.method_{i}")
+            for i in range(3)
+        ]
+        await store.upsert([(record, unit_vector(i, dim)) for i, record in enumerate(old)])
+
+        new = [
+            chunk_record(tier=TIER_A, file_path=path, identity=f"New.method_{i}")
+            for i in range(2)
+        ]
+        await store.replace_file(
+            TIER_A, path, [(record, unit_vector(10 + i, dim)) for i, record in enumerate(new)]
+        )
+
+        rows = await store.scroll({"tier": TIER_A, "file_path": path}, limit=_READ_ALL)
+        assert {row["identity"] for row in rows} == {"New.method_0", "New.method_1"}
+        assert await store.count() == 2  # the old rows are gone, not additive
+
+    async def test_replace_file_does_not_touch_other_files_or_tiers(
+        self, store: SurrealStore
+    ) -> None:
+        dim = PRODUCTION_DIM
+        path = "models/purchase_order.py"
+        kept_other_file = chunk_record(
+            tier=TIER_A, file_path="models/sale_order.py", identity="Kept"
+        )
+        kept_other_tier = chunk_record(tier=TIER_B, file_path=path, identity="Kept")
+        await store.upsert(
+            [(kept_other_file, unit_vector(0, dim)), (kept_other_tier, unit_vector(1, dim))]
+        )
+        new = chunk_record(tier=TIER_A, file_path=path, identity="New.method")
+        await store.replace_file(TIER_A, path, [(new, unit_vector(2, dim))])
+
+        assert await store.count() == 3  # kept_other_file + kept_other_tier + new
+        survivors = {row["identity"] for row in await store.scroll({}, limit=_READ_ALL)}
+        assert survivors == {"Kept", "New.method"}
+
+    async def test_replace_file_surfaces_a_rolled_back_transaction(
+        self, store: SurrealStore
+    ) -> None:
+        # LOAD-BEARING (task #19): must FAIL RED against the current bare-
+        # ``_query`` ``replace_file`` — it currently returns ``None`` with no
+        # exception at all here (verified live), even though the engine
+        # rejected the write and rolled the WHOLE transaction back.
+        dim = PRODUCTION_DIM
+        path = "models/purchase_order.py"
+        prior = [
+            chunk_record(tier=TIER_A, file_path=path, identity=f"Prior.method_{i}")
+            for i in range(2)
+        ]
+        await store.upsert([(record, unit_vector(i, dim)) for i, record in enumerate(prior)])
+
+        good = chunk_record(tier=TIER_A, file_path=path, identity="New.good")
+        poison = chunk_record(tier=TIER_A, file_path=path, identity="New.poison")
+        # Poison: wrong TYPE (not wrong VALUE) — the chunk table has no field
+        # ASSERT, but ``sub_ordinal`` is SCHEMAFULL ``int``; a string there is
+        # a genuine, deterministic, engine-level rejection (see class docstring).
+        poison.payload["sub_ordinal"] = "not-an-int"
+
+        connection_before = store._connection
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await store.replace_file(
+                TIER_A, path, [(good, unit_vector(10, dim)), (poison, unit_vector(11, dim))]
+            )
+        # F2 (error-type unification): a domain/schema rejection is a STORE
+        # error, never miscategorized as a connection failure — the broad
+        # ``pytest.raises(Exception)`` pattern is exactly what let this drift
+        # elsewhere, so the type is pinned EXACTLY, not just "a subclass of".
+        assert type(exc_info.value) is SurrealStoreError
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        # A healthy connection must never be nulled for a rejection that has
+        # nothing to do with the transport.
+        assert store._connection is connection_before
+
+        # The prior rows survive completely intact — the DELETE was rolled
+        # back too, not just the poisoned UPSERT (rollback verified by a
+        # follow-up read, not just "no exception on the surface").
+        rows = await store.scroll({"tier": TIER_A, "file_path": path}, limit=_READ_ALL)
+        assert {row["identity"] for row in rows} == {"Prior.method_0", "Prior.method_1"}
+        assert await store.count() == 2
+
+
 class TestResilience:
     """Connection failure RAISES a typed error — never a silent empty result."""
 
@@ -606,6 +710,43 @@ class TestResilience:
         with pytest.raises(VectorDimensionError):
             await store.upsert([(record, wrong_width)])
         assert await store.count() == 0
+
+
+class TestDomainRejectionErrorType:
+    """F2 (error-type unification, task #19): a domain/schema rejection is a
+    STORE error, never a connection error.
+
+    ``upsert`` runs a SINGLE statement per record through the bare
+    ``_query`` seam (see :meth:`SurrealStore._query`). Verified live: a
+    SCHEMAFULL type-coercion rejection there raises a
+    ``surrealdb.errors.SurrealError`` subclass, which today is caught by the
+    SAME except-branch as a genuine transport failure
+    (:data:`_CONNECTION_ERRORS`) and re-wrapped as
+    :class:`SurrealConnectionError` — nulling an otherwise HEALTHY
+    connection. The caller cannot tell "the server is down" apart from "the
+    write I sent was rejected", and a perfectly good connection is thrown
+    away for no reason. This class pins the INTENDED unified behaviour:
+    exactly :class:`SurrealStoreError`, connection left untouched.
+    """
+
+    async def test_single_statement_domain_rejection_raises_store_error(
+        self, store: SurrealStore
+    ) -> None:
+        # LOAD-BEARING: must FAIL RED against current code, which raises
+        # SurrealConnectionError here (verified live) instead of
+        # SurrealStoreError, and nulls the healthy connection in the process.
+        dim = PRODUCTION_DIM
+        poison = chunk_record(tier=TIER_A, file_path="models/x.py", identity="X")
+        poison.payload["sub_ordinal"] = "not-an-int"  # wrong TYPE, not wrong VALUE
+
+        connection_before = store._connection
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await store.upsert([(poison, unit_vector(0, dim))])
+        assert type(exc_info.value) is SurrealStoreError
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        assert store._connection is connection_before
+        assert await store.count() == 0  # nothing partially persisted
+
 
 # The closed allow-list of real chunk columns that are legitimate exact-match
 # filter dimensions (records.py structural fields + the security requirement).

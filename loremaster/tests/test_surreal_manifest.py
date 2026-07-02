@@ -410,9 +410,26 @@ class TestSetState:
         # the app layer): the DDL's ASSERT gives this for free, and a silent
         # acceptance here would corrupt the lifecycle invariant every reconcile
         # decision depends on.
+        #
+        # F2 (error-type unification, task #19): this is a SINGLE-statement
+        # write (``set_state`` -> one ``UPDATE`` through the bare ``_query``
+        # seam). Verified live: today it raises ``SurrealConnectionError``
+        # (not ``SurrealStoreError``) and NULLS the healthy connection —
+        # ``_query``'s except-branch treats the engine's ASSERT-rejection
+        # ``SurrealError`` exactly like a genuine transport failure. The
+        # broad ``pytest.raises(Exception)`` this test used before is
+        # precisely what let that drift go unnoticed (an audit finding), so
+        # the type is now pinned EXACTLY, and the connection's health is
+        # checked too. LOAD-BEARING: this must FAIL RED against current code.
         await _upsert_indexed(manifest)
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+        connection_before = manifest._connection
+        with pytest.raises(SurrealStoreError) as exc_info:
             await manifest.set_state(TIER_A, _PROBE_PATH, _INVALID_STATE)
+        assert type(exc_info.value) is SurrealStoreError
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        # A healthy connection must never be nulled for a rejection that has
+        # nothing to do with the transport.
+        assert manifest._connection is connection_before
         row = await manifest.get(TIER_A, _PROBE_PATH)
         assert row is not None
         assert row.state == STATE_INDEXED  # unchanged — the bad write never landed
@@ -536,8 +553,17 @@ class TestReplace:
         # would pass this call silently even though the engine rejected the
         # write and rolled back — this assertion is what forces the
         # implementation to actually surface the per-statement failure.
+        #
+        # F2 (error-type unification, task #19): this is the MULTI-statement
+        # path (``replace`` -> ``_exec_txn``), which already raises the exact
+        # ``SurrealStoreError`` and leaves the connection untouched (verified
+        # live) — this hardens the assertion from a broad
+        # ``pytest.raises(Exception)`` to the PRECISE type, so this test
+        # cannot silently regress to the single-statement path's
+        # miscategorization bug.
         await _upsert_indexed(manifest)
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+        connection_before = manifest._connection
+        with pytest.raises(SurrealStoreError) as exc_info:
             await manifest.replace(
                 tier=TIER_A,
                 file_path=_PROBE_PATH,
@@ -548,6 +574,9 @@ class TestReplace:
                 chunk_ids=["poison"],
                 state=_INVALID_STATE,  # out-of-domain — the poison
             )
+        assert type(exc_info.value) is SurrealStoreError
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        assert manifest._connection is connection_before
         # The PRIOR row survives completely intact — no orphan, no gap.
         row = await manifest.get(TIER_A, _PROBE_PATH)
         assert row is not None

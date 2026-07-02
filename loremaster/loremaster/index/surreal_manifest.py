@@ -37,41 +37,34 @@ GREEN-phase probes that verified them against the live 3.1.5 engine:
   unique index) on every subsequent call, the exact "insert or overwrite by
   key" semantics ``meta(k PRIMARY KEY, v)`` had in SQLite.
 
-Critical dialect gotcha this module works around (see :meth:`_exec_txn`): a
-multi-statement ``BEGIN … COMMIT`` run through the SDK's plain ``query()``
-call only inspects the FIRST statement's per-statement status before deciding
-whether to raise — verified live that a LATER statement's ``ASSERT``
-violation rolls the transaction back server-side while ``query()`` returns
-``None`` with **no exception at all**. :meth:`replace` therefore never uses
-plain ``query()``; it goes through :meth:`_exec_txn`, which uses the lower-
-level ``query_raw()`` and inspects every statement's ``status`` itself,
-raising :class:`~loremaster.store.surreal.SurrealStoreError` the moment any
-statement in the transaction failed — so a caller can never observe the
-"silent success" the SDK's own `query()` would otherwise report.
+Critical dialect gotcha this module works around (see
+:func:`~loremaster.store._txn.execute_transaction`): a multi-statement
+``BEGIN … COMMIT`` run through the SDK's plain ``query()`` call only inspects
+the FIRST statement's per-statement status before deciding whether to raise —
+verified live that a LATER statement's ``ASSERT`` violation rolls the
+transaction back server-side while ``query()`` returns ``None`` with **no
+exception at all**. :meth:`replace` therefore never uses plain ``query()``; it
+goes through the shared :func:`~loremaster.store._txn.execute_transaction`,
+which uses the lower-level ``query_raw()`` and inspects every statement's
+``status`` itself, raising :class:`~loremaster.store.surreal.SurrealStoreError`
+the moment any statement in the transaction failed — so a caller can never
+observe the "silent success" the SDK's own ``query()`` would otherwise report.
 
-**Reuse note — deliberately NOT extracted yet.**
-:class:`~loremaster.store.surreal.SurrealStore`.replace_file has the exact
-same latent gap: it commits its own multi-statement ``BEGIN … COMMIT``
-through a bare ``self._query()`` (plain ``query()`` under the hood), so a
-later statement's rejection rolls the transaction back server-side while
-that caller still sees a silent success — :meth:`_exec_txn` here is the
-audited fix for that same class of bug, just not yet applied to
-``replace_file``. It stays private to this module for now rather than being
-pulled into a shared ``store/_txn.py`` (or a connection-lifecycle mixin):
-with only ONE real call site (:meth:`replace`) today, the shared shape (a
-free function taking connection callables? a mixin unifying the two
-classes' already-near-identical, but independently evolving, connection
-lifecycles?) would be designed against a guess, not a second caller — real
-risk of extracting the wrong shape and reworking it anyway. The recommended
-sequencing: retrofit ``replace_file`` to call this SAME check (however it is
-reached) FIRST, proving the shape fits both callers, THEN extract the
-twice-proven implementation into one shared, audited helper — never let two
-copies of this check drift independently once that happens.
+**Shared with the store — the extraction.** The per-statement transaction
+check and the transport-vs-domain error classification are NOT private to this
+module: the identical gap exists in
+:meth:`~loremaster.store.surreal.SurrealStore.replace_file` (it commits its own
+multi-statement ``BEGIN … COMMIT``), and the single-statement ``_query`` seam
+of BOTH classes must tell a genuine transport failure apart from a domain
+rejection. Both concerns now route through the ONE audited implementation in
+:mod:`loremaster.store._txn` — :func:`~loremaster.store._txn.execute_transaction`
+for the transaction, :func:`~loremaster.store._txn.is_connection_error` for the
+``_query`` classification — extracted once a second real caller existed, so the
+two can never drift apart again.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -80,6 +73,7 @@ from surrealdb import AsyncSurreal
 from websockets.exceptions import WebSocketException
 
 from loremaster.index.manifest import FileRow
+from loremaster.store._txn import execute_transaction, is_connection_error
 from loremaster.store.surreal import (
     _CONNECTION_ERRORS,
     _SIGNIN_PASS_KEY,
@@ -105,32 +99,6 @@ _ID_KEY = "id"
 # The aggregate-projection aliases used by the ``GROUP ALL`` reads below.
 _SUM_ALIAS = "total"
 _COUNT_ALIAS = "count"
-
-# The exact substring the engine appends to a rolled-back transaction's final
-# statement when the rollback was caused by optimistic-concurrency contention
-# between two genuinely concurrent writers on the SAME row — verified live:
-# "Cannot COMMIT: Transaction conflict: Resource busy. This transaction can be
-# retried". This is the ONLY signal 3.1.5 exposes to distinguish a retryable
-# write-write race (safe, and expected, to retry transparently) from every
-# other kind of rolled-back transaction (e.g. a domain/``ASSERT`` violation,
-# which must never be retried and must surface to the caller immediately) —
-# neither the per-statement ``kind`` nor ``details.kind`` differ between the
-# two cases, only this message text does.
-_RETRYABLE_CONFLICT_MARKER = "can be retried"
-
-# The bounded number of attempts :meth:`SurrealManifest._exec_txn` makes when
-# the engine reports a retryable write-write conflict. Two genuinely
-# concurrent ``replace()`` calls on the same row need at most a couple of
-# rounds for the loser to retry against the winner's now-settled row; this
-# ceiling is generous headroom without ever looping unboundedly under
-# pathological contention.
-_MAX_TXN_CONFLICT_ATTEMPTS = 5
-
-# The linear backoff between conflict retries, in seconds — small enough that
-# a legitimate two-writer race resolves in well under the test suite's own
-# patience, but non-zero so two colliding retries do not immediately re-race
-# in lockstep on the very next event-loop tick.
-_TXN_CONFLICT_BACKOFF_SECONDS = 0.01
 
 
 class SurrealManifest:
@@ -232,6 +200,18 @@ class SurrealManifest:
             await self._safe_close(self._connection)
             self._connection = None
 
+    async def _drop_connection(self, connection: _SurrealConnection) -> None:
+        """Drop the cached handle so the NEXT call reconnects (the self-heal).
+
+        Null the cached handle FIRST so the next call reconnects even if the
+        close below is a no-op, then release the (now dead / unauthenticated)
+        socket. Shared by :meth:`_query` and the transaction seam
+        (:func:`~loremaster.store._txn.execute_transaction`, via the ``drop``
+        callback) — mirrors :meth:`SurrealStore._drop_connection`.
+        """
+        self._connection = None
+        await self._safe_close(connection)
+
     @staticmethod
     async def _safe_close(connection: _SurrealConnection) -> None:
         """Close ``connection``, swallowing an already-dead-socket failure."""
@@ -244,156 +224,34 @@ class SurrealManifest:
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         """Run a single statement on the (lazily opened) connection.
 
-        The manifest's self-heal seam, mirroring :meth:`SurrealStore._query`:
-        on a connection-class failure the cached handle is dropped so the NEXT
-        call transparently reconnects, and the failure is surfaced as a typed,
-        LOUD :class:`SurrealConnectionError`. This also covers a SINGLE-
-        statement domain violation (e.g. ``set_state`` writing an out-of-
-        domain state): SurrealDB's ``query()`` inspects the first (here, only)
-        statement's status and raises a :class:`~surrealdb.errors.SurrealError`
-        for it, which is one of :data:`_CONNECTION_ERRORS` — so it surfaces
-        here too, loudly, without a caller ever seeing a silent partial write.
+        The manifest's self-heal seam, mirroring :meth:`SurrealStore._query`,
+        and it CLASSIFIES a failure (see
+        :func:`~loremaster.store._txn.is_connection_error`): a transport/socket/
+        auth failure drops the cached handle so the NEXT call transparently
+        reconnects, surfaced as a typed, LOUD :class:`SurrealConnectionError`;
+        a SINGLE-statement domain violation (e.g. ``set_state`` writing an
+        out-of-domain state — SurrealDB's ``query()`` inspects the first (here,
+        only) statement's status and raises a ``SurrealError`` for it) is NOT a
+        connection fault — it keeps the healthy connection and surfaces as a
+        :class:`SurrealStoreError`, so a caller can tell "the write I sent was
+        rejected" apart from "the server is down", and a good connection is
+        never thrown away for a rejection.
         """
         connection = await self._ensure_connection()
         try:
             return await connection.query(statement, params or {})
         except _CONNECTION_ERRORS as error:
-            # Drop the (now dead / unauthenticated) cached handle FIRST so the
-            # next call reconnects even if the close below is a no-op, then
-            # release the socket and surface a typed failure.
-            self._connection = None
-            await self._safe_close(connection)
-            raise SurrealConnectionError(
-                f"SurrealDB query failed against {self._url!r}: {error}"
-            ) from error
-
-    async def _exec_txn(self, statement: str, params: dict[str, Any]) -> None:
-        """Run a multi-statement ``BEGIN … COMMIT`` and verify EVERY statement.
-
-        The counter to the SDK's own ``query()`` gap: ``query()`` only checks
-        the FIRST statement's ``status`` before deciding whether to raise, so
-        a later ``ASSERT`` violation inside a transaction rolls back server-
-        side while ``query()`` returns ``None`` with no exception at all
-        (confirmed live — see the module docstring). Each attempt runs three
-        linear steps: :meth:`_txn_query_raw` (self-healing ``query_raw`` +
-        the SDK's own RPC-error check), :meth:`_failed_statements` (extract
-        the per-statement ``ERR`` entries), then :meth:`_should_retry` (decide
-        whether a rollback is a transient conflict worth another attempt).
-
-        A genuine transport/auth failure (the socket died, or the server is
-        unreachable) still self-heals exactly like :meth:`_query` — see
-        :meth:`_txn_query_raw`.
-
-        A per-statement engine rejection (the rollback case) splits two ways:
-        a RETRYABLE optimistic-concurrency conflict (two genuinely concurrent
-        ``replace()`` calls racing the same row — see
-        :data:`_RETRYABLE_CONFLICT_MARKER`) is retried, bounded, entirely
-        within this call, so the caller never observes it; every OTHER
-        rejection (e.g. an out-of-domain ``state``) raises
-        :class:`SurrealStoreError` immediately — retrying it would never
-        succeed, and the caller must see it.
-
-        Raises:
-            SurrealConnectionError: The server is unreachable or the socket died.
-            SurrealStoreError: A non-retryable statement failure (the
-                transaction was rolled back), or the conflict retries were
-                exhausted under sustained contention.
-        """
-        # Populated by every attempt; guaranteed non-empty by the time the
-        # loop exits (an empty result returns immediately, below), so the
-        # final raise can always safely report the LAST attempt's failure.
-        failed_statements: list[dict[str, Any]] = []
-        for attempt in range(_MAX_TXN_CONFLICT_ATTEMPTS):
-            response = await self._txn_query_raw(statement, params)
-            failed_statements = self._failed_statements(response)
-            if not failed_statements:
-                return
-            if not self._should_retry(attempt, failed_statements):
-                break
-            await asyncio.sleep(_TXN_CONFLICT_BACKOFF_SECONDS * (attempt + 1))
-        raise SurrealStoreError(
-            f"SurrealDB transaction statement failed and was rolled back: "
-            f"{failed_statements[-1].get('result')}"
-        )
-
-    async def _txn_query_raw(self, statement: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Run ``statement`` via ``query_raw``, self-healing on a connection failure.
-
-        Mirrors :meth:`_query`'s self-heal seam exactly, but calls the SDK's
-        lower-level ``query_raw`` (which skips the SDK's own per-statement
-        error check) so :meth:`_exec_txn` can inspect every statement's
-        ``status`` itself instead — see the module docstring's dialect note.
-
-        Raises:
-            SurrealConnectionError: The server is unreachable or the socket died.
-        """
-        connection = await self._ensure_connection()
-        try:
-            response = await connection.query_raw(statement, params)
-            # ``query_raw`` deliberately skips the SDK's own RPC-level error
-            # check (unlike ``query()``) so :meth:`_failed_statements` can run
-            # the per-statement inspection first; re-running it here (rather
-            # than hand-parsing the ``error`` field) reuses the SDK's own
-            # error-to-exception mapping, so an RPC-level failure — e.g. the
-            # socket silently reconnected unauthenticated after a mid-life
-            # drop, surfacing as an "Anonymous access not allowed" response
-            # rather than a raised exception — is caught by the SAME
-            # ``_CONNECTION_ERRORS`` branch below as a genuine transport
-            # failure, and self-heals the same way.
-            connection.check_response_for_error(response, "query")
-        except _CONNECTION_ERRORS as error:
-            self._connection = None
-            await self._safe_close(connection)
-            raise SurrealConnectionError(
-                f"SurrealDB transaction failed against {self._url!r}: {error}"
-            ) from error
-        return response
-
-    @staticmethod
-    def _failed_statements(response: dict[str, Any]) -> list[dict[str, Any]]:
-        """Return the ``ERR``-status per-statement results from a ``query_raw`` response.
-
-        Raises:
-            SurrealStoreError: The response carried no per-statement result
-                list at all — a shape the engine should never actually
-                return, but one this helper refuses to silently paper over.
-        """
-        results = response.get("result")
-        if not isinstance(results, list):
+            if is_connection_error(error):
+                # A genuine transport/auth fault: self-heal and surface loudly.
+                await self._drop_connection(connection)
+                raise SurrealConnectionError(
+                    f"SurrealDB query failed against {self._url!r}: {error}"
+                ) from error
+            # A domain/schema rejection of the write — the connection is healthy
+            # and must not be thrown away for a fault that is not the transport's.
             raise SurrealStoreError(
-                f"SurrealDB returned no result set for the transaction: {response!r}"
-            )
-        return [
-            statement_result
-            for statement_result in results
-            if isinstance(statement_result, dict) and statement_result.get("status") == "ERR"
-        ]
-
-    def _should_retry(self, attempt: int, failed_statements: list[dict[str, Any]]) -> bool:
-        """Whether ``attempt``'s rollback should be retried.
-
-        True only when attempts remain AND the failure is the retryable
-        write-write conflict (:meth:`_is_retryable_conflict`) — the final
-        attempt, or any other kind of rejection, must stop here and raise.
-        """
-        attempts_remaining = attempt < _MAX_TXN_CONFLICT_ATTEMPTS - 1
-        return attempts_remaining and self._is_retryable_conflict(failed_statements)
-
-    @staticmethod
-    def _is_retryable_conflict(failed_statements: list[dict[str, Any]]) -> bool:
-        """Whether a rolled-back transaction's failure is a RETRYABLE conflict.
-
-        True only when at least one failed statement's message carries the
-        engine's own "this transaction can be retried" marker — the write-write
-        race between two genuinely concurrent transactions on the same row,
-        which resolves cleanly on retry. Every other rejection (e.g. a
-        domain/``ASSERT`` violation) never carries that marker and is never
-        retried.
-        """
-        return any(
-            _RETRYABLE_CONFLICT_MARKER in str(statement_result.get("result", ""))
-            for statement_result in failed_statements
-        )
+                f"SurrealDB query rejected against {self._url!r}: {error}"
+            ) from error
 
     # -- record-id / row helpers ---------------------------------------------
 
@@ -546,9 +404,9 @@ class SurrealManifest:
             state: The new lifecycle state.
 
         Raises:
-            SurrealConnectionError: The server is unreachable, rejected auth,
-                or ``state`` violates the DDL's closed domain (see
-                :meth:`_query`).
+            SurrealConnectionError: The server is unreachable or rejected auth.
+            SurrealStoreError: ``state`` violates the DDL's closed domain — a
+                domain rejection, not a connection fault (see :meth:`_query`).
         """
         await self._query(
             f"UPDATE type::record('{FILE_TABLE}', $id) SET state = $state, updated_at = $now",
@@ -618,8 +476,9 @@ class SurrealManifest:
         never observes a half-applied update (the engine's own snapshot
         isolation) and a failure mid-swap (e.g. an out-of-domain ``state``)
         rolls the whole thing back, leaving the prior row intact. Runs through
-        :meth:`_exec_txn`, which — unlike a bare ``query()`` call — surfaces a
-        rolled-back transaction as a raised error (see the module docstring).
+        the shared :func:`~loremaster.store._txn.execute_transaction`, which —
+        unlike a bare ``query()`` call — surfaces a rolled-back transaction as a
+        raised error (see the module docstring).
 
         Args:
             tier: The tier the file belongs to.
@@ -656,7 +515,13 @@ class SurrealManifest:
             "chunk_ids = $chunk_ids, state = $state, updated_at = $updated_at;\n"
             "COMMIT;\n"
         )
-        await self._exec_txn(statement, params)
+        await execute_transaction(
+            statement,
+            params,
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+        )
 
     # -- meta key/value store --------------------------------------------
 
