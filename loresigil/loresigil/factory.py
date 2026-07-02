@@ -24,9 +24,13 @@ from pydantic import BaseModel, ConfigDict
 from loresigil.base import Embedder
 from loresigil.tei import DEFAULT_DIM as TEI_DEFAULT_DIM
 from loresigil.tei import DEFAULT_ENDPOINT, DEFAULT_MAX_INPUT_TOKENS, TEIEmbedder
-from loresigil.voyage_cloud import DEFAULT_API_URL, DEFAULT_MODEL, VoyageCloudEmbedder
+from loresigil.voyage_cloud import DEFAULT_API_URL as CLOUD_DEFAULT_API_URL
 from loresigil.voyage_cloud import DEFAULT_CONCURRENCY as CLOUD_DEFAULT_CONCURRENCY
+from loresigil.voyage_cloud import DEFAULT_MODEL as CLOUD_DEFAULT_MODEL
+from loresigil.voyage_cloud import VoyageCloudEmbedder
+from loresigil.voyage_context import DEFAULT_API_URL as CONTEXT_DEFAULT_API_URL
 from loresigil.voyage_context import DEFAULT_CONCURRENCY as CONTEXT_DEFAULT_CONCURRENCY
+from loresigil.voyage_context import DEFAULT_MODEL as CONTEXT_DEFAULT_MODEL
 from loresigil.voyage_context import VoyageContextEmbedder
 
 # Backend discriminators (kept as constants so dispatch and the schema agree).
@@ -60,12 +64,16 @@ class EmbeddingConfig(BaseModel):
     max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS
     max_batch_texts: int = 32
 
-    # Cloud fields (shared by voyage-cloud and voyage-context).
-    api_url: str = DEFAULT_API_URL
+    # Cloud fields (shared by voyage-cloud and voyage-context). None means
+    # "unset" — each backend arm resolves its OWN class default (the same
+    # pattern concurrency uses below); a shared literal default here would
+    # leak one backend's endpoint/model into the other (the odoo15_ctx
+    # deploy bug: contextualized payloads posted to the flat endpoint).
+    api_url: str | None = None
     output_dimension: int = TEI_DEFAULT_DIM
 
     # Shared fields.
-    model: str = DEFAULT_MODEL
+    model: str | None = None
     dim: int = TEI_DEFAULT_DIM
     concurrency: int | None = None
 
@@ -130,8 +138,8 @@ def make_embedder(config: EmbeddingConfig) -> Embedder:
         # the embedder's ``dim`` follows it (config.dim is not consulted).
         return VoyageContextEmbedder(
             api_key=api_key,
-            api_url=config.api_url,
-            model=config.model,
+            api_url=config.api_url or CONTEXT_DEFAULT_API_URL,
+            model=config.model or CONTEXT_DEFAULT_MODEL,
             output_dimension=config.output_dimension,
             concurrency=config.concurrency or CONTEXT_DEFAULT_CONCURRENCY,
         )
@@ -140,8 +148,8 @@ def make_embedder(config: EmbeddingConfig) -> Embedder:
     # Prompt name fields are TEI-only; the cloud call is left exactly as-is.
     return VoyageCloudEmbedder(
         api_key=api_key,
-        api_url=config.api_url,
-        model=config.model,
+        api_url=config.api_url or CLOUD_DEFAULT_API_URL,
+        model=config.model or CLOUD_DEFAULT_MODEL,
         dim=config.dim,
         output_dimension=config.output_dimension,
         concurrency=config.concurrency or CLOUD_DEFAULT_CONCURRENCY,

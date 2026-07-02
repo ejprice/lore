@@ -26,6 +26,8 @@ import pytest
 from loresigil.base import Embedder
 from loresigil.factory import EmbeddingConfig, MissingApiKeyError, make_embedder
 from loresigil.tei import TEIEmbedder
+from loresigil.voyage_cloud import DEFAULT_API_URL as CLOUD_DEFAULT_API_URL
+from loresigil.voyage_cloud import DEFAULT_MODEL as CLOUD_DEFAULT_MODEL
 from loresigil.voyage_cloud import VoyageCloudEmbedder
 
 TEI_KEY_ENV: str = "LORE_TEI_KEY_TEST"
@@ -112,3 +114,52 @@ class TestFactoryKeyResolution:
             make_embedder(config)
         # The error names the offending env var so the operator can fix it.
         assert "DEFINITELY_UNSET_KEY_ENV" in str(exc_info.value)
+
+
+class TestFactoryCloudEndpointResolution:
+    """No-regression: the cloud arm resolves ITS OWN default endpoint.
+
+    Companion to ``TestFactoryVoyageContextEndpointResolution`` (see
+    ``test_factory_voyage_context.py`` for the live bug): whatever mechanism
+    GREEN chooses to stop the shared api_url default leaking into the
+    voyage-context arm must not disturb the cloud arm's resolution.
+    """
+
+    def test_omitted_api_url_targets_cloud_endpoint(self) -> None:
+        config_fields = {key: value for key, value in CLOUD_CONFIG_FIELDS.items() if key != "api_url"}
+        embedder = make_embedder(EmbeddingConfig(**config_fields))
+        assert isinstance(embedder, VoyageCloudEmbedder)
+        # Effective URL is currently exposed only as the private ``_api_url``
+        # (see the voyage-context companion class note).
+        assert embedder._api_url == CLOUD_DEFAULT_API_URL
+
+    def test_explicit_api_url_override_wins(self) -> None:
+        override_url = "https://voyage-proxy.internal.example/v1/embeddings"
+        embedder = make_embedder(EmbeddingConfig(**{**CLOUD_CONFIG_FIELDS, "api_url": override_url}))
+        assert isinstance(embedder, VoyageCloudEmbedder)
+        assert embedder._api_url == override_url
+
+
+class TestFactoryCloudModelResolution:
+    """No-regression: the cloud arm resolves ITS OWN model default.
+
+    Companion to ``TestFactoryVoyageContextModelResolution`` — whatever
+    mechanism GREEN chooses for per-backend default resolution must leave the
+    cloud arm's model untouched.
+    """
+
+    def test_omitted_model_targets_cloud_default(self) -> None:
+        config_fields = {key: value for key, value in CLOUD_CONFIG_FIELDS.items() if key != "model"}
+        embedder = make_embedder(EmbeddingConfig(**config_fields))
+        assert isinstance(embedder, VoyageCloudEmbedder)
+        assert embedder._model == CLOUD_DEFAULT_MODEL
+        # Pin the constant to its documented value (the flat voyage-4 flagship)
+        # so the shared source of truth cannot drift silently.
+        assert CLOUD_DEFAULT_MODEL == "voyage-4-large"
+
+    def test_explicit_model_override_wins(self) -> None:
+        # Realistic override: the smaller sibling model of the same family.
+        override_model = "voyage-4"
+        embedder = make_embedder(EmbeddingConfig(**{**CLOUD_CONFIG_FIELDS, "model": override_model}))
+        assert isinstance(embedder, VoyageCloudEmbedder)
+        assert embedder._model == override_model
