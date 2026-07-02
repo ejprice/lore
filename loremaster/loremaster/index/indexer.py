@@ -32,11 +32,13 @@ points BEFORE purging the stale ones** for that ``(tier, file)`` (dedupe by
 deterministic point-id) so a concurrent reader never sees a gap; commit the
 manifest row transactionally (``state='indexed'``).
 
-**Resilience.** A permanently-failed embed (a ``None`` vector) OR a non-finite
-vector (an ``isfinite`` guard — one NaN poisons cosine/argmax across every
-query) marks the file ``failed``, stores **no** vectors for it, and lets the
-other files continue; the failure is surfaced in the returned
-:class:`IndexSummary`.
+**Resilience.** A chunker exception (any ``Exception`` the registry's chunker
+raises — a malformed-document ``ParseError``, a recursion-DoS ``ValueError``,
+etc.), a permanently-failed embed (a ``None`` vector), OR a non-finite vector
+(an ``isfinite`` guard — one NaN poisons cosine/argmax across every query)
+marks the file ``failed``, stores **no** vectors for it, and lets the other
+files continue — the file never reaches the embedder; the failure is surfaced
+in the returned :class:`IndexSummary`.
 
 **Selective rebuild.** Rebuilding one tier uses ``delete_by_tier`` so sibling
 tiers are untouched (the C1 primitive).
@@ -185,6 +187,16 @@ _STORE_FAILURE_ERRORS: tuple[type[BaseException], ...] = (
     httpx.HTTPError,
 )
 
+# The reason attached to ``index.file.failed`` when the CHUNK step (the
+# registry's ``dispatch_file``) raises. Deliberately broad at the catch site —
+# any ``Exception`` a chunker raises (a malformed-document ``ParseError``, a
+# recursion-DoS ``ValueError`` from ``lorescribe.xml_generic``'s depth gate,
+# or any other chunker-specific failure) isolates the ONE file rather than
+# propagating out of the walk / ``index_file`` and killing the whole sweep —
+# the same isolation the embed and store steps already have, extended to the
+# step that precedes them (a chunker-failed file never reaches the embedder).
+_FAILED_CHUNK_REASON = "chunk_failed"
+
 
 def _tier_version_meta_key(tier: str) -> str:
     """The manifest ``meta`` key holding ``tier``'s built version stamp."""
@@ -198,7 +210,8 @@ class IndexOutcome(BaseModel):
         tier: The tier the file belongs to.
         file_path: The tier-relative file path.
         state: ``indexed`` (freshly embedded), ``skipped`` (fast-path,
-            unchanged), or ``failed`` (an embed/finite-guard rejection).
+            unchanged), or ``failed`` (a chunker exception, an embed/finite-guard
+            rejection, or a persistent store error).
         n_chunks: The number of chunks the file produced (0 for an unclaimed
             extension).
     """
@@ -378,6 +391,12 @@ class Indexer:
         applies the cheaper mtime+size fast-path *before* reading the file, so an
         unchanged file is never even read.)
 
+        A chunker exception (ANY ``Exception`` the registry raises — a malformed
+        document's ``ParseError``, a recursion-DoS ``ValueError``, etc.) is
+        isolated to this ONE file: it is marked ``failed`` and this method
+        returns that outcome instead of propagating, so the watcher's live-event
+        drain never crashes on a single poisoned file.
+
         Args:
             tier: The tier the file belongs to.
             path: The tier-relative file path.
@@ -397,10 +416,20 @@ class Indexer:
                 tier=tier, file_path=path, state=STATE_SKIPPED, n_chunks=existing.n_chunks
             )
 
-        chunks = self._chunk(path, source)
+        size = len(source.encode("utf-8"))
+        try:
+            chunks = self._chunk(path, source)
+        except Exception:
+            # ANY chunker exception (ParseError, a recursion-DoS ValueError,
+            # etc.) isolates THIS file instead of propagating out of the
+            # watcher's live-event path — mirrors the embed/store isolation
+            # below, one step earlier.
+            return self._handle_chunk_failure(
+                tier=tier, path=path, content_hash=content_hash, mtime_ns=0, size=size,
+            )
         return await self._index_chunks(
             tier=tier, path=path, content_hash=content_hash,
-            chunks=chunks, mtime_ns=0, size=len(source.encode("utf-8")),
+            chunks=chunks, mtime_ns=0, size=size,
         )
 
     async def _index_chunks(
@@ -586,6 +615,48 @@ class Indexer:
             extra={"tier": tier, "file_path": path, "reason": reason},
         )
         return IndexOutcome(tier=tier, file_path=path, state=STATE_FAILED, n_chunks=0)
+
+    def _handle_chunk_failure(
+        self, *, tier: str, path: str, content_hash: str, mtime_ns: int, size: int
+    ) -> IndexOutcome:
+        """Isolate a chunker exception: mark ``(tier, path)`` ``failed`` and report it.
+
+        Called from the ``except Exception`` clause around each ``self._chunk``
+        call site (:meth:`index_file`, :meth:`_walk_and_index`) — the ONLY
+        broadly-caught exception class in this module, deliberately so: the
+        registry's chunkers raise a variety of types for a genuinely invalid
+        document (``xml.etree.ElementTree.ParseError`` for malformed/empty/
+        truncated XML, ``ValueError`` from ``lorescribe.xml_generic``'s
+        recursion-DoS depth gate, etc.), and every one of them must isolate the
+        ONE poisoned file rather than climb out of a sweep or a live watcher
+        event. The file never reaches the embedder. Delegates the actual
+        failure-commit to :meth:`_mark_file_failed` (the single failure-isolation
+        path shared by the chunk, embed, and store steps), first logging the
+        live traceback (``exc_info=True`` — valid here because this is always
+        called from within the triggering ``except`` block) for triage.
+
+        Args:
+            tier: The tier the file belongs to.
+            path: The tier-relative file path.
+            content_hash: The new content's hash (recorded so a later identical
+                re-index can still fast-path-skip a since-recovered file).
+            mtime_ns: The file mtime in nanoseconds (0 for a direct-source index).
+            size: The file size in bytes.
+
+        Returns:
+            A ``failed`` :class:`IndexOutcome` (``n_chunks=0`` — nothing stored).
+        """
+        prior = self._manifest.get(tier, path)
+        prior_ids = prior.chunk_ids if prior is not None else []
+        logger.warning(
+            "index.file.chunk_failed",
+            extra={"tier": tier, "file_path": path, "reason": _FAILED_CHUNK_REASON},
+            exc_info=True,
+        )
+        return self._mark_file_failed(
+            tier=tier, path=path, content_hash=content_hash, mtime_ns=mtime_ns,
+            size=size, prior=prior, prior_ids=prior_ids, reason=_FAILED_CHUNK_REASON,
+        )
 
     def _refresh_graph(self, tier: str, path: str, chunks: list[Chunk]) -> None:
         """Rebuild ``(tier, path)``'s Python graph slice from ``chunks`` (if wired).
@@ -845,11 +916,22 @@ class Indexer:
                     continue
                 source = abs_path.read_text(encoding="utf-8")
                 content_hash = sha512_hex(source)
-                chunks = self._chunk(rel, source)
-                outcome = await self._index_chunks(
-                    tier=root.tier, path=rel, content_hash=content_hash,
-                    chunks=chunks, mtime_ns=stat.st_mtime_ns, size=stat.st_size,
-                )
+                try:
+                    chunks = self._chunk(rel, source)
+                except Exception:
+                    # ANY chunker exception isolates THIS file (the walk-level
+                    # frames the production crash climbed) instead of killing
+                    # the whole sweep — mirrors the embed/store isolation one
+                    # step later in the pipeline.
+                    outcome = self._handle_chunk_failure(
+                        tier=root.tier, path=rel, content_hash=content_hash,
+                        mtime_ns=stat.st_mtime_ns, size=stat.st_size,
+                    )
+                else:
+                    outcome = await self._index_chunks(
+                        tier=root.tier, path=rel, content_hash=content_hash,
+                        chunks=chunks, mtime_ns=stat.st_mtime_ns, size=stat.st_size,
+                    )
                 outcomes.append(outcome)
                 # Notify the caller that this file has been indexed.  Called AFTER
                 # _index_chunks so the outcome is final before the callback fires.
