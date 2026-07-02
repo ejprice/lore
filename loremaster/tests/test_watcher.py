@@ -132,6 +132,11 @@ class ConcurrencyTrackingEmbedder(FakeEmbedder):
         self._in_flight = 0
         self.max_concurrent = 0
 
+    @property
+    def supports_contextualized(self) -> bool:
+        """This double instruments the FLAT embed path — opt out of grouped dispatch."""
+        return False
+
     async def embed_documents(self, texts: list[str]) -> Any:
         self._in_flight += 1
         self.max_concurrent = max(self.max_concurrent, self._in_flight)

@@ -96,6 +96,11 @@ class RecordingEmbedder(FakeEmbedder):
         super().__init__(**kwargs)
         self.embed_batches: list[list[str]] = []
 
+    @property
+    def supports_contextualized(self) -> bool:
+        """This double instruments the FLAT embed path — opt out of grouped dispatch."""
+        return False
+
     async def embed_documents(self, texts: list[str]) -> Any:
         self.embed_batches.append(list(texts))
         return await super().embed_documents(texts)
@@ -118,6 +123,11 @@ class NonFiniteEmbedder(FakeEmbedder):
     def __init__(self, *, nan_texts: set[str], **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._nan_texts = nan_texts
+
+    @property
+    def supports_contextualized(self) -> bool:
+        """This double instruments the FLAT embed path — opt out of grouped dispatch."""
+        return False
 
     async def embed_documents(self, texts: list[str]) -> Any:
         result = await super().embed_documents(texts)

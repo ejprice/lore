@@ -21,6 +21,7 @@ from loresigil.base import Embedder, EmbedResult
 from loresigil.batching import build_batches, run_in_windows
 from loresigil.resilient import RequestFn, ResilientEmbedder
 from loresigil.tokens import VoyageTokenCounter
+from loresigil.voyage_http import build_bearer_client
 
 DEFAULT_API_URL: str = "https://api.voyageai.com/v1/embeddings"
 DEFAULT_MODEL: str = "voyage-4-large"
@@ -33,7 +34,6 @@ DEFAULT_NAME_PREFIX: str = "voyage-cloud:"
 DEFAULT_MAX_INPUT_TOKENS: int = 32_000
 # Voyage's documented per-request batch ceiling.
 _MAX_BATCH_TEXTS: int = 128
-_REQUEST_TIMEOUT_S: float = 120.0
 _PROBE_SENTINEL: str = "probe"
 
 _INPUT_TYPE_DOCUMENT: str = "document"
@@ -74,13 +74,9 @@ class VoyageCloudEmbedder(Embedder):
         self._max_input_tokens = max_input_tokens
         self._name = f"{DEFAULT_NAME_PREFIX}{model}"
         self._token_counter = VoyageTokenCounter()
-        # The bearer token is baked into the client headers below; it is not
-        # retained on the instance (needless secret surface).
-        self._client = httpx.AsyncClient(
-            timeout=_REQUEST_TIMEOUT_S,
-            transport=transport,
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
+        # The bearer token is baked into the shared client builder; it is not
+        # retained on this instance (needless secret surface).
+        self._client = build_bearer_client(api_key, transport)
         # Document and query paths use the same resilience but a different
         # input_type, so each gets its own request function.
         self._document_resilient = ResilientEmbedder(

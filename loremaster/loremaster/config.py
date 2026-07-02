@@ -126,7 +126,7 @@ class EmbeddingConfig(_StrictModel):
             means no ``"prompt_name"`` key is sent — backward-compatible opt-in.
     """
 
-    backend: Literal["tei", "voyage-cloud"]
+    backend: Literal["tei", "voyage-cloud", "voyage-context"]
     base_url: str
     endpoint: str
     model: str

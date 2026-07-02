@@ -40,11 +40,12 @@ strict = true
 plugins = ["pydantic.mypy"]
 warn_unreachable = true
 disallow_any_unimported = true
-# ``loremaster/tests`` is on the path so the shared test-helper module
-# (``_extension_helpers``) — imported as a plain top-level module under
-# ``--import-mode=importlib`` (see loremaster/tests/conftest.py) — resolves
-# statically for mypy as well as at runtime.
-mypy_path = "lorescribe:loresigil:loremaster:loremaster/tests"
+# ``loremaster/tests`` and ``loresigil/tests`` are on the path so their shared
+# test-helper modules (``_extension_helpers``, ``_contextualized_fixtures``) —
+# imported as plain top-level modules under ``--import-mode=importlib`` (see
+# each member's ``tests/conftest.py``) — resolve statically for mypy as well
+# as at runtime.
+mypy_path = "lorescribe:loresigil:loremaster:loremaster/tests:loresigil/tests"
 explicit_package_bases = true
 namespace_packages = true
 #

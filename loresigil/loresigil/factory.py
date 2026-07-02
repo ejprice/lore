@@ -6,6 +6,8 @@ is therefore a config edit, not a code change.
 
 * ``backend == "tei"`` → :class:`~loresigil.tei.TEIEmbedder`.
 * ``backend == "voyage-cloud"`` → :class:`~loresigil.voyage_cloud.VoyageCloudEmbedder`.
+* ``backend == "voyage-context"`` → :class:`~loresigil.voyage_context.VoyageContextEmbedder`
+  (the contextualized, document-grouped endpoint).
 
 Secrets are env-refs: the bearer key is read from the environment variable named by
 ``api_key_env`` (never inlined in the config). A missing/empty key raises
@@ -24,10 +26,13 @@ from loresigil.tei import DEFAULT_DIM as TEI_DEFAULT_DIM
 from loresigil.tei import DEFAULT_ENDPOINT, DEFAULT_MAX_INPUT_TOKENS, TEIEmbedder
 from loresigil.voyage_cloud import DEFAULT_API_URL, DEFAULT_MODEL, VoyageCloudEmbedder
 from loresigil.voyage_cloud import DEFAULT_CONCURRENCY as CLOUD_DEFAULT_CONCURRENCY
+from loresigil.voyage_context import DEFAULT_CONCURRENCY as CONTEXT_DEFAULT_CONCURRENCY
+from loresigil.voyage_context import VoyageContextEmbedder
 
 # Backend discriminators (kept as constants so dispatch and the schema agree).
 BACKEND_TEI: str = "tei"
 BACKEND_VOYAGE_CLOUD: str = "voyage-cloud"
+BACKEND_VOYAGE_CONTEXT: str = "voyage-context"
 
 _TEI_DEFAULT_CONCURRENCY: int = 2
 
@@ -46,7 +51,7 @@ class EmbeddingConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    backend: Literal["tei", "voyage-cloud"]
+    backend: Literal["tei", "voyage-cloud", "voyage-context"]
     api_key_env: str
 
     # TEI fields (with verified defaults).
@@ -55,7 +60,7 @@ class EmbeddingConfig(BaseModel):
     max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS
     max_batch_texts: int = 32
 
-    # Cloud fields.
+    # Cloud fields (shared by voyage-cloud and voyage-context).
     api_url: str = DEFAULT_API_URL
     output_dimension: int = TEI_DEFAULT_DIM
 
@@ -118,6 +123,17 @@ def make_embedder(config: EmbeddingConfig) -> Embedder:
             concurrency=config.concurrency or _TEI_DEFAULT_CONCURRENCY,
             query_prompt_name=config.query_prompt_name,
             document_prompt_name=config.document_prompt_name,
+        )
+
+    if config.backend == BACKEND_VOYAGE_CONTEXT:
+        # output_dimension is the single Matryoshka knob for this backend —
+        # the embedder's ``dim`` follows it (config.dim is not consulted).
+        return VoyageContextEmbedder(
+            api_key=api_key,
+            api_url=config.api_url,
+            model=config.model,
+            output_dimension=config.output_dimension,
+            concurrency=config.concurrency or CONTEXT_DEFAULT_CONCURRENCY,
         )
 
     # The only remaining Literal value is voyage-cloud.

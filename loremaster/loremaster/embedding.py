@@ -35,9 +35,20 @@ def to_loresigil_config(config: EmbeddingConfig) -> LoresigilEmbeddingConfig:
     defaults). Secrets stay indirected: only ``api_key_env`` (the env-var name)
     crosses, never a key value.
 
+    Loremaster exposes a SINGLE ``dim`` knob regardless of backend (no
+    duplicate ``output_dimension`` key on ``lore.yaml``). The loresigil factory,
+    however, reads ``dim`` for the TEI arm but ``output_dimension`` for the
+    voyage-cloud/voyage-context arms (the Matryoshka knob) — so ``config.dim``
+    is routed onto BOTH loresigil fields here, backend-agnostically, rather
+    than only the one today's TEI-only deploys happen to need. Omitting
+    ``output_dimension`` would silently fall back to the loresigil factory's
+    own default and drop the configured dim for any non-TEI backend.
+
     The asymmetric prompt-name fields (``query_prompt_name`` /
     ``document_prompt_name``) are passed through verbatim, including ``None``,
-    so the no-prompt default path is preserved byte-identically.
+    so the no-prompt default path is preserved byte-identically. This layer
+    stays backend-agnostic: whether a given backend's constructor actually
+    consumes them is that backend's decision, not this translation seam's.
 
     Args:
         config: The validated loremaster embedding configuration.
@@ -51,6 +62,7 @@ def to_loresigil_config(config: EmbeddingConfig) -> LoresigilEmbeddingConfig:
         endpoint=config.endpoint,
         api_key_env=config.api_key_env,
         dim=config.dim,
+        output_dimension=config.dim,
         max_input_tokens=config.max_input_tokens,
         max_batch_texts=config.max_batch_texts,
         model=config.model,

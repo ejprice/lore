@@ -14,13 +14,44 @@ This module defines the two contracts every embedder in the lore project shares:
   satisfy. It is genuinely abstract: ``ABCMeta`` blocks instantiation of the
   base class or of any subclass that has not implemented the full method
   contract, so a half-finished embedder can never be wired into a pipeline.
+
+The contextualized (document-grouped) seam added in v0.4 is OPTIONAL:
+``supports_contextualized`` and :meth:`Embedder.embed_document_chunks` are
+non-abstract defaults, so a subclass implementing only the eight pre-existing
+abstract members remains a complete, instantiable embedder.
+
+The token-usage / cost-telemetry seam added in the v0.4 follow-up cycle is
+also OPTIONAL: :class:`EmbedUsage` and :attr:`EmbedResult.usage` (default
+``None``) let a backend surface provider-billed token counts without
+breaking any existing constructor call.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class EmbedUsage(BaseModel):
+    """Provider-billed token count for one embedding call.
+
+    A sub-model rather than a bare ``total_tokens: int | None`` field on
+    :class:`EmbedResult` because (a) it mirrors the wire's own ``usage``
+    object so future provider fields (e.g. a cost breakdown) extend this
+    model without another :class:`EmbedResult` migration, (b) validation
+    (non-negative, strict) lives on the value object itself, and (c)
+    ``usage: EmbedUsage | None`` reads unambiguously as "telemetry absent",
+    where a bare ``None`` int could be misread as zero.
+
+    Attributes:
+        total_tokens: The provider-reported token count billed for the call
+            (or portion of it) this result represents. Never negative.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_tokens: int = Field(ge=0)
 
 
 class EmbedResult(BaseModel):
@@ -31,12 +62,17 @@ class EmbedResult(BaseModel):
             embedding vector for that input, or ``None`` when the backend
             permanently failed to embed it.
         dim: Dimensionality of the (non-``None``) vectors in this result.
+        usage: Provider-billed token usage for the call that produced this
+            result, or ``None`` when the backend does not report usage at
+            all. ``None`` is distinct from ``EmbedUsage(total_tokens=0)``: a
+            reporting backend that billed nothing says the latter.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     vectors: list[list[float] | None]
     dim: int
+    usage: EmbedUsage | None = None
 
 
 class Embedder(ABC):
@@ -44,8 +80,12 @@ class Embedder(ABC):
 
     Concrete subclasses expose four read-only properties describing the model
     (``name``, ``dim``, ``max_input_tokens``, ``normalized``) and implement the
-    four behavioural methods below. Because every member is abstract, neither
-    this class nor an incomplete subclass can be instantiated.
+    four behavioural methods below. Because those eight members are abstract,
+    neither this class nor an incomplete subclass can be instantiated.
+
+    The contextualized seam (``supports_contextualized`` /
+    :meth:`embed_document_chunks`) is a non-abstract default — backends opt in
+    by overriding both; everyone else keeps working unchanged.
     """
 
     @property
@@ -68,6 +108,17 @@ class Embedder(ABC):
     def normalized(self) -> bool:
         """Whether returned vectors are L2-normalized to unit length."""
 
+    @property
+    def supports_contextualized(self) -> bool:
+        """Whether this embedder implements contextualized (document-grouped) embedding.
+
+        ``False`` by default. A backend that implements
+        :meth:`embed_document_chunks` overrides this to ``True`` so callers can
+        feature-detect the capability before calling. Declared by the class,
+        never toggled per instance (read-only property, no setter).
+        """
+        return False
+
     @abstractmethod
     async def embed_documents(self, texts: list[str]) -> EmbedResult:
         """Embed a batch of documents.
@@ -79,6 +130,27 @@ class Embedder(ABC):
             An :class:`EmbedResult` whose ``vectors`` are positionally aligned
             with ``texts`` (``None`` for any permanently-failed input).
         """
+
+    async def embed_document_chunks(self, docs: list[list[str]]) -> list[EmbedResult]:
+        """Embed each document's grouped chunks with document-level context.
+
+        Args:
+            docs: One entry per document, each the ordered chunk texts of that
+                document.
+
+        Returns:
+            One :class:`EmbedResult` per document, its ``vectors`` aligned 1:1
+            with that document's chunks (``None`` marks a permanently-failed
+            chunk — the same convention as :meth:`embed_documents`).
+
+        Raises:
+            NotImplementedError: Default for backends without the capability —
+                check ``supports_contextualized`` before calling.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement contextualized embedding; "
+            f"check supports_contextualized before calling embed_document_chunks"
+        )
 
     @abstractmethod
     async def embed_query(self, text: str) -> list[float]:

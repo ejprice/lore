@@ -20,6 +20,15 @@ shape — and gets the same resilience contract for free:
 
 The transport itself lives in the backend's ``request_fn``; the retry sleep is
 injectable so tests stay fast and deterministic.
+
+This module also exports three small pure helpers — ``is_retryable_status``,
+``compute_backoff_delay``, and ``quarantine_vector`` — factored out because
+:class:`~loresigil.voyage_context.VoyageContextEmbedder` hand-rolls its own
+per-document retry loop (see that module's docstring for why it cannot reuse
+:class:`ResilientEmbedder` wholesale) but must apply the EXACT same transient-
+status classification, backoff schedule, and vector quarantine. Sharing these
+three functions makes that "exact same" an enforced invariant rather than a
+comment promising two copies stay in sync.
 """
 
 from __future__ import annotations
@@ -56,6 +65,70 @@ HTTP_SERVER_ERROR_FLOOR: int = 500
 # When sub-splitting an over-length input, halve it by character count until each
 # piece's token count fits the cap. This factor bounds the recursion depth.
 _SUBSPLIT_FACTOR: int = 2
+
+
+def is_retryable_status(status: int) -> bool:
+    """Whether an HTTP status is transient and worth an exponential-backoff retry.
+
+    The one status-classification predicate shared verbatim by
+    :class:`ResilientEmbedder` and
+    :class:`~loresigil.voyage_context.VoyageContextEmbedder`'s hand-rolled
+    retry loop: 429 (rate limit) and any 5xx (server error) are retried;
+    every other status is permanent for that request.
+
+    Args:
+        status: The HTTP status code from a failed response.
+
+    Returns:
+        ``True`` if the caller should back off and retry the same request.
+    """
+    return status == HTTP_TOO_MANY_REQUESTS or status >= HTTP_SERVER_ERROR_FLOOR
+
+
+def compute_backoff_delay(attempt: int) -> float:
+    """Compute the exponentially growing, capped backoff delay for ``attempt``.
+
+    Shared by :class:`ResilientEmbedder` and
+    :class:`~loresigil.voyage_context.VoyageContextEmbedder` so "same backoff
+    schedule" (documented in both) is one formula, not two copies that could
+    silently drift apart.
+
+    Args:
+        attempt: The zero-based attempt index that just failed.
+
+    Returns:
+        The delay in seconds: ``BACKOFF_BASE_S * BACKOFF_GROWTH ** attempt``,
+        capped at ``BACKOFF_CAP_S``.
+    """
+    return min(BACKOFF_BASE_S * (BACKOFF_GROWTH**attempt), BACKOFF_CAP_S)
+
+
+def quarantine_vector(vector: list[float], dim: int | None) -> list[float] | None:
+    """Return ``vector`` only if it is the right shape and all-finite; else ``None``.
+
+    Shared by :class:`ResilientEmbedder` and
+    :class:`~loresigil.voyage_context.VoyageContextEmbedder`. Two ways an
+    untrusted vector poisons the corpus, both rejected here:
+
+    * Non-finite component (NaN/inf) — poisons cosine similarity and argmax
+      across every query.
+    * Wrong dimension — would be stored under a lying ``dim`` and silently break
+      (or mis-rank) the vector index; ``mean_pool`` would also corrupt on mixed
+      dims. Enforced only when an expected ``dim`` is supplied.
+
+    Args:
+        vector: The untrusted wire vector to validate.
+        dim: Expected embedding dimension, or ``None`` to skip the shape check
+            (finiteness is always checked).
+
+    Returns:
+        ``vector`` unchanged if it passes both checks, else ``None``.
+    """
+    if dim is not None and len(vector) != dim:
+        return None
+    if all(math.isfinite(component) for component in vector):
+        return vector
+    return None
 
 
 def split_to_fit(text: str, token_counter: VoyageTokenCounter, max_input_tokens: int) -> list[str]:
@@ -199,7 +272,7 @@ class ResilientEmbedder:
                         "embed.permanent_failure", extra={"status": status, "n_texts": n_texts}
                     )
                     return None
-                if status == HTTP_TOO_MANY_REQUESTS or status >= HTTP_SERVER_ERROR_FLOOR:
+                if is_retryable_status(status):
                     last_status = status
                     await self._backoff(attempt, status=status, n_texts=n_texts)
                     continue
@@ -279,19 +352,10 @@ class ResilientEmbedder:
     def _quarantine(self, vector: list[float]) -> list[float] | None:
         """Return ``vector`` only if it is the right shape and all-finite; else ``None``.
 
-        Two ways an untrusted vector poisons the corpus, both rejected here:
-
-        * Non-finite component (NaN/inf) — poisons cosine similarity and argmax
-          across every query.
-        * Wrong dimension — would be stored under a lying ``dim`` and silently break
-          (or mis-rank) the vector index; ``mean_pool`` would also corrupt on mixed
-          dims. Enforced only when an expected ``dim`` was configured.
+        Delegates to the module-level :func:`quarantine_vector` (shared with
+        :class:`~loresigil.voyage_context.VoyageContextEmbedder`).
         """
-        if self._dim is not None and len(vector) != self._dim:
-            return None
-        if all(math.isfinite(component) for component in vector):
-            return vector
-        return None
+        return quarantine_vector(vector, self._dim)
 
     async def _backoff(self, attempt: int, *, status: int | None, n_texts: int) -> None:
         """Log the retry, then sleep for an exponentially growing, capped delay.
@@ -303,7 +367,7 @@ class ResilientEmbedder:
                 ``None`` for a transport error (ConnectError/timeout).
             n_texts: The batch size — a count only, never the texts themselves.
         """
-        delay = min(BACKOFF_BASE_S * (BACKOFF_GROWTH**attempt), BACKOFF_CAP_S)
+        delay = compute_backoff_delay(attempt)
         logger.warning(
             "embed.retry.backoff",
             extra={"status": status, "attempt": attempt, "delay_s": delay, "n_texts": n_texts},

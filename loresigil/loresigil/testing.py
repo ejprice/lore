@@ -18,6 +18,10 @@ It satisfies the full :class:`~loresigil.base.Embedder` contract:
 * Token counting uses a cheap, dependency-light ``len // 4`` heuristic by default
   (so the double stays fast and import-light); pass ``use_exact_tokenizer=True`` to
   delegate to the exact :class:`~loresigil.tokens.VoyageTokenCounter`.
+* Usage is deterministic and ALWAYS reported (never ``None``): the offline fake
+  can measure exactly what it "billed" via its own public :meth:`count_tokens`,
+  so it always does — a fail_inputs text (or a would-be quarantined vector in a
+  real backend) still counts toward the bill, matching "billed" != "succeeded".
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ import math
 import struct
 from collections.abc import Set
 
-from loresigil.base import Embedder, EmbedResult
+from loresigil.base import Embedder, EmbedResult, EmbedUsage
 from loresigil.tokens import VoyageTokenCounter
 
 # Default model parameters mirror the small-model shape used across the project.
@@ -41,6 +45,11 @@ _CHARS_PER_TOKEN: int = 4
 
 # Number of bytes consumed from the hash digest per vector component (float64).
 _BYTES_PER_COMPONENT: int = 8
+
+# Delimiter folded into the hash input for a contextualized chunk (doc chunks
+# joined + chunk index + chunk text). A control character is vanishingly
+# unlikely to appear in real prose, so it cannot collide with chunk content.
+_DOC_CONTEXT_SEPARATOR: str = "\x00"
 
 
 class FakeEmbedder(Embedder):
@@ -63,7 +72,8 @@ class FakeEmbedder(Embedder):
             max_input_tokens: Reported hard per-input token cap.
             normalized: Whether produced vectors are L2-normalized to unit length.
             fail_inputs: Texts that should come back as ``None`` (permanent
-                failure) from :meth:`embed_documents`.
+                failure) from :meth:`embed_documents` and, per chunk, from
+                :meth:`embed_document_chunks`.
             probe_fails: When ``True``, :meth:`probe` raises to simulate an
                 unreachable endpoint.
             name: Reported model name.
@@ -142,12 +152,61 @@ class FakeEmbedder(Embedder):
                 components = [value / norm for value in components]
         return components
 
+    def _usage_for(self, texts: list[str]) -> EmbedUsage:
+        """Deterministic bill for ``texts``: the sum of :meth:`count_tokens`.
+
+        Shared by the flat and grouped paths so both report against the SAME
+        public, recomputable source of truth — a downstream cost test can
+        recompute this exactly via ``embedder.count_tokens``. A
+        ``fail_inputs`` text (flat path) still counts: "billed" != "succeeded".
+        """
+        return EmbedUsage(total_tokens=sum(self.count_tokens(texts)))
+
     async def embed_documents(self, texts: list[str]) -> EmbedResult:
         """Embed a batch, returning a result positionally aligned with ``texts``."""
         vectors: list[list[float] | None] = [
             None if text in self._fail_inputs else self._vector_for(text) for text in texts
         ]
-        return EmbedResult(vectors=vectors, dim=self._dim)
+        return EmbedResult(vectors=vectors, dim=self._dim, usage=self._usage_for(texts))
+
+    @property
+    def supports_contextualized(self) -> bool:
+        """The fake advertises the contextualized (document-grouped) seam."""
+        return True
+
+    async def embed_document_chunks(self, docs: list[list[str]]) -> list[EmbedResult]:
+        """Embed each doc's grouped chunks with deterministic context sensitivity.
+
+        A chunk's vector depends on its SURROUNDING document (different doc ->
+        different vector; in-doc differs from flat ``embed_documents``), while
+        chunks stay individually distinguishable. ``fail_inputs`` applies per
+        chunk: a failing chunk is ``None`` at its slot, siblings unaffected.
+
+        Args:
+            docs: One entry per document, each the ordered chunk texts.
+
+        Returns:
+            One input-aligned :class:`EmbedResult` per doc; each doc's ``usage``
+            is the exact bill for just that doc's chunks (offline, the fake CAN
+            measure per doc, so it always does).
+        """
+        results: list[EmbedResult] = []
+        for chunks in docs:
+            # The context key folds in every chunk of the surrounding
+            # document, so the SAME chunk text embedded inside two different
+            # documents (differing elsewhere) yields two different vectors —
+            # the observable proof that grouping happened.
+            context_key = _DOC_CONTEXT_SEPARATOR.join(chunks)
+            vectors: list[list[float] | None] = [
+                None
+                if chunk in self._fail_inputs
+                else self._vector_for(
+                    f"{context_key}{_DOC_CONTEXT_SEPARATOR}{index}{_DOC_CONTEXT_SEPARATOR}{chunk}"
+                )
+                for index, chunk in enumerate(chunks)
+            ]
+            results.append(EmbedResult(vectors=vectors, dim=self._dim, usage=self._usage_for(chunks)))
+        return results
 
     async def embed_query(self, text: str) -> list[float]:
         """Embed a single query string into one deterministic vector."""

@@ -84,6 +84,11 @@ class RecordingEmbedder(FakeEmbedder):
         super().__init__(**kwargs)
         self.embed_batches: list[list[str]] = []
 
+    @property
+    def supports_contextualized(self) -> bool:
+        """This double instruments the FLAT embed path — opt out of grouped dispatch."""
+        return False
+
     async def embed_documents(self, texts: list[str]) -> Any:
         self.embed_batches.append(list(texts))
         return await super().embed_documents(texts)

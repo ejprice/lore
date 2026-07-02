@@ -67,7 +67,7 @@ from loremaster.index.manifest import (
     Manifest,
 )
 from loremaster.index.paths import is_included, walked_dirs
-from loremaster.index.records import chunk_to_record, sha512_hex
+from loremaster.index.records import Record, chunk_to_record, sha512_hex
 from loremaster.index.schema import (
     SCHEMA_FINGERPRINT_META_KEY,
     SCHEMA_REBUILD_STATUS_META_KEY,
@@ -78,7 +78,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from lorescribe.registry import ChunkerRegistry
-    from loresigil.base import Embedder
+    from loresigil.base import Embedder, EmbedResult
 
     from loremaster.extension import SourceProvider
     from loremaster.graph import CodeGraph
@@ -417,12 +417,17 @@ class Indexer:
 
         An unclaimed file (no chunks) is committed as a zero-chunk ``indexed``
         row (so a directory walk never re-reads it) with no embed. Otherwise the
-        chunk texts are embedded; if ANY vector is missing (``None`` —
-        permanent failure) or non-finite (the ``isfinite`` guard), the whole
-        file is marked ``failed`` and NO vectors are stored — never a partial or
-        poisoned set. On success the new points are upserted, THEN the stale
-        point ids (the prior row's ids no longer produced) are purged, then the
-        manifest row is replaced transactionally as ``indexed``.
+        chunk texts are embedded via :meth:`_embed_records`, which feature-detects
+        ``self._embedder.supports_contextualized`` to pick the call site: a
+        contextualized-capable embedder gets the WHOLE file's chunks as one
+        grouped document (``embed_document_chunks``); every other embedder keeps
+        the flat ``embed_documents`` call, byte-identical to before. If ANY
+        vector from either path is missing (``None`` — permanent failure) or
+        non-finite (the ``isfinite`` guard), the whole file is marked ``failed``
+        and NO vectors are stored — never a partial or poisoned set. On success
+        the new points are upserted, THEN the stale point ids (the prior row's
+        ids no longer produced) are purged, then the manifest row is replaced
+        transactionally as ``indexed``.
         """
         started_ns = time.monotonic_ns()
         records = [
@@ -440,10 +445,9 @@ class Indexer:
         prior = self._manifest.get(tier, path)
         prior_ids = prior.chunk_ids if prior is not None else []
 
+        usage_tokens: int | None = None
         if records:
-            result = await self._embedder.embed_documents(
-                [record.embedding_text for record in records]
-            )
+            result = await self._embed_records(records)
             vectors = result.vectors
             if not self._all_vectors_usable(vectors):
                 # Embedder failure / non-finite: mark failed, store NOTHING new,
@@ -453,6 +457,7 @@ class Indexer:
                     size=size, prior=prior, prior_ids=prior_ids,
                     reason=_FAILED_EMBED_REASON,
                 )
+            usage_tokens = result.usage.total_tokens if result.usage is not None else None
 
         # The Qdrant store ops (upsert NEW, then purge stale). Each already retries
         # a TRANSIENT failure internally (Layer 1); if one STILL fails for THIS
@@ -505,11 +510,36 @@ class Indexer:
             extra={
                 "tier": tier, "file_path": path, "n_chunks": len(records),
                 "state": STATE_INDEXED, "duration_ms": duration_ms,
+                "usage_tokens": usage_tokens,
             },
         )
         return IndexOutcome(
             tier=tier, file_path=path, state=STATE_INDEXED, n_chunks=len(records)
         )
+
+    async def _embed_records(self, records: Sequence[Record]) -> EmbedResult:
+        """Embed ``records``' texts, dispatching on the embedder's grouping capability.
+
+        A ``supports_contextualized`` embedder (e.g. voyage-context) gets the
+        file's chunk texts as EXACTLY ONE document — one file == one document,
+        the doc-grouping semantics the contextualized backend needs to produce
+        context-sensitive vectors — via ``embed_document_chunks``, and this
+        returns that single doc's :class:`~loresigil.base.EmbedResult`. Every
+        other embedder uses the pre-existing flat ``embed_documents`` call,
+        unchanged (back-compat, byte-identical to before this dispatch existed).
+
+        Args:
+            records: The file's chunk records, in order.
+
+        Returns:
+            The :class:`~loresigil.base.EmbedResult` for this file's chunks,
+            positionally aligned with ``records`` either way.
+        """
+        texts = [record.embedding_text for record in records]
+        if self._embedder.supports_contextualized:
+            doc_results = await self._embedder.embed_document_chunks([texts])
+            return doc_results[0]
+        return await self._embedder.embed_documents(texts)
 
     def _mark_file_failed(
         self,

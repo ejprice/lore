@@ -251,10 +251,27 @@ async def store_factory() -> AsyncIterator[StoreFactory]:
         await client.close()
 
 
+class FlatFakeEmbedder(FakeEmbedder):
+    """A :class:`FakeEmbedder` pinned to the FLAT embed path.
+
+    These search tests' identity oracle (query text == chunk text => cosine 1.0)
+    holds only when index-time vectors are FLAT: a contextualized-capable
+    embedder's grouped vectors are deliberately context-sensitive, so the same
+    text embedded as a query (always flat) would no longer match. The grouped
+    flavor of this truth is pinned by test_indexer_contextualized.py's
+    ``test_grouped_path_stores_the_context_sensitive_vector_not_a_flat_one``.
+    """
+
+    @property
+    def supports_contextualized(self) -> bool:
+        """This double instruments the FLAT embed path — opt out of grouped dispatch."""
+        return False
+
+
 @pytest.fixture()
 def embedder() -> FakeEmbedder:
-    """The shipped deterministic embedder at the production dim."""
-    return FakeEmbedder(dim=_DIM)
+    """The shipped deterministic embedder at the production dim (flat-path pinned)."""
+    return FlatFakeEmbedder(dim=_DIM)
 
 
 @pytest.fixture()
