@@ -1638,8 +1638,12 @@ async def build_app_context(
        store, the search pipeline, and the tier-aware read tools.
     3. Run the extension ``on_startup`` hooks — UNWINDING on partial failure (fix
        A): a failing hook aborts the build after tearing the started hooks down.
-    4. When ``start_tasks``: start the live watcher and create the periodic
-       reconcile asyncio task.
+    4. When ``start_tasks``: run the store-divergence heal + the initial delta
+       sweep unconditionally (the corpus is always indexed at startup), then —
+       ONLY when ``config.watcher.enabled`` is also ``True`` — start the live
+       watcher and create the periodic reconcile asyncio task. A ``watcher:
+       {enabled: false}`` corpus is thus indexed once at startup but never
+       live-watched afterward (no inotify observer, no periodic reconcile).
 
     Args:
         server: The composed :class:`LoreServer` (config + extensions).
@@ -1648,7 +1652,9 @@ async def build_app_context(
         manifest_path: SQLite manifest path.
         graph_path: Kùzu code-graph path.
         snapshot_root: Static-tier snapshot root (also the read-file static base).
-        start_tasks: When ``True``, start the watcher + periodic reconcile task.
+        start_tasks: When ``True``, run the initial sweep and — if
+            ``config.watcher.enabled`` — start the watcher + periodic reconcile
+            task.
 
     Returns:
         The fully-wired :class:`AppContext`.
@@ -1808,12 +1814,21 @@ async def build_app_context(
         app_context._extension_ctx = extension_ctx
 
         # 4a) Background tasks (watcher + INITIAL reconcile + periodic reconcile).
-        # ``start_tasks`` gates ONLY the periodic watcher loop + the initial
-        # delta-reconcile sweep (the schema-rebuild decision below is independent).
+        # ``start_tasks`` gates the whole startup-tasks path (the test seam this
+        # parameter exists for — many tests build with ``start_tasks=False`` to
+        # skip ALL of this and drive the manifest/store directly). WITHIN that
+        # path, ``config.watcher.enabled`` additionally gates ONLY the live
+        # inotify watcher (its observer thread + drain worker) and the periodic
+        # reconcile task it schedules below — NOT the initial sweep. A
+        # ``watcher: {enabled: false}`` corpus is "static, non-live-watched": it
+        # must still be indexed at startup (the divergence heal + initial delta
+        # sweep run unconditionally, just below), it just never live-updates
+        # afterward (the schema-rebuild decision is independent of both).
         if start_tasks:
-            await watcher.start()
-            app_context.watcher_started = True
-            logger.info("startup.watcher.started")
+            if config.watcher.enabled:
+                await watcher.start()
+                app_context.watcher_started = True
+                logger.info("startup.watcher.started")
             # STORE-DIVERGENCE RECONCILE (idempotent startup, FP-02/03/04/10): heal
             # a corpus whose LIVE Qdrant point count or graph row count diverged from
             # the manifest BEFORE the initial sweep declares the index live. A wiped/
@@ -1871,9 +1886,10 @@ async def build_app_context(
             _stamp_fingerprint_after_fresh_initial_sweep(
                 manifest=manifest, config=config, index_was_empty=index_was_empty
             )
-            app_context.reconcile_task = asyncio.get_running_loop().create_task(
-                _periodic_reconcile(watcher, config.watcher.reconcile_interval_s)
-            )
+            if config.watcher.enabled:
+                app_context.reconcile_task = asyncio.get_running_loop().create_task(
+                    _periodic_reconcile(watcher, config.watcher.reconcile_interval_s)
+                )
 
         # 4b) Embedding-schema rebuild decision (runs REGARDLESS of start_tasks).
         # If the stored fingerprint is absent or differs from the current config's

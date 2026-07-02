@@ -177,7 +177,13 @@ def _slug() -> str:
     return f"test_{uuid.uuid4().hex}"
 
 
-def _config(slug: str, live_path: Path, *, auth: dict[str, Any] | None = None) -> LoreConfig:
+def _config(
+    slug: str,
+    live_path: Path,
+    *,
+    auth: dict[str, Any] | None = None,
+    watcher_enabled: bool = True,
+) -> LoreConfig:
     payload: dict[str, Any] = {
         "schema_version": 1,
         "project": {"slug": slug, "root": "."},
@@ -204,7 +210,7 @@ def _config(slug: str, live_path: Path, *, auth: dict[str, Any] | None = None) -
         "exclude_globs": [],
         "chunkers": {".py": {"chunker": "python_ast"}},
         "watcher": {
-            "enabled": True,
+            "enabled": watcher_enabled,
             "observer": "inotify",
             "debounce_ms": 1500,
             "reconcile_interval_s": 600,
@@ -631,6 +637,86 @@ class TestAppContextLifespan:
             )
         # The started watcher was torn down on the abort (no orphaned thread).
         assert stopped == [True], "an aborted startup must stop a watcher it had started"
+
+    async def test_watcher_disabled_skips_live_watcher_but_still_runs_initial_sweep(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Task #13: ``watcher.enabled: false`` means "no live inotify watcher, no
+        # periodic reconcile timer" for a STATIC, non-live-watched corpus — but the
+        # corpus must still be indexed by the unconditional initial startup sweep
+        # (you still want it indexed; you just don't want live re-indexing).
+        # Spy on LiveWatcher.start to prove it is never invoked, while asserting
+        # the initial sweep DID index the on-disk file.
+        import loremaster.index.watcher as watcher_module
+
+        started: list[bool] = []
+        original_start = watcher_module.LiveWatcher.start
+
+        async def _tracked_start(self: Any) -> None:
+            started.append(True)
+            await original_start(self)
+
+        monkeypatch.setattr(watcher_module.LiveWatcher, "start", _tracked_start)
+
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "static_corpus.py").write_text(
+            "def indexed_while_watcher_disabled():\n    return 1\n", encoding="utf-8"
+        )
+        config = _config(slug, live, watcher_enabled=False)
+        ctx = await _make_context(
+            config=config, client=qdrant, tmp_path=tmp_path, start_tasks=True
+        )
+        try:
+            assert started == [], "watcher.enabled=False must not start the live watcher"
+            assert ctx.watcher_started is False
+            assert ctx.reconcile_task is None, (
+                "watcher.enabled=False must not spawn the periodic reconcile task"
+            )
+            # But the initial sweep still ran: the on-disk file is indexed + resolvable.
+            status = await ctx.index_status()
+            assert status.files_indexed >= 1, (
+                "watcher.enabled=False must not skip the initial startup sweep"
+            )
+            symbol = await ctx.get_symbol("indexed_while_watcher_disabled")
+            assert symbol.file_path == "pkg/static_corpus.py"
+        finally:
+            await ctx.aclose()
+
+    async def test_watcher_enabled_true_still_starts_watcher_and_periodic_task(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The flip side of the pin above: ``watcher.enabled: true`` (the default)
+        # is unchanged behaviour — the live watcher + periodic reconcile task ARE
+        # started. Spies on LiveWatcher.start to confirm it IS invoked (not just
+        # that watcher_started is set), so this fails the same way the disabled
+        # test would if the gate were inverted.
+        import loremaster.index.watcher as watcher_module
+
+        started: list[bool] = []
+        original_start = watcher_module.LiveWatcher.start
+
+        async def _tracked_start(self: Any) -> None:
+            started.append(True)
+            await original_start(self)
+
+        monkeypatch.setattr(watcher_module.LiveWatcher, "start", _tracked_start)
+
+        slug = _slug()
+        live = tmp_path / "live"
+        live.mkdir()
+        config = _config(slug, live, watcher_enabled=True)
+        ctx = await _make_context(
+            config=config, client=qdrant, tmp_path=tmp_path, start_tasks=True
+        )
+        try:
+            assert started == [True], "watcher.enabled=True must start the live watcher"
+            assert ctx.watcher_started is True
+            assert ctx.reconcile_task is not None
+            assert not ctx.reconcile_task.done()
+        finally:
+            await ctx.aclose()
 
 
 # --------------------------------------------------------------------------- #
