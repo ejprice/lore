@@ -37,10 +37,19 @@ Behavioural conventions are inherited from the existing loresigil embedders
   ``asyncio.sleep`` — the exact seam convention of ``ResilientEmbedder``) and
   follows the shared ``compute_backoff_delay`` ladder; a failed FINAL attempt
   never pays a parting sleep (sleeping is only a bridge BETWEEN attempts).
-* A doc whose total tokens exceed the model's documented 32k context window is
-  a loud per-doc failure (all-``None`` chunks) — NEVER silent truncation and
-  NEVER a silent split into multiple context windows (splitting would silently
-  change what "context" each chunk was embedded with).
+* A doc whose chunk-group total exceeds the 32k window is split into
+  OVERLAPPING sub-window requests (OPERATOR DECISION 2026-07-02, superseding
+  the original fail-loud pin; live driver: odoo/fields.py-scale files, 4128
+  lines). Each chunk's canonical vector comes from exactly ONE window — one
+  where it has bilateral context unless it is a file-edge chunk; boundary
+  chunks also travel in the adjacent window as context-only padding whose
+  returned vectors are DISCARDED. Every request stays under the window
+  budget; nothing is ever silently truncated; a normal-size doc's behaviour
+  is byte-identical to before (single request, no windowing). Per-doc results
+  carry ``windowed=True`` provenance so the indexer/render layer can mark
+  ``(windowed context)`` rather than presenting partial context as whole-file
+  context. Exact window packing (greedy vs balanced) is implementation
+  freedom — only these observables are pinned.
 
 Explicitly SCOPED OUT of this contract (flagged for operator review):
 
@@ -70,7 +79,7 @@ from typing import Any
 import httpx
 import pytest
 from _contextualized_fixtures import DOC_POLICY, DOC_RUNBOOK, DOC_SINGLE
-from loresigil.base import Embedder, EmbedResult
+from loresigil.base import Embedder, EmbedResult, EmbedUsage
 from loresigil.resilient import BACKOFF_CAP_S, SleepFn, compute_backoff_delay
 from loresigil.tokens import VoyageTokenCounter
 from loresigil.voyage_context import (
@@ -109,8 +118,8 @@ FLAT_TEXTS: list[str] = [DOC_POLICY[0], DOC_RUNBOOK[1], DOC_SINGLE[0]]
 OVERSIZE_SENTENCE: str = (
     "Chargeback disputes must be filed within sixty days of the statement closing date. "
 )
-_OVERSIZE_REPEATS_PER_CHUNK: int = 500
-_OVERSIZE_CHUNK_COUNT: int = 6
+_WINDOWED_REPEATS_PER_CHUNK: int = 250
+_WINDOWED_CHUNK_COUNT: int = 12
 
 # Norm tolerance for the independent unit-norm sanity bound (math.hypot).
 NORM_TOLERANCE: float = 1e-6
@@ -668,46 +677,229 @@ class TestVoyageContextProbe:
             await embedder.probe()
 
 
-class TestVoyageContextOversizeDoc:
-    """A doc over the 32k context window fails loud per-doc — never truncated.
+def _window_vector(chunk: str, window_chunks: list[str], dim: int) -> list[float]:
+    """Deterministic vector for ``chunk`` AS EMBEDDED WITHIN ``window_chunks``.
 
-    The codebase convention (``batching.py`` docstring): clamping over-length
-    input is never batching's job, and silent truncation is forbidden. A doc
-    that cannot fit ONE context window cannot be contextualized as requested,
-    so its chunks degrade to the aligned all-``None`` permanent-failure
-    convention while sibling docs are unaffected. Silent window-splitting is
-    deliberately NOT accepted either — it would change what "context" each
-    chunk was embedded with. (If the operator prefers split-and-stitch, amend
-    at contract review.)
+    Contextualized embeddings depend on the whole window — the realistic mock
+    must too, otherwise a chunk's vector would be identical in every window
+    and the tests could not observe WHICH window a canonical vector came from.
+    """
+    window_digest = hashlib.sha256("\x1e".join(window_chunks).encode()).hexdigest()
+    return _unit_vector_for_text(f"{chunk}\x1f{window_digest}", dim)
+
+
+def _build_over_window_chunks(token_counter: VoyageTokenCounter) -> list[str]:
+    """Distinct, realistic source-file sections totalling > the 32k window.
+
+    Sized with the PRODUCTION tokenizer and self-checked: the doc must exceed
+    the window (forcing >= 2 sub-windows) while each chunk stays small enough
+    to sit interior to a window with padding on both sides.
+    """
+    chunks = [
+        f"Section {index:02d}: ORM field descriptor registry, part {index}. "
+        + OVERSIZE_SENTENCE * _WINDOWED_REPEATS_PER_CHUNK
+        for index in range(_WINDOWED_CHUNK_COUNT)
+    ]
+    counts = token_counter.count_tokens(chunks)
+    assert sum(counts) > DOC_TOKEN_WINDOW, "fixture must exceed the 32k window"
+    assert max(counts) <= DOC_TOKEN_WINDOW // 4, "chunks must fit interior to a window"
+    return chunks
+
+
+class _WindowingTransport:
+    """Context-sensitive mock provider enforcing the real per-doc window budget.
+
+    * Serves ``_window_vector`` per chunk (a vector depends on its whole
+      window) so canonical-window identification is observable.
+    * 400s any request carrying a doc over the token window (real API
+      behaviour — silent truncation or over-budget windows cannot pass).
+    * Optionally 400s any window containing an exact poison chunk, to fail
+      ONE window while its neighbours stay healthy.
+    * Records every doc entry seen/served and every served bill.
     """
 
-    async def test_doc_over_token_window_degrades_loud_not_truncated(self) -> None:
-        token_counter = VoyageTokenCounter()
-        oversize_chunk = OVERSIZE_SENTENCE * _OVERSIZE_REPEATS_PER_CHUNK
-        oversize_doc = [oversize_chunk] * _OVERSIZE_CHUNK_COUNT
-        total_tokens = sum(token_counter.count_tokens(oversize_doc))
-        # Fixture self-check with the PRODUCTION tokenizer (same source of
-        # truth the embedder uses) — the doc genuinely exceeds the window.
-        assert total_tokens > DOC_TOKEN_WINDOW
+    def __init__(
+        self,
+        token_counter: VoyageTokenCounter,
+        fail_windows_containing: str | None = None,
+    ) -> None:
+        self._token_counter = token_counter
+        self._fail_marker = fail_windows_containing
+        self.bodies: list[dict[str, Any]] = []
+        self.all_request_docs: list[list[str]] = []  # every doc entry SENT (incl. 400s)
+        self.window_docs: list[list[str]] = []  # every doc entry served 200
+        self.served_totals: list[int] = []
 
+    def transport(self) -> httpx.MockTransport:
         def handler(request: httpx.Request) -> httpx.Response:
             body: dict[str, Any] = json.loads(request.content.decode())
+            self.bodies.append(body)
             inputs: list[list[str]] = body["inputs"]
+            self.all_request_docs.extend(inputs)
             for doc in inputs:
-                if sum(token_counter.count_tokens(doc)) > DOC_TOKEN_WINDOW:
-                    # Emulates the real API: an over-window doc is a 400 —
-                    # so if the client silently TRUNCATED the doc to fit, the
-                    # mock would answer 200 with vectors and the all-None
-                    # assertion below would catch the truncation.
+                if sum(self._token_counter.count_tokens(doc)) > DOC_TOKEN_WINDOW:
                     return httpx.Response(400, json={"detail": "context window exceeded"})
-            return httpx.Response(200, json=_context_payload(inputs, CONTEXT_DIM))
+            if self._fail_marker is not None and any(
+                chunk == self._fail_marker for doc in inputs for chunk in doc
+            ):
+                return httpx.Response(400, json={"detail": "injected window failure"})
+            total = sum(_heuristic_tokens(chunk) for doc in inputs for chunk in doc)
+            data: list[dict[str, Any]] = [
+                {
+                    "index": doc_index,
+                    "data": [
+                        {
+                            "index": chunk_index,
+                            "embedding": _window_vector(chunk, doc, CONTEXT_DIM),
+                        }
+                        for chunk_index, chunk in enumerate(doc)
+                    ],
+                }
+                for doc_index, doc in enumerate(inputs)
+            ]
+            self.window_docs.extend(inputs)
+            self.served_totals.append(total)
+            return httpx.Response(200, json={"data": data, "usage": {"total_tokens": total}})
 
-        embedder = _make_embedder(httpx.MockTransport(handler))
-        results = await embedder.embed_document_chunks([oversize_doc, DOC_POLICY])
-        # The over-window doc: aligned all-None (loud per-doc failure).
-        assert results[0].vectors == [None] * _OVERSIZE_CHUNK_COUNT
-        # The sibling doc is untouched by its neighbour's size.
-        _assert_doc_result_matches(results[1], DOC_POLICY, CONTEXT_DIM)
+        return httpx.MockTransport(handler)
+
+
+def _find_canonical_window(
+    chunk: str, vector: list[float], window_docs: list[list[str]]
+) -> list[str]:
+    """Return the served window whose context explains ``vector`` for ``chunk``.
+
+    Fails the test if no served window explains the vector — i.e. the vector
+    was fabricated, misaligned, or synthesized outside any real request.
+    """
+    for window in window_docs:
+        if chunk in window and vector == _window_vector(chunk, window, CONTEXT_DIM):
+            return window
+    raise AssertionError(f"no served window explains the vector for chunk {chunk[:48]!r}")
+
+
+class TestVoyageContextWindowedOversizeDoc:
+    """OPERATOR AMENDMENT 2026-07-02: oversize docs split into OVERLAPPING windows.
+
+    Supersedes the retired fail-loud pin (all-``None``). In the operator's
+    words: "If we have to split, then we split, but let's use an algorithm
+    that preserves as much context as possible for the chunks we're embedding.
+    We can have overlap in the split document." Only observables are pinned —
+    the packing algorithm (greedy vs balanced) is implementation freedom.
+    """
+
+    async def test_oversize_doc_gets_aligned_vectors_via_overlapping_windows(self) -> None:
+        token_counter = VoyageTokenCounter()
+        oversize_doc = _build_over_window_chunks(token_counter)
+        recorder = _WindowingTransport(token_counter)
+        embedder = _make_embedder(recorder.transport())
+
+        results = await embedder.embed_document_chunks([oversize_doc])
+        vectors = results[0].vectors
+
+        # (a) 1:1 alignment: every chunk gets exactly one canonical vector.
+        assert len(vectors) == len(oversize_doc)
+        canonical_windows: list[list[str]] = []
+        for chunk, vector in zip(oversize_doc, vectors, strict=True):
+            assert vector is not None
+            canonical_windows.append(_find_canonical_window(chunk, vector, recorder.window_docs))
+
+        # (b) every request (even rejected ones) stayed under the budget.
+        for sent_doc in recorder.all_request_docs:
+            assert sum(token_counter.count_tokens(sent_doc)) <= DOC_TOKEN_WINDOW
+
+        # It really was windowed: >= 2 distinct sub-window requests.
+        assert len({tuple(window) for window in recorder.window_docs}) >= 2
+
+        # (c) overlap: some chunk text travelled in more than one window.
+        assert any(
+            sum(1 for window in recorder.window_docs if chunk in window) >= 2
+            for chunk in oversize_doc
+        )
+
+        # (d) maximal bilateral context: an interior FILE chunk is never
+        # canonical at a window edge — edge slots are context-padding whose
+        # vectors are discarded. Only the file's own first/last chunk may sit
+        # at a window edge.
+        last = len(oversize_doc) - 1
+        for position, (chunk, window) in enumerate(
+            zip(oversize_doc, canonical_windows, strict=True)
+        ):
+            if 0 < position < last:
+                index_in_window = window.index(chunk)
+                assert 0 < index_in_window < len(window) - 1, (
+                    f"chunk {position} is canonical at the edge of its window"
+                )
+
+        # (3) provenance: the split is visible to the indexer/render layer.
+        assert results[0].windowed is True
+
+    async def test_normal_size_doc_is_untouched_by_windowing(self) -> None:
+        # (e) byte-identical behaviour for docs within the window: ONE request,
+        # the doc verbatim, no padding copies, no windowed marker.
+        token_counter = VoyageTokenCounter()
+        recorder = _WindowingTransport(token_counter)
+        embedder = _make_embedder(recorder.transport())
+
+        results = await embedder.embed_document_chunks([DOC_RUNBOOK])
+
+        assert len(recorder.bodies) == 1
+        assert recorder.bodies[0]["inputs"] == [DOC_RUNBOOK]
+        for chunk, vector in zip(DOC_RUNBOOK, results[0].vectors, strict=True):
+            # The whole doc IS the window — context-sensitive oracle agrees.
+            assert vector == _window_vector(chunk, DOC_RUNBOOK, CONTEXT_DIM)
+        assert results[0].windowed is False
+
+    async def test_failed_window_nones_only_its_canonical_chunks(self) -> None:
+        token_counter = VoyageTokenCounter()
+        oversize_doc = _build_over_window_chunks(token_counter)
+        # Fail every window carrying the FILE-FIRST chunk: file-edge chunks
+        # appear in exactly one window (no left neighbour to pad into), so
+        # exactly the first window fails while its right neighbour is healthy.
+        recorder = _WindowingTransport(token_counter, fail_windows_containing=oversize_doc[0])
+        embedder = _make_embedder(recorder.transport())
+
+        results = await embedder.embed_document_chunks([oversize_doc])
+        vectors = results[0].vectors
+        assert len(vectors) == len(oversize_doc)
+
+        none_indices = [index for index, vector in enumerate(vectors) if vector is None]
+        # The failed window costs its canonical chunks…
+        assert none_indices, "the failed window's canonical chunks must be None"
+        # …which are a CONTIGUOUS PREFIX (windows span contiguous chunk runs
+        # and the failed window is the first)…
+        assert none_indices == list(range(len(none_indices)))
+        # …and its neighbours are NOT poisoned: the rest carry real vectors
+        # explained by healthy served windows.
+        assert len(none_indices) < len(oversize_doc)
+        for position in range(len(none_indices), len(oversize_doc)):
+            vector = vectors[position]
+            assert vector is not None
+            _find_canonical_window(oversize_doc[position], vector, recorder.window_docs)
+
+        # Context-padding copies do NOT rescue: the seam-adjacent canonical
+        # chunk of the failed window also travelled (as padding) in a healthy
+        # window — it must STILL be None, its padding vector discarded.
+        last_none_chunk = oversize_doc[none_indices[-1]]
+        healthy_chunk_texts = {chunk for window in recorder.window_docs for chunk in window}
+        assert last_none_chunk in healthy_chunk_texts
+        assert vectors[none_indices[-1]] is None
+
+        # A partially-failed split is STILL windowed provenance.
+        assert results[0].windowed is True
+
+    async def test_windowed_usage_conserves_every_window_bill(self) -> None:
+        # Conservation extends across windows: overlap chunks genuinely bill
+        # twice, and that honest measurement must all land in the doc's usage.
+        token_counter = VoyageTokenCounter()
+        oversize_doc = _build_over_window_chunks(token_counter)
+        recorder = _WindowingTransport(token_counter)
+        embedder = _make_embedder(recorder.transport())
+
+        results = await embedder.embed_document_chunks([oversize_doc])
+
+        assert len(recorder.served_totals) >= 2  # it really paid per window
+        assert results[0].usage == EmbedUsage(total_tokens=sum(recorder.served_totals))
 
 
 class TestVoyageContextTokenCounting:

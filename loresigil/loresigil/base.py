@@ -24,6 +24,15 @@ The token-usage / cost-telemetry seam added in the v0.4 follow-up cycle is
 also OPTIONAL: :class:`EmbedUsage` and :attr:`EmbedResult.usage` (default
 ``None``) let a backend surface provider-billed token counts without
 breaking any existing constructor call.
+
+The overlapping-window seam (2026-07-02, ``VoyageContextEmbedder``) is
+likewise OPTIONAL: :attr:`EmbedResult.windowed` (default ``False``) lets a
+contextualized backend mark a result whose chunks were embedded across
+multiple overlapping sub-window requests (an over-budget document split
+for the provider's per-document context window) rather than one single
+request — so a downstream renderer can surface "(windowed context)"
+provenance instead of silently presenting partial context as whole-file
+context. Every other backend/result keeps the default ``False`` unchanged.
 """
 
 from __future__ import annotations
@@ -66,6 +75,12 @@ class EmbedResult(BaseModel):
             result, or ``None`` when the backend does not report usage at
             all. ``None`` is distinct from ``EmbedUsage(total_tokens=0)``: a
             reporting backend that billed nothing says the latter.
+        windowed: ``True`` when this result's chunks were produced by
+            splitting an over-budget document into overlapping sub-window
+            requests rather than one single request (see
+            :class:`~loresigil.voyage_context.VoyageContextEmbedder`).
+            Defaults to ``False`` — the byte-identical, non-windowed
+            behaviour every other call site already expects.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -73,6 +88,7 @@ class EmbedResult(BaseModel):
     vectors: list[list[float] | None]
     dim: int
     usage: EmbedUsage | None = None
+    windowed: bool = False
 
 
 class Embedder(ABC):

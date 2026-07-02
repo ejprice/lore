@@ -20,8 +20,7 @@ Wire contract (S8-verified):
   source of truth for billed tokens (never re-derived from the client's own
   tokenizer — the provider's billing meter is not guaranteed to agree with it).
 * Degrade, never crash: per-doc failures come back as aligned all-``None``
-  results without poisoning sibling docs; a doc over the model's context
-  window is a loud per-doc failure, never a silent truncation or split.
+  results without poisoning sibling docs.
 
 The retry/backoff and finiteness-quarantine machinery is IMPORTED, not just
 conventionally mirrored, from :mod:`loresigil.resilient`
@@ -73,6 +72,39 @@ Spreading the abandoned share across the OTHER docs of the combined request
 instead would be equally conservation-correct but is not what this
 implementation does — folding it back onto the doc it was actually billed
 for keeps the accounting local to that doc's own resolution path.
+
+Overlapping-window seam (OPERATOR DECISION 2026-07-02, superseding the
+original fail-loud pin for a document whose chunks total more than the
+provider's per-document context window): such a document is NEVER sent
+as-is (it would only ever draw a 400), and it never enters the combined
+multi-doc fast path either (:meth:`_embed_docs_with_windowing` routes it out
+before any request for the call is built). It is instead split into
+OVERLAPPING sub-window requests by :meth:`_embed_windowed_doc`, each a
+contiguous run of whole chunks that stays under the budget. The split is two
+passes: :meth:`_build_doc_windows` first partitions the document into a
+disjoint CORE partition sized to half the window budget
+(:data:`_CORE_WINDOW_FRACTION`) via the same greedy packer flat batching
+uses (:func:`~loresigil.batching.build_batches`) — this gives every chunk
+exactly one CANONICAL (core) window. Second, :meth:`_pad_span` grows each
+core span with as much bilateral context as still fits under the FULL
+budget, ALTERNATING sides (rather than exhausting one side before the
+other) so an interior core span gets padding on both neighbours whenever
+there is any headroom at all — a one-sided pad would leave that span's far
+edge chunk canonical at its window's edge, which must never happen for a
+chunk that is not the document's own first/last chunk. Each window travels
+as its own single-document request; only its CANONICAL local range is ever
+read back into the result — the padding positions' returned vectors are
+context only and are always discarded, even when the window that served
+them succeeded (so a healthy neighbour window can never "rescue" a chunk
+whose own canonical window failed). A window that fails leaves exactly its
+canonical chunks ``None``; every other window is unaffected. Because the
+provider bills per REQUEST, an overlap chunk is genuinely billed once per
+window it travels in — the windowed result's usage is the exact, unadjusted
+sum of every successfully-parsed window's wire total, never de-duplicated.
+The result carries ``windowed=True`` so downstream layers can distinguish
+partial (windowed) context from a document's normal single-request result,
+which remains byte-identical to before (``windowed=False``, one request, no
+padding copies).
 """
 
 from __future__ import annotations
@@ -85,7 +117,7 @@ from typing import Any
 import httpx
 
 from loresigil.base import Embedder, EmbedResult, EmbedUsage
-from loresigil.batching import run_in_windows
+from loresigil.batching import build_batches, run_in_windows
 from loresigil.resilient import SleepFn, compute_backoff_delay, is_retryable_status, quarantine_vector
 from loresigil.tokens import VoyageTokenCounter
 from loresigil.voyage_http import build_bearer_client
@@ -99,7 +131,8 @@ DEFAULT_CONCURRENCY: int = 4
 DEFAULT_NAME_PREFIX: str = "voyage-context:"
 
 # voyage-context-4's documented per-DOCUMENT context window (tokens). A doc
-# whose chunks exceed it in total cannot be contextualized as requested.
+# whose chunks exceed it in total is split into overlapping sub-windows (see
+# the module docstring's "Overlapping-window seam" section).
 DEFAULT_MAX_INPUT_TOKENS: int = 32_000
 
 # Maximum attempts (initial + retries) for a transient (429/5xx/transport)
@@ -120,6 +153,14 @@ _ZERO_TOKENS: int = 0
 # (deterministic, if tiny) proportional share rather than dividing by zero.
 _MIN_USAGE_WEIGHT: int = 1
 
+# The fraction of the per-document token window reserved for a window's
+# CORE (canonical) span when splitting an over-budget document — the other
+# half is headroom left for bilateral context padding (see
+# :meth:`VoyageContextEmbedder._build_doc_windows`). Reserving only half
+# guarantees there is always some room to pad BOTH sides of an interior core
+# span, not just the side reached first.
+_CORE_WINDOW_FRACTION: float = 0.5
+
 
 @dataclass(frozen=True)
 class _ContextBatchResponse:
@@ -134,6 +175,26 @@ class _ContextBatchResponse:
 
     vectors: list[list[list[float]]]
     usage_total_tokens: int
+
+
+@dataclass(frozen=True)
+class _DocWindow:
+    """One overlapping sub-window of an over-budget document.
+
+    Attributes:
+        chunk_indices: Original document chunk positions covered by this
+            window, in window (ascending, contiguous) order — this list IS
+            the request body's single doc, positionally.
+        canonical_start: Index into ``chunk_indices`` where this window's
+            CANONICAL (core) chunks begin.
+        canonical_end: Exclusive end index into ``chunk_indices`` of the
+            canonical range; ``chunk_indices[canonical_start:canonical_end]``
+            are the original indices this window is authoritative for.
+    """
+
+    chunk_indices: list[int]
+    canonical_start: int
+    canonical_end: int
 
 
 class VoyageContextEmbedder(Embedder):
@@ -159,7 +220,7 @@ class VoyageContextEmbedder(Embedder):
             output_dimension: The single Matryoshka dimensionality knob —
                 sent in the request body, reflected by :attr:`dim`.
             concurrency: In-flight request pool size for the per-document
-                fallback fan-out.
+                fallback fan-out and the sub-window fan-out.
             transport: Optional httpx transport (offline ``MockTransport`` in
                 tests).
             sleep_fn: Awaitable sleep used for backoff; defaults to
@@ -190,7 +251,7 @@ class VoyageContextEmbedder(Embedder):
 
     @property
     def max_input_tokens(self) -> int:
-        """Per-DOCUMENT token window; an over-window doc fails loud per-doc."""
+        """Per-DOCUMENT token window; an over-window doc splits into sub-windows."""
         return DEFAULT_MAX_INPUT_TOKENS
 
     @property
@@ -213,7 +274,8 @@ class VoyageContextEmbedder(Embedder):
             One input-aligned :class:`EmbedResult` per doc; ``None`` marks a
             permanently-failed chunk. One doc's failure never poisons siblings.
             Each result's ``usage`` conserves the call's served-and-parsed
-            totals (see module docstring).
+            totals (see module docstring). ``windowed`` is ``True`` only for a
+            doc whose own chunk total exceeded :attr:`max_input_tokens`.
         """
         return await self._embed_docs(docs, _INPUT_TYPE_DOCUMENT)
 
@@ -278,7 +340,10 @@ class VoyageContextEmbedder(Embedder):
 
         Reads linearly as two passes: try everything together first (cheap,
         one request), then resolve whatever that pass could not settle one
-        document at a time (never poisoning a doc's siblings).
+        document at a time (never poisoning a doc's siblings). Any document
+        whose own chunk total exceeds :attr:`max_input_tokens` is routed out
+        to :meth:`_embed_docs_with_windowing` FIRST — it can never safely
+        join the combined-batch fast path, so it must never reach it.
 
         Args:
             docs: One entry per document, each the ordered chunk texts.
@@ -295,6 +360,12 @@ class VoyageContextEmbedder(Embedder):
         """
         if not docs:
             return []
+
+        oversize_indices = [
+            index for index, chunks in enumerate(docs) if self._doc_exceeds_window(chunks)
+        ]
+        if oversize_indices:
+            return await self._embed_docs_with_windowing(docs, input_type, oversize_indices)
 
         resolved_by_index: dict[int, EmbedResult] = {}
         abandoned_usage_by_index = await self._resolve_combined_batch(
@@ -315,6 +386,202 @@ class VoyageContextEmbedder(Embedder):
                 resolved_by_index[index] = result
 
         return [resolved_by_index[index] for index in range(len(docs))]
+
+    def _doc_exceeds_window(self, chunks: list[str]) -> bool:
+        """Whether ``chunks``' total token cost exceeds the per-document window."""
+        return sum(self.count_tokens(chunks)) > self.max_input_tokens
+
+    async def _embed_docs_with_windowing(
+        self, docs: list[list[str]], input_type: str, oversize_indices: list[int]
+    ) -> list[EmbedResult]:
+        """Resolve any over-window docs via sub-windows, everything else unchanged.
+
+        An over-window document can never safely join the combined-batch fast
+        path (it alone already exceeds the per-request budget, and mixing it
+        with siblings would only make the request larger) — so it is routed
+        entirely through :meth:`_embed_windowed_doc`, off the normal request
+        path, before any request for this call is ever sent. Every remaining
+        within-budget document re-enters :meth:`_embed_docs` — now guaranteed
+        oversize-free — so its behaviour (combined batch, per-doc fallback,
+        usage attribution) is byte-identical to the non-windowed path.
+
+        Args:
+            docs: One entry per document, each the ordered chunk texts.
+            input_type: ``"document"`` or ``"query"``, forwarded verbatim.
+            oversize_indices: Indices into ``docs`` whose own token total
+                exceeds :attr:`max_input_tokens`.
+
+        Returns:
+            One input-aligned :class:`EmbedResult` per doc, positionally
+            recombined from the windowed and normal resolutions.
+        """
+        oversize_set = set(oversize_indices)
+        normal_indices = [index for index in range(len(docs)) if index not in oversize_set]
+
+        async def resolve_oversize(index: int) -> EmbedResult:
+            return await self._embed_windowed_doc(docs[index], input_type)
+
+        windowed_results = await run_in_windows(
+            oversize_indices, resolve_oversize, concurrency=self._concurrency
+        )
+        resolved_by_index: dict[int, EmbedResult] = dict(
+            zip(oversize_indices, windowed_results, strict=True)
+        )
+
+        if normal_indices:
+            normal_results = await self._embed_docs(
+                [docs[index] for index in normal_indices], input_type
+            )
+            for local_index, original_index in enumerate(normal_indices):
+                resolved_by_index[original_index] = normal_results[local_index]
+
+        return [resolved_by_index[index] for index in range(len(docs))]
+
+    async def _embed_windowed_doc(self, chunks: list[str], input_type: str) -> EmbedResult:
+        """Resolve one over-budget document via overlapping sub-window requests.
+
+        See the module docstring's "Overlapping-window seam" section for the
+        full algorithm. Each :class:`_DocWindow` travels as its own
+        single-document request; only its CANONICAL local range is ever read
+        back — a window's padding-position vectors are context only and are
+        always discarded, even from a window that otherwise succeeded, so a
+        healthy neighbour can never rescue a chunk whose own canonical window
+        failed.
+
+        Args:
+            chunks: The ordered chunk texts of the one over-budget document.
+            input_type: ``"document"`` or ``"query"``, forwarded verbatim.
+
+        Returns:
+            An input-aligned :class:`EmbedResult` with ``windowed=True``;
+            a chunk is ``None`` only if its own canonical window's request
+            could not be satisfied. ``usage.total_tokens`` is the exact,
+            unadjusted sum of every successfully-parsed window's wire total
+            (an overlap chunk is genuinely billed once per window it
+            travelled in — see the module docstring).
+        """
+        token_counts = self.count_tokens(chunks)
+        windows = self._build_doc_windows(chunks, token_counts)
+
+        async def resolve_window(window: _DocWindow) -> _ContextBatchResponse | None:
+            window_chunks = [chunks[index] for index in window.chunk_indices]
+            return await self._request_with_retry([window_chunks], input_type)
+
+        responses = await run_in_windows(
+            windows, resolve_window, concurrency=self._concurrency
+        )
+
+        vectors: list[list[float] | None] = [None] * len(chunks)
+        total_tokens = 0
+        for window, response in zip(windows, responses, strict=True):
+            if response is None:
+                # Nothing usable came back for this window: its canonical
+                # chunks stay None; nothing was billed for this window.
+                continue
+            total_tokens += response.usage_total_tokens
+            window_vectors = response.vectors[0] if response.vectors else []
+            if len(window_vectors) != len(window.chunk_indices):
+                # An untrusted/short response for this window is unsafe to
+                # map positionally; its canonical chunks stay None even
+                # though the request WAS billed (billed != succeeded).
+                continue
+            for local_index in range(window.canonical_start, window.canonical_end):
+                original_index = window.chunk_indices[local_index]
+                vectors[original_index] = self._quarantine_vector(window_vectors[local_index])
+
+        return EmbedResult(
+            vectors=vectors,
+            dim=self._output_dimension,
+            usage=EmbedUsage(total_tokens=total_tokens),
+            windowed=True,
+        )
+
+    def _build_doc_windows(self, chunks: list[str], token_counts: list[int]) -> list[_DocWindow]:
+        """Split an over-budget document into overlapping, budget-respecting windows.
+
+        Two passes: first a disjoint CORE partition sized to half the window
+        budget (:data:`_CORE_WINDOW_FRACTION`) via the same greedy packer
+        used for flat batching (:func:`~loresigil.batching.build_batches`,
+        with the text-count cap disabled — only the token budget applies to
+        this endpoint), so every chunk has exactly one canonical window.
+        Second, :meth:`_pad_span` grows each core span with as much
+        bilateral context as still fits under the FULL budget.
+
+        Args:
+            chunks: The document's ordered chunk texts.
+            token_counts: Exact per-chunk token counts, index-aligned with
+                ``chunks``.
+
+        Returns:
+            One :class:`_DocWindow` per core span, in document order,
+            covering every chunk exactly once canonically.
+        """
+        core_budget = max(1, int(self.max_input_tokens * _CORE_WINDOW_FRACTION))
+        core_spans = build_batches(token_counts, max_tokens=core_budget, max_texts=len(chunks))
+        windows: list[_DocWindow] = []
+        for span in core_spans:
+            core_start, core_end = span[0], span[-1] + 1
+            pad_left, pad_right = self._pad_span(core_start, core_end, token_counts)
+            windows.append(
+                _DocWindow(
+                    chunk_indices=list(range(core_start - pad_left, core_end + pad_right)),
+                    canonical_start=pad_left,
+                    canonical_end=pad_left + (core_end - core_start),
+                )
+            )
+        return windows
+
+    def _pad_span(
+        self, core_start: int, core_end: int, token_counts: list[int]
+    ) -> tuple[int, int]:
+        """Grow ``[core_start, core_end)`` on both sides while staying under budget.
+
+        Alternates sides (rather than exhausting one before the other) so an
+        interior core span gets at least one padding chunk on BOTH
+        neighbours whenever there is any headroom at all — a one-sided pad
+        would leave that span's far edge chunk canonical at its window's
+        edge, which the caller must never produce for a chunk that is not
+        the document's own first/last chunk.
+
+        Args:
+            core_start: Inclusive start index of the core span.
+            core_end: Exclusive end index of the core span.
+            token_counts: Exact per-chunk token counts for the whole document.
+
+        Returns:
+            ``(pad_left, pad_right)`` — how many chunks were pulled in on
+            each side.
+        """
+        budget = self.max_input_tokens
+        chunk_count = len(token_counts)
+        window_tokens = sum(token_counts[core_start:core_end])
+        left_cursor = core_start - 1
+        right_cursor = core_end
+        left_open = left_cursor >= 0
+        right_open = right_cursor < chunk_count
+        pad_left = pad_right = 0
+        grow_left_turn = True
+        while left_open or right_open:
+            if grow_left_turn and left_open:
+                candidate = token_counts[left_cursor]
+                if window_tokens + candidate <= budget:
+                    window_tokens += candidate
+                    pad_left += 1
+                    left_cursor -= 1
+                    left_open = left_cursor >= 0
+                else:
+                    left_open = False
+            elif not grow_left_turn and right_open:
+                candidate = token_counts[right_cursor]
+                if window_tokens + candidate <= budget:
+                    window_tokens += candidate
+                    pad_right += 1
+                    right_cursor += 1
+                    right_open = right_cursor < chunk_count
+                else:
+                    right_open = False
+            grow_left_turn = not grow_left_turn
+        return pad_left, pad_right
 
     async def _resolve_combined_batch(
         self,
@@ -408,12 +675,12 @@ class VoyageContextEmbedder(Embedder):
         Returns:
             An input-aligned :class:`EmbedResult`; aligned all-``None`` if this
             document's own isolated request still could not be satisfied (e.g.
-            it exceeds the context window, or the batch is unsatisfiable as
-            sent) — the chunks are never sub-split into separate requests,
-            which would silently change what context each chunk was embedded
-            with. A DEDICATED single-doc request needs no attribution split:
-            its ``usage`` is the exact wire total of that one request (0 if
-            the request never billed at all).
+            the batch is unsatisfiable as sent) — the chunks are never
+            sub-split into separate requests, which would silently change
+            what context each chunk was embedded with. A DEDICATED
+            single-doc request needs no attribution split: its ``usage`` is
+            the exact wire total of that one request (0 if the request never
+            billed at all).
         """
         response = await self._request_with_retry([chunks], input_type)
         if response is None:
