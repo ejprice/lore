@@ -753,6 +753,15 @@ class FakeSurrealStore:
             bookkeeping key never included), at most ``limit`` of them; ``[]``
             when nothing matches.
 
+            KNOWN MODELLING BOUNDARY (cycle-1 follow-up audit): the REAL
+            scroll's rows also carry the SDK-level ``id`` key (a
+            ``RecordID``), which this fake intentionally does NOT model — no
+            production consumer reads ``row["id"]`` (``SymbolTool`` reads
+            declared columns only). A future consumer that wants ``row["id"]``
+            must FIRST add fake parity here plus a contract test in
+            ``test_surreal_fakes.py``, or it will pass green against a fake
+            that cannot warn it.
+
         Raises:
             SurrealConnectionError: The fake is currently armed to fail.
             SurrealStoreError: A filter key is not an allowed chunk filter column.

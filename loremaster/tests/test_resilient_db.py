@@ -1,15 +1,21 @@
 """Contract tests for the *resilient local-DB open* slice (FP-01 + FP-08).
 
-These tests define the behaviour of a feature that does NOT yet exist. They are
-written BLIND to the eventual implementation: the expectations come from the
-idempotent-startup requirement, never from how the current code happens to
-behave. Every test is expected to be RED until the resilient-open work lands,
-and it is RED *behaviourally* — the current code raises / wedges and an explicit
-assertion catches that — NOT structurally (no missing-import / missing-attribute
-errors: ``Manifest``, ``CodeGraph`` and ``build_app_context`` already exist and
-import cleanly; we pin new behaviour onto those existing public constructors).
+These tests defined the behaviour of a feature that did NOT yet exist when the
+contract was authored. They were written BLIND to the eventual implementation:
+the expectations came from the idempotent-startup requirement, never from how
+the then-current code happened to behave — RED *behaviourally*, pinned onto the
+public constructors that existed at the time (the SQLite ``Manifest``,
+``CodeGraph``, ``build_app_context``).
 
-The two bugs this contract closes
+HISTORICAL NOTE (post-P5): the SQLite ``Manifest`` class named throughout the
+bug narrative below was DELETED after the Surreal port — its half of this
+contract now lives on through ``MemoryLedger`` (the surviving
+``open_resilient_sqlite`` consumer; see ``test_memory_durability.py``'s
+``TestLedgerResilientOpen``) and ``test_surreal_manifest.py``. The Kùzu
+``CodeGraph`` half remains pinned HERE until its own P8 retirement. The
+narrative is kept as-written: it documents WHY the resilient open exists.
+
+The two bugs this contract closed
 ---------------------------------
 
 * **FP-01 — clean container wedge.** On a fresh deploy the state volume is empty,
