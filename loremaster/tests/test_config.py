@@ -618,3 +618,140 @@ class TestProjectSlugCharset:
         """
         config = LoreConfig.model_validate(_CANONICAL_CONFIG)
         assert config.project.slug == "demand_intelligence"
+
+
+# ---------------------------------------------------------------------------
+# Ledger #14 Part 2 — the sweep-level batch-embedding config seam
+# ---------------------------------------------------------------------------
+#
+# ``EmbeddingConfig`` gains one new OPTIONAL, defaulted sub-section — ``batch``
+# — mirroring the EXACT "OPTIONAL with a default instance" precedent already
+# established by ``LoggingConfig`` / ``SurrealConfig`` on ``LoreConfig``: every
+# existing ``lore.yaml`` (which carries no ``embedding.batch:`` block) keeps
+# validating unchanged and transparently gets the documented defaults.
+#
+# THE PINNED SHAPE (this contract's own design decision, named here, blind to
+# any implementation):
+#
+#   class BatchConfig(_StrictModel):
+#       mode: Literal["realtime", "batch", "auto"] = "auto"
+#       chunk_count_threshold: PositiveInt = 1000
+#       poll_interval_s: float = <loresigil.voyage_batch.DEFAULT_POLL_INTERVAL_S>
+#
+#   class EmbeddingConfig(_StrictModel):
+#       ...
+#       batch: BatchConfig = BatchConfig()
+#
+# Design notes:
+# * ``mode`` — "realtime" forces the pre-batch per-file embed path regardless
+#   of embedder capability; "batch" forces the two-pass bulk-sweep path
+#   (falling back to realtime with a WARNING if the embedder doesn't
+#   advertise ``supports_batch``); "auto" (the default) picks batch only when
+#   a sweep's pending chunk count exceeds ``chunk_count_threshold`` AND the
+#   embedder supports it.
+# * ``chunk_count_threshold`` (default 1000) is THIS CONTRACT's own pinned
+#   default — small enough that a real multi-hundred-file project sweep
+#   trips it, large enough that a single-file watcher-triggered reconcile
+#   (which stays realtime regardless of mode — see
+#   ``test_indexer_bulk_sweep.py``) never accidentally qualifies.
+# * ``poll_interval_s`` defaults to loresigil's OWN
+#   ``DEFAULT_POLL_INTERVAL_S`` (never a hand-copied ``30.0`` literal here —
+#   clause 5: the SAME source of truth the Voyage batch client itself uses).
+
+
+class TestEmbeddingBatchConfig:
+    """The ``embedding.batch`` sweep-level batch-embedding config seam."""
+
+    def test_batch_defaults_when_block_is_absent(self) -> None:
+        # Every existing lore.yaml (no ``batch:`` sub-block) must keep
+        # validating and transparently get the documented defaults.
+        from loresigil.voyage_batch import DEFAULT_POLL_INTERVAL_S
+
+        payload = _deep_copy_config()
+        assert "batch" not in payload["embedding"]
+        config = LoreConfig.model_validate(payload)
+        assert config.embedding.batch.mode == "auto"
+        assert config.embedding.batch.chunk_count_threshold == 1000
+        assert config.embedding.batch.poll_interval_s == DEFAULT_POLL_INTERVAL_S
+
+    def test_batch_poll_interval_default_is_read_from_the_shared_voyage_constant(
+        self,
+    ) -> None:
+        # Independent-of-any-hand-copied-literal pin: if loresigil's own
+        # default ever changes, this contract's default must track it rather
+        # than silently drifting to a stale hardcoded number.
+        from loresigil.voyage_batch import DEFAULT_POLL_INTERVAL_S
+
+        assert DEFAULT_POLL_INTERVAL_S == pytest.approx(30.0)  # sanity: the real value
+        payload = _deep_copy_config()
+        config = LoreConfig.model_validate(payload)
+        assert config.embedding.batch.poll_interval_s == DEFAULT_POLL_INTERVAL_S
+
+    def test_batch_block_is_parsed_when_explicitly_present(self) -> None:
+        payload = _deep_copy_config()
+        payload["embedding"]["batch"] = {
+            "mode": "batch",
+            "chunk_count_threshold": 500,
+            "poll_interval_s": 45.0,
+        }
+        config = LoreConfig.model_validate(payload)
+        assert config.embedding.batch.mode == "batch"
+        assert config.embedding.batch.chunk_count_threshold == 500
+        assert config.embedding.batch.poll_interval_s == 45.0
+
+    @pytest.mark.parametrize("mode", ["realtime", "batch", "auto"])
+    def test_batch_mode_accepts_every_documented_literal(self, mode: str) -> None:
+        payload = _deep_copy_config()
+        payload["embedding"]["batch"] = {"mode": mode}
+        config = LoreConfig.model_validate(payload)
+        assert config.embedding.batch.mode == mode
+
+    def test_batch_mode_rejects_unknown_literal(self) -> None:
+        payload = _deep_copy_config()
+        payload["embedding"]["batch"] = {"mode": "sometimes"}
+        with pytest.raises(ValidationError):
+            LoreConfig.model_validate(payload)
+
+    def test_batch_chunk_count_threshold_rejects_zero(self) -> None:
+        payload = _deep_copy_config()
+        payload["embedding"]["batch"] = {"chunk_count_threshold": 0}
+        with pytest.raises(ValidationError):
+            LoreConfig.model_validate(payload)
+
+    def test_batch_chunk_count_threshold_rejects_negative(self) -> None:
+        payload = _deep_copy_config()
+        payload["embedding"]["batch"] = {"chunk_count_threshold": -50}
+        with pytest.raises(ValidationError):
+            LoreConfig.model_validate(payload)
+
+    def test_batch_block_rejects_extra_field(self) -> None:
+        # A known section stays strict: a typo'd key inside ``batch`` fails loud
+        # (mirrors TestLoggingConfig's identical pin on its own sub-section).
+        payload = _deep_copy_config()
+        payload["embedding"]["batch"] = {"mode": "auto", "chunck_count_threshold": 10}
+        with pytest.raises(ValidationError):
+            LoreConfig.model_validate(payload)
+
+    def test_adding_batch_block_does_not_weaken_embedding_strictness(self) -> None:
+        # Regression guard (mirrors TestLoggingConfig's identical top-level
+        # pin): making ``batch`` an optional defaulted field must NOT loosen
+        # ``extra="forbid"`` on the surrounding ``embedding`` section itself —
+        # an unrelated typo'd embedding key is still rejected.
+        payload = _deep_copy_config()
+        payload["embedding"]["batch"] = {"mode": "auto"}
+        payload["embedding"]["bacth"] = {"mode": "auto"}  # the realistic typo
+        with pytest.raises(ValidationError):
+            LoreConfig.model_validate(payload)
+
+    def test_batch_config_class_is_named_and_importable(self) -> None:
+        # Mirrors the sibling-section naming convention already established
+        # for every OPTIONAL-with-default sub-section on LoreConfig
+        # (LoggingConfig, SurrealConfig, WatcherConfig, AuthConfig,
+        # QdrantConfig) — imported inside the test body (not at module scope)
+        # so a not-yet-existing symbol fails ONLY this one test, not the
+        # whole file's collection.
+        from loremaster.config import BatchConfig
+
+        payload = _deep_copy_config()
+        config = LoreConfig.model_validate(payload)
+        assert isinstance(config.embedding.batch, BatchConfig)

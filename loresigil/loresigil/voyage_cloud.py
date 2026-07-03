@@ -255,6 +255,7 @@ class VoyageCloudEmbedder(Embedder):
         *,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         sleep_fn: SleepFn | None = None,
+        deadline_s: float | None = None,
     ) -> str:
         """Poll a batch job until it reaches a terminal status.
 
@@ -264,16 +265,21 @@ class VoyageCloudEmbedder(Embedder):
             sleep_fn: Awaitable sleep used between polls; defaults to
                 ``asyncio.sleep`` (injected in tests so polling doesn't block
                 the suite).
+            deadline_s: Optional logical-clock deadline; raises
+                :class:`TimeoutError` naming the job id if exceeded before a
+                terminal status (a real batch job may legally take the full
+                12h completion window).
 
         Returns:
             The terminal status (always ``STATUS_COMPLETED``).
 
         Raises:
+            TimeoutError: The deadline elapsed before a terminal status.
             BatchJobFailedError: If the terminal status is not ``"completed"``,
-                naming the job id.
+                naming the job id and folding its ``errors`` payload.
         """
         return await self._batch_client.await_completion(
-            job_id, poll_interval_s=poll_interval_s, sleep_fn=sleep_fn
+            job_id, poll_interval_s=poll_interval_s, sleep_fn=sleep_fn, deadline_s=deadline_s
         )
 
     async def fetch_batch_results(self, job_id: str) -> dict[str, list[float] | None]:
@@ -289,8 +295,9 @@ class VoyageCloudEmbedder(Embedder):
         Returns:
             A mapping from each submitted id to its embedding vector, or
             ``None`` for an id the batch job's error file names as a
-            permanent per-item failure (the same sentinel convention
-            :class:`~loresigil.base.EmbedResult` already uses).
+            permanent per-item failure (or a malformed output line the
+            provider emitted) — the same sentinel convention
+            :class:`~loresigil.base.EmbedResult` already uses.
 
         Raises:
             RuntimeError: If the job has not yet reached a terminal status.
@@ -301,7 +308,9 @@ class VoyageCloudEmbedder(Embedder):
         results: dict[str, list[float] | None] = {}
         if output_bytes is not None:
             for custom_id, body in parse_batch_output_lines(output_bytes).items():
-                results[custom_id] = body["data"][0]["embedding"]
+                # A malformed output line surfaces as None (the same sentinel a
+                # per-item error-file failure uses), never a crash nor a drop.
+                results[custom_id] = None if body is None else body["data"][0]["embedding"]
         if error_bytes is not None:
             for custom_id in parse_batch_failed_ids(error_bytes):
                 results[custom_id] = None

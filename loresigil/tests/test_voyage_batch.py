@@ -246,6 +246,7 @@ try:
         DEFAULT_POLL_INTERVAL_S,
         MAX_BATCH_FILE_BYTES,
         MAX_BATCH_INPUTS,
+        STATUS_CANCELLED,
         STATUS_COMPLETED,
         STATUS_FAILED,
         STATUS_IN_PROGRESS,
@@ -254,6 +255,7 @@ try:
         BatchSizeExceededError,
         DuplicateBatchIdError,
         encode_batch_jsonl,
+        parse_batch_output_lines,
     )
 
     _BATCH_API_AVAILABLE = True
@@ -271,6 +273,7 @@ except ImportError:  # pragma: no cover - pre-implementation RED: the module is 
     BatchJobFailedError = _MissingVoyageBatchApiError  # type: ignore[misc,assignment]
     DuplicateBatchIdError = _MissingVoyageBatchApiError  # type: ignore[misc,assignment]
     encode_batch_jsonl = None  # type: ignore[assignment]
+    parse_batch_output_lines = None  # type: ignore[assignment]
     # Obviously-wrong placeholders (never the real expected value) so a
     # constant-only comparison cannot silently pass pre-implementation.
     DEFAULT_FILES_API_URL = ""
@@ -282,6 +285,7 @@ except ImportError:  # pragma: no cover - pre-implementation RED: the module is 
     STATUS_IN_PROGRESS = "__missing_status_in_progress__"
     STATUS_COMPLETED = "__missing_status_completed__"
     STATUS_FAILED = "__missing_status_failed__"
+    STATUS_CANCELLED = "__missing_status_cancelled__"
     TERMINAL_BATCH_STATUSES = frozenset()
 
 
@@ -397,11 +401,20 @@ class _CloudBatchServer:
         polls_before_terminal: int = 2,
         terminal_status: str = STATUS_COMPLETED,
         failed_ids: frozenset[str] = frozenset(),
+        malformed_ids: frozenset[str] = frozenset(),
+        job_errors: list[dict[str, Any]] | None = None,
     ) -> None:
         self.dim = dim
         self._polls_before_terminal = polls_before_terminal
         self._terminal_status = terminal_status
         self._failed_ids = failed_ids
+        # Carry-in (c): ids whose OUTPUT line is deliberately malformed (a
+        # provider-contract violation distinct from a documented per-item
+        # failure, which lives in the ERROR file via ``failed_ids`` instead).
+        self._malformed_ids = malformed_ids
+        # Carry-in (b): the batch object's own ``errors`` payload, folded into
+        # a whole-job failure's BatchJobFailedError.
+        self._job_errors = job_errors
         self.files: dict[str, bytes] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
         self.batch_create_bodies: list[dict[str, Any]] = []
@@ -503,6 +516,9 @@ class _CloudBatchServer:
                 "status": self._terminal_status,
                 "output_file_id": job["output_file_id"],
                 "error_file_id": job["error_file_id"],
+                # Carry-in (b): the wire's own "errors" field (null when
+                # clean, per the guide's own example batch objects).
+                "errors": self._job_errors,
             },
         )
 
@@ -513,6 +529,19 @@ class _CloudBatchServer:
         for line in lines:
             custom_id = line["custom_id"]
             texts: list[str] = line["body"]["input"]
+            if custom_id in self._malformed_ids:
+                # Carry-in (c): a provider-contract-violating line that still
+                # lives in the OUTPUT file (status_code 200 but no body) must
+                # not be silently dropped nor crash the parser downstream.
+                output_lines.append(
+                    {
+                        "batch_id": job_id,
+                        "custom_id": custom_id,
+                        "response": {"status_code": 200},
+                        "error": None,
+                    }
+                )
+                continue
             if custom_id in self._failed_ids:
                 error_lines.append(
                     {
@@ -579,11 +608,20 @@ class _ContextBatchServer:
         polls_before_terminal: int = 2,
         terminal_status: str = STATUS_COMPLETED,
         failed_ids: frozenset[str] = frozenset(),
+        malformed_ids: frozenset[str] = frozenset(),
+        job_errors: list[dict[str, Any]] | None = None,
     ) -> None:
         self.dim = dim
         self._polls_before_terminal = polls_before_terminal
         self._terminal_status = terminal_status
         self._failed_ids = failed_ids
+        # Carry-in (c): ids whose OUTPUT line is deliberately malformed (a
+        # provider-contract violation distinct from a documented per-item
+        # failure, which lives in the ERROR file via ``failed_ids`` instead).
+        self._malformed_ids = malformed_ids
+        # Carry-in (b): the batch object's own ``errors`` payload, folded into
+        # a whole-job failure's BatchJobFailedError.
+        self._job_errors = job_errors
         self.files: dict[str, bytes] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
         self.batch_create_bodies: list[dict[str, Any]] = []
@@ -691,6 +729,9 @@ class _ContextBatchServer:
                 "status": self._terminal_status,
                 "output_file_id": job["output_file_id"],
                 "error_file_id": job["error_file_id"],
+                # Carry-in (b): the wire's own "errors" field (null when
+                # clean, per the guide's own example batch objects).
+                "errors": self._job_errors,
             },
         )
 
@@ -703,6 +744,19 @@ class _ContextBatchServer:
             docs: list[list[str]] = line["body"]["inputs"]
             assert len(docs) == 1, "design decision #2: exactly one doc per line"
             chunks = docs[0]
+            if custom_id in self._malformed_ids:
+                # Carry-in (c): a provider-contract-violating line that still
+                # lives in the OUTPUT file (status_code 200 but no body) must
+                # not be silently dropped nor crash the parser downstream.
+                output_lines.append(
+                    {
+                        "batch_id": job_id,
+                        "custom_id": custom_id,
+                        "response": {"status_code": 200},
+                        "error": None,
+                    }
+                )
+                continue
             if custom_id in self._failed_ids:
                 error_lines.append(
                     {
@@ -1394,3 +1448,568 @@ class TestBatchRealtimeLiveParitySmoke:
         # negligible cross-request floating-point drift on the live service.
         cosine = sum(a * b for a, b in zip(realtime_vector, batch_vector, strict=True))
         assert cosine == pytest.approx(1.0, abs=1e-3)
+
+
+# ── 8. Batch methods become non-abstract Embedder ABC defaults (ledger #14
+# Part 2) ─────────────────────────────────────────────────────────────────
+
+
+class TestBatchMethodDefaultsOnEmbedderABC:
+    """The five batch methods (``submit_batch_documents`` /
+    ``submit_batch_document_chunks`` / ``get_batch_status`` /
+    ``await_batch_completion`` / ``fetch_batch_results``) become non-abstract
+    ``Embedder`` defaults, mirroring ``embed_document_chunks``'s optional-
+    capability pattern. This is what lets a caller (the indexer bulk-sweep,
+    a later cycle) invoke them POLYMORPHICALLY on any ``Embedder``-typed
+    reference, guarded by ``supports_batch``, instead of needing an
+    ``isinstance``/``hasattr`` check against the two concrete Voyage classes.
+    A legacy embedder implementing only the pre-batch members must still
+    instantiate (back-compat) and raise a well-defined ``NotImplementedError``
+    rather than an ``AttributeError`` if a caller forgets to check the flag.
+    """
+
+    def test_adding_batch_defaults_does_not_make_embedder_abstract(self) -> None:
+        # Back-compat pin, mirrors TestBatchCapabilityFlag's own probe: a
+        # subclass implementing ONLY the pre-batch abstract members remains
+        # fully instantiable after the ABC grows these five defaults.
+        assert isinstance(_LegacyCompleteEmbedder(), Embedder)
+
+    async def test_submit_batch_documents_raises_not_implemented_by_default(self) -> None:
+        embedder = _LegacyCompleteEmbedder()
+        with pytest.raises(NotImplementedError):
+            await embedder.submit_batch_documents(["hello"], [_stable_id("legacy-flat")])
+
+    async def test_submit_batch_document_chunks_raises_not_implemented_by_default(self) -> None:
+        embedder = _LegacyCompleteEmbedder()
+        with pytest.raises(NotImplementedError):
+            await embedder.submit_batch_document_chunks(
+                [["a", "b"]], [_stable_id("legacy-grouped")]
+            )
+
+    async def test_get_batch_status_raises_not_implemented_by_default(self) -> None:
+        embedder = _LegacyCompleteEmbedder()
+        with pytest.raises(NotImplementedError):
+            await embedder.get_batch_status("job-legacy-1")
+
+    async def test_await_batch_completion_raises_not_implemented_by_default(self) -> None:
+        embedder = _LegacyCompleteEmbedder()
+        with pytest.raises(NotImplementedError):
+            await embedder.await_batch_completion("job-legacy-1", sleep_fn=_instant_sleep)
+
+    async def test_fetch_batch_results_raises_not_implemented_by_default(self) -> None:
+        embedder = _LegacyCompleteEmbedder()
+        with pytest.raises(NotImplementedError):
+            await embedder.fetch_batch_results("job-legacy-1")
+
+    async def test_voyage_cloud_embedder_batch_methods_are_unaffected_by_the_new_defaults(
+        self,
+    ) -> None:
+        # Regression guard: a CONCRETE override (VoyageCloudEmbedder already
+        # implements these methods per Part 1) must win over the new ABC
+        # default via normal MRO — adding the default must not shadow it.
+        server = _CloudBatchServer(polls_before_terminal=1)
+        embedder = _make_cloud_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        status = await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        assert status == STATUS_COMPLETED
+
+
+# ── 9. FakeEmbedder grows an offline, deterministic Batch API double (ledger
+# #14 Part 2 — the fakes-first double the indexer bulk-sweep tests inject)
+# ────────────────────────────────────────────────────────────────────────────
+
+# A small dim for FakeEmbedder's OWN unit tests here — mirrors the existing
+# ``dim=16`` convention already used project-wide for FakeEmbedder tests
+# (test_testing.py), distinct from the production-scale CLOUD_DIM/CONTEXT_DIM
+# (2048) used for the real Voyage-embedder request-shape tests above: this
+# suite exercises FakeEmbedder's OWN batch/realtime parity logic, not a
+# store/HNSW vector-width interaction (clause 1 is satisfied by test_indexer_
+# bulk_sweep.py's use of the real production dim for THAT seam).
+_FAKE_DIM: int = 16
+
+
+class TestFakeEmbedderBatchCapability:
+    """``FakeEmbedder``'s new offline Batch API double.
+
+    Reuses the SAME deterministic hash-of-text oracle as the realtime path
+    (vector parity is therefore a VALUE-level guarantee against an
+    independently-callable oracle, never a shape/tautology check) and the
+    SAME validation/status vocabulary as the real Voyage backends
+    (``encode_batch_jsonl``'s errors, ``voyage_batch``'s
+    ``STATUS_*``/``BatchJobFailedError``) so a caller's generic batch
+    error-handling works identically against the fake and the real thing.
+    """
+
+    async def test_submit_batch_documents_raises_when_unsupported(self) -> None:
+        # supports_batch defaults to False (Part 1's pin) — calling a batch
+        # method anyway must raise the SAME well-defined error the ABC
+        # default does for ANY unsupported embedder, not a bespoke one.
+        embedder = FakeEmbedder(dim=_FAKE_DIM)
+        with pytest.raises(NotImplementedError):
+            await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+
+    async def test_submit_batch_document_chunks_raises_when_unsupported(self) -> None:
+        embedder = FakeEmbedder(dim=_FAKE_DIM)
+        with pytest.raises(NotImplementedError):
+            await embedder.submit_batch_document_chunks([DOC_SINGLE], [DOC_IDS_2[0]])
+
+    async def test_submit_batch_documents_returns_a_job_id_string(self) -> None:
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True)
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        assert isinstance(job_id, str) and job_id
+        assert json.loads(json.dumps(job_id)) == job_id  # "serializable job handle"
+
+    async def test_rejects_mismatched_ids_length_before_recording_any_job(self) -> None:
+        shared_jobs: dict[str, Any] = {}
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True, batch_jobs=shared_jobs)
+        with pytest.raises(ValueError):
+            await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS[:-1])
+        assert shared_jobs == {}  # build-time refusal: nothing recorded
+
+    async def test_rejects_empty_batch(self) -> None:
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True)
+        with pytest.raises(ValueError):
+            await embedder.submit_batch_documents([], [])
+
+    async def test_rejects_duplicate_ids_naming_the_duplicate(self) -> None:
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True)
+        duplicate_ids = [FLAT_IDS[0], FLAT_IDS[0], FLAT_IDS[1]]
+        with pytest.raises(DuplicateBatchIdError) as exc_info:
+            await embedder.submit_batch_documents(FLAT_TEXTS, duplicate_ids)
+        assert FLAT_IDS[0] in str(exc_info.value)
+
+    async def test_get_batch_status_is_in_progress_before_configured_polls(self) -> None:
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True, batch_polls_before_terminal=5)
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        assert await embedder.get_batch_status(job_id) == STATUS_IN_PROGRESS
+
+    async def test_await_batch_completion_sleeps_only_between_polls(self) -> None:
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True, batch_polls_before_terminal=3)
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        sleeps: list[float] = []
+
+        async def recording_sleep(delay: float) -> None:
+            sleeps.append(delay)
+
+        status = await embedder.await_batch_completion(job_id, sleep_fn=recording_sleep)
+        assert status == STATUS_COMPLETED
+        # 3 polls needed to reach terminal -> exactly 2 BRIDGING sleeps.
+        assert len(sleeps) == 2
+
+    async def test_fetch_batch_results_flat_arm_matches_realtime_vectors(self) -> None:
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True)
+        # Independent oracle: the SAME embedder's own realtime call, computed
+        # via a SEPARATE code path (embed_documents) from the batch plumbing
+        # under test (submit/poll/fetch) — a batch-path bug that drops,
+        # reorders, or mis-maps an id surfaces here as a VALUE mismatch.
+        realtime = await embedder.embed_documents(FLAT_TEXTS)
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        results = await embedder.fetch_batch_results(job_id)
+        assert set(results.keys()) == set(FLAT_IDS)
+        for id_, realtime_vector in zip(FLAT_IDS, realtime.vectors, strict=True):
+            assert results[id_] == realtime_vector
+
+    async def test_fail_inputs_map_to_none_in_flat_batch_results(self) -> None:
+        failing_text = FLAT_TEXTS[1]  # middle slot — catches an off-by-one remap
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True, fail_inputs={failing_text})
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        results = await embedder.fetch_batch_results(job_id)
+        assert results[FLAT_IDS[1]] is None
+        # Siblings unpoisoned.
+        assert results[FLAT_IDS[0]] is not None
+        assert results[FLAT_IDS[2]] is not None
+
+    async def test_fetch_batch_results_grouped_arm_is_context_sensitive_like_realtime(
+        self,
+    ) -> None:
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True)
+        docs = [DOC_RUNBOOK, DOC_POLICY]
+        realtime_results = await embedder.embed_document_chunks(docs)
+        job_id = await embedder.submit_batch_document_chunks(docs, DOC_IDS_2)
+        await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        batch_results = await embedder.fetch_batch_results(job_id)
+        for doc_id, realtime_result in zip(DOC_IDS_2, realtime_results, strict=True):
+            batch_result = batch_results[doc_id]
+            assert isinstance(batch_result, EmbedResult)
+            assert batch_result.vectors == realtime_result.vectors
+
+    async def test_whole_doc_failure_maps_to_none_without_poisoning_siblings(self) -> None:
+        # A batch LINE is one atomic unit (design decision #4): a single
+        # poisoned chunk fails the WHOLE line, mapping the id straight to
+        # bare ``None`` — the SAME shape the real VoyageContextEmbedder's
+        # error-file-driven whole-doc failure uses (never an EmbedResult
+        # wrapping all-None vectors).
+        docs = [DOC_RUNBOOK, DOC_POLICY]
+        failed_id = DOC_IDS_2[0]
+        embedder = FakeEmbedder(
+            dim=_FAKE_DIM, supports_batch=True, fail_inputs={DOC_RUNBOOK[0]}
+        )
+        job_id = await embedder.submit_batch_document_chunks(docs, DOC_IDS_2)
+        await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        results = await embedder.fetch_batch_results(job_id)
+        assert results[failed_id] is None
+        sibling = results[DOC_IDS_2[1]]
+        assert isinstance(sibling, EmbedResult)
+        assert all(vector is not None for vector in sibling.vectors)
+
+    async def test_whole_job_failure_raises_batch_job_failed_error_naming_job_id(self) -> None:
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True, batch_should_fail=True)
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        with pytest.raises(BatchJobFailedError) as exc_info:
+            await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        assert job_id in str(exc_info.value)
+
+    async def test_fetch_results_before_terminal_raises_runtime_error(self) -> None:
+        embedder = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True, batch_polls_before_terminal=5)
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        with pytest.raises(RuntimeError):
+            await embedder.fetch_batch_results(job_id)
+
+    async def test_new_instance_sharing_batch_jobs_dict_resumes_the_job(self) -> None:
+        # The resumability contract at the FakeEmbedder level: a brand-new
+        # instance sharing ONLY the externally-persisted job_id + the shared
+        # job-store (standing in for the real Voyage account) resumes a
+        # submission it never made itself.
+        shared_jobs: dict[str, Any] = {}
+        submitting = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True, batch_jobs=shared_jobs)
+        job_id = await submitting.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        del submitting  # simulate the submitting process exiting
+
+        resumed = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True, batch_jobs=shared_jobs)
+        assert await resumed.get_batch_status(job_id) == STATUS_COMPLETED
+        results = await resumed.fetch_batch_results(job_id)
+        # Independent oracle: a THIRD, throwaway FakeEmbedder instance's own
+        # realtime call — vectors are a pure function of (text, dim,
+        # normalized), identical across any instance (the class's own
+        # documented guarantee), so this is a real cross-instance check.
+        expected = await FakeEmbedder(dim=_FAKE_DIM).embed_documents(FLAT_TEXTS)
+        for id_, vector in zip(FLAT_IDS, expected.vectors, strict=True):
+            assert results[id_] == vector
+
+    async def test_separately_constructed_instances_do_not_share_jobs_by_default(self) -> None:
+        # Defensive: the private-by-default job store must NOT leak across
+        # unrelated FakeEmbedder instances in the same test process.
+        submitter = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True)
+        job_id = await submitter.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        stranger = FakeEmbedder(dim=_FAKE_DIM, supports_batch=True)
+        with pytest.raises(KeyError):
+            await stranger.get_batch_status(job_id)
+
+
+# ── 10. Carry-in (a): await_completion deadline / TimeoutError ─────────────
+
+
+class TestAwaitCompletionDeadline:
+    """A real batch job may legally take up to the full 12h completion
+    window; a caller polling with an injected instant sleep must still be
+    able to give up DETERMINISTICALLY rather than looping forever. The
+    deadline is measured against the CUMULATIVE ``poll_interval_s`` schedule
+    (a logical clock), not real wall-clock time, so it stays testable under
+    an injected instant sleep_fn."""
+
+    async def test_raises_timeout_error_when_deadline_exceeded_before_terminal(self) -> None:
+        server = _CloudBatchServer(polls_before_terminal=100)
+        embedder = _make_cloud_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        with pytest.raises(TimeoutError) as exc_info:
+            await embedder.await_batch_completion(
+                job_id, poll_interval_s=1.0, sleep_fn=_instant_sleep, deadline_s=3.0
+            )
+        assert job_id in str(exc_info.value)
+
+    async def test_does_not_raise_when_job_completes_within_the_deadline(self) -> None:
+        server = _CloudBatchServer(polls_before_terminal=2)
+        embedder = _make_cloud_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        status = await embedder.await_batch_completion(
+            job_id, poll_interval_s=1.0, sleep_fn=_instant_sleep, deadline_s=100.0
+        )
+        assert status == STATUS_COMPLETED
+
+    async def test_context_arm_also_honors_the_deadline(self) -> None:
+        server = _ContextBatchServer(polls_before_terminal=100)
+        embedder = _make_context_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_document_chunks([DOC_SINGLE], [DOC_IDS_2[0]])
+        with pytest.raises(TimeoutError) as exc_info:
+            await embedder.await_batch_completion(
+                job_id, poll_interval_s=1.0, sleep_fn=_instant_sleep, deadline_s=2.0
+            )
+        assert job_id in str(exc_info.value)
+
+    async def test_omitting_the_deadline_polls_until_terminal_unchanged(self) -> None:
+        # Back-compat regression guard: every PRE-carry-in test in this file
+        # never passes deadline_s — that unbounded-polling behaviour must be
+        # exactly preserved (None is a real, permanent default, not a stub).
+        server = _CloudBatchServer(polls_before_terminal=5)
+        embedder = _make_cloud_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        status = await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        assert status == STATUS_COMPLETED
+
+    async def test_fake_embedder_await_batch_completion_also_honors_deadline(self) -> None:
+        # The SAME deadline contract, pinned on the fakes-first double the
+        # indexer bulk-sweep tests inject (clause 5: one shared convention).
+        embedder = FakeEmbedder(
+            dim=_FAKE_DIM, supports_batch=True, batch_polls_before_terminal=100
+        )
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        with pytest.raises(TimeoutError) as exc_info:
+            await embedder.await_batch_completion(
+                job_id, poll_interval_s=1.0, sleep_fn=_instant_sleep, deadline_s=3.0
+            )
+        assert job_id in str(exc_info.value)
+
+
+# ── 11. Carry-in (b): BatchJobFailedError folds the batch errors payload ───
+
+
+class TestBatchJobFailedErrorFoldsErrorsPayload:
+    """A whole-job failure's raised ``BatchJobFailedError`` folds the batch
+    object's own ``errors`` payload (a REAL wire field — the guide's own
+    example batch objects all carry ``"errors": null`` when clean) so an
+    operator reading a traceback sees WHY the job failed without a separate
+    dashboard/API lookup."""
+
+    _JOB_ERRORS: list[dict[str, Any]] = [
+        {
+            "code": "batch_expired",
+            "message": "This request could not be executed before the completion window expired.",
+        }
+    ]
+
+    async def test_await_batch_completion_error_carries_the_errors_payload(self) -> None:
+        server = _CloudBatchServer(
+            polls_before_terminal=1, terminal_status=STATUS_FAILED, job_errors=self._JOB_ERRORS
+        )
+        embedder = _make_cloud_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        with pytest.raises(BatchJobFailedError) as exc_info:
+            await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        assert exc_info.value.errors == self._JOB_ERRORS
+        assert "batch_expired" in str(exc_info.value)
+
+    async def test_error_without_an_errors_payload_still_names_the_job_id(self) -> None:
+        # Regression guard: "errors": null (the guide's clean-batch default)
+        # must not crash the folding logic — it degrades to naming the job id.
+        server = _CloudBatchServer(polls_before_terminal=1, terminal_status=STATUS_FAILED)
+        embedder = _make_cloud_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        with pytest.raises(BatchJobFailedError) as exc_info:
+            await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        assert exc_info.value.errors is None
+        assert job_id in str(exc_info.value)
+
+    async def test_context_arm_also_folds_the_errors_payload(self) -> None:
+        server = _ContextBatchServer(
+            polls_before_terminal=1, terminal_status=STATUS_FAILED, job_errors=self._JOB_ERRORS
+        )
+        embedder = _make_context_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_document_chunks([DOC_SINGLE], [DOC_IDS_2[0]])
+        with pytest.raises(BatchJobFailedError) as exc_info:
+            await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        assert exc_info.value.errors == self._JOB_ERRORS
+
+
+# ── 12. Carry-in (c): parse_batch_output_lines maps malformed lines to None ─
+
+
+class TestParseBatchOutputLinesMalformedHandling:
+    """A malformed output line (has a ``custom_id``, but is missing
+    ``response.body`` or carries a non-200 ``status_code`` despite living in
+    the OUTPUT file — a provider-contract violation) maps its id to ``None``
+    — the SAME failure sentinel a genuine per-item failure uses — rather than
+    silently vanishing from the returned mapping. A silent drop would let a
+    downstream caller believe an id was simply never submitted instead of
+    flagging it as unusable; ``None`` routes cleanly into the SAME
+    all-vectors-usable / ``_mark_file_failed`` convention every other
+    permanent-failure path already uses."""
+
+    def test_well_formed_line_still_maps_to_its_body(self) -> None:
+        raw = (
+            json.dumps(
+                {
+                    "batch_id": "batch-1",
+                    "custom_id": "req-1",
+                    "response": {
+                        "status_code": 200,
+                        "body": {"data": [{"embedding": [0.1, 0.2]}]},
+                    },
+                    "error": None,
+                }
+            )
+            + "\n"
+        ).encode()
+        assert parse_batch_output_lines(raw) == {
+            "req-1": {"data": [{"embedding": [0.1, 0.2]}]}
+        }
+
+    def test_status_200_but_missing_body_maps_to_none(self) -> None:
+        raw = (
+            json.dumps(
+                {
+                    "batch_id": "batch-1",
+                    "custom_id": "req-2",
+                    "response": {"status_code": 200},  # malformed: no "body"
+                    "error": None,
+                }
+            )
+            + "\n"
+        ).encode()
+        assert parse_batch_output_lines(raw) == {"req-2": None}
+
+    def test_null_response_maps_to_none(self) -> None:
+        raw = (
+            json.dumps(
+                {"batch_id": "batch-1", "custom_id": "req-3", "response": None, "error": None}
+            )
+            + "\n"
+        ).encode()
+        assert parse_batch_output_lines(raw) == {"req-3": None}
+
+    def test_non_200_status_in_the_output_file_maps_to_none(self) -> None:
+        # Per the guide, a non-200 line belongs in the ERROR file, not here —
+        # but a provider-contract violation must not silently vanish.
+        raw = (
+            json.dumps(
+                {
+                    "batch_id": "batch-1",
+                    "custom_id": "req-4",
+                    "response": {"status_code": 500, "message": "oops"},
+                    "error": None,
+                }
+            )
+            + "\n"
+        ).encode()
+        assert parse_batch_output_lines(raw) == {"req-4": None}
+
+    def test_line_with_no_custom_id_at_all_is_dropped_not_crashed(self) -> None:
+        # Nothing to key the result by — this is the ONE case still dropped,
+        # explicitly scoped: it is not attributable to any submitted input.
+        raw = (
+            json.dumps(
+                {"batch_id": "batch-1", "response": {"status_code": 200, "body": {"data": []}}, "error": None}
+            )
+            + "\n"
+        ).encode()
+        assert parse_batch_output_lines(raw) == {}
+
+    def test_mixed_well_formed_and_malformed_lines_both_surface(self) -> None:
+        lines = [
+            {
+                "batch_id": "b",
+                "custom_id": "good",
+                "response": {"status_code": 200, "body": {"data": [1]}},
+                "error": None,
+            },
+            {
+                "batch_id": "b",
+                "custom_id": "bad",
+                "response": {"status_code": 200},
+                "error": None,
+            },
+        ]
+        raw = ("\n".join(json.dumps(line) for line in lines) + "\n").encode()
+        assert parse_batch_output_lines(raw) == {"good": {"data": [1]}, "bad": None}
+
+
+class TestFetchBatchResultsHandlesMalformedOutputLines:
+    """End-to-end: ``fetch_batch_results`` must not crash NOR drop a
+    malformed output line for either embedder arm — it surfaces as ``None``,
+    which the caller's existing None-vector convention already handles."""
+
+    async def test_cloud_arm_malformed_line_maps_to_none_without_crashing(self) -> None:
+        malformed_id = FLAT_IDS[1]  # middle slot — catches an off-by-one remap
+        server = _CloudBatchServer(polls_before_terminal=1, malformed_ids=frozenset({malformed_id}))
+        embedder = _make_cloud_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        results = await embedder.fetch_batch_results(job_id)
+        assert results[malformed_id] is None
+        for text, id_ in zip(FLAT_TEXTS, FLAT_IDS, strict=True):
+            if id_ == malformed_id:
+                continue
+            assert results[id_] == _unit_vector_for_text(text, CLOUD_DIM)
+
+    async def test_context_arm_malformed_line_maps_to_none_without_crashing(self) -> None:
+        malformed_id = DOC_IDS_2[0]
+        docs = [DOC_RUNBOOK, DOC_POLICY]
+        server = _ContextBatchServer(
+            polls_before_terminal=1, malformed_ids=frozenset({malformed_id})
+        )
+        embedder = _make_context_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_document_chunks(docs, DOC_IDS_2)
+        await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        results = await embedder.fetch_batch_results(job_id)
+        assert results[malformed_id] is None
+        sibling = results[DOC_IDS_2[1]]
+        assert isinstance(sibling, EmbedResult)
+        assert all(vector is not None for vector in sibling.vectors)
+
+
+# ── 13. Carry-in (d): explicit cancelled-terminal + partial-failure×usage ──
+
+
+class TestExplicitCancelledTerminalStatus:
+    """``STATUS_CANCELLED`` is a documented terminal status distinct from
+    ``STATUS_FAILED`` (guide lifecycle table: ``cancelling -> cancelled``);
+    only ``STATUS_FAILED`` had a dedicated whole-job test before this, leaving
+    a coverage gap on the OTHER non-completed terminal status."""
+
+    async def test_cancelled_job_raises_batch_job_failed_error_naming_job_and_status(
+        self,
+    ) -> None:
+        server = _CloudBatchServer(polls_before_terminal=1, terminal_status=STATUS_CANCELLED)
+        embedder = _make_cloud_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        with pytest.raises(BatchJobFailedError) as exc_info:
+            await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        assert job_id in str(exc_info.value)
+        assert STATUS_CANCELLED in str(exc_info.value)
+
+    async def test_get_batch_status_reports_cancelled_verbatim(self) -> None:
+        server = _CloudBatchServer(polls_before_terminal=1, terminal_status=STATUS_CANCELLED)
+        embedder = _make_cloud_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_documents(FLAT_TEXTS, FLAT_IDS)
+        await embedder.get_batch_status(job_id)  # advance the fake to terminal
+        assert await embedder.get_batch_status(job_id) == STATUS_CANCELLED
+
+    async def test_context_arm_cancelled_job_also_raises(self) -> None:
+        server = _ContextBatchServer(polls_before_terminal=1, terminal_status=STATUS_CANCELLED)
+        embedder = _make_context_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_document_chunks([DOC_SINGLE], [DOC_IDS_2[0]])
+        with pytest.raises(BatchJobFailedError) as exc_info:
+            await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        assert STATUS_CANCELLED in str(exc_info.value)
+
+
+class TestPartialFailureUsageConservationCombo:
+    """Usage conservation and partial-doc-failure isolation are each pinned
+    SEPARATELY earlier in this file; this combines them — a job with SOME
+    failed docs must still conserve usage over exactly the SURVIVING docs (no
+    drift from double-counting a failed doc or dropping a survivor)."""
+
+    async def test_usage_conserves_the_served_total_when_some_docs_fail(self) -> None:
+        docs = [DOC_RUNBOOK, DOC_POLICY, DOC_SINGLE]
+        failed_id = DOC_IDS_3[1]  # middle slot — catches an off-by-one remap
+        server = _ContextBatchServer(polls_before_terminal=1, failed_ids=frozenset({failed_id}))
+        embedder = _make_context_batch_embedder(server.transport())
+        job_id = await embedder.submit_batch_document_chunks(docs, DOC_IDS_3)
+        await embedder.await_batch_completion(job_id, sleep_fn=_instant_sleep)
+        results = await embedder.fetch_batch_results(job_id)
+
+        assert results[failed_id] is None
+        surviving_docs = [
+            doc for doc, id_ in zip(docs, DOC_IDS_3, strict=True) if id_ != failed_id
+        ]
+        summed = sum(
+            result.usage.total_tokens
+            for result in results.values()
+            if result is not None and result.usage
+        )
+        # Independent derivation: the SAME mock-provider billing meter used by
+        # the fixture server, recomputed here over ONLY the surviving docs.
+        expected = sum(_heuristic_tokens(chunk) for doc in surviving_docs for chunk in doc)
+        assert summed == expected
+        assert summed > 0  # sanity: real text bills tokens

@@ -403,6 +403,7 @@ class VoyageContextEmbedder(Embedder):
         *,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         sleep_fn: SleepFn | None = None,
+        deadline_s: float | None = None,
     ) -> str:
         """Poll a batch job until it reaches a terminal status.
 
@@ -412,16 +413,21 @@ class VoyageContextEmbedder(Embedder):
             sleep_fn: Awaitable sleep used between polls; defaults to
                 ``asyncio.sleep`` (injected in tests so polling doesn't block
                 the suite).
+            deadline_s: Optional logical-clock deadline; raises
+                :class:`TimeoutError` naming the job id if exceeded before a
+                terminal status (a real batch job may legally take the full
+                12h completion window).
 
         Returns:
             The terminal status (always ``STATUS_COMPLETED``).
 
         Raises:
+            TimeoutError: The deadline elapsed before a terminal status.
             BatchJobFailedError: If the terminal status is not ``"completed"``,
-                naming the job id.
+                naming the job id and folding its ``errors`` payload.
         """
         return await self._batch_client.await_completion(
-            job_id, poll_interval_s=poll_interval_s, sleep_fn=sleep_fn
+            job_id, poll_interval_s=poll_interval_s, sleep_fn=sleep_fn, deadline_s=deadline_s
         )
 
     async def fetch_batch_results(self, job_id: str) -> dict[str, EmbedResult | None]:
@@ -450,6 +456,12 @@ class VoyageContextEmbedder(Embedder):
         results: dict[str, EmbedResult | None] = {}
         if output_bytes is not None:
             for custom_id, body in parse_batch_output_lines(output_bytes).items():
+                if body is None:
+                    # A malformed output line surfaces as a bare None (the same
+                    # whole-doc failure sentinel an error-file line uses), never
+                    # a crash nor a silent drop.
+                    results[custom_id] = None
+                    continue
                 doc_entry = body["data"][0]
                 vectors: list[list[float] | None] = [entry["embedding"] for entry in doc_entry["data"]]
                 usage = EmbedUsage(total_tokens=self._extract_usage_total(body))

@@ -24,21 +24,33 @@ rationale):
 * Batch-level parameters (``model``/``input_type``/``output_dimension``/
   ``enable_auto_chunking``) travel once in ``request_params`` at batch
   creation, never per-line.
-* A whole-line failure (from the batch's error file) maps its id to ``None``;
-  a whole-job failure (terminal status other than ``"completed"``) raises
-  :class:`BatchJobFailedError` naming the job id.
+* A whole-line failure (from the batch's error file, OR a malformed output
+  line) maps its id to ``None``; a whole-job failure (terminal status other
+  than ``"completed"``) raises :class:`BatchJobFailedError` naming the job id
+  and folding the batch object's own ``errors`` payload.
+* A caller may bound polling with a ``deadline_s`` — a real batch job may
+  legally take the full 12h completion window, so a caller that cannot wait
+  that long gives up deterministically with a :class:`TimeoutError`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 
 import httpx
 
 from loresigil.resilient import SleepFn
+
+# Zero-arg awaitable returning a batch job's current lifecycle status — the
+# poll seam :func:`poll_until_terminal` drives (an HTTP GET for a real backend,
+# an in-memory lookup for the shipped fake).
+StatusFn = Callable[[], Awaitable[str]]
+# Optional zero-arg awaitable returning the batch object's ``errors`` payload,
+# folded into a :class:`BatchJobFailedError` on a non-completed terminal status.
+ErrorsFn = Callable[[], Awaitable[list[dict[str, Any]] | None]]
 
 # ── Files/Batches endpoints (fixed, documented URLs — no deployment-specific
 # configuration exists yet; see the contract's design decision 7). ──────────
@@ -91,9 +103,35 @@ class BatchSizeExceededError(ValueError):
 class BatchJobFailedError(RuntimeError):
     """Raised when a batch job's terminal status is not ``"completed"``.
 
-    Names the job id so an operator can look the job up directly (via the
-    Voyage dashboard/API) without re-deriving it from the call site.
+    Names the job id (so an operator can look the job up directly via the
+    Voyage dashboard/API without re-deriving it from the call site) and folds
+    the batch object's own ``errors`` payload — a real wire field, ``null`` on
+    the guide's clean-batch example objects — into the message so a traceback
+    shows WHY the job failed without a separate dashboard lookup.
+
+    Attributes:
+        job_id: The failed batch job's provider id.
+        status: The terminal status the job ended in (``"failed"`` /
+            ``"cancelled"``), or ``None`` when constructed without one.
+        errors: The batch object's ``errors`` payload, or ``None`` when the
+            job carried none (the clean-batch default).
     """
+
+    def __init__(
+        self,
+        job_id: str,
+        status: str | None = None,
+        errors: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.job_id = job_id
+        self.status = status
+        self.errors = errors
+        message = f"batch job {job_id} ended in terminal status {status!r}"
+        if errors:
+            # Fold the provider's own error detail into the message so an
+            # operator reading a traceback sees WHY, not just THAT, it failed.
+            message = f"{message}; errors={errors}"
+        super().__init__(message)
 
 
 class DuplicateBatchIdError(ValueError):
@@ -169,27 +207,50 @@ def _iter_jsonl(raw: bytes) -> Iterator[dict[str, Any]]:
             yield json.loads(line)
 
 
-def parse_batch_output_lines(raw: bytes) -> dict[str, dict[str, Any]]:
-    """Parse a batch OUTPUT file into ``{custom_id: response body}``.
+def parse_batch_output_lines(raw: bytes) -> dict[str, dict[str, Any] | None]:
+    """Parse a batch OUTPUT file into ``{custom_id: response body | None}``.
 
-    Only successfully-embedded (``response.status_code == 200``) lines are
-    included; a failed input's line lives in the batch's separate ERROR file
-    instead (see :func:`parse_batch_failed_ids`) — a batch job never mixes
-    the two shapes within one file.
+    A well-formed line (``response.status_code == 200`` with a ``body``) maps
+    its id to that wire ``response.body`` — byte-identical in shape to the
+    realtime response body for the same endpoint, per the guide.
+
+    A MALFORMED output line (a line living in the output file that is missing
+    ``response.body``, carries a non-200 ``status_code``, or has a null
+    ``response`` — all provider-contract violations, since a genuine per-item
+    failure belongs in the separate ERROR file) maps its id to ``None`` — the
+    SAME failure sentinel a genuine per-item failure uses — rather than
+    silently vanishing. A silent drop would let a downstream caller believe an
+    id was simply never submitted instead of flagging it unusable.
+
+    The ONE case still dropped is a line with no ``custom_id`` at all: there is
+    no key to attribute the result to any submitted input.
 
     Args:
         raw: The downloaded output file's raw bytes.
 
     Returns:
-        A mapping from each successful line's ``custom_id`` to its wire
-        ``response.body`` — byte-identical in shape to the realtime response
-        body for the same endpoint, per the guide.
+        A mapping from each output line's ``custom_id`` to its wire
+        ``response.body`` (or ``None`` for a malformed line).
     """
-    bodies: dict[str, dict[str, Any]] = {}
+    bodies: dict[str, dict[str, Any] | None] = {}
     for line in _iter_jsonl(raw):
+        custom_id = line.get("custom_id")
+        if custom_id is None:
+            # No key to attribute this line to any submitted input — the one
+            # line shape we cannot surface, so it is dropped (not crashed).
+            continue
         response = line.get("response")
-        if response is not None and response.get("status_code") == _HTTP_OK and "body" in response:
-            bodies[line["custom_id"]] = response["body"]
+        if (
+            response is not None
+            and response.get("status_code") == _HTTP_OK
+            and "body" in response
+        ):
+            bodies[custom_id] = response["body"]
+        else:
+            # A provider-contract-violating output line still surfaces, as the
+            # None failure sentinel, so the caller never mistakes it for a
+            # never-submitted id.
+            bodies[custom_id] = None
     return bodies
 
 
@@ -210,6 +271,72 @@ def parse_batch_failed_ids(raw: bytes) -> frozenset[str]:
         The set of ids the batch job could not embed.
     """
     return frozenset(line["custom_id"] for line in _iter_jsonl(raw))
+
+
+async def poll_until_terminal(
+    get_status: StatusFn,
+    *,
+    job_id: str,
+    poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+    sleep_fn: SleepFn | None = None,
+    deadline_s: float | None = None,
+    fetch_errors: ErrorsFn | None = None,
+) -> str:
+    """Poll ``get_status`` until a terminal status, honouring an optional deadline.
+
+    Shared by :class:`VoyageBatchClient` and the shipped
+    :class:`~loresigil.testing.FakeEmbedder` so both honour the SAME
+    terminal/deadline/failure-folding contract from one place.
+
+    Sleeps only BETWEEN polls — a status already terminal on the first check
+    returns immediately, and a status discovered terminal after a poll never
+    pays a trailing sleep it would not use. The deadline is a LOGICAL clock
+    over the cumulative ``poll_interval_s`` schedule (not wall time), so it
+    stays deterministic under an injected instant ``sleep_fn``.
+
+    Args:
+        get_status: Awaitable returning the job's current lifecycle status.
+        job_id: The batch job id (named in the raised errors).
+        poll_interval_s: Delay charged against the logical clock per poll gap.
+        sleep_fn: Awaitable sleep used between polls; defaults to
+            ``asyncio.sleep`` (injected in tests so polling doesn't block the
+            suite) — the same seam convention
+            :class:`~loresigil.resilient.ResilientEmbedder` uses for backoff.
+        deadline_s: Give up (raise :class:`TimeoutError`) once the cumulative
+            poll schedule would exceed this many seconds before a terminal
+            status; ``None`` (the default) polls unbounded.
+        fetch_errors: Optional awaitable returning the batch object's
+            ``errors`` payload, folded into a :class:`BatchJobFailedError` on a
+            non-completed terminal status.
+
+    Returns:
+        The terminal status (always :data:`STATUS_COMPLETED` — any other
+        terminal status raises instead).
+
+    Raises:
+        TimeoutError: The deadline elapsed before a terminal status, naming
+            the job id.
+        BatchJobFailedError: The terminal status is not ``"completed"``,
+            naming the job id (and folding any ``errors`` payload).
+    """
+    sleep = sleep_fn or asyncio.sleep
+    elapsed_s = 0.0
+    status = await get_status()
+    while status not in TERMINAL_BATCH_STATUSES:
+        # Charge the NEXT poll gap against the logical clock BEFORE sleeping so
+        # a caller that cannot wait the full 12h window gives up deterministically.
+        if deadline_s is not None and elapsed_s + poll_interval_s > deadline_s:
+            raise TimeoutError(
+                f"batch job {job_id} did not reach a terminal status within the "
+                f"{deadline_s}s deadline (last status {status!r})"
+            )
+        await sleep(poll_interval_s)
+        elapsed_s += poll_interval_s
+        status = await get_status()
+    if status != STATUS_COMPLETED:
+        errors = await fetch_errors() if fetch_errors is not None else None
+        raise BatchJobFailedError(job_id, status=status, errors=errors)
+    return status
 
 
 class VoyageBatchClient:
@@ -298,7 +425,7 @@ class VoyageBatchClient:
 
         Returns:
             The parsed JSON batch object (``id``/``status``/``output_file_id``/
-            ``error_file_id``).
+            ``error_file_id``/``errors``).
         """
         response = await self._client.get(f"{self._batches_api_url}/{job_id}")
         response.raise_for_status()
@@ -324,44 +451,50 @@ class VoyageBatchClient:
         status: str = batch["status"]
         return status
 
+    async def _fetch_errors(self, job_id: str) -> list[dict[str, Any]] | None:
+        """Return the batch object's ``errors`` payload (``None`` when clean)."""
+        batch = await self.get_batch(job_id)
+        errors: list[dict[str, Any]] | None = batch.get("errors")
+        return errors
+
     async def await_completion(
         self,
         job_id: str,
         *,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         sleep_fn: SleepFn | None = None,
+        deadline_s: float | None = None,
     ) -> str:
         """Poll a batch job until it reaches a terminal status.
 
-        Sleeps only BETWEEN polls — a status already terminal on the first
-        check returns immediately, and a status discovered terminal after a
-        poll never pays a trailing sleep it would not use.
+        Sleeps only BETWEEN polls (see :func:`poll_until_terminal` for the
+        shared terminal/deadline/failure-folding contract).
 
         Args:
             job_id: The batch job id.
             poll_interval_s: Delay between polls.
             sleep_fn: Awaitable sleep used between polls; defaults to
-                ``asyncio.sleep`` (injected in tests so polling doesn't block
-                the suite) — the same seam convention
-                :class:`~loresigil.resilient.ResilientEmbedder` uses for
-                backoff.
+                ``asyncio.sleep``.
+            deadline_s: Optional logical-clock deadline; raises
+                :class:`TimeoutError` if exceeded before a terminal status.
 
         Returns:
             The terminal status (always ``STATUS_COMPLETED`` — any other
             terminal status raises instead).
 
         Raises:
+            TimeoutError: The deadline elapsed before a terminal status.
             BatchJobFailedError: If the terminal status is not ``"completed"``,
-                naming the job id.
+                naming the job id and folding its ``errors`` payload.
         """
-        sleep = sleep_fn or asyncio.sleep
-        status = await self.get_status(job_id)
-        while status not in TERMINAL_BATCH_STATUSES:
-            await sleep(poll_interval_s)
-            status = await self.get_status(job_id)
-        if status != STATUS_COMPLETED:
-            raise BatchJobFailedError(f"batch job {job_id} ended in terminal status {status!r}")
-        return status
+        return await poll_until_terminal(
+            lambda: self.get_status(job_id),
+            job_id=job_id,
+            poll_interval_s=poll_interval_s,
+            sleep_fn=sleep_fn,
+            deadline_s=deadline_s,
+            fetch_errors=lambda: self._fetch_errors(job_id),
+        )
 
     async def fetch_result_files(self, job_id: str) -> tuple[bytes | None, bytes | None]:
         """Validate a job is completed and return its ``(output, error)`` file bytes.
@@ -387,7 +520,7 @@ class VoyageBatchClient:
                 f"batch job {job_id} has not reached a terminal status yet (status={status!r})"
             )
         if status != STATUS_COMPLETED:
-            raise BatchJobFailedError(f"batch job {job_id} ended in terminal status {status!r}")
+            raise BatchJobFailedError(job_id, status=status, errors=batch.get("errors"))
 
         output_file_id = batch.get("output_file_id")
         error_file_id = batch.get("error_file_id")

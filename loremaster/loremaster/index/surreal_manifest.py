@@ -689,6 +689,23 @@ class SurrealManifest:
             f"UPSERT {META_TABLE} SET k = $k, v = $v WHERE k = $k", {"k": key, "v": value}
         )
 
+    async def meta_delete(self, key: str) -> None:
+        """Remove the meta row for ``key`` (idempotent — a no-op when absent).
+
+        The clear half of the meta key/value store: after a bulk-sweep batch
+        job's results are fully applied (or a terminal-failed job is abandoned to
+        the realtime fallback), the indexer removes the in-flight-job marker under
+        ``BULK_SWEEP_BATCH_JOB_META_KEY`` so a later sweep never mistakes a
+        completed/dead job for a live one to REATTACH to.
+
+        Args:
+            key: The meta key to remove.
+
+        Raises:
+            SurrealConnectionError: The server is unreachable or rejected auth.
+        """
+        await self._query(f"DELETE {META_TABLE} WHERE k = $k", {"k": key})
+
     # -- store-divergence reconcile surface --------------------------------
 
     async def expected_chunks(self, tier: str | None = None) -> int:

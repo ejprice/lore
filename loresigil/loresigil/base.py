@@ -38,15 +38,26 @@ The asynchronous Batch API seam (2026-07-03) is likewise OPTIONAL:
 :attr:`Embedder.supports_batch` (default ``False``, mirroring
 :attr:`supports_contextualized`) lets a backend advertise that it also
 implements batch submission/polling/fetch methods (see
-:mod:`loresigil.voyage_batch`) without those methods being part of the core
-abstract contract every embedder must satisfy.
+:mod:`loresigil.voyage_batch`). Those five methods
+(:meth:`Embedder.submit_batch_documents` /
+:meth:`Embedder.submit_batch_document_chunks` /
+:meth:`Embedder.get_batch_status` / :meth:`Embedder.await_batch_completion` /
+:meth:`Embedder.fetch_batch_results`) are non-abstract defaults that raise
+:class:`NotImplementedError` — so a subclass implementing only the pre-batch
+members stays instantiable, while a caller can invoke them polymorphically on
+any ``Embedder``-typed reference (guarded by ``supports_batch``) instead of an
+``isinstance``/``hasattr`` check against the concrete backends.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from loresigil.resilient import SleepFn
+from loresigil.voyage_batch import DEFAULT_POLL_INTERVAL_S
 
 
 class EmbedUsage(BaseModel):
@@ -108,7 +119,9 @@ class Embedder(ABC):
 
     The contextualized seam (``supports_contextualized`` /
     :meth:`embed_document_chunks`) is a non-abstract default — backends opt in
-    by overriding both; everyone else keeps working unchanged.
+    by overriding both; everyone else keeps working unchanged. The Batch API
+    seam (``supports_batch`` + the five ``*_batch_*`` methods) follows the same
+    optional-default pattern.
     """
 
     @property
@@ -186,6 +199,84 @@ class Embedder(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not implement contextualized embedding; "
             f"check supports_contextualized before calling embed_document_chunks"
+        )
+
+    async def submit_batch_documents(self, texts: list[str], ids: list[str]) -> str:
+        """Submit an asynchronous batch job embedding ``texts`` (flat arm).
+
+        Args:
+            texts: Documents to embed.
+            ids: Caller-supplied stable ids, 1:1 with ``texts``.
+
+        Returns:
+            The provider-assigned batch job id.
+
+        Raises:
+            NotImplementedError: Default for backends without the capability —
+                check ``supports_batch`` before calling.
+        """
+        raise self._batch_unsupported("submit_batch_documents")
+
+    async def submit_batch_document_chunks(self, docs: list[list[str]], ids: list[str]) -> str:
+        """Submit an asynchronous batch job embedding ``docs`` (grouped arm).
+
+        Args:
+            docs: One entry per document, each the ordered chunk texts.
+            ids: Caller-supplied stable ids, 1:1 with ``docs``.
+
+        Returns:
+            The provider-assigned batch job id.
+
+        Raises:
+            NotImplementedError: Default for backends without the capability —
+                check ``supports_batch`` before calling.
+        """
+        raise self._batch_unsupported("submit_batch_document_chunks")
+
+    async def get_batch_status(self, job_id: str) -> str:
+        """Return a submitted batch job's current lifecycle status.
+
+        Raises:
+            NotImplementedError: Default for backends without the capability —
+                check ``supports_batch`` before calling.
+        """
+        raise self._batch_unsupported("get_batch_status")
+
+    async def await_batch_completion(
+        self,
+        job_id: str,
+        *,
+        poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+        sleep_fn: SleepFn | None = None,
+        deadline_s: float | None = None,
+    ) -> str:
+        """Poll a batch job until it reaches a terminal status.
+
+        Raises:
+            NotImplementedError: Default for backends without the capability —
+                check ``supports_batch`` before calling.
+        """
+        raise self._batch_unsupported("await_batch_completion")
+
+    async def fetch_batch_results(self, job_id: str) -> dict[str, Any]:
+        """Fetch a completed batch job's results, keyed by caller-supplied id.
+
+        Raises:
+            NotImplementedError: Default for backends without the capability —
+                check ``supports_batch`` before calling.
+        """
+        raise self._batch_unsupported("fetch_batch_results")
+
+    def _batch_unsupported(self, method_name: str) -> NotImplementedError:
+        """Build the shared "batch not supported" error for a batch method.
+
+        Centralises the message so every default batch method raises the SAME
+        well-defined :class:`NotImplementedError` (never a bare
+        ``AttributeError``) — telling the caller to feature-detect first.
+        """
+        return NotImplementedError(
+            f"{type(self).__name__} does not implement the asynchronous Batch API; "
+            f"check supports_batch before calling {method_name}"
         )
 
     @abstractmethod

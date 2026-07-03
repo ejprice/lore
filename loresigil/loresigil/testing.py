@@ -22,6 +22,18 @@ It satisfies the full :class:`~loresigil.base.Embedder` contract:
   can measure exactly what it "billed" via its own public :meth:`count_tokens`,
   so it always does — a fail_inputs text (or a would-be quarantined vector in a
   real backend) still counts toward the bill, matching "billed" != "succeeded".
+
+The asynchronous Batch API seam (2026-07-03) is an OPTIONAL, offline double of
+the real Voyage Files/Batches lifecycle (see :mod:`loresigil.voyage_batch`):
+``supports_batch=True`` enables ``submit_batch_documents`` /
+``submit_batch_document_chunks`` (validated identically to the real backends via
+:func:`~loresigil.voyage_batch.encode_batch_jsonl`), plus ``get_batch_status`` /
+``await_batch_completion`` / ``fetch_batch_results``. Batch vectors are computed
+through the SAME realtime paths (:meth:`embed_documents` /
+:meth:`embed_document_chunks`), so batch/realtime parity holds by construction.
+Submitted jobs live in an injectable ``batch_jobs`` mapping (private per instance
+by default) that stands in for the real Voyage account — a brand-new instance
+sharing that mapping can resume a job it never submitted itself.
 """
 
 from __future__ import annotations
@@ -29,10 +41,23 @@ from __future__ import annotations
 import hashlib
 import math
 import struct
+import uuid
 from collections.abc import Set
+from typing import Any
 
 from loresigil.base import Embedder, EmbedResult, EmbedUsage
+from loresigil.resilient import SleepFn
 from loresigil.tokens import VoyageTokenCounter
+from loresigil.voyage_batch import (
+    DEFAULT_POLL_INTERVAL_S,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_IN_PROGRESS,
+    TERMINAL_BATCH_STATUSES,
+    BatchJobFailedError,
+    encode_batch_jsonl,
+    poll_until_terminal,
+)
 
 # Default model parameters mirror the small-model shape used across the project.
 _DEFAULT_DIM: int = 8
@@ -51,6 +76,16 @@ _BYTES_PER_COMPONENT: int = 8
 # unlikely to appear in real prose, so it cannot collide with chunk content.
 _DOC_CONTEXT_SEPARATOR: str = "\x00"
 
+# Batch-double defaults. A job reaches a terminal status on its FIRST poll by
+# default (so the common happy path never sleeps); a test raises this to hold a
+# job ``in_progress`` for a configured number of polls.
+_DEFAULT_BATCH_POLLS_BEFORE_TERMINAL: int = 1
+# Prefix for the offline fake's job ids (json-serializable, unique per submit).
+_FAKE_BATCH_JOB_PREFIX: str = "fake-batch-"
+# The two batch-line shapes the fake records, mirroring the two real backends.
+_BATCH_KIND_FLAT: str = "flat"
+_BATCH_KIND_GROUPED: str = "grouped"
+
 
 class FakeEmbedder(Embedder):
     """Deterministic, offline :class:`Embedder` for tests and downstream fixtures."""
@@ -65,6 +100,9 @@ class FakeEmbedder(Embedder):
         name: str = _DEFAULT_NAME,
         use_exact_tokenizer: bool = False,
         supports_batch: bool = False,
+        batch_jobs: dict[str, Any] | None = None,
+        batch_polls_before_terminal: int = _DEFAULT_BATCH_POLLS_BEFORE_TERMINAL,
+        batch_should_fail: bool = False,
     ) -> None:
         """Configure the fake embedder.
 
@@ -74,7 +112,8 @@ class FakeEmbedder(Embedder):
             normalized: Whether produced vectors are L2-normalized to unit length.
             fail_inputs: Texts that should come back as ``None`` (permanent
                 failure) from :meth:`embed_documents` and, per chunk, from
-                :meth:`embed_document_chunks`.
+                :meth:`embed_document_chunks`; in the batch double a document
+                containing any such chunk fails as a WHOLE line.
             probe_fails: When ``True``, :meth:`probe` raises to simulate an
                 unreachable endpoint.
             name: Reported model name.
@@ -84,6 +123,15 @@ class FakeEmbedder(Embedder):
             supports_batch: Configurable :attr:`supports_batch` flag, so a test
                 exercising batch-capability gating can flip it without a real
                 batch-capable backend.
+            batch_jobs: Injectable job store standing in for the real Voyage
+                account — shared across instances to exercise resumability; a
+                private (per-instance) ``{}`` by default so unrelated instances
+                never see each other's jobs.
+            batch_polls_before_terminal: Number of :meth:`get_batch_status`
+                polls a submitted job stays ``in_progress`` before reaching a
+                terminal status (``1`` = terminal on the first poll).
+            batch_should_fail: When ``True``, a submitted job's terminal status
+                is ``failed`` (a whole-job failure), not ``completed``.
         """
         self._dim = dim
         self._max_input_tokens = max_input_tokens
@@ -95,6 +143,11 @@ class FakeEmbedder(Embedder):
             VoyageTokenCounter() if use_exact_tokenizer else None
         )
         self._supports_batch = supports_batch
+        # Private per-instance store by default; a shared dict makes a job
+        # resumable by a brand-new instance (the real Voyage account analogue).
+        self._batch_jobs: dict[str, Any] = batch_jobs if batch_jobs is not None else {}
+        self._batch_polls_before_terminal = batch_polls_before_terminal
+        self._batch_should_fail = batch_should_fail
 
     @property
     def name(self) -> str:
@@ -169,6 +222,14 @@ class FakeEmbedder(Embedder):
 
     async def embed_documents(self, texts: list[str]) -> EmbedResult:
         """Embed a batch, returning a result positionally aligned with ``texts``."""
+        return self._embed_documents_core(texts)
+
+    def _embed_documents_core(self, texts: list[str]) -> EmbedResult:
+        """The flat-embed core, shared by the realtime path AND the fake batch
+        synthesis (:meth:`_compute_batch_results`) — a PRIVATE seam so a
+        recording subclass overriding the public method never counts internal
+        batch synthesis as a realtime call, while batch/realtime vectors stay
+        byte-identical by construction."""
         vectors: list[list[float] | None] = [
             None if text in self._fail_inputs else self._vector_for(text) for text in texts
         ]
@@ -200,6 +261,12 @@ class FakeEmbedder(Embedder):
             is the exact bill for just that doc's chunks (offline, the fake CAN
             measure per doc, so it always does).
         """
+        return self._embed_document_chunks_core(docs)
+
+    def _embed_document_chunks_core(self, docs: list[list[str]]) -> list[EmbedResult]:
+        """The grouped-embed core, shared by the realtime path AND the fake
+        batch synthesis — private for the same recording-subclass reason as
+        :meth:`_embed_documents_core`."""
         results: list[EmbedResult] = []
         for chunks in docs:
             # The context key folds in every chunk of the surrounding
@@ -249,3 +316,148 @@ class FakeEmbedder(Embedder):
         if not text:
             return 0
         return max(1, len(text) // _CHARS_PER_TOKEN)
+
+    # ── Offline Batch API double ─────────────────────────────────────────────
+    async def submit_batch_documents(self, texts: list[str], ids: list[str]) -> str:
+        """Record an offline batch job embedding ``texts`` (flat arm).
+
+        Validated identically to the real backends (via the shared
+        :func:`~loresigil.voyage_batch.encode_batch_jsonl` length/empty/
+        duplicate checks) BEFORE any job is recorded.
+
+        Raises:
+            NotImplementedError: When ``supports_batch`` is ``False``.
+            ValueError: Empty batch or an ``ids``/``texts`` length mismatch.
+            DuplicateBatchIdError: A repeated id (named in the message).
+        """
+        if not self._supports_batch:
+            raise self._batch_unsupported("submit_batch_documents")
+        # Validate before recording; discards the encoded bytes (offline fake).
+        encode_batch_jsonl(ids, [{"input": [text]} for text in texts])
+        return self._record_batch_job(_BATCH_KIND_FLAT, list(texts), list(ids))
+
+    async def submit_batch_document_chunks(self, docs: list[list[str]], ids: list[str]) -> str:
+        """Record an offline batch job embedding ``docs`` (grouped arm).
+
+        Raises:
+            NotImplementedError: When ``supports_batch`` is ``False``.
+            ValueError: Empty batch or an ``ids``/``docs`` length mismatch.
+            DuplicateBatchIdError: A repeated id (named in the message).
+        """
+        if not self._supports_batch:
+            raise self._batch_unsupported("submit_batch_document_chunks")
+        encode_batch_jsonl(ids, [{"inputs": [chunks]} for chunks in docs])
+        return self._record_batch_job(
+            _BATCH_KIND_GROUPED, [list(chunks) for chunks in docs], list(ids)
+        )
+
+    def _record_batch_job(self, kind: str, payload: Any, ids: list[str]) -> str:
+        """Store a job in the shared job store and return its unique id.
+
+        The per-job poll/failure config is snapshotted HERE so a resumed
+        instance (sharing only the job store) reproduces the submitter's
+        behaviour, not its own — a job's outcome is fixed at submit time.
+        """
+        job_id = f"{_FAKE_BATCH_JOB_PREFIX}{uuid.uuid4().hex}"
+        self._batch_jobs[job_id] = {
+            "kind": kind,
+            "payload": payload,
+            "ids": ids,
+            "polls": 0,
+            "polls_before_terminal": self._batch_polls_before_terminal,
+            "should_fail": self._batch_should_fail,
+        }
+        return job_id
+
+    async def get_batch_status(self, job_id: str) -> str:
+        """Return a recorded job's status, advancing its poll counter.
+
+        Mirrors the real fake-provider server: each poll advances the job until
+        it has been polled ``polls_before_terminal`` times, then it settles on
+        its terminal status.
+
+        Raises:
+            KeyError: An unknown job id (e.g. a job an unrelated instance's
+                private store never recorded).
+        """
+        job = self._batch_jobs[job_id]
+        job["polls"] += 1
+        if job["polls"] < job["polls_before_terminal"]:
+            return STATUS_IN_PROGRESS
+        return STATUS_FAILED if job["should_fail"] else STATUS_COMPLETED
+
+    async def await_batch_completion(
+        self,
+        job_id: str,
+        *,
+        poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+        sleep_fn: SleepFn | None = None,
+        deadline_s: float | None = None,
+    ) -> str:
+        """Poll a recorded job until terminal (see :func:`poll_until_terminal`).
+
+        Honours the SAME terminal/deadline/failure contract as the real
+        backends, driven by the shared helper.
+
+        Raises:
+            TimeoutError: The deadline elapsed before a terminal status.
+            BatchJobFailedError: A ``failed`` terminal status, naming the job id.
+        """
+        return await poll_until_terminal(
+            lambda: self.get_batch_status(job_id),
+            job_id=job_id,
+            poll_interval_s=poll_interval_s,
+            sleep_fn=sleep_fn,
+            deadline_s=deadline_s,
+        )
+
+    async def fetch_batch_results(
+        self, job_id: str
+    ) -> dict[str, list[float] | EmbedResult | None]:
+        """Fetch a completed job's results, keyed by caller-supplied id.
+
+        Vectors are computed through the SAME realtime code paths as
+        :meth:`embed_documents` / :meth:`embed_document_chunks`, so batch and
+        realtime results are byte-identical by construction. A flat id maps to
+        a bare vector (or ``None`` for a failed text); a grouped id maps to its
+        doc's :class:`EmbedResult` (or bare ``None`` when the WHOLE line failed,
+        design decision #4).
+
+        Raises:
+            KeyError: An unknown job id.
+            RuntimeError: The job has not yet reached a terminal status.
+            BatchJobFailedError: A ``failed`` terminal status, naming the job id.
+        """
+        status = await self.get_batch_status(job_id)
+        if status not in TERMINAL_BATCH_STATUSES:
+            raise RuntimeError(
+                f"batch job {job_id} has not reached a terminal status yet (status={status!r})"
+            )
+        if status != STATUS_COMPLETED:
+            raise BatchJobFailedError(job_id, status=status)
+        return await self._compute_batch_results(self._batch_jobs[job_id])
+
+    async def _compute_batch_results(
+        self, job: dict[str, Any]
+    ) -> dict[str, list[float] | EmbedResult | None]:
+        """Compute a completed job's id-keyed results via the realtime paths."""
+        ids: list[str] = job["ids"]
+        results: dict[str, list[float] | EmbedResult | None] = {}
+        if job["kind"] == _BATCH_KIND_FLAT:
+            # PRIVATE core, not the public method: a recording subclass's
+            # override of embed_documents must never count this internal
+            # synthesis as a realtime call (vectors stay byte-identical —
+            # same core the realtime path delegates to).
+            realtime = self._embed_documents_core(job["payload"])
+            for custom_id, vector in zip(ids, realtime.vectors, strict=True):
+                results[custom_id] = vector
+            return results
+        for chunks, custom_id in zip(job["payload"], ids, strict=True):
+            if any(chunk in self._fail_inputs for chunk in chunks):
+                # A batch line is one atomic unit: any failed chunk fails the
+                # WHOLE line to a bare None (design decision #4).
+                results[custom_id] = None
+            else:
+                [doc_result] = self._embed_document_chunks_core([chunks])
+                results[custom_id] = doc_result
+        return results

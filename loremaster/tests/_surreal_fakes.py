@@ -615,6 +615,9 @@ class FakeSurrealManifest:
     async def meta_set(self, key: str, value: str) -> None:
         self.db.meta[key] = value
 
+    async def meta_delete(self, key: str) -> None:
+        self.db.meta.pop(key, None)
+
     async def reset_tier(self, tier: str) -> None:
         for (row_tier, file_path), row in list(self.db.manifest_rows.items()):
             if row_tier == tier:

@@ -54,10 +54,12 @@ import math
 import os
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from lorescribe.models import Chunk, ChunkContext
+from loresigil.voyage_batch import BatchJobFailedError
 from pydantic import BaseModel, ConfigDict
 
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, RootConfig
@@ -178,6 +180,68 @@ _FAILED_STORE_REASON = "store_op_failed_after_retries"
 # the same isolation the embed and store steps already have, extended to the
 # step that precedes them (a chunker-failed file never reaches the embedder).
 _FAILED_CHUNK_REASON = "chunk_failed"
+
+# Sweep-level batch-embedding dispatch modes (the string values of
+# ``loremaster.config.BatchMode``). A whole-sweep decides ONCE, before pass 1,
+# which path it runs; ``index_file`` (the watcher/reconcile single-file
+# primitive) ignores these entirely and always embeds realtime.
+_BATCH_MODE_REALTIME = "realtime"
+_BATCH_MODE_BATCH = "batch"
+_BATCH_MODE_AUTO = "auto"
+
+# The two batch-line shapes, mirroring the two realtime dispatch arms: ``flat``
+# is one line per CHUNK (``submit_batch_documents``); ``grouped`` is one line per
+# FILE (``submit_batch_document_chunks``), for a contextualized embedder — the
+# same one-doc-per-file rule the realtime ``embed_document_chunks`` dispatch uses.
+_BATCH_KIND_FLAT = "flat"
+_BATCH_KIND_GROUPED = "grouped"
+
+# The separator folded into a grouped submission's per-file batch ``custom_id``.
+# A NUL never appears in a tier name or a POSIX path, so it cannot collide two
+# files' ids. ``chr(0)`` (not a backslash escape) keeps the source ASCII-clean.
+_BATCH_LINE_ID_SEPARATOR = chr(0)
+
+# The manifest ``meta`` key under which a two-pass bulk sweep persists its
+# in-flight batch job descriptor (``{"job_id": str, "kind": "flat"|"grouped"}``)
+# BEFORE polling, so a crash between submit and apply leaves durable evidence a
+# NEW sweep REATTACHES to instead of resubmitting (no double-embed, no doubled
+# provider bill). Cleared once the job's results are fully applied (or a
+# terminal-failed job is abandoned to the realtime fallback).
+BULK_SWEEP_BATCH_JOB_META_KEY = "bulk_sweep_batch_job"
+
+
+@dataclass
+class _PendingFile:
+    """One walked+chunked file awaiting embedding in a two-pass bulk sweep.
+
+    Pass 1 (walk + chunk, ZERO embeds) produces one of these per genuinely-
+    pending file; pass 2 submits their chunk texts as ONE batch job and applies
+    each file's existing atomic composed transaction as the vectors arrive. The
+    per-file records/point-ids are derived deterministically at pass-1 time, so a
+    crash-resumed sweep re-derives identical ids with no extra bookkeeping.
+
+    Attributes:
+        tier: The tier the file belongs to.
+        path: The tier-relative POSIX file path.
+        content_hash: The file's content SHA-512 (freshness + manifest row).
+        source: The file's full verbatim text (the ``file_text`` body).
+        chunks: The chunker's output for the file (order-significant).
+        records: The chunk records derived from ``chunks`` (the SAME derivation
+            :meth:`Indexer._index_chunks` uses), paired positionally with vectors.
+        new_ids: The records' point ids (the chunk-replace fragment's new ids).
+        mtime_ns: The file mtime in nanoseconds (the manifest fast-path key).
+        size: The file size in bytes.
+    """
+
+    tier: str
+    path: str
+    content_hash: str
+    source: str
+    chunks: list[Chunk]
+    records: list[Record]
+    new_ids: list[str]
+    mtime_ns: int
+    size: int
 
 
 def _tier_version_meta_key(tier: str) -> str:
@@ -1048,8 +1112,26 @@ class Indexer:
         Iterates :attr:`LoreConfig.effective_roots`, not the raw ``roots`` list,
         so a single-tree config (top-level ``include`` globs and NO ``roots:``)
         indexes its synthesised default live root instead of silently indexing
-        nothing. On a FULLY-successful, genuinely-productive sweep, stamps a
-        new snapshot generation (see :meth:`_maybe_stamp_snapshot`).
+        nothing. Decides ONCE (before pass 1) between the pre-existing per-file
+        realtime flow (:meth:`_index_all_realtime`) and the two-pass bulk-sweep
+        batch flow (:meth:`_sweep_two_pass`) via
+        :meth:`_sweep_uses_batch_dispatch`. On a FULLY-successful, genuinely-
+        productive sweep, stamps a new snapshot generation (see
+        :meth:`_maybe_stamp_snapshot`) — the SAME gate either path shares.
+        """
+        if self._sweep_uses_batch_dispatch():
+            result = await self._sweep_two_pass(is_rebuild=False, fingerprint=None)
+        else:
+            result = await self._index_all_realtime()
+        await self._maybe_stamp_snapshot(result)
+        return result
+
+    async def _index_all_realtime(self) -> IndexSummary:
+        """The pre-existing per-file realtime sweep body (one inline embed per file).
+
+        Split out of :meth:`index_all` so the batch-dispatch decision can pick
+        between this and the two-pass batch flow while the stamp-on-success gate
+        stays shared. Behaviour is byte-identical to the pre-batch ``index_all``.
         """
         outcomes: list[IndexOutcome] = []
         rebuilt: list[str] = []
@@ -1059,9 +1141,7 @@ class Indexer:
             outcomes.extend(summary.outcomes)
             rebuilt.extend(summary.tiers_rebuilt)
             skipped_tiers.extend(summary.tiers_skipped)
-        result = self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=skipped_tiers)
-        await self._maybe_stamp_snapshot(result)
-        return result
+        return self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=skipped_tiers)
 
     async def _maybe_stamp_snapshot(self, summary: IndexSummary) -> None:
         """Stamp a new snapshot generation iff this sweep fully succeeded AND did
@@ -1084,8 +1164,495 @@ class Indexer:
             return
         await self._snapshot_stamper.stamp()
 
+    # -- two-pass bulk-sweep batch flow (index_all / rebuild_all only) ------
+
+    def _sweep_uses_batch_dispatch(self) -> bool:
+        """Decide ONCE (before pass 1) whether a whole-sweep runs the two-pass batch flow.
+
+        * ``realtime`` -> never (always the pre-existing per-file realtime flow).
+        * ``batch`` -> yes IF the embedder advertises ``supports_batch``;
+          otherwise the WHOLE sweep falls back to realtime with ONE loud WARNING
+          (an operator who explicitly asked for batch on a TEI/local backend must
+          see why they didn't get it — never a silent downgrade).
+        * ``auto`` -> yes IF the embedder supports batch (the post-pass-1
+          pending-chunk-count-vs-threshold half of the ``auto`` decision is applied
+          later, once pass 1 has counted the genuinely-pending chunks — a raw file
+          count would misjudge it).
+
+        Returns:
+            ``True`` to enter the two-pass batch collection; ``False`` to run the
+            pre-existing per-file realtime flow.
+        """
+        mode = self._config.embedding.batch.mode
+        if mode == _BATCH_MODE_REALTIME:
+            return False
+        if not self._embedder.supports_batch:
+            if mode == _BATCH_MODE_BATCH:
+                logger.warning(
+                    "index.sweep.batch_unsupported_realtime_fallback",
+                    extra={"mode": mode, "embedder": self._embedder.name},
+                )
+            return False
+        return True
+
+    async def _sweep_two_pass(
+        self, *, is_rebuild: bool, fingerprint: str | None
+    ) -> IndexSummary:
+        """Run a whole-sweep in two passes: walk+chunk everything, then ONE batch job.
+
+        Pass 1 (:meth:`_collect_sweep_pending`) walks + chunks every genuinely-
+        pending file with ZERO embeds (preserving the mtime/size fast-path skips,
+        the static-tier version-stamp freshness gate, and the chunker
+        fault-isolation). Pass 2 then decides on the ACTUAL pending-chunk count:
+        ``auto`` at/under the threshold (or a zero-chunk sweep) degrades to the
+        realtime embed of the already-chunked files; otherwise the collected
+        chunks are submitted as ONE asynchronous batch job, polled, and applied
+        per file (:meth:`_run_batch_pass_two`). ``rebuild_all`` reuses this with
+        ``is_rebuild`` (unconditional per-tier purge) and stamps the fingerprint +
+        rebuild-status ``done`` on completion, exactly as its realtime twin does.
+        """
+        total = 0
+        if is_rebuild:
+            assert fingerprint is not None  # rebuild_all always supplies one
+            total = self.count_files_to_rebuild()
+            await self._write_rebuild_status(
+                state=_REBUILD_STATE_IN_PROGRESS, done=0, total=total,
+                fingerprint=fingerprint,
+            )
+        pending, immediate_outcomes, rebuilt, skipped_tiers = (
+            await self._collect_sweep_pending(is_rebuild=is_rebuild)
+        )
+        pending_chunk_count = sum(len(pf.records) for pf in pending)
+        mode = self._config.embedding.batch.mode
+        threshold = self._config.embedding.batch.chunk_count_threshold
+        if not pending:
+            embed_outcomes: list[IndexOutcome] = []
+        elif pending_chunk_count == 0 or (
+            mode == _BATCH_MODE_AUTO and pending_chunk_count <= threshold
+        ):
+            # ``auto`` below the threshold (or nothing to embed at all): no batch
+            # job for a handful of changed files — embed the already-chunked
+            # pending files realtime instead (the 12h-worst-case batch latency is
+            # not worth it for a small sweep).
+            embed_outcomes = await self._realtime_embed_pending(pending)
+        else:
+            embed_outcomes = await self._run_batch_pass_two(pending)
+        outcomes = immediate_outcomes + embed_outcomes
+        result = self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=skipped_tiers)
+        if is_rebuild:
+            assert fingerprint is not None
+            # ALL tiers succeeded -> stamp the fingerprint (durable completion
+            # evidence) then flip the status blob to ``done`` (the human surface).
+            await self._manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, fingerprint)
+            await self._write_rebuild_status(
+                state=_REBUILD_STATE_DONE, done=result.files_indexed, total=total,
+                fingerprint=fingerprint,
+            )
+        return result
+
+    async def _collect_sweep_pending(
+        self, *, is_rebuild: bool
+    ) -> tuple[list[_PendingFile], list[IndexOutcome], list[str], list[str]]:
+        """Pass 1: walk + chunk every effective root, collecting pending work (no embeds).
+
+        Reproduces the per-tier freshness dispatch of :meth:`index_tier` /
+        :meth:`rebuild_all` but STOPS before embedding: a genuinely-pending file
+        is chunked and its records derived into a :class:`_PendingFile` for pass 2,
+        while a fast-path-skipped file, a chunker-failed file, and a stamp-skipped
+        static tier's already-indexed files each become an immediate
+        :class:`IndexOutcome` that never reaches a batch submission.
+
+        Returns:
+            ``(pending, immediate_outcomes, rebuilt_tiers, skipped_tiers)``.
+        """
+        pending: list[_PendingFile] = []
+        immediate: list[IndexOutcome] = []
+        rebuilt: list[str] = []
+        skipped_tiers: list[str] = []
+        for root in self._config.effective_roots:
+            if is_rebuild:
+                base = await self._purge_tier_for_rebuild(root)
+                await self._walk_collect_tier(root, base, pending, immediate)
+                rebuilt.append(root.tier)
+                continue
+            if root.watch == WATCH_LIVE:
+                assert root.path is not None  # validated by RootConfig
+                await self._walk_collect_tier(root, Path(root.path), pending, immediate)
+                rebuilt.append(root.tier)
+                continue
+            assert root.version is not None  # validated by RootConfig
+            static_base = await self._prepare_static_tier_for_collect(root)
+            if static_base is None:
+                # Version-stamp fast-path SKIP (zero walk). The tier's already-
+                # indexed files are still reported as skipped (read from the
+                # manifest, no filesystem walk) so the sweep summary accounts for
+                # every file it left intact.
+                skipped_tiers.append(root.tier)
+                for row in await self._manifest.files_for_tier(root.tier):
+                    if row.state == STATE_INDEXED:
+                        immediate.append(
+                            IndexOutcome(
+                                tier=root.tier, file_path=row.file_path,
+                                state=STATE_SKIPPED, n_chunks=row.n_chunks,
+                            )
+                        )
+                continue
+            await self._walk_collect_tier(root, static_base, pending, immediate)
+            await self.set_tier_version_stamp(root.tier, root.version)
+            rebuilt.append(root.tier)
+        return pending, immediate, rebuilt, skipped_tiers
+
+    async def _purge_tier_for_rebuild(self, root: RootConfig) -> Path:
+        """Purge a tier's vectors + manifest rows for an unconditional rebuild pass 1.
+
+        Mirrors the per-tier purge of :meth:`rebuild_all` (acquire a static tier's
+        snapshot, ``delete_by_tier``, drop the manifest rows) so the pass-1 walk
+        re-collects every file (``needs_reindex`` can never short-circuit).
+        """
+        self._acquire_static_snapshot(root)
+        await self._store.delete_by_tier(root.tier)
+        for stale in await self._manifest.files_for_tier(root.tier):
+            await self._manifest.delete(root.tier, stale.file_path)
+        base = self._tier_base(root.tier)
+        assert base is not None  # every effective root resolves a base
+        return base
+
+    async def _prepare_static_tier_for_collect(self, root: RootConfig) -> Path | None:
+        """Apply a static tier's D5 freshness gate for pass 1; return its walk base or None.
+
+        Mirrors :meth:`_index_static_tier`'s three-way freshness logic exactly — a
+        matching version stamp over a materialised (or never-built) snapshot
+        returns ``None`` (SKIP with zero walk); a changed/absent stamp (or a lost
+        snapshot volume) acquires the snapshot, selectively purges the tier, and
+        returns the materialisation dir to walk. The version RE-STAMP is done by
+        the caller AFTER the walk, matching the realtime path's ordering.
+        """
+        assert root.version is not None  # validated by RootConfig
+        if await self.tier_version_stamp(root.tier) == root.version and (
+            self._snapshot_materialized(root.tier)
+            or await self._manifest.indexed_file_count(tier=root.tier) == 0
+        ):
+            logger.info("index.tier.skip", extra={"tier": root.tier})
+            return None
+        provider = self._providers_by_tier.get(root.tier)
+        if provider is None:
+            raise KeyError(
+                f"static tier {root.tier!r} has no registered SourceProvider"
+            )
+        logger.info("index.tier.rebuild", extra={"tier": root.tier, "watch": WATCH_STATIC})
+        provider.acquire(root.tier, self._snapshot_layout.snapshot_root)
+        await self._store.delete_by_tier(root.tier)
+        for stale in await self._manifest.files_for_tier(root.tier):
+            await self._manifest.delete(root.tier, stale.file_path)
+        return self._snapshot_layout.materialization_dir(root.tier)
+
+    async def _walk_collect_tier(
+        self,
+        root: RootConfig,
+        base: Path,
+        pending: list[_PendingFile],
+        immediate: list[IndexOutcome],
+    ) -> None:
+        """Walk ``base``, chunking each genuinely-pending file into ``pending`` (no embeds).
+
+        The pass-1 twin of :meth:`_walk_and_index`: the SAME dir-prune + include +
+        mtime/size fast-path + chunker fault-isolation, but instead of embedding
+        each file inline it derives the file's records and appends a
+        :class:`_PendingFile` for the ONE batch job pass 2 submits. A fast-path-
+        skipped or chunker-failed file becomes an immediate outcome exactly as in
+        the realtime walk (a chunker-failed file is isolated ``failed`` NOW and
+        never poisons the shared batch job).
+        """
+        self._reset_graph_resolution_cache()
+        for dirpath in walked_dirs(self._config, base):
+            for filename in sorted(os.listdir(dirpath)):
+                abs_path = Path(dirpath) / filename
+                if not abs_path.is_file():
+                    continue
+                rel = str(PurePosixPath(abs_path.relative_to(base).as_posix()))
+                if not is_included(self._config, root, rel):
+                    continue
+                stat = abs_path.stat()
+                if not await self._manifest.needs_reindex(
+                    root.tier, rel, stat.st_mtime_ns, stat.st_size
+                ):
+                    immediate.append(
+                        IndexOutcome(
+                            tier=root.tier, file_path=rel, state=STATE_SKIPPED,
+                            n_chunks=await self._chunk_count(root.tier, rel),
+                        )
+                    )
+                    continue
+                source = abs_path.read_text(encoding="utf-8")
+                content_hash = sha512_hex(source)
+                try:
+                    chunks = self._chunk(rel, source)
+                except Exception:
+                    # ANY chunker exception isolates THIS file (marked failed now)
+                    # instead of poisoning the shared batch job — identical to the
+                    # realtime walk's isolation, one step before the embed.
+                    immediate.append(
+                        await self._handle_chunk_failure(
+                            tier=root.tier, path=rel, content_hash=content_hash,
+                            mtime_ns=stat.st_mtime_ns, size=stat.st_size,
+                        )
+                    )
+                    continue
+                records = self._records_for(
+                    root.tier, rel, content_hash, stat.st_mtime_ns, chunks
+                )
+                pending.append(
+                    _PendingFile(
+                        tier=root.tier, path=rel, content_hash=content_hash,
+                        source=source, chunks=chunks, records=records,
+                        new_ids=[record.point_id for record in records],
+                        mtime_ns=stat.st_mtime_ns, size=stat.st_size,
+                    )
+                )
+
+    def _records_for(
+        self,
+        tier: str,
+        path: str,
+        content_hash: str,
+        mtime_ns: int,
+        chunks: list[Chunk],
+    ) -> list[Record]:
+        """Build a file's ordered chunk records (the SAME derivation as `_index_chunks`)."""
+        return [
+            chunk_to_record(
+                chunk, slug=self._config.project.slug, tier=tier, file_path=path,
+                content_hash=content_hash, mtime_ns=mtime_ns,
+            )
+            for chunk in chunks
+        ]
+
+    async def _realtime_embed_pending(
+        self, pending: list[_PendingFile]
+    ) -> list[IndexOutcome]:
+        """Embed already-chunked pending files via the UNCHANGED realtime per-file path.
+
+        The degrade target for ``auto`` below the threshold AND the whole-job
+        terminal-failure fallback: each pending file is embedded + committed
+        through :meth:`_index_chunks` (one realtime embed per file), reusing the
+        pass-1 chunks so no file is re-walked or re-chunked. "Throughput degraded
+        beats sweep lost."
+        """
+        outcomes: list[IndexOutcome] = []
+        for pf in pending:
+            outcomes.append(
+                await self._index_chunks(
+                    tier=pf.tier, path=pf.path, content_hash=pf.content_hash,
+                    source=pf.source, chunks=pf.chunks, mtime_ns=pf.mtime_ns,
+                    size=pf.size,
+                )
+            )
+        return outcomes
+
+    async def _run_batch_pass_two(
+        self, pending: list[_PendingFile]
+    ) -> list[IndexOutcome]:
+        """Pass 2: submit (or REATTACH) ONE batch job, poll it, apply each file's result.
+
+        A live in-flight job id persisted under
+        :data:`BULK_SWEEP_BATCH_JOB_META_KEY` REATTACHES (polls + fetches the
+        EXISTING job) instead of resubmitting — no double-embed, no doubled
+        provider bill. A fresh submission persists its job id to the manifest meta
+        BEFORE polling, so a crash between submit and apply leaves durable
+        evidence. On a WHOLE-job terminal failure the meta key is cleared and the
+        affected files are re-embedded via the realtime fallback (ONE WARNING; the
+        sweep still fully succeeds). On success every file's result is applied and
+        the meta key is cleared.
+        """
+        descriptor = await self._read_batch_job_descriptor()
+        if descriptor is not None:
+            # REATTACH: a prior (possibly crashed) sweep already submitted this
+            # job. Pass 1 re-derived the identical pending order, so the fetched
+            # results still apply correctly without the original custom ids.
+            job_id = descriptor["job_id"]
+            kind = descriptor["kind"]
+        else:
+            kind = (
+                _BATCH_KIND_GROUPED
+                if self._embedder.supports_contextualized
+                else _BATCH_KIND_FLAT
+            )
+            job_id = await self._submit_batch_job(pending, kind)
+            # Persist BEFORE polling: durable evidence of the in-flight job.
+            await self._persist_batch_job_descriptor(job_id, kind)
+        try:
+            await self._embedder.await_batch_completion(
+                job_id, poll_interval_s=self._config.embedding.batch.poll_interval_s
+            )
+            results = await self._embedder.fetch_batch_results(job_id)
+        except BatchJobFailedError:
+            # Whole-job terminal failure: never mark the files failed, never abort
+            # — fall back to a synchronous realtime re-embed of exactly this
+            # sweep's files (ONE loud WARNING). The meta key must not point at a
+            # dead job. This is the pinned "throughput degraded beats sweep lost".
+            await self._clear_batch_job_descriptor()
+            logger.warning(
+                "index.sweep.batch_job_failed_realtime_fallback",
+                extra={"job_id": job_id},
+            )
+            return await self._realtime_embed_pending(pending)
+        outcomes = await self._apply_batch_results(pending, results, kind)
+        await self._clear_batch_job_descriptor()
+        return outcomes
+
+    async def _submit_batch_job(self, pending: list[_PendingFile], kind: str) -> str:
+        """Submit the sweep's pending chunks as ONE batch job (flat or grouped arm).
+
+        The flat arm submits one line per CHUNK (its deterministic point id as the
+        ``custom_id``); the grouped/contextualized arm submits one line per FILE
+        (the file's whole chunk group), mirroring the realtime
+        ``embed_document_chunks`` one-doc-per-file dispatch. The custom-id scheme
+        is internal bookkeeping — results are applied by pass-1 order (see
+        :meth:`_apply_batch_results`), never by a specific id string shape.
+        """
+        if kind == _BATCH_KIND_FLAT:
+            texts: list[str] = []
+            ids: list[str] = []
+            for pf in pending:
+                for record in pf.records:
+                    texts.append(record.embedding_text)
+                    ids.append(record.point_id)
+            return await self._embedder.submit_batch_documents(texts, ids)
+        docs: list[list[str]] = []
+        doc_ids: list[str] = []
+        for pf in pending:
+            docs.append([record.embedding_text for record in pf.records])
+            doc_ids.append(self._grouped_batch_line_id(pf))
+        return await self._embedder.submit_batch_document_chunks(docs, doc_ids)
+
+    @staticmethod
+    def _grouped_batch_line_id(pf: _PendingFile) -> str:
+        """The unique batch ``custom_id`` for a grouped (one-line-per-file) submission."""
+        return f"{pf.tier}{_BATCH_LINE_ID_SEPARATOR}{pf.path}"
+
+    async def _apply_batch_results(
+        self, pending: list[_PendingFile], results: dict[str, Any], kind: str
+    ) -> list[IndexOutcome]:
+        """Apply a completed job's results to each pending file, in pass-1 order.
+
+        The results are consumed in submission order (the SAME order pass 1
+        collected the files/chunks), so a crash-resumed sweep that re-derives the
+        identical pending order applies the vectors correctly even though it never
+        saw the original submission's custom ids. The flat arm slices the flat
+        vector stream per file's chunk count; the grouped arm takes one document
+        result per file (a whole-line failure — a bare ``None`` — fails just that
+        file, via the existing None-vector guard in :meth:`_commit_batch_file`).
+        """
+        values = list(results.values())
+        outcomes: list[IndexOutcome] = []
+        if kind == _BATCH_KIND_FLAT:
+            cursor = 0
+            for pf in pending:
+                count = len(pf.records)
+                file_vectors: list[Any] = list(values[cursor : cursor + count])
+                cursor += count
+                outcomes.append(await self._commit_batch_file(pf, file_vectors))
+            return outcomes
+        for pf, doc_result in zip(pending, values, strict=True):
+            if doc_result is None:
+                grouped_vectors: list[Any] = [None] * len(pf.records)
+            else:
+                grouped_vectors = list(doc_result.vectors)
+            outcomes.append(await self._commit_batch_file(pf, grouped_vectors))
+        return outcomes
+
+    async def _commit_batch_file(
+        self, pf: _PendingFile, vectors: list[list[float] | None]
+    ) -> IndexOutcome:
+        """Commit one pending file's batch-embedded vectors via its atomic composed txn.
+
+        The batch twin of :meth:`_index_chunks`'s commit half: the SAME usable-
+        vector guard (a ``None``/non-finite vector fails the file via
+        :meth:`_mark_file_failed`, last-good retained), the SAME composed chunk +
+        ``file_text`` + manifest (+ graph) fragments applied through ONE
+        :meth:`SurrealStore.apply`, and the SAME typed-``SurrealStoreError``
+        isolation — only the vectors' PROVENANCE (a batch job, not an inline
+        embed) differs, so per-file atomicity and fault-isolation are unchanged.
+        """
+        started_ns = time.monotonic_ns()
+        prior = await self._manifest.get(pf.tier, pf.path)
+        prior_ids = prior.chunk_ids if prior is not None else []
+        if not self._all_vectors_usable(vectors):
+            # A permanently-failed / non-finite batch item: mark failed in a small
+            # manifest-only write, store NOTHING new, retain any prior points
+            # (last-good). Siblings keep indexing.
+            return await self._mark_file_failed(
+                tier=pf.tier, path=pf.path, content_hash=pf.content_hash,
+                mtime_ns=pf.mtime_ns, size=pf.size, prior=prior, prior_ids=prior_ids,
+                reason=_FAILED_EMBED_REASON,
+            )
+        try:
+            fragments = self._compose_file_fragments(
+                tier=pf.tier, path=pf.path, source=pf.source,
+                content_hash=pf.content_hash, records=pf.records, vectors=vectors,
+                new_ids=pf.new_ids, mtime_ns=pf.mtime_ns, size=pf.size, chunks=pf.chunks,
+            )
+            await self._store.apply(fragments)
+        except SurrealStoreError:
+            logger.warning(
+                "index.file.store_failed",
+                extra={
+                    "tier": pf.tier, "file_path": pf.path, "reason": _FAILED_STORE_REASON,
+                },
+                exc_info=True,
+            )
+            return await self._mark_file_failed(
+                tier=pf.tier, path=pf.path, content_hash=pf.content_hash,
+                mtime_ns=pf.mtime_ns, size=pf.size, prior=prior, prior_ids=prior_ids,
+                reason=_FAILED_STORE_REASON,
+            )
+        duration_ms = (time.monotonic_ns() - started_ns) / 1_000_000
+        logger.info(
+            "index.file.done",
+            extra={
+                "tier": pf.tier, "file_path": pf.path, "n_chunks": len(pf.records),
+                "state": STATE_INDEXED, "duration_ms": duration_ms, "usage_tokens": None,
+            },
+        )
+        return IndexOutcome(
+            tier=pf.tier, file_path=pf.path, state=STATE_INDEXED, n_chunks=len(pf.records)
+        )
+
+    async def _read_batch_job_descriptor(self) -> dict[str, Any] | None:
+        """Read the persisted in-flight batch-job descriptor, or ``None`` if absent."""
+        raw = await self._manifest.meta_get(BULK_SWEEP_BATCH_JOB_META_KEY)
+        if raw is None:
+            return None
+        descriptor: dict[str, Any] = json.loads(raw)
+        return descriptor
+
+    async def _persist_batch_job_descriptor(self, job_id: str, kind: str) -> None:
+        """Persist the in-flight batch-job descriptor BEFORE polling (crash evidence)."""
+        await self._manifest.meta_set(
+            BULK_SWEEP_BATCH_JOB_META_KEY, json.dumps({"job_id": job_id, "kind": kind})
+        )
+
+    async def _clear_batch_job_descriptor(self) -> None:
+        """Clear the in-flight batch-job descriptor (a completed/dead job is not live)."""
+        await self._manifest.meta_delete(BULK_SWEEP_BATCH_JOB_META_KEY)
 
     async def rebuild_all(self, fingerprint: str) -> IndexSummary:
+        """Re-embed EVERY tier from scratch, dispatching batch vs realtime like index_all.
+
+        A batch/auto-over-threshold sweep with a batch-capable embedder runs the
+        two-pass bulk flow (:meth:`_sweep_two_pass` with ``is_rebuild=True``);
+        otherwise the pre-existing per-file realtime rebuild
+        (:meth:`_rebuild_all_realtime`) runs unchanged. Either path stamps the
+        fingerprint + rebuild-status ``done`` only after ALL tiers complete (the
+        crash-safety contract) and stamps a snapshot on a fully-successful sweep.
+        """
+        if self._sweep_uses_batch_dispatch():
+            result = await self._sweep_two_pass(is_rebuild=True, fingerprint=fingerprint)
+            await self._maybe_stamp_snapshot(result)
+            return result
+        return await self._rebuild_all_realtime(fingerprint)
+
+    async def _rebuild_all_realtime(self, fingerprint: str) -> IndexSummary:
         """Re-embed EVERY tier from scratch and stamp the fingerprint on completion.
 
         Mirrors :meth:`_index_static_tier`'s purge+rewalk, but UNCONDITIONALLY for

@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
+from loresigil.voyage_batch import DEFAULT_POLL_INTERVAL_S
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -44,6 +45,20 @@ from pydantic import (
     StringConstraints,
     model_validator,
 )
+
+# Sweep-level batch-embedding dispatch modes (ledger #14 Part 2). "realtime"
+# forces the per-file embed path; "batch" forces the two-pass bulk-sweep path
+# (falling back to realtime with a WARNING when the embedder lacks
+# ``supports_batch``); "auto" picks batch only when a sweep's pending chunk
+# count exceeds the threshold AND the embedder supports it.
+BatchMode = Literal["realtime", "batch", "auto"]
+DEFAULT_BATCH_MODE: BatchMode = "auto"
+
+# The default pending-chunk count above which an "auto" sweep dispatches a batch
+# job: small enough that a real multi-hundred-file project sweep trips it, large
+# enough that a single-file watcher reconcile (which stays realtime regardless
+# of mode) never accidentally qualifies.
+DEFAULT_BATCH_CHUNK_COUNT_THRESHOLD: int = 1000
 
 # Freshness policies a root may declare (D5). Typed as the exact string literals
 # so they satisfy ``RootConfig.watch: Literal["live", "static"]`` when used to
@@ -102,6 +117,35 @@ class ProjectConfig(_StrictModel):
     root: str
 
 
+class BatchConfig(_StrictModel):
+    """Sweep-level batch-embedding configuration (ledger #14 Part 2).
+
+    OPTIONAL on :class:`EmbeddingConfig` with a default instance (mirroring
+    :class:`LoggingConfig` / :class:`SurrealConfig` on :class:`LoreConfig`), so
+    every existing ``lore.yaml`` (which carries no ``embedding.batch:`` block)
+    keeps validating and transparently gets these defaults.
+
+    Attributes:
+        mode: The sweep dispatch mode. ``"auto"`` (the default) picks the
+            two-pass batch flow only when a sweep's pending chunk count exceeds
+            :attr:`chunk_count_threshold` AND the embedder advertises
+            ``supports_batch``; ``"batch"`` forces it (falling back to realtime
+            with a WARNING when unsupported); ``"realtime"`` forces the
+            pre-existing per-file embed path.
+        chunk_count_threshold: The pending-chunk count above which an ``"auto"``
+            sweep dispatches a batch job. Positive.
+        poll_interval_s: The delay between batch-job status polls. Defaults to
+            loresigil's own
+            :data:`~loresigil.voyage_batch.DEFAULT_POLL_INTERVAL_S` (the SAME
+            source of truth the Voyage batch client uses), never a hand-copied
+            literal.
+    """
+
+    mode: BatchMode = DEFAULT_BATCH_MODE
+    chunk_count_threshold: PositiveInt = DEFAULT_BATCH_CHUNK_COUNT_THRESHOLD
+    poll_interval_s: float = DEFAULT_POLL_INTERVAL_S
+
+
 class EmbeddingConfig(_StrictModel):
     """Embedding-backend configuration.
 
@@ -127,6 +171,9 @@ class EmbeddingConfig(_StrictModel):
         document_prompt_name: Optional TEI prompt name sent as ``"prompt_name"``
             in the POST body for ``embed_documents`` calls. ``None`` (default)
             means no ``"prompt_name"`` key is sent — backward-compatible opt-in.
+        batch: Sweep-level batch-embedding configuration (see
+            :class:`BatchConfig`). OPTIONAL with a default instance, so an
+            existing lore.yaml with no ``embedding.batch:`` block still parses.
     """
 
     backend: Literal["tei", "voyage-cloud", "voyage-context"]
@@ -148,6 +195,11 @@ class EmbeddingConfig(_StrictModel):
     # not listed here — this is an explicit addition, not a relaxation).
     query_prompt_name: str | None = None
     document_prompt_name: str | None = None
+
+    # OPTIONAL with a default instance (like ``logging`` on ``LoreConfig``), so
+    # an existing lore.yaml with no ``embedding.batch:`` block still validates
+    # and transparently gets the documented sweep-batch defaults.
+    batch: BatchConfig = BatchConfig()
 
 
 class QdrantConfig(_StrictModel):
