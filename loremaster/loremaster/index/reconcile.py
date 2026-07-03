@@ -23,9 +23,10 @@ What reconcile owns on top of :meth:`Indexer.index_all`:
   visits files that still exist, so a file present in the manifest but GONE from
   disk is invisible to ``index_tier``. Reconcile closes that gap: for every LIVE
   tier it diffs the manifest's rows against the files the walk actually saw and
-  purges the difference — ``store.delete_by_file(tier, path)`` (tier-scoped, so a
-  sibling tier's copy of the same path survives) followed by
-  ``manifest.delete(tier, path)``. STATIC tiers are excluded from the purge pass:
+  purges the difference in ONE composed atomic transaction — the store chunk-delete
+  + ``file_text`` delete + manifest-row delete (+ the graph slice), tier-scoped so a
+  sibling tier's copy of the same path survives. STATIC tiers are excluded from the
+  purge pass:
   a matching-stamp static tier is intentionally not walked, so "the walk didn't
   see it" carries no information about deletion there — a static tier's contents
   change only through a version-stamp rebuild, which already purges via
@@ -42,7 +43,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loremaster.config import WATCH_LIVE
 from loremaster.index.indexer import IndexSummary
@@ -52,10 +53,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from loremaster.config import LoreConfig, RootConfig
-    from loremaster.graph import CodeGraph
     from loremaster.index.indexer import Indexer, IndexOutcome
-    from loremaster.index.manifest import Manifest
-    from loremaster.store.qdrant import QdrantStore
 
 
 class ReconcileSummary(IndexSummary):
@@ -81,10 +79,10 @@ class ReconcileEngine:
         indexer: The :class:`~loremaster.index.indexer.Indexer` that owns the
             per-tier walk + per-file pipeline. Reconcile delegates all indexing
             to it and only adds the deletion-purge pass.
-        manifest: The SQLite :class:`~loremaster.index.manifest.Manifest` — the
-            authority diffed against the disk to find deletions.
-        store: The :class:`~loremaster.store.qdrant.QdrantStore` whose
-            ``delete_by_file`` purges a deleted file's points.
+        manifest: The async :class:`~loremaster.index.surreal_manifest.SurrealManifest`
+            — the authority diffed against the disk to find deletions.
+        store: The async :class:`~loremaster.store.surreal.SurrealStore` whose
+            composed ``apply`` purges a deleted file's every surface atomically.
         config: The validated :class:`~loremaster.config.LoreConfig`; its roots
             drive the sweep.
     """
@@ -93,10 +91,10 @@ class ReconcileEngine:
         self,
         *,
         indexer: Indexer,
-        manifest: Manifest,
-        store: QdrantStore,
+        manifest: Any,
+        store: Any,
         config: LoreConfig,
-        code_graph: CodeGraph | None = None,
+        code_graph: Any = None,
     ) -> None:
         self._indexer = indexer
         self._manifest = manifest
@@ -159,8 +157,13 @@ class ReconcileEngine:
     async def _purge_deletions(self) -> int:
         """Purge live-tier manifest rows whose file is gone from disk.
 
+        Each deletion is a SINGLE composed atomic transaction (see
+        :meth:`_purge_file`) spanning the store chunks + ``file_text`` body +
+        manifest row (+ the graph slice), so a vanished file's surfaces are removed
+        all-or-nothing — a reader never observes a file half-purged.
+
         Returns:
-            The number of (tier, file) rows purged from Qdrant and the manifest.
+            The number of (tier, file) rows purged from the store and the manifest.
         """
         purged = 0
         for root in self._config.effective_roots:
@@ -169,20 +172,38 @@ class ReconcileEngine:
             assert root.path is not None  # validated by RootConfig
             base = Path(root.path)
             on_disk = self._included_files_on_disk(root, base)
-            for row in self._manifest.files_for_tier(root.tier):
+            for row in await self._manifest.files_for_tier(root.tier):
                 if row.file_path not in on_disk:
                     logger.debug(
                         "reconcile.purge",
                         extra={"tier": root.tier, "file_path": row.file_path},
                     )
-                    await self._store.delete_by_file(root.tier, row.file_path)
-                    self._manifest.delete(root.tier, row.file_path)
-                    # Purge the deleted file's graph slice too (tier-scoped), so the
-                    # graph never outlives the source it was derived from.
-                    if self._code_graph is not None:
-                        self._code_graph.delete_file_graph(root.tier, row.file_path)
+                    await self._purge_file(root.tier, row.file_path)
                     purged += 1
         return purged
+
+    async def _purge_file(self, tier: str, file_path: str) -> None:
+        """Purge one vanished file's surfaces in ONE composed atomic transaction.
+
+        Composes the store chunk-delete + ``file_text`` delete + manifest-row delete
+        (+ the tier-scoped code-graph slice purge when a graph is wired) into a single
+        :meth:`SurrealStore.apply` — tier- and file-scoped, so a sibling tier's copy
+        of the same path (C1) survives and a reader never sees the file half-removed.
+
+        Args:
+            tier: The tier the deleted file belonged to.
+            file_path: The tier-relative path that vanished from disk.
+        """
+        fragments: list[Any] = [
+            self._store.delete_file_fragment(tier, file_path),
+            self._store.file_text_delete_fragment(tier, file_path),
+            self._manifest.delete_fragment(tier, file_path),
+        ]
+        # Purge the deleted file's graph slice too (tier-scoped), so the graph never
+        # outlives the source it was derived from.
+        if self._code_graph is not None:
+            fragments.append(self._code_graph.purge_file_fragment(tier, file_path))
+        await self._store.apply(fragments)
 
     def _included_files_on_disk(self, root: RootConfig, base: Path) -> set[str]:
         """Return the tier-relative included paths that currently exist under ``base``.

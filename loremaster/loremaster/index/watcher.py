@@ -74,7 +74,7 @@ import logging
 import os
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from watchdog.events import (
     FileSystemEvent,
@@ -95,11 +95,8 @@ from loremaster.index.paths import is_included
 
 if TYPE_CHECKING:
     from loremaster.config import LoreConfig
-    from loremaster.graph import CodeGraph
     from loremaster.index.indexer import Indexer
-    from loremaster.index.manifest import Manifest
     from loremaster.index.reconcile import ReconcileEngine, ReconcileSummary
-    from loremaster.store.qdrant import QdrantStore
 
 logger = logging.getLogger(__name__)
 
@@ -571,9 +568,9 @@ class LiveWatcher:
     Args:
         indexer: The :class:`~loremaster.index.indexer.Indexer` whose
             ``index_file`` performs the per-file pipeline.
-        manifest: The SQLite :class:`~loremaster.index.manifest.Manifest`.
-        store: The :class:`~loremaster.store.qdrant.QdrantStore` whose
-            ``delete_by_file`` purges a deleted/moved-from file's points.
+        manifest: The async :class:`~loremaster.index.surreal_manifest.SurrealManifest`.
+        store: The async :class:`~loremaster.store.surreal.SurrealStore` whose
+            composed ``apply`` purges a deleted/moved-from file's every surface.
         config: The validated :class:`~loremaster.config.LoreConfig`; its live
             roots drive what is watched.
         loop: The asyncio loop the observer thread marshals events onto.
@@ -583,8 +580,9 @@ class LiveWatcher:
         queue_maxsize: The bound on the in-flight work queue. Defaults to
             :data:`_DEFAULT_QUEUE_MAXSIZE`; overridable so a deploy can tune the
             bound and tests can exercise the ``QueueFull`` overflow backstop.
-        code_graph: Optional :class:`~loremaster.graph.CodeGraph`. When supplied, a
-            delete/move-from purge also removes the file's graph slice; ``None``
+        code_graph: Optional :class:`~loremaster.graph_surreal.SurrealCodeGraph`.
+            When supplied, a delete/move-from purge also removes the file's graph
+            slice (as a fragment in the composed purge transaction); ``None``
             disables graph purging (the index path's graph refresh is the
             indexer's concern).
     """
@@ -593,13 +591,13 @@ class LiveWatcher:
         self,
         *,
         indexer: Indexer,
-        manifest: Manifest,
-        store: QdrantStore,
+        manifest: Any,
+        store: Any,
         config: LoreConfig,
         loop: asyncio.AbstractEventLoop,
         reconcile_engine: ReconcileEngine,
         queue_maxsize: int = _DEFAULT_QUEUE_MAXSIZE,
-        code_graph: CodeGraph | None = None,
+        code_graph: Any = None,
     ) -> None:
         self._indexer = indexer
         self._manifest = manifest
@@ -1027,13 +1025,23 @@ class LiveWatcher:
         await self._indexer.index_file(tier, rel_path, source)
 
     async def _purge(self, tier: str, rel_path: str) -> None:
-        """Purge a (tier, file) from Qdrant, the manifest, and the graph (tier-scoped)."""
-        await self._store.delete_by_file(tier, rel_path)
-        self._manifest.delete(tier, rel_path)
+        """Purge a (tier, file) across store + manifest + graph in ONE composed txn.
+
+        Composes the store chunk-delete + ``file_text`` delete + manifest-row delete
+        (+ the tier-scoped graph slice purge when a graph is wired) into a single
+        atomic :meth:`SurrealStore.apply` — tier-scoped, so a sibling tier's copy of
+        the path survives and a reader never observes the file half-removed.
+        """
+        fragments: list[Any] = [
+            self._store.delete_file_fragment(tier, rel_path),
+            self._store.file_text_delete_fragment(tier, rel_path),
+            self._manifest.delete_fragment(tier, rel_path),
+        ]
         # Keep the code-graph in lock-step: a deleted/moved-from file's symbols
         # must not linger in the graph (tier-scoped, so a sibling tier survives).
         if self._code_graph is not None:
-            self._code_graph.delete_file_graph(tier, rel_path)
+            fragments.append(self._code_graph.purge_file_fragment(tier, rel_path))
+        await self._store.apply(fragments)
 
     # -- periodic sweep (under the SAME lock) ------------------------------- #
 

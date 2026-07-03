@@ -27,10 +27,12 @@ incremental later, out of scope here).
 (unchanged ``indexed`` file → skip, zero embeds). Otherwise chunk via
 ``registry.dispatch_file`` with a real :class:`~lorescribe.models.ChunkContext`
 (the embedder's token counter + ``max_input_tokens`` injected); embed the chunk
-texts; build records via ``chunk_to_record(..., tier=tier)``; **upsert the NEW
-points BEFORE purging the stale ones** for that ``(tier, file)`` (dedupe by
-deterministic point-id) so a concurrent reader never sees a gap; commit the
-manifest row transactionally (``state='indexed'``).
+texts; build records via ``chunk_to_record(..., tier=tier)``; then commit the
+chunk-replace + verbatim ``file_text`` body + manifest row (+ the Python code-graph
+slice for a ``.py`` file) as ONE atomic composed ``SurrealStore.apply`` transaction
+— **atomicity, not an upsert-before-purge ordering**, is what keeps a concurrent
+reader from ever observing a half-applied file, so the stale points/edges vanish in
+the SAME commit the new ones land in (``state='indexed'``).
 
 **Resilience.** A chunker exception (any ``Exception`` the registry's chunker
 raises — a malformed-document ``ParseError``, a recursion-DoS ``ValueError``,
@@ -51,22 +53,18 @@ import logging
 import math
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import httpx
 from lorescribe.models import Chunk, ChunkContext
 from pydantic import BaseModel, ConfigDict
-from qdrant_client.common.client_exceptions import ResourceExhaustedResponse
-from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, RootConfig
 from loremaster.index.manifest import (
     STATE_FAILED,
     STATE_INDEXED,
     FileRow,
-    Manifest,
 )
 from loremaster.index.paths import is_included, walked_dirs
 from loremaster.index.records import Record, chunk_to_record, sha512_hex
@@ -75,16 +73,13 @@ from loremaster.index.schema import (
     SCHEMA_REBUILD_STATUS_META_KEY,
 )
 from loremaster.source.snapshot import SnapshotLayout
+from loremaster.store.surreal import SurrealStoreError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from lorescribe.registry import ChunkerRegistry
     from loresigil.base import Embedder, EmbedResult
 
     from loremaster.extension import SourceProvider
-    from loremaster.graph import CodeGraph
-    from loremaster.store.qdrant import QdrantStore
 
 # The Python source suffix whose files contribute to the code-graph. Non-Python
 # files are NOT given a graph slice (the graph is a Python AST structure only),
@@ -165,27 +160,14 @@ def graph_roots(
 # failure path here, so naming it is enough for an operator to triage.
 _FAILED_EMBED_REASON = "embed_failed_or_non_finite"
 
-# The reason attached to ``index.file.failed`` when the Qdrant STORE op (upsert /
-# stale-purge) failed past the store's own transient-retry budget for THIS file.
-# This is the cold-index crash class: a persistent 500 must isolate the one file,
-# not propagate and kill the whole batch index.
+# The reason attached to ``index.file.failed`` when the composed per-file STORE
+# transaction is REFUSED — a typed :class:`~loremaster.store.surreal.SurrealStoreError`
+# from ``compose``/``apply`` (the hard statement-count cap overflow of a
+# pathologically chunk-heavy file, or a server-side rollback). The atomic apply
+# replaces the old upsert-then-purge ordering, so there is no partial residue: THIS
+# one file is isolated ``failed`` and the sweep continues, exactly like the chunker
+# fault-isolation contract one step earlier in the pipeline.
 _FAILED_STORE_REASON = "store_op_failed_after_retries"
-
-# Store-side failures the per-file pipeline ISOLATES (mark the file failed and
-# continue) when they persist past :class:`QdrantStore`'s own retry budget. These
-# mirror the store's transient classification (a transient that never cleared) plus
-# a permanent 4xx — either way, ONE file's store error must not crash the index.
-# Narrowly scoped to Qdrant/transport errors so a genuine programming bug (a
-# ``TypeError`` etc.) still surfaces loudly rather than being silently swallowed.
-# ``ResourceExhaustedResponse`` (a ``QdrantException``, NOT an
-# ``UnexpectedResponse``) is the 429+``Retry-After`` overload class — a persistent
-# overload of ONE file must isolate it, exactly like a persistent 500.
-_STORE_FAILURE_ERRORS: tuple[type[BaseException], ...] = (
-    UnexpectedResponse,
-    ResourceExhaustedResponse,
-    ResponseHandlingException,
-    httpx.HTTPError,
-)
 
 # The reason attached to ``index.file.failed`` when the CHUNK step (the
 # registry's ``dispatch_file``) raises. Deliberately broad at the catch site —
@@ -297,9 +279,11 @@ class Indexer:
     while the CLI wires the real deployment resources.
 
     Args:
-        store: The :class:`~loremaster.store.qdrant.QdrantStore`.
+        store: The async :class:`~loremaster.store.surreal.SurrealStore` — its
+            composed-transaction ``apply`` plus the pure chunk / ``file_text``
+            fragment builders back the atomic per-file update.
         embedder: The active :class:`loresigil.base.Embedder`.
-        manifest: The SQLite :class:`~loremaster.index.manifest.Manifest`.
+        manifest: The async :class:`~loremaster.index.surreal_manifest.SurrealManifest`.
         registry: The composed :class:`~lorescribe.registry.ChunkerRegistry`.
         source_providers: The :class:`SourceProvider`s, one per static tier
             (matched to a tier by the provider's ``tier`` attribute).
@@ -311,14 +295,14 @@ class Indexer:
     def __init__(
         self,
         *,
-        store: QdrantStore,
+        store: Any,
         embedder: Embedder,
-        manifest: Manifest,
+        manifest: Any,
         registry: ChunkerRegistry,
         source_providers: Sequence[SourceProvider],
         config: LoreConfig,
         snapshot_root: Path,
-        code_graph: CodeGraph | None = None,
+        code_graph: Any = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -406,7 +390,7 @@ class Indexer:
             The :class:`IndexOutcome` (``indexed`` / ``skipped`` / ``failed``).
         """
         content_hash = sha512_hex(source)
-        existing = self._manifest.get(tier, path)
+        existing = await self._manifest.get(tier, path)
         if (
             existing is not None
             and existing.state == STATE_INDEXED
@@ -424,11 +408,11 @@ class Indexer:
             # etc.) isolates THIS file instead of propagating out of the
             # watcher's live-event path — mirrors the embed/store isolation
             # below, one step earlier.
-            return self._handle_chunk_failure(
+            return await self._handle_chunk_failure(
                 tier=tier, path=path, content_hash=content_hash, mtime_ns=0, size=size,
             )
         return await self._index_chunks(
-            tier=tier, path=path, content_hash=content_hash,
+            tier=tier, path=path, content_hash=content_hash, source=source,
             chunks=chunks, mtime_ns=0, size=size,
         )
 
@@ -438,25 +422,37 @@ class Indexer:
         tier: str,
         path: str,
         content_hash: str,
+        source: str,
         chunks: list[Chunk],
         mtime_ns: int,
         size: int,
     ) -> IndexOutcome:
-        """Embed ``chunks``, upsert-new-before-purge, and commit the manifest row.
+        """Embed ``chunks``, then commit chunks + ``file_text`` + manifest (+ graph)
+        as ONE atomic composed transaction.
 
-        An unclaimed file (no chunks) is committed as a zero-chunk ``indexed``
-        row (so a directory walk never re-reads it) with no embed. Otherwise the
-        chunk texts are embedded via :meth:`_embed_records`, which feature-detects
+        An unclaimed file (no chunks) is committed as a zero-chunk ``indexed`` row
+        (so a directory walk never re-reads it) — its chunk fragment is a bare
+        DELETE that purges any prior points, so an edit down to zero chunks never
+        orphans them. Otherwise the chunk texts are embedded via
+        :meth:`_embed_records`, which feature-detects
         ``self._embedder.supports_contextualized`` to pick the call site: a
-        contextualized-capable embedder gets the WHOLE file's chunks as one
-        grouped document (``embed_document_chunks``); every other embedder keeps
-        the flat ``embed_documents`` call, byte-identical to before. If ANY
-        vector from either path is missing (``None`` — permanent failure) or
-        non-finite (the ``isfinite`` guard), the whole file is marked ``failed``
-        and NO vectors are stored — never a partial or poisoned set. On success
-        the new points are upserted, THEN the stale point ids (the prior row's
-        ids no longer produced) are purged, then the manifest row is replaced
-        transactionally as ``indexed``.
+        contextualized-capable embedder gets the WHOLE file's chunks as one grouped
+        document (``embed_document_chunks``); every other embedder keeps the flat
+        ``embed_documents`` call. If ANY vector is missing (``None`` — permanent
+        failure) or non-finite (the ``isfinite`` guard), the whole file is marked
+        ``failed`` in a SMALL separate manifest-only write and NO surface is touched
+        — the prior points/graph are retained (last-good).
+
+        On the success path the chunk-replace, ``file_text`` body, manifest row and
+        (for a ``.py`` file with a wired graph) code-graph slice are composed into
+        ONE :meth:`SurrealStore.apply` transaction, so a concurrent reader never
+        observes a half-applied file and the stale chunks/edges vanish in the SAME
+        commit the new ones land in. An oversized ``file_text`` body (over the
+        store's :attr:`file_text_max_bytes` cap) is indexed WITHOUT the file_text
+        fragment (a single WARNING; chunks/manifest/graph still land ``indexed``). A
+        composed transaction that would overflow the store's hard statement cap is
+        refused LOUDLY by ``apply`` (a typed :class:`SurrealStoreError`) and isolated
+        ``failed`` — one pathological file never kills the sweep.
         """
         started_ns = time.monotonic_ns()
         records = [
@@ -471,68 +467,54 @@ class Indexer:
             for chunk in chunks
         ]
         new_ids = [record.point_id for record in records]
-        prior = self._manifest.get(tier, path)
+        prior = await self._manifest.get(tier, path)
         prior_ids = prior.chunk_ids if prior is not None else []
 
         usage_tokens: int | None = None
+        vectors: list[list[float] | None] = []
         if records:
             result = await self._embed_records(records)
             vectors = result.vectors
             if not self._all_vectors_usable(vectors):
-                # Embedder failure / non-finite: mark failed, store NOTHING new,
-                # leave any prior points in place (last-good retained). Continue.
-                return self._mark_file_failed(
+                # Embedder failure / non-finite: mark failed in a SMALL separate
+                # manifest-only write, store NOTHING new, leave any prior points +
+                # graph in place (last-good retained). The sweep continues.
+                return await self._mark_file_failed(
                     tier=tier, path=path, content_hash=content_hash, mtime_ns=mtime_ns,
                     size=size, prior=prior, prior_ids=prior_ids,
                     reason=_FAILED_EMBED_REASON,
                 )
             usage_tokens = result.usage.total_tokens if result.usage is not None else None
 
-        # The Qdrant store ops (upsert NEW, then purge stale). Each already retries
-        # a TRANSIENT failure internally (Layer 1); if one STILL fails for THIS
-        # file past that budget, isolate it — mark the file failed, retain its
-        # last-good points + manifest metadata, and let the OTHER files keep
-        # indexing. A raw 500 escaping here is exactly the cold-index crash this
-        # guards against. A non-store error (a real bug) is NOT caught — it
-        # propagates loudly. Upsert and purge share one guard so a failure in
-        # either leaves a consistent (failed, last-good-retained) state.
+        # The composed atomic per-file transaction (clause 1): chunk-replace +
+        # ``file_text`` body + manifest row (+ graph slice for a wired ``.py``),
+        # applied ALL-OR-NOTHING through ONE ``store.apply``. Atomicity replaces the
+        # old upsert-new-before-purge ordering — a concurrent reader observes only
+        # the complete pre- or post-replace state, so the stale points/edges are
+        # purged in the SAME commit the new ones land in. A composed transaction the
+        # store refuses (its hard statement-count cap overflowed — a pathologically
+        # chunk-heavy file) raises a typed :class:`SurrealStoreError` at BUILD time,
+        # before anything persists; catch it, isolate THIS file ``failed`` (last-good
+        # retained), and let the OTHER files keep indexing (clause 5).
         try:
-            if records:
-                # Upsert NEW before purging stale: a concurrent reader sees the new
-                # content (deterministic ids dedupe an unchanged chunk in place);
-                # only then (below) are the genuinely stale ids removed.
-                pairs = list(zip(records, [v for v in vectors if v is not None], strict=True))
-                await self._store.upsert(pairs)
-
-            # Purge stale ids (prior − new) AFTER any new points are upserted. This
-            # runs even when ``records`` is empty (a file edited to yield no
-            # chunks), so its prior points are never orphaned in the store. With
-            # new records, the just-upserted ids are excluded (set difference).
-            stale_ids = [pid for pid in prior_ids if pid not in set(new_ids)]
-            await self._store.delete_points(stale_ids)
-        except _STORE_FAILURE_ERRORS:
+            fragments = self._compose_file_fragments(
+                tier=tier, path=path, source=source, content_hash=content_hash,
+                records=records, vectors=vectors, new_ids=new_ids,
+                mtime_ns=mtime_ns, size=size, chunks=chunks,
+            )
+            await self._store.apply(fragments)
+        except SurrealStoreError:
             logger.warning(
                 "index.file.store_failed",
                 extra={"tier": tier, "file_path": path, "reason": _FAILED_STORE_REASON},
                 exc_info=True,
             )
-            return self._mark_file_failed(
+            return await self._mark_file_failed(
                 tier=tier, path=path, content_hash=content_hash, mtime_ns=mtime_ns,
                 size=size, prior=prior, prior_ids=prior_ids,
                 reason=_FAILED_STORE_REASON,
             )
 
-        # Transactional manifest commit (atomic delete-old + insert-new row).
-        self._manifest.replace(
-            tier=tier, file_path=path, sha512=content_hash, mtime_ns=mtime_ns,
-            size=size, n_chunks=len(records), chunk_ids=new_ids, state=STATE_INDEXED,
-        )
-        # Keep the code-graph slice as fresh as the vector index: rebuild this
-        # file's Python graph slice from the SAME chunks (transactional delete +
-        # rebuild inside the graph). Only runs on the SUCCESS path — a failed
-        # embed returned earlier, so the graph never diverges from what is indexed
-        # (last-good graph retained alongside last-good vectors).
-        self._refresh_graph(tier, path, chunks)
         duration_ms = (time.monotonic_ns() - started_ns) / 1_000_000
         logger.info(
             "index.file.done",
@@ -544,6 +526,100 @@ class Indexer:
         )
         return IndexOutcome(
             tier=tier, file_path=path, state=STATE_INDEXED, n_chunks=len(records)
+        )
+
+    def _compose_file_fragments(
+        self,
+        *,
+        tier: str,
+        path: str,
+        source: str,
+        content_hash: str,
+        records: list[Record],
+        vectors: list[list[float] | None],
+        new_ids: list[str],
+        mtime_ns: int,
+        size: int,
+        chunks: list[Chunk],
+    ) -> list[Any]:
+        """Build the ordered producer fragments for one file's atomic apply.
+
+        Spans the four producers the per-file transaction covers: the chunk-replace
+        (a DELETE + one UPSERT per record — empty ``records`` composes a bare DELETE
+        that purges any prior points), the ``file_text`` body (SKIPPED when it
+        exceeds the store's cap — see :meth:`_file_text_within_cap`), the manifest
+        row (committed ``indexed``), and — only for a ``.py`` file with a wired graph
+        — the code-graph slice. The chunk vectors are paired with their records
+        positionally; the embed guard upstream already proved every vector present.
+
+        Returns:
+            The fragment list ready to hand to :meth:`SurrealStore.apply`, ordered
+            chunk → file_text → manifest → graph.
+        """
+        pairs = list(zip(records, [v for v in vectors if v is not None], strict=True))
+        fragments: list[Any] = [self._store.replace_file_fragment(tier, path, pairs)]
+        if self._file_text_within_cap(tier, path, source):
+            fragments.append(self._store.file_text_fragment(tier, path, source, content_hash))
+        fragments.append(
+            self._manifest.replace_fragment(
+                tier=tier, file_path=path, sha512=content_hash, mtime_ns=mtime_ns,
+                size=size, n_chunks=len(records), chunk_ids=new_ids, state=STATE_INDEXED,
+            )
+        )
+        graph_fragment = self._graph_fragment(tier, path, chunks)
+        if graph_fragment is not None:
+            fragments.append(graph_fragment)
+        return fragments
+
+    def _file_text_within_cap(self, tier: str, path: str, source: str) -> bool:
+        """Whether ``source``'s UTF-8 byte size is within the store's file_text cap.
+
+        The clause-4 pre-check: the per-body byte ceiling is READ from the store
+        (:attr:`SurrealStore.file_text_max_bytes` — the single source of truth, never
+        a hand-copied literal), so an oversized body is skipped BEFORE the fragment
+        is built rather than crashing the composed apply. A skip logs one WARNING
+        naming the file + byte sizes (never the source text) and drops only the
+        ``file_text`` fragment — the chunks, manifest row and graph slice still land
+        ``indexed``.
+
+        Returns:
+            ``True`` to include the ``file_text`` fragment; ``False`` to skip it.
+        """
+        body_bytes = len(source.encode("utf-8"))
+        cap: int = self._store.file_text_max_bytes
+        if body_bytes > cap:
+            logger.warning(
+                "index.file.file_text_skipped",
+                extra={
+                    "tier": tier, "file_path": path,
+                    "reason": "file_text_body_exceeds_cap",
+                    "body_bytes": body_bytes, "cap_bytes": cap,
+                },
+            )
+            return False
+        return True
+
+    def _graph_fragment(self, tier: str, path: str, chunks: list[Chunk]) -> Any:
+        """Build ``(tier, path)``'s code-graph fragment for the composed apply, or None.
+
+        ``None`` when no :class:`~loremaster.graph_surreal.SurrealCodeGraph` is wired
+        (backward compatible) or when ``path`` is not a Python file (the graph is a
+        Python-AST structure only — a markdown/sql/xml file must never synthesise a
+        spurious module node). Otherwise the graph's PURE
+        ``build_file_graph_fragment`` derives the slice (astroid at BUILD time) and
+        returns its purge+upsert+relate fragment, which rides the SAME per-file
+        transaction as the chunk/file_text/manifest fragments — so the graph slice is
+        as fresh, and as atomic, as the vector index. The module qualified-name is
+        the TRUE importable dotted path (see :meth:`_importable_module_name`),
+        unifying a node's name with the ``imports``-edge ``dst`` strings.
+        """
+        if self._code_graph is None:
+            return None
+        if not path.endswith(_PYTHON_SUFFIX):
+            return None
+        module_name = self._importable_module_name(tier, path)
+        return self._code_graph.build_file_graph_fragment(
+            tier, path, chunks, module_name=module_name
         )
 
     async def _embed_records(self, records: Sequence[Record]) -> EmbedResult:
@@ -570,7 +646,7 @@ class Indexer:
             return doc_results[0]
         return await self._embedder.embed_documents(texts)
 
-    def _mark_file_failed(
+    async def _mark_file_failed(
         self,
         *,
         tier: str,
@@ -605,7 +681,7 @@ class Indexer:
         Returns:
             A ``failed`` :class:`IndexOutcome` (``n_chunks=0`` — nothing stored).
         """
-        self._manifest.upsert(
+        await self._manifest.upsert(
             tier=tier, file_path=path, sha512=content_hash, mtime_ns=mtime_ns,
             size=size, n_chunks=prior.n_chunks if prior else 0,
             chunk_ids=prior_ids, state=STATE_FAILED,
@@ -616,7 +692,7 @@ class Indexer:
         )
         return IndexOutcome(tier=tier, file_path=path, state=STATE_FAILED, n_chunks=0)
 
-    def _handle_chunk_failure(
+    async def _handle_chunk_failure(
         self, *, tier: str, path: str, content_hash: str, mtime_ns: int, size: int
     ) -> IndexOutcome:
         """Isolate a chunker exception: mark ``(tier, path)`` ``failed`` and report it.
@@ -646,27 +722,29 @@ class Indexer:
         Returns:
             A ``failed`` :class:`IndexOutcome` (``n_chunks=0`` — nothing stored).
         """
-        prior = self._manifest.get(tier, path)
+        prior = await self._manifest.get(tier, path)
         prior_ids = prior.chunk_ids if prior is not None else []
         logger.warning(
             "index.file.chunk_failed",
             extra={"tier": tier, "file_path": path, "reason": _FAILED_CHUNK_REASON},
             exc_info=True,
         )
-        return self._mark_file_failed(
+        return await self._mark_file_failed(
             tier=tier, path=path, content_hash=content_hash, mtime_ns=mtime_ns,
             size=size, prior=prior, prior_ids=prior_ids, reason=_FAILED_CHUNK_REASON,
         )
 
-    def _refresh_graph(self, tier: str, path: str, chunks: list[Chunk]) -> None:
-        """Rebuild ``(tier, path)``'s Python graph slice from ``chunks`` (if wired).
+    async def _refresh_graph(self, tier: str, path: str, chunks: list[Chunk]) -> None:
+        """Rebuild ``(tier, path)``'s Python graph slice STANDALONE (graph-only heal).
 
-        A no-op when no :class:`~loremaster.graph.CodeGraph` is injected (backward
-        compatible) or when ``path`` is not a Python file (the graph is a Python
-        AST structure only — a markdown/sql/xml file must not synthesise a
-        spurious module node). The graph's own ``build_file_graph`` is the
-        transactional, tier-scoped delete+rebuild primitive, so a re-index updates
-        only this file's slice and a removed symbol leaves no orphan edge.
+        The atomic per-file index composes the graph as a FRAGMENT in the ONE
+        per-file transaction (see :meth:`_graph_fragment`); this STANDALONE path is
+        used ONLY by :meth:`rebuild_graph_only`, which re-derives a tier's graph
+        slices from disk WITHOUT touching the healthy vector collection (no embed,
+        no composed apply). A no-op when no
+        :class:`~loremaster.graph_surreal.SurrealCodeGraph` is injected or when
+        ``path`` is not a Python file. The graph's own ``build_file_graph`` is the
+        transactional, tier-scoped delete+rebuild primitive.
 
         The module qualified-name passed to the graph is the TRUE importable
         dotted path, derived from the tier's on-disk package layout (the indexer
@@ -682,7 +760,7 @@ class Indexer:
         if not path.endswith(_PYTHON_SUFFIX):
             return
         module_name = self._importable_module_name(tier, path)
-        self._code_graph.build_file_graph(tier, path, chunks, module_name=module_name)
+        await self._code_graph.build_file_graph(tier, path, chunks, module_name=module_name)
 
     def _reset_graph_resolution_cache(self) -> None:
         """Bound astroid's resolution cache at a full-sweep boundary (if graph wired).
@@ -833,9 +911,9 @@ class Indexer:
         # both manifest rows AND a materialised snapshot), so "stamp + rows but no
         # snapshot" is the lost-volume signature and "stamp + no rows" is the
         # never-built signature.
-        if self.tier_version_stamp(root.tier) == root.version and (
+        if await self.tier_version_stamp(root.tier) == root.version and (
             self._snapshot_materialized(root.tier)
-            or self._manifest.indexed_file_count(tier=root.tier) == 0
+            or await self._manifest.indexed_file_count(tier=root.tier) == 0
         ):
             # MATCH + (present snapshot OR nothing ever built) → skip with ZERO
             # walk and zero acquisition.
@@ -853,19 +931,19 @@ class Indexer:
         logger.info("index.tier.rebuild", extra={"tier": root.tier, "watch": WATCH_STATIC})
         provider.acquire(root.tier, self._snapshot_layout.snapshot_root)
         await self._store.delete_by_tier(root.tier)
-        for stale in self._manifest.files_for_tier(root.tier):
-            self._manifest.delete(root.tier, stale.file_path)
+        for stale in await self._manifest.files_for_tier(root.tier):
+            await self._manifest.delete(root.tier, stale.file_path)
 
         base = self._snapshot_layout.materialization_dir(root.tier)
         outcomes = await self._walk_and_index(root, base)
-        self.set_tier_version_stamp(root.tier, root.version)
+        await self.set_tier_version_stamp(root.tier, root.version)
         return self._summarize(outcomes, rebuilt=[root.tier], skipped_tiers=[])
 
     async def _walk_and_index(
         self,
         root: RootConfig,
         base: Path,
-        on_file_indexed: Callable[[IndexOutcome], None] | None = None,
+        on_file_indexed: Callable[[IndexOutcome], Awaitable[None]] | None = None,
     ) -> list[IndexOutcome]:
         """Walk ``base`` (pruning excluded dirs), index each included file.
 
@@ -904,13 +982,13 @@ class Indexer:
                 if not is_included(self._config, root, rel):
                     continue
                 stat = abs_path.stat()
-                if not self._manifest.needs_reindex(
+                if not await self._manifest.needs_reindex(
                     root.tier, rel, stat.st_mtime_ns, stat.st_size
                 ):
                     outcomes.append(
                         IndexOutcome(
                             tier=root.tier, file_path=rel, state=STATE_SKIPPED,
-                            n_chunks=self._chunk_count(root.tier, rel),
+                            n_chunks=await self._chunk_count(root.tier, rel),
                         )
                     )
                     continue
@@ -923,13 +1001,13 @@ class Indexer:
                     # frames the production crash climbed) instead of killing
                     # the whole sweep — mirrors the embed/store isolation one
                     # step later in the pipeline.
-                    outcome = self._handle_chunk_failure(
+                    outcome = await self._handle_chunk_failure(
                         tier=root.tier, path=rel, content_hash=content_hash,
                         mtime_ns=stat.st_mtime_ns, size=stat.st_size,
                     )
                 else:
                     outcome = await self._index_chunks(
-                        tier=root.tier, path=rel, content_hash=content_hash,
+                        tier=root.tier, path=rel, content_hash=content_hash, source=source,
                         chunks=chunks, mtime_ns=stat.st_mtime_ns, size=stat.st_size,
                     )
                 outcomes.append(outcome)
@@ -938,13 +1016,16 @@ class Indexer:
                 # Skipped files intentionally do NOT trigger this (fast-path means
                 # no new embedding occurred — nothing to report as live progress).
                 if on_file_indexed is not None:
-                    on_file_indexed(outcome)
+                    await on_file_indexed(outcome)
         return outcomes
 
-    def _chunk_count(self, tier: str, path: str) -> int:
+    async def _chunk_count(self, tier: str, path: str) -> int:
         """The committed chunk count for a fast-path-skipped file (manifest read)."""
-        row = self._manifest.get(tier, path)
-        return row.n_chunks if row is not None else 0
+        row = await self._manifest.get(tier, path)
+        if row is None:
+            return 0
+        n_chunks: int = row.n_chunks
+        return n_chunks
 
     # -- whole-project orchestration ---------------------------------------
 
@@ -1005,7 +1086,7 @@ class Indexer:
         # purge below clears the manifest rows, so the count is taken before any
         # deletion (it walks the on-disk trees, independent of manifest state).
         total = sum(self._count_included_files(root) for root in roots)
-        self._write_rebuild_status(
+        await self._write_rebuild_status(
             state=_REBUILD_STATE_IN_PROGRESS, done=0, total=total,
             fingerprint=fingerprint,
         )
@@ -1014,7 +1095,7 @@ class Indexer:
         rebuilt: list[str] = []
         done = 0
 
-        def _on_file_indexed(outcome: IndexOutcome) -> None:
+        async def _on_file_indexed(outcome: IndexOutcome) -> None:
             """Increment the done counter and write the in-progress status per file.
 
             Invoked by ``_walk_and_index`` IMMEDIATELY after each file's
@@ -1026,7 +1107,7 @@ class Indexer:
             done += 1
             # Live progress so index_status / rebuilding_notice reflect the
             # rebuild as it advances (the stamp is withheld until the end).
-            self._write_rebuild_status(
+            await self._write_rebuild_status(
                 state=_REBUILD_STATE_IN_PROGRESS, done=done, total=total,
                 fingerprint=fingerprint,
             )
@@ -1038,8 +1119,8 @@ class Indexer:
             # so its materialisation dir exists for the walk.
             self._acquire_static_snapshot(root)
             await self._store.delete_by_tier(root.tier)
-            for stale in self._manifest.files_for_tier(root.tier):
-                self._manifest.delete(root.tier, stale.file_path)
+            for stale in await self._manifest.files_for_tier(root.tier):
+                await self._manifest.delete(root.tier, stale.file_path)
 
             base = self._tier_base(root.tier)
             assert base is not None  # every effective root resolves a base
@@ -1051,13 +1132,13 @@ class Indexer:
         # ALL tiers succeeded → stamp the fingerprint and flip the status to done.
         # Order matters: the fingerprint is the durable completion evidence; the
         # status blob is the human/agent-facing roll-up.
-        self._manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, fingerprint)
-        self._write_rebuild_status(
+        await self._manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, fingerprint)
+        await self._write_rebuild_status(
             state=_REBUILD_STATE_DONE, done=done, total=total, fingerprint=fingerprint,
         )
         return self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=[])
 
-    def stamp_schema_fingerprint(self, fingerprint: str) -> None:
+    async def stamp_schema_fingerprint(self, fingerprint: str) -> None:
         """Stamp the embedding-schema fingerprint + mark the rebuild status done.
 
         The empty-index fast path the startup task takes instead of a full
@@ -1070,8 +1151,8 @@ class Indexer:
         Args:
             fingerprint: The current embedding-schema fingerprint to stamp.
         """
-        self._manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, fingerprint)
-        self._write_rebuild_status(
+        await self._manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, fingerprint)
+        await self._write_rebuild_status(
             state=_REBUILD_STATE_DONE, done=0, total=0, fingerprint=fingerprint,
         )
 
@@ -1104,7 +1185,7 @@ class Indexer:
         # clean astroid cache and let it stay warm across this tier's files.
         self._reset_graph_resolution_cache()
         regraphed = 0
-        for row in self._manifest.files_for_tier(tier):
+        for row in await self._manifest.files_for_tier(tier):
             # Only INDEXED rows represent files whose graph slice should exist; a
             # pending/failed row has no committed content to re-graph.
             if row.state != STATE_INDEXED:
@@ -1118,7 +1199,7 @@ class Indexer:
             chunks = self._chunk(row.file_path, source)
             # _refresh_graph is the transactional, tier-scoped delete+rebuild of this
             # file's slice — NO embed, NO upsert, NO delete_by_tier.
-            self._refresh_graph(tier, row.file_path, chunks)
+            await self._refresh_graph(tier, row.file_path, chunks)
             regraphed += 1
         return regraphed
 
@@ -1185,7 +1266,7 @@ class Indexer:
                     count += 1
         return count
 
-    def _write_rebuild_status(
+    async def _write_rebuild_status(
         self, *, state: str, done: int, total: int, fingerprint: str
     ) -> None:
         """Write the ``schema_rebuild_status`` meta blob (the live progress surface).
@@ -1202,7 +1283,8 @@ class Indexer:
             total: Total files to re-embed.
             fingerprint: The target fingerprint being rebuilt toward.
         """
-        self._manifest.meta_set(
+        from_fingerprint = await self._manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+        await self._manifest.meta_set(
             SCHEMA_REBUILD_STATUS_META_KEY,
             json.dumps(
                 {
@@ -1210,13 +1292,13 @@ class Indexer:
                     "done": done,
                     "total": total,
                     "reason": _REBUILD_REASON_FINGERPRINT_MISMATCH,
-                    "from_fingerprint": self._manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY),
+                    "from_fingerprint": from_fingerprint,
                     "to_fingerprint": fingerprint,
                 }
             ),
         )
 
-    def mark_rebuild_failed(self, fingerprint: str) -> None:
+    async def mark_rebuild_failed(self, fingerprint: str) -> None:
         """Settle the rebuild-status meta to ``failed`` after the rebuild's work raised (FP-11).
 
         Called by the background rebuild task when ``rebuild_all`` (or the empty-
@@ -1239,7 +1321,7 @@ class Indexer:
         # surface keeps a meaningful done/total; a missing/malformed blob → zeros.
         done = 0
         total = 0
-        raw_status = self._manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+        raw_status = await self._manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
         if raw_status is not None:
             try:
                 prior = json.loads(raw_status)
@@ -1249,11 +1331,11 @@ class Indexer:
             except (ValueError, TypeError):
                 done = 0
                 total = 0
-        self._write_rebuild_status(
+        await self._write_rebuild_status(
             state=_REBUILD_STATE_FAILED, done=done, total=total, fingerprint=fingerprint,
         )
 
-    def index_status(self) -> IndexSummary:
+    async def index_status(self) -> IndexSummary:
         """Return a freshness roll-up read PURELY from the manifest (zero embeds).
 
         Counts each file row by state across every tier — the cheap health
@@ -1265,7 +1347,7 @@ class Indexer:
             An :class:`IndexSummary` whose counts come from the manifest.
         """
         indexed = failed = 0
-        for row in self._manifest.all_files():
+        for row in await self._manifest.all_files():
             if row.state == STATE_INDEXED:
                 indexed += 1
             elif row.state == STATE_FAILED:
@@ -1291,10 +1373,11 @@ class Indexer:
 
     # -- version stamps (D5) -----------------------------------------------
 
-    def tier_version_stamp(self, tier: str) -> str | None:
+    async def tier_version_stamp(self, tier: str) -> str | None:
         """Return the built version stamp for ``tier`` from the manifest ``meta``."""
-        return self._manifest.meta_get(_tier_version_meta_key(tier))
+        stamp: str | None = await self._manifest.meta_get(_tier_version_meta_key(tier))
+        return stamp
 
-    def set_tier_version_stamp(self, tier: str, version: str) -> None:
+    async def set_tier_version_stamp(self, tier: str, version: str) -> None:
         """Stamp ``tier``'s built version into the manifest ``meta``."""
-        self._manifest.meta_set(_tier_version_meta_key(tier), version)
+        await self._manifest.meta_set(_tier_version_meta_key(tier), version)
