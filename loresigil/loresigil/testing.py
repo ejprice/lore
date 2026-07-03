@@ -64,6 +64,7 @@ class FakeEmbedder(Embedder):
         probe_fails: bool = False,
         name: str = _DEFAULT_NAME,
         use_exact_tokenizer: bool = False,
+        supports_batch: bool = False,
     ) -> None:
         """Configure the fake embedder.
 
@@ -80,6 +81,9 @@ class FakeEmbedder(Embedder):
             use_exact_tokenizer: When ``True``, :meth:`count_tokens` delegates to
                 the exact :class:`VoyageTokenCounter`; otherwise a ``len // 4``
                 heuristic is used.
+            supports_batch: Configurable :attr:`supports_batch` flag, so a test
+                exercising batch-capability gating can flip it without a real
+                batch-capable backend.
         """
         self._dim = dim
         self._max_input_tokens = max_input_tokens
@@ -90,6 +94,7 @@ class FakeEmbedder(Embedder):
         self._token_counter: VoyageTokenCounter | None = (
             VoyageTokenCounter() if use_exact_tokenizer else None
         )
+        self._supports_batch = supports_batch
 
     @property
     def name(self) -> str:
@@ -173,6 +178,11 @@ class FakeEmbedder(Embedder):
     def supports_contextualized(self) -> bool:
         """The fake advertises the contextualized (document-grouped) seam."""
         return True
+
+    @property
+    def supports_batch(self) -> bool:
+        """Configurable batch-capability flag (see the constructor's ``supports_batch``)."""
+        return self._supports_batch
 
     async def embed_document_chunks(self, docs: list[list[str]]) -> list[EmbedResult]:
         """Embed each doc's grouped chunks with deterministic context sensitivity.

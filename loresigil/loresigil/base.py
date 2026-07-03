@@ -33,6 +33,13 @@ for the provider's per-document context window) rather than one single
 request — so a downstream renderer can surface "(windowed context)"
 provenance instead of silently presenting partial context as whole-file
 context. Every other backend/result keeps the default ``False`` unchanged.
+
+The asynchronous Batch API seam (2026-07-03) is likewise OPTIONAL:
+:attr:`Embedder.supports_batch` (default ``False``, mirroring
+:attr:`supports_contextualized`) lets a backend advertise that it also
+implements batch submission/polling/fetch methods (see
+:mod:`loresigil.voyage_batch`) without those methods being part of the core
+abstract contract every embedder must satisfy.
 """
 
 from __future__ import annotations
@@ -132,6 +139,19 @@ class Embedder(ABC):
         :meth:`embed_document_chunks` overrides this to ``True`` so callers can
         feature-detect the capability before calling. Declared by the class,
         never toggled per instance (read-only property, no setter).
+        """
+        return False
+
+    @property
+    def supports_batch(self) -> bool:
+        """Whether this embedder implements the asynchronous Batch API.
+
+        ``False`` by default. A backend that implements the batch-submission
+        methods (``submit_batch_documents``/``submit_batch_document_chunks``,
+        ``fetch_batch_results``, ``get_batch_status``, ``await_batch_completion``)
+        overrides this to ``True`` so callers can feature-detect the capability
+        before calling. Declared by the class, never toggled per instance
+        (read-only property, no setter) — mirrors :attr:`supports_contextualized`.
         """
         return False
 

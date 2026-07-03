@@ -120,6 +120,15 @@ from loresigil.base import Embedder, EmbedResult, EmbedUsage
 from loresigil.batching import build_batches, run_in_windows
 from loresigil.resilient import SleepFn, compute_backoff_delay, is_retryable_status, quarantine_vector
 from loresigil.tokens import VoyageTokenCounter
+from loresigil.voyage_batch import (
+    DEFAULT_BATCHES_API_URL,
+    DEFAULT_FILES_API_URL,
+    DEFAULT_POLL_INTERVAL_S,
+    VoyageBatchClient,
+    encode_batch_jsonl,
+    parse_batch_failed_ids,
+    parse_batch_output_lines,
+)
 from loresigil.voyage_http import build_bearer_client
 
 logger = logging.getLogger(__name__)
@@ -160,6 +169,10 @@ _MIN_USAGE_WEIGHT: int = 1
 # guarantees there is always some room to pad BOTH sides of an interior core
 # span, not just the side reached first.
 _CORE_WINDOW_FRACTION: float = 0.5
+
+# The Batch API's ``endpoint`` field targets a path, not a full URL (the guide's
+# own create-batch example body: ``{"endpoint": "/v1/embeddings", ...}``).
+_BATCH_ENDPOINT_PATH: str = "/v1/contextualizedembeddings"
 
 
 @dataclass(frozen=True)
@@ -209,6 +222,8 @@ class VoyageContextEmbedder(Embedder):
         concurrency: int = DEFAULT_CONCURRENCY,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep_fn: SleepFn | None = None,
+        files_api_url: str = DEFAULT_FILES_API_URL,
+        batches_api_url: str = DEFAULT_BATCHES_API_URL,
     ) -> None:
         """Configure the contextualized cloud embedder.
 
@@ -227,6 +242,8 @@ class VoyageContextEmbedder(Embedder):
                 ``asyncio.sleep`` (injected in tests so retries don't block
                 the suite) — the exact seam convention of
                 :class:`~loresigil.resilient.ResilientEmbedder`.
+            files_api_url: Full Batch Files API base URL.
+            batches_api_url: Full Batches API base URL.
         """
         self._api_url = api_url
         self._model = model
@@ -238,6 +255,9 @@ class VoyageContextEmbedder(Embedder):
         # The bearer token is baked into the shared client builder; it is not
         # retained on this instance (needless secret surface).
         self._client = build_bearer_client(api_key, transport)
+        # The Batch API shares this same bearer-authenticated client — see
+        # loresigil.voyage_batch's module docstring for the shared plumbing.
+        self._batch_client = VoyageBatchClient(self._client, files_api_url, batches_api_url)
 
     @property
     def name(self) -> str:
@@ -262,6 +282,11 @@ class VoyageContextEmbedder(Embedder):
     @property
     def supports_contextualized(self) -> bool:
         """This backend's reason to exist — advertises the contextualized seam."""
+        return True
+
+    @property
+    def supports_batch(self) -> bool:
+        """Advertises the asynchronous Batch API capability (Files + Batches)."""
         return True
 
     async def embed_document_chunks(self, docs: list[list[str]]) -> list[EmbedResult]:
@@ -334,6 +359,107 @@ class VoyageContextEmbedder(Embedder):
     def count_tokens(self, texts: list[str]) -> list[int]:
         """Return exact, input-aligned token counts via the pinned tokenizer."""
         return self._token_counter.count_tokens(texts)
+
+    async def submit_batch_document_chunks(self, docs: list[list[str]], ids: list[str]) -> str:
+        """Submit an asynchronous batch job embedding ``docs`` (document-grouped).
+
+        ONE JSONL line PER DOCUMENT (P1 per-doc atomicity preserved at the
+        batch seam — a document's chunks always travel together, never split
+        across lines), each tagged with its caller-supplied ``custom_id``.
+        ``enable_auto_chunking`` is pinned ``False`` once in ``request_params``
+        — the SAME "lore's chunks are canonical" guarantee the realtime path
+        pins per-request, here covering every line in the job with one setting.
+
+        Args:
+            docs: One entry per document, each the ordered chunk texts.
+            ids: Caller-supplied stable ids, 1:1 with ``docs``.
+
+        Returns:
+            The provider-assigned batch job id.
+
+        Raises:
+            ValueError: Empty batch or an ``ids``/``docs`` length mismatch
+                (before any network call — the JSONL is built first).
+            DuplicateBatchIdError: A repeated id (before any network call).
+        """
+        bodies = [{"inputs": [chunks]} for chunks in docs]
+        jsonl_bytes = encode_batch_jsonl(ids, bodies)
+        input_file_id = await self._batch_client.upload_input_file(jsonl_bytes)
+        request_params = {
+            "model": self._model,
+            "input_type": _INPUT_TYPE_DOCUMENT,
+            "output_dimension": self._output_dimension,
+            "enable_auto_chunking": False,
+        }
+        return await self._batch_client.create_batch(_BATCH_ENDPOINT_PATH, input_file_id, request_params)
+
+    async def get_batch_status(self, job_id: str) -> str:
+        """Return a submitted batch job's current lifecycle status."""
+        return await self._batch_client.get_status(job_id)
+
+    async def await_batch_completion(
+        self,
+        job_id: str,
+        *,
+        poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+        sleep_fn: SleepFn | None = None,
+    ) -> str:
+        """Poll a batch job until it reaches a terminal status.
+
+        Args:
+            job_id: The batch job id.
+            poll_interval_s: Delay between polls; sleeps only BETWEEN polls.
+            sleep_fn: Awaitable sleep used between polls; defaults to
+                ``asyncio.sleep`` (injected in tests so polling doesn't block
+                the suite).
+
+        Returns:
+            The terminal status (always ``STATUS_COMPLETED``).
+
+        Raises:
+            BatchJobFailedError: If the terminal status is not ``"completed"``,
+                naming the job id.
+        """
+        return await self._batch_client.await_completion(
+            job_id, poll_interval_s=poll_interval_s, sleep_fn=sleep_fn
+        )
+
+    async def fetch_batch_results(self, job_id: str) -> dict[str, EmbedResult | None]:
+        """Fetch a completed batch job's results, keyed by caller-supplied id.
+
+        A caller only needs ``job_id`` (persisted externally) to call this —
+        never the original in-memory ``ids``/``docs`` — which is what makes
+        batch submission resumable across a process restart.
+
+        Args:
+            job_id: The batch job id.
+
+        Returns:
+            A mapping from each submitted id to its doc's :class:`EmbedResult`
+            (vectors aligned with that doc's chunks; ``usage`` is the EXACT
+            per-line wire total, per design decision #5 — one line is one doc,
+            so there is no cross-doc attribution to do), or ``None`` for an id
+            the batch job's error file names as a whole-doc failure.
+
+        Raises:
+            RuntimeError: If the job has not yet reached a terminal status.
+            BatchJobFailedError: If the job's terminal status is not
+                ``"completed"``, naming the job id.
+        """
+        output_bytes, error_bytes = await self._batch_client.fetch_result_files(job_id)
+        results: dict[str, EmbedResult | None] = {}
+        if output_bytes is not None:
+            for custom_id, body in parse_batch_output_lines(output_bytes).items():
+                doc_entry = body["data"][0]
+                vectors: list[list[float] | None] = [entry["embedding"] for entry in doc_entry["data"]]
+                usage = EmbedUsage(total_tokens=self._extract_usage_total(body))
+                results[custom_id] = EmbedResult(
+                    vectors=vectors, dim=self._output_dimension, usage=usage
+                )
+        if error_bytes is not None:
+            for custom_id in parse_batch_failed_ids(error_bytes):
+                results[custom_id] = None
+        return results
 
     async def _embed_docs(self, docs: list[list[str]], input_type: str) -> list[EmbedResult]:
         """Embed ``docs`` together in one request, falling back per-doc on failure.
