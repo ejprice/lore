@@ -60,7 +60,6 @@ from lorescribe.xml_generic import XmlChunker
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
-from qdrant_client.models import ScoredPoint
 
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, load_config
 from loremaster.extension import (
@@ -91,6 +90,7 @@ from loremaster.index.indexer import IndexSummary
 from loremaster.memory.store import RecalledMemory
 from loremaster.read_file import FileSpan
 from loremaster.search import DetailSelector, SearchResult
+from loremaster.store.candidate import Candidate
 from loremaster.symbols import ResolvedSymbol
 
 if TYPE_CHECKING:
@@ -495,15 +495,18 @@ class LoreServer:
 
     # -- resolved behaviour hooks ------------------------------------------
 
-    def format_result(self, result: ScoredPoint, ctx: ExtensionContext) -> str | None:
+    def format_result(self, result: Candidate, ctx: ExtensionContext) -> str | None:
         """Resolve the citation/format for a result (seam 5).
 
         The first registered extension whose ``format_result`` returns a non-
         ``None`` string wins; if none claims it, returns ``None`` so the caller
         uses the base default citation format.
 
+        P6 read-path cutover (§6 item 3): the seam formats the backend-neutral
+        :class:`~loremaster.store.candidate.Candidate`, never a ``ScoredPoint``.
+
         Args:
-            result: The scored point to format.
+            result: The candidate hit to format.
             ctx: The shared-services bundle.
 
         Returns:
@@ -563,8 +566,8 @@ class LoreServer:
         return "source"
 
     def augment_candidates(
-        self, query: str, candidates: list[ScoredPoint], ctx: ExtensionContext
-    ) -> list[ScoredPoint]:
+        self, query: str, candidates: list[Candidate], ctx: ExtensionContext
+    ) -> list[Candidate]:
         """Run every extension's candidate-augmentation in order (seam 4 / C3).
 
         Each extension may inject extra candidates; the output of one feeds the
@@ -584,8 +587,8 @@ class LoreServer:
         return result
 
     def rerank(
-        self, candidates: list[ScoredPoint], ctx: ExtensionContext
-    ) -> list[ScoredPoint]:
+        self, candidates: list[Candidate], ctx: ExtensionContext
+    ) -> list[Candidate]:
         """Run every extension's re-rank in order (seam 4 / C3).
 
         Args:
@@ -1851,13 +1854,23 @@ async def build_app_context(
         manifest=manifest,
     )
     search_pipeline = SearchPipeline(
-        store=store,
+        # P6 read cutover (§6 item 1): the read path is the unified SurrealDB
+        # store's ``hybrid_search`` (HNSW ⊕ BM25 via RRF), so the pipeline reads
+        # from ``write_store`` (the SurrealStore), NOT the legacy Qdrant handle.
+        store=write_store,
         embedder=embedder,
         server=server,
         manifest=manifest,
         config=config,
         extension_context=extension_ctx,
+        # §6 item 7: per-hit graph enrichment joins the SAME SurrealCodeGraph the
+        # indexer/reconcile write into (already in scope above).
+        code_graph=code_graph,
         memory_store=memory_store,
+        # §6 item 9: the reranker seam is config-gated. P6 ships no live reranker
+        # client (seam-only), so pass ``None`` — even a configured ``search.
+        # reranker`` stays inert until a future build injects the client here.
+        reranker=None,
     )
     snapshot_layout = SnapshotLayout(snapshot_root)
     live_roots = {
@@ -1871,7 +1884,10 @@ async def build_app_context(
     read_file_tool = ReadFileTool(
         live_roots=live_roots, snapshot_layout=snapshot_layout, known_tiers=known_tiers
     )
-    symbol_tool = SymbolTool(store=store)
+    # P6 store port: SymbolTool's get_symbol reads through the unified
+    # SurrealDB store's scroll() primitive, so it depends on write_store
+    # (the SurrealStore), NOT the legacy Qdrant handle.
+    symbol_tool = SymbolTool(store=write_store)
 
     watcher = LiveWatcher(
         indexer=indexer,

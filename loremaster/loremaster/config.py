@@ -417,6 +417,42 @@ class LoggingConfig(_StrictModel):
     destination: Literal["stderr"] = "stderr"
 
 
+class RerankerConfig(_StrictModel):
+    """A cross-encoder reranker backend (P6 §6 item 9, the config-gated seam).
+
+    Locates an external cross-encoder rerank service the search pipeline routes
+    its RRF-fused candidates through, AFTER the store's hybrid fusion and BEFORE
+    formatting. PRESENCE of this block is the sole gate: with no ``reranker:``
+    the pipeline provably never calls the reranker seam (a merely-injected seam
+    object stays inert), so the default deploy pays no rerank latency.
+
+    Attributes:
+        url: The rerank service endpoint (a cross-encoder scoring API).
+        model: The reranker model identifier the service serves.
+    """
+
+    url: str
+    model: str
+
+
+class SearchConfig(_StrictModel):
+    """Query-time search configuration (P6 §6 item 9).
+
+    OPTIONAL on :class:`LoreConfig` with a default instance (mirroring
+    :class:`LoggingConfig` / :class:`SurrealConfig`), so every existing
+    ``lore.yaml`` (which carries no ``search:`` section) keeps validating and
+    transparently gets the defaults — chiefly ``reranker: null`` (no reranker).
+
+    Attributes:
+        reranker: The optional config-gated cross-encoder reranker (see
+            :class:`RerankerConfig`). ``None`` (the default) means the pipeline's
+            reranker seam is provably NOT called — the config, not the mere
+            presence of a seam object, is the gate.
+    """
+
+    reranker: RerankerConfig | None = None
+
+
 class LoreConfig(_StrictModel):
     """The complete, validated parse of a project's tiered ``lore.yaml``.
 
@@ -440,6 +476,9 @@ class LoreConfig(_StrictModel):
         server: MCP server bind configuration.
         logging: Structured-logging configuration. OPTIONAL with a default, so an
             existing ``lore.yaml`` with no ``logging:`` section still validates.
+        search: Query-time search configuration (P6 §6 item 9). OPTIONAL with a
+            default, so an existing ``lore.yaml`` with no ``search:`` section
+            still validates; carries the config-gated reranker seam.
         auth: The optional rotatable-key auth layer (D9). ``None`` ⇒ no-auth
             localhost mode.
         extensions: The OPAQUE extension namespace — a mapping of extension name
@@ -462,6 +501,10 @@ class LoreConfig(_StrictModel):
     watcher: WatcherConfig
     server: ServerConfig
     logging: LoggingConfig = LoggingConfig()
+    # OPTIONAL with a default instance (like ``logging``): an existing
+    # ``lore.yaml`` with no ``search:`` section still validates and gets the
+    # documented default (``reranker: null`` — the reranker seam stays off).
+    search: SearchConfig = SearchConfig()
     auth: AuthConfig | None = None
     # The opaque extension namespace: a typo'd extension *key* is not catchable
     # by the base (it cannot know every extension's schema), so this is a

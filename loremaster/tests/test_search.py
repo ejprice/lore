@@ -1,147 +1,143 @@
-"""Contract tests for ``loremaster.search`` — the query-time pipeline.
+"""Contract tests for ``loremaster.search`` — the P6 query-time pipeline (v2).
 
-The :class:`~loremaster.search.SearchPipeline` is the read side of lore: it
-turns a natural-language query into a list of *summarised* results
-(``[SOURCE:file:line]`` + a stable ``Key:`` + a fenced source block), never a
-raw :class:`~qdrant_client.models.ScoredPoint` dump. It is the MCP
-``search_code`` tool's engine.
+The :class:`~loremaster.search.SearchPipeline` is the read side of lore: it turns
+a natural-language query into a list of *summarised* :class:`SearchResult` value
+objects, never a raw backend hit. It is the MCP ``search_code`` tool's engine.
 
-These run against the **REAL local Qdrant** (``http://127.0.0.1:16333``,
-throwaway ``lore_test_<uuid>`` collections), a real
-:class:`~loremaster.index.indexer.Indexer` over a **real corpus** (so the points
-under search carry real chunk types / payloads / line numbers, not hand-faked
-ones), the shipped deterministic :class:`~loresigil.testing.FakeEmbedder`, and
-the fast in-memory async :class:`~loremaster.index.surreal_manifest.SurrealManifest`
-fake (via ``fake_surreal_trio``).
+**P6 read-path cutover (plan §6).** The pipeline reads from the unified SurrealDB
+store's ``hybrid_search`` (HNSW ⊕ BM25 fused with Reciprocal Rank Fusion), which
+returns backend-neutral :class:`~loremaster.store.candidate.Candidate`\\ s
+(``key`` = bare uuid5, ``score`` = RRF-scale < 1.0, ``payload`` = the FLATTENED
+canonical chunk fields incl. the chunker's ``signature``, ``origin`` = ``"fused"``)
+— never a ``qdrant_client`` ``ScoredPoint``. These run against the audited
+in-memory :func:`~_surreal_fakes.fake_surreal_trio` (store + manifest + graph
+sharing one database), the shipped deterministic
+:class:`~loresigil.testing.FakeEmbedder`, and — for the memory features — a small
+recall double; NO live Qdrant/SurrealDB server is required.
 
-Why real Qdrant, not ``:memory:``: ranking and payload-filtered search
-(``filters={"tier": ...}``) are *server-side* behaviours — filter-based search
-is a no-op on the in-memory backend. "A boosted chunk overtakes an unboosted
-one" and "a tier filter returns only that tier's hit" are only meaningful
-against the live engine.
+The pinned P6 contract (each maps to plan §6):
 
-**Concurrency-safe teardown (deliberately NOT the inherited global sweep).** A
-sibling agent may be creating/deleting ``lore_test_*`` collections on this SAME
-server concurrently; the inherited ``conftest.qdrant_client`` fixture tears down
-by a GLOBAL ``lore_test_*`` prefix sweep, which under concurrency would delete
-the other run's in-flight collections. This module owns a :func:`store_factory`
-that records the EXACT collection names it creates and deletes only those by
-name on teardown. Foreign collections are never touched; this module's never
-leak.
-
-The pinned contract (each maps to a plan / AMENDMENT-1 requirement):
-
-* **Pipeline shape.** ``search_code(query, k, filters=None, wait_for_fresh=False,
-  detail_level="auto")`` embeds the query (``embed_query``), searches the store,
-  runs the extension ``augment_candidates`` then ``rerank`` (identity for the
-  bare generic server), memory-boosts, formats, freshness-flags, and partitions
-  by detail level. It returns summarised :class:`~loremaster.search.SearchResult`
-  value objects, NEVER raw ``ScoredPoint``\\ s.
-* **Base citation format (seam 5 default).** Each result's ``formatted`` carries
-  ``[SOURCE:<file_path>:<line_start>]``, a stable ``Key:`` line (the chunk's key),
-  and a fenced ```` ``` ```` source block wrapping the chunk's ``source_text``.
-* **Ranking.** A query embedding equal to one indexed chunk's text (FakeEmbedder
-  is deterministic ⇒ cosine 1.0) ranks that chunk first — an independent oracle,
-  not the implementation's own arithmetic.
-* **Memory-boost (generic).** A saved memory whose ``refs`` point at a chunk's
-  key lifts that chunk ABOVE an unboosted chunk that the bare store ranked higher
-  — proven by an ordering flip, with the control (no memory) showing the original
-  order, so the boost is the cause.
-* **Freshness flags (never blanket-block).** A chunk whose manifest file row is
-  ``dirty``/``embedding`` is flagged stale ("⚠ re-indexing — may be stale"); an
-  ``indexed`` chunk is not. The stale chunk is STILL RETURNED (annotate, never
-  block).
-* **detail_level partition (seam 11 / C2).** With ``detail_level="summary"`` only
-  summary-classified chunk types come back; ``"source"`` only source-classified;
-  ``"auto"`` returns both. The base default classifies ``imports``/``class``/
-  ``markdown_section`` as summary and ``method``/``function`` as source — proven
-  with REAL chunks of those types.
-* **Extension hooks vs generic.** A FAKE extension's ``augment_candidates`` /
-  ``rerank`` / ``format_result`` / ``classify_detail`` observably change the
-  output, while the bare (zero-extension) server uses the base defaults — both
-  proven side by side so the seam wiring is the cause.
-* **Filters.** ``filters={"tier": X}`` returns only tier-X hits;
-  ``filters={"file_path": P}`` only that file's — server-side, on real indexes.
-* **``wait_for_fresh`` is bounded.** With an in-flight file matching the query's
-  path filter that NEVER reaches ``indexed``, ``wait_for_fresh=True`` returns
-  within the timeout (serving stale-with-warning) rather than hanging forever.
+* **Store cutover (item 1).** ``search_code`` calls ``store.hybrid_search`` with
+  BOTH the query VECTOR (embedded) AND the raw query TEXT (the BM25 arm needs it),
+  producing :class:`SearchResult`\\ s, never a ``Candidate``/``ScoredPoint`` dump.
+  Filters (tier / file_path / the ``path`` alias) survive verbatim.
+* **Honest failure (item 2).** A down store RAISES out of ``search_code`` (never a
+  silent ``[]``); an embedder failure propagates (never swallowed).
+* **Memory-boost re-grounded on RRF scale (item 4).** A memory-referenced hit
+  overtakes an unreferenced higher-RRF-scored one (proven by an ordering flip vs a
+  no-memory control), and equally-boosted hits keep a stable order. No memory
+  store ⇒ inert.
+* **Visible memory injection (item 5, NEW).** ≤2 query-matching memories are
+  injected as VISIBLE, provenance-stamped result entries (distinct from the silent
+  score-boost) — the memory text + a provenance marker + its refs' keys — that do
+  NOT masquerade as source citations.
+* **Citation grammar + short keys (item 6).** The base format KEEPS
+  ``[SOURCE:file:line]`` + ``Key:`` + fenced source AND ADDS the v2 citation
+  ``[S:tier:path:start-end@hash6]``; ``chunk_key`` stays the full stable bare uuid5.
+* **Per-hit graph enrichment (item 7).** Each function/method hit carries
+  ``← N prod / M test · tests: K`` (from the code graph) plus its ``signature``;
+  enrichment is capped (≤10 graph joins per response, top-10 by score); a graph
+  that raises mid-enrichment still returns the hit, annotated with an explicit
+  marker.
+* **Per-result staleness stays visible (item 8).** An in-flight (dirty/embedding)
+  chunk is flagged stale but still returned; ``wait_for_fresh`` is bounded.
+* **Config-gated reranker seam (item 9).** ``search.reranker`` null (default) ⇒ the
+  reranker seam is provably NOT called; configured ⇒ candidates pass through it
+  post-RRF, pre-format.
+* **Render-sanitiser (item 10).** Control chars / framing in non-fenced fields
+  (identities / paths / memory lines) are collapsed so they cannot break the
+  citation line or escape a fence.
+* **Detail levels (item 11).** The ``auto``/``summary``/``source`` partition
+  survives.
+* **Extension hooks (item 3).** The seam hooks operate on ``Candidate``.
 """
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
-import pytest_asyncio
-
-# ``conftest`` and ``_extension_helpers`` resolve as top-level modules because
-# conftest.py inserts the tests dir onto ``sys.path`` (see
-# loremaster/tests/conftest.py). The inherited harness URL + key reader are
-# reused WITHOUT its global-sweep teardown; ``_extension_helpers`` ships the fake
-# extension overriding every seam (proves the pipeline consults the resolved
-# LoreServer hooks, not hardwired base behaviour). ``_surreal_fakes`` supplies the
-# async in-memory ``FakeSurrealManifest`` — the P5 write-stack's manifest contract,
-# faked, since ``SearchPipeline`` now consults it asynchronously (see
-# ``_index_corpus`` below for why it replaces the old SQLite ``Manifest``); it is
-# ``cast`` to the real :class:`SurrealManifest` at the one fixture boundary that
-# constructs it, so every downstream type hint stays the real production type.
 from _extension_helpers import FakeExtension, minimal_config
-from _surreal_fakes import fake_surreal_trio
-from _surreal_harness import (
-    drop_database as drop_surreal_database,
+from _surreal_fakes import (
+    FakeSurrealCodeGraph,
+    FakeSurrealManifest,
+    FakeSurrealStore,
+    fake_surreal_trio,
 )
-from _surreal_harness import (
-    make_env,
-    surreal_password,
-    surreal_url,
-    surreal_user,
-)
-from conftest import QDRANT_URL, _qdrant_api_key
 from loremaster.config import LoreConfig
 from loremaster.extension import Extension, ExtensionContext
+from loremaster.graph_surreal import SurrealCodeGraph
 from loremaster.index.manifest import STATE_DIRTY, STATE_EMBEDDING, STATE_INDEXED
-from loremaster.index.records import chunk_to_record, sha512_hex
+from loremaster.index.records import chunk_to_record, point_id, sha512_hex
 from loremaster.index.surreal_manifest import SurrealManifest
-from loremaster.memory.store import MemoryRef, MemoryStore
+from loremaster.memory.store import MemoryRef, RecalledMemory
 from loremaster.search import SearchPipeline, SearchResult
-from loremaster.server import LoreServer, build_app_context
-from loremaster.store.qdrant import QdrantStore
-from lorescribe.models import ChunkContext
+from loremaster.server import LoreServer
+from loremaster.store.candidate import Candidate
+from loremaster.store.surreal import SurrealConnectionError, SurrealStore
+from lorescribe.models import Chunk, ChunkContext
 from loresigil.testing import FakeEmbedder
-from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import ScoredPoint
 
 # Production embedding dim per the owner directive (FakeEmbedder at 2048).
 _DIM = 2048
 
-# The (sole) tier every ``_config``-built config declares — matches the "custom"
-# literal the tests already hardcode when reading manifest rows back.
+# The (sole) tier every ``_config``-built config declares.
 _TIER = "custom"
 
 # The freshness warning marker the plan pins ("⚠ re-indexing — may be stale").
 _STALE_MARKER = "re-indexing"
 
-# The memory-collection slug suffix the MemoryStore convention appends.
-_MEMORY_SUFFIX = "_memory"
+# --------------------------------------------------------------------------- #
+# Contract constants THIS module DEFINES (the interface the pipeline must meet).
+# These are the shapes/caps/markers the CONTRACT decides for items 5/6/7/10 —
+# not values reverse-engineered from any implementation. Reported for review.
+# --------------------------------------------------------------------------- #
 
-# The namespace + credential env-var names the one real ``build_app_context``
-# test's throwaway SurrealDB database uses (mirrors ``test_cli.py``'s
-# harness-isolation convention).
-_SURREAL_TEST_NAMESPACE = "lore_test"
-_SURREAL_USER_ENV = "SURREAL_USER"
-_SURREAL_PASS_ENV = "SURREAL_PASS"
+# item 6: the v2 short-citation grammar prefix. Full form:
+# ``[S:<tier>:<file_path>:<line_start>-<line_end>@<hash6>]`` (hash6 = first 6 hex
+# of the chunk's content_hash). Coexists with the kept ``[SOURCE:file:line]``.
+_SHORT_CITATION_PREFIX = "[S:"
+
+# item 7: the per-hit graph ref-join line, rendered on a function/method hit as
+# ``← N prod / M test · tests: K`` (N/M = production/test reference counts from
+# ``graph.references``; K = covering-test-node count from ``graph.tests_for``).
+_ENRICHMENT_ARROW = "←"  # "←"
+_ENRICHMENT_MIDDOT = "·"  # "·"
+# item 7: the maximum number of hits enriched per response (dead-reckoning's cap);
+# a k=20 response issues at most this many graph joins (top-10 by score).
+_ENRICHMENT_CAP = 10
+# item 7: the explicit marker annotating a hit whose enrichment could not be
+# computed (the graph raised mid-enrichment) — annotate, never blanket-fail.
+_ENRICHMENT_UNAVAILABLE = "⚠ enrichment unavailable"  # "⚠ enrichment unavailable"
+
+# item 5: the provenance marker distinguishing an injected memory line from a real
+# source citation; the injected result's ``kind`` discriminator; the injection cap.
+_MEMORY_MARKER = "[MEMORY]"
+_MEMORY_KIND = "memory"
+_HIT_KIND = "hit"
+_MEMORY_INJECTION_CAP = 2
+
+
+def _refjoin_line(n_prod: int, n_test: int, n_tests: int) -> str:
+    """The exact ref-join enrichment substring for the given graph counts (item 7).
+
+    The format is the CONTRACT (``← N prod / M test · tests: K``); the *values*
+    are supplied by an independent oracle (a hand-known corpus + the audited fake
+    graph's own ``references``/``tests_for``), so this is a faithful-forwarding
+    check, not a restatement of the pipeline's own arithmetic.
+    """
+    return f"{_ENRICHMENT_ARROW} {n_prod} prod / {n_test} test {_ENRICHMENT_MIDDOT} tests: {n_tests}"
 
 
 # --------------------------------------------------------------------------- #
-# Real corpus — modules whose chunk types we can pin by inspection
+# Real corpora — modules whose chunk types / references we can pin by inspection.
 # --------------------------------------------------------------------------- #
-# A real module the python_ast chunker splits into imports/class/method/function
-# — types the base classifies as summary (imports/class) vs source (method/
-# function). Used for the detail_level partition and the freshness/format tests.
+# A real module the python_ast chunker splits into imports/class/method/function —
+# types the base classifies as summary (imports/class) vs source (method/function).
 _PY_ROUTING = """\
 import os
 
@@ -154,7 +150,7 @@ class Router:
 
 
 def champion_routing(week):
-    \"\"\"Route the 36-week curve champion to the right warehouse.\"\"\"
+    \"\"\"Route the 36-week curve champion warehouse.\"\"\"
     return week * 2
 """
 
@@ -166,6 +162,35 @@ def quarterly_pricing(volume):
     return volume * 0.95
 """
 
+# --- enrichment corpus: a target with a KNOWN production + test reference profile
+# (modelled on test_graph_surreal's REFLIB — a symbol called from prod AND a test).
+_REFLIB_SOURCE = """\
+def champion_routing(week):
+    \"\"\"Route the 36-week curve champion warehouse.\"\"\"
+    return week * 2
+"""
+
+_CONSUMER_SOURCE = """\
+from reflib import champion_routing
+
+
+def dispatch(week):
+    \"\"\"A production caller of champion_routing.\"\"\"
+    return champion_routing(week)
+"""
+
+_TEST_REFLIB_SOURCE = """\
+from reflib import champion_routing
+
+
+def test_champion_routing():
+    assert champion_routing(1) == 2
+"""
+
+# The unique bare symbol name the enrichment join keys on (globally unique across
+# the enrichment corpus, so a bare-name OR fqn join both resolve it).
+_ENRICHMENT_SYMBOL = "champion_routing"
+
 
 def _write(path: Path, text: str) -> None:
     """Create parents and write ``text`` (UTF-8)."""
@@ -174,41 +199,21 @@ def _write(path: Path, text: str) -> None:
 
 
 def _slug() -> str:
-    """A per-test slug → throwaway ``lore_test_<uuid4>`` collection."""
+    """A per-test slug (point ids fold it in, so keep it unique)."""
     return f"test_{uuid.uuid4().hex}"
 
 
-def _embedding_text_for(
-    server: LoreServer, file_path: str, source: str, identity: str
-) -> str:
-    """Return the EXACT ``embedding_text`` the indexer embedded for one chunk.
-
-    Runs ``source`` through the SAME chunker registry the indexer used (so the
-    text — including any chunker-internal prefix — is the genuine producer's
-    output, not a hand-mirrored copy). A query equal to this embeds, under the
-    deterministic FakeEmbedder, to that chunk's exact stored vector — an
-    independent ranking oracle (cosine 1.0) free of a hardcoded text format.
-    """
-    ctx = ChunkContext(
-        slug="oracle",
-        file_path=file_path,
-        count_tokens=lambda text: max(1, len(text) // 4),
-        max_input_tokens=8192,
-    )
-    chunks = server.registry.dispatch_file(file_path, source, ctx)
-    return next(chunk.embedding_text for chunk in chunks if chunk.identity == identity)
-
-
 def _config(
-    *, slug: str, live_path: Path, surreal: dict[str, Any] | None = None
+    *,
+    slug: str,
+    live_path: Path,
+    reranker: dict[str, Any] | None = None,
 ) -> LoreConfig:
     """A validated :class:`LoreConfig` with one live tier rooted at ``live_path``.
 
-    ``surreal`` threads an explicit SurrealDB connection block (the harness's
-    throwaway dev-server URL + credentials) when given — needed ONLY by the one
-    test that drives the real ``build_app_context`` (``TestRuntimeExtensionContext``);
-    every other test in this file builds a :class:`SearchPipeline` directly and
-    never resolves SurrealDB credentials at all.
+    ``reranker`` threads the P6 ``search.reranker: {url, model}`` block (item 9);
+    ``None`` (the default) leaves it unset, so the config carries no reranker and
+    the pipeline must provably NOT call the reranker seam.
     """
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -227,10 +232,10 @@ def _config(
             "api_key_env": "LORE_TEI_KEY",
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": QDRANT_URL, "api_key_env": "QDRANT__SERVICE__API_KEY"},
+        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         "roots": [
             {
-                "tier": "custom",
+                "tier": _TIER,
                 "watch": "live",
                 "path": str(live_path),
                 "include": ["**/*.py"],
@@ -248,121 +253,268 @@ def _config(
         },
         "server": {"host": "127.0.0.1", "path": "/mcp", "port": 9201},
     }
-    if surreal is not None:
-        payload["surreal"] = surreal
+    if reranker is not None:
+        # item 9: the config-gated reranker seam (SearchConfig). Present ⇒ the
+        # pipeline routes candidates through the seam post-RRF, pre-format.
+        payload["search"] = {"reranker": reranker}
     return LoreConfig.model_validate(payload)
 
 
 # --------------------------------------------------------------------------- #
-# Fixtures — concurrency-safe, exact-name teardown
+# Producer-grounded oracles — the query text / line span / signature the REAL
+# chunker emits (so a fixture value is the genuine producer's output, never a
+# hand-mirrored copy).
 # --------------------------------------------------------------------------- #
-StoreFactory = Callable[[str], QdrantStore]
+def _chunk_for(server: LoreServer, file_path: str, source: str, identity: str) -> Chunk:
+    """Return the REAL chunk the indexer's chunker emits for ``identity``.
 
-
-@pytest_asyncio.fixture()
-async def store_factory() -> AsyncIterator[StoreFactory]:
-    """Builder for :class:`QdrantStore`, with CONCURRENCY-SAFE exact-name teardown.
-
-    Owns its own client and deletes ONLY the exact collection names it created
-    (never a ``lore_test_*`` prefix sweep, which would race a sibling agent on
-    this shared server).
+    Runs ``source`` through the SAME chunker registry the indexer uses, so the
+    line span / signature / embedding_text read off it are the genuine producer's
+    output — an independent oracle, not a hand-mirrored copy.
     """
-    client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-    created: list[str] = []
-
-    def _make(slug: str) -> QdrantStore:
-        store = QdrantStore(client=client, slug=slug)
-        created.append(store.collection_name)
-        return store
-
-    try:
-        yield _make
-    finally:
-        for name in created:
-            if await client.collection_exists(name):
-                await client.delete_collection(name)
-        await client.close()
+    ctx = ChunkContext(
+        slug="oracle",
+        file_path=file_path,
+        count_tokens=lambda text: max(1, len(text) // 4),
+        max_input_tokens=8192,
+    )
+    chunks = server.registry.dispatch_file(file_path, source, ctx)
+    return next(chunk for chunk in chunks if chunk.identity == identity)
 
 
+def _embedding_text_for(
+    server: LoreServer, file_path: str, source: str, identity: str
+) -> str:
+    """The EXACT ``embedding_text`` the indexer embedded for one chunk (rank oracle).
+
+    A query equal to this embeds — under the deterministic FakeEmbedder — to that
+    chunk's stored vector (cosine 1.0), an independent ranking oracle free of a
+    hardcoded chunker text format.
+    """
+    return _chunk_for(server, file_path, source, identity).embedding_text
+
+
+def _expected_point_id(slug: str, file_path: str, chunk: Chunk) -> str:
+    """The bare uuid5 point id the indexer mints for ``chunk`` (chunk_key oracle).
+
+    Computed via the production :func:`~loremaster.index.records.point_id` over the
+    chunk's own natural key — the SAME derivation ``chunk_to_record`` uses — so it
+    is independent of the pipeline's own key handling.
+    """
+    return point_id(slug, _TIER, file_path, chunk.chunk_type, chunk.identity, chunk.sub_ordinal)
+
+
+def _expected_short_citation(file_path: str, source: str, chunk: Chunk) -> str:
+    """The exact ``[S:tier:path:start-end@hash6]`` citation for ``chunk`` (item 6).
+
+    ``hash6`` is the first 6 hex of the file's SHA-512, computed HERE from the raw
+    source via the production :func:`~loremaster.index.records.sha512_hex` — an
+    independent oracle, never read back from the pipeline's formatted output.
+    """
+    hash6 = sha512_hex(source)[:6]
+    return (
+        f"{_SHORT_CITATION_PREFIX}{_TIER}:{file_path}:"
+        f"{chunk.line_start}-{chunk.line_end}@{hash6}]"
+    )
+
+
+def _max_backtick_run(text: str) -> int:
+    """The longest run of consecutive backticks anywhere in ``text``."""
+    runs = re.findall(r"`+", text)
+    return max((len(run) for run in runs), default=0)
+
+
+# --------------------------------------------------------------------------- #
+# Test doubles (all faithful to the seam they stand in for).
+# --------------------------------------------------------------------------- #
 class FlatFakeEmbedder(FakeEmbedder):
     """A :class:`FakeEmbedder` pinned to the FLAT embed path.
 
-    These search tests' identity oracle (query text == chunk text => cosine 1.0)
-    holds only when index-time vectors are FLAT: a contextualized-capable
-    embedder's grouped vectors are deliberately context-sensitive, so the same
-    text embedded as a query (always flat) would no longer match. The grouped
-    flavor of this truth is pinned by test_indexer_contextualized.py's
-    ``test_grouped_path_stores_the_context_sensitive_vector_not_a_flat_one``.
+    The identity oracle (query text == chunk text ⇒ cosine 1.0) holds only when
+    index-time vectors are FLAT; a contextualized embedder's grouped vectors are
+    deliberately context-sensitive.
     """
 
     @property
     def supports_contextualized(self) -> bool:
-        """This double instruments the FLAT embed path — opt out of grouped dispatch."""
+        """Instrument the FLAT embed path — opt out of grouped dispatch."""
         return False
 
 
-@pytest.fixture()
-def embedder() -> FakeEmbedder:
-    """The shipped deterministic embedder at the production dim (flat-path pinned)."""
-    return FlatFakeEmbedder(dim=_DIM)
+class _FailingEmbedder(FlatFakeEmbedder):
+    """A :class:`FakeEmbedder` whose query embed permanently raises (item 2)."""
+
+    class EmbedderDown(RuntimeError):
+        """The distinct error this double raises from ``embed_query``."""
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Raise instead of embedding — the pipeline must NOT swallow this."""
+        raise self.EmbedderDown("embedder backend is down")
 
 
-@pytest.fixture()
-def manifest() -> SurrealManifest:
-    """A fast in-memory async manifest — the P5 write-stack's :class:`SurrealManifest`
-    CONTRACT, faked (:mod:`_surreal_fakes`). ``SearchPipeline`` now consults its
-    manifest asynchronously (``_is_stale`` / ``_all_rows_indexed_for_path``), so
-    the old synchronous SQLite ``Manifest`` no longer satisfies its type — and
-    these tests never need a REAL SurrealDB round-trip (they pin
-    ``SearchPipeline`` behaviour, not the manifest store itself), so the fake is
-    the right-sized double (``fake_surreal_trio`` wires it with its own private
-    in-memory database; only the manifest half is used here). ``cast`` to the real
-    type: the fake satisfies the SAME async contract structurally but is not a
-    nominal ``SurrealManifest`` subclass — the standard typed-double pattern.
+class _RecordingSurrealStore(FakeSurrealStore):
+    """A :class:`FakeSurrealStore` that records its last ``hybrid_search`` call.
+
+    Proves the producer→consumer seam (item 1): the pipeline forwards BOTH the
+    embedded query VECTOR and the RAW query TEXT (the BM25 arm's input) into the
+    store. It still delegates to the real fused search, so results are genuine.
     """
-    return cast(SurrealManifest, fake_surreal_trio(dim=_DIM).manifest)
+
+    def __init__(self, *, dim: int, db: Any) -> None:
+        super().__init__(dim=dim, db=db)
+        self.last_query_text: str | None = None
+        self.last_query_vector: list[float] | None = None
+        self.last_k: int | None = None
+        self.hybrid_search_calls = 0
+
+    async def hybrid_search(
+        self,
+        *,
+        query_vector: list[float],
+        query_text: str,
+        k: int,
+        filters: dict[str, str] | None = None,
+    ) -> list[Candidate]:
+        self.last_query_text = query_text
+        self.last_query_vector = list(query_vector)
+        self.last_k = k
+        self.hybrid_search_calls += 1
+        return await super().hybrid_search(
+            query_vector=query_vector, query_text=query_text, k=k, filters=filters
+        )
 
 
+class _FakeMemoryStore:
+    """A minimal recall double standing in for the pipeline's ``memory_store`` seam.
+
+    The pipeline consumes ``recall_memory(query) -> list[RecalledMemory]``; this
+    returns a fixed, score-ordered list so the memory-boost (item 4) and visible
+    injection (item 5) behaviours are deterministic without a live embedder/Qdrant.
+    (MemoryStore internals are P7 — explicitly out of scope for this cycle.)
+    """
+
+    def __init__(self, recalled: list[RecalledMemory]) -> None:
+        self._recalled = recalled
+        self.recall_calls = 0
+
+    async def recall_memory(self, query: str, k: int = 5) -> list[RecalledMemory]:
+        self.recall_calls += 1
+        return list(self._recalled[:k])
+
+
+class _RecordingReranker:
+    """A recording stand-in for the config-gated cross-encoder reranker seam (item 9).
+
+    Records whether it was called and the candidates it received (post-RRF,
+    pre-format), returning them unchanged. No live reranker in P6 — the seam
+    interface only.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.received: list[Candidate] | None = None
+
+    async def rerank(
+        self, query: str, candidates: list[Candidate], ctx: ExtensionContext
+    ) -> list[Candidate]:
+        self.calls += 1
+        self.received = list(candidates)
+        return candidates
+
+
+class _CountingCodeGraph(FakeSurrealCodeGraph):
+    """A :class:`FakeSurrealCodeGraph` counting enrichment lookups (item 7 cap)."""
+
+    def __init__(self, *, db: Any, tier_roots: Any, project_roots: Any) -> None:
+        super().__init__(db=db, tier_roots=tier_roots, project_roots=project_roots)
+        self.reference_lookups = 0
+
+    async def references(self, name: str) -> Any:
+        self.reference_lookups += 1
+        return await super().references(name)
+
+
+class _RaisingCodeGraph(FakeSurrealCodeGraph):
+    """A :class:`FakeSurrealCodeGraph` whose enrichment queries raise (item 7)."""
+
+    async def references(self, name: str) -> Any:
+        raise SurrealConnectionError("code graph socket dropped mid-enrichment")
+
+    async def tests_for(self, symbol_or_file: str) -> Any:
+        raise SurrealConnectionError("code graph socket dropped mid-enrichment")
+
+
+class _CtxRecordingExtension(Extension):
+    """An :class:`Extension` whose seam-4 ``augment_candidates`` records its ``ctx``.
+
+    ``augment_candidates`` fires UNCONDITIONALLY (even over an empty candidate
+    list), so it is the reliable observation point for "the search seam receives a
+    RUNTIME context carrying the real services", independent of whether any hit is
+    served. P6: it now receives ``list[Candidate]``.
+    """
+
+    def __init__(self) -> None:
+        self.recorded_ctx: ExtensionContext | None = None
+
+    @property
+    def name(self) -> str:
+        return "ctxrec"
+
+    def augment_candidates(
+        self, query: str, candidates: list[Candidate], ctx: ExtensionContext
+    ) -> list[Candidate]:
+        self.recorded_ctx = ctx
+        return candidates
+
+
+# --------------------------------------------------------------------------- #
+# Indexing + pipeline wiring over the shared fake trio.
+# --------------------------------------------------------------------------- #
 class _Indexed:
-    """A small bundle: a slug-scoped store, the manifest it was indexed under, and the config."""
+    """A bundle: the fake trio (store/manifest/graph over one db) + the config."""
 
     def __init__(
-        self, *, store: QdrantStore, manifest: SurrealManifest, config: LoreConfig
+        self,
+        *,
+        store: FakeSurrealStore,
+        # The truthful fixture type — _make_pipeline casts it to the pipeline's
+        # SurrealManifest-typed param at the one construction seam.
+        manifest: FakeSurrealManifest,
+        graph: FakeSurrealCodeGraph,
+        config: LoreConfig,
+        db: Any,
     ) -> None:
         self.store = store
         self.manifest = manifest
+        self.graph = graph
         self.config = config
+        self.db = db
 
 
 async def _index_corpus(
     *,
     slug: str,
     live_path: Path,
-    store: QdrantStore,
     embedder: FakeEmbedder,
-    manifest: SurrealManifest,
     server: LoreServer | None = None,
+    reranker: dict[str, Any] | None = None,
 ) -> _Indexed:
-    """Index the live corpus at ``live_path`` for real, returning the bundle.
+    """Index every ``*.py`` under ``live_path`` into a fresh fake trio.
 
-    NOT the production :class:`~loremaster.index.indexer.Indexer`: since P5 its
-    write path is the unified SurrealDB store exclusively (the composed-
-    transaction ``store.apply(...)``), which :class:`QdrantStore` does not
-    implement — ``SearchPipeline``'s read path is UNCHANGED (still Qdrant; the
-    P5→P6 dual-store interim documented on ``server.build_app_context``), so a
-    real ``Indexer`` run would populate SurrealDB while this suite searches
-    Qdrant and find nothing. Instead this chunks + embeds every ``.py`` file
-    through the SAME producer helpers the real ``Indexer`` uses — the REAL
-    chunker registry (``composed.registry.dispatch_file``) and the REAL (fake)
-    embedder, translated to :class:`~loremaster.index.records.Record` via the
-    production ``chunk_to_record`` — so the points under search still carry
-    real chunk types, payloads, and line numbers; only the ORCHESTRATION differs
-    (a direct ``store.upsert`` + a mirrored manifest row, not the atomic Surreal
-    apply).
+    Chunks + embeds every file through the SAME producer helpers the real Indexer
+    uses (the real chunker registry + the real (fake) embedder + the production
+    ``chunk_to_record``), then writes each file's chunks to the store, its manifest
+    row, AND its derived code-graph slice — so the points under search carry real
+    chunk types / payloads / line spans and the graph carries real reference edges
+    (the tier/project roots point astroid at the on-disk corpus for resolution).
     """
-    config = _config(slug=slug, live_path=live_path)
+    config = _config(slug=slug, live_path=live_path, reranker=reranker)
     composed = server if server is not None else LoreServer(config)
-    await store.ensure_collection(embedder.dim)
+    trio = fake_surreal_trio(
+        dim=embedder.dim,
+        tier_roots={_TIER: str(live_path)},
+        project_roots=[str(live_path)],
+    )
     for path in sorted(live_path.rglob("*.py")):
         rel = str(path.relative_to(live_path).as_posix())
         source = path.read_text(encoding="utf-8")
@@ -391,18 +543,16 @@ async def _index_corpus(
             for record, vector in zip(records, vectors, strict=True)
             if vector is not None
         ]
-        await store.upsert(pairs)
-        await manifest.upsert(
-            tier=_TIER,
-            file_path=rel,
-            sha512=content_hash,
-            mtime_ns=stat.st_mtime_ns,
-            size=len(source.encode("utf-8")),
-            n_chunks=len(records),
-            chunk_ids=[record.point_id for record in records],
-            state=STATE_INDEXED,
+        await trio.store.upsert(pairs)
+        await trio.manifest.upsert(
+            tier=_TIER, file_path=rel, sha512=content_hash, mtime_ns=stat.st_mtime_ns,
+            size=len(source.encode("utf-8")), n_chunks=len(records),
+            chunk_ids=[record.point_id for record in records], state=STATE_INDEXED,
         )
-    return _Indexed(store=store, manifest=manifest, config=config)
+        await trio.graph.build_file_graph(_TIER, rel, chunks)
+    return _Indexed(
+        store=trio.store, manifest=trio.manifest, graph=trio.graph, config=config, db=trio.db
+    )
 
 
 def _make_pipeline(
@@ -410,828 +560,982 @@ def _make_pipeline(
     indexed: _Indexed,
     embedder: FakeEmbedder,
     server: LoreServer,
-    memory_store: MemoryStore | None = None,
+    memory_store: Any | None = None,
+    reranker: Any | None = None,
+    store: FakeSurrealStore | None = None,
+    code_graph: FakeSurrealCodeGraph | None = None,
 ) -> SearchPipeline:
-    """Wire a :class:`SearchPipeline` over an indexed bundle + the composed server.
+    """Wire a v2 :class:`SearchPipeline` over an indexed bundle + composed server.
 
     Builds the RUNTIME :class:`ExtensionContext` over the live (fake) services so
-    the pipeline's search seams receive a functional embedder/manifest/tokenizer
-    — the same shape ``build_app_context`` injects in production.
+    the pipeline's search seams receive a functional embedder/manifest/tokenizer.
+    ``code_graph`` (item 7) is a required v2 dependency; ``reranker`` (item 9) is
+    the optional config-gated seam.
     """
+    the_store = store if store is not None else indexed.store
+    the_graph = code_graph if code_graph is not None else indexed.graph
     extension_context = ExtensionContext(
-        store=indexed.store,
+        store=the_store,
         embedder=embedder,
         config=indexed.config,
         count_tokens=embedder.count_tokens,
         manifest=indexed.manifest,
     )
     return SearchPipeline(
-        store=indexed.store,
+        store=cast(SurrealStore, the_store),
         embedder=embedder,
         server=server,
-        manifest=indexed.manifest,
-        extension_context=extension_context,
-        memory_store=memory_store,
+        manifest=cast(SurrealManifest, indexed.manifest),
         config=indexed.config,
+        extension_context=extension_context,
+        code_graph=cast(SurrealCodeGraph, the_graph),
+        memory_store=memory_store,
+        reranker=reranker,
     )
 
 
-# --------------------------------------------------------------------------- #
-# Pipeline shape & summarised output
-# --------------------------------------------------------------------------- #
-class TestSummarisedOutput:
-    """search_code returns summarised value objects, never raw ScoredPoints."""
+@pytest.fixture()
+def embedder() -> FakeEmbedder:
+    """The shipped deterministic embedder at the production dim (flat-path pinned)."""
+    return FlatFakeEmbedder(dim=_DIM)
 
-    async def test_returns_search_result_value_objects(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+
+async def _index_single(
+    tmp_path: Path, embedder: FakeEmbedder, *, files: dict[str, str] | None = None
+) -> tuple[_Indexed, LoreServer]:
+    """Index a small corpus (``routing.py`` by default) and return (indexed, server)."""
+    corpus = files if files is not None else {"routing.py": _PY_ROUTING}
+    for name, text in corpus.items():
+        _write(tmp_path / name, text)
+    slug = _slug()
+    config = _config(slug=slug, live_path=tmp_path)
+    server = LoreServer(config)
+    indexed = await _index_corpus(
+        slug=slug, live_path=tmp_path, embedder=embedder, server=server
+    )
+    return indexed, server
+
+
+# --------------------------------------------------------------------------- #
+# item 1 — store cutover (hybrid_search: vector + text; Candidate → SearchResult)
+# --------------------------------------------------------------------------- #
+class TestStoreCutover:
+    """search_code reads from hybrid_search and returns summarised value objects."""
+
+    async def test_forwards_query_vector_and_raw_text_to_hybrid_search(
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
+        # The producer→consumer seam: the pipeline embeds the query for the vector
+        # arm but MUST forward the RAW query text for the BM25 arm — dropping it (or
+        # sending the vector/prompt text) is the classic seam bug this pins.
+        indexed, server = await _index_single(tmp_path, embedder)
+        recording = _RecordingSurrealStore(dim=embedder.dim, db=indexed.db)
+        pipeline = _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, store=recording
         )
+
+        query = "champion routing warehouse"
+        await pipeline.search_code(query, k=5)
+
+        assert recording.hybrid_search_calls == 1
+        # The BM25 arm's input is the caller's RAW query text, verbatim.
+        assert recording.last_query_text == query
+        # The vector arm's input is the embedded query (deterministic ⇒ equal).
+        assert recording.last_query_vector == await embedder.embed_query(query)
+
+    async def test_returns_search_result_value_objects_never_candidates(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        indexed, server = await _index_single(tmp_path, embedder)
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
         results = await pipeline.search_code("champion routing warehouse", k=5)
 
         assert results, "a real query over a real corpus must return hits"
         assert all(isinstance(r, SearchResult) for r in results)
-        # Never a raw ScoredPoint dump.
-        from qdrant_client.models import ScoredPoint
-
-        assert not any(isinstance(r, ScoredPoint) for r in results)
+        # Never a raw backend hit dump (the Anthropic token-efficiency rule).
+        assert not any(isinstance(r, Candidate) for r in results)
 
     async def test_respects_k_ceiling(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        _write(tmp_path / "pricing.py", _PY_PRICING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
+        indexed, server = await _index_single(
+            tmp_path, embedder, files={"routing.py": _PY_ROUTING, "pricing.py": _PY_PRICING}
         )
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
+        # k bounds the number of store hits returned (no memory store ⇒ no
+        # extra visible-memory entries, so total == hits).
         results = await pipeline.search_code("anything", k=2)
         assert len(results) <= 2
 
 
 # --------------------------------------------------------------------------- #
-# Base citation/result format (seam 5 default)
+# item 2 — honest failure (down store RAISES; embedder failure propagates)
 # --------------------------------------------------------------------------- #
-class TestBaseFormat:
-    """The base default citation: [SOURCE:file:line] + stable Key: + fenced source."""
+class TestHonestFailure:
+    """A down store raises out of search_code; an embedder failure propagates."""
 
-    async def test_base_format_carries_source_key_and_fenced_block(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+    async def test_down_store_raises_never_returns_empty(
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
+        indexed, server = await _index_single(tmp_path, embedder)
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
-        # Query equal to the champion_routing function's source so it ranks first
-        # (FakeEmbedder deterministic). Then inspect that result's format.
-        results = await pipeline.search_code("champion routing warehouse", k=5)
+        # Arm the store to simulate a downed connection on the next read; the
+        # pipeline must surface it LOUDLY (a silent [] would hide an outage).
+        indexed.store.arm_connection_failure()
+        with pytest.raises(SurrealConnectionError):
+            await pipeline.search_code("champion routing warehouse", k=5)
+
+    async def test_embedder_failure_propagates(
+        self, tmp_path: Path
+    ) -> None:
+        failing = _FailingEmbedder(dim=_DIM)
+        # Index with a WORKING embedder, then search with the failing one so the
+        # failure is isolated to the query-embed step.
+        working = FlatFakeEmbedder(dim=_DIM)
+        indexed, server = await _index_single(tmp_path, working)
+        pipeline = _make_pipeline(indexed=indexed, embedder=failing, server=server)
+
+        with pytest.raises(_FailingEmbedder.EmbedderDown):
+            await pipeline.search_code("champion routing warehouse", k=5)
+
+
+# --------------------------------------------------------------------------- #
+# item 6 — citation grammar (kept [SOURCE:] + Key: + fence, added [S:...]) + keys
+# --------------------------------------------------------------------------- #
+class TestCitationGrammar:
+    """The base citation keeps its v1 grammar AND gains the v2 short citation."""
+
+    async def test_base_format_keeps_source_key_and_fenced_block(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        indexed, server = await _index_single(tmp_path, embedder)
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+
+        # A query equal to champion_routing's embedding_text ranks it first.
+        query = _embedding_text_for(server, "routing.py", _PY_ROUTING, "champion_routing")
+        results = await pipeline.search_code(query, k=5)
         top = results[0]
 
-        # [SOURCE:<file_path>:<line_start>] — the file path is the indexed
-        # tier-relative path; the line is the chunk's start line (an int).
         assert "[SOURCE:routing.py:" in top.formatted
-        # A stable Key: line carrying the chunk's key.
         assert "Key:" in top.formatted
-        assert top.chunk_key, "a base result still carries a (structural) key"
-        assert top.chunk_key in top.formatted
-        # A fenced source block wrapping the real source text.
+        assert top.chunk_key and top.chunk_key in top.formatted
         assert "```" in top.formatted
 
-    async def test_source_line_in_citation_matches_chunk_line_start(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+    async def test_source_line_matches_chunk_line_start(
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        # champion_routing's `def` is line 11 of _PY_ROUTING (counted by hand:
-        # import(1), blanks(2,3), class(4)+docstring(5)+blank(6)+method(7,8)+
-        # blanks(9,10), then `def champion_routing` at 11). An independent oracle
-        # counted from the source, NOT read back from the implementation.
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
+        # champion_routing's ``def`` is line 11 of _PY_ROUTING (import(1), blanks,
+        # class(4)+docstring(5)+blank(6)+method(7,8)+blanks(9,10), def at 11) — an
+        # oracle counted from the source, not read back from the implementation.
+        indexed, server = await _index_single(tmp_path, embedder)
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
-        # Embed the EXACT text the indexer embedded for champion_routing's chunk
-        # (FakeEmbedder is deterministic ⇒ cosine 1.0 ⇒ it ranks first). We pull
-        # that text from the same chunker the indexer used, so the query equals
-        # the stored vector's source without hardcoding the chunker's text format.
-        champion_text = _embedding_text_for(server, "routing.py", _PY_ROUTING, "champion_routing")
-        results = await pipeline.search_code(champion_text, k=5)
-        top = results[0]
+        query = _embedding_text_for(server, "routing.py", _PY_ROUTING, "champion_routing")
+        top = (await pipeline.search_code(query, k=5))[0]
         assert "[SOURCE:routing.py:11]" in top.formatted
 
+    async def test_v2_short_citation_composed_from_payload_fields(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # item 6: ``[S:tier:path:start-end@hash6]`` — every component sourced from
+        # the payload (tier/path/line span) + the file's real SHA-512 (first 6 hex).
+        indexed, server = await _index_single(tmp_path, embedder)
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+
+        query = _embedding_text_for(server, "routing.py", _PY_ROUTING, "champion_routing")
+        top = (await pipeline.search_code(query, k=5))[0]
+
+        chunk = _chunk_for(server, "routing.py", _PY_ROUTING, "champion_routing")
+        expected = _expected_short_citation("routing.py", _PY_ROUTING, chunk)
+        # The exact short citation the CONTRACT specifies, e.g.
+        # ``[S:custom:routing.py:11-13@<hash6>]``.
+        assert expected in top.formatted
+
+    async def test_both_citation_grammars_coexist(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        indexed, server = await _index_single(tmp_path, embedder)
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+
+        query = _embedding_text_for(server, "routing.py", _PY_ROUTING, "champion_routing")
+        top = (await pipeline.search_code(query, k=5))[0]
+
+        # The acceptance-pinned v1 citation survives alongside the added v2 short one.
+        assert "[SOURCE:" in top.formatted
+        assert _SHORT_CITATION_PREFIX in top.formatted
+
+    async def test_chunk_key_is_the_full_stable_bare_uuid5(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # item 6: chunk_key REMAINS the full stable key (memory refs match on it);
+        # the added short citation must not shorten or replace it.
+        indexed, server = await _index_single(tmp_path, embedder)
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+
+        query = _embedding_text_for(server, "routing.py", _PY_ROUTING, "champion_routing")
+        top = (await pipeline.search_code(query, k=5))[0]
+
+        chunk = _chunk_for(server, "routing.py", _PY_ROUTING, "champion_routing")
+        expected_key = _expected_point_id(indexed.config.project.slug, "routing.py", chunk)
+        assert top.chunk_key == expected_key
+        # A canonical uuid5 string (36 chars), never a truncated hash6.
+        assert uuid.UUID(top.chunk_key)
+
 
 # --------------------------------------------------------------------------- #
-# Ranking (independent oracle: identical-text cosine == 1.0)
+# item 1/4 — ranking (RRF-scale) + magnitude sanity bound on the derived score
 # --------------------------------------------------------------------------- #
 class TestRanking:
-    """A chunk whose text equals the query embeds identically ⇒ ranks first."""
+    """A chunk whose text equals the query ranks first; its score is RRF-scale."""
 
-    async def test_query_equal_to_chunk_text_ranks_that_chunk_first(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+    async def test_query_equal_to_chunk_text_ranks_it_first_at_rrf_scale(
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        _write(tmp_path / "pricing.py", _PY_PRICING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
+        indexed, server = await _index_single(
+            tmp_path, embedder, files={"routing.py": _PY_ROUTING, "pricing.py": _PY_PRICING}
         )
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
-        # The EXACT text the indexer embedded for quarterly_pricing's chunk →
-        # that chunk's vector (FakeEmbedder deterministic ⇒ cosine 1.0), so the
-        # pricing chunk MUST outrank every routing chunk. The query text is pulled
-        # from the same chunker the indexer used (independent oracle, no hardcoded
-        # chunker text format).
+        # The EXACT text embedded for quarterly_pricing → its stored vector (cosine
+        # 1.0), so the pricing chunk MUST outrank every routing chunk. Independent
+        # oracle: the query is the producer's own embedding_text.
         pricing_text = _embedding_text_for(server, "pricing.py", _PY_PRICING, "quarterly_pricing")
         results = await pipeline.search_code(pricing_text, k=5)
-        assert results
-        assert "pricing.py" in results[0].formatted
-        # cosine of an identical vector is 1.0 — an independent magnitude oracle.
-        assert results[0].score == pytest.approx(1.0, abs=1e-4)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert hits
+        assert "pricing.py" in hits[0].formatted
+        # Magnitude/sanity bound (clause 4): a fused RRF score is strictly positive
+        # and well under 1.0 (unlike a raw cosine, which would be ~1.0). Catches an
+        # order-of-magnitude regression to raw cosine or an un-fused arm.
+        assert 0.0 < hits[0].score < 1.0
 
 
 # --------------------------------------------------------------------------- #
-# Memory-boost (generic) — proven by an ordering FLIP vs a no-memory control
+# item 4 — memory-boost re-grounded on RRF scale (behaviour, not the constant)
 # --------------------------------------------------------------------------- #
 class TestMemoryBoost:
-    """A saved memory referencing a chunk's key lifts it above an unboosted hit."""
+    """A memory-referenced hit overtakes an unreferenced higher-RRF-scored one."""
 
-    async def _index_two_funcs(
-        self, tmp_path: Path, store_factory: StoreFactory,
-        embedder: FakeEmbedder, manifest: SurrealManifest,
+    async def _two_file_pipeline(
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> tuple[_Indexed, LoreServer]:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        _write(tmp_path / "pricing.py", _PY_PRICING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
+        return await _index_single(
+            tmp_path, embedder, files={"routing.py": _PY_ROUTING, "pricing.py": _PY_PRICING}
         )
-        return indexed, server
 
     async def test_boost_flips_order_vs_no_memory_control(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        indexed, server = await self._index_two_funcs(
-            tmp_path, store_factory, embedder, manifest
-        )
-
-        # CONTROL: no memory store → the bare store ranking decides the order.
-        control = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+        indexed, server = await self._two_file_pipeline(tmp_path, embedder)
         query = "tiered routing and pricing logic"
-        control_results = await control.search_code(query, k=5)
-        assert len(control_results) >= 2
-        control_top_key = control_results[0].chunk_key
-        # Pick a chunk the control ranked BELOW the top to boost.
-        boost_target = next(
-            r for r in control_results[1:] if r.chunk_key != control_top_key
-        )
 
-        # Save a memory whose ref points at the boost target's key. A second
-        # store over the project's _memory collection.
-        mem_store = MemoryStore(
-            store=store_factory(f"{indexed.config.project.slug}{_MEMORY_SUFFIX}"),
-            embedder=embedder,
-        )
-        await mem_store.ensure_ready()
-        await mem_store.save_memory(
-            query,  # the memory text matches the query so recall finds it
-            refs=[MemoryRef(chunk_key=boost_target.chunk_key)],
-        )
+        # CONTROL: no memory store ⇒ the bare RRF ranking decides the hit order.
+        control = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+        control_hits = [r for r in await control.search_code(query, k=5) if r.kind == _HIT_KIND]
+        assert len(control_hits) >= 2
+        control_top_key = control_hits[0].chunk_key
+        boost_target = next(r for r in control_hits[1:] if r.chunk_key != control_top_key)
 
+        # A recalled memory referencing the lower-ranked hit's key must lift it.
+        memory_store = _FakeMemoryStore(
+            [
+                RecalledMemory(
+                    text="the pricing/routing correction",
+                    refs=[MemoryRef(chunk_key=boost_target.chunk_key)],
+                    score=0.9,
+                )
+            ]
+        )
         boosted = _make_pipeline(
-            indexed=indexed, embedder=embedder, server=server, memory_store=mem_store
+            indexed=indexed, embedder=embedder, server=server, memory_store=memory_store
         )
-        boosted_results = await boosted.search_code(query, k=5)
+        boosted_hits = [r for r in await boosted.search_code(query, k=5) if r.kind == _HIT_KIND]
+        boosted_keys = [r.chunk_key for r in boosted_hits]
 
-        # The boosted chunk now outranks the control's former top — an ordering
-        # FLIP that only the memory boost can cause (control proves it was lower).
-        boosted_keys = [r.chunk_key for r in boosted_results]
+        # An ordering FLIP that only the boost can cause (the control proves the
+        # target was ranked BELOW the former top) — behaviour, not the constant.
         assert boost_target.chunk_key in boosted_keys
-        assert boosted_keys.index(boost_target.chunk_key) < boosted_keys.index(
-            control_top_key
+        assert boosted_keys.index(boost_target.chunk_key) < boosted_keys.index(control_top_key)
+
+    async def test_stable_order_among_equally_boosted_hits(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        indexed, server = await self._two_file_pipeline(tmp_path, embedder)
+        query = "tiered routing and pricing logic"
+
+        control = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+        control_hits = [r for r in await control.search_code(query, k=10) if r.kind == _HIT_KIND]
+        assert len(control_hits) >= 2
+        # Boost the top TWO hits equally; their RELATIVE order must be preserved.
+        top_two = [control_hits[0].chunk_key, control_hits[1].chunk_key]
+        memory_store = _FakeMemoryStore(
+            [
+                RecalledMemory(
+                    text="boost both leaders",
+                    refs=[MemoryRef(chunk_key=k) for k in top_two],
+                    score=0.9,
+                )
+            ]
         )
+        boosted = _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, memory_store=memory_store
+        )
+        boosted_keys = [
+            r.chunk_key for r in await boosted.search_code(query, k=10) if r.kind == _HIT_KIND
+        ]
+        # Both stay at the head and keep their control order (stable among equals).
+        assert boosted_keys.index(top_two[0]) < boosted_keys.index(top_two[1])
 
     async def test_no_memory_store_is_inert(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        # A pipeline with memory_store=None must search fine (the generic, no-
-        # memory deploy) — memory-boost is optional, never required.
-        indexed, server = await self._index_two_funcs(
-            tmp_path, store_factory, embedder, manifest
-        )
+        indexed, server = await self._two_file_pipeline(tmp_path, embedder)
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
         results = await pipeline.search_code("routing", k=5)
         assert results
+        # No memory store ⇒ no boost AND no injected memory entries.
+        assert all(r.kind == _HIT_KIND for r in results)
 
 
 # --------------------------------------------------------------------------- #
-# Freshness flags — annotate, never blanket-block
+# item 5 — visible, provenance-stamped memory injection (NEW)
+# --------------------------------------------------------------------------- #
+class TestVisibleMemoryInjection:
+    """≤2 query-matching memories render as visible provenance lines, distinct
+    from the silent boost and NOT masquerading as source citations."""
+
+    async def _pipeline_with_memories(
+        self, tmp_path: Path, embedder: FakeEmbedder, recalled: list[RecalledMemory]
+    ) -> SearchPipeline:
+        indexed, server = await _index_single(tmp_path, embedder)
+        return _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server,
+            memory_store=_FakeMemoryStore(recalled),
+        )
+
+    async def test_matching_memory_injected_as_visible_provenance_line(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        ref_key = "11111111-1111-5111-8111-111111111111"
+        memory_text = "champion_routing lives in routing.py, not pricing.py"
+        pipeline = await self._pipeline_with_memories(
+            tmp_path, embedder,
+            [RecalledMemory(text=memory_text, refs=[MemoryRef(chunk_key=ref_key)], score=0.9)],
+        )
+
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        memory_entries = [r for r in results if r.kind == _MEMORY_KIND]
+
+        assert len(memory_entries) == 1
+        line = memory_entries[0].formatted
+        # The line carries the provenance marker + the memory text + its ref key.
+        assert _MEMORY_MARKER in line
+        assert memory_text in line
+        assert ref_key in line
+
+    async def test_injected_line_is_not_a_source_citation(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # The visible memory line must be DISTINGUISHABLE from a real code hit — it
+        # must not carry either citation grammar, or an agent could mistake project
+        # guidance for a cited source span.
+        pipeline = await self._pipeline_with_memories(
+            tmp_path, embedder,
+            [RecalledMemory(
+                text="a project convention note",
+                refs=[MemoryRef(chunk_key="22222222-2222-5222-8222-222222222222")],
+                score=0.9,
+            )],
+        )
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        memory_entries = [r for r in results if r.kind == _MEMORY_KIND]
+        assert memory_entries
+        for entry in memory_entries:
+            assert "[SOURCE:" not in entry.formatted
+            assert _SHORT_CITATION_PREFIX not in entry.formatted
+
+    async def test_injection_capped_at_two_by_score(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # Three matching memories recalled; only the TWO highest-scored are injected
+        # (a deterministic cap), in descending-score order.
+        recalled = [
+            RecalledMemory(text="mem-high", refs=[MemoryRef(chunk_key="a" * 32)], score=0.95),
+            RecalledMemory(text="mem-mid", refs=[MemoryRef(chunk_key="b" * 32)], score=0.80),
+            RecalledMemory(text="mem-low", refs=[MemoryRef(chunk_key="c" * 32)], score=0.50),
+        ]
+        pipeline = await self._pipeline_with_memories(tmp_path, embedder, recalled)
+
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        memory_texts = [r.formatted for r in results if r.kind == _MEMORY_KIND]
+
+        assert len(memory_texts) == _MEMORY_INJECTION_CAP
+        # The top-2 by score, in order; the low-score memory is dropped.
+        assert "mem-high" in memory_texts[0]
+        assert "mem-mid" in memory_texts[1]
+        assert all("mem-low" not in text for text in memory_texts)
+
+    async def test_injected_memories_render_before_hits(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # Contract decision: injected memories lead the result list (response-level
+        # guidance surfaces first), then the ranked code hits follow.
+        pipeline = await self._pipeline_with_memories(
+            tmp_path, embedder,
+            [RecalledMemory(
+                text="a leading note",
+                refs=[MemoryRef(chunk_key="d" * 32)], score=0.9,
+            )],
+        )
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        assert results[0].kind == _MEMORY_KIND
+        assert any(r.kind == _HIT_KIND for r in results), "the code hits still follow"
+
+    async def test_no_memory_store_injects_nothing(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        indexed, server = await _index_single(tmp_path, embedder)
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        assert results
+        assert not any(r.kind == _MEMORY_KIND for r in results)
+
+
+# --------------------------------------------------------------------------- #
+# item 7 — per-hit graph enrichment (ref-joins v1.0 + signature + cap + failure)
+# --------------------------------------------------------------------------- #
+class TestGraphEnrichment:
+    """A function/method hit carries its ref-joins + signature; enrichment is
+    bounded and fails-soft."""
+
+    async def _enrichment_corpus(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> tuple[_Indexed, LoreServer, str]:
+        """Index the reflib corpus; return (indexed, server, champion_routing key)."""
+        files = {
+            "reflib.py": _REFLIB_SOURCE,
+            "consumer.py": _CONSUMER_SOURCE,
+            "tests/test_reflib.py": _TEST_REFLIB_SOURCE,
+        }
+        indexed, server = await _index_single(tmp_path, embedder, files=files)
+        chunk = _chunk_for(server, "reflib.py", _REFLIB_SOURCE, _ENRICHMENT_SYMBOL)
+        key = _expected_point_id(indexed.config.project.slug, "reflib.py", chunk)
+        return indexed, server, key
+
+    async def test_function_hit_carries_refjoins_and_signature(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        indexed, server, target_key = await self._enrichment_corpus(tmp_path, embedder)
+
+        # Independent oracle: the audited fake graph's OWN reference/test counts for
+        # the target. The corpus is built so these are non-zero (a production caller
+        # + a test caller) — a non-empty driver table, so an "enrichment silently
+        # inert on an empty graph" bug cannot hide as 0/0.
+        summary = await indexed.graph.references(_ENRICHMENT_SYMBOL)
+        covering = await indexed.graph.tests_for(_ENRICHMENT_SYMBOL)
+        assert summary.production_references >= 1
+        assert summary.test_references >= 1
+        expected_refjoin = _refjoin_line(
+            summary.production_references, summary.test_references, len(covering)
+        )
+
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+        results = await pipeline.search_code("champion routing warehouse", k=10)
+        target = next(r for r in results if r.chunk_key == target_key)
+
+        # The pipeline must JOIN the graph with the right key and render the counts
+        # verbatim — a wrong join key would yield 0/0 and fail this substring.
+        assert expected_refjoin in target.formatted
+        # And the chunker-stamped signature rides along (an independent oracle read
+        # off the producer's metadata, e.g. "(week)").
+        signature = _chunk_for(server, "reflib.py", _REFLIB_SOURCE, _ENRICHMENT_SYMBOL).metadata[
+            "signature"
+        ]
+        assert signature is not None and signature in target.formatted
+
+    async def test_non_symbol_hit_has_no_ref_join_line(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # Enrichment is for function/method hits only. A class-header chunk (signature
+        # None) carries neither the ref-join arrow nor a signature line.
+        indexed, server = await _index_single(tmp_path, embedder)
+        class_chunk = _chunk_for(server, "routing.py", _PY_ROUTING, "Router")
+        class_key = _expected_point_id(indexed.config.project.slug, "routing.py", class_chunk)
+
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+        results = await pipeline.search_code("Router routes a request", k=10)
+        class_result = next((r for r in results if r.chunk_key == class_key), None)
+        assert class_result is not None, "the class header chunk is retrievable"
+        assert _ENRICHMENT_ARROW not in class_result.formatted
+
+    async def test_enrichment_is_capped_for_a_large_response(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # A module of many functions: a k=20 response must issue at most
+        # _ENRICHMENT_CAP graph joins (top-10 by score enriched), so enrichment can
+        # never fan out one graph round-trip per hit on a wide result set.
+        handlers = "\n\n\n".join(
+            f'def routing_handler_{i}(week):\n'
+            f'    """Route handler {i}."""\n'
+            f'    return week + {i}'
+            for i in range(25)
+        )
+        indexed, server = await _index_single(
+            tmp_path, embedder, files={"handlers.py": handlers}
+        )
+        counting = _CountingCodeGraph(
+            db=indexed.db, tier_roots={_TIER: str(tmp_path)}, project_roots=[str(tmp_path)]
+        )
+        pipeline = _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, code_graph=counting
+        )
+
+        results = await pipeline.search_code("routing handler", k=20)
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        enriched = [r for r in hits if _ENRICHMENT_ARROW in r.formatted]
+
+        assert len(hits) > _ENRICHMENT_CAP, "the corpus yields more hits than the cap"
+        # At most the cap is enriched, and the graph is joined at most cap times.
+        assert len(enriched) <= _ENRICHMENT_CAP
+        assert counting.reference_lookups <= _ENRICHMENT_CAP
+
+    async def test_graph_raising_mid_enrichment_still_returns_the_hit(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # A graph that fails mid-enrichment must NOT drop the hit or blanket-fail the
+        # search — the hit is returned, its enrichment omitted and explicitly marked.
+        indexed, server, target_key = await self._enrichment_corpus(tmp_path, embedder)
+        raising = _RaisingCodeGraph(
+            db=indexed.db, tier_roots={_TIER: str(tmp_path)}, project_roots=[str(tmp_path)]
+        )
+        pipeline = _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, code_graph=raising
+        )
+
+        results = await pipeline.search_code("champion routing warehouse", k=10)
+        target = next(r for r in results if r.chunk_key == target_key)
+
+        # Still cited (the search succeeded), but enrichment annotated as unavailable.
+        assert "[SOURCE:" in target.formatted
+        assert _ENRICHMENT_ARROW not in target.formatted
+        assert _ENRICHMENT_UNAVAILABLE in target.formatted
+
+
+# --------------------------------------------------------------------------- #
+# item 8 — freshness flags (annotate, never blanket-block) + bounded wait
 # --------------------------------------------------------------------------- #
 class TestFreshnessFlags:
     """An in-flight (dirty/embedding) chunk is flagged stale but still returned."""
 
     @pytest.mark.parametrize("inflight_state", [STATE_DIRTY, STATE_EMBEDDING])
     async def test_inflight_chunk_is_flagged_but_still_returned(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
-        inflight_state: str,
+        self, tmp_path: Path, embedder: FakeEmbedder, inflight_state: str
     ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
-        # Flip routing.py to an in-flight state AFTER indexing (its points are
-        # still searchable — the manifest, not Qdrant, is the freshness authority).
-        await manifest.set_state("custom", "routing.py", inflight_state)
+        indexed, server = await _index_single(tmp_path, embedder)
+        # Flip routing.py to an in-flight state AFTER indexing (its chunks are still
+        # searchable — the manifest, not the store, is the freshness authority).
+        await indexed.manifest.set_state(_TIER, "routing.py", inflight_state)
 
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
         results = await pipeline.search_code("champion routing warehouse", k=5)
 
         assert results, "freshness is annotate-never-block: hits still come back"
-        flagged = [r for r in results if "routing.py" in r.formatted]
+        flagged = [r for r in results if r.kind == _HIT_KIND and "routing.py" in r.formatted]
         assert flagged, "the in-flight file's chunks are still returned"
         for r in flagged:
             assert r.stale is True
             assert _STALE_MARKER in r.formatted
 
     async def test_indexed_chunk_is_not_flagged_stale(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
-        # All files settled at 'indexed' after index_all — confirm the control.
-        routing_row = await manifest.get("custom", "routing.py")
-        assert routing_row is not None
-        assert routing_row.state == STATE_INDEXED
+        indexed, server = await _index_single(tmp_path, embedder)
+        routing_row = await indexed.manifest.get(_TIER, "routing.py")
+        assert routing_row is not None and routing_row.state == STATE_INDEXED
 
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
         results = await pipeline.search_code("champion routing warehouse", k=5)
         assert results
-        for r in results:
+        for r in (r for r in results if r.kind == _HIT_KIND):
             assert r.stale is False
             assert _STALE_MARKER not in r.formatted
 
 
-# --------------------------------------------------------------------------- #
-# detail_level partition (seam 11 / C2) — proven with REAL chunk types
-# --------------------------------------------------------------------------- #
-class TestDetailLevel:
-    """summary/source/auto partition the results by the chunk-type classification."""
+class TestWaitForFresh:
+    """wait_for_fresh times out and serves stale-with-warning rather than hanging."""
 
-    async def _pipeline(
-        self, tmp_path: Path, store_factory: StoreFactory,
-        embedder: FakeEmbedder, manifest: SurrealManifest,
-    ) -> SearchPipeline:
+    async def test_wait_for_fresh_times_out_and_returns(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        indexed, server = await _index_single(tmp_path, embedder)
+        # routing.py stuck in 'embedding' forever — wait_for_fresh must give up.
+        await indexed.manifest.set_state(_TIER, "routing.py", STATE_EMBEDDING)
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+
+        start = time.monotonic()
+        results = await pipeline.search_code(
+            "champion routing warehouse", k=5,
+            wait_for_fresh=True, filters={"file_path": "routing.py"}, wait_timeout_s=0.5,
+        )
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, "bounded — it returned well within a generous ceiling"
+        assert results
+        assert any(r.stale for r in results if r.kind == _HIT_KIND)
+        assert any(_STALE_MARKER in r.formatted for r in results if r.kind == _HIT_KIND)
+
+    async def test_wait_for_fresh_returns_immediately_when_all_indexed(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        indexed, server = await _index_single(tmp_path, embedder)
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+
+        start = time.monotonic()
+        results = await pipeline.search_code(
+            "champion routing warehouse", k=5,
+            wait_for_fresh=True, filters={"file_path": "routing.py"}, wait_timeout_s=5.0,
+        )
+        elapsed = time.monotonic() - start
+        assert elapsed < 2.0, "an already-indexed file needs no waiting"
+        assert results
+        assert all(not r.stale for r in results if r.kind == _HIT_KIND)
+
+
+# --------------------------------------------------------------------------- #
+# item 9 — config-gated reranker seam (default OFF, provably not called)
+# --------------------------------------------------------------------------- #
+class TestConfigGatedReranker:
+    """search.reranker null ⇒ seam not called; configured ⇒ candidates pass through."""
+
+    async def test_reranker_default_off_is_not_called(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # A normal config carries no reranker; even with a reranker double injected,
+        # the pipeline must NOT call it (the config, not mere presence, is the gate).
+        indexed, server = await _index_single(tmp_path, embedder)
+        reranker = _RecordingReranker()
+        pipeline = _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, reranker=reranker
+        )
+        await pipeline.search_code("champion routing warehouse", k=5)
+        assert reranker.calls == 0
+
+    async def test_configured_reranker_receives_candidates_post_rrf(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # With search.reranker configured, candidates pass through the seam AFTER
+        # the store's RRF fusion and BEFORE formatting — the seam sees Candidates.
         _write(tmp_path / "routing.py", _PY_ROUTING)
         slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
+        reranker_cfg = {"url": "http://reranker.internal:8080/rerank", "model": "bge-reranker-v2"}
+        server = LoreServer(_config(slug=slug, live_path=tmp_path, reranker=reranker_cfg))
         indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
+            slug=slug, live_path=tmp_path, embedder=embedder, server=server,
+            reranker=reranker_cfg,
         )
+        reranker = _RecordingReranker()
+        pipeline = _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, reranker=reranker
+        )
+
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        assert reranker.calls == 1
+        assert reranker.received is not None and reranker.received, "it received the RRF candidates"
+        assert all(isinstance(c, Candidate) for c in reranker.received)
+        # Formatting still ran (the seam is a pass-through in the pipeline path).
+        assert any(r.kind == _HIT_KIND for r in results)
+
+
+# --------------------------------------------------------------------------- #
+# item 10 — render-sanitiser (control chars / framing in non-fenced fields)
+# --------------------------------------------------------------------------- #
+class TestRenderSanitiser:
+    """Control chars / framing in non-fenced fields cannot break a citation or fence."""
+
+    async def _search_one_hostile_chunk(
+        self, tmp_path: Path, embedder: FakeEmbedder, payload: dict[str, Any]
+    ) -> SearchResult:
+        """Upsert ONE crafted (imports-type, no enrichment) chunk and return its hit."""
+        indexed, server = await _index_single(tmp_path, embedder, files={})
+        from loremaster.index.records import Record
+
+        vector = await embedder.embed_query("seed")
+        record = Record(point_id=str(uuid.uuid4()), embedding_text="seed", payload=payload)
+        await indexed.store.upsert([(record, vector)])
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
+        results = await pipeline.search_code("seed", k=5)
+        assert results, "the single crafted chunk is retrievable"
+        return results[0]
+
+    @staticmethod
+    def _hostile_payload(**overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "tier": _TIER,
+            "file_path": "pkg/normal.py",
+            "identity": "normal",
+            "chunk_type": "imports",  # non-symbol ⇒ no graph enrichment needed
+            "line_start": 1,
+            "line_end": 1,
+            "content_hash": "abcdef0123456789" * 8,  # 128 hex chars
+            "source_text": "import os\n",
+            "signature": None,
+        }
+        payload.update(overrides)
+        return payload
+
+    async def test_ansi_escape_collapsed_in_citation_lines(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # An ANSI escape smuggled into file_path must not survive into the rendered
+        # citation lines (it could rewrite a terminal or hide text).
+        hostile = self._hostile_payload(file_path="pkg/ev\x1b]0;pwn\x07il.py")
+        result = await self._search_one_hostile_chunk(tmp_path, embedder, hostile)
+        assert "\x1b" not in result.formatted
+
+    async def test_newline_injection_cannot_split_the_short_citation(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # A newline in file_path must not break the single-line [S:...] citation into
+        # two lines (which would let injected text pose as a second citation).
+        hostile = self._hostile_payload(file_path="pkg/evil.py\nInjected: fake line")
+        result = await self._search_one_hostile_chunk(tmp_path, embedder, hostile)
+        start = result.formatted.index(_SHORT_CITATION_PREFIX)
+        end = result.formatted.index("]", start)
+        citation = result.formatted[start : end + 1]
+        assert "\n" not in citation, "the [S:...] citation must stay a single line"
+
+    async def test_backtick_fence_breakout_stays_fenced(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # A ``` run inside source_text must not close the wrapper fence early; the
+        # wrapper must open with a backtick run LONGER than any run in the source
+        # (the CommonMark nesting rule).
+        source = "def f():\n    return '```'\n```\nnot really a close\n"
+        hostile = self._hostile_payload(chunk_type="function", source_text=source, signature="()")
+        result = await self._search_one_hostile_chunk(tmp_path, embedder, hostile)
+        # The source is present verbatim, wrapped in a fence longer than its own runs.
+        assert source in result.formatted
+        fence_lines = [
+            line for line in result.formatted.splitlines() if set(line) == {"`"}
+        ]
+        assert fence_lines, "a bare backtick fence line must delimit the source block"
+        assert max(len(line) for line in fence_lines) > _max_backtick_run(source)
+
+    async def test_hostile_memory_line_is_sanitised(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # The memory-line path is a non-fenced field too: a memory whose text carries
+        # an ANSI escape / newline must not smuggle framing into the output.
+        indexed, server = await _index_single(tmp_path, embedder)
+        memory_store = _FakeMemoryStore(
+            [RecalledMemory(
+                text="note with \x1b]0;evil\x07 and a\nnewline",
+                refs=[MemoryRef(chunk_key="e" * 32)], score=0.9,
+            )]
+        )
+        pipeline = _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, memory_store=memory_store
+        )
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        memory_entries = [r for r in results if r.kind == _MEMORY_KIND]
+        assert memory_entries
+        line = memory_entries[0].formatted
+        assert "\x1b" not in line
+        # The injected memory renders as a single logical line (no embedded newline
+        # splitting it into a fake extra result).
+        assert "\n" not in line
+
+
+# --------------------------------------------------------------------------- #
+# item 11 — detail_level partition (auto / summary / source) survives
+# --------------------------------------------------------------------------- #
+class TestDetailLevel:
+    """summary/source/auto partition the hits by chunk-type classification."""
+
+    async def _pipeline(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> SearchPipeline:
+        indexed, server = await _index_single(tmp_path, embedder)
         return _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
     async def test_summary_returns_only_summary_chunk_types(
-        self, tmp_path: Path, store_factory: StoreFactory,
-        embedder: FakeEmbedder, manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        pipeline = await self._pipeline(tmp_path, store_factory, embedder, manifest)
+        pipeline = await self._pipeline(tmp_path, embedder)
         # _PY_ROUTING yields imports/class (summary) + method/function (source).
         results = await pipeline.search_code("routing", k=10, detail_level="summary")
-        assert results, "summary chunks (imports/class) exist in this corpus"
-        # Every returned result is a summary chunk: classify_detail==summary.
-        assert all(r.detail_level == "summary" for r in results)
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert hits, "summary chunks (imports/class) exist in this corpus"
+        assert all(r.detail_level == "summary" for r in hits)
 
     async def test_source_returns_only_source_chunk_types(
-        self, tmp_path: Path, store_factory: StoreFactory,
-        embedder: FakeEmbedder, manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        pipeline = await self._pipeline(tmp_path, store_factory, embedder, manifest)
+        pipeline = await self._pipeline(tmp_path, embedder)
         results = await pipeline.search_code("routing", k=10, detail_level="source")
-        assert results, "source chunks (method/function) exist in this corpus"
-        assert all(r.detail_level == "source" for r in results)
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert hits, "source chunks (method/function) exist in this corpus"
+        assert all(r.detail_level == "source" for r in hits)
 
     async def test_auto_returns_both_levels(
-        self, tmp_path: Path, store_factory: StoreFactory,
-        embedder: FakeEmbedder, manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        pipeline = await self._pipeline(tmp_path, store_factory, embedder, manifest)
+        pipeline = await self._pipeline(tmp_path, embedder)
         results = await pipeline.search_code("routing", k=10, detail_level="auto")
-        levels = {r.detail_level for r in results}
-        # The corpus has both summary and source chunks; auto keeps both.
+        levels = {r.detail_level for r in results if r.kind == _HIT_KIND}
         assert "summary" in levels
         assert "source" in levels
 
 
 # --------------------------------------------------------------------------- #
-# Extension hooks vs the bare generic server
+# item 3 — extension hooks operate on Candidate; bare server = base defaults
 # --------------------------------------------------------------------------- #
 class TestExtensionHooks:
-    """A FAKE extension's seams observably change the output; generic = base."""
+    """A FAKE extension's Candidate seams observably change output; generic = base."""
+
+    async def _extension_pipeline(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> SearchPipeline:
+        _write(tmp_path / "routing.py", _PY_ROUTING)
+        slug = _slug()
+        base_config = _config(slug=slug, live_path=tmp_path)
+        # Merge the fake extension's config slice into this config.
+        ext_config = base_config.model_copy(update={"extensions": minimal_config().extensions})
+        server = LoreServer(ext_config).register_extension(FakeExtension())
+        indexed = await _index_corpus(
+            slug=slug, live_path=tmp_path, embedder=embedder, server=server
+        )
+        return _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
     async def test_fake_extension_format_overrides_base_citation(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        # Compose a server WITH the fake extension. The fake's config slice lives
-        # under extensions.fake; merge it into this config.
-        ext_config = config.model_copy(
-            update={"extensions": minimal_config().extensions}
-        )
-        server = LoreServer(ext_config).register_extension(FakeExtension())
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
-        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
-
+        pipeline = await self._extension_pipeline(tmp_path, embedder)
         results = await pipeline.search_code("routing", k=5)
-        assert results
-        # The fake's format_result returns "FAKE: <id>" for EVERY result, so the
-        # base [SOURCE:...] citation must NOT appear — the seam-5 hook won.
-        assert all(r.formatted.startswith("FAKE:") for r in results)
-        assert not any("[SOURCE:" in r.formatted for r in results)
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert hits
+        # The fake's format_result returns "FAKE: <key>" for every hit ⇒ the base
+        # [SOURCE:...] citation must NOT appear (the seam-5 hook won).
+        assert all(r.formatted.startswith("FAKE:") for r in hits)
+        assert not any("[SOURCE:" in r.formatted for r in hits)
 
     async def test_fake_extension_augment_injects_a_candidate(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        ext_config = config.model_copy(
-            update={"extensions": minimal_config().extensions}
-        )
-        server = LoreServer(ext_config).register_extension(FakeExtension())
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
-        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
-
-        # The fake's augment_candidates injects a ScoredPoint id="injected"
-        # score=1.0 and rerank sorts by score desc, so the injected candidate
-        # leads — visible proof the seam-4 hook ran in the pipeline.
+        pipeline = await self._extension_pipeline(tmp_path, embedder)
+        # The fake's augment_candidates injects a Candidate keyed "injected" score
+        # 1.0 and rerank sorts by score desc ⇒ the injected candidate leads the hits.
         results = await pipeline.search_code("routing", k=10)
-        assert results
-        assert results[0].formatted == "FAKE: injected"
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert hits
+        assert hits[0].formatted == "FAKE: injected"
 
     async def test_bare_server_uses_base_defaults(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        # The control: a zero-extension server. No "FAKE:" anywhere, no injected
-        # candidate — the base [SOURCE:...] citation is used.
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
+        indexed, server = await _index_single(tmp_path, embedder)
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
-
         results = await pipeline.search_code("routing", k=10)
-        assert results
-        assert not any(r.formatted.startswith("FAKE:") for r in results)
-        assert all("[SOURCE:" in r.formatted for r in results)
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert hits
+        assert not any(r.formatted.startswith("FAKE:") for r in hits)
+        assert all("[SOURCE:" in r.formatted for r in hits)
 
 
 # --------------------------------------------------------------------------- #
-# Filters — server-side, on real payload indexes
+# item 1 — filters scope the search server-side (tier / file_path / path alias)
 # --------------------------------------------------------------------------- #
 class TestFilters:
-    """filters scope the search to a tier / file_path, server-side."""
+    """filters scope the search to a tier / file_path, in the store's fused arms."""
+
+    async def _two_files(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> tuple[_Indexed, LoreServer]:
+        return await _index_single(
+            tmp_path, embedder, files={"routing.py": _PY_ROUTING, "pricing.py": _PY_PRICING}
+        )
 
     async def test_file_path_filter_returns_only_that_file(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        _write(tmp_path / "pricing.py", _PY_PRICING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
+        indexed, server = await self._two_files(tmp_path, embedder)
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
         results = await pipeline.search_code(
             "anything at all", k=10, filters={"file_path": "pricing.py"}
         )
-        assert results, "the filtered file has chunks"
-        # Every hit is from pricing.py — the routing.py chunks are filtered out
-        # server-side (proven against the real engine, not a no-op backend).
-        assert all("pricing.py" in r.formatted for r in results)
-        assert not any("routing.py" in r.formatted for r in results)
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert hits, "the filtered file has chunks"
+        assert all("pricing.py" in r.formatted for r in hits)
+        assert not any("routing.py" in r.formatted for r in hits)
 
     async def test_tier_filter_returns_only_that_tier(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
+        indexed, server = await _index_single(tmp_path, embedder)
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
-        # The only tier is 'custom'; a non-existent tier returns nothing (the
-        # filter is applied, not ignored).
-        hits = await pipeline.search_code("routing", k=10, filters={"tier": "custom"})
-        assert hits
-        misses = await pipeline.search_code(
-            "routing", k=10, filters={"tier": "nonexistent_tier"}
-        )
-        assert misses == []
+        hits = await pipeline.search_code("routing", k=10, filters={"tier": _TIER})
+        assert [r for r in hits if r.kind == _HIT_KIND]
+        # A non-existent tier scopes to nothing (the filter is applied, not ignored).
+        misses = await pipeline.search_code("routing", k=10, filters={"tier": "nonexistent_tier"})
+        assert [r for r in misses if r.kind == _HIT_KIND] == []
 
-    async def test_path_alias_filter_scopes_like_file_path(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
+    async def test_path_alias_scopes_like_file_path(
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        """Contract: the 'path' alias for 'file_path' must scope the Qdrant store
-        query IDENTICALLY to the canonical 'file_path' key.
-
-        The public API documents 'path' as a valid alias (see
-        ``_FILTER_FILE_PATH_KEYS = ("file_path", "path")`` and the MCP tool
-        docstring).  After the fix, ``{"path": "pricing.py"}`` must:
-
-        * return at least one result (the file has real chunks), and
-        * scope the server-side filter so EVERY hit comes from pricing.py, and
-        * exclude routing.py entirely — not merely rank it lower.
-
-        This is an integration test against the REAL Qdrant engine (not a no-op
-        in-memory backend) because the alias translation must happen BEFORE the
-        store query, and the store's ``_build_filter`` applies the dict key
-        verbatim as a Qdrant payload field name.  The test proves the full
-        producer-to-consumer seam: index → real Qdrant → path-alias filter →
-        SearchResult list.
-
-        Expected values are derived solely from the alias contract (path ≡
-        file_path), not from any implementation detail of the buggy code.  The
-        sibling test ``test_file_path_filter_returns_only_that_file`` (which uses
-        the canonical key and is known-green) serves as the independent oracle:
-        the alias must produce the same scope.
-        """
-        # Arrange — two-file corpus (same as the sibling test; both files must be
-        # indexed so the filter has something real to exclude).
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        _write(tmp_path / "pricing.py", _PY_PRICING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
+        # The public 'path' alias must translate to the canonical 'file_path' key
+        # BEFORE the store query (the store's filter allow-list rejects 'path'), so
+        # {"path": "pricing.py"} scopes identically to {"file_path": "pricing.py"}.
+        indexed, server = await self._two_files(tmp_path, embedder)
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
-        # Act — filter with the ALIAS 'path', not the canonical 'file_path'.
-        # The value "pricing.py" is the tier-relative path the indexer stamped into
-        # every point's file_path payload field; it is read from _PY_PRICING's
-        # file name, matching the production path convention (not a magic literal).
-        FILTERED_FILE = "pricing.py"
-        EXCLUDED_FILE = "routing.py"
         results = await pipeline.search_code(
-            "anything at all", k=10, filters={"path": FILTERED_FILE}
+            "anything at all", k=10, filters={"path": "pricing.py"}
         )
-
-        # Assert — the alias must behave IDENTICALLY to {"file_path": "pricing.py"}.
-        # (1) The filtered file has real indexed chunks — a non-empty result set
-        #     proves the filter did not silently match nothing (the bug: returns []).
-        assert results, (
-            f"{{'path': {FILTERED_FILE!r}}} filter must match chunks from that file; "
-            f"an empty list means the alias was not translated to the canonical "
-            f"file_path payload key before the Qdrant query"
-        )
-        # (2) Every hit is from pricing.py — server-side scoping, not just ranking.
-        assert all(FILTERED_FILE in r.formatted for r in results), (
-            f"every result must be from {FILTERED_FILE!r}; a hit from another file "
-            f"means the alias filter was ignored server-side"
-        )
-        # (3) No hit from routing.py — the filter excluded it, not merely ranked it lower.
-        assert not any(EXCLUDED_FILE in r.formatted for r in results), (
-            "routing.py chunks must be excluded by the path filter; "
-            "a routing.py hit means the alias scoped nothing"
-        )
-        # (4) Sanity-bound: result count is within the plausible range for a single
-        #     small module (at least 1, at most k=10 — catches scale / sign bugs).
-        assert 1 <= len(results) <= 10
-
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert hits, "the 'path' alias must translate to file_path and match chunks"
+        assert all("pricing.py" in r.formatted for r in hits)
+        assert not any("routing.py" in r.formatted for r in hits)
+        assert 1 <= len(hits) <= 10  # sanity bound: catches a scale/sign regression
 
 
 # --------------------------------------------------------------------------- #
-# wait_for_fresh — ALWAYS bounded, NEVER hangs
+# Runtime ExtensionContext wiring — the search seams get REAL services
 # --------------------------------------------------------------------------- #
-class TestWaitForFresh:
-    """wait_for_fresh times out and serves stale-with-warning rather than hanging."""
+class TestRuntimeExtensionContext:
+    """The search seams receive a RUNTIME ctx (real embedder/manifest/tokenizer).
 
-    async def test_wait_for_fresh_times_out_and_returns(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
-    ) -> None:
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
-        # Stick routing.py in 'embedding' state FOREVER — it never reaches
-        # 'indexed'. wait_for_fresh must give up after its bounded timeout.
-        await manifest.set_state("custom", "routing.py", STATE_EMBEDDING)
-
-        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
-
-        start = time.monotonic()
-        results = await pipeline.search_code(
-            "champion routing warehouse",
-            k=5,
-            wait_for_fresh=True,
-            filters={"file_path": "routing.py"},
-            wait_timeout_s=0.5,
-        )
-        elapsed = time.monotonic() - start
-
-        # Bounded: it returned well within a generous ceiling (never hung).
-        assert elapsed < 5.0
-        # And it served stale-with-warning rather than blocking/erroring.
-        assert results
-        assert any(r.stale for r in results)
-        assert any(_STALE_MARKER in r.formatted for r in results)
-
-    async def test_wait_for_fresh_returns_immediately_when_all_indexed(
-        self,
-        tmp_path: Path,
-        store_factory: StoreFactory,
-        embedder: FakeEmbedder,
-        manifest: SurrealManifest,
-    ) -> None:
-        # When the matching file is already 'indexed', wait_for_fresh returns at
-        # once (no wait), and nothing is flagged stale.
-        _write(tmp_path / "routing.py", _PY_ROUTING)
-        slug = _slug()
-        config = _config(slug=slug, live_path=tmp_path)
-        server = LoreServer(config)
-        indexed = await _index_corpus(
-            slug=slug, live_path=tmp_path, store=store_factory(slug),
-            embedder=embedder, manifest=manifest, server=server,
-        )
-        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
-
-        start = time.monotonic()
-        results = await pipeline.search_code(
-            "champion routing warehouse",
-            k=5,
-            wait_for_fresh=True,
-            filters={"file_path": "routing.py"},
-            wait_timeout_s=5.0,
-        )
-        elapsed = time.monotonic() - start
-        assert elapsed < 2.0, "an already-indexed file needs no waiting"
-        assert results
-        assert all(not r.stale for r in results)
-
-
-# --------------------------------------------------------------------------- #
-# Runtime ExtensionContext wiring (bug A2) — the search seams get REAL services
-# --------------------------------------------------------------------------- #
-class _CtxRecordingExtension(Extension):
-    """An :class:`Extension` whose seam-4 ``augment_candidates`` RECORDS its ``ctx``.
-
-    The search pipeline hands each context-taking search seam an
-    :class:`ExtensionContext`. This extension stashes the exact context object it
-    is handed on :attr:`recorded_ctx` so a test can assert it carries the RUNTIME
-    services (a real embedder, a real manifest, a working ``count_tokens``) rather
-    than the composition-time placeholder (``embedder=None``, ``manifest=None``,
-    and the ``_no_tokenizer`` stub that refuses to count).
-
-    Observed via ``augment_candidates`` (seam 4) rather than ``format_result``
-    (seam 5): ``SearchPipeline.search_code`` calls ``augment_candidates``
-    UNCONDITIONALLY — even over an EMPTY candidate list — whereas
-    ``format_result`` only fires per-HIT (``_to_result`` is never called on an
-    empty candidate set). That distinction matters on THIS branch: the P5→P6
-    dual-store interim (documented on ``server.build_app_context`` — the write
-    path now lands in SurrealDB while ``search_code`` still reads the read-path
-    QdrantStore) means a real ``search_code`` call returns ZERO hits regardless
-    of indexing, until P6 cuts the read path over. Seam 4 still proves the exact
-    same "the search seam gets a RUNTIME ctx, not the composition placeholder"
-    contract this class exists to pin — it just does so on a seam whose firing
-    does not depend on a store this branch cannot populate.
+    Pinned at the PIPELINE level (not via ``build_app_context`` — that server
+    integration belongs to the server-wiring cycle). ``augment_candidates`` fires
+    unconditionally, so it is the reliable observation point for the runtime ctx.
     """
 
-    def __init__(self) -> None:
-        self.recorded_ctx: ExtensionContext | None = None
-
-    @property
-    def name(self) -> str:
-        """The extension's stable name (no config slice required)."""
-        return "ctxrec"
-
-    def augment_candidates(
-        self, query: str, candidates: list[ScoredPoint], ctx: ExtensionContext
-    ) -> list[ScoredPoint]:
-        """Record the handed ``ctx`` (identity function otherwise)."""
-        self.recorded_ctx = ctx
-        return candidates
-
-    def format_result(self, result: ScoredPoint, ctx: ExtensionContext) -> str | None:
-        """Emit a recognisable citation (unused for the ctx-recording assertion,
-        kept so a hit — if the read path ever serves one — still renders
-        distinctively)."""
-        return f"CTXREC: {result.id}"
-
-
-class TestRuntimeExtensionContext:
-    """The search seams receive a RUNTIME ctx (real embedder/manifest/tokenizer)."""
-
     async def test_search_seam_ctx_carries_runtime_services(
-        self,
-        tmp_path: Path,
-        embedder: FakeEmbedder,
-        monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        # Drive a real search_code through the SAME build_app_context wiring the
-        # live server uses (FakeEmbedder + a throwaway Qdrant collection), with a
-        # recording extension on the seam-5 hook. The ctx that hook receives MUST
-        # carry the runtime services, not the composition-time placeholder.
-        #
-        # KNOWN P5→P6 dual-store-interim gap (documented on
-        # server.build_app_context): ``app_context.reindex()`` writes through the
-        # unified SurrealDB write store, but ``app_context.search_code`` still
-        # reads Qdrant — so this test's ``assert results`` below is expected to
-        # fail until P6 cuts the read path over. The env/config plumbing here is
-        # still ported (real SURREAL_USER/PASS creds + a throwaway harness
-        # database) so the test fails on that DOCUMENTED gap, not on a
-        # resolve_secret KeyError.
-        monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
-        monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
         _write(tmp_path / "routing.py", _PY_ROUTING)
         slug = _slug()
-        config = _config(
-            slug=slug,
-            live_path=tmp_path,
-            surreal={
-                "url": surreal_url(),
-                "namespace": _SURREAL_TEST_NAMESPACE,
-                "user_env": _SURREAL_USER_ENV,
-                "password_env": _SURREAL_PASS_ENV,
-            },
-        )
+        config = _config(slug=slug, live_path=tmp_path)
         recorder = _CtxRecordingExtension()
         server = LoreServer(config).register_extension(recorder)
+        indexed = await _index_corpus(
+            slug=slug, live_path=tmp_path, embedder=embedder, server=server
+        )
+        pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
-        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        try:
-            app_context = await build_app_context(
-                server=server,
-                embedder=embedder,
-                qdrant_client=client,
-                manifest_path=tmp_path / "manifest.db",
-                graph_path=tmp_path / "graph.db",
-                snapshot_root=tmp_path / "snapshot",
-                start_tasks=False,
-            )
-            try:
-                # A real reconcile so the corpus is indexed (build_app_context with
-                # start_tasks=False does not auto-sweep), then search through the
-                # live AppContext handler — the path the MCP tool takes.
-                await app_context.reindex()
-                # The result list itself is not asserted on (see the ctx-
-                # recording docstring above) — only that the seam ran.
-                await app_context.search_code("champion routing warehouse", k=5)
-            finally:
-                await app_context.aclose()
-        finally:
-            for candidate in (f"lore_{slug}", f"lore_{slug}_memory"):
-                if await client.collection_exists(candidate):
-                    await client.delete_collection(candidate)
-            await client.close()
-            await drop_surreal_database(make_env(database=slug, dim=embedder.dim))
+        await pipeline.search_code("champion routing warehouse", k=5)
 
-        # NOTE: NOT asserting on ``results`` here (see _CtxRecordingExtension's
-        # docstring) — the P5→P6 dual-store interim means search_code returns
-        # zero hits on this branch regardless of indexing, so a hit-gated
-        # observation point (format_result / seam 5) can never fire. The
-        # runtime-ctx-wiring contract is instead pinned via augment_candidates
-        # (seam 4), which SearchPipeline.search_code calls unconditionally, hit
-        # or not — the SAME ctx object every context-taking seam receives.
         ctx = recorder.recorded_ctx
         assert ctx is not None, "the augment_candidates seam (4) must have been handed a ctx"
-        # The runtime ctx carries the REAL (fake) embedder, not the placeholder None.
-        assert ctx.embedder is not None
+        # The runtime ctx carries the REAL (fake) embedder, not a None placeholder.
         assert ctx.embedder is embedder
-        # The runtime ctx carries the REAL manifest, not the placeholder None.
+        # And the REAL manifest + a WORKING token counter (the placeholder raises).
         assert ctx.manifest is not None
-        # And a WORKING token counter — the placeholder ``_no_tokenizer`` raises
-        # NotImplementedError, so a returned int proves the real one was injected.
         counts = ctx.count_tokens(["a sample string"])
-        assert isinstance(counts, list)
-        assert len(counts) == 1
-        assert isinstance(counts[0], int)
+        assert isinstance(counts, list) and len(counts) == 1 and isinstance(counts[0], int)
+

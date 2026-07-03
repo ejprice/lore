@@ -37,9 +37,9 @@ from loremaster.extension import (
 )
 from lorescribe.base import Chunker
 from lorescribe.javascript import JsBlock
+from loremaster.store.candidate import Candidate
 from lorescribe.models import Chunk, ChunkContext, ProfileResult
 from pydantic import BaseModel, ConfigDict
-from qdrant_client.models import ScoredPoint
 
 # The version the fake's semantic memory-key carries (seam 6 — carries a
 # key_version). A distinct, recognisable number so a test can pin it.
@@ -238,23 +238,26 @@ class FakeExtension(Extension):
             )
         ]
 
-    # seam 4 (C3) — inject a candidate, then reorder by score descending
+    # seam 4 (C3) — inject a candidate, then reorder by score descending. P6
+    # cutover: the injected hit is a backend-neutral Candidate keyed "injected"
+    # (``origin="fused"`` mirrors the store's RRF hybrid-search hits), never a
+    # ``qdrant_client`` ``ScoredPoint``.
     def augment_candidates(
-        self, query: str, candidates: list[ScoredPoint], ctx: ExtensionContext
-    ) -> list[ScoredPoint]:
-        injected = ScoredPoint(
-            id="injected", version=0, score=1.0, payload={"injected": True}, vector=None
+        self, query: str, candidates: list[Candidate], ctx: ExtensionContext
+    ) -> list[Candidate]:
+        injected = Candidate(
+            key="injected", score=1.0, payload={"injected": True}, origin="fused"
         )
         return [injected, *candidates]
 
     def rerank(
-        self, candidates: list[ScoredPoint], ctx: ExtensionContext
-    ) -> list[ScoredPoint]:
+        self, candidates: list[Candidate], ctx: ExtensionContext
+    ) -> list[Candidate]:
         return sorted(candidates, key=lambda c: c.score, reverse=True)
 
-    # seam 5
-    def format_result(self, result: ScoredPoint, ctx: ExtensionContext) -> str | None:
-        return f"FAKE: {result.id}"
+    # seam 5 — format off the Candidate's ``key`` (not a qdrant ``id``).
+    def format_result(self, result: Candidate, ctx: ExtensionContext) -> str | None:
+        return f"FAKE: {result.key}"
 
     # seam 6 — versioned semantic memory-key
     def chunk_key(self, payload: dict[str, Any], ctx: ExtensionContext) -> str | None:

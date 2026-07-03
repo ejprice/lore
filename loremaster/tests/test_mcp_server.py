@@ -690,16 +690,6 @@ class TestAppContextLifespan:
                 "backend's ensure_ready failed — a non-None _connection means it leaked"
             )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "P5 dual-store interim: the write path (indexer) lands chunks in "
-            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
-            "so the index->read round-trip this test pins is unfulfillable until "
-            "P6 cuts the read path over. strict=True: the moment P6 lands and "
-            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
-        ),
-    )
     async def test_startup_runs_an_initial_reconcile_so_offline_edits_index_now(
         self, tmp_path: Path, qdrant: AsyncQdrantClient
     ) -> None:
@@ -817,9 +807,10 @@ class TestAppContextLifespan:
                 "watcher.enabled=False must not spawn the periodic reconcile task"
             )
             # But the initial sweep still ran: the on-disk file is indexed. The
-            # read-your-writes get_symbol tail lives in the xfailed sibling below
-            # (C3+C5 audit bug #1: xfailing THIS gating half would shadow task
-            # #13's only regression guard behind the dual-store interim).
+            # read-your-writes get_symbol tail lives in the sibling below —
+            # split during the P5 dual-store interim (C3+C5 audit bug #1) so
+            # this gating half never hid behind the sibling's then-xfail; both
+            # run green unmarked since the P6 read-path cutover.
             status = await ctx.index_status()
             assert status.files_indexed >= 1, (
                 "watcher.enabled=False must not skip the initial startup sweep"
@@ -827,16 +818,6 @@ class TestAppContextLifespan:
         finally:
             await ctx.aclose()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "P5 dual-store interim: the write path (indexer) lands chunks in "
-            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
-            "so the index->read round-trip this test pins is unfulfillable until "
-            "P6 cuts the read path over. strict=True: the moment P6 lands and "
-            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
-        ),
-    )
     async def test_watcher_disabled_initial_sweep_is_symbol_resolvable(
         self, tmp_path: Path, qdrant: AsyncQdrantClient
     ) -> None:
@@ -1344,16 +1325,6 @@ class TestToolOutputSchemas:
                 f"return a real pydantic model so the element schema is field-level"
             )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "P5 dual-store interim: the write path (indexer) lands chunks in "
-            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
-            "so the index->read round-trip this test pins is unfulfillable until "
-            "P6 cuts the read path over. strict=True: the moment P6 lands and "
-            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
-        ),
-    )
     async def test_live_call_returns_structured_content_with_fields(
         self, tmp_path: Path, qdrant: AsyncQdrantClient
     ) -> None:
@@ -1443,16 +1414,6 @@ class TestToolBehaviourEndToEnd:
         finally:
             await ctx.aclose()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "P5 dual-store interim: the write path (indexer) lands chunks in "
-            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
-            "so the index->read round-trip this test pins is unfulfillable until "
-            "P6 cuts the read path over. strict=True: the moment P6 lands and "
-            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
-        ),
-    )
     async def test_search_code_finds_indexed_symbol(self, indexed_context: AppContext) -> None:
         results = await indexed_context.search_code("champion routing", k=10)
         assert results
@@ -1466,16 +1427,6 @@ class TestToolBehaviourEndToEnd:
         assert status.files_indexed >= 1
         assert status.files_failed == 0
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "P5 dual-store interim: the write path (indexer) lands chunks in "
-            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
-            "so the index->read round-trip this test pins is unfulfillable until "
-            "P6 cuts the read path over. strict=True: the moment P6 lands and "
-            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
-        ),
-    )
     async def test_get_symbol_resolves_exact_definition(
         self, indexed_context: AppContext
     ) -> None:
@@ -1589,16 +1540,6 @@ class TestToolBehaviourEndToEnd:
         dead = await indexed_context.code_graph.dead_code([], max_results=0)
         assert dead == []  # empty is fine, not an error
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "P5 dual-store interim: the write path (indexer) lands chunks in "
-            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
-            "so the index->read round-trip this test pins is unfulfillable until "
-            "P6 cuts the read path over. strict=True: the moment P6 lands and "
-            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
-        ),
-    )
     async def test_reindex_brings_a_new_file_current(
         self, indexed_context: AppContext, tmp_path: Path
     ) -> None:
@@ -1651,16 +1592,6 @@ class TestReindexTierValidation:
         # The configured tier ("custom") must be named so the caller can correct.
         assert "custom" in message, "the error must name the valid tier(s)"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "P5 dual-store interim: the write path (indexer) lands chunks in "
-            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
-            "so the index->read round-trip this test pins is unfulfillable until "
-            "P6 cuts the read path over. strict=True: the moment P6 lands and "
-            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
-        ),
-    )
     async def test_known_tier_reindexes(self, indexed_context: AppContext) -> None:
         # A real tier proceeds (and brings a new file in that tier current).
         live = indexed_context._config.effective_roots[0].path  # noqa: SLF001
@@ -1746,16 +1677,6 @@ class TestRegisteredToolWrappers:
         )
         return structured
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "P5 dual-store interim: the write path (indexer) lands chunks in "
-            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
-            "so the index->read round-trip this test pins is unfulfillable until "
-            "P6 cuts the read path over. strict=True: the moment P6 lands and "
-            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
-        ),
-    )
     async def test_search_code_wrapper_yields_structured_list(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
@@ -1771,16 +1692,6 @@ class TestRegisteredToolWrappers:
         assert any("[SOURCE:" in item["formatted"] for item in items)
         assert any("pkg/router.py" in item["formatted"] for item in items)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "P5 dual-store interim: the write path (indexer) lands chunks in "
-            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
-            "so the index->read round-trip this test pins is unfulfillable until "
-            "P6 cuts the read path over. strict=True: the moment P6 lands and "
-            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
-        ),
-    )
     async def test_get_symbol_wrapper_yields_structured_model(
         self, indexed: tuple[Any, AppContext]
     ) -> None:

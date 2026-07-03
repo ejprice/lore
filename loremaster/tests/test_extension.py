@@ -1,7 +1,8 @@
 """Contract tests for ``loremaster.extension`` — the composition surface.
 
 This module pins the *extension API surface* the loremaster base exposes (plan
-AMENDMENT 1, §A1.3 — the eleven seams, refined by §A1.10 C2/C3):
+AMENDMENT 1, §A1.3 — the eleven seams, refined by §A1.10 C2/C3, and the P6
+read-path cutover §6):
 
 * :class:`ExtensionContext` — the shared-services bundle (store, embedder,
   config, ``count_tokens``, manifest) handed to every context-taking seam. It is
@@ -13,6 +14,16 @@ AMENDMENT 1, §A1.3 — the eleven seams, refined by §A1.10 C2/C3):
   seams 3 and 8 hand back.
 * :class:`SourceProvider` — the indexer-side Protocol (signature only).
 
+**P6 seam-type cutover (§6 item 3).** The unified SurrealDB store's read path
+returns a backend-neutral :class:`~loremaster.store.candidate.Candidate`, never a
+``qdrant_client`` ``ScoredPoint``. So the three search-pipeline seams that carry a
+candidate — ``augment_candidates`` / ``rerank`` / ``format_result`` — now take and
+return :class:`Candidate`, and NO qdrant type is reachable from any seam
+signature. This is a *breaking* change to the seam types; it is APPROVED because
+no extension ships against loremaster yet. ``chunk_key`` already takes a plain
+payload ``dict`` and ``classify_detail`` a plain ``chunk_type`` string, so neither
+mentions a backend type and neither changes.
+
 The load-bearing invariant the whole framework rests on: **the defaults are
 genuinely inert.** A bare :class:`Extension` subclass that overrides nothing must
 return ``[]`` / ``None`` / identity for every seam, so that registering zero
@@ -23,6 +34,7 @@ seam by seam, against a do-nothing subclass — and separately assert that a
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -51,9 +63,9 @@ from loremaster.extension import (
     SourceProvider,
     ToolSpec,
 )
+from loremaster.store.candidate import Candidate
 from loresigil.testing import FakeEmbedder
 from pydantic import ValidationError
-from qdrant_client.models import ScoredPoint
 
 
 class TestExtensionContext:
@@ -237,19 +249,20 @@ class TestBareDefaultsAreInert:
     def test_seam4_augment_candidates_default_identity(
         self, bare_extension: Any, ext_context: Any
     ) -> None:
-        candidates = [_scored("a", 0.9), _scored("b", 0.5)]
+        candidates = [_candidate("a", 0.9), _candidate("b", 0.5)]
         # Identity: same objects, same order — the base must not reshape the set.
         result = bare_extension.augment_candidates("query", candidates, ext_context)
         assert result == candidates
-        assert [c.id for c in result] == ["a", "b"]
+        # P6: the seam now carries backend-neutral Candidates (key, not id).
+        assert [c.key for c in result] == ["a", "b"]
 
     def test_seam4_rerank_default_identity(self, bare_extension: Any, ext_context: Any) -> None:
-        candidates = [_scored("a", 0.9), _scored("b", 0.5)]
+        candidates = [_candidate("a", 0.9), _candidate("b", 0.5)]
         assert bare_extension.rerank(candidates, ext_context) == candidates
 
     def test_seam5_format_result_default_none(self, bare_extension: Any, ext_context: Any) -> None:
         # ``None`` ⇒ the base supplies its default citation/format.
-        assert bare_extension.format_result(_scored("a", 0.9), ext_context) is None
+        assert bare_extension.format_result(_candidate("a", 0.9), ext_context) is None
 
     def test_seam6_chunk_key_default_none(self, bare_extension: Any, ext_context: Any) -> None:
         # ``None`` ⇒ the base uses its structural point-ID, not an extension key.
@@ -274,14 +287,19 @@ class TestBareDefaultsAreInert:
         assert bare_extension.source_providers() == []
 
     def test_seam11_classify_detail_default_none(self, bare_extension: Any) -> None:
-        # ``None`` ⇒ base default classification (C2).
+        # ``None`` ⇒ base default classification (C2). Unchanged by P6: this seam
+        # takes a plain chunk-type string, never a backend candidate type.
         assert bare_extension.classify_detail("class") is None
 
-def _scored(point_id: str, score: float, payload: dict[str, Any] | None = None) -> ScoredPoint:
-    """Build a :class:`ScoredPoint` candidate for the search-pipeline seams."""
-    return ScoredPoint(
-        id=point_id, version=0, score=score, payload=payload or {}, vector=None
-    )
+def _candidate(point_id: str, score: float, payload: dict[str, Any] | None = None) -> Candidate:
+    """Build a :class:`~loremaster.store.candidate.Candidate` for the seam tests.
+
+    P6 read-path cutover: the search-pipeline seams operate on the backend-neutral
+    :class:`Candidate` (``key`` / ``score`` / ``payload`` / ``origin``), NEVER a
+    ``qdrant_client`` ``ScoredPoint``. ``origin="fused"`` mirrors the store's RRF
+    hybrid-search hits (the sole production source of these candidates).
+    """
+    return Candidate(key=point_id, score=score, payload=payload or {}, origin="fused")
 
 class TestFakeExtensionRoundTrips:
     """A :class:`FakeExtension` overriding every seam returns its overrides.
@@ -289,6 +307,13 @@ class TestFakeExtensionRoundTrips:
     This is the mirror of the inert-defaults suite: it proves the seams are real
     override points (not, say, ``@final`` or swallowed), so :class:`LoreServer`
     has something to wire.
+
+    NOTE (P6 cross-file dependency): ``_extension_helpers.FakeExtension`` overrides
+    the three candidate-carrying seams; with the P6 cutover its
+    ``augment_candidates`` must inject a :class:`Candidate` keyed ``"injected"`` and
+    ``format_result`` must render ``result.key``. Until that helper is moved
+    ScoredPoint→Candidate these assertions stay RED (the helper still emits a
+    ``ScoredPoint`` and reads ``.id``).
     """
 
     def test_every_seam_is_overridable(self, ext_context: Any) -> None:
@@ -303,16 +328,17 @@ class TestFakeExtensionRoundTrips:
         # seam 3
         tools = ext.tools(ext_context)
         assert [t.name for t in tools] == ["fake_tool"]
-        # seam 4 — candidate augmentation injects, rerank reorders
-        base = [_scored("a", 0.5), _scored("b", 0.9)]
+        # seam 4 — candidate augmentation injects, rerank reorders. The injected
+        # candidate is a backend-neutral Candidate keyed "injected" (P6).
+        base = [_candidate("a", 0.5), _candidate("b", 0.9)]
         augmented = ext.augment_candidates("q", base, ext_context)
-        assert any(c.id == "injected" for c in augmented)
+        assert any(c.key == "injected" for c in augmented)
         reranked = ext.rerank(augmented, ext_context)
         assert [c.score for c in reranked] == sorted(
             (c.score for c in reranked), reverse=True
         )
-        # seam 5
-        assert ext.format_result(_scored("a", 0.5), ext_context) == "FAKE: a"
+        # seam 5 — formats off the Candidate's ``key`` (not a qdrant ``id``).
+        assert ext.format_result(_candidate("a", 0.5), ext_context) == "FAKE: a"
         # seam 6 — versioned key
         key = ext.chunk_key({"model_name": "sale.order"}, ext_context)
         assert key is not None and key.startswith("fake:") and ext.key_version == 7
@@ -348,6 +374,72 @@ class TestFakeExtensionRoundTrips:
             ext.classify_detail("unknown_to_fake"),
         }
         assert levels == {"summary", "source", None}
+
+
+# --------------------------------------------------------------------------- #
+# P6 seam-type cutover (§6 item 3): the candidate-carrying seams speak Candidate.
+# --------------------------------------------------------------------------- #
+# The unified SurrealDB read path returns :class:`Candidate`, so the three seams
+# that receive/return a candidate must be typed on it, and NO ``qdrant`` /
+# ``ScoredPoint`` type may remain reachable from an extension seam signature (the
+# whole point of the neutral candidate: a domain extension is decoupled from the
+# concrete search backend). Breaking is APPROVED — no extension ships yet.
+_CANDIDATE_SEAMS = ("augment_candidates", "rerank", "format_result")
+
+
+class TestExtensionSeamTypesAreCandidate:
+    """The candidate-carrying seams are typed on Candidate, never a qdrant type."""
+
+    @pytest.mark.parametrize("seam_name", _CANDIDATE_SEAMS)
+    def test_seam_signature_references_candidate_not_scoredpoint(
+        self, seam_name: str
+    ) -> None:
+        # The seam's declared type must be the backend-neutral Candidate; a
+        # lingering ``ScoredPoint`` annotation would recouple every extension to
+        # qdrant, defeating the store swap. Inspect the source-level signature
+        # (``from __future__ import annotations`` keeps these as strings).
+        signature = str(inspect.signature(getattr(Extension, seam_name)))
+        assert "Candidate" in signature, (
+            f"seam {seam_name!r} must carry the backend-neutral Candidate type; "
+            f"got signature {signature!r}"
+        )
+        assert "ScoredPoint" not in signature, (
+            f"seam {seam_name!r} still references the qdrant ScoredPoint type — the "
+            f"P6 read path returns Candidate, so no seam may name a backend type"
+        )
+        assert "qdrant" not in signature.lower(), (
+            f"seam {seam_name!r} must not name any qdrant type in its signature"
+        )
+
+    def test_extension_module_imports_no_qdrant_scoredpoint(self) -> None:
+        # Belt-and-braces on the module itself: with every seam de-qdrant-ified the
+        # extension module must not even import ``ScoredPoint`` (a dangling import
+        # is a latent recoupling waiting for the next edit to reuse it).
+        import loremaster.extension as extension_module
+
+        assert not hasattr(extension_module, "ScoredPoint"), (
+            "loremaster.extension must not import qdrant's ScoredPoint after the "
+            "P6 candidate cutover"
+        )
+
+    def test_a_candidate_flows_through_augment_rerank_format_unchanged_in_type(
+        self, ext_context: Any
+    ) -> None:
+        # The end-to-end type contract: a Candidate handed into augment_candidates
+        # survives rerank as a Candidate and is formattable by format_result — the
+        # exact chain the search pipeline runs (§6 item 3). If any seam silently
+        # re-wrapped it into a backend type, one of these isinstance checks fails.
+        ext = FakeExtension()
+        seed = [_candidate("hit-1", 0.5, payload={"file_path": "pkg/a.py"})]
+
+        augmented = ext.augment_candidates("q", seed, ext_context)
+        assert augmented and all(isinstance(c, Candidate) for c in augmented)
+
+        reranked = ext.rerank(augmented, ext_context)
+        assert reranked and all(isinstance(c, Candidate) for c in reranked)
+
+        rendered = ext.format_result(reranked[0], ext_context)
+        assert isinstance(rendered, str)
 
 
 # --------------------------------------------------------------------------- #

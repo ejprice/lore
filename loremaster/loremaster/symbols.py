@@ -8,18 +8,31 @@ the EXACT stored source of a named Python symbol plus its on-disk location
 than recalling a plausible-looking one.
 
 The lookup is a **filter-only** store query (no query vector): a symbol is found
-by matching the chunk's payload ``identity`` — the python_ast qualified name
+by matching the chunk's stored ``identity`` — the python_ast qualified name
 (``ClassName``, ``ClassName.method``, or a bare ``function``) — against
 ``qualified_name``, scoped to the Python *symbol* chunk types
 (``class`` / ``method`` / ``function``). Scoping by chunk type is what keeps a
 same-named ``imports`` block or a fallback ``python_window`` from masquerading as
 a symbol: ``get_symbol("imports")`` is a clean not-found, not a leak of the
-import block. The query rides the store's :meth:`~loremaster.store.qdrant.QdrantStore.scroll`
-filter-only primitive over the ``identity`` + ``chunk_type`` KEYWORD indexes.
+import block. The query rides the store's
+:meth:`~loremaster.store.surreal.SurrealStore.scroll` filter-only primitive over
+the ``identity`` + ``chunk_type`` columns.
 
-The tool is dependency-injected with the :class:`~loremaster.store.qdrant.QdrantStore`
-so the same store machinery (and a real-server client in tests) is reused; it
-owns no Qdrant wiring of its own.
+**P6 store port.** ``scroll`` hands back plain FLATTENED ``dict`` rows — no
+Qdrant ``qmodels.Record``/``.payload`` wrapper — so every field this module
+reads (``identity`` / ``chunk_type`` / ``tier`` / ``file_path`` / ``line_start``
+/ ``line_end`` / ``source_text``) is a direct dict-key lookup on the row itself.
+A row may carry extra, unmodeled keys (a real ``signature`` the chunker stamps,
+the schema's own ``llm_summary``, or anything else riding the flexible
+``metadata`` blob) — this module reads only its six named keys and tolerates
+whatever else rides along. A downed store surfaces as
+:class:`~loremaster.store.surreal.SurrealConnectionError` propagating straight
+out of :meth:`SymbolTool.get_symbol` — an outage must never masquerade as a
+clean not-found.
+
+The tool is dependency-injected with the
+:class:`~loremaster.store.surreal.SurrealStore` so the same store machinery (and
+a real-server client in tests) is reused; it owns no store wiring of its own.
 """
 
 from __future__ import annotations
@@ -28,23 +41,22 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
-from qdrant_client import models as qmodels
 
-from loremaster.store.qdrant import QdrantStore
+from loremaster.store.surreal import SurrealStore
 
 # The python_ast chunk types that ARE code symbols (mirrors lorescribe's
 # ``CHUNK_TYPE_CLASS``/``METHOD``/``FUNCTION``). Deliberately EXCLUDES ``imports``
 # and ``python_window`` so a non-symbol chunk never resolves as a symbol.
 SYMBOL_CHUNK_TYPES: tuple[str, ...] = ("class", "method", "function")
 
-# How many candidate points a single per-(identity, chunk_type) scroll fetches.
+# How many candidate rows a single per-(identity, chunk_type) scroll fetches.
 # A symbol's identity is unique within its ``(file, chunk_type)`` (the python_ast
 # ``_IdentityAllocator`` disambiguates collisions with ``#N``), so one match per
 # tier/file is expected; a small ceiling guards a pathological corpus without an
 # unbounded scan.
 _SCROLL_LIMIT = 8
 
-# Payload keys read off the matched point (stamped by ``chunk_to_record``).
+# Row keys read off the matched row (stamped by ``chunk_to_record``).
 _IDENTITY_KEY = "identity"
 _CHUNK_TYPE_KEY = "chunk_type"
 _TIER_KEY = "tier"
@@ -102,12 +114,12 @@ class SymbolTool:
     """Resolve a qualified Python name to its exact stored definition + location.
 
     Args:
-        store: The :class:`~loremaster.store.qdrant.QdrantStore` holding the
+        store: The :class:`~loremaster.store.surreal.SurrealStore` holding the
             project's indexed chunks. Injected so the same store (and a real
-            client in tests) is reused; the tool owns no Qdrant wiring itself.
+            client in tests) is reused; the tool owns no store wiring itself.
     """
 
-    def __init__(self, *, store: QdrantStore) -> None:
+    def __init__(self, *, store: SurrealStore) -> None:
         self._store = store
 
     async def get_symbol(self, qualified_name: str) -> ResolvedSymbol:
@@ -144,6 +156,8 @@ class SymbolTool:
         Raises:
             GetSymbolError: If no Python symbol chunk resolves — a clean
                 not-found, naming the qualified name.
+            SurrealConnectionError: The store's connection is down — propagates
+                straight through, never masquerading as a clean not-found.
         """
         exact = await self._find_by_identity(qualified_name)
         if exact is not None:
@@ -159,8 +173,8 @@ class SymbolTool:
             f"reindex() if the file was just added."
         )
 
-    async def _find_by_identity(self, identity: str) -> qmodels.Record | None:
-        """Return the first symbol point whose stored ``identity`` equals ``identity``.
+    async def _find_by_identity(self, identity: str) -> dict[str, Any] | None:
+        """Return the first symbol row whose stored ``identity`` equals ``identity``.
 
         Scans the symbol chunk types in order and returns the first exact match,
         or ``None`` when no symbol chunk carries that identity. Used by the
@@ -172,35 +186,35 @@ class SymbolTool:
             identity: The bare within-file identity to match exactly.
 
         Returns:
-            The matched point, or ``None``.
+            The matched row, or ``None``.
         """
         for chunk_type in SYMBOL_CHUNK_TYPES:
-            points = await self._store.scroll(
+            rows = await self._store.scroll(
                 filters={_IDENTITY_KEY: identity, _CHUNK_TYPE_KEY: chunk_type},
                 limit=_SCROLL_LIMIT,
             )
-            if points:
-                return points[0]
+            if rows:
+                return rows[0]
         return None
 
-    async def _find_all_by_identity(self, identity: str) -> list[qmodels.Record]:
-        """Return EVERY symbol point whose stored ``identity`` equals ``identity``.
+    async def _find_all_by_identity(self, identity: str) -> list[dict[str, Any]]:
+        """Return EVERY symbol row whose stored ``identity`` equals ``identity``.
 
         A bare identity can COLLIDE across files (the python_ast chunker stamps the
         same within-file ``identity`` for same-named symbols in different modules —
         e.g. ``EmbeddingConfig`` in two packages). Module-qualified resolution must
         see all of them to pick the one whose ``file_path`` matches the caller's
-        module path; testing only the first-scrolled point would make every other
+        module path; testing only the first-scrolled row would make every other
         sibling unreachable (and which one is reachable is scroll-order-dependent).
 
         Args:
             identity: The bare within-file identity to match exactly.
 
         Returns:
-            All matching points across the symbol chunk types (possibly empty);
+            All matching rows across the symbol chunk types (possibly empty);
             order is not significant — the caller filters by ``file_path``.
         """
-        matches: list[qmodels.Record] = []
+        matches: list[dict[str, Any]] = []
         for chunk_type in SYMBOL_CHUNK_TYPES:
             matches.extend(
                 await self._store.scroll(
@@ -210,14 +224,14 @@ class SymbolTool:
             )
         return matches
 
-    async def _find_module_qualified(self, qualified_name: str) -> qmodels.Record | None:
-        """Resolve a MODULE-qualified dotted name to its stored point, or ``None``.
+    async def _find_module_qualified(self, qualified_name: str) -> dict[str, Any] | None:
+        """Resolve a MODULE-qualified dotted name to its stored row, or ``None``.
 
         Splits ``qualified_name`` on dots and, for each candidate identity length
         (the trailing 1 then 2 segments — class/function vs ``Class.method``),
-        looks up ALL points carrying that bare identity and returns the FIRST one
+        looks up ALL rows carrying that bare identity and returns the FIRST one
         whose ``file_path`` path-matches the remaining leading module segments.
-        Considering every collision sibling (not just the first-scrolled point) is
+        Considering every collision sibling (not just the first-scrolled row) is
         what makes a same-named symbol in another module reachable by its own
         fully-qualified name — otherwise only one arbitrary sibling would resolve.
         A name with no module prefix (a single segment, already tried as the exact
@@ -227,7 +241,7 @@ class SymbolTool:
             qualified_name: The full dotted name the caller passed.
 
         Returns:
-            The matched point, or ``None`` when nothing resolves.
+            The matched row, or ``None`` when nothing resolves.
         """
         segments = qualified_name.split(_DOTTED_SEP)
         for identity_length in range(1, _MAX_IDENTITY_SEGMENTS + 1):
@@ -237,14 +251,14 @@ class SymbolTool:
                 break
             module_segments = segments[:-identity_length]
             candidate_identity = _DOTTED_SEP.join(segments[-identity_length:])
-            for point in await self._find_all_by_identity(candidate_identity):
-                if self._module_path_matches(point, module_segments):
-                    return point
+            for row in await self._find_all_by_identity(candidate_identity):
+                if self._module_path_matches(row, module_segments):
+                    return row
         return None
 
     @staticmethod
-    def _module_path_matches(point: qmodels.Record, module_segments: list[str]) -> bool:
-        """Whether the point's module path is a trailing match of ``module_segments``.
+    def _module_path_matches(row: dict[str, Any], module_segments: list[str]) -> bool:
+        """Whether the row's module path is a trailing match of ``module_segments``.
 
         The stored ``file_path`` (e.g. ``pkg/calc.py``) maps to a dotted module
         path (``pkg.calc``). The caller's module path and the file's module path
@@ -253,20 +267,19 @@ class SymbolTool:
         exactly-qualified (``pkg.calc.X``), over-qualified / repeated-package
         (``loremaster.loremaster.index.indexer.X``), and under-qualified / missing
         the repeated package dir (``loremaster.index.indexer.X``) resolve to the
-        same point, while an unrelated ``other.mod.X`` does not (its tail differs).
+        same row, while an unrelated ``other.mod.X`` does not (its tail differs).
         The reported bug passed BOTH the under- and over-qualified forms; the
         common-tail rule accepts each without a wrong cross-module hit.
 
         Args:
-            point: The candidate matched point (its ``file_path`` is the anchor).
+            row: The candidate matched row (its ``file_path`` is the anchor).
             module_segments: The caller's leading dotted segments (the module path).
 
         Returns:
             ``True`` when the file's and caller's module paths share a full
             common tail (the shorter path equals the other's trailing segments).
         """
-        payload: dict[str, Any] = point.payload or {}
-        file_path = payload.get(_FILE_PATH_KEY)
+        file_path = row.get(_FILE_PATH_KEY)
         if not isinstance(file_path, str):
             return False
         pure_path = PurePosixPath(file_path)
@@ -286,15 +299,20 @@ class SymbolTool:
         return module_segments[-common_length:] == file_module_segments[-common_length:]
 
     @staticmethod
-    def _to_resolved(point: qmodels.Record) -> ResolvedSymbol:
-        """Map a matched store point's payload into a :class:`ResolvedSymbol`."""
-        payload: dict[str, Any] = point.payload or {}
+    def _to_resolved(row: dict[str, Any]) -> ResolvedSymbol:
+        """Map a matched store row into a :class:`ResolvedSymbol`.
+
+        Reads only its six named keys — the row's FLATTENED shape may carry
+        extra, unmodeled keys (a real ``signature``, ``llm_summary``, or a
+        future ``metadata`` addition) which are simply ignored, never breaking
+        resolution.
+        """
         return ResolvedSymbol(
-            qualified_name=payload[_IDENTITY_KEY],
-            chunk_type=payload[_CHUNK_TYPE_KEY],
-            tier=payload[_TIER_KEY],
-            file_path=payload[_FILE_PATH_KEY],
-            line_start=payload[_LINE_START_KEY],
-            line_end=payload[_LINE_END_KEY],
-            source=payload[_SOURCE_TEXT_KEY],
+            qualified_name=row[_IDENTITY_KEY],
+            chunk_type=row[_CHUNK_TYPE_KEY],
+            tier=row[_TIER_KEY],
+            file_path=row[_FILE_PATH_KEY],
+            line_start=row[_LINE_START_KEY],
+            line_end=row[_LINE_END_KEY],
+            source=row[_SOURCE_TEXT_KEY],
         )

@@ -44,8 +44,8 @@ from _extension_helpers import (
 from loremaster.server import LoreServer
 from lorescribe.base import Chunker
 from lorescribe.models import Chunk, ChunkContext
+from loremaster.store.candidate import Candidate
 from pydantic import ValidationError
-from qdrant_client.models import ScoredPoint
 
 # A real XML file on this host: a small file the base XmlChunker collapses to a
 # single whole-file chunk, with ``<threshold>`` children a profile can force out.
@@ -64,9 +64,14 @@ def _chunk_context(file_path: str) -> ChunkContext:
         max_input_tokens=8192,
     )
 
-def _scored(point_id: str, score: float) -> ScoredPoint:
-    """Build a :class:`ScoredPoint` candidate for the search-pipeline seams."""
-    return ScoredPoint(id=point_id, version=0, score=score, payload={}, vector=None)
+def _candidate(point_id: str, score: float) -> Candidate:
+    """Build a backend-neutral :class:`Candidate` for the search-pipeline seams.
+
+    P6 read-path cutover: the seams carry :class:`Candidate` (key/score/
+    payload/origin), never a ``qdrant_client`` ``ScoredPoint``; ``origin=
+    "fused"`` mirrors the store's RRF hybrid hits, their sole production source.
+    """
+    return Candidate(key=point_id, score=score, payload={}, origin="fused")
 
 @pytest.fixture()
 def config_path(tmp_path: Path) -> Path:
@@ -128,7 +133,7 @@ class TestBareServerIsGenericRag:
 
         server = LoreServer.from_config(config_path)
         ctx = server.extension_context(store=object())
-        assert server.format_result(_scored("a", 0.9), ctx) is None
+        assert server.format_result(_candidate("a", 0.9), ctx) is None
 
     def test_bare_chunk_key_is_base_default(self, config_path: Path) -> None:
 
@@ -149,7 +154,7 @@ class TestBareServerIsGenericRag:
 
         server = LoreServer.from_config(config_path)
         ctx = server.extension_context(store=object())
-        candidates = [_scored("a", 0.9), _scored("b", 0.5)]
+        candidates = [_candidate("a", 0.9), _candidate("b", 0.5)]
         assert server.augment_candidates("q", candidates, ctx) == candidates
         assert server.rerank(candidates, ctx) == candidates
 
@@ -233,7 +238,7 @@ class TestRegisterExtensionWiring:
         server = LoreServer.from_config(config_path).register_extension(FakeExtension())
         ctx = server.extension_context(store=object())
         # The registered extension's format wins over the base default.
-        assert server.format_result(_scored("a", 0.9), ctx) == "FAKE: a"
+        assert server.format_result(_candidate("a", 0.9), ctx) == "FAKE: a"
 
     def test_seam6_chunk_key_override_carries_version(self, config_path: Path) -> None:
 
@@ -255,9 +260,9 @@ class TestRegisterExtensionWiring:
 
         server = LoreServer.from_config(config_path).register_extension(FakeExtension())
         ctx = server.extension_context(store=object())
-        base = [_scored("a", 0.5), _scored("b", 0.9)]
+        base = [_candidate("a", 0.5), _candidate("b", 0.9)]
         augmented = server.augment_candidates("q", base, ctx)
-        assert any(c.id == "injected" for c in augmented)
+        assert any(c.key == "injected" for c in augmented)
         reranked = server.rerank(augmented, ctx)
         scores = [c.score for c in reranked]
         assert scores == sorted(scores, reverse=True)

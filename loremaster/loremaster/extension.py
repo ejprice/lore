@@ -55,7 +55,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from lorescribe.base import Chunker
 from pydantic import BaseModel, ConfigDict, Field
-from qdrant_client.models import ScoredPoint
+
+from loremaster.store.candidate import Candidate
 
 # The two detail levels seam 11 (C2) partitions chunk types into: a coarse
 # "overview" tier vs the full implementation tier. ``None`` from a classifier
@@ -240,41 +241,53 @@ class Extension(ABC):
 
     # -- seam 4: search-pipeline hook (C3) ----------------------------------
     def augment_candidates(
-        self, query: str, candidates: list[ScoredPoint], ctx: ExtensionContext
-    ) -> list[ScoredPoint]:
+        self, query: str, candidates: list[Candidate], ctx: ExtensionContext
+    ) -> list[Candidate]:
         """Inject extra candidates into the search candidate set (seam 4 / C3).
 
         Default: identity — return ``candidates`` unchanged.
 
+        P6 read-path cutover (§6 item 3): the seam carries the backend-neutral
+        :class:`~loremaster.store.candidate.Candidate` the unified SurrealDB
+        store's hybrid search returns, never a ``qdrant_client`` ``ScoredPoint``.
+
         Args:
             query: The user's search query.
-            candidates: The current candidate points.
+            candidates: The current candidate hits.
             ctx: The shared-services bundle.
         """
         return candidates
 
     def rerank(
-        self, candidates: list[ScoredPoint], ctx: ExtensionContext
-    ) -> list[ScoredPoint]:
+        self, candidates: list[Candidate], ctx: ExtensionContext
+    ) -> list[Candidate]:
         """Adjust the candidate order/score (seam 4 / C3).
 
         Default: identity — return ``candidates`` unchanged.
 
+        P6 read-path cutover (§6 item 3): the seam carries
+        :class:`~loremaster.store.candidate.Candidate`\\ s, never a
+        ``qdrant_client`` ``ScoredPoint``.
+
         Args:
-            candidates: The candidate points to (re)order.
+            candidates: The candidate hits to (re)order.
             ctx: The shared-services bundle.
         """
         return candidates
 
     # -- seam 5: citation/result format ------------------------------------
-    def format_result(self, result: ScoredPoint, ctx: ExtensionContext) -> str | None:
+    def format_result(self, result: Candidate, ctx: ExtensionContext) -> str | None:
         """Produce a custom citation/format for a result (seam 5).
 
         Default: ``None`` — the base supplies its default ``[SOURCE:file:line]``
         citation/format.
 
+        P6 read-path cutover (§6 item 3): the seam formats a backend-neutral
+        :class:`~loremaster.store.candidate.Candidate` (render off its ``key`` /
+        ``payload``), never a ``qdrant_client`` ``ScoredPoint``.
+
         Args:
-            result: The scored point to format.
+            result: The candidate hit to format.
             ctx: The shared-services bundle.
         """
         return None
