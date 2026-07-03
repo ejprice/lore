@@ -212,7 +212,9 @@ class GraphNode(BaseModel):
     """A single decoded ``CodeNode`` row.
 
     Attributes:
-        id: The surrogate ``SERIAL`` row id.
+        id: The node's identity as a string (the Kùzu surrogate ``SERIAL``
+            row id, stringified — the shared model types it ``str`` so the
+            SurrealDB port can carry its composite record id in the same field).
         kind: One of :data:`KIND_MODULE` / :data:`KIND_CLASS` /
             :data:`KIND_METHOD` / :data:`KIND_FUNCTION`.
         qualified_name: The dotted name (``demo.service.IndexService.boot``).
@@ -224,7 +226,7 @@ class GraphNode(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    id: int
+    id: str
     kind: str
     qualified_name: str
     file_path: str
@@ -264,7 +266,7 @@ class DeadCodeNode(BaseModel):
     labelled reason it is considered dead.
 
     Attributes:
-        id: The surrogate ``SERIAL`` row id (as :class:`GraphNode`).
+        id: The node's identity as a string (as :class:`GraphNode`).
         kind: One of :data:`KIND_MODULE` / :data:`KIND_CLASS` /
             :data:`KIND_METHOD` / :data:`KIND_FUNCTION`.
         qualified_name: The dotted name of the dead symbol.
@@ -278,7 +280,7 @@ class DeadCodeNode(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: int
+    id: str
     kind: str
     qualified_name: str
     file_path: str
@@ -854,7 +856,7 @@ class CodeGraph:
         """
         chunk_id = row["chunk_id"]
         return GraphNode(
-            id=int(str(row["id"])),
+            id=str(row["id"]),
             kind=str(row["kind"]),
             qualified_name=str(row["qualified_name"]),
             file_path=str(row["file_path"]),
@@ -1079,7 +1081,7 @@ class CodeGraph:
             The related test nodes (de-duplicated by row id).
         """
         target_bare = self._bare_name(symbol_or_file)
-        related: dict[int, GraphNode] = {}
+        related: dict[str, GraphNode] = {}
 
         # 1) Test nodes whose file has a reference to the target (by FQN or bare).
         edge_result = self._execute(
@@ -1149,7 +1151,7 @@ class CodeGraph:
         """
         production_sources, test_sources = self._reference_sources(name)
         referencing: list[GraphNode] = []
-        seen_node_ids: set[int] = set()
+        seen_node_ids: set[str] = set()
         for source_name in production_sources | test_sources:
             for node in self._nodes_by_qualified_name(source_name):
                 if node.id not in seen_node_ids:

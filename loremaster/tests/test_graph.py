@@ -800,6 +800,146 @@ class TestBlastRadius:
             graph.close()
 
 
+# ===========================================================================
+# 4b. what_imports / blast_radius by MODULE TARGET — the PARITY ANCHOR.
+#
+# Kùzu's ``what_imports``/``_reverse_neighbours`` already support a
+# "STARTS WITH '<module>.'" prefix arm so a MODULE-NAME query finds every
+# ``from <module> import <symbol>`` importer (the stored ``imports`` edge
+# ``dst`` is the resolved SYMBOL fqn, e.g. ``demo.reflib.widget``, never the bare
+# module name). That arm WORKS today but was never pinned by an explicit test —
+# this section locks it down so the SurrealDB port (``graph_surreal.py``) has an
+# oracle it cannot silently drift from. These tests must PASS unmodified; a
+# failure here means the Kùzu ORACLE itself moved, not the port.
+#
+# ORACLE: every expected importer set is read straight off the ALREADY-AUTHORED
+# fixture sources this file uses elsewhere (REFCONSUMER_SOURCE / REFTEST_SOURCE /
+# MODLIB_APP_SOURCE / TEST_SOURCE) — never re-derived from the engine.
+# ===========================================================================
+
+
+class TestWhatImportsModuleTarget:
+    """``what_imports`` queried BY MODULE NAME finds ``from module import X`` importers."""
+
+    def test_module_target_finds_multiple_from_import_importers(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """``what_imports("demo.reflib")`` finds every ``from demo.reflib import`` site.
+
+        Independent oracle, read off REFCONSUMER_SOURCE (``from demo.reflib import
+        widget``) and REFTEST_SOURCE (``from demo.reflib import widget, lonely``):
+        both ``demo.consumer`` and ``tests.test_reflib`` import a symbol FROM
+        ``demo.reflib``, queried BY THE MODULE'S OWN NAME (neither importer's own
+        FQN).
+        """
+        graph, _root = reflib_graph
+        importers = {node.qualified_name for node in graph.what_imports(REFLIB_MODULE)}
+        assert importers == {REFCONSUMER_MODULE, REFTEST_MODULE}
+
+    def test_module_target_finds_single_from_import_importer(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
+        """``what_imports("pkg.helpers")`` finds ``pkg.app`` (the only importer).
+
+        Independent oracle: MODLIB_APP_SOURCE reads ``from pkg.helpers import
+        build`` — the sole importer of the ``pkg.helpers`` module, queried by the
+        module's own name.
+        """
+        graph, _root = modlib_graph
+        importers = {node.qualified_name for node in graph.what_imports(MODLIB_HELPERS_MODULE)}
+        assert importers == {MODLIB_APP_MODULE}
+
+    def test_dotted_module_target_finds_its_from_import_importer(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
+        """A multi-segment dotted module target still resolves its importer.
+
+        Independent oracle: TEST_SOURCE reads ``from demo.service import
+        IndexService`` — ``tests.test_service`` imports a SYMBOL from the dotted
+        module ``demo.service``, queried by the module's own dotted name. Only the
+        app + test files need to be built (the ``Ref.dst`` string match needs no
+        node for ``demo.errors`` itself — same convention as this file's other
+        ``what_imports`` tests, e.g. ``test_returns_modules_that_import_the_
+        resolved_symbol``).
+        """
+        graph, _root = resolved_graph
+        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
+        graph.build_file_graph(
+            SAMPLE_TIER, TEST_PATH, _chunk(TEST_PATH, TEST_SOURCE), module_name=TEST_MODULE
+        )
+        importers = {node.qualified_name for node in graph.what_imports(APP_MODULE)}
+        assert TEST_MODULE in importers
+
+    def test_module_target_prefix_does_not_leak_across_sibling_modules(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
+        """A naive string-prefix match must NOT confuse ``pkg.a`` with ``pkg.ab``.
+
+        Independent oracle: MODLIB_APP_SOURCE imports ``pkg.ab.ab_symbol`` (``from
+        pkg.ab import ab_symbol``) but NEVER imports anything from ``pkg.a``. The
+        literal string ``"pkg.a"`` IS a Python string-prefix of
+        ``"pkg.ab.ab_symbol"`` — an anchor-less ``STARTS WITH`` would wrongly
+        report ``pkg.app`` as an importer of ``pkg.a``. Kùzu's arm is already
+        trailing-dot anchored (the same anchor convention ``dead_code``'s module
+        roll-up pins in ``test_module_prefix_scoping_uses_trailing_dot_anchor``),
+        so ``pkg.a`` returns nothing and ``pkg.ab`` returns exactly ``pkg.app``.
+        """
+        graph, _root = modlib_graph
+        assert list(graph.what_imports(MODLIB_A_MODULE)) == []
+        ab_importers = {node.qualified_name for node in graph.what_imports(MODLIB_AB_MODULE)}
+        assert ab_importers == {MODLIB_APP_MODULE}
+
+    def test_symbol_target_lookup_is_unaffected_by_the_module_target_arm(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """Regression guard: a SYMBOL-target query keeps ITS pre-existing behaviour.
+
+        Independent oracle, unchanged from ``TestWhatImports``: ``widget``'s two
+        importers by its OWN fqn (``demo.reflib.widget``, not the module name).
+        The module-prefix arm is strictly additive — it must never replace or
+        shadow the existing FQN/bare match.
+        """
+        graph, _root = reflib_graph
+        importers = {node.qualified_name for node in graph.what_imports(FQN_WIDGET)}
+        assert importers == {REFCONSUMER_MODULE, REFTEST_MODULE}
+
+
+class TestBlastRadiusModuleTarget:
+    """``blast_radius`` reaches reverse-import dependents when a MODULE enters the walk."""
+
+    def test_module_target_at_the_root_reaches_its_from_import_importers(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
+        """``blast_radius("demo.reflib", depth=3)`` reaches both module-level importers.
+
+        Independent oracle: identical to the ``what_imports`` oracle above — both
+        ``demo.consumer`` and ``tests.test_reflib`` import a symbol from
+        ``demo.reflib``, a single hop back from the module target itself.
+        ``depth=3`` is generous (matching this file's own
+        ``test_finds_direct_reverse_dependents`` convention for a 1-hop
+        assertion) so the case pins reachability, not an unrelated depth bound.
+        """
+        graph, _root = reflib_graph
+        affected = {
+            node.qualified_name
+            for node in graph.blast_radius(REFLIB_MODULE, depth=3, max_results=100)
+        }
+        assert REFCONSUMER_MODULE in affected
+        assert REFTEST_MODULE in affected
+
+    def test_module_enters_the_frontier_mid_walk_and_still_reaches_its_importer(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
+        """``blast_radius(symbol)`` still finds a 2nd-hop importer of the 1st-hop MODULE.
+
+        Independent oracle, the audit's exact live-reproduced scenario: ``demo.
+        service`` imports the symbol ``demo.errors.LoadError`` (1 hop back from
+        LoadError reaches the MODULE node ``demo.service``, per APP_SOURCE's ``from
+        demo.errors import LoadError``); ``tests.test_service`` in turn imports a
+        SYMBOL from ``demo.service`` (TEST_SOURCE's ``from demo.service import
+        IndexService``), reachable only via the module-prefix arm once ``demo.
+        service`` — a bare module qualified_name, not a symbol fqn — enters the BFS
+        frontier at hop 2.
+        """
+        graph, _root = resolved_graph
+        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
+        graph.build_file_graph(
+            SAMPLE_TIER, TEST_PATH, _chunk(TEST_PATH, TEST_SOURCE), module_name=TEST_MODULE
+        )
+        affected = {
+            node.qualified_name
+            for node in graph.blast_radius(FQN_LOAD_ERROR, depth=3, max_results=100)
+        }
+        assert APP_MODULE in affected  # 1st hop: demo.service imports LoadError
+        assert TEST_MODULE in affected  # 2nd hop: test_service imports FROM demo.service
+
+
 class TestTestsFor:
     """``tests_for`` links test nodes to a target by reference OR the name heuristic."""
 

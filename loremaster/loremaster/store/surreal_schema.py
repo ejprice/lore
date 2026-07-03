@@ -58,6 +58,18 @@ FINDING_TABLE = "finding"
 TRACE_TABLE = "trace"
 COMMAND_TABLE = "command"
 
+# The S13 "Model A" code-graph tables (the astroid-derived code graph, ported
+# from KùzuDB). ``code_node`` holds graph nodes (deterministic composite record
+# id ``[tier, file_path, qualified_name]``); ``name`` is the name-node indirection
+# every reference lands on (carrying a queryable ``value`` for the module-prefix
+# reach); ``refers`` / ``answers_to`` are native
+# ``TYPE RELATION`` edge tables. Single source of truth shared by
+# ``loremaster.graph_surreal`` and its contract tests.
+CODE_NODE_TABLE = "code_node"
+NAME_TABLE = "name"
+REFERS_RELATION = "refers"
+ANSWERS_TO_RELATION = "answers_to"
+
 # The plain SCHEMAFULL tables the plan requires to exist but that carry no
 # field-level probe in the P2 contract. Neither ``trace`` nor ``meta`` are here
 # — ``trace`` grows two audited optional columns below, ``meta`` grows its
@@ -137,10 +149,72 @@ _CHUNK_VECTOR_FIELD = "embedding"
 # in a later phase; a uniform prior for now).
 _MEMORY_DEFAULT_IMPORTANCE = 0.8
 
+# ---------------------------------------------------------------------------
+# Code-graph (S13 Model A) field specs — the single source of truth for
+# ``generate_graph_ddl``. Mirrors the ``_CHUNK_FIELD_SPECS`` discipline: one
+# ``(name, type_expr)`` list per table drives the ``DEFINE FIELD`` emission.
+# ---------------------------------------------------------------------------
+
+# ``code_node`` fields. ``chunk_id`` is ``option<string>`` — the synthesised
+# module node has no originating chunk, so it stores ``NONE`` and decodes back to
+# ``None``; a symbol node carries its chunk's identity.
+_CODE_NODE_FIELD_SPECS: tuple[tuple[str, str], ...] = (
+    ("kind", _CHUNK_STRING_TYPE),
+    ("qualified_name", _CHUNK_STRING_TYPE),
+    ("bare_name", _CHUNK_STRING_TYPE),
+    ("file_path", _CHUNK_STRING_TYPE),
+    ("tier", _CHUNK_STRING_TYPE),
+    ("chunk_id", "option<string>"),
+)
+
+# ``refers`` (code_node → name) reference-edge fields. ``src_tier`` /
+# ``src_file_path`` are the per-file purge keys a rebuild deletes by.
+_REFERS_FIELD_SPECS: tuple[tuple[str, str], ...] = (
+    ("kind", _CHUNK_STRING_TYPE),
+    ("resolved", "bool"),
+    ("src_tier", _CHUNK_STRING_TYPE),
+    ("src_file_path", _CHUNK_STRING_TYPE),
+)
+
+# ``answers_to`` (code_node → name) FQN/bare fan-out edge fields — also the
+# per-file purge keys.
+_ANSWERS_TO_FIELD_SPECS: tuple[tuple[str, str], ...] = (
+    ("tier", _CHUNK_STRING_TYPE),
+    ("file_path", _CHUNK_STRING_TYPE),
+)
+
+# ``name`` fields. The name record's id-string component is ALSO carried as a
+# queryable ``value`` column: 3.1.5 cannot index (nor ``string::starts_with``) a
+# RecordID's string component directly, so the module-prefix reach of
+# ``what_imports`` / ``blast_radius`` — find every ``name`` whose value starts with
+# ``<module>.`` — needs a plain string field it can prefix-match and index.
+_NAME_FIELD_SPECS: tuple[tuple[str, str], ...] = (("value", _CHUNK_STRING_TYPE),)
+
 
 def _define_table(name: str) -> str:
     """A SCHEMAFULL ``DEFINE TABLE`` statement (idempotent)."""
     return f"DEFINE TABLE IF NOT EXISTS {name} SCHEMAFULL"
+
+
+def _define_relation_table(name: str) -> str:
+    """A SCHEMAFULL native ``TYPE RELATION`` ``DEFINE TABLE`` statement (idempotent).
+
+    A ``TYPE RELATION`` table is a first-class edge table: SurrealDB auto-defines
+    its ``in``/``out`` endpoint columns, and native graph traversal
+    (``->refers->name`` / ``name<-refers<-code_node``) walks it directly.
+    """
+    return f"DEFINE TABLE IF NOT EXISTS {name} TYPE RELATION SCHEMAFULL"
+
+
+def _define_schemaless_table(name: str) -> str:
+    """A SCHEMALESS ``DEFINE TABLE`` statement (idempotent).
+
+    The ``name`` table (its sole SCHEMALESS user) is always constructible from
+    the name a referencing file wrote (``name:<dst-string>``), UPSERTed
+    idempotently; its one defined column, ``value``, is added by
+    :func:`_name_statements` (SCHEMALESS still permits a defined field).
+    """
+    return f"DEFINE TABLE IF NOT EXISTS {name} SCHEMALESS"
 
 
 def _define_field(table: str, name: str, type_expr: str, *, constraint: str = "") -> str:
@@ -294,6 +368,73 @@ def _trace_statements() -> list[str]:
     ]
 
 
+def _code_node_statements() -> list[str]:
+    """The ``code_node`` table: fields + the bare/qualified/(tier,file) indexes.
+
+    The hot lookups the query layer leans on: ``bare_name`` and
+    ``qualified_name`` symbol resolution, and the composite ``(tier, file_path)``
+    scope used by the file count and per-file purge.
+    """
+    statements: list[str] = [_define_table(CODE_NODE_TABLE)]
+    statements += [
+        _define_field(CODE_NODE_TABLE, name, type_expr)
+        for name, type_expr in _CODE_NODE_FIELD_SPECS
+    ]
+    statements.append(_plain_index(CODE_NODE_TABLE, f"{CODE_NODE_TABLE}_bare_name", ("bare_name",)))
+    statements.append(
+        _plain_index(CODE_NODE_TABLE, f"{CODE_NODE_TABLE}_qualified_name", ("qualified_name",))
+    )
+    statements.append(
+        _plain_index(CODE_NODE_TABLE, f"{CODE_NODE_TABLE}_tier_file", ("tier", "file_path"))
+    )
+    return statements
+
+
+def _name_statements() -> list[str]:
+    """The ``name`` table: the ``value`` string field + a prefix-capable index.
+
+    ``name`` stays SCHEMALESS (a referencing file always constructs the record id
+    ``name:<dst-string>`` from what it knows), but it now carries an explicit
+    ``value`` column holding that same string. The plain index on ``value``
+    mirrors ``code_node``'s ``bare_name`` / ``qualified_name`` indexes and backs
+    the ``string::starts_with(value, '<module>.')`` module-prefix reach the Kùzu
+    ``what_imports`` / ``_reverse_neighbours`` prefix arm depends on (3.1.5 cannot
+    prefix-match a RecordID's id-string component directly).
+    """
+    statements: list[str] = [_define_schemaless_table(NAME_TABLE)]
+    statements += [
+        _define_field(NAME_TABLE, name, type_expr) for name, type_expr in _NAME_FIELD_SPECS
+    ]
+    statements.append(_plain_index(NAME_TABLE, f"{NAME_TABLE}_value", ("value",)))
+    return statements
+
+
+def _refers_statements() -> list[str]:
+    """The ``refers`` relation edge table: fields + the ``src_file_path`` purge index."""
+    statements: list[str] = [_define_relation_table(REFERS_RELATION)]
+    statements += [
+        _define_field(REFERS_RELATION, name, type_expr)
+        for name, type_expr in _REFERS_FIELD_SPECS
+    ]
+    statements.append(
+        _plain_index(REFERS_RELATION, f"{REFERS_RELATION}_src_file_path", ("src_file_path",))
+    )
+    return statements
+
+
+def _answers_to_statements() -> list[str]:
+    """The ``answers_to`` relation edge table: fields + the ``(tier, file_path)`` index."""
+    statements: list[str] = [_define_relation_table(ANSWERS_TO_RELATION)]
+    statements += [
+        _define_field(ANSWERS_TO_RELATION, name, type_expr)
+        for name, type_expr in _ANSWERS_TO_FIELD_SPECS
+    ]
+    statements.append(
+        _plain_index(ANSWERS_TO_RELATION, f"{ANSWERS_TO_RELATION}_tier_file", ("tier", "file_path"))
+    )
+    return statements
+
+
 def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str:
     """Generate the full, idempotent SurrealDB DDL for lore's unified store.
 
@@ -340,4 +481,30 @@ def generate_manifest_ddl() -> str:
         a single SurrealDB ``query()`` call.
     """
     statements: list[str] = _file_statements() + _meta_statements()
+    return ";\n".join(statements) + ";\n"
+
+
+def generate_graph_ddl() -> str:
+    """Generate the S13 Model-A code-graph schema slice — idempotent.
+
+    Emits the four tables (:data:`CODE_NODE_TABLE`, :data:`NAME_TABLE`,
+    :data:`REFERS_RELATION`, :data:`ANSWERS_TO_RELATION`), their fields, and the
+    hot-lookup / per-file-purge indexes. Like :func:`generate_manifest_ddl` this
+    is a schema SLICE — it carries no HNSW/FULLTEXT index and needs no embedding
+    width, since the code graph stores no vectors. ``refers`` and ``answers_to``
+    are native ``TYPE RELATION`` edge tables (so reverse traversal walks them
+    directly); ``name`` is SCHEMALESS but carries a queryable ``value`` column
+    (plus a prefix-capable index) backing the module-prefix reach. Every
+    statement is
+    ``IF NOT EXISTS``, so applying it twice (or alongside :func:`generate_ddl`)
+    is a safe no-op.
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string ready to hand to a
+        single SurrealDB ``query()`` call.
+    """
+    statements: list[str] = _code_node_statements()
+    statements += _name_statements()
+    statements += _refers_statements()
+    statements += _answers_to_statements()
     return ";\n".join(statements) + ";\n"
