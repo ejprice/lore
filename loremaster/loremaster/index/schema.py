@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from loremaster.config import LoreConfig
-    from loremaster.index.manifest import Manifest
+    from loremaster.index.surreal_manifest import SurrealManifest
 
 # ---------------------------------------------------------------------------
 # Manifest meta keys — the single shared source of truth (clause 5)
@@ -165,7 +165,7 @@ def rebuild_needed(stored: str | None, current: str) -> bool:
 # Rebuild-in-progress notice
 # ---------------------------------------------------------------------------
 
-def rebuilding_notice(manifest: Manifest) -> str | None:
+async def rebuilding_notice(manifest: SurrealManifest) -> str | None:
     """Return a human-readable rebuild-progress message, or ``None`` when idle.
 
     Reads the :data:`SCHEMA_REBUILD_STATUS_META_KEY` meta key from ``manifest``.
@@ -178,12 +178,12 @@ def rebuilding_notice(manifest: Manifest) -> str | None:
     ``"done"``) — so an idle empty result stays a plain empty result.
 
     Args:
-        manifest: The open :class:`~loremaster.index.manifest.Manifest` to read.
+        manifest: The open :class:`~loremaster.index.surreal_manifest.SurrealManifest` to read.
 
     Returns:
         A progress string, or ``None`` when not rebuilding.
     """
-    raw = manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+    raw = await manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
     if raw is None:
         return None
     try:

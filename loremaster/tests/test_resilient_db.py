@@ -766,6 +766,12 @@ class TestBuildAppContextCreatesStateDir:
         except Exception as import_error:  # pragma: no cover - harness wiring
             pytest.skip(f"hermetic Qdrant harness unavailable: {import_error}")
 
+        import os
+
+        from _surreal_harness import drop_database, make_env, surreal_password, surreal_user
+
+        os.environ.setdefault("SURREAL_USER", surreal_user())
+        os.environ.setdefault("SURREAL_PASS", surreal_password())
         config = _build_realistic_config(tmp_path)
         slug = config.project.slug
 
@@ -795,22 +801,24 @@ class TestBuildAppContextCreatesStateDir:
                     f"and build, not raise OperationalError: {error}"
                 )
 
-            # End-state: the manifest and graph files were created under the dir
-            # that did not exist, and the manifest is a working empty ledger.
-            assert absent_state_dir.is_dir(), "build_app_context must create the state dir"
-            assert manifest_path.is_file(), "the manifest db must exist after startup"
-            assert graph_path.is_file(), "the graph db must exist after startup"
-
-            reread = Manifest(str(manifest_path))
-            try:
-                assert reread.all_files() == [], (
-                    "a fresh-deploy manifest built under a created dir must be empty"
-                )
-            finally:
-                reread.close()
+            # End-state (P5 successor contract): the manifest/graph live in
+            # SurrealDB (no local files), so FP-01's surviving server-seam
+            # surface is the SQLite MEMORY LEDGER under the absent dir — the
+            # dir must have been created for it — and a fresh-deploy Surreal
+            # manifest must be empty/queryable.
+            assert absent_state_dir.is_dir(), (
+                "build_app_context must create the state dir for the memory ledger"
+            )
+            assert manifest_path.with_name(f"{slug}.memory.db").is_file(), (
+                "the memory ledger must exist after startup"
+            )
+            assert await app_context.manifest.all_files() == [], (
+                "a fresh-deploy manifest must be empty"
+            )
         finally:
             if app_context is not None:
                 await app_context.aclose()
+            await drop_database(make_env(database=slug, dim=_CONFIG_DIM))
             for name in created_collections:
                 if await client.collection_exists(name):
                     await client.delete_collection(name)
@@ -820,6 +828,12 @@ class TestBuildAppContextCreatesStateDir:
 # The production embedding dimensionality used across the hermetic harnesses
 # (matches test_schema_rebuild.py's _DIM — clause 5: same source of truth).
 _CONFIG_DIM: int = 2048
+
+
+def _surreal_url() -> str:
+    from _surreal_harness import surreal_url
+
+    return surreal_url()
 
 
 def _build_realistic_config(tmp_path: Path) -> Any:
@@ -835,7 +849,7 @@ def _build_realistic_config(tmp_path: Path) -> Any:
 
     live_root = tmp_path / "live"
     live_root.mkdir(parents=True, exist_ok=True)
-    slug = f"test-{uuid.uuid4().hex}"
+    slug = f"test_{uuid.uuid4().hex}"
     payload: dict[str, Any] = {
         "schema_version": 1,
         "project": {"slug": slug, "root": "."},
@@ -854,6 +868,15 @@ def _build_realistic_config(tmp_path: Path) -> Any:
             "tokenizer": "voyage-4-nano",
         },
         "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
+        # P5 write stack: throwaway per-call database on the dev server (the
+        # unique slug doubles as the database name; reaped in the test finally).
+        "surreal": {
+            "url": _surreal_url(),
+            "namespace": "lore_test",
+            "database": slug,
+            "user_env": "SURREAL_USER",
+            "password_env": "SURREAL_PASS",
+        },
         "roots": [
             {
                 "tier": "custom",

@@ -64,6 +64,16 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from _surreal_harness import (
+    drop_database as drop_surreal_database,
+)
+from _surreal_harness import (
+    make_env,
+    surreal_password,
+    surreal_url,
+    surreal_user,
+    unique_database,
+)
 from loremaster.config import LoreConfig
 from loremaster.server import (
     LoreServer,
@@ -82,6 +92,17 @@ from qdrant_client import AsyncQdrantClient
 # coherent with how the production config declares ``embedding.dim``.
 _DIM = 2048
 
+# The namespace the one real end-to-end eager-startup test's throwaway SurrealDB
+# database lives under (mirrors ``test_cli.py``'s harness-isolation convention).
+_SURREAL_TEST_NAMESPACE = "lore_test"
+
+# The env-var *names* the default SurrealConfig references credentials by —
+# matching :data:`loremaster.config.SURREAL_DEFAULT_USER_ENV` /
+# ``SURREAL_DEFAULT_PASSWORD_ENV`` so the real ``build_app_context`` resolves
+# them via the SAME names the production default config uses.
+_SURREAL_USER_ENV = "SURREAL_USER"
+_SURREAL_PASS_ENV = "SURREAL_PASS"
+
 # The number of distinct MCP client sessions simulated AFTER eager startup in the
 # once-per-process test. Two is the minimum that distinguishes "build once,
 # reuse" from "build per session"; the existing heavy-startup test also uses 2.
@@ -97,7 +118,13 @@ def _slug() -> str:
     return f"test_{uuid.uuid4().hex}"
 
 
-def _config(slug: str, live_path: Path, *, auth: dict[str, Any] | None = None) -> LoreConfig:
+def _config(
+    slug: str,
+    live_path: Path,
+    *,
+    auth: dict[str, Any] | None = None,
+    surreal: dict[str, Any] | None = None,
+) -> LoreConfig:
     """Build a validated :class:`LoreConfig` mirroring the production shape.
 
     Reuses the exact production-realistic config payload the rest of the
@@ -105,6 +132,11 @@ def _config(slug: str, live_path: Path, *, auth: dict[str, Any] | None = None) -
     at dim ``_DIM``, the real local throwaway Qdrant URL/key env, a single
     inotify-watched custom-tier root, and the 127.0.0.1 loopback server bind the
     Origin guard defends. ``auth`` threads an enabled Bearer block when given.
+    ``surreal`` threads an explicit SurrealDB connection block (the harness's
+    throwaway dev-server URL + per-test database) when given; omitted, the
+    config falls back to :class:`~loremaster.config.SurrealConfig`'s
+    production defaults — fine for the composition-only tests that never reach
+    the real ``build_app_context`` write-store construction.
     """
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -141,6 +173,8 @@ def _config(slug: str, live_path: Path, *, auth: dict[str, Any] | None = None) -
     }
     if auth is not None:
         payload["auth"] = auth
+    if surreal is not None:
+        payload["surreal"] = surreal
     return LoreConfig.model_validate(payload)
 
 
@@ -619,6 +653,14 @@ class TestEagerStartupEndToEnd:
         # The real eager build constructs its own AsyncQdrantClient from the
         # config's api_key_env; export the throwaway server's key so it connects.
         monkeypatch.setenv("QDRANT__SERVICE__API_KEY", _qdrant_api_key())
+        # The real eager build ALSO constructs a SurrealStore/SurrealManifest/
+        # SurrealCodeGraph write stack; export the harness's root credentials and
+        # point config.surreal at the dev SurrealDB server + a throwaway
+        # per-test database (reaped in the finally below), mirroring
+        # ``test_cli.py``'s harness-isolation convention.
+        monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
+        monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
+        database = unique_database()
 
         slug = _slug()
         live = tmp_path / "live"
@@ -626,7 +668,17 @@ class TestEagerStartupEndToEnd:
         (live / "pkg" / "boot.py").write_text(
             "def boot():\n    return 1\n", encoding="utf-8"
         )
-        config = _config(slug, live)
+        config = _config(
+            slug,
+            live,
+            surreal={
+                "url": surreal_url(),
+                "namespace": _SURREAL_TEST_NAMESPACE,
+                "database": database,
+                "user_env": _SURREAL_USER_ENV,
+                "password_env": _SURREAL_PASS_ENV,
+            },
+        )
         # The eager build creates the project + _memory collections from the slug;
         # register both for the fixture's exact-name reap.
         qdrant._lore_created.append(f"lore_{slug}")  # type: ignore[attr-defined]
@@ -664,21 +716,25 @@ class TestEagerStartupEndToEnd:
         mcp = build_mcp_server(LoreServer(config))
         app = build_asgi_app(mcp, config)
 
-        replies = await _drive_lifespan(app)
+        try:
+            replies = await _drive_lifespan(app)
 
-        # The heavy build ran EAGERLY at process startup (the watcher started) with
-        # zero sessions opened — the whole point of the feature.
-        assert watcher_starts == 1, (
-            f"the live watcher started {watcher_starts}x; the heavy build must run "
-            f"exactly once, EAGERLY at lifespan.startup, before any MCP session"
-        )
-        assert "lifespan.startup.complete" in replies["all"], (
-            "the real composed app must complete its eager startup"
-        )
-        assert "lifespan.shutdown.complete" in replies["all"], (
-            "the real composed app must complete its shutdown (eager lease "
-            "released → AppContext + Qdrant client torn down)"
-        )
+            # The heavy build ran EAGERLY at process startup (the watcher started)
+            # with zero sessions opened — the whole point of the feature.
+            assert watcher_starts == 1, (
+                f"the live watcher started {watcher_starts}x; the heavy build must "
+                f"run exactly once, EAGERLY at lifespan.startup, before any MCP "
+                f"session"
+            )
+            assert "lifespan.startup.complete" in replies["all"], (
+                "the real composed app must complete its eager startup"
+            )
+            assert "lifespan.shutdown.complete" in replies["all"], (
+                "the real composed app must complete its shutdown (eager lease "
+                "released → AppContext + Qdrant client torn down)"
+            )
+        finally:
+            await drop_surreal_database(make_env(database=database, dim=_DIM))
 
 
 # --------------------------------------------------------------------------- #

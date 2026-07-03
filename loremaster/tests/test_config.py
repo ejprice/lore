@@ -491,17 +491,21 @@ class TestResolveSecret:
 # ---------------------------------------------------------------------------
 
 # The documented safe-charset contract for a slug. Stated here as the spec the
-# test verifies — NOT copied from the implementation (which does not yet exist).
-# Lowercase alnum + ``-``/``_``, must start with an alnum, non-empty.
-_SLUG_PATTERN: str = r"^[a-z0-9][a-z0-9_-]*$"
+# test verifies — NOT copied from the implementation.
+# Lowercase alnum + ``_``, must start with an alnum, non-empty. HYPHENS ARE
+# REJECTED (operator directive 2026-07-03): the slug becomes the SurrealDB
+# database name (``effective_surreal_database``), and an unescaped hyphenated
+# identifier fails SurrealQL parsing — blocked at config load rather than
+# escaped at every interpolation site.
+_SLUG_PATTERN: str = r"^[a-z0-9][a-z0-9_]*$"
 
 # VALID slugs that MUST be accepted. Grounded in real lore deployments: ``lore``
 # (this repo's own slug), ``demand_intelligence`` (the canonical config above),
-# and a hyphen+underscore+digit mix proving the full permitted charset parses.
+# and an underscore+digit mix proving the full permitted charset parses.
 _VALID_SLUGS: tuple[str, ...] = (
     "lore",
     "demand_intelligence",
-    "my-proj_2",
+    "my_proj_2",
 )
 
 # INVALID slugs that MUST raise at load. Each is a realistic operator-typo or
@@ -514,6 +518,8 @@ _INVALID_SLUGS: dict[str, str] = {
     "UPPER": "uppercase — Qdrant collection names and the convention are lowercase",
     "": "empty — yields a bare '.db' path and an 'lore_' collection",
     "-leading": "leading separator — must start with an alphanumeric",
+    "my-proj": "hyphen — the slug is the SurrealDB database name; an unescaped "
+    "hyphenated identifier fails SurrealQL parsing (blocked at load, task #32)",
 }
 
 
@@ -530,7 +536,7 @@ def _project_payload(slug: str) -> dict[str, Any]:
 
 
 class TestProjectSlugCharset:
-    """FIX 1: ``ProjectConfig.slug`` is constrained to a safe ``[a-z0-9_-]`` charset.
+    """FIX 1: ``ProjectConfig.slug`` is constrained to a safe ``[a-z0-9_]`` charset.
 
     The slug drives the ``lore_<slug>`` collection name and the on-disk
     ``<slug>.db`` / ``<slug>.memory.db`` / ``<slug>.graph.db`` paths. An

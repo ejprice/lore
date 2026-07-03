@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from loresigil.base import Embedder
 
     from loremaster.config import LoreConfig
-    from loremaster.index.manifest import Manifest
+    from loremaster.index.surreal_manifest import SurrealManifest
     from loremaster.memory.store import MemoryStore
     from loremaster.server import LoreServer
     from loremaster.store.qdrant import QdrantStore
@@ -162,7 +162,7 @@ class SearchPipeline:
         store: QdrantStore,
         embedder: Embedder,
         server: LoreServer,
-        manifest: Manifest,
+        manifest: SurrealManifest,
         config: LoreConfig,
         extension_context: ExtensionContext,
         memory_store: MemoryStore | None = None,
@@ -224,7 +224,7 @@ class SearchPipeline:
         # Memory-boost (generic) — lift candidates a recalled memory references.
         candidates = await self._apply_memory_boost(query, candidates, ctx)
 
-        results = [self._to_result(point, ctx) for point in candidates]
+        results = [await self._to_result(point, ctx) for point in candidates]
         return self._partition_by_detail(results, detail_level)
 
     # -- filter normalisation ---------------------------------------------------
@@ -298,7 +298,7 @@ class SearchPipeline:
             return
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            if self._all_rows_indexed_for_path(file_path):
+            if await self._all_rows_indexed_for_path(file_path):
                 return
             await asyncio.sleep(_WAIT_POLL_INTERVAL_S)
 
@@ -312,13 +312,13 @@ class SearchPipeline:
                 return filters[key]
         return None
 
-    def _all_rows_indexed_for_path(self, file_path: str) -> bool:
+    async def _all_rows_indexed_for_path(self, file_path: str) -> bool:
         """True iff every manifest row for ``file_path`` (any tier) is ``indexed``.
 
         A path may exist under multiple tiers (C1); a wait is satisfied only when
         no copy is still in-flight. An absent path (no rows) is vacuously settled.
         """
-        rows = [row for row in self._manifest.all_files() if row.file_path == file_path]
+        rows = [row for row in await self._manifest.all_files() if row.file_path == file_path]
         return all(row.state == STATE_INDEXED for row in rows)
 
     # -- step 5: memory-boost -----------------------------------------------
@@ -355,11 +355,11 @@ class SearchPipeline:
 
     # -- steps 6 + 7 + key: per-result formatting ---------------------------
 
-    def _to_result(self, point: ScoredPoint, ctx: ExtensionContext) -> SearchResult:
+    async def _to_result(self, point: ScoredPoint, ctx: ExtensionContext) -> SearchResult:
         """Format one candidate, flag freshness, and classify its detail level."""
         payload = point.payload or {}
         key = self._chunk_key(point, ctx)
-        stale = self._is_stale(payload)
+        stale = await self._is_stale(payload)
         detail = self._server.classify_detail(payload.get(_PAYLOAD_CHUNK_TYPE, "")) or "source"
 
         formatted = self._server.format_result(point, ctx)
@@ -405,7 +405,7 @@ class SearchPipeline:
             f"```\n{source_text}\n```"
         )
 
-    def _is_stale(self, payload: dict[str, Any]) -> bool:
+    async def _is_stale(self, payload: dict[str, Any]) -> bool:
         """True iff the chunk's manifest file row is in-flight (not ``indexed``).
 
         The manifest — not Qdrant — is the freshness authority. A row absent from
@@ -413,7 +413,7 @@ class SearchPipeline:
         """
         tier = payload.get(_PAYLOAD_TIER, "")
         file_path = payload.get(_PAYLOAD_FILE_PATH, "")
-        row = self._manifest.get(tier, file_path)
+        row = await self._manifest.get(tier, file_path)
         if row is None:
             return False
         return row.state != STATE_INDEXED

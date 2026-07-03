@@ -1,55 +1,94 @@
 """Contract tests for the deterministic embedding-schema fingerprint + async rebuild.
 
-These tests are GROUP A — they define the contract for a feature that does NOT
-yet exist. Every test is expected to be RED (fail with AttributeError or
-ImportError) until the implementation is written.
+PORTED to the unified SurrealDB write stack (P5): manifest state (the fingerprint
+stamp, the rebuild-status blob, the indexed rows) lives in
+:class:`~loremaster.index.surreal_manifest.SurrealManifest` over a real SurrealDB
+database now, not the pre-port SQLite ``Manifest``; the direct-``Indexer`` tests
+wire :class:`~loremaster.store.surreal.SurrealStore` (the write path) instead of
+:class:`~loremaster.store.qdrant.QdrantStore`. Every fixture/oracle below was
+swapped onto the real Surreal ports, mirroring ``test_indexer_surreal_
+integration.py`` / the divergence-reconcile suite's house pattern (a throwaway
+instance per surface, opened against the SAME ``(namespace, database)`` — the
+database defaults to the test's ``slug``, matching :attr:`~loremaster.config.
+LoreConfig.effective_surreal_database`). The ASSERTIONS are unchanged from the
+pre-port suite everywhere the swap is purely mechanical — none of the search
+assertions in this file assert a POSITIVE hit (only emptiness, for the
+rebuilding-notice seam), so none needed the oracle substitution the sibling
+divergence-reconcile suite required for its one positive-hit search assertion.
+
+A few individual tests marked ``# offline`` in the pre-port suite (a fresh
+SQLite ``Manifest`` needs no server) now touch the LIVE SurrealDB dev server too
+(a fresh SurrealManifest is a real network client) — their ``# offline`` comment
+is corrected to reflect that; their assertions are unchanged.
 
 The contract under test:
     1. A pure fingerprint function (A1, A2) — deterministic, sensitive to
-       embedding-schema fields, blind to unrelated fields.
+       embedding-schema fields, blind to unrelated fields. UNCHANGED — pure,
+       config-only, no store/manifest touch at all.
     2. A pure rebuild-needed decision (A3) — stored-vs-current fingerprint logic.
+       UNCHANGED — pure.
     3. A force-rebuild operation (A4, A5) — re-embeds all tiers, stamps
        fingerprint ONLY after completion.
     4. index_status surfaces schema fields (A6) — fingerprint + rebuild status
        section visible to a caller during/after rebuild.
     5. Startup wiring (A7) — build_app_context spawns background rebuild when
        fingerprint mismatch; runs normal sync reconcile on a match.
+    6. The rebuilding-notice seam (A8) — an empty corpus-read result during an
+       in-progress rebuild RAISES an agent-visible notice.
+    7. Live progress (A9) — rebuild_all advances done LIVE, not only at the end.
+    8. Failed-rebuild reporting (A10/FP-11) — a raised background rebuild settles
+       to 'failed', never stuck at 'in_progress' forever.
 
-Tests marked ``# offline`` need no Qdrant. Tests marked ``# real-Qdrant`` hit
-http://127.0.0.1:16333 and require the QDRANT__SERVICE__API_KEY.
+Tests marked ``# offline`` need no server at all. Tests marked ``# real-Surreal``
+need the SurrealDB dev server. Tests marked ``# real-Qdrant + real-Surreal`` drive
+the full ``build_app_context`` prod path and need BOTH (Qdrant for the read-path
+probe-gate/collection; Surreal for the write-path manifest/store/graph).
 
 How to run:
     PP=<worktree>/loremaster:<worktree>/loresigil:<worktree>/lorescribe
     cd <worktree>/loremaster
-    PYTHONPATH=$PP /home/ejprice/PycharmProjects/lore/.venv/bin/python \\
+    SURREAL_USER=root SURREAL_PASS=spikeroot PYTHONPATH=$PP \\
+        /home/ejprice/PycharmProjects/lore/.venv/bin/python \\
         -m pytest tests/test_schema_rebuild.py -q -p no:cacheprovider
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
 import pytest_asyncio
+from _surreal_harness import (
+    TEST_NAMESPACE,
+    connect_admin,
+    make_env,
+    run,
+    surreal_password,
+    surreal_url,
+    surreal_user,
+)
+from _surreal_harness import (
+    drop_database as drop_surreal_database,
+)
 
 # ---------------------------------------------------------------------------
-# Production-canonical imports.  These deliberately reference symbols that do
-# NOT yet exist so the suite is RED at collection time for the new module while
-# remaining importable itself (lazy import pattern inside each test class).
+# Production-canonical imports.
 #
 # We import existing production symbols freely — they ground the fixtures in
 # the real config/manifest/indexer conventions (clause 5: shared source of truth).
 # ---------------------------------------------------------------------------
 from loremaster.config import LoreConfig
 from loremaster.index.indexer import Indexer
-from loremaster.index.manifest import Manifest
+from loremaster.index.surreal_manifest import SurrealManifest
 from loremaster.server import LoreServer, build_app_context
 from loremaster.source.local_directory import LocalDirectorySourceProvider
-from loremaster.store.qdrant import QdrantStore
+from loremaster.store.surreal import SurrealStore
 from loresigil.testing import FakeEmbedder
 from qdrant_client import AsyncQdrantClient
 
@@ -69,6 +108,13 @@ _TEI_BASE_URL = "http://tei.example:8080"
 _TEI_ENDPOINT = "/embed"
 _TEI_KEY_ENV = "LORE_TEI_KEY"
 
+# The env-var *names* the default SurrealConfig references credentials by
+# (mirrors test_cli.py / test_startup_divergence_reconcile.py's identical local
+# constants) — exported for the duration of EVERY test in this module via the
+# autouse ``_surreal_credentials`` fixture below.
+_SURREAL_USER_ENV = "SURREAL_USER"
+_SURREAL_PASS_ENV = "SURREAL_PASS"
+
 # The meta key prefix used for the embedding-schema fingerprint in the manifest.
 # Shared constant so tests and impl converge on the same key name (clause 5).
 SCHEMA_FINGERPRINT_META_KEY = "embedding_schema_fingerprint"
@@ -82,6 +128,21 @@ SCHEMA_REBUILD_STATUS_META_KEY = "schema_rebuild_status"
 # python_ast chunker now sizes the composed embedding_text (header + source), so
 # chunk boundaries change for near-cap files and all indexes must rebuild.
 EXPECTED_SCHEMA_VERSION: int = 2
+
+
+# ---------------------------------------------------------------------------
+# Module-wide credential export — every test in this module (offline or not)
+# may end up touching the live SurrealDB dev server via a fresh SurrealManifest
+# (its connection is opened lazily on first use, so even a nominally "offline"
+# pre-port test now needs credentials resolvable). Mirrors test_cli.py's
+# per-fixture ``monkeypatch.setenv`` pattern, applied autouse so every test
+# signature stays unchanged.
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _surreal_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Export the dev-server root credentials for the duration of every test."""
+    monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
+    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +189,12 @@ def _build_live_corpus(root: Path) -> None:
 
 
 def _slug() -> str:
+    """A throwaway slug — also the Surreal DATABASE name (P5's identity unification).
+
+    ``config.surreal.database`` is left unset in :func:`_config`, so
+    :attr:`~loremaster.config.LoreConfig.effective_surreal_database` derives it
+    from THIS slug — the same identity the ``lore_<slug>`` Qdrant collection uses.
+    """
     return f"test_{uuid.uuid4().hex}"
 
 
@@ -154,6 +221,12 @@ def _config(
     tests can vary exactly one field at a time (A2 sensitivity checks).
     Unrelated fields (concurrency, server_port, qdrant_url) are also parameterised
     so the insensitivity checks are explicit (A2 negative cases).
+
+    The ``surreal:`` block points at the dev-server harness under the harness's
+    shared ``lore_test`` namespace, with ``database`` left UNSET so it derives
+    from ``slug`` (see :func:`_slug`) — every direct-Surreal-port fixture below
+    and every ``build_app_context`` call agree on the SAME database without a
+    second, hand-threaded identifier.
     """
     if chunkers is None:
         chunkers = {".py": {"chunker": "python_ast"}, ".md": {"chunker": "markdown"}}
@@ -175,6 +248,7 @@ def _config(
             "tokenizer": tokenizer,
         },
         "qdrant": {"url": qdrant_url, "api_key_env": "QDRANT__SERVICE__API_KEY"},
+        "surreal": {"url": surreal_url(), "namespace": TEST_NAMESPACE},
         "roots": [
             {
                 "tier": "custom",
@@ -201,6 +275,57 @@ def _config(
     if document_prompt_name is not None:
         payload["embedding"]["document_prompt_name"] = document_prompt_name
     return LoreConfig.model_validate(payload)
+
+
+# ---------------------------------------------------------------------------
+# Throwaway SurrealManifest context manager — opened against the SAME
+# ``(namespace, database)`` a ``build_app_context``/direct-Indexer test wired
+# for ``slug`` (namespace is the harness's shared ``lore_test``; database
+# derives from ``slug`` per :func:`_config`'s unset ``surreal.database``).
+# Mirrors the divergence-reconcile suite's identical helper.
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def _open_manifest(slug: str) -> AsyncIterator[SurrealManifest]:
+    """Yield a ready :class:`SurrealManifest` over ``slug``'s database; closes on exit."""
+    manifest = SurrealManifest(
+        url=surreal_url(),
+        namespace=TEST_NAMESPACE,
+        database=slug,
+        user=surreal_user(),
+        password=surreal_password(),
+    )
+    await manifest.ensure_ready()
+    try:
+        yield manifest
+    finally:
+        await manifest.close()
+
+
+async def _delete_meta_key(slug: str, key: str) -> None:
+    """Delete one row from the ``meta`` table via a fresh admin connection.
+
+    The Surreal analogue of the pre-port suite's direct SQLite
+    ``DELETE FROM meta WHERE k = ?`` — used ONLY to simulate a legacy/
+    unknown-provenance index whose fingerprint stamp was never written (there is
+    no ``SurrealManifest`` "delete this meta key" method; production only ever
+    ``meta_set``s, so this fixture reaches for the same raw-admin-connection
+    escape hatch the store-divergence harness uses for its own fixture-only
+    mutations).
+    """
+    env = make_env(database=slug, dim=_DIM)
+    connection = await connect_admin(env)
+    try:
+        await run(connection, "DELETE meta WHERE k = $k", {"k": key})
+    finally:
+        await connection.close()
+
+
+async def _drop_slug_database(slug: str) -> None:
+    """Best-effort teardown of ``slug``'s throwaway Surreal database."""
+    try:
+        await drop_surreal_database(make_env(database=slug, dim=_DIM))
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -234,37 +359,49 @@ class RecordingEmbedder(FakeEmbedder):
 
 
 # ---------------------------------------------------------------------------
-# Qdrant fixture — exact-name teardown, same pattern as test_indexer.py
-# (clause 5: reuse the production fixture convention).
+# SurrealStore fixture — exact-name teardown, same intent as the pre-port
+# QdrantStore factory (clause 5: reuse the production fixture convention), now
+# minting SurrealStore instances over a throwaway per-slug database.
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture()
 async def store_factory() -> AsyncIterator[Any]:
-    """Build QdrantStore instances with concurrency-safe exact-name teardown."""
-    from conftest import QDRANT_URL, _qdrant_api_key
+    """Build SurrealStore instances; closes each and drops its database on exit.
 
-    client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-    created: list[str] = []
+    A direct-Indexer test (the write path never touches Qdrant at all — P5's
+    dual-store interim keeps Qdrant strictly read-side) only needs this single
+    factory: no separate Qdrant collection exists for these tests to leak.
+    """
+    created_slugs: list[str] = []
+    created_stores: list[SurrealStore] = []
 
-    def _make(slug: str) -> QdrantStore:
-        store = QdrantStore(client=client, slug=slug)
-        created.append(store.collection_name)
+    def _make(slug: str) -> SurrealStore:
+        store = SurrealStore(
+            url=surreal_url(),
+            namespace=TEST_NAMESPACE,
+            database=slug,
+            dim=_DIM,
+            user=surreal_user(),
+            password=surreal_password(),
+        )
+        created_slugs.append(slug)
+        created_stores.append(store)
         return store
 
     try:
         yield _make
     finally:
-        for name in created:
-            if await client.collection_exists(name):
-                await client.delete_collection(name)
-        await client.close()
+        for store in created_stores:
+            await store.close()
+        for slug in created_slugs:
+            await _drop_slug_database(slug)
 
 
 def _make_indexer(
     *,
     config: LoreConfig,
-    store: QdrantStore,
+    store: SurrealStore,
     embedder: Any,
-    manifest: Manifest,
+    manifest: SurrealManifest,
     snapshot_root: Path,
 ) -> Indexer:
     """Wire an Indexer exactly as the CLI/server does (mirrors test_indexer.py)."""
@@ -285,7 +422,7 @@ def _make_indexer(
 
 
 # ===========================================================================
-# A1 — Fingerprint determinism (offline)
+# A1 — Fingerprint determinism (offline — pure, config-only)
 # ===========================================================================
 class TestFingerprintDeterminism:
     """``embedding_schema_fingerprint(config)`` is deterministic across calls.
@@ -301,7 +438,7 @@ class TestFingerprintDeterminism:
         Act: call the fingerprint function twice.
         Assert: the results are identical (deterministic, not random).
         """
-        # offline — no Qdrant needed
+        # offline — no server needed (pure function of config)
         from loremaster.index.schema import (
             embedding_schema_fingerprint,
         )
@@ -346,7 +483,7 @@ class TestFingerprintDeterminism:
 
 
 # ===========================================================================
-# A2 — Fingerprint sensitivity (offline)
+# A2 — Fingerprint sensitivity (offline — pure, config-only)
 # ===========================================================================
 class TestFingerprintSensitivity:
     """The fingerprint changes on schema-relevant fields; is stable on unrelated ones.
@@ -576,7 +713,7 @@ class TestRebuildNeededDecision:
         * (X, X)     → False (fingerprints match → no rebuild)
         * (X, Y)     → True  (fingerprints differ → rebuild)
 
-    The function is pure; no Qdrant, no filesystem.
+    The function is pure; no store, no filesystem.
     """
 
     def test_none_stored_means_rebuild_needed(self) -> None:
@@ -607,16 +744,16 @@ class TestRebuildNeededDecision:
 
 
 # ===========================================================================
-# A4 — Force rebuild re-embeds all tiers (real Qdrant)
+# A4 — Force rebuild re-embeds all tiers (real Surreal)
 # ===========================================================================
 class TestForceRebuildReembeds:
-    """``Indexer.rebuild_all()`` (or equivalent) re-embeds every tier from scratch.
+    """``Indexer.rebuild_all()`` re-embeds every tier from scratch.
 
     Contract:
         * After a successful initial index, calling rebuild_all() causes EVERY
           file to be re-embedded (proven by RecordingEmbedder.total_embedded
           increasing beyond the baseline by the number of chunks in the corpus).
-        * The points are still present in Qdrant after the rebuild (not wiped).
+        * The chunks are still present in the store after the rebuild (not wiped).
         * The current fingerprint is stamped into the manifest meta AFTER
           completion (the stamp is the evidence the rebuild ran).
     """
@@ -626,9 +763,9 @@ class TestForceRebuildReembeds:
     ) -> None:
         """Arrange: index a live corpus with RecordingEmbedder.
         Act: call rebuild_all() with a fresh RecordingEmbedder.
-        Assert: new embedder's total_embedded >= baseline; points present; stamp set.
+        Assert: new embedder's total_embedded >= baseline; rows present; stamp set.
         """
-        # real-Qdrant
+        # real-Surreal
         from loremaster.index.schema import (
             embedding_schema_fingerprint,
         )
@@ -638,64 +775,62 @@ class TestForceRebuildReembeds:
         _build_live_corpus(live)
         config = _config(slug=slug, live_path=live)
         store = store_factory(slug)
-        await store.ensure_collection(_DIM)
-        manifest = Manifest(str(tmp_path / "m.db"))
+        await store.ensure_ready()
 
-        # Step 1: initial index (baseline embeds).
-        initial_embedder = RecordingEmbedder(dim=_DIM)
-        indexer = _make_indexer(
-            config=config, store=store, embedder=initial_embedder,
-            manifest=manifest, snapshot_root=tmp_path / "snap",
-        )
-        await indexer.index_all()
-        baseline_embedded = initial_embedder.total_embedded
-        # Sanity: the real corpus produced at least 3 chunks (multiple files).
-        assert baseline_embedded >= 3, (
-            f"baseline_embedded={baseline_embedded} — corpus too small to test rebuild"
-        )
+        async with _open_manifest(slug) as manifest:
+            # Step 1: initial index (baseline embeds).
+            initial_embedder = RecordingEmbedder(dim=_DIM)
+            indexer = _make_indexer(
+                config=config, store=store, embedder=initial_embedder,
+                manifest=manifest, snapshot_root=tmp_path / "snap",
+            )
+            await indexer.index_all()
+            baseline_embedded = initial_embedder.total_embedded
+            # Sanity: the real corpus produced at least 3 chunks (multiple files).
+            assert baseline_embedded >= 3, (
+                f"baseline_embedded={baseline_embedded} — corpus too small to test rebuild"
+            )
 
-        # Step 2: rebuild_all() with a FRESH RecordingEmbedder (zero prior state).
-        rebuild_embedder = RecordingEmbedder(dim=_DIM)
-        rebuild_indexer = _make_indexer(
-            config=config, store=store, embedder=rebuild_embedder,
-            manifest=manifest, snapshot_root=tmp_path / "snap",
-        )
-        await rebuild_indexer.rebuild_all(
-            fingerprint=embedding_schema_fingerprint(config)
-        )
+            # Step 2: rebuild_all() with a FRESH RecordingEmbedder (zero prior state).
+            rebuild_embedder = RecordingEmbedder(dim=_DIM)
+            rebuild_indexer = _make_indexer(
+                config=config, store=store, embedder=rebuild_embedder,
+                manifest=manifest, snapshot_root=tmp_path / "snap",
+            )
+            await rebuild_indexer.rebuild_all(
+                fingerprint=embedding_schema_fingerprint(config)
+            )
 
-        # The rebuild actually re-embedded (not a no-op fast-path skip).
-        assert rebuild_embedder.total_embedded >= baseline_embedded, (
-            f"rebuild_all must re-embed at least as many chunks as the initial index "
-            f"(got {rebuild_embedder.total_embedded}, expected >= {baseline_embedded})"
-        )
+            # The rebuild actually re-embedded (not a no-op fast-path skip).
+            assert rebuild_embedder.total_embedded >= baseline_embedded, (
+                f"rebuild_all must re-embed at least as many chunks as the initial index "
+                f"(got {rebuild_embedder.total_embedded}, expected >= {baseline_embedded})"
+            )
 
-        # Points are still present in Qdrant (rebuild doesn't leave the index empty).
-        hits = await store.search([0.0] * _DIM, k=500)
-        landed_paths = {
-            h.payload["file_path"] for h in hits if h.payload is not None
-        }
-        assert "src/widget.py" in landed_paths, (
-            "widget.py must be present in Qdrant after rebuild_all"
-        )
-        assert "src/routing.py" in landed_paths, (
-            "routing.py must be present in Qdrant after rebuild_all"
-        )
+            # Chunks are still present in the store (rebuild doesn't leave it empty).
+            rows = await store.scroll({}, limit=500)
+            landed_paths = {row["file_path"] for row in rows}
+            assert "src/widget.py" in landed_paths, (
+                "widget.py must be present in the store after rebuild_all"
+            )
+            assert "src/routing.py" in landed_paths, (
+                "routing.py must be present in the store after rebuild_all"
+            )
 
-        # The fingerprint is stamped into the manifest meta.
-        stored_fp = manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
-        expected_fp = embedding_schema_fingerprint(config)
-        assert stored_fp == expected_fp, (
-            f"rebuild_all must stamp the current fingerprint into manifest meta "
-            f"under key '{SCHEMA_FINGERPRINT_META_KEY}'"
-        )
+            # The fingerprint is stamped into the manifest meta.
+            stored_fp = await manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+            expected_fp = embedding_schema_fingerprint(config)
+            assert stored_fp == expected_fp, (
+                f"rebuild_all must stamp the current fingerprint into manifest meta "
+                f"under key '{SCHEMA_FINGERPRINT_META_KEY}'"
+            )
 
-        # Sanity bound: the fingerprint is a 64-char hex string (clause 4).
-        assert stored_fp is not None and len(stored_fp) == 64
+            # Sanity bound: the fingerprint is a 64-char hex string (clause 4).
+            assert stored_fp is not None and len(stored_fp) == 64
 
 
 # ===========================================================================
-# A5 — Fingerprint stamped ONLY after completion (offline + real-Qdrant)
+# A5 — Fingerprint stamped ONLY after completion (real Surreal)
 # ===========================================================================
 class TestFingerprintStampedOnlyAfterCompletion:
     """The embedding-schema fingerprint is NOT stamped before rebuild_all completes.
@@ -711,22 +846,28 @@ class TestFingerprintStampedOnlyAfterCompletion:
     but the stamp is NOT set (the stamp comes after all files succeed).
     """
 
-    def test_stamp_absent_before_rebuild_all_is_called(
+    async def test_stamp_absent_before_rebuild_all_is_called(
         self, tmp_path: Path
     ) -> None:
         """A fresh manifest has no fingerprint stamp — trivially correct."""
-        # offline
-        manifest = Manifest(str(tmp_path / "m.db"))
-        stored = manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
-        assert stored is None, (
-            "a fresh manifest must have no fingerprint stamp before any rebuild"
-        )
+        # real-Surreal (a fresh throwaway database has no manifest rows yet — a
+        # SurrealManifest opens a real connection even for a "nothing stamped
+        # yet" check, unlike the pre-port SQLite Manifest's offline file open)
+        slug = _slug()
+        try:
+            async with _open_manifest(slug) as manifest:
+                stored = await manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+            assert stored is None, (
+                "a fresh manifest must have no fingerprint stamp before any rebuild"
+            )
+        finally:
+            await _drop_slug_database(slug)
 
     async def test_stamp_set_after_successful_rebuild_all(
         self, tmp_path: Path, store_factory: Any
     ) -> None:
         """rebuild_all() sets the stamp on success — the completion evidence."""
-        # real-Qdrant
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -734,21 +875,22 @@ class TestFingerprintStampedOnlyAfterCompletion:
         _build_live_corpus(live)
         config = _config(slug=slug, live_path=live)
         store = store_factory(slug)
-        await store.ensure_collection(_DIM)
-        manifest = Manifest(str(tmp_path / "m.db"))
-        indexer = _make_indexer(
-            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=tmp_path / "snap",
-        )
+        await store.ensure_ready()
 
-        # The stamp is absent before the rebuild.
-        assert manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY) is None
+        async with _open_manifest(slug) as manifest:
+            indexer = _make_indexer(
+                config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+                manifest=manifest, snapshot_root=tmp_path / "snap",
+            )
 
-        current_fp = embedding_schema_fingerprint(config)
-        await indexer.rebuild_all(fingerprint=current_fp)
+            # The stamp is absent before the rebuild.
+            assert await manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY) is None
 
-        # The stamp is set after completion.
-        assert manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY) == current_fp
+            current_fp = embedding_schema_fingerprint(config)
+            await indexer.rebuild_all(fingerprint=current_fp)
+
+            # The stamp is set after completion.
+            assert await manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY) == current_fp
 
     async def test_stamp_not_set_when_rebuild_all_raises_midway(
         self, tmp_path: Path, store_factory: Any
@@ -760,7 +902,7 @@ class TestFingerprintStampedOnlyAfterCompletion:
         stamp must still hold the OLD value (not the new one) so the restart
         logic detects a mismatch and tries again.
         """
-        # real-Qdrant
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -768,45 +910,45 @@ class TestFingerprintStampedOnlyAfterCompletion:
         _build_live_corpus(live)
         config = _config(slug=slug, live_path=live)
         store = store_factory(slug)
-        await store.ensure_collection(_DIM)
-        manifest = Manifest(str(tmp_path / "m.db"))
+        await store.ensure_ready()
 
-        # Plant an "old" fingerprint as if a prior schema was in place.
-        old_fp = "0" * 64  # a realistic-length but distinct hex fingerprint
-        manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, old_fp)
+        async with _open_manifest(slug) as manifest:
+            # Plant an "old" fingerprint as if a prior schema was in place.
+            old_fp = "0" * 64  # a realistic-length but distinct hex fingerprint
+            await manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, old_fp)
 
-        current_fp = embedding_schema_fingerprint(config)
-        assert current_fp != old_fp, "test setup: current and old must differ"
+            current_fp = embedding_schema_fingerprint(config)
+            assert current_fp != old_fp, "test setup: current and old must differ"
 
-        # An embedder that raises on the first embed call — guarantees the rebuild
-        # fails before stamping (which happens only after ALL files succeed).
-        class BombEmbedder(FakeEmbedder):
-            @property
-            def supports_contextualized(self) -> bool:
-                """This double instruments the FLAT embed path — opt out of grouped dispatch."""
-                return False
+            # An embedder that raises on the first embed call — guarantees the rebuild
+            # fails before stamping (which happens only after ALL files succeed).
+            class BombEmbedder(FakeEmbedder):
+                @property
+                def supports_contextualized(self) -> bool:
+                    """This double instruments the FLAT embed path — opt out of grouped dispatch."""
+                    return False
 
-            async def embed_documents(self, texts: list[str]) -> Any:
-                raise RuntimeError("simulated mid-rebuild embedder failure")
+                async def embed_documents(self, texts: list[str]) -> Any:
+                    raise RuntimeError("simulated mid-rebuild embedder failure")
 
-        bomb_indexer = _make_indexer(
-            config=config, store=store, embedder=BombEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=tmp_path / "snap",
-        )
+            bomb_indexer = _make_indexer(
+                config=config, store=store, embedder=BombEmbedder(dim=_DIM),
+                manifest=manifest, snapshot_root=tmp_path / "snap",
+            )
 
-        with pytest.raises(Exception):  # any exception from the failing embedder
-            await bomb_indexer.rebuild_all(fingerprint=current_fp)
+            with pytest.raises(Exception):  # any exception from the failing embedder
+                await bomb_indexer.rebuild_all(fingerprint=current_fp)
 
-        # The stamp must still hold the OLD fingerprint (not the new one).
-        after_raise = manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
-        assert after_raise == old_fp, (
-            f"a failed rebuild must NOT update the fingerprint stamp "
-            f"(got {after_raise!r}, expected {old_fp!r})"
-        )
+            # The stamp must still hold the OLD fingerprint (not the new one).
+            after_raise = await manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+            assert after_raise == old_fp, (
+                f"a failed rebuild must NOT update the fingerprint stamp "
+                f"(got {after_raise!r}, expected {old_fp!r})"
+            )
 
 
 # ===========================================================================
-# A6 — index_status reports schema fields (offline / manifest-level)
+# A6 — index_status reports schema fields (real Qdrant + real Surreal)
 # ===========================================================================
 class TestIndexStatusReportsSchemaFields:
     """``AppContext.index_status()`` surfaces the embedding schema fingerprint
@@ -815,8 +957,8 @@ class TestIndexStatusReportsSchemaFields:
     The contract specifies the OUTPUT SHAPE — we construct the manifest state
     that would exist during/after a rebuild, then assert the tool's return
     value includes the required fields. This is a seam test: we pre-populate
-    the manifest meta keys that the (not-yet-built) implementation will read,
-    and verify the tool surfaces them correctly.
+    the manifest meta keys the implementation reads, and verify the tool
+    surfaces them correctly.
 
     Required output fields:
         embedding_schema.fingerprint: str (the hex hash)
@@ -830,10 +972,10 @@ class TestIndexStatusReportsSchemaFields:
     """
 
     async def test_index_status_includes_embedding_schema_fingerprint(
-        self, tmp_path: Path, store_factory: Any
+        self, tmp_path: Path
     ) -> None:
         """With a fingerprint stamped in the manifest, index_status includes it."""
-        # real-Qdrant (needs AppContext.index_status() which needs the store)
+        # real-Qdrant + real-Surreal (needs AppContext.index_status() which needs the store)
         from conftest import QDRANT_URL, _qdrant_api_key
         from loremaster.index.schema import (
             EMBEDDING_SCHEMA_VERSION,
@@ -851,9 +993,8 @@ class TestIndexStatusReportsSchemaFields:
             current_fp = embedding_schema_fingerprint(config)
             # Pre-stamp the fingerprint as if a rebuild completed.
             manifest_path = tmp_path / "m.db"
-            manifest = Manifest(str(manifest_path))
-            manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, current_fp)
-            manifest.close()
+            async with _open_manifest(slug) as manifest:
+                await manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, current_fp)
 
             # Register the collection for teardown.
             created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
@@ -867,29 +1008,30 @@ class TestIndexStatusReportsSchemaFields:
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
+            try:
+                status = await app_ctx.index_status()
 
-            status = await app_ctx.index_status()
-
-            # The status must carry the embedding_schema section.
-            assert hasattr(status, "embedding_schema"), (
-                "index_status() result must have an 'embedding_schema' attribute"
-            )
-            assert status.embedding_schema.fingerprint == current_fp  # type: ignore[union-attr]
-            assert status.embedding_schema.version == EMBEDDING_SCHEMA_VERSION  # type: ignore[union-attr]
+                # The status must carry the embedding_schema section.
+                assert hasattr(status, "embedding_schema"), (
+                    "index_status() result must have an 'embedding_schema' attribute"
+                )
+                assert status.embedding_schema.fingerprint == current_fp  # type: ignore[union-attr]
+                assert status.embedding_schema.version == EMBEDDING_SCHEMA_VERSION  # type: ignore[union-attr]
+            finally:
+                await app_ctx.aclose()
 
         finally:
             for name in created_collections:
                 if await qdrant_client.collection_exists(name):
                     await qdrant_client.delete_collection(name)
             await qdrant_client.close()
+            await _drop_slug_database(slug)
 
     async def test_index_status_includes_schema_rebuild_status_when_in_progress(
-        self, tmp_path: Path, store_factory: Any
+        self, tmp_path: Path
     ) -> None:
         """With an in_progress rebuild status in the manifest, index_status surfaces it."""
-        # real-Qdrant
-        import json
-
+        # real-Qdrant + real-Surreal
         from conftest import QDRANT_URL, _qdrant_api_key
         from loremaster.index.schema import embedding_schema_fingerprint
 
@@ -903,7 +1045,6 @@ class TestIndexStatusReportsSchemaFields:
 
         # Pre-populate the rebuild status as if a background rebuild started.
         manifest_path = tmp_path / "m.db"
-        manifest = Manifest(str(manifest_path))
         rebuild_status_payload = json.dumps({
             "state": "in_progress",
             "done": 2,
@@ -912,8 +1053,8 @@ class TestIndexStatusReportsSchemaFields:
             "from_fingerprint": old_fp,
             "to_fingerprint": current_fp,
         })
-        manifest.meta_set(SCHEMA_REBUILD_STATUS_META_KEY, rebuild_status_payload)
-        manifest.close()
+        async with _open_manifest(slug) as manifest:
+            await manifest.meta_set(SCHEMA_REBUILD_STATUS_META_KEY, rebuild_status_payload)
 
         qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
@@ -927,35 +1068,38 @@ class TestIndexStatusReportsSchemaFields:
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
+            try:
+                status = await app_ctx.index_status()
 
-            status = await app_ctx.index_status()
+                assert hasattr(status, "schema_rebuild"), (
+                    "index_status() result must have a 'schema_rebuild' attribute"
+                )
+                rebuild = status.schema_rebuild
+                assert rebuild is not None, "schema_rebuild must be set during an in-progress rebuild"
+                assert rebuild.state == "in_progress"
+                assert rebuild.done == 2
+                assert rebuild.total == 5
+                assert rebuild.reason == "fingerprint_mismatch"
+                assert rebuild.from_fingerprint == old_fp
+                assert rebuild.to_fingerprint == current_fp
 
-            assert hasattr(status, "schema_rebuild"), (
-                "index_status() result must have a 'schema_rebuild' attribute"
-            )
-            rebuild = status.schema_rebuild
-            assert rebuild is not None, "schema_rebuild must be set during an in-progress rebuild"
-            assert rebuild.state == "in_progress"
-            assert rebuild.done == 2
-            assert rebuild.total == 5
-            assert rebuild.reason == "fingerprint_mismatch"
-            assert rebuild.from_fingerprint == old_fp
-            assert rebuild.to_fingerprint == current_fp
-
-            # Sanity bound: done and total are non-negative, done <= total (clause 4).
-            assert 0 <= rebuild.done <= rebuild.total
+                # Sanity bound: done and total are non-negative, done <= total (clause 4).
+                assert 0 <= rebuild.done <= rebuild.total
+            finally:
+                await app_ctx.aclose()
 
         finally:
             for name in created_collections:
                 if await qdrant_client.collection_exists(name):
                     await qdrant_client.delete_collection(name)
             await qdrant_client.close()
+            await _drop_slug_database(slug)
 
     async def test_index_status_schema_rebuild_idle_when_no_status_in_manifest(
-        self, tmp_path: Path, store_factory: Any
+        self, tmp_path: Path
     ) -> None:
         """With no rebuild status in manifest, schema_rebuild.state is 'idle'."""
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         from conftest import QDRANT_URL, _qdrant_api_key
 
         slug = _slug()
@@ -975,19 +1119,54 @@ class TestIndexStatusReportsSchemaFields:
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
+            try:
+                status = await app_ctx.index_status()
 
-            status = await app_ctx.index_status()
-
-            assert hasattr(status, "schema_rebuild"), (
-                "index_status() result must have a 'schema_rebuild' attribute"
-            )
-            assert status.schema_rebuild.state == "idle"  # type: ignore[union-attr]
+                assert hasattr(status, "schema_rebuild"), (
+                    "index_status() result must have a 'schema_rebuild' attribute"
+                )
+                assert status.schema_rebuild.state == "idle"  # type: ignore[union-attr]
+            finally:
+                await app_ctx.aclose()
 
         finally:
             for name in created_collections:
                 if await qdrant_client.collection_exists(name):
                     await qdrant_client.delete_collection(name)
             await qdrant_client.close()
+            await _drop_slug_database(slug)
+
+
+# A background rebuild racing a networked status-read: unlike the pre-port
+# SQLite ``Manifest`` (a synchronous read that never yielded control back to
+# the event loop, so a freshly ``create_task``'d rebuild never got a chance to
+# run before the assertion), a ``SurrealManifest`` read is a real network
+# round-trip that DOES yield — long enough for a 3-file corpus under a
+# near-instant ``FakeEmbedder`` to race to completion before the test's very
+# first status read. ``SlowEmbedder`` closes that window deliberately (an
+# artificial per-call delay comfortably longer than one local status read) so
+# the transient ``in_progress`` state is reliably observable — the SAME
+# technique the pre-port suite got "for free" from a synchronous read, ported
+# to stay meaningful over a genuinely networked manifest.
+_SLOW_EMBEDDER_DELAY_S = 1.0
+
+
+class SlowEmbedder(FakeEmbedder):
+    """A :class:`FakeEmbedder` whose ``embed_documents`` sleeps briefly first.
+
+    Keeps a spawned background rebuild task busy long enough that a test can
+    reliably observe the transient ``in_progress`` window over a REAL network
+    connection, without changing anything about what is embedded.
+    """
+
+    @property
+    def supports_contextualized(self) -> bool:
+        """This double instruments the FLAT embed path — opt out of grouped dispatch."""
+        return False
+
+    async def embed_documents(self, texts: list[str]) -> Any:
+        await asyncio.sleep(_SLOW_EMBEDDER_DELAY_S)
+        return await super().embed_documents(texts)
 
 
 # ===========================================================================
@@ -1013,14 +1192,20 @@ class TestStartupDecision:
     async def test_fingerprint_mismatch_spawns_background_rebuild_task(
         self, tmp_path: Path
     ) -> None:
-        """Arrange: manifest has an OLD fingerprint != current config fingerprint.
+        """Arrange: a POPULATED index (real indexed rows) with an OLD fingerprint
+                 != the current config fingerprint. (A populated index is the
+                 precondition for the full in-progress purge+re-embed path — an
+                 EMPTY index takes a documented fast path that just stamps the
+                 fingerprint with no in_progress churn at all, per
+                 ``_maybe_spawn_schema_rebuild``'s ``index_was_empty`` branch;
+                 that shape is covered separately by
+                 ``test_prod_path_empty_index_missing_fp_may_stamp_without_
+                 separate_rebuild``.)
         Act: build_app_context (start_tasks=False).
         Assert: AppContext.schema_rebuild_task is NOT None (a task was created),
                 schema_rebuild status in manifest is 'in_progress'.
         """
-        # real-Qdrant (needs collection creation)
-        import json
-
+        # real-Qdrant + real-Surreal (needs collection creation)
         from conftest import QDRANT_URL, _qdrant_api_key
         from loremaster.index.schema import embedding_schema_fingerprint
 
@@ -1028,21 +1213,15 @@ class TestStartupDecision:
         live = tmp_path / "live"
         _build_live_corpus(live)
         config = _config(slug=slug, live_path=live)
-
-        # Plant a DIFFERENT old fingerprint into the manifest.
         manifest_path = tmp_path / "m.db"
-        manifest = Manifest(str(manifest_path))
-        old_fp = "c" * 64  # 64-char hex, distinct from the current fp
-        manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, old_fp)
-        current_fp = embedding_schema_fingerprint(config)
-        # Make sure our planted old_fp actually differs (sanity).
-        assert old_fp != current_fp
-        manifest.close()
 
         qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         try:
-            app_ctx = await build_app_context(
+            # Seed a REAL populated index first (a fast embedder — the seed's own
+            # embed speed is irrelevant, only the SECOND build's rebuild needs to
+            # be observably slow).
+            seed_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
@@ -1051,48 +1230,76 @@ class TestStartupDecision:
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
+            await seed_ctx.reindex(None)
+            seed_status = await seed_ctx.index_status()
+            assert seed_status.files_indexed >= 1, (
+                "test setup: the seed build must populate the manifest with indexed rows"
+            )
+            await seed_ctx.aclose()
 
-            # The startup must have SPAWNED a background rebuild task.
-            assert hasattr(app_ctx, "schema_rebuild_task"), (
-                "AppContext must expose 'schema_rebuild_task' so callers can "
-                "verify the spawn happened"
-            )
-            assert app_ctx.schema_rebuild_task is not None, (
-                "build_app_context must create a background rebuild task when "
-                "the stored fingerprint differs from the current one"
-            )
-            assert isinstance(app_ctx.schema_rebuild_task, asyncio.Task), (
-                "schema_rebuild_task must be an asyncio.Task (created via create_task)"
-            )
+            # Plant a DIFFERENT old fingerprint into the now-populated manifest,
+            # overwriting whatever the seed itself stamped.
+            old_fp = "c" * 64  # 64-char hex, distinct from the current fp
+            current_fp = embedding_schema_fingerprint(config)
+            # Make sure our planted old_fp actually differs (sanity).
+            assert old_fp != current_fp
+            async with _open_manifest(slug) as manifest:
+                await manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, old_fp)
 
-            # The manifest status must have flipped to in_progress (set BEFORE
-            # the background task runs, so the server can report it immediately).
-            reread = Manifest(str(manifest_path))
-            raw_status = reread.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
-            assert raw_status is not None, (
-                "manifest must hold a schema_rebuild_status meta key after startup "
-                "detects a fingerprint mismatch"
+            app_ctx = await build_app_context(
+                server=LoreServer(config),
+                embedder=SlowEmbedder(dim=_DIM),
+                qdrant_client=qdrant_client,
+                manifest_path=manifest_path,
+                graph_path=tmp_path / "graph.db",
+                snapshot_root=tmp_path / "snap",
+                start_tasks=False,
             )
-            status_blob = json.loads(raw_status)
-            assert status_blob["state"] == "in_progress", (
-                f"schema_rebuild_status.state must be 'in_progress' immediately after "
-                f"build_app_context spawns the rebuild; got {status_blob['state']!r}"
-            )
-            assert status_blob.get("from_fingerprint") == old_fp
-            assert status_blob.get("to_fingerprint") == current_fp
-
-            # Cancel the task so it doesn't run past the test boundary.
-            app_ctx.schema_rebuild_task.cancel()
             try:
-                await app_ctx.schema_rebuild_task
-            except (asyncio.CancelledError, Exception):
-                pass
+                # The startup must have SPAWNED a background rebuild task.
+                assert hasattr(app_ctx, "schema_rebuild_task"), (
+                    "AppContext must expose 'schema_rebuild_task' so callers can "
+                    "verify the spawn happened"
+                )
+                assert app_ctx.schema_rebuild_task is not None, (
+                    "build_app_context must create a background rebuild task when "
+                    "the stored fingerprint differs from the current one"
+                )
+                assert isinstance(app_ctx.schema_rebuild_task, asyncio.Task), (
+                    "schema_rebuild_task must be an asyncio.Task (created via create_task)"
+                )
+
+                # The manifest status must have flipped to in_progress (set BEFORE
+                # the background task runs, so the server can report it immediately).
+                async with _open_manifest(slug) as reread:
+                    raw_status = await reread.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+                assert raw_status is not None, (
+                    "manifest must hold a schema_rebuild_status meta key after startup "
+                    "detects a fingerprint mismatch"
+                )
+                status_blob = json.loads(raw_status)
+                assert status_blob["state"] == "in_progress", (
+                    f"schema_rebuild_status.state must be 'in_progress' immediately after "
+                    f"build_app_context spawns the rebuild; got {status_blob['state']!r}"
+                )
+                assert status_blob.get("from_fingerprint") == old_fp
+                assert status_blob.get("to_fingerprint") == current_fp
+
+                # Cancel the task so it doesn't run past the test boundary.
+                app_ctx.schema_rebuild_task.cancel()
+                try:
+                    await app_ctx.schema_rebuild_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            finally:
+                await app_ctx.aclose()
 
         finally:
             for name in created_collections:
                 if await qdrant_client.collection_exists(name):
                     await qdrant_client.delete_collection(name)
             await qdrant_client.close()
+            await _drop_slug_database(slug)
 
     async def test_matching_fingerprint_does_not_spawn_rebuild_task(
         self, tmp_path: Path
@@ -1101,7 +1308,7 @@ class TestStartupDecision:
         Act: build_app_context (start_tasks=False).
         Assert: schema_rebuild_task is None (no rebuild spawned).
         """
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         from conftest import QDRANT_URL, _qdrant_api_key
         from loremaster.index.schema import embedding_schema_fingerprint
 
@@ -1112,10 +1319,9 @@ class TestStartupDecision:
 
         # Pre-stamp the CURRENT fingerprint (matching — no rebuild needed).
         manifest_path = tmp_path / "m.db"
-        manifest = Manifest(str(manifest_path))
         current_fp = embedding_schema_fingerprint(config)
-        manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, current_fp)
-        manifest.close()
+        async with _open_manifest(slug) as manifest:
+            await manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, current_fp)
 
         qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
@@ -1129,19 +1335,22 @@ class TestStartupDecision:
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
-
-            # Matching fingerprint → no background rebuild task.
-            schema_rebuild_task = getattr(app_ctx, "schema_rebuild_task", None)
-            assert schema_rebuild_task is None, (
-                "build_app_context must NOT spawn a rebuild task when the "
-                "fingerprint matches (no rebuild needed)"
-            )
+            try:
+                # Matching fingerprint → no background rebuild task.
+                schema_rebuild_task = getattr(app_ctx, "schema_rebuild_task", None)
+                assert schema_rebuild_task is None, (
+                    "build_app_context must NOT spawn a rebuild task when the "
+                    "fingerprint matches (no rebuild needed)"
+                )
+            finally:
+                await app_ctx.aclose()
 
         finally:
             for name in created_collections:
                 if await qdrant_client.collection_exists(name):
                     await qdrant_client.delete_collection(name)
             await qdrant_client.close()
+            await _drop_slug_database(slug)
 
     async def test_missing_stored_fingerprint_spawns_rebuild_task(
         self, tmp_path: Path
@@ -1150,7 +1359,7 @@ class TestStartupDecision:
         Act: build_app_context (start_tasks=False).
         Assert: schema_rebuild_task is created (None stored → rebuild, fail safe).
         """
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         from conftest import QDRANT_URL, _qdrant_api_key
 
         slug = _slug()
@@ -1171,27 +1380,30 @@ class TestStartupDecision:
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
-
-            assert hasattr(app_ctx, "schema_rebuild_task"), (
-                "AppContext must expose 'schema_rebuild_task'"
-            )
-            assert app_ctx.schema_rebuild_task is not None, (
-                "a missing fingerprint must trigger a background rebuild task "
-                "(provenance unknown → fail safe toward correctness)"
-            )
-
-            # Cancel the task so it doesn't run past the test boundary.
-            app_ctx.schema_rebuild_task.cancel()
             try:
-                await app_ctx.schema_rebuild_task
-            except (asyncio.CancelledError, Exception):
-                pass
+                assert hasattr(app_ctx, "schema_rebuild_task"), (
+                    "AppContext must expose 'schema_rebuild_task'"
+                )
+                assert app_ctx.schema_rebuild_task is not None, (
+                    "a missing fingerprint must trigger a background rebuild task "
+                    "(provenance unknown → fail safe toward correctness)"
+                )
+
+                # Cancel the task so it doesn't run past the test boundary.
+                app_ctx.schema_rebuild_task.cancel()
+                try:
+                    await app_ctx.schema_rebuild_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            finally:
+                await app_ctx.aclose()
 
         finally:
             for name in created_collections:
                 if await qdrant_client.collection_exists(name):
                     await qdrant_client.delete_collection(name)
             await qdrant_client.close()
+            await _drop_slug_database(slug)
 
     async def test_prod_path_missing_fp_over_populated_index_rebuilds_not_silent_stamp(
         self, tmp_path: Path
@@ -1200,13 +1412,13 @@ class TestStartupDecision:
 
         The prod path (``start_tasks=True``) runs the initial delta sweep, which
         FAST-PATH-SKIPS unchanged files (no re-embed). For a legacy / pre-feature
-        index — populated manifest rows + Qdrant points, but NO fingerprint stamp
+        index — populated manifest rows + store chunks, but NO fingerprint stamp
         (unknown provenance) — the sweep re-embeds nothing, so the stored vectors
         are NOT proven to be the current schema. Stamping the current fingerprint
         after that no-op sweep would MASK a needed rebuild (the bug). The fail-safe:
         provenance-unknown over a non-empty index → trigger a rebuild.
 
-        Arrange: index a real corpus (manifest rows + store points), then DELETE
+        Arrange: index a real corpus (manifest rows + store chunks), then DELETE
                  the fingerprint meta key to simulate the legacy/unknown-provenance
                  index.
         Act: build_app_context(start_tasks=True) — the PROD path with the sweep +
@@ -1217,7 +1429,7 @@ class TestStartupDecision:
                 fingerprint must remain unstamped — a populated-unstamped index is
                 never treated as current).
         """
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         from conftest import QDRANT_URL, _qdrant_api_key
         from loremaster.index.schema import embedding_schema_fingerprint
 
@@ -1232,7 +1444,7 @@ class TestStartupDecision:
         app_ctx: Any = None
         try:
             # Step 1: build the index for real (start_tasks=False) so the manifest
-            # has indexed rows and Qdrant has points — a POPULATED index.
+            # has indexed rows and the store has chunks — a POPULATED index.
             seed_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
@@ -1254,18 +1466,15 @@ class TestStartupDecision:
             await seed_ctx.aclose()
 
             # Step 2: REMOVE the fingerprint stamp entirely → legacy / pre-feature
-            # index whose provenance is unknown (manifest rows + points present, no
-            # stamp). meta_set cannot delete, so drop the row via the manifest's real
-            # SQLite ``meta`` table (k TEXT PK) — grounding the fixture in the actual
-            # DB the production code reads, not a hand-faked stand-in.
-            manifest = Manifest(str(manifest_path))
-            with manifest._connection:
-                manifest._connection.execute(
-                    "DELETE FROM meta WHERE k = ?", (SCHEMA_FINGERPRINT_META_KEY,)
-                )
-            stored_before = manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
-            indexed_rows = len(manifest.all_files())
-            manifest.close()
+            # index whose provenance is unknown (manifest rows + chunks present, no
+            # stamp). SurrealManifest has no "delete this meta key" method, so drop
+            # the row via a fresh admin connection (grounding the fixture in the
+            # actual ``meta`` table the production code reads, not a hand-faked
+            # stand-in — mirrors the pre-port suite's direct SQLite DELETE).
+            await _delete_meta_key(slug, SCHEMA_FINGERPRINT_META_KEY)
+            async with _open_manifest(slug) as manifest:
+                stored_before = await manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+                indexed_rows = len(await manifest.all_files())
             current_fp = embedding_schema_fingerprint(config)
             # The index is genuinely populated (rows present) but unstamped — the
             # exact legacy/unknown-provenance shape the fail-safe must catch.
@@ -1292,15 +1501,13 @@ class TestStartupDecision:
             # A rebuild must have been triggered: either a task was spawned, or the
             # manifest's rebuild status flipped to in_progress.
             rebuild_task = getattr(app_ctx, "schema_rebuild_task", None)
-            reread = Manifest(str(manifest_path))
-            raw_status = reread.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
-            stored_fp_after = reread.meta_get(SCHEMA_FINGERPRINT_META_KEY)
-            reread.close()
+            async with _open_manifest(slug) as reread:
+                raw_status = await reread.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+                stored_fp_after = await reread.meta_get(SCHEMA_FINGERPRINT_META_KEY)
             status_in_progress = False
             if raw_status is not None:
-                import json as _json
                 try:
-                    status_in_progress = _json.loads(raw_status).get("state") == "in_progress"
+                    status_in_progress = json.loads(raw_status).get("state") == "in_progress"
                 except (ValueError, TypeError):
                     status_in_progress = False
 
@@ -1329,6 +1536,7 @@ class TestStartupDecision:
                 if await qdrant_client.collection_exists(name):
                     await qdrant_client.delete_collection(name)
             await qdrant_client.close()
+            await _drop_slug_database(slug)
 
     async def test_prod_path_empty_index_missing_fp_may_stamp_without_separate_rebuild(
         self, tmp_path: Path
@@ -1336,7 +1544,7 @@ class TestStartupDecision:
         """Fix #1 companion: an EMPTY index + missing fp + start_tasks=True may stamp.
 
         The desirable optimisation the fail-safe must NOT break: a TRULY EMPTY
-        index (fresh deploy — no manifest rows, no points) whose initial sweep
+        index (fresh deploy — no manifest rows, no chunks) whose initial sweep
         BUILDS everything under the current schema is genuinely current afterwards,
         so stamping the fingerprint after that sweep — with no separate redundant
         background rebuild — is acceptable. This pins that the non-empty fail-safe
@@ -1348,7 +1556,7 @@ class TestStartupDecision:
                 the current value, and there is no lingering non-terminal rebuild
                 (no separate rebuild task left in progress).
         """
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         from conftest import QDRANT_URL, _qdrant_api_key
         from loremaster.index.schema import embedding_schema_fingerprint
 
@@ -1381,9 +1589,8 @@ class TestStartupDecision:
                     pass
 
             current_fp = embedding_schema_fingerprint(config)
-            reread = Manifest(str(manifest_path))
-            stored_fp_after = reread.meta_get(SCHEMA_FINGERPRINT_META_KEY)
-            reread.close()
+            async with _open_manifest(slug) as reread:
+                stored_fp_after = await reread.meta_get(SCHEMA_FINGERPRINT_META_KEY)
 
             # An empty index built by the initial sweep is current → the fingerprint
             # is stamped to the current value (whether via the post-sweep stamp or a
@@ -1402,6 +1609,7 @@ class TestStartupDecision:
                 if await qdrant_client.collection_exists(name):
                     await qdrant_client.delete_collection(name)
             await qdrant_client.close()
+            await _drop_slug_database(slug)
 
 
 # ===========================================================================
@@ -1429,6 +1637,15 @@ class TestStartupDecision:
 # empty+idle. The progress numbers (done/total) planted in the manifest must
 # appear in that text.
 #
+# NOTE: unlike the sibling divergence-reconcile suite, EVERY search-related
+# assertion here checks EMPTINESS (never a positive citation hit), so the
+# P5→P6 dual-store interim (search_code reads the read-path QdrantStore, which
+# the write path no longer populates — see server.py's build_app_context
+# docstring) does not affect these tests at all: the result is guaranteed
+# empty for BOTH reasons (the deliberate no-match filter AND the interim) and
+# the tests only assert on the rebuilding-notice behaviour around that empty
+# result. No oracle substitution was needed here.
+#
 # Scope: corpus-index read tools only. recall_memory / save_memory are OUT of
 # scope — the memory collection is a SEPARATE Qdrant collection (``_memory``
 # suffix) that the schema rebuild never purges, so a memory read during a
@@ -1451,30 +1668,27 @@ _REBUILD_TOTAL = 11
 _NO_MATCH_FILTER: dict[str, str] = {"file_path": "no/such/file/ever_indexed.py"}
 
 
-def _seed_in_progress_rebuild(manifest_path: Path, *, from_fp: str, to_fp: str) -> None:
+async def _seed_in_progress_rebuild(slug: str, *, from_fp: str, to_fp: str) -> None:
     """Seed the manifest meta with an in_progress schema-rebuild status.
 
     Mirrors exactly the JSON blob ``build_app_context`` writes when it spawns a
     background rebuild (A6/A7), so the read-tool seam sees the same shape it will
     in production (clause 5: same source of truth as the producer).
     """
-    import json
-
-    manifest = Manifest(str(manifest_path))
-    manifest.meta_set(
-        SCHEMA_REBUILD_STATUS_META_KEY,
-        json.dumps(
-            {
-                "state": "in_progress",
-                "done": _REBUILD_DONE,
-                "total": _REBUILD_TOTAL,
-                "reason": "fingerprint_mismatch",
-                "from_fingerprint": from_fp,
-                "to_fingerprint": to_fp,
-            }
-        ),
-    )
-    manifest.close()
+    async with _open_manifest(slug) as manifest:
+        await manifest.meta_set(
+            SCHEMA_REBUILD_STATUS_META_KEY,
+            json.dumps(
+                {
+                    "state": "in_progress",
+                    "done": _REBUILD_DONE,
+                    "total": _REBUILD_TOTAL,
+                    "reason": "fingerprint_mismatch",
+                    "from_fingerprint": from_fp,
+                    "to_fingerprint": to_fp,
+                }
+            ),
+        )
 
 
 def _mentions_rebuilding(text: str) -> bool:
@@ -1492,16 +1706,23 @@ async def app_context_factory(tmp_path: Path) -> AsyncIterator[Any]:
     read seam reads it. Indexes a real corpus first so the corpus tools have a
     populated graph/store — the EMPTY result then comes from querying a
     nonexistent term/target, not from an unindexed project.
+
+    Tracks every built AppContext's slug (== Surreal database, since
+    ``surreal.database`` is unset in :func:`_config`) for exact-name teardown of
+    BOTH the Qdrant probe-gate collections AND the throwaway Surreal database.
     """
     from conftest import QDRANT_URL, _qdrant_api_key
 
     qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
     created_collections: list[str] = []
+    created_slugs: list[str] = []
+    open_contexts: list[Any] = []
 
     async def _build(config: LoreConfig, manifest_path: Path) -> Any:
         slug = config.project.slug
         created_collections.extend([f"lore_{slug}", f"lore_{slug}_memory"])
-        return await build_app_context(
+        created_slugs.append(slug)
+        app_ctx = await build_app_context(
             server=LoreServer(config),
             embedder=FakeEmbedder(dim=_DIM),
             qdrant_client=qdrant_client,
@@ -1510,14 +1731,23 @@ async def app_context_factory(tmp_path: Path) -> AsyncIterator[Any]:
             snapshot_root=tmp_path / "snap",
             start_tasks=False,
         )
+        open_contexts.append(app_ctx)
+        return app_ctx
 
     try:
         yield _build
     finally:
+        for app_ctx in open_contexts:
+            try:
+                await app_ctx.aclose()
+            except Exception:
+                pass
         for name in created_collections:
             if await qdrant_client.collection_exists(name):
                 await qdrant_client.delete_collection(name)
         await qdrant_client.close()
+        for slug in created_slugs:
+            await _drop_slug_database(slug)
 
 
 class TestRebuildingNoticeSeam:
@@ -1548,40 +1778,44 @@ class TestRebuildingNoticeSeam:
         The pure-helper contract the six tools share — proven directly so a
         regression localises to the helper, not to each tool.
         """
-        # offline — pure manifest read
+        # real-Surreal — pure manifest read, but the manifest is a real client now
         from loremaster.index.schema import rebuilding_notice
 
-        manifest_path = tmp_path / "m.db"
-        _seed_in_progress_rebuild(
-            manifest_path, from_fp="a" * 64, to_fp="b" * 64
-        )
-        manifest = Manifest(str(manifest_path))
+        slug = _slug()
+        try:
+            await _seed_in_progress_rebuild(slug, from_fp="a" * 64, to_fp="b" * 64)
+            async with _open_manifest(slug) as manifest:
+                notice = await rebuilding_notice(manifest)
 
-        notice = rebuilding_notice(manifest)
-
-        assert notice is not None, (
-            "rebuilding_notice must return a message when schema_rebuild is in_progress"
-        )
-        assert _mentions_rebuilding(notice), (
-            f"the notice must tell the agent the store is rebuilding; got {notice!r}"
-        )
-        # The progress (done/total) must be conveyed so the agent knows to retry.
-        assert str(_REBUILD_DONE) in notice and str(_REBUILD_TOTAL) in notice, (
-            f"the notice must carry progress {_REBUILD_DONE}/{_REBUILD_TOTAL}; got {notice!r}"
-        )
+            assert notice is not None, (
+                "rebuilding_notice must return a message when schema_rebuild is in_progress"
+            )
+            assert _mentions_rebuilding(notice), (
+                f"the notice must tell the agent the store is rebuilding; got {notice!r}"
+            )
+            # The progress (done/total) must be conveyed so the agent knows to retry.
+            assert str(_REBUILD_DONE) in notice and str(_REBUILD_TOTAL) in notice, (
+                f"the notice must carry progress {_REBUILD_DONE}/{_REBUILD_TOTAL}; got {notice!r}"
+            )
+        finally:
+            await _drop_slug_database(slug)
 
     async def test_rebuilding_notice_helper_returns_none_when_idle(
         self, tmp_path: Path
     ) -> None:
         """A8 seam: ``rebuilding_notice(manifest)`` returns None when NOT rebuilding."""
-        # offline — fresh manifest, no rebuild status → idle
+        # real-Surreal — fresh manifest, no rebuild status → idle
         from loremaster.index.schema import rebuilding_notice
 
-        manifest = Manifest(str(tmp_path / "m.db"))
-        assert rebuilding_notice(manifest) is None, (
-            "rebuilding_notice must return None when no rebuild is in progress "
-            "(so an idle empty result stays a plain empty result)"
-        )
+        slug = _slug()
+        try:
+            async with _open_manifest(slug) as manifest:
+                assert await rebuilding_notice(manifest) is None, (
+                    "rebuilding_notice must return None when no rebuild is in progress "
+                    "(so an idle empty result stays a plain empty result)"
+                )
+        finally:
+            await _drop_slug_database(slug)
 
     async def test_a8a_search_code_empty_in_progress_raises_rebuilding_error(
         self, tmp_path: Path, app_context_factory: Any
@@ -1596,7 +1830,7 @@ class TestRebuildingNoticeSeam:
                 EXCEPTION (serialization-robust: a ToolError IS agent-visible),
                 NOT on a pre-serialization attribute of a returned object.
         """
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -1612,7 +1846,7 @@ class TestRebuildingNoticeSeam:
 
         # Seed an in_progress rebuild AFTER the index so the read seam reads it.
         current_fp = embedding_schema_fingerprint(config)
-        _seed_in_progress_rebuild(manifest_path, from_fp="9" * 64, to_fp=current_fp)
+        await _seed_in_progress_rebuild(slug, from_fp="9" * 64, to_fp=current_fp)
 
         # A server-side filter matching no indexed point forces a TRUE empty result
         # regardless of the embedder (a junk query term still returns top-k under a
@@ -1651,7 +1885,7 @@ class TestRebuildingNoticeSeam:
         helper, so it never makes the suite brittle against an SDK refactor — the
         raise-based assertion in the sibling test is the primary contract.
         """
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         try:
@@ -1675,7 +1909,7 @@ class TestRebuildingNoticeSeam:
         app_ctx = await app_context_factory(config, manifest_path)
         await app_ctx.reindex(None)
         current_fp = embedding_schema_fingerprint(config)
-        _seed_in_progress_rebuild(manifest_path, from_fp="9" * 64, to_fp=current_fp)
+        await _seed_in_progress_rebuild(slug, from_fp="9" * 64, to_fp=current_fp)
 
         # Drive the tool exactly as the MCP wrapper would, then push whatever the
         # tool produces through the SDK's result conversion. The rebuilding signal
@@ -1714,7 +1948,7 @@ class TestRebuildingNoticeSeam:
         an empty result is a TRUE 'no matches' and must stay a plain empty list —
         never raised, never dressed up as rebuild-in-progress.
         """
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         slug = _slug()
         live = tmp_path / "live"
         _build_live_corpus(live)
@@ -1751,7 +1985,7 @@ class TestRebuildingNoticeSeam:
         (nobody imports a nonexistent target) DURING a rebuild must RAISE with the
         rebuilding + progress message, exactly like search_code.
         """
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -1764,7 +1998,7 @@ class TestRebuildingNoticeSeam:
         await app_ctx.reindex(None)
 
         current_fp = embedding_schema_fingerprint(config)
-        _seed_in_progress_rebuild(manifest_path, from_fp="8" * 64, to_fp=current_fp)
+        await _seed_in_progress_rebuild(slug, from_fp="8" * 64, to_fp=current_fp)
 
         # A target nobody imports → empty reverse-import set → must RAISE in_progress.
         with pytest.raises(Exception) as excinfo:  # noqa: PT011 - message asserted below
@@ -1788,7 +2022,7 @@ class TestRebuildingNoticeSeam:
         The same false-positive guard as A8b, for the second tool — confirms the
         shared seam is gated on in_progress for what_imports too.
         """
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         slug = _slug()
         live = tmp_path / "live"
         _build_live_corpus(live)
@@ -1809,7 +2043,7 @@ class TestRebuildingNoticeSeam:
 
 
 # ===========================================================================
-# A9 — rebuild_all advances done LIVE during the rebuild (real Qdrant)
+# A9 — rebuild_all advances done LIVE during the rebuild (real Surreal)
 # ===========================================================================
 
 # The number of files the extended corpus contains (3 from _build_live_corpus +
@@ -1868,7 +2102,7 @@ class ProgressSpyEmbedder(FakeEmbedder):
     inspect rebuild_all internals.
     """
 
-    def __init__(self, manifest: Manifest, **kwargs: Any) -> None:
+    def __init__(self, manifest: SurrealManifest, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         # The manifest the spy reads ``done`` from — the SAME instance rebuild_all
         # writes to, so this is the real production seam (clause 3: seam coverage).
@@ -1885,12 +2119,10 @@ class ProgressSpyEmbedder(FakeEmbedder):
 
     async def embed_documents(self, texts: list[str]) -> Any:
         """Record the current manifest done counter, then delegate."""
-        import json as _json
-
-        raw = self._spy_manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+        raw = await self._spy_manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
         if raw is not None:
             try:
-                blob = _json.loads(raw)
+                blob = json.loads(raw)
                 observed_done = int(blob.get("done", 0))
             except (ValueError, TypeError, KeyError):
                 observed_done = 0
@@ -1940,9 +2172,7 @@ class TestRebuildProgressAdvancesLive:
             3. After rebuild_all: state == "done", done == total (completion
                correct, crash-safety invariant untouched).
         """
-        # real-Qdrant
-        import json as _json
-
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -1950,138 +2180,138 @@ class TestRebuildProgressAdvancesLive:
         _build_extended_corpus(live)
         config = _config(slug=slug, live_path=live)
         store = store_factory(slug)
-        await store.ensure_collection(_DIM)
-        manifest = Manifest(str(tmp_path / "m.db"))
+        await store.ensure_ready()
 
-        # Sanity: verify the corpus actually has the expected total so a
-        # miscounted corpus silently invalidates the oracle.
-        # We count by doing an initial index and reading the manifest — the same
-        # authoritative source rebuild_all uses (clause 5: same source of truth).
-        seed_embedder = FakeEmbedder(dim=_DIM)
-        seed_indexer = _make_indexer(
-            config=config, store=store, embedder=seed_embedder,
-            manifest=manifest, snapshot_root=tmp_path / "snap",
-        )
-        await seed_indexer.index_all()
-        # All 4 indexable files must have been indexed on the initial pass.
-        initial_indexed = sum(
-            1 for row in manifest.all_files() if row.state == "indexed"
-        )
-        assert initial_indexed == _EXTENDED_CORPUS_TOTAL, (
-            f"corpus setup error: expected {_EXTENDED_CORPUS_TOTAL} indexed files, "
-            f"got {initial_indexed} — _build_extended_corpus or _EXTENDED_CORPUS_TOTAL "
-            f"is inconsistent"
-        )
-
-        # Now wire the spy embedder into a FRESH indexer for the rebuild.
-        # The spy and rebuild_all share the SAME manifest instance — the real seam.
-        spy = ProgressSpyEmbedder(manifest=manifest, dim=_DIM)
-        rebuild_indexer = _make_indexer(
-            config=config, store=store, embedder=spy,
-            manifest=manifest, snapshot_root=tmp_path / "snap",
-        )
-
-        # ACT: rebuild_all purges all manifest rows + vectors, then re-embeds every
-        # file.  The spy records done at the start of each embed_documents call.
-        fingerprint = embedding_schema_fingerprint(config)
-        await rebuild_indexer.rebuild_all(fingerprint=fingerprint)
-
-        # -----------------------------------------------------------------------
-        # ASSERT 1: the spy must have been called (> 0 embed calls) — proves the
-        # rebuild actually ran and was observable, not vacuously empty.
-        # -----------------------------------------------------------------------
-        assert len(spy.observed_done_values) > 0, (
-            "rebuild_all must call embed_documents at least once — "
-            "the spy must have recorded observations (corpus has 4 files)"
-        )
-
-        # Sanity bound on observation count: at most one call per file (clause 4).
-        # A batching implementation might call embed_documents fewer times than
-        # files (multiple files per batch), but never MORE than files.
-        assert len(spy.observed_done_values) <= _EXTENDED_CORPUS_TOTAL, (
-            f"embed_documents was called {len(spy.observed_done_values)} times — "
-            f"more than the {_EXTENDED_CORPUS_TOTAL} files in the corpus (impossible)"
-        )
-
-        # -----------------------------------------------------------------------
-        # ASSERT 2: the observed sequence is non-decreasing.
-        # (A live counter that resets mid-rebuild would indicate a different bug.)
-        # -----------------------------------------------------------------------
-        for index in range(1, len(spy.observed_done_values)):
-            assert spy.observed_done_values[index] >= spy.observed_done_values[index - 1], (
-                f"observed done values must be non-decreasing; "
-                f"sequence {spy.observed_done_values} has a decrease at index {index}"
+        async with _open_manifest(slug) as manifest:
+            # Sanity: verify the corpus actually has the expected total so a
+            # miscounted corpus silently invalidates the oracle.
+            # We count by doing an initial index and reading the manifest — the same
+            # authoritative source rebuild_all uses (clause 5: same source of truth).
+            seed_embedder = FakeEmbedder(dim=_DIM)
+            seed_indexer = _make_indexer(
+                config=config, store=store, embedder=seed_embedder,
+                manifest=manifest, snapshot_root=tmp_path / "snap",
+            )
+            await seed_indexer.index_all()
+            # All 4 indexable files must have been indexed on the initial pass.
+            initial_indexed = sum(
+                1 for row in await manifest.all_files() if row.state == "indexed"
+            )
+            assert initial_indexed == _EXTENDED_CORPUS_TOTAL, (
+                f"corpus setup error: expected {_EXTENDED_CORPUS_TOTAL} indexed files, "
+                f"got {initial_indexed} — _build_extended_corpus or _EXTENDED_CORPUS_TOTAL "
+                f"is inconsistent"
             )
 
-        # -----------------------------------------------------------------------
-        # ASSERT 3 (PRIMARY — the one that FAILS on current code):
-        # At least one observed done value is strictly between 0 and total.
-        # This is the precise contract: "done must advance DURING the rebuild."
-        #
-        # Under the bug: every embed call sees done==0 (the counter is written
-        # AFTER _walk_and_index returns the full list) → no value in (0, total)
-        # exists → this assertion fails.
-        #
-        # Under the fix: _write_rebuild_status is called per-file inside the walk
-        # so by the time the N-th file's embed_documents fires, N-1 files' status
-        # writes have already landed → at least one call sees done >= 1 < total.
-        #
-        # Robustness against batching: if the implementation processes multiple
-        # files per embed_documents call, the spy still records the done value at
-        # the START of that call.  As long as ANY per-file status write precedes
-        # a subsequent embed call, the condition holds.  We do NOT require a
-        # strictly-increasing value per call (batching may keep it flat for a
-        # group), only that the overall sequence reaches a strictly interior value.
-        # -----------------------------------------------------------------------
-        # The primary discriminator: a value strictly between 0 and total was seen.
-        has_interior_progress = any(
-            0 < value < _EXTENDED_CORPUS_TOTAL
-            for value in spy.observed_done_values
-        )
-        assert has_interior_progress, (
-            f"rebuild_all must advance schema_rebuild_status.done LIVE — "
-            f"at least one embed_documents call must observe done in "
-            f"(0, {_EXTENDED_CORPUS_TOTAL}) exclusive, but observed values were "
-            f"{spy.observed_done_values!r} (all-zero means done is only written "
-            f"AFTER _walk_and_index returns the full list — the bug)"
-        )
+            # Now wire the spy embedder into a FRESH indexer for the rebuild.
+            # The spy and rebuild_all share the SAME manifest instance — the real seam.
+            spy = ProgressSpyEmbedder(manifest=manifest, dim=_DIM)
+            rebuild_indexer = _make_indexer(
+                config=config, store=store, embedder=spy,
+                manifest=manifest, snapshot_root=tmp_path / "snap",
+            )
 
-        # -----------------------------------------------------------------------
-        # ASSERT 4: completion state is correct (crash-safety contract untouched).
-        # Final state after rebuild_all: state == "done" AND done == total.
-        # -----------------------------------------------------------------------
-        raw_final = manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
-        assert raw_final is not None, (
-            "schema_rebuild_status meta key must be present after rebuild_all completes"
-        )
-        final_blob = _json.loads(raw_final)
-        assert final_blob["state"] == "done", (
-            f"schema_rebuild_status.state must be 'done' after successful rebuild_all; "
-            f"got {final_blob['state']!r}"
-        )
-        # done must equal the count of indexed files — not the pre-counted total,
-        # which could differ if files were skipped or failed.  We read done and
-        # total from the BLOB so this is an exact-match assertion on the produced
-        # state, not a restatement of _EXTENDED_CORPUS_TOTAL (independent oracle).
-        assert final_blob["done"] == final_blob["total"], (
-            f"schema_rebuild_status.done must equal total at completion; "
-            f"blob={final_blob!r}"
-        )
-        # Sanity bound: done and total are non-negative and done >= initial_indexed
-        # (we re-embedded at least as many files as the initial index had — clause 4).
-        assert final_blob["done"] >= 1, (
-            f"done must be positive after a real rebuild; blob={final_blob!r}"
-        )
-        assert final_blob["total"] >= 1, (
-            f"total must be positive for a non-empty corpus; blob={final_blob!r}"
-        )
-        # The fingerprint stamp must be set after success (crash-safety: written
-        # only on completion, not during).
-        stored_fp = manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
-        assert stored_fp == fingerprint, (
-            f"the fingerprint must be stamped into the manifest after a successful "
-            f"rebuild_all; stored={stored_fp!r}, expected={fingerprint!r}"
-        )
+            # ACT: rebuild_all purges all manifest rows + vectors, then re-embeds every
+            # file.  The spy records done at the start of each embed_documents call.
+            fingerprint = embedding_schema_fingerprint(config)
+            await rebuild_indexer.rebuild_all(fingerprint=fingerprint)
+
+            # -----------------------------------------------------------------------
+            # ASSERT 1: the spy must have been called (> 0 embed calls) — proves the
+            # rebuild actually ran and was observable, not vacuously empty.
+            # -----------------------------------------------------------------------
+            assert len(spy.observed_done_values) > 0, (
+                "rebuild_all must call embed_documents at least once — "
+                "the spy must have recorded observations (corpus has 4 files)"
+            )
+
+            # Sanity bound on observation count: at most one call per file (clause 4).
+            # A batching implementation might call embed_documents fewer times than
+            # files (multiple files per batch), but never MORE than files.
+            assert len(spy.observed_done_values) <= _EXTENDED_CORPUS_TOTAL, (
+                f"embed_documents was called {len(spy.observed_done_values)} times — "
+                f"more than the {_EXTENDED_CORPUS_TOTAL} files in the corpus (impossible)"
+            )
+
+            # -----------------------------------------------------------------------
+            # ASSERT 2: the observed sequence is non-decreasing.
+            # (A live counter that resets mid-rebuild would indicate a different bug.)
+            # -----------------------------------------------------------------------
+            for index in range(1, len(spy.observed_done_values)):
+                assert spy.observed_done_values[index] >= spy.observed_done_values[index - 1], (
+                    f"observed done values must be non-decreasing; "
+                    f"sequence {spy.observed_done_values} has a decrease at index {index}"
+                )
+
+            # -----------------------------------------------------------------------
+            # ASSERT 3 (PRIMARY — the one that FAILS on current code):
+            # At least one observed done value is strictly between 0 and total.
+            # This is the precise contract: "done must advance DURING the rebuild."
+            #
+            # Under the bug: every embed call sees done==0 (the counter is written
+            # AFTER _walk_and_index returns the full list) → no value in (0, total)
+            # exists → this assertion fails.
+            #
+            # Under the fix: _write_rebuild_status is called per-file inside the walk
+            # so by the time the N-th file's embed_documents fires, N-1 files' status
+            # writes have already landed → at least one call sees done >= 1 < total.
+            #
+            # Robustness against batching: if the implementation processes multiple
+            # files per embed_documents call, the spy still records the done value at
+            # the START of that call.  As long as ANY per-file status write precedes
+            # a subsequent embed call, the condition holds.  We do NOT require a
+            # strictly-increasing value per call (batching may keep it flat for a
+            # group), only that the overall sequence reaches a strictly interior value.
+            # -----------------------------------------------------------------------
+            # The primary discriminator: a value strictly between 0 and total was seen.
+            has_interior_progress = any(
+                0 < value < _EXTENDED_CORPUS_TOTAL
+                for value in spy.observed_done_values
+            )
+            assert has_interior_progress, (
+                f"rebuild_all must advance schema_rebuild_status.done LIVE — "
+                f"at least one embed_documents call must observe done in "
+                f"(0, {_EXTENDED_CORPUS_TOTAL}) exclusive, but observed values were "
+                f"{spy.observed_done_values!r} (all-zero means done is only written "
+                f"AFTER _walk_and_index returns the full list — the bug)"
+            )
+
+            # -----------------------------------------------------------------------
+            # ASSERT 4: completion state is correct (crash-safety contract untouched).
+            # Final state after rebuild_all: state == "done" AND done == total.
+            # -----------------------------------------------------------------------
+            raw_final = await manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+            assert raw_final is not None, (
+                "schema_rebuild_status meta key must be present after rebuild_all completes"
+            )
+            final_blob = json.loads(raw_final)
+            assert final_blob["state"] == "done", (
+                f"schema_rebuild_status.state must be 'done' after successful rebuild_all; "
+                f"got {final_blob['state']!r}"
+            )
+            # done must equal the count of indexed files — not the pre-counted total,
+            # which could differ if files were skipped or failed.  We read done and
+            # total from the BLOB so this is an exact-match assertion on the produced
+            # state, not a restatement of _EXTENDED_CORPUS_TOTAL (independent oracle).
+            assert final_blob["done"] == final_blob["total"], (
+                f"schema_rebuild_status.done must equal total at completion; "
+                f"blob={final_blob!r}"
+            )
+            # Sanity bound: done and total are non-negative and done >= initial_indexed
+            # (we re-embedded at least as many files as the initial index had — clause 4).
+            assert final_blob["done"] >= 1, (
+                f"done must be positive after a real rebuild; blob={final_blob!r}"
+            )
+            assert final_blob["total"] >= 1, (
+                f"total must be positive for a non-empty corpus; blob={final_blob!r}"
+            )
+            # The fingerprint stamp must be set after success (crash-safety: written
+            # only on completion, not during).
+            stored_fp = await manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+            assert stored_fp == fingerprint, (
+                f"the fingerprint must be stamped into the manifest after a successful "
+                f"rebuild_all; stored={stored_fp!r}, expected={fingerprint!r}"
+            )
 
 
 # ===========================================================================
@@ -2103,7 +2333,7 @@ class TestRebuildProgressAdvancesLive:
 # ``failed`` (and ``index_status`` surfaces ``state == "failed"``). A SUCCESSFUL
 # rebuild still ends ``done`` (the success path is untouched).
 #
-# These are GROUP A10 — RED until the failed-state wiring exists.
+# These are GROUP A10.
 
 # The terminal failed-state string the contract defines. Named so the assertion
 # reads against a single source of truth, not a bare literal scattered across
@@ -2112,7 +2342,7 @@ class TestRebuildProgressAdvancesLive:
 _REBUILD_STATE_FAILED_EXPECTED = "failed"
 
 
-def _read_rebuild_state(manifest_path: Path) -> str | None:
+async def _read_rebuild_state(slug: str) -> str | None:
     """Read ``schema_rebuild_status.state`` straight from the manifest meta.
 
     The independent oracle for the rebuild's terminal state: reads the SAME JSON
@@ -2120,17 +2350,12 @@ def _read_rebuild_state(manifest_path: Path) -> str | None:
     the consumer (``index_status`` / ``rebuilding_notice``) agree on (clause 5).
     Returns ``None`` when no status blob exists or it is malformed.
     """
-    import json as _json
-
-    manifest = Manifest(str(manifest_path))
-    try:
-        raw = manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
-    finally:
-        manifest.close()
+    async with _open_manifest(slug) as manifest:
+        raw = await manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
     if raw is None:
         return None
     try:
-        blob = _json.loads(raw)
+        blob = json.loads(raw)
     except (ValueError, TypeError):
         return None
     if not isinstance(blob, dict):
@@ -2183,7 +2408,7 @@ class TestFailedRebuildReportsFailed:
         Assert: the manifest's rebuild-status state reads ``failed`` (NOT
                 ``in_progress``); the fingerprint is NOT advanced to current.
         """
-        # real-Qdrant
+        # real-Qdrant + real-Surreal
         from conftest import QDRANT_URL, _qdrant_api_key
         from loremaster.index.schema import embedding_schema_fingerprint
 
@@ -2197,7 +2422,7 @@ class TestFailedRebuildReportsFailed:
         created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         app_ctx: Any = None
         try:
-            # Step 1: seed a POPULATED index (manifest rows + Qdrant points) with a
+            # Step 1: seed a POPULATED index (manifest rows + store chunks) with a
             # GOOD embedder, then plant a STALE fingerprint so the next startup sees
             # a genuine mismatch (populated + stamped-but-wrong → full re-embed, the
             # only path that runs the in_progress purge+re-embed the bomb derails).
@@ -2220,9 +2445,8 @@ class TestFailedRebuildReportsFailed:
             old_fp = "7" * 64  # 64-char hex; distinct from the current fingerprint
             current_fp = embedding_schema_fingerprint(config)
             assert old_fp != current_fp, "test setup: stale fp must differ from current"
-            seed_manifest = Manifest(str(manifest_path))
-            seed_manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, old_fp)
-            seed_manifest.close()
+            async with _open_manifest(slug) as seed_manifest:
+                await seed_manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, old_fp)
 
             # Step 2: build the context with a BombEmbedder → the spawned rebuild's
             # embed step raises. The startup spawns the rebuild task (stale fp over a
@@ -2250,7 +2474,7 @@ class TestFailedRebuildReportsFailed:
                 await rebuild_task
 
             # The terminal state must be ``failed`` — NOT stuck at in_progress.
-            settled_state = _read_rebuild_state(manifest_path)
+            settled_state = await _read_rebuild_state(slug)
             assert settled_state == _REBUILD_STATE_FAILED_EXPECTED, (
                 "a background rebuild whose work raised must settle the rebuild "
                 f"status to {_REBUILD_STATE_FAILED_EXPECTED!r}, not leave it stuck; "
@@ -2259,9 +2483,8 @@ class TestFailedRebuildReportsFailed:
 
             # Crash-safety unchanged: a failed rebuild does NOT advance the stamp to
             # current, so the next startup re-triggers (the stamp holds the old fp).
-            final_manifest = Manifest(str(manifest_path))
-            stored_fp_after = final_manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
-            final_manifest.close()
+            async with _open_manifest(slug) as final_manifest:
+                stored_fp_after = await final_manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
             assert stored_fp_after != current_fp, (
                 "a FAILED rebuild must NOT stamp the current fingerprint (it would "
                 f"mask the still-needed rebuild); stamp after failure was "
@@ -2275,6 +2498,7 @@ class TestFailedRebuildReportsFailed:
                 if await qdrant_client.collection_exists(name):
                     await qdrant_client.delete_collection(name)
             await qdrant_client.close()
+            await _drop_slug_database(slug)
 
     async def test_index_status_surfaces_failed_state_after_failed_rebuild(
         self, tmp_path: Path
@@ -2288,9 +2512,7 @@ class TestFailedRebuildReportsFailed:
         status tool reads it back faithfully — the producer↔consumer seam where a
         new state value could be silently dropped (clause 3).
         """
-        # real-Qdrant (index_status needs the AppContext + store)
-        import json
-
+        # real-Qdrant + real-Surreal (index_status needs the AppContext + store)
         from conftest import QDRANT_URL, _qdrant_api_key
 
         slug = _slug()
@@ -2303,21 +2525,20 @@ class TestFailedRebuildReportsFailed:
         new_fp = "6" * 64
         # Seed a FAILED rebuild-status blob — the exact shape the failed-state
         # writer must produce (clause 5: same blob the producer writes).
-        manifest = Manifest(str(manifest_path))
-        manifest.meta_set(
-            SCHEMA_REBUILD_STATUS_META_KEY,
-            json.dumps(
-                {
-                    "state": _REBUILD_STATE_FAILED_EXPECTED,
-                    "done": 1,
-                    "total": 3,
-                    "reason": "fingerprint_mismatch",
-                    "from_fingerprint": old_fp,
-                    "to_fingerprint": new_fp,
-                }
-            ),
-        )
-        manifest.close()
+        async with _open_manifest(slug) as manifest:
+            await manifest.meta_set(
+                SCHEMA_REBUILD_STATUS_META_KEY,
+                json.dumps(
+                    {
+                        "state": _REBUILD_STATE_FAILED_EXPECTED,
+                        "done": 1,
+                        "total": 3,
+                        "reason": "fingerprint_mismatch",
+                        "from_fingerprint": old_fp,
+                        "to_fingerprint": new_fp,
+                    }
+                ),
+            )
 
         qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
@@ -2353,6 +2574,7 @@ class TestFailedRebuildReportsFailed:
                 if await qdrant_client.collection_exists(name):
                     await qdrant_client.delete_collection(name)
             await qdrant_client.close()
+            await _drop_slug_database(slug)
 
     async def test_successful_rebuild_still_ends_done_not_failed(
         self, tmp_path: Path, store_factory: Any
@@ -2365,7 +2587,7 @@ class TestFailedRebuildReportsFailed:
         asserts the terminal state, so a fix that over-eagerly marks everything
         failed is caught.
         """
-        # real-Qdrant
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -2373,19 +2595,18 @@ class TestFailedRebuildReportsFailed:
         _build_live_corpus(live)
         config = _config(slug=slug, live_path=live)
         store = store_factory(slug)
-        await store.ensure_collection(_DIM)
-        manifest_path = tmp_path / "m.db"
-        manifest = Manifest(str(manifest_path))
-        indexer = _make_indexer(
-            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=tmp_path / "snap",
-        )
+        await store.ensure_ready()
 
-        fingerprint = embedding_schema_fingerprint(config)
-        await indexer.rebuild_all(fingerprint=fingerprint)
-        manifest.close()
+        async with _open_manifest(slug) as manifest:
+            indexer = _make_indexer(
+                config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
+                manifest=manifest, snapshot_root=tmp_path / "snap",
+            )
 
-        settled_state = _read_rebuild_state(manifest_path)
+            fingerprint = embedding_schema_fingerprint(config)
+            await indexer.rebuild_all(fingerprint=fingerprint)
+
+        settled_state = await _read_rebuild_state(slug)
         assert settled_state == "done", (
             "a SUCCESSFUL rebuild must still end in the 'done' terminal state — "
             f"the failed-state wiring must not regress the happy path; got "

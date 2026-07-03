@@ -95,14 +95,15 @@ from loremaster.symbols import ResolvedSymbol
 if TYPE_CHECKING:
     from loresigil.base import Embedder
 
-    from loremaster.graph import CodeGraph
+    from loremaster.graph_surreal import SurrealCodeGraph
     from loremaster.index.indexer import Indexer
-    from loremaster.index.manifest import Manifest
     from loremaster.index.reconcile import ReconcileEngine
+    from loremaster.index.surreal_manifest import SurrealManifest
     from loremaster.memory.store import MemoryStore
     from loremaster.read_file import ReadFileTool
     from loremaster.search import SearchPipeline
     from loremaster.store.qdrant import QdrantStore
+    from loremaster.store.surreal import SurrealStore
     from loremaster.symbols import SymbolTool
 
 # The parent-context ``state`` key under which the per-extension lifespan-state
@@ -968,9 +969,10 @@ class AppContext:
         server: LoreServer,
         embedder: Embedder,
         store: QdrantStore,
+        write_store: SurrealStore,
         memory_store_handle: QdrantStore,
-        manifest: Manifest,
-        code_graph: CodeGraph,
+        manifest: SurrealManifest,
+        code_graph: SurrealCodeGraph,
         indexer: Indexer,
         reconcile_engine: ReconcileEngine,
         watcher: Any,
@@ -984,6 +986,7 @@ class AppContext:
         self._config: LoreConfig = server.config
         self.embedder = embedder
         self.store = store
+        self.write_store = write_store
         self._memory_store_handle = memory_store_handle
         self.manifest = manifest
         self.code_graph = code_graph
@@ -1019,7 +1022,7 @@ class AppContext:
         results = await self.search_pipeline.search_code(
             query, k, filters, wait_for_fresh=wait_for_fresh, detail_level=detail_level
         )
-        self._raise_if_empty_during_rebuild(results)
+        await self._raise_if_empty_during_rebuild(results)
         return results
 
     async def read_file(
@@ -1038,7 +1041,7 @@ class AppContext:
             # A not-found span DURING a rebuild may just be a not-yet-re-embedded
             # file — raise the rebuilding error (so the agent retries) rather than
             # letting a bare not-found mislead it. When idle, re-raise as-is.
-            raise self._rebuilding_error_or(exc) from exc
+            raise await self._rebuilding_error_or(exc) from exc
 
     async def get_symbol(self, qualified_name: str) -> ResolvedSymbol:
         """Resolve a qualified Python name to its exact stored definition + location."""
@@ -1050,7 +1053,7 @@ class AppContext:
             # An unresolved symbol DURING a rebuild may simply be not-yet-re-embedded
             # — raise the rebuilding error so the agent retries. When idle, the
             # not-found is genuine and re-raised unchanged.
-            raise self._rebuilding_error_or(exc) from exc
+            raise await self._rebuilding_error_or(exc) from exc
 
     async def save_memory(
         self, text: str, *, metadata: dict[str, Any] | None = None
@@ -1092,7 +1095,7 @@ class AppContext:
         await self._settle_schema_rebuild()
         if self.watcher is not None and self.watcher_started:
             await self.watcher.run_sweep()
-            return self.indexer.index_status()
+            return await self.indexer.index_status()
         return await self.reconcile_engine.reconcile()
 
     async def _settle_schema_rebuild(self) -> None:
@@ -1152,15 +1155,15 @@ class AppContext:
             SCHEMA_REBUILD_STATUS_META_KEY,
         )
 
-        summary = self.indexer.index_status()
+        summary = await self.indexer.index_status()
         embedding_schema = EmbeddingSchemaStatus(
-            fingerprint=self.manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY),
+            fingerprint=await self.manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY),
             version=EMBEDDING_SCHEMA_VERSION,
         )
         # The rebuild status: parse the stored JSON blob into the model, or fall
         # back to the idle default when absent / malformed (a corrupt blob must
         # not crash a status read).
-        raw_status = self.manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+        raw_status = await self.manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
         if raw_status is None:
             schema_rebuild = SchemaRebuildStatus()
         else:
@@ -1175,8 +1178,8 @@ class AppContext:
 
     async def what_imports(self, target: str) -> list[GraphNode]:
         """Return the module nodes that import ``target`` (reverse import edge)."""
-        importers = self.code_graph.what_imports(target)
-        self._raise_if_empty_during_rebuild(importers)
+        importers = await self.code_graph.what_imports(target)
+        await self._raise_if_empty_during_rebuild(importers)
         return importers
 
     async def blast_radius(
@@ -1186,14 +1189,14 @@ class AppContext:
         max_results: int = _DEFAULT_BLAST_MAX_RESULTS,
     ) -> list[GraphNode]:
         """Return the BOUNDED reverse-edge transitive closure from ``target``."""
-        radius = self.code_graph.blast_radius(target, depth, max_results)
-        self._raise_if_empty_during_rebuild(radius)
+        radius = await self.code_graph.blast_radius(target, depth, max_results)
+        await self._raise_if_empty_during_rebuild(radius)
         return radius
 
     async def tests_for(self, symbol_or_file: str) -> list[GraphNode]:
         """Return the test nodes related to a symbol or file."""
-        tests = self.code_graph.tests_for(symbol_or_file)
-        self._raise_if_empty_during_rebuild(tests)
+        tests = await self.code_graph.tests_for(symbol_or_file)
+        await self._raise_if_empty_during_rebuild(tests)
         return tests
 
     async def references(self, name: str) -> ReferenceSummary:
@@ -1205,7 +1208,7 @@ class AppContext:
         result. Raising on an empty ``referencing`` list would false-positive on
         legitimately orphaned symbols.
         """
-        return self.code_graph.references(name)
+        return await self.code_graph.references(name)
 
     async def dead_code(
         self,
@@ -1229,7 +1232,7 @@ class AppContext:
         live_tiers = [
             root.tier for root in self._config.effective_roots if root.watch == WATCH_LIVE
         ]
-        return self.code_graph.dead_code(
+        return await self.code_graph.dead_code(
             live_tiers,
             include_tests=include_tests,
             include_dunders=include_dunders,
@@ -1249,7 +1252,7 @@ class AppContext:
     # (state in_progress), so an idle no-match stays a plain empty result / a plain
     # not-found — never a false-positive rebuild signal.
 
-    def _raise_if_empty_during_rebuild(self, results: list[Any]) -> None:
+    async def _raise_if_empty_during_rebuild(self, results: list[Any]) -> None:
         """Raise a :class:`SchemaRebuildingError` when ``results`` is empty mid-rebuild.
 
         The shared seam for the four list-returning corpus read tools
@@ -1270,12 +1273,12 @@ class AppContext:
 
         if results:
             return
-        notice = rebuilding_notice(self.manifest)
+        notice = await rebuilding_notice(self.manifest)
         if notice is None:
             return
         raise SchemaRebuildingError(notice)
 
-    def _rebuilding_error_or(self, error: Exception) -> Exception:
+    async def _rebuilding_error_or(self, error: Exception) -> Exception:
         """Return a rebuilding error during a rebuild, else the original error.
 
         The not-found-tool counterpart of :meth:`_raise_if_empty_during_rebuild`
@@ -1294,7 +1297,7 @@ class AppContext:
         """
         from loremaster.index.schema import rebuilding_notice
 
-        notice = rebuilding_notice(self.manifest)
+        notice = await rebuilding_notice(self.manifest)
         if notice is None:
             return error
         return SchemaRebuildingError(f"{error} ({notice})")
@@ -1381,8 +1384,9 @@ class AppContext:
             self.watcher_started = False
         if self._extension_ctx is not None:
             await self._server.run_shutdown_hooks(self._extension_ctx)
-        self.manifest.close()
-        self.code_graph.close()
+        await self.manifest.close()
+        await self.code_graph.close()
+        await self.write_store.close()
 
 
 # The ``in_progress`` rebuild-status state value the read-tools' rebuilding-notice
@@ -1405,7 +1409,7 @@ _HEAL_REBUILD_REASON = "store_divergence_heal"
 _HEAL_REBUILD_STATE_DONE = "done"
 
 
-def _open_rebuilding_window(manifest: Any) -> str | None:
+async def _open_rebuilding_window(manifest: Any) -> str | None:
     """Open the divergence-heal rebuilding-notice window; return the PRIOR status blob.
 
     Sets ``SCHEMA_REBUILD_STATUS_META_KEY`` to an ``in_progress`` blob so a read
@@ -1425,8 +1429,8 @@ def _open_rebuilding_window(manifest: Any) -> str | None:
     """
     from loremaster.index.schema import SCHEMA_REBUILD_STATUS_META_KEY
 
-    prior: str | None = manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
-    manifest.meta_set(
+    prior: str | None = await manifest.meta_get(SCHEMA_REBUILD_STATUS_META_KEY)
+    await manifest.meta_set(
         SCHEMA_REBUILD_STATUS_META_KEY,
         json.dumps(
             {
@@ -1438,7 +1442,7 @@ def _open_rebuilding_window(manifest: Any) -> str | None:
     return prior
 
 
-def _restore_rebuilding_window(manifest: Any, prior_status: str | None) -> None:
+async def _restore_rebuilding_window(manifest: Any, prior_status: str | None) -> None:
     """Close the divergence-heal rebuilding-notice window (out of ``in_progress``).
 
     Restores the status blob to exactly what it was before the heal opened the
@@ -1455,9 +1459,9 @@ def _restore_rebuilding_window(manifest: Any, prior_status: str | None) -> None:
     from loremaster.index.schema import SCHEMA_REBUILD_STATUS_META_KEY
 
     if prior_status is not None:
-        manifest.meta_set(SCHEMA_REBUILD_STATUS_META_KEY, prior_status)
+        await manifest.meta_set(SCHEMA_REBUILD_STATUS_META_KEY, prior_status)
         return
-    manifest.meta_set(
+    await manifest.meta_set(
         SCHEMA_REBUILD_STATUS_META_KEY,
         json.dumps({"state": _HEAL_REBUILD_STATE_DONE, "reason": _HEAL_REBUILD_REASON}),
     )
@@ -1520,8 +1524,8 @@ async def reconcile_store_divergence(
     # A real wiped graph over a Python corpus still heals (Python files indexed,
     # graph empty → reset → the sweep re-graphs them).
     graph_wiped = (
-        code_graph.indexed_file_count() == 0
-        and manifest.indexed_file_count(suffix=PYTHON_SUFFIX) > 0
+        await code_graph.indexed_file_count() == 0
+        and await manifest.indexed_file_count(suffix=PYTHON_SUFFIX) > 0
     )
 
     # PASS 1 — PLAN the heal per LIVE tier WITHOUT mutating anything yet, so the
@@ -1551,8 +1555,8 @@ async def reconcile_store_divergence(
         # is the SWEEP that restores the rows to ``indexed`` and the real points to
         # the store, so a SECOND reconcile over the truly-healed index reads the
         # count back in agreement (idempotent) without any placeholder trickery.
-        expected = manifest.expected_chunks(tier)
-        live = await store.count_points(tier)
+        expected = await manifest.expected_chunks(tier)
+        live = await store.count(tier)
         # ANY inequality is a heal trigger: a short count is a wiped/short tier
         # (FP-02), an over-count is orphan leftovers (FP-03).
         count_diverged = live != expected
@@ -1583,7 +1587,7 @@ async def reconcile_store_divergence(
     # rebuild's blob) on completion, so a finished heal leaves no phantom notice. The
     # heal runs synchronously here, BEFORE _maybe_spawn_schema_rebuild, so it never
     # collides with the background rebuild's own use of the same meta key.
-    prior_status = _open_rebuilding_window(manifest)
+    prior_status = await _open_rebuilding_window(manifest)
     try:
         # PURGE path (FP-02/FP-03/count-vs-mtime): purge the whole tier (clearing
         # orphans and any wiped/partial remnant) and reset its rows out of
@@ -1596,7 +1600,7 @@ async def reconcile_store_divergence(
         # and reintroduce the blind-index bug undetectably).
         for tier in tiers_to_purge:
             await store.delete_by_tier(tier)
-            manifest.reset_tier(tier)
+            await manifest.reset_tier(tier)
         # GRAPH-ONLY path (FP-04 follow-up): re-graph the tier's indexed .py files
         # from disk WITHOUT a vector purge or re-embed — the collection is intact.
         # tiers_to_regraph is only ever populated when an indexer was supplied (the
@@ -1606,7 +1610,7 @@ async def reconcile_store_divergence(
             for tier in tiers_to_regraph:
                 await indexer.rebuild_graph_only(tier)
     finally:
-        _restore_rebuilding_window(manifest, prior_status)
+        await _restore_rebuilding_window(manifest, prior_status)
 
 
 async def build_app_context(
@@ -1663,10 +1667,11 @@ async def build_app_context(
         ProbeGateError: If the probe gate refuses.
         Exception: Re-raises a failing extension ``on_startup`` (after unwinding).
     """
-    from loremaster.graph import CodeGraph
+    from loremaster.config import resolve_secret
+    from loremaster.graph_surreal import SurrealCodeGraph
     from loremaster.index.indexer import Indexer, graph_roots
-    from loremaster.index.manifest import Manifest
     from loremaster.index.reconcile import ReconcileEngine
+    from loremaster.index.surreal_manifest import SurrealManifest
     from loremaster.index.watcher import LiveWatcher
     from loremaster.memory.ledger import MemoryLedger
     from loremaster.memory.store import MemoryStore
@@ -1675,12 +1680,20 @@ async def build_app_context(
     from loremaster.source.local_directory import LocalDirectorySourceProvider
     from loremaster.source.snapshot import SnapshotLayout
     from loremaster.store.qdrant import QdrantStore
+    from loremaster.store.surreal import SurrealStore
     from loremaster.symbols import SymbolTool
 
     config = server.config
     slug = config.project.slug
 
-    # 1) Store + probe gate + collection.
+    # 1) READ-path store + probe gate + collection. DUAL-STORE INTERIM (P5→P6):
+    # the search/memory/symbol READ path still speaks the Qdrant API, so its
+    # QdrantStore stays constructed here until P6 (search v2) / P7 (memory v2)
+    # port those consumers onto the unified SurrealDB store. The WRITE path
+    # (indexer/reconcile/watcher) runs on the Surreal stack below — chunks
+    # indexed from here on land in SurrealDB, NOT Qdrant, so Qdrant search
+    # results grow stale on this branch by design until P6 cuts the read path
+    # over (v1.0 ships at P8 with Qdrant deleted).
     store = QdrantStore(
         client=qdrant_client,
         slug=slug,
@@ -1694,24 +1707,57 @@ async def build_app_context(
     await run_probe_gate(embedder=embedder, store=store, config=config)
     await store.ensure_collection(config.embedding.dim)
 
+    # 1b) WRITE-path store: the unified SurrealDB database (SurrealConfig) that
+    # holds chunks + file_text + manifest + code graph — the same database a
+    # cold `python -m loremaster.index` populates. Credentials resolve by
+    # env-var NAME (never inlined), failing loudly when unset.
+    surreal_user = resolve_secret(config.surreal.user_env)
+    surreal_password = resolve_secret(config.surreal.password_env)
+    surreal_database = config.effective_surreal_database
+    write_store = SurrealStore(
+        url=config.surreal.url,
+        namespace=config.surreal.namespace,
+        database=surreal_database,
+        dim=config.embedding.dim,
+        user=surreal_user,
+        password=surreal_password,
+    )
+    await write_store.ensure_ready()
+
     memory_store_handle = QdrantStore(client=qdrant_client, slug=f"{slug}{_MEMORY_SLUG_SUFFIX}")
     # FP-06 durable write-through: the memory ledger lives alongside the
     # manifest on the state volume (``<slug>.memory.db``), so a Qdrant wipe of
     # the memory collection is recoverable by re-embedding from the ledger.
     memory_ledger = MemoryLedger(str(manifest_path.with_name(f"{slug}.memory.db")))
 
-    # 2) Core services.
-    manifest = Manifest(str(manifest_path))
+    # 2) Core services — the Surreal write stack (manifest + code graph live in
+    # the SAME database as the chunks; ``manifest_path`` survives only as the
+    # anchor for the SQLite memory LEDGER above, until P7 moves memory).
+    manifest = SurrealManifest(
+        url=config.surreal.url,
+        namespace=config.surreal.namespace,
+        database=surreal_database,
+        user=surreal_user,
+        password=surreal_password,
+    )
+    await manifest.ensure_ready()
     # Wire astroid resolution into the code-graph: it resolves each tier's files on
     # disk under these roots so in-project references become FQNs and external ones
     # are dropped. Derived from the SAME effective roots the indexer walks.
     graph_tier_roots, graph_project_roots = graph_roots(config, snapshot_root)
-    code_graph = CodeGraph(
-        str(graph_path), tier_roots=graph_tier_roots, project_roots=graph_project_roots
+    code_graph = SurrealCodeGraph(
+        url=config.surreal.url,
+        namespace=config.surreal.namespace,
+        database=surreal_database,
+        user=surreal_user,
+        password=surreal_password,
+        tier_roots=graph_tier_roots,
+        project_roots=graph_project_roots,
     )
+    await code_graph.ensure_ready()
     providers = _build_source_providers(server, config, LocalDirectorySourceProvider)
     indexer = Indexer(
-        store=store,
+        store=write_store,
         embedder=embedder,
         manifest=manifest,
         registry=server.registry,
@@ -1721,7 +1767,7 @@ async def build_app_context(
         code_graph=code_graph,
     )
     reconcile_engine = ReconcileEngine(
-        indexer=indexer, manifest=manifest, store=store, config=config, code_graph=code_graph
+        indexer=indexer, manifest=manifest, store=write_store, config=config, code_graph=code_graph
     )
     memory_store = MemoryStore(
         store=memory_store_handle, embedder=embedder, ledger=memory_ledger
@@ -1776,7 +1822,7 @@ async def build_app_context(
     watcher = LiveWatcher(
         indexer=indexer,
         manifest=manifest,
-        store=store,
+        store=write_store,
         config=config,
         loop=asyncio.get_running_loop(),
         reconcile_engine=reconcile_engine,
@@ -1787,6 +1833,7 @@ async def build_app_context(
         server=server,
         embedder=embedder,
         store=store,
+        write_store=write_store,
         memory_store_handle=memory_store_handle,
         manifest=manifest,
         code_graph=code_graph,
@@ -1830,7 +1877,7 @@ async def build_app_context(
                 app_context.watcher_started = True
                 logger.info("startup.watcher.started")
             # STORE-DIVERGENCE RECONCILE (idempotent startup, FP-02/03/04/10): heal
-            # a corpus whose LIVE Qdrant point count or graph row count diverged from
+            # a corpus whose LIVE store chunk count or graph row count diverged from
             # the manifest BEFORE the initial sweep declares the index live. A wiped/
             # short/over-counted tier (or an empty graph) is purged and its rows
             # reset out of ``indexed`` so the sweep below re-embeds the REAL content
@@ -1841,7 +1888,7 @@ async def build_app_context(
             # manifest/graph are built, and before run_sweep, so the heal is
             # effective by the time the context is returned.
             await reconcile_store_divergence(
-                store=store,
+                store=write_store,
                 manifest=manifest,
                 code_graph=code_graph,
                 config=config,
@@ -1853,7 +1900,7 @@ async def build_app_context(
             # afterwards (safe to stamp without a rebuild); a POPULATED index whose
             # files the sweep merely fast-path-SKIPS is NOT proven current and must
             # NOT be silently stamped. The manifest is read before the sweep walks.
-            index_was_empty = len(manifest.all_files()) == 0
+            index_was_empty = len(await manifest.all_files()) == 0
             # INITIAL reconcile on start (the on-demand "start = delta-reconcile"
             # lifecycle): a fresh start after offline edits must delta-index NOW,
             # not wait out the periodic interval (default 600s) — otherwise the
@@ -1883,7 +1930,7 @@ async def build_app_context(
             # POPULATED-but-unstamped (legacy / unknown-provenance) index was merely
             # fast-path-skipped — its stored vectors are NOT proven current, so it is
             # NOT stamped here (Fix #1) and falls through to a real rebuild below.
-            _stamp_fingerprint_after_fresh_initial_sweep(
+            await _stamp_fingerprint_after_fresh_initial_sweep(
                 manifest=manifest, config=config, index_was_empty=index_was_empty
             )
             if config.watcher.enabled:
@@ -1899,7 +1946,7 @@ async def build_app_context(
         # rebuild), then _run_schema_rebuild is spawned as a background asyncio.Task
         # and serves immediately. It re-embeds under the watcher's single-writer
         # lock, so it serialises with the periodic reconcile rather than racing it.
-        _maybe_spawn_schema_rebuild(
+        await _maybe_spawn_schema_rebuild(
             app_context=app_context,
             indexer=indexer,
             manifest=manifest,
@@ -1907,13 +1954,19 @@ async def build_app_context(
             config=config,
         )
     except BaseException:
-        # Tear down whatever started, then close the SQLite handles (idempotent).
+        # Tear down whatever started, then close the Surreal handles (idempotent).
         if app_context.schema_rebuild_task is not None:
             app_context.schema_rebuild_task.cancel()
+        if app_context.reconcile_task is not None:
+            # Without this, a failure AFTER the periodic task spawns leaks a task
+            # that later runs a sweep against the just-closed manifest/store —
+            # the same orphan-task-vs-closed-DB failure task #16 fixed (audit #2).
+            app_context.reconcile_task.cancel()
         if app_context.watcher_started:
             await watcher.stop()
-        manifest.close()
-        code_graph.close()
+        await manifest.close()
+        await code_graph.close()
+        await write_store.close()
         raise
 
     return app_context
@@ -1940,8 +1993,8 @@ def _build_source_providers(server: LoreServer, config: LoreConfig, provider_cls
 _REBUILD_REASON_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
 
 
-def _stamp_fingerprint_after_fresh_initial_sweep(
-    *, manifest: Manifest, config: LoreConfig, index_was_empty: bool
+async def _stamp_fingerprint_after_fresh_initial_sweep(
+    *, manifest: SurrealManifest, config: LoreConfig, index_was_empty: bool
 ) -> None:
     """Stamp the current fingerprint after a fresh deploy's initial sweep built the index.
 
@@ -1977,20 +2030,20 @@ def _stamp_fingerprint_after_fresh_initial_sweep(
         embedding_schema_fingerprint,
     )
 
-    if manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY) is not None:
+    if await manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY) is not None:
         return
     if not index_was_empty:
         # Populated-but-unstamped: unknown provenance over real rows the sweep only
         # skipped — do NOT stamp; let the rebuild decision fail safe into a rebuild.
         return
-    manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, embedding_schema_fingerprint(config))
+    await manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, embedding_schema_fingerprint(config))
 
 
-def _maybe_spawn_schema_rebuild(
+async def _maybe_spawn_schema_rebuild(
     *,
     app_context: AppContext,
     indexer: Indexer,
-    manifest: Manifest,
+    manifest: SurrealManifest,
     watcher: Any,
     config: LoreConfig,
 ) -> bool:
@@ -2027,7 +2080,7 @@ def _maybe_spawn_schema_rebuild(
     )
 
     current_fingerprint = embedding_schema_fingerprint(config)
-    stored_fingerprint = manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+    stored_fingerprint = await manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
     if not rebuild_needed(stored_fingerprint, current_fingerprint):
         app_context.schema_rebuild_task = None
         return False
@@ -2047,10 +2100,10 @@ def _maybe_spawn_schema_rebuild(
     # over an empty index would be pointless and would race a direct caller's
     # index_all(). A POPULATED-but-unstamped (legacy / unknown-provenance) index
     # DOES carry stale vectors, so its task does the full re-embed.
-    index_was_empty = len(manifest.all_files()) == 0
+    index_was_empty = len(await manifest.all_files()) == 0
     total = indexer.count_files_to_rebuild()
     if stored_fingerprint is not None:
-        manifest.meta_set(
+        await manifest.meta_set(
             SCHEMA_REBUILD_STATUS_META_KEY,
             json.dumps(
                 {
@@ -2121,7 +2174,7 @@ async def _run_schema_rebuild(
                 # empty-index post-sweep stamp produces on the start_tasks=True
                 # path). No in_progress churn, so a concurrent / subsequent read
                 # never sees a phantom rebuild.
-                indexer.stamp_schema_fingerprint(fingerprint)
+                await indexer.stamp_schema_fingerprint(fingerprint)
                 return
             await indexer.rebuild_all(fingerprint)
         except Exception:
@@ -2133,7 +2186,7 @@ async def _run_schema_rebuild(
             # next startup re-detects the mismatch and re-triggers — crash-safety
             # unchanged. Re-raise so the failure still propagates out of the task
             # (logged / surfaced by _settle_schema_rebuild at the next reindex).
-            indexer.mark_rebuild_failed(fingerprint)
+            await indexer.mark_rebuild_failed(fingerprint)
             raise
 
 
@@ -2145,7 +2198,15 @@ async def _periodic_reconcile(watcher: Any, interval_s: int) -> None:
     """
     while True:
         await asyncio.sleep(interval_s)
-        await watcher.run_sweep()
+        try:
+            await watcher.run_sweep()
+        except Exception:
+            # The Surreal store has NO retry layer (fail-fast + reconnect-on-next-
+            # call by design), so a transient server blip makes the sweep raise.
+            # Swallow-and-log so ONE blip cannot permanently kill the downtime/
+            # overflow backstop for the process lifetime (audit #3); the next
+            # interval retries over the self-healed connection.
+            logger.exception("reconcile.periodic.sweep_failed")
 
 
 class _ProcessLifespanGuard:

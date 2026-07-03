@@ -7,10 +7,13 @@ indexing logic lives in :class:`Indexer`; this module only does the real wiring
 that the dependency-injected tests stub out:
 
 * ``make_embedder(config.embedding)`` — the active loresigil embedder;
-* a real :class:`~loremaster.store.qdrant.QdrantStore` over an
-  :class:`~qdrant_client.AsyncQdrantClient` (collection ``lore_<slug>``), with
-  every extension-declared payload index applied;
-* the SQLite :class:`~loremaster.index.manifest.Manifest`;
+* the unified SurrealDB write stack (P5): a
+  :class:`~loremaster.store.surreal.SurrealStore` +
+  :class:`~loremaster.index.surreal_manifest.SurrealManifest` +
+  :class:`~loremaster.graph_surreal.SurrealCodeGraph`, all on the project's
+  namespace/database from :class:`~loremaster.config.SurrealConfig` — the SAME
+  database the server reads, so a cold CLI index is immediately servable (the
+  graph tools are non-empty after ``python -m loremaster.index``);
 * :meth:`~loremaster.server.LoreServer.from_config` for the composed chunker
   registry + the extensions' source providers, PLUS the built-in
   :class:`~loremaster.source.local_directory.LocalDirectorySourceProvider` per
@@ -26,20 +29,17 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from qdrant_client import AsyncQdrantClient
-
 from loremaster.config import WATCH_STATIC, LoreConfig, load_config, resolve_secret
 from loremaster.embedding import make_embedder_from_config
 from loremaster.extension import SourceProvider
-from loremaster.graph import CodeGraph
+from loremaster.graph_surreal import SurrealCodeGraph
 from loremaster.index.indexer import Indexer, IndexSummary, graph_roots
-from loremaster.index.manifest import Manifest
+from loremaster.index.surreal_manifest import SurrealManifest
 from loremaster.server import LoreServer
 from loremaster.source.local_directory import LocalDirectorySourceProvider
-from loremaster.store.qdrant import QdrantStore
+from loremaster.store.surreal import SurrealStore
 
-# Default manifest + snapshot locations (plan D8 / the staleness-engine ledger).
-_DEFAULT_MANIFEST_DIR = Path.home() / ".local" / "state" / "lore"
+# Default static-tier snapshot location (plan D8 / the staleness-engine ledger).
 _DEFAULT_SNAPSHOT_ROOT = Path.home() / "docker" / "mcp" / "lore-snapshot"
 
 
@@ -51,10 +51,16 @@ def build_parser() -> argparse.ArgumentParser:
         to ``lore.yaml``; ``--tier`` optionally restricts the run to one tier
         (the explicit ``reindex(tier=…)`` escape hatch), defaulting to ``None``
         (index every configured root).
+
+    Note:
+        The pre-P5 ``--manifest``/``--graph`` path flags are GONE: the manifest
+        and code graph live in the project's SurrealDB database (the ``surreal:``
+        section of ``lore.yaml``), not in local files, so there is no path to
+        point at — the CLI and the server share state by sharing the database.
     """
     parser = argparse.ArgumentParser(
         prog="loremaster.index",
-        description="Batch-build/refresh a project's lore Qdrant index (per-tier freshness).",
+        description="Batch-build/refresh a project's lore SurrealDB index (per-tier freshness).",
     )
     parser.add_argument(
         "--config", required=True, help="Path to the project lore.yaml configuration."
@@ -63,19 +69,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--tier",
         default=None,
         help="Restrict the run to one tier (default: index every configured root).",
-    )
-    parser.add_argument(
-        "--manifest",
-        default=None,
-        help="Path to the SQLite manifest (default: ~/.local/state/lore/<slug>.db).",
-    )
-    parser.add_argument(
-        "--graph",
-        default=None,
-        help=(
-            "Path to the SQLite code-graph the server reads "
-            "(default: alongside the manifest, ~/.local/state/lore/<slug>.graph.kuzu)."
-        ),
     )
     parser.add_argument(
         "--snapshot-root",
@@ -105,57 +98,54 @@ async def _run(config: LoreConfig, args: argparse.Namespace) -> IndexSummary:
     """Wire the real resources, run the indexer, and return its summary."""
     server = LoreServer(config)
 
-    manifest_path = (
-        Path(args.manifest)
-        if args.manifest
-        else _DEFAULT_MANIFEST_DIR / f"{config.project.slug}.db"
-    )
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest = Manifest(str(manifest_path))
-
-    # The code-graph lives at the SAME shared path the server reads — alongside
-    # the manifest as ``<slug>.graph.kuzu`` (both are bind-mounted into the
-    # container). Building it here is what makes the graph tools (what_imports /
-    # blast_radius / tests_for) non-empty after a cold ``python -m loremaster.index``.
-    graph_path = (
-        Path(args.graph)
-        if args.graph
-        else manifest_path.parent / f"{config.project.slug}.graph.kuzu"
-    )
-    graph_path.parent.mkdir(parents=True, exist_ok=True)
-
     snapshot_root = (
         Path(args.snapshot_root) if args.snapshot_root else _DEFAULT_SNAPSHOT_ROOT
     )
+
+    # The unified SurrealDB write stack: one namespace/database (the SAME one the
+    # server reads — shared state by shared database, not shared files) holding
+    # chunks + file_text + manifest + code graph, per SurrealConfig. Credentials
+    # are resolved by env-var NAME (never inlined), failing loudly when unset.
+    surreal_user = resolve_secret(config.surreal.user_env)
+    surreal_password = resolve_secret(config.surreal.password_env)
+    database = config.effective_surreal_database
 
     # Wire astroid resolution: the graph resolves each tier's files on disk under
     # these roots, classifying references in-project (kept, as FQNs) vs external
     # (dropped). Derived from the SAME effective roots the indexer walks.
     tier_roots, project_roots = graph_roots(config, snapshot_root)
-    code_graph = CodeGraph(
-        str(graph_path), tier_roots=tier_roots, project_roots=project_roots
-    )
 
     embedder = make_embedder_from_config(config.embedding)
-    client = AsyncQdrantClient(
-        url=config.qdrant.url, api_key=resolve_secret(config.qdrant.api_key_env)
+    store = SurrealStore(
+        url=config.surreal.url,
+        namespace=config.surreal.namespace,
+        database=database,
+        dim=config.embedding.dim,
+        user=surreal_user,
+        password=surreal_password,
+    )
+    manifest = SurrealManifest(
+        url=config.surreal.url,
+        namespace=config.surreal.namespace,
+        database=database,
+        user=surreal_user,
+        password=surreal_password,
+    )
+    code_graph = SurrealCodeGraph(
+        url=config.surreal.url,
+        namespace=config.surreal.namespace,
+        database=database,
+        user=surreal_user,
+        password=surreal_password,
+        tier_roots=tier_roots,
+        project_roots=project_roots,
     )
     try:
-        store = QdrantStore(
-            client=client,
-            slug=config.project.slug,
-            extra_keyword_indexes=[
-                spec.field_name
-                for spec in server.payload_index_specs
-                if spec.schema_type == "keyword"
-            ],
-            extra_bool_indexes=[
-                spec.field_name
-                for spec in server.payload_index_specs
-                if spec.schema_type == "bool"
-            ],
-        )
-        await store.ensure_collection(config.embedding.dim)
+        # Explicit readiness (schema application is atomic + per-statement
+        # checked): each component applies its DDL slice before the sweep.
+        await store.ensure_ready()
+        await manifest.ensure_ready()
+        await code_graph.ensure_ready()
         indexer = Indexer(
             store=store,
             embedder=embedder,
@@ -167,16 +157,16 @@ async def _run(config: LoreConfig, args: argparse.Namespace) -> IndexSummary:
             code_graph=code_graph,
         )
         if args.tier is not None:
-            root = next((r for r in config.roots if r.tier == args.tier), None)
+            root = next((r for r in config.effective_roots if r.tier == args.tier), None)
             if root is None:
-                known = ", ".join(sorted(r.tier for r in config.roots)) or "(none configured)"
+                known = ", ".join(sorted(r.tier for r in config.effective_roots)) or "(none configured)"
                 raise SystemExit(f"unknown --tier {args.tier!r}; configured tiers: {known}")
             return await indexer.index_tier(root)
         return await indexer.index_all()
     finally:
-        await client.close()
-        manifest.close()
-        code_graph.close()
+        await store.close()
+        await manifest.close()
+        await code_graph.close()
 
 
 def main(argv: list[str] | None = None) -> int:

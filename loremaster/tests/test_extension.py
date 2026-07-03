@@ -388,6 +388,18 @@ _BUILTIN_TOOLS = {
 }
 
 
+def _surreal_url() -> str:
+    from _surreal_harness import surreal_url
+
+    return surreal_url()
+
+
+def _surreal_env_creds(monkeypatch_or_none: Any = None) -> tuple[str, str]:
+    from _surreal_harness import surreal_password, surreal_user
+
+    return surreal_user(), surreal_password()
+
+
 def _server_config(slug: str, live_path: Path) -> Any:
     """A valid :class:`LoreConfig` for a live ``build_app_context`` (dim 2048)."""
     from loremaster.config import LoreConfig
@@ -410,6 +422,15 @@ def _server_config(slug: str, live_path: Path) -> Any:
             "tokenizer": "voyage-4-nano",
         },
         "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
+        # The P5 write stack: a throwaway per-call database on the dev server
+        # (unique via the slug, which each caller mints per test).
+        "surreal": {
+            "url": _surreal_url(),
+            "namespace": "lore_test",
+            "database": slug,
+            "user_env": "SURREAL_USER",
+            "password_env": "SURREAL_PASS",
+        },
         "roots": [
             {"tier": "custom", "watch": "live", "path": str(live_path), "include": ["**/*.py"]}
         ],
@@ -475,9 +496,21 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
         return f"test_{uuid.uuid4().hex}"
 
     async def _live_context(self, *, server: Any, qdrant: Any, tmp_path: Path) -> Any:
-        """Build a live :class:`AppContext` over the server (real Qdrant, fake embedder)."""
+        """Build a live :class:`AppContext` over the server (real Qdrant, fake embedder).
+
+        Exports the dev server's SurrealDB credentials (the P5 write stack
+        resolves them by env-var name at construction) — idempotent, the same
+        values the harness resolves. The per-test surreal database is the SLUG
+        (unique per test); the caller's ``finally`` drops it via
+        ``_drop_surreal_db``.
+        """
+        import os
+
+        from _surreal_harness import surreal_password, surreal_user
         from loremaster.server import build_app_context
 
+        os.environ.setdefault("SURREAL_USER", surreal_user())
+        os.environ.setdefault("SURREAL_PASS", surreal_password())
         slug = server.config.project.slug
         qdrant._lore_created.append(f"lore_{slug}")
         qdrant._lore_created.append(f"lore_{slug}_memory")
@@ -490,6 +523,13 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
             snapshot_root=tmp_path / "snap",
             start_tasks=False,
         )
+
+    @staticmethod
+    async def _drop_surreal_db(slug: str) -> None:
+        """Reap the per-test surreal database (named = the test's unique slug)."""
+        from _surreal_harness import drop_database, make_env
+
+        await drop_database(make_env(database=slug, dim=_DIM))
 
     async def test_extension_tool_appears_in_tools_list_with_the_ten_builtins(
         self, tmp_path: Path
@@ -560,6 +600,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
             assert again == ext.on_startup_seed() + 5 + 3
         finally:
             await ctx.aclose()
+            await self._drop_surreal_db(server.config.project.slug)
 
     async def test_extension_tool_name_colliding_with_a_builtin_raises(
         self, tmp_path: Path
@@ -637,6 +678,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
             assert result["items"] == ["a", "b"]
         finally:
             await ctx.aclose()
+            await self._drop_surreal_db(server.config.project.slug)
 
     async def test_non_scalar_args_publish_correct_json_schema_types(
         self, tmp_path: Path
@@ -719,6 +761,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
             assert out_b["saw_sibling"] is False
         finally:
             await ctx.aclose()
+            await self._drop_surreal_db(server.config.project.slug)
 
 
 class _DuplicateBumpExtension(Extension):

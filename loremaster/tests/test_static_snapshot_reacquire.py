@@ -1,11 +1,14 @@
 """Contract tests for FP-05 — static-tier snapshot RE-ACQUIRE when the
 materialisation dir is gone.
 
-These tests are a CONTRACT for a fix that does NOT yet exist. They are expected
-to be RED (an ``AssertionError`` / ``ReadFileError`` / ``FileNotFoundError``)
-until the implementation is written. They are written blind to the future
-implementation — the behavioural expectations come from the requirement, not
-from how ``_index_static_tier`` happens to behave today.
+PORTED for P5-C3b: the :class:`~loremaster.index.indexer.Indexer` is rewired off
+the sync SQLite-manifest + Qdrant store onto the **async** Surreal ports (see
+``_surreal_fakes``). These tests keep the SAME behavioural pins as the pre-port
+suite — only the fixtures change: the real Qdrant store + SQLite ``Manifest``
+are replaced by the fast in-memory async fakes (:mod:`_surreal_fakes`) that
+mirror :class:`~loremaster.store.surreal.SurrealStore` /
+:class:`~loremaster.index.surreal_manifest.SurrealManifest`, and every manifest
+read (``tier_version_stamp``) is now ``await``ed.
 
 The bug (current behaviour, the thing this contract forbids):
     ``Indexer._index_static_tier`` is version-stamp gated. A manifest stamp
@@ -41,12 +44,11 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import pytest
-import pytest_asyncio
+from _surreal_fakes import fake_surreal_trio
 
 # Production symbols — imported freely to ground fixtures in the real config /
 # indexer / snapshot-layout conventions (clause 5). None of these is the
@@ -54,14 +56,11 @@ import pytest_asyncio
 # contract (index_tier) is exercised here without naming any new private symbol.
 from loremaster.config import LoreConfig
 from loremaster.index.indexer import Indexer
-from loremaster.index.manifest import Manifest
 from loremaster.read_file import FileSpan, ReadFileError, ReadFileTool
 from loremaster.server import LoreServer
 from loremaster.source.local_directory import LocalDirectorySourceProvider
 from loremaster.source.snapshot import SnapshotLayout
-from loremaster.store.qdrant import QdrantStore
 from loresigil.testing import FakeEmbedder
-from qdrant_client import AsyncQdrantClient
 
 # Production embedding dimensionality — every FakeEmbedder fixture uses it
 # (clause 1: real scale, not a convenience value). Same as test_indexer.py.
@@ -117,7 +116,7 @@ def _build_static_source(root: Path) -> None:
 
 
 def _slug() -> str:
-    """A per-test slug → throwaway ``lore_test_<uuid4>`` collection."""
+    """A per-test slug (namespaces the fake trio's project identity)."""
     return f"test_{uuid.uuid4().hex}"
 
 
@@ -215,39 +214,12 @@ class _ExplodingProvider:
         )
 
 
-@pytest_asyncio.fixture()
-async def store_factory() -> AsyncIterator[Any]:
-    """Build :class:`QdrantStore` instances with concurrency-safe exact-name teardown.
-
-    Same pattern as ``test_indexer.py`` — owns its own client and deletes ONLY
-    the exact collection names this test created (never a prefix sweep), so a
-    sibling agent's ``lore_test_*`` collections are never reaped (clause 5).
-    """
-    from conftest import QDRANT_URL, _qdrant_api_key
-
-    client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-    created: list[str] = []
-
-    def _make(slug: str) -> QdrantStore:
-        store = QdrantStore(client=client, slug=slug)
-        created.append(store.collection_name)
-        return store
-
-    try:
-        yield _make
-    finally:
-        for name in created:
-            if await client.collection_exists(name):
-                await client.delete_collection(name)
-        await client.close()
-
-
 def _make_indexer(
     *,
     config: LoreConfig,
-    store: QdrantStore,
+    store: Any,
     embedder: Any,
-    manifest: Manifest,
+    manifest: Any,
     snapshot_root: Path,
     providers: list[Any] | None = None,
 ) -> Indexer:
@@ -255,7 +227,8 @@ def _make_indexer(
 
     Mirrors ``test_indexer.py._make_indexer`` (clause 5). When ``providers`` is
     given it REPLACES the built-in per-static-root provider wiring, so a test can
-    inject a counting / exploding provider to observe the acquire seam.
+    inject a counting / exploding provider to observe the acquire seam. ``store``
+    and ``manifest`` are the fake async Surreal ports from :func:`fake_surreal_trio`.
     """
     server = LoreServer(config)
     if providers is None:
@@ -309,7 +282,7 @@ class TestStaticSnapshotReacquire:
     """
 
     async def test_matching_stamp_reacquires_when_snapshot_dir_absent(
-        self, tmp_path: Path, store_factory: Any
+        self, tmp_path: Path
     ) -> None:
         """Arrange: build the tier once (stamp + snapshot present); then DELETE the
         snapshot dir, leaving the stamp behind (the lost-volume shape).
@@ -317,14 +290,11 @@ class TestStaticSnapshotReacquire:
         Assert: the provider's ``acquire`` ran (re-acquire), the materialisation
                 dir is repopulated, and the tier is reported rebuilt — NOT skipped.
         """
-        # real-Qdrant
         slug = _slug()
         static_src = tmp_path / "community_src"
         _build_static_source(static_src)
         config = _config(slug=slug, static_source=static_src)
-        store = store_factory(slug)
-        await store.ensure_collection(_DIM)
-        manifest = Manifest(str(tmp_path / "m.db"))
+        trio = fake_surreal_trio(dim=_DIM)
         snapshot_root = tmp_path / "snap"
         layout = SnapshotLayout(snapshot_root)
         materialized = layout.materialization_dir(_STATIC_TIER)
@@ -332,11 +302,11 @@ class TestStaticSnapshotReacquire:
 
         # Step 1: initial build — stamps the version AND materialises the snapshot.
         first_indexer = _make_indexer(
-            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=snapshot_root,
+            config=config, store=trio.store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=trio.manifest, snapshot_root=snapshot_root,
         )
         await first_indexer.index_tier(root)
-        assert first_indexer.tier_version_stamp(_STATIC_TIER) == _STATIC_VERSION
+        assert await first_indexer.tier_version_stamp(_STATIC_TIER) == _STATIC_VERSION
         assert (materialized / _STATIC_FILE_REL).exists(), (
             "test setup: the initial build must materialise the snapshot file"
         )
@@ -347,14 +317,14 @@ class TestStaticSnapshotReacquire:
         shutil.rmtree(materialized)
         assert not materialized.exists(), "test setup: snapshot dir must be gone"
         # The stamp STILL matches the config version — the trap the bug falls into.
-        assert first_indexer.tier_version_stamp(_STATIC_TIER) == _STATIC_VERSION
+        assert await first_indexer.tier_version_stamp(_STATIC_TIER) == _STATIC_VERSION
 
         # Step 3: re-index the tier with a COUNTING provider so the acquire seam is
         # observable. The stamp matches but the snapshot is gone → must re-acquire.
         counting = _CountingProvider(_STATIC_TIER, static_src)
         second_indexer = _make_indexer(
-            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=snapshot_root, providers=[counting],
+            config=config, store=trio.store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=trio.manifest, snapshot_root=snapshot_root, providers=[counting],
         )
         summary = await second_indexer.index_tier(root)
 
@@ -376,9 +346,7 @@ class TestStaticSnapshotReacquire:
         )
         assert _STATIC_TIER not in summary.tiers_skipped
 
-    async def test_read_file_works_again_after_reacquire(
-        self, tmp_path: Path, store_factory: Any
-    ) -> None:
+    async def test_read_file_works_again_after_reacquire(self, tmp_path: Path) -> None:
         """The END-TO-END consumer contract: read_file recovers after re-acquire.
 
         Arrange: build the tier (snapshot present), then delete the snapshot dir.
@@ -388,14 +356,11 @@ class TestStaticSnapshotReacquire:
         Assert: read_file returns the file's real content again — the served
                 files physically exist once more.
         """
-        # real-Qdrant
         slug = _slug()
         static_src = tmp_path / "community_src"
         _build_static_source(static_src)
         config = _config(slug=slug, static_source=static_src)
-        store = store_factory(slug)
-        await store.ensure_collection(_DIM)
-        manifest = Manifest(str(tmp_path / "m.db"))
+        trio = fake_surreal_trio(dim=_DIM)
         snapshot_root = tmp_path / "snap"
         layout = SnapshotLayout(snapshot_root)
         materialized = layout.materialization_dir(_STATIC_TIER)
@@ -404,8 +369,8 @@ class TestStaticSnapshotReacquire:
 
         # Step 1: build + materialise, then prove read_file works initially.
         indexer = _make_indexer(
-            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=snapshot_root,
+            config=config, store=trio.store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=trio.manifest, snapshot_root=snapshot_root,
         )
         await indexer.index_tier(root)
         span = read_tool.read_file(_STATIC_TIER, _STATIC_FILE_REL)
@@ -424,8 +389,8 @@ class TestStaticSnapshotReacquire:
 
         # Step 3: re-index — a matching stamp + absent snapshot must re-acquire.
         recover_indexer = _make_indexer(
-            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=snapshot_root,
+            config=config, store=trio.store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=trio.manifest, snapshot_root=snapshot_root,
         )
         await recover_indexer.index_tier(root)
 
@@ -441,7 +406,7 @@ class TestStaticSnapshotReacquire:
         assert recovered.line_end >= 1
 
     async def test_matching_stamp_with_present_snapshot_still_skips_zero_acquire(
-        self, tmp_path: Path, store_factory: Any
+        self, tmp_path: Path
     ) -> None:
         """The optimisation MUST be preserved: present snapshot + matching stamp → SKIP.
 
@@ -454,14 +419,11 @@ class TestStaticSnapshotReacquire:
         skips_with_zero_walk`` (clause 5): the exploding provider is the failure
         signal — if acquire runs, the optimisation regressed.
         """
-        # real-Qdrant
         slug = _slug()
         static_src = tmp_path / "community_src"
         _build_static_source(static_src)
         config = _config(slug=slug, static_source=static_src)
-        store = store_factory(slug)
-        await store.ensure_collection(_DIM)
-        manifest = Manifest(str(tmp_path / "m.db"))
+        trio = fake_surreal_trio(dim=_DIM)
         snapshot_root = tmp_path / "snap"
         layout = SnapshotLayout(snapshot_root)
         materialized = layout.materialization_dir(_STATIC_TIER)
@@ -469,8 +431,8 @@ class TestStaticSnapshotReacquire:
 
         # Step 1: real build → stamp set + snapshot dir present and non-empty.
         first_indexer = _make_indexer(
-            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=snapshot_root,
+            config=config, store=trio.store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=trio.manifest, snapshot_root=snapshot_root,
         )
         await first_indexer.index_tier(root)
         assert (materialized / _STATIC_FILE_REL).exists(), (
@@ -482,8 +444,8 @@ class TestStaticSnapshotReacquire:
         # PRESENT snapshot must skip without ever calling acquire.
         exploding = _ExplodingProvider(_STATIC_TIER)
         second_indexer = _make_indexer(
-            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=snapshot_root, providers=[exploding],
+            config=config, store=trio.store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=trio.manifest, snapshot_root=snapshot_root, providers=[exploding],
         )
         summary = await second_indexer.index_tier(root)
 
@@ -497,7 +459,7 @@ class TestStaticSnapshotReacquire:
         assert _STATIC_TIER not in summary.tiers_rebuilt
 
     async def test_matching_stamp_reacquires_when_snapshot_dir_empty(
-        self, tmp_path: Path, store_factory: Any
+        self, tmp_path: Path
     ) -> None:
         """An EMPTY snapshot dir (present but no files) also forces a re-acquire.
 
@@ -507,14 +469,11 @@ class TestStaticSnapshotReacquire:
         This case pins the EMPTY half of "absent/empty" so a fix that only checks
         ``dir.exists()`` (and misses the empty case) is caught.
         """
-        # real-Qdrant
         slug = _slug()
         static_src = tmp_path / "community_src"
         _build_static_source(static_src)
         config = _config(slug=slug, static_source=static_src)
-        store = store_factory(slug)
-        await store.ensure_collection(_DIM)
-        manifest = Manifest(str(tmp_path / "m.db"))
+        trio = fake_surreal_trio(dim=_DIM)
         snapshot_root = tmp_path / "snap"
         layout = SnapshotLayout(snapshot_root)
         materialized = layout.materialization_dir(_STATIC_TIER)
@@ -522,8 +481,8 @@ class TestStaticSnapshotReacquire:
 
         # Step 1: initial build → stamp + materialised snapshot.
         first_indexer = _make_indexer(
-            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=snapshot_root,
+            config=config, store=trio.store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=trio.manifest, snapshot_root=snapshot_root,
         )
         await first_indexer.index_tier(root)
         assert (materialized / _STATIC_FILE_REL).exists()
@@ -535,13 +494,13 @@ class TestStaticSnapshotReacquire:
         assert materialized.exists() and not any(materialized.iterdir()), (
             "test setup: the snapshot dir must be present but EMPTY"
         )
-        assert first_indexer.tier_version_stamp(_STATIC_TIER) == _STATIC_VERSION
+        assert await first_indexer.tier_version_stamp(_STATIC_TIER) == _STATIC_VERSION
 
         # Step 3: re-index with a counting provider → must re-acquire on EMPTY.
         counting = _CountingProvider(_STATIC_TIER, static_src)
         second_indexer = _make_indexer(
-            config=config, store=store, embedder=FakeEmbedder(dim=_DIM),
-            manifest=manifest, snapshot_root=snapshot_root, providers=[counting],
+            config=config, store=trio.store, embedder=FakeEmbedder(dim=_DIM),
+            manifest=trio.manifest, snapshot_root=snapshot_root, providers=[counting],
         )
         summary = await second_indexer.index_tier(root)
 

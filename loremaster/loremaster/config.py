@@ -58,14 +58,17 @@ WATCH_STATIC: Literal["static"] = "static"
 TIER_DEFAULT = "default"
 
 # The safe charset a project ``slug`` must match: lowercase alphanumerics plus
-# ``-`` / ``_``, starting with an alphanumeric, non-empty. The slug is f-string'd
-# straight into BOTH the ``lore_<slug>`` Qdrant collection name AND the on-disk
-# state-DB paths (``<slug>.db`` / ``<slug>.memory.db`` / ``<slug>.graph.kuzu``), so
-# a traversal (``../etc``), a separator (``a/b``), whitespace, an uppercase, or a
-# leading separator is a path/collection hazard. Constraining it makes an
-# operator typo or a malicious value FAIL FAST at config load rather than
-# silently relocating the durable state outside the state dir.
-SLUG_PATTERN: str = r"^[a-z0-9][a-z0-9_-]*$"
+# ``_``, starting with an alphanumeric, non-empty. The slug is f-string'd
+# straight into the ``lore_<slug>`` Qdrant collection name, the on-disk
+# state-DB paths (``<slug>.memory.db``), AND — since P5 — the SurrealDB
+# database name (``effective_surreal_database``), so a traversal (``../etc``),
+# a separator (``a/b``), whitespace, an uppercase, or a leading separator is a
+# path/collection hazard, and a HYPHEN is rejected outright (operator directive
+# 2026-07-03, task #32): an unescaped hyphenated identifier fails SurrealQL
+# parsing (``REMOVE DATABASE my-proj`` → parse error), so it is blocked at
+# config load rather than escaped at every interpolation site. Constraining it
+# makes an operator typo or a malicious value FAIL FAST at load.
+SLUG_PATTERN: str = r"^[a-z0-9][a-z0-9_]*$"
 
 # An annotated ``str`` carrying the safe-charset constraint — mirrors the
 # ``PositiveInt`` annotated-type idiom already used for ``dim`` etc., so an
@@ -157,6 +160,55 @@ class QdrantConfig(_StrictModel):
 
     url: str
     api_key_env: str
+
+
+# The production SurrealDB RPC default — the standard WebSocket ``/rpc`` port.
+# The test harness retargets it via a per-test ``surreal:`` block (the dev
+# server on :18000 with a unique per-test database).
+SURREAL_DEFAULT_URL = "ws://127.0.0.1:8000/rpc"
+
+# The shared namespace every project's database lives under. Mirrors the
+# ``lore_<slug>`` Qdrant-collection convention: one namespace, one database per
+# project slug, so the two-container topology maps cleanly onto Surreal.
+SURREAL_DEFAULT_NAMESPACE = "lore"
+
+# The env-var *names* the root credentials are referenced by — never the secret
+# itself (mirrors :attr:`QdrantConfig.api_key_env` / :attr:`AuthKey.key_env`).
+SURREAL_DEFAULT_USER_ENV = "SURREAL_USER"
+SURREAL_DEFAULT_PASSWORD_ENV = "SURREAL_PASS"
+
+
+class SurrealConfig(_StrictModel):
+    """SurrealDB connection configuration (P5 store unification).
+
+    Locates the project's SurrealDB namespace + database and references the root
+    credentials by environment-variable *name* — never inlined, mirroring
+    :class:`QdrantConfig`'s ``api_key_env`` discipline (:func:`resolve_secret`
+    reads them at startup and fails loudly if unset).
+
+    OPTIONAL on :class:`LoreConfig` with a default instance, so every existing
+    ``lore.yaml`` (which carries no ``surreal:`` section) keeps validating and
+    transparently gets the localhost production defaults.
+
+    Attributes:
+        url: The SurrealDB RPC URL (a WebSocket ``/rpc`` endpoint). Defaults to
+            the standard localhost port.
+        namespace: The namespace the project's database lives under. Defaults to
+            the shared ``lore`` namespace.
+        database: The database name. ``None`` (default) derives it from the
+            project slug — the same identity the ``lore_<slug>`` Qdrant
+            collection uses — via :attr:`LoreConfig.effective_surreal_database`.
+        user_env: The *name* of the environment variable holding the root
+            username.
+        password_env: The *name* of the environment variable holding the root
+            password.
+    """
+
+    url: str = SURREAL_DEFAULT_URL
+    namespace: str = SURREAL_DEFAULT_NAMESPACE
+    database: str | None = None
+    user_env: str = SURREAL_DEFAULT_USER_ENV
+    password_env: str = SURREAL_DEFAULT_PASSWORD_ENV
 
 
 class RootConfig(_StrictModel):
@@ -345,6 +397,10 @@ class LoreConfig(_StrictModel):
     project: ProjectConfig
     embedding: EmbeddingConfig
     qdrant: QdrantConfig
+    # OPTIONAL with a default instance (like ``logging``), so an existing
+    # ``lore.yaml`` with no ``surreal:`` section still validates and gets the
+    # localhost production defaults; the dev-server harness sets it explicitly.
+    surreal: SurrealConfig = SurrealConfig()
     roots: list[RootConfig] = []
     include: list[str]
     exclude_dirs: list[str]
@@ -390,6 +446,17 @@ class LoreConfig(_StrictModel):
                 include=list(self.include),
             )
         ]
+
+    @property
+    def effective_surreal_database(self) -> str:
+        """The SurrealDB database name for this project.
+
+        Returns the explicit :attr:`SurrealConfig.database` when set, else the
+        project slug — the same identity the ``lore_<slug>`` Qdrant collection
+        and the on-disk state-DB paths use, so the Surreal database co-locates
+        with the rest of a project's durable state under one name.
+        """
+        return self.surreal.database or self.project.slug
 
 
 def load_config(path: str | Path) -> LoreConfig:

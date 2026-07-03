@@ -2,38 +2,51 @@
 
 The CLI is the cold-index entrypoint (``python -m loremaster.index``): it wires
 the REAL deployment resources and runs the :class:`~loremaster.index.indexer.Indexer`
-over a project's ``lore.yaml``. The deployed server builds a
-:class:`~loremaster.graph.CodeGraph` and passes it to the indexer so the graph
-tools (``what_imports`` / ``blast_radius`` / ``tests_for``) work; a cold index
-through the CLI MUST do the same, at the SAME shared graph path the server reads
-(``<manifest_dir>/<slug>.graph.db``) — otherwise the graph tools return empty on
-a freshly-cold-indexed deployment.
+over a project's ``lore.yaml``. Since P5 the deployment resources are the unified
+SurrealDB write stack — store + manifest + code graph in ONE namespace/database
+(:class:`~loremaster.config.SurrealConfig`) — the SAME database the server reads.
+A cold index through the CLI MUST land the code graph in that shared database
+(``what_imports`` / ``blast_radius`` / ``tests_for`` non-empty afterwards);
+pre-P5 this contract was "same graph FILE path as the server" — it is now
+"same DATABASE as the server", with the database name derived from the project
+slug when ``surreal.database`` is unset.
 
-These tests run the CLI's real wiring against a **REAL local Qdrant** (throwaway
-``lore_test_<uuid>`` collection), a **REAL corpus** (a ``tmp_path`` tree where one
-module imports a symbol from another), a temp-file manifest + graph, and a
-**FakeEmbedder** substituted for the real TEI embedder (the embedder is loresigil's
-tested concern — faking it keeps these fast, deterministic, and network-free).
+These tests run the CLI's real wiring against the REAL SurrealDB dev server
+(throwaway per-test database under the ``lore_test`` namespace), a **REAL
+corpus** (a ``tmp_path`` tree where one module imports a symbol from another),
+and a **FakeEmbedder** substituted for the real TEI embedder (the embedder is
+loresigil's tested concern — faking it keeps these fast, deterministic, and
+network-free).
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
-import pytest_asyncio
 import yaml
-from conftest import kz_query, kz_row
-from loremaster.graph import KIND_MODULE, CodeGraph
-from loremaster.store.qdrant import QdrantStore
+from _surreal_harness import (
+    drop_database as drop_surreal_database,
+)
+from _surreal_harness import (
+    make_env,
+    surreal_password,
+    surreal_url,
+    surreal_user,
+    unique_database,
+)
+from loremaster.graph_surreal import SurrealCodeGraph
 from loresigil.testing import FakeEmbedder
-from qdrant_client import AsyncQdrantClient
 
 # Production embedding dimensionality the FakeEmbedder mimics.
 _DIM = 2048
+
+# The namespace every throwaway CLI-test database lives under (the harness's
+# own isolation convention).
+_TEST_NAMESPACE = "lore_test"
 
 # A module that DEFINES a symbol other modules import.
 _MODULE_A = """\
@@ -52,27 +65,9 @@ def headline(week):
     return compute_curve(week) + 1
 """
 
-
-@pytest_asyncio.fixture()
-async def store_factory() -> AsyncIterator[Any]:
-    """Builder for a :class:`QdrantStore` with exact-name (concurrency-safe) teardown."""
-    from conftest import QDRANT_URL, _qdrant_api_key
-
-    client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-    created: list[str] = []
-
-    def _make(slug: str) -> QdrantStore:
-        store = QdrantStore(client=client, slug=slug)
-        created.append(store.collection_name)
-        return store
-
-    try:
-        yield _make
-    finally:
-        for name in created:
-            if await client.collection_exists(name):
-                await client.delete_collection(name)
-        await client.close()
+# The env-var names the default SurrealConfig references credentials by.
+_SURREAL_USER_ENV = "SURREAL_USER"
+_SURREAL_PASS_ENV = "SURREAL_PASS"
 
 
 @pytest.fixture()
@@ -82,18 +77,18 @@ def fake_embedder_cli(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     The CLI calls ``make_embedder_from_config`` to construct the live TEI
     embedder; faking it at the ``cli`` module boundary keeps the test
     network-free while leaving every other piece of the CLI wiring (store,
-    manifest, code-graph, providers, indexer) REAL. The CLI resolves the Qdrant
-    API key via ``resolve_secret`` (an ``os.environ`` read), so the key — read
-    from the same authoritative dotenv source the rest of the suite uses — is
-    exported into the environment for the duration of the test.
+    manifest, code-graph, providers, indexer) REAL. The CLI resolves the
+    SurrealDB credentials via ``resolve_secret`` (an ``os.environ`` read), so
+    the dev server's root credentials — the same ones the harness resolves —
+    are exported for the duration of the test.
     """
-    from conftest import _QDRANT_KEY_NAME, _qdrant_api_key
     from loremaster.index import cli
 
     monkeypatch.setattr(
         cli, "make_embedder_from_config", lambda _config: FakeEmbedder(dim=_DIM)
     )
-    monkeypatch.setenv(_QDRANT_KEY_NAME, _qdrant_api_key())
+    monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
+    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
     yield
 
 
@@ -101,8 +96,28 @@ def _slug() -> str:
     return f"test_{uuid.uuid4().hex}"
 
 
-def _write_lore_yaml(*, config_path: Path, slug: str, project_root: Path) -> None:
-    """Write a minimal explicit-roots ``lore.yaml`` whose live root is the corpus."""
+def _write_lore_yaml(
+    *,
+    config_path: Path,
+    slug: str,
+    project_root: Path,
+    surreal_database: str | None,
+) -> None:
+    """Write a minimal explicit-roots ``lore.yaml`` whose live root is the corpus.
+
+    Args:
+        surreal_database: An explicit throwaway database name, or ``None`` to
+            omit the field and exercise the slug-derived default — the
+            "same database the server reads" contract.
+    """
+    surreal_block: dict[str, Any] = {
+        "url": surreal_url(),
+        "namespace": _TEST_NAMESPACE,
+        "user_env": _SURREAL_USER_ENV,
+        "password_env": _SURREAL_PASS_ENV,
+    }
+    if surreal_database is not None:
+        surreal_block["database"] = surreal_database
     payload: dict[str, Any] = {
         "schema_version": 1,
         "project": {"slug": slug, "root": str(project_root)},
@@ -121,6 +136,7 @@ def _write_lore_yaml(*, config_path: Path, slug: str, project_root: Path) -> Non
             "tokenizer": "voyage-4-nano",
         },
         "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
+        "surreal": surreal_block,
         "roots": [
             {"tier": "custom", "watch": "live", "path": str(project_root), "include": ["**/*.py"]}
         ],
@@ -147,27 +163,50 @@ def _build_import_corpus(project_root: Path) -> None:
     (pkg / "b.py").write_text(_MODULE_B, encoding="utf-8")
 
 
+async def _assert_graph_populated(database: str, project_root: Path) -> None:
+    """The shared-database contract: the CLI's cold index left a queryable graph.
+
+    Opens an INDEPENDENT :class:`SurrealCodeGraph` on the same database (as the
+    server would) and asserts the resolved in-project import edge is reachable:
+    ``pkg.b``'s ``from pkg.a import compute_curve`` resolves to the symbol FQN
+    ``pkg.a.compute_curve``.
+    """
+    graph = SurrealCodeGraph(
+        url=surreal_url(),
+        namespace=_TEST_NAMESPACE,
+        database=database,
+        user=surreal_user(),
+        password=surreal_password(),
+        tier_roots={"custom": project_root},
+        project_roots=[project_root],
+    )
+    try:
+        importers = {node.qualified_name for node in await graph.what_imports("pkg.a.compute_curve")}
+        assert "pkg.b" in importers
+        assert await graph.indexed_file_count() >= 2
+    finally:
+        await graph.close()
+
+
 class TestCliBuildsCodeGraph:
-    """A cold index through the CLI builds a populated code-graph (Bug B)."""
+    """A cold index through the CLI builds a populated code-graph (Bug B) in the
+    project's SurrealDB database."""
 
     async def test_cli_run_populates_graph_with_nodes_and_import_edges(
         self,
         tmp_path: Path,
-        store_factory: Any,
         fake_embedder_cli: None,
     ) -> None:
-        # Pre-create the throwaway collection under the session-scoped slug so the
-        # store_factory teardown reaps it (the CLI opens its OWN client/store, but
-        # ensure_collection is idempotent and the collection name is deterministic).
         slug = _slug()
-        store_factory(slug)
+        database = unique_database()
 
         project_root = tmp_path / "tree"
         _build_import_corpus(project_root)
         config_path = tmp_path / "lore.yaml"
-        _write_lore_yaml(config_path=config_path, slug=slug, project_root=project_root)
-        manifest_path = tmp_path / "state" / f"{slug}.db"
-        graph_path = tmp_path / "state" / f"{slug}.graph.kuzu"
+        _write_lore_yaml(
+            config_path=config_path, slug=slug, project_root=project_root,
+            surreal_database=database,
+        )
 
         # Call _run directly (the real CLI wiring) — main() owns its own
         # asyncio.run(), which cannot nest inside this async test's loop.
@@ -177,83 +216,52 @@ class TestCliBuildsCodeGraph:
         args = build_parser().parse_args(
             [
                 "--config", str(config_path),
-                "--manifest", str(manifest_path),
-                "--graph", str(graph_path),
                 "--snapshot-root", str(tmp_path / "snap"),
             ]
         )
-        summary = await _run(load_config(args.config), args)
-        assert summary.files_failed == 0
-        assert summary.files_indexed > 0
-
-        # The graph file at the explicit path exists and holds real nodes.
-        assert graph_path.exists()
-        graph = CodeGraph(str(graph_path))
         try:
-            node_count = int(
-                kz_row(kz_query(graph.connection, "MATCH (n:CodeNode) RETURN count(n)"))[0]
-            )
-            assert node_count > 0, "cold index built NO graph nodes"
-            # The module nodes for both files are present.
-            module_count = int(
-                kz_row(kz_query(
-                    graph.connection,
-                    "MATCH (n:CodeNode) WHERE n.kind = $kind RETURN count(n)",
-                    {"kind": KIND_MODULE},
-                ))[0]
-            )
-            assert module_count >= 2
-            # The RESOLVED import edge is reachable via the reverse lookup: pkg.b's
-            # ``from pkg.a import compute_curve`` resolves in-project to the symbol
-            # FQN ``pkg.a.compute_curve``, so the module pkg.b imports it.
-            importers = {
-                node.qualified_name for node in graph.what_imports("pkg.a.compute_curve")
-            }
-            assert "pkg.b" in importers
+            summary = await _run(load_config(args.config), args)
+            assert summary.files_failed == 0
+            assert summary.files_indexed > 0
+            await _assert_graph_populated(database, project_root)
         finally:
-            graph.close()
+            await drop_surreal_database(make_env(database=database, dim=_DIM))
 
-    async def test_cli_run_defaults_graph_path_alongside_manifest(
+    async def test_cli_run_defaults_database_to_project_slug(
         self,
         tmp_path: Path,
-        store_factory: Any,
         fake_embedder_cli: None,
     ) -> None:
-        # With NO --graph, the CLI must build the graph at the SAME path the
-        # server reads: <manifest_dir>/<slug>.graph.kuzu. A mismatch means the
-        # server serves an empty graph after a cold index.
-        slug = _slug()
-        store_factory(slug)
+        # With NO surreal.database configured, the CLI must land everything in
+        # the slug-derived database — the SAME name the server derives, so a
+        # cold CLI index is immediately servable. (Pre-P5 this contract was the
+        # shared graph FILE path; the database name is its successor.)
+        slug = _slug()  # unique ⇒ the derived database name is also unique
 
         project_root = tmp_path / "tree"
         _build_import_corpus(project_root)
         config_path = tmp_path / "lore.yaml"
-        _write_lore_yaml(config_path=config_path, slug=slug, project_root=project_root)
-        manifest_path = tmp_path / "state" / f"{slug}.db"
+        _write_lore_yaml(
+            config_path=config_path, slug=slug, project_root=project_root,
+            surreal_database=None,
+        )
 
         from loremaster.config import load_config
         from loremaster.index.cli import _run, build_parser
 
+        config = load_config(config_path)
+        assert config.effective_surreal_database == slug  # the derivation itself
+
         args = build_parser().parse_args(
             [
                 "--config", str(config_path),
-                "--manifest", str(manifest_path),
                 "--snapshot-root", str(tmp_path / "snap"),
             ]
         )
-        summary = await _run(load_config(args.config), args)
-        assert summary.files_failed == 0
-        assert summary.files_indexed > 0
-
-        # The server-shared default path: alongside the manifest, <slug>.graph.kuzu.
-        expected_graph_path = manifest_path.parent / f"{slug}.graph.kuzu"
-        assert expected_graph_path.exists(), "default graph path not written"
-        graph = CodeGraph(str(expected_graph_path))
         try:
-            # pkg.b's resolved in-project import is the symbol FQN pkg.a.compute_curve.
-            importers = {
-                node.qualified_name for node in graph.what_imports("pkg.a.compute_curve")
-            }
-            assert "pkg.b" in importers
+            summary = await _run(config, args)
+            assert summary.files_failed == 0
+            assert summary.files_indexed > 0
+            await _assert_graph_populated(slug, project_root)
         finally:
-            graph.close()
+            await drop_surreal_database(make_env(database=slug, dim=_DIM))

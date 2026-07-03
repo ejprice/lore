@@ -73,6 +73,15 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from _surreal_harness import (
+    drop_database as drop_surreal_database,
+)
+from _surreal_harness import (
+    make_env,
+    surreal_password,
+    surreal_url,
+    surreal_user,
+)
 from loremaster.config import LoreConfig
 from loremaster.server import (
     AppContext,
@@ -89,6 +98,18 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client import models as qmodels
 
 _DIM = 2048
+
+# The namespace every throwaway per-test SurrealDB database lives under (mirrors
+# ``test_cli.py``'s harness-isolation convention; shared with the rest of the
+# suite's ported files so a persistent dev server accumulates ONE namespace).
+_SURREAL_TEST_NAMESPACE = "lore_test"
+
+# The env-var *names* the default SurrealConfig references credentials by —
+# matching :data:`loremaster.config.SURREAL_DEFAULT_USER_ENV` /
+# ``SURREAL_DEFAULT_PASSWORD_ENV`` so the real ``build_app_context`` resolves
+# them via the SAME names the production default config uses.
+_SURREAL_USER_ENV = "SURREAL_USER"
+_SURREAL_PASS_ENV = "SURREAL_PASS"
 
 # A real Python module with a uniquely-named symbol so search/get_symbol/graph
 # have something distinctive to find. Chunked for real through python_ast.
@@ -173,8 +194,43 @@ async def qdrant() -> AsyncIterator[AsyncQdrantClient]:
         await client.close()
 
 
+# Every slug minted by :func:`_slug` during the CURRENT test, so the autouse
+# :func:`_surreal_test_env` fixture can reap that test's throwaway SurrealDB
+# database (``surreal.database`` defaults to the project slug — see
+# :attr:`~loremaster.config.LoreConfig.effective_surreal_database`) without
+# every one of this file's ~40 call sites having to plumb its own database name
+# + teardown. Cleared by the fixture after each test; pytest runs this module's
+# tests serially, so no cross-test collision.
+_pending_surreal_slugs: list[str] = []
+
+
 def _slug() -> str:
-    return f"test_{uuid.uuid4().hex}"
+    """A unique per-test project slug, ALSO the default SurrealDB database name."""
+    slug = f"test_{uuid.uuid4().hex}"
+    _pending_surreal_slugs.append(slug)
+    return slug
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _surreal_test_env(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
+    """Export the harness's root SurrealDB credentials; reap every slug-named database.
+
+    Every :func:`_config` in this file carries an explicit ``surreal`` block
+    pointed at the harness dev server with NO explicit ``database`` — the config
+    falls back to the project slug (:attr:`~loremaster.config.LoreConfig.
+    effective_surreal_database`), so each test's real ``AppContext`` writes to
+    its own throwaway database named after its (uuid4-unique) slug. Autouse so
+    every test in this file gets the credentials, whether or not it happens to
+    reach ``build_app_context``.
+    """
+    monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
+    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
+    try:
+        yield
+    finally:
+        for slug in _pending_surreal_slugs:
+            await drop_surreal_database(make_env(database=slug, dim=_DIM))
+        _pending_surreal_slugs.clear()
 
 
 def _config(
@@ -202,6 +258,15 @@ def _config(
             "tokenizer": "voyage-4-nano",
         },
         "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
+        # No explicit ``database`` — it defaults to the (uuid4-unique) project
+        # slug, giving every test its own throwaway SurrealDB database with zero
+        # extra plumbing (reaped by the autouse ``_surreal_test_env`` fixture).
+        "surreal": {
+            "url": surreal_url(),
+            "namespace": _SURREAL_TEST_NAMESPACE,
+            "user_env": _SURREAL_USER_ENV,
+            "password_env": _SURREAL_PASS_ENV,
+        },
         "roots": [
             {"tier": "custom", "watch": "live", "path": str(live_path), "include": ["**/*.py"]}
         ],
@@ -494,35 +559,44 @@ class TestAppContextLifespan:
         self, tmp_path: Path, qdrant: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Lifecycle hygiene (owner rule): when startup aborts (a failing extension
-        # hook AFTER the manifest + graph were opened), those SQLite connections
+        # hook AFTER the manifest + graph were opened), those Surreal connections
         # must be CLOSED, not leaked. A leaked connection on a half-built server is
         # the degradation case the rule targets. Spy on the manifest + graph
         # connections and assert both were closed after the abort — a discriminator
         # that fails on the un-hardened build (which leaks them).
-        import loremaster.graph as graph_module
-        import loremaster.index.manifest as manifest_module
+        #
+        # PORTED: the pre-port suite tracked ``loremaster.index.manifest.Manifest``
+        # (SQLite) + ``loremaster.graph.CodeGraph`` (Kùzu) — build_app_context now
+        # constructs ``SurrealManifest`` / ``SurrealCodeGraph`` instead (imported
+        # from ``loremaster.index.surreal_manifest`` / ``loremaster.graph_surreal``
+        # at call time), so the tracked-subclass monkeypatch targets are ported to
+        # match. The probe is ported too: a SurrealDB connection self-heals on
+        # reconnect rather than raising when reused post-close (unlike a closed
+        # sqlite3/Kùzu handle), so "was it really closed?" is instead read off the
+        # SAME private ``_connection`` attribute ``close()`` nulls — the identical
+        # implementation-internals-reaching style the pre-port probe used
+        # (``handle.connection``), just the Surreal port's own closure signal.
+        import loremaster.graph_surreal as graph_module
+        import loremaster.index.surreal_manifest as manifest_module
         from loremaster.extension import Extension, ExtensionContext
 
         opened: list[Any] = []
 
-        class _TrackedManifest(manifest_module.Manifest):
-            def __init__(self, db_path: str) -> None:
-                super().__init__(db_path)
+        class _TrackedManifest(manifest_module.SurrealManifest):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
                 opened.append(self)
 
-        class _TrackedGraph(graph_module.CodeGraph):
-            def __init__(self, db_path: str, **kwargs: Any) -> None:
-                # Forward the resolution kwargs (tier_roots/project_roots) the
-                # production construction site now passes — the spy must mirror the
-                # real constructor signature, not the pre-resolution one.
-                super().__init__(db_path, **kwargs)
+        class _TrackedGraph(graph_module.SurrealCodeGraph):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
                 opened.append(self)
 
         # build_app_context imports these from their source modules at call time,
         # so patching the source attribute is what the local ``from ... import``
         # resolves.
-        monkeypatch.setattr(manifest_module, "Manifest", _TrackedManifest)
-        monkeypatch.setattr(graph_module, "CodeGraph", _TrackedGraph)
+        monkeypatch.setattr(manifest_module, "SurrealManifest", _TrackedManifest)
+        monkeypatch.setattr(graph_module, "SurrealCodeGraph", _TrackedGraph)
 
         class _BoomExtension(Extension):
             @property
@@ -547,17 +621,26 @@ class TestAppContextLifespan:
                 start_tasks=False,
             )
         # Both DB handles were opened during the (aborted) build and must now be
-        # closed. A closed connection raises on use — that is the probe. The
-        # manifest is SQLite (``SELECT 1``); the graph is Kùzu (``RETURN 1`` — the
-        # valid trivial Cypher), so each is probed with its OWN dialect's no-op
-        # query (``SELECT 1`` is NOT valid Cypher and would raise even OPEN, making
-        # the probe meaningless for the Kùzu handle).
+        # closed — ``close()`` is the ONLY code path that nulls the private
+        # ``_connection`` attribute, so a non-``None`` value after the abort means
+        # the handle was left open (the leak the rule guards against).
         assert len(opened) == 2, "manifest + graph should both have been opened"
         for handle in opened:
-            probe = "RETURN 1" if isinstance(handle, _TrackedGraph) else "SELECT 1"
-            with pytest.raises(Exception):  # noqa: B017 - raises on a closed conn
-                handle.connection.execute(probe)
+            assert handle._connection is None, (  # noqa: SLF001 - the closure signal
+                f"{type(handle).__name__} must be closed (connection nulled) after "
+                "an aborted startup — a non-None _connection means it leaked"
+            )
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "P5 dual-store interim: the write path (indexer) lands chunks in "
+            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
+            "so the index->read round-trip this test pins is unfulfillable until "
+            "P6 cuts the read path over. strict=True: the moment P6 lands and "
+            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
+        ),
+    )
     async def test_startup_runs_an_initial_reconcile_so_offline_edits_index_now(
         self, tmp_path: Path, qdrant: AsyncQdrantClient
     ) -> None:
@@ -674,11 +757,43 @@ class TestAppContextLifespan:
             assert ctx.reconcile_task is None, (
                 "watcher.enabled=False must not spawn the periodic reconcile task"
             )
-            # But the initial sweep still ran: the on-disk file is indexed + resolvable.
+            # But the initial sweep still ran: the on-disk file is indexed. The
+            # read-your-writes get_symbol tail lives in the xfailed sibling below
+            # (C3+C5 audit bug #1: xfailing THIS gating half would shadow task
+            # #13's only regression guard behind the dual-store interim).
             status = await ctx.index_status()
             assert status.files_indexed >= 1, (
                 "watcher.enabled=False must not skip the initial startup sweep"
             )
+        finally:
+            await ctx.aclose()
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "P5 dual-store interim: the write path (indexer) lands chunks in "
+            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
+            "so the index->read round-trip this test pins is unfulfillable until "
+            "P6 cuts the read path over. strict=True: the moment P6 lands and "
+            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
+        ),
+    )
+    async def test_watcher_disabled_initial_sweep_is_symbol_resolvable(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> None:
+        # The read-your-writes tail split out of the gating test above: the file
+        # the watcher-disabled initial sweep indexed must resolve via get_symbol.
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "static_corpus.py").write_text(
+            "def indexed_while_watcher_disabled():\n    return 1\n", encoding="utf-8"
+        )
+        config = _config(slug, live, watcher_enabled=False)
+        ctx = await _make_context(
+            config=config, client=qdrant, tmp_path=tmp_path, start_tasks=True
+        )
+        try:
             symbol = await ctx.get_symbol("indexed_while_watcher_disabled")
             assert symbol.file_path == "pkg/static_corpus.py"
         finally:
@@ -1170,6 +1285,16 @@ class TestToolOutputSchemas:
                 f"return a real pydantic model so the element schema is field-level"
             )
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "P5 dual-store interim: the write path (indexer) lands chunks in "
+            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
+            "so the index->read round-trip this test pins is unfulfillable until "
+            "P6 cuts the read path over. strict=True: the moment P6 lands and "
+            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
+        ),
+    )
     async def test_live_call_returns_structured_content_with_fields(
         self, tmp_path: Path, qdrant: AsyncQdrantClient
     ) -> None:
@@ -1259,6 +1384,16 @@ class TestToolBehaviourEndToEnd:
         finally:
             await ctx.aclose()
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "P5 dual-store interim: the write path (indexer) lands chunks in "
+            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
+            "so the index->read round-trip this test pins is unfulfillable until "
+            "P6 cuts the read path over. strict=True: the moment P6 lands and "
+            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
+        ),
+    )
     async def test_search_code_finds_indexed_symbol(self, indexed_context: AppContext) -> None:
         results = await indexed_context.search_code("champion routing", k=10)
         assert results
@@ -1272,6 +1407,16 @@ class TestToolBehaviourEndToEnd:
         assert status.files_indexed >= 1
         assert status.files_failed == 0
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "P5 dual-store interim: the write path (indexer) lands chunks in "
+            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
+            "so the index->read round-trip this test pins is unfulfillable until "
+            "P6 cuts the read path over. strict=True: the moment P6 lands and "
+            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
+        ),
+    )
     async def test_get_symbol_resolves_exact_definition(
         self, indexed_context: AppContext
     ) -> None:
@@ -1382,9 +1527,19 @@ class TestToolBehaviourEndToEnd:
         # regardless of corpus state.
         # Note: max_results=0 is below the schema ge=1 floor, so call the handler
         # directly (bypassing validation) to prove the handler itself does not raise.
-        dead = indexed_context.code_graph.dead_code([], max_results=0)
+        dead = await indexed_context.code_graph.dead_code([], max_results=0)
         assert dead == []  # empty is fine, not an error
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "P5 dual-store interim: the write path (indexer) lands chunks in "
+            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
+            "so the index->read round-trip this test pins is unfulfillable until "
+            "P6 cuts the read path over. strict=True: the moment P6 lands and "
+            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
+        ),
+    )
     async def test_reindex_brings_a_new_file_current(
         self, indexed_context: AppContext, tmp_path: Path
     ) -> None:
@@ -1437,6 +1592,16 @@ class TestReindexTierValidation:
         # The configured tier ("custom") must be named so the caller can correct.
         assert "custom" in message, "the error must name the valid tier(s)"
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "P5 dual-store interim: the write path (indexer) lands chunks in "
+            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
+            "so the index->read round-trip this test pins is unfulfillable until "
+            "P6 cuts the read path over. strict=True: the moment P6 lands and "
+            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
+        ),
+    )
     async def test_known_tier_reindexes(self, indexed_context: AppContext) -> None:
         # A real tier proceeds (and brings a new file in that tier current).
         live = indexed_context._config.effective_roots[0].path  # noqa: SLF001
@@ -1522,6 +1687,16 @@ class TestRegisteredToolWrappers:
         )
         return structured
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "P5 dual-store interim: the write path (indexer) lands chunks in "
+            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
+            "so the index->read round-trip this test pins is unfulfillable until "
+            "P6 cuts the read path over. strict=True: the moment P6 lands and "
+            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
+        ),
+    )
     async def test_search_code_wrapper_yields_structured_list(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
@@ -1537,6 +1712,16 @@ class TestRegisteredToolWrappers:
         assert any("[SOURCE:" in item["formatted"] for item in items)
         assert any("pkg/router.py" in item["formatted"] for item in items)
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "P5 dual-store interim: the write path (indexer) lands chunks in "
+            "SurrealDB while search_code/get_symbol still read the Qdrant store, "
+            "so the index->read round-trip this test pins is unfulfillable until "
+            "P6 cuts the read path over. strict=True: the moment P6 lands and "
+            "this XPASSes, the marker MUST be removed - these are P6 acceptance tests."
+        ),
+    )
     async def test_get_symbol_wrapper_yields_structured_model(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
