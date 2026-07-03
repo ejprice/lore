@@ -59,6 +59,26 @@ embedding:
 # --- vector store (Qdrant) --------------------------------------------------
 qdrant: {url: http://127.0.0.1:16333, api_key_env: QDRANT__SERVICE__API_KEY}   # CUSTOMIZE url
 
+# --- unified store (SurrealDB) — v2 store unification -----------------------
+# OPTIONAL section in the schema: every field below has the default shown, so
+# an existing lore.yaml with no `surreal:` block still validates and gets
+# these defaults. Unlike `logging:`/`auth:` further down, though, omitting
+# this block does NOT mean SurrealDB is skipped — it means the defaults are
+# used, and a reachable SurrealDB server is still required. During the
+# P5->P8 dual-store interim BOTH SurrealDB and Qdrant above must be reachable
+# at boot: search, symbol lookup, and the graph tools already read/write
+# through SurrealDB (server-mode, RocksDB-backed), while memory
+# (lore_save_memory/lore_recall_memory) stays on Qdrant until P7. `database`
+# defaults to `project.slug` — the same identity the `lore_<slug>` Qdrant
+# collection uses. Secrets are env-var NAMEs only, never inlined, mirroring
+# `qdrant.api_key_env` above.
+# surreal:
+#   url: ws://127.0.0.1:8000/rpc            # CUSTOMIZE if not the local default port
+#   namespace: lore
+#   database: my_project                    # CUSTOMIZE — omit to default to project.slug
+#   user_env: SURREAL_USER                  # env-var NAME only — never the value
+#   password_env: SURREAL_PASS              # env-var NAME only — never the value
+
 # --- source roots / tiers ---------------------------------------------------
 # Prefer an EXPLICIT live root. `path: /workspace` is the project mount inside the
 # container. `watch: live` = inotify; `watch: static` = a version-stamped batch tier

@@ -38,8 +38,8 @@ A [`uv`](https://docs.astral.sh/uv/)-workspace monorepo (Python 3.14+):
 ## MCP tools
 
 `lore_search_code` · `lore_read_file` · `lore_get_symbol` · `lore_what_imports` · `lore_blast_radius` ·
-`lore_tests_for` · `lore_references` · `lore_dead_code` · `lore_save_memory` · `lore_recall_memory` ·
-`lore_reindex` · `lore_index_status`
+`lore_tests_for` · `lore_references` · `lore_dead_code` · `lore_impact` · `lore_map` ·
+`lore_save_memory` · `lore_recall_memory` · `lore_reindex` · `lore_index_status`
 
 ### Freshness & read-your-writes
 
@@ -136,34 +136,42 @@ without forking the core. See **`EXTENDING.md`** (the eleven seams) and
 
 ## Status / Roadmap
 
-The sections above describe the **live, shipped system**: Qdrant (vectors) + SQLite
-(manifest) + KùzuDB (code-graph). That is what a deployed `lore-<slug>` container
-actually runs today.
-
-In progress, on the `feat/surreal-unification` branch and **not yet wired into the
-running server**: a rearchitecture ("DeadReckoning+ v2") that unifies the store onto
+The sections above describe the **live, shipped system** on `feat/surreal-unification`:
 a single, always-networked [SurrealDB](https://surrealdb.com) server (≥3.1.x;
-server-mode only — embedded mode was evaluated and ruled out) serving hybrid
-vector+BM25 search, the manifest, and the code-graph. Progress so far:
+server-mode only — embedded mode was evaluated and ruled out) is now the write path
+and most of the read path of a deployed `lore-<slug>` container. The v2 rearchitecture
+("DeadReckoning+") retires the legacy Qdrant + SQLite + KùzuDB stack **per-consumer,
+not in one cutover** — each phase below is complete and already running, not a design
+doc:
 
 - **P1 — shipped and live**: the `voyage-context` embedder backend (see "Choosing
   an embedder" above) is dispatched by the real indexer and selectable via config
-  (on this branch; not yet on a release) — orthogonal to the store, so it works on
-  today's Qdrant/SQLite/Kùzu stack.
-- **P2 — `SurrealStore`**: hybrid retrieval (HNSW vector search fused with BM25
-  FULLTEXT via the engine's native `search::rrf`) plus atomic per-file replace.
-- **P3 — `SurrealManifest`**: the manifest ported onto SurrealDB's `file`/`meta`
-  tables.
-- **P4 — `SurrealCodeGraph`**: the code-graph ported onto SurrealDB's native
-  `RELATE` traversal (the astroid derivation logic is reused unchanged from the
-  live `CodeGraph`).
-
-P2–P4 are complete, tested modules that **nothing in the server or indexer calls
-yet** — the live system still runs Qdrant/SQLite/Kùzu end-to-end. Still planned,
-not started: wiring the transactional indexer and watcher/reconcile onto the new
-store, then the MCP tool surface itself, plus a client/server split (a write-side
-"scout" process co-located with the repo vs. a stateless, horizontally replicated
-MCP server) once the store layer is fully wired in.
+  (on this branch; not yet on a release) — orthogonal to the store, so it predates
+  and survives the cutover below unchanged.
+- **P5 — write path, shipped and live**: the indexer, watcher, and reconcile sweep
+  write through `SurrealStore` (hybrid HNSW vector + BM25 FULLTEXT retrieval fused
+  via the engine's native `search::rrf`, atomic per-file replace), `SurrealManifest`,
+  and `SurrealCodeGraph` (native `RELATE` traversal; the astroid derivation logic is
+  reused unchanged from the legacy `CodeGraph`). Every chunk indexed since P5 lands
+  in SurrealDB, never Qdrant. A standalone single-writer `Scout` daemon (`scout.py`)
+  composing the same write stack also exists now as a first step toward a
+  write/read process split — the MCP server itself still composes its own
+  in-process write stack too, so that split isn't cut over yet.
+- **P6 — read path, shipped and live**: `lore_search_code` (SearchPipeline v2 — one-
+  query hybrid RRF, per-hit graph enrichment, memory-boost, config-gated reranker
+  seam) and `lore_get_symbol` read the same unified store the indexer writes (commit
+  `8ae67ab`). The graph tools — `lore_what_imports`, `lore_blast_radius`,
+  `lore_tests_for`, `lore_references`, `lore_dead_code`, plus the new `lore_impact`
+  (bounded blast-radius-with-tests in one call) and `lore_map` (PageRank-ranked,
+  token-budgeted repo map) — all compose over the same `SurrealCodeGraph`.
+- **Memory — still on Qdrant, by design, until P7**: `lore_save_memory` /
+  `lore_recall_memory` keep speaking the Qdrant API on a separate handle; a durable
+  write-through ledger protects them against a Qdrant wipe in the meantime. **P7**
+  (a `MemoryBackend` seam + orchestration ledger) is planned, not started.
+- **P8 (v1.0) — planned**: once memory is off Qdrant, the `QdrantStore`/client and
+  its dependency are deleted outright, and the legacy KùzuDB code-graph shell is
+  removed.
+- **P9 — planned**: cross-tier compare on `lore_diff`.
 
 ## Development
 
