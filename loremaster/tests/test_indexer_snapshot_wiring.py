@@ -54,12 +54,14 @@ fixture pattern, minus the code-graph collaborator (irrelevant here).
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from _surreal_harness import (
     PRODUCTION_DIM,
@@ -75,7 +77,7 @@ from loremaster.index.reconcile import ReconcileEngine
 from loremaster.index.surreal_manifest import SurrealManifest
 from loremaster.server import LoreServer
 from loremaster.store.surreal import SurrealStore
-from loremaster.store.surreal_schema import SNAPSHOT_TABLE
+from loremaster.store.surreal_schema import SNAPSHOT_ENTRY_TABLE, SNAPSHOT_TABLE
 from loresigil.testing import FakeEmbedder
 
 try:
@@ -180,6 +182,17 @@ async def _snapshot_rows(env: SurrealEnv) -> list[dict[str, Any]]:
     finally:
         await connection.close()
     return [row for row in result if isinstance(row, dict)] if isinstance(result, list) else []
+
+
+async def _entry_rows_for_snapshot(env: SurrealEnv, snapshot_id: str) -> list[dict[str, Any]]:
+    """Every ``snapshot_entry`` row referencing ``snapshot_id`` — a fresh admin read."""
+    connection = await connect_admin(env)
+    try:
+        result = await run(connection, f"SELECT * FROM {SNAPSHOT_ENTRY_TABLE}")
+    finally:
+        await connection.close()
+    rows = [row for row in result if isinstance(row, dict)] if isinstance(result, list) else []
+    return [row for row in rows if str(row["snapshot"]) == snapshot_id]
 
 
 @dataclass(frozen=True)
@@ -414,3 +427,129 @@ class TestAGenuineChangeDoesStampAgain:
         assert len(second_rows) == 2
         ids = {str(row["id"]) for row in second_rows}
         assert len(ids) == 2  # two DISTINCT snapshots, never a re-used id
+
+
+# ===========================================================================
+# Fix #1 (audit bug): a purge-only sweep is STILL a generation change.
+# ===========================================================================
+
+
+class TestReconcilePurgeOnlySweepStampsANewSnapshot:
+    """A deletion is a generation change too: a sweep that indexes NOTHING but
+    genuinely purges a vanished file must still stamp a new snapshot, whose
+    entries omit the purged file — otherwise the newest snapshot keeps
+    listing a file that no longer exists on disk."""
+
+    async def test_a_pure_deletion_sweep_stamps_a_new_snapshot_omitting_the_deleted_file(
+        self, wiring_bench: _WiringBench
+    ) -> None:
+        _write_pricing_file(wiring_bench.live_root)
+        doomed_path = wiring_bench.live_root / "src" / "doomed.py"
+        doomed_path.write_text("def doomed():\n    return 1\n", encoding="utf-8")
+
+        first_summary = await wiring_bench.engine.reconcile()
+        assert first_summary.files_indexed >= 2
+        assert first_summary.files_failed == 0
+        first_rows = await _snapshot_rows(wiring_bench.env)
+        assert len(first_rows) == 1
+        first_id = str(first_rows[0]["id"])
+
+        doomed_path.unlink()
+        second_summary = await wiring_bench.engine.reconcile()
+        assert second_summary.files_indexed == 0
+        assert second_summary.files_failed == 0
+        assert second_summary.files_purged >= 1
+
+        second_rows = await _snapshot_rows(wiring_bench.env)
+        assert len(second_rows) == 2  # a NEW snapshot exists alongside the first
+        ids = {str(row["id"]) for row in second_rows}
+        assert first_id in ids
+        second_id = (ids - {first_id}).pop()
+
+        entries = await _entry_rows_for_snapshot(wiring_bench.env, second_id)
+        entry_paths = {entry["file_path"] for entry in entries}
+        assert "src/doomed.py" not in entry_paths  # the purged file is OMITTED
+        assert "src/pricing.py" in entry_paths  # the survivor is still tracked
+
+
+class TestReconcileFailedAndPurgedSweepDoesNotStamp:
+    """A sweep containing BOTH a failure and a purge must still stamp NOTHING
+    — ``files_failed != 0`` always wins, regardless of any purge activity."""
+
+    async def test_a_sweep_with_a_failure_and_a_purge_stamps_nothing(
+        self, wiring_bench: _WiringBench
+    ) -> None:
+        _write_pricing_file(wiring_bench.live_root)
+        doomed_path = wiring_bench.live_root / "src" / "doomed.py"
+        doomed_path.write_text("def doomed():\n    return 1\n", encoding="utf-8")
+
+        baseline = await wiring_bench.engine.reconcile()
+        assert baseline.files_failed == 0
+        assert len(await _snapshot_rows(wiring_bench.env)) == 1
+
+        doomed_path.unlink()
+        (wiring_bench.live_root / "src" / "broken.py").write_text(
+            _BROKEN_SOURCE, encoding="utf-8"
+        )
+        texts = wiring_bench.indexer.chunk_texts(TIER_A, "src/broken.py", _BROKEN_SOURCE)
+        assert texts
+
+        failing_indexer = Indexer(
+            store=wiring_bench.store,
+            embedder=FakeEmbedder(dim=_DIM, fail_inputs=set(texts)),
+            manifest=wiring_bench.manifest,
+            registry=LoreServer(wiring_bench.config).registry,
+            source_providers=[],
+            config=wiring_bench.config,
+            snapshot_root=wiring_bench.live_root.parent / "snap",
+            snapshot_stamper=wiring_bench.stamper,
+        )
+        failing_engine = ReconcileEngine(
+            indexer=failing_indexer,
+            manifest=wiring_bench.manifest,
+            store=wiring_bench.store,
+            config=wiring_bench.config,
+            snapshot_stamper=wiring_bench.stamper,
+        )
+
+        summary = await failing_engine.reconcile()
+        assert summary.files_failed >= 1
+        assert summary.files_purged >= 1
+
+        # NOTHING new was stamped — a failure always wins over a purge.
+        assert len(await _snapshot_rows(wiring_bench.env)) == 1
+
+
+# ===========================================================================
+# Fix #3 (audit hardening): an advisory stamp failure is best-effort.
+# ===========================================================================
+
+
+class TestReconcileSnapshotStampFailureIsBestEffort:
+    """An advisory snapshot-stamp hiccup must never turn an otherwise-
+    successful sweep into a reported failure: ``stamp()`` raising is caught,
+    logged loudly, and the sweep's own summary is untouched."""
+
+    async def test_a_raising_stamp_does_not_fail_the_sweep(
+        self,
+        wiring_bench: _WiringBench,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _write_pricing_file(wiring_bench.live_root)
+
+        async def _boom() -> str:
+            raise RuntimeError("stamping exploded")
+
+        monkeypatch.setattr(wiring_bench.stamper, "stamp", _boom)
+
+        with caplog.at_level(logging.WARNING, logger="loremaster.index.reconcile"):
+            summary = await wiring_bench.engine.reconcile()
+
+        assert summary.files_indexed >= 1
+        assert summary.files_failed == 0
+
+        events = [r for r in caplog.records if r.message == "snapshot.stamp_failed"]
+        assert len(events) == 1
+        # The advisory failure means no snapshot was actually created either.
+        assert await _snapshot_rows(wiring_bench.env) == []

@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,9 @@ from surrealdb import AsyncSurreal, InvalidRecordIdError, RecordID
 from loremaster.index.surreal_manifest import STATE_INDEXED, SurrealManifest
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
+    TxnFragment,
+    compose,
+    execute_transaction,
     is_connection_error,
 )
 from loremaster.store.surreal import (
@@ -150,15 +154,32 @@ def capture_git_identity(repo_root: Path) -> tuple[str | None, str | None]:
 # SnapshotStamper
 # ---------------------------------------------------------------------------
 
-# Keys the SDK adds to a returned row that are NOT part of the stored payload.
-_ID_KEY = "id"
-
 # A defensive bound on how many chunk rows a single file's fidelity read may
 # pull from the store (see :meth:`SurrealStore.scroll`, whose ``limit`` is a
 # REQUIRED bound — a read is never unbounded). Real files sit far below this;
 # it exists to cap one pathological file rather than to reflect a realistic
-# chunk count.
+# chunk count. Hitting the cap EXACTLY is itself a signal worth a WARNING
+# (see :meth:`SnapshotStamper.stamp`) — the read may have silently truncated
+# a pathological file's real chunk count down to this ceiling.
 _MAX_CHUNKS_PER_FILE = 50_000
+
+# The client-generated snapshot record id's alpha tag. A stamp's snapshot row
+# needs a KNOWN id BEFORE the transaction runs (every entry's ``snapshot``
+# link is built from it) — this prefix, not the engine's own auto-id, is what
+# makes that possible. Guarantees ``RecordID.__str__`` never needs to escape
+# the identifier (see ``RecordID._escape_identifier``: a bare hex string
+# could — vanishingly rarely — contain zero alphabetic characters and be
+# escaped as "looks numeric"; a fixed alpha prefix rules that out entirely),
+# so :meth:`stamp`'s returned id string round-trips cleanly through
+# :meth:`delete_snapshot`'s ``RecordID.parse``.
+_SNAPSHOT_ID_PREFIX = "sn"
+
+# The composed-transaction fragment's param-name prefix (mirrors
+# ``CHUNK_FRAGMENT_PARAM_PREFIX`` / ``FILE_TEXT_FRAGMENT_PARAM_PREFIX`` in
+# ``store/surreal.py``) — distinct from every other producer's prefix so a
+# stamp fragment could, in principle, be composed alongside another
+# producer's fragment without a param collision.
+_SNAPSHOT_FRAGMENT_PARAM_PREFIX = "sn_"
 
 
 class SnapshotStamper:
@@ -324,17 +345,11 @@ class SnapshotStamper:
                 f"SurrealDB query rejected against {self._url!r}: {error}"
             ) from error
 
-    @staticmethod
-    def _as_rows(result: Any) -> list[dict[str, Any]]:
-        """Narrow a ``SELECT``/``CREATE``-shaped result to its list of dict rows."""
-        if not isinstance(result, list):
-            return []
-        return [row for row in result if isinstance(row, dict)]
-
     # -- stamping -------------------------------------------------------
 
     async def stamp(self) -> str:
-        """Write ONE new ``snapshot`` row + its ``snapshot_entry`` children.
+        """Write ONE new ``snapshot`` row + its ``snapshot_entry`` children,
+        ATOMICALLY (P5-C4 hardening #3: composed as ONE transaction).
 
         Reads EVERY currently-``indexed`` row from ``manifest``, captures git
         identity from ``project_root``, and for each indexed
@@ -344,12 +359,23 @@ class SnapshotStamper:
         manifest with zero indexed rows still produces a well-formed,
         zero-total, zero-entry snapshot rather than raising.
 
+        The parent row's id is generated CLIENT-SIDE (see
+        :data:`_SNAPSHOT_ID_PREFIX`) rather than read back from the engine's
+        own auto-id — that is what lets every entry's ``snapshot`` link be
+        built BEFORE anything is sent to the server, so the parent row and
+        every child entry compose into a SINGLE ``BEGIN … COMMIT`` (see
+        :meth:`_stamp_fragment`) run through the shared
+        :func:`~loremaster.store._txn.execute_transaction`. A mid-stamp
+        connection drop or ANY entry's rejection rolls the WHOLE stamp back —
+        never an orphan snapshot row with only some of its entries.
+
         Returns:
             The new snapshot's stringified record id (e.g. ``"snapshot:abc123"``).
 
         Raises:
             SurrealConnectionError: The server is unreachable or the socket died.
-            SurrealStoreError: The write was rejected by the engine.
+            SurrealStoreError: The write was rejected by the engine (nothing
+                is left half-applied).
         """
         indexed_rows = [
             row for row in await self._manifest.all_files() if row.state == STATE_INDEXED
@@ -362,6 +388,19 @@ class SnapshotStamper:
             chunk_rows = await self._store.scroll(
                 {"tier": row.tier, "file_path": row.file_path}, limit=_MAX_CHUNKS_PER_FILE
             )
+            if len(chunk_rows) == _MAX_CHUNKS_PER_FILE:
+                # Hitting the cap EXACTLY means the read may have silently
+                # truncated this file's real chunk count — surfaced loudly so
+                # an operator can investigate, rather than trusting a
+                # possibly-partial chunk_hashes list.
+                logger.warning(
+                    "snapshot.chunk_scroll_truncated",
+                    extra={
+                        "tier": row.tier,
+                        "file_path": row.file_path,
+                        "limit": _MAX_CHUNKS_PER_FILE,
+                    },
+                )
             chunk_hashes = [
                 {"identity": chunk_row["identity"], "hash": chunk_row["content_hash"]}
                 for chunk_row in chunk_rows
@@ -382,24 +421,77 @@ class SnapshotStamper:
             "files_total": len(indexed_rows),
             "chunks_total": chunks_total,
         }
-        created_rows = self._as_rows(
-            await self._query(
-                f"CREATE {SNAPSHOT_TABLE} CONTENT $content", {"content": snapshot_content}
-            )
+        snapshot_record_id = RecordID(
+            SNAPSHOT_TABLE, f"{_SNAPSHOT_ID_PREFIX}{uuid.uuid4().hex}"
         )
-        if not created_rows:
-            raise SurrealStoreError(
-                f"CREATE {SNAPSHOT_TABLE} returned no row — the write was silently rejected"
-            )
-        snapshot_record_id = created_rows[0][_ID_KEY]
-
-        for entry in entries:
-            entry_content: dict[str, Any] = {**entry, "snapshot": snapshot_record_id}
-            await self._query(
-                f"CREATE {SNAPSHOT_ENTRY_TABLE} CONTENT $content", {"content": entry_content}
-            )
-
+        fragment = self._stamp_fragment(snapshot_record_id, snapshot_content, entries)
+        statement_text, merged_params = compose(fragment)
+        await execute_transaction(
+            statement_text,
+            merged_params,
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+        )
         return str(snapshot_record_id)
+
+    def _stamp_fragment(
+        self,
+        snapshot_record_id: RecordID,
+        snapshot_content: dict[str, Any],
+        entries: list[dict[str, Any]],
+    ) -> TxnFragment:
+        """Build the ONE composable fragment for a full stamp.
+
+        A PURE builder (no I/O): the snapshot row's ``CREATE`` and every
+        entry's ``CREATE`` are emitted as sibling statements bound to
+        namespaced params (:data:`_SNAPSHOT_FRAGMENT_PARAM_PREFIX`), so
+        :func:`~loremaster.store._txn.compose` merges them into ONE
+        ``BEGIN … COMMIT`` — the parent snapshot row and every per-file entry
+        land, or roll back, together. Mirrors the ``type::record(table, $id)``
+        idiom every other producer in ``store/surreal.py`` uses for a
+        client-known id.
+
+        Args:
+            snapshot_record_id: The client-generated parent record id (see
+                :meth:`stamp`).
+            snapshot_content: The parent row's field payload.
+            entries: The per-file entry payloads (``snapshot`` NOT yet set —
+                :meth:`_entry_content` adds that link).
+
+        Returns:
+            The stamp's single :class:`~loremaster.store._txn.TxnFragment`.
+        """
+        prefix = _SNAPSHOT_FRAGMENT_PARAM_PREFIX
+        snapshot_key_param = f"{prefix}snapshot_key"
+        snapshot_content_param = f"{prefix}snapshot_content"
+        params: dict[str, Any] = {
+            snapshot_key_param: snapshot_record_id.id,
+            snapshot_content_param: snapshot_content,
+        }
+        statements = [
+            f"CREATE type::record('{SNAPSHOT_TABLE}', ${snapshot_key_param}) "
+            f"CONTENT ${snapshot_content_param}"
+        ]
+        for index, entry in enumerate(entries):
+            entry_content_param = f"{prefix}entry_content{index}"
+            params[entry_content_param] = self._entry_content(entry, snapshot_record_id)
+            statements.append(
+                f"CREATE {SNAPSHOT_ENTRY_TABLE} CONTENT ${entry_content_param}"
+            )
+        return TxnFragment(statements=statements, params=params)
+
+    @staticmethod
+    def _entry_content(entry: dict[str, Any], snapshot_record_id: RecordID) -> dict[str, Any]:
+        """Build one ``snapshot_entry``'s CONTENT dict, linked to its parent.
+
+        The ONLY place a single entry's content is assembled — small and
+        separately testable (see ``test_snapshots.py::
+        TestStampIsOneAtomicTransaction``, which splices an unrelated poison
+        statement into the SAME composed transaction to prove a later
+        rejection rolls back everything, not just itself).
+        """
+        return {**entry, "snapshot": snapshot_record_id}
 
     async def delete_snapshot(self, snapshot_id: str) -> None:
         """Delete the ``snapshot`` row AND every ``snapshot_entry`` referencing it.
@@ -419,6 +511,15 @@ class SnapshotStamper:
             # A malformed id names nothing to delete — idempotent no-op, not
             # a caller-facing error (a GC sweep may race a concurrent delete).
             return
+        # ORDERING IS LOAD-BEARING: children before the parent row. Record
+        # links do NOT auto-clean on delete (docs-audit constraint), so if the
+        # parent were deleted FIRST and this call crashed/dropped mid-way, the
+        # entries would be ORPHANED with no ``snapshot`` row left to filter by
+        # — invisible to any future GC sweep. Deleting entries first means a
+        # crash between the two statements leaves, at worst, a parentless
+        # snapshot row whose entries are ALREADY gone — a state a RETRY of
+        # this same idempotent call (or a future GC sweep keyed on the row)
+        # can still clean up correctly.
         await self._query(
             f"DELETE {SNAPSHOT_ENTRY_TABLE} WHERE snapshot = $snapshot_id",
             {"snapshot_id": record_id},

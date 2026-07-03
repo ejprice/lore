@@ -170,23 +170,51 @@ class ReconcileEngine:
         return result
 
     async def _maybe_stamp_snapshot(self, summary: ReconcileSummary) -> None:
-        """Stamp a new snapshot generation iff this sweep fully succeeded AND did
-        something (P5-C4, ledger #25).
+        """Stamp a new snapshot generation iff this sweep fully succeeded AND
+        changed something — by indexing OR by purging (P5-C4, ledger #25; gate
+        widened by the C4 audit's bug #1).
 
-        Mirrors :meth:`~loremaster.index.indexer.Indexer._maybe_stamp_snapshot`'s
-        gate exactly: a no-op sweep (every file fast-path skipped, zero
-        changes) must NOT create a heartbeat snapshot, and a sweep containing
-        even one failed file must stamp NOTHING. A no-op
+        A DELETION is a generation change too: a purge-only sweep (zero files
+        indexed, zero failed, but a file genuinely vanished from disk) must
+        still stamp — otherwise the newest snapshot keeps listing a file that
+        no longer exists on disk. This is why the gate here is WIDER than
+        :meth:`~loremaster.index.indexer.Indexer._maybe_stamp_snapshot`'s:
+        ``IndexSummary`` (the walk-only result that method reads) has no
+        ``files_purged`` equivalent to widen with — only reconcile's own
+        deletion pass produces one. Both methods agree on the other half of
+        the gate: a sweep containing even one failed file stamps NOTHING,
+        regardless of how much else it indexed or purged. A no-op
         :attr:`_snapshot_stamper` (the default) makes this a silent no-op.
+
+        ``stamp()`` itself is BEST-EFFORT from this caller's perspective (P5-C4
+        audit hardening #3b): any exception it raises is caught, logged loudly
+        (``snapshot.stamp_failed``), and never propagates — an advisory
+        snapshot hiccup must never turn an otherwise-successful sweep into a
+        reported failure.
 
         Args:
             summary: The just-completed sweep's :class:`ReconcileSummary`.
         """
         if self._snapshot_stamper is None:
             return
-        if summary.files_failed != 0 or summary.files_indexed <= 0:
+        if summary.files_failed != 0:
             return
-        await self._snapshot_stamper.stamp()
+        if summary.files_indexed <= 0 and summary.files_purged <= 0:
+            return
+        try:
+            await self._snapshot_stamper.stamp()
+        except Exception:
+            # Advisory only: the sweep itself already fully succeeded (the
+            # gate above already checked files_failed == 0) — a snapshot
+            # hiccup must never be reported as a sweep failure.
+            logger.warning(
+                "snapshot.stamp_failed",
+                exc_info=True,
+                extra={
+                    "files_indexed": summary.files_indexed,
+                    "files_purged": summary.files_purged,
+                },
+            )
 
     async def _purge_deletions(self) -> int:
         """Purge live-tier manifest rows whose file is gone from disk.

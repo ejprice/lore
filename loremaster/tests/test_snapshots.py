@@ -74,6 +74,7 @@ properties with no in-memory shortcut worth faking.
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -96,12 +97,18 @@ from _surreal_harness import (
 )
 from loremaster.index.records import sha512_hex
 from loremaster.index.surreal_manifest import STATE_INDEXED, SurrealManifest
+from loremaster.store._txn import TxnFragment, compose
 from loremaster.store.surreal import (
     _CONNECTION_ERRORS,
     SurrealStore,
     SurrealStoreError,
 )
-from loremaster.store.surreal_schema import SNAPSHOT_ENTRY_TABLE, SNAPSHOT_TABLE
+from loremaster.store.surreal_schema import (
+    FILE_STATES,
+    FILE_TABLE,
+    SNAPSHOT_ENTRY_TABLE,
+    SNAPSHOT_TABLE,
+)
 
 try:
     from loremaster.index.snapshots import SnapshotStamper, capture_git_identity
@@ -115,6 +122,16 @@ except ImportError:  # pragma: no cover - pre-P5-C4 RED: the module does not exi
 
 _DIM = PRODUCTION_DIM
 _TIER = TIER_A
+
+# A file.state value deliberately OUTSIDE the schema's closed domain — reused
+# from ``test_surreal_apply.py``'s own verified poison: a CREATE setting
+# ``state`` to this value is guaranteed rejected by the ``file.state`` field
+# ASSERT (``surreal_schema._file_statements``), independent of anything this
+# module implements. Used to prove ``SnapshotStamper.stamp()`` composes ONE
+# real transaction — an unrelated statement's rejection must roll back the
+# WHOLE thing, including the snapshot row and entries that would otherwise
+# already have landed under the old N+1-CREATE implementation.
+_INVALID_FILE_STATE = "__definitely_not_a_valid_state__"
 
 # The self-heal error vocabulary a healthy, self-healing port may surface
 # across a mid-life socket drop — mirrors
@@ -769,3 +786,113 @@ class TestSnapshotStamperMidLifeConnectionRecovery:
         )
         assert second_id and second_id != first_id
         assert len(await _snapshot_rows(stamp_bench.env)) == 2  # both stamps landed
+
+
+# ===========================================================================
+# Fix #2 (audit hardening): stamp() composes ONE atomic transaction.
+# ===========================================================================
+
+
+class TestStampIsOneAtomicTransaction:
+    """``stamp()`` must compose the snapshot row + every entry into ONE
+    ``BEGIN … COMMIT`` (P5-C4 hardening #3): a mid-stamp connection drop or a
+    later statement's rejection must never leave an orphan snapshot row with
+    only SOME of its entries persisted."""
+
+    async def test_poison_state_is_genuinely_out_of_domain(self) -> None:
+        # Guards the poison itself, independent of any implementation here.
+        assert _INVALID_FILE_STATE not in FILE_STATES
+
+    async def test_a_rejected_statement_rolls_back_the_whole_stamp(
+        self, stamp_bench: _StampBench, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A real, would-otherwise-succeed indexed file — proving the poison
+        # rolls back genuinely GOOD work too, not merely itself.
+        await _write_chunk_rows(
+            stamp_bench.store, tier=_TIER, file_path=_ORDER_SERVICE_PATH,
+            chunk_sources=_ORDER_SERVICE_CHUNK_SOURCES, dim=_DIM,
+        )
+        await _upsert_manifest_row(
+            stamp_bench.manifest, tier=_TIER, file_path=_ORDER_SERVICE_PATH,
+            source=_ORDER_SERVICE_SOURCE, n_chunks=len(_ORDER_SERVICE_CHUNK_SOURCES),
+        )
+
+        # An UNRELATED poison statement (a distinct ``file`` record, its own
+        # id so it can never id-clash with a manifest row) spliced into the
+        # SAME composed transaction ``stamp()`` builds — mirrors
+        # ``test_surreal_apply.py``'s ``_invalid_state_fragment``.
+        poison_path = "demo/__poison_snapshot_stamp__.py"
+        poison_fragment = TxnFragment(
+            statements=[
+                f"CREATE type::record('{FILE_TABLE}', $px_id) SET "
+                "sha512 = $px_sha, mtime_ns = $px_mtime, size = $px_size, "
+                "n_chunks = $px_n, chunk_ids = $px_ids, state = $px_state, "
+                "updated_at = $px_when"
+            ],
+            params={
+                "px_id": [_TIER, poison_path],
+                "px_sha": "0" * 128,
+                "px_mtime": 0,
+                "px_size": 0,
+                "px_n": 0,
+                "px_ids": [],
+                "px_state": _INVALID_FILE_STATE,
+                "px_when": datetime.now(UTC),
+            },
+        )
+
+        def _compose_with_poison(*fragments: TxnFragment) -> tuple[str, dict[str, Any]]:
+            return compose(*fragments, poison_fragment)
+
+        monkeypatch.setattr("loremaster.index.snapshots.compose", _compose_with_poison)
+
+        with pytest.raises(SurrealStoreError):
+            await stamp_bench.stamper.stamp()
+
+        # NOTHING landed — not the snapshot row, not its entry. Under the OLD
+        # N+1-CREATE implementation the snapshot row (and this entry) would
+        # have already committed BEFORE the poison ever ran.
+        assert await _snapshot_rows(stamp_bench.env) == []
+        assert await _raw_rows(stamp_bench.env, SNAPSHOT_ENTRY_TABLE) == []
+
+
+# ===========================================================================
+# Nit #4: a file whose chunk scroll hits the cap warns (possible truncation).
+# ===========================================================================
+
+
+class TestSnapshotStamperWarnsOnPossibleChunkTruncation:
+    """A file whose chunk_hashes list exactly equals the scroll cap is a
+    possible-truncation signal — the WARNING names the file so an operator
+    can investigate, rather than silently trusting a maybe-partial list."""
+
+    async def test_stamp_warns_when_a_files_chunk_scroll_hits_the_lowered_cap(
+        self,
+        stamp_bench: _StampBench,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Lower the cap below the fixture's 3 real chunk rows so the scroll
+        # genuinely hits it exactly.
+        monkeypatch.setattr("loremaster.index.snapshots._MAX_CHUNKS_PER_FILE", 2)
+
+        await _write_chunk_rows(
+            stamp_bench.store, tier=_TIER, file_path=_ORDER_SERVICE_PATH,
+            chunk_sources=_ORDER_SERVICE_CHUNK_SOURCES, dim=_DIM,
+        )
+        await _upsert_manifest_row(
+            stamp_bench.manifest, tier=_TIER, file_path=_ORDER_SERVICE_PATH,
+            source=_ORDER_SERVICE_SOURCE, n_chunks=len(_ORDER_SERVICE_CHUNK_SOURCES),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="loremaster.index.snapshots"):
+            await stamp_bench.stamper.stamp()
+
+        events = [
+            record
+            for record in caplog.records
+            if record.message == "snapshot.chunk_scroll_truncated"
+        ]
+        assert len(events) == 1
+        assert events[0].levelno == logging.WARNING
+        assert events[0].file_path == _ORDER_SERVICE_PATH  # type: ignore[attr-defined]
