@@ -759,3 +759,117 @@ class TestNoVectorLeakage:
         assert "vector" not in row
         assert "__point_id" not in row
         assert stored_vector not in row.values()
+
+
+class TestCanonicalPayloadShape:
+    """Invariant 13 (cycle-1 audit addendum): the fake serves the CANONICAL
+    flattened payload shape the real store's read path produces.
+
+    The real ``SurrealStore`` runs ``_normalize_row`` on every scroll row and
+    every hybrid-search payload: the ``metadata`` column's contents are
+    promoted TOP-LEVEL and the ``"metadata"`` wrapper key itself never
+    survives to a caller (pinned canonically by test_surreal_store.py's
+    ``TestMetadataShapeReconciliation`` — ``assert "metadata" not in
+    rows[0]``); on an (adversarial-only) name collision the declared column's
+    own value wins. A fake serving the NESTED shape instead would let a P6
+    pipeline read ``payload["metadata"][...]`` and ship green while
+    production KeyErrors — the exact faithful-to-the-happy-path failure mode
+    this contract exists to prevent.
+    """
+
+    async def test_hybrid_search_payload_flattens_metadata_top_level(
+        self, store: FakeSurrealStore
+    ) -> None:
+        record = chunk_record(
+            tier=TIER_A,
+            file_path="models/meta_shape.py",
+            identity="MetaShape.symbol",
+            ident_text="MetaShape symbol",
+            metadata={"language": "python", "signature": "def confirm(self, order)"},
+        )
+        await store.upsert([(record, unit_vector(0, PRODUCTION_DIM))])
+
+        results = await store.hybrid_search(
+            query_vector=unit_vector(0, PRODUCTION_DIM),
+            query_text="MetaShape symbol",
+            k=5,
+        )
+
+        assert results
+        payload = results[0].payload
+        assert "metadata" not in payload, (
+            "the metadata WRAPPER must never survive to a caller — the real "
+            "store's _normalize_row drops it (TestMetadataShapeReconciliation)"
+        )
+        # The wrapper's CONTENTS are promoted top-level…
+        assert payload["language"] == "python"
+        assert payload["signature"] == "def confirm(self, order)"
+        # …and the declared columns are still intact alongside them.
+        assert payload["tier"] == TIER_A
+        assert payload["file_path"] == "models/meta_shape.py"
+
+    async def test_scroll_row_flattens_metadata_top_level(
+        self, store: FakeSurrealStore
+    ) -> None:
+        populated = chunk_record(
+            tier=TIER_A,
+            file_path="models/meta_scroll.py",
+            identity="MetaScroll.symbol",
+            metadata={"language": "python"},
+        )
+        # ``chunk_record`` injects ``"metadata": {}`` BY DEFAULT — so the
+        # empty-wrapper case rides every corpus; pin that it too is dropped.
+        empty_default = chunk_record(
+            tier=TIER_A,
+            file_path="models/meta_scroll_empty.py",
+            identity="MetaScrollEmpty.symbol",
+        )
+        await store.upsert(
+            [
+                (populated, unit_vector(0, PRODUCTION_DIM)),
+                (empty_default, unit_vector(1, PRODUCTION_DIM)),
+            ]
+        )
+
+        rows = await store.scroll(filters={"tier": TIER_A}, limit=10)
+
+        assert len(rows) == 2
+        by_path = {row["file_path"]: row for row in rows}
+        populated_row = by_path["models/meta_scroll.py"]
+        empty_row = by_path["models/meta_scroll_empty.py"]
+        assert "metadata" not in populated_row
+        assert populated_row["language"] == "python"
+        assert "metadata" not in empty_row, (
+            "an EMPTY metadata wrapper is dropped too — the real "
+            "_normalize_row never lets the key survive"
+        )
+
+    async def test_metadata_collision_declared_column_wins(
+        self, store: FakeSurrealStore
+    ) -> None:
+        # Adversarial-only input: a metadata key shadowing a declared column.
+        # The real _normalize_row applies the declared columns LAST, so the
+        # column's genuine value wins over the same-named metadata key.
+        record = chunk_record(
+            tier=TIER_A,
+            file_path="models/meta_clash.py",
+            identity="MetaClash.symbol",
+            ident_text="MetaClash symbol",
+            metadata={"tier": "EVIL-SHADOW-TIER", "extra_key": "kept"},
+        )
+        await store.upsert([(record, unit_vector(0, PRODUCTION_DIM))])
+
+        results = await store.hybrid_search(
+            query_vector=unit_vector(0, PRODUCTION_DIM),
+            query_text="MetaClash symbol",
+            k=5,
+        )
+
+        assert results
+        payload = results[0].payload
+        assert payload["tier"] == TIER_A, (
+            "on a name collision the DECLARED column's value wins — a fake "
+            "letting metadata shadow a column would corrupt tier/path scoping"
+        )
+        assert payload["extra_key"] == "kept"
+        assert "metadata" not in payload

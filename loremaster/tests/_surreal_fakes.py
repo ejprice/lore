@@ -96,6 +96,7 @@ from loremaster.store.surreal import (
     SurrealConnectionError,
     SurrealStoreError,
     VectorDimensionError,
+    _MAX_HYBRID_K,
 )
 from loremaster.store.surreal_schema import CHUNK_FILTER_KEYS, CHUNK_FULLTEXT_FIELDS
 from lorescribe.models import Chunk
@@ -523,16 +524,31 @@ class FakeSurrealStore:
 
     @staticmethod
     def _clean_payload(chunk: _StoredChunk) -> dict[str, Any]:
-        """``chunk``'s payload with the internal ``"__point_id"`` bookkeeping key
-        stripped — never leaked onto a caller-facing ``Candidate``/scroll row.
+        """``chunk``'s payload reconciled to the canonical production shape.
+
+        Mirrors :meth:`SurrealStore._normalize_row` EXACTLY (cycle-1 audit
+        addendum, invariant 13): the internal ``"__point_id"`` bookkeeping key
+        is always stripped (fake-only, never part of the real row shape), and
+        the ``"metadata"`` wrapper key is popped — when it held a non-empty
+        dict its contents are merged top-level with the declared chunk columns
+        applied LAST, so a declared column's real value wins over a same-named
+        metadata key on an (adversarial-only) collision — but the
+        ``"metadata"`` key itself never survives to a caller, even when
+        absent, empty, or not a dict.
 
         The stored vector is never merged into ``payload`` in the first place
         (it lives on ``chunk.vector``, a separate attribute), so no additional
         stripping is needed to keep it off a returned row either.
         """
-        return {
-            key: value for key, value in chunk.payload.items() if key != "__point_id"
+        metadata = chunk.payload.get("metadata")
+        rest = {
+            key: value
+            for key, value in chunk.payload.items()
+            if key not in ("__point_id", "metadata")
         }
+        if isinstance(metadata, dict) and metadata:
+            return {**metadata, **rest}
+        return rest
 
     @staticmethod
     def _cosine_similarity(
@@ -609,6 +625,18 @@ class FakeSurrealStore:
         this is what lets an exact identifier match RESCUE a chunk whose vector
         is a poor match. Ties break on ascending point id, same as the vector
         arm.
+
+        Tokenization boundary (cycle-1 audit addendum): this arm's overlap unit
+        (:meth:`_tokenize`, ``[a-z0-9_]+`` whole-token matching) is STRICTER
+        than the real store's ``code_ident`` analyzer, which additionally
+        subtoken-splits camelCase/snake_case identifiers (see
+        ``SurrealStore.hybrid_search``'s module-docstring dialect notes). The
+        divergence runs ONE direction: a subtoken query (e.g. ``"confirm"``
+        against an indexed ``action_confirm``) can rescue a hit on the real
+        analyzer but NOT on this fake — a false RED against the fake, never a
+        false GREEN. Retrieval-QUALITY assertions that depend on subtoken
+        rescue belong in ``test_surreal_store.py`` against the real analyzer,
+        never pinned against this fake.
         """
         query_tokens = self._tokenize(query_text)
         matched = sorted(
@@ -641,12 +669,23 @@ class FakeSurrealStore:
         match scope returns ``[]``, never raises; an armed fake (see
         :meth:`arm_connection_failure`) raises :class:`SurrealConnectionError`
         instead of ever running a search — the connection check happens FIRST,
-        mirroring the real store's own ordering.
+        mirroring the real store's own ordering. ``k`` is clamped to
+        :data:`~loremaster.store.surreal._MAX_HYBRID_K` — the SAME ceiling the
+        real store clamps to (imported, never a hand-copied literal) — before
+        it drives the final fused-result slice.
+
+        Tokenization-boundary note (cycle-1 audit addendum): this arm's
+        fulltext overlap is STRICTER than the real store's ``code_ident``
+        analyzer (whole-token match here vs. camelCase/snake_case subtoken
+        splitting there — see :meth:`_rank_by_fulltext`), so a subtoken-rescue
+        assertion belongs in ``test_surreal_store.py`` against the real
+        server, never pinned against this fake.
 
         Args:
             query_vector: The query embedding (same width as the store's dim).
             query_text: The natural-language/identifier query text.
-            k: The maximum number of fused results.
+            k: The maximum number of fused results (clamped to
+                :data:`~loremaster.store.surreal._MAX_HYBRID_K`).
             filters: Optional field -> exact-value scope; each KEY is allow-list
                 validated.
 
@@ -661,6 +700,7 @@ class FakeSurrealStore:
         self._maybe_trip_connection_failure()
         scope_filters = filters or {}
         self._validate_filter_keys(scope_filters)
+        k = min(k, _MAX_HYBRID_K)
         scoped = [
             chunk
             for chunk in self.db.chunks.values()

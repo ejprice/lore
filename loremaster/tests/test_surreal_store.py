@@ -941,6 +941,45 @@ class TestScrollLimit:
         )
         assert len(rows) == _SCROLL_LIMIT
 
+    async def test_scroll_order_is_deterministic_ascending_record_id(
+        self, store: SurrealStore
+    ) -> None:
+        # Cycle-1 audit addendum: scroll order must be CONTRACTUAL (ORDER BY
+        # id), not an engine accident — symbols.py's collision handling and
+        # every future scroll consumer must never inherit a heisen-order.
+        # Seed in DESCENDING point-id order (the known-permutation trick) so
+        # an insertion-order echo cannot masquerade as the contract. Honest
+        # note: pre-ORDER-BY the engine may ALREADY iterate ascending (RocksDB
+        # key order), so this pin's red phase is best-effort; the guarantee —
+        # not the accident — is what it locks in.
+        dim = PRODUCTION_DIM
+        pairs = [
+            (
+                chunk_record(
+                    tier=TIER_A,
+                    file_path=f"models/order{i}.py",
+                    identity="Ordered.scan",
+                ),
+                unit_vector(0, dim),
+            )
+            for i in range(9)
+        ]
+        pairs.sort(key=lambda pair: pair[0].point_id, reverse=True)
+        await store.upsert(pairs)
+        # Expected: ascending bare point-id order (record ids share the table
+        # prefix, so bare-key order == record-id order, ASCII collation both
+        # sides).
+        expected_paths = [
+            record.payload["file_path"]
+            for record, _vector in sorted(pairs, key=lambda pair: pair[0].point_id)
+        ]
+
+        first = await store.scroll({"identity": "Ordered.scan"}, limit=9)
+        second = await store.scroll({"identity": "Ordered.scan"}, limit=9)
+
+        assert [row["file_path"] for row in first] == expected_paths
+        assert [row["file_path"] for row in second] == expected_paths
+
 
 # Connection-drop exception classes a mid-life failure may surface as before the
 # store heals — the store's OWN _CONNECTION_ERRORS (shared source of truth) plus

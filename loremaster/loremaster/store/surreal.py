@@ -924,7 +924,9 @@ class SurrealStore:
 
         Returns:
             The matching rows (payload fields, embedding omitted), at most
-            ``limit`` of them; ``[]`` when nothing matches.
+            ``limit`` of them, in DETERMINISTIC ascending record-id order (an
+            explicit ``ORDER BY`` — never left to engine iteration order); ``[]``
+            when nothing matches.
 
         Raises:
             SurrealStoreError: A filter key is not an allowed chunk filter column.
@@ -933,7 +935,7 @@ class SurrealStore:
         statement = f"SELECT * OMIT {_EMBEDDING_KEY} FROM {CHUNK_TABLE}"
         if where:
             statement += f" WHERE {where}"
-        statement += f" LIMIT ${_LIMIT_PARAM}"
+        statement += f" ORDER BY {_ID_KEY} LIMIT ${_LIMIT_PARAM}"
         params[_LIMIT_PARAM] = limit
         rows = self._as_rows(await self._query(statement, params))
         return [self._normalize_row(row) for row in rows]
