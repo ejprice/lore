@@ -29,6 +29,14 @@ about the contract certifies a bug):
   ``compose``/``apply`` do — and applies every producer's effect all-or-nothing,
   so a mid-transaction failure rolls the WHOLE thing back (the atomicity the
   four rewired surfaces depend on).
+* P6 extends :class:`FakeSurrealStore` with the READ path —
+  :meth:`~FakeSurrealStore.hybrid_search` and :meth:`~FakeSurrealStore.scroll` —
+  signature-identical to the real store's, fusing a cosine-similarity vector arm
+  and a token-overlap fulltext arm with Reciprocal Rank Fusion exactly the way
+  the real engine's ``search::rrf`` does; plus
+  :meth:`~FakeSurrealStore.arm_connection_failure`, a control surface the fake
+  invents (it has no real socket to kill) so a test can pin "a down connection
+  raises, never a silent empty" for the read path too.
 * The code-graph fake REUSES the REAL astroid derivation
   (:class:`~loremaster.graph_surreal._AstroidDerivation`) — the SAME
   ``_derive_nodes`` / ``_derive_edges`` production runs — so a node qualified
@@ -54,6 +62,8 @@ RED that the rewiring turns green.
 from __future__ import annotations
 
 import copy
+import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -78,13 +88,16 @@ from loremaster.index.surreal_manifest import (
     STATE_INDEXED,
 )
 from loremaster.store._txn import TXN_STATEMENT_HARD_CAP, TxnParamCollisionError
+from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import (
     CHUNK_FRAGMENT_PARAM_PREFIX,
     FILE_TEXT_FRAGMENT_PARAM_PREFIX,
     FILE_TEXT_MAX_BYTES,
+    SurrealConnectionError,
     SurrealStoreError,
     VectorDimensionError,
 )
+from loremaster.store.surreal_schema import CHUNK_FILTER_KEYS, CHUNK_FULLTEXT_FIELDS
 from lorescribe.models import Chunk
 
 # The producer tags every fake fragment carries so a ported test can assert the
@@ -95,6 +108,20 @@ PRODUCER_CHUNK = "chunk"
 PRODUCER_FILE_TEXT = "file_text"
 PRODUCER_MANIFEST = "manifest"
 PRODUCER_GRAPH = "graph"
+
+# The fake's OWN Reciprocal Rank Fusion constant (P6 read path). Deliberately
+# NOT an import of the real store's private ``_RRF_K`` — the contract
+# (``test_surreal_fakes.py``) explicitly leaves this to the implementer — but
+# kept at the SAME order of magnitude as production's so a fused score lands in
+# the same realistic range a caller already expects (a rank-1/rank-1 hit tops
+# out at 2/(_RRF_K + 1), comfortably under 1.0).
+_RRF_K = 60
+
+# The token shape :meth:`FakeSurrealStore._tokenize` splits on — lower-cased
+# alphanumerics/underscore runs. Text is lower-cased BEFORE this pattern runs,
+# so no uppercase range is needed here (keeps the case-insensitivity in one
+# place rather than duplicated into the pattern itself).
+_TOKEN_PATTERN = re.compile(r"[a-z0-9_]+")
 
 
 @dataclass
@@ -242,6 +269,9 @@ class FakeSurrealStore:
     oversize-file_text decisions cheaply (a small file crosses a small cap) while
     still reading the ceiling from the store — the single source of truth the
     indexer's pre-check reads (clause 5), never a hand-copied literal.
+
+    P6 adds the READ path: :meth:`hybrid_search` and :meth:`scroll`, plus the
+    :meth:`arm_connection_failure` control surface — see the module docstring.
     """
 
     def __init__(
@@ -259,6 +289,11 @@ class FakeSurrealStore:
         # Every atomic apply's composed fragment list, in order — the telemetry a
         # ported test inspects to pin the composition of one transaction.
         self.applied_transactions: list[list[FakeFragment]] = []
+        # The SHARED failure-injection trip counter (arm_connection_failure):
+        # consumed by EITHER hybrid_search or scroll, so a test can arm the fake
+        # to simulate a downed connection regardless of which read method asks
+        # next — see arm_connection_failure's own docstring for the contract.
+        self._connection_failure_trips_remaining: int = 0
 
     # -- ceilings the indexer reads (clause-5 single source of truth) -----
 
@@ -430,6 +465,269 @@ class FakeSurrealStore:
         if tier is None:
             return len(self.db.chunks)
         return sum(1 for chunk in self.db.chunks.values() if chunk.tier == tier)
+
+    # -- read path: hybrid search / scroll / failure injection (P6) -------
+
+    def arm_connection_failure(self, times: int = 1) -> None:
+        """Arm the fake to simulate a downed connection on the NEXT ``times`` reads.
+
+        A single trip counter SHARED by :meth:`hybrid_search` and :meth:`scroll`
+        — mirroring a genuinely dead SurrealDB connection, where it does not
+        matter which read method asks next. Each tripped call raises
+        :class:`SurrealConnectionError` and consumes one trip; once exhausted,
+        the fake auto-disarms and behaves normally again (degradation ->
+        recovery, never permanently wedged) — the real store has no equivalent
+        method (it has a real socket to kill instead), so this is a fake-only
+        control surface invented for the read-path resilience contract.
+
+        Args:
+            times: How many subsequent read calls (across BOTH methods) should
+                raise before the fake recovers.
+        """
+        self._connection_failure_trips_remaining = times
+
+    def _maybe_trip_connection_failure(self) -> None:
+        """Consume one armed trip and raise, if the fake is currently armed.
+
+        Called at the TOP of both read methods, mirroring the real store's own
+        "establish the connection first, so a down server raises before any
+        search work" ordering in :meth:`SurrealStore.hybrid_search`.
+        """
+        if self._connection_failure_trips_remaining > 0:
+            self._connection_failure_trips_remaining -= 1
+            raise SurrealConnectionError(
+                "fake store armed via arm_connection_failure(); simulating a "
+                "downed connection"
+            )
+
+    @staticmethod
+    def _validate_filter_keys(filters: Mapping[str, str]) -> None:
+        """Raise on a filter KEY outside :data:`CHUNK_FILTER_KEYS`.
+
+        The SAME allow-list defense :meth:`SurrealStore._build_where` enforces
+        at its own trust boundary (imported from the schema's single source of
+        truth, never a hand-copied twin), so a test written against the fake
+        never certifies a permissiveness the real store would reject.
+        """
+        for key in filters:
+            if key not in CHUNK_FILTER_KEYS:
+                raise SurrealStoreError(
+                    f"illegal filter key {key!r}: not an allowed chunk filter "
+                    f"column (allowed: {sorted(CHUNK_FILTER_KEYS)})"
+                )
+
+    @staticmethod
+    def _matches_filters(chunk: _StoredChunk, filters: Mapping[str, str]) -> bool:
+        """Whether ``chunk`` satisfies every AND-combined ``filters`` condition."""
+        return all(chunk.payload.get(key) == value for key, value in filters.items())
+
+    @staticmethod
+    def _clean_payload(chunk: _StoredChunk) -> dict[str, Any]:
+        """``chunk``'s payload with the internal ``"__point_id"`` bookkeeping key
+        stripped — never leaked onto a caller-facing ``Candidate``/scroll row.
+
+        The stored vector is never merged into ``payload`` in the first place
+        (it lives on ``chunk.vector``, a separate attribute), so no additional
+        stripping is needed to keep it off a returned row either.
+        """
+        return {
+            key: value for key, value in chunk.payload.items() if key != "__point_id"
+        }
+
+    @staticmethod
+    def _cosine_similarity(
+        query_vector: Sequence[float], stored_vector: Sequence[float]
+    ) -> float:
+        """The cosine similarity between a query and a stored vector.
+
+        Returns 0.0 for a zero-norm vector rather than dividing by zero — a
+        degenerate case no real embedding produces, but a defensive floor
+        cheaper than special-casing every caller.
+        """
+        dot_product = sum(
+            query * stored for query, stored in zip(query_vector, stored_vector, strict=True)
+        )
+        query_norm = math.sqrt(sum(query * query for query in query_vector))
+        stored_norm = math.sqrt(sum(stored * stored for stored in stored_vector))
+        if query_norm == 0.0 or stored_norm == 0.0:
+            return 0.0
+        return dot_product / (query_norm * stored_norm)
+
+    def _rank_by_vector(
+        self, chunks: Sequence[_StoredChunk], query_vector: Sequence[float]
+    ) -> dict[str, int]:
+        """1-indexed vector-arm ranks (best first) for every chunk in ``chunks``.
+
+        Mirrors the real HNSW arm's exhaustiveness within its filtered scope:
+        EVERY scoped chunk is ranked (never a similarity cutoff), so the vector
+        arm alone can always surface the true nearest neighbour, and a poor
+        match still gets a (worst) rank rather than being dropped. Ties (equal
+        cosine similarity) break on ASCENDING point id — a deterministic,
+        non-insertion-order key, mirroring the real store's own final
+        ``(-score, key)`` tie-break in ``SurrealStore._to_candidates``.
+        """
+        scored = sorted(
+            (
+                (
+                    self._cosine_similarity(query_vector, chunk.vector),
+                    chunk.payload["__point_id"],
+                )
+                for chunk in chunks
+            ),
+            key=lambda pair: (-pair[0], pair[1]),
+        )
+        return {
+            point_id: rank for rank, (_similarity, point_id) in enumerate(scored, start=1)
+        }
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        """Lower-cased, alnum/underscore token set — the case-insensitive
+        overlap unit :meth:`_fulltext_overlap` intersects."""
+        return set(_TOKEN_PATTERN.findall(text.lower()))
+
+    def _fulltext_overlap(self, chunk: _StoredChunk, query_tokens: set[str]) -> int:
+        """The token-overlap COUNT between ``query_tokens`` and ``chunk``'s
+        indexed fulltext fields (:data:`CHUNK_FULLTEXT_FIELDS` — the SAME set
+        the real schema's FULLTEXT index covers, never a hand-picked subset)."""
+        haystack = " ".join(
+            str(chunk.payload[field])
+            for field in CHUNK_FULLTEXT_FIELDS
+            if chunk.payload.get(field)
+        )
+        return len(query_tokens & self._tokenize(haystack))
+
+    def _rank_by_fulltext(
+        self, chunks: Sequence[_StoredChunk], query_text: str
+    ) -> dict[str, int]:
+        """1-indexed fulltext-arm ranks (best first) for chunks with ANY token
+        overlap against ``query_text``.
+
+        Mirrors the real BM25 ``@@`` arm: unlike the vector arm, a chunk with
+        ZERO overlap is excluded entirely (a real FULLTEXT ``@@`` match returns
+        no row for it), so it contributes nothing to that chunk's fused score —
+        this is what lets an exact identifier match RESCUE a chunk whose vector
+        is a poor match. Ties break on ascending point id, same as the vector
+        arm.
+        """
+        query_tokens = self._tokenize(query_text)
+        matched = sorted(
+            (
+                (overlap, chunk.payload["__point_id"])
+                for chunk in chunks
+                if (overlap := self._fulltext_overlap(chunk, query_tokens)) > 0
+            ),
+            key=lambda pair: (-pair[0], pair[1]),
+        )
+        return {
+            point_id: rank for rank, (_overlap, point_id) in enumerate(matched, start=1)
+        }
+
+    async def hybrid_search(
+        self,
+        *,
+        query_vector: list[float],
+        query_text: str,
+        k: int,
+        filters: dict[str, str] | None = None,
+    ) -> list[Candidate]:
+        """One-query hybrid retrieval: cosine vector arm (+) token-overlap
+        fulltext arm, fused with Reciprocal Rank Fusion (RRF).
+
+        Signature-identical to :meth:`SurrealStore.hybrid_search` (pinned by
+        ``test_surreal_fakes.py``'s signature-parity test). A filter scopes
+        BOTH arms BEFORE either is ranked (never "global top-k, then filter"),
+        so filtered recall is full within the scope. A healthy-but-empty/no-
+        match scope returns ``[]``, never raises; an armed fake (see
+        :meth:`arm_connection_failure`) raises :class:`SurrealConnectionError`
+        instead of ever running a search — the connection check happens FIRST,
+        mirroring the real store's own ordering.
+
+        Args:
+            query_vector: The query embedding (same width as the store's dim).
+            query_text: The natural-language/identifier query text.
+            k: The maximum number of fused results.
+            filters: Optional field -> exact-value scope; each KEY is allow-list
+                validated.
+
+        Returns:
+            Up to ``k`` fused :class:`Candidate` hits, keyed by bare point id,
+            highest RRF score first (ties broken by ascending point id).
+
+        Raises:
+            SurrealConnectionError: The fake is currently armed to fail.
+            SurrealStoreError: A filter key is not an allowed chunk filter column.
+        """
+        self._maybe_trip_connection_failure()
+        scope_filters = filters or {}
+        self._validate_filter_keys(scope_filters)
+        scoped = [
+            chunk
+            for chunk in self.db.chunks.values()
+            if self._matches_filters(chunk, scope_filters)
+        ]
+        if not scoped:
+            return []
+
+        vector_ranks = self._rank_by_vector(scoped, query_vector)
+        fulltext_ranks = self._rank_by_fulltext(scoped, query_text)
+
+        scores: dict[str, float] = {}
+        for chunk in scoped:
+            point_id = chunk.payload["__point_id"]
+            score = 0.0
+            if point_id in vector_ranks:
+                score += 1.0 / (_RRF_K + vector_ranks[point_id])
+            if point_id in fulltext_ranks:
+                score += 1.0 / (_RRF_K + fulltext_ranks[point_id])
+            scores[point_id] = score
+
+        ranked_ids = sorted(scores, key=lambda point_id: (-scores[point_id], point_id))[:k]
+        return [
+            Candidate(
+                key=point_id,
+                score=scores[point_id],
+                payload=self._clean_payload(self.db.chunks[point_id]),
+                origin="fused",
+            )
+            for point_id in ranked_ids
+        ]
+
+    async def scroll(self, filters: dict[str, str], limit: int) -> list[dict[str, Any]]:
+        """Return the chunk rows matching ``filters`` — a bounded filter-only lookup.
+
+        Signature-identical to :meth:`SurrealStore.scroll`. Ties (rows equally
+        matching ``filters``) resolve in ASCENDING point-id order — a
+        deterministic, non-insertion-order key — so a caller reading
+        ``rows[0]`` on a same-identity collision (the real hazard
+        ``symbols.py``'s ``_find_by_identity`` documents) is exercised
+        realistically against the fake too.
+
+        Args:
+            filters: Field -> exact-value conditions, AND-combined; each KEY is
+                allow-list validated.
+            limit: The maximum number of rows to return.
+
+        Returns:
+            The matching rows (the vector and the internal ``"__point_id"``
+            bookkeeping key never included), at most ``limit`` of them; ``[]``
+            when nothing matches.
+
+        Raises:
+            SurrealConnectionError: The fake is currently armed to fail.
+            SurrealStoreError: A filter key is not an allowed chunk filter column.
+        """
+        self._maybe_trip_connection_failure()
+        self._validate_filter_keys(filters)
+        matches = sorted(
+            (
+                chunk
+                for chunk in self.db.chunks.values()
+                if self._matches_filters(chunk, filters)
+            ),
+            key=lambda chunk: chunk.payload["__point_id"],
+        )
+        return [self._clean_payload(chunk) for chunk in matches[:limit]]
 
     # -- inspection helpers (test-only, not part of the production API) ---
 
