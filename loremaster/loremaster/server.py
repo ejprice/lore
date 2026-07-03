@@ -39,6 +39,7 @@ the realistic greedy forms, not a pathologically path-specific predicate.)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.metadata
 import inspect
 import json
@@ -973,6 +974,7 @@ class AppContext:
         memory_store_handle: QdrantStore,
         manifest: SurrealManifest,
         code_graph: SurrealCodeGraph,
+        snapshot_stamper: Any,
         indexer: Indexer,
         reconcile_engine: ReconcileEngine,
         watcher: Any,
@@ -990,6 +992,9 @@ class AppContext:
         self._memory_store_handle = memory_store_handle
         self.manifest = manifest
         self.code_graph = code_graph
+        # The server-owned snapshot stamper (C4-audit #2): constructed, readied,
+        # injected into the indexer + reconcile engine, and closed on aclose.
+        self._snapshot_stamper = snapshot_stamper
         self.indexer = indexer
         self.reconcile_engine = reconcile_engine
         self.watcher = watcher
@@ -1384,6 +1389,9 @@ class AppContext:
             self.watcher_started = False
         if self._extension_ctx is not None:
             await self._server.run_shutdown_hooks(self._extension_ctx)
+        # The stamper owns its OWN connection — close it too, or it outlives
+        # the server as a leaked socket (readied last, closed first).
+        await self._snapshot_stamper.close()
         await self.manifest.close()
         await self.code_graph.close()
         await self.write_store.close()
@@ -1671,6 +1679,7 @@ async def build_app_context(
     from loremaster.graph_surreal import SurrealCodeGraph
     from loremaster.index.indexer import Indexer, graph_roots
     from loremaster.index.reconcile import ReconcileEngine
+    from loremaster.index.snapshots import SnapshotStamper
     from loremaster.index.surreal_manifest import SurrealManifest
     from loremaster.index.watcher import LiveWatcher
     from loremaster.memory.ledger import MemoryLedger
@@ -1722,39 +1731,78 @@ async def build_app_context(
         user=surreal_user,
         password=surreal_password,
     )
-    await write_store.ensure_ready()
+    # The Surreal WRITE-STACK ready guard (C6-audit follow-up #3): readying the
+    # four write backends below can fail PARTWAY through (e.g. the code graph's
+    # socket refuses after the store + manifest already came up) — a bare
+    # sequence of ``await X.ensure_ready()`` calls would leak every backend that
+    # readied successfully before the failure, since the pre-existing
+    # ``except BaseException`` further down this function only guards the
+    # extension-hooks-and-later phase. Track what has readied so far and close
+    # it (newest-first) before re-raising the typed error, mirroring
+    # ``Scout.start()``'s identical "close what already opened" pattern.
+    write_stack_readied: list[Any] = []
+    try:
+        await write_store.ensure_ready()
+        write_stack_readied.append(write_store)
 
-    memory_store_handle = QdrantStore(client=qdrant_client, slug=f"{slug}{_MEMORY_SLUG_SUFFIX}")
-    # FP-06 durable write-through: the memory ledger lives alongside the
-    # manifest on the state volume (``<slug>.memory.db``), so a Qdrant wipe of
-    # the memory collection is recoverable by re-embedding from the ledger.
-    memory_ledger = MemoryLedger(str(manifest_path.with_name(f"{slug}.memory.db")))
+        memory_store_handle = QdrantStore(client=qdrant_client, slug=f"{slug}{_MEMORY_SLUG_SUFFIX}")
+        # FP-06 durable write-through: the memory ledger lives alongside the
+        # manifest on the state volume (``<slug>.memory.db``), so a Qdrant wipe of
+        # the memory collection is recoverable by re-embedding from the ledger.
+        memory_ledger = MemoryLedger(str(manifest_path.with_name(f"{slug}.memory.db")))
 
-    # 2) Core services — the Surreal write stack (manifest + code graph live in
-    # the SAME database as the chunks; ``manifest_path`` survives only as the
-    # anchor for the SQLite memory LEDGER above, until P7 moves memory).
-    manifest = SurrealManifest(
-        url=config.surreal.url,
-        namespace=config.surreal.namespace,
-        database=surreal_database,
-        user=surreal_user,
-        password=surreal_password,
-    )
-    await manifest.ensure_ready()
-    # Wire astroid resolution into the code-graph: it resolves each tier's files on
-    # disk under these roots so in-project references become FQNs and external ones
-    # are dropped. Derived from the SAME effective roots the indexer walks.
-    graph_tier_roots, graph_project_roots = graph_roots(config, snapshot_root)
-    code_graph = SurrealCodeGraph(
-        url=config.surreal.url,
-        namespace=config.surreal.namespace,
-        database=surreal_database,
-        user=surreal_user,
-        password=surreal_password,
-        tier_roots=graph_tier_roots,
-        project_roots=graph_project_roots,
-    )
-    await code_graph.ensure_ready()
+        # 2) Core services — the Surreal write stack (manifest + code graph live in
+        # the SAME database as the chunks; ``manifest_path`` survives only as the
+        # anchor for the SQLite memory LEDGER above, until P7 moves memory).
+        manifest = SurrealManifest(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+        )
+        await manifest.ensure_ready()
+        write_stack_readied.append(manifest)
+        # Wire astroid resolution into the code-graph: it resolves each tier's files on
+        # disk under these roots so in-project references become FQNs and external ones
+        # are dropped. Derived from the SAME effective roots the indexer walks.
+        graph_tier_roots, graph_project_roots = graph_roots(config, snapshot_root)
+        code_graph = SurrealCodeGraph(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+            tier_roots=graph_tier_roots,
+            project_roots=graph_project_roots,
+        )
+        await code_graph.ensure_ready()
+        write_stack_readied.append(code_graph)
+        # The server-side snapshot stamper (C4-audit #2): the CLI/scout wire one, and
+        # the server must too, or a live server's periodic reconcile never records a
+        # snapshot generation. ONE stamper, readied here and injected into BOTH the
+        # indexer AND the reconcile engine below (an unwired stamper stamps nothing).
+        # Resolved from ``loremaster.index.snapshots`` at call time (the lazy-import
+        # pattern the other write-stack collaborators use).
+        snapshot_stamper = SnapshotStamper(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+            store=write_store,
+            manifest=manifest,
+            project_root=Path(config.project.root),
+        )
+        await snapshot_stamper.ensure_ready()
+        write_stack_readied.append(snapshot_stamper)
+    except BaseException:
+        # Close what opened, newest-first, before re-raising the typed error —
+        # so a mid-ready failure leaks no live write-stack connection.
+        for backend in reversed(write_stack_readied):
+            with contextlib.suppress(Exception):
+                await backend.close()
+        raise
     providers = _build_source_providers(server, config, LocalDirectorySourceProvider)
     indexer = Indexer(
         store=write_store,
@@ -1765,9 +1813,11 @@ async def build_app_context(
         config=config,
         snapshot_root=snapshot_root,
         code_graph=code_graph,
+        snapshot_stamper=snapshot_stamper,
     )
     reconcile_engine = ReconcileEngine(
-        indexer=indexer, manifest=manifest, store=write_store, config=config, code_graph=code_graph
+        indexer=indexer, manifest=manifest, store=write_store, config=config,
+        code_graph=code_graph, snapshot_stamper=snapshot_stamper,
     )
     memory_store = MemoryStore(
         store=memory_store_handle, embedder=embedder, ledger=memory_ledger
@@ -1837,6 +1887,7 @@ async def build_app_context(
         memory_store_handle=memory_store_handle,
         manifest=manifest,
         code_graph=code_graph,
+        snapshot_stamper=snapshot_stamper,
         indexer=indexer,
         reconcile_engine=reconcile_engine,
         watcher=watcher,
@@ -1964,6 +2015,7 @@ async def build_app_context(
             app_context.reconcile_task.cancel()
         if app_context.watcher_started:
             await watcher.stop()
+        await snapshot_stamper.close()
         await manifest.close()
         await code_graph.close()
         await write_store.close()

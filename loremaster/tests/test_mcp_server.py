@@ -631,6 +631,65 @@ class TestAppContextLifespan:
                 "an aborted startup — a non-None _connection means it leaked"
             )
 
+    async def test_ready_guard_closes_earlier_backends_on_a_mid_ready_failure(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Audit follow-up #3 (C6 fresh-context audit): ``manifest.ensure_ready`` /
+        # ``code_graph.ensure_ready`` / ``snapshot_stamper.ensure_ready`` ran
+        # OUTSIDE the "except BaseException" teardown further down the function —
+        # a ready failure on any ONE of the four write backends leaked every
+        # backend that had already readied successfully before it. Fault-inject a
+        # ``code_graph.ensure_ready`` failure (the write store and the manifest
+        # already readied before it) and prove both are closed on the way out —
+        # mirroring ``Scout.start()``'s "close what already opened, newest-first"
+        # pattern.
+        import loremaster.graph_surreal as graph_module
+        import loremaster.index.surreal_manifest as manifest_module
+        import loremaster.store.surreal as store_module
+
+        opened: list[Any] = []
+
+        class _TrackedStore(store_module.SurrealStore):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                opened.append(self)
+
+        class _TrackedManifest(manifest_module.SurrealManifest):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                opened.append(self)
+
+        class _FailingGraph(graph_module.SurrealCodeGraph):
+            async def ensure_ready(self) -> None:
+                raise RuntimeError("code graph socket refused")
+
+        # build_app_context imports these from their source modules at call time
+        # (the same lazy-import pattern the other write-stack tests patch).
+        monkeypatch.setattr(store_module, "SurrealStore", _TrackedStore)
+        monkeypatch.setattr(manifest_module, "SurrealManifest", _TrackedManifest)
+        monkeypatch.setattr(graph_module, "SurrealCodeGraph", _FailingGraph)
+
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        qdrant._lore_created.append(f"lore_{slug}")  # type: ignore[attr-defined]
+        qdrant._lore_created.append(f"lore_{slug}_memory")  # type: ignore[attr-defined]
+        with pytest.raises(RuntimeError, match="code graph socket refused"):
+            await build_app_context(
+                server=LoreServer(config),
+                embedder=FakeEmbedder(dim=_DIM),
+                qdrant_client=qdrant,
+                manifest_path=tmp_path / "m.db",
+                graph_path=tmp_path / "graph.kuzu",
+                snapshot_root=tmp_path / "snap",
+                start_tasks=False,
+            )
+        assert len(opened) == 2, "the write store + manifest should both have been opened"
+        for handle in opened:
+            assert handle._connection is None, (  # noqa: SLF001 - the closure signal
+                f"{type(handle).__name__} must be closed after a LATER write-stack "
+                "backend's ensure_ready failed — a non-None _connection means it leaked"
+            )
+
     @pytest.mark.xfail(
         strict=True,
         reason=(
@@ -2247,3 +2306,99 @@ class TestRunAndMain:
                 lg.handlers = []
                 lg.setLevel(_logging.NOTSET)
                 lg.propagate = True
+
+
+# --------------------------------------------------------------------------- #
+# P5-C6 (ledger #27) server-side wiring — build_app_context must construct,
+# inject, and (on aclose) close a SnapshotStamper (the C4-audit #2 gap: an
+# all-mode server that never stamps a snapshot because the stamper is unwired).
+# --------------------------------------------------------------------------- #
+class TestBuildAppContextWiresSnapshotStamper:
+    """The all-mode ``build_app_context`` owns a ``SnapshotStamper`` end-to-end.
+
+    C4-audit #2: the indexer/reconcile snapshot hook is inert unless SOMETHING
+    constructs a stamper and injects it. The CLI/scout do; the SERVER must too, or
+    a live server's periodic reconcile never records a snapshot generation. This
+    pins the server-side wiring: build_app_context constructs the stamper, readies
+    it, injects it into BOTH the indexer and the reconcile engine, and ``aclose``
+    closes its connection.
+
+    Uses a spy stamper monkeypatched at its SOURCE module so the assertions observe
+    construction/injection/close without opening a real stamper socket. The spy's
+    presence requires build_app_context to resolve ``SnapshotStamper`` at call time
+    from ``loremaster.index.snapshots`` (the same lazy-import pattern it already
+    uses for its other write-stack collaborators).
+    """
+
+    async def test_build_app_context_constructs_injects_and_closes_the_stamper(
+        self, qdrant: AsyncQdrantClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import loremaster.index.snapshots as snapshots_module
+
+        constructed: list[Any] = []
+
+        class _SpyStamper:
+            """Records its construction kwargs + ensure_ready/close, never connects."""
+
+            def __init__(
+                self,
+                *,
+                url: str,
+                namespace: str,
+                database: str,
+                user: str,
+                password: str,
+                store: Any,
+                manifest: Any,
+                project_root: Any,
+            ) -> None:
+                self.url = url
+                self.namespace = namespace
+                self.database = database
+                self.user = user
+                self.password = password
+                self.store = store
+                self.manifest = manifest
+                self.project_root = project_root
+                self.ensure_ready_calls = 0
+                self.close_calls = 0
+                constructed.append(self)
+
+            async def ensure_ready(self) -> None:
+                self.ensure_ready_calls += 1
+
+            async def close(self) -> None:
+                self.close_calls += 1
+
+            async def stamp(self) -> str:
+                return "snapshot:spy"
+
+        monkeypatch.setattr(snapshots_module, "SnapshotStamper", _SpyStamper)
+
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        context = await _make_context(
+            config=config, client=qdrant, tmp_path=tmp_path, start_tasks=False
+        )
+        try:
+            assert len(constructed) == 1, (
+                "build_app_context must construct exactly one SnapshotStamper (the "
+                "all-mode server-side wiring, C4-audit #2)"
+            )
+            spy = constructed[0]
+            assert spy.ensure_ready_calls == 1, "the stamper must be readied at build"
+            # Wired to the SAME per-project database + resolved credentials the rest
+            # of the write stack uses (the seam a wrong-DB/wrong-cred wiring bites).
+            assert spy.url == config.surreal.url
+            assert spy.namespace == config.surreal.namespace
+            assert spy.database == config.effective_surreal_database
+            assert spy.user == surreal_user()
+            assert spy.password == surreal_password()
+            # Injected into BOTH write paths, else a productive sweep stamps nothing.
+            assert context.indexer._snapshot_stamper is spy
+            assert context.reconcile_engine._snapshot_stamper is spy
+        finally:
+            await context.aclose()
+        # aclose owns the stamper's lifecycle too — its connection is closed on
+        # teardown (a leaked stamper socket would outlive the server).
+        assert spy.close_calls == 1
