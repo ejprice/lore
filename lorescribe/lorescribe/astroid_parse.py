@@ -97,12 +97,24 @@ class ParsedFunction:
         line_start: 1-based first source line — the first decorator's line when
             the def is decorated, otherwise the ``def`` (or ``async def``) line.
         line_end: 1-based last source line of the def's body.
+        signature: The def's own callable shape, rendered as
+            ``f"({node.args.as_string()})"`` plus an arrow-suffixed
+            ``f" -> {node.returns.as_string()}"`` when a return annotation is
+            written (see :func:`_function_signature`). No ``def``/name prefix
+            (the name already lives on :attr:`name`) and no ``async`` marker
+            (async-ness is the chunk's business, not the signature's). Two
+            astroid-rendering quirks are pinned as-is rather than "fixed":
+            a forward-ref string return annotation (``-> "Settings"``) renders
+            with astroid's own single-quote ``Const.as_string()`` repr, not the
+            source's original quoting; a ``*args`` / ``**kwargs`` type
+            annotation is DROPPED by ``Arguments.as_string()``.
     """
 
     name: str
     decorators: list[str]
     line_start: int
     line_end: int
+    signature: str
 
 
 @dataclass(frozen=True)
@@ -267,6 +279,23 @@ def _iter_methods(class_node: nodes.ClassDef) -> list[nodes.FunctionDef]:
     return methods
 
 
+def _function_signature(node: nodes.FunctionDef) -> str:
+    """Render a def's own callable shape by delegating to astroid's own rendering.
+
+    Composition (pinned, not hand-rolled): a parenthesized argument list from
+    ``node.args.as_string()``, plus an arrow-suffixed return annotation from
+    ``node.returns.as_string()`` ONLY when a return annotation is written. No
+    ``def``/name prefix and no ``async`` marker — those are not the signature's
+    business. astroid 4.1.2 quirks documented on :class:`ParsedFunction` are
+    inherited as-is: a forward-ref string return renders single-quoted, and a
+    ``*args`` / ``**kwargs`` annotation is dropped by ``Arguments.as_string()``.
+    """
+    signature = f"({node.args.as_string()})"
+    if node.returns is not None:
+        signature += f" -> {node.returns.as_string()}"
+    return signature
+
+
 def _build_parsed_function(node: nodes.FunctionDef) -> ParsedFunction:
     """Reduce an astroid def node to a :class:`ParsedFunction` value object."""
     return ParsedFunction(
@@ -274,6 +303,7 @@ def _build_parsed_function(node: nodes.FunctionDef) -> ParsedFunction:
         decorators=_decorator_names(node),
         line_start=_definition_start_line(node),
         line_end=_line_end(node),
+        signature=_function_signature(node),
     )
 
 

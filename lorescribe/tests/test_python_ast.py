@@ -1202,3 +1202,233 @@ class TestEmbeddingTextHeaderBudget:
 def test_handles_parametrized(path: str, expected: bool) -> None:
     """Table-driven restatement of the handles contract for quick scanning."""
     assert PythonAstChunker().handles(path) is expected
+
+
+# --------------------------------------------------------------------------- #
+# Function/method chunk ``metadata["signature"]`` (P6 delta).                  #
+#                                                                              #
+# Contract: a function/method chunk's ``metadata["signature"]`` equals the    #
+# ``ParsedFunction.signature`` astroid_parse computed for it — the chunker    #
+# copies the value through, it does not re-derive it. A CLASS-header chunk    #
+# carries ``metadata["signature"] = None`` (classes are out of scope for v1 — #
+# the key is present so the metadata shape is TOTAL across chunk types,       #
+# matching the existing ``class_name``/``method_name``/``inherits``/         #
+# ``decorators`` convention already total on every chunk type in this         #
+# module — see ``_build_imports_chunk`` / ``_chunk_fallback``). The           #
+# syntax-error fallback path carries the SAME total-shape convention:         #
+# ``metadata["signature"] is None`` (fallback chunks aren't symbols, but the  #
+# key is never simply missing).                                              #
+#                                                                              #
+# Expected strings are LITERAL PINS produced by running astroid 4.1.2's own   #
+# ``args.as_string()`` / ``returns.as_string()`` composition against          #
+# REALISTIC_SOURCE interactively (see ``test_astroid_parse.py`` for the exact #
+# composition rule and the full derivation transcript) — never hand-rolled,   #
+# never computed by calling astroid at test run time.                        #
+# --------------------------------------------------------------------------- #
+
+# Pinned literal expected signatures for REALISTIC_SOURCE's methods (astroid
+# 4.1.2, verified interactively): identity -> expected metadata["signature"].
+EXPECTED_METHOD_SIGNATURES: dict[str, str] = {
+    "Settings.from_file": "(cls, path: Path) -> 'Settings'",
+    "Settings.with_retries": "(self, retries: int) -> 'Settings'",
+    "BaseService.start": "(self) -> None",
+    "IndexService.start": "(self) -> None",
+    "IndexService._warm": "(self) -> None",
+}
+
+# Pinned literal expected signatures for REALISTIC_SOURCE's top-level functions.
+EXPECTED_FUNCTION_SIGNATURES: dict[str, str] = {
+    "build_manifest": "(settings: Settings) -> dict[str, int]",
+}
+
+
+class TestFunctionAndMethodChunkSignatureMetadata:
+    """Function/method chunks carry the astroid-rendered ``signature`` string."""
+
+    def setup_method(self) -> None:
+        self.chunks = PythonAstChunker().chunk(REALISTIC_SOURCE, make_ctx())
+        self.method_chunks = {
+            chunk.identity: chunk for chunk in chunks_by_type(self.chunks, "method")
+        }
+        self.function_chunks = {
+            chunk.identity: chunk for chunk in chunks_by_type(self.chunks, "function")
+        }
+
+    @pytest.mark.parametrize(
+        "identity,expected", list(EXPECTED_METHOD_SIGNATURES.items())
+    )
+    def test_method_chunk_signature_matches_pinned_rendering(
+        self, identity: str, expected: str
+    ) -> None:
+        assert self.method_chunks[identity].metadata["signature"] == expected
+
+    @pytest.mark.parametrize(
+        "identity,expected", list(EXPECTED_FUNCTION_SIGNATURES.items())
+    )
+    def test_function_chunk_signature_matches_pinned_rendering(
+        self, identity: str, expected: str
+    ) -> None:
+        assert self.function_chunks[identity].metadata["signature"] == expected
+
+    def test_existing_metadata_keys_unchanged_alongside_signature(self) -> None:
+        # Regression guard (contract point 9): adding "signature" must not
+        # displace or rename any pre-existing metadata key.
+        warm = self.method_chunks["IndexService._warm"]
+        assert warm.metadata["class_name"] == "IndexService"
+        assert warm.metadata["method_name"] == "_warm"
+        assert warm.metadata["inherits"] == ["BaseService", "dict"]
+        assert warm.metadata["decorators"] == []
+        assert warm.metadata["signature"] == EXPECTED_METHOD_SIGNATURES["IndexService._warm"]
+
+        build = self.function_chunks["build_manifest"]
+        assert build.metadata["method_name"] == "build_manifest"
+        assert build.metadata["decorators"] == []
+        assert build.metadata["signature"] == EXPECTED_FUNCTION_SIGNATURES["build_manifest"]
+
+
+class TestClassChunkSignatureIsExplicitlyNone:
+    """A class-header chunk's ``metadata["signature"]`` is ``None`` (v1 scope).
+
+    Classes are out of scope for signature rendering in this cycle; the key
+    is still present (not missing) so downstream readers can uniformly do
+    ``chunk.metadata["signature"]`` without a ``KeyError`` regardless of
+    chunk_type.
+    """
+
+    def setup_method(self) -> None:
+        self.chunks = PythonAstChunker().chunk(REALISTIC_SOURCE, make_ctx())
+        self.class_chunks = {
+            chunk.identity: chunk for chunk in chunks_by_type(self.chunks, "class")
+        }
+
+    @pytest.mark.parametrize("identity", list(EXPECTED_CLASSES))
+    def test_class_chunk_signature_key_present_and_none(self, identity: str) -> None:
+        chunk = self.class_chunks[identity]
+        assert "signature" in chunk.metadata
+        assert chunk.metadata["signature"] is None
+
+
+class TestImportsChunkSignatureIsExplicitlyNone:
+    """An ``imports`` chunk's ``metadata["signature"]`` is ``None`` (not a symbol).
+
+    Same total-shape reasoning as the class case: the imports chunk already
+    stamps ``class_name=None`` / ``method_name=None`` / ``inherits=[]`` /
+    ``decorators=[]`` unconditionally (see ``_build_imports_chunk``), so
+    ``signature`` follows the SAME established convention rather than being
+    the one metadata key that goes missing on this chunk_type.
+    """
+
+    def test_imports_chunk_signature_key_present_and_none(self) -> None:
+        chunks = PythonAstChunker().chunk(REALISTIC_SOURCE, make_ctx())
+        imports_chunk = chunks_by_type(chunks, "imports")[0]
+        assert "signature" in imports_chunk.metadata
+        assert imports_chunk.metadata["signature"] is None
+
+
+class TestOversizeSubSplitSignatureConsistency:
+    """Every sub-split piece of one oversize function carries the SAME signature.
+
+    The signature belongs to the SYMBOL (the whole function), not to a slice
+    of its source — sub-splitting for the token cap must not fragment,
+    duplicate-with-variation, or drop the signature across pieces.
+    """
+
+    # Reuses TestOversizeGuard's oversize fixture shape: one class with a
+    # single very long method whose source blows past a small injected cap.
+    @staticmethod
+    def _oversize_source() -> str:
+        body = "\n".join(
+            f"        step_{i} = transform(payload_{i})" for i in range(400)
+        )
+        return (
+            textwrap.dedent(
+                '''\
+                class Pipeline:
+                    def execute(self):
+                '''
+            )
+            + body
+            + "\n"
+        )
+
+    @staticmethod
+    def _quarter_len(text: str) -> int:
+        return len(text) // 4
+
+    def setup_method(self) -> None:
+        source = self._oversize_source()
+        small_cap = 200
+        ctx = make_ctx(max_input_tokens=small_cap, counter=self._quarter_len)
+        chunks = PythonAstChunker().chunk(source, ctx)
+        self.execute_pieces = [
+            chunk
+            for chunk in chunks
+            if chunk.chunk_type == "method" and chunk.identity == "Pipeline.execute"
+        ]
+
+    def test_oversize_method_actually_splits(self) -> None:
+        # Precondition: without >= 2 pieces this class would test nothing new.
+        assert len(self.execute_pieces) >= 2
+
+    def test_every_sub_split_piece_carries_the_same_signature(self) -> None:
+        # Pinned literal (astroid 4.1.2): "def execute(self):" -> "(self)".
+        expected_signature = "(self)"
+        for piece in self.execute_pieces:
+            assert piece.metadata["signature"] == expected_signature
+
+
+class TestAsyncFunctionChunkSignature:
+    """An async top-level function's chunk signature carries no async marker."""
+
+    SOURCE: str = textwrap.dedent(
+        '''\
+        """Module with a single async top-level function."""
+
+
+        async def warm_cache(service, *, force: bool = False) -> None:
+            """Warm the cache concurrently."""
+            return None
+        '''
+    )
+
+    # Pinned literal (astroid 4.1.2): args="service, *, force: bool = False",
+    # return="None" -> "(service, *, force: bool = False) -> None". No
+    # "async" marker — async-ness is the chunk_type's business, not the
+    # signature's (contract decision, mirrored from test_astroid_parse.py).
+    EXPECTED_SIGNATURE: str = "(service, *, force: bool = False) -> None"
+
+    def setup_method(self) -> None:
+        self.chunks = PythonAstChunker().chunk(self.SOURCE, make_ctx())
+        self.function_chunks = {
+            chunk.identity: chunk for chunk in chunks_by_type(self.chunks, "function")
+        }
+
+    def test_async_function_chunk_signature_matches_pinned_rendering(self) -> None:
+        assert (
+            self.function_chunks["warm_cache"].metadata["signature"]
+            == self.EXPECTED_SIGNATURE
+        )
+
+    def test_async_function_chunk_signature_has_no_async_marker(self) -> None:
+        assert "async" not in self.function_chunks["warm_cache"].metadata["signature"]
+
+
+class TestSyntaxErrorFallbackChunkHasNoSignature:
+    """Sliding-window fallback chunks are not symbols: ``signature`` is ``None``.
+
+    Same sentinel unparseable source already used by ``astroid_parse``'s
+    ``TestSyntaxErrorRaisesTypedError`` (a shared, established broken-source
+    fixture, not a fresh magic literal) — kept tiny here since only the
+    metadata SHAPE is under test, not window geometry (covered elsewhere by
+    ``TestSyntaxErrorFallback``).
+    """
+
+    BROKEN_SOURCE: str = "def broken(:\n    pass\n"
+
+    def test_window_chunk_signature_key_present_and_none(self) -> None:
+        chunks = PythonAstChunker().chunk(self.BROKEN_SOURCE, make_ctx())
+        assert chunks, "expected at least one fallback window chunk"
+        for chunk in chunks:
+            assert chunk.chunk_type == "python_window"
+            assert "signature" in chunk.metadata
+            assert chunk.metadata["signature"] is None

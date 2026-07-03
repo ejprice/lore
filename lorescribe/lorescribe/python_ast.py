@@ -216,6 +216,7 @@ class PythonAstChunker(Chunker):
             "method_name": None,
             "inherits": [],
             "decorators": [],
+            "signature": None,
         }
         return self._emit_sized(
             chunk_type=CHUNK_TYPE_IMPORTS,
@@ -280,6 +281,7 @@ class PythonAstChunker(Chunker):
                     "method_name": None,
                     "inherits": inherits,
                     "decorators": decorators,
+                    "signature": None,
                 },
                 metadata_header=self._build_metadata_header(
                     ctx, CHUNK_TYPE_CLASS, class_name=class_name
@@ -337,6 +339,7 @@ class PythonAstChunker(Chunker):
             "method_name": function.name,
             "inherits": inherits,
             "decorators": decorators,
+            "signature": function.signature,
         }
         return self._emit_sized(
             chunk_type=chunk_type,
@@ -551,6 +554,7 @@ class PythonAstChunker(Chunker):
                         "method_name": None,
                         "inherits": [],
                         "decorators": [],
+                        "signature": None,
                     },
                     metadata_header=header,
                     ctx=ctx,

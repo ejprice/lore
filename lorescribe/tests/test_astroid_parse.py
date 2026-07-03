@@ -648,3 +648,232 @@ class TestStructuralParseLeavesNoNegativeImportResidue:
             )
         finally:
             clear_resolution_cache()
+
+
+# --------------------------------------------------------------------------- #
+# ``ParsedFunction.signature`` — rendered parameter signature (P6 delta).      #
+#                                                                              #
+# Contract (architect's reconciliation delta, NOT read from any                #
+# implementation — this attribute does not exist yet): every                   #
+# ``ParsedFunction`` carries a ``signature: str`` — the def's own callable     #
+# shape, rendered so downstream consumers (lore_verify's anti-hallucination    #
+# check, ``detail: signatures`` search-hit rendering) can echo a REAL          #
+# signature without re-parsing source.                                        #
+#                                                                              #
+# CANONICAL RENDERING (pinned here, this contract's decision):                 #
+#   signature = f"({node.args.as_string()})"                                  #
+#   if node.returns is not None:                                              #
+#       signature += f" -> {node.returns.as_string()}"                        #
+#                                                                              #
+# i.e. a parenthesized, astroid-rendered argument list, plus an                #
+# arrow-suffixed return annotation ONLY when one is written. No ``def``/name   #
+# prefix (the name already lives on ``ParsedFunction.name``) and NO ``async``  #
+# marker (async-ness is the chunk_type's business, not the signature's).       #
+#                                                                              #
+# Every expected string below is a LITERAL PIN, produced by running exactly    #
+# the composition above against astroid 4.1.2 interactively (NOT computed by   #
+# this test at run time, and NOT hand-rolled from the requirement text):       #
+#                                                                              #
+#   >>> import astroid; mod = astroid.parse(SIGNATURE_SOURCE)                 #
+#   >>> node.args.as_string(); node.returns.as_string() if node.returns else None #
+#                                                                              #
+# This is deliberate: the production code is expected to DELEGATE to these     #
+# same two astroid calls rather than re-implement a renderer, and a literal    #
+# pin (vs. a live astroid call inside the test) still fails if the             #
+# implementation quietly diverges (e.g. hand-rolls its own formatter that      #
+# mishandles positional-only markers or vararg annotations).                  #
+#                                                                              #
+# Real astroid 4.1.2 rendering quirk pinned as-is (NOT "fixed" here): a        #
+# ``*args: int`` / ``**kwargs: str`` vararg/kwarg type annotation is DROPPED   #
+# by ``Arguments.as_string()`` — verified interactively, see ``warm_cache``.   #
+# --------------------------------------------------------------------------- #
+
+SIGNATURE_SOURCE: str = textwrap.dedent(
+    '''\
+    """Module exercising every function/method signature shape."""
+    from pathlib import Path
+
+
+    class Settings:
+        """Runtime settings."""
+
+        @classmethod
+        def from_file(cls, path: Path) -> "Settings":
+            """Load settings from a JSON file."""
+            return cls()
+
+        def with_retries(self, retries: int = 3) -> "Settings":
+            """Return a copy with a different retry count."""
+            return self
+
+        @staticmethod
+        def parse_flag(raw: str) -> bool:
+            """Parse a CLI flag string to a bool."""
+            return raw.lower() == "true"
+
+
+    def sync_all(sources: list[str], *, force: bool = False, retries: int = 3) -> dict[str, int]:
+        """Sync every source, optionally forcing a full resync."""
+        return {}
+
+
+    async def warm_cache(service: Settings, *args: int, **kwargs: str) -> None:
+        """Warm the cache concurrently."""
+        return None
+
+
+    def positional_only(a, b, /, c, *, d):
+        """Exercise positional-only and keyword-only markers."""
+        return a, b, c, d
+
+
+    def no_annotations(a, b=1, *args, **kwargs):
+        """No type annotations or return annotation at all."""
+        return a, b, args, kwargs
+    '''
+)
+
+# Pinned literal expected method signatures (astroid 4.1.2, verified
+# interactively against SIGNATURE_SOURCE — see the module comment above).
+EXPECTED_METHOD_SIGNATURES: dict[str, str] = {
+    # classmethod: astroid renders "cls" AS-WRITTEN (never stripped); the
+    # forward-ref return annotation '"Settings"' is a string-Const node whose
+    # OWN ``.as_string()`` renders it with astroid's single-quote repr, NOT
+    # the source's double quotes — pinned as astroid actually renders it.
+    "from_file": "(cls, path: Path) -> 'Settings'",
+    "with_retries": "(self, retries: int = 3) -> 'Settings'",
+    # staticmethod: no self/cls in the source signature -> none rendered.
+    "parse_flag": "(raw: str) -> bool",
+}
+
+# Pinned literal expected top-level function signatures (same source/oracle).
+EXPECTED_FUNCTION_SIGNATURES: dict[str, str] = {
+    "sync_all": (
+        "(sources: list[str], *, force: bool = False, retries: int = 3)"
+        " -> dict[str, int]"
+    ),
+    # async: NO "async" marker in the signature. *args: int / **kwargs: str
+    # ALSO lose their annotations here — the astroid 4.1.2 rendering quirk
+    # documented above, pinned as-is.
+    "warm_cache": "(service: Settings, *args, **kwargs) -> None",
+    "positional_only": "(a, b, /, c, *, d)",
+    "no_annotations": "(a, b=1, *args, **kwargs)",
+}
+
+
+class TestParsedFunctionSignatureRendering:
+    """``ParsedFunction.signature`` renders every real-world argument shape.
+
+    Covers: plain/defaulted/annotated args, ``*args``/``**kwargs`` (typed and
+    untyped), keyword-only (``*,``) and positional-only (``/``) markers,
+    forward-ref string return annotations, absent return annotations, async
+    functions (no marker), and decorator-independence (``@classmethod`` /
+    ``@staticmethod`` do not alter the def's own parameter list).
+    """
+
+    def setup_method(self) -> None:
+        self.module = parse_module(SIGNATURE_SOURCE)
+        self.functions_by_name: dict[str, ParsedFunction] = {
+            fn.name: fn for fn in self.module.functions
+        }
+        settings = next(c for c in self.module.classes if c.name == "Settings")
+        self.methods_by_name: dict[str, ParsedFunction] = {
+            m.name: m for m in settings.methods
+        }
+
+    def test_signature_is_a_string_on_every_function(self) -> None:
+        for fn in self.functions_by_name.values():
+            assert isinstance(fn.signature, str)
+
+    def test_signature_is_a_string_on_every_method(self) -> None:
+        for method in self.methods_by_name.values():
+            assert isinstance(method.signature, str)
+
+    def test_signature_is_a_plain_str_not_an_astroid_node(self) -> None:
+        # Encapsulation invariant this module documents at the top: no astroid
+        # node ever escapes a value object's public attributes.
+        for method in self.methods_by_name.values():
+            assert type(method.signature).__module__ == "builtins"
+
+    @pytest.mark.parametrize(
+        "name,expected", list(EXPECTED_FUNCTION_SIGNATURES.items())
+    )
+    def test_function_signature_matches_pinned_rendering(
+        self, name: str, expected: str
+    ) -> None:
+        assert self.functions_by_name[name].signature == expected
+
+    @pytest.mark.parametrize(
+        "name,expected", list(EXPECTED_METHOD_SIGNATURES.items())
+    )
+    def test_method_signature_matches_pinned_rendering(
+        self, name: str, expected: str
+    ) -> None:
+        assert self.methods_by_name[name].signature == expected
+
+    def test_classmethod_signature_keeps_cls_uninstripped(self) -> None:
+        # The verify verb compares against what the code SAYS — "cls" must
+        # not be silently dropped as an implicit parameter.
+        assert self.methods_by_name["from_file"].signature.startswith("(cls")
+
+    def test_instance_method_signature_keeps_self_uninstripped(self) -> None:
+        assert self.methods_by_name["with_retries"].signature.startswith("(self")
+
+    def test_staticmethod_signature_has_no_implicit_first_param(self) -> None:
+        # parse_flag is a @staticmethod with no self/cls in its own source —
+        # the signature must reflect exactly what is written, nothing implied.
+        assert self.methods_by_name["parse_flag"].signature == "(raw: str) -> bool"
+
+    def test_async_function_signature_carries_no_async_marker(self) -> None:
+        # Contract decision: "async" is the chunk_type/source's business, not
+        # the signature's — the signature is parameters (+ return) only.
+        sig = self.functions_by_name["warm_cache"].signature
+        assert "async" not in sig
+
+    def test_return_annotation_present_renders_arrow_suffix(self) -> None:
+        assert " -> " in self.functions_by_name["sync_all"].signature
+
+    def test_return_annotation_absent_renders_no_arrow(self) -> None:
+        # no_annotations has no "-> ..." in source; the rendering must not
+        # fabricate one.
+        assert " -> " not in self.functions_by_name["no_annotations"].signature
+
+    def test_decorated_method_signature_unaffected_by_decorator(self) -> None:
+        # @classmethod / @staticmethod are decorators on the DEF, not part of
+        # its parameter list — they must never leak into the rendered string.
+        assert "classmethod" not in self.methods_by_name["from_file"].signature
+        assert "staticmethod" not in self.methods_by_name["parse_flag"].signature
+
+    def test_positional_only_marker_rendered(self) -> None:
+        # "/" marks the positional-only boundary as astroid exposes it.
+        assert "/" in self.functions_by_name["positional_only"].signature
+
+    def test_keyword_only_marker_rendered(self) -> None:
+        # "*," marks the keyword-only boundary (no *args present here).
+        assert "*," in self.functions_by_name["positional_only"].signature
+        assert "*," in self.functions_by_name["sync_all"].signature
+
+    def test_default_value_literal_rendered(self) -> None:
+        # Defaults render with their literal value, not just the bare
+        # parameter name — in astroid's own two spacing conventions: an
+        # ANNOTATED default is PEP8-spaced ("force: bool = False"), an
+        # unannotated one is tight ("b=1"). (Contract-owner fix: the original
+        # asserted "force=False", contradicting the pinned table two screens
+        # up — the annotated form was never rendered spaceless.)
+        assert "force: bool = False" in self.functions_by_name["sync_all"].signature
+        assert "b=1" in self.functions_by_name["no_annotations"].signature
+        assert "retries: int = 3" in self.methods_by_name["with_retries"].signature
+
+    def test_vararg_and_kwarg_without_annotation_rendered_bare(self) -> None:
+        assert "*args, **kwargs" in self.functions_by_name["no_annotations"].signature
+
+    def test_vararg_kwarg_annotation_dropped_by_astroid_rendering(self) -> None:
+        # Documented astroid 4.1.2 quirk (pinned, not hand-fixed): a typed
+        # vararg/kwarg (*args: int / **kwargs: str) renders WITHOUT its
+        # annotation via Arguments.as_string(). If a future astroid version
+        # starts rendering it, this test will fail loudly rather than silently
+        # certifying stale behaviour.
+        sig = self.functions_by_name["warm_cache"].signature
+        assert "*args, **kwargs" in sig
+        assert "*args: int" not in sig
+        assert "**kwargs: str" not in sig
