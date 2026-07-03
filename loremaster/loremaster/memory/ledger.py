@@ -78,8 +78,9 @@ class MemoryLedger:
 
     Construction is resilient: a missing parent dir or a corrupt file must not
     crash the open (the durable copy degrades to empty rather than wedging the
-    process). The resilient open, WAL pragma, and schema migration all mirror the
-    :class:`~loremaster.index.manifest.Manifest`'s posture.
+    process). The resilient open, WAL pragma, and schema migration mirror the
+    posture the SQLite ``Manifest`` class had before it was deleted post-P5 —
+    this ledger sits alongside its old location on the state volume.
 
     Args:
         db_path: The SQLite ledger path on the state volume (alongside the

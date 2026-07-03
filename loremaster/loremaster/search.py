@@ -138,8 +138,8 @@ class SearchPipeline:
             resolves the extension hooks (``augment_candidates``/``rerank``/
             ``format_result``/``classify_detail``) — identity/base for a bare
             server.
-        manifest: The SQLite :class:`~loremaster.index.manifest.Manifest`, the
-            authority on per-(tier, file) freshness.
+        manifest: The :class:`~loremaster.index.surreal_manifest.SurrealManifest`,
+            the authority on per-(tier, file) freshness.
         config: The validated :class:`~loremaster.config.LoreConfig`.
         extension_context: The RUNTIME :class:`~loremaster.extension.ExtensionContext`
             handed to every context-taking search seam (4/5/6/11). It carries the

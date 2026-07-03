@@ -143,7 +143,8 @@ class ExtensionContext(BaseModel):
         count_tokens: The embedder's batch token counter (``list[str] ->
             list[int]``), carried so a seam can size text without re-importing
             the tokenizer.
-        manifest: The :class:`~loremaster.index.manifest.Manifest` ledger.
+        manifest: The Surreal-backed manifest — :class:`~loremaster.index.
+            surreal_manifest.SurrealManifest` in production, a fake in tests.
         state: A mutable scratch dict a lifespan hook (seam 9) may stash state on
             — e.g. an ``on_startup`` caching a derived value for later handlers.
             Defaults to a fresh empty dict per context.

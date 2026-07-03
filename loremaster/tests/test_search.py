@@ -10,8 +10,9 @@ These run against the **REAL local Qdrant** (``http://127.0.0.1:16333``,
 throwaway ``lore_test_<uuid>`` collections), a real
 :class:`~loremaster.index.indexer.Indexer` over a **real corpus** (so the points
 under search carry real chunk types / payloads / line numbers, not hand-faked
-ones), the shipped deterministic :class:`~loresigil.testing.FakeEmbedder`, and a
-real SQLite :class:`~loremaster.index.manifest.Manifest`.
+ones), the shipped deterministic :class:`~loresigil.testing.FakeEmbedder`, and
+the fast in-memory async :class:`~loremaster.index.surreal_manifest.SurrealManifest`
+fake (via ``fake_surreal_trio``).
 
 Why real Qdrant, not ``:memory:``: ranking and payload-filtered search
 (``filters={"tier": ...}``) are *server-side* behaviours — filter-based search

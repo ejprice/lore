@@ -565,8 +565,8 @@ class TestAppContextLifespan:
         # connections and assert both were closed after the abort — a discriminator
         # that fails on the un-hardened build (which leaks them).
         #
-        # PORTED: the pre-port suite tracked ``loremaster.index.manifest.Manifest``
-        # (SQLite) + ``loremaster.graph.CodeGraph`` (Kùzu) — build_app_context now
+        # PORTED: the pre-port suite tracked the old SQLite ``Manifest`` class
+        # (since deleted) + ``loremaster.graph.CodeGraph`` (Kùzu) — build_app_context now
         # constructs ``SurrealManifest`` / ``SurrealCodeGraph`` instead (imported
         # from ``loremaster.index.surreal_manifest`` / ``loremaster.graph_surreal``
         # at call time), so the tracked-subclass monkeypatch targets are ported to

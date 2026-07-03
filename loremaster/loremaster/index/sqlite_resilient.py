@@ -1,8 +1,9 @@
 """Resilient SQLite open — the shared building block for FP-01 + FP-08.
 
-Both local DBs (the :class:`~loremaster.index.manifest.Manifest` and the
-:class:`~loremaster.graph.CodeGraph`) open a real file-backed SQLite database at
-construction. Two production failure modes wedge a bare ``sqlite3.connect``:
+The memory ledger (:class:`~loremaster.memory.ledger.MemoryLedger`) — and,
+historically, the now-deleted SQLite ``Manifest`` — opens a real file-backed
+SQLite database at construction. Two production failure modes wedge a bare
+``sqlite3.connect``:
 
 * **FP-01 — absent parent dir.** On a clean container the state volume is empty,
   so the directory holding ``<slug>.db`` does not exist. ``sqlite3.connect``
@@ -15,22 +16,23 @@ construction. Two production failure modes wedge a bare ``sqlite3.connect``:
   it raises ``DatabaseError: file is not a database`` and every restart
   re-wedges until a human deletes the file.
 
-Both DBs are fully rebuildable (a fresh empty manifest triggers a reindex; a
-fresh graph is rebuilt by reindex), so the correct recovery for a corrupt image
-is delete-and-recreate. A VALID database — including a zero-byte file SQLite
+The ledger is fully rebuildable — a fresh empty ledger is backfilled from the
+Qdrant memory collection (``MemoryStore.backfill_ledger_from_store`` /
+``restore_if_diverged``), so the correct recovery for a corrupt image is
+delete-and-recreate. A VALID database — including a zero-byte file SQLite
 treats as valid-and-fresh — must open UNCHANGED; the recovery path must never
 nuke a healthy database.
 
 :func:`open_resilient_sqlite` is the single source of truth for that open: it
 materialises the parent dir (owner-only — the state dir holds the plaintext
 memory ledger), connects, probes integrity, and on a malformed image deletes the
-file (with its WAL sidecars) and recreates a fresh empty DB. Both DB
-constructors call it instead of a bare ``sqlite3.connect`` so the logic lives in
-exactly one place.
+file (with its WAL sidecars) and recreates a fresh empty DB. ``MemoryLedger``
+calls it instead of a bare ``sqlite3.connect`` so the logic lives in exactly one
+place.
 
-**Owner-only on disk (defense-in-depth).** The state dir holds the manifest AND
-the plaintext memory ledger ``<slug>.memory.db`` (user-authored memory TEXT), so
-neither the directory nor the database file may be group/world-readable:
+**Owner-only on disk (defense-in-depth).** The state dir holds the plaintext
+memory ledger ``<slug>.memory.db`` (user-authored memory TEXT), so neither the
+directory nor the database file may be group/world-readable:
 
 * Every directory the open CREATES is mode ``0o700``. The mkdir runs under a
   tightly-scoped ``os.umask(0o077)`` so a newly-created dir/file is owner-only
@@ -42,9 +44,9 @@ neither the directory nor the database file may be group/world-readable:
   a new file at ``0o666 & ~umask`` (== 0o644, world-readable), and a file written
   by a prior default-mode build stays 0o644 forever. Chmodding on every open both
   sets a freshly-created file owner-only AND retro-tightens an inherited
-  world-readable file from an older deploy — WHY: the plaintext memory ledger /
-  manifest must never be readable by other local users, and the dir mode is the
-  only other protection (a shared mount / inherited dir loosens it).
+  world-readable file from an older deploy — WHY: the plaintext memory ledger
+  must never be readable by other local users, and the dir mode is the only
+  other protection (a shared mount / inherited dir loosens it).
 """
 
 from __future__ import annotations
