@@ -51,6 +51,7 @@ import …`` seam every caller (and test) uses keeps working unchanged.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -63,6 +64,14 @@ from surrealdb import (
 )
 from surrealdb.errors import ErrorKind, ServerError, SurrealError
 from websockets.exceptions import WebSocketException
+
+# The server-side home for the FULL engine detail a rolled-back transaction
+# carries (see :func:`execute_transaction` / :func:`_failed_statements`): the
+# raised :class:`SurrealStoreError` NEVER carries this raw text (ledger #31 —
+# an ASSERT/coercion rejection can echo a bound VALUE back verbatim, and that
+# text will flow to MCP clients in P8); an operator can always correlate a
+# classified exception back to the full detail here via this module's logger.
+logger = logging.getLogger(__name__)
 
 
 class SurrealStoreError(RuntimeError):
@@ -332,6 +341,78 @@ _TXN_CONFLICT_BACKOFF_SECONDS = 0.01
 # The per-statement status the engine stamps on a rejected statement.
 _ERR_STATUS = "ERR"
 
+# The short, engine-derived error CLASSES the raised (public) message may name —
+# ledger #31: informative enough for an operator/caller to triage WITHOUT ever
+# repeating the raw engine text (which can carry an interpolated bound VALUE).
+# Checked in this order by :func:`_classify_engine_error`, most-specific first.
+_ERROR_CLASS_RETRYABLE_CONFLICT = "retryable conflict"
+_ERROR_CLASS_ASSERT_VIOLATION = "assert violation"
+_ERROR_CLASS_FIELD_COERCION = "field coercion"
+_ERROR_CLASS_UNSPECIFIED = "unspecified rejection"
+
+# The substrings (verified live — see the module docstring's ``ASSERT``/coercion
+# grounding, and ``TestDomainRejectionErrorType`` / ``TestReplaceFile`` in
+# ``test_surreal_store.py``) that :func:`_classify_engine_error` keys off of. A
+# case-insensitive membership check, never a value-bearing capture group — the
+# classifier only ever RETURNS one of the fixed labels above, never a slice of
+# the raw text itself.
+_ASSERT_VIOLATION_MARKER = "assert"
+_FIELD_COERCION_MARKER = "coerce"
+
+# The correlation hint appended to every classified rollback message, so an
+# operator holding only the (deliberately generic) exception text can still
+# find the full engine detail :func:`execute_transaction` logs server-side.
+_SERVER_LOG_HINT = "see the server log for the full engine detail"
+
+
+def _classify_engine_error(raw_result: object) -> str:
+    """Classify a rolled-back statement's raw engine result into a short,
+    GENERIC label — never a slice of ``raw_result`` itself.
+
+    This is the hygiene boundary (ledger #31): callers of
+    :func:`execute_transaction` see only the label this returns; the full
+    ``raw_result`` text (which can carry an interpolated bound value, e.g. an
+    ``ASSERT`` rejection echoing the offending value back verbatim) is logged
+    server-side and never returned here.
+
+    Args:
+        raw_result: The failed statement's raw ``result`` field from the
+            engine's ``query_raw`` response (usually a ``str``, but handled
+            defensively via ``str()`` since the engine's shape is not a
+            contract this module controls).
+
+    Returns:
+        One of the ``_ERROR_CLASS_*`` labels — the retryable-conflict marker
+        is checked FIRST since a sustained (attempts-exhausted) conflict must
+        still be reported as a conflict, not folded into "unspecified".
+    """
+    text = str(raw_result)
+    if _RETRYABLE_CONFLICT_MARKER in text:
+        return _ERROR_CLASS_RETRYABLE_CONFLICT
+    lowered = text.lower()
+    if _ASSERT_VIOLATION_MARKER in lowered:
+        return _ERROR_CLASS_ASSERT_VIOLATION
+    if _FIELD_COERCION_MARKER in lowered:
+        return _ERROR_CLASS_FIELD_COERCION
+    return _ERROR_CLASS_UNSPECIFIED
+
+
+@dataclass(frozen=True)
+class _FailedStatement:
+    """One ``ERR``-status statement from a rolled-back transaction's raw response.
+
+    Carries the statement's POSITION in the raw response (``index``, 0-based)
+    alongside the engine's raw per-statement result (``raw_result``) — the
+    latter is kept STRICTLY internal to this module (logged server-side,
+    consulted by :func:`_is_retryable_conflict`) and must never be
+    interpolated into a :class:`SurrealStoreError` message; see
+    :func:`_classify_engine_error`.
+    """
+
+    index: int
+    raw_result: Any
+
+
 # Callback aliases the two owners hand :func:`execute_transaction`: how to obtain
 # the live connection (their own lazy ``_ensure_connection``) and how to self-heal
 # a dropped one (null the cached handle + close the dead socket).
@@ -395,6 +476,15 @@ async def execute_transaction(
     it; every OTHER rejection (e.g. an out-of-domain ``state``) raises
     :class:`SurrealStoreError` immediately — retrying it would never succeed.
 
+    Error-message hygiene (ledger #31): the engine's raw per-statement result
+    can echo a bound VALUE back verbatim (e.g. an ``ASSERT`` rejection quoting
+    the offending value) — text that will flow to MCP clients in P8. The FULL
+    detail is logged server-side (``logger.error``, structured: statement
+    index, status, the raw engine result) immediately before raising; the
+    RAISED :class:`SurrealStoreError` carries only a CLASSIFIED, generic
+    summary (:func:`_classify_engine_error`) plus a "see the server log"
+    correlation hint — never the raw text itself.
+
     Args:
         statement: The full multi-statement ``BEGIN … COMMIT`` SurrealQL text.
         params: The bound parameters for the whole transaction.
@@ -407,23 +497,43 @@ async def execute_transaction(
         SurrealConnectionError: The server is unreachable or the socket died.
         SurrealStoreError: A non-retryable statement failure (the transaction was
             rolled back), or the conflict retries were exhausted under sustained
-            contention.
+            contention. The message is classified/generic; the full engine
+            detail is logged server-side (see above).
     """
     # Populated by every attempt; guaranteed non-empty by the time the loop exits
     # (an empty result returns immediately, below), so the final raise can always
-    # safely report the LAST attempt's failure.
-    failed_statements: list[dict[str, Any]] = []
+    # safely report the LAST attempt's failure. ``statement_count`` mirrors the
+    # same "last attempt" rule, so the reported position/count are always drawn
+    # from the SAME response.
+    failed_statements: list[_FailedStatement] = []
+    statement_count = 0
     for attempt in range(_MAX_TXN_CONFLICT_ATTEMPTS):
         response = await _txn_query_raw(statement, params, acquire=acquire, drop=drop, url=url)
         failed_statements = _failed_statements(response)
+        statement_count = len(response.get("result") or [])
         if not failed_statements:
             return
         if not _should_retry(attempt, failed_statements):
             break
         await asyncio.sleep(_TXN_CONFLICT_BACKOFF_SECONDS * (attempt + 1))
+    last_failure = failed_statements[-1]
+    error_class = _classify_engine_error(last_failure.raw_result)
+    # Server-side, FULL detail — logged BEFORE raising, so the raw engine text
+    # (which may carry an interpolated bound value) is always recoverable by an
+    # operator even though the raised exception never carries it.
+    logger.error(
+        "store.transaction.rolled_back",
+        extra={
+            "statement_index": last_failure.index,
+            "statement_count": statement_count,
+            "status": _ERR_STATUS,
+            "engine_result": last_failure.raw_result,
+        },
+    )
     raise SurrealStoreError(
-        f"SurrealDB transaction statement failed and was rolled back: "
-        f"{failed_statements[-1].get('result')}"
+        f"SurrealDB transaction failed and was rolled back: statement "
+        f"{last_failure.index + 1} of {statement_count} was rejected "
+        f"({error_class}); {_SERVER_LOG_HINT}"
     )
 
 
@@ -472,27 +582,33 @@ async def _txn_query_raw(
     return response
 
 
-def _failed_statements(response: dict[str, Any]) -> list[dict[str, Any]]:
+def _failed_statements(response: dict[str, Any]) -> list[_FailedStatement]:
     """Return the ``ERR``-status per-statement results from a ``query_raw`` response.
 
     Raises:
         SurrealStoreError: The response carried no per-statement result list at
             all — a shape the engine should never actually return, but one this
-            helper refuses to silently paper over.
+            helper refuses to silently paper over. Hygiene (ledger #31): the
+            full malformed ``response`` is logged server-side; the raised
+            message never echoes it (the response CAN carry per-statement
+            results with bound values, the same leak surface as the ordinary
+            rollback path below).
     """
     results = response.get("result")
     if not isinstance(results, list):
+        logger.error("store.transaction.malformed_response", extra={"response": response})
         raise SurrealStoreError(
-            f"SurrealDB returned no result set for the transaction: {response!r}"
+            "SurrealDB returned an unexpected transaction response shape "
+            f"(no per-statement result list); {_SERVER_LOG_HINT}"
         )
     return [
-        statement_result
-        for statement_result in results
+        _FailedStatement(index=index, raw_result=statement_result.get("result"))
+        for index, statement_result in enumerate(results)
         if isinstance(statement_result, dict) and statement_result.get("status") == _ERR_STATUS
     ]
 
 
-def _should_retry(attempt: int, failed_statements: list[dict[str, Any]]) -> bool:
+def _should_retry(attempt: int, failed_statements: list[_FailedStatement]) -> bool:
     """Whether ``attempt``'s rollback should be retried.
 
     True only when attempts remain AND the failure is the retryable write-write
@@ -503,16 +619,17 @@ def _should_retry(attempt: int, failed_statements: list[dict[str, Any]]) -> bool
     return attempts_remaining and _is_retryable_conflict(failed_statements)
 
 
-def _is_retryable_conflict(failed_statements: list[dict[str, Any]]) -> bool:
+def _is_retryable_conflict(failed_statements: list[_FailedStatement]) -> bool:
     """Whether a rolled-back transaction's failure is a RETRYABLE conflict.
 
     True only when at least one failed statement's message carries the engine's
     own "this transaction can be retried" marker — the write-write race between
     two genuinely concurrent transactions on the same row, which resolves cleanly
     on retry. Every other rejection (e.g. a domain/``ASSERT`` violation) never
-    carries that marker and is never retried.
+    carries that marker and is never retried. Reads the RAW engine text (never
+    exposed outside this module — see :class:`_FailedStatement`); ledger #31
+    only changed what :func:`execute_transaction` RAISES, not this decision.
     """
     return any(
-        _RETRYABLE_CONFLICT_MARKER in str(statement_result.get("result", ""))
-        for statement_result in failed_statements
+        _RETRYABLE_CONFLICT_MARKER in str(failed.raw_result) for failed in failed_statements
     )

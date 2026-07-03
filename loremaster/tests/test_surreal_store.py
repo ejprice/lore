@@ -41,8 +41,10 @@ loremaster.store.surreal`` / ``loremaster.store.candidate``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 import pytest
@@ -61,7 +63,11 @@ from _surreal_harness import (
 from loremaster.graph_surreal import SurrealCodeGraph
 from loremaster.index.records import Record, chunk_to_record, sha512_hex
 from loremaster.index.surreal_manifest import SurrealManifest
-from loremaster.store._txn import execute_transaction
+from loremaster.store._txn import (
+    _MAX_TXN_CONFLICT_ATTEMPTS,
+    _RETRYABLE_CONFLICT_MARKER,
+    execute_transaction,
+)
 from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import (
     _CONNECTION_ERRORS,
@@ -1818,3 +1824,250 @@ class TestTxnSdkKeyErrorClassification:
                 url="ws://127.0.0.1:19555/rpc",  # unreachable — never actually dialed
             )
         assert dropped == [fake_connection]
+
+
+
+# ===========================================================================
+# Ledger #31 (c2-security, low): error-message hygiene. A rolled-back
+# transaction's raw engine detail can echo bound VALUES back through the
+# ASSERT/coercion rejection text (e.g. "Found 'the-actual-value' for field
+# ..."), and that raw text used to ride straight into ``SurrealStoreError``'s
+# message — which will flow to MCP clients in P8. The contract pinned here:
+#
+#   1. The FULL engine detail is logged server-side (``logger.error``,
+#      structured: statement index, status, the raw engine result text)
+#      BEFORE raising.
+#   2. The RAISED ``SurrealStoreError`` carries a CLASSIFIED, generic
+#      message: which statement failed (index/count), a short engine ERROR
+#      CLASS if extractable (e.g. "assert violation", "field coercion"), and
+#      a "see the server log" correlation hint — but NEVER the raw engine
+#      text or any value it could carry.
+#   3. The retryable-conflict detection (:data:`_RETRYABLE_CONFLICT_MARKER`)
+#      still reads the RAW text internally — only the RAISED message changed.
+#
+# Every case here is fully DI'd against a scripted fake connection (the same
+# pattern as ``TestTxnSdkKeyErrorClassification`` above) — no live server, no
+# genuine write-write race, fully deterministic.
+# ===========================================================================
+
+# A synthetic engine rejection carrying a value that must NEVER reach the
+# raised message — stands in for a real ASSERT/coercion rejection that echoes
+# the offending bound value back verbatim (the finding's exact shape).
+_SENSITIVE_MARKER = "TOP-SECRET-BOUND-VALUE-9f3a1c"
+_SENSITIVE_ENGINE_TEXT = (
+    f"Found '{_SENSITIVE_MARKER}' for field `name`, with record "
+    f"`chunk:abc123`, but expected the value to fulfil the following "
+    f"assertion: $value != NONE"
+)
+
+# A field-coercion rejection — a distinct engine failure SHAPE from an ASSERT
+# violation, so the classifier's two branches are each independently pinned.
+_COERCION_ENGINE_TEXT = "Couldn't coerce value for field `sub_ordinal`: Expected int"
+
+# The exact live retryable-conflict text (see ``_txn._RETRYABLE_CONFLICT_MARKER``).
+_CONFLICT_ENGINE_TEXT = (
+    f"Cannot COMMIT: Transaction conflict: Resource busy. This transaction "
+    f"{_RETRYABLE_CONFLICT_MARKER}"
+)
+
+_OK_STATEMENT: dict[str, Any] = {"status": "OK", "result": None}
+
+
+def _err_response(*, result_text: str, leading_ok: int = 0, trailing_ok: int = 0) -> dict[str, Any]:
+    """Build a ``query_raw``-shaped response: ``leading_ok`` OK statements,
+    then one ERR statement carrying ``result_text``, then ``trailing_ok`` more
+    OK statements — the exact shape :func:`~loremaster.store._txn.
+    _failed_statements` inspects. Leading/trailing OK counts let a test pin
+    the failed statement's INDEX distinctly from the total statement COUNT.
+    """
+    entries = [dict(_OK_STATEMENT) for _ in range(leading_ok)]
+    entries.append({"status": "ERR", "result": result_text})
+    entries.extend(dict(_OK_STATEMENT) for _ in range(trailing_ok))
+    return {"result": entries}
+
+
+@dataclass
+class _TxnRollbackFakeConnection:
+    """Stand-in SDK connection for the ledger #31 hygiene + retry pins:
+    scripts a SEQUENCE of ``query_raw`` responses (one consumed per attempt),
+    in the SDK's raw multi-statement shape — so the classified-message /
+    server-log / retry-preserved contract is pinned deterministically,
+    without a live server or a genuine write-write race.
+    """
+
+    responses: list[dict[str, Any]]
+    calls: int = field(default=0, init=False)
+
+    async def query_raw(self, statement: str, params: dict[str, Any]) -> dict[str, Any]:
+        response = self.responses[self.calls]
+        self.calls += 1
+        return response
+
+    def check_response_for_error(self, response: Any, method: str) -> None:
+        """No RPC-level error in these canned per-statement responses."""
+        return None
+
+
+def _never_drop() -> Callable[[Any], Awaitable[None]]:
+    """A ``drop`` callback that fails the test if invoked — a domain
+    rejection (or a retryable conflict) must never tear down a healthy
+    connection, only a genuine transport failure may.
+    """
+
+    async def _drop(connection: Any) -> None:
+        raise AssertionError("a domain rejection must never drop the connection")
+
+    return _drop
+
+
+async def _run_execute_transaction(
+    fake: _TxnRollbackFakeConnection, *, drop: Callable[[Any], Awaitable[None]] | None = None
+) -> None:
+    """Drive ``execute_transaction`` against ``fake`` with a fixed poison
+    statement/params — the shape is irrelevant to these tests since the fake
+    ignores it entirely and only replays scripted responses.
+    """
+
+    async def _acquire() -> _SurrealConnection:
+        return cast("_SurrealConnection", fake)
+
+    await execute_transaction(
+        "BEGIN;\nUPDATE chunk SET name = $name;\nCOMMIT;\n",
+        {"name": "poison"},
+        acquire=_acquire,
+        drop=drop or _never_drop(),
+        url="ws://127.0.0.1:19555/rpc",  # unreachable — never actually dialed
+    )
+
+
+class TestTxnRollbackMessageHygiene:
+    """The RAISED message is classified/generic; the engine's raw
+    per-statement detail is logged server-side, never echoed to the caller."""
+
+    async def test_raised_message_never_echoes_the_raw_engine_text(self) -> None:
+        fake = _TxnRollbackFakeConnection(
+            responses=[_err_response(result_text=_SENSITIVE_ENGINE_TEXT, leading_ok=2, trailing_ok=2)]
+        )
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(fake)
+
+        message = str(exc_info.value)
+        assert _SENSITIVE_ENGINE_TEXT not in message
+        assert _SENSITIVE_MARKER not in message
+        assert fake.calls == 1  # non-retryable: never retried
+
+    async def test_raised_message_names_the_failed_statement_position_and_class(self) -> None:
+        fake = _TxnRollbackFakeConnection(
+            responses=[_err_response(result_text=_SENSITIVE_ENGINE_TEXT, leading_ok=2, trailing_ok=2)]
+        )
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(fake)
+
+        message = str(exc_info.value)
+        # 2 leading OK + the ERR (index 2, 1-based ordinal 3) + 2 trailing OK
+        # = 5 statements total: the ERR is neither first nor last, so the
+        # ordinal and the count are DISTINCT numbers in the message.
+        assert "statement 3 of 5" in message
+        assert "assert violation" in message.lower()
+        assert "server log" in message.lower()
+
+    async def test_field_coercion_rejection_is_classified_distinctly(self) -> None:
+        fake = _TxnRollbackFakeConnection(
+            responses=[_err_response(result_text=_COERCION_ENGINE_TEXT, leading_ok=1)]
+        )
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(fake)
+
+        message = str(exc_info.value)
+        assert _COERCION_ENGINE_TEXT not in message
+        assert "field coercion" in message.lower()
+
+    async def test_server_log_carries_the_full_engine_detail_before_raising(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake = _TxnRollbackFakeConnection(
+            responses=[_err_response(result_text=_SENSITIVE_ENGINE_TEXT, leading_ok=2, trailing_ok=2)]
+        )
+        with caplog.at_level(logging.ERROR, logger="loremaster.store._txn"):
+            with pytest.raises(SurrealStoreError):
+                await _run_execute_transaction(fake)
+
+        error_records = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert error_records, "the full engine detail must be logged server-side"
+        record = error_records[0]
+        logged = " ".join(
+            str(value) for value in (record.getMessage(), getattr(record, "engine_result", ""))
+        )
+        assert _SENSITIVE_ENGINE_TEXT in logged
+        assert getattr(record, "statement_index", None) == 2  # 0-based: the 3rd entry
+        assert getattr(record, "statement_count", None) == 5
+        assert getattr(record, "status", None) == "ERR"
+
+
+class TestTxnMalformedResponseHygiene:
+    """``_failed_statements``' malformed-response guard (a shape the engine
+    should never return) must ALSO never echo the raw response into the
+    raised message — only into the server-side log.
+    """
+
+    async def test_malformed_response_message_never_echoes_the_raw_response(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        malformed = {"result": _SENSITIVE_MARKER}  # not a list — the poison shape
+        fake = _TxnRollbackFakeConnection(responses=[malformed])
+
+        with caplog.at_level(logging.ERROR, logger="loremaster.store._txn"):
+            with pytest.raises(SurrealStoreError) as exc_info:
+                await _run_execute_transaction(fake)
+
+        assert _SENSITIVE_MARKER not in str(exc_info.value)
+        error_records = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert error_records
+        logged = " ".join(
+            str(value)
+            for value in (error_records[0].getMessage(), getattr(error_records[0], "response", ""))
+        )
+        assert _SENSITIVE_MARKER in logged
+
+
+class TestTxnRetryBehaviourUnchanged:
+    """The conflict-retry decision (``_should_retry`` / ``_is_retryable_conflict``)
+    still reads the RAW engine text internally — only the RAISED message
+    changed; the retry/no-retry behaviour itself must be unchanged.
+    """
+
+    async def test_retryable_conflict_is_retried_and_succeeds_silently(self) -> None:
+        fake = _TxnRollbackFakeConnection(
+            responses=[
+                _err_response(result_text=_CONFLICT_ENGINE_TEXT),
+                {"result": [dict(_OK_STATEMENT)]},
+            ]
+        )
+
+        await _run_execute_transaction(fake)  # must NOT raise
+
+        assert fake.calls == 2  # one conflict, one successful retry — invisible to the caller
+
+    async def test_sustained_conflict_still_raises_after_bounded_attempts(self) -> None:
+        fake = _TxnRollbackFakeConnection(
+            responses=[
+                _err_response(result_text=_CONFLICT_ENGINE_TEXT) for _ in range(_MAX_TXN_CONFLICT_ATTEMPTS)
+            ]
+        )
+
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(fake)
+
+        assert fake.calls == _MAX_TXN_CONFLICT_ATTEMPTS  # bounded, not unbounded
+        assert _CONFLICT_ENGINE_TEXT not in str(exc_info.value)
+        assert "retryable conflict" in str(exc_info.value).lower()
+
+    async def test_non_retryable_rejection_is_never_retried(self) -> None:
+        fake = _TxnRollbackFakeConnection(
+            responses=[_err_response(result_text=_SENSITIVE_ENGINE_TEXT)]
+        )
+
+        with pytest.raises(SurrealStoreError):
+            await _run_execute_transaction(fake)
+
+        assert fake.calls == 1
