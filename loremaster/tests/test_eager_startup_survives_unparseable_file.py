@@ -216,7 +216,6 @@ class TestEagerStartupSurvivesUnparseableFile:
             embedder=FakeEmbedder(dim=_DIM),
             qdrant_client=qdrant,
             manifest_path=tmp_path / "m.db",
-            graph_path=tmp_path / "graph.db",
             snapshot_root=tmp_path / "snap",
             start_tasks=True,
         )

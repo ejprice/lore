@@ -539,7 +539,6 @@ async def divergence_harness(
         *,
         config: LoreConfig,
         manifest_path: Path,
-        graph_path: Path,
         snapshot_root: Path,
         start_tasks: bool = True,
     ) -> Any:
@@ -552,7 +551,6 @@ async def divergence_harness(
             embedder=FakeEmbedder(dim=_DIM),
             qdrant_client=client,
             manifest_path=manifest_path,
-            graph_path=graph_path,
             snapshot_root=snapshot_root,
             start_tasks=start_tasks,
         )
@@ -715,12 +713,11 @@ class TestWipedCollectionHeals:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Step 1: seed a real index through the prod path, then settle + close.
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)  # bring every tier current under the lock
@@ -747,7 +744,7 @@ class TestWipedCollectionHeals:
         # reconcile (after ensure_ready, before the index is declared live) must
         # detect count < expected, RESET the tier, and the SWEEP re-embeds.
         restarted = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await restarted.reindex(None)  # settle any in-flight heal under the lock
@@ -784,11 +781,10 @@ class TestWipedCollectionHeals:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -797,7 +793,7 @@ class TestWipedCollectionHeals:
         await _wipe_tier(slug=slug, tier=_LIVE_TIER)
 
         restarted = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await restarted.reindex(None)
@@ -843,11 +839,10 @@ class TestOrphanOverCountHeals:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -870,7 +865,7 @@ class TestOrphanOverCountHeals:
         )
 
         restarted = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await restarted.reindex(None)
@@ -912,11 +907,10 @@ class TestWipedGraphHeals:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -943,7 +937,7 @@ class TestWipedGraphHeals:
 
         # RESTART — the reconcile must detect graph==0 < manifest>0 and re-graph.
         restarted = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await restarted.reindex(None)
@@ -997,12 +991,11 @@ class TestNoFalseHealWhenHealthy:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Step 1: seed a genuinely healthy index, then close cleanly.
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -1076,12 +1069,11 @@ class TestNoFalseHealWhenHealthy:
         _build_docs_only_corpus(live)  # ZERO .py files → graph legitimately empty
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Step 1: seed a genuinely healthy docs-only index, then close cleanly.
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -1168,12 +1160,11 @@ class TestReconcileIdempotent:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Seed a real index, then close.
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -1191,7 +1182,7 @@ class TestReconcileIdempotent:
         # REAL vectors (not placeholders). This is the same heal path
         # TestWipedCollectionHeals proves works.
         healed_ctx = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await healed_ctx.reindex(None)
@@ -1269,11 +1260,10 @@ class TestPartialPerTierDivergence:
             slug=slug, live_path=live, static_source=static_src,
         )
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -1374,11 +1364,10 @@ class TestPartialPerTierDivergence:
             slug=slug, live_path=live, static_source=static_src,
         )
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -1394,7 +1383,7 @@ class TestPartialPerTierDivergence:
 
         # HEAL via the REAL prod path: reset + SWEEP re-embeds real content.
         restarted = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await restarted.reindex(None)
@@ -1453,12 +1442,11 @@ class TestReconcileDoesNotFabricatePoints:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Seed a real index, then close.
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -1555,11 +1543,10 @@ class TestCountVsMtimeInteraction:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -1581,7 +1568,7 @@ class TestCountVsMtimeInteraction:
         await _wipe_tier(slug=slug, tier=_LIVE_TIER)
 
         restarted = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await restarted.reindex(None)
@@ -1623,11 +1610,10 @@ class TestEmptyDecisionReadsLiveCount:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -1735,12 +1721,11 @@ class TestGraphOnlyHealDoesNotReEmbed:
         _build_live_corpus(live)  # has .py files → graph genuinely populated
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         # Step 1: seed a real, fully-healthy index (collection + graph), then close.
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -1849,11 +1834,10 @@ class TestRebuildGraphOnlyIndexerMethod:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -2035,11 +2019,10 @@ class TestDivergenceHealSetsRebuildingNotice:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)
@@ -2109,11 +2092,10 @@ class TestDivergenceHealSetsRebuildingNotice:
         _build_live_corpus(live)
         config = divergence_harness["config"](slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
-        graph_path = tmp_path / "graph.kuzu"
         snap = tmp_path / "snap"
 
         seed = await divergence_harness["build"](
-            config=config, manifest_path=manifest_path, graph_path=graph_path,
+            config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
         await seed.reindex(None)

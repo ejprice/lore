@@ -1004,7 +1004,6 @@ class TestIndexStatusReportsSchemaFields:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -1064,7 +1063,6 @@ class TestIndexStatusReportsSchemaFields:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -1115,7 +1113,6 @@ class TestIndexStatusReportsSchemaFields:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=tmp_path / "m.db",
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -1226,7 +1223,6 @@ class TestStartupDecision:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -1251,7 +1247,6 @@ class TestStartupDecision:
                 embedder=SlowEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -1331,7 +1326,6 @@ class TestStartupDecision:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -1376,7 +1370,6 @@ class TestStartupDecision:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=tmp_path / "m.db",
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -1450,7 +1443,6 @@ class TestStartupDecision:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -1493,7 +1485,6 @@ class TestStartupDecision:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=True,
             )
@@ -1575,7 +1566,6 @@ class TestStartupDecision:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=True,
             )
@@ -1727,7 +1717,6 @@ async def app_context_factory(tmp_path: Path) -> AsyncIterator[Any]:
             embedder=FakeEmbedder(dim=_DIM),
             qdrant_client=qdrant_client,
             manifest_path=manifest_path,
-            graph_path=tmp_path / "graph.db",
             snapshot_root=tmp_path / "snap",
             start_tasks=False,
         )
@@ -2431,7 +2420,6 @@ class TestFailedRebuildReportsFailed:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -2456,7 +2444,6 @@ class TestFailedRebuildReportsFailed:
                 embedder=_BombEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -2549,7 +2536,6 @@ class TestFailedRebuildReportsFailed:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
-                graph_path=tmp_path / "graph.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )

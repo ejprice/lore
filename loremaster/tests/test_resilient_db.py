@@ -499,9 +499,10 @@ class TestBuildAppContextCreatesStateDir:
     async def test_build_app_context_under_absent_state_dir_does_not_raise(
         self, tmp_path: Path
     ) -> None:
-        """Arrange: manifest_path/graph_path under a state dir that does NOT exist.
-        Act: build_app_context with that path, a FakeEmbedder, a throwaway Qdrant.
-        Assert: it does not raise, the manifest is empty/queryable, the graph empty.
+        """Arrange: a manifest_path (memory-ledger anchor) under a state dir that
+        does NOT exist. Act: build_app_context with that path, a FakeEmbedder, a
+        throwaway Qdrant. Assert: it does not raise, the manifest is
+        empty/queryable, the graph empty.
         """
         # real-Qdrant — the probe gate + ensure_collection need a live Qdrant.
         from loremaster.server import LoreServer, build_app_context
@@ -525,7 +526,6 @@ class TestBuildAppContextCreatesStateDir:
         # The state dir does NOT exist — this is the FP-01 clean-container trigger.
         absent_state_dir = tmp_path / "state" / "lore"
         manifest_path = absent_state_dir / f"{slug}.db"
-        graph_path = absent_state_dir / f"{slug}.graph.db"
         assert not absent_state_dir.exists(), "fixture must start with an absent state dir"
 
         client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
@@ -538,7 +538,6 @@ class TestBuildAppContextCreatesStateDir:
                     embedder=FakeEmbedder(dim=_CONFIG_DIM),
                     qdrant_client=client,
                     manifest_path=manifest_path,
-                    graph_path=graph_path,
                     snapshot_root=tmp_path / "snap",
                     start_tasks=False,
                 )

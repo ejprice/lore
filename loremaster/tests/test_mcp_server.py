@@ -319,7 +319,6 @@ async def _make_context(
         embedder=embedder or FakeEmbedder(dim=_DIM),
         qdrant_client=client,
         manifest_path=tmp_path / "m.db",
-        graph_path=tmp_path / "graph.kuzu",
         snapshot_root=tmp_path / "snap",
         start_tasks=start_tasks,
     )
@@ -550,7 +549,6 @@ class TestAppContextLifespan:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
-                graph_path=tmp_path / "graph.kuzu",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -616,7 +614,6 @@ class TestAppContextLifespan:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
-                graph_path=tmp_path / "graph.kuzu",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -679,7 +676,6 @@ class TestAppContextLifespan:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
-                graph_path=tmp_path / "graph.kuzu",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
@@ -763,7 +759,6 @@ class TestAppContextLifespan:
                 embedder=FakeEmbedder(dim=_DIM),
                 qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
-                graph_path=tmp_path / "graph.kuzu",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=True,
             )

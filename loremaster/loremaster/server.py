@@ -1630,17 +1630,17 @@ async def build_app_context(
     embedder: Embedder,
     qdrant_client: Any,
     manifest_path: Path,
-    graph_path: Path,
     snapshot_root: Path,
     start_tasks: bool = False,
 ) -> AppContext:
     """Run the probe gate, construct the runtime services, optionally spawn tasks.
 
-    The dependency-injected core of the lifespan: every collaborator that the
-    real lifespan builds from config (the embedder, the Qdrant client, the SQLite
-    paths, the snapshot root) is a parameter, so a test wires a
-    :class:`~loresigil.testing.FakeEmbedder` + a throwaway Qdrant collection and
-    drives the SAME construction path the server runs.
+    The dependency-injected core of the lifespan: every collaborator the real
+    lifespan builds from config (the embedder, the Qdrant client, the
+    memory-ledger anchor path, the snapshot root) is a parameter, so a test
+    wires a :class:`~loresigil.testing.FakeEmbedder` + a throwaway Qdrant
+    collection + a throwaway SurrealDB database and drives the SAME
+    construction path the server runs.
 
     Sequence (plan Deliverable 3 lifespan):
 
@@ -1664,8 +1664,10 @@ async def build_app_context(
         server: The composed :class:`LoreServer` (config + extensions).
         embedder: The active embedder (probed by the gate).
         qdrant_client: The async Qdrant client the stores share.
-        manifest_path: SQLite manifest path.
-        graph_path: Kùzu code-graph path.
+        manifest_path: The state-dir anchor whose ``.with_name()`` derives the
+            memory-ledger SQLite path (``<slug>.memory.db``) — NOT a manifest
+            path; the manifest itself lives in SurrealDB (``config.surreal.*``).
+            Retired at P7 when memory moves onto the unified store too.
         snapshot_root: Static-tier snapshot root (also the read-file static base).
         start_tasks: When ``True``, run the initial sweep and — if
             ``config.watcher.enabled`` — start the watcher + periodic reconcile
@@ -1699,17 +1701,17 @@ async def build_app_context(
     slug = config.project.slug
 
     # 1) READ-path store + probe gate + collection. DUAL-STORE INTERIM (P5→P8):
-    # the search/symbol/memory READ path still speaks the Qdrant API, so its
-    # QdrantStore stays constructed here for the whole interim window. The
-    # WRITE path (indexer/reconcile/watcher) already runs on the Surreal stack
-    # below — chunks indexed from here on land in SurrealDB, NOT Qdrant.
+    # the memory READ path still speaks the Qdrant API, so its QdrantStore
+    # stays constructed here for the remaining interim window. The WRITE path
+    # (indexer/reconcile/watcher) already runs on the Surreal stack below —
+    # chunks indexed from here on land in SurrealDB, NOT Qdrant.
     # Retirement is PER-CONSUMER, not one cutover: search + symbols
-    # (SymbolTool) port onto the unified store at P6 (search pipeline v2 —
-    # already scheduled), memory ports at P7 (memory v2), and the
+    # (SymbolTool) ported onto the unified store at P6 (search pipeline v2 —
+    # commit 8ae67ab), memory ports at P7 (memory v2), and the
     # QdrantStore/client/deps are only deleted at P8 (v1.0) once every
-    # consumer is off it. Staleness retires the same way — a consumer's
-    # Qdrant-served results grow stale by design only until THAT consumer's
-    # own phase lands, not until P8.
+    # consumer is off it. Staleness retires the same way — memory's
+    # Qdrant-served results grow stale by design only until its own phase
+    # lands, not until P8.
     store = QdrantStore(
         client=qdrant_client,
         slug=slug,
@@ -1847,6 +1849,11 @@ async def build_app_context(
     # SAME object is reused for the startup hooks below, so seam-9 ``state`` set at
     # startup is visible to the search seams.
     extension_ctx = ExtensionContext(
+        # ctx.store is still the LEGACY QdrantStore handle: the indexer stopped
+        # writing this corpus at P5, so an extension hook that re-queries
+        # ctx.store reads stale/empty data. Flips to the unified SurrealStore
+        # in the P6 extension-seam close-out cycle (FieldIndexSpec +
+        # EXTENDING.md + ctx.store flip); memory stays on Qdrant until P7.
         store=store,
         embedder=embedder,
         config=config,
@@ -2417,7 +2424,6 @@ def build_mcp_server(server: LoreServer) -> Any:
                 embedder=make_embedder_from_config(config.embedding),
                 qdrant_client=client,
                 manifest_path=_DEFAULT_MANIFEST_DIR / f"{config.project.slug}.db",
-                graph_path=_DEFAULT_MANIFEST_DIR / f"{config.project.slug}.graph.kuzu",
                 snapshot_root=_DEFAULT_SNAPSHOT_ROOT,
                 start_tasks=True,
             )
