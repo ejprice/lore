@@ -62,9 +62,13 @@ step needs manual intervention.
 ## `start` — launch for a working session (idempotent)
 
 1. **Already running + current image?** `lore-<slug>` is `running` AND its baked
-   image ID matches the current `localhost/lore:latest` tag → no-op, re-merge
-   `.mcp.json` (so wiring survives a reboot), and exit 0. No reconnect reminder —
-   nothing changed.
+   image ID matches the current `localhost/lore:latest` tag → **probe the MCP
+   port first** (see "Port-probe / wait-for-bind" below). If it's already
+   ACCEPTING → no-op, re-merge `.mcp.json` (so wiring survives a reboot), and
+   exit 0. No reconnect reminder — nothing changed. If it is NOT yet
+   accepting (container up but still mid boot-reconcile), enter the
+   wait-for-bind loop before declaring success — do NOT treat "running" alone
+   as done.
 1a. **Already running + STALE image?** `lore-<slug>` is `running` but its baked
    image ID differs from the current tag (the image was rebuilt) → **recreate**.
    `podman restart` reuses the same baked image, so only stop + rm + run picks up
@@ -75,16 +79,44 @@ step needs manual intervention.
    dead one. Only once the preconditions are known good: `podman stop` → `podman rm`
    → relaunch. A relaunch (`podman run`) failure after teardown degrades gracefully
    (loud on stderr, `_EXIT_ERROR`), never an uncaught exception. On success,
-   re-merge `.mcp.json` and print the MCP-reconnect reminder.
+   **wait for bind** (below), then re-merge `.mcp.json` and print the
+   MCP-reconnect reminder.
 2. **Pre-flight (not-running path):** hard-probe `/embed` (STOP if down/wrong dim);
    confirm the collection exists (if not, tell the user to run `setup` first — do
    NOT silently cold-build on `start`).
 3. **Launch the container** (see the run invocation below). On startup the
    server runs the **delta-reconcile**: walk included roots → mtime+size
    fast-path → re-index only the changed delta, purge deletions. No cold
-   rebuild.
+   rebuild. This delta-reconcile runs BEFORE uvicorn binds the port, which is
+   exactly why step 3a below exists — a launched container is not yet a
+   reachable server.
+3a. **Wait for bind.** Poll the MCP endpoint (POST a minimal MCP `initialize`
+   request; any HTTP response — even non-2xx — counts as bound) every ~3s up
+   to `--bind-timeout` seconds (default 600s; `--no-wait` skips this step
+   entirely, fire-and-forget). Print a progress line every ~30s while
+   waiting. On timeout: exit non-zero with a loud message including the tail
+   of `podman logs`.
 4. **Merge `.mcp.json`** (idempotent — re-merging the same entry is a no-op).
 5. Report status.
+
+### Port-probe / wait-for-bind (shared by `start` and `status`)
+
+Neither verb may treat "container running" as "server reachable" — loremaster's
+ASGI lifespan startup runs the boot-time delta-reconcile **before** uvicorn
+binds the port, so a freshly-launched (or even long-running, if the reconcile
+is still churning through embedder 429 backoff) container can refuse
+connections for minutes. `lore_deploy.py` implements the probe itself
+(`_probe_mcp_port` / `_wait_for_bind`, stdlib-only urllib/socket — no sibling
+script, since both `status` and `start` need it inline):
+
+- Reads `host` / `port` / `path` from the project's `lore.yaml` `server:` block.
+- POSTs a minimal MCP `initialize` JSON-RPC request with
+  `Content-Type: application/json` and `Accept: application/json, text/event-stream`.
+- **Success = any HTTP response** — a 2xx counts as serving, but so does a
+  non-2xx (e.g. a 400 from a malformed probe body): either one proves the
+  port is bound and something is answering HTTP there. Only a connection
+  refused / reset / timeout means "not accepting".
+- Per-attempt timeout ~3s.
 
 ### Run invocation (the proven host pattern)
 
@@ -132,11 +164,20 @@ podman run -d --name lore-<slug> \
 
 1. Container state: `podman container inspect lore-<slug>` → running / stopped /
    absent.
-2. If running, query `index_status()` (via the MCP endpoint or the server's
+2. If running, report image currency (current vs. stale `localhost/lore:latest`).
+3. If running, **probe the MCP port** (see "Port-probe / wait-for-bind" above —
+   one attempt, ~3s timeout, no wait loop) and print a structured line:
+   `status: mcp endpoint http://host:port/path = ACCEPTING` or
+   `= NOT ACCEPTING (... likely boot delta-reconcile ...)`. Container state
+   alone is NOT sufficient to call the server up — this is exactly the gap
+   that let a "running, healthy-looking" `status` coexist with a refused MCP
+   connection for ~4 minutes.
+4. If running, query `index_status()` (via the MCP endpoint or the server's
    status command) for freshness: total points, in-flight (`dirty`/`embedding`)
    files, `files_failed`. Report `files_failed == 0` as healthy.
-3. If stopped, report the last manifest state (read `~/.local/state/lore/
-   <slug>.db` counts) so the user knows the index is preserved.
+5. If stopped, report the last manifest state (read `~/.local/state/lore/
+   <slug>.db` counts) so the user knows the index is preserved. **Skip the port
+   probe entirely** — there is nothing to probe.
 
 ## Failure / STOP conditions (loud, never silent)
 
@@ -150,3 +191,4 @@ podman run -d --name lore-<slug> \
 | collection missing on `start` | STOP — tell the user to run `setup` (cold index). |
 | recreate precondition unmet (image or env-file missing on the stale-image path) | STOP — `_EXIT_ERROR`, leave the running container untouched (never tear down before validating). |
 | relaunch (`podman run`) fails after teardown on recreate | STOP — `_EXIT_ERROR`, loud on stderr; never propagate an uncaught `CalledProcessError`. |
+| MCP port never accepts within `--bind-timeout` (default 600s) on `start` | STOP — `_EXIT_ERROR`, loud on stderr with the tail of `podman logs --tail 5`; skipped entirely by `--no-wait`. |

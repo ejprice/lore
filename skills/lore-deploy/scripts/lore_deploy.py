@@ -26,11 +26,16 @@ venv (the dispatcher resolves a sensible default).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -63,6 +68,38 @@ LORE_SECRETS_DIR = Path.home() / "docker" / "mcp" / "lore-secrets"
 
 _EXIT_OK = 0
 _EXIT_ERROR = 2
+
+# ---------------------------------------------------------------------------
+# Port-probe / wait-for-bind constants.
+#
+# A "running" container is NOT the same as "accepting MCP connections" —
+# loremaster's ASGI lifespan startup runs a boot-time delta-reconcile (walking
+# + re-indexing changed files, subject to embedder 429 backoff) BEFORE uvicorn
+# binds the port. The incident this closes: `status` reported healthy and
+# `start` declared success purely from container state + the manifest file,
+# while the real MCP endpoint refused connections for ~4 minutes.
+# ---------------------------------------------------------------------------
+_PROBE_TIMEOUT_S = 3.0
+_DEFAULT_BIND_TIMEOUT_S = 600.0
+_BIND_POLL_INTERVAL_S = 3.0
+_BIND_PROGRESS_INTERVAL_S = 30.0
+
+# A minimal, well-formed MCP `initialize` JSON-RPC request. The probe's success
+# criterion doesn't care about the reply shape (any HTTP response — even a
+# non-2xx one — proves the port is bound), but sending a genuine MCP request
+# means a real MCP server gets a well-formed probe rather than a throwaway GET.
+_MCP_INITIALIZE_BODY = json.dumps(
+    {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "lore-deploy-probe", "version": "1.0"},
+        },
+    }
+).encode("utf-8")
 
 # Printed to stdout whenever a container is freshly launched or recreated on a new
 # image so the operator knows to reconnect their MCP client (e.g. restart Claude Code
@@ -173,6 +210,68 @@ def _free_port(base: int) -> int:
     raise RuntimeError(f"no free port found in [{base}, {base + 1000})")
 
 
+def _probe_mcp_port(host: str, port: int, path: str, *, timeout_s: float = _PROBE_TIMEOUT_S) -> bool:
+    """Return True iff ``(host, port, path)`` is bound and speaking HTTP right now.
+
+    POSTs a minimal MCP ``initialize`` JSON-RPC request. Deliberately loose
+    success criterion: ANY HTTP response — including a non-2xx status —
+    proves the port is bound and serving, which is the only thing a caller
+    needs to know (vs. connection-refused/timeout, meaning nothing is
+    listening there yet — e.g. loremaster's boot-time delta-reconcile still
+    holding the port unbound before uvicorn binds). Never raises; a transport
+    failure just means "not yet".
+    """
+    url = f"http://{host}:{port}{path}"
+    request = urllib.request.Request(
+        url,
+        data=_MCP_INITIALIZE_BODY,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s):
+            return True
+    except urllib.error.HTTPError:
+        return True  # a real HTTP response, even an error one, proves the port is bound
+    except OSError:
+        return False  # connection refused / timed out / reset — nothing listening (yet)
+
+
+def _wait_for_bind(
+    host: str,
+    port: int,
+    path: str,
+    *,
+    timeout_s: float,
+    poll_interval_s: float = _BIND_POLL_INTERVAL_S,
+    progress_interval_s: float = _BIND_PROGRESS_INTERVAL_S,
+    on_progress: Callable[[float], None] | None = None,
+) -> bool:
+    """Poll ``_probe_mcp_port`` until it accepts connections or ``timeout_s`` elapses.
+
+    Returns True the moment a probe succeeds; False once the budget is
+    exhausted with no bind ever observed. Calls ``on_progress(elapsed_s)``
+    roughly every ``progress_interval_s`` while still waiting, so a caller can
+    print a "still waiting" line without this helper owning stdout.
+    """
+    start = time.monotonic()
+    last_progress = start
+    while True:
+        if _probe_mcp_port(host, port, path, timeout_s=min(poll_interval_s, _PROBE_TIMEOUT_S)):
+            return True
+        now = time.monotonic()
+        elapsed = now - start
+        if elapsed >= timeout_s:
+            return False
+        if on_progress is not None and (now - last_progress) >= progress_interval_s:
+            on_progress(elapsed)
+            last_progress = now
+        time.sleep(poll_interval_s)
+
+
 def _loremaster_python() -> str:
     """Resolve an interpreter that can import loremaster (config parse, ensure step).
 
@@ -231,6 +330,60 @@ def _read_config_field(config_path: Path, expr: str) -> str:
             f"failed to read {expr!r} from {config_path}: {result.stderr.strip()}"
         )
     return result.stdout.strip()
+
+
+def _read_server_block(config_path: Path) -> tuple[str, int, str]:
+    """Read the ``server:`` block (host, port, path) a project's lore.yaml declares."""
+    host = _read_config_field(config_path, "c.server.host")
+    port = int(_read_config_field(config_path, "c.server.port"))
+    path = _read_config_field(config_path, "c.server.path")
+    return host, port, path
+
+
+def _await_bind(
+    container_name: str,
+    host: str,
+    port: int,
+    path: str,
+    *,
+    timeout_s: float,
+    no_wait: bool,
+) -> int:
+    """Wait for the MCP endpoint to accept connections, or fail loud.
+
+    Every ``start`` path that ends with a running container calls this before
+    declaring success — a "running" container can still be mid-boot
+    delta-reconcile with the port unbound (the incident this closes). Skips
+    the wait entirely when ``no_wait`` (fire-and-forget, operator's call). On
+    timeout, prints a loud stderr message with the tail of ``podman logs`` and
+    returns ``_EXIT_ERROR`` — the caller must not print an unqualified success
+    line afterward.
+    """
+    url = f"http://{host}:{port}{path}"
+    if no_wait:
+        print(f"start: --no-wait set — not confirming {url} is accepting connections.")
+        return _EXIT_OK
+
+    def _progress(elapsed: float) -> None:
+        print(
+            f"start: still waiting for {container_name} to accept MCP connections at "
+            f"{url} ({elapsed:.0f}s elapsed) — likely the boot-time delta-reconcile is "
+            f"still holding the port unbound; continuing to poll."
+        )
+
+    print(f"start: waiting for {container_name} to accept MCP connections at {url}…")
+    if _wait_for_bind(host, port, path, timeout_s=timeout_s, on_progress=_progress):
+        print(f"start: {url} is accepting connections.")
+        return _EXIT_OK
+
+    tail = _run(["podman", "logs", "--tail", "5", container_name], check=False, capture=True)
+    print(
+        f"start: TIMEOUT — {container_name} did not accept MCP connections at {url} "
+        f"within {timeout_s:.0f}s. Last `podman logs --tail 5 {container_name}`:\n"
+        f"{tail.stdout}{tail.stderr}",
+        file=sys.stderr,
+    )
+    return _EXIT_ERROR
 
 
 # ---------------------------------------------------------------------------
@@ -433,13 +586,25 @@ def verb_setup(project: Path, env_file: Path) -> int:
     return _EXIT_OK
 
 
-def verb_start(project: Path, env_file: Path) -> int:
+def verb_start(
+    project: Path,
+    env_file: Path,
+    *,
+    bind_timeout_s: float = _DEFAULT_BIND_TIMEOUT_S,
+    no_wait: bool = False,
+) -> int:
     """``start`` — launch the container (delta-reconcile) + merge .mcp.json (idempotent).
 
     Three paths based on the container's current state and image currency:
     - RUNNING + current image  → no-op, re-merge .mcp.json (no reminder, nothing changed).
     - RUNNING + stale image    → stop + rm + relaunch, re-merge .mcp.json, print reminder.
     - NOT running              → standard launch path, re-merge .mcp.json, print reminder.
+
+    Every path that ends with a running container additionally waits for the
+    MCP port to actually ACCEPT connections before declaring success (see
+    ``_await_bind``) — a "running" container can still be mid-boot
+    delta-reconcile with the port unbound. ``bind_timeout_s``/``no_wait`` are
+    the ``--bind-timeout``/``--no-wait`` CLI knobs.
     """
     config_path = project / "lore.yaml"
     slug = project.name
@@ -452,7 +617,22 @@ def verb_start(project: Path, env_file: Path) -> int:
     if state == "running":
         if _container_on_current_image(container_name, IMAGE):
             # Container is running on the current image — no recreate needed.
-            print(f"start: {container_name} already running — no-op.")
+            # Probe FIRST and only enter the wait loop if not yet accepting —
+            # the common case (already running + already bound) stays a fast no-op.
+            host, port, mount = _read_server_block(config_path)
+            url = f"http://{host}:{port}{mount}"
+            if _probe_mcp_port(host, port, mount, timeout_s=_PROBE_TIMEOUT_S):
+                print(f"start: {container_name} already running — no-op.")
+            else:
+                print(
+                    f"start: {container_name} already running but {url} is not yet "
+                    f"accepting connections — waiting for bind."
+                )
+                if (rc := _await_bind(
+                    container_name, host, port, mount,
+                    timeout_s=bind_timeout_s, no_wait=no_wait,
+                )) != _EXIT_OK:
+                    return rc
             # Re-merge .mcp.json (cheap, idempotent) so wiring stays current even
             # after a reboot or out-of-band container restart — mirrors verb_setup's
             # already-provisioned no-op branch.
@@ -502,6 +682,12 @@ def verb_start(project: Path, env_file: Path) -> int:
                     file=sys.stderr,
                 )
                 return _EXIT_ERROR
+            host, port, mount = _read_server_block(config_path)
+            if (rc := _await_bind(
+                container_name, host, port, mount,
+                timeout_s=bind_timeout_s, no_wait=no_wait,
+            )) != _EXIT_OK:
+                return rc
             _merge_mcp_from_config(project, slug, config_path)
             print(_MCP_RECONNECT_REMINDER)
             return _EXIT_OK
@@ -523,8 +709,14 @@ def verb_start(project: Path, env_file: Path) -> int:
         return rc
 
     _launch_container(project, config_path, env_file)
-    port = _merge_mcp_from_config(project, slug, config_path)
-    print(f"start: {container_name} launched (delta-reconcile on startup) on port {port}.")
+    host, port, mount = _read_server_block(config_path)
+    if (rc := _await_bind(
+        container_name, host, port, mount,
+        timeout_s=bind_timeout_s, no_wait=no_wait,
+    )) != _EXIT_OK:
+        return rc
+    merged_port = _merge_mcp_from_config(project, slug, config_path)
+    print(f"start: {container_name} launched (delta-reconcile on startup) on port {merged_port}.")
     # Always remind the operator to reconnect after a fresh launch so the MCP client
     # picks up the live tool schemas from the newly-started server.
     print(_MCP_RECONNECT_REMINDER)
@@ -548,10 +740,15 @@ def verb_status(project: Path) -> int:
     """``status`` — running/stopped + index freshness from the manifest.
 
     For a running container, also reports whether it is on the current
-    ``localhost/lore:latest`` image or is running stale code.
+    ``localhost/lore:latest`` image or is running stale code, AND probes the
+    live MCP port — "running" is container state, not proof the server is
+    actually accepting connections (loremaster's boot-time delta-reconcile can
+    hold the port unbound for minutes after the container starts). A stopped
+    container skips the probe (nothing to probe).
     """
     slug = project.name
     container_name = f"lore-{slug}"
+    config_path = project / "lore.yaml"
     state = _container_state(container_name)
     manifest = MANIFEST_DIR / f"{slug}.db"
     running = state == "running"
@@ -572,6 +769,25 @@ def verb_status(project: Path) -> int:
     else:
         print(f"status: no manifest at {manifest} (not yet set up).")
     if running:
+        if config_path.exists():
+            try:
+                host, port, mount = _read_server_block(config_path)
+            except RuntimeError as error:
+                print(
+                    f"status: could not read the server block from {config_path} to "
+                    f"probe the MCP endpoint: {error}",
+                    file=sys.stderr,
+                )
+            else:
+                url = f"http://{host}:{port}{mount}"
+                if _probe_mcp_port(host, port, mount, timeout_s=_PROBE_TIMEOUT_S):
+                    print(f"status: mcp endpoint {url} = ACCEPTING")
+                else:
+                    print(
+                        f"status: mcp endpoint {url} = NOT ACCEPTING (container "
+                        f"running — likely boot delta-reconcile still holding the "
+                        f"port unbound; re-check shortly)"
+                    )
         print("status: query the MCP index_status() tool for live freshness "
               "(see server-interface.md — the live path lands with the server build).")
     return _EXIT_OK
@@ -694,6 +910,21 @@ def _build_parser() -> argparse.ArgumentParser:
             "is honored verbatim."
         ),
     )
+    parser.add_argument(
+        "--bind-timeout", type=float, default=_DEFAULT_BIND_TIMEOUT_S,
+        help=(
+            "`start` only: seconds to wait for the MCP port to accept connections "
+            f"after launching/recreating/confirming the container (default "
+            f"{_DEFAULT_BIND_TIMEOUT_S:.0f}s). Ignored by setup/stop/status."
+        ),
+    )
+    parser.add_argument(
+        "--no-wait", action="store_true",
+        help=(
+            "`start` only: skip waiting for the MCP port to accept connections "
+            "(fire-and-forget). Ignored by setup/stop/status."
+        ),
+    )
     return parser
 
 
@@ -715,7 +946,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.verb == "setup":
         return verb_setup(project, env_file)
     if args.verb == "start":
-        return verb_start(project, env_file)
+        return verb_start(
+            project, env_file, bind_timeout_s=args.bind_timeout, no_wait=args.no_wait,
+        )
     if args.verb == "stop":
         return verb_stop(project)
     return verb_status(project)

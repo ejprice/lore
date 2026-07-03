@@ -48,14 +48,43 @@ python3 ~/.claude/skills/lore-deploy/scripts/lore_deploy.py <verb> --project <ab
 | Verb | What it does (idempotent) |
 |---|---|
 | `setup` | Once per project. Scaffold `lore.yaml`, verify env keys, **hard-probe `/embed`**, ensure both Qdrant collections, build the image if missing, **cold-index**, merge `.mcp.json`. Re-running detects the existing config + collection + manifest and **no-ops** (never re-scaffolds, never nukes the index). |
-| `start` | Launch the container (delta-reconcile runs on startup) + merge `.mcp.json`. Already-running ⇒ no-op. |
+| `start` | Launch the container (delta-reconcile runs on startup) + merge `.mcp.json`, then **waits for the MCP port to actually accept connections** before declaring success — a "running" container can still be mid-boot delta-reconcile with the port unbound (see "Port-probe / wait-for-bind" below). Already-running-and-bound ⇒ fast no-op. |
 | `stop` | Stop + remove the container. Collections + manifest **persist**. Not-running ⇒ no-op. |
-| `status` | Report running/stopped + `index_status()` freshness (in-flight/failed files). For a stopped container it reads the manifest directly. |
+| `status` | Report running/stopped + `index_status()` freshness (in-flight/failed files), AND **probes the live MCP port** to report `ACCEPTING`/`NOT ACCEPTING` — container state alone does not prove the server is reachable. For a stopped container it reads the manifest directly and skips the probe. |
 
 Read `references/lifecycle.md` for the precise step sequence, the persistence
 guarantees, and the failure/STOP conditions of each verb. Read
 `references/server-interface.md` for the live server contract (entrypoint,
 healthcheck, manifest/state layout, `.mcp.json` shape).
+
+## Port-probe / wait-for-bind — "running" ≠ "accepting connections"
+
+**A running container is not proof the MCP endpoint is reachable.**
+loremaster's ASGI lifespan startup runs a boot-time delta-reconcile
+(re-indexing changed files, subject to embedder 429 backoff) **before**
+uvicorn binds the port. An incident on 2026-07-03 saw a "running" container,
+a `status` that reported healthy, and an operator's MCP client refused for
+~4 minutes — because neither verb ever probed the live port.
+
+Both `status` and `start` now POST a minimal MCP `initialize` JSON-RPC request
+to the configured `server:` host/port/path. Any HTTP response — even a
+non-2xx one — counts as **ACCEPTING** (the port is bound and serving); a
+connection-refused or timeout counts as **NOT ACCEPTING**.
+
+- `status` (running container only): probes once (~3s timeout) and prints
+  `status: mcp endpoint http://host:port/path = ACCEPTING` or
+  `= NOT ACCEPTING (... likely boot delta-reconcile ...)`. A stopped
+  container skips the probe entirely.
+- `start`: every path that ends with a running container — fresh launch,
+  stale-image recreate, **and** the already-running no-op path — polls the
+  probe (every ~3s) until it accepts or a budget elapses (default 600s,
+  `--bind-timeout <seconds>` to override, `--no-wait` to skip waiting
+  entirely). It prints a progress line every ~30s while waiting. On timeout
+  it exits non-zero with the tail of `podman logs`. The already-running path
+  probes first and only enters the wait loop if not yet accepting, so the
+  common case (already running and already bound) stays a fast no-op.
+
+## Activating it in-session (read this — the #1 onboarding gotcha)
 
 ## Activating it in-session (read this — the #1 onboarding gotcha)
 
@@ -136,7 +165,10 @@ server's own `instructions`.
 
 ## Helper scripts
 
-- `scripts/lore_deploy.py` — the verb dispatcher (the entrypoint above).
+- `scripts/lore_deploy.py` — the verb dispatcher (the entrypoint above). Also
+  where the MCP port-probe / wait-for-bind logic lives (`_probe_mcp_port` /
+  `_wait_for_bind`, stdlib-only) — it's inline rather than a sibling script
+  because `status` and `start` both need it and neither shells out for it.
 - `scripts/probe_embed.py` — hard-probe the `/embed` endpoint; prints the
   observed dimension or exits non-zero (unreachable / wrong dim / 5xx).
 - `scripts/ensure_collections.py` — ensure both collections exist at the right
