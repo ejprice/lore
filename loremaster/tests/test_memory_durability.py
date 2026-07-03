@@ -54,6 +54,7 @@ RED surfaces behaviourally (``AttributeError`` / ``NotImplementedError`` /
 
 from __future__ import annotations
 
+import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
@@ -614,6 +615,92 @@ class TestRecallSemanticsUnchanged:
         assert any(item.text == MEMORY_NOTES[2] for item in recalled)
 
 
+# ---------------------------------------------------------------------------
+# Corruption-classifier fault injection — ported from test_resilient_db.py.
+#
+# ``open_resilient_sqlite`` (the SHARED helper both the manifest and this
+# ledger open through) narrows its corruption catch to a non-``OperationalError``
+# ``DatabaseError`` on the integrity probe (a transient lock/IO blip must
+# propagate, never delete a healthy db). These two small proxies inject that
+# exact fault deterministically, mirroring test_resilient_db.py's
+# ``_IntegrityProbeFaultingConnection`` / ``_IntegrityCheckFaultInjector``
+# 1:1 — duplicated here (not imported) because test modules do not cross-import
+# each other in this suite; the pattern is generic to ``open_resilient_sqlite``
+# and carries no Manifest-specific logic.
+# ---------------------------------------------------------------------------
+
+# The exact probe statement ``_is_healthy`` issues, pinned so the injected
+# fault lands on the integrity probe and nothing else.
+_INTEGRITY_CHECK_SQL: str = "PRAGMA integrity_check"
+
+
+class _IntegrityProbeFaultingConnection:
+    """A delegating proxy over a real connection that faults ONLY on the probe.
+
+    ``sqlite3.Connection`` is an immutable C type, so its ``execute`` cannot be
+    monkeypatched directly. Instead we wrap a real connection: every attribute
+    and method delegates to the genuine connection EXCEPT ``execute``, which
+    raises the configured error the first time the SQL is exactly
+    ``PRAGMA integrity_check`` and otherwise passes through.
+    """
+
+    def __init__(self, real_connection: sqlite3.Connection, error: sqlite3.DatabaseError) -> None:
+        object.__setattr__(self, "_real_connection", real_connection)
+        object.__setattr__(self, "_error", error)
+        object.__setattr__(self, "fired", False)
+
+    def execute(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+        if not self.fired and sql == _INTEGRITY_CHECK_SQL:
+            object.__setattr__(self, "fired", True)
+            raise self._error
+        return self._real_connection.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real_connection, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._real_connection, name, value)
+
+
+class _IntegrityCheckFaultInjector:
+    """Patches ``loremaster.index.sqlite_resilient``'s ``sqlite3.connect`` to fault.
+
+    ``open_resilient_sqlite`` calls ``sqlite3.connect`` (module-global in
+    ``loremaster.index.sqlite_resilient``) and then probes the result with
+    ``PRAGMA integrity_check``. We patch that module-global to return a
+    :class:`_IntegrityProbeFaultingConnection` wrapping the genuine connection,
+    so the probe raises the injected error while every other operation —
+    including the real file open and the post-detection ``close()`` — behaves
+    exactly as in production.
+    """
+
+    def __init__(self, error: sqlite3.DatabaseError) -> None:
+        self._error = error
+        self.proxy: _IntegrityProbeFaultingConnection | None = None
+
+    @property
+    def fired(self) -> bool:
+        """Whether the injected integrity-probe fault actually fired."""
+        return self.proxy is not None and bool(self.proxy.fired)
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Patch ``sqlite3.connect`` AS THE IMPLEMENTATION MODULE references it."""
+        import loremaster.index.sqlite_resilient as impl
+
+        real_connect = impl.sqlite3.connect  # type: ignore[attr-defined]
+        injector = self
+
+        def _faulting_connect(*args: Any, **kwargs: Any) -> Any:
+            real_connection = real_connect(*args, **kwargs)
+            if injector.proxy is None:
+                proxy = _IntegrityProbeFaultingConnection(real_connection, injector._error)
+                injector.proxy = proxy
+                return proxy
+            return real_connection
+
+        monkeypatch.setattr(impl.sqlite3, "connect", _faulting_connect)  # type: ignore[attr-defined]
+
+
 class TestLedgerResilientOpen:
     """The ledger opens resiliently — a missing parent or a corrupt file.
 
@@ -667,6 +754,61 @@ class TestLedgerResilientOpen:
         record = next(r for r in ledger.all_records() if r.memory_id == memory_id)
         # The second write wins (upsert), so the latest metadata is present.
         assert record.metadata.get("author") == "op"
+
+    def test_open_on_an_empty_file_is_a_plain_fresh_open_not_corruption(
+        self, tmp_path: Path
+    ) -> None:
+        """A 0-byte ledger file opens as an empty ledger — NOT corruption-recreate.
+
+        Ported from test_resilient_db.py's ``TestEmptyFileIsNotCorruption``: the
+        corruption detector must distinguish a malformed IMAGE (delete+recreate)
+        from an empty file SQLite legitimately initialises in place. An
+        over-eager detector would churn on every fresh deploy.
+        """
+        from loremaster.memory.ledger import MemoryLedger
+
+        empty_path = tmp_path / "lore_test.memory.db"
+        empty_path.write_bytes(b"")
+        assert empty_path.stat().st_size == 0, "fixture must be a true zero-byte file"
+
+        ledger = MemoryLedger(str(empty_path))
+        assert ledger.count() == 0, "an empty file is a valid fresh ledger"
+
+    def test_non_operational_database_error_on_probe_still_recreates_ledger(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A plain DatabaseError (NOT OperationalError) on the probe → recreate.
+
+        Ported from test_resilient_db.py's ``TestGenuineCorruptionStillRecreates``:
+        the genuine-corruption class must still delete-and-recreate, distinguished
+        from a transient lock/IO blip purely by the exception class on the SAME
+        integrity-probe seam ``open_resilient_sqlite`` shares with the manifest.
+        """
+        from loremaster.memory.ledger import MemoryLedger
+
+        ledger_path = tmp_path / "lore_test.memory.db"
+        note = MEMORY_NOTES[0]
+        seed = MemoryLedger(str(ledger_path))
+        seed.record(memory_id=expected_memory_id(note), text=note, metadata={}, refs_stamp="")
+        assert seed.count() == 1, "seed ledger must hold the durable memory"
+        seed.close()
+
+        # A plain DatabaseError — NOT an OperationalError. This is what a
+        # malformed header raises; isinstance(error, OperationalError) is False.
+        corruption_error = sqlite3.DatabaseError("file is not a database")
+        assert not isinstance(corruption_error, sqlite3.OperationalError), (
+            "fixture must be a NON-operational DatabaseError (the corruption class)"
+        )
+        injector = _IntegrityCheckFaultInjector(corruption_error)
+        injector.install(monkeypatch)
+
+        # Genuine corruption recreates — construction must SUCCEED (no raise).
+        ledger = MemoryLedger(str(ledger_path))
+        assert injector.fired, "the injected probe fault must have fired"
+        assert ledger.count() == 0, (
+            "genuine corruption must delete-and-recreate a FRESH empty ledger "
+            "(the seed row must be gone)"
+        )
 
 
 # =========================================================================== #

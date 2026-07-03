@@ -43,6 +43,7 @@ from _extension_helpers import (
     UnannotatedArgExtension,
     minimal_config,
 )
+from _surreal_fakes import fake_surreal_trio
 from loremaster.extension import (
     Extension,
     ExtensionContext,
@@ -50,7 +51,6 @@ from loremaster.extension import (
     SourceProvider,
     ToolSpec,
 )
-from loremaster.index.manifest import Manifest
 from loresigil.testing import FakeEmbedder
 from pydantic import ValidationError
 from qdrant_client.models import ScoredPoint
@@ -59,10 +59,10 @@ from qdrant_client.models import ScoredPoint
 class TestExtensionContext:
     """The shared-services bundle handed to context-taking seams."""
 
-    def test_bundles_the_shared_services_and_is_typed(self, tmp_path: Path) -> None:
+    def test_bundles_the_shared_services_and_is_typed(self) -> None:
         embedder = FakeEmbedder(dim=8)
         config = minimal_config()
-        manifest = Manifest(str(tmp_path / "m.db"))
+        manifest = fake_surreal_trio(dim=8).manifest
         # The store needs no live client merely to be carried in the context.
         store = object()  # a stand-in handle; the context only *carries* it
         ctx = ExtensionContext(
@@ -78,14 +78,13 @@ class TestExtensionContext:
         assert ctx.manifest is manifest
         # ``count_tokens`` is the embedder's batch counter, carried verbatim.
         assert ctx.count_tokens(["hello world"]) == embedder.count_tokens(["hello world"])
-        manifest.close()
 
-    def test_is_mutable_so_a_lifespan_hook_can_stash_state(self, tmp_path: Path) -> None:
+    def test_is_mutable_so_a_lifespan_hook_can_stash_state(self) -> None:
         # Seam 9 (§A1.3.9): ``on_startup`` "may stash state on the mutable
         # ExtensionContext". A frozen model would make that impossible.
 
         embedder = FakeEmbedder(dim=8)
-        manifest = Manifest(str(tmp_path / "m.db"))
+        manifest = fake_surreal_trio(dim=8).manifest
         ctx = ExtensionContext(
             store=object(),
             embedder=embedder,
@@ -95,7 +94,6 @@ class TestExtensionContext:
         )
         ctx.state["session"] = "stashed-by-startup"  # noqa: F821 - attribute under test
         assert ctx.state["session"] == "stashed-by-startup"
-        manifest.close()
 
 class TestToolSpec:
     """The declarative tool spec seam 3 hands back (no FastMCP coupling)."""
@@ -210,11 +208,11 @@ def bare_extension() -> Any:
     return _Bare()
 
 @pytest.fixture()
-def ext_context(tmp_path: Path) -> Any:
+def ext_context() -> Any:
     """An :class:`ExtensionContext` over fakes for the context-taking seams."""
 
     embedder = FakeEmbedder(dim=8)
-    manifest = Manifest(str(tmp_path / "ctx.db"))
+    manifest = fake_surreal_trio(dim=8).manifest
     return ExtensionContext(
         store=object(),
         embedder=embedder,

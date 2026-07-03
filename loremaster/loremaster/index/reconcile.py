@@ -6,7 +6,7 @@ on a timer. The timer sweep is the backstop that catches inotify events the watc
 dropped (a ``git checkout`` burst → ``IN_Q_OVERFLOW``, or downtime while the
 container was stopped). It is built entirely on the already-merged
 :class:`~loremaster.index.indexer.Indexer` and
-:class:`~loremaster.index.manifest.Manifest`.
+:class:`~loremaster.index.surreal_manifest.SurrealManifest`.
 
 What reconcile owns on top of :meth:`Indexer.index_all`:
 
@@ -14,7 +14,7 @@ What reconcile owns on top of :meth:`Indexer.index_all`:
   thing per tier — a LIVE tier is walked with the manifest mtime+size fast-path
   (unchanged ``indexed`` file → zero embeds) and any non-``indexed`` file
   (``failed``/``dirty``/``embedding`` from a crash mid-embed) is re-attempted
-  because :meth:`Manifest.needs_reindex` returns ``True`` for it; a STATIC tier
+  because :meth:`SurrealManifest.needs_reindex` returns ``True`` for it; a STATIC tier
   is freshness-gated on its version stamp (matching stamp → SKIP with zero walk
   and zero acquisition; changed/absent → acquire + rebuild + re-stamp). Reconcile
   does NOT re-implement any of that — it delegates, so the policy lives in one

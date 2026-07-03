@@ -76,7 +76,6 @@ import pytest
 # Production constructors under test — these EXIST and import cleanly today, so
 # referencing them keeps the suite RED on *behaviour*, never on a missing symbol.
 from loremaster.graph import CodeGraph
-from loremaster.index.manifest import STATE_INDEXED, Manifest
 from loremaster.index.sqlite_resilient import open_resilient_sqlite
 
 # The real producer the indexer uses to derive graph chunks — grounds the
@@ -126,21 +125,6 @@ _SQLITE_HEADER_MAGIC: bytes = b"SQLite format 3\x00"
 _SLUG: str = "lore-loremaster"
 _MANIFEST_FILENAME: str = f"{_SLUG}.db"
 _GRAPH_FILENAME: str = f"{_SLUG}.graph.kuzu"
-
-# Representative manifest file-row values, mirroring test_manifest.py exactly so
-# the "healthy DB survives" and "post-recovery write" rows are production-shaped
-# (clause 1 + clause 5). A real sha512 is 128 hex chars; mtime_ns is a real
-# nanosecond epoch; chunk_ids are real UUID4 point-ids.
-_TIER: str = "custom"
-_FILE_PATH: str = "src/pkg/mod.py"
-_SHA512: str = "a" * 128
-_MTIME_NS: int = 1_700_000_000_000_000_000
-_SIZE_BYTES: int = 4096
-_CHUNK_IDS: list[str] = [
-    "11111111-1111-1111-1111-111111111111",
-    "22222222-2222-2222-2222-222222222222",
-]
-_N_CHUNKS: int = len(_CHUNK_IDS)
 
 # A real Python module the production PythonAstChunker splits into chunks — the
 # graph's input lives at the lorescribe→loremaster producer↔consumer seam.
@@ -328,96 +312,6 @@ def _assert_raises_on_raw_open(path: Path) -> None:
 # ---------------------------------------------------------------------------
 # FP-01 — absent parent dir must not wedge the open
 # ---------------------------------------------------------------------------
-class TestAbsentStateDirManifest:
-    """FP-01: a Manifest opened under an absent parent dir must SUCCEED.
-
-    On a clean container the state volume is empty, so the dir holding
-    ``<slug>.db`` does not exist. ``sqlite3.connect`` cannot create a parent dir,
-    so the open must create it (or the constructor must ``mkdir`` defensively).
-    The end-state pinned here: the open does not raise and the manifest is a
-    working, empty ledger.
-    """
-
-    def test_manifest_open_under_absent_parent_dir_does_not_raise(
-        self, tmp_path: Path
-    ) -> None:
-        """Arrange: a manifest path under a state dir that does NOT exist.
-        Act: construct a Manifest over it.
-        Assert: construction succeeds (no OperationalError).
-        """
-        absent_state_dir = tmp_path / "state" / "lore"
-        manifest_path = absent_state_dir / _MANIFEST_FILENAME
-        # Precondition: the parent dir really is absent (this is the FP-01 trigger).
-        assert not absent_state_dir.exists(), "fixture must start with an absent state dir"
-
-        manifest: Manifest | None = None
-        try:
-            # Today this raises OperationalError: unable to open database file.
-            manifest = Manifest(str(manifest_path))
-        except sqlite3.OperationalError as error:
-            pytest.fail(
-                "Manifest over an absent parent dir must create the dir and open, "
-                f"not raise OperationalError: {error}"
-            )
-        finally:
-            if manifest is not None:
-                manifest.close()
-
-    def test_manifest_open_under_absent_parent_dir_yields_empty_queryable_ledger(
-        self, tmp_path: Path
-    ) -> None:
-        """A freshly created manifest under an absent dir is an EMPTY working ledger.
-
-        The end-state must be a usable manifest, not merely a non-raising open: a
-        fresh ledger has zero file rows and accepts a normal write.
-        """
-        manifest_path = tmp_path / "state" / "lore" / _MANIFEST_FILENAME
-
-        manifest = Manifest(str(manifest_path))
-        try:
-            # A brand-new manifest is empty (independent oracle: a fresh ledger
-            # has indexed nothing yet — from the requirement, not the impl).
-            assert manifest.all_files() == [], "a freshly created manifest must be empty"
-
-            # And a subsequent normal write works end-to-end (the dir was created
-            # and the schema is live).
-            manifest.upsert(
-                tier=_TIER,
-                file_path=_FILE_PATH,
-                sha512=_SHA512,
-                mtime_ns=_MTIME_NS,
-                size=_SIZE_BYTES,
-                n_chunks=_N_CHUNKS,
-                chunk_ids=_CHUNK_IDS,
-                state=STATE_INDEXED,
-            )
-            rows = manifest.all_files()
-            assert len(rows) == 1, "the post-create write must land exactly one row"
-            assert rows[0].file_path == _FILE_PATH
-            assert rows[0].chunk_ids == _CHUNK_IDS  # JSON round-trip survives
-        finally:
-            manifest.close()
-
-    def test_manifest_open_actually_creates_the_missing_state_dir(
-        self, tmp_path: Path
-    ) -> None:
-        """The recovery must materialise the missing dir AND the db file on disk.
-
-        A side-effect assertion: after the open, both the parent dir and the db
-        file exist — proving the dir was created, not merely that the open didn't
-        raise.
-        """
-        state_dir = tmp_path / "state" / "lore"
-        manifest_path = state_dir / _MANIFEST_FILENAME
-
-        manifest = Manifest(str(manifest_path))
-        try:
-            assert state_dir.is_dir(), "the absent state dir must be created on open"
-            assert manifest_path.is_file(), "the manifest db file must exist after open"
-        finally:
-            manifest.close()
-
-
 class TestAbsentStateDirGraph:
     """FP-01: a CodeGraph opened under an absent parent dir must SUCCEED.
 
@@ -464,84 +358,6 @@ class TestAbsentStateDirGraph:
 # ---------------------------------------------------------------------------
 # FP-08 — corrupt existing DB must self-heal (delete + recreate)
 # ---------------------------------------------------------------------------
-class TestCorruptManifestRecovers:
-    """FP-08: a corrupt ``<slug>.db`` must be deleted and recreated, not raised.
-
-    The current code raises ``sqlite3.DatabaseError`` on the first statement and
-    every restart re-wedges. Because the manifest is rebuildable (a fresh empty
-    ledger triggers a full reindex), the resilient open must detect the corruption
-    (integrity check fails / open raises), delete the bad file, and recreate a
-    fresh empty manifest that is immediately queryable and writable.
-    """
-
-    def test_corruption_fixture_genuinely_raises_on_raw_open(
-        self, tmp_path: Path
-    ) -> None:
-        """RED witness: the fixture's malformed image really is a DatabaseError.
-
-        Guards against a no-op corruption fixture (clause 2 tautology guard): if
-        this passes, a later green on the resilient open means real recovery.
-        """
-        corrupt_path = tmp_path / _MANIFEST_FILENAME
-        size = _write_corrupt_sqlite(corrupt_path)
-        assert size > 0, "corruption fixture must be a NON-EMPTY malformed image"
-
-        _assert_raises_on_raw_open(corrupt_path)
-
-    def test_manifest_open_over_corrupt_file_does_not_raise(
-        self, tmp_path: Path
-    ) -> None:
-        """Opening a Manifest over a corrupt file must recover, not raise."""
-        corrupt_path = tmp_path / _MANIFEST_FILENAME
-        _write_corrupt_sqlite(corrupt_path)
-        _assert_raises_on_raw_open(corrupt_path)  # confirm it IS corrupt first
-
-        manifest: Manifest | None = None
-        try:
-            # Today: sqlite3.DatabaseError "file is not a database".
-            manifest = Manifest(str(corrupt_path))
-        except sqlite3.DatabaseError as error:
-            pytest.fail(
-                "Manifest over a corrupt file must delete-and-recreate, "
-                f"not raise DatabaseError: {error}"
-            )
-        finally:
-            if manifest is not None:
-                manifest.close()
-
-    def test_manifest_recovered_from_corruption_is_empty_and_writable(
-        self, tmp_path: Path
-    ) -> None:
-        """After recovery the manifest is a FRESH empty ledger that accepts writes.
-
-        The recreated db must be queryable (``all_files() == []`` — the prior
-        garbage is gone, not partially recovered) and a normal write must land.
-        """
-        corrupt_path = tmp_path / _MANIFEST_FILENAME
-        _write_corrupt_sqlite(corrupt_path)
-
-        manifest = Manifest(str(corrupt_path))
-        try:
-            assert manifest.all_files() == [], (
-                "a manifest recreated from corruption must be a FRESH empty ledger"
-            )
-            manifest.upsert(
-                tier=_TIER,
-                file_path=_FILE_PATH,
-                sha512=_SHA512,
-                mtime_ns=_MTIME_NS,
-                size=_SIZE_BYTES,
-                n_chunks=_N_CHUNKS,
-                chunk_ids=_CHUNK_IDS,
-                state=STATE_INDEXED,
-            )
-            rows = manifest.all_files()
-            assert len(rows) == 1, "a write after recovery must land exactly one row"
-            assert rows[0].file_path == _FILE_PATH
-        finally:
-            manifest.close()
-
-
 class TestCorruptGraphRecovers:
     """FP-08: a corrupt ``<slug>.graph.kuzu`` must be deleted and recreated.
 
@@ -627,55 +443,6 @@ class TestCorruptGraphRecovers:
 # ---------------------------------------------------------------------------
 # Anti-regression — a VALID existing DB must open UNCHANGED
 # ---------------------------------------------------------------------------
-class TestHealthyManifestSurvives:
-    """The critical guard: a VALID manifest opens UNCHANGED — its rows survive.
-
-    Without this guard a "recreate on every open" implementation would pass FP-08
-    while silently destroying every real index on restart. We write a real row,
-    close, reopen via the SAME resilient constructor, and assert the row is still
-    there (NOT recreated). This is RED today only against a not-yet-existing
-    recovery path that over-recreates; against the current code it passes — so it
-    is the regression tripwire the GREEN phase must keep green while making the
-    corruption tests pass.
-    """
-
-    def test_reopening_a_healthy_manifest_preserves_its_rows(
-        self, tmp_path: Path
-    ) -> None:
-        """Arrange: a manifest with one real row, then closed.
-        Act: reopen the same path via the resilient constructor.
-        Assert: the row is still present (the open did NOT nuke a healthy db).
-        """
-        manifest_path = tmp_path / _MANIFEST_FILENAME
-
-        seed = Manifest(str(manifest_path))
-        seed.upsert(
-            tier=_TIER,
-            file_path=_FILE_PATH,
-            sha512=_SHA512,
-            mtime_ns=_MTIME_NS,
-            size=_SIZE_BYTES,
-            n_chunks=_N_CHUNKS,
-            chunk_ids=_CHUNK_IDS,
-            state=STATE_INDEXED,
-        )
-        seed.close()
-
-        reopened = Manifest(str(manifest_path))
-        try:
-            rows = reopened.all_files()
-            assert len(rows) == 1, (
-                "a healthy manifest must reopen UNCHANGED — the row must survive, "
-                "the resilient open must NOT recreate a valid db"
-            )
-            assert rows[0].file_path == _FILE_PATH
-            assert rows[0].sha512 == _SHA512
-            assert rows[0].chunk_ids == _CHUNK_IDS
-            assert rows[0].state == STATE_INDEXED
-        finally:
-            reopened.close()
-
-
 class TestHealthyGraphSurvives:
     """A VALID code-graph opens UNCHANGED — its nodes/edges survive a reopen."""
 
@@ -702,37 +469,11 @@ class TestHealthyGraphSurvives:
 
 
 # ---------------------------------------------------------------------------
-# Empty-file boundary — a zero-byte file is valid-and-fresh, NOT corruption
-# ---------------------------------------------------------------------------
-class TestEmptyFileIsNotCorruption:
-    """Boundary: a ZERO-BYTE db file is valid-and-fresh — it must NOT be 'recovered'.
-
-    The corruption detector must distinguish a malformed IMAGE (delete + recreate)
-    from an empty file SQLite legitimately initialises in place. An over-eager
-    detector that deletes empty files would churn on every fresh deploy. This is a
-    sanity boundary on the FP-08 detector, not a recovery case.
-    """
-
-    def test_manifest_open_over_empty_file_is_a_plain_fresh_open(
-        self, tmp_path: Path
-    ) -> None:
-        """A 0-byte manifest file opens as an empty ledger with no error or churn."""
-        empty_path = tmp_path / _MANIFEST_FILENAME
-        empty_path.write_bytes(b"")
-        assert empty_path.stat().st_size == 0, "fixture must be a true zero-byte file"
-
-        manifest = Manifest(str(empty_path))
-        try:
-            assert manifest.all_files() == [], "an empty file is a valid fresh manifest"
-        finally:
-            manifest.close()
-
-
-# ---------------------------------------------------------------------------
 # FP-01 at the SERVER seam — build_app_context over an absent state dir
 # ---------------------------------------------------------------------------
 #
-# The unit-level Manifest/CodeGraph tests above pin the building blocks; this
+# The unit-level CodeGraph tests above pin the graph-side building block (the
+# manifest side is covered at the unit level in test_surreal_manifest.py); this
 # class pins the END-STATE the requirement actually cares about: the SERVER
 # startup path (build_app_context) over a nonexistent state dir must not raise
 # and must produce a working manifest + graph. It mirrors the hermetic harness
@@ -1038,26 +779,6 @@ class _IntegrityCheckFaultInjector:
         monkeypatch.setattr(impl.sqlite3, "connect", _faulting_connect)  # type: ignore[attr-defined]
 
 
-def _seed_healthy_manifest_row(db_path: Path) -> None:
-    """Create a HEALTHY manifest with one real row, then close it.
-
-    The pre-degradation healthy state: a valid db on disk holding data that MUST
-    survive a transient blip on the next open.
-    """
-    seed = Manifest(str(db_path))
-    seed.upsert(
-        tier=_TIER,
-        file_path=_FILE_PATH,
-        sha512=_SHA512,
-        mtime_ns=_MTIME_NS,
-        size=_SIZE_BYTES,
-        n_chunks=_N_CHUNKS,
-        chunk_ids=_CHUNK_IDS,
-        state=STATE_INDEXED,
-    )
-    seed.close()
-
-
 class TestTransientErrorDoesNotDeleteHealthyDatabase:
     """A TRANSIENT OperationalError during the integrity probe must NOT delete.
 
@@ -1070,77 +791,6 @@ class TestTransientErrorDoesNotDeleteHealthyDatabase:
     These are RED against the current impl, which swallows the OperationalError
     (as a DatabaseError subclass) and DELETES the healthy db.
     """
-
-    def test_locked_database_propagates_and_does_not_delete_manifest(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A "database is locked" blip on a healthy manifest must NOT nuke it.
-
-        Arrange: a healthy manifest with one real row on disk.
-        Act: open it again while the integrity probe raises OperationalR(locked).
-        Assert: the OperationalError PROPAGATES (fail-closed) AND the file and its
-                row survive (after the fault clears, the row is still there).
-        """
-        manifest_path = tmp_path / _MANIFEST_FILENAME
-        _seed_healthy_manifest_row(manifest_path)
-        size_before = manifest_path.stat().st_size
-
-        injector = _IntegrityCheckFaultInjector(sqlite3.OperationalError(_LOCKED_MESSAGE))
-        injector.install(monkeypatch)
-
-        # Fail-closed: the transient OperationalError must propagate, not be
-        # swallowed-then-delete. (Current impl swallows it → no raise → DELETE.)
-        with pytest.raises(sqlite3.OperationalError, match="locked"):
-            Manifest(str(manifest_path))
-
-        assert injector.fired, "the injected integrity-probe fault must have fired"
-
-        # The healthy db file must STILL EXIST — a transient blip never deletes.
-        assert manifest_path.is_file(), (
-            "a transient OperationalError must NOT delete a healthy manifest "
-            "(the file was unlinked — data-loss bug)"
-        )
-        # And once the transient condition clears, the prior row is intact — the
-        # data was never destroyed (not merely "a file exists", but the SAME data).
-        monkeypatch.undo()
-        recovered = Manifest(str(manifest_path))
-        try:
-            rows = recovered.all_files()
-            assert len(rows) == 1, (
-                "the healthy manifest row must SURVIVE a transient blip "
-                "(it was deleted/recreated empty — data-loss bug)"
-            )
-            assert rows[0].file_path == _FILE_PATH
-            assert rows[0].sha512 == _SHA512
-            assert rows[0].chunk_ids == _CHUNK_IDS
-        finally:
-            recovered.close()
-        assert manifest_path.stat().st_size >= size_before, (
-            "the recovered db must be at least as large as before — not a fresh empty one"
-        )
-
-    def test_disk_io_error_propagates_and_does_not_delete_manifest(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A "disk I/O error" blip on a healthy manifest must NOT nuke it."""
-        manifest_path = tmp_path / _MANIFEST_FILENAME
-        _seed_healthy_manifest_row(manifest_path)
-
-        injector = _IntegrityCheckFaultInjector(sqlite3.OperationalError(_DISK_IO_MESSAGE))
-        injector.install(monkeypatch)
-
-        with pytest.raises(sqlite3.OperationalError):
-            Manifest(str(manifest_path))
-
-        assert manifest_path.is_file(), (
-            "a transient disk-IO OperationalError must NOT delete a healthy manifest"
-        )
-        monkeypatch.undo()
-        recovered = Manifest(str(manifest_path))
-        try:
-            assert len(recovered.all_files()) == 1, "the row must survive a disk-IO blip"
-        finally:
-            recovered.close()
 
     def test_transient_open_fault_propagates_and_does_not_delete_graph(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1237,71 +887,6 @@ class TestTransientErrorDoesNotDeleteHealthyDatabase:
             assert records[0].metadata == _MEMORY_METADATA
         finally:
             recovered.close()
-
-
-class TestGenuineCorruptionStillRecreates:
-    """The other side of the contract: GENUINE corruption STILL deletes+recreates.
-
-    Narrowing the catch must not regress FP-08. A plain ``DatabaseError`` that is
-    NOT an ``OperationalError`` (the malformed-image / "file is not a database"
-    signal), or non-"ok" integrity rows, must still delete-and-recreate. The first
-    test injects a plain non-operational DatabaseError on the probe (the cleanest
-    class distinction); the second confirms a real malformed image on disk still
-    recreates (the end-to-end FP-08 path).
-    """
-
-    def test_non_operational_database_error_on_probe_still_recreates_manifest(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A plain DatabaseError (NOT OperationalError) on the probe → recreate.
-
-        This is the genuine-corruption class. The seed row must be GONE (the db was
-        deleted and recreated empty) — proving the narrowed catch still recovers
-        true corruption, distinguished from the transient case purely by the
-        exception class on the SAME seam.
-        """
-        manifest_path = tmp_path / _MANIFEST_FILENAME
-        _seed_healthy_manifest_row(manifest_path)
-
-        # A plain DatabaseError — NOT an OperationalError. This is what a malformed
-        # header raises; isinstance(error, OperationalError) is False (audited).
-        corruption_error = sqlite3.DatabaseError("file is not a database")
-        assert not isinstance(corruption_error, sqlite3.OperationalError), (
-            "fixture must be a NON-operational DatabaseError (the corruption class)"
-        )
-        injector = _IntegrityCheckFaultInjector(corruption_error)
-        injector.install(monkeypatch)
-
-        # Genuine corruption recreates — construction must SUCCEED (no raise).
-        manifest = Manifest(str(manifest_path))
-        try:
-            assert injector.fired, "the injected probe fault must have fired"
-            assert manifest.all_files() == [], (
-                "genuine corruption must delete-and-recreate a FRESH empty manifest "
-                "(the seed row must be gone)"
-            )
-        finally:
-            manifest.close()
-
-    def test_malformed_image_on_disk_still_recreates_manifest(
-        self, tmp_path: Path
-    ) -> None:
-        """End-to-end FP-08: a real malformed image on disk still recreates empty.
-
-        No monkeypatch — a genuine non-empty malformed file. Confirms the
-        unpatched recovery path is unchanged by the transient-case narrowing.
-        """
-        corrupt_path = tmp_path / _MANIFEST_FILENAME
-        _write_corrupt_sqlite(corrupt_path)
-        _assert_raises_on_raw_open(corrupt_path)  # RED witness: it IS corrupt
-
-        manifest = Manifest(str(corrupt_path))
-        try:
-            assert manifest.all_files() == [], (
-                "a real malformed image must still delete-and-recreate a fresh empty db"
-            )
-        finally:
-            manifest.close()
 
 
 class TestSqliteExceptionHierarchyIsTheBugSurface:
@@ -1546,15 +1131,14 @@ class TestStateDirCreatedOwnerOnly:
 # The disclosure-bit boundary (``mode & 0o077 == 0``) is pinned independently of
 # the exact owner bits so a future "owner rw only" formulation still satisfies the
 # real invariant: nothing leaks to other local users. And the hardening is pinned
-# through the REAL production constructors (Manifest / CodeGraph / MemoryLedger),
-# not only the bare helper, so the guarantee covers the path the server runs
-# (clause 3/4: the production open seam, with the memory ledger as the at-risk
-# artifact).
+# through the REAL production constructors (CodeGraph / MemoryLedger), not only
+# the bare helper, so the guarantee covers the path the server runs (clause 3/4:
+# the production open seam, with the memory ledger as the at-risk artifact).
 #
 # These mode assertions are BEHAVIOURALLY RED today: a default-mode connect yields
 # 0o644, which ``== 0o600`` and ``& 0o077 == 0`` both reject. They are NOT
-# structurally red — ``open_resilient_sqlite`` / ``Manifest`` / ``CodeGraph`` /
-# ``MemoryLedger`` all exist and import cleanly; only the FILE permission is wrong.
+# structurally red — ``open_resilient_sqlite`` / ``CodeGraph`` / ``MemoryLedger``
+# all exist and import cleanly; only the FILE permission is wrong.
 # ---------------------------------------------------------------------------
 
 # The required owner-only permission bits for a DB FILE the open creates or opens:
@@ -1579,15 +1163,20 @@ def _file_mode(path: Path) -> int:
     return stat.S_IMODE(os.stat(path).st_mode)
 
 
-def _make_world_readable_healthy_manifest(db_path: Path) -> None:
-    """Write a HEALTHY manifest with one real row, then ``chmod`` it world-readable.
+def _make_world_readable_healthy_db(db_path: Path) -> None:
+    """Write a HEALTHY sqlite db with one real row, then ``chmod`` it world-readable.
 
     Reproduces the production pre-condition this fix retro-tightens: a valid db
     file left at 0o644 by a prior default-mode build, holding real data that MUST
-    survive the next (tightening) open. Uses the same production-shaped row as the
-    other healthy fixtures (clause 1/5).
+    survive the next (tightening) open. A generic sqlite table (mirroring the
+    corruption fixture's own seed shape) — the file-permission guarantee is
+    backend-agnostic, so it does not need any particular consumer's schema.
     """
-    _seed_healthy_manifest_row(db_path)
+    connection = sqlite3.connect(str(db_path))
+    connection.execute("CREATE TABLE seed (value INTEGER)")
+    connection.execute("INSERT INTO seed VALUES (42)")
+    connection.commit()
+    connection.close()
     os.chmod(db_path, _WORLD_READABLE_FILE_MODE)
     # Precondition guard: the fixture really starts world-readable, so a later
     # 0o600 assertion proves the open TIGHTENED it (not that it was already tight).
@@ -1599,12 +1188,12 @@ def _make_world_readable_healthy_manifest(db_path: Path) -> None:
 class TestDatabaseFilesAreOwnerOnly:
     """SECURITY: a DB file the resilient open creates/opens is mode 0o600 (owner-only).
 
-    The dir-0700 hardening protects the directory; this guards the FILE. The
-    plaintext memory ledger ``<slug>.memory.db`` and the manifest must be owner-rw
-    only — never group/world-readable — on both a freshly created file and an
-    existing world-readable one (the deploy-time tighten guarantee). Pinned both at
-    the bare ``open_resilient_sqlite`` helper and through the real Manifest /
-    CodeGraph / MemoryLedger production constructors.
+    The dir-0700 hardening protects the directory; this guards the FILE. A
+    plaintext DB file — most critically the memory ledger ``<slug>.memory.db`` —
+    must be owner-rw only — never group/world-readable — on both a freshly
+    created file and an existing world-readable one (the deploy-time tighten
+    guarantee). Pinned both at the bare ``open_resilient_sqlite`` helper and
+    through the real CodeGraph / MemoryLedger production constructors.
     """
 
     def test_freshly_created_db_file_is_mode_0600(self, tmp_path: Path) -> None:
@@ -1664,15 +1253,16 @@ class TestDatabaseFilesAreOwnerOnly:
         THE deploy-time guarantee: a valid db file written world-readable by a
         prior default-mode build is re-permissioned to owner-only on the next open,
         WITHOUT being deleted and WITHOUT losing its data. The healthy-db-survives
-        contract (TestHealthyManifestSurvives) and this tighten contract must hold
-        together: the chmod must not trip the resilient open into a delete/recreate.
+        contract (TestHealthyGraphSurvives pins the same guarantee on the Kùzu
+        side) and this tighten contract must hold together: the chmod must not
+        trip the resilient open into a delete/recreate.
 
-        Arrange: a healthy manifest with one real row, chmod'd to 0o644.
+        Arrange: a healthy sqlite db with one real row, chmod'd to 0o644.
         Act: open it again via the bare resilient helper.
         Assert: the file is now 0o600 AND its row survived (not recreated empty).
         """
         db_path = tmp_path / _MANIFEST_FILENAME
-        _make_world_readable_healthy_manifest(db_path)
+        _make_world_readable_healthy_db(db_path)
 
         connection = open_resilient_sqlite(str(db_path))
         try:
@@ -1688,39 +1278,18 @@ class TestDatabaseFilesAreOwnerOnly:
             connection.close()
 
         # And the healthy data SURVIVED — the tighten must not have deleted the db.
-        # Read back through the production Manifest constructor (the consumer that
-        # interprets the bytes), proving the row is the SAME data, not a fresh empty
-        # ledger (the anti-regression seam: tighten ≠ delete-recreate).
-        reopened = Manifest(str(db_path))
+        # Read back with a raw sqlite3 connection (the file-permission guarantee is
+        # backend-agnostic), proving the row is the SAME data, not a fresh empty db
+        # (the anti-regression seam: tighten ≠ delete-recreate).
+        raw = sqlite3.connect(str(db_path))
         try:
-            rows = reopened.all_files()
-            assert len(rows) == 1, (
+            rows = raw.execute("SELECT value FROM seed").fetchall()
+            assert rows == [(42,)], (
                 "tightening an existing healthy db must NOT delete it — the row "
                 "must survive (the 0o600 chmod must not trip the resilient recreate)"
             )
-            assert rows[0].file_path == _FILE_PATH
-            assert rows[0].sha512 == _SHA512
-            assert rows[0].chunk_ids == _CHUNK_IDS
         finally:
-            reopened.close()
-
-    def test_manifest_constructor_yields_owner_only_db_file(self, tmp_path: Path) -> None:
-        """A db file created through the real ``Manifest(path)`` is 0o600.
-
-        Pins the hardening through the PRODUCTION open path, not only the bare
-        helper — Manifest.__init__ calls open_resilient_sqlite, so the server's
-        manifest db must land owner-only (clause 3/4: the real consumer seam).
-        """
-        manifest_path = tmp_path / "state" / "lore" / _MANIFEST_FILENAME
-
-        manifest = Manifest(str(manifest_path))
-        try:
-            assert _file_mode(manifest_path) == _OWNER_ONLY_FILE_MODE, (
-                f"a Manifest-created db file must be {_OWNER_ONLY_FILE_MODE:#o} "
-                f"(owner-only), got {_file_mode(manifest_path):#o}"
-            )
-        finally:
-            manifest.close()
+            raw.close()
 
     def test_graph_constructor_yields_owner_only_db_file(self, tmp_path: Path) -> None:
         """A db file created through the real ``CodeGraph(path)`` is 0o600.
