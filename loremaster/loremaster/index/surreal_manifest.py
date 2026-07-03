@@ -65,15 +65,20 @@ two can never drift apart again.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
 
 from surrealdb import AsyncSurreal
-from websockets.exceptions import WebSocketException
 
 from loremaster.index.manifest import FileRow
-from loremaster.store._txn import execute_transaction, is_connection_error
+from loremaster.store._txn import (
+    TxnFragment,
+    compose,
+    execute_transaction,
+    is_connection_error,
+)
 from loremaster.store.surreal import (
     _CONNECTION_ERRORS,
     _SIGNIN_PASS_KEY,
@@ -92,6 +97,13 @@ STATE_INDEXED = "indexed"
 STATE_DIRTY = "dirty"
 STATE_EMBEDDING = "embedding"
 STATE_FAILED = "failed"
+
+# The producer-namespacing prefix the manifest stamps on the bound params of
+# the transaction fragment it builds, so its ``file``-row params never clobber
+# a sibling producer's (chunk / file_text / graph) params in a composed
+# per-file transaction (see :func:`~loremaster.store._txn.compose`). ``mf_`` =
+# the ManiFest row.
+MANIFEST_FRAGMENT_PARAM_PREFIX = "mf_"
 
 # Keys the SDK adds to a returned row that are NOT part of the stored payload.
 _ID_KEY = "id"
@@ -135,44 +147,67 @@ class SurrealManifest:
         self._password = password
         # Opened on first use; ``None`` means "not yet connected / closed".
         self._connection: _SurrealConnection | None = None
+        # Guards the connect-time check-then-set below (mirrors
+        # ``SurrealStore._connect_lock``): without it, N concurrent
+        # first-callers on a fresh instance all pass the
+        # ``self._connection is not None`` check before any of them finishes
+        # connecting, each opening its OWN underlying SDK connection. Safe to
+        # construct here (unbound to any running loop) on Python >= 3.10.
+        self._connect_lock = asyncio.Lock()
 
     # -- connection lifecycle ------------------------------------------------
 
     async def _ensure_connection(self) -> _SurrealConnection:
         """Return the live connection, opening + signing in on first use.
 
-        Mirrors :meth:`SurrealStore._ensure_connection` exactly: a down server
-        or bad password is a LOUD, typed failure, never a hang or a silently
-        empty manifest.
+        Double-checked locking (mirrors
+        :meth:`~loremaster.store.surreal.SurrealStore._ensure_connection`):
+        the fast path (already connected) never touches the lock; a first
+        caller acquires :attr:`_connect_lock` and re-checks — a concurrent
+        racer that lost the race to acquire the lock finds the connection
+        already assigned by the winner and returns it without opening a
+        second one. A down server or bad password is a LOUD, typed failure,
+        never a hang or a silently empty manifest.
 
         Raises:
             SurrealConnectionError: The server is unreachable or rejected auth.
         """
         if self._connection is not None:
             return self._connection
-        connection = AsyncSurreal(self._url)
-        credentials: dict[str, Any] = {
-            _SIGNIN_USER_KEY: self._user,
-            _SIGNIN_PASS_KEY: self._password,
-        }
-        try:
-            await connection.signin(credentials)
-            await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
-            await connection.use(self._namespace, self._database)
-            await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
-        except _CONNECTION_ERRORS as error:
-            # Close the half-open socket (if any) so a failed connect never
-            # leaks a dangling connection, then surface a typed connection error.
-            await self._safe_close(connection)
-            raise SurrealConnectionError(
-                f"could not connect to SurrealDB at {self._url!r} "
-                f"(namespace={self._namespace!r}, database={self._database!r}): {error}"
-            ) from error
-        self._connection = connection
-        logger.debug(
-            "manifest.connected", extra={"namespace": self._namespace, "database": self._database}
-        )
-        return connection
+        async with self._connect_lock:
+            # Re-check: another caller may have already connected while this
+            # one was waiting for the lock. mypy narrows ``self._connection``
+            # to ``None`` from the outer guard and can't model the
+            # cross-coroutine mutation across the ``await`` inside
+            # ``__aenter__`` above, hence the unreachable ignore (mirrors
+            # ``watcher.py``'s identical double-checked-lock pattern).
+            if self._connection is not None:
+                return self._connection  # type: ignore[unreachable]
+            connection = AsyncSurreal(self._url)
+            credentials: dict[str, Any] = {
+                _SIGNIN_USER_KEY: self._user,
+                _SIGNIN_PASS_KEY: self._password,
+            }
+            try:
+                await connection.signin(credentials)
+                await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
+                await connection.use(self._namespace, self._database)
+                await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
+            except _CONNECTION_ERRORS as error:
+                # Close the half-open socket (if any) so a failed connect never
+                # leaks a dangling connection, then surface a typed connection
+                # error.
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): {error}"
+                ) from error
+            self._connection = connection
+            logger.debug(
+                "manifest.connected",
+                extra={"namespace": self._namespace, "database": self._database},
+            )
+            return connection
 
     async def ensure_ready(self) -> None:
         """Connect and apply the manifest's schema slice — idempotent.
@@ -180,18 +215,28 @@ class SurrealManifest:
         Applies ONLY the ``file`` + ``meta`` DDL (:func:`generate_manifest_ddl`)
         — this manifest owns no embedder ``dim``/analyzer configuration, unlike
         :class:`~loremaster.store.surreal.SurrealStore`, so it never needs the
-        full store DDL to create its two tables.
+        full store DDL to create its two tables. Applied inside ONE ``BEGIN …
+        COMMIT`` transaction via :func:`~loremaster.store._txn.execute_transaction`,
+        which inspects EVERY statement's status — the SDK's plain ``query()``
+        inspects only the FIRST statement, so a LATER statement's rejection
+        would otherwise roll the whole schema back server-side while
+        ``query()`` raised nothing at all (verified live).
 
         Raises:
-            SurrealConnectionError: The server is unreachable or rejected auth.
+            SurrealConnectionError: The server is unreachable, rejected auth, or
+                the socket died mid-apply.
+            SurrealStoreError: Any DDL statement was rejected by the engine (a
+                real schema bug); the connection stays healthy.
         """
-        connection = await self._ensure_connection()
-        try:
-            await connection.query(generate_manifest_ddl())
-        except (OSError, WebSocketException) as error:
-            raise SurrealConnectionError(
-                f"could not apply schema to SurrealDB at {self._url!r}: {error}"
-            ) from error
+        await self._ensure_connection()
+        ddl = generate_manifest_ddl()
+        await execute_transaction(
+            f"BEGIN;\n{ddl}COMMIT;\n",
+            {},
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+        )
         logger.debug("manifest.schema.ready", extra={"database": self._database})
 
     async def close(self) -> None:
@@ -203,13 +248,20 @@ class SurrealManifest:
     async def _drop_connection(self, connection: _SurrealConnection) -> None:
         """Drop the cached handle so the NEXT call reconnects (the self-heal).
 
-        Null the cached handle FIRST so the next call reconnects even if the
-        close below is a no-op, then release the (now dead / unauthenticated)
-        socket. Shared by :meth:`_query` and the transaction seam
+        A COMPARE-AND-SWAP, not an unconditional null: ``self._connection`` is
+        cleared only when ``connection`` IS STILL the currently cached handle.
+        A late caller can be holding a STALE connection reference captured
+        BEFORE an earlier self-heal already replaced ``self._connection`` with
+        a fresh one; nulling unconditionally would let that late caller wipe
+        out a perfectly healthy, freshly-reconnected handle out from under
+        every other in-flight caller. The connection HANDED to this call is
+        always closed regardless, since it is the dead/stale one either way.
+        Shared by :meth:`_query` and the transaction seam
         (:func:`~loremaster.store._txn.execute_transaction`, via the ``drop``
         callback) — mirrors :meth:`SurrealStore._drop_connection`.
         """
-        self._connection = None
+        if self._connection is connection:
+            self._connection = None
         await self._safe_close(connection)
 
     @staticmethod
@@ -236,12 +288,20 @@ class SurrealManifest:
         :class:`SurrealStoreError`, so a caller can tell "the write I sent was
         rejected" apart from "the server is down", and a good connection is
         never thrown away for a rejection.
+
+        The ``except`` also catches a raw ``KeyError``: probe-verified live (a
+        socket drop with a query in flight), the installed SDK's OWN response
+        routing raises ``builtins.KeyError(<request-uuid>)`` straight out of
+        ``connection.query(...)`` — never a domain rejection — so it is ALWAYS
+        classified as a connection fault. The ``except`` wraps ONLY the bare
+        SDK call above — never our own dict-indexing code — so this can never
+        misclassify a ``KeyError`` raised by application logic.
         """
         connection = await self._ensure_connection()
         try:
             return await connection.query(statement, params or {})
-        except _CONNECTION_ERRORS as error:
-            if is_connection_error(error):
+        except (*_CONNECTION_ERRORS, KeyError) as error:
+            if isinstance(error, KeyError) or is_connection_error(error):
                 # A genuine transport/auth fault: self-heal and surface loudly.
                 await self._drop_connection(connection)
                 raise SurrealConnectionError(
@@ -496,31 +556,100 @@ class SurrealManifest:
                 server-side (e.g. an out-of-domain ``state``); the prior row is
                 left intact.
         """
-        record_id = self._record_id(tier, file_path)
-        params: dict[str, Any] = {
-            "id": record_id,
-            "sha512": sha512,
-            "mtime_ns": mtime_ns,
-            "size": size,
-            "n_chunks": n_chunks,
-            "chunk_ids": chunk_ids,
-            "state": state,
-            "updated_at": self._now(),
-        }
-        statement = (
-            "BEGIN;\n"
-            f"DELETE type::record('{FILE_TABLE}', $id);\n"
-            f"CREATE type::record('{FILE_TABLE}', $id) SET "
-            "sha512 = $sha512, mtime_ns = $mtime_ns, size = $size, n_chunks = $n_chunks, "
-            "chunk_ids = $chunk_ids, state = $state, updated_at = $updated_at;\n"
-            "COMMIT;\n"
+        fragment = self.replace_fragment(
+            tier=tier,
+            file_path=file_path,
+            sha512=sha512,
+            mtime_ns=mtime_ns,
+            size=size,
+            n_chunks=n_chunks,
+            chunk_ids=chunk_ids,
+            state=state,
         )
+        statement, params = compose(fragment)
         await execute_transaction(
             statement,
             params,
             acquire=self._ensure_connection,
             drop=self._drop_connection,
             url=self._url,
+        )
+
+    def replace_fragment(
+        self,
+        *,
+        tier: str,
+        file_path: str,
+        sha512: str,
+        mtime_ns: int,
+        size: int,
+        n_chunks: int,
+        chunk_ids: list[str],
+        state: str,
+    ) -> TxnFragment:
+        """Build the fragment that atomically replaces the ``(tier, file_path)`` row.
+
+        A PURE builder: the old row is DELETEd and the new row CREATEd — composed
+        into one transaction, that swap is what gives a concurrent reader the
+        engine's snapshot isolation and rolls the whole thing back (leaving the
+        prior row intact) on a mid-swap failure such as an out-of-domain ``state``.
+        Every param is namespaced with :data:`MANIFEST_FRAGMENT_PARAM_PREFIX` so it
+        never collides with a sibling producer's params in the merged transaction.
+
+        Args:
+            tier: The tier the file belongs to.
+            file_path: The file path being replaced within the tier.
+            sha512: The new SHA-512 hex digest.
+            mtime_ns: The new modification time, in nanoseconds.
+            size: The new size, in bytes.
+            n_chunks: The new chunk count.
+            chunk_ids: The new point ids.
+            state: The new lifecycle state.
+
+        Returns:
+            The manifest-replace :class:`TxnFragment` (a DELETE then a CREATE),
+            carrying no ``BEGIN``/``COMMIT`` of its own.
+        """
+        prefix = MANIFEST_FRAGMENT_PARAM_PREFIX
+        id_key = f"{prefix}id"
+        sha_key = f"{prefix}sha512"
+        mtime_key = f"{prefix}mtime_ns"
+        size_key = f"{prefix}size"
+        n_chunks_key = f"{prefix}n_chunks"
+        chunk_ids_key = f"{prefix}chunk_ids"
+        state_key = f"{prefix}state"
+        updated_key = f"{prefix}updated_at"
+        params: dict[str, Any] = {
+            id_key: self._record_id(tier, file_path),
+            sha_key: sha512,
+            mtime_key: mtime_ns,
+            size_key: size,
+            n_chunks_key: n_chunks,
+            chunk_ids_key: chunk_ids,
+            state_key: state,
+            updated_key: self._now(),
+        }
+        statements = [
+            f"DELETE type::record('{FILE_TABLE}', ${id_key})",
+            f"CREATE type::record('{FILE_TABLE}', ${id_key}) SET "
+            f"sha512 = ${sha_key}, mtime_ns = ${mtime_key}, size = ${size_key}, "
+            f"n_chunks = ${n_chunks_key}, chunk_ids = ${chunk_ids_key}, "
+            f"state = ${state_key}, updated_at = ${updated_key}",
+        ]
+        return TxnFragment(statements=statements, params=params)
+
+    def delete_fragment(self, tier: str, file_path: str) -> TxnFragment:
+        """Build the fragment that deletes the ``(tier, file_path)`` manifest row.
+
+        Tier-scoped like :meth:`delete`; the composable counterpart a full-file
+        purge composes alongside the chunk / file_text / graph deletes. Absent row
+        composes to a harmless no-op DELETE.
+        """
+        prefix = MANIFEST_FRAGMENT_PARAM_PREFIX
+        id_key = f"{prefix}id"
+        return TxnFragment(
+            statements=[f"DELETE type::record('{FILE_TABLE}', ${id_key})"],
+            params={id_key: self._record_id(tier, file_path)},
         )
 
     # -- meta key/value store --------------------------------------------

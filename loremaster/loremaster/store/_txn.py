@@ -51,7 +51,9 @@ import …`` seam every caller (and test) uses keeps working unchanged.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+import re
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from surrealdb import (
@@ -69,6 +71,214 @@ class SurrealStoreError(RuntimeError):
 
 class SurrealConnectionError(SurrealStoreError):
     """The store could not reach or authenticate to the SurrealDB server."""
+
+
+class TxnParamCollisionError(SurrealStoreError):
+    """Two composed fragments bound the SAME parameter name.
+
+    Raised by :func:`compose` the moment a later fragment's params dict carries
+    a key an earlier fragment already bound: a naive merge would silently
+    overwrite one producer's value with another's, corrupting the transaction.
+    Every producer namespaces its params with a distinct prefix precisely so
+    this never happens in practice — this typed error is the LOUD guard that
+    turns a namespacing bug into an immediate, diagnosable failure instead of a
+    silent data corruption.
+    """
+
+
+class TxnEnvelopeViolationError(SurrealStoreError):
+    """A fragment statement smuggles its own transaction-envelope control.
+
+    Raised by :func:`compose` when a fragment's statement text carries a bare
+    ``BEGIN``/``COMMIT`` keyword (case-insensitive, word-boundary aware — an
+    identifier that merely CONTAINS ``begin``/``commit`` as a substring, e.g. a
+    ``commit_hash`` audit column, is ordinary and never flagged) or an internal
+    statement separator (a ``;`` beyond the single, optional trailing
+    terminator a builder may author). A fragment is composable precisely
+    because it owns none of the envelope compose() adds exactly once; either
+    poison shape would corrupt that guarantee: a smuggled ``COMMIT`` closes the
+    atomic block early (everything composed after it would run OUTSIDE the
+    intended transaction); a smuggled ``BEGIN`` opens a second, nested one; a
+    bare internal ``;`` splits one declared statement into several UNTRACKED
+    ones, silently undercounting what :data:`TXN_STATEMENT_HARD_CAP` and
+    :data:`TXN_STATEMENT_WARN_THRESHOLD` count against.
+    """
+
+
+# The body-statement count above which :meth:`SurrealStore.apply` emits a
+# WARNING rather than a DEBUG telemetry record. A per-file transaction that
+# spans a file's chunks + body + graph + manifest sits far below this; crossing
+# it means an accidentally-huge batch (thousands of statements in one
+# ``BEGIN … COMMIT``) that should be visible in the logs before it strains the
+# engine. A generous ceiling — high enough never to warn on a legitimately large
+# file, low enough to catch a runaway batch.
+TXN_STATEMENT_WARN_THRESHOLD = 800
+
+# The composed transaction's HARD body-statement ceiling — the write-path
+# analogue of the read path's ``_MAX_HYBRID_K`` clamp (``store/surreal.py``): a
+# DISTINCT, HIGHER bound than :data:`TXN_STATEMENT_WARN_THRESHOLD` (crossing
+# the WARN threshold only logs and still composes; crossing THIS one refuses
+# outright). Defense-in-depth against a pathological single file (e.g. a
+# 100k-tiny-generated-function source) producing one multi-hundred-thousand-
+# statement transaction that would strain the SHARED server — refused at BUILD
+# time in :func:`compose`, so :meth:`SurrealStore.apply` (which calls
+# ``compose`` first) never even reaches ``execute_transaction``.
+TXN_STATEMENT_HARD_CAP = 5000
+
+# The single ``BEGIN … COMMIT`` envelope :func:`compose` wraps the merged
+# fragment bodies in. A fragment carries NONE of its own (that is what makes it
+# composable); the envelope is added exactly once, here.
+_TXN_BEGIN = "BEGIN;\n"
+_TXN_COMMIT = "\nCOMMIT;"
+
+# The per-statement terminator :func:`_normalise_statement` guarantees, so a
+# builder may author its statements with or without a trailing ``;`` and compose
+# still emits one well-formed, semicolon-separated body.
+_STATEMENT_TERMINATOR = ";"
+
+# The envelope-integrity keyword scan (see :class:`TxnEnvelopeViolationError`):
+# a bare ``BEGIN``/``COMMIT`` token, case-insensitive (the engine treats
+# SurrealQL keywords case-insensitively even though every builder here emits
+# uppercase). ``\b`` word boundaries make this identifier-safe: ``commit_hash``
+# has no boundary between ``commit`` and the following ``_`` (a word
+# character), so it never matches.
+_BEGIN_COMMIT_KEYWORD_PATTERN = re.compile(r"\b(BEGIN|COMMIT)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class TxnFragment:
+    """One producer's composable slice of a larger transaction.
+
+    A fragment is an ORDERED list of SurrealQL ``statements`` plus the
+    ``params`` those statements bind — and, crucially, it carries NO
+    ``BEGIN``/``COMMIT`` of its own. That omission is what lets any set of
+    fragments (a file's chunks, its verbatim body, its manifest row, its
+    code-graph nodes/edges) merge into ONE transaction via :func:`compose`,
+    which adds the single envelope exactly once. Each producer namespaces its
+    ``params`` keys with a distinct prefix so the merged param dict never
+    collides (see :class:`TxnParamCollisionError`).
+
+    Attributes:
+        statements: The ordered SurrealQL statements, without any transaction
+            envelope; a builder may include or omit the trailing ``;`` — compose
+            normalises it.
+        params: The bound parameters these statements reference, producer-
+            namespaced so they survive the merge without clobbering a sibling.
+    """
+
+    statements: Sequence[str]
+    params: Mapping[str, Any]
+
+
+def _normalise_statement(statement: str) -> str:
+    """Return ``statement`` with exactly one trailing ``;`` and no surrounding whitespace.
+
+    A fragment builder may author a statement with or without its terminator;
+    normalising here means :func:`compose` always emits a uniform,
+    semicolon-separated body regardless of the producer's local style.
+    """
+    trimmed = statement.strip().rstrip(_STATEMENT_TERMINATOR).rstrip()
+    return f"{trimmed}{_STATEMENT_TERMINATOR}"
+
+
+def _assert_envelope_integrity(statement: str) -> None:
+    """Refuse a fragment statement that could split or close compose()'s envelope.
+
+    Checked on every RAW fragment statement, before :func:`_normalise_statement`
+    runs. A single, optional trailing terminator is the ONLY ``;`` a legitimate
+    one-statement fragment ever carries — anything beyond that (an internal
+    separator) or a bare ``BEGIN``/``COMMIT`` keyword means the fragment is
+    smuggling more than the one statement it declared. See
+    :class:`TxnEnvelopeViolationError`.
+
+    Raises:
+        TxnEnvelopeViolationError: ``statement`` carries an internal statement
+            separator or a bare ``BEGIN``/``COMMIT`` keyword.
+    """
+    stripped = statement.strip()
+    # Peel off exactly one optional trailing terminator (the ordinary shape a
+    # builder may author) before checking for an INTERNAL separator, so a
+    # single trailing ``;`` is never mistaken for smuggled statements.
+    body = (
+        stripped[: -len(_STATEMENT_TERMINATOR)]
+        if stripped.endswith(_STATEMENT_TERMINATOR)
+        else stripped
+    )
+    if _STATEMENT_TERMINATOR in body:
+        raise TxnEnvelopeViolationError(
+            f"fragment statement contains an internal statement separator "
+            f"({_STATEMENT_TERMINATOR!r}) beyond its single trailing terminator, "
+            f"which would split it into untracked statements: {statement!r}"
+        )
+    if _BEGIN_COMMIT_KEYWORD_PATTERN.search(stripped):
+        raise TxnEnvelopeViolationError(
+            f"fragment statement contains a bare BEGIN/COMMIT keyword, which "
+            f"would close or nest compose()'s single transaction envelope: "
+            f"{statement!r}"
+        )
+
+
+def compose(*fragments: TxnFragment) -> tuple[str, dict[str, Any]]:
+    """Merge ``fragments`` into ONE ``BEGIN … COMMIT`` transaction.
+
+    Concatenates the fragments' statements in the order given (statement order
+    is load-bearing — a producer's DELETE-then-UPSERT must stay ordered, and the
+    fragment order the caller chose must stay stable) inside a single
+    transaction envelope, and unions their params into one dict.
+
+    Every statement is checked for envelope integrity (see
+    :class:`TxnEnvelopeViolationError`) before it is normalised, and the
+    composed body-statement count is checked against
+    :data:`TXN_STATEMENT_HARD_CAP` before the envelope text is assembled — both
+    BUILD-time refusals, so :meth:`~loremaster.store.surreal.SurrealStore.apply`
+    (which calls this first) never reaches ``execute_transaction`` for either.
+
+    Args:
+        *fragments: The producer fragments to compose (at least one).
+
+    Returns:
+        ``(statement_text, merged_params)`` — the full multi-statement
+        ``BEGIN … COMMIT`` SurrealQL text and the merged bound parameters, ready
+        to hand straight to :func:`execute_transaction`.
+
+    Raises:
+        ValueError: No fragments were given — composing nothing is a caller bug
+            (an empty apply names no work), never a silently-empty transaction.
+        TxnParamCollisionError: Two fragments bound the same param name; a naive
+            merge would silently drop one value, so compose refuses loudly.
+        TxnEnvelopeViolationError: A fragment statement smuggles its own
+            ``BEGIN``/``COMMIT`` or an internal statement separator.
+        SurrealStoreError: The composed body would exceed
+            :data:`TXN_STATEMENT_HARD_CAP` statements.
+    """
+    if not fragments:
+        raise ValueError(
+            "compose() requires at least one fragment; composing nothing would "
+            "emit a BEGIN … COMMIT that commits no work"
+        )
+    merged_params: dict[str, Any] = {}
+    body: list[str] = []
+    for fragment in fragments:
+        for key, value in fragment.params.items():
+            if key in merged_params:
+                raise TxnParamCollisionError(
+                    f"parameter {key!r} bound by more than one fragment — a naive "
+                    f"merge would silently overwrite one producer's value; every "
+                    f"producer must namespace its params with a distinct prefix"
+                )
+            merged_params[key] = value
+        for statement in fragment.statements:
+            _assert_envelope_integrity(statement)
+            body.append(_normalise_statement(statement))
+    if len(body) > TXN_STATEMENT_HARD_CAP:
+        raise SurrealStoreError(
+            f"composed transaction has {len(body)} statements, exceeding the "
+            f"hard cap of {TXN_STATEMENT_HARD_CAP} statements per transaction — "
+            f"refused before anything was sent to the server"
+        )
+    statement_text = _TXN_BEGIN + "\n".join(body) + _TXN_COMMIT
+    return statement_text, merged_params
+
 
 
 # ``AsyncSurreal`` is a factory returning one of these by URL scheme; this alias
@@ -238,6 +448,15 @@ async def _txn_query_raw(
     :data:`_CONNECTION_ERRORS` branch below as a genuine transport failure, and
     self-heals the same way.
 
+    The ``except`` also catches a raw ``KeyError``: probe-verified live (a
+    socket drop with a query in flight), the installed SDK's OWN response
+    routing raises ``builtins.KeyError(<request-uuid>)`` from EITHER await
+    above — never a domain rejection (a per-statement ``ERR`` never raises
+    here at all; see :func:`_failed_statements`), so it is always a transport
+    fault and always self-heals via ``drop``. The ``except`` wraps ONLY these
+    two SDK calls — never our own dict-indexing code — so this can never
+    misclassify a ``KeyError`` raised by application logic.
+
     Raises:
         SurrealConnectionError: The server is unreachable or the socket died.
     """
@@ -245,7 +464,7 @@ async def _txn_query_raw(
     try:
         response = await connection.query_raw(statement, params)
         connection.check_response_for_error(response, "query")
-    except _CONNECTION_ERRORS as error:
+    except (*_CONNECTION_ERRORS, KeyError) as error:
         await drop(connection)
         raise SurrealConnectionError(
             f"SurrealDB transaction failed against {url!r}: {error}"

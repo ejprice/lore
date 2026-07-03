@@ -65,6 +65,7 @@ only touches astroid's process-global cache, never the DB.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -72,7 +73,6 @@ from typing import Any, NoReturn
 
 from lorescribe.models import Chunk
 from surrealdb import AsyncSurreal, RecordID
-from websockets.exceptions import WebSocketException
 
 from loremaster.graph import (
     _QUALIFIER_SEPARATOR,
@@ -101,7 +101,9 @@ from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
     SurrealStoreError,
+    TxnFragment,
     _SurrealConnection,
+    compose,
     execute_transaction,
     is_connection_error,
 )
@@ -164,9 +166,14 @@ _EDGE_OUT = "out"
 # their own SELECTed columns on every row), so only that index is named.
 _ID_QNAME_INDEX = 2
 
-# Fixed bound-parameter names shared across statements.
-_P_TIER = "tier"
-_P_FILE = "file"
+# The producer-namespacing prefix every bound param of the code-graph's per-file
+# build/purge fragment carries, so its params never clobber a sibling producer's
+# (chunk / file_text / manifest) params in a composed per-file transaction (see
+# :func:`~loremaster.store._txn.compose`). ``gr_`` = the code GRaph.
+GRAPH_FRAGMENT_PARAM_PREFIX = "gr_"
+
+# Fixed bound-parameter names shared across QUERY statements (independent reads,
+# never composed with another producer, so they need no namespacing prefix).
 _P_NAMES = "names"
 _P_IDS = "ids"
 _P_KIND = "kind"
@@ -177,12 +184,19 @@ _P_BARE = "bare"
 _P_PAIR_TIER = "pair_tier"
 _P_PAIR_FILE = "pair_file"
 
+# The build/purge fragment's fixed tier/file params — namespaced under
+# :data:`GRAPH_FRAGMENT_PARAM_PREFIX` because these DO compose into the shared
+# per-file transaction alongside the other three producers' fragments.
+_P_TIER = f"{GRAPH_FRAGMENT_PARAM_PREFIX}tier"
+_P_FILE = f"{GRAPH_FRAGMENT_PARAM_PREFIX}file"
+
 # Generated (per-node / per-edge / per-name) bound-parameter prefixes for the
-# per-file build transaction. Kept distinct so a node/edge/name index can never
-# collide on a param name.
-_NAME_PARAM_PREFIX = "nm"
-_NODE_PARAM_PREFIX = "nd"
-_EDGE_PARAM_PREFIX = "ed"
+# per-file build transaction — each anchored under
+# :data:`GRAPH_FRAGMENT_PARAM_PREFIX` and kept distinct so a node/edge/name index
+# can never collide on a param name (nor with a sibling producer's).
+_NAME_PARAM_PREFIX = f"{GRAPH_FRAGMENT_PARAM_PREFIX}nm"
+_NODE_PARAM_PREFIX = f"{GRAPH_FRAGMENT_PARAM_PREFIX}nd"
+_EDGE_PARAM_PREFIX = f"{GRAPH_FRAGMENT_PARAM_PREFIX}ed"
 # Generated bound-param prefix for the module-prefix ``string::starts_with`` arm
 # of ``what_imports`` / ``_reverse_neighbours`` — one per frontier prefix, kept
 # distinct so a prefix index can never collide with a node/edge/name param.
@@ -303,6 +317,14 @@ class SurrealCodeGraph:
         self._password = password
         # Opened on first use; ``None`` means "not yet connected / closed".
         self._connection: _SurrealConnection | None = None
+        # Guards the connect-time check-then-set below (mirrors
+        # ``SurrealStore._connect_lock`` / ``SurrealManifest._connect_lock``):
+        # without it, N concurrent first-callers on a fresh instance all pass
+        # the ``self._connection is not None`` check before any of them
+        # finishes connecting, each opening its OWN underlying SDK connection.
+        # Safe to construct here (unbound to any running loop) on Python
+        # >= 3.10.
+        self._connect_lock = asyncio.Lock()
         # The reused astroid derivation (no Kùzu backend — see the delegate).
         self._derivation = _AstroidDerivation(
             tier_roots=tier_roots, project_roots=project_roots
@@ -343,37 +365,54 @@ class SurrealCodeGraph:
     async def _ensure_connection(self) -> _SurrealConnection:
         """Return the live connection, opening + signing in on first use.
 
-        A down server or bad password is a LOUD, typed failure, never a hang or a
-        silently empty graph.
+        Double-checked locking (mirrors
+        :meth:`~loremaster.store.surreal.SurrealStore._ensure_connection`):
+        the fast path (already connected) never touches the lock; a first
+        caller acquires :attr:`_connect_lock` and re-checks — a concurrent
+        racer that lost the race to acquire the lock finds the connection
+        already assigned by the winner and returns it without opening a
+        second one. A down server or bad password is a LOUD, typed failure,
+        never a hang or a silently empty graph.
 
         Raises:
             SurrealConnectionError: The server is unreachable or rejected auth.
         """
         if self._connection is not None:
             return self._connection
-        connection = AsyncSurreal(self._url)
-        credentials: dict[str, Any] = {
-            _SIGNIN_USER_KEY: self._user,
-            _SIGNIN_PASS_KEY: self._password,
-        }
-        try:
-            await connection.signin(credentials)
-            await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
-            await connection.use(self._namespace, self._database)
-            await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
-        except _CONNECTION_ERRORS as error:
-            # Close the half-open socket (if any) so a failed connect never leaks
-            # a dangling connection, then surface a typed connection error.
-            await self._safe_close(connection)
-            raise SurrealConnectionError(
-                f"could not connect to SurrealDB at {self._url!r} "
-                f"(namespace={self._namespace!r}, database={self._database!r}): {error}"
-            ) from error
-        self._connection = connection
-        logger.debug(
-            "graph.connected", extra={"namespace": self._namespace, "database": self._database}
-        )
-        return connection
+        async with self._connect_lock:
+            # Re-check: another caller may have already connected while this
+            # one was waiting for the lock. mypy narrows ``self._connection``
+            # to ``None`` from the outer guard and can't model the
+            # cross-coroutine mutation across the ``await`` inside
+            # ``__aenter__`` above, hence the unreachable ignore (mirrors
+            # ``watcher.py``'s identical double-checked-lock pattern).
+            if self._connection is not None:
+                return self._connection  # type: ignore[unreachable]
+            connection = AsyncSurreal(self._url)
+            credentials: dict[str, Any] = {
+                _SIGNIN_USER_KEY: self._user,
+                _SIGNIN_PASS_KEY: self._password,
+            }
+            try:
+                await connection.signin(credentials)
+                await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
+                await connection.use(self._namespace, self._database)
+                await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
+            except _CONNECTION_ERRORS as error:
+                # Close the half-open socket (if any) so a failed connect never
+                # leaks a dangling connection, then surface a typed connection
+                # error.
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): {error}"
+                ) from error
+            self._connection = connection
+            logger.debug(
+                "graph.connected",
+                extra={"namespace": self._namespace, "database": self._database},
+            )
+            return connection
 
     async def ensure_ready(self) -> None:
         """Connect and apply the code-graph schema slice — idempotent.
@@ -381,18 +420,28 @@ class SurrealCodeGraph:
         Applies :func:`~loremaster.store.surreal_schema.generate_graph_ddl` (the
         Model-A tables/indexes). The graph owns no embedder ``dim``/analyzer, so
         it never needs the full store DDL. Idempotent: a second call is a safe
-        no-op.
+        no-op. Applied inside ONE ``BEGIN … COMMIT`` transaction via
+        :func:`~loremaster.store._txn.execute_transaction`, which inspects EVERY
+        statement's status — the SDK's plain ``query()`` inspects only the
+        FIRST statement, so a LATER statement's rejection would otherwise roll
+        the whole schema back server-side while ``query()`` raised nothing at
+        all (verified live).
 
         Raises:
-            SurrealConnectionError: The server is unreachable or rejected auth.
+            SurrealConnectionError: The server is unreachable, rejected auth, or
+                the socket died mid-apply.
+            SurrealStoreError: Any DDL statement was rejected by the engine (a
+                real schema bug); the connection stays healthy.
         """
-        connection = await self._ensure_connection()
-        try:
-            await connection.query(generate_graph_ddl())
-        except (OSError, WebSocketException) as error:
-            raise SurrealConnectionError(
-                f"could not apply graph schema to SurrealDB at {self._url!r}: {error}"
-            ) from error
+        await self._ensure_connection()
+        ddl = generate_graph_ddl()
+        await execute_transaction(
+            f"BEGIN;\n{ddl}COMMIT;\n",
+            {},
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+        )
         logger.debug("graph.schema.ready", extra={"database": self._database})
 
     async def close(self) -> None:
@@ -402,10 +451,19 @@ class SurrealCodeGraph:
             self._connection = None
 
     async def _drop_connection(self, connection: _SurrealConnection) -> None:
-        """Drop the cached handle so the NEXT call reconnects (the self-heal)."""
-        # Null the cached handle FIRST so the next call reconnects even if the
-        # close below is a no-op, then release the (dead) socket.
-        self._connection = None
+        """Drop the cached handle so the NEXT call reconnects (the self-heal).
+
+        A COMPARE-AND-SWAP, not an unconditional null: ``self._connection`` is
+        cleared only when ``connection`` IS STILL the currently cached handle.
+        A late caller can be holding a STALE connection reference captured
+        BEFORE an earlier self-heal already replaced ``self._connection`` with
+        a fresh one; nulling unconditionally would let that late caller wipe
+        out a perfectly healthy, freshly-reconnected handle out from under
+        every other in-flight caller. The connection HANDED to this call is
+        always closed regardless, since it is the dead/stale one either way.
+        """
+        if self._connection is connection:
+            self._connection = None
         await self._safe_close(connection)
 
     @staticmethod
@@ -424,12 +482,20 @@ class SurrealCodeGraph:
         fault drops the cached handle so the next call reconnects, surfaced as a
         typed, LOUD :class:`SurrealConnectionError`; a domain/schema rejection
         keeps the healthy connection and surfaces as :class:`SurrealStoreError`.
+
+        The ``except`` also catches a raw ``KeyError``: probe-verified live (a
+        socket drop with a query in flight), the installed SDK's OWN response
+        routing raises ``builtins.KeyError(<request-uuid>)`` straight out of
+        ``connection.query(...)`` — never a domain rejection — so it is ALWAYS
+        classified as a connection fault. The ``except`` wraps ONLY the bare
+        SDK call above — never our own dict-indexing code — so this can never
+        misclassify a ``KeyError`` raised by application logic.
         """
         connection = await self._ensure_connection()
         try:
             return await connection.query(statement, params or {})
-        except _CONNECTION_ERRORS as error:
-            if is_connection_error(error):
+        except (*_CONNECTION_ERRORS, KeyError) as error:
+            if isinstance(error, KeyError) or is_connection_error(error):
                 await self._drop_connection(connection)
                 raise SurrealConnectionError(
                     f"SurrealDB query failed against {self._url!r}: {error}"
@@ -584,6 +650,11 @@ class SurrealCodeGraph:
         a sibling file or another tier's copy of the same path (C1) is untouched.
         The derivation is REUSED from :class:`~loremaster.graph.CodeGraph`.
 
+        Expressed over the ONE statement-producing path: it builds its
+        :meth:`build_file_graph_fragment` and composes it into a single
+        transaction, so there is no second, drifting copy of the purge + upsert +
+        relate statement text.
+
         Args:
             tier: The source tier the file belongs to.
             file_path: The tier-relative POSIX file path (the tier-scoping key).
@@ -592,12 +663,10 @@ class SurrealCodeGraph:
                 qualified under; ``None`` ⇒ the pure path-join
                 :meth:`module_qualified_name`.
         """
-        module = (
-            module_name if module_name is not None else CodeGraph.module_qualified_name(file_path)
+        fragment = self.build_file_graph_fragment(
+            tier, file_path, chunks, module_name=module_name
         )
-        nodes = self._derivation._derive_nodes(module, chunks)
-        edges = self._derivation._derive_edges(module, chunks, tier=tier, file_path=file_path)
-        statement, params = self._build_statement(tier, file_path, nodes, edges)
+        statement, params = compose(fragment)
         await self._run_transaction(statement, params)
 
     async def delete_file_graph(self, tier: str, file_path: str) -> None:
@@ -605,45 +674,58 @@ class SurrealCodeGraph:
 
         Tier-scoped: the same path's rows under other tiers survive (C1). Orphan
         ``name`` rows a purge may strand are harmless — they carry no fields and
-        every query walks the edge tables, not the name rows.
+        every query walks the edge tables, not the name rows. Expressed over the
+        ONE statement-producing path: it composes its :meth:`purge_file_fragment`.
 
         Args:
             tier: The source tier the file belongs to.
             file_path: The tier-relative POSIX file path to purge.
         """
-        statement = "\n".join(("BEGIN;", *self._purge_statements(), "COMMIT;"))
-        await self._run_transaction(statement, {_P_TIER: tier, _P_FILE: file_path})
+        statement, params = compose(self.purge_file_fragment(tier, file_path))
+        await self._run_transaction(statement, params)
 
-    @staticmethod
-    def _purge_statements() -> tuple[str, ...]:
-        """The three tier+file-scoped DELETEs that purge one file's graph slice."""
-        return (
-            f"DELETE {CODE_NODE_TABLE} "
-            f"WHERE {_COL_TIER} = ${_P_TIER} AND {_COL_FILE_PATH} = ${_P_FILE};",
-            f"DELETE {REFERS_RELATION} "
-            f"WHERE {_COL_SRC_TIER} = ${_P_TIER} AND {_COL_SRC_FILE_PATH} = ${_P_FILE};",
-            f"DELETE {ANSWERS_TO_RELATION} "
-            f"WHERE {_COL_TIER} = ${_P_TIER} AND {_COL_FILE_PATH} = ${_P_FILE};",
-        )
-
-    def _build_statement(
+    def build_file_graph_fragment(
         self,
         tier: str,
         file_path: str,
-        nodes: Sequence[_NodeSpec],
-        edges: Sequence[_EdgeSpec],
-    ) -> tuple[str, dict[str, Any]]:
-        """Assemble the one-transaction per-file build (purge + upsert + relate).
+        chunks: Sequence[Chunk],
+        *,
+        module_name: str | None = None,
+    ) -> TxnFragment:
+        """Build the per-file code-graph fragment (purge + upsert + relate).
 
-        Every value — record ids, kinds, names — is a BOUND parameter (no
-        interpolation). The name records are UPSERTed first (each carrying its
-        own string as ``value`` so the module-prefix reach can prefix-match it),
-        so an edge to a not-yet-defined name never dangles (order-independence);
-        each node then ``answers_to`` its FQN-name AND bare-name (the collision
-        fan-out) and each reference ``refers`` to its dst-name.
+        A PURE builder: the astroid derivation (``_derive_nodes`` /
+        ``_derive_edges``, REUSED from :class:`~loremaster.graph.CodeGraph`) runs
+        here at BUILD time — it is sync CPU + on-disk source reads, never a socket
+        touch. Every value — record ids, kinds, names — is a BOUND parameter (no
+        interpolation), each namespaced under :data:`GRAPH_FRAGMENT_PARAM_PREFIX`
+        so it never collides with a sibling producer's params in the merged
+        transaction. The file's prior graph rows are purged first; the name records
+        are UPSERTed next (each carrying its own string as ``value`` so the
+        module-prefix reach can prefix-match it), so an edge to a not-yet-defined
+        name never dangles (order-independence); each node then ``answers_to`` its
+        FQN-name AND bare-name (the collision fan-out) and each reference ``refers``
+        to its dst-name.
+
+        Args:
+            tier: The source tier the file belongs to.
+            file_path: The tier-relative POSIX file path (the tier-scoping key).
+            chunks: The file's lorescribe AST chunks.
+            module_name: The importable module prefix every node/reference is
+                qualified under; ``None`` ⇒ the pure path-join
+                :meth:`module_qualified_name`.
+
+        Returns:
+            The code-graph :class:`TxnFragment`, carrying no ``BEGIN``/``COMMIT``.
         """
+        module = (
+            module_name if module_name is not None else CodeGraph.module_qualified_name(file_path)
+        )
+        nodes = self._derivation._derive_nodes(module, chunks)
+        edges = self._derivation._derive_edges(module, chunks, tier=tier, file_path=file_path)
+
         params: dict[str, Any] = {_P_TIER: tier, _P_FILE: file_path}
-        lines: list[str] = ["BEGIN;", *self._purge_statements()]
+        statements: list[str] = [*self._purge_statements()]
 
         # Every distinct name touched by this file (node FQNs/bares + edge dsts),
         # UPSERTed once so the relate targets always exist.
@@ -661,15 +743,39 @@ class SurrealCodeGraph:
             # can ``string::starts_with`` on an indexed column (a RecordID id is
             # not itself prefix-matchable on 3.1.5).
             params[value_key] = name
-            lines.append(f"UPSERT ${id_key} SET {_COL_VALUE} = ${value_key};")
+            statements.append(f"UPSERT ${id_key} SET {_COL_VALUE} = ${value_key};")
 
         for index, node in enumerate(nodes):
-            lines.extend(self._node_statements(index, tier, file_path, node, params))
+            statements.extend(self._node_statements(index, tier, file_path, node, params))
         for index, edge in enumerate(edges):
-            lines.append(self._edge_statement(index, tier, file_path, edge, params))
+            statements.append(self._edge_statement(index, tier, file_path, edge, params))
 
-        lines.append("COMMIT;")
-        return "\n".join(lines), params
+        return TxnFragment(statements=statements, params=params)
+
+    def purge_file_fragment(self, tier: str, file_path: str) -> TxnFragment:
+        """Build the fragment that purges one file's whole code-graph slice.
+
+        The composable counterpart to :meth:`delete_file_graph` — the three
+        tier+file-scoped DELETEs a full-file purge composes alongside the chunk /
+        file_text / manifest deletes. Params are namespaced under
+        :data:`GRAPH_FRAGMENT_PARAM_PREFIX`.
+        """
+        return TxnFragment(
+            statements=list(self._purge_statements()),
+            params={_P_TIER: tier, _P_FILE: file_path},
+        )
+
+    @staticmethod
+    def _purge_statements() -> tuple[str, ...]:
+        """The three tier+file-scoped DELETEs that purge one file's graph slice."""
+        return (
+            f"DELETE {CODE_NODE_TABLE} "
+            f"WHERE {_COL_TIER} = ${_P_TIER} AND {_COL_FILE_PATH} = ${_P_FILE};",
+            f"DELETE {REFERS_RELATION} "
+            f"WHERE {_COL_SRC_TIER} = ${_P_TIER} AND {_COL_SRC_FILE_PATH} = ${_P_FILE};",
+            f"DELETE {ANSWERS_TO_RELATION} "
+            f"WHERE {_COL_TIER} = ${_P_TIER} AND {_COL_FILE_PATH} = ${_P_FILE};",
+        )
 
     def _node_statements(
         self,

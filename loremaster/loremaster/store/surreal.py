@@ -20,9 +20,12 @@ this server):
 * **Filtered KNN under-returns**, so each hybrid arm *overfetches* (``k`` scaled
   by :data:`_OVERFETCH_FACTOR`) inside the filtered subquery and the final ``k``
   is honoured only after fusion.
-* **The HNSW KNN operator needs its EF form** — a bare ``<|K|>`` is rejected;
-  ``<|K,EF|>`` uses the index. It also may not be nested in an ``OR``/``NOT``,
-  so the vector arm ANDs its filters and never ORs.
+* **The HNSW KNN operator's bare ``<|K|>`` form is valid** (it uses the
+  index's default EF search-list size); this store always spells the EXPLICIT
+  ``<|K,EF|>`` form instead, so the search-list size can be sized to the
+  overfetch deliberately rather than left to an implicit default. It also may
+  not be nested in an ``OR``/``NOT``, so the vector arm ANDs its filters and
+  never ORs.
 * **``search::rrf`` accepts only INLINE subqueries** (a ``LET``-bound arg comes
   back ``None``); it returns the fused rows with an added ``rrf_score``.
 * **The FULLTEXT ``@@`` match is conjunctive over the ANALYZED query tokens**,
@@ -46,6 +49,11 @@ so an agent supplies its filter keys, ``k`` and query text):
   :data:`_MAX_QUERY_TOKENS`. An unclamped huge ``k`` overran the engine's HNSW
   search-list allocation and crashed the shared server, so the clamp is
   load-bearing, not cosmetic.
+* **Write-path sizes are bounded too** — a composed transaction's body-
+  statement count is capped at
+  :data:`~loremaster.store._txn.TXN_STATEMENT_HARD_CAP` (in ``compose()``) and
+  a single ``file_text`` body is capped at :data:`FILE_TEXT_MAX_BYTES`, both
+  refused at BUILD time, before anything reaches the server.
 
 Deliberate divergences from :class:`~loremaster.store.qdrant.QdrantStore` (not
 oversights):
@@ -73,28 +81,34 @@ oversights):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
+from pathlib import PurePosixPath
 from typing import Any
 
 from surrealdb import AsyncSurreal, RecordID
-from websockets.exceptions import WebSocketException
 
 from loremaster.index.records import Record
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
+    TXN_STATEMENT_WARN_THRESHOLD,
     SurrealConnectionError,
     SurrealStoreError,
+    TxnFragment,
     _SurrealConnection,
+    compose,
     execute_transaction,
     is_connection_error,
 )
 from loremaster.store.candidate import Candidate, CandidateOrigin
 from loremaster.store.surreal_schema import (
+    CHUNK_COLUMNS,
     CHUNK_FILTER_KEYS,
     CHUNK_FULLTEXT_FIELDS,
     CHUNK_TABLE,
     DEFAULT_ANALYZER_NAME,
+    FILE_TEXT_TABLE,
     generate_ddl,
 )
 
@@ -195,11 +209,53 @@ _RRF_SCORE_KEY = "rrf_score"
 _EMBEDDING_KEY = "embedding"
 _COUNT_KEY = "count"
 
+# The chunk table's ``metadata`` column — a REQUIRED (non-``option``) FLEXIBLE
+# object (see ``surreal_schema._CHUNK_FIELD_SPECS``) that nests any payload key
+# NOT among the schema's declared chunk columns, so a write always emits a
+# well-formed row even when nothing needs nesting (an empty object).
+_METADATA_KEY = "metadata"
+
+# The chunk table's REQUIRED, BM25-indexed identifier-retrieval column — the
+# plan's DERIVED field (identity + bare name + file stem). No production
+# translator emits it, so ``_chunk_content`` derives it when absent.
+_IDENT_TEXT_KEY = "ident_text"
+
+# The declared chunk columns that are spread top-level rather than nested into
+# ``_METADATA_KEY`` — every schema column EXCEPT ``metadata`` itself (the
+# extras bucket) and ``embedding`` (assembled separately from the caller's
+# vector, never carried in ``record.payload``). Derived from the schema's own
+# field specs (``CHUNK_COLUMNS``), never a hand-copied parallel list, so it can
+# never drift from the DDL.
+_DECLARED_CHUNK_COLUMNS = frozenset(CHUNK_COLUMNS) - {_METADATA_KEY, _EMBEDDING_KEY}
+
 # The record-id table separator in a stringified ``RecordID`` (``chunk:uuid``).
 _TABLE_SEPARATOR = ":"
 
 # Every hybrid hit is a fusion of both arms, so it is reported as ``fused``.
 _FUSED_ORIGIN: CandidateOrigin = "fused"
+
+# The producer-namespacing prefixes the store stamps on the bound params of
+# the transaction fragments it builds, so a chunk fragment and a ``file_text``
+# fragment (and the manifest / graph fragments they compose with) never clobber
+# one another's params in the merged transaction (see
+# :func:`~loremaster.store._txn.compose`). ``st_`` = the STore's chunk rows;
+# ``ft_`` = the File-Text body rows.
+CHUNK_FRAGMENT_PARAM_PREFIX = "st_"
+FILE_TEXT_FRAGMENT_PARAM_PREFIX = "ft_"
+
+# The ``file_text`` row's two content columns (see
+# ``surreal_schema._file_text_statements``): the verbatim body + its SHA-512.
+_FILE_TEXT_TEXT_KEY = "text"
+_FILE_TEXT_SHA_KEY = "sha512"
+
+# The per-row byte ceiling on a ``file_text`` body — defense-in-depth against
+# one pathological file (a giant generated/vendored blob) inflating a single
+# row, and the composed transaction it rides in (see
+# ``loremaster.store._txn.TXN_STATEMENT_HARD_CAP`` for the sibling statement-
+# count guard), without limit. Measured in UTF-8 BYTES, not code points — the
+# actual on-the-wire/row size a multi-byte body (CJK, emoji, …) really costs —
+# comfortably above realistic large generated/vendored source files (a few MB).
+FILE_TEXT_MAX_BYTES = 10 * 1024 * 1024
 
 
 class VectorDimensionError(SurrealStoreError):
@@ -247,16 +303,27 @@ class SurrealStore:
         self._analyzer_name = analyzer_name
         # Opened on first use; ``None`` means "not yet connected / closed".
         self._connection: _SurrealConnection | None = None
+        # Guards the connect-time check-then-set below: without it, N
+        # concurrent first-callers on a fresh instance all pass the
+        # ``self._connection is not None`` check before any of them finishes
+        # connecting, each opening its OWN underlying SDK connection. Safe to
+        # construct here (unbound to any running loop) on Python >= 3.10.
+        self._connect_lock = asyncio.Lock()
 
     # -- connection lifecycle ----------------------------------------------
 
     async def _ensure_connection(self) -> _SurrealConnection:
         """Return the live connection, opening + signing in on first use.
 
-        Signs in, materialises the namespace/database (idempotent) and selects
-        them. Any transport or auth failure is wrapped in
-        :class:`SurrealConnectionError` — a down server or bad password is a
-        LOUD, typed failure, never a hang or a silent empty result.
+        Double-checked locking: the fast path (already connected) never
+        touches the lock; a first caller acquires :attr:`_connect_lock` and
+        re-checks — a concurrent racer that lost the race to acquire the lock
+        finds the connection already assigned by the winner and returns it
+        without opening a second one. Signs in, materialises the
+        namespace/database (idempotent) and selects them. Any transport or
+        auth failure is wrapped in :class:`SurrealConnectionError` — a down
+        server or bad password is a LOUD, typed failure, never a hang or a
+        silent empty result.
 
         Returns:
             The cached, signed-in connection bound to this store's ns/db.
@@ -266,51 +333,80 @@ class SurrealStore:
         """
         if self._connection is not None:
             return self._connection
-        connection = AsyncSurreal(self._url)
-        credentials: dict[str, Any] = {
-            _SIGNIN_USER_KEY: self._user,
-            _SIGNIN_PASS_KEY: self._password,
-        }
-        try:
-            await connection.signin(credentials)
-            await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
-            await connection.use(self._namespace, self._database)
-            await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
-        except _CONNECTION_ERRORS as error:
-            # Close the half-open socket (if any) so a failed connect never leaks
-            # a dangling connection, then surface a typed connection error.
-            await self._safe_close(connection)
-            raise SurrealConnectionError(
-                f"could not connect to SurrealDB at {self._url!r} "
-                f"(namespace={self._namespace!r}, database={self._database!r}): {error}"
-            ) from error
-        self._connection = connection
-        logger.debug(
-            "store.connected",
-            extra={"namespace": self._namespace, "database": self._database},
-        )
-        return connection
+        async with self._connect_lock:
+            # Re-check: another caller may have already connected while this
+            # one was waiting for the lock. mypy narrows ``self._connection``
+            # to ``None`` from the outer guard and can't model the
+            # cross-coroutine mutation across the ``await`` inside
+            # ``__aenter__`` above, hence the unreachable ignore (mirrors
+            # ``watcher.py``'s identical double-checked-lock pattern).
+            if self._connection is not None:
+                return self._connection  # type: ignore[unreachable]
+            connection = AsyncSurreal(self._url)
+            credentials: dict[str, Any] = {
+                _SIGNIN_USER_KEY: self._user,
+                _SIGNIN_PASS_KEY: self._password,
+            }
+            try:
+                await connection.signin(credentials)
+                await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
+                await connection.use(self._namespace, self._database)
+                await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
+            except _CONNECTION_ERRORS as error:
+                # Close the half-open socket (if any) so a failed connect never
+                # leaks a dangling connection, then surface a typed connection
+                # error.
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): {error}"
+                ) from error
+            self._connection = connection
+            logger.debug(
+                "store.connected",
+                extra={"namespace": self._namespace, "database": self._database},
+            )
+            return connection
+
+    @property
+    def file_text_max_bytes(self) -> int:
+        """The per-body UTF-8 byte ceiling the indexer's clause-4 pre-check reads.
+
+        Exposed as the SINGLE source of truth the indexer consults before it decides
+        whether to compose the ``file_text`` fragment for a file (see
+        :meth:`Indexer._file_text_within_cap`) — the indexer never hardcodes the cap.
+        A body over this ceiling is indexed WITHOUT its ``file_text`` fragment
+        (chunks / manifest / graph still land); :meth:`file_text_fragment` enforces
+        the SAME ceiling as a build-time hard refusal for any direct caller.
+        """
+        return FILE_TEXT_MAX_BYTES
 
     async def ensure_ready(self) -> None:
         """Connect and apply the schema — idempotent and safe to re-run.
 
         The DDL is generated ``IF NOT EXISTS`` from the configured ``dim``, so a
-        second call neither raises nor wipes existing data.
+        second call neither raises nor wipes existing data. Applied inside ONE
+        ``BEGIN … COMMIT`` transaction via :func:`~loremaster.store._txn.
+        execute_transaction`, which inspects EVERY statement's status — the
+        SDK's plain ``query()`` inspects only the FIRST statement, so a LATER
+        statement's rejection would otherwise roll the whole schema back
+        server-side while ``query()`` raised nothing at all (verified live).
 
         Raises:
-            SurrealConnectionError: The server is unreachable or rejected auth.
+            SurrealConnectionError: The server is unreachable, rejected auth, or
+                the socket died mid-apply.
+            SurrealStoreError: Any DDL statement was rejected by the engine (a
+                real schema bug); the connection stays healthy.
         """
-        connection = await self._ensure_connection()
+        await self._ensure_connection()
         ddl = generate_ddl(dim=self._dim, analyzer_name=self._analyzer_name)
-        try:
-            await connection.query(ddl)
-        except (OSError, WebSocketException) as error:
-            # A transport drop *during* schema apply is still a connection fault;
-            # a genuine DDL error (a ``SurrealError``) would be a real bug and is
-            # deliberately left to propagate rather than masked.
-            raise SurrealConnectionError(
-                f"could not apply schema to SurrealDB at {self._url!r}: {error}"
-            ) from error
+        await execute_transaction(
+            f"BEGIN;\n{ddl}COMMIT;\n",
+            {},
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+        )
         logger.debug("store.schema.ready", extra={"database": self._database})
 
     async def close(self) -> None:
@@ -322,13 +418,20 @@ class SurrealStore:
     async def _drop_connection(self, connection: _SurrealConnection) -> None:
         """Drop the cached handle so the NEXT call reconnects (the self-heal).
 
-        The single place the mid-life self-heal is enacted: null the cached
-        handle FIRST so the next call reconnects even if the close below is a
-        no-op, then release the (now dead / unauthenticated) socket. Shared by
-        :meth:`_query` and the transaction seam (:func:`~loremaster.store._txn.
-        execute_transaction`, via the ``drop`` callback).
+        A COMPARE-AND-SWAP, not an unconditional null: ``self._connection`` is
+        cleared only when ``connection`` IS STILL the currently cached handle.
+        A late caller can be holding a STALE connection reference captured
+        BEFORE an earlier self-heal already replaced ``self._connection`` with
+        a fresh one; nulling unconditionally would let that late caller wipe
+        out a perfectly healthy, freshly-reconnected handle out from under
+        every other in-flight caller. The connection HANDED to this call is
+        always closed regardless, since it is the dead/stale one either way.
+        Shared by :meth:`_query` and the transaction seam
+        (:func:`~loremaster.store._txn.execute_transaction`, via the ``drop``
+        callback).
         """
-        self._connection = None
+        if self._connection is connection:
+            self._connection = None
         await self._safe_close(connection)
 
     @staticmethod
@@ -357,12 +460,22 @@ class SurrealStore:
         connection fault — it keeps the healthy connection and surfaces as a
         :class:`SurrealStoreError`. Either way it is LOUD, never a silent empty
         result.
+
+        The ``except`` also catches a raw ``KeyError``: probe-verified live (a
+        socket drop with a query in flight), the installed SDK's OWN response
+        routing raises ``builtins.KeyError(<request-uuid>)`` straight out of
+        ``connection.query(...)`` — never a domain rejection — so it is ALWAYS
+        classified as a connection fault (self-heal + :class:`SurrealConnectionError`),
+        never mistaken for a domain rejection of the statement itself. The
+        ``except`` wraps ONLY the bare SDK call above — never our own
+        dict-indexing code — so this can never misclassify a ``KeyError``
+        raised by application logic.
         """
         connection = await self._ensure_connection()
         try:
             return await connection.query(statement, params or {})
-        except _CONNECTION_ERRORS as error:
-            if is_connection_error(error):
+        except (*_CONNECTION_ERRORS, KeyError) as error:
+            if isinstance(error, KeyError) or is_connection_error(error):
                 # A genuine transport/auth fault: self-heal and surface loudly.
                 await self._drop_connection(connection)
                 raise SurrealConnectionError(
@@ -395,10 +508,108 @@ class SurrealStore:
                     f"expected {self._dim}"
                 )
 
+    @classmethod
+    def _chunk_content(cls, record: Record, vector: list[float]) -> dict[str, Any]:
+        """The full chunk row content — declared columns top-level, extras nested.
+
+        ``record.payload`` is production-shaped: declared chunk columns plus
+        arbitrary chunker metadata keys spread top-level (see
+        ``records.chunk_to_record``), usually with NO ``"metadata"`` key at
+        all. This splits it via :meth:`_split_payload` so the write always
+        matches the schema's shape — the ``metadata`` column is a REQUIRED
+        (non-``option``) field, so it is emitted even when empty. A payload
+        that already carries an explicit ``"metadata"`` dict (the legacy
+        nested-producer shape) is still accepted: its contents merge into the
+        same extras bucket alongside any top-level extras.
+
+        ``ident_text`` — the plan's DERIVED identifier-retrieval field
+        (identity + bare name + file stem, BM25-indexed twice) — is another
+        REQUIRED column no production translator emits
+        (``records.chunk_to_record`` has no such field), so when the payload
+        does not carry one it is derived HERE, at the single point every
+        chunk write funnels through. A producer-supplied value always wins.
+        """
+        declared, metadata = cls._split_payload(record.payload)
+        if not declared.get(_IDENT_TEXT_KEY):
+            declared[_IDENT_TEXT_KEY] = cls._derive_ident_text(declared)
+        return {**declared, _METADATA_KEY: metadata, _EMBEDDING_KEY: vector}
+
     @staticmethod
-    def _chunk_content(record: Record, vector: list[float]) -> dict[str, Any]:
-        """The full chunk row content — the record payload plus its embedding."""
-        return {**record.payload, _EMBEDDING_KEY: vector}
+    def _derive_ident_text(declared: dict[str, Any]) -> str:
+        """The plan's ``ident_text`` derivation: identity + bare name + file stem.
+
+        Deduplicated in order (a module-level chunk's identity often IS the
+        file stem). A chunk with no identity still gets its file stem, so any
+        ``chunk_to_record``-built payload (which always carries ``file_path``)
+        derives non-empty; a pathological payload lacking BOTH identity and
+        file_path derives ``''`` — stored without error (no ASSERT on the
+        column), just unsearchable by identifier.
+        """
+        identity = str(declared.get("identity") or "")
+        bare_name = identity.rsplit(".", 1)[-1] if identity else ""
+        file_stem = PurePosixPath(str(declared.get("file_path") or "")).stem
+        parts: list[str] = []
+        for part in (identity, bare_name, file_stem):
+            if part and part not in parts:
+                parts.append(part)
+        return " ".join(parts)
+
+    @staticmethod
+    def _split_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Split a payload into declared top-level columns + metadata extras.
+
+        Every key in :data:`_DECLARED_CHUNK_COLUMNS` passes through
+        top-level, faithfully — including a value already resolved from a
+        metadata-key collision upstream (``records.chunk_to_record`` spreads
+        the chunk's metadata LAST, so a colliding key like ``chunk_type`` is
+        already resolved to one value before the record ever reaches the
+        store). Every other key nests into the metadata bucket; an explicit
+        ``"metadata"`` dict (the legacy nested-producer shape) contributes its
+        own contents to that SAME bucket rather than round-tripping as a
+        literal nested key.
+
+        Args:
+            payload: The record's payload, in either production (flattened)
+                or legacy (nested-``"metadata"``) shape.
+
+        Returns:
+            ``(declared, metadata)`` — the top-level column values and the
+            extras to nest under :data:`_METADATA_KEY`.
+
+        Raises:
+            SurrealStoreError: The payload carries a reserved key the store
+                cannot round-trip faithfully — a non-dict ``"metadata"``
+                value (neither the production nor the legacy shape; silently
+                dropping it would be data loss) or an ``"embedding"`` key
+                (would nest on write and spuriously reappear top-level on
+                read-merge). Refused BEFORE any statement is built, so
+                nothing persists.
+        """
+        declared: dict[str, Any] = {}
+        metadata: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key == _METADATA_KEY:
+                if not isinstance(value, dict):
+                    raise SurrealStoreError(
+                        f"payload key {_METADATA_KEY!r} is reserved for the nested "
+                        f"metadata column and only accepts a dict (the legacy "
+                        f"nested-producer shape); got {type(value).__name__} — "
+                        f"refusing the write rather than silently dropping the value"
+                    )
+                metadata.update(value)
+                continue
+            if key == _EMBEDDING_KEY:
+                raise SurrealStoreError(
+                    f"payload key {_EMBEDDING_KEY!r} is reserved for the vector "
+                    f"column; a chunker metadata key by this name would nest on "
+                    f"write and spuriously reappear top-level on read-merge — "
+                    f"refusing the write"
+                )
+            if key in _DECLARED_CHUNK_COLUMNS:
+                declared[key] = value
+            else:
+                metadata[key] = value
+        return declared, metadata
 
     async def upsert(self, records_with_vectors: Sequence[tuple[Record, list[float]]]) -> None:
         """Upsert ``(record, vector)`` pairs by their deterministic point id.
@@ -420,6 +631,195 @@ class SurrealStore:
                 {"id": record.point_id, "content": self._chunk_content(record, vector)},
             )
 
+    def replace_file_fragment(
+        self,
+        tier: str,
+        file_path: str,
+        records_with_vectors: Sequence[tuple[Record, list[float]]],
+    ) -> TxnFragment:
+        """Build the transaction fragment that atomically replaces a file's chunks.
+
+        A PURE builder (no I/O): it validates every vector's width and reshapes
+        each production-shaped payload into the schema's row shape at BUILD time —
+        so a wrong-width vector (:class:`VectorDimensionError`) or a reserved
+        metadata key (:class:`SurrealStoreError` from :meth:`_split_payload`) is
+        rejected LOUDLY here, before anything is composed or applied. The fragment
+        DELETEs every existing chunk of ``(tier, file_path)`` and UPSERTs the new
+        ones; composed into a single transaction (see :meth:`apply`) that DELETE +
+        UPSERT set is what makes a concurrent reader observe only the complete pre-
+        or post-replace state. Every param is namespaced with
+        :data:`CHUNK_FRAGMENT_PARAM_PREFIX` so it never collides with a sibling
+        producer's params in the merged transaction.
+
+        Args:
+            tier: The tier whose copy of the file is being replaced.
+            file_path: The file path being replaced.
+            records_with_vectors: The new ``(Record, vector)`` pairs (may be empty
+                — the DELETE still runs, purging any stale chunks).
+
+        Returns:
+            The chunk-replace :class:`TxnFragment` (a DELETE followed by the
+            per-record UPSERTs), carrying no ``BEGIN``/``COMMIT`` of its own.
+
+        Raises:
+            VectorDimensionError: Any vector is the wrong width (nothing is built).
+            SurrealStoreError: A payload carries a reserved key that cannot be
+                round-tripped faithfully.
+        """
+        self._validate_dimensions(records_with_vectors)
+        prefix = CHUNK_FRAGMENT_PARAM_PREFIX
+        tier_param, file_param = f"{prefix}tier", f"{prefix}file"
+        params: dict[str, Any] = {tier_param: tier, file_param: file_path}
+        statements = [
+            f"DELETE {CHUNK_TABLE} WHERE tier = ${tier_param} AND file_path = ${file_param}"
+        ]
+        for index, (record, vector) in enumerate(records_with_vectors):
+            id_param = f"{prefix}id{index}"
+            content_param = f"{prefix}content{index}"
+            params[id_param] = record.point_id
+            params[content_param] = self._chunk_content(record, vector)
+            statements.append(
+                f"UPSERT type::record('{CHUNK_TABLE}', ${id_param}) CONTENT ${content_param}"
+            )
+        return TxnFragment(statements=statements, params=params)
+
+    def delete_file_fragment(self, tier: str, file_path: str) -> TxnFragment:
+        """Build the fragment that purges every chunk of ``(tier, file_path)``.
+
+        The composable counterpart to :meth:`delete_by_file`, tier- and
+        file-scoped so a custom override of a community file purges only the named
+        tier's copy. A pair with no chunks composes to a harmless no-op DELETE.
+        """
+        prefix = CHUNK_FRAGMENT_PARAM_PREFIX
+        tier_param, file_param = f"{prefix}tier", f"{prefix}file"
+        return TxnFragment(
+            statements=[
+                f"DELETE {CHUNK_TABLE} WHERE tier = ${tier_param} AND file_path = ${file_param}"
+            ],
+            params={tier_param: tier, file_param: file_path},
+        )
+
+    def file_text_fragment(
+        self, tier: str, file_path: str, text: str, sha512: str
+    ) -> TxnFragment:
+        """Build the fragment that stores a file's VERBATIM body + its SHA-512.
+
+        The NEW ``file_text`` writer: the row is keyed by the SAME
+        ``[tier, file_path]`` composite id discipline the ``file`` manifest table
+        uses (via ``type::record``), so a tier override and the community original
+        of one path coexist rather than the second overwriting the first. UPSERT so
+        a re-index of the same path overwrites in place (idempotent). Params are
+        namespaced with :data:`FILE_TEXT_FRAGMENT_PARAM_PREFIX`.
+
+        A PURE builder (no I/O): ``text``'s UTF-8 byte length is checked against
+        :data:`FILE_TEXT_MAX_BYTES` at BUILD time, so an oversized body is
+        refused LOUDLY here, before anything is composed or applied.
+
+        Args:
+            tier: The tier the body belongs to.
+            file_path: The file path within the tier.
+            text: The verbatim source body to store unmodified.
+            sha512: The body's SHA-512 hex digest (shared with the manifest row —
+                never a hand-copied twin).
+
+        Returns:
+            The ``file_text`` UPSERT :class:`TxnFragment`.
+
+        Raises:
+            SurrealStoreError: ``text``'s UTF-8 byte length exceeds
+                :data:`FILE_TEXT_MAX_BYTES`.
+        """
+        body_bytes = len(text.encode("utf-8"))
+        if body_bytes > FILE_TEXT_MAX_BYTES:
+            raise SurrealStoreError(
+                f"file_text body for {file_path!r} is {body_bytes} bytes, "
+                f"exceeding the {FILE_TEXT_MAX_BYTES}-byte cap — refused before "
+                f"anything was composed or sent to the server"
+            )
+        prefix = FILE_TEXT_FRAGMENT_PARAM_PREFIX
+        id_param, content_param = f"{prefix}id", f"{prefix}content"
+        return TxnFragment(
+            statements=[
+                f"UPSERT type::record('{FILE_TEXT_TABLE}', ${id_param}) CONTENT ${content_param}"
+            ],
+            params={
+                id_param: [tier, file_path],
+                content_param: {_FILE_TEXT_TEXT_KEY: text, _FILE_TEXT_SHA_KEY: sha512},
+            },
+        )
+
+    def file_text_delete_fragment(self, tier: str, file_path: str) -> TxnFragment:
+        """Build the fragment that removes the ``file_text`` body of one path.
+
+        Tier-scoped like :meth:`file_text_fragment`; the composable counterpart a
+        full-file purge composes alongside the chunk / manifest / graph deletes.
+        """
+        prefix = FILE_TEXT_FRAGMENT_PARAM_PREFIX
+        id_param = f"{prefix}id"
+        return TxnFragment(
+            statements=[f"DELETE type::record('{FILE_TEXT_TABLE}', ${id_param})"],
+            params={id_param: [tier, file_path]},
+        )
+
+    async def apply(self, fragments: Sequence[TxnFragment]) -> None:
+        """Compose ``fragments`` into ONE transaction and run it atomically.
+
+        The correctness-critical heart of the per-file update: the store's OWN
+        signed-in connection runs a single ``BEGIN … COMMIT`` spanning every
+        producer's fragment (chunks + ``file_text`` body + manifest row + code
+        graph). Because a SurrealDB transaction is connection-scoped, running all
+        four producers' fragments through THIS connection is exactly what makes
+        the update atomic across all four tables — a concurrent reader on another
+        connection never observes a half-applied file, and one rejected statement
+        rolls the WHOLE thing back (the manifest/graph instances that produced the
+        fragments read the committed rows back over their own connections).
+
+        The composed transaction's size is logged (statement + param counts) and a
+        WARNING is emitted above :data:`~loremaster.store._txn.
+        TXN_STATEMENT_WARN_THRESHOLD` — the guard against an accidentally-huge
+        batch. Runs through the shared :func:`~loremaster.store._txn.
+        execute_transaction`, which verifies EVERY statement's status (never the
+        SDK's first-statement-only ``query()``) and self-heals a transport failure.
+
+        Args:
+            fragments: The producer fragments to apply as one transaction (at
+                least one — an empty apply names no work and raises ``ValueError``
+                from :func:`~loremaster.store._txn.compose`).
+
+        Raises:
+            ValueError: No fragments were given.
+            TxnParamCollisionError: Two fragments bound the same param name.
+            SurrealConnectionError: The server is unreachable or the socket died.
+            SurrealStoreError: The transaction was rejected/rolled back
+                server-side; nothing is left half-applied.
+        """
+        statement_text, merged_params = compose(*fragments)
+        statement_count = sum(len(fragment.statements) for fragment in fragments)
+        self._log_transaction_size(statement_count, len(merged_params))
+        await execute_transaction(
+            statement_text,
+            merged_params,
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+        )
+
+    @staticmethod
+    def _log_transaction_size(statement_count: int, param_count: int) -> None:
+        """Emit the transaction-size telemetry, WARNing above the ceiling.
+
+        A DEBUG record for a normal-sized transaction; a WARNING once the body
+        statement count crosses :data:`~loremaster.store._txn.
+        TXN_STATEMENT_WARN_THRESHOLD`, so a runaway batch is visible before it
+        strains the engine. Both records carry ``statement_count`` / ``param_count``
+        as structured fields.
+        """
+        extra = {"statement_count": statement_count, "param_count": param_count}
+        if statement_count > TXN_STATEMENT_WARN_THRESHOLD:
+            logger.warning("store.apply.large_transaction", extra=extra)
+        else:
+            logger.debug("store.apply.transaction", extra=extra)
+
     async def replace_file(
         self,
         tier: str,
@@ -428,14 +828,13 @@ class SurrealStore:
     ) -> None:
         """Atomically replace a file's chunks in a single transaction.
 
-        Deletes every existing chunk of ``(tier, file_path)`` and inserts the new
-        ones inside ONE ``BEGIN … COMMIT`` block, so a concurrent reader on
-        another connection only ever observes the complete pre- or post-replace
-        state — never an empty/partial window. Runs through the shared
-        :func:`~loremaster.store._txn.execute_transaction` (NOT a bare
-        ``self._query``), which inspects every statement's status and raises
-        :class:`SurrealStoreError` if the engine rolled the transaction back —
-        so a mid-transaction rejection can never be reported as a silent success.
+        The self-contained chunk writer, now expressed over the ONE
+        statement-producing path: it builds its :meth:`replace_file_fragment` and
+        runs it through :meth:`apply`, so there is no second, drifting copy of the
+        DELETE-then-UPSERT statement text. A concurrent reader on another
+        connection only ever observes the complete pre- or post-replace state, and
+        a mid-transaction rejection surfaces as a raised
+        :class:`SurrealStoreError` (never a silent success).
 
         Args:
             tier: The tier whose copy of the file is being replaced.
@@ -449,29 +848,7 @@ class SurrealStore:
                 server-side (e.g. a type-coercion failure); nothing is left
                 half-applied.
         """
-        self._validate_dimensions(records_with_vectors)
-        tier_param, file_param = "__tier", "__file"
-        params: dict[str, Any] = {tier_param: tier, file_param: file_path}
-        statements = [
-            "BEGIN",
-            f"DELETE {CHUNK_TABLE} WHERE tier = ${tier_param} AND file_path = ${file_param}",
-        ]
-        for index, (record, vector) in enumerate(records_with_vectors):
-            id_param = f"__id{index}"
-            content_param = f"__content{index}"
-            params[id_param] = record.point_id
-            params[content_param] = self._chunk_content(record, vector)
-            statements.append(
-                f"UPSERT type::record('{CHUNK_TABLE}', ${id_param}) CONTENT ${content_param}"
-            )
-        statements.append("COMMIT")
-        await execute_transaction(
-            ";\n".join(statements) + ";",
-            params,
-            acquire=self._ensure_connection,
-            drop=self._drop_connection,
-            url=self._url,
-        )
+        await self.apply([self.replace_file_fragment(tier, file_path, records_with_vectors)])
 
     # -- deletes ------------------------------------------------------------
 
@@ -480,12 +857,11 @@ class SurrealStore:
 
         Scoped to the ``(tier, file_path)`` pair, so a custom override of a
         community file purges only the named tier's copy. A pair with no chunks
-        is a harmless no-op.
+        is a harmless no-op. Expressed over the ONE statement-producing path:
+        it composes its :meth:`delete_file_fragment` through :meth:`apply` rather
+        than carrying a second, drifting copy of the DELETE text.
         """
-        await self._query(
-            f"DELETE {CHUNK_TABLE} WHERE tier = $tier AND file_path = $file_path",
-            {"tier": tier, "file_path": file_path},
-        )
+        await self.apply([self.delete_file_fragment(tier, file_path)])
 
     async def delete_by_tier(self, tier: str) -> None:
         """Purge every chunk in ``tier`` — the per-tier rebuild primitive.
@@ -559,7 +935,8 @@ class SurrealStore:
             statement += f" WHERE {where}"
         statement += f" LIMIT ${_LIMIT_PARAM}"
         params[_LIMIT_PARAM] = limit
-        return self._as_rows(await self._query(statement, params))
+        rows = self._as_rows(await self._query(statement, params))
+        return [self._normalize_row(row) for row in rows]
 
     async def hybrid_search(
         self,
@@ -781,6 +1158,36 @@ class SurrealStore:
             return []
         return [row for row in result if isinstance(row, dict)]
 
+    @staticmethod
+    def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
+        """Reconcile an internal row back to the canonical production shape.
+
+        The read-side mirror of :meth:`_split_payload`: spreads the
+        ``metadata`` column's contents top-level and drops the wrapper key,
+        so every returned row/payload matches exactly what
+        ``records.chunk_to_record`` would have produced — no ``"metadata"``
+        key ever survives to a caller. On a name collision (only reachable
+        from adversarial/legacy input — a faithful write via
+        :meth:`_chunk_content` can never produce one, since a declared
+        column's value is never also duplicated into the metadata bucket),
+        the declared column's own value wins.
+
+        Args:
+            row: A raw row/payload as stored (may carry ``id``/other SDK
+                fields alongside the chunk columns and ``metadata``).
+
+        Returns:
+            ``row`` with ``metadata``'s contents merged top-level and the
+            ``"metadata"`` key itself removed.
+        """
+        metadata = row.get(_METADATA_KEY)
+        rest = {key: value for key, value in row.items() if key != _METADATA_KEY}
+        if isinstance(metadata, dict) and metadata:
+            # ``rest`` is applied LAST so a declared column's real value wins
+            # over a same-named metadata key on the (adversarial-only) clash.
+            return {**metadata, **rest}
+        return rest
+
     def _to_candidates(self, result: Any) -> list[Candidate]:
         """Turn fused ``search::rrf`` rows into neutral :class:`Candidate`s.
 
@@ -791,11 +1198,13 @@ class SurrealStore:
         """
         candidates: list[Candidate] = []
         for row in self._as_rows(result):
-            payload = {
-                field: value
-                for field, value in row.items()
-                if field not in (_ID_KEY, _RRF_SCORE_KEY)
-            }
+            payload = self._normalize_row(
+                {
+                    field: value
+                    for field, value in row.items()
+                    if field not in (_ID_KEY, _RRF_SCORE_KEY)
+                }
+            )
             candidates.append(
                 Candidate(
                     key=self._bare_id(row.get(_ID_KEY)),

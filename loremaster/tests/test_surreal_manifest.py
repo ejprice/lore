@@ -94,6 +94,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -116,8 +117,14 @@ from loremaster.index.surreal_manifest import (
     STATE_INDEXED,
     SurrealManifest,
 )
-from loremaster.store.surreal import _CONNECTION_ERRORS, SurrealConnectionError, SurrealStoreError
-from loremaster.store.surreal_schema import FILE_STATES
+from loremaster.store.surreal import (
+    _CONNECTION_ERRORS,
+    SurrealConnectionError,
+    SurrealStoreError,
+    _SurrealConnection,
+)
+from loremaster.store.surreal_schema import FILE_STATES, FILE_TABLE, generate_manifest_ddl
+from surrealdb import AsyncSurreal as _RealAsyncSurreal
 
 # A port with nothing listening — the "server is down" adversary (same dead
 # port ``test_surreal_store.py`` uses, so a shared firewall/port-reservation
@@ -1010,3 +1017,224 @@ class TestMidLifeConnectionRecovery:
         recovered = await call_until_recovered(_replace, _HEALABLE_ERRORS, label="manifest")
         assert recovered is not None
         assert recovered.chunk_ids == new_ids
+
+
+# ---------------------------------------------------------------------------
+# P5-C1c (SurrealDB docs-audit, ledger #28), hardening #1: ``ensure_ready``
+# must be LOUD on ANY failing DDL statement, not just the first — mirrors
+# ``test_surreal_store.py``'s identical concern (the SAME SDK gap: ``query()``
+# validates only the first statement of a multi-statement string). See that
+# file's matching section for the live-verified proof that the invalid
+# statement below fails at EXECUTION (not parse) and every statement after it
+# still applies while ``query()`` raises nothing.
+# ---------------------------------------------------------------------------
+
+# The ghost index/field names the invalid DDL statement below references.
+_GHOST_INDEX_NAME = "ghost_idx_probe"
+_GHOST_FIELD_NAME = "ghost_field_xyz_probe"
+
+
+def _invalid_ddl_statement(table: str) -> str:
+    """A syntactically valid ``DEFINE INDEX`` that 3.1.5 rejects AT EXECUTION.
+
+    Indexing a field never ``DEFINE FIELD``'d on ``table`` parses cleanly but
+    fails when the engine tries to build the index (verified live:
+    ``status: "ERR"``, ``"The field '<field>' does not exist"``), while
+    ``query()`` raises nothing and the ghost index is confirmed absent
+    afterward.
+    """
+    return (
+        f"DEFINE INDEX IF NOT EXISTS {_GHOST_INDEX_NAME} ON {table} "
+        f"FIELDS {_GHOST_FIELD_NAME}"
+    )
+
+
+def _ddl_with_late_invalid_statement(ddl: str, table: str) -> str:
+    """Splice :func:`_invalid_ddl_statement` into the MIDDLE of a real DDL string.
+
+    A middle position proves the SDK's first-statement-only check misses a
+    failure ANYWHERE downstream of the first statement.
+    """
+    statements = [stmt.strip() for stmt in ddl.strip().split(";\n") if stmt.strip()]
+    middle_index = len(statements) // 2
+    statements.insert(middle_index, _invalid_ddl_statement(table))
+    return ";\n".join(statements) + ";\n"
+
+
+class TestEnsureReadyRaisesOnLateDdlFailure:
+    """P5-C1c hardening #1: a LATER DDL statement's rejection must surface.
+
+    LOAD-BEARING: must FAIL RED against current code — ``ensure_ready``
+    applies ``generate_manifest_ddl()`` via a bare ``connection.query(ddl)``
+    call, which inspects only the first statement and swallows a later
+    ``ERR`` completely.
+    """
+
+    async def test_ensure_ready_raises_on_a_semantically_invalid_late_ddl_statement(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        # Arrange: the REAL manifest DDL, poisoned mid-way through.
+        real_ddl = generate_manifest_ddl()
+        poisoned_ddl = _ddl_with_late_invalid_statement(real_ddl, FILE_TABLE)
+
+        def _poisoned_generate_manifest_ddl() -> str:
+            return poisoned_ddl
+
+        monkeypatch.setattr(
+            "loremaster.index.surreal_manifest.generate_manifest_ddl",
+            _poisoned_generate_manifest_ddl,
+        )
+        broken_manifest = SurrealManifest(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+
+        try:
+            # Act / Assert: a domain/schema rejection — the transport is
+            # healthy — must surface as a STORE error, never a silent success.
+            with pytest.raises(SurrealStoreError) as exc_info:
+                await broken_manifest.ensure_ready()
+            assert type(exc_info.value) is SurrealStoreError
+            assert not isinstance(exc_info.value, SurrealConnectionError)
+            assert broken_manifest._connection is not None
+        finally:
+            await broken_manifest.close()
+
+
+# ---------------------------------------------------------------------------
+# P5-C1c, hardening #2: ``_drop_connection`` must be a compare-and-swap, not
+# an unconditional null — mirrors ``test_surreal_store.py``'s identical
+# concern for ``SurrealManifest``'s own connection-lifecycle seam.
+# ---------------------------------------------------------------------------
+
+
+def _plain_counting_connection_factory() -> tuple[Callable[[str], Any], Callable[[], int]]:
+    """A drop-in ``AsyncSurreal`` replacement that COUNTS every real connection
+    it opens — no artificial signin delay, since this test drives its callers
+    SEQUENTIALLY (no concurrent race to widen).
+
+    Returns:
+        ``(factory, get_call_count)``.
+    """
+    call_count = 0
+
+    def factory(url: str) -> Any:
+        nonlocal call_count
+        call_count += 1
+        return _RealAsyncSurreal(url)
+
+    return factory, lambda: call_count
+
+
+class TestDropConnectionCompareAndSwap:
+    """P5-C1c hardening #2: dropping a STALE connection must never touch a
+    fresher, live one.
+
+    LOAD-BEARING: must FAIL RED against current code — ``_drop_connection``
+    nulls ``self._connection`` unconditionally, with no check that the
+    connection it was handed is still the live one.
+    """
+
+    async def test_dropping_a_stale_connection_after_a_reconnect_leaves_the_live_one_intact(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        factory, get_call_count = _plain_counting_connection_factory()
+        monkeypatch.setattr("loremaster.index.surreal_manifest.AsyncSurreal", factory)
+        fresh_manifest = SurrealManifest(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+        try:
+            # connection A, then simulate an EARLIER self-heal that already
+            # replaced it with connection B (bypassing ``_drop_connection``
+            # directly, so the STALE reference to A survives independently).
+            stale_connection = await fresh_manifest._ensure_connection()
+            assert get_call_count() == 1
+            # cast: keep mypy at the declared union (bare None narrows the
+            # attribute for the rest of the block -> false 'unreachable').
+            fresh_manifest._connection = cast("_SurrealConnection | None", None)
+            live_connection = await fresh_manifest._ensure_connection()
+            assert get_call_count() == 2
+            assert live_connection is not stale_connection
+
+            # Act: a LATE caller drops the STALE connection A — AFTER B is
+            # already the live, cached handle.
+            await fresh_manifest._drop_connection(stale_connection)
+
+            # Assert: B survives untouched.
+            assert fresh_manifest._connection is live_connection
+
+            # And the manifest keeps working by REUSING B — no third
+            # connection opened.
+            await fresh_manifest.ensure_ready()
+            assert get_call_count() == 2
+            assert fresh_manifest._connection is live_connection
+        finally:
+            await fresh_manifest.close()
+
+
+# ---------------------------------------------------------------------------
+# P5-C1c, hardening #3 (SurrealDB docs-audit follow-up, ledger #28): a raw SDK
+# routing ``KeyError`` must be classified as a connection fault — mirrors
+# ``test_surreal_store.py``'s identical ``_query`` seam (see that file's
+# module note for the live-probed root cause: an in-flight query on a dropped
+# socket surfaces ``builtins.KeyError(<request-uuid>)`` from the SDK's own
+# response routing, never ``_CONNECTION_ERRORS``, and the SCOPING note on why
+# classifying it here cannot misclassify a KeyError from our own code).
+# ---------------------------------------------------------------------------
+
+_SDK_ROUTING_KEY_ERROR_TOKEN = "3fae6a02-9c1e-4c1b-8f3a-77c2e4a9b001"
+
+
+class TestQuerySeamSdkKeyErrorClassification:
+    """P5-C1c hardening #3: a KeyError raised BY THE SDK CALL ITSELF inside
+    ``_query`` must surface as ``SurrealConnectionError`` and self-heal.
+
+    LOAD-BEARING: must FAIL RED against current code — ``_query``'s except
+    clause only catches ``_CONNECTION_ERRORS``; ``KeyError`` propagates
+    completely untyped today.
+    """
+
+    async def test_sdk_routing_key_error_surfaces_as_connection_error_and_heals(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        factory, get_call_count = _plain_counting_connection_factory()
+        monkeypatch.setattr("loremaster.index.surreal_manifest.AsyncSurreal", factory)
+        live_manifest = SurrealManifest(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+        try:
+            await live_manifest.ensure_ready()
+            assert get_call_count() == 1
+            broken_connection = live_manifest._connection
+            assert broken_connection is not None
+
+            # A deterministic stand-in for the SDK's own response-routing
+            # failure (see the module note above) — patched on the LIVE
+            # connection INSTANCE itself.
+            async def _raise_routing_key_error(*args: object, **kwargs: object) -> Any:
+                raise KeyError(_SDK_ROUTING_KEY_ERROR_TOKEN)
+
+            monkeypatch.setattr(broken_connection, "query", _raise_routing_key_error)
+
+            # Act / Assert: the raw KeyError must surface as a typed
+            # SurrealConnectionError (never bare) AND drop the connection.
+            with pytest.raises(SurrealConnectionError):
+                await live_manifest.all_files()
+            assert live_manifest._connection is None
+
+            # Recovery: the NEXT call reconnects — exactly one NEW connection.
+            assert await live_manifest.all_files() == []
+            assert get_call_count() == 2
+        finally:
+            await live_manifest.close()

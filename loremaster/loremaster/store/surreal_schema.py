@@ -71,16 +71,14 @@ REFERS_RELATION = "refers"
 ANSWERS_TO_RELATION = "answers_to"
 
 # The plain SCHEMAFULL tables the plan requires to exist but that carry no
-# field-level probe in the P2 contract. Neither ``trace`` nor ``meta`` are here
-# — ``trace`` grows two audited optional columns below, ``meta`` grows its
-# ``k``/``v`` fields (P3, the ``SurrealManifest`` port) — the rest are
-# structural placeholders whose fields land in a later phase.
-_STRUCTURAL_TABLES = (
-    SNAPSHOT_TABLE,
-    SNAPSHOT_ENTRY_TABLE,
-    FINDING_TABLE,
-    COMMAND_TABLE,
-)
+# field-level probe yet. ``snapshot``/``snapshot_entry``/``command`` were
+# promoted to full field-level definitions in P5-C1b (see
+# ``_snapshot_statements`` / ``_snapshot_entry_statements`` /
+# ``_command_statements`` below); ``finding`` stays a bare placeholder until
+# P9. Neither ``trace`` nor ``meta`` are here either — ``trace`` grows two
+# audited optional columns below, ``meta`` grows its ``k``/``v`` fields (P3,
+# the ``SurrealManifest`` port).
+_STRUCTURAL_TABLES = (FINDING_TABLE,)
 
 # The closed domain a ``file.state`` may take — a file is exactly one of these at
 # any time. An out-of-domain state is rejected by the field ASSERT, so the
@@ -148,6 +146,15 @@ _CHUNK_VECTOR_FIELD = "embedding"
 # Default for the audited ``memory.importance`` column (a by-kind default lands
 # in a later phase; a uniform prior for now).
 _MEMORY_DEFAULT_IMPORTANCE = 0.8
+
+# The closed status domain a ``command`` row moves through: enqueued
+# (``pending``), successfully applied (``done``), or terminally failed
+# (``failed``). An out-of-domain status is rejected by the field ASSERT, just
+# like :data:`FILE_STATES` guards ``file.state``.
+_COMMAND_STATUS_PENDING = "pending"
+_COMMAND_STATUS_DONE = "done"
+_COMMAND_STATUS_FAILED = "failed"
+_COMMAND_STATUSES = (_COMMAND_STATUS_PENDING, _COMMAND_STATUS_DONE, _COMMAND_STATUS_FAILED)
 
 # ---------------------------------------------------------------------------
 # Code-graph (S13 Model A) field specs — the single source of truth for
@@ -368,6 +375,91 @@ def _trace_statements() -> list[str]:
     ]
 
 
+def _snapshot_statements() -> list[str]:
+    """The ``snapshot`` table: one row per full-project index generation.
+
+    ``git_ref``/``git_branch`` are ``option<string>`` because a non-git
+    (tarball-imported) codebase never has a commit/branch to record;
+    ``created_at`` self-stamps via ``DEFAULT time::now()`` so a writer never
+    has to compute the timestamp itself.
+    """
+    return [
+        _define_table(SNAPSHOT_TABLE),
+        _define_field(SNAPSHOT_TABLE, "created_at", "datetime", constraint="DEFAULT time::now()"),
+        _define_field(SNAPSHOT_TABLE, "git_ref", "option<string>"),
+        _define_field(SNAPSHOT_TABLE, "git_branch", "option<string>"),
+        _define_field(SNAPSHOT_TABLE, "files_total", "int"),
+        _define_field(SNAPSHOT_TABLE, "chunks_total", "int"),
+    ]
+
+
+def _snapshot_entry_statements() -> list[str]:
+    """The ``snapshot_entry`` table: one row per file captured by a ``snapshot``.
+
+    ``snapshot`` is a real ``record<snapshot>`` link (not a bare id string) so
+    a reader can ``FETCH``/dot-traverse straight to the parent row.
+    ``chunk_hashes`` is a ``FLEXIBLE`` array of ``{identity, hash}`` objects — a
+    per-chunk identity/digest pair a snapshot-diff scan needs to detect a
+    changed chunk without re-reading its whole body. Live-verified dialect
+    quirk (3.1.5): a bare ``array<object> FLEXIBLE`` outer type still enforces
+    strict per-index nested-field paths (``chunk_hashes[1].hash`` etc.) unless
+    the two known keys are ALSO given their own bracket-wildcard
+    (``chunk_hashes[*].<key>``) field definitions — with those present,
+    ``FLEXIBLE`` on the outer field still tolerates any additional,
+    undeclared key an object may carry. The plain (non-UNIQUE) index on
+    ``snapshot`` backs a purge/diff scan by parent; it must stay non-unique
+    since many entries legitimately share one snapshot.
+    """
+    return [
+        _define_table(SNAPSHOT_ENTRY_TABLE),
+        _define_field(SNAPSHOT_ENTRY_TABLE, "snapshot", f"record<{SNAPSHOT_TABLE}>"),
+        _define_field(SNAPSHOT_ENTRY_TABLE, "tier", "string"),
+        _define_field(SNAPSHOT_ENTRY_TABLE, "file_path", "string"),
+        _define_field(SNAPSHOT_ENTRY_TABLE, "sha512", "string"),
+        _define_field(SNAPSHOT_ENTRY_TABLE, "chunk_hashes", "array<object> FLEXIBLE"),
+        _define_field(SNAPSHOT_ENTRY_TABLE, "chunk_hashes[*].identity", "string"),
+        _define_field(SNAPSHOT_ENTRY_TABLE, "chunk_hashes[*].hash", "string"),
+        _plain_index(SNAPSHOT_ENTRY_TABLE, f"{SNAPSHOT_ENTRY_TABLE}_snapshot", ("snapshot",)),
+    ]
+
+
+def _command_statements() -> list[str]:
+    """The ``command`` table: the scout-enqueued work-item queue.
+
+    ``kind`` is a required, non-empty ``string`` — non-empty SEMANTICALLY: the
+    trim-aware ``ASSERT`` rejects whitespace-only values (which name no command
+    any subscriber could dispatch on) as loudly as the exact empty string,
+    while the plain, non-``option`` type rejects an entirely missing one.
+    ``payload`` is a ``FLEXIBLE`` object defaulting to ``{}`` so a caller
+    may omit it for a payload-less command. ``status`` defaults to
+    :data:`_COMMAND_STATUS_PENDING` and is constrained to
+    :data:`_COMMAND_STATUSES`, mirroring how :data:`FILE_STATES` guards
+    ``file.state``. The index on ``status`` backs the scout's poll-fallback
+    query for outstanding work.
+    """
+    allowed = ", ".join(f"'{status}'" for status in _COMMAND_STATUSES)
+    return [
+        _define_table(COMMAND_TABLE),
+        _define_field(
+            COMMAND_TABLE,
+            "kind",
+            "string",
+            constraint="ASSERT string::len(string::trim($value)) > 0",
+        ),
+        _define_field(COMMAND_TABLE, "payload", "object FLEXIBLE", constraint="DEFAULT {}"),
+        _define_field(COMMAND_TABLE, "created_at", "datetime", constraint="DEFAULT time::now()"),
+        _define_field(
+            COMMAND_TABLE,
+            "status",
+            "string",
+            constraint=f"DEFAULT '{_COMMAND_STATUS_PENDING}' ASSERT $value IN [{allowed}]",
+        ),
+        _define_field(COMMAND_TABLE, "processed_at", "option<datetime>"),
+        _define_field(COMMAND_TABLE, "error", "option<string>"),
+        _plain_index(COMMAND_TABLE, f"{COMMAND_TABLE}_status", ("status",)),
+    ]
+
+
 def _code_node_statements() -> list[str]:
     """The ``code_node`` table: fields + the bare/qualified/(tier,file) indexes.
 
@@ -459,7 +551,11 @@ def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str
     statements += _memory_statements(dim, analyzer_name)
     statements += _trace_statements()
     statements += _meta_statements()
-    # The remaining plan tables exist structurally; their fields land later.
+    statements += _snapshot_statements()
+    statements += _snapshot_entry_statements()
+    statements += _command_statements()
+    # ``finding`` still has no field-level probe (P9 scope); it stays a bare
+    # SCHEMAFULL placeholder.
     statements += [_define_table(table) for table in _STRUCTURAL_TABLES]
     return ";\n".join(statements) + ";\n"
 

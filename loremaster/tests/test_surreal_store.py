@@ -41,12 +41,15 @@ loremaster.store.surreal`` / ``loremaster.store.candidate``.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
 from _surreal_harness import (
     PRODUCTION_DIM,
+    SLUG,
     TIER_A,
     TIER_B,
     SurrealEnv,
@@ -55,7 +58,10 @@ from _surreal_harness import (
     surreal_env,  # noqa: F401 - re-exported pytest fixture
     unit_vector,
 )
-from loremaster.index.records import Record
+from loremaster.graph_surreal import SurrealCodeGraph
+from loremaster.index.records import Record, chunk_to_record, sha512_hex
+from loremaster.index.surreal_manifest import SurrealManifest
+from loremaster.store._txn import execute_transaction
 from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import (
     _CONNECTION_ERRORS,
@@ -63,9 +69,13 @@ from loremaster.store.surreal import (
     SurrealStore,
     SurrealStoreError,
     VectorDimensionError,
+    _SurrealConnection,
 )
+from loremaster.store.surreal_schema import CHUNK_TABLE, generate_ddl
 from loremaster.symbols import _SCROLL_LIMIT  # the real scroll caller's read cap
+from lorescribe.models import Chunk
 from pydantic import ValidationError
+from surrealdb import AsyncSurreal as _RealAsyncSurreal
 
 # A factory (yielded by the ``two_stores`` fixture) that builds one more ready
 # store on the SAME database — a second live connection for the isolation test.
@@ -383,8 +393,15 @@ class TestHybridSearch:
         assert hit.payload["source_text"] == body
 
     async def test_large_metadata_payload_round_trips(self, store: SurrealStore) -> None:
-        # A production long-tail row: a big nested FLEXIBLE metadata blob must
-        # survive intact through the store's serialization.
+        # A production long-tail row: a big metadata blob must survive intact
+        # through the store's serialization. The INPUT still uses the
+        # harness's legacy nested-``metadata``-key producer shape
+        # (``chunk_record()`` migrates in a later REFACTOR, not here), but
+        # the reconciled READ-BACK contract is canonical regardless of
+        # producer shape: every attribute key comes back TOP-LEVEL, and the
+        # returned row carries NO ``"metadata"`` wrapper key at all — the
+        # same canonical shape ``TestMetadataShapeReconciliation`` pins for
+        # the modern ``chunk_to_record``-flattened producer shape.
         dim = PRODUCTION_DIM
         big_metadata = {
             f"attr_{i}": {"nested": list(range(20)), "text": "x" * 500} for i in range(50)
@@ -395,8 +412,11 @@ class TestHybridSearch:
         await store.upsert([(record, unit_vector(0, dim))])
         rows = await store.scroll({"file_path": "models/big.py"}, limit=_READ_ALL)
         assert len(rows) == 1
-        assert rows[0]["metadata"]["attr_0"]["nested"] == list(range(20))
-        assert rows[0]["metadata"]["attr_49"]["text"] == "x" * 500
+        # Canonical API-boundary shape: no "metadata" wrapper key survives —
+        # every attribute is promoted to a top-level key on read-back.
+        assert "metadata" not in rows[0]
+        assert rows[0]["attr_0"]["nested"] == list(range(20))
+        assert rows[0]["attr_49"]["text"] == "x" * 500
 
 
 class TestCount:
@@ -1026,3 +1046,775 @@ class TestQueryTextEdgeCases:
         )
         assert len(results) == 1  # exactly the boundary k
         assert results[0].key == target.point_id  # the BM25+vector best
+
+
+# ---------------------------------------------------------------------------
+# P5-C1a, concern 1 (P2-audit S5): the connect-lock race.
+#
+# ``_ensure_connection`` on ALL THREE lazily-connecting classes
+# (``SurrealStore``, ``SurrealManifest``, ``SurrealCodeGraph``) is a bare
+# check-then-set: ``if self._connection is not None: return ...`` followed by
+# an ``await``-laden connect+signin sequence before ``self._connection =
+# connection`` is ever assigned. N concurrent FIRST callers on a freshly
+# constructed instance therefore all pass the check before any of them
+# finishes connecting, each opening its OWN underlying SDK connection — a
+# resource leak (N-1 sockets abandoned) that also wastes N signin round trips
+# at process/request startup, when exactly one connection is needed.
+# ---------------------------------------------------------------------------
+
+# The number of concurrent first-callers racing a fresh instance — enough to
+# make a check-then-set race land reliably (matches this suite's other
+# "prove concurrency correctness" probes, e.g. the snapshot-isolation loop).
+_RACE_CONCURRENT_CALLERS = 8
+
+# A small artificial delay inserted into the wrapped connection's ``signin``
+# so ALL ``_RACE_CONCURRENT_CALLERS`` coroutines are guaranteed to pass the
+# ``self._connection is not None`` check before any of them completes and
+# assigns — forcing the interleave deterministically rather than depending on
+# incidental localhost network timing (which could vary by host/load and make
+# the RED demonstration flaky).
+_RACE_SIGNIN_DELAY_SECONDS = 0.02
+
+
+def _counting_connection_factory() -> tuple[Callable[[str], Any], Callable[[], int]]:
+    """A drop-in replacement for the SDK's ``AsyncSurreal`` constructor that
+    COUNTS every real connection it opens.
+
+    Wraps the REAL ``AsyncSurreal(url)`` (preserving behaviour — the returned
+    object is a genuine, working connection against the live server) and
+    delays its ``signin`` by :data:`_RACE_SIGNIN_DELAY_SECONDS` so a batch of
+    concurrently-scheduled callers all reach their own ``AsyncSurreal(url)``
+    construction (and thus increment the counter) before ANY of them
+    completes signin and could assign ``self._connection`` — the
+    deterministic check-then-set race window the class docstrings below pin.
+
+    Returns:
+        ``(factory, get_call_count)`` — the callable to monkeypatch in for
+        ``AsyncSurreal``, and a zero-arg accessor for the running count of
+        distinct connections it has constructed.
+    """
+    call_count = 0
+
+    def factory(url: str) -> Any:
+        nonlocal call_count
+        call_count += 1
+        connection = _RealAsyncSurreal(url)
+        original_signin = connection.signin
+
+        async def delayed_signin(credentials: dict[str, Any]) -> Any:
+            await asyncio.sleep(_RACE_SIGNIN_DELAY_SECONDS)
+            return await original_signin(credentials)
+
+        connection.signin = delayed_signin  # type: ignore[assignment, method-assign]
+        return connection
+
+    return factory, lambda: call_count
+
+
+class TestConnectionRaceSingleConnect:
+    """P2-audit S5: a fresh instance's lazy connect must open exactly ONE
+    underlying SDK connection under N concurrent first-callers — for EACH of
+    the three lazily-connecting classes (``SurrealStore``, ``SurrealManifest``,
+    ``SurrealCodeGraph``), which all share the identical check-then-set
+    ``_ensure_connection`` idiom (verified by reading each class's source).
+
+    LOAD-BEARING: every case here must FAIL RED against current code — the
+    bare ``if self._connection is not None`` check has no lock, so N
+    concurrently-scheduled first callers all pass it before any of them
+    finishes connecting and assigns, each opening its own connection.
+    """
+
+    async def test_surreal_store_opens_exactly_one_connection_under_concurrent_first_use(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        # Arrange: a FRESH store (never connected) with the connection
+        # factory it will call wrapped to count + deterministically widen
+        # the race window.
+        factory, get_call_count = _counting_connection_factory()
+        monkeypatch.setattr("loremaster.store.surreal.AsyncSurreal", factory)
+        fresh_store = SurrealStore(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            dim=surreal_env.dim,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+
+        # Act: N concurrent first-callers racing the SAME fresh instance.
+        try:
+            results = await asyncio.gather(
+                *(fresh_store._ensure_connection() for _ in range(_RACE_CONCURRENT_CALLERS))
+            )
+        finally:
+            await fresh_store.close()
+
+        # Assert: every racing caller still gets a usable, signed-in
+        # connection back — the race is about HOW MANY connections get
+        # opened, not the correctness of any individual caller's result.
+        assert len(results) == _RACE_CONCURRENT_CALLERS
+        assert get_call_count() == 1, (
+            f"expected exactly one underlying connection, got {get_call_count()} — "
+            "the check-then-set race let concurrent first-callers each open their own"
+        )
+
+    async def test_surreal_manifest_opens_exactly_one_connection_under_concurrent_first_use(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        factory, get_call_count = _counting_connection_factory()
+        monkeypatch.setattr("loremaster.index.surreal_manifest.AsyncSurreal", factory)
+        fresh_manifest = SurrealManifest(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+
+        try:
+            results = await asyncio.gather(
+                *(fresh_manifest._ensure_connection() for _ in range(_RACE_CONCURRENT_CALLERS))
+            )
+        finally:
+            await fresh_manifest.close()
+
+        assert len(results) == _RACE_CONCURRENT_CALLERS
+        assert get_call_count() == 1, (
+            f"expected exactly one underlying connection, got {get_call_count()} — "
+            "the check-then-set race let concurrent first-callers each open their own"
+        )
+
+    async def test_surreal_code_graph_opens_exactly_one_connection_under_concurrent_first_use(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        factory, get_call_count = _counting_connection_factory()
+        monkeypatch.setattr("loremaster.graph_surreal.AsyncSurreal", factory)
+        fresh_graph = SurrealCodeGraph(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            user=surreal_env.user,
+            password=surreal_env.password,
+            tier_roots={},
+            project_roots=[],
+        )
+
+        try:
+            results = await asyncio.gather(
+                *(fresh_graph._ensure_connection() for _ in range(_RACE_CONCURRENT_CALLERS))
+            )
+        finally:
+            await fresh_graph.close()
+
+        assert len(results) == _RACE_CONCURRENT_CALLERS
+        assert get_call_count() == 1, (
+            f"expected exactly one underlying connection, got {get_call_count()} — "
+            "the check-then-set race let concurrent first-callers each open their own"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P5-C1a, concern 2: metadata-shape reconciliation.
+#
+# ``records.chunk_to_record`` — the REAL, production translator every indexed
+# chunk goes through — spreads a chunk's ``metadata`` dict TOP-LEVEL into the
+# record payload (``**dict(chunk.metadata)``); it never nests it under a
+# ``"metadata"`` key (see ``records.py``). The store's public API boundary
+# must speak that SAME top-level shape in both directions: what goes in via
+# ``upsert``/``replace_file`` must come back byte-equal (per key) from
+# ``scroll`` and ``hybrid_search`` — regardless of whatever internal row
+# shape the store chooses to persist it as.
+# ---------------------------------------------------------------------------
+
+# A representative source body for the metadata-shape tests — real Odoo-style
+# domain code, not a placeholder.
+_METADATA_TEST_SOURCE = (
+    "def action_confirm(self):\n"
+    "    for order in self:\n"
+    "        order._check_stock_level()\n"
+    "        order.write({'state': 'purchase'})\n"
+    "    return True\n"
+)
+
+
+def _production_metadata(*, ident_text: str) -> dict[str, Any]:
+    """A representative chunker metadata payload: nested dict, list, string,
+    int and bool values — the actual shape a real chunker attaches, not a
+    convenience synthetic chosen because the arithmetic comes out clean.
+
+    ``ident_text`` is included because the ``chunk`` schema declares it a
+    REQUIRED (non-``option``) top-level column
+    (``surreal_schema._CHUNK_FIELD_SPECS``) that ``records.chunk_to_record``
+    itself never populates — a real producer stamps it into
+    ``Chunk.metadata`` before translation, which ``chunk_to_record``'s
+    documented top-level spread then promotes to a first-class field. Using
+    it here is not a test workaround; it is the only channel that exists
+    today for that column, exercised exactly as production would use it.
+    """
+    return {
+        "ident_text": ident_text,
+        "docstring": "Confirm the purchase order and post the linked account move.",
+        "decorators": ["api.model", "api.depends('state')"],
+        "complexity": 7,
+        "is_property": False,
+        "signature": {"args": ["self"], "returns": "bool"},
+        "call_sites": ["sale_order.py:88", "stock_picking.py:142"],
+    }
+
+
+def _production_record(
+    *,
+    tier: str,
+    file_path: str,
+    identity: str,
+    metadata: dict[str, Any],
+    chunk_type: str = "python_symbol",
+    source_text: str = _METADATA_TEST_SOURCE,
+    slug: str = SLUG,
+) -> Record:
+    """Build a chunk :class:`Record` via the REAL ``records.chunk_to_record``.
+
+    Unlike the harness's ``chunk_record()`` (which stamps the PLACEHOLDER
+    nested-``metadata`` shape), this goes through the SAME production
+    translator ``indexer.py`` calls, so the resulting :class:`Record` payload
+    is byte-identical in shape to what a real indexing run would upsert —
+    the exact producer to consumer seam this contract pins.
+    """
+    chunk = Chunk(
+        chunk_type=chunk_type,
+        source_text=source_text,
+        identity=identity,
+        line_start=1,
+        line_end=source_text.count("\n") + 1,
+        metadata=metadata,
+    )
+    return chunk_to_record(
+        chunk,
+        slug=slug,
+        tier=tier,
+        file_path=file_path,
+        content_hash=sha512_hex(source_text),
+        mtime_ns=time.time_ns(),
+    )
+
+
+class TestMetadataShapeReconciliation:
+    """P5-C1a, concern 2: the store's public API boundary speaks the SAME
+    production payload shape ``records.chunk_to_record`` produces — chunker
+    metadata keys spread top-level, no ``"metadata"`` wrapper key — in BOTH
+    directions (write via ``upsert``/``replace_file``, read via
+    ``scroll``/``hybrid_search``).
+
+    LOAD-BEARING: every case here must FAIL RED against current code. The
+    ``chunk`` table's SCHEMAFULL ``metadata`` column is a REQUIRED (non-
+    ``option``) ``object FLEXIBLE`` field (``surreal_schema._CHUNK_FIELD_
+    SPECS``) that a real ``chunk_to_record`` payload never populates (it has
+    no ``"metadata"`` key at all — see the module note above); today's
+    ``SurrealStore._chunk_content`` passes ``record.payload`` straight
+    through as ``CONTENT``, so the engine rejects the write outright
+    (verified live: ``Couldn't coerce value for field 'metadata' ...
+    Expected object but found NONE``) — the store cannot persist a real
+    production-shaped chunk at all today, not merely lose a few of its keys.
+    """
+
+    async def test_upsert_scroll_round_trips_production_shaped_metadata_top_level(
+        self, store: SurrealStore
+    ) -> None:
+        # Arrange: a real chunk_to_record()-built record with representative,
+        # multi-typed chunker metadata (nested dict, list, str, int, bool).
+        dim = PRODUCTION_DIM
+        file_path = "models/purchase_order.py"
+        metadata = _production_metadata(ident_text="PurchaseOrder action_confirm")
+        record = _production_record(
+            tier=TIER_A,
+            file_path=file_path,
+            identity="PurchaseOrder.action_confirm",
+            metadata=metadata,
+        )
+
+        # Act
+        await store.upsert([(record, unit_vector(0, dim))])
+        rows = await store.scroll({"file_path": file_path}, limit=_READ_ALL)
+
+        # Assert: every key the production translator emitted — including
+        # every metadata-origin key — round-trips PER-KEY EQUAL, not merely
+        # "some subset survived".
+        assert len(rows) == 1
+        row = rows[0]
+        for key, expected_value in record.payload.items():
+            assert row.get(key) == expected_value, (
+                f"payload key {key!r} did not round-trip: "
+                f"expected {expected_value!r}, got {row.get(key)!r}"
+            )
+        # Duplication guard: no internal "metadata" wrapper rides along
+        # alongside the flattened top-level copies (which would still pass the
+        # per-key subset check above while silently doubling the data). The
+        # pin is deliberately subset-shaped, not exact-key-set: read-back may
+        # legitimately carry the store-DERIVED ident_text column a production
+        # payload never supplies.
+        assert "metadata" not in row
+
+    async def test_replace_file_hybrid_search_round_trips_production_shaped_metadata(
+        self, store: SurrealStore
+    ) -> None:
+        dim = PRODUCTION_DIM
+        file_path = "models/account_move.py"
+        metadata = _production_metadata(ident_text="AccountMove reconcile")
+        record = _production_record(
+            tier=TIER_A,
+            file_path=file_path,
+            identity="AccountMove.reconcile",
+            metadata=metadata,
+        )
+
+        await store.replace_file(TIER_A, file_path, [(record, unit_vector(0, dim))])
+        results = await store.hybrid_search(
+            query_vector=unit_vector(0, dim), query_text="AccountMove reconcile", k=5
+        )
+
+        hit = next((candidate for candidate in results if candidate.key == record.point_id), None)
+        assert hit is not None, "the production-shaped chunk should surface"
+        for key, expected_value in record.payload.items():
+            assert hit.payload.get(key) == expected_value, (
+                f"Candidate payload key {key!r} did not round-trip: "
+                f"expected {expected_value!r}, got {hit.payload.get(key)!r}"
+            )
+        # Duplication guard (same as the scroll seam): no internal "metadata"
+        # wrapper riding along the fused Candidate payload.
+        assert "metadata" not in hit.payload
+
+    async def test_metadata_key_matching_declared_column_does_not_corrupt_round_trip(
+        self, store: SurrealStore
+    ) -> None:
+        # A chunker-attached metadata key that happens to SHARE A NAME with a
+        # declared chunk column (``chunk_type``) is a realistic accident (a
+        # chunker that also stamps its own classification label). Python's
+        # dict-merge order in ``chunk_to_record`` (metadata spread LAST)
+        # resolves the collision to ONE value before the record ever reaches
+        # the store — that resolved value is the ground truth this test
+        # documents (independent of the store) and then requires the store to
+        # persist FAITHFULLY as the DECLARED column, usable for filtering,
+        # never silently redirected into an internal metadata blob and lost
+        # from column-based scroll/delete.
+        dim = PRODUCTION_DIM
+        file_path = "models/stock_picking.py"
+        shadowing_value = "stale_chunker_classification"
+        metadata = _production_metadata(ident_text="StockPicking action_done")
+        metadata["chunk_type"] = shadowing_value
+        record = _production_record(
+            tier=TIER_A,
+            file_path=file_path,
+            identity="StockPicking.action_done",
+            metadata=metadata,
+            chunk_type="python_symbol",
+        )
+        # Ground truth, independent of the store: chunk_to_record's own
+        # dict-merge already resolved the collision to the metadata's value
+        # (metadata is spread LAST in records.chunk_to_record's payload dict
+        # literal, so it wins) — this is records.py's pinned, existing
+        # behaviour, not something this test invents.
+        assert record.payload["chunk_type"] == shadowing_value
+
+        await store.upsert([(record, unit_vector(0, dim))])
+
+        # The resolved value must be usable as the DECLARED filter column —
+        # not silently dropped or hidden inside an opaque metadata blob.
+        matches = await store.scroll({"chunk_type": shadowing_value}, limit=_READ_ALL)
+        assert len(matches) == 1
+        assert matches[0]["identity"] == "StockPicking.action_done"
+        # Duplication guard (same as the other two seams): no internal
+        # "metadata" wrapper riding along the returned row.
+        assert "metadata" not in matches[0]
+        # The pre-collision value never independently survives anywhere,
+        # confirming the collision resolved to ONE value, not a silent
+        # duplicate under a second key.
+        stale = await store.scroll({"chunk_type": "python_symbol"}, limit=_READ_ALL)
+        assert stale == []
+
+    async def test_non_dict_metadata_payload_key_is_rejected_loudly(
+        self, store: SurrealStore
+    ) -> None:
+        # C1-audit finding #1: a chunker metadata key literally named
+        # ``metadata`` with a NON-dict value cannot be represented faithfully
+        # (a dict value is the documented legacy nested-producer shape; a
+        # scalar is neither shape). Silently dropping it — the pre-fix
+        # behaviour — is data loss; the store must refuse the write LOUDLY
+        # and persist nothing.
+        dim = PRODUCTION_DIM
+        file_path = "models/res_partner.py"
+        metadata = _production_metadata(ident_text="ResPartner name_get")
+        metadata["metadata"] = "a-string-label"  # non-dict reserved-name value
+        record = _production_record(
+            tier=TIER_A,
+            file_path=file_path,
+            identity="ResPartner.name_get",
+            metadata=metadata,
+        )
+
+        with pytest.raises(SurrealStoreError):
+            await store.upsert([(record, unit_vector(0, dim))])
+
+        assert await store.scroll({"file_path": file_path}, limit=_READ_ALL) == []
+
+    async def test_metadata_key_named_embedding_is_rejected_loudly(
+        self, store: SurrealStore
+    ) -> None:
+        # C1-audit finding #1 (mirror case): a chunker metadata key named
+        # ``embedding`` would nest into the metadata bucket on write and then
+        # reappear TOP-LEVEL on read-merge — a spurious vector-column leak the
+        # ``SELECT * OMIT embedding`` projection cannot catch. Reserved name:
+        # the store must refuse the write LOUDLY and persist nothing. Exercised
+        # through replace_file to cover the second write entrance.
+        dim = PRODUCTION_DIM
+        file_path = "models/res_users.py"
+        metadata = _production_metadata(ident_text="ResUsers has_group")
+        metadata["embedding"] = "chunker-emitted-lookalike"
+        record = _production_record(
+            tier=TIER_A,
+            file_path=file_path,
+            identity="ResUsers.has_group",
+            metadata=metadata,
+        )
+
+        with pytest.raises(SurrealStoreError):
+            await store.replace_file(TIER_A, file_path, [(record, unit_vector(0, dim))])
+
+        assert await store.scroll({"file_path": file_path}, limit=_READ_ALL) == []
+
+
+# ---------------------------------------------------------------------------
+# P5-C1c (SurrealDB docs-audit, ledger #28), hardening #1: ``ensure_ready``
+# must be LOUD on ANY failing DDL statement, not just the first.
+#
+# The installed SDK (``surrealdb`` 2.0.0) ``query()`` validates ONLY the FIRST
+# statement of a multi-statement string (it inspects ``response["result"][0]``
+# and returns ``result[0]["result"]``); a LATER statement's semantic rejection
+# comes back with per-statement ``status == "ERR"`` while ``query()`` itself
+# raises NOTHING. Verified live against the dev server (3.1.5): splicing a
+# syntactically valid but semantically invalid ``DEFINE INDEX`` into the
+# MIDDLE of the real ``generate_ddl()`` output leaves every statement AFTER it
+# still applied (the rest of the schema is built normally) while ``query()``
+# returns ``None`` and the poisoned index itself is confirmed absent
+# afterward (``INFO FOR TABLE`` never lists it) — a genuine execution-time
+# semantic rejection, not a parse error that would abort the whole batch
+# before any statement ran. ``ensure_ready`` applies its DDL through a bare
+# ``connection.query(ddl)`` call, so today it reports success on a schema
+# that was only PARTIALLY applied.
+# ---------------------------------------------------------------------------
+
+# The ghost index/field names the invalid DDL statement below references —
+# named constants (never re-typed inline) so the "why did this fail" story
+# stays in one place.
+_GHOST_INDEX_NAME = "ghost_idx_probe"
+_GHOST_FIELD_NAME = "ghost_field_xyz_probe"
+
+
+def _invalid_ddl_statement(table: str) -> str:
+    """A syntactically valid ``DEFINE INDEX`` that 3.1.5 rejects AT EXECUTION.
+
+    Indexing a field that was never ``DEFINE FIELD``'d on ``table`` PARSES
+    cleanly (valid SurrealQL grammar) but fails when the engine actually
+    tries to build the index. Verified live via ``query_raw`` against the dev
+    server: the statement's per-statement result comes back
+    ``status: "ERR"``, ``result: "The field '<field>' does not exist"`` —
+    while the SAME string run through the SDK's ``query()`` raises nothing at
+    all, and the ghost index is confirmed absent afterward.
+    """
+    return (
+        f"DEFINE INDEX IF NOT EXISTS {_GHOST_INDEX_NAME} ON {table} "
+        f"FIELDS {_GHOST_FIELD_NAME}"
+    )
+
+
+def _ddl_with_late_invalid_statement(ddl: str, table: str) -> str:
+    """Splice :func:`_invalid_ddl_statement` into the MIDDLE of a real DDL string.
+
+    A middle (neither first nor last) position proves the SDK's
+    first-statement-only check misses a failure ANYWHERE downstream of the
+    first statement — not merely a special-cased "last statement" gap.
+    """
+    statements = [stmt.strip() for stmt in ddl.strip().split(";\n") if stmt.strip()]
+    middle_index = len(statements) // 2
+    statements.insert(middle_index, _invalid_ddl_statement(table))
+    return ";\n".join(statements) + ";\n"
+
+
+class TestEnsureReadyRaisesOnLateDdlFailure:
+    """P5-C1c hardening #1: a LATER DDL statement's rejection must surface.
+
+    LOAD-BEARING: must FAIL RED against current code — ``ensure_ready``
+    applies its DDL via a bare ``connection.query(ddl)`` call, which (per the
+    module docstring above) inspects only the first statement and swallows a
+    later ``ERR`` completely; ``ensure_ready`` returns normally today even
+    though a real statement in its own schema was rejected by the engine.
+    """
+
+    async def test_ensure_ready_raises_on_a_semantically_invalid_late_ddl_statement(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        # Arrange: the REAL DDL (same generator, same kwargs ``ensure_ready``
+        # calls today), poisoned with one invalid statement mid-way through.
+        real_ddl = generate_ddl(dim=surreal_env.dim)
+        poisoned_ddl = _ddl_with_late_invalid_statement(real_ddl, CHUNK_TABLE)
+
+        def _poisoned_generate_ddl(*, dim: int, analyzer_name: str) -> str:
+            return poisoned_ddl
+
+        monkeypatch.setattr("loremaster.store.surreal.generate_ddl", _poisoned_generate_ddl)
+        broken_store = SurrealStore(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            dim=surreal_env.dim,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+
+        try:
+            # Act / Assert: the failing statement must surface as a STORE
+            # error (a domain/schema rejection — the transport is perfectly
+            # healthy) rather than a silent success.
+            with pytest.raises(SurrealStoreError) as exc_info:
+                await broken_store.ensure_ready()
+            assert type(exc_info.value) is SurrealStoreError
+            assert not isinstance(exc_info.value, SurrealConnectionError)
+            # A domain rejection must never throw away a healthy connection.
+            assert broken_store._connection is not None
+        finally:
+            await broken_store.close()
+
+
+# ---------------------------------------------------------------------------
+# P5-C1c, hardening #2: ``_drop_connection`` must be a compare-and-swap, not
+# an unconditional null.
+#
+# A LATE caller can hold a STALE connection reference captured BEFORE an
+# earlier self-heal already replaced ``self._connection`` with a fresh one.
+# Today's ``_drop_connection`` nulls ``self._connection`` unconditionally —
+# regardless of whether the connection object it was HANDED is still the live
+# one — so that late caller wipes out a perfectly healthy, freshly-reconnected
+# handle out from under every other in-flight caller.
+# ---------------------------------------------------------------------------
+
+
+def _plain_counting_connection_factory() -> tuple[Callable[[str], Any], Callable[[], int]]:
+    """A drop-in ``AsyncSurreal`` replacement that COUNTS every real connection
+    it opens — a lighter sibling of :func:`_counting_connection_factory` with
+    NO artificial signin delay, because this test drives its callers
+    SEQUENTIALLY (there is no concurrent race to widen here).
+
+    Returns:
+        ``(factory, get_call_count)``.
+    """
+    call_count = 0
+
+    def factory(url: str) -> Any:
+        nonlocal call_count
+        call_count += 1
+        return _RealAsyncSurreal(url)
+
+    return factory, lambda: call_count
+
+
+class TestDropConnectionCompareAndSwap:
+    """P5-C1c hardening #2: dropping a STALE connection must never touch a
+    fresher, live one.
+
+    LOAD-BEARING: must FAIL RED against current code — ``_drop_connection``
+    is ``self._connection = None; await self._safe_close(connection)``
+    unconditionally, with no check that ``connection`` is still
+    ``self._connection`` before nulling it.
+    """
+
+    async def test_dropping_a_stale_connection_after_a_reconnect_leaves_the_live_one_intact(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        # Arrange: a fresh store; count every real connection opened.
+        factory, get_call_count = _plain_counting_connection_factory()
+        monkeypatch.setattr("loremaster.store.surreal.AsyncSurreal", factory)
+        fresh_store = SurrealStore(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            dim=surreal_env.dim,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+        try:
+            # connection A, then simulate an EARLIER self-heal that already
+            # replaced it with connection B (bypassing ``_drop_connection``
+            # directly, so the STALE reference to A survives independently —
+            # exactly as a slow concurrent caller would still be holding it).
+            stale_connection = await fresh_store._ensure_connection()
+            assert get_call_count() == 1
+            # cast: keep mypy at the declared union — a bare None assignment
+            # narrows the attribute to None across the rest of the block
+            # (method calls never re-widen it), making later asserts
+            # 'unreachable' under warn_unreachable.
+            fresh_store._connection = cast("_SurrealConnection | None", None)
+            live_connection = await fresh_store._ensure_connection()
+            assert get_call_count() == 2
+            assert live_connection is not stale_connection
+
+            # Act: a LATE caller drops the STALE connection A — AFTER B is
+            # already the live, cached handle.
+            await fresh_store._drop_connection(stale_connection)
+
+            # Assert: B survives untouched — a compare-and-swap, not an
+            # unconditional null.
+            assert fresh_store._connection is live_connection
+
+            # And the store keeps working by REUSING B — no third connection
+            # is opened just because a stale handle was dropped.
+            await fresh_store.ensure_ready()
+            assert get_call_count() == 2
+            assert fresh_store._connection is live_connection
+        finally:
+            await fresh_store.close()
+
+
+# ---------------------------------------------------------------------------
+# P5-C1c, hardening #3 (SurrealDB docs-audit follow-up, ledger #28): a raw
+# ``KeyError`` from the SDK's OWN response-routing must be classified as a
+# connection fault, not propagate untyped.
+#
+# Probe-confirmed live (throwaway 3.1.5 container): when the socket drops
+# with queries IN FLIGHT on one shared connection, the installed SDK (2.0.0)
+# raises a raw ``builtins.KeyError(<request-uuid>)`` from its response
+# routing on EVERY in-flight future (6/6 in the probe) — NOT
+# ``asyncio.CancelledError`` (never reproduced), and NOT anything in
+# ``_CONNECTION_ERRORS`` (``OSError`` / ``SurrealError`` /
+# ``WebSocketException``). Only the NEXT call on the dead connection heals via
+# ``ConnectionClosedError``. Today's ``_query`` except clause only catches
+# ``_CONNECTION_ERRORS``, so this ``KeyError`` propagates completely
+# untyped — never wrapped, never triggering the self-heal.
+#
+# SCOPING NOTE for the GREEN implementer: both try blocks this classification
+# must widen to catch ``KeyError`` in — ``_query``'s
+# ``return await connection.query(statement, params or {})`` and
+# ``_txn_query_raw``'s ``await connection.query_raw(...)`` /
+# ``connection.check_response_for_error(...)`` — contain ONLY the SDK call
+# itself (verified by reading both try bodies), so classifying ANY KeyError
+# raised inside these specific try blocks as a connection fault cannot
+# misclassify a KeyError from our own code — there is no own-code path inside
+# either try block today. Keep the except scoped this tight; do not widen the
+# try block to also cover post-processing logic that might raise its own
+# KeyError.
+# ---------------------------------------------------------------------------
+
+# A realistic SDK request-correlation id — the SDK routes in-flight requests
+# by a UUID4 key, so the raw KeyError this bug raises always carries one.
+_SDK_ROUTING_KEY_ERROR_TOKEN = "3fae6a02-9c1e-4c1b-8f3a-77c2e4a9b001"
+
+
+class TestQuerySeamSdkKeyErrorClassification:
+    """P5-C1c hardening #3: a KeyError raised BY THE SDK CALL ITSELF inside
+    ``_query`` must surface as ``SurrealConnectionError`` and self-heal —
+    mirrors the identical seam on ``SurrealManifest``/``SurrealCodeGraph``
+    (see their own test files' matching section).
+
+    LOAD-BEARING: must FAIL RED against current code — ``_query``'s except
+    clause is ``except _CONNECTION_ERRORS``; ``KeyError`` is none of those, so
+    it propagates completely untyped today.
+    """
+
+    async def test_sdk_routing_key_error_surfaces_as_connection_error_and_heals(
+        self, surreal_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    ) -> None:
+        # Arrange: a fresh, ready store on a REAL connection (counted, so the
+        # eventual reconnect can be pinned to exactly one NEW connection).
+        factory, get_call_count = _plain_counting_connection_factory()
+        monkeypatch.setattr("loremaster.store.surreal.AsyncSurreal", factory)
+        live_store = SurrealStore(
+            url=surreal_env.url,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            dim=surreal_env.dim,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+        try:
+            await live_store.ensure_ready()
+            assert get_call_count() == 1
+            broken_connection = live_store._connection
+            assert broken_connection is not None
+
+            # A deterministic stand-in for the SDK's own response-routing
+            # failure (see the module note above) — patched on the LIVE
+            # connection INSTANCE itself, exactly the technique
+            # ``_counting_connection_factory`` already uses for ``signin``.
+            async def _raise_routing_key_error(*args: object, **kwargs: object) -> Any:
+                raise KeyError(_SDK_ROUTING_KEY_ERROR_TOKEN)
+
+            monkeypatch.setattr(broken_connection, "query", _raise_routing_key_error)
+
+            # Act / Assert: the raw KeyError must surface as a typed
+            # SurrealConnectionError (never bare) AND drop the connection.
+            with pytest.raises(SurrealConnectionError):
+                await live_store.count()
+            assert live_store._connection is None
+
+            # Recovery: the NEXT call reconnects — exactly one NEW
+            # connection, never a wedge and never a silent reconnect storm.
+            assert await live_store.count() == 0
+            assert get_call_count() == 2
+        finally:
+            await live_store.close()
+
+
+class _FakeSdkRoutingKeyErrorConnection:
+    """A minimal stand-in for a live SDK connection whose ``query_raw`` raises
+    the SDK's own raw response-routing ``KeyError`` (see the module note
+    above) — deterministic, no live server or socket kill needed, since
+    :func:`~loremaster.store._txn.execute_transaction` is fully
+    dependency-injected (``acquire``/``drop``), unlike the single-statement
+    ``_query`` seam above which needs a real connected instance.
+    """
+
+    async def query_raw(self, statement: str, params: dict[str, Any]) -> dict[str, Any]:
+        raise KeyError(_SDK_ROUTING_KEY_ERROR_TOKEN)
+
+    def check_response_for_error(self, response: Any, method: str) -> None:  # pragma: no cover
+        raise AssertionError("query_raw must raise before this is ever reached")
+
+
+class TestTxnSdkKeyErrorClassification:
+    """P5-C1c hardening #3, shared seam: :func:`~loremaster.store._txn.
+    execute_transaction`'s ``query_raw`` call must classify the SAME SDK
+    routing ``KeyError`` the single-statement ``_query`` seams do — the
+    identical gap lives in the SHARED ``_txn_query_raw`` (used by
+    ``replace_file`` / ``replace`` / ``build_file_graph`` /
+    ``delete_file_graph`` across all three ported classes), so this pins it
+    ONCE against the shared function directly rather than duplicating the
+    probe through all three callers (the classification logic is not
+    per-class code, unlike the compare-and-swap hardening above).
+
+    LOAD-BEARING: must FAIL RED against current code — ``_txn_query_raw``'s
+    except clause is ``except _CONNECTION_ERRORS`` (same tuple as
+    ``_query``); a raw ``KeyError`` from ``query_raw`` propagates completely
+    untyped, and ``drop`` is never invoked.
+    """
+
+    async def test_sdk_routing_key_error_surfaces_as_connection_error_and_drops(self) -> None:
+        # Arrange: a fake connection whose query_raw call IS the failure —
+        # no live server needed, execute_transaction is fully DI'd.
+        fake_connection = _FakeSdkRoutingKeyErrorConnection()
+        dropped: list[Any] = []
+
+        async def _acquire() -> _SurrealConnection:
+            return cast("_SurrealConnection", fake_connection)
+
+        async def _drop(connection: Any) -> None:
+            dropped.append(connection)
+
+        # Act / Assert: the raw KeyError must surface as SurrealConnectionError
+        # and the transaction's connection must be dropped exactly once.
+        with pytest.raises(SurrealConnectionError):
+            await execute_transaction(
+                "BEGIN;\nDELETE chunk;\nCOMMIT;\n",
+                {},
+                acquire=_acquire,
+                drop=_drop,
+                url="ws://127.0.0.1:19555/rpc",  # unreachable — never actually dialed
+            )
+        assert dropped == [fake_connection]
