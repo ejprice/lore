@@ -1535,25 +1535,28 @@ class Indexer:
     ) -> list[IndexOutcome]:
         """Apply a completed job's results to each pending file, in pass-1 order.
 
-        The results are consumed in submission order (the SAME order pass 1
-        collected the files/chunks), so a crash-resumed sweep that re-derives the
-        identical pending order applies the vectors correctly even though it never
-        saw the original submission's custom ids. The flat arm slices the flat
-        vector stream per file's chunk count; the grouped arm takes one document
-        result per file (a whole-line failure — a bare ``None`` — fails just that
-        file, via the existing None-vector guard in :meth:`_commit_batch_file`).
+        Results are looked up BY ``custom_id`` — NEVER positionally: the Batch
+        API explicitly does not align output order with submission order (the
+        real backends build the result dict in output-file line order and
+        append error-file failures last). The flat arm's custom ids are the
+        chunks' deterministic point ids; the grouped arm's are the per-file
+        line ids — both re-derivable by a crash-resumed sweep from pass-1 state
+        alone, so re-attachment needs no extra bookkeeping. A missing id maps
+        to ``None`` and fails just that file via the existing None-vector guard
+        in :meth:`_commit_batch_file` (P5 phase-audit blocker fix: the previous
+        positional consumption committed WRONG vectors whenever any item
+        failed or the provider reordered).
         """
-        values = list(results.values())
         outcomes: list[IndexOutcome] = []
         if kind == _BATCH_KIND_FLAT:
-            cursor = 0
             for pf in pending:
-                count = len(pf.records)
-                file_vectors: list[Any] = list(values[cursor : cursor + count])
-                cursor += count
+                file_vectors: list[Any] = [
+                    results.get(record.point_id) for record in pf.records
+                ]
                 outcomes.append(await self._commit_batch_file(pf, file_vectors))
             return outcomes
-        for pf, doc_result in zip(pending, values, strict=True):
+        for pf in pending:
+            doc_result = results.get(self._grouped_batch_line_id(pf))
             if doc_result is None:
                 grouped_vectors: list[Any] = [None] * len(pf.records)
             else:

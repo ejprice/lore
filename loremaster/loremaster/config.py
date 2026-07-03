@@ -41,6 +41,7 @@ from loresigil.voyage_batch import DEFAULT_POLL_INTERVAL_S
 from pydantic import (
     BaseModel,
     ConfigDict,
+    PositiveFloat,
     PositiveInt,
     StringConstraints,
     model_validator,
@@ -143,7 +144,7 @@ class BatchConfig(_StrictModel):
 
     mode: BatchMode = DEFAULT_BATCH_MODE
     chunk_count_threshold: PositiveInt = DEFAULT_BATCH_CHUNK_COUNT_THRESHOLD
-    poll_interval_s: float = DEFAULT_POLL_INTERVAL_S
+    poll_interval_s: PositiveFloat = DEFAULT_POLL_INTERVAL_S
 
 
 class EmbeddingConfig(_StrictModel):
@@ -257,8 +258,8 @@ class SurrealConfig(_StrictModel):
     """
 
     url: str = SURREAL_DEFAULT_URL
-    namespace: str = SURREAL_DEFAULT_NAMESPACE
-    database: str | None = None
+    namespace: SlugStr = SURREAL_DEFAULT_NAMESPACE
+    database: SlugStr | None = None
     user_env: str = SURREAL_DEFAULT_USER_ENV
     password_env: str = SURREAL_DEFAULT_PASSWORD_ENV
 

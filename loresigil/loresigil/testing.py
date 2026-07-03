@@ -440,9 +440,20 @@ class FakeEmbedder(Embedder):
     async def _compute_batch_results(
         self, job: dict[str, Any]
     ) -> dict[str, list[float] | EmbedResult | None]:
-        """Compute a completed job's id-keyed results via the realtime paths."""
+        """Compute a completed job's id-keyed results via the realtime paths.
+
+        ADVERSARIAL ORDERING (P5 phase-audit blocker): the REAL backend builds
+        this dict in OUTPUT-FILE line order — which the Batch API explicitly
+        does NOT align with submission order — and appends error-file failures
+        LAST. The fake models that faithfully: successes are inserted in
+        REVERSED submission order and failures appended at the end, so any
+        consumer that reads ``results.values()`` positionally (instead of
+        keying by ``custom_id``) misaligns and FAILS its tests — the previous
+        submission-order fake masked exactly that corruption.
+        """
         ids: list[str] = job["ids"]
-        results: dict[str, list[float] | EmbedResult | None] = {}
+        successes: dict[str, list[float] | EmbedResult | None] = {}
+        failures: dict[str, list[float] | EmbedResult | None] = {}
         if job["kind"] == _BATCH_KIND_FLAT:
             # PRIVATE core, not the public method: a recording subclass's
             # override of embed_documents must never count this internal
@@ -450,14 +461,19 @@ class FakeEmbedder(Embedder):
             # same core the realtime path delegates to).
             realtime = self._embed_documents_core(job["payload"])
             for custom_id, vector in zip(ids, realtime.vectors, strict=True):
-                results[custom_id] = vector
-            return results
-        for chunks, custom_id in zip(job["payload"], ids, strict=True):
-            if any(chunk in self._fail_inputs for chunk in chunks):
-                # A batch line is one atomic unit: any failed chunk fails the
-                # WHOLE line to a bare None (design decision #4).
-                results[custom_id] = None
-            else:
-                [doc_result] = self._embed_document_chunks_core([chunks])
-                results[custom_id] = doc_result
-        return results
+                if vector is None:
+                    failures[custom_id] = None
+                else:
+                    successes[custom_id] = vector
+        else:
+            for chunks, custom_id in zip(job["payload"], ids, strict=True):
+                if any(chunk in self._fail_inputs for chunk in chunks):
+                    # A batch line is one atomic unit: any failed chunk fails
+                    # the WHOLE line to a bare None (design decision #4).
+                    failures[custom_id] = None
+                else:
+                    [doc_result] = self._embed_document_chunks_core([chunks])
+                    successes[custom_id] = doc_result
+        reordered = dict(reversed(list(successes.items())))
+        reordered.update(failures)
+        return reordered

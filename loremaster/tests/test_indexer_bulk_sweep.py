@@ -828,15 +828,20 @@ class TestBulkSweepCrashRecoveryResumability:
         )
 
         # Simulate "sweep #1 submitted the job and crashed before applying":
-        # drive pass 1 + the submit call directly, then persist the job id
-        # exactly as the real sweep would BEFORE polling, without ever
-        # applying results.
-        expected_texts: list[str] = []
-        for rel in paths:
-            source = (live / rel).read_text(encoding="utf-8")
-            expected_texts.extend(_probe_texts(config, "custom", rel, source))
-        crash_ids = [f"crash-sim-{i}" for i in range(len(expected_texts))]
-        crashed_job_id = await embedder.submit_batch_documents(expected_texts, crash_ids)
+        # drive the REAL pass 1 + submit on a throwaway indexer, then discard
+        # it (the "crash"), persisting the job id exactly as the real sweep
+        # would BEFORE polling — without ever applying results. The submission
+        # carries the REAL deterministic point ids: the re-attach guarantee is
+        # precisely that a resumed pass 1 re-derives those same ids and looks
+        # results up BY id (phase-audit blocker fix), never by position — a
+        # synthetic-id simulation would test nothing real.
+        crashed_indexer = _make_indexer(
+            config=config, trio=trio, embedder=embedder, snapshot_root=tmp_path / "snap"
+        )
+        crashed_pending, _, _, _ = await crashed_indexer._collect_sweep_pending(
+            is_rebuild=False
+        )
+        crashed_job_id = await crashed_indexer._submit_batch_job(crashed_pending, "flat")
         await trio.manifest.meta_set(
             BULK_SWEEP_BATCH_JOB_META_KEY,
             json.dumps({"job_id": crashed_job_id, "kind": "flat"}),
