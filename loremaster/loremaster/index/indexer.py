@@ -1,13 +1,13 @@
 """The batch :class:`Indexer` — config → source → chunk → embed → records → store.
 
 This is the integration centerpiece (plan AMENDMENT 1 / D5–D7). A standalone,
-dependency-injected, OOP indexer that builds and refreshes a project's Qdrant
-index, one tier at a time. It is consumed two ways:
+dependency-injected, OOP indexer that builds and refreshes a project's
+SurrealDB index, one tier at a time. It is consumed two ways:
 
 * the deploy/CI **CLI** (:mod:`loremaster.index.cli`) wires the real
-  :class:`~loremaster.store.qdrant.QdrantStore`, a real
-  :class:`loresigil.base.Embedder` (via ``make_embedder``), the SQLite
-  :class:`~loremaster.index.manifest.Manifest`, the composed
+  :class:`~loremaster.store.surreal.SurrealStore`, a real
+  :class:`loresigil.base.Embedder` (via ``make_embedder``), the
+  :class:`~loremaster.index.surreal_manifest.SurrealManifest`, the composed
   :class:`~lorescribe.registry.ChunkerRegistry`, and the per-static-tier
   :class:`~loremaster.source.local_directory.LocalDirectorySourceProvider`s, then
   runs it;
@@ -336,11 +336,13 @@ class IndexSummary(BaseModel):
 
 
 class Indexer:
-    """Build/refresh a project's Qdrant index, tier by tier (dependency-injected).
+    """Build/refresh a project's SurrealDB index, tier by tier (dependency-injected).
 
-    Every collaborator is injected so tests pass a :class:`FakeEmbedder`, a real
-    Qdrant client (throwaway collection), a temp-file manifest, and real files,
-    while the CLI wires the real deployment resources.
+    Every collaborator is injected so tests pass a :class:`FakeEmbedder`, the
+    fast in-memory async fakes mirroring
+    :class:`~loremaster.store.surreal.SurrealStore` /
+    :class:`~loremaster.index.surreal_manifest.SurrealManifest`, and real
+    files, while the CLI wires the real deployment resources.
 
     Args:
         store: The async :class:`~loremaster.store.surreal.SurrealStore` — its

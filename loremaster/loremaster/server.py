@@ -1504,13 +1504,13 @@ async def reconcile_store_divergence(
     provide is not defeated, and a sibling healthy tier is left untouched.
 
     Args:
-        store: The :class:`~loremaster.store.qdrant.QdrantStore` the
-            ``ensure_collection`` already ran against (the live point-count
-            oracle + the ``delete_by_tier`` purge primitive).
-        manifest: The :class:`~loremaster.index.manifest.Manifest` (the honest
-            expected-count source + the ``reset_tier`` heal trigger).
-        code_graph: The :class:`~loremaster.graph.CodeGraph` (the graph row-count
-            oracle for the FP-04 wiped-graph heal).
+        store: The :class:`~loremaster.store.surreal.SurrealStore` (the WRITE-path
+            store) the live point-count oracle + the ``delete_by_tier`` purge
+            primitive run against.
+        manifest: The :class:`~loremaster.index.surreal_manifest.SurrealManifest`
+            (the honest expected-count source + the ``reset_tier`` heal trigger).
+        code_graph: The :class:`~loremaster.graph_surreal.SurrealCodeGraph` (the
+            graph row-count oracle for the FP-04 wiped-graph heal).
         config: The :class:`~loremaster.config.LoreConfig` enumerating the tiers
             to reconcile.
         indexer: The :class:`~loremaster.index.indexer.Indexer` (graph-wired) the
@@ -1695,14 +1695,18 @@ async def build_app_context(
     config = server.config
     slug = config.project.slug
 
-    # 1) READ-path store + probe gate + collection. DUAL-STORE INTERIM (P5→P6):
-    # the search/memory/symbol READ path still speaks the Qdrant API, so its
-    # QdrantStore stays constructed here until P6 (search v2) / P7 (memory v2)
-    # port those consumers onto the unified SurrealDB store. The WRITE path
-    # (indexer/reconcile/watcher) runs on the Surreal stack below — chunks
-    # indexed from here on land in SurrealDB, NOT Qdrant, so Qdrant search
-    # results grow stale on this branch by design until P6 cuts the read path
-    # over (v1.0 ships at P8 with Qdrant deleted).
+    # 1) READ-path store + probe gate + collection. DUAL-STORE INTERIM (P5→P8):
+    # the search/symbol/memory READ path still speaks the Qdrant API, so its
+    # QdrantStore stays constructed here for the whole interim window. The
+    # WRITE path (indexer/reconcile/watcher) already runs on the Surreal stack
+    # below — chunks indexed from here on land in SurrealDB, NOT Qdrant.
+    # Retirement is PER-CONSUMER, not one cutover: search + symbols
+    # (SymbolTool) port onto the unified store at P6 (search pipeline v2 —
+    # already scheduled), memory ports at P7 (memory v2), and the
+    # QdrantStore/client/deps are only deleted at P8 (v1.0) once every
+    # consumer is off it. Staleness retires the same way — a consumer's
+    # Qdrant-served results grow stale by design only until THAT consumer's
+    # own phase lands, not until P8.
     store = QdrantStore(
         client=qdrant_client,
         slug=slug,

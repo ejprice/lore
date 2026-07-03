@@ -1,8 +1,8 @@
 """The policy-aware reconcile engine — startup + periodic staleness sweep.
 
 This is staleness angles (2) and (3) of Deliverable 3 (and AMENDMENT 1 D5): the
-sweep that brings the Qdrant index current with the filesystem on startup and on
-a timer. The timer sweep is the backstop that catches inotify events the watcher
+sweep that brings the SurrealDB index current with the filesystem on startup and
+on a timer. The timer sweep is the backstop that catches inotify events the watcher
 dropped (a ``git checkout`` burst → ``IN_Q_OVERFLOW``, or downtime while the
 container was stopped). It is built entirely on the already-merged
 :class:`~loremaster.index.indexer.Indexer` and
@@ -61,7 +61,7 @@ class ReconcileSummary(IndexSummary):
 
     Attributes:
         files_purged: Files present in the manifest but gone from disk that this
-            sweep purged from Qdrant and the manifest (a live-tier-only count;
+            sweep purged from the store and the manifest (a live-tier-only count;
             static tiers are not diffed for deletions).
     """
 
@@ -72,8 +72,9 @@ class ReconcileEngine:
     """Bring the index current with the filesystem, one root at a time.
 
     Dependency-injected so the server wires the real collaborators and tests pass
-    a :class:`FakeEmbedder`-backed indexer, a temp-file manifest, a throwaway
-    Qdrant collection, and a real ``tmp_path`` corpus.
+    a :class:`FakeEmbedder`-backed indexer, the fast in-memory async fakes
+    mirroring the Surreal store/manifest (:mod:`_surreal_fakes`), and a real
+    ``tmp_path`` corpus.
 
     Args:
         indexer: The :class:`~loremaster.index.indexer.Indexer` that owns the

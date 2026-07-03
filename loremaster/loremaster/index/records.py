@@ -1,6 +1,6 @@
-"""Chunk → Qdrant-record translation and the tier-keyed point-ID scheme (C1).
+"""Chunk → store-record translation and the tier-keyed point-ID scheme (C1).
 
-This module is the *single* place the natural key is turned into a Qdrant point
+This module is the *single* place the natural key is turned into a store point
 id. C1 makes ``tier`` a **first-class key dimension**: a module-relative
 ``file_path`` is not globally unique across tiers (a ``custom`` override and the
 ``community`` original can share a path), so without ``tier`` in the key one
@@ -53,13 +53,13 @@ _HASH_ENCODING = "utf-8"
 
 
 class Record(BaseModel):
-    """A single Qdrant point: its id, the text to embed, and the stored payload.
+    """A single store record: its id, the text to embed, and the stored payload.
 
     Attributes:
         point_id: The deterministic UUID5 point id (see :func:`point_id`).
         embedding_text: The exact string handed to the embedder (carried verbatim
             from :attr:`Chunk.embedding_text`).
-        payload: The Qdrant payload — every structural field (including ``tier``)
+        payload: The record payload — every structural field (including ``tier``)
             plus the chunk's own ``metadata`` merged on top.
     """
 
@@ -79,7 +79,7 @@ def point_id(
     sub_ordinal: int,
     key_version: int = KEY_VERSION,
 ) -> str:
-    """Derive the deterministic Qdrant point id for a chunk's tiered natural key.
+    """Derive the deterministic store point id for a chunk's tiered natural key.
 
     The id is
     ``uuid5(NAMESPACE_URL, "slug:tier:file_path:chunk_type:identity:sub_ordinal:key_version")``.
