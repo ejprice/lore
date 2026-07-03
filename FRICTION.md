@@ -59,6 +59,35 @@ consumed-by-<phase or commit> / superseded).
   inference bounds mean exhaustiveness checks (renames/await migrations) still
   need mypy/grep verification — document that boundary in the tool text.
 
+- **2026-07-03 · team-lead (P6) · lore_tests_for · zero_hits** — asked for the
+  covering tests of a FILE (`loremaster/search.py`, then the fuller
+  `loremaster/loremaster/search.py`): both returned `[]`, while the SYMBOL form
+  (`loremaster.search.SearchPipeline`) returned 50+ test nodes and
+  `what_imports` proves the `test_search.py → search` edge exists. The
+  documented file-path input shape silently matches nothing. Workaround:
+  re-asked with the symbol form. **Feeds:** P6/P8 — fix the path normalisation
+  (or teach the miss: "no file match — try a symbol name"), and document the
+  working input shape in the tool text.
+
+- **2026-07-03 · parity-scout + team-lead (P6) · lore_references · wrong_result
+  (NEAR-MISS: almost deleted a live production base class)** — profiling
+  `loremaster.graph.CodeGraph` for the #34 dead-code cleanup returned
+  `production_references: 0` (test_references: 25), and the cleanup plan
+  accordingly scheduled the class for deletion — but
+  `graph_surreal.py:213 class _AstroidDerivation(CodeGraph):` is a PRODUCTION
+  inheritance reference (astroid-derivation reuse), and `server.py` +
+  `graph_surreal.py` import the module's constants/models at module scope.
+  Caught only by the mandatory grep cross-check before deletion. Likely root
+  cause: the known installed-vs-mounted resolution gap (in-container astroid
+  resolves project imports to the pip-installed copy, dropping in-project
+  refs; TEST files aren't installed, so their refs resolve to the workspace —
+  explaining prod=0/test=25 exactly). Workaround: grep cross-check remains
+  MANDATORY before any deadness verdict; brief doctrine updated. **Feeds:**
+  the v0.3 container fix (source must shadow the install on astroid's path —
+  needs image rebuild+recreate) and P6/P8 verdict-bearing-output doctrine:
+  reference counts on in-project symbols must be trustworthy before
+  lore_impact/dead_code can carry liveness verdicts.
+
 ## Consumed
 
 *(none yet — entries move here when a phase/commit addresses them, with the
