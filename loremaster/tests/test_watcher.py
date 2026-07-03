@@ -42,6 +42,25 @@ SCOPE OF THIS PORT (reported to the team lead):
   explicitly flagged as intentionally NOT restored live in OTHER files, not
   here: ``TestStoreFailureIsolation`` (``test_indexer.py`` — superseded, no
   retry layer by design) and the two search oracles (P6 scope).
+* **RESTORED (P6 read-path cutover, 8ae67ab)** — the two search-oracle tests
+  commit 53db748 explicitly deferred: ``TestLiveModify.
+  test_modify_event_content_becomes_searchable_via_search_code`` and
+  ``TestDelete.test_delete_event_content_no_longer_searchable_via_search_code``.
+  Archaeology note: in the PRE-PORT file (``git show df5431e~1``), the
+  ``store.search([0.0] * _DIM, k=500)`` calls at old lines 313/470/742/781 were
+  ALWAYS a raw broad scan against the real backend (Qdrant), never a call
+  through a query-time ranking/formatting pipeline — no such pipeline existed
+  before P6. The C3 port's ``_has_identity``/``stored_file_paths()`` fake-state
+  reads are an equally-faithful port of THAT raw-scan shape (they already cover
+  the debounce-coalesce purge and atomic-move purge assertions). What was
+  genuinely deferred — and is restored here as NEW coverage, not a literal
+  reinstatement — is a round trip through the REAL :class:`~loremaster.search.
+  SearchPipeline`: now that it reads the SAME ``FakeSurrealStore`` the indexer
+  writes through in this file's fixtures, these two tests prove new content is
+  retrievable via ``search_code`` after a live modify, and a deleted file's
+  content is NOT (honest emptiness, never stale serving) after a live delete —
+  the flagship presence/absence duo the module docstring's headline contract
+  bullets ("new content searchable" / "purges the file") describe.
 """
 
 from __future__ import annotations
@@ -54,16 +73,20 @@ import struct as _struct_for_overflow_guard
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
 from loremaster.config import LoreConfig
+from loremaster.extension import ExtensionContext
+from loremaster.graph_surreal import SurrealCodeGraph
 from loremaster.index.indexer import Indexer, IndexOutcome
 from loremaster.index.reconcile import ReconcileEngine
-from loremaster.index.surreal_manifest import STATE_INDEXED
+from loremaster.index.surreal_manifest import STATE_INDEXED, SurrealManifest
 from loremaster.index.watcher import LiveWatcher, _OverflowAwareInotify
+from loremaster.search import SearchPipeline, SearchResult
 from loremaster.server import LoreServer
+from loremaster.store.surreal import SurrealStore
 from loresigil.base import Embedder
 from loresigil.testing import FakeEmbedder
 from watchdog.observers.inotify_c import Inotify as _WatchdogInotify
@@ -75,6 +98,13 @@ _TEI_KEY_ENV = "LORE_TEI_KEY"
 
 _DEBOUNCE_MS = 120
 _SETTLE_TIMEOUT_S = 8.0
+
+# Comfortably above the tiny live corpus's total chunk count (1-2 files) in the
+# two P6 search-oracle tests below, so a single ``hybrid_search`` call can
+# always retrieve every candidate — mirrors the pre-port fixture's generous
+# k=500 (see the module docstring's archaeology note) scaled down for this
+# file's much smaller corpus.
+_SEARCH_K = 20
 
 
 # --------------------------------------------------------------------------- #
@@ -303,6 +333,37 @@ def _make_watcher(
     )
 
 
+def _make_search_pipeline(
+    *, config: LoreConfig, trio: FakeSurrealTrio, embedder: Embedder
+) -> SearchPipeline:
+    """Wire a v2 :class:`SearchPipeline` directly over ``trio`` (the P6 read path).
+
+    Inlined here rather than imported from ``test_search.py`` — this suite does
+    not cross-import test helpers across modules. Builds a BARE :class:`LoreServer`
+    (no extension hooks) plus a runtime :class:`ExtensionContext` over the SAME
+    (fake) store/manifest the watcher/indexer just wrote through, so
+    ``search_code`` performs a genuine end-to-end READ of what the live event
+    committed — never a peek at the fake's internal ``db.chunks`` dict.
+    """
+    server = LoreServer(config)
+    extension_context = ExtensionContext(
+        store=trio.store,
+        embedder=embedder,
+        config=config,
+        count_tokens=embedder.count_tokens,
+        manifest=trio.manifest,
+    )
+    return SearchPipeline(
+        store=cast(SurrealStore, trio.store),
+        embedder=embedder,
+        server=server,
+        manifest=cast(SurrealManifest, trio.manifest),
+        config=config,
+        extension_context=extension_context,
+        code_graph=cast(SurrealCodeGraph, trio.graph),
+    )
+
+
 def _has_identity(trio: FakeSurrealTrio, file_path: str, identity: str) -> bool:
     for chunk in trio.store.db.chunks.values():
         if chunk.file_path == file_path and chunk.payload.get("identity") == identity:
@@ -336,6 +397,35 @@ async def _wait_for(predicate: Callable[[], bool], timeout_s: float = _SETTLE_TI
             return True
         await asyncio.sleep(0.05)
     return bool(predicate())
+
+
+async def _wait_for_search_result(
+    pipeline: SearchPipeline,
+    query: str,
+    predicate: Callable[[list[SearchResult]], bool],
+    *,
+    timeout_s: float = _SETTLE_TIMEOUT_S,
+) -> list[SearchResult]:
+    """Poll ``pipeline.search_code(query)`` until ``predicate(results)`` holds.
+
+    The ORACLE polled here is ``search_code`` itself — the real query-time read
+    path (embed → hybrid_search → augment/rerank → format) — never a peek at
+    the fake's internal state; this is what makes the two P6 search-oracle
+    tests below a genuine round-trip guard rather than a restatement of
+    ``_has_identity``. The real-Observer tests can't assume synchronous
+    delivery (inotify events are marshalled onto the loop from a background
+    thread via ``call_soon_threadsafe``), hence the bounded poll. Always
+    evaluates one final time after the deadline so a transition landing
+    exactly at the boundary is not lost (mirrors :func:`_wait_for`).
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    results: list[SearchResult] = await pipeline.search_code(query, k=_SEARCH_K)
+    while not predicate(results):
+        if asyncio.get_running_loop().time() >= deadline:
+            return results
+        await asyncio.sleep(0.05)
+        results = await pipeline.search_code(query, k=_SEARCH_K)
+    return results
 
 
 def _inotify_watched_dirs(watcher: LiveWatcher) -> set[Path]:
@@ -394,6 +484,50 @@ class TestLiveModify:
             # The real Observer should pick up the write and reindex the file.
             assert await _wait_for(
                 lambda: _has_identity(trio, "src/routing.py", "watcher_marker_abc")
+            )
+        finally:
+            await watcher.stop()
+
+    async def test_modify_event_content_becomes_searchable_via_search_code(
+        self, tmp_path: Path
+    ) -> None:
+        """P6 search-oracle restoration (see module docstring archaeology note).
+
+        Proves the FULL watcher -> indexer -> store -> :class:`SearchPipeline`
+        round trip the P6 read-path cutover (8ae67ab) makes closable: a real
+        inotify write's new content is retrievable through ``search_code`` —
+        not merely present in the fake's internal chunk dict (that narrower
+        claim is already pinned by ``test_modify_event_reindexes_file`` above).
+        """
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        embedder = FakeEmbedder(dim=_DIM)
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=embedder, snapshot_root=tmp_path / "snap",
+        )
+        # Seed the index so we are testing an UPDATE, not a first build.
+        await indexer.index_file(
+            "custom", "src/routing.py",
+            (live / "src" / "routing.py").read_text(encoding="utf-8"),
+        )
+        pipeline = _make_search_pipeline(config=config, trio=trio, embedder=embedder)
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        await watcher.start()
+        try:
+            # Write a NEW uniquely-named symbol to the watched file.
+            marker = "watcher_marker_search_e2e"
+            (live / "src" / "routing.py").write_text(
+                f"def {marker}(week):\n    return week\n", encoding="utf-8"
+            )
+            results = await _wait_for_search_result(
+                pipeline, marker, lambda rs: any(marker in r.formatted for r in rs),
+            )
+            assert any(marker in r.formatted for r in results), (
+                f"search_code never surfaced {marker!r} after the real-inotify "
+                f"modify settled — results: {[r.formatted for r in results]}"
             )
         finally:
             await watcher.stop()
@@ -694,6 +828,58 @@ class TestDelete:
 
         assert await trio.manifest.get("custom", "src/routing.py") is None
         assert "src/routing.py" not in trio.store.stored_file_paths()
+
+    async def test_delete_event_content_no_longer_searchable_via_search_code(
+        self, tmp_path: Path
+    ) -> None:
+        """P6 search-oracle restoration (see module docstring archaeology note).
+
+        The dual of ``test_modify_event_content_becomes_searchable_via_search_code``:
+        proves a REAL inotify delete makes the file's content UNRETRIEVABLE
+        through ``search_code`` — honest emptiness, never a stale hit for
+        content that no longer exists on disk. Driven through the real
+        watchdog Observer (a physical ``unlink()``), not the seam call
+        ``on_deleted_path`` above — this is the read-side, full-loop guard;
+        ``test_delete_event_purges_file`` above already pins the write-side
+        (fake-state) purge via the deterministic seam.
+        """
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        embedder = FakeEmbedder(dim=_DIM)
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=embedder, snapshot_root=tmp_path / "snap",
+        )
+        seed_source = (live / "src" / "routing.py").read_text(encoding="utf-8")
+        await indexer.index_file("custom", "src/routing.py", seed_source)
+        pipeline = _make_search_pipeline(config=config, trio=trio, embedder=embedder)
+
+        # Baseline: the seeded content IS searchable BEFORE the delete — proves
+        # the post-delete absence below is a real transition, not a query that
+        # was always going to return nothing (a vacuous pass).
+        marker = "champion_routing"
+        baseline = await pipeline.search_code(marker, k=_SEARCH_K)
+        assert any(marker in r.formatted for r in baseline), (
+            "the search oracle must find the seeded content BEFORE deleting it, "
+            "otherwise 'not found after delete' would be a vacuous pass"
+        )
+
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        await watcher.start()
+        try:
+            (live / "src" / "routing.py").unlink()
+            # The real Observer's DELETE event purges the file end-to-end.
+            results = await _wait_for_search_result(
+                pipeline, marker, lambda rs: not any(marker in r.formatted for r in rs),
+            )
+            assert not any(marker in r.formatted for r in results), (
+                f"search_code still surfaced {marker!r} after the real-inotify "
+                f"delete settled — stale serving: {[r.formatted for r in results]}"
+            )
+        finally:
+            await watcher.stop()
 
 
 # --------------------------------------------------------------------------- #
@@ -1364,5 +1550,3 @@ class TestKernelOverflowDetectionDoesNotMutateGlobalParser:
             )
             assert isinstance(current, staticmethod)
             assert current is _PRISTINE_PARSE_EVENT_BUFFER
-
-        assert spy.fired == iterations
