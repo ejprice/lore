@@ -1712,6 +1712,10 @@ async def build_app_context(
     # consumer is off it. Staleness retires the same way — memory's
     # Qdrant-served results grow stale by design only until its own phase
     # lands, not until P8.
+    # NOTE (P8): this seam-8 index application must re-home onto the unified
+    # SurrealStore when QdrantStore is deleted, or extension keyword/bool field
+    # indexes go dead — the same re-homing the fulltext kind is already
+    # declared-not-consumed awaiting (EXTENDING.md §3).
     store = QdrantStore(
         client=qdrant_client,
         slug=slug,

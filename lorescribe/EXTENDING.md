@@ -13,7 +13,7 @@ importing anything domain-specific**:
 
 Everything here is pure `lorescribe`. The `loremaster` extension framework (the
 `Extension` ABC, the `LoreServer` composition) is documented separately in
-`loremaster/EXTENDING.md`; it is the thing that *wires* the hooks below into a
+`EXTENDING.md` (repo root); it is the thing that *wires* the hooks below into a
 running server. This document is the lower layer: the contracts a hook must
 satisfy.
 
@@ -253,7 +253,7 @@ chunks = registry.dispatch_file("/project/Makefile", source, ctx)
 > When this chunker is contributed through a `loremaster` `Extension`, the
 > framework reads an optional `default_suffixes` class attribute (defaulting to
 > `()`), namespaces the registry key, and enforces a guard that a chunker may not
-> shadow an existing suffix-owner — see `loremaster/EXTENDING.md` §"The register
+> shadow an existing suffix-owner — see `EXTENDING.md` (repo root) §"The register
 > guard". From pure `lorescribe`'s point of view, only `handles`/`chunk` matter.
 
 ---
