@@ -32,7 +32,7 @@ A [`uv`](https://docs.astral.sh/uv/)-workspace monorepo (Python 3.14+):
 | Package | Role |
 |---|---|
 | **`lorescribe`** | Language-aware chunkers (Python AST, Markdown, SQL, XML, JavaScript, CSS, text) emitting identity-stamped chunks. |
-| **`loresigil`** | A swappable embedder abstraction — self-hosted [TEI](https://github.com/huggingface/text-embeddings-inference) `voyage-4-nano` (dim 2048) with local token counting and resilient batching. |
+| **`loresigil`** | A swappable embedder abstraction — self-hosted [TEI](https://github.com/huggingface/text-embeddings-inference) `voyage-4-nano` (dim 2048) is the reference backend; hosted Voyage AI backends (`voyage-cloud`, `voyage-context`) are also config-selectable — with local token counting and resilient batching. |
 | **`loremaster`** | The MCP server + extension framework — orchestrates chunkers + embedder into a [Qdrant](https://qdrant.tech) index, a SQLite manifest, and a code-graph; serves the MCP. |
 
 ## MCP tools
@@ -101,12 +101,69 @@ static tiers), include/exclude globs, the chunker map, watcher, server, and opti
 Bearer auth + structured logging. **Secrets are only ever environment-variable
 references**, never inlined. See **`lore.yaml.sample`** for an annotated template.
 
+### Choosing an embedder
+
+`embedding.backend` selects one of three config-swappable backends:
+
+- **`tei`** — a self-hosted [TEI](https://github.com/huggingface/text-embeddings-inference)
+  endpoint serving `voyage-4-nano` (dim 2048). The reference deployment.
+- **`voyage-cloud`** — the hosted Voyage AI embeddings API, `voyage-4-large` by
+  default. No self-hosted endpoint to run.
+- **`voyage-context`** — the hosted Voyage AI *contextualized* (document-grouped)
+  embeddings API, `voyage-context-4` by default. Each indexed file's chunks are
+  embedded together as one document, so a chunk's vector carries its surrounding
+  file's context. `dim` doubles as the Matryoshka `output_dimension` knob
+  (`lore.yaml` exposes a single `dim` field regardless of backend); auto-chunking
+  is always pinned off (lore's own chunk boundaries are canonical, never
+  re-split by the provider); a file whose chunks exceed the per-document context
+  window falls back automatically to overlapping sub-window requests.
+
+An internal A/B eval comparing these found: `voyage-4-nano` (self-hosted `tei`)
+is sufficient for small repos; `voyage-4-large` (`voyage-cloud`) measurably helps
+on large repos; `voyage-context-4`'s contextualization did **not** improve
+results for code — AST-chunked code doesn't benefit from cross-chunk document
+context the way prose does. Default to `tei`/`voyage-cloud` sized to the repo;
+reach for `voyage-context` only when you have a specific reason to want
+document-grouped context. See **`lore.yaml.sample`** for a `voyage-context`
+config block.
+
 ## Extending
 
 `loremaster` is a framework: build a domain-specific MCP by subclassing one `Extension`
 ABC and registering it — `LoreServer.from_config(...).register_extension(...).run()` —
 without forking the core. See **`loremaster/EXTENDING.md`** (the eleven seams) and
 **`lorescribe/EXTENDING.md`** (writing chunkers / schema profiles).
+
+## Status / Roadmap
+
+The sections above describe the **live, shipped system**: Qdrant (vectors) + SQLite
+(manifest) + KùzuDB (code-graph). That is what a deployed `lore-<slug>` container
+actually runs today.
+
+In progress, on the `feat/surreal-unification` branch and **not yet wired into the
+running server**: a rearchitecture ("DeadReckoning+ v2") that unifies the store onto
+a single, always-networked [SurrealDB](https://surrealdb.com) server (≥3.1.x;
+server-mode only — embedded mode was evaluated and ruled out) serving hybrid
+vector+BM25 search, the manifest, and the code-graph. Progress so far:
+
+- **P1 — shipped and live**: the `voyage-context` embedder backend (see "Choosing
+  an embedder" above) is dispatched by the real indexer and selectable via config
+  (on this branch; not yet on a release) — orthogonal to the store, so it works on
+  today's Qdrant/SQLite/Kùzu stack.
+- **P2 — `SurrealStore`**: hybrid retrieval (HNSW vector search fused with BM25
+  FULLTEXT via the engine's native `search::rrf`) plus atomic per-file replace.
+- **P3 — `SurrealManifest`**: the manifest ported onto SurrealDB's `file`/`meta`
+  tables.
+- **P4 — `SurrealCodeGraph`**: the code-graph ported onto SurrealDB's native
+  `RELATE` traversal (the astroid derivation logic is reused unchanged from the
+  live `CodeGraph`).
+
+P2–P4 are complete, tested modules that **nothing in the server or indexer calls
+yet** — the live system still runs Qdrant/SQLite/Kùzu end-to-end. Still planned,
+not started: wiring the transactional indexer and watcher/reconcile onto the new
+store, then the MCP tool surface itself, plus a client/server split (a write-side
+"scout" process co-located with the repo vs. a stateless, horizontally replicated
+MCP server) once the store layer is fully wired in.
 
 ## Development
 

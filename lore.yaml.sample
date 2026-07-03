@@ -30,6 +30,32 @@ embedding:
   api_key_env: LORE_TEI_KEY               # env-var NAME only — never the value
   tokenizer: voyage-4-nano
 
+# --- alternative embedder: voyage-context (hosted, contextualized/document-grouped) ---
+# Swap the block above for this one to use Voyage AI's hosted, contextualized
+# endpoint instead of a self-hosted TEI instance (no `tei` container to run).
+# `dim` doubles as the Matryoshka `output_dimension` knob for this backend.
+# `base_url` / `endpoint` / `tokenizer` / `truncate` / `max_input_tokens` /
+# `max_batch_texts` are still REQUIRED by the schema (shared across every
+# backend) but are INERT here — there is no lore.yaml key to override this
+# backend's endpoint URL (always https://api.voyageai.com/v1/contextualizedembeddings)
+# or its per-document token window (fixed at 32000; an oversize file is windowed
+# automatically). No prompt_name fields (those are `tei`-only). See README
+# "Choosing an embedder" for scale guidance — an internal eval found
+# contextualization does not out-perform flat chunk embedding for AST-chunked code.
+# embedding:
+#   backend: voyage-context
+#   base_url: unused                        # required by schema; ignored by this backend
+#   endpoint: /unused                       # required by schema; ignored by this backend
+#   model: voyage-context-4
+#   dim: 2048                               # the Matryoshka output_dimension knob
+#   truncate: false                         # required by schema; ignored by this backend
+#   max_input_tokens: 8192                  # required by schema; ignored by this backend
+#   max_batch_texts: 32                     # required by schema; ignored by this backend
+#   concurrency: 4
+#   connect_timeout_s: 5
+#   api_key_env: LORE_VOYAGE_KEY            # env-var NAME only — never the value
+#   tokenizer: voyage-4-nano                # required by schema; ignored by this backend
+
 # --- vector store (Qdrant) --------------------------------------------------
 qdrant: {url: http://127.0.0.1:16333, api_key_env: QDRANT__SERVICE__API_KEY}   # CUSTOMIZE url
 
