@@ -47,6 +47,18 @@ consumed-by-<phase or commit> / superseded).
   every brief — in force as of today) + P8 doctrine: the instructions block
   must assume deferred loading and say so.
 
+- **2026-07-03 · team-lead · graph tools · affordance_gap (self-inflicted doc gap)** —
+  the team-lead mis-scoped v0.3's own graph surface, attributing "structural
+  seam-sweeps" wholesale to grep/Explore when `references`/`what_imports`/
+  `blast_radius`/`tests_for` chains answer most symbol-level sweep questions at
+  function granularity. The tool's own steward underestimated it → typical
+  agents will too. Workaround: none (capability unused). Root cause: no single
+  affordance says "chain these four for a seam map." **Feeds:** P8 tool
+  descriptions + instructions block (teach the CHAIN, not just the tools);
+  P6 lore_map/lore_impact are the one-call ergonomic. Residual truth: astroid-
+  inference bounds mean exhaustiveness checks (renames/await migrations) still
+  need mypy/grep verification — document that boundary in the tool text.
+
 ## Consumed
 
 *(none yet — entries move here when a phase/commit addresses them, with the
