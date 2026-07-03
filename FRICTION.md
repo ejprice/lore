@@ -20,14 +20,6 @@ consumed-by-<phase or commit> / superseded).
 
 ## Open
 
-- **2026-07-03 · team-lead · (whole surface) · distrust_unverified** — avoided
-  lore for an entire heavy build session on an unmeasured staleness prior;
-  later measured FALSE (90-minute-old `CommandSubscriber` resolved perfectly,
-  0 in-flight). Workaround: grep/subagent sweeps all session. Root cause:
-  freshness is pull-only (agent must remember to ask `index_status`); trust
-  decays on priors when nothing pushes freshness into results. **Feeds:** P6
-  read-path — per-result staleness flags + `wait_for_fresh` are the fix;
-  keep them visible in EVERY result, not opt-in.
 
 - **2026-07-03 · team-lead · lore_search_code · capability_gap** — P5's
   discovery questions were structural seam-sweeps ("every call site of the
@@ -100,5 +92,14 @@ consumed-by-<phase or commit> / superseded).
 
 ## Consumed
 
-*(none yet — entries move here when a phase/commit addresses them, with the
-commit/phase reference appended)*
+- **2026-07-03 · team-lead · (whole surface) · distrust_unverified** — avoided
+  lore for an entire heavy build session on an unmeasured staleness prior;
+  later measured FALSE (90-minute-old `CommandSubscriber` resolved perfectly,
+  0 in-flight). Workaround: grep/subagent sweeps all session. Root cause:
+  freshness is pull-only (agent must remember to ask `index_status`); trust
+  decays on priors when nothing pushes freshness into results. **Consumed-by
+  P6 commit 8ae67ab**: SearchPipeline v2 keeps the per-result staleness flag +
+  warning line VISIBLE on every in-flight hit (annotate, never blanket-block),
+  wait_for_fresh semantics preserved — contract-pinned in test_search.py's
+  TestFreshnessFlags/TestWaitForFresh. (Doctrine half — push freshness into
+  the tool text/instructions — still lands with P8's surface.)
