@@ -90,6 +90,22 @@ consumed-by-<phase or commit> / superseded).
   teaching miss on a path that matches nothing) + P8 tool text documenting the
   exact-match semantics.
 
+- **2026-07-04 · team-lead (v2 FIRST LIVE USE) · lore_map · wrong_result
+  (ranking)** — the unfocused map's TOP modules are all TEST INFRASTRUCTURE
+  (_surreal_harness, _surreal_fakes, _extension_helpers rank 1-2-4; server.py
+  ranks 5th). PageRank over the raw import graph rewards test-consumed hubs,
+  but orientation means PRODUCTION structure. Workaround: none needed yet
+  (focus= re-centers usefully). **Feeds:** P7/P8 — rank should down-weight or
+  segregate test-file nodes (the references() prod/test split already knows
+  how); consider a default prod-only view with tests behind a flag.
+
+- **2026-07-04 · team-lead (v2 FIRST LIVE USE) · lore_map · capability_gap
+  (rendering)** — per-module symbol lists render EVERY symbol (80+ names for
+  _surreal_fakes) — a dump, not a rollup; the budget then starves module
+  COVERAGE (155 elided) to afford symbol noise. **Feeds:** P7/P8 — cap
+  symbols per module (top-N by rank + "+K more"), spending budget on breadth
+  over depth.
+
 ## Consumed
 
 - **2026-07-03 · team-lead · (whole surface) · distrust_unverified** — avoided
