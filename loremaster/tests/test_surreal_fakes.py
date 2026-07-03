@@ -51,8 +51,10 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from _surreal_fakes import FakeSurrealStore, fake_surreal_trio
+from _surreal_fakes import FakeSurrealCodeGraph, FakeSurrealStore, fake_surreal_trio
 from _surreal_harness import PRODUCTION_DIM, TIER_A, TIER_B, chunk_record, unit_vector
+from loremaster.graph import KIND_CLASS, KIND_FUNCTION, KIND_METHOD, KIND_MODULE, GraphNode
+from loremaster.graph_surreal import SurrealCodeGraph
 from loremaster.index.records import Record
 from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import (
@@ -63,6 +65,8 @@ from loremaster.store.surreal import (
 )
 from loremaster.store.surreal_schema import CHUNK_FILTER_KEYS
 from loremaster.symbols import _SCROLL_LIMIT  # the real scroll caller's read cap
+from lorescribe.models import ChunkContext
+from lorescribe.python_ast import PythonAstChunker
 
 # Hostile filter KEYS an agent-facing search tool could pass through P6's
 # ``search_code``/``get_symbol`` tools. None may be silently accepted: the real
@@ -873,3 +877,298 @@ class TestCanonicalPayloadShape:
         )
         assert payload["extra_key"] == "kept"
         assert "metadata" not in payload
+
+
+# --------------------------------------------------------------------------- #
+# lore_map's whole-graph read surface: ``all_nodes()`` — signature/shape
+# parity between the real graph and the fake, plus the fake's OWN dedupe
+# guarantee on a re-upserted file (the deferred all_nodes parity pin:
+# ``MapEngine._extract_module_graph`` already depends on this method, but
+# until now it was only exercised INDIRECTLY through test_map.py's PageRank
+# assertions — never pinned at the signature/shape/dedupe level directly).
+# --------------------------------------------------------------------------- #
+_ALL_NODES_TIER = TIER_A
+_ALL_NODES_FILE_PATH = "models/purchase_order_router.py"
+_ALL_NODES_SOURCE = """\
+def route_purchase_order(order_id):
+    \"\"\"Route a purchase order to its approval chain.\"\"\"
+    return order_id
+"""
+
+
+def _approx_token_count(text: str) -> int:
+    """Behavioural stand-in for the embedder's injected token counter (~4 cpt)."""
+    return max(1, len(text) // 4)
+
+
+def _all_nodes_chunk(path: str, source: str) -> list[Any]:
+    """Chunk ``source`` through the REAL ``PythonAstChunker`` (the prod producer).
+
+    Mirrors ``test_graph_surreal.py``'s own ``_chunk`` helper: driving the real
+    chunker (not hand-rolled ``Chunk`` objects) exercises the producer/consumer
+    seam ``all_nodes`` sits behind (clause 3), so a chunker-shape drift cannot
+    slip past this parity pin either.
+    """
+    ctx = ChunkContext(
+        slug="all_nodes_parity",
+        file_path=path,
+        count_tokens=_approx_token_count,
+        max_input_tokens=8192,
+    )
+    return PythonAstChunker().chunk(source, ctx)
+
+
+class TestAllNodesParity:
+    """``all_nodes()`` signature parity + decode shape + dedupe-on-reupsert.
+
+    Only the FAKE's own guarantees are exercised directly here (this file's
+    charter, per its own module docstring) — the REAL graph's identical
+    idempotent-rebuild guarantee is already pinned in
+    ``test_graph_surreal.py::TestDeterministicId::
+    test_rebuild_is_idempotent_no_duplicate_nodes``. This class is the FAKE's
+    OWN formal pin of the same invariant, plus the cross-fake/real signature
+    check ``TestSignatureParity`` above already established for the store's
+    read-path methods.
+    """
+
+    def test_all_nodes_signature_matches_real_graph(self) -> None:
+        real_params = _params_excluding_self(SurrealCodeGraph.all_nodes)
+        fake_params = _params_excluding_self(FakeSurrealCodeGraph.all_nodes)
+        assert list(fake_params) == list(real_params) == []
+        assert inspect.iscoroutinefunction(SurrealCodeGraph.all_nodes)
+        assert inspect.iscoroutinefunction(FakeSurrealCodeGraph.all_nodes)
+
+    async def test_all_nodes_returns_real_graph_node_instances_with_full_shape(
+        self,
+    ) -> None:
+        trio = fake_surreal_trio(dim=PRODUCTION_DIM)
+        chunks = _all_nodes_chunk(_ALL_NODES_FILE_PATH, _ALL_NODES_SOURCE)
+        await trio.graph.build_file_graph(_ALL_NODES_TIER, _ALL_NODES_FILE_PATH, chunks)
+
+        nodes = await trio.graph.all_nodes()
+
+        assert nodes, "the seeded file must contribute at least one node"
+        assert all(isinstance(node, GraphNode) for node in nodes)
+        # Every real decode column the production consumer (MapEngine) reads
+        # off a node must be present and correctly typed.
+        for node in nodes:
+            assert node.id
+            assert node.kind in {KIND_MODULE, KIND_CLASS, KIND_FUNCTION, KIND_METHOD}
+            assert node.qualified_name
+            assert node.file_path == _ALL_NODES_FILE_PATH
+            assert node.tier == _ALL_NODES_TIER
+
+    async def test_all_nodes_empty_on_a_wiped_graph(self) -> None:
+        trio = fake_surreal_trio(dim=PRODUCTION_DIM)
+        assert await trio.graph.all_nodes() == []
+
+    async def test_upserting_the_same_file_twice_never_duplicates_nodes(self) -> None:
+        trio = fake_surreal_trio(dim=PRODUCTION_DIM)
+        chunks = _all_nodes_chunk(_ALL_NODES_FILE_PATH, _ALL_NODES_SOURCE)
+
+        await trio.graph.build_file_graph(_ALL_NODES_TIER, _ALL_NODES_FILE_PATH, chunks)
+        first_ids = sorted(node.id for node in await trio.graph.all_nodes())
+
+        await trio.graph.build_file_graph(_ALL_NODES_TIER, _ALL_NODES_FILE_PATH, chunks)
+        second_ids = sorted(node.id for node in await trio.graph.all_nodes())
+
+        assert first_ids, "sanity: the file must have actually produced nodes"
+        assert first_ids == second_ids, (
+            "re-upserting the SAME file must not change the node id set"
+        )
+        assert len(second_ids) == len(set(second_ids)), (
+            "no duplicate node ids may appear after a re-upsert"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Bare-name bridge cycle — FakeSurrealCodeGraph matching-semantics parity
+# (deferred pins 2b/2c of the bridge-cycle contract). Item 2a (``all_nodes``
+# signature/shape/dedupe parity) is ALREADY pinned above by
+# ``TestAllNodesParity`` — not duplicated here.
+#
+# WHY a SECOND corpus builder (not the ``TestAllNodesParity`` one above): 2b/2c
+# need a genuinely RESOLVED cross-file reference (an import + a call astroid
+# can actually resolve to a full FQN dst), which requires real on-disk files
+# under ``tier_roots``/``project_roots`` — the single-file, no-resolution
+# fixture above has no dst to bridge to.
+# --------------------------------------------------------------------------- #
+
+from collections.abc import Iterator  # noqa: E402 - see module note above
+from pathlib import Path  # noqa: E402
+import textwrap  # noqa: E402
+
+from loremaster.graph import ReferenceSummary  # noqa: E402
+from lorescribe.astroid_parse import (  # noqa: E402
+    clear_resolution_cache,
+    reset_search_path_memo,
+)
+
+_BRIDGE_TIER = TIER_A
+
+# The SAME champion_routing/reflib/consumer naming already established across
+# this repo's P6-tail contracts (``test_impact.py``, ``test_search.py``) and
+# reused verbatim in ``test_graph_surreal.py``'s own bare-name-bridge section
+# — clause 5: one shared convention, never a hand-invented twin.
+_BRIDGE_REFLIB_SOURCE = textwrap.dedent(
+    '''\
+    """demo.reflib -- defines champion_routing."""
+
+
+    def champion_routing(week):
+        """Route the champion warehouse."""
+        return week * 2
+    '''
+)
+_BRIDGE_CONSUMER_SOURCE = textwrap.dedent(
+    '''\
+    """A production caller of champion_routing."""
+    from demo.reflib import champion_routing
+
+
+    def dispatch(week):
+        """A production caller."""
+        return champion_routing(week)
+    '''
+)
+_BRIDGE_REFLIB_PATH = "demo/reflib.py"
+_BRIDGE_CONSUMER_PATH = "demo/consumer.py"
+_BRIDGE_REFLIB_MODULE = "demo.reflib"
+_BRIDGE_CONSUMER_MODULE = "demo.consumer"
+_FQN_BRIDGE_CHAMPION_ROUTING = "demo.reflib.champion_routing"
+_FQN_BRIDGE_DISPATCH = "demo.consumer.dispatch"
+
+
+@pytest.fixture(autouse=True)
+def _reset_astroid_resolution_state_for_bridge_tests() -> Iterator[None]:
+    """Reset astroid's process-global resolution state around EVERY test in
+    this file.
+
+    Mirrors ``test_graph_surreal.py``'s/``test_impact.py``'s identical guard
+    (clause 5 — the SAME convention, not reinvented): the bridge tests below
+    build resolution-enabled packages reusing the SAME dotted module names
+    (``demo.reflib`` / ``demo.consumer``) under a FRESH ``tmp_path`` per test;
+    without the reset, an earlier test's residual astroid cache/search-path
+    memo degrades a later test's cross-module resolution to a bare, unresolved
+    reference regardless of test order. Harmless for this file's OTHER
+    (non-resolution) fake-store tests — it only touches astroid's own global
+    state.
+    """
+    clear_resolution_cache()
+    reset_search_path_memo()
+    yield
+    clear_resolution_cache()
+    reset_search_path_memo()
+
+
+def _bridge_chunk(path: str, source: str) -> list[Any]:
+    """Chunk ``source`` through the REAL ``PythonAstChunker`` (mirrors
+    ``test_graph_surreal.py``'s own ``_chunk`` helper — the SAME production
+    producer, so the fake's derivation input is byte-identical to the real
+    build path's).
+    """
+    ctx = ChunkContext(
+        slug="bridge",
+        file_path=path,
+        count_tokens=lambda text: max(1, len(text) // 4),
+        max_input_tokens=8192,
+    )
+    return PythonAstChunker().chunk(source, ctx)
+
+
+async def _build_bridge_reflib_graph(tmp_path: Path) -> FakeSurrealCodeGraph:
+    """Materialise the reflib/consumer corpus on disk; build a fresh,
+    resolution-enabled :class:`FakeSurrealCodeGraph` over BOTH files.
+    """
+    root = tmp_path / "project"
+    (root / "demo").mkdir(parents=True)
+    (root / "demo" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "demo" / "reflib.py").write_text(_BRIDGE_REFLIB_SOURCE, encoding="utf-8")
+    (root / "demo" / "consumer.py").write_text(_BRIDGE_CONSUMER_SOURCE, encoding="utf-8")
+    trio = fake_surreal_trio(
+        dim=PRODUCTION_DIM, tier_roots={_BRIDGE_TIER: root}, project_roots=[root]
+    )
+    await trio.graph.build_file_graph(
+        _BRIDGE_TIER,
+        _BRIDGE_REFLIB_PATH,
+        _bridge_chunk(_BRIDGE_REFLIB_PATH, _BRIDGE_REFLIB_SOURCE),
+        module_name=_BRIDGE_REFLIB_MODULE,
+    )
+    await trio.graph.build_file_graph(
+        _BRIDGE_TIER,
+        _BRIDGE_CONSUMER_PATH,
+        _bridge_chunk(_BRIDGE_CONSUMER_PATH, _BRIDGE_CONSUMER_SOURCE),
+        module_name=_BRIDGE_CONSUMER_MODULE,
+    )
+    return trio.graph
+
+
+class TestFakeMatchingDoesNotOverMatchOnWrongFqn:
+    """``FakeSurrealCodeGraph._matches`` must not over-match relative to the
+    REAL graph's LITERAL name-id equality (bridge-cycle contract item 2b).
+
+    Live-verified against the REAL ``SurrealCodeGraph`` on the equivalent
+    corpus (see ``test_graph_surreal.py``'s bare-name-bridge section):
+    ``references("lib.champion_routing")`` — a WRONG FQN sharing ONLY
+    champion_routing's bare LAST segment (a plausible typo/wrong-module-guess,
+    not a contrived string) — returns an all-zero summary on the real graph,
+    because real name-id equality never matches on a shared last segment
+    alone. The fake's ``_matches`` instead computes ``bare_name(dst) ==
+    bare_name(target)``, oblivious to the (wrong) leading module segment, so
+    it WRONGLY reports 2 production references today — RED.
+    """
+
+    async def test_wrong_fqn_sharing_only_the_bare_segment_is_rejected_by_references(
+        self, tmp_path: Path
+    ) -> None:
+        graph = await _build_bridge_reflib_graph(tmp_path)
+        summary = await graph.references("lib.champion_routing")
+        assert isinstance(summary, ReferenceSummary)
+        assert summary.production_references == 0
+        assert summary.referencing == []
+
+    async def test_wrong_fqn_sharing_only_the_bare_segment_is_rejected_by_blast_radius(
+        self, tmp_path: Path
+    ) -> None:
+        graph = await _build_bridge_reflib_graph(tmp_path)
+        radius = await graph.blast_radius(
+            "lib.champion_routing", depth=1, max_results=10
+        )
+        assert radius == []
+
+    async def test_an_unrelated_bare_string_is_honestly_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Two ordinary non-matching bare strings — a REGRESSION GUARD (already
+        green today): neither ``"outing"`` nor ``"n_routing"`` equals
+        ``champion_routing``'s own bare last segment on EITHER the fake's rule
+        or the real's, so both must stay honestly empty.
+        """
+        graph = await _build_bridge_reflib_graph(tmp_path)
+        assert (await graph.references("outing")).production_references == 0
+        assert (await graph.references("n_routing")).production_references == 0
+
+
+class TestFakeBareAndFqnBridgeAlignment:
+    """Valid bare + FQN queries both work on the fake TODAY (via its own
+    over-permissive ``_matches``), and must KEEP working once the fake's
+    matching is tightened to the real answers_to-bridge rule (bridge-cycle
+    contract item 2c) — pinned so the eventual alignment cannot regress the
+    happy path.
+    """
+
+    async def test_bare_query_finds_the_resolved_reference(
+        self, tmp_path: Path
+    ) -> None:
+        graph = await _build_bridge_reflib_graph(tmp_path)
+        summary = await graph.references("champion_routing")
+        assert summary.production_references == 2
+        assert _FQN_BRIDGE_DISPATCH in {n.qualified_name for n in summary.referencing}
+
+    async def test_fqn_query_finds_the_resolved_reference(
+        self, tmp_path: Path
+    ) -> None:
+        graph = await _build_bridge_reflib_graph(tmp_path)
+        summary = await graph.references(_FQN_BRIDGE_CHAMPION_ROUTING)
+        assert summary.production_references == 2
+        assert _FQN_BRIDGE_DISPATCH in {n.qualified_name for n in summary.referencing}

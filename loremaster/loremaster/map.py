@@ -486,8 +486,12 @@ class MapEngine:
         moment the NEXT line would exceed ``budget`` (never a partial line).
         When anything was squeezed out, the elision trailer is appended too —
         popping already-kept lines first if needed so the trailer itself
-        never pushes the block over budget, guaranteeing
-        ``count_tokens(formatted) <= budget`` unconditionally.
+        never pushes the block over budget. This holds because ``budget`` is
+        already clamped to at least :data:`_BUDGET_FLOOR` (200 tokens), which
+        comfortably exceeds the elision trailer's own short rendered length —
+        popping every kept entry always leaves enough room for the trailer
+        alone. It is the clamped floor doing the guaranteeing, not an
+        unconditional property of this method in isolation.
 
         Args:
             entries: The full rank-ordered entry list.

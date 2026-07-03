@@ -715,6 +715,49 @@ class SurrealCodeGraph:
             record_id for record_id in self._values(result) if isinstance(record_id, RecordID)
         ]
 
+    async def _bare_name_answerers(self, bare_names: Sequence[str]) -> list[str]:
+        """The FQNs of every ``code_node`` whose ``answers_to`` fan-out includes
+        any of ``bare_names`` — the SAME bridge :meth:`what_imports` already uses
+        to reach a RESOLVED FQN dst from a bare query.
+
+        Every node ``answers_to`` both its own FQN and its own bare last segment
+        (see the class docstring's schema section), so querying the relation's
+        ``out`` side by a bare name returns the ``in`` (code_node) of every node
+        that OWNS that bare name — including EVERY collidee of a FQN-collision.
+
+        Callers gate on bareness THEMSELVES (:meth:`references` /
+        :meth:`_reverse_neighbours`): only a genuinely bare query/frontier-name
+        (``name == self._bare(name)``) may pass its own bare form in here. An
+        already-fully-qualified query must stay scoped to its own literal dst —
+        bridging it too would leak a bare-name-colliding sibling's profile into
+        an unambiguous FQN query, exactly the pre-existing gap in
+        :meth:`what_imports`'s own bridge (which unconditionally bridges on
+        ``bare(target)`` regardless of whether ``target`` is already an
+        unambiguous FQN) — deliberately NOT repeated here.
+
+        Args:
+            bare_names: The already-known-bare names to bridge from. Empty
+                short-circuits to no query.
+
+        Returns:
+            The distinct qualified names of every answering node (empty if
+            nobody answers to any of ``bare_names``).
+        """
+        if not bare_names:
+            return []
+        answerers = self._values(
+            await self._query(
+                f"SELECT VALUE {_EDGE_IN} FROM {ANSWERS_TO_RELATION} "
+                f"WHERE {_EDGE_OUT} IN ${_P_NAMES}",
+                {_P_NAMES: [self._name_id(name) for name in bare_names]},
+            )
+        )
+        return [
+            self._composite_qname(record_id)
+            for record_id in answerers
+            if isinstance(record_id, RecordID)
+        ]
+
     # -- per-file build / delete ---------------------------------------------
 
     async def build_file_graph(
@@ -1091,6 +1134,16 @@ class SurrealCodeGraph:
         value AND its bare last segment (the resolution seam), across ALL
         reference kinds; the edge's source ``code_node`` is the dependent.
 
+        A genuinely BARE frontier name (``name == self._bare(name)``) ALSO
+        bridges through :meth:`_bare_name_answerers` to reach every RESOLVED FQN
+        sharing that bare name (the same ``answers_to`` fan-out
+        :meth:`what_imports` already uses) — a literal ``dst`` equality can never
+        match a bare frontier name against a resolved FQN dst otherwise. A
+        DOTTED frontier name (a module name, or an already-fully-qualified
+        symbol) is never bridged this way — see :meth:`_bare_name_answerers`'s
+        docstring for why an unconditional bridge would leak a bare-name-
+        colliding sibling in.
+
         A DOTTED frontier name ALSO reaches importers of a SYMBOL resolved UNDER
         it — ``from <module> import <sym>`` records the import dst as the resolved
         ``<module>.<sym>`` fqn, so once a bare MODULE qualified_name enters the
@@ -1105,9 +1158,15 @@ class SurrealCodeGraph:
         unique: dict[str, RecordID] = {}
         # Base arm: any reference kind whose dst is a frontier name (full or bare).
         name_ids: list[RecordID] = []
+        bare_frontier_names: list[str] = []
         for name in frontier:
+            bare = self._bare(name)
             name_ids.append(self._name_id(name))
-            name_ids.append(self._name_id(self._bare(name)))
+            name_ids.append(self._name_id(bare))
+            if name == bare:
+                bare_frontier_names.append(bare)
+        for fqn in await self._bare_name_answerers(bare_frontier_names):
+            name_ids.append(self._name_id(fqn))
         base_src_ids = self._values(
             await self._query(
                 f"SELECT VALUE {_EDGE_IN} FROM {REFERS_RELATION} WHERE {_EDGE_OUT} IN ${_P_NAMES}",
@@ -1205,19 +1264,50 @@ class SurrealCodeGraph:
         e.g. recursion — is not external use). Distinct sources are split into
         production vs test by the referencing file's path.
 
+        A genuinely BARE ``name`` (``name == self._bare(name)``, no dotted
+        qualifier) additionally bridges through :meth:`_bare_name_answerers`
+        (the same ``answers_to`` fan-out :meth:`what_imports` already uses) to
+        reach every RESOLVED FQN sharing that bare name — a query like
+        ``"widget"`` reaches a ``calls``/``imports`` edge whose dst is the
+        resolved ``demo.reflib.widget``, which literal bare-id equality alone
+        can never match. When more than one FQN answers (a bare-name
+        collision), the summary is the UNION of every collidee's referencing
+        profile — each collidee's own qualified name is ALSO excluded as a
+        self-reference. An already-fully-qualified ``name`` stays scoped to its
+        own literal dst: bridging it too would leak a colliding sibling's
+        profile into an unambiguous query, the pre-existing gap in
+        ``what_imports``'s own bridge deliberately not repeated here.
+
         Args:
             name: The qualified name of the symbol to profile.
 
         Returns:
             The :class:`ReferenceSummary` for ``name``.
         """
+        bare = self._bare(name)
+        # Self-reference exclusion set: the literal query, plus every bridged
+        # collidee's own FQN (recursion through any of them is still not an
+        # external use). ``RecordID`` is unhashable, so the dst ids are keyed
+        # by their string form (the same de-dupe-by-string-key idiom
+        # ``what_imports`` already uses for its own bridged name set).
+        target_names = {name}
+        name_ids_by_key: dict[str, RecordID] = {
+            str(self._name_id(name)): self._name_id(name),
+            str(self._name_id(bare)): self._name_id(bare),
+        }
+        if name == bare:
+            for fqn in await self._bare_name_answerers([bare]):
+                target_names.add(fqn)
+                fqn_id = self._name_id(fqn)
+                name_ids_by_key[str(fqn_id)] = fqn_id
+
         rows = self._rows(
             await self._query(
                 f"SELECT {_EDGE_IN}, {_COL_SRC_FILE_PATH} FROM {REFERS_RELATION} "
                 f"WHERE {_COL_KIND} IN ${_P_KINDS} AND {_EDGE_OUT} IN ${_P_NAMES}",
                 {
                     _P_KINDS: list(_REFERENCE_KINDS),
-                    _P_NAMES: [self._name_id(name), self._name_id(self._bare(name))],
+                    _P_NAMES: list(name_ids_by_key.values()),
                 },
             )
         )
@@ -1229,8 +1319,8 @@ class SurrealCodeGraph:
             if not isinstance(source_id, RecordID):
                 continue
             source_qname = self._composite_qname(source_id)
-            if source_qname == name:
-                continue  # self-reference excluded
+            if source_qname in target_names:
+                continue  # self-reference excluded (incl. any bridged collidee)
             if self._is_test_path(str(row[_COL_SRC_FILE_PATH])):
                 test.add(source_qname)
             else:

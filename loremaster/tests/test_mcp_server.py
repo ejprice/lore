@@ -83,6 +83,8 @@ from _surreal_harness import (
     surreal_user,
 )
 from loremaster.config import LoreConfig
+from loremaster.map import _BUDGET_FLOOR as _PRODUCTION_MAP_BUDGET_FLOOR
+from loremaster.map import _ELISION_FRAGMENT as _PRODUCTION_MAP_ELISION_FRAGMENT
 from loremaster.server import (
     AppContext,
     LoreServer,
@@ -171,6 +173,118 @@ from pkg.utils import orphan_helper
 def test_orphan_helper():
     assert orphan_helper() == 42
 """
+
+
+# --------------------------------------------------------------------------- #
+# lore_impact / lore_map corpora (P6-tail tool wiring).
+# --------------------------------------------------------------------------- #
+# A target with a REAL production reference for the impact e2e/wrapper tests
+# (mirrors ``test_what_imports_traverses_graph`` / ``test_references_returns_
+# production_test_split``, which already prove ``pkg.base.BaseRouter`` has a
+# genuine production reference from ``pkg.router`` — reused here rather than
+# re-deriving a second oracle target).
+_IMPACT_TARGET_LIVE = _PY_MODULE_IMPORT_FQN
+_IMPACT_UNKNOWN_TARGET = "totally.bogus.symbol"
+_MAP_UNKNOWN_FOCUS = "totally.bogus.symbol"
+# A loose, generic fragment (deliberately NOT imported from the engines' own
+# ``_RETRY_HINT`` — mirrors test_impact.py's / test_map.py's own independent
+# ``_RETRY_FRAGMENT = "retry"`` local constant) so the pin holds regardless of
+# the engine's exact wording.
+_RETRY_FRAGMENT = "retry"
+
+# A hub-and-spoke + island shape mirroring test_map.py's own engine-level
+# corpus (scaled down: two hub importers instead of three — still a clear
+# 2-vs-1 import-count asymmetry, which is all an UNFOCUSED PageRank needs to
+# rank the hub first), so this WIRING test proves ``focus`` genuinely reaches
+# ``MapEngine.map`` through the AppContext handler without re-deriving the
+# PageRank algorithm's own correctness (already pinned behaviourally in
+# test_map.py against the FakeSurrealCodeGraph directly).
+_MAP_HUB_SOURCE = """\
+def shared_util(x):
+    \"\"\"The shared utility both importers below call.\"\"\"
+    return x
+"""
+
+_MAP_A_SOURCE = """\
+from hub import shared_util
+
+
+def use_a(x):
+    \"\"\"A production caller of the shared hub utility.\"\"\"
+    return shared_util(x)
+"""
+
+_MAP_B_SOURCE = """\
+from hub import shared_util
+
+
+def use_b(x):
+    \"\"\"A second production caller of the shared hub utility.\"\"\"
+    return shared_util(x)
+"""
+
+_MAP_ISLAND_SOURCE = """\
+def island_fn(x):
+    \"\"\"Referenced by exactly one file across the whole corpus.\"\"\"
+    return x
+"""
+
+_MAP_ISLAND_USER_SOURCE = """\
+from island import island_fn
+
+
+def use_island(x):
+    \"\"\"The lone caller of island_fn -- the island's only neighbor.\"\"\"
+    return island_fn(x)
+"""
+
+_MAP_HUB_MODULE = "hub"
+_MAP_ISLAND_MODULE = "island"
+_MAP_FOCUS_SYMBOL = "island_fn"
+
+
+def _map_hub_island_corpus() -> dict[str, str]:
+    """The hub/island import-asymmetry shape, scaled down from test_map.py."""
+    return {
+        "hub.py": _MAP_HUB_SOURCE,
+        "a.py": _MAP_A_SOURCE,
+        "b.py": _MAP_B_SOURCE,
+        "island.py": _MAP_ISLAND_SOURCE,
+        "island_user.py": _MAP_ISLAND_USER_SOURCE,
+    }
+
+
+def _map_budget_filler_source(index: int) -> str:
+    """One tiny, distinctly-named module — filler for the budget-elision test.
+
+    Real Odoo-flavoured naming (not foo/bar), long enough that even a terse
+    one-line-per-module render overflows a 200-token floor budget well before
+    all of them fit — see ``_MAP_BUDGET_FILLER_FILE_COUNT``'s own comment for
+    the arithmetic.
+    """
+    return (
+        f"def compute_purchase_order_landed_cost_allocation_{index:02d}(week):\n"
+        f'    """Allocate landed cost for widget batch {index:02d}."""\n'
+        f"    return week * {index}\n"
+    )
+
+
+# Enough distinct one-function modules that their rendered rollup lines
+# (map.py's own ``_render_module_line`` format: ``{module}  (rank R.RRRR)
+# symbols: {name}``) cannot all fit in the floor budget
+# (``_PRODUCTION_MAP_BUDGET_FLOOR`` tokens) under the FakeEmbedder's
+# ``len // 4`` heuristic (i.e. ``_PRODUCTION_MAP_BUDGET_FLOOR * 4`` chars):
+# each line here runs comfortably over 60 chars (long, realistic symbol
+# names), so 20 lines alone exceed 1200 chars — forcing at least one elision
+# regardless of minor rendering-format variance.
+_MAP_BUDGET_FILLER_FILE_COUNT = 20
+
+
+def _map_budget_filler_corpus() -> dict[str, str]:
+    return {
+        f"pkg/widget_{index:02d}.py": _map_budget_filler_source(index)
+        for index in range(_MAP_BUDGET_FILLER_FILE_COUNT)
+    }
 
 
 @pytest_asyncio.fixture()
@@ -890,6 +1004,11 @@ _BARE_TOOL_NAMES = {
     "tests_for",
     "references",
     "dead_code",
+    # P6-tail (lore_impact / lore_map): the "who depends on this?" / "orient
+    # me here" verdict-bearing rollups over the same unified graph the other
+    # graph tools above already read.
+    "impact",
+    "map",
 }
 _EXPECTED_TOOLS = {f"{_TOOL_PREFIX}{name}" for name in _BARE_TOOL_NAMES}
 
@@ -941,6 +1060,10 @@ _READ_ONLY_TOOLS = {
     "lore_tests_for",
     "lore_references",
     "lore_dead_code",
+    # P6-tail: both are pure reads over the graph, never mutating index/memory
+    # state — read-only exactly like their five graph-tool neighbours above.
+    "lore_impact",
+    "lore_map",
 }
 _MUTATING_TOOLS = {"lore_save_memory", "lore_reindex"}
 
@@ -1010,6 +1133,47 @@ class TestServerInstructions:
         assert "project" in lowered and "memory" in lowered
         assert "shared" in lowered
         assert "survives" in lowered or "persists" in lowered or "durable" in lowered
+
+    def test_instructions_teaches_the_map_search_impact_ladder(
+        self, tmp_path: Path
+    ) -> None:
+        # FRICTION (2026-07-03, team-lead, "graph tools", self-inflicted doc
+        # gap): naming each graph tool in isolation is not enough — an agent
+        # needs the WORKFLOW CHAIN taught explicitly (orient with lore_map,
+        # locate with lore_search_code, then verify safety with lore_impact
+        # before touching something), or the one-call ergonomic these two
+        # tools exist to provide goes unused just like the four-tool
+        # seam-sweep chain did. Pinned loosely (co-occurrence + relative
+        # order on ONE line, mirroring how every other bullet in this block
+        # is authored) so the author keeps editorial freedom over wording.
+        instructions = self._instructions(tmp_path)
+        chain_lines = [
+            line
+            for line in instructions.splitlines()
+            if "lore_map" in line and "search_code" in line and "lore_impact" in line
+        ]
+        assert chain_lines, (
+            "the instructions must teach the map -> search -> impact workflow "
+            "chain in at least one line naming all three tools together"
+        )
+        line = chain_lines[0]
+        assert line.index("lore_map") < line.index("search_code") < line.index(
+            "lore_impact"
+        ), (
+            "the chain-teaching line must name the tools in map -> search -> "
+            "impact order (orient, then locate, then verify safety)"
+        )
+
+    def test_instructions_teaches_deferred_tool_loading(self, tmp_path: Path) -> None:
+        # FRICTION (2026-07-03, team-lead, "(tool loading)", affordance_gap):
+        # lore's own tools are commonly loaded behind a deferred ToolSearch in
+        # the consuming agent's harness; a brief/instructions block that never
+        # says so loses to grep by default (subagent briefs never mentioned
+        # lore -> subagents never used it). The instructions must teach the
+        # consumer that a ToolSearch load may be needed before these tools are
+        # callable.
+        instructions = self._instructions(tmp_path)
+        assert "ToolSearch" in instructions
 
 
 class TestToolDescriptions:
@@ -1255,6 +1419,33 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
         "tier",
         "test_references",
         "reason",
+    },
+    # P6-tail: ImpactResult is a SCALAR return (mirrors lore_references /
+    # lore_index_status), so its own fields are top-level properties; its
+    # nested ModuleRollup fields surface under $defs.
+    "lore_impact": {
+        "target",
+        "verdict",
+        "production_references",
+        "test_references",
+        "covering_tests",
+        "direct_consumers",
+        "module_rollups",
+        "elided",
+        "caveat",
+        "formatted",
+        "module",
+        "consumer_count",
+    },
+    # P6-tail: MapResult is also a SCALAR return; its nested MapEntry fields
+    # surface under $defs.
+    "lore_map": {
+        "entries",
+        "elided_modules",
+        "formatted",
+        "module",
+        "rank",
+        "symbols",
     },
 }
 
@@ -1738,6 +1929,436 @@ class TestRegisteredToolWrappers:
             assert isinstance(item, dict)
             assert "qualified_name" in item
             assert "reason" in item
+
+
+# --------------------------------------------------------------------------- #
+# lore_impact / lore_map tool wiring (P6-tail): the two new verdict-bearing
+# graph-read tools riding the SAME AppContext-handler + FastMCP-wrapper
+# pattern the twelve built-in tools above already use. The ENGINE algorithms
+# (PageRank / depth-clamped rollups / caveat text / elision math) are already
+# pinned behaviourally in test_impact.py / test_map.py against a hand-built
+# FakeSurrealCodeGraph; everything below instead proves the WIRING seam: the
+# real tool is registered, the real AppContext threads the real code graph +
+# a real rebuild probe into the engine, and the served payload (handler
+# return value AND FastMCP structuredContent) carries the engine's real
+# fields end to end.
+# --------------------------------------------------------------------------- #
+class TestImpactMapToolBehaviourEndToEnd:
+    """``ctx.impact`` / ``ctx.map`` return the engines' structured result over a
+    real-indexed corpus — the handler-level half of the P6-tail tool wiring
+    (mirrors ``TestToolBehaviourEndToEnd`` for the twelve built-in tools).
+    """
+
+    @pytest_asyncio.fixture()
+    async def indexed_context(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> AsyncIterator[AppContext]:
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
+        (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            yield ctx
+        finally:
+            await ctx.aclose()
+
+    async def test_impact_returns_structured_result_with_nonempty_caveat(
+        self, indexed_context: AppContext
+    ) -> None:
+        result = await indexed_context.impact(_IMPACT_TARGET_LIVE, depth=1)
+
+        assert result.target == _IMPACT_TARGET_LIVE
+        assert result.verdict  # "live" or "dead (heuristic)" — either is a real verdict
+        assert isinstance(result.production_references, int)
+        assert isinstance(result.test_references, int)
+        assert result.caveat, "the caveat must never be empty on a served verdict"
+        assert result.caveat in result.formatted
+
+    @pytest.mark.parametrize(
+        "target_form",
+        [
+            pytest.param(_IMPACT_TARGET_LIVE, id="fqn-form"),
+            pytest.param("BaseRouter", id="bare-form"),
+        ],
+    )
+    async def test_impact_verdict_is_live_for_a_referenced_symbol(
+        self, indexed_context: AppContext, target_form: str
+    ) -> None:
+        # pkg.base.BaseRouter is imported (and inherited from) by pkg.router —
+        # a genuine production reference, so the served verdict must be "live".
+        # Parametrised over BOTH the fully-qualified AND the bare form: the
+        # bare-name bridge (graph_surreal.py's answers_to fan-out, mirroring
+        # what_imports's own bridge — a concurrent cycle) makes both
+        # legitimate queries for the SAME symbol, so a caller who doesn't
+        # know/type the FQN must still get the identical verdict through the
+        # lore_impact tool wiring.
+        result = await indexed_context.impact(target_form, depth=1)
+        assert result.verdict == "live"
+        assert result.production_references >= 1
+
+    async def test_impact_depth_flows_from_direct_consumers_to_module_rollups(
+        self, indexed_context: AppContext
+    ) -> None:
+        depth_one = await indexed_context.impact(_IMPACT_TARGET_LIVE, depth=1)
+        depth_two = await indexed_context.impact(_IMPACT_TARGET_LIVE, depth=2)
+
+        assert depth_one.direct_consumers, "depth 1 must render the direct consumer list"
+        assert depth_one.module_rollups == []
+        assert depth_two.module_rollups, "depth 2 must render module rollups instead"
+        assert depth_two.direct_consumers == []
+
+    async def test_impact_unknown_target_raises_naming_it_and_search_code(
+        self, indexed_context: AppContext
+    ) -> None:
+        from loremaster.impact import ImpactTargetNotFoundError
+
+        with pytest.raises(ImpactTargetNotFoundError) as exc_info:
+            await indexed_context.impact(_IMPACT_UNKNOWN_TARGET, depth=1)
+        message = str(exc_info.value)
+        assert _IMPACT_UNKNOWN_TARGET in message
+        assert "search_code" in message
+
+    async def test_map_returns_structured_result_with_entries_and_formatted(
+        self, indexed_context: AppContext
+    ) -> None:
+        result = await indexed_context.map()
+
+        assert result.entries, "a non-empty indexed corpus must yield map entries"
+        assert isinstance(result.elided_modules, int)
+        assert result.formatted
+        for entry in result.entries:
+            assert entry.module in result.formatted
+
+
+class TestImpactMapRegisteredToolWrappers:
+    """Drive the REGISTERED ``lore_impact`` / ``lore_map`` FastMCP wrappers
+    (not the AppContext handlers) — mirrors ``TestRegisteredToolWrappers``
+    above for the twelve built-in tools. Proves the served
+    ``structuredContent`` (the wire payload a real MCP client receives, not
+    just the pre-serialisation handler return value) carries the engine's
+    fields, and that an unknown target surfaces as a ``ToolError`` (FastMCP's
+    ``Tool.run`` wraps ANY handler exception in one uniformly, so this is the
+    "ToolError-shaped failure" mission item 2 asks for).
+    """
+
+    @pytest_asyncio.fixture()
+    async def indexed(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> AsyncIterator[tuple[Any, AppContext]]:
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
+        (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        mcp = build_mcp_server(LoreServer(config))
+        try:
+            yield mcp, ctx
+        finally:
+            await ctx.aclose()
+
+    @staticmethod
+    async def _structured(mcp: Any, name: str, ctx: AppContext, /, **kwargs: Any) -> Any:
+        tool = mcp._tool_manager.get_tool(name)  # noqa: SLF001 - test-only introspection
+        _unstructured, structured = await tool.run(
+            kwargs, context=_FakeToolContext(ctx), convert_result=True
+        )
+        return structured
+
+    async def test_lore_impact_wrapper_serves_a_nonempty_caveat_in_structured_content(
+        self, indexed: tuple[Any, AppContext]
+    ) -> None:
+        mcp, ctx = indexed
+        structured = await self._structured(
+            mcp, "lore_impact", ctx, target=_IMPACT_TARGET_LIVE, depth=1
+        )
+        assert isinstance(structured, dict)
+        assert structured["target"] == _IMPACT_TARGET_LIVE
+        assert structured["verdict"] == "live"
+        assert structured["caveat"], "the served caveat must be non-empty on the wire"
+        assert "production_references" in structured
+        assert "covering_tests" in structured
+        assert "direct_consumers" in structured
+        assert "module_rollups" in structured
+
+    async def test_lore_impact_wrapper_depth_two_serves_module_rollups(
+        self, indexed: tuple[Any, AppContext]
+    ) -> None:
+        mcp, ctx = indexed
+        structured = await self._structured(
+            mcp, "lore_impact", ctx, target=_IMPACT_TARGET_LIVE, depth=2
+        )
+        assert structured["module_rollups"], "depth=2 must serve rollups over the wire"
+        assert structured["direct_consumers"] == []
+
+    async def test_lore_impact_wrapper_unknown_target_raises_tool_error_naming_it(
+        self, indexed: tuple[Any, AppContext]
+    ) -> None:
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        mcp, ctx = indexed
+        with pytest.raises(ToolError) as exc_info:
+            await self._structured(
+                mcp, "lore_impact", ctx, target=_IMPACT_UNKNOWN_TARGET, depth=1
+            )
+        message = str(exc_info.value)
+        assert _IMPACT_UNKNOWN_TARGET in message
+        assert "search_code" in message
+
+    async def test_lore_map_wrapper_serves_entries_and_formatted(
+        self, indexed: tuple[Any, AppContext]
+    ) -> None:
+        mcp, ctx = indexed
+        structured = await self._structured(mcp, "lore_map", ctx)
+        assert isinstance(structured, dict)
+        assert structured["entries"], "a non-empty indexed corpus must serve map entries"
+        assert "elided_modules" in structured
+        assert structured["formatted"]
+
+
+class TestMapBudgetAndFocusWiring:
+    """``budget`` and ``focus`` genuinely reach ``MapEngine.map`` through the
+    AppContext handler — the wiring proof; the PageRank/budget ALGORITHM
+    itself is already pinned behaviourally in test_map.py against a hand-built
+    graph, so these two fixtures are real-indexed but otherwise minimal.
+    """
+
+    @pytest_asyncio.fixture()
+    async def filler_context(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> AsyncIterator[AppContext]:
+        slug = _slug()
+        live = tmp_path / "live"
+        for rel_path, source in _map_budget_filler_corpus().items():
+            file_path = live / rel_path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(source, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            yield ctx
+        finally:
+            await ctx.aclose()
+
+    @pytest_asyncio.fixture()
+    async def hub_island_context(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> AsyncIterator[AppContext]:
+        slug = _slug()
+        live = tmp_path / "live"
+        live.mkdir(parents=True, exist_ok=True)
+        for rel_path, source in _map_hub_island_corpus().items():
+            (live / rel_path).write_text(source, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            yield ctx
+        finally:
+            await ctx.aclose()
+
+    async def test_small_budget_yields_the_elision_trailer(
+        self, filler_context: AppContext
+    ) -> None:
+        result = await filler_context.map(budget=_PRODUCTION_MAP_BUDGET_FLOOR)
+
+        assert result.elided_modules > 0, (
+            f"{_MAP_BUDGET_FILLER_FILE_COUNT} modules must not all fit in the "
+            f"floor budget — some must be elided"
+        )
+        assert _PRODUCTION_MAP_ELISION_FRAGMENT in result.formatted
+
+    async def test_generous_budget_elides_nothing_for_the_same_filler_corpus(
+        self, filler_context: AppContext
+    ) -> None:
+        # The seam proof that ``budget`` genuinely FLOWS (not hardcoded to the
+        # floor internally): the SAME corpus that overflows the floor budget
+        # above must NOT elide anything once given a generous budget.
+        result = await filler_context.map(budget=6000)
+        assert result.elided_modules == 0
+        assert _PRODUCTION_MAP_ELISION_FRAGMENT not in result.formatted
+
+    @pytest.mark.parametrize(
+        "focus_form",
+        [
+            pytest.param(_MAP_FOCUS_SYMBOL, id="bare-form"),
+            pytest.param("island.island_fn", id="fqn-form"),
+        ],
+    )
+    async def test_focus_changes_the_top_entry_versus_unfocused(
+        self, hub_island_context: AppContext, focus_form: str
+    ) -> None:
+        # Parametrised over BOTH the bare AND the fully-qualified focus form:
+        # the bare-name bridge (graph_surreal.py's answers_to fan-out — a
+        # concurrent cycle) makes both legitimate queries for the SAME
+        # symbol, so lore_map's focus resolution must promote the island
+        # regardless of which form the caller passes.
+        unfocused = await hub_island_context.map()
+        focused = await hub_island_context.map(focus=focus_form)
+
+        assert unfocused.entries[0].module == _MAP_HUB_MODULE, (
+            "an unfocused map over this corpus must rank the globally-dominant "
+            "hub first (imported by two production files vs the island's one)"
+        )
+        assert focused.entries[0].module == _MAP_ISLAND_MODULE, (
+            "focusing on the island's own symbol must promote its module to "
+            "the top entry, away from the globally-dominant hub"
+        )
+        assert focused.entries[0].module != unfocused.entries[0].module
+
+    async def test_unknown_focus_raises_naming_it_and_search_code(
+        self, hub_island_context: AppContext
+    ) -> None:
+        from loremaster.map import MapFocusNotFoundError
+
+        with pytest.raises(MapFocusNotFoundError) as exc_info:
+            await hub_island_context.map(focus=_MAP_UNKNOWN_FOCUS)
+        message = str(exc_info.value)
+        assert _MAP_UNKNOWN_FOCUS in message
+        assert "search_code" in message
+
+
+class TestImpactMapRebuildingGate:
+    """Verdict-bearing lore_impact / lore_map calls NEVER serve mid-rebuild —
+    the graded honest-emptiness doctrine applied at the TOOL-WIRING level.
+
+    Unlike the four EXISTING corpus-read tools (search_code / what_imports /
+    blast_radius / tests_for), which only raise when their result WOULD BE
+    empty (``AppContext._raise_if_empty_during_rebuild``), ``ImpactEngine`` /
+    ``MapEngine`` gate UNCONDITIONALLY — even a target/corpus that would serve
+    a perfectly healthy, non-empty verdict must still raise while a rebuild is
+    in flight. This proves the AppContext wiring actually threads a LIVE
+    ``rebuild_notice`` probe into both engines (not just that the engines CAN
+    gate — already pinned in test_impact.py / test_map.py against an injected
+    fake probe).
+    """
+
+    @pytest_asyncio.fixture()
+    async def indexed_context(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> AsyncIterator[AppContext]:
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
+        (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            yield ctx
+        finally:
+            await ctx.aclose()
+
+    @staticmethod
+    async def _seed_in_progress_rebuild(ctx: AppContext) -> None:
+        """Seed the SAME manifest-meta shape a real background rebuild writes.
+
+        Mirrors ``build_app_context``'s own rebuild-status JSON shape (the
+        producer this reader must agree with, clause 5) — the identical blob
+        ``test_schema_rebuild.py``'s own ``_seed_in_progress_rebuild`` helper
+        writes.
+        """
+        import json
+
+        from loremaster.index.schema import SCHEMA_REBUILD_STATUS_META_KEY
+
+        await ctx.manifest.meta_set(
+            SCHEMA_REBUILD_STATUS_META_KEY,
+            json.dumps(
+                {
+                    "state": "in_progress",
+                    "done": 3,
+                    "total": 118,
+                    "reason": "fingerprint_mismatch",
+                    "from_fingerprint": "a" * 64,
+                    "to_fingerprint": "b" * 64,
+                }
+            ),
+        )
+
+    async def test_impact_never_serves_a_verdict_mid_rebuild_even_over_a_live_target(
+        self, indexed_context: AppContext
+    ) -> None:
+        # pkg.base.BaseRouter genuinely has a production reference -- a
+        # healthy call would serve verdict="live". Mid-rebuild it must still
+        # raise, never serve that (or any) verdict.
+        await self._seed_in_progress_rebuild(indexed_context)
+
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
+            await indexed_context.impact(_IMPACT_TARGET_LIVE, depth=1)
+        message = str(exc_info.value).lower()
+        assert "rebuild" in message
+        assert _RETRY_FRAGMENT in message
+
+    async def test_map_never_serves_a_map_mid_rebuild_even_over_a_populated_corpus(
+        self, indexed_context: AppContext
+    ) -> None:
+        await self._seed_in_progress_rebuild(indexed_context)
+
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
+            await indexed_context.map()
+        message = str(exc_info.value).lower()
+        assert "rebuild" in message
+        assert _RETRY_FRAGMENT in message
+
+
+class TestImpactMapProductionInvariants:
+    """Structural pin (not behavioural): the AppContext composition hands
+    BOTH new engines the SAME code graph every other tool reads — built with
+    the project's configured roots.
+
+    Why this matters (the P6-impact-green FRICTION note, REPORT-impact-
+    green-3.md): astroid resolution is silently DISABLED when a graph is
+    constructed with no ``project_roots``
+    (``SurrealCodeGraph._resolution_enabled = bool(project_roots)``) — a
+    rootless graph resolves only bare names, so cross-module references
+    quietly vanish and every reference-backed verdict (lore_impact's
+    live/dead call, lore_map's PageRank weights, lore_dead_code) drifts
+    toward FALSE-DEAD. Wiring the engines to a separately-built graph (or one
+    built without roots) would reproduce that exact class of bug even though
+    every unit-level engine test (test_impact.py / test_map.py, which inject
+    their OWN correctly-rooted fake graph directly) stays green — hence a
+    dedicated structural pin at the WIRING seam, not a behavioural re-proof.
+    """
+
+    @pytest_asyncio.fixture()
+    async def indexed_context(
+        self, tmp_path: Path, qdrant: AsyncQdrantClient
+    ) -> AsyncIterator[AppContext]:
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
+        (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            yield ctx
+        finally:
+            await ctx.aclose()
+
+    async def test_impact_engine_reads_through_the_same_rooted_ctx_graph(
+        self, indexed_context: AppContext
+    ) -> None:
+        engine = indexed_context._impact_engine  # noqa: SLF001 - structural wiring pin
+        assert engine._graph is indexed_context.code_graph  # noqa: SLF001
+        assert indexed_context.code_graph._derivation._resolution_enabled is True  # noqa: SLF001
+
+    async def test_map_engine_reads_through_the_same_rooted_ctx_graph(
+        self, indexed_context: AppContext
+    ) -> None:
+        engine = indexed_context._map_engine  # noqa: SLF001 - structural wiring pin
+        assert engine._graph is indexed_context.code_graph  # noqa: SLF001
+        assert indexed_context.code_graph._derivation._resolution_enabled is True  # noqa: SLF001
 
 
 # --------------------------------------------------------------------------- #

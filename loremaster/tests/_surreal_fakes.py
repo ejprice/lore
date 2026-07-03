@@ -1166,10 +1166,36 @@ class FakeSurrealCodeGraph:
             tier=tier,
         )
 
+    @staticmethod
+    def _bare_aware_equals(dst: str, target: str) -> bool:
+        """Whether ``dst`` matches ``target`` by exact FQN, or — ONLY when
+        ``target`` is itself bare — by their shared bare last segment.
+
+        Mirrors the REAL graph's literal name-id equality plus its gated
+        ``answers_to`` bridge (:meth:`~loremaster.graph_surreal.
+        SurrealCodeGraph._bare_name_answerers`, consumed by ``references`` /
+        ``_reverse_neighbours``): a genuinely bare ``target`` (no dotted
+        qualifier) bridges to every ``dst`` sharing that bare last segment —
+        the FQN-collision fan-out — because the real graph's ``answers_to``
+        relation links EVERY definition to its own bare name. A DOTTED
+        ``target`` (a full/wrong FQN) still matches an UNRESOLVED reference
+        recorded as the literal bare string (``dst`` itself has no dots), but
+        NEVER a resolved multi-segment ``dst`` that merely shares the same
+        last segment — that would be the wrong-FQN-sharing-only-the-bare-
+        segment over-match this alignment fixes (a plausible wrong-module
+        guess must not silently hit an unrelated same-named symbol).
+        """
+        if dst == target:
+            return True
+        target_bare = CodeGraph._bare_name(target)
+        if target == target_bare:
+            return CodeGraph._bare_name(dst) == target_bare
+        return dst == target_bare
+
     def _matches(self, dst: str, target: str) -> bool:
-        """Whether an edge dst matches ``target`` by fqn, bare, or module prefix."""
-        bare = CodeGraph._bare_name(target)
-        if dst == target or CodeGraph._bare_name(dst) == bare:
+        """Whether an edge dst matches ``target`` by fqn, gated bare name
+        (:meth:`_bare_aware_equals`), or module prefix."""
+        if self._bare_aware_equals(dst, target):
             return True
         # A module target reaches every symbol resolved under ``<module>.``.
         return dst.startswith(f"{target}.")
@@ -1181,11 +1207,15 @@ class FakeSurrealCodeGraph:
         Builds each :class:`~loremaster.graph.GraphNode` through the SAME
         ``_graph_node`` shim the keyed queries use, so an enumerated node is
         byte-identical to the one ``what_imports`` / ``blast_radius`` return.
+        Deduplicated by node id — parity with the real graph's own
+        ``_dedupe_by_id`` convention, so building the same fragment twice can
+        never surface a duplicate here either.
         """
-        return [
-            self._graph_node(tier, file_path, node)
-            for tier, file_path, node in self._all_nodes()
-        ]
+        seen: dict[str, GraphNode] = {}
+        for tier, file_path, node in self._all_nodes():
+            graph_node = self._graph_node(tier, file_path, node)
+            seen.setdefault(graph_node.id, graph_node)
+        return list(seen.values())
 
     async def what_imports(self, target: str) -> list[GraphNode]:
         """The MODULE nodes that import ``target`` (by fqn / bare / module reach)."""
@@ -1266,8 +1296,15 @@ class FakeSurrealCodeGraph:
         return list(related.values())
 
     async def references(self, name: str) -> ReferenceSummary:
-        """The reference profile of ``name`` split production vs test."""
-        bare = CodeGraph._bare_name(name)
+        """The reference profile of ``name`` split production vs test.
+
+        Matching reuses :meth:`_bare_aware_equals` (the SAME gated bare-name
+        equality ``_matches`` uses for ``what_imports`` / ``blast_radius`` /
+        ``tests_for``) — never a second, drifting copy of the literal-vs-bare
+        comparison. No module-prefix arm here: the real graph's own
+        ``references`` has none either (that reach is ``what_imports`` /
+        ``blast_radius``-only).
+        """
         production: set[str] = set()
         test: set[str] = set()
         referencing: list[GraphNode] = []
@@ -1275,7 +1312,7 @@ class FakeSurrealCodeGraph:
             for edge in slice_.edges:
                 if edge.kind not in _REFERENCE_KINDS:
                     continue
-                if not (edge.dst == name or CodeGraph._bare_name(edge.dst) == bare):
+                if not self._bare_aware_equals(edge.dst, name):
                     continue
                 if edge.src == name:
                     continue  # self-reference excluded

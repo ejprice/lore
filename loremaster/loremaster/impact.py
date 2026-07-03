@@ -254,6 +254,7 @@ class ImpactEngine:
             direct_consumers=direct_consumers,
             module_rollups=module_rollups,
             elided=elided,
+            max_consumers=max_consumers,
         )
         return ImpactResult(
             target=target,
@@ -301,8 +302,9 @@ class ImpactEngine:
         ``ReferenceSummary.referencing`` mixes production and test referrers;
         this filters to non-test file paths via the SAME
         :meth:`~loremaster.graph.CodeGraph._is_test_path` helper the graph
-        itself uses to build the split, so the direct-consumer list can never
-        drift from the counted ``production_references`` split.
+        itself uses to build the split, so the direct-consumer list stays
+        aligned with the counted ``production_references`` split under normal
+        operation (both derive from the identical per-source classification).
         """
         return sorted(
             {
@@ -388,12 +390,16 @@ class ImpactEngine:
         direct_consumers: list[str],
         module_rollups: list[ModuleRollup],
         elided: int,
+        max_consumers: int,
     ) -> str:
         """Render the compact, token-efficient impact block.
 
         One line per fact — never a raw dump — so a one-symbol impact query
         over a small corpus stays well under the pinned line-count ceiling
-        even with every optional section present.
+        even with every optional section present. ``max_consumers`` is the
+        caller's OWN cap (rendered verbatim in the elision marker) — never the
+        kept-plus-elided total, which is a different, larger number whenever
+        the cap actually bit.
         """
         lines = [
             f"impact: {target}",
@@ -412,7 +418,6 @@ class ImpactEngine:
             )
             lines.append(f"modules: {rollup_text}")
         if elided:
-            cap = len(direct_consumers) or len(module_rollups)
-            lines.append(_ELISION_TEMPLATE.format(count=elided, cap=cap + elided))
+            lines.append(_ELISION_TEMPLATE.format(count=elided, cap=max_consumers))
         lines.append(_CAVEAT_TEXT)
         return "\n".join(lines)

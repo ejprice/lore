@@ -85,8 +85,21 @@ from loremaster.graph import (
     GraphNode,
     ReferenceSummary,
 )
+# P6-tail (lore_impact / lore_map): ImpactEngine/MapEngine and their scalar
+# result models. The bound/cap constants are IMPORTED (not re-typed) from the
+# engines' own modules -- single source of truth for the tool-surface Field
+# constraints below (mirrors the ``_PYTHON_SUFFIX as PYTHON_SUFFIX`` pattern
+# already used for the indexer's constant just below).
+from loremaster.impact import ImpactEngine, ImpactResult
+from loremaster.impact import _DEFAULT_MAX_CONSUMERS as _IMPACT_DEFAULT_MAX_CONSUMERS
+from loremaster.impact import _DEPTH_MAX as _IMPACT_DEPTH_MAX
+from loremaster.impact import _DEPTH_MIN as _IMPACT_DEPTH_MIN
 from loremaster.index.indexer import _PYTHON_SUFFIX as PYTHON_SUFFIX
 from loremaster.index.indexer import IndexSummary
+from loremaster.map import MapEngine, MapResult
+from loremaster.map import _BUDGET_CAP as _MAP_BUDGET_CAP
+from loremaster.map import _BUDGET_DEFAULT as _MAP_DEFAULT_BUDGET
+from loremaster.map import _BUDGET_FLOOR as _MAP_BUDGET_FLOOR
 from loremaster.memory.store import RecalledMemory
 from loremaster.read_file import FileSpan
 from loremaster.search import DetailSelector, SearchResult
@@ -805,12 +818,31 @@ _INSTRUCTIONS = (
     "— zero production references (test-only consumers count as dead). A HEURISTIC detector, "
     "not proof: dynamic dispatch, decorators, and public API used outside the tree can evade "
     "it. By default excludes test nodes, dunder methods, and __main__/__init__ entrypoints.\n"
+    "- lore_impact(target, depth=1): who depends on target, in ONE call — production/test "
+    "reference counts, covering tests, and (depth 1) direct consumer names or (depth > 1) a "
+    "per-module rollup, plus a live / dead (heuristic) verdict carrying an explicit "
+    "astroid-bounds caveat. A 'dead' verdict is a LEAD to investigate, never a deletion "
+    "order. Reach for this before removing or refactoring something lore_dead_code flagged.\n"
+    "- lore_map(budget=1500, focus=None): a PageRank-ranked, token-budgeted map of which "
+    "modules matter most in this project (each with its rendered symbol names), optionally "
+    "re-centered on one symbol's own neighbourhood via focus. Reach for this FIRST when you "
+    "don't yet know where to look.\n"
     "- lore_index_status(): the freshness/health roll-up (indexed / in-flight / failed "
     "counts) read straight from the manifest — zero embeds, cheap.\n"
     "- lore_reindex(tier=None): force a whole-tier reconcile sweep (or all tiers). The "
     "heavy 'make everything current now' hammer — not a per-file wait.\n"
     "- lore_save_memory(text, ...) / lore_recall_memory(query, ...): the project-memory "
     "store (see MEMORY below).\n"
+    "\n"
+    "WORKFLOW LADDER when you don't already know exactly where to look: orient with "
+    "lore_map, locate specifics with lore_search_code, pin the exact definition with "
+    "lore_get_symbol, then verify safety with lore_impact before you touch anything — "
+    "lore_map -> lore_search_code -> lore_get_symbol -> lore_impact is the default chain.\n"
+    "\n"
+    "TOOL LOADING: if your harness exposes MCP tools behind a deferred loader (a ToolSearch- "
+    "style tool that must select these before they are callable), load lore's tools "
+    "explicitly up front — a lore tool that never gets ToolSearch-loaded is invisible to "
+    "you, so ask for it rather than assuming lore is unavailable.\n"
     "\n"
     "CITATIONS: every lore_search_code / lore_read_file result carries a "
     "[SOURCE:file:line] citation plus a stable 'Key:' line (the chunk key) and a fenced "
@@ -1014,6 +1046,22 @@ class AppContext:
         self.watcher_started: bool = False
         # The background schema-rebuild asyncio.Task (A7); None when no rebuild is running.
         self.schema_rebuild_task: Any = None
+        # P6-tail (lore_impact / lore_map): both engines compose over THIS SAME
+        # rooted ``code_graph`` (never a separately-built or rootless one -- a
+        # rootless graph silently disables astroid resolution and every
+        # reference-backed verdict drifts toward false-dead, the P6-impact-green
+        # FRICTION lesson) and share the SAME ``_rebuild_notice`` probe method
+        # below, so a verdict/ranking is never served mid-rebuild -- the identical
+        # gating discipline the six corpus-read tool handlers above apply via
+        # ``_raise_if_empty_during_rebuild`` / ``_rebuilding_error_or``, just
+        # enforced INSIDE the engine (it checks before running any query) rather
+        # than wrapped around an already-computed result.
+        self._impact_engine = ImpactEngine(graph=code_graph, rebuild_notice=self._rebuild_notice)
+        self._map_engine = MapEngine(
+            graph=code_graph,
+            count_tokens=self._count_tokens_single,
+            rebuild_notice=self._rebuild_notice,
+        )
 
     # -- tool handlers (the single end-to-end surface) ---------------------
 
@@ -1248,6 +1296,39 @@ class AppContext:
             max_results=max_results,
         )
 
+    async def impact(
+        self,
+        target: str,
+        depth: int = 1,
+        max_consumers: int = _IMPACT_DEFAULT_MAX_CONSUMERS,
+    ) -> ImpactResult:
+        """Return the full "who depends on this?" impact profile of ``target``.
+
+        Delegates to ``self._impact_engine`` (constructed in ``__init__`` over
+        THIS context's own ``code_graph`` + ``_rebuild_notice`` probe), which
+        gates itself on that probe BEFORE running any query — a verdict is never
+        served mid-rebuild, even for a target that would otherwise resolve
+        cleanly. ``ImpactRebuildingError`` / ``ImpactTargetNotFoundError``
+        propagate UNCHANGED (each already carries a caller-actionable message —
+        the rebuilding one names the retry hint, the not-found one names the
+        target plus the ``search_code`` next step), mirroring how ``get_symbol``
+        above lets ``GetSymbolError``'s detail reach the agent verbatim.
+        """
+        return await self._impact_engine.impact(target, depth, max_consumers)
+
+    async def map(
+        self, budget: int = _MAP_DEFAULT_BUDGET, focus: str | None = None
+    ) -> MapResult:
+        """Return the rank-ordered, budget-fitted "orient me here" map of the graph.
+
+        Delegates to ``self._map_engine`` (constructed in ``__init__`` over the
+        SAME ``code_graph`` + ``_rebuild_notice`` probe ``impact`` uses above) —
+        a ranking is never served mid-rebuild. ``MapRebuildingError`` /
+        ``MapFocusNotFoundError`` propagate UNCHANGED, mirroring ``impact``'s
+        error-passthrough convention immediately above.
+        """
+        return await self._map_engine.map(budget, focus)
+
     # -- rebuilding-notice seam (shared by the six corpus read tools) -------
     #
     # All six corpus read tools surface a rebuild UNIFORMLY by RAISING — the only
@@ -1309,6 +1390,36 @@ class AppContext:
         if notice is None:
             return error
         return SchemaRebuildingError(f"{error} ({notice})")
+
+    async def _rebuild_notice(self) -> str | None:
+        """The zero-arg rebuild probe injected into ``_impact_engine`` / ``_map_engine``.
+
+        Both engines call this BEFORE running any query and raise their own
+        typed rebuilding error (carrying this notice verbatim plus a retry hint)
+        when it is non-``None`` — the SAME manifest-meta signal
+        (:func:`~loremaster.index.schema.rebuilding_notice`) the six corpus read
+        tools above probe via ``_raise_if_empty_during_rebuild`` /
+        ``_rebuilding_error_or``, just read directly rather than only on an
+        already-empty result (lore_impact/lore_map gate UNCONDITIONALLY, per
+        their own docstrings).
+        """
+        from loremaster.index.schema import rebuilding_notice
+
+        return await rebuilding_notice(self.manifest)
+
+    def _count_tokens_single(self, text: str) -> int:
+        """Adapt the embedder's BATCH token counter to ``MapEngine``'s single-string form.
+
+        The embedder counts a batch (``list[str] -> list[int]``); ``MapEngine``
+        wants a single-string counter (``str -> int``) to measure its growing
+        rendered block. Mirrors the SAME adapter shape
+        :meth:`~loremaster.index.indexer.Indexer._chunk_context`'s ``count_one``
+        already uses for the identical embedder-batch-to-single seam. The
+        explicit ``int()`` cast keeps this typecheck-clean: ``loresigil`` ships
+        no ``py.typed`` marker, so ``count_tokens``'s real ``list[int]`` return
+        type is unfollowed and widens to ``Any`` at the call site.
+        """
+        return int(self.embedder.count_tokens([text])[0])
 
     # -- extension tools (seam 3) ------------------------------------------
 
@@ -2377,7 +2488,7 @@ class _ProcessLifespanGuard:
 
 
 def build_mcp_server(server: LoreServer) -> Any:
-    """Construct the FastMCP server: lifespan + the twelve built-ins + extension tools.
+    """Construct the FastMCP server: lifespan + the fourteen built-ins + extension tools.
 
     The lifespan builds the live :class:`AppContext` from config (the real
     embedder via :func:`~loremaster.embedding.make_embedder_from_config`, a real
@@ -2513,7 +2624,7 @@ _REINDEX_ANNOTATIONS = ToolAnnotations(
 
 
 def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
-    """Register the twelve built-in MCP tools, then the extension-contributed tools.
+    """Register the fourteen built-in MCP tools, then the extension-contributed tools.
 
     Kept separate so the registration list is one readable place. Every built-in
     tool pulls the live :class:`AppContext` off the request's lifespan context and
@@ -2528,7 +2639,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     vs mutating). The consumer-facing ``instructions`` block (:data:`_INSTRUCTIONS`)
     carries the cross-tool model (freshness, citations, memory stance).
 
-    After the twelve built-ins, every registered :class:`Extension`'s seam-3
+    After the fourteen built-ins, every registered :class:`Extension`'s seam-3
     :class:`ToolSpec`\\ s are registered as real FastMCP tools
     (:func:`_register_extension_tools`) — purely additive, with a name-collision
     guard so an extension tool can never silently shadow a built-in or another
@@ -3017,7 +3128,98 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             max_results=max_results,
         )
 
-    # After the twelve built-ins, register the extension-contributed seam-3 tools.
+    @mcp.tool(
+        name="lore_impact",
+        description=(
+            "Answer 'who depends on this, and is it safe to touch?' for ONE symbol "
+            "or module in a single call: production/test reference counts, the "
+            "covering tests, and — depending on 'depth' — either the direct "
+            "consumer names (depth 1) or a per-module rollup of the wider ripple "
+            "(depth > 1), plus an explicit verdict ('live' or 'dead (heuristic)') "
+            "that always carries an astroid-bounds caveat: a 'dead' verdict is a "
+            "LEAD to investigate, never a deletion order, since dynamic / "
+            "framework-mediated call sites can undercount. Reach for this before "
+            "removing or refactoring something lore_dead_code flagged, or whenever "
+            "you need the FULL picture rather than lore_references' raw counts or "
+            "lore_blast_radius' bare node list."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    async def impact(
+        context: Context[Any, AppContext, Any],
+        target: Annotated[
+            str,
+            Field(
+                description=(
+                    "The symbol or module to profile — a dotted name "
+                    "(e.g. 'pkg.router.ChampionRouter' or 'pkg.router') or a bare "
+                    "identity. Raises a clean not-found (naming the target and "
+                    "pointing at lore_search_code) if it matches nothing indexed."
+                )
+            ),
+        ],
+        depth: Annotated[
+            int,
+            Field(
+                ge=_IMPACT_DEPTH_MIN,
+                le=_IMPACT_DEPTH_MAX,
+                description=(
+                    f"Reverse-hop depth for the ripple computation (default 1, min "
+                    f"{_IMPACT_DEPTH_MIN}, max {_IMPACT_DEPTH_MAX}). Depth 1 renders "
+                    "the direct production consumer names; depth greater than 1 "
+                    "switches to a per-module consumer-count rollup of the wider "
+                    "ripple instead."
+                ),
+            ),
+        ] = 1,
+    ) -> ImpactResult:
+        return await _app_context(context).impact(target, depth)
+
+    @mcp.tool(
+        name="lore_map",
+        description=(
+            "Orient yourself in this codebase in one call: a PageRank-style, "
+            "token-budgeted rollup of which modules matter most (each with its "
+            "rendered symbol names), optionally re-centered on one symbol's own "
+            "neighbourhood via 'focus'. Reach for this FIRST when you don't yet "
+            "know where to start — before lore_search_code (which needs a query) "
+            "or lore_blast_radius (which needs a known target) — to get the lay "
+            "of the land, or re-run it focused to see what surrounds a symbol "
+            "you're about to change."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    async def map(
+        context: Context[Any, AppContext, Any],
+        budget: Annotated[
+            int,
+            Field(
+                ge=_MAP_BUDGET_FLOOR,
+                le=_MAP_BUDGET_CAP,
+                description=(
+                    f"Token ceiling for the rendered map (default "
+                    f"{_MAP_DEFAULT_BUDGET}, min {_MAP_BUDGET_FLOOR}, max "
+                    f"{_MAP_BUDGET_CAP}). Modules squeezed out by the budget are "
+                    "counted and named in an explicit elision trailer, never "
+                    "silently dropped."
+                ),
+            ),
+        ] = _MAP_DEFAULT_BUDGET,
+        focus: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "An optional bare or dotted symbol name to re-center the "
+                    "ranking on its own neighbourhood (its defining module plus "
+                    "the modules that reference it), instead of ranking the whole "
+                    "graph uniformly. Omit for an unfocused, whole-corpus map."
+                )
+            ),
+        ] = None,
+    ) -> MapResult:
+        return await _app_context(context).map(budget, focus)
+
+    # After the fourteen built-ins, register the extension-contributed seam-3 tools.
     _register_extension_tools(mcp, server)
 
 
@@ -3054,7 +3256,7 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
     would merely warn and keep the first registration, a silent shadow).
 
     Args:
-        mcp: The FastMCP server (the twelve built-ins are already registered).
+        mcp: The FastMCP server (the fourteen built-ins are already registered).
         server: The composed :class:`LoreServer` whose extensions contribute tools.
 
     Raises:
@@ -3072,7 +3274,7 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
             raise ValueError(
                 f"extension tool {spec.name!r} collides with an already-registered tool; "
                 f"refusing to shadow it on the MCP surface (rename the extension tool — a "
-                f"tool name must be unique across the twelve built-ins and every extension)."
+                f"tool name must be unique across the fourteen built-ins and every extension)."
             )
         wrapper = _extension_tool_wrapper(spec)
         mcp.add_tool(wrapper, name=spec.name, description=spec.description)

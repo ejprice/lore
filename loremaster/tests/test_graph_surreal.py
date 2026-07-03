@@ -2446,3 +2446,285 @@ class TestQuerySeamSdkKeyErrorClassification:
             assert get_call_count() == 2
         finally:
             await live_graph.close()
+
+# ===========================================================================
+# 16. Bare-name bridge — references()/blast_radius() must reach a RESOLVED FQN
+#     dst via a BARE query, exactly the way ``what_imports`` already does
+#     through the ``answers_to`` fan-out.
+#
+# THE BUG (live-reproduced, not guessed): ``references()`` binds
+# ``_P_NAMES: [name_id(name), name_id(bare(name))]`` and ``_reverse_neighbours``
+# binds the base arm the same way — LITERAL equality against the stored
+# ``name`` id. A resolved ``calls``/``imports`` edge's dst is the FULL FQN
+# (``demo.reflib.widget``), which never equals the bare id ``widget`` as a
+# string, so today ``references("widget")`` and ``blast_radius("widget", ...)``
+# silently return an all-zero / empty result even though a real production
+# caller exists — a false-dead verdict / false not-found. ``what_imports``
+# already closes this exact gap via the target node's OWN ``answers_to``
+# fan-out (``TestWhatImports.test_matches_by_bare_name_under_whole_package_
+# build``); this section pins the SAME mechanism for ``references`` /
+# ``blast_radius``.
+# ===========================================================================
+
+
+class TestReferencesBareNameBridge:
+    """``references`` must reach a RESOLVED FQN dst via a bare-name query.
+
+    RED today (live-verified against this exact fixture): ``references
+    ("widget")`` returns ``production_references == 0`` / ``test_references
+    == 0`` although ``demo.consumer.run`` (production) and ``tests.
+    test_reflib.test_widget`` (test) both really call it — the false-negative
+    this bridge cycle exists to fix.
+    """
+
+    async def test_bare_query_reaches_the_same_profile_as_its_fqn(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """``references("widget")`` must equal ``references(FQN_WIDGET)``.
+
+        Independent oracle: ``TestReferences.test_splits_production_and_test_
+        references`` (this file, UNCHANGED) already pins ``FQN_WIDGET``'s own
+        profile (production=2, test=2, read off ``REFLIB_SOURCE``/
+        ``REFCONSUMER_SOURCE``/``REFTEST_SOURCE``). This test does not
+        re-derive that number — it proves the BARE query reaches the
+        IDENTICAL profile via the bridge, plus the sanity floor that the
+        bridge did something rather than degenerate back to zero.
+        """
+        graph, _env = reflib_graph
+        bare_summary = await graph.references("widget")
+        fqn_summary = await graph.references(FQN_WIDGET)
+
+        # The floor: 0 is exactly the false-negative bug this cycle fixes.
+        assert bare_summary.production_references >= 1
+        assert bare_summary.production_references == fqn_summary.production_references
+        assert bare_summary.test_references == fqn_summary.test_references
+        assert {n.qualified_name for n in bare_summary.referencing} == {
+            n.qualified_name for n in fqn_summary.referencing
+        }
+
+    async def test_bare_query_on_an_unreferenced_symbol_stays_empty(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """The bridge must not manufacture references out of nothing.
+
+        ``orphan`` (bare) has no caller at all (independent oracle:
+        ``TestReferences.test_unreferenced_symbol_is_empty_not_error``, this
+        file, unchanged) — the bare bridge finding NO answerer's referencing
+        edges must still yield an honest all-zero summary, never a crash or a
+        spurious hit.
+        """
+        graph, _env = reflib_graph
+        summary = await graph.references("orphan")
+        assert summary.production_references == 0
+        assert summary.test_references == 0
+        assert summary.referencing == []
+
+
+class TestBlastRadiusBareNameBridge:
+    """``blast_radius`` must reach a direct RESOLVED consumer via a bare query.
+
+    RED today (live-verified): ``blast_radius("widget", depth=1, ...)``
+    returns ``[]`` although ``demo.consumer.run`` is one real reverse hop away
+    — ``_reverse_neighbours``'s base arm suffers the identical literal-equality
+    gap ``references`` does.
+    """
+
+    async def test_bare_symbol_reaches_its_direct_consumer(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """Mirrors ``TestBlastRadius.test_finds_direct_reverse_dependents``
+        (the FQN case, unchanged) with the query argument swapped for the bare
+        name — the SAME reverse-dependent must be reachable either way.
+        """
+        graph, _env = reflib_graph
+        affected = {
+            n.qualified_name
+            for n in await graph.blast_radius("widget", depth=1, max_results=50)
+        }
+        assert FQN_RUN in affected
+
+
+# ===========================================================================
+# 17. references() bare-name FQN-collision fan-out — a bare query MERGES every
+#     colliding target's referencing profile into ONE summary. This is the
+#     RESOLVED-edge counterpart to ``TestFqnCollision`` above (which pins the
+#     fan-out for an UNRESOLVED, un-inferable bare reference): here BOTH
+#     colliding definitions are independently resolved from their OWN caller,
+#     so today's literal name-id equality can bridge to NEITHER — the
+#     aggregation itself is what's RED, not merely "a" bridge.
+#
+# THE DECIDED AGGREGATION SHAPE (pin, not re-litigated at STUB/GREEN time):
+# querying by the BARE name returns ONE ``ReferenceSummary`` whose
+# ``production_references`` / ``test_references`` are the counts of the UNION
+# of distinct referencing qualified names across EVERY FQN answering that bare
+# name (not a per-target sum that could double-count a source referencing more
+# than one collidee — this fixture's two consumers each reference only their
+# OWN target, so the union and the naive sum coincide here); ``referencing``
+# is the deduped union of every colliding target's referencing nodes.
+# Querying by a SPECIFIC FQN keeps its existing, narrowly-scoped profile
+# (item 1d's regression guard).
+#
+# OPEN QUESTION for STUB/GREEN (recorded, not resolved here — see the contract
+# report): live-verified against THIS exact fixture, ``what_imports`` — whose
+# ``answers_to`` bridge already ships — ALREADY leaks a bare-name-colliding
+# sibling's importers into a query by ONE target's OWN FULL FQN
+# (``what_imports("routing.alpha_lib.champion_routing")`` today returns BOTH
+# ``routing.alpha_consumer`` AND ``routing.beta_consumer``, because its bridge
+# unconditionally includes ``bare(target)`` even when ``target`` is already an
+# unambiguous FQN). If the fix mechanically reuses that exact bridge for
+# ``references``/``blast_radius``, ``test_fqn_query_stays_scoped_to_its_own_
+# target`` below will regress — the implementer must gate the bare-bridge
+# lookup on whether the QUERY ITSELF is bare, not blindly bridge on
+# ``bare(target)`` for an already-fully-qualified query.
+# ===========================================================================
+
+ROUTING_ALPHA_LIB_SOURCE: str = textwrap.dedent(
+    '''\
+    """routing.alpha_lib — defines its OWN champion_routing."""
+
+
+    def champion_routing(week):
+        """Route the alpha warehouse."""
+        return week * 2
+    '''
+)
+ROUTING_ALPHA_CONSUMER_SOURCE: str = textwrap.dedent(
+    '''\
+    """A production caller of alpha's champion_routing."""
+    from routing.alpha_lib import champion_routing
+
+
+    def alpha_dispatch(week):
+        """The alpha production caller."""
+        return champion_routing(week)
+    '''
+)
+ROUTING_BETA_LIB_SOURCE: str = textwrap.dedent(
+    '''\
+    """routing.beta_lib — a SEPARATE module, ALSO defining champion_routing
+    (same bare name, different FQN, no relation to routing.alpha_lib)."""
+
+
+    def champion_routing(week):
+        """Route the beta warehouse."""
+        return week * 3
+    '''
+)
+ROUTING_BETA_CONSUMER_SOURCE: str = textwrap.dedent(
+    '''\
+    """A production caller of beta's champion_routing."""
+    from routing.beta_lib import champion_routing
+
+
+    def beta_dispatch(week):
+        """The beta production caller."""
+        return champion_routing(week)
+    '''
+)
+
+ROUTING_ALPHA_LIB_PATH: str = "routing/alpha_lib.py"
+ROUTING_ALPHA_CONSUMER_PATH: str = "routing/alpha_consumer.py"
+ROUTING_BETA_LIB_PATH: str = "routing/beta_lib.py"
+ROUTING_BETA_CONSUMER_PATH: str = "routing/beta_consumer.py"
+
+ROUTING_ALPHA_LIB_MODULE: str = "routing.alpha_lib"
+ROUTING_ALPHA_CONSUMER_MODULE: str = "routing.alpha_consumer"
+ROUTING_BETA_LIB_MODULE: str = "routing.beta_lib"
+ROUTING_BETA_CONSUMER_MODULE: str = "routing.beta_consumer"
+
+FQN_ALPHA_ROUTING: str = "routing.alpha_lib.champion_routing"
+FQN_BETA_ROUTING: str = "routing.beta_lib.champion_routing"
+FQN_ALPHA_DISPATCH: str = "routing.alpha_consumer.alpha_dispatch"
+FQN_BETA_DISPATCH: str = "routing.beta_consumer.beta_dispatch"
+
+
+def _write_routing_collide_package(root: Path) -> None:
+    """Materialise the two-module RESOLVED bare-name-collision package on disk."""
+    (root / "routing").mkdir(parents=True, exist_ok=True)
+    (root / "routing" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "routing" / "alpha_lib.py").write_text(ROUTING_ALPHA_LIB_SOURCE, encoding="utf-8")
+    (root / "routing" / "alpha_consumer.py").write_text(
+        ROUTING_ALPHA_CONSUMER_SOURCE, encoding="utf-8"
+    )
+    (root / "routing" / "beta_lib.py").write_text(ROUTING_BETA_LIB_SOURCE, encoding="utf-8")
+    (root / "routing" / "beta_consumer.py").write_text(
+        ROUTING_BETA_CONSUMER_SOURCE, encoding="utf-8"
+    )
+
+
+@pytest_asyncio.fixture()
+async def routing_collide_graph(
+    surreal_env: SurrealEnv,  # noqa: F811
+    tmp_path: Path,
+) -> AsyncIterator[tuple[SurrealCodeGraph, SurrealEnv]]:
+    """A resolution-enabled graph over the two-module bare-name-collision package."""
+    project_root = tmp_path / "project"
+    _write_routing_collide_package(project_root)
+    graph = await _make_and_build_graph(
+        surreal_env,
+        project_root,
+        [
+            (ROUTING_ALPHA_LIB_PATH, ROUTING_ALPHA_LIB_SOURCE, ROUTING_ALPHA_LIB_MODULE),
+            (
+                ROUTING_ALPHA_CONSUMER_PATH,
+                ROUTING_ALPHA_CONSUMER_SOURCE,
+                ROUTING_ALPHA_CONSUMER_MODULE,
+            ),
+            (ROUTING_BETA_LIB_PATH, ROUTING_BETA_LIB_SOURCE, ROUTING_BETA_LIB_MODULE),
+            (
+                ROUTING_BETA_CONSUMER_PATH,
+                ROUTING_BETA_CONSUMER_SOURCE,
+                ROUTING_BETA_CONSUMER_MODULE,
+            ),
+        ],
+    )
+    try:
+        yield graph, surreal_env
+    finally:
+        await graph.close()
+
+
+class TestReferencesBareNameFqnCollisionFanOut:
+    """A bare query aggregates every RESOLVED FQN colliding on that bare name."""
+
+    async def test_bare_query_aggregates_both_colliding_targets(
+        self, routing_collide_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """``references("champion_routing")`` merges alpha's AND beta's callers.
+
+        Independent oracle: each library has exactly ONE production caller
+        (``alpha_dispatch`` / ``beta_dispatch``), structurally identical to the
+        already-pinned ``widget`` shape (``TestReferences.
+        test_splits_production_and_test_references``: one ``from X import Y``
+        module-level import site + one calling-function site == 2 distinct
+        production sources per target). Two non-overlapping targets therefore
+        sum to 4 — read off THIS fixture's own two consumer files, never
+        derived from the bridge code under test. RED today: the aggregate is 0
+        (neither collidee's FQN dst equals the bare id).
+        """
+        graph, _env = routing_collide_graph
+        summary = await graph.references("champion_routing")
+        referrers = {n.qualified_name for n in summary.referencing}
+
+        assert ROUTING_ALPHA_CONSUMER_MODULE in referrers
+        assert FQN_ALPHA_DISPATCH in referrers
+        assert ROUTING_BETA_CONSUMER_MODULE in referrers
+        assert FQN_BETA_DISPATCH in referrers
+        assert summary.production_references == 4
+
+    async def test_fqn_query_stays_scoped_to_its_own_target(
+        self, routing_collide_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """``references(FQN_ALPHA_ROUTING)`` never leaks beta's callers in.
+
+        Regression guard (cycle brief item 1d): the per-target FQN query keeps
+        its existing, narrowly-scoped behaviour (GREEN today) once the bare
+        bridge lands. See this section's OPEN QUESTION banner above: a fix
+        that copies ``what_imports``'s bridge verbatim would break this.
+        """
+        graph, _env = routing_collide_graph
+        summary = await graph.references(FQN_ALPHA_ROUTING)
+        referrers = {n.qualified_name for n in summary.referencing}
+
+        assert referrers == {ROUTING_ALPHA_CONSUMER_MODULE, FQN_ALPHA_DISPATCH}
+        assert summary.production_references == 2
