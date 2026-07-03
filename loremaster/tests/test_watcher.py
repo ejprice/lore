@@ -1550,3 +1550,9 @@ class TestKernelOverflowDetectionDoesNotMutateGlobalParser:
             )
             assert isinstance(current, staticmethod)
             assert current is _PRISTINE_PARSE_EVENT_BUFFER
+
+        # Every repeat FIRED the callback — the only guard against a
+        # "fires once then latches off across repeated overflows" regression
+        # (detection has no latch by design; restored after being dropped as
+        # collateral in the 8ab017c oracle-restoration hunk).
+        assert spy.fired == iterations
