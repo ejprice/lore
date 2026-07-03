@@ -88,6 +88,16 @@ consumed-by-<phase or commit> / superseded).
   reference counts on in-project symbols must be trustworthy before
   lore_impact/dead_code can carry liveness verdicts.
 
+- **2026-07-03 · team-lead (P6) · lore_search_code · affordance_gap** — tried to
+  scope a search to one package with `filters={"path": "lorescribe"}`; silent
+  zero hits. The `path` filter is EXACT-file-match only (it maps to the
+  `file_path` payload key), but "scope to this subtree/package" is the natural
+  intent and there is no prefix affordance and no teaching miss ("path matched
+  no file — it must be a full file path"). Workaround: re-ran unscoped.
+  **Feeds:** P6 pipeline filters (a prefix/tier-aware path scope, or at least a
+  teaching miss on a path that matches nothing) + P8 tool text documenting the
+  exact-match semantics.
+
 ## Consumed
 
 *(none yet — entries move here when a phase/commit addresses them, with the
