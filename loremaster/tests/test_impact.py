@@ -490,6 +490,9 @@ class TestDeterminismAndBounds:
         assert len(result.direct_consumers) == 2
         assert result.elided >= 1
         assert _ELISION_FRAGMENT in result.formatted
+        assert "max_consumers=2" in result.formatted, (
+            "the elision line must report the TRUE cap, not the total"
+        )
 
     async def test_formatted_block_is_compact_and_carries_the_split(
         self, tmp_path: Path, engine_factory: Callable[..., Any]
