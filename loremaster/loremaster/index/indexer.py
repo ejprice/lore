@@ -290,6 +290,12 @@ class Indexer:
         config: The validated :class:`~loremaster.config.LoreConfig`.
         snapshot_root: The on-disk root static tiers are materialised under and
             served from (bind-mounted ``:ro`` at ``/source`` in the live server).
+        snapshot_stamper: Optional :class:`~loremaster.index.snapshots.
+            SnapshotStamper` (the capability layer, mirrors ``code_graph``).
+            When wired, :meth:`index_all` and :meth:`rebuild_all` stamp a new
+            snapshot on a FULLY-successful, genuinely-productive sweep (see
+            :meth:`_maybe_stamp_snapshot`); absent, the indexer behaves exactly
+            as before (backward compatible).
     """
 
     def __init__(
@@ -303,6 +309,7 @@ class Indexer:
         config: LoreConfig,
         snapshot_root: Path,
         code_graph: Any = None,
+        snapshot_stamper: Any = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -317,6 +324,12 @@ class Indexer:
         # per-file index rebuilds that file's Python graph slice; absent, the
         # indexer behaves exactly as before (backward compatible).
         self._code_graph = code_graph
+        # Optional snapshot stamper (P5-C4, the versioning capability layer,
+        # mirrors ``code_graph``). When present, a fully-successful, genuinely
+        # productive sweep (``index_all`` / ``rebuild_all``) stamps a new
+        # ``snapshot`` generation marker; absent, the indexer behaves exactly
+        # as before (backward compatible).
+        self._snapshot_stamper = snapshot_stamper
 
     # -- token-counter adapter ---------------------------------------------
 
@@ -1035,7 +1048,8 @@ class Indexer:
         Iterates :attr:`LoreConfig.effective_roots`, not the raw ``roots`` list,
         so a single-tree config (top-level ``include`` globs and NO ``roots:``)
         indexes its synthesised default live root instead of silently indexing
-        nothing.
+        nothing. On a FULLY-successful, genuinely-productive sweep, stamps a
+        new snapshot generation (see :meth:`_maybe_stamp_snapshot`).
         """
         outcomes: list[IndexOutcome] = []
         rebuilt: list[str] = []
@@ -1045,7 +1059,30 @@ class Indexer:
             outcomes.extend(summary.outcomes)
             rebuilt.extend(summary.tiers_rebuilt)
             skipped_tiers.extend(summary.tiers_skipped)
-        return self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=skipped_tiers)
+        result = self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=skipped_tiers)
+        await self._maybe_stamp_snapshot(result)
+        return result
+
+    async def _maybe_stamp_snapshot(self, summary: IndexSummary) -> None:
+        """Stamp a new snapshot generation iff this sweep fully succeeded AND did
+        something (P5-C4, ledger #25).
+
+        The shared stamp-on-full-success gate :meth:`index_all` and
+        :meth:`rebuild_all` both apply: a no-op sweep (every file fast-path
+        skipped, zero changes) must NOT create a heartbeat snapshot, and a
+        sweep containing even one failed file must stamp NOTHING — not even a
+        partial snapshot for the files that DID succeed. A no-op
+        :attr:`_snapshot_stamper` (the default) makes this a silent no-op,
+        matching the ``code_graph``-style optional-collaborator pattern.
+
+        Args:
+            summary: The just-completed sweep's :class:`IndexSummary`.
+        """
+        if self._snapshot_stamper is None:
+            return
+        if summary.files_failed != 0 or summary.files_indexed <= 0:
+            return
+        await self._snapshot_stamper.stamp()
 
 
     async def rebuild_all(self, fingerprint: str) -> IndexSummary:
@@ -1069,6 +1106,10 @@ class Indexer:
         This method does NOT acquire any writer lock — locking is the caller's job
         (the startup ``_run_schema_rebuild`` holds the watcher's single-writer lock
         for the whole rebuild so it never races the watcher / periodic reconcile).
+
+        A wired :attr:`_snapshot_stamper` also stamps a new snapshot generation
+        on a fully-successful, genuinely-productive rebuild (see
+        :meth:`_maybe_stamp_snapshot`).
 
         Args:
             fingerprint: The SHA-256 hex digest of the current embedding schema
@@ -1136,7 +1177,9 @@ class Indexer:
         await self._write_rebuild_status(
             state=_REBUILD_STATE_DONE, done=done, total=total, fingerprint=fingerprint,
         )
-        return self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=[])
+        result = self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=[])
+        await self._maybe_stamp_snapshot(result)
+        return result
 
     async def stamp_schema_fingerprint(self, fingerprint: str) -> None:
         """Stamp the embedding-schema fingerprint + mark the rebuild status done.

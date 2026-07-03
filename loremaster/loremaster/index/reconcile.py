@@ -85,6 +85,11 @@ class ReconcileEngine:
             composed ``apply`` purges a deleted file's every surface atomically.
         config: The validated :class:`~loremaster.config.LoreConfig`; its roots
             drive the sweep.
+        snapshot_stamper: Optional :class:`~loremaster.index.snapshots.
+            SnapshotStamper` (the capability layer, mirrors ``code_graph``).
+            When wired, :meth:`reconcile` stamps a new snapshot on a
+            FULLY-successful, genuinely-productive sweep; absent, reconcile
+            behaves exactly as before (backward compatible).
     """
 
     def __init__(
@@ -95,6 +100,7 @@ class ReconcileEngine:
         store: Any,
         config: LoreConfig,
         code_graph: Any = None,
+        snapshot_stamper: Any = None,
     ) -> None:
         self._indexer = indexer
         self._manifest = manifest
@@ -104,6 +110,11 @@ class ReconcileEngine:
         # vanished file's graph slice (kept as fresh as the vector index). The
         # per-file re-index path already refreshes the graph through the indexer.
         self._code_graph = code_graph
+        # Optional snapshot stamper (P5-C4, mirrors ``code_graph``). When
+        # present, a fully-successful, genuinely productive sweep stamps a new
+        # ``snapshot`` generation marker; absent, reconcile behaves exactly as
+        # before (backward compatible).
+        self._snapshot_stamper = snapshot_stamper
 
     async def reconcile(self) -> ReconcileSummary:
         """Walk every root per its policy, purge deletions, return a summary.
@@ -112,6 +123,9 @@ class ReconcileEngine:
         walk + fast-path + resume non-indexed; static → version-stamp defer).
         Then, for every LIVE tier, purge the files the manifest still holds but
         that no longer exist on disk (the part the walk structurally cannot do).
+        On a FULLY-successful, genuinely-productive sweep, stamps a new
+        snapshot generation (see :meth:`_maybe_stamp_snapshot`) — mirrors
+        :meth:`~loremaster.index.indexer.Indexer._maybe_stamp_snapshot`'s gate.
 
         Returns:
             The :class:`ReconcileSummary` rolling up every root's per-file
@@ -152,7 +166,27 @@ class ReconcileEngine:
                 "duration_ms": (time.monotonic_ns() - started_ns) / 1_000_000,
             },
         )
+        await self._maybe_stamp_snapshot(result)
         return result
+
+    async def _maybe_stamp_snapshot(self, summary: ReconcileSummary) -> None:
+        """Stamp a new snapshot generation iff this sweep fully succeeded AND did
+        something (P5-C4, ledger #25).
+
+        Mirrors :meth:`~loremaster.index.indexer.Indexer._maybe_stamp_snapshot`'s
+        gate exactly: a no-op sweep (every file fast-path skipped, zero
+        changes) must NOT create a heartbeat snapshot, and a sweep containing
+        even one failed file must stamp NOTHING. A no-op
+        :attr:`_snapshot_stamper` (the default) makes this a silent no-op.
+
+        Args:
+            summary: The just-completed sweep's :class:`ReconcileSummary`.
+        """
+        if self._snapshot_stamper is None:
+            return
+        if summary.files_failed != 0 or summary.files_indexed <= 0:
+            return
+        await self._snapshot_stamper.stamp()
 
     async def _purge_deletions(self) -> int:
         """Purge live-tier manifest rows whose file is gone from disk.
