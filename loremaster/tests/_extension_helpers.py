@@ -32,7 +32,7 @@ from loremaster.config import LoreConfig
 from loremaster.extension import (
     Extension,
     ExtensionContext,
-    PayloadIndexSpec,
+    FieldIndexSpec,
     ToolSpec,
 )
 from lorescribe.base import Chunker
@@ -269,10 +269,10 @@ class FakeExtension(Extension):
         return FakeConfigModel
 
     # seam 8
-    def payload_indexes(self) -> list[PayloadIndexSpec]:
+    def payload_indexes(self) -> list[FieldIndexSpec]:
         return [
-            PayloadIndexSpec(field_name="model_name", schema_type="keyword"),
-            PayloadIndexSpec(field_name="is_installed", schema_type="bool"),
+            FieldIndexSpec(field_name="model_name", kind="keyword"),
+            FieldIndexSpec(field_name="is_installed", kind="bool"),
         ]
 
     # seam 9

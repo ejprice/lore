@@ -172,12 +172,21 @@ _ENRICHMENT_UNAVAILABLE = "⚠ enrichment unavailable"  # "⚠ enrichment unavai
 _FENCE_CHAR = "`"
 _MIN_FENCE_WIDTH = 3
 
-# item 10: the render-sanitiser's control-char class — C0 controls (incl. TAB,
-# LF, CR, the ANSI/OSC introducer ESC ``\x1b`` and its BEL terminator ``\x07``),
-# DEL, and the C1 controls. A run of these collapses to a single space so a hostile
-# identity/path stays one logical line and cannot smuggle terminal-framing or a
-# fake second citation into a rendered field.
-_CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+# item 10 (audit followup): the render-sanitiser's hostile-char class — C0
+# controls (incl. TAB, LF, CR, the ANSI/OSC introducer ESC ``\x1b`` and its BEL
+# terminator ``\x07``), DEL, and the C1 controls, PLUS two Unicode sub-ranges
+# that are not control characters but are equally capable of corrupting a
+# rendered citation/memory line: the bidi override (U+202A-202E) and isolate
+# (U+2066-2069) formatting characters (can visually rewrite the line in a
+# bidi-aware terminal/UI) and zero-width characters (U+200B ZERO WIDTH SPACE,
+# U+FEFF ZERO WIDTH NO-BREAK SPACE/BOM, which can hide characters inside it). A
+# run of any of these collapses to a single space so a hostile identity/path/
+# memory text stays one logical, visually-honest line and cannot smuggle
+# terminal-framing, a fake second citation, or a hidden/reordered payload into a
+# rendered field.
+_CONTROL_CHAR_PATTERN = re.compile(
+    r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\u200b\ufeff]+"
+)
 # item 10: matches a run of consecutive backticks, for sizing the wrapper fence.
 _BACKTICK_RUN_PATTERN = re.compile(r"`+")
 
@@ -192,12 +201,13 @@ _WAIT_POLL_INTERVAL_S = 0.05
 def _sanitise_line(text: str) -> str:
     """Collapse control chars / newlines in a NON-fenced rendered field (item 10).
 
-    Any run of control characters (:data:`_CONTROL_CHAR_PATTERN` — C0/C1 controls,
-    DEL, incl. an ANSI/OSC ``ESC`` introducer and a newline) becomes a single
-    space, and leading/trailing whitespace is stripped, so the field renders as a
-    single logical line that cannot break the citation line it sits on or escape a
-    fence. Source *bodies* are NOT run through this — they stay verbatim inside a
-    backtick fence.
+    Any run of hostile characters (:data:`_CONTROL_CHAR_PATTERN` — C0/C1
+    controls, DEL, incl. an ANSI/OSC ``ESC`` introducer and a newline, PLUS bidi
+    override/isolate and zero-width characters) becomes a single space, and
+    leading/trailing whitespace is stripped, so the field renders as a single
+    logical, visually-honest line that cannot break the citation line it sits on,
+    escape a fence, or smuggle a hidden/reordered payload. Source *bodies* are
+    NOT run through this — they stay verbatim inside a backtick fence.
     """
     return _CONTROL_CHAR_PATTERN.sub(" ", text).strip()
 

@@ -121,6 +121,20 @@ _MEMORY_KIND = "memory"
 _HIT_KIND = "hit"
 _MEMORY_INJECTION_CAP = 2
 
+# item 10 (audit followup): bidi override/isolate + zero-width chars OUTSIDE the
+# C0/C1 control range the shipped sanitiser collapses — a hostile file_path/
+# identity/memory text can smuggle these to visually rewrite (bidi) or hide
+# (zero-width) characters in a rendered citation/memory line. One char from each
+# of the two distinct Unicode sub-ranges so the fix must be a genuine RANGE
+# match, not a single-codepoint patch: BIDI override (U+202A-202E) + isolate
+# (U+2066-2069); ZERO-WIDTH space (U+200B) + no-break space/BOM (U+FEFF).
+_BIDI_AND_ZERO_WIDTH_CHARS = (
+    "\u202e",  # RIGHT-TO-LEFT OVERRIDE (bidi override sub-range)
+    "\u2066",  # LEFT-TO-RIGHT ISOLATE (bidi isolate sub-range)
+    "\u200b",  # ZERO WIDTH SPACE
+    "\ufeff",  # ZERO WIDTH NO-BREAK SPACE / BOM
+)
+
 
 def _refjoin_line(n_prod: int, n_test: int, n_tests: int) -> str:
     """The exact ref-join enrichment substring for the given graph counts (item 7).
@@ -1348,6 +1362,50 @@ class TestRenderSanitiser:
         # The injected memory renders as a single logical line (no embedded newline
         # splitting it into a fake extra result).
         assert "\n" not in line
+
+    @pytest.mark.parametrize("hostile_char", _BIDI_AND_ZERO_WIDTH_CHARS)
+    async def test_bidi_and_zero_width_collapsed_in_citation_lines(
+        self, tmp_path: Path, embedder: FakeEmbedder, hostile_char: str
+    ) -> None:
+        # A bidi override/isolate can visually rewrite a rendered citation line in
+        # a bidi-aware terminal/UI, and a zero-width char can hide characters
+        # inside it — neither is a C0/C1 control, so the shipped sanitiser (which
+        # only collapses \x00-\x1f/\x7f-\x9f) lets them through untouched.
+        hostile = self._hostile_payload(file_path=f"pkg/ev{hostile_char}il.py")
+        result = await self._search_one_hostile_chunk(tmp_path, embedder, hostile)
+        assert hostile_char not in result.formatted
+
+    async def test_zero_width_no_break_space_stripped_from_memory_line(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # The memory-line path is a non-fenced field too: U+FEFF (ZERO WIDTH
+        # NO-BREAK SPACE / BOM) smuggled into memory text must not survive into
+        # the visible injected line.
+        indexed, server = await _index_single(tmp_path, embedder)
+        memory_store = _FakeMemoryStore(
+            [RecalledMemory(
+                text="note with a \ufeffhidden marker",
+                refs=[MemoryRef(chunk_key="f" * 32)], score=0.9,
+            )]
+        )
+        pipeline = _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, memory_store=memory_store
+        )
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        memory_entries = [r for r in results if r.kind == _MEMORY_KIND]
+        assert memory_entries
+        assert "\ufeff" not in memory_entries[0].formatted
+
+    async def test_fenced_source_keeps_bidi_and_zero_width_verbatim(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # The fenced source block is CONTENT, not framing: a bidi override / a
+        # zero-width space embedded in source_text is preserved verbatim inside
+        # the fence — the sanitiser must not overreach into the fenced body.
+        source = "def f():\n    return '\u202e\u200b evil'\n"
+        hostile = self._hostile_payload(chunk_type="function", source_text=source, signature="()")
+        result = await self._search_one_hostile_chunk(tmp_path, embedder, hostile)
+        assert source in result.formatted
 
 
 # --------------------------------------------------------------------------- #

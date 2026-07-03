@@ -225,7 +225,9 @@ class TestRegisterExtensionWiring:
 
         server = LoreServer.from_config(config_path).register_extension(FakeExtension())
         specs = server.payload_index_specs
-        by_field = {s.field_name: s.schema_type for s in specs}
+        # P6 close-out: the spec model is the backend-neutral FieldIndexSpec —
+        # ``kind`` (keyword|bool|fulltext), no longer a Qdrant ``schema_type``.
+        by_field = {s.field_name: s.kind for s in specs}
         assert by_field == {"model_name": "keyword", "is_installed": "bool"}
 
     def test_seam10_source_providers_are_collected(self, config_path: Path) -> None:

@@ -66,7 +66,7 @@ from loremaster.extension import (
     DetailLevel,
     Extension,
     ExtensionContext,
-    PayloadIndexSpec,
+    FieldIndexSpec,
     ToolSpec,
 )
 
@@ -210,7 +210,7 @@ class LoreServer:
         # base suffix-owner (e.g. claim ``.py``).
         self._suffix_owner: dict[str, str] = {}
         # Collected seam outputs.
-        self._payload_index_specs: list[PayloadIndexSpec] = []
+        self._payload_index_specs: list[FieldIndexSpec] = []
         self._source_providers: list[Any] = []
         # Validated per-extension config slices (seam 7), keyed by extension name.
         self._extension_configs: dict[str, BaseModel] = {}
@@ -292,8 +292,8 @@ class LoreServer:
         return self._registry
 
     @property
-    def payload_index_specs(self) -> list[PayloadIndexSpec]:
-        """The extension-declared extra payload indexes (seam 8), in registration order."""
+    def payload_index_specs(self) -> list[FieldIndexSpec]:
+        """The extension-declared extra field indexes (seam 8), in registration order."""
         return list(self._payload_index_specs)
 
     @property
@@ -1716,10 +1716,10 @@ async def build_app_context(
         client=qdrant_client,
         slug=slug,
         extra_keyword_indexes=[
-            spec.field_name for spec in server.payload_index_specs if spec.schema_type == "keyword"
+            spec.field_name for spec in server.payload_index_specs if spec.kind == "keyword"
         ],
         extra_bool_indexes=[
-            spec.field_name for spec in server.payload_index_specs if spec.schema_type == "bool"
+            spec.field_name for spec in server.payload_index_specs if spec.kind == "bool"
         ],
     )
     await run_probe_gate(embedder=embedder, store=store, config=config)
@@ -1849,12 +1849,13 @@ async def build_app_context(
     # SAME object is reused for the startup hooks below, so seam-9 ``state`` set at
     # startup is visible to the search seams.
     extension_ctx = ExtensionContext(
-        # ctx.store is still the LEGACY QdrantStore handle: the indexer stopped
-        # writing this corpus at P5, so an extension hook that re-queries
-        # ctx.store reads stale/empty data. Flips to the unified SurrealStore
-        # in the P6 extension-seam close-out cycle (FieldIndexSpec +
-        # EXTENDING.md + ctx.store flip); memory stays on Qdrant until P7.
-        store=store,
+        # ctx.store is the UNIFIED SurrealStore (P6 close-out ctx.store flip):
+        # the same ``write_store`` object the search pipeline reads, so an
+        # extension hook that queries ctx.store sees the live corpus, not the
+        # legacy Qdrant handle the indexer stopped writing at P5. Memory stays
+        # on Qdrant until P7 — that is a SEPARATE handle (``memory_store``),
+        # never reachable through ctx.store.
+        store=write_store,
         embedder=embedder,
         config=config,
         count_tokens=embedder.count_tokens,

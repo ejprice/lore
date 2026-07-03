@@ -20,8 +20,8 @@ The surface:
   overrides only what it needs.
 * :class:`ToolSpec` — the small DECLARATIVE tool spec seam 3 returns, so the
   contract is testable WITHOUT FastMCP; the later server build registers them.
-* :class:`PayloadIndexSpec` — the declarative extra-index spec seam 8 returns
-  (KEYWORD / BOOL payload fields beyond the base's).
+* :class:`FieldIndexSpec` — the declarative extra-index spec seam 8 returns
+  (backend-neutral ``keyword`` / ``bool`` / ``fulltext`` fields beyond the base's).
 * :class:`SourceProvider` — the indexer-side acquisition Protocol (signature
   ONLY here; the concrete ``LocalDirectorySourceProvider`` + snapshot layout is
   the next batch).
@@ -39,7 +39,7 @@ The eleven seams (the numbering matches §A1.3, with C2 adding seam 11):
    correction matching (carries :attr:`Extension.key_version`); ``None`` ⇒ base.
 7. :meth:`Extension.config_model` — validates the extension's ``extensions[name]``
    config slice; ``None`` ⇒ no extra config.
-8. :meth:`Extension.payload_indexes` — extra payload indexes to declare.
+8. :meth:`Extension.payload_indexes` — extra field indexes to declare.
 9. :meth:`Extension.on_startup` / :meth:`Extension.on_shutdown` — async lifespan.
 10. :meth:`Extension.source_providers` — indexer-side acquisition providers.
 11. :meth:`Extension.classify_detail` — chunk-type → ``"summary"``/``"source"``
@@ -63,9 +63,12 @@ from loremaster.store.candidate import Candidate
 # means "I have no opinion — fall through to the base / next classifier".
 DetailLevel = Literal["summary", "source"]
 
-# The payload-index kinds Qdrant supports here (seam 8). KEYWORD for exact-match
-# string fields (e.g. ``model_name``); BOOL for flags (e.g. ``is_installed``).
-PayloadIndexKind = Literal["keyword", "bool"]
+# The backend-neutral field-index kinds seam 8 supports. "keyword" for
+# exact-match string fields (e.g. ``model_name``); "bool" for flags (e.g.
+# ``is_installed``); "fulltext" for a BM25-indexable text field (e.g. an
+# ``llm_summary`` enrichment column) — the unified store maps each kind onto
+# its own index primitive rather than Qdrant's KEYWORD/BOOL-only vocabulary.
+FieldIndexKind = Literal["keyword", "bool", "fulltext"]
 
 # The baseline key-version an extension stamps into its semantic memory-key
 # (seam 6) unless it overrides :attr:`Extension.key_version`. odoo-code's
@@ -104,19 +107,22 @@ class ToolSpec(BaseModel):
     output_schema: dict[str, Any]
 
 
-class PayloadIndexSpec(BaseModel):
-    """An extension-declared extra payload index (seam 8).
+class FieldIndexSpec(BaseModel):
+    """An extension-declared extra field index (seam 8).
 
     Beyond the base ``tier``/``file_path``/``content_hash``/``chunk_type``
-    indexes, an extension may declare extra KEYWORD/BOOL fields the store should
-    index (e.g. odoo's ``model_name`` KEYWORD, ``is_installed`` BOOL). The
-    :attr:`schema_type` is constrained to the kinds the store supports, so an
-    unknown kind fails loudly at construction rather than silently skipping the
-    index later.
+    indexes, an extension may declare extra fields the store should index (e.g.
+    odoo's ``model_name`` keyword, ``is_installed`` bool, or an ``llm_summary``
+    fulltext column). Backend-neutral by design: the field names the KIND the
+    field should be indexed as, and the store maps that kind onto its own index
+    primitive, rather than the model naming a Qdrant-specific schema type. The
+    :attr:`kind` is constrained to the kinds the store supports, so an unknown
+    kind fails loudly at construction rather than silently skipping the index
+    later.
 
     Attributes:
-        field_name: The payload field to index.
-        schema_type: The index kind — ``"keyword"`` or ``"bool"``.
+        field_name: The field to index.
+        kind: The index kind — ``"keyword"``, ``"bool"``, or ``"fulltext"``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -124,7 +130,7 @@ class PayloadIndexSpec(BaseModel):
     field_name: str
     # Constrained to the supported kinds: an unknown kind (e.g. ``"geo"``) raises
     # a ``ValidationError`` here rather than being silently dropped downstream.
-    schema_type: PayloadIndexKind
+    kind: FieldIndexKind
 
 
 class ExtensionContext(BaseModel):
@@ -136,9 +142,10 @@ class ExtensionContext(BaseModel):
     shared services grows.
 
     Attributes:
-        store: The :class:`~loremaster.store.qdrant.QdrantStore` (or a test
-            stand-in). Typed ``Any`` to avoid importing the store here and to let
-            tests pass a lightweight handle.
+        store: The unified :class:`~loremaster.store.surreal.SurrealStore` (the
+            SAME store the search pipeline reads — ``hybrid_search``/``scroll``),
+            or a test stand-in. Typed ``Any`` to avoid importing the store here
+            and to let tests pass a lightweight handle.
         embedder: The active :class:`loresigil.base.Embedder`.
         config: The validated :class:`~loremaster.config.LoreConfig`.
         count_tokens: The embedder's batch token counter (``list[str] ->
@@ -317,9 +324,9 @@ class Extension(ABC):
         """
         return None
 
-    # -- seam 8: payload indexes -------------------------------------------
-    def payload_indexes(self) -> list[PayloadIndexSpec]:
-        """Declare extra payload indexes (seam 8). Default: none."""
+    # -- seam 8: field indexes -----------------------------------------------
+    def payload_indexes(self) -> list[FieldIndexSpec]:
+        """Declare extra field indexes (seam 8). Default: none."""
         return []
 
     # -- seam 9: async lifespan --------------------------------------------

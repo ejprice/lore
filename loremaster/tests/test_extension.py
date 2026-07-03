@@ -59,7 +59,6 @@ from _surreal_fakes import fake_surreal_trio
 from loremaster.extension import (
     Extension,
     ExtensionContext,
-    PayloadIndexSpec,
     SourceProvider,
     ToolSpec,
 )
@@ -129,27 +128,119 @@ class TestToolSpec:
         # The handler is a real callable invocable without any server machinery.
         assert spec.handler("community") == ["mod-in-community"]
 
-class TestPayloadIndexSpec:
-    """The declarative extra-index spec seam 8 hands back."""
+class TestFieldIndexSpec:
+    """The declarative extra-index spec seam 8 hands back (P6 close-out rename).
+
+    Renamed from ``PayloadIndexSpec``/``PayloadIndexKind`` to the backend-neutral
+    ``FieldIndexSpec`` (``field_name`` + ``kind``): Qdrant's KEYWORD/BOOL-only
+    vocabulary is gone, and the model gains a NEW ``"fulltext"`` kind — a
+    BM25-indexable text field (the ``llm_summary`` / P9 enrichment hook). The
+    import is LOCAL to each test (not hoisted to the top of the module) so a
+    not-yet-implemented name fails only that one test, never the whole module's
+    collection.
+    """
 
     def test_models_a_keyword_field(self) -> None:
+        from loremaster.extension import FieldIndexSpec
 
-        spec = PayloadIndexSpec(field_name="model_name", schema_type="keyword")
+        spec = FieldIndexSpec(field_name="model_name", kind="keyword")
         assert spec.field_name == "model_name"
-        assert spec.schema_type == "keyword"
+        assert spec.kind == "keyword"
 
     def test_models_a_bool_field(self) -> None:
+        from loremaster.extension import FieldIndexSpec
 
-        spec = PayloadIndexSpec(field_name="is_installed", schema_type="bool")
-        assert spec.schema_type == "bool"
+        spec = FieldIndexSpec(field_name="is_installed", kind="bool")
+        assert spec.kind == "bool"
 
-    def test_rejects_an_unknown_schema_kind(self) -> None:
-        # Qdrant indexes are KEYWORD/BOOL here; an unknown kind is a config bug
-        # that must fail loudly rather than silently skip the index. The
-        # ``type: ignore`` is deliberate — mypy correctly flags the bad literal at
-        # type-check time; this asserts the *runtime* validation also rejects it.
+    def test_models_a_fulltext_field(self) -> None:
+        # NEW in the P6 close-out: a BM25-indexable text field (the llm_summary /
+        # P9 enrichment hook) — the reason this seam moved off Qdrant's
+        # KEYWORD/BOOL-only vocabulary onto a backend-neutral one.
+        from loremaster.extension import FieldIndexSpec
+
+        spec = FieldIndexSpec(field_name="llm_summary", kind="fulltext")
+        assert spec.field_name == "llm_summary"
+        assert spec.kind == "fulltext"
+
+    def test_rejects_an_unknown_kind(self) -> None:
+        # An unknown kind is a config bug that must fail loudly rather than
+        # silently skip the index. The ``type: ignore`` is deliberate — mypy
+        # correctly flags the bad literal at type-check time; this asserts the
+        # *runtime* validation also rejects it.
+        from loremaster.extension import FieldIndexSpec
+
         with pytest.raises(ValidationError):
-            PayloadIndexSpec(field_name="x", schema_type="geo")  # type: ignore[arg-type]
+            FieldIndexSpec(field_name="x", kind="geo")  # type: ignore[arg-type]
+
+    def test_rejects_an_unexpected_field(self) -> None:
+        # extra="forbid" — the same fail-loud-on-typo contract every other
+        # declarative seam model (ToolSpec, the pre-rename spec) carries.
+        from loremaster.extension import FieldIndexSpec
+
+        with pytest.raises(ValidationError):
+            FieldIndexSpec(field_name="x", kind="keyword", schema_type="keyword")  # type: ignore[call-arg]
+
+class TestFieldIndexSpecRenameIsComplete:
+    """The pre-P6-close-out ``PayloadIndexSpec``/``PayloadIndexKind`` names are GONE.
+
+    Breaking rename APPROVED (no extension ships against loremaster yet, per the
+    module docstring's P6 candidate-cutover precedent) — but a HALF-finished
+    rename, where ``FieldIndexSpec`` is added yet the old names stay importable,
+    must not ship: an extension author reaching for the old name would silently
+    write against a name the store no longer wires anything to.
+    """
+
+    def test_payload_index_spec_class_is_absent(self) -> None:
+        import loremaster.extension as extension_module
+
+        assert not hasattr(extension_module, "PayloadIndexSpec"), (
+            "PayloadIndexSpec must be fully removed by the FieldIndexSpec rename "
+            "— a half-rename (both names present) must not ship"
+        )
+
+    def test_payload_index_kind_alias_is_absent(self) -> None:
+        import loremaster.extension as extension_module
+
+        assert not hasattr(extension_module, "PayloadIndexKind"), (
+            "PayloadIndexKind must be fully removed by the FieldIndexSpec rename"
+        )
+
+class TestFieldIndexesCollectedByLoreServer:
+    """A registered extension's ``FieldIndexSpec``\\ s surface through the SAME
+    ``LoreServer`` collection point the pre-rename ``payload_index_specs`` pin
+    exercised (``test_server.py``'s ``test_seam8_payload_indexes_are_collected``)
+    — mirrored here at the P6 close-out over the renamed model.
+    """
+
+    def test_registered_extension_field_indexes_are_collected(self) -> None:
+        from loremaster.extension import Extension, FieldIndexSpec
+        from loremaster.server import LoreServer
+
+        class _FieldIndexDeclaringExtension(Extension):
+            """A local (test-only) extension declaring all three FieldIndexSpec kinds."""
+
+            @property
+            def name(self) -> str:
+                return "field_index_demo"
+
+            def payload_indexes(self) -> list[FieldIndexSpec]:
+                return [
+                    FieldIndexSpec(field_name="model_name", kind="keyword"),
+                    FieldIndexSpec(field_name="is_installed", kind="bool"),
+                    FieldIndexSpec(field_name="llm_summary", kind="fulltext"),
+                ]
+
+        server = LoreServer(minimal_config()).register_extension(
+            _FieldIndexDeclaringExtension()
+        )
+        specs = server.payload_index_specs
+        by_field = {spec.field_name: spec.kind for spec in specs}
+        assert by_field == {
+            "model_name": "keyword",
+            "is_installed": "bool",
+            "llm_summary": "fulltext",
+        }
 
 class TestSourceProviderSignature:
     """``SourceProvider`` — signature only (the concrete impl is the next batch)."""
@@ -873,3 +964,154 @@ class _DuplicateBumpExtension(Extension):
                 output_schema={"total": "int"},
             )
         ]
+
+
+# --------------------------------------------------------------------------- #
+# ctx.store flip: the runtime ExtensionContext must carry the UNIFIED SurrealDB
+# store the search pipeline reads, never the legacy QdrantStore (P6 close-out).
+# --------------------------------------------------------------------------- #
+class TestRuntimeExtensionContextStoreIsUnifiedSurreal:
+    """P6 close-out ctx.store flip: the RUNTIME ``ExtensionContext.store`` the
+    search seams + startup hooks receive must be the unified SurrealStore the
+    search pipeline reads (``AppContext.write_store``), never the legacy
+    ``QdrantStore`` (``AppContext.store``).
+
+    Pinned against the REAL ``build_app_context`` composition — the strongest
+    testable seam for this bug: at the ``_make_pipeline``/fake-trio level
+    ``test_search.py`` already wires ``ctx.store`` onto a Surreal-SHAPED fake (it
+    has to, to drive the P6 pipeline at all), so a fake-level test alone would
+    stay green even if the PRODUCTION composition still wired the legacy Qdrant
+    handle into ``extension_ctx``. Only a live ``build_app_context`` run can catch
+    that composition-level regression, mirroring
+    ``TestSeam3ExtensionToolsAreWiredIntoTheLiveServer``'s live-server pattern.
+    """
+
+    @pytest_asyncio.fixture()
+    async def qdrant(self) -> AsyncIterator[Any]:
+        """A real Qdrant client with exact-name (concurrency-safe) teardown."""
+        from conftest import QDRANT_URL, _qdrant_api_key
+        from qdrant_client import AsyncQdrantClient
+
+        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
+        created: list[str] = []
+        client._lore_created = created  # type: ignore[attr-defined]
+        try:
+            yield client
+        finally:
+            for name in created:
+                for candidate in (name, f"{name}_memory"):
+                    if await client.collection_exists(candidate):
+                        await client.delete_collection(candidate)
+            await client.close()
+
+    @staticmethod
+    def _slug() -> str:
+        return f"test_{uuid.uuid4().hex}"
+
+    async def _live_context(self, *, server: Any, qdrant: Any, tmp_path: Path) -> Any:
+        """Build a live :class:`AppContext` over the server (real Qdrant/Surreal, fake embedder)."""
+        import os
+
+        from _surreal_harness import surreal_password, surreal_user
+        from loremaster.server import build_app_context
+
+        os.environ.setdefault("SURREAL_USER", surreal_user())
+        os.environ.setdefault("SURREAL_PASS", surreal_password())
+        slug = server.config.project.slug
+        qdrant._lore_created.append(f"lore_{slug}")
+        qdrant._lore_created.append(f"lore_{slug}_memory")
+        return await build_app_context(
+            server=server,
+            embedder=FakeEmbedder(dim=_DIM),
+            qdrant_client=qdrant,
+            manifest_path=tmp_path / "m.db",
+            snapshot_root=tmp_path / "snap",
+            start_tasks=False,
+        )
+
+    @staticmethod
+    async def _drop_surreal_db(slug: str) -> None:
+        """Reap the per-test surreal database (named = the test's unique slug)."""
+        from _surreal_harness import drop_database, make_env
+
+        await drop_database(make_env(database=slug, dim=_DIM))
+
+    async def test_runtime_ctx_store_is_the_unified_surreal_store(
+        self, tmp_path: Path, qdrant: Any
+    ) -> None:
+        from loremaster.server import LoreServer
+        from loremaster.store.qdrant import QdrantStore
+
+        live = tmp_path / "live"
+        live.mkdir()
+        slug = self._slug()
+        config = _server_config(slug, live)
+        server = LoreServer(config)
+        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        try:
+            runtime_ctx = ctx.extension_ctx
+            assert runtime_ctx is not None, "startup hooks must have set the runtime ctx"
+            # Duck-type: the unified store speaks hybrid_search (BM25 ⊕ HNSW via
+            # RRF); the legacy QdrantStore has NO such method (search()/scroll()
+            # only) — a lingering Qdrant handle fails this immediately.
+            assert hasattr(runtime_ctx.store, "hybrid_search")
+            assert hasattr(runtime_ctx.store, "scroll")
+            assert not isinstance(runtime_ctx.store, QdrantStore)
+            # It is the VERY object the search pipeline reads — not a same-shaped
+            # sibling instance that happens to point at a different database.
+            assert runtime_ctx.store is ctx.write_store
+            assert runtime_ctx.store is not ctx.store
+        finally:
+            await ctx.aclose()
+            await self._drop_surreal_db(server.config.project.slug)
+
+    async def test_ctx_store_round_trips_the_same_chunk_the_write_path_wrote(
+        self, tmp_path: Path, qdrant: Any
+    ) -> None:
+        # Behavioural proof (not just type/identity): a chunk written through
+        # ``ctx.write_store`` is findable through the RUNTIME
+        # ``ExtensionContext.store`` an extension hook receives, AND through the
+        # live search pipeline — the fake-trio pipeline tests can't catch a wrong
+        # production wiring (their ctx.store is always the same fake object the
+        # pipeline reads), so this drives the REAL build_app_context composition.
+        from _surreal_harness import chunk_record
+        from loremaster.server import LoreServer
+
+        live = tmp_path / "live"
+        live.mkdir()
+        slug = self._slug()
+        config = _server_config(slug, live)
+        server = LoreServer(config)
+        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        try:
+            record = chunk_record(
+                tier="custom",
+                file_path="pkg/routing.py",
+                identity="champion_routing_ctx_store_probe",
+                ident_text="champion routing warehouse dispatch probe",
+                slug=slug,
+            )
+            embed_result = await ctx.embedder.embed_documents([record.embedding_text])
+            [doc_vector] = embed_result.vectors
+            assert doc_vector is not None
+            await ctx.write_store.upsert([(record, doc_vector)])
+
+            runtime_ctx = ctx.extension_ctx
+            assert runtime_ctx is not None
+
+            # (a) the runtime ctx's store — what an extension hook receives —
+            # finds the exact row the write path wrote.
+            rows = await runtime_ctx.store.scroll(
+                filters={"identity": "champion_routing_ctx_store_probe"}, limit=5
+            )
+            assert len(rows) == 1
+            assert rows[0]["content_hash"] == record.payload["content_hash"]
+
+            # (b) the LIVE search pipeline (built over the SAME write_store)
+            # serves that identical chunk for a matching query — the pipeline
+            # and the ctx.store an extension hook sees are ONE corpus, not two.
+            results = await ctx.search_pipeline.search_code(record.embedding_text, k=5)
+            assert any(r.chunk_key == record.point_id for r in results)
+        finally:
+            await ctx.aclose()
+            await self._drop_surreal_db(server.config.project.slug)
