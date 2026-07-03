@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, NoReturn
@@ -201,6 +202,12 @@ _EDGE_PARAM_PREFIX = f"{GRAPH_FRAGMENT_PARAM_PREFIX}ed"
 # of ``what_imports`` / ``_reverse_neighbours`` — one per frontier prefix, kept
 # distinct so a prefix index can never collide with a node/edge/name param.
 _PREFIX_PARAM_PREFIX = "pfx"
+
+# The maximum representable Unicode codepoint (``sys.maxunicode`` — 0x10FFFF
+# since narrow builds were dropped in Python 3.3+). The one value whose
+# module-prefix range predicate has no valid "next" codepoint to increment to
+# — see :meth:`SurrealCodeGraph._prefix_upper_bound` (ledger #30).
+_MAX_UNICODE_CODEPOINT = sys.maxunicode
 
 
 class _AstroidDerivation(CodeGraph):
@@ -606,6 +613,86 @@ class SurrealCodeGraph:
         )
         return self._decode_nodes(result)
 
+    @staticmethod
+    def _prefix_upper_bound(prefix: str) -> str | None:
+        """The EXCLUSIVE upper bound of the half-open range equivalent to
+        ``string::starts_with(value, prefix)`` (ledger #30's index-pushed rewrite).
+
+        Built by incrementing ``prefix``'s LAST codepoint by one. For any two
+        strings that agree on every character up to that final position, the
+        incremented character sorts strictly above whatever character (if any)
+        the original string continues with there — including the highest
+        representable codepoint, an empty continuation (a name EQUAL to
+        ``prefix``), or any ordinary suffix — because lexicographic comparison
+        resolves at the FIRST differing position, which is always this one.
+        SurrealDB compares strings as UTF-8 bytes, which preserves Unicode
+        codepoint order for valid UTF-8, so this holds for non-ASCII prefixes
+        too (live-verified: ``"pkg.café."`` isolates ``"pkg.café.widget"`` from
+        the unrelated sibling ``"pkg.cafés.other"``).
+
+        Returns:
+            The incremented bound, or ``None`` when ``prefix`` is empty or its
+            last character IS the maximum codepoint
+            (:data:`_MAX_UNICODE_CODEPOINT`) — no valid "next" character
+            exists, so the caller falls back to an unbounded ``value >=
+            prefix`` scan. Every REAL caller's prefix is trailing-dot-anchored
+            (``f"{module}."`` — see :meth:`_names_with_value_prefix`), so this
+            edge is theoretical in production; it is handled (rather than left
+            to raise ``ValueError`` out of ``chr()``) because this is a
+            general-purpose range builder, not a single-caller inline.
+        """
+        if not prefix:
+            return None
+        last = prefix[-1]
+        if ord(last) >= _MAX_UNICODE_CODEPOINT:
+            return None
+        return f"{prefix[:-1]}{chr(ord(last) + 1)}"
+
+    @staticmethod
+    def _prefix_range_query(prefixes: Sequence[str]) -> tuple[str, dict[str, Any]]:
+        """Build the ``SELECT VALUE id FROM name WHERE <range>`` statement + bound
+        params matching ANY of ``prefixes`` (ledger #30's index-pushed rewrite).
+
+        Rewritten from ``string::starts_with`` — probe-verified live against
+        3.1.5: its ``EXPLAIN`` plan is a full ``TableScan``
+        (``pre_decode_filter: no (unsupported predicate)``), so the
+        ``name_value`` index was never consulted. The equivalent half-open
+        range predicate ``value >= $lo AND value < $hi``
+        (:meth:`_prefix_upper_bound` builds ``$hi``) IS pushed through
+        ``name_value`` as an ``IndexScan``, with an IDENTICAL result set for
+        every prefix tried — ordinary, exact-match, max-codepoint, and
+        multi-byte-unicode (see ``TestNamesWithValuePrefixRangeRewrite`` for
+        the live-verified corpus). Every value stays a BOUND parameter (no
+        interpolation).
+
+        Extracted as its own pure function (rather than inlined in
+        :meth:`_names_with_value_prefix`) so a test can append ``EXPLAIN`` to
+        the EXACT statement production runs, pinning the query PLAN without
+        duplicating the SQL text.
+
+        Args:
+            prefixes: The value-prefixes to match ANY of (OR'd together).
+                Never empty — the caller short-circuits that case.
+
+        Returns:
+            ``(statement, params)``.
+        """
+        conditions: list[str] = []
+        params: dict[str, Any] = {}
+        for index, prefix in enumerate(prefixes):
+            lo_key = f"{_PREFIX_PARAM_PREFIX}{index}_lo"
+            params[lo_key] = prefix
+            upper = SurrealCodeGraph._prefix_upper_bound(prefix)
+            if upper is None:
+                conditions.append(f"{_COL_VALUE} >= ${lo_key}")
+            else:
+                hi_key = f"{_PREFIX_PARAM_PREFIX}{index}_hi"
+                params[hi_key] = upper
+                conditions.append(f"({_COL_VALUE} >= ${lo_key} AND {_COL_VALUE} < ${hi_key})")
+        clause = " OR ".join(conditions)
+        statement = f"SELECT VALUE {_COL_ID} FROM {NAME_TABLE} WHERE {clause}"
+        return statement, params
+
     async def _names_with_value_prefix(self, prefixes: Sequence[str]) -> list[RecordID]:
         """The ``name`` record ids whose ``value`` starts with ANY of ``prefixes``.
 
@@ -613,22 +700,17 @@ class SurrealCodeGraph:
         "<module>."``): a trailing-dot-anchored ``<module>.`` prefix matches every
         ``name`` for a SYMBOL resolved UNDER that module (``demo.reflib.`` →
         ``demo.reflib.widget``) while the anchor keeps a sibling module out
-        (``pkg.a.`` never matches ``pkg.ab.ab_symbol``). Each prefix is a BOUND
-        parameter fed to ``string::starts_with`` (no interpolation); an empty
-        ``prefixes`` short-circuits to no query.
+        (``pkg.a.`` never matches ``pkg.ab.ab_symbol``). Queried as a half-open
+        RANGE predicate (:meth:`_prefix_range_query`), not ``string::starts_with``
+        — ledger #30: the range pushes through the ``name_value`` index; the
+        function form does not (live ``EXPLAIN`` probe). Every prefix stays a
+        BOUND parameter (no interpolation); an empty ``prefixes`` short-circuits
+        to no query.
         """
         if not prefixes:
             return []
-        conditions: list[str] = []
-        params: dict[str, Any] = {}
-        for index, prefix in enumerate(prefixes):
-            key = f"{_PREFIX_PARAM_PREFIX}{index}"
-            conditions.append(f"string::starts_with({_COL_VALUE}, ${key})")
-            params[key] = prefix
-        clause = " OR ".join(conditions)
-        result = await self._query(
-            f"SELECT VALUE {_COL_ID} FROM {NAME_TABLE} WHERE {clause}", params
-        )
+        statement, params = self._prefix_range_query(prefixes)
+        result = await self._query(statement, params)
         return [
             record_id for record_id in self._values(result) if isinstance(record_id, RecordID)
         ]

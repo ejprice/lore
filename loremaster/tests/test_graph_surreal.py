@@ -56,6 +56,7 @@ whole-package build and documents the divergence rather than papering over it.
 from __future__ import annotations
 
 import inspect
+import sys
 import textwrap
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from pathlib import Path
@@ -530,6 +531,28 @@ async def _relation_count(env: SurrealEnv, relation: str, where: str, params: di
     """The number of ``relation`` edge rows matching ``where`` (client-side count)."""
     rows = await _fetch_rows(env, f"SELECT * FROM {relation} WHERE {where}", params)
     return len(rows)
+
+
+async def _seed_names(env: SurrealEnv, values: Sequence[str]) -> None:
+    """UPSERT a ``name`` row (id ``name:<value>``, ``value`` column = itself) for
+    every string in ``values``.
+
+    Seeds the ``name`` table directly on a fresh admin connection, bypassing
+    the astroid derivation pipeline entirely — lets a test build a precise,
+    adversarial boundary corpus for the module-prefix range predicate
+    (``_names_with_value_prefix`` / ``_prefix_range_query``) without
+    materialising a whole Python package on disk.
+    """
+    connection = await connect_admin(env)
+    try:
+        for value in values:
+            await run(
+                connection,
+                "UPSERT $id SET value = $v",
+                {"id": RecordID(NAME_TABLE, value), "v": value},
+            )
+    finally:
+        await connection.close()
 
 
 # ===========================================================================
@@ -1076,6 +1099,179 @@ class TestBlastRadiusModuleTarget:
         }
         assert APP_MODULE in affected  # 1st hop: demo.service imports LoadError
         assert TEST_MODULE in affected  # 2nd hop: test_service imports FROM demo.service
+
+
+# ===========================================================================
+# 3c. _names_with_value_prefix RANGE-PREDICATE REWRITE (ledger #30) — result-set
+#     equivalence across a boundary-adversary corpus + an EXPLAIN-based pin that
+#     the rewritten query plan hits the ``name_value`` INDEX (never a table scan).
+#
+# WHY: probe-verified live against 3.1.5 — ``string::starts_with(value, $p)`` is
+# NOT pushed through ``name_value`` (``EXPLAIN`` shows a full ``TableScan``,
+# ``pre_decode_filter: no (unsupported predicate)``); the equivalent half-open
+# range ``value >= $lo AND value < $hi`` (``$hi`` = the prefix with its LAST
+# codepoint incremented by one) IS pushed through it (``EXPLAIN`` shows
+# ``IndexScan`` on ``name_value``), with an IDENTICAL result set for every
+# ordinary AND boundary prefix tried here (independently live-verified against
+# the raw engine before this file was written).
+#
+# The equivalence tests below exercise ``_names_with_value_prefix`` DIRECTLY —
+# they must stay GREEN both BEFORE and AFTER the rewrite (they GUARD it, they do
+# not pin it). Only the final ``EXPLAIN`` test is the load-bearing RED: it
+# references ``SurrealCodeGraph._prefix_range_query`` (new in the rewrite) and
+# asserts the plan shape, so it fails until the range predicate lands.
+# ===========================================================================
+
+
+def _plan_operators(node: Any) -> list[dict[str, Any]]:
+    """Flatten an ``EXPLAIN`` plan tree into every node's own attribute dict,
+    recursing through ``children``.
+
+    SurrealDB nests the actual scan step under a ``ProjectValue`` (or similar)
+    parent operator, so asserting against a literal top-level shape would be
+    brittle across even a patch-level engine change; this walks the WHOLE tree
+    regardless of nesting depth so the pin depends only on "some node in the
+    plan IS an IndexScan on name_value" / "no node IS a TableScan" — the two
+    properties ledger #30 actually cares about.
+    """
+    if not isinstance(node, dict):
+        return []
+    operators = [node]
+    for child in node.get("children", []) or []:
+        operators.extend(_plan_operators(child))
+    return operators
+
+
+class TestNamesWithValuePrefixRangeRewrite:
+    """``_names_with_value_prefix``'s range predicate: identical results, index-pushed plan."""
+
+    async def test_matches_a_name_exactly_equal_to_the_prefix(
+        self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """A name IDENTICAL to the prefix string is included (like ``str.startswith``)."""
+        graph, env, _root = demo_graph
+        await _seed_names(env, ["pkg.a.", "pkg.a", "pkg.ab.sym"])
+        matched = {
+            str(record_id.id) for record_id in await graph._names_with_value_prefix(["pkg.a."])
+        }
+        assert matched == {"pkg.a."}
+
+    async def test_matches_a_name_extending_the_prefix_with_an_ordinary_suffix(
+        self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """The everyday case: a name properly continuing past the anchor."""
+        graph, env, _root = demo_graph
+        await _seed_names(env, ["pkg.a.widget", "pkg.b.other"])
+        matched = {
+            str(record_id.id) for record_id in await graph._names_with_value_prefix(["pkg.a."])
+        }
+        assert matched == {"pkg.a.widget"}
+
+    async def test_does_not_leak_across_a_sibling_module_with_a_longer_shared_stem(
+        self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """``pkg.a.`` must not match ``pkg.ab.ab_symbol`` (S13's anchor invariant),
+        pinned here DIRECTLY at the range-predicate level — the end-to-end version
+        of this same concern is ``test_module_target_prefix_does_not_leak_across_
+        sibling_modules`` above.
+        """
+        graph, env, _root = demo_graph
+        await _seed_names(env, ["pkg.a.widget", "pkg.ab.ab_symbol"])
+        matched = {
+            str(record_id.id) for record_id in await graph._names_with_value_prefix(["pkg.a."])
+        }
+        assert matched == {"pkg.a.widget"}
+
+    async def test_matches_a_name_ending_in_the_maximum_unicode_codepoint(
+        self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """A continuation made of the HIGHEST representable codepoint still sorts
+        below the exclusive upper bound — live-verified: ``chr(sys.maxunicode)``
+        right after the anchor is still ``< hi``.
+        """
+        graph, env, _root = demo_graph
+        high = chr(sys.maxunicode)
+        await _seed_names(env, [f"pkg.a.{high}", "pkg.b.x"])
+        matched = {
+            str(record_id.id) for record_id in await graph._names_with_value_prefix(["pkg.a."])
+        }
+        assert matched == {f"pkg.a.{high}"}
+
+    async def test_last_character_boundary_increment_excludes_the_exact_upper_bound(
+        self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """A prefix ending in an ordinary ASCII letter (not the production ``.``
+        anchor) still ranges correctly: ``'z'`` increments to ``'{'`` — a name
+        EQUAL to that incremented bound is EXCLUDED (exclusive upper), a name
+        below the prefix is excluded, and both extensions of the prefix match.
+        """
+        graph, env, _root = demo_graph
+        await _seed_names(env, ["pkg.z", "pkg.zz", "pkg.{sibling}", "pkg.y"])
+        matched = {
+            str(record_id.id) for record_id in await graph._names_with_value_prefix(["pkg.z"])
+        }
+        assert matched == {"pkg.z", "pkg.zz"}
+
+    async def test_a_multibyte_unicode_module_prefix_isolates_its_own_symbols(
+        self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """A non-ASCII (multi-byte UTF-8) module name is a real production shape;
+        the anchor must isolate it from a sibling that merely SHARES the same
+        leading substring (``café`` vs ``cafés``).
+        """
+        graph, env, _root = demo_graph
+        await _seed_names(env, ["pkg.café.widget", "pkg.cafés.other"])
+        matched = {
+            str(record_id.id)
+            for record_id in await graph._names_with_value_prefix(["pkg.café."])
+        }
+        assert matched == {"pkg.café.widget"}
+
+    async def test_no_match_returns_empty_not_an_error(
+        self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """A prefix with nothing resolved under it is ``[]``, never a crash."""
+        graph, env, _root = demo_graph
+        await _seed_names(env, ["pkg.other.thing", "pkg.another.thing"])
+        assert await graph._names_with_value_prefix(["pkg.nonexistent."]) == []
+
+    async def test_multiple_prefixes_are_unioned(
+        self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """Two prefixes in the same call OR together (the multi-frontier shape
+        ``_reverse_neighbours`` feeds it during a ``blast_radius`` walk)."""
+        graph, env, _root = demo_graph
+        await _seed_names(env, ["pkg.a.widget", "pkg.b.widget", "pkg.c.widget"])
+        matched = {
+            str(record_id.id)
+            for record_id in await graph._names_with_value_prefix(["pkg.a.", "pkg.b."])
+        }
+        assert matched == {"pkg.a.widget", "pkg.b.widget"}
+
+    async def test_query_plan_hits_the_name_value_index_never_a_table_scan(
+        self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """LOAD-BEARING RED (ledger #30): the rewritten query's ``EXPLAIN`` plan
+        must show an ``IndexScan`` on ``name_value`` and NEVER a ``TableScan``.
+
+        Probe-verified live against 3.1.5 (see the section banner): the OLD
+        ``string::starts_with`` arm plans as a ``TableScan`` with
+        ``pre_decode_filter: no (unsupported predicate)`` — the index is
+        completely ignored. This fails until ``_prefix_range_query`` (the
+        range-predicate rewrite) exists and is what ``_names_with_value_prefix``
+        actually runs.
+        """
+        graph, _env, _root = demo_graph
+        statement, params = SurrealCodeGraph._prefix_range_query(["pkg.a."])
+        plan = await graph._query(f"{statement} EXPLAIN", params)
+        operators = _plan_operators(plan)
+        scan_kinds = {operator.get("operator") for operator in operators}
+        assert "TableScan" not in scan_kinds, f"plan still table-scans: {plan!r}"
+        index_scans = [
+            operator for operator in operators if operator.get("operator") == "IndexScan"
+        ]
+        assert index_scans, f"no IndexScan step in plan: {plan!r}"
+        assert index_scans[0]["attributes"]["index"] == f"{NAME_TABLE}_value"
 
 
 # ===========================================================================
