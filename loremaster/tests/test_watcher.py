@@ -22,13 +22,26 @@ SCOPE OF THIS PORT (reported to the team lead):
   ``TestOneInotifyInstancePerRoot`` (build_observer against explode-on-touch
   sentinels) and ``TestKernelOverflowDetectionDoesNotMutateGlobalParser`` (a pure
   raw-buffer scan against a spy).
-* **DEFERRED** — the REAL-inotify end-to-end tests that drive an actual watchdog
-  Observer over ``tmp_path`` (``TestLiveModify``, the nested/recursive-watch
-  indexing tests, the watch-scope pruning tests, and the start/stop lifecycle log
-  test). These exercise real kernel inotify (EEXIST/EMFILE-prone on a saturated
-  host, slow timeout-based polling) and their store/manifest usage is INCIDENTAL
-  to the watch mechanism they test — orthogonal to the Surreal rewiring. Left for
-  a focused follow-up so the fast unit port stays fast and deterministic.
+* **RESTORED (ledger #33 — test-restoration audit)** — the REAL-inotify
+  end-to-end tests that drive an actual watchdog ``Observer`` over ``tmp_path``
+  were dropped by the P5-C3b port (a fresh-context audit found none of the
+  ported tests call ``watcher.start()``): ``TestLiveModify``, the real-timer
+  burst-coalescing count (``TestDebounce``), the start/stop lifecycle-log test
+  (``TestWatcherLifecycleLogging``), the recursive-watch nested-indexing +
+  excluded-subtree event-scope regression guards
+  (``TestRecursiveWatchStillIndexesNestedFile`` /
+  ``TestRecursiveWatchStillFiltersExcludedSubtree``), and the watch-SCHEDULING
+  scope tests that inspect the running Observer's OWN inotify watch set —
+  ground truth, not the pure/tautological ``watcher.watched_paths()`` computation
+  already covered by ``TestSchedulingPruning`` (``TestWatchScopeExcludesNoisySubtrees``
+  / ``TestRuntimeNewDirWatchScope``). These are restored here onto the SAME async
+  Surreal fakes the rest of this file uses (store/manifest assertions read
+  ``trio.store``/``trio.manifest`` — the fakes are orthogonal to the real
+  watchdog Observer under test) rather than the old real-Qdrant + SQLite
+  fixtures, keeping the file's fixture story single. Two items the audit
+  explicitly flagged as intentionally NOT restored live in OTHER files, not
+  here: ``TestStoreFailureIsolation`` (``test_indexer.py`` — superseded, no
+  retry layer by design) and the two search oracles (P6 scope).
 """
 
 from __future__ import annotations
@@ -36,8 +49,10 @@ from __future__ import annotations
 import asyncio
 import inspect as _inspect_for_overflow_guard
 import logging
+import os
 import struct as _struct_for_overflow_guard
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -220,6 +235,32 @@ def _live_root_count(config: LoreConfig) -> int:
     return sum(1 for root in config.effective_roots if root.watch == WATCH_LIVE)
 
 
+# A live root whose excluded subtree (``__pycache__``) is DEEP and WIDE, so the
+# per-dir recursive watch would install MANY watches there (the production
+# explosion in miniature). The in-scope tree stays small, so the post-fix watch
+# count is a small, bounded set a test can pin exactly.
+_EXCLUDED_NESTED_SUBDIRS: tuple[str, ...] = (
+    f"pkg/{_EXCLUDED_DIR_NAME}",
+    f"pkg/{_EXCLUDED_DIR_NAME}/nested_a",
+    f"pkg/{_EXCLUDED_DIR_NAME}/nested_a/deeper",
+    f"pkg/{_EXCLUDED_DIR_NAME}/nested_b",
+    f"services/{_EXCLUDED_DIR_NAME}",
+    f"services/{_EXCLUDED_DIR_NAME}/cache_inner",
+)
+
+
+def _build_corpus_with_big_excluded_subtree(root: Path) -> None:
+    """A wide INCLUDED tree plus a wide EXCLUDED (``__pycache__``) subtree.
+
+    Mirrors the production failure mode in miniature: the excluded tree holds a
+    real file per dir so the dir physically exists and a naive recursive watch
+    (or an unpruned ``os.walk``) would descend it absent the exclude_dirs prune.
+    """
+    _build_wide_live_corpus(root)
+    for rel in _EXCLUDED_NESTED_SUBDIRS:
+        _write(root / rel / "artifact.pyc.py", "def excluded_artifact():\n    return 1\n")
+
+
 # --------------------------------------------------------------------------- #
 # Fake-trio wiring
 # --------------------------------------------------------------------------- #
@@ -276,6 +317,86 @@ def _queue_keys(watcher: LiveWatcher) -> list[tuple[str, str]]:
     for key in keys:
         watcher._queue.put_nowait(key)
     return keys
+
+
+async def _wait_for(predicate: Callable[[], bool], timeout_s: float = _SETTLE_TIMEOUT_S) -> bool:
+    """Poll a SYNC predicate until it is true or ``timeout_s`` elapses.
+
+    The real-Observer end-to-end tests below drive an actual watchdog thread,
+    which marshals events onto the loop asynchronously — a test must poll rather
+    than assume synchronous delivery. The fakes' state (``trio.store.db.chunks``,
+    the running Observer's own inotify watch set) is read synchronously, so a
+    single sync-predicate poller covers both the store-identity and the
+    inotify-watch-set oracles. Always evaluates one final time after the
+    deadline so a check that becomes true exactly at the boundary is not lost.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while asyncio.get_running_loop().time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.05)
+    return bool(predicate())
+
+
+def _inotify_watched_dirs(watcher: LiveWatcher) -> set[Path]:
+    """The set of directories the watcher's RUNNING observer holds inotify watches for.
+
+    Reaches through the (single, recursive) emitter → its ``InotifyBuffer`` →
+    the backing ``Inotify`` instance's ``_wd_for_path`` map (path bytes → watch
+    descriptor) — the GROUND TRUTH of which directories actually consumed a
+    kernel inotify watch, as opposed to ``watcher.watched_paths()`` (a pure,
+    config-derived computation of what the watcher INTENDS to schedule).
+    Requires the observer to have been started (so ``on_thread_start`` opened
+    the inotify instance); poll-wait on a non-empty result before asserting.
+    """
+    observer = watcher._observer
+    assert observer is not None, "observer not started"
+    watched: set[Path] = set()
+    for emitter in observer.emitters:
+        inotify_buffer = getattr(emitter, "_inotify", None)
+        if inotify_buffer is None:
+            continue
+        inotify = getattr(inotify_buffer, "_inotify", None)
+        if inotify is None:
+            continue
+        for path_bytes in inotify._wd_for_path:
+            watched.add(Path(os.fsdecode(path_bytes)).resolve())
+    return watched
+
+
+# --------------------------------------------------------------------------- #
+# Real-inotify MODIFY → index (RESTORED — ledger #33; real watchdog Observer)
+# --------------------------------------------------------------------------- #
+class TestLiveModify:
+    """A real file write under a live root is re-indexed via the Observer."""
+
+    async def test_modify_event_reindexes_file(self, tmp_path: Path) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        # Seed the index so we are testing an UPDATE, not a first build.
+        await indexer.index_file(
+            "custom", "src/routing.py",
+            (live / "src" / "routing.py").read_text(encoding="utf-8"),
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        await watcher.start()
+        try:
+            # Write a NEW uniquely-named symbol to the watched file.
+            (live / "src" / "routing.py").write_text(
+                "def watcher_marker_abc(week):\n    return week\n", encoding="utf-8"
+            )
+            # The real Observer should pick up the write and reindex the file.
+            assert await _wait_for(
+                lambda: _has_identity(trio, "src/routing.py", "watcher_marker_abc")
+            )
+        finally:
+            await watcher.stop()
 
 
 # --------------------------------------------------------------------------- #
@@ -335,6 +456,85 @@ class TestDebounceCoalesce:
         row = await trio.manifest.get("custom", "src/routing.py")
         assert row is not None and row.state == STATE_INDEXED
         assert _has_identity(trio, "src/routing.py", "deleted_then_recreated")
+
+
+# --------------------------------------------------------------------------- #
+# Debounce coalescing count under the REAL Observer/timer
+# (RESTORED — ledger #33; distinct from TestDebounceCoalesce's seam-driven
+# last-event-wins pair above — this proves N RAPID REAL writes collapse to a
+# single index_file call via the real debounce timer, not a hand-fired seam).
+# --------------------------------------------------------------------------- #
+class TestDebounce:
+    """N rapid events for one path collapse to a single ``index_file`` call."""
+
+    async def test_burst_coalesces_to_single_index(self, tmp_path: Path) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live, debounce_ms=_DEBOUNCE_MS)
+        trio = _trio()
+        inner = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        indexer = RecordingIndexer(inner)
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        await watcher.start()
+        try:
+            target = live / "src" / "routing.py"
+            # Fire many MODIFY events well within the debounce window, with the
+            # last write carrying the final content.
+            for n in range(10):
+                target.write_text(
+                    f"def burst_marker_{n}(week):\n    return {n}\n", encoding="utf-8"
+                )
+                await asyncio.sleep(_DEBOUNCE_MS / 1000.0 / 8.0)  # << debounce window
+            # Wait for the single coalesced index of the FINAL content.
+            assert await _wait_for(
+                lambda: _has_identity(trio, "src/routing.py", "burst_marker_9")
+            )
+            # The burst coalesced: routing.py was indexed at most a couple of times,
+            # not once per raw event (10). A correct debounce yields exactly 1.
+            routing_indexes = [c for c in indexer.index_calls if c[1] == "src/routing.py"]
+            assert len(routing_indexes) <= 2, (
+                f"debounce failed to coalesce: {len(routing_indexes)} index calls"
+            )
+            assert len(routing_indexes) >= 1
+        finally:
+            await watcher.stop()
+
+
+# --------------------------------------------------------------------------- #
+# Lifecycle logging: start / stop (RESTORED — ledger #33)
+# --------------------------------------------------------------------------- #
+class TestWatcherLifecycleLogging:
+    """``start``/``stop`` emit structured lifecycle events (caplog-asserted)."""
+
+    async def test_start_and_stop_emit_lifecycle_events(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        with caplog.at_level(logging.INFO, logger="loremaster.index.watcher"):
+            await watcher.start()
+            await watcher.stop()
+
+        start_events = [r for r in caplog.records if r.message == "watcher.start"]
+        stop_events = [r for r in caplog.records if r.message == "watcher.stop"]
+        assert len(start_events) == 1
+        assert start_events[0].levelno == logging.INFO
+        # The start event carries operational counts (how many dirs are watched,
+        # how many live tiers) — never the paths' contents.
+        assert start_events[0].watched_dir_count >= 1  # type: ignore[attr-defined]
+        assert start_events[0].live_tiers >= 1  # type: ignore[attr-defined]
+        assert len(stop_events) == 1
+        assert stop_events[0].levelno == logging.INFO
 
 
 # --------------------------------------------------------------------------- #
@@ -626,6 +826,126 @@ class TestOneInotifyInstancePerRoot:
 
 
 # --------------------------------------------------------------------------- #
+# (2) Live indexing still works under the recursive watch (nested INCLUDED dir)
+# (RESTORED — ledger #33; real watchdog Observer)
+# --------------------------------------------------------------------------- #
+class TestRecursiveWatchStillIndexesNestedFile:
+    """An edit to a file in a NESTED included subdir is still detected + indexed.
+
+    Proves the move to ONE recursive watch per root did not break the live path:
+    a real write deep under the root (``services/routing/module.py``) is picked
+    up by the single recursive Observer and re-indexed through ``index_file`` —
+    new content searchable.
+    """
+
+    async def test_nested_modify_event_reindexes_file(self, tmp_path: Path) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        nested_rel = "services/routing/module.py"
+        # Seed the index so this is an UPDATE under the recursive watch.
+        await indexer.index_file(
+            "custom", nested_rel, (live / nested_rel).read_text(encoding="utf-8"),
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        await watcher.start()
+        try:
+            # Write a NEW uniquely-named symbol DEEP in the nested subtree — the
+            # recursive watch must still observe it.
+            (live / nested_rel).write_text(
+                "def nested_recursive_marker(week):\n    return week\n",
+                encoding="utf-8",
+            )
+            assert await _wait_for(
+                lambda: _has_identity(trio, nested_rel, "nested_recursive_marker")
+            )
+        finally:
+            await watcher.stop()
+
+
+# --------------------------------------------------------------------------- #
+# (3) Excluded subtree STILL filtered at EVENT time (regression guard)
+# (RESTORED — ledger #33; seam-driven, matching the original fixture faithfully)
+# --------------------------------------------------------------------------- #
+class TestRecursiveWatchStillFiltersExcludedSubtree:
+    """An edit under an EXCLUDED dir is NOT indexed, though now physically watched.
+
+    The recursive-watch scaling fix moves pruning from SCHEDULE time (per-dir,
+    excluded dirs never scheduled) to EVENT time only (one recursive watch
+    physically observes the excluded subtree, and ``_resolve`` must drop its
+    events). This is the regression guard for that move: a write under the
+    configured ``exclude_dirs`` entry ``__pycache__`` — which the recursive
+    watch DOES see — must still yield ZERO index work. The excluded dir name is
+    read from the SAME config field production prunes against, not a
+    hand-copied literal.
+    """
+
+    async def test_event_under_recursively_watched_excluded_dir_does_no_index(
+        self, tmp_path: Path
+    ) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        # The excluded subtree must be one the config actually prunes (shared
+        # source of truth), and one the recursive watch would see.
+        assert _EXCLUDED_DIR_NAME in config.exclude_dirs
+        trio = _trio()
+        inner = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        indexer = RecordingIndexer(inner)
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+
+        # A modify event for a file inside the recursively-watched EXCLUDED
+        # subtree (``pkg/__pycache__/...``). Driven through the handler seam so
+        # the contract is deterministic and independent of host inotify headroom.
+        excluded_abs = live / "pkg" / _EXCLUDED_DIR_NAME / "module.cpython-314.pyc.py"
+        watcher.on_modified_path(str(excluded_abs))
+        await watcher.drain()
+
+        # The event-time ``_resolve`` drop filtered it: zero index work, no row.
+        assert indexer.index_calls == []
+        assert (
+            await trio.manifest.get(
+                "custom", f"pkg/{_EXCLUDED_DIR_NAME}/module.cpython-314.pyc.py"
+            )
+            is None
+        )
+
+    async def test_nested_included_event_still_indexes_proving_filter_is_selective(
+        self, tmp_path: Path
+    ) -> None:
+        """Control: a sibling INCLUDED nested file DOES index — the filter is
+        selective, not a blanket drop of everything under the recursive watch."""
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        inner = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        indexer = RecordingIndexer(inner)
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+
+        included_rel = "pkg/sub_a/deep/module.py"
+        watcher.on_modified_path(str(live / included_rel))
+        await watcher.drain()
+
+        # The included nested file WAS indexed (so the exclusion above is a real
+        # event-time filter decision, not a corpus artifact).
+        assert ("custom", included_rel) in indexer.index_calls
+        row = await trio.manifest.get("custom", included_rel)
+        assert row is not None and row.state == STATE_INDEXED
+
+
+# --------------------------------------------------------------------------- #
 # (4) Kernel IN_Q_OVERFLOW -> immediate tier reconcile (seam-driven)
 # --------------------------------------------------------------------------- #
 class _ReconcileSpy:
@@ -751,6 +1071,185 @@ class TestStopSettlesOverflowTasks:
         await trio.manifest.close()  # must not raise
         await asyncio.sleep(0.05)
         assert overflow_task.cancelled()
+
+
+# --------------------------------------------------------------------------- #
+# Watch-SCHEDULING scope excludes noisy subtrees (RESTORED — ledger #33)
+# --------------------------------------------------------------------------- #
+class TestWatchScopeExcludesNoisySubtrees:
+    """The recursive watch installs inotify watches for IN-SCOPE dirs ONLY.
+
+    The core idle-CPU assertion: an excluded directory subtree
+    (``exclude_dirs``) gets NO inotify watch, so a tree with a large excluded
+    subtree installs only the few real source-dir watches — not one per dir
+    across the whole tree. Inspected against the RUNNING observer's backing
+    ``Inotify._wd_for_path`` (the ground truth of consumed kernel watches) via
+    :func:`_inotify_watched_dirs` — NOT the pure/tautological
+    ``watcher.watched_paths()`` already covered by ``TestSchedulingPruning``.
+    """
+
+    async def test_excluded_subtree_dirs_get_no_inotify_watch(self, tmp_path: Path) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_corpus_with_big_excluded_subtree(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        await watcher.start()
+        try:
+            # The setup walk runs on the emitter thread; wait until at least the
+            # root watch is installed before inspecting the watch set.
+            assert await _wait_for(lambda: live.resolve() in _inotify_watched_dirs(watcher))
+            watched = _inotify_watched_dirs(watcher)
+
+            # Every IN-SCOPE directory is watched (root + each included subdir).
+            assert live.resolve() in watched
+            for rel in _NESTED_INCLUDED_SUBDIRS:
+                assert (live / rel).resolve() in watched, (
+                    f"in-scope dir {rel!r} lost its watch"
+                )
+
+            # NO directory inside an EXCLUDED subtree is watched — neither the
+            # ``__pycache__`` dir itself nor any nested dir under it.
+            for rel in _EXCLUDED_NESTED_SUBDIRS:
+                assert (live / rel).resolve() not in watched, (
+                    f"excluded dir {rel!r} consumed an inotify watch — the watch "
+                    f"scope did not prune exclude_dirs"
+                )
+
+            # The watch count is bounded by the IN-SCOPE dir count (root + the
+            # included subdirs), NOT the total dir count (which includes the wide
+            # excluded subtree).
+            in_scope_dir_count = 1 + len(_NESTED_INCLUDED_SUBDIRS)
+            assert len(watched) == in_scope_dir_count, (
+                f"watcher holds {len(watched)} inotify watches for "
+                f"{in_scope_dir_count} in-scope dirs — excluded subtrees were "
+                f"watched too"
+            )
+        finally:
+            await watcher.stop()
+
+    async def test_included_modify_still_indexes_under_pruned_watch(self, tmp_path: Path) -> None:
+        """Functional preservation: an edit to an in-scope file is still indexed.
+
+        Pruning excluded subtrees from the watch set must not cost any IN-SCOPE
+        coverage — a real write to a nested included file is still observed by
+        the (now exclusion-pruned) recursive watch and re-indexed via
+        ``index_file``, new content searchable.
+        """
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_corpus_with_big_excluded_subtree(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        nested_rel = "pkg/sub_a/deep/module.py"
+        await indexer.index_file(
+            "custom", nested_rel, (live / nested_rel).read_text(encoding="utf-8"),
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        await watcher.start()
+        try:
+            (live / nested_rel).write_text(
+                "def pruned_watch_still_indexes(week):\n    return week\n",
+                encoding="utf-8",
+            )
+            assert await _wait_for(
+                lambda: _has_identity(trio, nested_rel, "pruned_watch_still_indexes")
+            )
+        finally:
+            await watcher.stop()
+
+
+# --------------------------------------------------------------------------- #
+# Runtime new-dir watch scope (RESTORED — ledger #33)
+# --------------------------------------------------------------------------- #
+class TestRuntimeNewDirWatchScope:
+    """A NEW in-scope subdir is watched; a NEW excluded subdir is NOT.
+
+    The second watch-add path (runtime, not setup): watchdog adds a watch for
+    each newly-created directory under a recursive watch. The fix must apply the
+    SAME ``exclude_dirs`` prune there — a new in-scope subdir gets a watch (and
+    its files deliver events + index), a new excluded subdir gets NONE (so a
+    fresh ``__pycache__`` created at runtime never re-introduces the watch
+    explosion the setup prune removed).
+    """
+
+    async def test_new_in_scope_subdir_is_watched_and_indexes(self, tmp_path: Path) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        await watcher.start()
+        try:
+            assert await _wait_for(lambda: live.resolve() in _inotify_watched_dirs(watcher))
+            # Create a brand-new INCLUDED subdir at runtime, then a file in it.
+            new_dir = live / "services" / "fresh_runtime_pkg"
+            new_dir.mkdir(parents=True)
+            new_file = new_dir / "module.py"
+            new_file.write_text(
+                "def runtime_new_dir_marker():\n    return 1\n", encoding="utf-8"
+            )
+            # The new dir got its own watch AND the file event indexed.
+            assert await _wait_for(
+                lambda: _has_identity(
+                    trio, "services/fresh_runtime_pkg/module.py", "runtime_new_dir_marker",
+                )
+            )
+            assert new_dir.resolve() in _inotify_watched_dirs(watcher)
+        finally:
+            await watcher.stop()
+
+    async def test_new_excluded_subdir_gets_no_watch(self, tmp_path: Path) -> None:
+        """A runtime-created EXCLUDED subdir is never watched.
+
+        Creating a ``__pycache__`` at runtime (the common case: the first import
+        materialises it) must NOT install a watch — otherwise the setup-time
+        prune is undone the moment the interpreter writes a bytecode cache.
+        """
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_wide_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        await watcher.start()
+        try:
+            assert await _wait_for(lambda: live.resolve() in _inotify_watched_dirs(watcher))
+            watched_before = _inotify_watched_dirs(watcher)
+            # Create a brand-new EXCLUDED subdir at runtime + a nested dir in it.
+            new_excluded = live / "services" / _EXCLUDED_DIR_NAME
+            (new_excluded / "inner").mkdir(parents=True)
+            (new_excluded / "artifact.pyc.py").write_text(
+                "def runtime_excluded_marker():\n    return 1\n", encoding="utf-8"
+            )
+            # Give the observer time to (not) react to the new dir.
+            await asyncio.sleep(0.3)
+            watched_after = _inotify_watched_dirs(watcher)
+
+            # Neither the new excluded dir nor its nested child is ever watched.
+            assert new_excluded.resolve() not in watched_after, (
+                "a runtime-created excluded dir consumed an inotify watch"
+            )
+            assert (new_excluded / "inner").resolve() not in watched_after
+            # And the watch set did not grow beyond what was there before (no
+            # excluded dir watches were added).
+            assert watched_after == watched_before
+        finally:
+            await watcher.stop()
 
 
 # ===========================================================================
