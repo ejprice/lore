@@ -1174,6 +1174,19 @@ class FakeSurrealCodeGraph:
         # A module target reaches every symbol resolved under ``<module>.``.
         return dst.startswith(f"{target}.")
 
+    async def all_nodes(self) -> list[GraphNode]:
+        """Every code node across every slice — the whole-graph mirror of
+        :meth:`~loremaster.graph_surreal.SurrealCodeGraph.all_nodes`.
+
+        Builds each :class:`~loremaster.graph.GraphNode` through the SAME
+        ``_graph_node`` shim the keyed queries use, so an enumerated node is
+        byte-identical to the one ``what_imports`` / ``blast_radius`` return.
+        """
+        return [
+            self._graph_node(tier, file_path, node)
+            for tier, file_path, node in self._all_nodes()
+        ]
+
     async def what_imports(self, target: str) -> list[GraphNode]:
         """The MODULE nodes that import ``target`` (by fqn / bare / module reach)."""
         found: dict[str, GraphNode] = {}

@@ -949,6 +949,28 @@ class SurrealCodeGraph:
 
     # -- queries -------------------------------------------------------------
 
+    async def all_nodes(self) -> list[GraphNode]:
+        """Return EVERY ``code_node`` across every tier — the whole-graph vertex set.
+
+        The one WHOLE-GRAPH read the target-keyed query surface
+        (:meth:`what_imports` / :meth:`blast_radius` / :meth:`tests_for` /
+        :meth:`references`) does not otherwise provide: a single unfiltered
+        ``SELECT * FROM code_node``, decoded and deduped by record id, so a
+        corpus-wide consumer (e.g. :class:`~loremaster.map.MapEngine`) can
+        enumerate the module/symbol vertices WITHOUT a target to key on.
+        Reuses the same ``_decode_nodes`` / ``_dedupe_by_id`` helpers every
+        other read path funnels through, so a node's decode can never drift
+        from the keyed queries. A wiped graph yields ``[]``.
+
+        Returns:
+            Every distinct :class:`~loremaster.graph.GraphNode` in the graph.
+
+        Raises:
+            SurrealConnectionError: The server is unreachable or rejected auth.
+        """
+        result = await self._query(f"SELECT * FROM {CODE_NODE_TABLE}")
+        return self._dedupe_by_id(self._decode_nodes(result))
+
     async def what_imports(self, target: str) -> list[GraphNode]:
         """Return the module nodes that import ``target`` (by FQN or bare name).
 
