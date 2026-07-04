@@ -111,8 +111,8 @@ TERMINAL_STATUSES: frozenset[str] = frozenset({STATUS_DONE, STATUS_WONTFIX})
 # The full legal transition matrix (the state machine, transcribed verbatim from
 # the contract test's ``LEGAL_TRANSITIONS``): every ``(from, to)`` edge NOT in
 # this frozen set is illegal — including the claim-only ``open -> claimed`` edge
-# (reachable ONLY through :meth:`~TaskLedger.claim_task`), the no-op self-edges,
-# and every edge out of a terminal status.
+# (reachable ONLY through :meth:`~TaskLedger.claim_task`, never here), the no-op
+# self-edges, and every edge out of a terminal status.
 LEGAL_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     {
         (STATUS_CLAIMED, STATUS_IN_PROGRESS),
@@ -183,7 +183,11 @@ _CLAIM_RESOLVED_VAR = "clm_resolved"
 _SUPERSEDE_NEW_ID_PARAM = "sup_new_id"
 _SUPERSEDE_CONTENT_PARAM = "sup_content"
 _SUPERSEDE_OLD_ID_PARAM = "sup_old_id"
-_SUPERSEDE_PROVENANCE_PARAM = "sup_provenance"
+# The single new provenance EVENT this supersede appends SERVER-SIDE (never the
+# whole provenance object — a Python read-modify-write would silently clobber a
+# concurrently-committed transition's event on the SAME row; see
+# :meth:`TaskLedger._supersede_fragment`).
+_SUPERSEDE_EVENT_PARAM = "sup_event"
 # The LET-bound variable holding the guarded stamp's result rows, and the
 # FIXED message its zero-row guard THROWs. The message is a constant (never a
 # bound value), so the rolled-back rejection carries no interpolated data
@@ -194,10 +198,22 @@ _SUPERSEDE_ALREADY_MESSAGE = "task is already superseded"
 # The transition UPDATE's bound-parameter names (the ``tr_`` prefix).
 _TRANSITION_ID_PARAM = "tr_id"
 _TRANSITION_STATUS_PARAM = "tr_status"
-_TRANSITION_PROVENANCE_PARAM = "tr_provenance"
+# The single new provenance EVENT this transition appends SERVER-SIDE (never
+# the whole provenance object — see :meth:`TaskLedger._transition_fragment`).
+_TRANSITION_EVENT_PARAM = "tr_event"
 # The transition CAS's ``expected_from`` guard param — the exact status the
 # pre-read saw; the guarded UPDATE mutates ONLY while the row is STILL there.
 _TRANSITION_EXPECTED_FROM_PARAM = "tr_expected_from"
+# The LET-bound variable holding the guarded transition's result rows (mirrors
+# the supersede fragment's ``$sup_stamped`` shape), and the FIXED message its
+# zero-row guard THROWs. A concurrent writer that already moved the row OFF
+# ``expected_from`` — to ANY status, including this call's OWN target — makes
+# this UPDATE match zero rows; the THROW rolls the whole transaction back so a
+# lost race is ALWAYS a typed, detectable rollback, never a silent no-op a
+# caller could mistake for success (a same-target race a bare post-CAS
+# ``status`` re-read cannot distinguish from a genuine win).
+_TRANSITION_UPDATED_VAR = "tr_updated"
+_TRANSITION_ALREADY_MESSAGE = "task transition lost a concurrent compare-and-set"
 
 # The single-read existence-check / create param names.
 _ROW_ID_PARAM = "id"
@@ -661,6 +677,13 @@ class TaskLedger:
         re-entering ``open`` (the ``blocked -> open`` release edge) clears
         ``owner`` / ``claimed_at`` so the row is genuinely re-claimable.
 
+        The write is a guarded, THROW-on-zero-rows compare-and-set (see
+        :meth:`_transition_fragment`): a concurrent writer that already moved
+        the row away from the state THIS call's pre-read saw — to ANY other
+        status, including this call's OWN target — makes the transaction roll
+        back, which is ALWAYS detected here (never silently treated as success,
+        even when the concurrent winner happened to reach the same target).
+
         Args:
             task_id: The opaque id of the task to transition.
             status: The target status; must be a legal edge from the task's
@@ -675,7 +698,8 @@ class TaskLedger:
         Raises:
             TaskNotFoundError: No task with ``task_id`` exists.
             IllegalTransitionError: ``status`` is not a legal edge from the
-                task's current status (or the task is superseded).
+                task's current status (or the task is superseded), OR this
+                call lost a concurrent race to transition the same row.
         """
         row = await self._select_row(task_id)
         if row is None:
@@ -685,48 +709,60 @@ class TaskLedger:
         self._validate_transition(task_id, current, status, superseded_by)
 
         now = datetime.now(UTC)
-        provenance = self._append_event(
-            row.get(_COL_PROVENANCE),
-            {
-                _PROV_ACTOR: actor,
-                _PROV_ACTION: _ACTION_TRANSITION,
-                _PROV_TO: status,
-                _PROV_AT: now.isoformat(),
-            },
-        )
-        # The write is a guarded compare-and-set inside ONE transaction: it
-        # mutates ONLY while the row is STILL in the exact state the pre-read saw
-        # (``status = current``) and un-superseded. A concurrent transition
-        # changes ``status`` and a concurrent supersede sets ``superseded_by`` —
-        # either excludes this UPDATE, so it matches zero rows and writes nothing
-        # (never clobbering the winner's committed status or provenance).
+        event = {
+            _PROV_ACTOR: actor,
+            _PROV_ACTION: _ACTION_TRANSITION,
+            _PROV_TO: status,
+            _PROV_AT: now.isoformat(),
+        }
         release = status == STATUS_OPEN
-        await self._apply(
-            [self._transition_fragment(task_id, status, current, provenance, release)]
-        )
-
-        # Detect a lost race on the post-CAS re-read: a zero-row CAS leaves the
-        # status at whatever the concurrent winner committed, not this call's
-        # target. Re-validate from the FRESH state so the raised error names BOTH
-        # the (now-current) state and the refused target — e.g. the winner drove
-        # ``in_progress -> done`` and this call's ``in_progress -> wontfix`` is now
-        # the illegal ``done -> wontfix`` terminal->terminal edge.
-        updated = await self._select_row(task_id)
-        if updated is None:
-            raise TaskNotFoundError(f"no task with id {task_id!r}")
-        fresh_status = str(updated.get(_COL_STATUS))
-        if fresh_status != status:
+        try:
+            # The write is a guarded compare-and-set inside ONE transaction: it
+            # mutates ONLY while the row is STILL in the exact state the
+            # pre-read saw (``status = current``) and un-superseded, and the
+            # guard's THROW (see ``_transition_fragment``) turns a zero-row CAS
+            # into a rolled-back ``SurrealStoreError`` — never a silent no-op —
+            # so a concurrent writer that already drove the row to ANY other
+            # status (including, crucially, THIS call's own target) is ALWAYS
+            # detected, never masked as success.
+            await self._apply(
+                [self._transition_fragment(task_id, status, current, event, release)]
+            )
+        except SurrealConnectionError:
+            # A genuine transport fault — never a lost race; propagate untouched
+            # (must not be masked as an illegal-transition rejection).
+            raise
+        except SurrealStoreError as error:
+            # The transaction rolled back: this call's CAS matched zero rows,
+            # meaning a concurrent writer committed first. Re-validate from the
+            # FRESH state so the raised error names BOTH the (now-current) state
+            # and the refused target — e.g. a same-target race where the winner
+            # already drove ``in_progress -> done`` makes this call's own
+            # ``in_progress -> done`` request into the illegal ``done -> done``
+            # self-edge (the audit-#1 false-success this guard fixes). A
+            # vanished row (the ledger never deletes, so unreachable in
+            # practice) still raises typed ``TaskNotFoundError``.
+            fresh = await self._select_row(task_id)
+            if fresh is None:
+                raise TaskNotFoundError(f"no task with id {task_id!r}") from error
+            fresh_status = str(fresh.get(_COL_STATUS))
+            # Refuse from the FRESH edge when it is itself illegal (the common
+            # case, e.g. the done -> done self-edge above).
             self._validate_transition(
-                task_id, fresh_status, status, updated.get(_COL_SUPERSEDED_BY)
+                task_id, fresh_status, status, fresh.get(_COL_SUPERSEDED_BY)
             )
             # The fresh edge is somehow legal (a benign concurrent reorder, not
-            # exercised by the pins) — still refuse: this call's CAS never landed,
-            # so it did not perform the transition it promised.
+            # exercised by the pins) — still refuse: this call's CAS never
+            # landed, so it did not perform the transition it promised.
             raise IllegalTransitionError(
                 f"lost a concurrent transition race for task {task_id!r}: the status "
                 f"moved to {fresh_status!r} before this {current!r} -> {status!r} "
                 f"transition could apply"
-            )
+            ) from error
+
+        updated = await self._select_row(task_id)
+        if updated is None:
+            raise TaskNotFoundError(f"no task with id {task_id!r}")
         return self._row_to_task(updated)
 
     @staticmethod
@@ -734,25 +770,30 @@ class TaskLedger:
         task_id: str,
         target: str,
         expected_from: str,
-        provenance: dict[str, Any],
+        event: dict[str, Any],
         release: bool,
     ) -> TxnFragment:
-        """The guarded-CAS transition fragment: mutate ONLY from ``expected_from``.
+        """The guarded-CAS transition fragment: LET-bind, THROW on zero rows.
 
-        A single guarded ``UPDATE`` whose ``WHERE status = $expected_from AND
-        superseded_by IS NONE`` is the compare-and-set: the row moves to
-        ``target`` (stamping ``provenance``) exactly when it is STILL in the
-        state the caller's pre-read saw and un-superseded, and matches ZERO rows
-        otherwise — the same server-side CAS shape :meth:`_claim_fragment` uses,
-        so two concurrent transitions are serialised by
-        :func:`~loremaster.store._txn.execute_transaction`'s write-write retry and
-        exactly one ever applies. ``release`` (the ``blocked -> open`` edge)
-        additionally clears ``owner``/``claimed_at`` so the released row is
-        genuinely re-claimable.
+        Mirrors :meth:`_supersede_fragment`'s shape: a guarded ``UPDATE`` binds
+        its affected rows to ``$tr_updated`` — mutating ONLY while the row is
+        STILL in ``expected_from`` and un-superseded — and
+        ``IF array::len($tr_updated) == 0 { THROW … }`` rolls the WHOLE
+        transaction back the instant a concurrent writer already moved the row
+        away, so a zero-row CAS is ALWAYS a typed, detectable rollback — never a
+        silent no-op a caller could mistake for success (the same-target race a
+        bare post-CAS ``status`` re-read cannot distinguish from a genuine win).
+        The new provenance EVENT is appended SERVER-SIDE
+        (``provenance.events += [$tr_event]``) rather than written as a whole
+        Python-merged object, so a concurrent :meth:`supersede_task` committing
+        against the SAME row (a DIFFERENT guard column — ``superseded_by``, not
+        ``status``) can never clobber this call's event, or vice versa.
+        ``release`` (the ``blocked -> open`` edge) additionally clears
+        ``owner``/``claimed_at`` so the released row is genuinely re-claimable.
         """
         set_parts = [
             f"{_COL_STATUS} = ${_TRANSITION_STATUS_PARAM}",
-            f"{_COL_PROVENANCE} = ${_TRANSITION_PROVENANCE_PARAM}",
+            f"{_COL_PROVENANCE}.{_PROV_EVENTS} += [${_TRANSITION_EVENT_PARAM}]",
         ]
         if release:
             # The ONLY ways into ``open`` are creation and this release edge; a
@@ -761,17 +802,22 @@ class TaskLedger:
             set_parts.append(f"{_COL_OWNER} = NONE")
             set_parts.append(f"{_COL_CLAIMED_AT} = NONE")
         guarded_transition = (
-            f"UPDATE type::record('{TASK_TABLE}', ${_TRANSITION_ID_PARAM}) SET "
+            f"LET ${_TRANSITION_UPDATED_VAR} = (UPDATE "
+            f"type::record('{TASK_TABLE}', ${_TRANSITION_ID_PARAM}) SET "
             f"{', '.join(set_parts)} "
             f"WHERE {_COL_STATUS} = ${_TRANSITION_EXPECTED_FROM_PARAM} "
-            f"AND {_COL_SUPERSEDED_BY} IS NONE"
+            f"AND {_COL_SUPERSEDED_BY} IS NONE)"
+        )
+        guard_updated = (
+            f"IF array::len(${_TRANSITION_UPDATED_VAR}) == 0 "
+            f"{{ THROW '{_TRANSITION_ALREADY_MESSAGE}' }}"
         )
         return TxnFragment(
-            statements=[guarded_transition],
+            statements=[guarded_transition, guard_updated],
             params={
                 _TRANSITION_ID_PARAM: task_id,
                 _TRANSITION_STATUS_PARAM: target,
-                _TRANSITION_PROVENANCE_PARAM: provenance,
+                _TRANSITION_EVENT_PARAM: event,
                 _TRANSITION_EXPECTED_FROM_PARAM: expected_from,
             },
         )
@@ -822,15 +868,15 @@ class TaskLedger:
         The successor CREATE and the old-row stamp ride ONE ``BEGIN … COMMIT``
         (see :meth:`_supersede_fragment`): a fresh ``open`` / unowned successor is
         CREATEd AND the old row is stamped ``superseded_by = <new id>`` (with a
-        supersede event appended to its provenance). The stamp is a compare-and-set
-        (``WHERE superseded_by IS NONE``) and the CREATE is conditional on it, so
-        EXACTLY ONE successor is ever minted even under a concurrent double
-        supersede — the loser's whole transaction rolls back (no orphan) and
-        surfaces as :class:`IllegalTransitionError`. The old row is KEPT (never
-        deleted) so its history survives; a superseded task is terminal-like — it
-        can no longer be claimed (the claim CAS guards on ``superseded_by IS
-        NONE``), transitioned (:meth:`_validate_transition` refuses it), or
-        superseded again.
+        supersede event appended SERVER-SIDE to its provenance). The stamp is a
+        compare-and-set (``WHERE superseded_by IS NONE``) and the CREATE is
+        conditional on it, so EXACTLY ONE successor is ever minted even under a
+        concurrent double supersede — the loser's whole transaction rolls back
+        (no orphan) and surfaces as :class:`IllegalTransitionError`. The old row
+        is KEPT (never deleted) so its history survives; a superseded task is
+        terminal-like — it can no longer be claimed (the claim CAS guards on
+        ``superseded_by IS NONE``), transitioned (:meth:`_validate_transition`
+        refuses it), or superseded again.
 
         Args:
             task_id: The opaque id of the task being superseded.
@@ -863,18 +909,15 @@ class TaskLedger:
         new_id = uuid4().hex
         now = datetime.now(UTC)
         content = self._new_task_content(subject, description, None, created_by, now)
-        old_provenance = self._append_event(
-            row.get(_COL_PROVENANCE),
-            {
-                _PROV_ACTOR: created_by,
-                _PROV_ACTION: _ACTION_SUPERSEDE,
-                _PROV_SUCCESSOR: new_id,
-                _PROV_AT: now.isoformat(),
-            },
-        )
+        event = {
+            _PROV_ACTOR: created_by,
+            _PROV_ACTION: _ACTION_SUPERSEDE,
+            _PROV_SUCCESSOR: new_id,
+            _PROV_AT: now.isoformat(),
+        }
         try:
             await self._apply(
-                [self._supersede_fragment(task_id, new_id, content, old_provenance)]
+                [self._supersede_fragment(task_id, new_id, content, event)]
             )
         except SurrealConnectionError:
             # A genuine transport fault — never a lost race; propagate untouched
@@ -898,14 +941,18 @@ class TaskLedger:
 
     @staticmethod
     def _supersede_fragment(
-        old_id: str, new_id: str, content: dict[str, Any], old_provenance: dict[str, Any]
+        old_id: str, new_id: str, content: dict[str, Any], event: dict[str, Any]
     ) -> TxnFragment:
         """The supersede fragment: guarded stamp-first, THROW-guard, then CREATE.
 
         THREE ordered statements, one transaction, exactly-ONE-successor:
 
-        1. a guarded ``UPDATE`` that stamps ``superseded_by``/``provenance`` ONLY
-           while the old row is STILL ``superseded_by IS NONE`` (the CAS),
+        1. a guarded ``UPDATE`` that stamps ``superseded_by`` ONLY while the old
+           row is STILL ``superseded_by IS NONE`` (the CAS) and appends the new
+           supersede EVENT server-side (``provenance.events += [$sup_event]`` —
+           never a whole Python-merged provenance object, so a concurrent
+           :meth:`transition` committing against the SAME row via its OWN,
+           DIFFERENT guard column (``status``) can never clobber this event),
            binding its result rows to ``$sup_stamped``;
         2. ``IF array::len($sup_stamped) == 0 { THROW … }`` — a zero-row stamp
            (a concurrent supersede already won) THROWs, which rolls the WHOLE
@@ -921,7 +968,7 @@ class TaskLedger:
             f"LET ${_SUPERSEDE_STAMPED_VAR} = (UPDATE "
             f"type::record('{TASK_TABLE}', ${_SUPERSEDE_OLD_ID_PARAM}) SET "
             f"{_COL_SUPERSEDED_BY} = ${_SUPERSEDE_NEW_ID_PARAM}, "
-            f"{_COL_PROVENANCE} = ${_SUPERSEDE_PROVENANCE_PARAM} "
+            f"{_COL_PROVENANCE}.{_PROV_EVENTS} += [${_SUPERSEDE_EVENT_PARAM}] "
             f"WHERE {_COL_SUPERSEDED_BY} IS NONE)"
         )
         guard_stamped = (
@@ -938,7 +985,7 @@ class TaskLedger:
                 _SUPERSEDE_NEW_ID_PARAM: new_id,
                 _SUPERSEDE_CONTENT_PARAM: content,
                 _SUPERSEDE_OLD_ID_PARAM: old_id,
-                _SUPERSEDE_PROVENANCE_PARAM: old_provenance,
+                _SUPERSEDE_EVENT_PARAM: event,
             },
         )
 
@@ -979,21 +1026,6 @@ class TaskLedger:
             },
             _COL_CREATED_AT: now,
         }
-
-    @staticmethod
-    def _append_event(provenance: Any, event: dict[str, Any]) -> dict[str, Any]:
-        """Return a copy of ``provenance`` with ``event`` appended to its event log.
-
-        A whole-object rewrite (never a nested-path SET), so the write does not
-        depend on the engine's dotted-field-update semantics: the current
-        provenance is read alongside the row it belongs to, the event is appended
-        in Python, and the whole FLEXIBLE object is written back.
-        """
-        base = dict(provenance) if isinstance(provenance, dict) else {}
-        events = list(base.get(_PROV_EVENTS) or ())
-        events.append(event)
-        base[_PROV_EVENTS] = events
-        return base
 
     # -- reads / mapping ----------------------------------------------------
 

@@ -1164,3 +1164,195 @@ class TestBlockedByNormalization:
         free_attempt = await task_ledger.claim_task(dependent, AGENT_B)
         assert free_attempt.claimed is True
         assert free_attempt.task.owner == AGENT_B
+
+
+# ---------------------------------------------------------------------------
+# FIX-CYCLE 2 pins (REPORT-fix-audit.md findings #1/#2) — the two provenance /
+# false-success concurrency edges that SURVIVED fix cycle 1: a same-target
+# transition race (false double-success) and a transition-vs-supersede
+# provenance lost-update (independent guard columns, shared JSON blob).
+# ---------------------------------------------------------------------------
+
+# Identities for the SAME-target transition race — deliberately distinct from
+# every other identity in this file (including RESOLVER_MARKS_DONE, which races
+# a DIFFERENT target) so the winner's provenance event can be attributed
+# unambiguously to THIS race, never to a coincidental setup stamp.
+RACE_ACTOR_ALPHA = "resolver-agent-alpha-same-target"
+RACE_ACTOR_BETA = "resolver-agent-beta-same-target"
+
+# Identities for the transition-vs-supersede provenance race — one per mutator,
+# so presence of EITHER identity in the persisted provenance unambiguously means
+# THAT mutator's event specifically (never satisfied by a setup step: the setup
+# chain to in_progress only ever stamps CLAIMER/ACTOR).
+PROVENANCE_RACE_TRANSITION_ACTOR = "resolver-agent-transitions-to-blocked"
+PROVENANCE_RACE_SUPERSEDE_ACTOR = "orchestrator-agent-supersedes-in-progress"
+
+
+class TestSameTargetTransitionRace:
+    """Finding 1: two agents racing the SAME legal edge on one task (both
+    ``in_progress -> done``) must resolve to EXACTLY ONE winner.
+
+    Once the first caller's transition commits, the task is ``done``; the
+    SECOND caller's identical ``in_progress -> done`` request is now, from the
+    row's post-commit perspective, a ``done -> done`` self-edge — which is not
+    a member of ``LEGAL_TRANSITIONS`` and must be refused exactly as any other
+    illegal edge is (``TestTransitions.test_illegal_transition_raises_and_leaves_row_untouched``
+    already pins that a ``done -> done`` no-op is illegal). The CURRENT bug
+    (REPORT-fix-audit.md finding 1, reproduced live 30/30) instead returns TWO
+    ``Task`` successes and silently drops the loser's provenance stamp — this
+    pin targets exactly that: never two clean returns, never zero, and the
+    winner's own transition event must still be readable afterward.
+    """
+
+    async def test_same_target_race_has_exactly_one_winner_and_a_typed_loser(
+        self, task_ledger_factory: TaskLedgerFactory
+    ) -> None:
+        ledger_a = await task_ledger_factory()
+        ledger_b = await task_ledger_factory()
+
+        for iteration in range(_RACE_ITERATIONS):
+            task_id = await _drive_to_state(ledger_a, STATUS_IN_PROGRESS)
+
+            result_a, result_b = await asyncio.gather(
+                ledger_a.transition(task_id, STATUS_DONE, actor=RACE_ACTOR_ALPHA),
+                ledger_b.transition(task_id, STATUS_DONE, actor=RACE_ACTOR_BETA),
+                return_exceptions=True,
+            )
+
+            a_won = isinstance(result_a, Task)
+            b_won = isinstance(result_b, Task)
+
+            # EXACTLY one winner — never two clean returns (the current
+            # false-success bug), never zero.
+            assert a_won ^ b_won, (
+                f"iteration {iteration}: expected exactly one winner, got "
+                f"a_won={a_won} (a={result_a!r}) b_won={b_won} (b={result_b!r})"
+            )
+
+            winner_result = result_a if a_won else result_b
+            loser_result = result_b if a_won else result_a
+            winner_actor = RACE_ACTOR_ALPHA if a_won else RACE_ACTOR_BETA
+
+            assert isinstance(winner_result, Task)
+            assert winner_result.status == STATUS_DONE
+
+            # The loser's edge is illegal against the ALREADY-committed done
+            # state (a done -> done self-edge) — a typed IllegalTransitionError,
+            # never a silent second success and never a different exception.
+            assert isinstance(loser_result, IllegalTransitionError), (
+                f"iteration {iteration}: the loser must raise IllegalTransitionError, "
+                f"got {loser_result!r} (this is finding 1 if it is instead a Task)"
+            )
+            # The refused target is named in the error, exactly the convention
+            # every other illegal-transition case in this file follows.
+            assert STATUS_DONE in str(loser_result)
+
+            # A fresh read agrees: done, and the WINNER's transition event
+            # survived — the loser's refused write must not have clobbered it.
+            persisted = await ledger_a.get_task(task_id)
+            assert persisted.status == STATUS_DONE
+            assert _provenance_mentions(persisted.provenance, winner_actor), (
+                f"iteration {iteration}: the winner's ({winner_actor}) transition event "
+                f"was lost from provenance — persisted={persisted.provenance!r}"
+            )
+
+
+class TestProvenanceAppendOnly:
+    """Finding 2: ``transition`` and ``supersede_task`` guard DIFFERENT columns
+    (``status`` vs ``superseded_by``), so both may legitimately commit against
+    the SAME claimed-or-in-progress row concurrently — that is not itself a bug.
+    The bug (REPORT-fix-audit.md finding 2, reproduced live 40/40) is that both
+    mutators implement provenance as a Python read-modify-write of the WHOLE
+    ``provenance`` object, so whichever commits its write LAST silently drops
+    the other's appended event — violating the module's own "append-only …
+    events log" promise.
+
+    This pin races a legal transition (``in_progress -> blocked``) against a
+    supersede of the SAME task and checks the coordination columns settle
+    sanely (each column reflects only its OWN mutator's outcome) AND — the
+    actual defect target — that BOTH mutators' events survive in the persisted
+    ``provenance.events`` log whenever both commit.
+    """
+
+    async def test_transition_and_supersede_events_both_survive_when_both_commit(
+        self, task_ledger_factory: TaskLedgerFactory
+    ) -> None:
+        ledger_a = await task_ledger_factory()
+        ledger_b = await task_ledger_factory()
+
+        for iteration in range(_RACE_ITERATIONS):
+            task_id = await _drive_to_state(ledger_a, STATUS_IN_PROGRESS)
+
+            transition_result, supersede_result = await asyncio.gather(
+                ledger_a.transition(task_id, STATUS_BLOCKED, actor=PROVENANCE_RACE_TRANSITION_ACTOR),
+                ledger_b.supersede_task(
+                    task_id,
+                    subject=f"{SUBJECT_MEMORY} (superseding race) #{iteration}",
+                    description=DESCRIPTION_MEMORY,
+                    created_by=PROVENANCE_RACE_SUPERSEDE_ACTOR,
+                ),
+                return_exceptions=True,
+            )
+
+            transition_won = isinstance(transition_result, Task)
+            supersede_won = isinstance(supersede_result, str)
+
+            # Neither mutator may fail with anything OTHER than a typed
+            # IllegalTransitionError (a raw store/connection error leaking from
+            # an unguarded write is its own distinct defect from this pin's target).
+            if not transition_won:
+                assert isinstance(transition_result, IllegalTransitionError), (
+                    f"iteration {iteration}: transition must lose ONLY as a typed "
+                    f"IllegalTransitionError, got {transition_result!r}"
+                )
+            if not supersede_won:
+                assert isinstance(supersede_result, IllegalTransitionError), (
+                    f"iteration {iteration}: supersede must lose ONLY as a typed "
+                    f"IllegalTransitionError, got {supersede_result!r}"
+                )
+            # Independent guard columns: at least one of the two must commit —
+            # they do not contend for the same column, so a double-loss would
+            # mean some THIRD mechanism blocked both (not this pin's target, but
+            # worth surfacing loudly rather than silently passing).
+            assert transition_won or supersede_won, (
+                f"iteration {iteration}: expected at least one of the two "
+                f"independent-guard-column mutators to commit, got neither "
+                f"(transition={transition_result!r}, supersede={supersede_result!r})"
+            )
+
+            persisted = await ledger_a.get_task(task_id)
+
+            # --- coordination-state sanity: each column reflects ONLY its own
+            # --- mutator's outcome, independent of what the OTHER one did.
+            if transition_won:
+                assert persisted.status == STATUS_BLOCKED, (
+                    f"iteration {iteration}: a WINNING transition must persist its target status"
+                )
+            else:
+                assert persisted.status == STATUS_IN_PROGRESS, (
+                    f"iteration {iteration}: a LOSING transition must leave status untouched"
+                )
+            if supersede_won:
+                # At most one successor: superseded_by names EXACTLY the id this
+                # call returned, never a different (phantom) successor.
+                assert persisted.superseded_by == supersede_result, (
+                    f"iteration {iteration}: superseded_by must name the WINNING successor"
+                )
+            else:
+                assert persisted.superseded_by is None, (
+                    f"iteration {iteration}: a LOSING supersede must not stamp superseded_by"
+                )
+
+            # --- THE pin: the events log is APPEND-ONLY. A committed mutator's
+            # --- event must survive regardless of what the OTHER mutator did to
+            # --- the SAME provenance blob afterward — no read-modify-write clobber.
+            if transition_won:
+                assert _provenance_mentions(persisted.provenance, PROVENANCE_RACE_TRANSITION_ACTOR), (
+                    f"iteration {iteration}: the WINNING transition's event was lost from "
+                    f"provenance — persisted={persisted.provenance!r}"
+                )
+            if supersede_won:
+                assert _provenance_mentions(persisted.provenance, PROVENANCE_RACE_SUPERSEDE_ACTOR), (
+                    f"iteration {iteration}: the WINNING supersede's event was lost from "
+                    f"provenance — persisted={persisted.provenance!r}"
+                )
