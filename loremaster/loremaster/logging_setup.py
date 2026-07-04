@@ -21,7 +21,7 @@ this module owns only the *sinks* and the *secret backstop*:
   formatter + the redacting filter) to each lore-namespace logger
   (:data:`LORE_NAMESPACES`) with ``propagate=False`` — it does NOT reconfigure
   the root logger (that would fight uvicorn's own root handler) — and pins the
-  chatty third-party loggers (``httpx``/``qdrant_client``) to ``WARNING``. It is
+  chatty third-party logger ``httpx`` to ``WARNING``. It is
   idempotent: a second call resets handlers rather than stacking a duplicate.
 """
 
@@ -43,7 +43,7 @@ LORE_NAMESPACES: tuple[str, ...] = ("loremaster", "loresigil", "lorescribe")
 
 # Third-party loggers whose per-request INFO chatter would flood the structured
 # stream; pinned to WARNING so only their genuine problems surface.
-_THIRD_PARTY_WARN_NAMESPACES: tuple[str, ...] = ("httpx", "qdrant_client")
+_THIRD_PARTY_WARN_NAMESPACES: tuple[str, ...] = ("httpx",)
 
 # The sentinel a scrubbed secret is replaced with.
 REDACTED = "***REDACTED***"

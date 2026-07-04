@@ -131,7 +131,6 @@ if TYPE_CHECKING:
     )
     from loremaster.read_file import ReadFileTool
     from loremaster.search import SearchPipeline
-    from loremaster.store.qdrant import QdrantStore
     from loremaster.store.surreal import SurrealStore
     from loremaster.symbols import SymbolTool
     from loremaster.tasks import ClaimResult, Task, TaskLedger
@@ -1058,7 +1057,7 @@ class ReindexTierError(ValueError):
     """
 
 
-async def run_probe_gate(*, embedder: Embedder, store: QdrantStore, config: LoreConfig) -> int:
+async def run_probe_gate(*, embedder: Embedder, config: LoreConfig) -> int:
     """Probe the embedder and verify dim coherence before the server starts.
 
     The gate (plan Deliverable 3 "startup probe gate"):
@@ -1068,23 +1067,24 @@ async def run_probe_gate(*, embedder: Embedder, store: QdrantStore, config: Lore
        unreachable → REFUSE.
     2. The observed dim must equal ``config.embedding.dim`` → else REFUSE (a
        wrong-dim deploy would silently corrupt retrieval).
-    3. If the collection ALREADY exists, its vector size must equal
-       ``config.embedding.dim`` → else REFUSE with a remediation message, leaving
-       the collection INTACT. We NEVER auto-recreate — that silently nukes the
-       index.
+
+    The existing-store vector-size coherence check is now owned downstream, not
+    here: a populated chunk store whose dim drifted from ``config.embedding.dim``
+    is caught by the embedding-schema-fingerprint rebuild machinery
+    (``embedding_schema_fingerprint`` folds ``dim`` in, so a mismatch triggers a
+    rebuild), and the memory backend refuses a wrong-dim memory table in its own
+    ``ensure_ready``. The gate itself is now store-agnostic.
 
     Args:
         embedder: The active embedder to probe.
-        store: The project's :class:`QdrantStore` (for the existing-collection dim).
         config: The validated project config (``embedding.dim`` is the source of
-            truth the probe and collection must agree with).
+            truth the probe must agree with).
 
     Returns:
         The observed embedding dimension (== ``config.embedding.dim`` on success).
 
     Raises:
-        ProbeGateError: On an unreachable embedder, a probe/config dim mismatch, or
-            an existing-collection size mismatch.
+        ProbeGateError: On an unreachable embedder or a probe/config dim mismatch.
     """
     expected_dim = config.embedding.dim
     try:
@@ -1105,16 +1105,6 @@ async def run_probe_gate(*, embedder: Embedder, store: QdrantStore, config: Lore
             f"embedder reports dim {observed} but config.embedding.dim is {expected_dim}; "
             f"refusing to start — fix the config or the model before indexing (a wrong dim "
             f"silently corrupts retrieval)."
-        )
-    existing_dim = await store.collection_dim()
-    if existing_dim is not None and existing_dim != expected_dim:
-        reason = f"existing collection size {existing_dim} != config.embedding.dim {expected_dim}"
-        logger.error("startup.probe_gate.refuse", extra={"reason": reason})
-        raise ProbeGateError(
-            f"existing collection {store.collection_name!r} has vector size {existing_dim} "
-            f"but config.embedding.dim is {expected_dim}; refusing to start and leaving the "
-            f"collection INTACT (never auto-recreated). Re-create it deliberately, or fix the "
-            f"config to match, then reindex."
         )
     logger.info("startup.probe_gate.pass", extra={"observed_dim": observed})
     return observed
@@ -1147,7 +1137,7 @@ class AppContext:
     The FastMCP tool functions are thin wrappers that fetch this context from the
     lifespan and call the matching handler — so the handlers are the single, fully
     end-to-end-testable surface (a test drives them directly with a FakeEmbedder +
-    real Qdrant; the FastMCP tools just re-expose them).
+    a real SurrealDB store; the FastMCP tools just re-expose them).
     """
 
     def __init__(
@@ -1167,7 +1157,6 @@ class AppContext:
         symbol_tool: SymbolTool,
         memory_backend: MemoryBackend,
         task_ledger: TaskLedger,
-        qdrant_client: Any,
     ) -> None:
         self._server = server
         self._config: LoreConfig = server.config
@@ -1189,7 +1178,6 @@ class AppContext:
         # durable fleet task ledger the two task tools ride.
         self.memory_backend = memory_backend
         self.task_ledger = task_ledger
-        self._qdrant_client = qdrant_client
         # The parent extension context (per-extension namespaced state lives here),
         # set when the lifespan ran the startup hooks, so shutdown reuses it.
         self._extension_ctx: ExtensionContext | None = None
@@ -1966,7 +1954,7 @@ async def reconcile_store_divergence(
 ) -> None:
     """Heal a corpus index whose LIVE store/graph diverged from the manifest.
 
-    The idempotent-startup step that runs after ``ensure_collection`` and before
+    The idempotent-startup step that runs after the store's ``ensure_ready()`` and before
     the index is declared live. For every configured tier it compares the LIVE
     oracle — ``store.count_points(tier)`` and ``code_graph.indexed_file_count()``
     — against the manifest's honest expectation
@@ -2106,7 +2094,6 @@ async def build_app_context(
     *,
     server: LoreServer,
     embedder: Embedder,
-    qdrant_client: Any,
     manifest_path: Path,
     snapshot_root: Path,
     start_tasks: bool = False,
@@ -2114,21 +2101,20 @@ async def build_app_context(
     """Run the probe gate, construct the runtime services, optionally spawn tasks.
 
     The dependency-injected core of the lifespan: every collaborator the real
-    lifespan builds from config (the embedder, the Qdrant client, the
-    memory-ledger anchor path, the snapshot root) is a parameter, so a test
-    wires a :class:`~loresigil.testing.FakeEmbedder` + a throwaway Qdrant
-    collection + a throwaway SurrealDB database and drives the SAME
-    construction path the server runs.
+    lifespan builds from config (the embedder, the memory-ledger anchor path, the
+    snapshot root) is a parameter, so a test wires a
+    :class:`~loresigil.testing.FakeEmbedder` + a throwaway SurrealDB database and
+    drives the SAME construction path the server runs.
 
     Sequence (plan Deliverable 3 lifespan):
 
-    1. Build the project store (with extension-declared payload indexes) and run
-       the **probe gate** (:func:`run_probe_gate`) — refuse on unreachable / dim
-       mismatch (never auto-recreate). THEN ``ensure_collection`` at the config
-       dim (and the memory collection).
-    2. Construct the manifest, the code-graph, the embedder-injected indexer (with
-       the graph wired in), the reconcile engine (with the graph), the memory
-       store, the search pipeline, and the tier-aware read tools.
+    1. Run the **probe gate** (:func:`run_probe_gate`) — refuse on an unreachable
+       embedder or a probe/config dim mismatch — then ready the SurrealDB write
+       stack (store + manifest + graph + snapshot stamper + memory backend + task
+       ledger) against the config dim.
+    2. Construct the embedder-injected indexer (with the graph wired in), the
+       reconcile engine (with the graph), the search pipeline, and the tier-aware
+       read tools.
     3. Run the extension ``on_startup`` hooks — UNWINDING on partial failure (fix
        A): a failing hook aborts the build after tearing the started hooks down.
     4. When ``start_tasks``: run the store-divergence heal + the initial delta
@@ -2141,7 +2127,6 @@ async def build_app_context(
     Args:
         server: The composed :class:`LoreServer` (config + extensions).
         embedder: The active embedder (probed by the gate).
-        qdrant_client: The async Qdrant client the stores share.
         manifest_path: The state-dir anchor whose ``.with_name()`` derives the
             memory-ledger SQLite path (``<slug>.memory.db``) — NOT a manifest
             path; the manifest itself lives in SurrealDB (``config.surreal.*``).
@@ -2171,7 +2156,6 @@ async def build_app_context(
     from loremaster.search import SearchPipeline
     from loremaster.source.local_directory import LocalDirectorySourceProvider
     from loremaster.source.snapshot import SnapshotLayout
-    from loremaster.store.qdrant import QdrantStore
     from loremaster.store.surreal import SurrealStore
     from loremaster.symbols import SymbolTool
     from loremaster.tasks import TaskLedger
@@ -2179,34 +2163,21 @@ async def build_app_context(
     config = server.config
     slug = config.project.slug
 
-    # 1) READ-path store + probe gate + collection. DUAL-STORE INTERIM (P5→P8):
-    # the memory READ path still speaks the Qdrant API, so its QdrantStore
-    # stays constructed here for the remaining interim window. The WRITE path
-    # (indexer/reconcile/watcher) already runs on the Surreal stack below —
-    # chunks indexed from here on land in SurrealDB, NOT Qdrant.
-    # Retirement is PER-CONSUMER, not one cutover: search + symbols
-    # (SymbolTool) ported onto the unified store at P6 (search pipeline v2 —
-    # commit 8ae67ab), memory ports at P7 (memory v2), and the
-    # QdrantStore/client/deps are only deleted at P8 (v1.0) once every
-    # consumer is off it. Staleness retires the same way — memory's
-    # Qdrant-served results grow stale by design only until its own phase
-    # lands, not until P8.
-    # NOTE (P8): this seam-8 index application must re-home onto the unified
-    # SurrealStore when QdrantStore is deleted, or extension keyword/bool field
-    # indexes go dead — the same re-homing the fulltext kind is already
-    # declared-not-consumed awaiting (EXTENDING.md §3).
-    store = QdrantStore(
-        client=qdrant_client,
-        slug=slug,
-        extra_keyword_indexes=[
-            spec.field_name for spec in server.payload_index_specs if spec.kind == "keyword"
-        ],
-        extra_bool_indexes=[
-            spec.field_name for spec in server.payload_index_specs if spec.kind == "bool"
-        ],
-    )
-    await run_probe_gate(embedder=embedder, store=store, config=config)
-    await store.ensure_collection(config.embedding.dim)
+    # 1) PROBE GATE (store-agnostic): refuse on an unreachable embedder or a
+    # probe/config dim mismatch BEFORE any store is readied. The former READ-path
+    # QdrantStore (memory-interim) is gone — memory now serves from the SurrealDB
+    # ``memory_backend`` (P7), search + symbols read the unified SurrealStore (P6),
+    # and the Qdrant client/deps retired at P8a. Existing-store dim coherence is
+    # owned downstream now (the embedding-schema-fingerprint rebuild folds ``dim``
+    # in; the memory backend refuses a wrong-dim memory table in ``ensure_ready``).
+    #
+    # SEAM-8 FOLLOW-UP (P8+): extension-declared keyword/bool payload indexes
+    # (``server.payload_index_specs``) were applied to the retired QdrantStore. The
+    # unified SurrealStore does not yet apply them (the same declared-not-consumed
+    # state the fulltext kind already awaits — EXTENDING.md §3), so a future phase
+    # must re-home this index application onto SurrealStore. No current live
+    # deployment declares payload indexes, so this is inert today.
+    await run_probe_gate(embedder=embedder, config=config)
 
     # 1b) WRITE-path store: the unified SurrealDB database (SurrealConfig) that
     # holds chunks + file_text + manifest + code graph — the same database a
@@ -2426,7 +2397,6 @@ async def build_app_context(
         symbol_tool=symbol_tool,
         memory_backend=memory_backend,
         task_ledger=task_ledger,
-        qdrant_client=qdrant_client,
     )
 
     # 3) Extension startup hooks (fix A: unwind on partial failure). Reuse the
@@ -2466,7 +2436,7 @@ async def build_app_context(
             # + rebuilds the graph regardless of the unchanged-mtime fast-path; a
             # healthy tier is left strictly untouched (no false heal). The reconcile
             # only detects + triggers — it fabricates nothing, so the count is
-            # restored by the sweep, not faked. Runs after ensure_collection + the
+            # restored by the sweep, not faked. Runs after the store's ensure_ready() + the
             # manifest/graph are built, and before run_sweep, so the heal is
             # effective by the time the context is returned.
             await reconcile_store_divergence(
@@ -2807,9 +2777,11 @@ class _ProcessLifespanGuard:
 
     This guard makes the heavy startup idempotent per process. Each session takes
     a reference-counted *lease*: the FIRST lease builds the shared
-    :class:`AppContext` (Qdrant client + probe gate + watcher + tasks); every
-    subsequent concurrent lease REUSES the same context (no second probe/watcher);
-    and the LAST lease to release tears the context + client down. An ``asyncio``
+    :class:`AppContext` (probe gate + SurrealDB write stack + watcher + tasks);
+    every subsequent concurrent lease REUSES the same context (no second
+    probe/watcher); and the LAST lease to release tears the context down (plus any
+    process-owned client, though the SurrealDB stack self-closes via
+    ``AppContext.aclose``). An ``asyncio``
     lock serialises the build/teardown so two sessions racing the first lease
     cannot both build. Sequential sessions (build → release-to-zero → a later
     session) correctly rebuild — the guard tracks "currently live", not
@@ -2859,7 +2831,8 @@ class _ProcessLifespanGuard:
 
         Idempotent at zero: extra releases never drive the refcount negative or
         double-close. The teardown mirrors the original lifespan ``finally`` —
-        ``AppContext.aclose`` (tasks/watcher/hooks/SQLite) then the Qdrant client.
+        ``AppContext.aclose`` (tasks/watcher/hooks/SurrealDB), then any
+        process-owned client (``None`` since the SurrealDB stack self-closes).
         """
         async with self._lock:
             if self._refcount == 0:
@@ -2881,9 +2854,9 @@ def build_mcp_server(server: LoreServer) -> Any:
     """Construct the FastMCP server: lifespan + the sixteen built-ins + extension tools.
 
     The lifespan builds the live :class:`AppContext` from config (the real
-    embedder via :func:`~loremaster.embedding.make_embedder_from_config`, a real
-    Qdrant client, the default SQLite paths, the snapshot root) and starts the
-    watcher + reconcile tasks; teardown closes it. Each tool is a thin wrapper
+    embedder via :func:`~loremaster.embedding.make_embedder_from_config`, the
+    SurrealDB write stack, the default SQLite paths, the snapshot root) and starts
+    the watcher + reconcile tasks; teardown closes it. Each tool is a thin wrapper
     that fetches the :class:`AppContext` from the request's lifespan context and
     calls the matching handler — every tool returns a pydantic value object (a
     filtered/summarised shape), never a raw store dump.
@@ -2907,38 +2880,28 @@ def build_mcp_server(server: LoreServer) -> Any:
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
-    from qdrant_client import AsyncQdrantClient
-
-    from loremaster.config import resolve_secret
     from loremaster.embedding import make_embedder_from_config
 
     config = server.config
 
     async def _build_context() -> tuple[AppContext, Any]:
-        """Run the heavy startup once: build the Qdrant client + the AppContext.
+        """Run the heavy startup once: build the AppContext (SurrealDB write stack).
 
         Returns:
-            The built ``(app_context, client)`` pair the guard reuses across
-            sessions and closes on the last release.
+            The built ``(app_context, None)`` pair the guard reuses across
+            sessions. The second element is the process-owned client the guard
+            closes on the last release; the SurrealDB stack is owned and torn down
+            by ``AppContext.aclose`` itself, so there is no separate client to hand
+            back — ``None`` (the guard's release tolerates it).
         """
-        client = AsyncQdrantClient(
-            url=config.qdrant.url, api_key=resolve_secret(config.qdrant.api_key_env)
+        app_context = await build_app_context(
+            server=server,
+            embedder=make_embedder_from_config(config.embedding),
+            manifest_path=_DEFAULT_MANIFEST_DIR / f"{config.project.slug}.db",
+            snapshot_root=_DEFAULT_SNAPSHOT_ROOT,
+            start_tasks=True,
         )
-        try:
-            app_context = await build_app_context(
-                server=server,
-                embedder=make_embedder_from_config(config.embedding),
-                qdrant_client=client,
-                manifest_path=_DEFAULT_MANIFEST_DIR / f"{config.project.slug}.db",
-                snapshot_root=_DEFAULT_SNAPSHOT_ROOT,
-                start_tasks=True,
-            )
-        except BaseException:
-            # build_app_context tears down its own half-built state; we still own
-            # the client it never adopted, so close it before the error propagates.
-            await client.close()
-            raise
-        return app_context, client
+        return app_context, None
 
     # ONE guard per built server → one shared heavy startup per process. Captured
     # by the per-session lifespan closure below.
@@ -4063,14 +4026,15 @@ _LIFESPAN_SHUTDOWN = "lifespan.shutdown"
 _LIFESPAN_SHUTDOWN_COMPLETE = "lifespan.shutdown.complete"
 # Operator-safe FIXED message for an eager-build failure surfaced as the ASGI
 # lifespan.startup.failed event. WHY a constant and not str(exc): uvicorn logs
-# this message UNREDACTED at process startup, so a credentialed config (e.g.
-# qdrant.url user:pass@host surfacing in an HTTP-status exception) would leak
-# verbatim into the startup log. The real detail is logged through the module
-# logger (the redaction-backstopped lore sink) instead — see _drive_lifespan.
+# this message UNREDACTED at process startup, so a credentialed config (e.g. a
+# surreal.url or embedding base_url with user:pass@host surfacing in a transport
+# exception) would leak verbatim into the startup log. The real detail is logged
+# through the module logger (the redaction-backstopped lore sink) instead — see
+# _drive_lifespan.
 _EAGER_BUILD_FAILED_MESSAGE = "eager startup build failed; see server logs"
 
 # FP-07 — bounded retry-with-backoff for the eager heavy build at process startup.
-# A TRANSIENT Qdrant/TEI outage at boot makes the eager build raise once ->
+# A TRANSIENT SurrealDB/TEI outage at boot makes the eager build raise once ->
 # lifespan.startup.failed -> uvicorn aborts -> the container EXITS with no
 # auto-retry. A brief dependency blip should not permanently down the container, so
 # the eager startup retries the build up to ``_DEFAULT_EAGER_MAX_ATTEMPTS`` times
@@ -4096,7 +4060,8 @@ class _EagerStartupLifespan:
     the heavy build runs ONCE at startup and the shared :class:`AppContext` survives
     between sessions (no per-session build/teardown churn; every per-session lease
     just reuses the eager one). On ``lifespan.shutdown`` it releases the eager lease
-    (-> AppContext + Qdrant client teardown) and exits the inner lifespan.
+    (-> AppContext teardown, incl. the SurrealDB write stack) and exits the inner
+    lifespan.
 
     Only the ``lifespan`` scope is intercepted; every other scope (``http``) is
     delegated straight to the inner app, so the Origin/Bearer wrapping that sits
@@ -4121,7 +4086,7 @@ class _EagerStartupLifespan:
                 Tolerated as ``None`` defensively — the inner lifespan still runs,
                 the eager lease is simply skipped (no heavy build hoisted).
             max_attempts: The BOUNDED retry budget for the eager heavy build at
-                ``lifespan.startup`` (FP-07). A transient Qdrant/TEI blip is retried
+                ``lifespan.startup`` (FP-07). A transient SurrealDB/TEI blip is retried
                 up to this many times before failing closed; the production default
                 is ``_DEFAULT_EAGER_MAX_ATTEMPTS`` (> 1, so it is never single-shot).
             backoff_base_s: Seconds slept between failed eager-build attempts. The
@@ -4200,7 +4165,7 @@ class _EagerStartupLifespan:
                 return
             # 2) Take the PROCESS-LIFETIME eager lease — the heavy build. Skipped
             #    when no guard was surfaced (defensive), so the inner still runs.
-            #    FP-07: a transient Qdrant/TEI outage at boot must not permanently
+            #    FP-07: a transient SurrealDB/TEI outage at boot must not permanently
             #    down the container, so the build is RETRIED with bounded backoff —
             #    up to self._max_attempts acquires, sleeping self._backoff_base_s
             #    between failures. A build that fails K < N times then succeeds comes
@@ -4219,7 +4184,7 @@ class _EagerStartupLifespan:
                     # still learn WHY startup failed. The ASGI message below stays a
                     # FIXED operator-safe phrase — never str(exc) — because uvicorn
                     # logs that message UNREDACTED at startup, so any secret-bearing
-                    # exception text (e.g. a credentialed qdrant.url) must not reach
+                    # exception text (e.g. a credentialed surreal.url) must not reach
                     # it.
                     logger.error("eager startup build failed", exc_info=last_exc)
                     await send(
@@ -4354,7 +4319,7 @@ def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
     # straight through, so the Origin/Bearer wrapping below is untouched.
     eager_guard = getattr(mcp, "_lore_eager_guard", None)
     # FP-07: wire the PRODUCTION-default BOUNDED retry policy (N > 1 + a real
-    # backoff) so a brief boot-time Qdrant/TEI blip is retried rather than aborting
+    # backoff) so a brief boot-time SurrealDB/TEI blip is retried rather than aborting
     # the container on the first failure. Passed explicitly so the production
     # composition's bounded-not-single-shot behaviour is unmistakable at the seam.
     app: Any = _EagerStartupLifespan(

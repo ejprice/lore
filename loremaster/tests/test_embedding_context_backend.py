@@ -104,7 +104,6 @@ def _base_lore_config_payload(
         "schema_version": 1,
         "project": {"slug": slug, "root": "."},
         "embedding": embedding_fields,
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         "include": ["src/**/*.py"],
         "exclude_dirs": [".git", ".venv"],
         "exclude_globs": [],

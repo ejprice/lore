@@ -191,7 +191,6 @@ def _config(*, slug: str, live_path: Path) -> LoreConfig:
             "api_key_env": _TEI_KEY_ENV,
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         "roots": [
             {
                 "tier": "custom",

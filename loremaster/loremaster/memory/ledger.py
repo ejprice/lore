@@ -1,16 +1,16 @@
 """Durable SQLite write-through ledger for project memories (FP-06).
 
-The ``lore_<slug>_memory`` Qdrant collection holds USER-AUTHORED project
-memories, and today there is no second copy: a Qdrant wipe destroys every saved
-memory forever (unlike code vectors, a memory cannot be re-derived from source).
-This ledger is the durable source of truth — every ``save_memory`` write-through
-persists the memory here on the state volume BEFORE the volatile Qdrant upsert,
-so a later restore can re-embed it.
+The volatile SurrealDB memory store holds USER-AUTHORED project memories, and on
+its own it is the only copy: a SurrealDB wipe destroys every saved memory forever
+(unlike code vectors, a memory cannot be re-derived from source). This ledger is
+the durable source of truth — every ``save_memory`` write-through persists the
+memory here on the state volume BEFORE the volatile SurrealDB upsert, so a later
+restore can re-embed it.
 
-The ledger is keyed on the deterministic ``uuid5`` memory id (the same id the
-:class:`~loremaster.memory.store.MemoryStore` mints), so :meth:`record` is an
-idempotent upsert and a restore re-mints the SAME id — overwriting in place
-rather than multiplying points.
+The ledger is keyed on the deterministic ``uuid5`` memory id (the same id
+:func:`~loremaster.memory.backend.derive_memory_id` mints), so :meth:`record` is
+an idempotent upsert and a restore re-mints the SAME id — overwriting in place
+rather than multiplying rows.
 
 Resilient-open posture (mirrors the manifest / resilient-db slice): construction
 must NOT crash on a missing parent dir or a corrupt file. The durable copy
@@ -29,7 +29,7 @@ from loremaster.index.sqlite_resilient import open_resilient_sqlite
 # Schema DDL. Executed idempotently on every connection open so a fresh db and a
 # reopened file-backed db both arrive at the same schema. The PK is the
 # deterministic ``memory_id`` so :meth:`record` upserts (ON CONFLICT) rather than
-# appending a duplicate row — mirroring the Qdrant deterministic-id dedup.
+# appending a duplicate row — mirroring the volatile store's deterministic-id dedup.
 # ``metadata`` is stored as JSON text (a SQLite cell is scalar; the caller's
 # metadata is a nested dict, so it round-trips through ``json``).
 _SCHEMA = """
@@ -135,7 +135,7 @@ class MemoryLedger:
         Recording the same ``memory_id`` twice upserts (one row, latest write
         wins) via ``ON CONFLICT ... DO UPDATE``, never appends — so a
         write-through on a re-saved note collapses to a single durable row,
-        matching the deterministic-id dedup the store does against Qdrant.
+        matching the deterministic-id dedup the store does against SurrealDB.
 
         Args:
             memory_id: The deterministic ``uuid5`` point id (the natural key).

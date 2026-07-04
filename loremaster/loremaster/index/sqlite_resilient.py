@@ -17,8 +17,8 @@ SQLite database at construction. Two production failure modes wedge a bare
   re-wedges until a human deletes the file.
 
 The ledger is fully rebuildable — a fresh empty ledger is backfilled from the
-Qdrant memory collection (``MemoryStore.backfill_ledger_from_store`` /
-``restore_if_diverged``), so the correct recovery for a corrupt image is
+SurrealDB memory store by the memory backend's boot backfill / divergence
+restore, so the correct recovery for a corrupt image is
 delete-and-recreate. A VALID database — including a zero-byte file SQLite
 treats as valid-and-fresh — must open UNCHANGED; the recovery path must never
 nuke a healthy database.

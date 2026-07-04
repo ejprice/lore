@@ -4,7 +4,8 @@ The unified SurrealDB store fuses two retrieval arms — an HNSW vector search a
 a BM25 FULLTEXT search — with the engine's native ``search::rrf`` (Reciprocal
 Rank Fusion). Whatever the arm, a hit is handed back as this single, backend-
 neutral :class:`Candidate`: the loremaster callers depend on *these* four fields,
-never on any ``qdrant_client`` (``ScoredPoint``) or raw ``surrealdb`` type. Keeping
+never on any raw vector-store point type (a ``ScoredPoint``-style object) or raw
+``surrealdb`` type. Keeping
 the return type neutral is what let the store swap Qdrant for SurrealDB without a
 caller rewrite.
 
@@ -22,7 +23,7 @@ from pydantic import BaseModel, ConfigDict
 # The three retrieval arms a candidate can originate from. ``vector`` = HNSW
 # nearest-neighbour only; ``fulltext`` = BM25 lexical only; ``fused`` = a
 # ``search::rrf`` fusion of both. Pinned as a ``Literal`` so a typo or a leaked
-# backend-ism (e.g. ``"qdrant_hit"``) fails validation loudly rather than coercing.
+# backend-ism (e.g. ``"backend_hit"``) fails validation loudly rather than coercing.
 CandidateOrigin = Literal["vector", "fulltext", "fused"]
 
 

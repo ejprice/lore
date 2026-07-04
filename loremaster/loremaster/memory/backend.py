@@ -1,15 +1,16 @@
 """The P7 ``MemoryBackend`` wire vocabulary + protocol over SurrealDB.
 
-This module replaces the Qdrant-only :mod:`loremaster.memory.store` payload
+This module replaced the Qdrant-only ``loremaster.memory.store`` payload
 shapes with the Spectron-derived, snake_case memory wire vocabulary the local
-SurrealDB-backed implementation (:mod:`loremaster.memory.local`) speaks:
+SurrealDB-backed implementation (:mod:`loremaster.memory.local`) speaks (that
+Qdrant-era module was deleted at P8a once every consumer was off it):
 
 * :class:`MemoryRef` + :func:`derive_refs_stamp` / :func:`refs_from_stamp` /
   :func:`derive_memory_id` — the pure, storage-agnostic deterministic-id
-  derivation. These moved here from the Qdrant-era
-  :mod:`loremaster.memory.store` (where they were ``MemoryStore`` classmethods)
+  derivation. These moved here from the Qdrant-era ``loremaster.memory.store``
+  (where they were ``MemoryStore`` classmethods)
   so the local SurrealDB backend, the fakes, and the durable ledger replay share
-  ONE id-minting source of truth and the Qdrant module can later be deleted. The
+  ONE id-minting source of truth. The
   id scheme is UNCHANGED (``uuid5`` over ``memory:{text}:{refs_stamp}``), so a
   restore re-mints byte-identical ids — pinned by
   ``test_memory_backend.TestMovedMemoryIdHelpersParity``.
@@ -85,10 +86,10 @@ ChunkExistsFn = Callable[[str], Awaitable[bool]]
 # --- Deterministic memory-id derivation (storage-agnostic, v0.3-compatible) ---
 #
 # The pure id-minting contract every backend + the durable ledger replay share.
-# Moved here from :mod:`loremaster.memory.store` (formerly ``MemoryStore``
-# classmethods) so the Qdrant module can later be deleted while these survive as
-# the ONE source of truth. The scheme is UNCHANGED, so a restore re-mints
-# byte-identical ids (pinned by ``test_memory_backend``'s parity suite).
+# Moved here from the Qdrant-era ``loremaster.memory.store`` (formerly
+# ``MemoryStore`` classmethods) so that module could be deleted (it was, at P8a)
+# while these survive as the ONE source of truth. The scheme is UNCHANGED, so a
+# restore re-mints byte-identical ids (pinned by ``test_memory_backend``'s parity suite).
 
 # UUID5 name components, joined by ``_ID_SEPARATOR``. ``memory`` namespaces the id
 # so a memory id can never collide with a structural chunk point id.

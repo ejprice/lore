@@ -67,7 +67,8 @@ DetailLevel = Literal["summary", "source"]
 # exact-match string fields (e.g. ``model_name``); "bool" for flags (e.g.
 # ``is_installed``); "fulltext" for a BM25-indexable text field (e.g. an
 # ``llm_summary`` enrichment column) — the unified store maps each kind onto
-# its own index primitive rather than Qdrant's KEYWORD/BOOL-only vocabulary.
+# its own index primitive rather than a vector store's fixed KEYWORD/BOOL-only
+# index vocabulary.
 FieldIndexKind = Literal["keyword", "bool", "fulltext"]
 
 # The baseline key-version an extension stamps into its semantic memory-key
@@ -115,7 +116,7 @@ class FieldIndexSpec(BaseModel):
     odoo's ``model_name`` keyword, ``is_installed`` bool, or an ``llm_summary``
     fulltext column). Backend-neutral by design: the field names the KIND the
     field should be indexed as, and the store maps that kind onto its own index
-    primitive, rather than the model naming a Qdrant-specific schema type. The
+    primitive, rather than the model naming a backend-specific schema type. The
     :attr:`kind` is constrained to the kinds the store supports, so an unknown
     kind fails loudly at construction rather than silently skipping the index
     later.
@@ -256,7 +257,8 @@ class Extension(ABC):
 
         P6 read-path cutover (§6 item 3): the seam carries the backend-neutral
         :class:`~loremaster.store.candidate.Candidate` the unified SurrealDB
-        store's hybrid search returns, never a ``qdrant_client`` ``ScoredPoint``.
+        store's hybrid search returns, never a raw vector-store point type (a
+        ``ScoredPoint``-style object).
 
         Args:
             query: The user's search query.
@@ -273,8 +275,8 @@ class Extension(ABC):
         Default: identity — return ``candidates`` unchanged.
 
         P6 read-path cutover (§6 item 3): the seam carries
-        :class:`~loremaster.store.candidate.Candidate`\\ s, never a
-        ``qdrant_client`` ``ScoredPoint``.
+        :class:`~loremaster.store.candidate.Candidate`\\ s, never a raw
+        vector-store point type (a ``ScoredPoint``-style object).
 
         Args:
             candidates: The candidate hits to (re)order.
@@ -291,7 +293,8 @@ class Extension(ABC):
 
         P6 read-path cutover (§6 item 3): the seam formats a backend-neutral
         :class:`~loremaster.store.candidate.Candidate` (render off its ``key`` /
-        ``payload``), never a ``qdrant_client`` ``ScoredPoint``.
+        ``payload``), never a raw vector-store point type (a ``ScoredPoint``-style
+        object).
 
         Args:
             result: The candidate hit to format.

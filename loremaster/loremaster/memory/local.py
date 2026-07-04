@@ -78,7 +78,7 @@ from loremaster.store.surreal_schema import (
 logger = logging.getLogger(__name__)
 
 # Default cap on the number of memories a recall returns when the caller does
-# not specify ``k`` (mirrors ``loremaster.memory.store``'s legacy default).
+# not specify ``k`` (mirrors the legacy Qdrant-era memory store's default).
 _DEFAULT_RECALL_K = 5
 
 # The kind a memory defaults to when none is recorded — a pre-v2 ledger row (no
@@ -569,9 +569,9 @@ class LocalMemoryBackend:
     async def restore_from_ledger(self) -> int:
         """Replay the durable ledger rows NOT already covered by the store.
 
-        Membership is by deterministic id (mirrors
-        :meth:`MemoryStore.backfill_ledger_from_store`'s skip pattern): a ledger
-        row whose id the store already carries is skipped, so once the store
+        Membership is by deterministic id (mirrors the retired Qdrant-era
+        backfill's skip pattern): a ledger row whose id the store already
+        carries is skipped, so once the store
         covers the ledger a further restore is a pure no-op — 0 replays, ZERO
         document embeds (the boot-path divergence guard). A pre-v2 ledger row (no
         v2 metadata) replays with the plan-pinned defaults (``kind="fact"``,

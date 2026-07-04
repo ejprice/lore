@@ -19,7 +19,7 @@ import block. The query rides the store's
 the ``identity`` + ``chunk_type`` columns.
 
 **P6 store port.** ``scroll`` hands back plain FLATTENED ``dict`` rows — no
-Qdrant ``qmodels.Record``/``.payload`` wrapper — so every field this module
+raw vector-store ``Record``/``.payload`` wrapper — so every field this module
 reads (``identity`` / ``chunk_type`` / ``tier`` / ``file_path`` / ``line_start``
 / ``line_end`` / ``source_text``) is a direct dict-key lookup on the row itself.
 A row may carry extra, unmodeled keys (a real ``signature`` the chunker stamps,

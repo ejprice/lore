@@ -55,8 +55,8 @@ so an agent supplies its filter keys, ``k`` and query text):
   a single ``file_text`` body is capped at :data:`FILE_TEXT_MAX_BYTES`, both
   refused at BUILD time, before anything reaches the server.
 
-Deliberate divergences from :class:`~loremaster.store.qdrant.QdrantStore` (not
-oversights):
+Deliberate divergences from the retired ``QdrantStore`` (module deleted at P8a;
+not oversights):
 
 * **Server, never embedded.** :data:`_SurrealConnection` is typed as the SDK's
   full return union (including ``AsyncEmbeddedSurrealConnection``) because

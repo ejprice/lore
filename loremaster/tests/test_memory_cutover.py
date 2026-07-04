@@ -14,7 +14,7 @@ The pinned contract (decided by the CONTRACT phase, blind to the implementation)
   that is a :class:`~loremaster.tasks.TaskLedger`; it LOSES the vestigial ``store``
   attribute and the ``_memory_store_handle`` (both are dead weight after the read
   path moved to the unified SurrealDB store and memory moved to the backend). The
-  Qdrant probe-gate path is UNCHANGED and is NOT pinned here.
+  probe gate is now store-agnostic and is NOT pinned here.
 
 * **Boot ledger restore (contract §4 — the load-bearing pin).** A durable
   :class:`~loremaster.memory.ledger.MemoryLedger` pre-populated (in the v0.3
@@ -25,11 +25,11 @@ The pinned contract (decided by the CONTRACT phase, blind to the implementation)
   FP-06 divergence guard: an in-sync store is a pure no-op, zero document
   embeds), observed through a counting embedder.
 
-These are REAL-INFRA tests (Qdrant at ``127.0.0.1:16333`` + the SurrealDB dev
-harness at ``ws://127.0.0.1:18000/rpc``): they drive the genuine
-``build_app_context`` boot, the real seam where a unit/scale/restore bug lives —
-mocks on each side would miss the producer↔consumer handoff (the durable ledger's
-v0.3 row shape crossing into the backend's replay).
+These are REAL-INFRA tests (the SurrealDB dev harness at
+``ws://127.0.0.1:18000/rpc``): they drive the genuine ``build_app_context``
+boot, the real seam where a unit/scale/restore bug lives — mocks on each side
+would miss the producer↔consumer handoff (the durable ledger's v0.3 row shape
+crossing into the backend's replay).
 
 How to run:
     PP=<worktree>/loremaster:<worktree>/loresigil:<worktree>/lorescribe
@@ -62,7 +62,6 @@ from loremaster.memory.ledger import MemoryLedger
 from loremaster.server import AppContext, LoreServer, build_app_context
 from loremaster.tasks import TaskLedger
 from loresigil.testing import FakeEmbedder
-from qdrant_client import AsyncQdrantClient
 
 # The production embedding dimensionality every FakeEmbedder fixture uses.
 _DIM = 2048
@@ -103,28 +102,6 @@ async def _surreal_test_env(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[No
         _pending_surreal_slugs.clear()
 
 
-@pytest_asyncio.fixture()
-async def qdrant() -> AsyncIterator[AsyncQdrantClient]:
-    """A real Qdrant client with exact-name (concurrency-safe) teardown.
-
-    Registers created project + ``<name>_memory`` collections on ``_lore_created``
-    for exact-name reaping — mirrors ``test_mcp_server.py``'s identical fixture.
-    """
-    from conftest import QDRANT_URL, _qdrant_api_key
-
-    client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-    created: list[str] = []
-    client._lore_created = created  # type: ignore[attr-defined]
-    try:
-        yield client
-    finally:
-        for name in created:
-            for candidate in (name, f"{name}_memory"):
-                if await client.collection_exists(candidate):
-                    await client.delete_collection(candidate)
-        await client.close()
-
-
 def _config(slug: str, live_path: Path) -> LoreConfig:
     """A validated config with an explicit ``surreal`` block on the dev harness.
 
@@ -148,7 +125,6 @@ def _config(slug: str, live_path: Path) -> LoreConfig:
             "api_key_env": "LORE_TEI_KEY",
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         "surreal": {
             "url": surreal_url(),
             "namespace": _SURREAL_TEST_NAMESPACE,
@@ -200,24 +176,20 @@ class _CountingEmbedder(FakeEmbedder):
 async def _build(
     config: LoreConfig,
     *,
-    client: AsyncQdrantClient,
     manifest_path: Path,
     snapshot_root: Path,
     embedder: FakeEmbedder | None = None,
 ) -> AppContext:
     """Drive the REAL ``build_app_context`` boot (mirrors ``test_mcp_server._make_context``).
 
-    Registers the project + ``_memory`` Qdrant collection names for the fixture's
-    exact-name reap. ``start_tasks=False`` gives the watcher-free boot path while
-    still running the memory-boot (ledger restore) wiring under test.
+    The unified SurrealDB database (derived from the uuid4-unique slug) is the only
+    store the boot wires — no Qdrant client after the P8a purge. ``start_tasks=False``
+    gives the watcher-free boot path while still running the memory-boot (ledger
+    restore) wiring under test.
     """
-    slug = config.project.slug
-    client._lore_created.append(f"lore_{slug}")  # type: ignore[attr-defined]
-    client._lore_created.append(f"lore_{slug}_memory")  # type: ignore[attr-defined]
     return await build_app_context(
         server=LoreServer(config),
         embedder=embedder or FakeEmbedder(dim=_DIM),
-        qdrant_client=client,
         manifest_path=manifest_path,
         snapshot_root=snapshot_root,
         start_tasks=False,
@@ -281,11 +253,12 @@ def _seed_ledger(path: Path) -> list[str]:
 # =========================================================================== #
 class TestAppContextCutoverWiring:
     """A built AppContext carries the SurrealDB memory backend + the task ledger,
-    and no longer holds the vestigial Qdrant read handle / memory-store handle."""
+    and no longer holds the vestigial Qdrant read handle / memory-store handle / the
+    ``_qdrant_client`` P8a removed."""
 
     @pytest_asyncio.fixture()
     async def built_context(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
+        self, tmp_path: Path
     ) -> AsyncIterator[AppContext]:
         """A real AppContext over an EMPTY corpus (memory + task wiring only)."""
         slug = _slug()
@@ -293,7 +266,7 @@ class TestAppContextCutoverWiring:
         live.mkdir(parents=True, exist_ok=True)  # empty — the wiring is corpus-independent
         config = _config(slug, live)
         ctx = await _build(
-            config, client=qdrant, manifest_path=tmp_path / "m.db",
+            config, manifest_path=tmp_path / "m.db",
             snapshot_root=tmp_path / "snap",
         )
         try:
@@ -341,6 +314,17 @@ class TestAppContextCutoverWiring:
             "the Qdrant '_memory_store_handle' must be gone after the memory cutover"
         )
 
+    async def test_app_context_has_no_qdrant_client_attribute(
+        self, built_context: AppContext
+    ) -> None:
+        # P8a removed the stored-but-never-read ``_qdrant_client`` handle: the
+        # eager/lifespan build no longer constructs an AsyncQdrantClient and the
+        # probe gate is store-agnostic, so a built AppContext must not carry it.
+        assert not hasattr(built_context, "_qdrant_client"), (
+            "the vestigial '_qdrant_client' handle must be gone after the P8a "
+            "Qdrant purge"
+        )
+
 
 # =========================================================================== #
 # Contract §4 — BOOT MIGRATION: a pre-populated durable ledger is recallable
@@ -351,7 +335,7 @@ class TestBootLedgerRestore:
     is recallable; a second boot is an inert no-op (the FP-06 divergence guard)."""
 
     async def test_prepopulated_ledger_is_recallable_after_boot(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
+        self, tmp_path: Path
     ) -> None:
         # Arrange: seed the durable ledger (v0.3 shape) at the path the boot reads,
         # with NO SurrealDB memory rows yet — the legacy-restore precondition.
@@ -364,7 +348,7 @@ class TestBootLedgerRestore:
 
         config = _config(slug, live)
         ctx = await _build(
-            config, client=qdrant, manifest_path=manifest_path, snapshot_root=tmp_path / "snap"
+            config, manifest_path=manifest_path, snapshot_root=tmp_path / "snap"
         )
         try:
             backend = getattr(ctx, "memory_backend", None)
@@ -393,7 +377,7 @@ class TestBootLedgerRestore:
             await ctx.aclose()
 
     async def test_second_boot_over_synced_store_reembeds_nothing(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
+        self, tmp_path: Path
     ) -> None:
         # Arrange: the SAME slug (⇒ same SurrealDB database) + the SAME manifest path
         # (⇒ same durable ledger) across two boots, so the second boot finds the
@@ -409,7 +393,7 @@ class TestBootLedgerRestore:
         # Boot 1: the restore re-embeds the seeded rows document-side.
         first_embedder = _CountingEmbedder(dim=_DIM)
         first_ctx = await _build(
-            config, client=qdrant, manifest_path=manifest_path,
+            config, manifest_path=manifest_path,
             snapshot_root=snapshot_root, embedder=first_embedder,
         )
         await first_ctx.aclose()  # persists the SurrealDB database (never dropped here)
@@ -420,7 +404,7 @@ class TestBootLedgerRestore:
         # Boot 2: same database + ledger ⇒ the store already covers the ledger.
         second_embedder = _CountingEmbedder(dim=_DIM)
         second_ctx = await _build(
-            config, client=qdrant, manifest_path=manifest_path,
+            config, manifest_path=manifest_path,
             snapshot_root=snapshot_root, embedder=second_embedder,
         )
         try:

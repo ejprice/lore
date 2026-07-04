@@ -14,8 +14,8 @@ while the live server wires the deployed SurrealDB / embedder resources.
 ⊕ a BM25 FULLTEXT arm fused with Reciprocal Rank Fusion), which returns
 backend-neutral :class:`~loremaster.store.candidate.Candidate`\\ s (``key`` = bare
 uuid5, ``score`` = RRF-scale < 1.0, ``payload`` = the flattened canonical chunk
-fields incl. the chunker's ``signature``) — never a ``qdrant_client``
-``ScoredPoint``. The read result is a list of summarised :class:`SearchResult`
+fields incl. the chunker's ``signature``) — never a raw vector-store point type
+(a ``ScoredPoint``-style object). The read result is a list of summarised :class:`SearchResult`
 value objects, never a raw candidate dump (the Anthropic token-efficiency rule).
 
 The v2 pipeline for one ``search_code(query, k, filters, wait_for_fresh,

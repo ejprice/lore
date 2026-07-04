@@ -107,7 +107,7 @@ def embedding_schema_fingerprint(config: LoreConfig) -> str:
     Unrelated fields (changes do NOT flip the fingerprint):
         * ``embedding.concurrency``
         * ``server.port``
-        * ``qdrant.url``
+        * ``surreal.url``
         * project slug, roots, watchers, auth, logging
 
     Args:

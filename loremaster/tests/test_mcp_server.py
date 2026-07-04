@@ -5,7 +5,7 @@ the :class:`AppContext` lifespan with the embedder **startup probe gate**, the
 spawned live watcher + periodic reconcile tasks, the pluggable Bearer auth wiring
 (D9/D11/§A1.12), and the twelve MCP tools wrapping the merged services. These tests
 drive the REAL wiring with a :class:`~loresigil.testing.FakeEmbedder` (dim 2048)
-and a REAL local Qdrant (throwaway collections) + a real ``tmp_path`` corpus —
+and a REAL SurrealDB (throwaway per-test databases) + a real ``tmp_path`` corpus —
 the embedder is loresigil's tested concern, so faking it keeps the suite fast and
 deterministic while everything else is real.
 
@@ -18,13 +18,13 @@ Startup probe gate (Deliverable 3 / "startup probe gate")
 * **observed dim != config.dim → REFUSE.** A probe reporting a different
   dimensionality than the config declares aborts — a wrong-dim deploy cannot
   silently corrupt retrieval.
-* **collection size != config.dim → REFUSE, NEVER auto-recreate.** An EXISTING
-  collection whose vector size disagrees with config aborts with a remediation
-  message and the collection is left INTACT (auto-recreate would silently nuke
-  the index). Proven by asserting the pre-existing wrong-dim collection still
-  exists after the refusal.
-* **All coherent → PASS.** probe == config.dim, and either no collection yet or a
-  matching-size collection, lets startup proceed.
+* **existing-collection dim check → retired with Qdrant.** ``run_probe_gate`` is now
+  store-agnostic (Qdrant retired at P8a). The old Qdrant-collection wrong-dim refusal
+  was Qdrant-specific; over the unified SurrealDB store, dim drift on the chunk store
+  is caught by the embedding-schema-fingerprint rebuild (``embedding_schema_fingerprint``
+  folds ``dim`` in). The gate itself only probes the embedder and checks
+  observed-vs-config dim.
+* **All coherent → PASS.** probe == config.dim lets startup proceed.
 
 AppContext lifespan
 -------------------
@@ -97,10 +97,7 @@ from loremaster.server import (
     configure_logging_from_config,
     run_probe_gate,
 )
-from loremaster.store.qdrant import QdrantStore
 from loresigil.testing import FakeEmbedder
-from qdrant_client import AsyncQdrantClient
-from qdrant_client import models as qmodels
 
 _DIM = 2048
 
@@ -290,27 +287,6 @@ def _map_budget_filler_corpus() -> dict[str, str]:
     }
 
 
-@pytest_asyncio.fixture()
-async def qdrant() -> AsyncIterator[AsyncQdrantClient]:
-    """A real Qdrant client with exact-name (concurrency-safe) teardown."""
-    from conftest import QDRANT_URL, _qdrant_api_key
-
-    client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-    created: list[str] = []
-    client._lore_created = created  # type: ignore[attr-defined]
-    try:
-        yield client
-    finally:
-        # build_app_context creates the project collection AND a ``<name>_memory``
-        # sibling; reap BOTH for every tracked name so the server tests leave no
-        # lore_test_ collection behind (exact-name, never a prefix sweep).
-        for name in created:
-            for candidate in (name, f"{name}_memory"):
-                if await client.collection_exists(candidate):
-                    await client.delete_collection(candidate)
-        await client.close()
-
-
 # Every slug minted by :func:`_slug` during the CURRENT test, so the autouse
 # :func:`_surreal_test_env` fixture can reap that test's throwaway SurrealDB
 # database (``surreal.database`` defaults to the project slug — see
@@ -374,7 +350,6 @@ def _config(
             "api_key_env": "LORE_TEI_KEY",
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         # No explicit ``database`` — it defaults to the (uuid4-unique) project
         # slug, giving every test its own throwaway SurrealDB database with zero
         # extra plumbing (reaped by the autouse ``_surreal_test_env`` fixture).
@@ -404,13 +379,6 @@ def _config(
     return LoreConfig.model_validate(payload)
 
 
-def _store(client: AsyncQdrantClient, slug: str) -> QdrantStore:
-    """Build a QdrantStore and register its collection for fixture teardown."""
-    store = QdrantStore(client=client, slug=slug)
-    client._lore_created.append(store.collection_name)  # type: ignore[attr-defined]
-    return store
-
-
 def _render_text(value: object) -> str:
     """The agent-visible TEXT projection of a tool result.
 
@@ -427,7 +395,6 @@ def _render_text(value: object) -> str:
 async def _make_context(
     *,
     config: LoreConfig,
-    client: AsyncQdrantClient,
     tmp_path: Path,
     embedder: FakeEmbedder | None = None,
     start_tasks: bool = False,
@@ -435,19 +402,13 @@ async def _make_context(
     """Build a live :class:`AppContext` with injected fakes (the test wiring seam).
 
     ``build_app_context`` runs the probe gate, constructs every runtime service,
-    ensures the collections, and (when ``start_tasks``) spawns the watcher +
+    readies the SurrealDB write stack, and (when ``start_tasks``) spawns the watcher +
     reconcile tasks — the same path the lifespan takes, but with the embedder /
-    client / paths injected so a test needs no real TEI endpoint.
+    paths injected so a test needs no real TEI endpoint.
     """
-    # build_app_context creates the project AND ``_memory`` collections internally
-    # (from the config slug), so register both for the fixture's exact-name reap.
-    slug = config.project.slug
-    client._lore_created.append(f"lore_{slug}")  # type: ignore[attr-defined]
-    client._lore_created.append(f"lore_{slug}_memory")  # type: ignore[attr-defined]
     return await build_app_context(
         server=LoreServer(config),
         embedder=embedder or FakeEmbedder(dim=_DIM),
-        qdrant_client=client,
         manifest_path=tmp_path / "m.db",
         snapshot_root=tmp_path / "snap",
         start_tasks=start_tasks,
@@ -496,84 +457,65 @@ class TestLoggingWiring:
 # Startup probe gate
 # --------------------------------------------------------------------------- #
 class TestProbeGate:
-    """The startup probe gate refuses on unreachable / dim-mismatch (no auto-recreate)."""
+    """The startup probe gate refuses on unreachable / probe-vs-config dim mismatch."""
 
     async def test_unreachable_embedder_refuses(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
+        self, tmp_path: Path    ) -> None:
         slug = _slug()
-        store = _store(qdrant, slug)
         config = _config(slug, tmp_path / "live")
         with pytest.raises(ProbeGateError):
             await run_probe_gate(
-                embedder=FakeEmbedder(dim=_DIM, probe_fails=True), store=store, config=config
+                embedder=FakeEmbedder(dim=_DIM, probe_fails=True), config=config
             )
 
     async def test_observed_dim_mismatch_refuses(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
+        self, tmp_path: Path    ) -> None:
         # The embedder probes a DIFFERENT dim than the config declares → refuse.
         slug = _slug()
-        store = _store(qdrant, slug)
         config = _config(slug, tmp_path / "live")  # config.dim == 2048
         with pytest.raises(ProbeGateError, match="(?i)dim"):
-            await run_probe_gate(embedder=FakeEmbedder(dim=1024), store=store, config=config)
+            await run_probe_gate(embedder=FakeEmbedder(dim=1024), config=config)
 
-    async def test_existing_collection_wrong_size_refuses_without_recreate(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
-        # An EXISTING collection at the WRONG size must refuse AND leave the
-        # collection intact (never auto-recreate — that silently nukes the index).
-        slug = _slug()
-        store = _store(qdrant, slug)
-        # Pre-create the collection at a wrong size (1024, not config's 2048).
-        await qdrant.create_collection(
-            collection_name=store.collection_name,
-            vectors_config=qmodels.VectorParams(size=1024, distance=qmodels.Distance.COSINE),
-        )
-        config = _config(slug, tmp_path / "live")
-        with pytest.raises(ProbeGateError, match="(?i)collection|size|dim"):
-            await run_probe_gate(embedder=FakeEmbedder(dim=_DIM), store=store, config=config)
-        # The wrong-size collection still exists, unmodified (no auto-recreate).
-        assert await qdrant.collection_exists(store.collection_name)
-        info = await qdrant.get_collection(store.collection_name)
-        assert info.config.params.vectors.size == 1024  # type: ignore[union-attr]
+    # RETIRED: ``test_existing_collection_wrong_size_refuses_without_recreate`` was
+    # removed — ``run_probe_gate`` is now store-agnostic (the existing-collection dim
+    # check was dropped when Qdrant left the boot path at P8a). That refusal was
+    # Qdrant-specific; over the unified SurrealDB store, chunk-store dim drift is
+    # caught by the embedding-schema-fingerprint rebuild instead. (The LIVE Surreal
+    # memory backend's ``ensure_ready`` applies idempotent IF-NOT-EXISTS memory DDL
+    # and does NOT gate on dim — a pre-existing P7 design, flagged separately.)
 
     async def test_coherent_dims_pass(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
+        self, tmp_path: Path
     ) -> None:
         # probe == config.dim and no collection yet → the gate passes (returns the
         # observed dim).
         slug = _slug()
-        store = _store(qdrant, slug)
         config = _config(slug, tmp_path / "live")
         observed = await run_probe_gate(
-            embedder=FakeEmbedder(dim=_DIM), store=store, config=config
+            embedder=FakeEmbedder(dim=_DIM), config=config
         )
         assert observed == _DIM
 
     async def test_passing_gate_logs_probe_gate_pass(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         slug = _slug()
-        store = _store(qdrant, slug)
         config = _config(slug, tmp_path / "live")
         with caplog.at_level(logging.INFO, logger="loremaster.server"):
-            await run_probe_gate(embedder=FakeEmbedder(dim=_DIM), store=store, config=config)
+            await run_probe_gate(embedder=FakeEmbedder(dim=_DIM), config=config)
         events = [r for r in caplog.records if r.message == "startup.probe_gate.pass"]
         assert len(events) == 1
         assert events[0].levelno == logging.INFO
         assert events[0].observed_dim == _DIM  # type: ignore[attr-defined]
 
     async def test_refusing_gate_logs_probe_gate_refuse(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         slug = _slug()
-        store = _store(qdrant, slug)
         config = _config(slug, tmp_path / "live")  # config.dim == 2048
         with caplog.at_level(logging.ERROR, logger="loremaster.server"):
             with pytest.raises(ProbeGateError):
-                await run_probe_gate(embedder=FakeEmbedder(dim=1024), store=store, config=config)
+                await run_probe_gate(embedder=FakeEmbedder(dim=1024), config=config)
         events = [r for r in caplog.records if r.message == "startup.probe_gate.refuse"]
         assert events, "a refusing gate must log startup.probe_gate.refuse at ERROR"
         assert events[0].levelno == logging.ERROR
@@ -587,16 +529,14 @@ class TestProbeGate:
 class TestAppContextLifespan:
     """The lifespan builds services, spawns tasks, runs hooks; teardown reverses."""
 
-    async def test_build_context_ensures_collection_and_services(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
+    async def test_build_context_wires_services(self, tmp_path: Path) -> None:
         slug = _slug()
         config = _config(slug, tmp_path / "live")
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         try:
-            # The collection now exists at the configured dim.
-            store = QdrantStore(client=qdrant, slug=slug)
-            assert await store.collection_dim() == _DIM
+            # The SurrealDB write stack is wired (no Qdrant collection to check now).
+            assert ctx.write_store is not None
+            assert ctx.memory_backend is not None
             # The runtime services are wired and reachable.
             assert ctx.search_pipeline is not None
             assert ctx.indexer is not None
@@ -605,14 +545,13 @@ class TestAppContextLifespan:
             await ctx.aclose()
 
     async def test_lifespan_spawns_watcher_and_reconcile_tasks(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
+        self, tmp_path: Path    ) -> None:
         slug = _slug()
         live = tmp_path / "live"
         live.mkdir()
         config = _config(slug, live)
         ctx = await _make_context(
-            config=config, client=qdrant, tmp_path=tmp_path, start_tasks=True
+            config=config, tmp_path=tmp_path, start_tasks=True
         )
         try:
             # The watcher observer is running and the periodic reconcile task is live.
@@ -625,7 +564,7 @@ class TestAppContextLifespan:
             assert ctx.reconcile_task is None or ctx.reconcile_task.done()
 
     async def test_startup_logs_initial_reconcile_and_watcher_started(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         # When start_tasks=True the lifespan runs an INITIAL reconcile and starts
         # the watcher — each must emit its structured startup event.
@@ -636,7 +575,7 @@ class TestAppContextLifespan:
         config = _config(slug, live)
         with caplog.at_level(logging.INFO, logger="loremaster.server"):
             ctx = await _make_context(
-                config=config, client=qdrant, tmp_path=tmp_path, start_tasks=True
+                config=config, tmp_path=tmp_path, start_tasks=True
             )
             try:
                 initial = [r for r in caplog.records if r.message == "startup.reconcile.initial"]
@@ -651,8 +590,7 @@ class TestAppContextLifespan:
                 await ctx.aclose()
 
     async def test_failing_extension_startup_aborts_lifespan(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
+        self, tmp_path: Path    ) -> None:
         # Framework fix A: an extension whose on_startup raises must abort the
         # lifespan startup — no half-started server. The collection may exist (core
         # resources came up first), but the context build raises.
@@ -669,22 +607,17 @@ class TestAppContextLifespan:
         slug = _slug()
         config = _config(slug, tmp_path / "live")
         server = LoreServer(config).register_extension(_BoomExtension())
-        # The core collections come up before the (failing) extension hook, so
-        # register them for the fixture's exact-name reap (no leak on the abort).
-        qdrant._lore_created.append(f"lore_{slug}")  # type: ignore[attr-defined]
-        qdrant._lore_created.append(f"lore_{slug}_memory")  # type: ignore[attr-defined]
         with pytest.raises(RuntimeError, match="refused to start"):
             await build_app_context(
                 server=server,
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
 
     async def test_failed_startup_closes_sqlite_connections(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Lifecycle hygiene (owner rule): when startup aborts (a failing extension
         # hook AFTER the manifest + graph were opened), those Surreal connections
@@ -736,13 +669,10 @@ class TestAppContextLifespan:
 
         slug = _slug()
         config = _config(slug, tmp_path / "live")
-        qdrant._lore_created.append(f"lore_{slug}")  # type: ignore[attr-defined]
-        qdrant._lore_created.append(f"lore_{slug}_memory")  # type: ignore[attr-defined]
         with pytest.raises(RuntimeError, match="refused to start"):
             await build_app_context(
                 server=LoreServer(config).register_extension(_BoomExtension()),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -759,7 +689,7 @@ class TestAppContextLifespan:
             )
 
     async def test_ready_guard_closes_earlier_backends_on_a_mid_ready_failure(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Audit follow-up #3 (C6 fresh-context audit): ``manifest.ensure_ready`` /
         # ``code_graph.ensure_ready`` / ``snapshot_stamper.ensure_ready`` ran
@@ -798,13 +728,10 @@ class TestAppContextLifespan:
 
         slug = _slug()
         config = _config(slug, tmp_path / "live")
-        qdrant._lore_created.append(f"lore_{slug}")  # type: ignore[attr-defined]
-        qdrant._lore_created.append(f"lore_{slug}_memory")  # type: ignore[attr-defined]
         with pytest.raises(RuntimeError, match="code graph socket refused"):
             await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -817,8 +744,7 @@ class TestAppContextLifespan:
             )
 
     async def test_startup_runs_an_initial_reconcile_so_offline_edits_index_now(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
+        self, tmp_path: Path    ) -> None:
         # Fix #1 (HIGH): a fresh ``start`` (start_tasks=True) over a corpus that
         # was edited while offline must delta-index IMMEDIATELY — NOT wait out the
         # 600s periodic interval. Build with start_tasks=True over a live root that
@@ -832,7 +758,7 @@ class TestAppContextLifespan:
         )
         config = _config(slug, live)
         ctx = await _make_context(
-            config=config, client=qdrant, tmp_path=tmp_path, start_tasks=True
+            config=config, tmp_path=tmp_path, start_tasks=True
         )
         try:
             # Right after start (no sleep, no edit), the offline file is indexed.
@@ -848,7 +774,7 @@ class TestAppContextLifespan:
             await ctx.aclose()
 
     async def test_aborted_startup_after_watcher_started_stops_the_watcher(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Fix #4 (LOW): when startup aborts AFTER the watcher's observer thread
         # started (start_tasks=True), the abort handler must STOP the watcher — no
@@ -881,13 +807,10 @@ class TestAppContextLifespan:
         live = tmp_path / "live"
         live.mkdir()
         config = _config(slug, live)
-        qdrant._lore_created.append(f"lore_{slug}")  # type: ignore[attr-defined]
-        qdrant._lore_created.append(f"lore_{slug}_memory")  # type: ignore[attr-defined]
         with pytest.raises(RuntimeError, match="post-start step failed"):
             await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant,
                 manifest_path=tmp_path / "m.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=True,
@@ -896,7 +819,7 @@ class TestAppContextLifespan:
         assert stopped == [True], "an aborted startup must stop a watcher it had started"
 
     async def test_watcher_disabled_skips_live_watcher_but_still_runs_initial_sweep(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Task #13: ``watcher.enabled: false`` means "no live inotify watcher, no
         # periodic reconcile timer" for a STATIC, non-live-watched corpus — but the
@@ -923,7 +846,7 @@ class TestAppContextLifespan:
         )
         config = _config(slug, live, watcher_enabled=False)
         ctx = await _make_context(
-            config=config, client=qdrant, tmp_path=tmp_path, start_tasks=True
+            config=config, tmp_path=tmp_path, start_tasks=True
         )
         try:
             assert started == [], "watcher.enabled=False must not start the live watcher"
@@ -944,8 +867,7 @@ class TestAppContextLifespan:
             await ctx.aclose()
 
     async def test_watcher_disabled_initial_sweep_is_symbol_resolvable(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
+        self, tmp_path: Path    ) -> None:
         # The read-your-writes tail split out of the gating test above: the file
         # the watcher-disabled initial sweep indexed must resolve via get_symbol.
         slug = _slug()
@@ -956,7 +878,7 @@ class TestAppContextLifespan:
         )
         config = _config(slug, live, watcher_enabled=False)
         ctx = await _make_context(
-            config=config, client=qdrant, tmp_path=tmp_path, start_tasks=True
+            config=config, tmp_path=tmp_path, start_tasks=True
         )
         try:
             symbol = await ctx.get_symbol("indexed_while_watcher_disabled")
@@ -965,7 +887,7 @@ class TestAppContextLifespan:
             await ctx.aclose()
 
     async def test_watcher_enabled_true_still_starts_watcher_and_periodic_task(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The flip side of the pin above: ``watcher.enabled: true`` (the default)
         # is unchanged behaviour — the live watcher + periodic reconcile task ARE
@@ -988,7 +910,7 @@ class TestAppContextLifespan:
         live.mkdir()
         config = _config(slug, live, watcher_enabled=True)
         ctx = await _make_context(
-            config=config, client=qdrant, tmp_path=tmp_path, start_tasks=True
+            config=config, tmp_path=tmp_path, start_tasks=True
         )
         try:
             assert started == [True], "watcher.enabled=True must start the live watcher"
@@ -1531,8 +1453,7 @@ class TestToolOutputSchemas:
             )
 
     async def test_live_call_returns_structured_content_with_fields(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
+        self, tmp_path: Path    ) -> None:
         # A live call through the FastMCP tool surface must emit structuredContent
         # whose payload carries the model's named fields — proof the model instance
         # (not a stringified blob) reaches the consumer with its schema.
@@ -1542,7 +1463,7 @@ class TestToolOutputSchemas:
         (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         mcp = build_mcp_server(LoreServer(config))
         try:
@@ -1574,8 +1495,7 @@ class TestActionableErrors:
     """Consumer-facing errors suggest a next step (the actionable-error standard)."""
 
     async def test_get_symbol_not_found_names_the_symbol_and_searched_types(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
+        self, tmp_path: Path    ) -> None:
         # A get_symbol miss must name what was not found AND what was searched, so
         # the consumer knows the lookup was scoped to symbol chunk types (and can
         # fall back to search_code / reindex).
@@ -1583,7 +1503,7 @@ class TestActionableErrors:
 
         slug = _slug()
         config = _config(slug, tmp_path / "live")
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         try:
             with pytest.raises(GetSymbolError) as exc_info:
                 await ctx.get_symbol("definitely_absent_symbol")
@@ -1602,8 +1522,7 @@ class TestToolBehaviourEndToEnd:
 
     @pytest_asyncio.fixture()
     async def indexed_context(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> AsyncIterator[AppContext]:
+        self, tmp_path: Path    ) -> AsyncIterator[AppContext]:
         """An AppContext with a real Python file indexed (vectors + graph)."""
         slug = _slug()
         live = tmp_path / "live"
@@ -1611,7 +1530,7 @@ class TestToolBehaviourEndToEnd:
         (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         # Index the live tier so the store + graph are populated.
         await ctx.indexer.index_all()
         try:
@@ -1698,8 +1617,7 @@ class TestToolBehaviourEndToEnd:
         assert isinstance(summary.referencing, list)
 
     async def test_dead_code_surfaces_test_only_symbol(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> None:
+        self, tmp_path: Path    ) -> None:
         # A corpus with ``pkg/utils.py`` (defines ``orphan_helper``) and
         # ``tests/test_utils.py`` (the ONLY consumer of ``orphan_helper`` — a test
         # file). After indexing, ``dead_code`` must report ``orphan_helper`` as dead
@@ -1713,7 +1631,7 @@ class TestToolBehaviourEndToEnd:
         (live / "pkg" / "utils.py").write_text(_PY_UTILS, encoding="utf-8")
         (live / "tests" / "test_utils.py").write_text(_PY_TEST_REF, encoding="utf-8")
         config = _config(slug, live)
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         try:
             dead = await ctx.dead_code()
@@ -1775,15 +1693,14 @@ class TestReindexTierValidation:
 
     @pytest_asyncio.fixture()
     async def indexed_context(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> AsyncIterator[AppContext]:
+        self, tmp_path: Path    ) -> AsyncIterator[AppContext]:
         slug = _slug()
         live = tmp_path / "live"
         (live / "pkg").mkdir(parents=True)
         (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)  # declares the live tier "custom"
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         try:
             yield ctx
@@ -1855,8 +1772,7 @@ class TestRegisteredToolWrappers:
 
     @pytest_asyncio.fixture()
     async def indexed(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> AsyncIterator[tuple[Any, AppContext]]:
+        self, tmp_path: Path    ) -> AsyncIterator[tuple[Any, AppContext]]:
         """A built FastMCP server + a real-indexed AppContext sharing one corpus."""
         slug = _slug()
         live = tmp_path / "live"
@@ -1864,7 +1780,7 @@ class TestRegisteredToolWrappers:
         (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         mcp = build_mcp_server(LoreServer(config))
         try:
@@ -1975,15 +1891,14 @@ class TestImpactMapToolBehaviourEndToEnd:
 
     @pytest_asyncio.fixture()
     async def indexed_context(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> AsyncIterator[AppContext]:
+        self, tmp_path: Path    ) -> AsyncIterator[AppContext]:
         slug = _slug()
         live = tmp_path / "live"
         (live / "pkg").mkdir(parents=True)
         (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         try:
             yield ctx
@@ -2071,15 +1986,14 @@ class TestImpactMapRegisteredToolWrappers:
 
     @pytest_asyncio.fixture()
     async def indexed(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> AsyncIterator[tuple[Any, AppContext]]:
+        self, tmp_path: Path    ) -> AsyncIterator[tuple[Any, AppContext]]:
         slug = _slug()
         live = tmp_path / "live"
         (live / "pkg").mkdir(parents=True)
         (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         mcp = build_mcp_server(LoreServer(config))
         try:
@@ -2155,8 +2069,7 @@ class TestMapBudgetAndFocusWiring:
 
     @pytest_asyncio.fixture()
     async def filler_context(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> AsyncIterator[AppContext]:
+        self, tmp_path: Path    ) -> AsyncIterator[AppContext]:
         slug = _slug()
         live = tmp_path / "live"
         for rel_path, source in _map_budget_filler_corpus().items():
@@ -2164,7 +2077,7 @@ class TestMapBudgetAndFocusWiring:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(source, encoding="utf-8")
         config = _config(slug, live)
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         try:
             yield ctx
@@ -2173,15 +2086,14 @@ class TestMapBudgetAndFocusWiring:
 
     @pytest_asyncio.fixture()
     async def hub_island_context(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> AsyncIterator[AppContext]:
+        self, tmp_path: Path    ) -> AsyncIterator[AppContext]:
         slug = _slug()
         live = tmp_path / "live"
         live.mkdir(parents=True, exist_ok=True)
         for rel_path, source in _map_hub_island_corpus().items():
             (live / rel_path).write_text(source, encoding="utf-8")
         config = _config(slug, live)
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         try:
             yield ctx
@@ -2266,15 +2178,14 @@ class TestImpactMapRebuildingGate:
 
     @pytest_asyncio.fixture()
     async def indexed_context(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> AsyncIterator[AppContext]:
+        self, tmp_path: Path    ) -> AsyncIterator[AppContext]:
         slug = _slug()
         live = tmp_path / "live"
         (live / "pkg").mkdir(parents=True)
         (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         try:
             yield ctx
@@ -2355,15 +2266,14 @@ class TestImpactMapProductionInvariants:
 
     @pytest_asyncio.fixture()
     async def indexed_context(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient
-    ) -> AsyncIterator[AppContext]:
+        self, tmp_path: Path    ) -> AsyncIterator[AppContext]:
         slug = _slug()
         live = tmp_path / "live"
         (live / "pkg").mkdir(parents=True)
         (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
         (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
         config = _config(slug, live)
-        ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         try:
             yield ctx
@@ -2409,30 +2319,20 @@ class TestLifespanRunsOncePerProcess:
     """
 
     async def test_heavy_startup_runs_once_across_two_sessions(
-        self, tmp_path: Path, qdrant: AsyncQdrantClient, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import loremaster.embedding as embedding_module
         import loremaster.server as server_module
-        from conftest import _qdrant_api_key
-
-        # The real ``_lifespan`` builds its own AsyncQdrantClient from the config's
-        # api_key_env; export the throwaway server's key so it connects (the local
-        # ``qdrant`` fixture reads the same key from the dotenv file).
-        monkeypatch.setenv("QDRANT__SERVICE__API_KEY", _qdrant_api_key())
 
         slug = _slug()
         live = tmp_path / "live"
         (live / "pkg").mkdir(parents=True)
         (live / "pkg" / "boot.py").write_text("def boot():\n    return 1\n", encoding="utf-8")
         config = _config(slug, live)
-        # The lifespan builds its own Qdrant client + collections from the config
-        # slug; register both for the fixture's exact-name reap.
-        qdrant._lore_created.append(f"lore_{slug}")  # type: ignore[attr-defined]
-        qdrant._lore_created.append(f"lore_{slug}_memory")  # type: ignore[attr-defined]
 
-        # Keep the lifespan hermetic: a FakeEmbedder (no live TEI), the throwaway
-        # Qdrant, and tmp-path SQLite/snapshot dirs — but otherwise the REAL
-        # composed lifespan the framework runs.
+        # Keep the lifespan hermetic: a FakeEmbedder (no live TEI) and tmp-path
+        # SQLite/snapshot dirs — but otherwise the REAL composed lifespan the
+        # framework runs.
         # ``_lifespan`` does ``from loremaster.embedding import
         # make_embedder_from_config`` at call time, so patch it at its source.
         monkeypatch.setattr(
@@ -2882,7 +2782,7 @@ class TestBuildAppContextWiresSnapshotStamper:
     """
 
     async def test_build_app_context_constructs_injects_and_closes_the_stamper(
-        self, qdrant: AsyncQdrantClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import loremaster.index.snapshots as snapshots_module
 
@@ -2929,7 +2829,7 @@ class TestBuildAppContextWiresSnapshotStamper:
         slug = _slug()
         config = _config(slug, tmp_path / "live")
         context = await _make_context(
-            config=config, client=qdrant, tmp_path=tmp_path, start_tasks=False
+            config=config, tmp_path=tmp_path, start_tasks=False
         )
         try:
             assert len(constructed) == 1, (
@@ -2970,7 +2870,7 @@ _CUTOVER_CHUNK_KEY = "5f6b3d21-9c4a-5e88-a1b2-c3d4e5f60718"
 
 
 @pytest_asyncio.fixture()
-async def cutover_ctx(tmp_path: Path, qdrant: AsyncQdrantClient) -> AsyncIterator[AppContext]:
+async def cutover_ctx(tmp_path: Path) -> AsyncIterator[AppContext]:
     """A real AppContext over an EMPTY corpus — the P7 memory/task tool seam.
 
     The memory + task handlers are corpus-independent, so the build skips indexing;
@@ -2980,7 +2880,7 @@ async def cutover_ctx(tmp_path: Path, qdrant: AsyncQdrantClient) -> AsyncIterato
     live = tmp_path / "live"
     live.mkdir(parents=True, exist_ok=True)
     config = _config(slug, live)
-    ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+    ctx = await _make_context(config=config, tmp_path=tmp_path)
     try:
         yield ctx
     finally:

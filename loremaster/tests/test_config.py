@@ -54,10 +54,6 @@ _CANONICAL_CONFIG: dict[str, Any] = {
         "api_key_env": "LORE_TEI_KEY",
         "tokenizer": "voyage-4-nano",
     },
-    "qdrant": {
-        "url": "http://127.0.0.1:16333",
-        "api_key_env": "QDRANT__SERVICE__API_KEY",
-    },
     "roots": [
         {
             "tier": "custom",
@@ -118,8 +114,6 @@ class TestLoreConfigParsing:
         assert config.embedding.connect_timeout_s == 5
         assert config.embedding.api_key_env == "LORE_TEI_KEY"
         assert config.embedding.truncate is False
-        assert config.qdrant.url == "http://127.0.0.1:16333"
-        assert config.qdrant.api_key_env == "QDRANT__SERVICE__API_KEY"
         assert config.include == ["src/**/*.py", "*.md"]
         assert config.exclude_dirs == [".git", ".venv", ".claude"]
         assert config.exclude_globs == ["**/*.parquet", "uv.lock"]
@@ -295,9 +289,17 @@ class TestLoreConfigStrictness:
         with pytest.raises(ValidationError):
             LoreConfig.model_validate(payload)
 
-    def test_rejects_extra_qdrant_field(self) -> None:
+    def test_rejects_a_qdrant_block(self) -> None:
+        # P8a retired the ``qdrant:`` config section entirely. The strict model
+        # (extra="forbid") now REJECTS any lingering ``qdrant:`` block outright —
+        # the intended fail-loud posture so a stale, pre-P8a lore.yaml fails at
+        # load rather than silently ignoring a section the server no longer reads
+        # (P8f ships the config upgrader that strips it).
         payload = _deep_copy_config()
-        payload["qdrant"]["timeout"] = 5
+        payload["qdrant"] = {
+            "url": "http://127.0.0.1:16333",
+            "api_key_env": "QDRANT__SERVICE__API_KEY",
+        }
         with pytest.raises(ValidationError):
             LoreConfig.model_validate(payload)
 
@@ -463,8 +465,8 @@ class TestResolveSecret:
 # FIX 1 — ProjectConfig.slug must be constrained to a safe charset
 # ---------------------------------------------------------------------------
 #
-# ``ProjectConfig.slug`` is the single value that drives BOTH the ``lore_<slug>``
-# Qdrant collection name AND the on-disk state paths the server constructs:
+# ``ProjectConfig.slug`` is the single value that drives BOTH the SurrealDB
+# database name AND the on-disk state paths the server constructs:
 # ``_DEFAULT_MANIFEST_DIR / f"{slug}.db"`` / ``f"{slug}.memory.db"`` /
 # ``f"{slug}.graph.db"`` (server.py ~2022-2023, _DEFAULT_MANIFEST_DIR ~2954).
 #
@@ -473,7 +475,7 @@ class TestResolveSecret:
 # whitespace (``Has Space``), uppercase (``UPPER``), an empty string, or a
 # leading separator (``-leading``) into the slug. Because the slug is f-string'd
 # straight into a filesystem path, ``../etc`` would relocate the state DBs OUTSIDE
-# the state dir, and a separator could collide / escape the collection namespace.
+# the state dir, and a separator could collide / escape the database namespace.
 # This is defense-in-depth: the config is operator-controlled, but a typo must
 # FAIL FAST at load time rather than silently writing the durable memory ledger
 # to the wrong place.
@@ -515,8 +517,8 @@ _INVALID_SLUGS: dict[str, str] = {
     "../etc": "path traversal — escapes the state dir, relocates the DBs",
     "a/b": "embedded separator — escapes the slug into a subpath / collection",
     "Has Space": "whitespace + a space — not a safe filename / collection token",
-    "UPPER": "uppercase — Qdrant collection names and the convention are lowercase",
-    "": "empty — yields a bare '.db' path and an 'lore_' collection",
+    "UPPER": "uppercase — the SurrealDB database name and the convention are lowercase",
+    "": "empty — yields a bare '.db' path and a nameless database",
     "-leading": "leading separator — must start with an alphanumeric",
     "my-proj": "hyphen — the slug is the SurrealDB database name; an unescaped "
     "hyphenated identifier fails SurrealQL parsing (blocked at load, task #32)",
@@ -746,8 +748,8 @@ class TestEmbeddingBatchConfig:
     def test_batch_config_class_is_named_and_importable(self) -> None:
         # Mirrors the sibling-section naming convention already established
         # for every OPTIONAL-with-default sub-section on LoreConfig
-        # (LoggingConfig, SurrealConfig, WatcherConfig, AuthConfig,
-        # QdrantConfig) — imported inside the test body (not at module scope)
+        # (LoggingConfig, SurrealConfig, WatcherConfig, AuthConfig) —
+        # imported inside the test body (not at module scope)
         # so a not-yet-existing symbol fails ONLY this one test, not the
         # whole file's collection.
         from loremaster.config import BatchConfig

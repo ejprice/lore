@@ -45,11 +45,11 @@ Hermetic design
 ---------------
 The startup-ordering / once-per-process / inner-lifespan / shutdown assertions are
 driven against the COMPOSITION with a SUBSTITUTED spy guard + a fake inner app, so
-no live Qdrant or TEI is needed and the ASSERTIONS do not mirror the production
+no live SurrealDB or TEI is needed and the ASSERTIONS do not mirror the production
 build factory's internals (they observe a spy's call counts, an oracle the impl
 cannot satisfy by accident). One end-to-end case drives the REAL composed app's
-raw ASGI ``lifespan`` protocol with a FakeEmbedder + a real throwaway Qdrant +
-tmp-path SQLite/snapshot dirs — mirroring the hermetic pattern in
+raw ASGI ``lifespan`` protocol with a FakeEmbedder + a real throwaway SurrealDB
+database + tmp-path snapshot dirs — mirroring the hermetic pattern in
 ``test_mcp_server.py::test_heavy_startup_runs_once_across_two_sessions`` — to pin
 the real handoff (the producer↔consumer seam where ``build_mcp_server`` surfaces
 the guard and ``build_asgi_app`` consumes it).
@@ -58,12 +58,10 @@ the guard and ``build_asgi_app`` consumes it).
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import pytest
-import pytest_asyncio
 from _surreal_harness import (
     drop_database as drop_surreal_database,
 )
@@ -82,7 +80,6 @@ from loremaster.server import (
     build_mcp_server,
 )
 from loresigil.testing import FakeEmbedder
-from qdrant_client import AsyncQdrantClient
 
 # The configured embedding dimensionality the FakeEmbedder must report so the
 # startup probe gate (probe dim == config.dim) passes. Mirrors the value the rest
@@ -114,7 +111,7 @@ _EXPECTED_BUILD_COUNT_PER_PROCESS = 1
 
 
 def _slug() -> str:
-    """A unique throwaway project slug per test (namespaces Qdrant collections)."""
+    """A unique throwaway project slug per test (namespaces the per-test store)."""
     return f"test_{uuid.uuid4().hex}"
 
 
@@ -129,9 +126,9 @@ def _config(
 
     Reuses the exact production-realistic config payload the rest of the
     loremaster suite uses (``test_mcp_server._config``): a TEI embedding backend
-    at dim ``_DIM``, the real local throwaway Qdrant URL/key env, a single
-    inotify-watched custom-tier root, and the 127.0.0.1 loopback server bind the
-    Origin guard defends. ``auth`` threads an enabled Bearer block when given.
+    at dim ``_DIM``, a single inotify-watched custom-tier root, and the 127.0.0.1
+    loopback server bind the Origin guard defends. ``auth`` threads an enabled
+    Bearer block when given.
     ``surreal`` threads an explicit SurrealDB connection block (the harness's
     throwaway dev-server URL + per-test database) when given; omitted, the
     config falls back to :class:`~loremaster.config.SurrealConfig`'s
@@ -155,7 +152,6 @@ def _config(
             "api_key_env": "LORE_TEI_KEY",
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         "roots": [
             {"tier": "custom", "watch": "live", "path": str(live_path), "include": ["**/*.py"]}
         ],
@@ -603,57 +599,30 @@ class TestSecurityWrappingPreserved:
 
 
 # --------------------------------------------------------------------------- #
-# Invariant 1-4 end-to-end — the REAL composed app, real Qdrant, FakeEmbedder
+# Invariant 1-4 end-to-end — the REAL composed app, real SurrealDB, FakeEmbedder
 # --------------------------------------------------------------------------- #
-@pytest_asyncio.fixture()
-async def qdrant() -> AsyncIterator[AsyncQdrantClient]:
-    """A real local Qdrant client with exact-name (concurrency-safe) teardown.
-
-    Mirrors ``test_mcp_server.qdrant``: build_app_context creates the project
-    collection AND a ``<name>_memory`` sibling, so reap BOTH for every tracked
-    name (never a bare-prefix sweep that could nuke a sibling worktree's run).
-    """
-    from conftest import QDRANT_URL, _qdrant_api_key
-
-    client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-    created: list[str] = []
-    client._lore_created = created  # type: ignore[attr-defined]
-    try:
-        yield client
-    finally:
-        for name in created:
-            for candidate in (name, f"{name}_memory"):
-                if await client.collection_exists(candidate):
-                    await client.delete_collection(candidate)
-        await client.close()
-
-
 class TestEagerStartupEndToEnd:
     """One real-handoff case: drive the REAL composed app's ASGI lifespan.
 
     This exercises the actual ``build_mcp_server`` → ``build_asgi_app`` seam with
     the REAL production guard + build factory (not a spy), faking only what the
     rest of the suite fakes — the embedder (no live TEI) — against a REAL throwaway
-    Qdrant + tmp-path SQLite/snapshot dirs. It proves the eager startup fires the
-    heavy build at lifespan.startup over the real wiring (the seam where a unit /
-    null / handle-name mismatch would actually bite), and that shutdown tears down.
+    SurrealDB database + tmp-path snapshot dirs. It proves the eager startup fires
+    the heavy build at lifespan.startup over the real wiring (the seam where a unit
+    / null / handle-name mismatch would actually bite), and that shutdown tears
+    down.
     """
 
     async def test_real_composed_lifespan_builds_eagerly_then_tears_down(
         self,
         tmp_path: Path,
-        qdrant: AsyncQdrantClient,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import loremaster.embedding as embedding_module
         import loremaster.index.watcher as watcher_module
         import loremaster.server as server_module
-        from conftest import _qdrant_api_key
 
-        # The real eager build constructs its own AsyncQdrantClient from the
-        # config's api_key_env; export the throwaway server's key so it connects.
-        monkeypatch.setenv("QDRANT__SERVICE__API_KEY", _qdrant_api_key())
-        # The real eager build ALSO constructs a SurrealStore/SurrealManifest/
+        # The real eager build constructs a SurrealStore/SurrealManifest/
         # SurrealCodeGraph write stack; export the harness's root credentials and
         # point config.surreal at the dev SurrealDB server + a throwaway
         # per-test database (reaped in the finally below), mirroring
@@ -679,10 +648,6 @@ class TestEagerStartupEndToEnd:
                 "password_env": _SURREAL_PASS_ENV,
             },
         )
-        # The eager build creates the project + _memory collections from the slug;
-        # register both for the fixture's exact-name reap.
-        qdrant._lore_created.append(f"lore_{slug}")  # type: ignore[attr-defined]
-        qdrant._lore_created.append(f"lore_{slug}_memory")  # type: ignore[attr-defined]
 
         # Keep it hermetic: FakeEmbedder (no live TEI), tmp-path state/snapshot dirs
         # — but otherwise the REAL composed eager lifespan. make_embedder_from_config
@@ -731,7 +696,7 @@ class TestEagerStartupEndToEnd:
             )
             assert "lifespan.shutdown.complete" in replies["all"], (
                 "the real composed app must complete its shutdown (eager lease "
-                "released → AppContext + Qdrant client torn down)"
+                "released → AppContext + SurrealDB write stack torn down)"
             )
         finally:
             await drop_surreal_database(make_env(database=database, dim=_DIM))
@@ -833,13 +798,15 @@ async def _drive_startup_expecting_failure(app: Any) -> bool:
 # --------------------------------------------------------------------------- #
 # A recognizable sentinel that stands in for whatever secret-bearing detail a
 # future eager-build exception string could carry. The leak vector the audit
-# flagged is concrete: a config like ``qdrant.url: http://user:pass@host`` would
-# put credentials into an httpx/qdrant HTTP-status exception's ``str()`` — and
-# the current code copies ``str(exc)`` verbatim into the ASGI startup.failed
-# message, which uvicorn logs UNREDACTED. This sentinel embeds both an obvious
-# marker token AND a realistic ``user:pw@host`` credential shape so the test
-# fails the moment ANY part of the raw exception text reaches the ASGI message.
-_LEAK_SENTINEL = "SENTINEL-SECRET-abc123 http://leak_user:leak_pw@qdrant.internal:6333"
+# flagged is concrete: a credentialed store connection URL (e.g.
+# ``surreal.url: ws://user:pass@host``) would put credentials into a connection /
+# HTTP-status exception's ``str()`` — and the current code copies ``str(exc)``
+# verbatim into the ASGI startup.failed message, which uvicorn logs UNREDACTED.
+# This sentinel embeds both an obvious marker token AND a realistic
+# ``user:pw@host`` credential shape (store-neutral — the host is a generic
+# placeholder, not a real config field) so the test fails the moment ANY part of
+# the raw exception text reaches the ASGI message.
+_LEAK_SENTINEL = "SENTINEL-SECRET-abc123 ws://secret_user:secret_pw@leak.internal:6333"
 
 # The contract's independent oracle: the startup.failed message must be a FIXED,
 # operator-safe phrase that is NOT a function of the exception. This is the
@@ -857,7 +824,7 @@ class _LeakingSpyGuard(_SpyGuard):
     composition's acquire/release sequencing is exercised exactly as in the other
     failure tests) but overrides ``acquire`` to raise a ``RuntimeError`` whose
     ``str()`` contains :data:`_LEAK_SENTINEL`. This reproduces the audit's leak
-    vector: a real eager-build failure (e.g. a Qdrant connect error against a
+    vector: a real eager-build failure (e.g. a SurrealDB connect error against a
     credentialed URL) whose exception string carries secret material the operator
     never wants copied into uvicorn's startup log.
 
@@ -922,7 +889,7 @@ class TestEagerBuildFailureMessageDoesNotLeakSecrets:
     Security hardening (from the security audit). uvicorn logs the ASGI
     ``lifespan.startup.failed`` ``message`` field UNREDACTED at process startup,
     so copying ``str(exc)`` into it is a latent secret-leak path: a credentialed
-    ``qdrant.url`` (or any secret that surfaces in an HTTP-status exception) lands
+    ``surreal.url`` (or any secret that surfaces in a connection exception) lands
     in the startup log. The contract:
 
     1. The ASGI startup.failed message must be a FIXED, operator-safe string that
@@ -987,9 +954,9 @@ class TestEagerBuildFailureMessageDoesNotLeakSecrets:
         )
         # Belt-and-suspenders on the credential substring specifically (the part an
         # operator log must never contain), independent of the marker token.
-        assert "leak_pw" not in failed_message and "leak_user" not in failed_message, (
+        assert "secret_pw" not in failed_message and "secret_user" not in failed_message, (
             "the startup.failed message must not carry credentials from the "
-            "exception (the qdrant.url user:pass leak vector the audit flagged)"
+            "exception (the surreal.url user:pass leak vector the audit flagged)"
         )
         # ...and it must read as a fixed operator-safe phrase naming the failure,
         # not the empty string or an exc-derived value. (Substring, not equality:
@@ -1020,7 +987,7 @@ class TestEagerBuildFailureMessageDoesNotLeakSecrets:
 # --------------------------------------------------------------------------- #
 # FP-07 — eager startup retries the heavy build with bounded backoff
 # --------------------------------------------------------------------------- #
-# With eager startup, a TRANSIENT Qdrant/TEI outage at boot makes the eager build
+# With eager startup, a TRANSIENT SurrealDB/TEI outage at boot makes the eager build
 # raise -> lifespan.startup.failed -> uvicorn aborts -> the container EXITS (no
 # auto-retry). A brief dependency blip should not permanently down the container.
 # The fix: the eager startup retries the heavy build with BOUNDED backoff (N

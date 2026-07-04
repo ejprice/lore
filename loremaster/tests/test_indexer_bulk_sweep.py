@@ -297,7 +297,6 @@ def _config(
         "schema_version": 1,
         "project": {"slug": slug, "root": "."},
         "embedding": embedding,
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         "roots": roots,
         "include": [],
         "exclude_dirs": [".git", ".venv", "__pycache__"],
@@ -1013,7 +1012,6 @@ if _HARNESS_AVAILABLE:
                 "tokenizer": "voyage-4-nano",
                 "batch": {"mode": "batch"},
             },
-            "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
             "roots": [
                 {
                     "tier": TIER_A,

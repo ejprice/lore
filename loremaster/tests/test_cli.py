@@ -135,7 +135,6 @@ def _write_lore_yaml(
             "api_key_env": "LORE_TEI_KEY",
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         "surreal": surreal_block,
         "roots": [
             {"tier": "custom", "watch": "live", "path": str(project_root), "include": ["**/*.py"]}

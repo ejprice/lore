@@ -15,7 +15,7 @@ sink. These tests pin that boundary:
   known fake secret that must appear in NO emitted record.
 * :func:`configure_logging` scopes handlers to the lore namespace with
   ``propagate=False`` (it must NOT reconfigure root — that fights uvicorn),
-  silences ``httpx``/``qdrant_client`` to WARNING, honours the level + format,
+  silences ``httpx`` to WARNING, honours the level + format,
   lets ``LORE_LOG_LEVEL`` override the config default, and is IDEMPOTENT (a second
   call does not stack a second handler / double-emit).
 
@@ -51,7 +51,7 @@ FAKE_API_KEY = "AbCdEf0123456789AbCdEf0123456789AbCdEf01"
 
 # The third-party loggers configure_logging must pin to WARNING (their per-request
 # INFO chatter would otherwise flood the structured stream).
-SILENCED_THIRD_PARTY = ("httpx", "qdrant_client")
+SILENCED_THIRD_PARTY = ("httpx",)
 
 
 def _make_record(
@@ -80,7 +80,7 @@ def _restore_lore_loggers() -> Iterator[None]:
 
     ``configure_logging`` mutates global logging state (handlers, levels,
     ``propagate``) on the ``loremaster``/``loresigil``/``lorescribe`` namespace
-    loggers and on ``httpx``/``qdrant_client``. Without a restore, a configure in
+    loggers and on ``httpx``. Without a restore, a configure in
     one test leaks its handler into the next (cross-contamination of shared
     global state — the exact state-leakage the lifecycle rule forbids). This
     fixture records each affected logger's handlers/level/propagate before the

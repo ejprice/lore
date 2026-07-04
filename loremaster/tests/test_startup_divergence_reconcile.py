@@ -12,18 +12,15 @@ surface, opened against the SAME ``(namespace, database)`` ``build_app_context``
 used, via the ``_surreal_harness`` env). The ASSERTIONS are unchanged from the
 pre-port suite wherever the swap is purely mechanical.
 
-ONE assertion could not survive mechanically unchanged and required a genuine
-oracle substitution, flagged here explicitly (see
-``TestWipedCollectionHeals.test_wiped_collection_makes_representative_symbol_
-searchable_again``): ``SearchPipeline`` still reads the READ-path
-:class:`~loremaster.store.qdrant.QdrantStore` (the P5→P6 dual-store interim —
-see ``server.py``'s ``build_app_context`` docstring), while the indexer now
-writes chunks ONLY to the WRITE-path ``SurrealStore`` — so a real
-``search_code()`` call returns zero corpus hits regardless of any heal, on this
-branch, by design, until P6 cuts the read path over. The oracle was swapped from
-"a search hit cites the healed file" to "the write-store's own chunk rows for the
-healed file carry real, non-placeholder source text" — the same INTENT (prove the
-heal restored real content, not just a fabricated count) over the store the heal
+ONE assertion uses a direct store-row oracle rather than a ``search_code()`` hit
+(see ``TestWipedCollectionHeals.test_wiped_collection_makes_representative_symbol_
+searchable_again``): search now serves from the unified WRITE-path
+:class:`~loremaster.store.surreal.SurrealStore` (the P6 read cutover — the SAME
+store the indexer writes chunks to), so a search-based oracle and a direct
+store-row oracle read the same store. This assertion proves the heal restored real
+content by reading the write-store's own chunk rows for the healed file directly —
+they carry real, non-placeholder source text — the same INTENT (prove the heal
+restored real content, not just a fabricated count) over the store the heal
 actually acts on.
 
 The root cause the slice fixes: every "is the index healthy?" decision today
@@ -82,11 +79,11 @@ How to run:
         /home/ejprice/PycharmProjects/lore/.venv/bin/python \\
         -m pytest tests/test_startup_divergence_reconcile.py -q -p no:cacheprovider
 
-All tests need the real local Qdrant (http://127.0.0.1:16333 — the probe-gate /
-collection-existence path ``build_app_context`` still runs) AND the real local
-SurrealDB dev server (ws://127.0.0.1:18000 by default; ``LORE_TEST_SURREAL_URL``
-overrides) — the divergence the slice heals (live Surreal chunk count vs.
-manifest) is a SERVER-side fact no in-memory backend can represent.
+All tests need the real local SurrealDB dev server (ws://127.0.0.1:18000 by
+default; ``LORE_TEST_SURREAL_URL`` overrides) — the divergence the slice heals
+(live Surreal chunk count vs. manifest) is a SERVER-side fact no in-memory
+backend can represent. Qdrant is no longer on the boot path (retired at P8a), so
+no Qdrant server is required.
 """
 
 from __future__ import annotations
@@ -130,7 +127,6 @@ from loremaster.index.surreal_manifest import STATE_INDEXED, SurrealManifest
 from loremaster.server import LoreServer, build_app_context
 from loremaster.store.surreal import SurrealStore
 from loresigil.testing import FakeEmbedder
-from qdrant_client import AsyncQdrantClient
 
 # ---------------------------------------------------------------------------
 # Production-realistic constants (the same values the existing suite uses —
@@ -159,12 +155,6 @@ _SURREAL_PASS_ENV = "SURREAL_PASS"
 # (clause 5).
 _LIVE_TIER = "custom"
 _STATIC_TIER = "community"
-
-# The memory collection suffix build_app_context appends for the SEPARATE memory
-# store (lore_<slug>_memory). The divergence reconcile must never touch it — it
-# is registered for teardown but is out of scope for the corpus heal (clause 3:
-# the seam boundary is the corpus collection only).
-_MEMORY_SUFFIX = "_memory"
 
 # The Surreal code-graph tables a full wipe clears (mirrors
 # ``store.surreal_schema``'s single source of truth) — used only by the
@@ -303,8 +293,8 @@ def _slug() -> str:
 
     ``config.surreal.database`` is left unset in :func:`_config` below, so
     :attr:`~loremaster.config.LoreConfig.effective_surreal_database` derives it
-    from THIS slug — the same identity the ``lore_<slug>`` Qdrant collection
-    uses. A uuid4-based slug is unique enough that it also serves directly as a
+    from THIS slug — the project's ``lore_<slug>`` identity. A uuid4-based slug is
+    unique enough that it also serves directly as a
     collision-free per-test Surreal database name (matching
     ``test_indexer_surreal_integration.py``'s ``_config(slug=surreal_env.database, ...)``
     convention), so no separate ``unique_database()`` call is needed.
@@ -369,7 +359,6 @@ def _config(
             "api_key_env": _TEI_KEY_ENV,
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         "surreal": {"url": surreal_url(), "namespace": TEST_NAMESPACE},
         "roots": roots,
         "include": [],
@@ -504,9 +493,9 @@ async def _open_graph(
 
 # ---------------------------------------------------------------------------
 # AppContext factory — drives the REAL build_app_context with start_tasks=True
-# (the PROD path: probe gate → ensure_collection → reconcile → initial sweep),
-# with exact-name teardown of every Qdrant collection AND Surreal database it
-# created (clause 3: the real handoff, not a mock on each side).
+# (the PROD path: probe gate → ready write stack → reconcile → initial sweep),
+# with exact-name teardown of every Surreal database it created (clause 3: the
+# real handoff, not a mock on each side).
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture()
 async def divergence_harness(
@@ -516,23 +505,16 @@ async def divergence_harness(
 
     Exports the dev-server root credentials for the duration of the test (the
     ``resolve_secret`` seam ``build_app_context`` reads — mirrors test_cli.py's
-    identical pattern) and tracks every Qdrant collection AND Surreal database
-    a built context creates for exact-name teardown.
+    identical pattern) and tracks every Surreal database a built context creates
+    for exact-name teardown.
     """
-    from conftest import QDRANT_URL, _qdrant_api_key
-
     monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
     monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
 
-    api_key = _qdrant_api_key()
-    created_collections: list[str] = []
     created_databases: list[str] = []
     open_contexts: list[Any] = []
-    open_clients: list[AsyncQdrantClient] = []
 
     def _register(slug: str) -> None:
-        created_collections.append(f"lore_{slug}")
-        created_collections.append(f"lore_{slug}{_MEMORY_SUFFIX}")
         created_databases.append(slug)
 
     async def _build(
@@ -544,20 +526,15 @@ async def divergence_harness(
     ) -> Any:
         """Build an AppContext through the REAL prod path; track it for teardown."""
         _register(config.project.slug)
-        client = AsyncQdrantClient(url=QDRANT_URL, api_key=api_key)
-        open_clients.append(client)
         app_ctx = await build_app_context(
             server=LoreServer(config),
             embedder=FakeEmbedder(dim=_DIM),
-            qdrant_client=client,
             manifest_path=manifest_path,
             snapshot_root=snapshot_root,
             start_tasks=start_tasks,
         )
         open_contexts.append(app_ctx)
         return app_ctx
-
-    mutator_client = AsyncQdrantClient(url=QDRANT_URL, api_key=api_key)
 
     bundle = {
         "build": _build,
@@ -573,12 +550,6 @@ async def divergence_harness(
                 await app_ctx.aclose()
             except Exception:
                 pass
-        for name in created_collections:
-            if await mutator_client.collection_exists(name):
-                await mutator_client.delete_collection(name)
-        await mutator_client.close()
-        for client in open_clients:
-            await client.close()
         for database in created_databases:
             try:
                 await drop_surreal_database(make_env(database=database, dim=_DIM))
@@ -764,17 +735,14 @@ class TestWipedCollectionHeals:
     ) -> None:
         """The heal re-embeds REAL content: the healed row carries the real source.
 
-        FLAGGED ORACLE SWAP (see module docstring): the pre-port version of this
-        test asserted a real ``search_code()`` hit cites the healed file.
-        ``SearchPipeline`` still reads the READ-path ``QdrantStore`` (the P5→P6
-        dual-store interim), while the indexer now writes chunks ONLY to the
-        WRITE-path ``SurrealStore`` — so ``search_code()`` returns ZERO corpus
-        hits on this branch regardless of any heal, by design, until P6 cuts the
-        read path over. This assertion therefore reads the SAME store the heal
-        actually repopulates: the healed tier's ``widget.py`` chunk rows carry
-        REAL, non-empty ``source_text`` matching the authored corpus — the same
-        INTENT (prove the heal restored real content, not just a fabricated
-        count) over the store the heal acts on.
+        DIRECT STORE-ROW ORACLE (see module docstring): the pre-port version of
+        this test asserted a real ``search_code()`` hit cites the healed file.
+        Search now serves from the unified WRITE-path ``SurrealStore`` (the P6
+        read cutover — the SAME store the indexer writes chunks to), so this
+        assertion reads that store's rows directly: the healed tier's
+        ``widget.py`` chunk rows carry REAL, non-empty ``source_text`` matching
+        the authored corpus — the same INTENT (prove the heal restored real
+        content, not just a fabricated count) over the store the heal acts on.
         """
         slug = _slug()
         live = tmp_path / "live"

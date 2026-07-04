@@ -13,9 +13,8 @@ from the indexer/reconcile/watcher rewiring that port covered, so the class was
 dropped rather than ported blind. This file restores it against the CURRENT
 Surreal composition — the same server seam ``test_cli.py`` / ``test_extension.py``
 / ``test_resilient_db.py`` drive: a real throwaway SurrealDB database via
-``_surreal_harness`` plus a real throwaway Qdrant collection via ``conftest``,
-with a :class:`~loresigil.testing.FakeEmbedder` substituted for the network TEI
-call.
+``_surreal_harness`` (Qdrant retired from the boot path at P8a), with a
+:class:`~loresigil.testing.FakeEmbedder` substituted for the network TEI call.
 
 Fixture note — malformed XML, not a malformed ``.py``: the ORIGINAL crash
 fixture is byte-for-byte reproduced here (a comment-only ``dummy.xml``) rather
@@ -41,11 +40,9 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-import pytest_asyncio
 from _surreal_harness import drop_database, make_env, surreal_password, surreal_url, surreal_user
 from loremaster.config import LoreConfig
 from loremaster.server import LoreServer
@@ -95,7 +92,7 @@ def _build_poisoned_corpus(root: Path) -> None:
 
 
 def _slug() -> str:
-    """A per-test slug -> throwaway Qdrant collection + SurrealDB database."""
+    """A per-test slug -> throwaway SurrealDB database."""
     return f"test_{uuid.uuid4().hex}"
 
 
@@ -123,7 +120,6 @@ def _config(*, slug: str, live_path: Path) -> LoreConfig:
             "api_key_env": "LORE_TEI_KEY",
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         "surreal": {
             "url": surreal_url(),
             "namespace": _SURREAL_TEST_NAMESPACE,
@@ -167,32 +163,8 @@ class TestEagerStartupSurvivesUnparseableFile:
     re-enter via a different call site on the startup/reconcile path.
     """
 
-    @pytest_asyncio.fixture()
-    async def qdrant(self) -> AsyncIterator[Any]:
-        """A real Qdrant client; deletes exactly the collections this test created.
-
-        ``build_app_context`` creates BOTH the project collection and its
-        ``_memory`` sibling, so teardown reaps both (mirrors
-        ``test_extension.py``'s / ``test_indexer_chunker_fault_isolation.py``'s
-        old ``qdrant`` fixture convention: the test appends the collection names
-        it creates onto ``client._lore_created``).
-        """
-        from conftest import QDRANT_URL, _qdrant_api_key
-        from qdrant_client import AsyncQdrantClient
-
-        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created: list[str] = []
-        client._lore_created = created  # type: ignore[attr-defined]
-        try:
-            yield client
-        finally:
-            for name in created:
-                if await client.collection_exists(name):
-                    await client.delete_collection(name)
-            await client.close()
-
     async def test_eager_startup_build_completes_and_reports_the_failure(
-        self, tmp_path: Path, qdrant: Any
+        self, tmp_path: Path
     ) -> None:
         from loremaster.server import build_app_context
 
@@ -208,13 +180,9 @@ class TestEagerStartupSurvivesUnparseableFile:
         os.environ.setdefault(_SURREAL_USER_ENV, surreal_user())
         os.environ.setdefault(_SURREAL_PASS_ENV, surreal_password())
 
-        qdrant._lore_created.append(f"lore_{slug}")
-        qdrant._lore_created.append(f"lore_{slug}_memory")
-
         app_context = await build_app_context(
             server=server,
             embedder=FakeEmbedder(dim=_DIM),
-            qdrant_client=qdrant,
             manifest_path=tmp_path / "m.db",
             snapshot_root=tmp_path / "snap",
             start_tasks=True,

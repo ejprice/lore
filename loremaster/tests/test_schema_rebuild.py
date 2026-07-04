@@ -5,7 +5,7 @@ stamp, the rebuild-status blob, the indexed rows) lives in
 :class:`~loremaster.index.surreal_manifest.SurrealManifest` over a real SurrealDB
 database now, not the pre-port SQLite ``Manifest``; the direct-``Indexer`` tests
 wire :class:`~loremaster.store.surreal.SurrealStore` (the write path) instead of
-:class:`~loremaster.store.qdrant.QdrantStore`. Every fixture/oracle below was
+the retired ``QdrantStore`` (module deleted at P8a). Every fixture/oracle below was
 swapped onto the real Surreal ports, mirroring ``test_indexer_surreal_
 integration.py`` / the divergence-reconcile suite's house pattern (a throwaway
 instance per surface, opened against the SAME ``(namespace, database)`` — the
@@ -40,9 +40,10 @@ The contract under test:
        to 'failed', never stuck at 'in_progress' forever.
 
 Tests marked ``# offline`` need no server at all. Tests marked ``# real-Surreal``
-need the SurrealDB dev server. Tests marked ``# real-Qdrant + real-Surreal`` drive
-the full ``build_app_context`` prod path and need BOTH (Qdrant for the read-path
-probe-gate/collection; Surreal for the write-path manifest/store/graph).
+need the SurrealDB dev server — including the ones that drive the full
+``build_app_context`` prod path, which now readies the write-path manifest /
+store / graph over the unified SurrealDB stack (Qdrant retired at P8a, so there
+is no second backend to stand up).
 
 How to run:
     PP=<worktree>/loremaster:<worktree>/loresigil:<worktree>/lorescribe
@@ -90,7 +91,6 @@ from loremaster.server import LoreServer, build_app_context
 from loremaster.source.local_directory import LocalDirectorySourceProvider
 from loremaster.store.surreal import SurrealStore
 from loresigil.testing import FakeEmbedder
-from qdrant_client import AsyncQdrantClient
 
 # ---------------------------------------------------------------------------
 # Production-realistic constants (same values the existing test suite uses,
@@ -193,7 +193,7 @@ def _slug() -> str:
 
     ``config.surreal.database`` is left unset in :func:`_config`, so
     :attr:`~loremaster.config.LoreConfig.effective_surreal_database` derives it
-    from THIS slug — the same identity the ``lore_<slug>`` Qdrant collection uses.
+    from THIS slug — the per-project identity the unified SurrealDB stack keys on.
     """
     return f"test_{uuid.uuid4().hex}"
 
@@ -213,13 +213,17 @@ def _config(
     chunkers: dict[str, Any] | None = None,
     concurrency: int = 2,
     server_port: int = 9201,
-    qdrant_url: str = "http://127.0.0.1:16333",
+    # The param shadows the imported ``surreal_url`` helper INSIDE the body, but
+    # the default is evaluated at def-time (module scope) where the name still
+    # refers to the helper — so this resolves to the live dev-server URL and the
+    # body uses the ``surreal_url`` param value below.
+    surreal_url: str = surreal_url(),
 ) -> LoreConfig:
     """Build a validated :class:`LoreConfig` grounded in production-realistic values.
 
     Parameters correspond 1-to-1 with the embedding-schema fingerprint fields so
     tests can vary exactly one field at a time (A2 sensitivity checks).
-    Unrelated fields (concurrency, server_port, qdrant_url) are also parameterised
+    Unrelated fields (concurrency, server_port, surreal_url) are also parameterised
     so the insensitivity checks are explicit (A2 negative cases).
 
     The ``surreal:`` block points at the dev-server harness under the harness's
@@ -247,8 +251,7 @@ def _config(
             "api_key_env": _TEI_KEY_ENV,
             "tokenizer": tokenizer,
         },
-        "qdrant": {"url": qdrant_url, "api_key_env": "QDRANT__SERVICE__API_KEY"},
-        "surreal": {"url": surreal_url(), "namespace": TEST_NAMESPACE},
+        "surreal": {"url": surreal_url, "namespace": TEST_NAMESPACE},
         "roots": [
             {
                 "tier": "custom",
@@ -367,9 +370,9 @@ class RecordingEmbedder(FakeEmbedder):
 async def store_factory() -> AsyncIterator[Any]:
     """Build SurrealStore instances; closes each and drops its database on exit.
 
-    A direct-Indexer test (the write path never touches Qdrant at all — P5's
-    dual-store interim keeps Qdrant strictly read-side) only needs this single
-    factory: no separate Qdrant collection exists for these tests to leak.
+    A direct-Indexer test drives the unified SurrealDB write path only, so it
+    needs just this single factory: there is no separate backing store for these
+    tests to leak.
     """
     created_slugs: list[str] = []
     created_stores: list[SurrealStore] = []
@@ -491,7 +494,7 @@ class TestFingerprintSensitivity:
     Schema-relevant (must flip): backend, model, dim, endpoint, max_input_tokens,
     tokenizer, truncate, query_prompt_name, document_prompt_name, chunkers.
 
-    Unrelated (must NOT flip): concurrency, server.port, qdrant.url.
+    Unrelated (must NOT flip): concurrency, server.port, surreal.url.
 
     One test per variation so a single regression failure points to the exact field.
     """
@@ -684,21 +687,24 @@ class TestFingerprintSensitivity:
             "changing server.port must NOT flip the fingerprint"
         )
 
-    def test_qdrant_url_change_does_not_flip_fingerprint(self, tmp_path: Path) -> None:
-        """qdrant.url is a connection detail; it does NOT affect the embedding schema."""
+    def test_surreal_url_change_does_not_flip_fingerprint(self, tmp_path: Path) -> None:
+        """surreal.url is a connection detail; it does NOT affect the embedding schema."""
         # offline
         from loremaster.index.schema import embedding_schema_fingerprint
 
         baseline = self._base_fp(tmp_path)
+        # A different SurrealDB endpoint (a connection detail) must not perturb
+        # the embedding-schema fingerprint — the same negative case the retired
+        # qdrant.url variant used to pin, re-expressed onto the live surreal.url.
         unchanged = embedding_schema_fingerprint(
             _config(
                 slug="unchanged",
                 live_path=tmp_path / "live",
-                qdrant_url="http://10.0.0.1:6333",
+                surreal_url="ws://10.0.0.1:9999/rpc",
             )
         )
         assert unchanged == baseline, (
-            "changing qdrant.url must NOT flip the fingerprint"
+            "changing surreal.url must NOT flip the fingerprint"
         )
 
 
@@ -948,7 +954,7 @@ class TestFingerprintStampedOnlyAfterCompletion:
 
 
 # ===========================================================================
-# A6 — index_status reports schema fields (real Qdrant + real Surreal)
+# A6 — index_status reports schema fields (real Surreal)
 # ===========================================================================
 class TestIndexStatusReportsSchemaFields:
     """``AppContext.index_status()`` surfaces the embedding schema fingerprint
@@ -975,8 +981,7 @@ class TestIndexStatusReportsSchemaFields:
         self, tmp_path: Path
     ) -> None:
         """With a fingerprint stamped in the manifest, index_status includes it."""
-        # real-Qdrant + real-Surreal (needs AppContext.index_status() which needs the store)
-        from conftest import QDRANT_URL, _qdrant_api_key
+        # real-Surreal (needs AppContext.index_status() which needs the store)
         from loremaster.index.schema import (
             EMBEDDING_SCHEMA_VERSION,
             embedding_schema_fingerprint,
@@ -988,7 +993,6 @@ class TestIndexStatusReportsSchemaFields:
         config = _config(slug=slug, live_path=live)
 
         # Build the full AppContext (same seam test_mcp_server.py uses).
-        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
         try:
             current_fp = embedding_schema_fingerprint(config)
             # Pre-stamp the fingerprint as if a rebuild completed.
@@ -996,13 +1000,9 @@ class TestIndexStatusReportsSchemaFields:
             async with _open_manifest(slug) as manifest:
                 await manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, current_fp)
 
-            # Register the collection for teardown.
-            created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
-
             app_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -1020,18 +1020,13 @@ class TestIndexStatusReportsSchemaFields:
                 await app_ctx.aclose()
 
         finally:
-            for name in created_collections:
-                if await qdrant_client.collection_exists(name):
-                    await qdrant_client.delete_collection(name)
-            await qdrant_client.close()
             await _drop_slug_database(slug)
 
     async def test_index_status_includes_schema_rebuild_status_when_in_progress(
         self, tmp_path: Path
     ) -> None:
         """With an in_progress rebuild status in the manifest, index_status surfaces it."""
-        # real-Qdrant + real-Surreal
-        from conftest import QDRANT_URL, _qdrant_api_key
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -1055,13 +1050,10 @@ class TestIndexStatusReportsSchemaFields:
         async with _open_manifest(slug) as manifest:
             await manifest.meta_set(SCHEMA_REBUILD_STATUS_META_KEY, rebuild_status_payload)
 
-        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         try:
             app_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -1087,31 +1079,23 @@ class TestIndexStatusReportsSchemaFields:
                 await app_ctx.aclose()
 
         finally:
-            for name in created_collections:
-                if await qdrant_client.collection_exists(name):
-                    await qdrant_client.delete_collection(name)
-            await qdrant_client.close()
             await _drop_slug_database(slug)
 
     async def test_index_status_schema_rebuild_idle_when_no_status_in_manifest(
         self, tmp_path: Path
     ) -> None:
         """With no rebuild status in manifest, schema_rebuild.state is 'idle'."""
-        # real-Qdrant + real-Surreal
-        from conftest import QDRANT_URL, _qdrant_api_key
+        # real-Surreal
 
         slug = _slug()
         live = tmp_path / "live"
         _build_live_corpus(live)
         config = _config(slug=slug, live_path=live)
 
-        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         try:
             app_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=tmp_path / "m.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -1127,10 +1111,6 @@ class TestIndexStatusReportsSchemaFields:
                 await app_ctx.aclose()
 
         finally:
-            for name in created_collections:
-                if await qdrant_client.collection_exists(name):
-                    await qdrant_client.delete_collection(name)
-            await qdrant_client.close()
             await _drop_slug_database(slug)
 
 
@@ -1202,8 +1182,7 @@ class TestStartupDecision:
         Assert: AppContext.schema_rebuild_task is NOT None (a task was created),
                 schema_rebuild status in manifest is 'in_progress'.
         """
-        # real-Qdrant + real-Surreal (needs collection creation)
-        from conftest import QDRANT_URL, _qdrant_api_key
+        # real-Surreal (needs a populated index the rebuild can purge)
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -1212,8 +1191,6 @@ class TestStartupDecision:
         config = _config(slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
 
-        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         try:
             # Seed a REAL populated index first (a fast embedder — the seed's own
             # embed speed is irrelevant, only the SECOND build's rebuild needs to
@@ -1221,7 +1198,6 @@ class TestStartupDecision:
             seed_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -1245,7 +1221,6 @@ class TestStartupDecision:
             app_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=SlowEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -1290,10 +1265,6 @@ class TestStartupDecision:
                 await app_ctx.aclose()
 
         finally:
-            for name in created_collections:
-                if await qdrant_client.collection_exists(name):
-                    await qdrant_client.delete_collection(name)
-            await qdrant_client.close()
             await _drop_slug_database(slug)
 
     async def test_matching_fingerprint_does_not_spawn_rebuild_task(
@@ -1303,8 +1274,7 @@ class TestStartupDecision:
         Act: build_app_context (start_tasks=False).
         Assert: schema_rebuild_task is None (no rebuild spawned).
         """
-        # real-Qdrant + real-Surreal
-        from conftest import QDRANT_URL, _qdrant_api_key
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -1318,13 +1288,10 @@ class TestStartupDecision:
         async with _open_manifest(slug) as manifest:
             await manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, current_fp)
 
-        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         try:
             app_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -1340,10 +1307,6 @@ class TestStartupDecision:
                 await app_ctx.aclose()
 
         finally:
-            for name in created_collections:
-                if await qdrant_client.collection_exists(name):
-                    await qdrant_client.delete_collection(name)
-            await qdrant_client.close()
             await _drop_slug_database(slug)
 
     async def test_missing_stored_fingerprint_spawns_rebuild_task(
@@ -1353,8 +1316,7 @@ class TestStartupDecision:
         Act: build_app_context (start_tasks=False).
         Assert: schema_rebuild_task is created (None stored → rebuild, fail safe).
         """
-        # real-Qdrant + real-Surreal
-        from conftest import QDRANT_URL, _qdrant_api_key
+        # real-Surreal
 
         slug = _slug()
         live = tmp_path / "live"
@@ -1362,13 +1324,10 @@ class TestStartupDecision:
         config = _config(slug=slug, live_path=live)
         # manifest_path is a fresh file — no fingerprint stamped.
 
-        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         try:
             app_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=tmp_path / "m.db",
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -1392,10 +1351,6 @@ class TestStartupDecision:
                 await app_ctx.aclose()
 
         finally:
-            for name in created_collections:
-                if await qdrant_client.collection_exists(name):
-                    await qdrant_client.delete_collection(name)
-            await qdrant_client.close()
             await _drop_slug_database(slug)
 
     async def test_prod_path_missing_fp_over_populated_index_rebuilds_not_silent_stamp(
@@ -1422,8 +1377,7 @@ class TestStartupDecision:
                 fingerprint must remain unstamped — a populated-unstamped index is
                 never treated as current).
         """
-        # real-Qdrant + real-Surreal
-        from conftest import QDRANT_URL, _qdrant_api_key
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -1432,8 +1386,6 @@ class TestStartupDecision:
         config = _config(slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
 
-        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         app_ctx: Any = None
         try:
             # Step 1: build the index for real (start_tasks=False) so the manifest
@@ -1441,7 +1393,6 @@ class TestStartupDecision:
             seed_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -1483,7 +1434,6 @@ class TestStartupDecision:
             app_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=True,
@@ -1523,10 +1473,6 @@ class TestStartupDecision:
         finally:
             if app_ctx is not None:
                 await app_ctx.aclose()
-            for name in created_collections:
-                if await qdrant_client.collection_exists(name):
-                    await qdrant_client.delete_collection(name)
-            await qdrant_client.close()
             await _drop_slug_database(slug)
 
     async def test_prod_path_empty_index_missing_fp_may_stamp_without_separate_rebuild(
@@ -1547,8 +1493,7 @@ class TestStartupDecision:
                 the current value, and there is no lingering non-terminal rebuild
                 (no separate rebuild task left in progress).
         """
-        # real-Qdrant + real-Surreal
-        from conftest import QDRANT_URL, _qdrant_api_key
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -1557,14 +1502,11 @@ class TestStartupDecision:
         config = _config(slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"  # fresh: no fingerprint, no rows
 
-        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         app_ctx: Any = None
         try:
             app_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=True,
@@ -1595,10 +1537,6 @@ class TestStartupDecision:
         finally:
             if app_ctx is not None:
                 await app_ctx.aclose()
-            for name in created_collections:
-                if await qdrant_client.collection_exists(name):
-                    await qdrant_client.delete_collection(name)
-            await qdrant_client.close()
             await _drop_slug_database(slug)
 
 
@@ -1627,19 +1565,16 @@ class TestStartupDecision:
 # empty+idle. The progress numbers (done/total) planted in the manifest must
 # appear in that text.
 #
-# NOTE: unlike the sibling divergence-reconcile suite, EVERY search-related
-# assertion here checks EMPTINESS (never a positive citation hit), so the
-# P5→P6 dual-store interim (search_code reads the read-path QdrantStore, which
-# the write path no longer populates — see server.py's build_app_context
-# docstring) does not affect these tests at all: the result is guaranteed
-# empty for BOTH reasons (the deliberate no-match filter AND the interim) and
-# the tests only assert on the rebuilding-notice behaviour around that empty
-# result. No oracle substitution was needed here.
+# NOTE: EVERY search-related assertion here checks EMPTINESS (never a positive
+# citation hit). search_code reads the unified SurrealDB store, and these tests
+# only assert on the rebuilding-notice behaviour around a DELIBERATELY empty
+# result (the no-match file_path filter), so no positive-hit oracle is needed
+# here.
 #
 # Scope: corpus-index read tools only. recall_memory / save_memory are OUT of
-# scope — the memory collection is a SEPARATE Qdrant collection (``_memory``
-# suffix) that the schema rebuild never purges, so a memory read during a
-# corpus rebuild is genuinely complete and must NOT carry a rebuilding notice.
+# scope — memory is a SEPARATE SurrealDB backend (the ``memory`` table) that the
+# schema rebuild never purges, so a memory read during a corpus rebuild is
+# genuinely complete and must NOT carry a rebuilding notice.
 # (No A8 case asserts on memory tools by design — scoped out here.)
 
 # The progress numbers planted in the in-progress rebuild status. Named
@@ -1699,23 +1634,17 @@ async def app_context_factory(tmp_path: Path) -> AsyncIterator[Any]:
 
     Tracks every built AppContext's slug (== Surreal database, since
     ``surreal.database`` is unset in :func:`_config`) for exact-name teardown of
-    BOTH the Qdrant probe-gate collections AND the throwaway Surreal database.
+    the throwaway Surreal database.
     """
-    from conftest import QDRANT_URL, _qdrant_api_key
-
-    qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-    created_collections: list[str] = []
     created_slugs: list[str] = []
     open_contexts: list[Any] = []
 
     async def _build(config: LoreConfig, manifest_path: Path) -> Any:
         slug = config.project.slug
-        created_collections.extend([f"lore_{slug}", f"lore_{slug}_memory"])
         created_slugs.append(slug)
         app_ctx = await build_app_context(
             server=LoreServer(config),
             embedder=FakeEmbedder(dim=_DIM),
-            qdrant_client=qdrant_client,
             manifest_path=manifest_path,
             snapshot_root=tmp_path / "snap",
             start_tasks=False,
@@ -1731,10 +1660,6 @@ async def app_context_factory(tmp_path: Path) -> AsyncIterator[Any]:
                 await app_ctx.aclose()
             except Exception:
                 pass
-        for name in created_collections:
-            if await qdrant_client.collection_exists(name):
-                await qdrant_client.delete_collection(name)
-        await qdrant_client.close()
         for slug in created_slugs:
             await _drop_slug_database(slug)
 
@@ -1819,7 +1744,7 @@ class TestRebuildingNoticeSeam:
                 EXCEPTION (serialization-robust: a ToolError IS agent-visible),
                 NOT on a pre-serialization attribute of a returned object.
         """
-        # real-Qdrant + real-Surreal
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -1874,7 +1799,7 @@ class TestRebuildingNoticeSeam:
         helper, so it never makes the suite brittle against an SDK refactor — the
         raise-based assertion in the sibling test is the primary contract.
         """
-        # real-Qdrant + real-Surreal
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         try:
@@ -1937,7 +1862,7 @@ class TestRebuildingNoticeSeam:
         an empty result is a TRUE 'no matches' and must stay a plain empty list —
         never raised, never dressed up as rebuild-in-progress.
         """
-        # real-Qdrant + real-Surreal
+        # real-Surreal
         slug = _slug()
         live = tmp_path / "live"
         _build_live_corpus(live)
@@ -1974,7 +1899,7 @@ class TestRebuildingNoticeSeam:
         (nobody imports a nonexistent target) DURING a rebuild must RAISE with the
         rebuilding + progress message, exactly like search_code.
         """
-        # real-Qdrant + real-Surreal
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -2011,7 +1936,7 @@ class TestRebuildingNoticeSeam:
         The same false-positive guard as A8b, for the second tool — confirms the
         shared seam is gated on in_progress for what_imports too.
         """
-        # real-Qdrant + real-Surreal
+        # real-Surreal
         slug = _slug()
         live = tmp_path / "live"
         _build_live_corpus(live)
@@ -2397,8 +2322,7 @@ class TestFailedRebuildReportsFailed:
         Assert: the manifest's rebuild-status state reads ``failed`` (NOT
                 ``in_progress``); the fingerprint is NOT advanced to current.
         """
-        # real-Qdrant + real-Surreal
-        from conftest import QDRANT_URL, _qdrant_api_key
+        # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
 
         slug = _slug()
@@ -2407,8 +2331,6 @@ class TestFailedRebuildReportsFailed:
         config = _config(slug=slug, live_path=live)
         manifest_path = tmp_path / "m.db"
 
-        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         app_ctx: Any = None
         try:
             # Step 1: seed a POPULATED index (manifest rows + store chunks) with a
@@ -2418,7 +2340,6 @@ class TestFailedRebuildReportsFailed:
             seed_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -2442,7 +2363,6 @@ class TestFailedRebuildReportsFailed:
             app_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=_BombEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -2481,10 +2401,6 @@ class TestFailedRebuildReportsFailed:
         finally:
             if app_ctx is not None:
                 await app_ctx.aclose()
-            for name in created_collections:
-                if await qdrant_client.collection_exists(name):
-                    await qdrant_client.delete_collection(name)
-            await qdrant_client.close()
             await _drop_slug_database(slug)
 
     async def test_index_status_surfaces_failed_state_after_failed_rebuild(
@@ -2499,8 +2415,7 @@ class TestFailedRebuildReportsFailed:
         status tool reads it back faithfully — the producer↔consumer seam where a
         new state value could be silently dropped (clause 3).
         """
-        # real-Qdrant + real-Surreal (index_status needs the AppContext + store)
-        from conftest import QDRANT_URL, _qdrant_api_key
+        # real-Surreal (index_status needs the AppContext + store)
 
         slug = _slug()
         live = tmp_path / "live"
@@ -2527,14 +2442,11 @@ class TestFailedRebuildReportsFailed:
                 ),
             )
 
-        qdrant_client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         app_ctx: Any = None
         try:
             app_ctx = await build_app_context(
                 server=LoreServer(config),
                 embedder=FakeEmbedder(dim=_DIM),
-                qdrant_client=qdrant_client,
                 manifest_path=manifest_path,
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
@@ -2556,10 +2468,6 @@ class TestFailedRebuildReportsFailed:
         finally:
             if app_ctx is not None:
                 await app_ctx.aclose()
-            for name in created_collections:
-                if await qdrant_client.collection_exists(name):
-                    await qdrant_client.delete_collection(name)
-            await qdrant_client.close()
             await _drop_slug_database(slug)
 
     async def test_successful_rebuild_still_ends_done_not_failed(

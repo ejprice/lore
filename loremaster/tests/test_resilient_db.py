@@ -161,15 +161,12 @@ def _assert_raises_on_raw_open(path: Path) -> None:
 # this class pins the END-STATE the requirement actually cares about: the SERVER
 # startup path (build_app_context) over a nonexistent state dir must not raise
 # and must produce a working memory ledger + Surreal manifest. It mirrors the
-# hermetic harness in test_schema_rebuild.py (FakeEmbedder + a real throwaway
-# Qdrant collection + tmp paths) so it drives the SAME construction path the
-# server runs.
+# hermetic harness in test_schema_rebuild.py (FakeEmbedder + tmp paths) so it
+# drives the SAME construction path the server runs.
 #
-# Marked ``real-Qdrant``: build_app_context runs the probe gate + ensure_collection,
-# which require a reachable Qdrant at conftest.QDRANT_URL with the API key. When
-# Qdrant is unavailable the probe gate fails BEFORE the memory ledger is built,
-# so this case cannot witness the FP-01 fix — it is then xfail-skipped, and the
-# unit-level owner-only-dir tests below remain the authoritative FP-01 coverage.
+# Qdrant retired from the boot path at P8a: the probe gate is now store-agnostic
+# (embedder-only), so this case always exercises the FP-01 fix — no external
+# service dependency to skip on.
 # ---------------------------------------------------------------------------
 class TestBuildAppContextCreatesStateDir:
     """FP-01 server seam: build_app_context over an absent state dir must succeed."""
@@ -179,23 +176,15 @@ class TestBuildAppContextCreatesStateDir:
         self, tmp_path: Path
     ) -> None:
         """Arrange: a manifest_path (memory-ledger anchor) under a state dir that
-        does NOT exist. Act: build_app_context with that path, a FakeEmbedder, a
-        throwaway Qdrant. Assert: it does not raise, the state dir + memory ledger
-        are created, and the Surreal manifest is empty/queryable.
+        does NOT exist. Act: build_app_context with that path and a FakeEmbedder
+        over a throwaway SurrealDB database. Assert: it does not raise, the state
+        dir + memory ledger are created, and the Surreal manifest is empty/queryable.
         """
-        # real-Qdrant — the probe gate + ensure_collection need a live Qdrant.
-        from loremaster.server import LoreServer, build_app_context
-
-        try:
-            from conftest import QDRANT_URL, _qdrant_api_key
-            from loresigil.testing import FakeEmbedder
-            from qdrant_client import AsyncQdrantClient
-        except Exception as import_error:  # pragma: no cover - harness wiring
-            pytest.skip(f"hermetic Qdrant harness unavailable: {import_error}")
-
         import os
 
         from _surreal_harness import drop_database, make_env, surreal_password, surreal_user
+        from loremaster.server import LoreServer, build_app_context
+        from loresigil.testing import FakeEmbedder
 
         os.environ.setdefault("SURREAL_USER", surreal_user())
         os.environ.setdefault("SURREAL_PASS", surreal_password())
@@ -207,15 +196,12 @@ class TestBuildAppContextCreatesStateDir:
         manifest_path = absent_state_dir / f"{slug}.db"
         assert not absent_state_dir.exists(), "fixture must start with an absent state dir"
 
-        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created_collections = [f"lore_{slug}", f"lore_{slug}_memory"]
         app_context: Any = None
         try:
             try:
                 app_context = await build_app_context(
                     server=LoreServer(config),
                     embedder=FakeEmbedder(dim=_CONFIG_DIM),
-                    qdrant_client=client,
                     manifest_path=manifest_path,
                     snapshot_root=tmp_path / "snap",
                     start_tasks=False,
@@ -244,10 +230,6 @@ class TestBuildAppContextCreatesStateDir:
             if app_context is not None:
                 await app_context.aclose()
             await drop_database(make_env(database=slug, dim=_CONFIG_DIM))
-            for name in created_collections:
-                if await client.collection_exists(name):
-                    await client.delete_collection(name)
-            await client.close()
 
 
 # The production embedding dimensionality used across the hermetic harnesses
@@ -266,7 +248,7 @@ def _build_realistic_config(tmp_path: Path) -> Any:
 
     Mirrors test_schema_rebuild.py's ``_config`` (same TEI/Voyage shape) so the
     server seam test drives the SAME construction path the server runs (clause 5).
-    A unique slug per call avoids cross-test Qdrant-collection collisions.
+    A unique slug per call avoids cross-test SurrealDB-database collisions.
     """
     import uuid
 
@@ -292,7 +274,6 @@ def _build_realistic_config(tmp_path: Path) -> Any:
             "api_key_env": "LORE_TEI_KEY",
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         # P5 write stack: throwaway per-call database on the dev server (the
         # unique slug doubles as the database name; reaped in the test finally).
         "surreal": {

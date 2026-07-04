@@ -79,7 +79,6 @@ def minimal_config(extensions: dict[str, dict[str, Any]] | None = None) -> LoreC
             "api_key_env": "LORE_TEI_KEY",
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         "include": ["**/*.py"],
         "exclude_dirs": [".git"],
         "exclude_globs": ["uv.lock"],

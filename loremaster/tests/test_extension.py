@@ -36,12 +36,10 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Literal
 
 import pytest
-import pytest_asyncio
 from _extension_helpers import (
     BUILTIN_COLLISION_NAME,
     SCHEMA_TOOL_FACTOR_DEFAULT,
@@ -602,7 +600,6 @@ def _server_config(slug: str, live_path: Path) -> Any:
             "api_key_env": "LORE_TEI_KEY",
             "tokenizer": "voyage-4-nano",
         },
-        "qdrant": {"url": "http://127.0.0.1:16333", "api_key_env": "QDRANT__SERVICE__API_KEY"},
         # The P5 write stack: a throwaway per-call database on the dev server
         # (unique via the slug, which each caller mints per test).
         "surreal": {
@@ -654,30 +651,12 @@ class _FakeToolContext:
 class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
     """An extension's seam-3 ToolSpec is registered as a live, invocable MCP tool."""
 
-    @pytest_asyncio.fixture()
-    async def qdrant(self) -> AsyncIterator[Any]:
-        """A real Qdrant client with exact-name (concurrency-safe) teardown."""
-        from conftest import QDRANT_URL, _qdrant_api_key
-        from qdrant_client import AsyncQdrantClient
-
-        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created: list[str] = []
-        client._lore_created = created  # type: ignore[attr-defined]
-        try:
-            yield client
-        finally:
-            for name in created:
-                for candidate in (name, f"{name}_memory"):
-                    if await client.collection_exists(candidate):
-                        await client.delete_collection(candidate)
-            await client.close()
-
     @staticmethod
     def _slug() -> str:
         return f"test_{uuid.uuid4().hex}"
 
-    async def _live_context(self, *, server: Any, qdrant: Any, tmp_path: Path) -> Any:
-        """Build a live :class:`AppContext` over the server (real Qdrant, fake embedder).
+    async def _live_context(self, *, server: Any, tmp_path: Path) -> Any:
+        """Build a live :class:`AppContext` over the server (real SurrealDB, fake embedder).
 
         Exports the dev server's SurrealDB credentials (the P5 write stack
         resolves them by env-var name at construction) — idempotent, the same
@@ -692,13 +671,9 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
 
         os.environ.setdefault("SURREAL_USER", surreal_user())
         os.environ.setdefault("SURREAL_PASS", surreal_password())
-        slug = server.config.project.slug
-        qdrant._lore_created.append(f"lore_{slug}")
-        qdrant._lore_created.append(f"lore_{slug}_memory")
         return await build_app_context(
             server=server,
             embedder=FakeEmbedder(dim=_DIM),
-            qdrant_client=qdrant,
             manifest_path=tmp_path / "m.db",
             snapshot_root=tmp_path / "snap",
             start_tasks=False,
@@ -749,7 +724,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
         assert "count" in bump.inputSchema.get("properties", {})
 
     async def test_extension_tool_is_invocable_end_to_end_with_runtime_ctx(
-        self, tmp_path: Path, qdrant: Any
+        self, tmp_path: Path
     ) -> None:
         # The real end-to-end proof (not the vacuous ``spec.handler()`` direct call):
         # drive the REGISTERED FastMCP wrapper against a LIVE AppContext and get the
@@ -765,7 +740,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
         ext = CounterExtension()
         server = LoreServer(config).register_extension(ext)
         mcp = build_mcp_server(server)
-        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        ctx = await self._live_context(server=server, tmp_path=tmp_path)
         try:
             tool = mcp._tool_manager.get_tool("bump_counter")  # noqa: SLF001
             assert tool is not None
@@ -818,7 +793,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
             build_mcp_server(server)
 
     async def test_optional_arg_is_not_required_and_invocable_without_it(
-        self, tmp_path: Path, qdrant: Any
+        self, tmp_path: Path
     ) -> None:
         # CONTRACT GAP #1 (optionality lost). The handler declares
         # ``factor: int = SCHEMA_TOOL_FACTOR_DEFAULT``; the published inputSchema
@@ -844,7 +819,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
             "an arg with a handler default must publish as NOT required"
         )
 
-        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        ctx = await self._live_context(server=server, tmp_path=tmp_path)
         try:
             tool = mcp._tool_manager.get_tool("echo_shapes")  # noqa: SLF001
             # Invoke WITHOUT ``factor`` — the handler's default must apply.
@@ -909,7 +884,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
             build_mcp_server(server)
 
     async def test_cross_extension_tool_state_is_isolated(
-        self, tmp_path: Path, qdrant: Any
+        self, tmp_path: Path
     ) -> None:
         # Two extensions, each with its OWN private lifespan state + a tool reading
         # it. One extension's tool must see ONLY its own sentinel and NEVER the
@@ -927,7 +902,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
             .register_extension(IsolationExtensionB())
         )
         mcp = build_mcp_server(server)
-        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        ctx = await self._live_context(server=server, tmp_path=tmp_path)
         try:
             tool_a = mcp._tool_manager.get_tool("read_state_a")  # noqa: SLF001
             tool_b = mcp._tool_manager.get_tool("read_state_b")  # noqa: SLF001
@@ -968,48 +943,30 @@ class _DuplicateBumpExtension(Extension):
 
 # --------------------------------------------------------------------------- #
 # ctx.store flip: the runtime ExtensionContext must carry the UNIFIED SurrealDB
-# store the search pipeline reads, never the legacy QdrantStore (P6 close-out).
+# store the search pipeline reads, never a legacy read handle (P6 close-out).
 # --------------------------------------------------------------------------- #
 class TestRuntimeExtensionContextStoreIsUnifiedSurreal:
     """P6 close-out ctx.store flip: the RUNTIME ``ExtensionContext.store`` the
     search seams + startup hooks receive must be the unified SurrealStore the
-    search pipeline reads (``AppContext.write_store``), never the legacy
-    ``QdrantStore`` (``AppContext.store``).
+    search pipeline reads (``AppContext.write_store``), never a legacy read
+    handle (``AppContext.store``, retired at P7).
 
     Pinned against the REAL ``build_app_context`` composition — the strongest
     testable seam for this bug: at the ``_make_pipeline``/fake-trio level
     ``test_search.py`` already wires ``ctx.store`` onto a Surreal-SHAPED fake (it
     has to, to drive the P6 pipeline at all), so a fake-level test alone would
-    stay green even if the PRODUCTION composition still wired the legacy Qdrant
+    stay green even if the PRODUCTION composition still wired a legacy read
     handle into ``extension_ctx``. Only a live ``build_app_context`` run can catch
     that composition-level regression, mirroring
     ``TestSeam3ExtensionToolsAreWiredIntoTheLiveServer``'s live-server pattern.
     """
 
-    @pytest_asyncio.fixture()
-    async def qdrant(self) -> AsyncIterator[Any]:
-        """A real Qdrant client with exact-name (concurrency-safe) teardown."""
-        from conftest import QDRANT_URL, _qdrant_api_key
-        from qdrant_client import AsyncQdrantClient
-
-        client = AsyncQdrantClient(url=QDRANT_URL, api_key=_qdrant_api_key())
-        created: list[str] = []
-        client._lore_created = created  # type: ignore[attr-defined]
-        try:
-            yield client
-        finally:
-            for name in created:
-                for candidate in (name, f"{name}_memory"):
-                    if await client.collection_exists(candidate):
-                        await client.delete_collection(candidate)
-            await client.close()
-
     @staticmethod
     def _slug() -> str:
         return f"test_{uuid.uuid4().hex}"
 
-    async def _live_context(self, *, server: Any, qdrant: Any, tmp_path: Path) -> Any:
-        """Build a live :class:`AppContext` over the server (real Qdrant/Surreal, fake embedder)."""
+    async def _live_context(self, *, server: Any, tmp_path: Path) -> Any:
+        """Build a live :class:`AppContext` over the server (real SurrealDB, fake embedder)."""
         import os
 
         from _surreal_harness import surreal_password, surreal_user
@@ -1017,13 +974,9 @@ class TestRuntimeExtensionContextStoreIsUnifiedSurreal:
 
         os.environ.setdefault("SURREAL_USER", surreal_user())
         os.environ.setdefault("SURREAL_PASS", surreal_password())
-        slug = server.config.project.slug
-        qdrant._lore_created.append(f"lore_{slug}")
-        qdrant._lore_created.append(f"lore_{slug}_memory")
         return await build_app_context(
             server=server,
             embedder=FakeEmbedder(dim=_DIM),
-            qdrant_client=qdrant,
             manifest_path=tmp_path / "m.db",
             snapshot_root=tmp_path / "snap",
             start_tasks=False,
@@ -1037,26 +990,26 @@ class TestRuntimeExtensionContextStoreIsUnifiedSurreal:
         await drop_database(make_env(database=slug, dim=_DIM))
 
     async def test_runtime_ctx_store_is_the_unified_surreal_store(
-        self, tmp_path: Path, qdrant: Any
+        self, tmp_path: Path
     ) -> None:
         from loremaster.server import LoreServer
-        from loremaster.store.qdrant import QdrantStore
+        from loremaster.store.surreal import SurrealStore
 
         live = tmp_path / "live"
         live.mkdir()
         slug = self._slug()
         config = _server_config(slug, live)
         server = LoreServer(config)
-        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        ctx = await self._live_context(server=server, tmp_path=tmp_path)
         try:
             runtime_ctx = ctx.extension_ctx
             assert runtime_ctx is not None, "startup hooks must have set the runtime ctx"
             # Duck-type: the unified store speaks hybrid_search (BM25 ⊕ HNSW via
-            # RRF); the legacy QdrantStore has NO such method (search()/scroll()
-            # only) — a lingering Qdrant handle fails this immediately.
+            # RRF); a legacy read handle would have no such method (search()/
+            # scroll() only) — a lingering legacy handle fails this immediately.
             assert hasattr(runtime_ctx.store, "hybrid_search")
             assert hasattr(runtime_ctx.store, "scroll")
-            assert not isinstance(runtime_ctx.store, QdrantStore)
+            assert isinstance(runtime_ctx.store, SurrealStore)
             # It is the VERY object the search pipeline reads — not a same-shaped
             # sibling instance that happens to point at a different database.
             assert runtime_ctx.store is ctx.write_store
@@ -1069,7 +1022,7 @@ class TestRuntimeExtensionContextStoreIsUnifiedSurreal:
             await self._drop_surreal_db(server.config.project.slug)
 
     async def test_ctx_store_round_trips_the_same_chunk_the_write_path_wrote(
-        self, tmp_path: Path, qdrant: Any
+        self, tmp_path: Path
     ) -> None:
         # Behavioural proof (not just type/identity): a chunk written through
         # ``ctx.write_store`` is findable through the RUNTIME
@@ -1085,7 +1038,7 @@ class TestRuntimeExtensionContextStoreIsUnifiedSurreal:
         slug = self._slug()
         config = _server_config(slug, live)
         server = LoreServer(config)
-        ctx = await self._live_context(server=server, qdrant=qdrant, tmp_path=tmp_path)
+        ctx = await self._live_context(server=server, tmp_path=tmp_path)
         try:
             record = chunk_record(
                 tier="custom",

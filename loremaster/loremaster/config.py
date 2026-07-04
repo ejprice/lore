@@ -75,11 +75,11 @@ TIER_DEFAULT = "default"
 
 # The safe charset a project ``slug`` must match: lowercase alphanumerics plus
 # ``_``, starting with an alphanumeric, non-empty. The slug is f-string'd
-# straight into the ``lore_<slug>`` Qdrant collection name, the on-disk
-# state-DB paths (``<slug>.memory.db``), AND — since P5 — the SurrealDB
-# database name (``effective_surreal_database``), so a traversal (``../etc``),
+# straight into the on-disk state-DB paths (``<slug>.memory.db``), the SurrealDB
+# database name (``effective_surreal_database``), AND the ``lore_<slug>``
+# container/naming convention, so a traversal (``../etc``),
 # a separator (``a/b``), whitespace, an uppercase, or a leading separator is a
-# path/collection hazard, and a HYPHEN is rejected outright (operator directive
+# path/database hazard, and a HYPHEN is rejected outright (operator directive
 # 2026-07-03, task #32): an unescaped hyphenated identifier fails SurrealQL
 # parsing (``REMOVE DATABASE my-proj`` → parse error), so it is blocked at
 # config load rather than escaped at every interpolation site. Constraining it
@@ -104,12 +104,12 @@ class ProjectConfig(_StrictModel):
     """Project identity.
 
     Attributes:
-        slug: The project identifier; drives the ``lore_<slug>`` collection name
+        slug: The project identifier; drives the SurrealDB database name
             AND the on-disk state-DB paths (``<slug>.db`` / ``<slug>.memory.db``).
             Constrained to the safe :data:`SLUG_PATTERN` charset because it is
             interpolated straight into filesystem paths and
-            a Qdrant collection name: a traversal, separator, whitespace,
-            uppercase, or leading-separator slug is a path/collection hazard and
+            the SurrealDB database name: a traversal, separator, whitespace,
+            uppercase, or leading-separator slug is a path/database hazard and
             must be rejected at load, not silently written to the wrong place.
         root: The project root the include/exclude globs are resolved against.
     """
@@ -203,30 +203,18 @@ class EmbeddingConfig(_StrictModel):
     batch: BatchConfig = BatchConfig()
 
 
-class QdrantConfig(_StrictModel):
-    """Qdrant connection configuration.
-
-    Attributes:
-        url: The Qdrant base URL.
-        api_key_env: The *name* of the environment variable holding the API key.
-    """
-
-    url: str
-    api_key_env: str
-
-
 # The production SurrealDB RPC default — the standard WebSocket ``/rpc`` port.
 # The test harness retargets it via a per-test ``surreal:`` block (the dev
 # server on :18000 with a unique per-test database).
 SURREAL_DEFAULT_URL = "ws://127.0.0.1:8000/rpc"
 
-# The shared namespace every project's database lives under. Mirrors the
-# ``lore_<slug>`` Qdrant-collection convention: one namespace, one database per
-# project slug, so the two-container topology maps cleanly onto Surreal.
+# The shared namespace every project's database lives under. Follows the
+# ``lore_<slug>`` naming convention: one namespace, one database per project
+# slug, so the two-container topology maps cleanly onto Surreal.
 SURREAL_DEFAULT_NAMESPACE = "lore"
 
 # The env-var *names* the root credentials are referenced by — never the secret
-# itself (mirrors :attr:`QdrantConfig.api_key_env` / :attr:`AuthKey.key_env`).
+# itself (mirrors :attr:`AuthKey.key_env`'s env-var-name discipline).
 SURREAL_DEFAULT_USER_ENV = "SURREAL_USER"
 SURREAL_DEFAULT_PASSWORD_ENV = "SURREAL_PASS"
 
@@ -235,9 +223,9 @@ class SurrealConfig(_StrictModel):
     """SurrealDB connection configuration (P5 store unification).
 
     Locates the project's SurrealDB namespace + database and references the root
-    credentials by environment-variable *name* — never inlined, mirroring
-    :class:`QdrantConfig`'s ``api_key_env`` discipline (:func:`resolve_secret`
-    reads them at startup and fails loudly if unset).
+    credentials by environment-variable *name* — never inlined (:func:`resolve_secret`
+    reads them at startup and fails loudly if unset), the same env-var-name
+    discipline :attr:`AuthKey.key_env` uses.
 
     OPTIONAL on :class:`LoreConfig` with a default instance, so every existing
     ``lore.yaml`` (which carries no ``surreal:`` section) keeps validating and
@@ -249,8 +237,9 @@ class SurrealConfig(_StrictModel):
         namespace: The namespace the project's database lives under. Defaults to
             the shared ``lore`` namespace.
         database: The database name. ``None`` (default) derives it from the
-            project slug — the same identity the ``lore_<slug>`` Qdrant
-            collection uses — via :attr:`LoreConfig.effective_surreal_database`.
+            project slug — the same identity the on-disk state-DB paths and the
+            ``lore_<slug>`` naming convention use — via
+            :attr:`LoreConfig.effective_surreal_database`.
         user_env: The *name* of the environment variable holding the root
             username.
         password_env: The *name* of the environment variable holding the root
@@ -464,7 +453,6 @@ class LoreConfig(_StrictModel):
         schema_version: The config schema version.
         project: Project identity.
         embedding: Embedding-backend configuration.
-        qdrant: Qdrant connection configuration.
         roots: The source roots/tiers with per-tier freshness policies (D5).
             Defaults to an empty list (a bare single-tree generic deploy).
         include: Glob patterns (relative to the project root) selecting files to
@@ -488,7 +476,6 @@ class LoreConfig(_StrictModel):
     schema_version: int
     project: ProjectConfig
     embedding: EmbeddingConfig
-    qdrant: QdrantConfig
     # OPTIONAL with a default instance (like ``logging``), so an existing
     # ``lore.yaml`` with no ``surreal:`` section still validates and gets the
     # localhost production defaults; the dev-server harness sets it explicitly.
@@ -548,8 +535,8 @@ class LoreConfig(_StrictModel):
         """The SurrealDB database name for this project.
 
         Returns the explicit :attr:`SurrealConfig.database` when set, else the
-        project slug — the same identity the ``lore_<slug>`` Qdrant collection
-        and the on-disk state-DB paths use, so the Surreal database co-locates
+        project slug — the same identity the on-disk state-DB paths and the
+        ``lore_<slug>`` naming convention use, so the Surreal database co-locates
         with the rest of a project's durable state under one name.
         """
         return self.surreal.database or self.project.slug
