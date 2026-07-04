@@ -106,6 +106,18 @@ consumed-by-<phase or commit> / superseded).
   symbols per module (top-N by rank + "+K more"), spending budget on breadth
   over depth.
 
+- **2026-07-03 · team-lead (P7 prep) · lore_impact · wrong_result (bare-name
+  covering-tests drop)** — `lore_impact("RecalledMemory")` (bare name) returned
+  the correct 2 prod / 10 test reference counts via the answers_to bridge but
+  `tests: 0`, while the qualified `loremaster.memory.store.RecalledMemory`
+  form returned 137 covering tests from the same graph. The covering-tests
+  join silently ignores bare-name input instead of riding the same bridge (or
+  teaching the miss). Workaround: re-asked with the module-qualified name.
+  **Feeds:** P7/P8 — route the tests_for join through the same answers_to
+  resolution as the ref counts, or render an explicit "tests unresolved for
+  bare names — qualify the name" notice. Triage with the two lore_map entries
+  at cycle 1 close.
+
 ## Consumed
 
 - **2026-07-03 · team-lead · (whole surface) · distrust_unverified** — avoided
