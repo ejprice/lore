@@ -1039,6 +1039,49 @@ class SurrealStore:
         values = result if isinstance(result, list) else []
         return {str(value) for value in values if value is not None}
 
+    async def file_text(self, tier: str, file_path: str) -> dict[str, str] | None:
+        """Return the stored ``{text, sha512}`` body of ``(tier, file_path)``, or ``None``.
+
+        The read counterpart to :meth:`file_text_fragment`: a bounded, FILTER-ONLY
+        keyed lookup of the one ``file_text`` row addressed by the SAME
+        ``[tier, file_path]`` composite record id the writer keys on (via
+        ``type::record``), so a tier override and the community original of one
+        path never collide. The row's verbatim ``text`` and its ``sha512`` come
+        back together; nothing matching yields ``None``.
+
+        Rides the store's self-healing, error-classifying :meth:`_query` seam (a
+        transport failure self-heals and raises :class:`SurrealConnectionError`; a
+        domain rejection keeps the healthy connection and raises
+        :class:`SurrealStoreError`), and binds the composite id as a parameter —
+        caller input is NEVER interpolated into the statement text.
+
+        Args:
+            tier: The tier whose copy of the file to read.
+            file_path: The file path within the tier.
+
+        Returns:
+            ``{"text": <verbatim body>, "sha512": <digest>}`` for the stored row,
+            or ``None`` when no ``file_text`` row exists for the pair.
+
+        Raises:
+            SurrealConnectionError: The server is unreachable or the socket died.
+            SurrealStoreError: The engine rejected the read (a domain fault).
+        """
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT {_FILE_TEXT_TEXT_KEY}, {_FILE_TEXT_SHA_KEY} "
+                f"FROM type::record('{FILE_TEXT_TABLE}', $id)",
+                {"id": [tier, file_path]},
+            )
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            _FILE_TEXT_TEXT_KEY: row[_FILE_TEXT_TEXT_KEY],
+            _FILE_TEXT_SHA_KEY: row[_FILE_TEXT_SHA_KEY],
+        }
+
     async def scroll(self, filters: dict[str, str], limit: int) -> list[dict[str, Any]]:
         """Return the chunk rows matching ``filters`` — a bounded FILTER-ONLY lookup.
 

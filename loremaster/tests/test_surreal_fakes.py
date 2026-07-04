@@ -56,7 +56,7 @@ from _surreal_fakes import FakeSurrealCodeGraph, FakeSurrealStore, fake_surreal_
 from _surreal_harness import PRODUCTION_DIM, TIER_A, TIER_B, chunk_record, unit_vector
 from loremaster.graph import KIND_CLASS, KIND_FUNCTION, KIND_METHOD, KIND_MODULE, GraphNode
 from loremaster.graph_surreal import SurrealCodeGraph
-from loremaster.index.records import Record
+from loremaster.index.records import Record, sha512_hex
 from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import (
     _RRF_K as _PRODUCTION_RRF_K,
@@ -1011,6 +1011,86 @@ class TestRecordTraceFake:
         assert first == second  # deterministic call-to-call
         assert set(first) == set(insertion_hashes)  # no row lost or duplicated
         assert first != insertion_hashes  # NOT a naive insertion-order walk
+
+
+class TestFileTextReadFake:
+    """The fake's P8b ``file_text`` keyed-read surface — signature parity with the
+    real store, keyed read-back of the stored body+digest, honest ``None`` on a
+    missing pair, a COPY (never a live reference a caller could scribble on to
+    corrupt the fake's stored state — the adversarial-double doctrine), and the
+    injected down-connection failure via the SHARED ``arm_connection_failure``
+    trip counter (the real store's transport can fail ANY read, so the fake can
+    never be more forgiving on a downed connection than the real store).
+    """
+
+    _TIER = TIER_A
+    _PATH = "models/purchase_order.py"
+    _SOURCE = "def action_confirm(self):\n    return True\n"
+
+    async def _seed(self, store: FakeSurrealStore) -> str:
+        """Write the body through the SHARED write API and return its digest."""
+        sha = sha512_hex(self._SOURCE)
+        await store.apply(
+            [store.file_text_fragment(self._TIER, self._PATH, self._SOURCE, sha)]
+        )
+        return sha
+
+    def test_file_text_signature_matches_real_store(self) -> None:
+        real_params = _params_excluding_self(SurrealStore.file_text)
+        fake_params = _params_excluding_self(FakeSurrealStore.file_text)
+        assert list(fake_params) == list(real_params) == ["tier", "file_path"]
+        for name, real_param in real_params.items():
+            fake_param = fake_params[name]
+            assert fake_param.kind == real_param.kind, name
+            assert fake_param.default == real_param.default, name
+        assert inspect.iscoroutinefunction(FakeSurrealStore.file_text)
+
+    async def test_reads_back_stored_body_and_digest(self, store: FakeSurrealStore) -> None:
+        sha = await self._seed(store)
+        row = await store.file_text(self._TIER, self._PATH)
+        assert row is not None
+        assert row["text"] == self._SOURCE
+        assert row["sha512"] == sha
+
+    async def test_absent_pair_returns_none(self, store: FakeSurrealStore) -> None:
+        assert await store.file_text(self._TIER, "models/missing.py") is None
+
+    async def test_returned_row_is_a_copy_not_a_live_reference(
+        self, store: FakeSurrealStore
+    ) -> None:
+        await self._seed(store)
+        row = await store.file_text(self._TIER, self._PATH)
+        assert row is not None
+        row["text"] = "MUTATED-BY-CALLER"  # a caller scribbling on the result
+        again = await store.file_text(self._TIER, self._PATH)
+        assert again is not None
+        assert again["text"] == self._SOURCE  # the fake's stored state is untouched
+
+    async def test_armed_fake_raises_on_file_text_then_recovers(
+        self, store: FakeSurrealStore
+    ) -> None:
+        await self._seed(store)
+        store.arm_connection_failure()
+        with pytest.raises(SurrealConnectionError):
+            await store.file_text(self._TIER, self._PATH)
+        # Recovery: the very next call is healthy again (a down read is never a
+        # silent empty — it raised BEFORE the lookup).
+        row = await store.file_text(self._TIER, self._PATH)
+        assert row is not None
+        assert row["text"] == self._SOURCE
+
+    async def test_file_text_shares_the_arm_counter_with_the_read_methods(
+        self, store: FakeSurrealStore
+    ) -> None:
+        # The SAME shared trip counter the other read methods consume — a
+        # genuinely down connection does not care which read asks next.
+        store.arm_connection_failure(times=2)
+        with pytest.raises(SurrealConnectionError):
+            await store.scroll(filters={}, limit=10)  # trip 1 (a read)
+        with pytest.raises(SurrealConnectionError):
+            await store.file_text(self._TIER, self._PATH)  # trip 2 — proves shared counter
+        # Exhausted: the third call is healthy again (honest None on a missing pair).
+        assert await store.file_text(self._TIER, self._PATH) is None
 
 
 # --------------------------------------------------------------------------- #

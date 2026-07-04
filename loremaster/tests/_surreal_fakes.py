@@ -824,6 +824,24 @@ class FakeSurrealStore:
         )
         return [self._clean_payload(chunk) for chunk in matches[:limit]]
 
+    async def file_text(self, tier: str, file_path: str) -> dict[str, str] | None:
+        """Return the stored ``{text, sha512}`` body of ``(tier, file_path)``, or ``None``.
+
+        Signature-identical to :meth:`SurrealStore.file_text` (pinned by
+        ``test_surreal_fakes.py``'s signature-parity test): a bounded, keyed
+        read of the one ``file_text`` row addressed by the ``[tier, file_path]``
+        pair. Honours :meth:`arm_connection_failure` (a down connection RAISES
+        :class:`SurrealConnectionError` BEFORE the lookup — the read-path "loud on
+        failure" contract, so this fake can never be more forgiving than the real
+        store on a downed connection), then returns the stored row as a COPY so a
+        caller can never mutate the fake's own stored state (the adversarial-double
+        doctrine — a keyed read is never a live reference into the backing store).
+        Nothing stored for the pair yields ``None``.
+        """
+        self._maybe_trip_connection_failure()
+        row = self.db.file_text.get((tier, file_path))
+        return dict(row) if row is not None else None
+
     # -- trace write path (P8a observability) -----------------------------
 
     async def record_trace(

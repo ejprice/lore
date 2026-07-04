@@ -1045,6 +1045,73 @@ class TestApplyAtomicSuccess:
 
 
 # ===========================================================================
+# 4b. The NEW keyed ``file_text`` READ — ``SurrealStore.file_text`` reads back the
+#     exact body + digest the ``file_text_fragment`` writer stored, keyed by the
+#     ``[tier, file_path]`` composite id, over the store's own self-healing
+#     connection. The store-side companion to the P8b store-read engine.
+# ===========================================================================
+
+
+class TestFileTextRead:
+    """``SurrealStore.file_text`` round-trips the stored ``{text, sha512}`` body
+    for ``(tier, file_path)`` — keyed, tier-scoped, ``None`` on an absent pair,
+    reflecting an in-place overwrite — read over the store's own connection."""
+
+    async def test_reads_back_stored_body_and_digest(self, apply_bench: _Bench) -> None:
+        source = APP_SOURCE
+        expected_sha = sha512_hex(source)
+        await apply_bench.store.apply(
+            [apply_bench.store.file_text_fragment(TIER_A, APP_PATH, source, expected_sha)]
+        )
+        row = await apply_bench.store.file_text(TIER_A, APP_PATH)
+        assert row is not None
+        assert row["text"] == source
+        assert row["sha512"] == expected_sha
+        assert set(row) == {"text", "sha512"}  # only the two content columns, no id
+
+    async def test_absent_pair_returns_none(self, apply_bench: _Bench) -> None:
+        # A never-written pair reads back ``None`` — a healthy empty, never a raise.
+        assert await apply_bench.store.file_text(TIER_A, "models/never_indexed.py") is None
+
+    async def test_read_is_tier_scoped(self, apply_bench: _Bench) -> None:
+        # The composite id folds in the tier, so a custom override and the
+        # community original of one path read back as DISTINCT bodies.
+        await apply_bench.store.apply(
+            [apply_bench.store.file_text_fragment(TIER_A, APP_PATH, APP_SOURCE, sha512_hex(APP_SOURCE))]
+        )
+        await apply_bench.store.apply(
+            [
+                apply_bench.store.file_text_fragment(
+                    TIER_B, APP_PATH, APP_SOURCE_V2, sha512_hex(APP_SOURCE_V2)
+                )
+            ]
+        )
+        row_a = await apply_bench.store.file_text(TIER_A, APP_PATH)
+        row_b = await apply_bench.store.file_text(TIER_B, APP_PATH)
+        assert row_a is not None and row_b is not None
+        assert row_a["text"] == APP_SOURCE
+        assert row_b["text"] == APP_SOURCE_V2
+
+    async def test_read_reflects_an_overwrite_in_place(self, apply_bench: _Bench) -> None:
+        # UPSERT semantics: re-writing the same pair overwrites, and the read sees
+        # the NEW body (never a stale first write left behind).
+        await apply_bench.store.apply(
+            [apply_bench.store.file_text_fragment(TIER_A, APP_PATH, APP_SOURCE, sha512_hex(APP_SOURCE))]
+        )
+        await apply_bench.store.apply(
+            [
+                apply_bench.store.file_text_fragment(
+                    TIER_A, APP_PATH, APP_SOURCE_V2, sha512_hex(APP_SOURCE_V2)
+                )
+            ]
+        )
+        row = await apply_bench.store.file_text(TIER_A, APP_PATH)
+        assert row is not None
+        assert row["text"] == APP_SOURCE_V2
+        assert row["sha512"] == sha512_hex(APP_SOURCE_V2)
+
+
+# ===========================================================================
 # 5. Mid-transaction failure → NOTHING applied. Compose the four good fragments
 #    PLUS a deliberately-failing one (an out-of-domain file.state) and confirm
 #    apply raises a typed store error while EVERY surface reads back empty —
