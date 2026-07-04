@@ -72,6 +72,7 @@ EXPECTED_TABLES = frozenset(
         "trace",
         "command",
         "memory",
+        "task",
     }
 )
 
@@ -570,22 +571,26 @@ class TestProbeRoundTrips:
         note = "PurchaseOrder.action_confirm posts the vendor bill, not the picking."
         await run(
             connection,
-            "CREATE type::record('memory', $id) SET note_text=$note_text, refs=$refs, "
-            "kind=$kind, trust=$trust, embedding=$embedding, provenance=$provenance, "
-            "created_at=time::now()",
+            "CREATE type::record('memory', $id) SET note_text=$note_text, labels=$labels, "
+            "kind=$kind, source=$source, embedding=$embedding, created_at=time::now()",
             {
                 "id": "m1",
                 "note_text": note,
-                "refs": [],
+                "labels": [],
                 "kind": "correction",
-                "trust": 0.9,
+                # P7 wire shape: ``trust`` is a two-value enum riding INSIDE the
+                # ``source`` object (the P2 top-level float ``trust`` column was
+                # wrong and has been migrated away), and ``provenance`` is renamed
+                # to ``source``; the obsolete ``refs`` column is folded into
+                # ``labels``.
+                "source": {"kind": "operator", "ref": "chat:abc123", "trust": "authoritative"},
                 "embedding": [0.3] * env.dim,
-                "provenance": {"author": "ejprice", "session": "abc123"},
             },
         )
         row = _one(await run(connection, "SELECT * FROM type::record('memory', 'm1')"))
         assert row["note_text"] == note
         assert row["kind"] == "correction"
+        assert row["source"]["trust"] == "authoritative"
         assert len(row["embedding"]) == env.dim
 
 

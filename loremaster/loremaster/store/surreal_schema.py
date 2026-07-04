@@ -57,6 +57,7 @@ SNAPSHOT_ENTRY_TABLE = "snapshot_entry"
 FINDING_TABLE = "finding"
 TRACE_TABLE = "trace"
 COMMAND_TABLE = "command"
+TASK_TABLE = "task"
 
 # The S13 "Model A" code-graph tables (the astroid-derived code graph, ported
 # from KùzuDB). ``code_node`` holds graph nodes (deterministic composite record
@@ -143,9 +144,70 @@ CHUNK_FILTER_KEYS: tuple[str, ...] = tuple(
 # The chunk column the HNSW vector index is built on (the embedding vector).
 _CHUNK_VECTOR_FIELD = "embedding"
 
-# Default for the audited ``memory.importance`` column (a by-kind default lands
-# in a later phase; a uniform prior for now).
+# Default for the audited ``memory.importance`` column — the SCHEMA-level prior a
+# row written without an explicit importance falls back to. The P7 backend always
+# supplies a by-kind importance (see ``memory.backend.IMPORTANCE_DEFAULTS_BY_KIND``),
+# so this uniform prior only ever backs a hand-written / legacy row.
 _MEMORY_DEFAULT_IMPORTANCE = 0.8
+
+# --- P7 ``memory`` table wire vocabulary (Spectron-derived, snake_case) -------
+#
+# Obsolete P2 memory columns the P7 migration DROPS. All three were REQUIRED
+# (non-``option``) in P2, and a SCHEMAFULL table coerces a MISSING required field
+# to an error (verified live), so a lingering P2 column would make the table
+# reject every P7 backend write that omits it. They are therefore removed rather
+# than left to drift:
+#   * ``trust`` — a P2 *float* (the wrong shape; trust is a two-value enum) now
+#     rides INSIDE the ``source`` object.
+#   * ``provenance`` — the P2 provenance object, renamed to ``source``.
+#   * ``refs`` — the P2 versioned-ref array, folded into the flat ``labels`` list
+#     (a ``lore_ref=<key>[@version]`` label) the backend parses back on recall.
+# Emitted ``REMOVE FIELD IF EXISTS`` so a fresh test DB (no such fields) is a
+# harmless no-op while the live zero-row table migrates cleanly.
+_OBSOLETE_MEMORY_FIELDS: tuple[str, ...] = ("refs", "trust", "provenance")
+
+# The ``memory`` table's fields as ``(name, type_expr, constraint)`` triples — the
+# single source of truth ``_memory_statements`` emits one ``DEFINE FIELD`` per.
+# Every RETAINED P2 column (``note_text``/``kind``/``embedding``/``created_at``/
+# ``valid_until``/``importance``/``expires_at``) keeps its EXACT P2 definition, so
+# ``IF NOT EXISTS`` can never silently drift it; the rest are genuinely NEW,
+# additive columns. Because every column whose MEANING changed vs P2 is REMOVED
+# above (never redefined in place), no field needs ``DEFINE FIELD OVERWRITE`` to
+# escape a stale definition — the removal expresses the change, and ``IF NOT
+# EXISTS`` is correct for both the retained and the new columns.
+_MEMORY_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("note_text", _CHUNK_STRING_TYPE, ""),
+    ("kind", _CHUNK_STRING_TYPE, ""),
+    # All flat labels (including ``lore_ref=`` chunk refs); defaulted so a
+    # label-less write may omit it.
+    ("labels", "array<string>", "DEFAULT []"),
+    # The provenance object (``kind``/``ref``/``trust``) — FLEXIBLE so it
+    # round-trips intact, replacing the P2 ``provenance`` column.
+    ("source", "object FLEXIBLE", ""),
+    ("importance", "float", f"DEFAULT {_MEMORY_DEFAULT_IMPORTANCE}"),
+    ("memory_category", "option<string>", ""),
+    # When the row became live; defaulted so a hand-written probe row need not
+    # compute it. The backend sets it explicitly to the creation instant.
+    ("valid_from", "datetime", "DEFAULT time::now()"),
+    # When the row stopped being live (superseded/invalidated); the recall path
+    # filters on it, and the ``memory_valid_until`` index backs that filter.
+    ("valid_until", "option<datetime>", ""),
+    ("supersedes", "option<string>", ""),
+    ("superseded_by", "option<string>", ""),
+    ("expires_at", "option<datetime>", ""),
+    ("created_at", "datetime", ""),
+    ("embedding", "array<float>", ""),
+)
+
+# The memory column the BM25 FULLTEXT index is built on — the SINGLE source of
+# truth the backend's hybrid BM25 arm imports so its ``@@`` predicate always
+# targets exactly the FULLTEXT-indexed field (mirrors :data:`CHUNK_FULLTEXT_FIELDS`).
+MEMORY_FULLTEXT_FIELDS: tuple[str, ...] = ("note_text",)
+
+# The memory columns the HNSW vector index and the temporal-validity index are
+# built on.
+_MEMORY_VECTOR_FIELD = "embedding"
+_MEMORY_VALID_UNTIL_FIELD = "valid_until"
 
 # The closed status domain a ``command`` row moves through: enqueued
 # (``pending``), successfully applied (``done``), or terminally failed
@@ -155,6 +217,57 @@ _COMMAND_STATUS_PENDING = "pending"
 _COMMAND_STATUS_DONE = "done"
 _COMMAND_STATUS_FAILED = "failed"
 _COMMAND_STATUSES = (_COMMAND_STATUS_PENDING, _COMMAND_STATUS_DONE, _COMMAND_STATUS_FAILED)
+
+# --- P7 ``task`` table (the durable, fleet-visible orchestration ledger) ------
+#
+# The closed six-status vocabulary a ``task`` row moves through — the exact set
+# ``loremaster.tasks`` (the ledger's value objects + state machine) is built
+# from. An out-of-domain status is rejected by the field ASSERT, mirroring how
+# :data:`_COMMAND_STATUSES` guards ``command.status`` and :data:`FILE_STATES`
+# guards ``file.state``. Tasks are NOT searched semantically, so — unlike
+# ``memory`` — the table carries no embedding/HNSW/FULLTEXT column, only a plain
+# index on ``status`` backing the fleet-visible status filter.
+_TASK_STATUS_OPEN = "open"
+_TASK_STATUS_CLAIMED = "claimed"
+_TASK_STATUS_IN_PROGRESS = "in_progress"
+_TASK_STATUS_DONE = "done"
+_TASK_STATUS_BLOCKED = "blocked"
+_TASK_STATUS_WONTFIX = "wontfix"
+_TASK_STATUSES = (
+    _TASK_STATUS_OPEN,
+    _TASK_STATUS_CLAIMED,
+    _TASK_STATUS_IN_PROGRESS,
+    _TASK_STATUS_DONE,
+    _TASK_STATUS_BLOCKED,
+    _TASK_STATUS_WONTFIX,
+)
+
+# The ``ASSERT`` domain clause for ``task.status`` — built once from the closed
+# vocabulary above so the six statuses are named a single time.
+_TASK_STATUS_ALLOWED = ", ".join(f"'{status}'" for status in _TASK_STATUSES)
+
+# The ``task`` table's fields as ``(name, type_expr, constraint)`` triples — the
+# single source of truth :func:`_task_statements` emits one ``DEFINE FIELD`` per,
+# mirroring :data:`_MEMORY_FIELD_SPECS`. ``owner``/``claimed_at``/``superseded_by``
+# are ``option`` (a fresh task is unowned/unclaimed/not-superseded, decoding back
+# to ``None``); ``blocked_by`` defaults to ``[]`` so a dependency-free task may
+# omit it; ``provenance`` is ``FLEXIBLE`` so the free-form who/when audit blob
+# round-trips intact; ``status`` carries the closed-domain ASSERT.
+_TASK_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("subject", _CHUNK_STRING_TYPE, ""),
+    ("description", _CHUNK_STRING_TYPE, ""),
+    ("status", _CHUNK_STRING_TYPE, f"ASSERT $value IN [{_TASK_STATUS_ALLOWED}]"),
+    ("owner", "option<string>", ""),
+    ("claimed_at", "option<datetime>", ""),
+    ("blocked_by", "array<string>", "DEFAULT []"),
+    ("provenance", "object FLEXIBLE", ""),
+    ("superseded_by", "option<string>", ""),
+    ("created_at", "datetime", ""),
+)
+
+# The ``task`` column the plain status index is built on (the fleet-visible
+# ``query_tasks(status=...)`` filter).
+_TASK_STATUS_FIELD = "status"
 
 # ---------------------------------------------------------------------------
 # Code-graph (S13 Model A) field specs — the single source of truth for
@@ -339,29 +452,42 @@ def _file_text_statements() -> list[str]:
     ]
 
 
+def _remove_field(table: str, name: str) -> str:
+    """A ``REMOVE FIELD IF EXISTS`` statement (idempotent; no-op when absent).
+
+    Used by the P7 ``memory`` migration to DROP the obsolete P2 columns
+    (:data:`_OBSOLETE_MEMORY_FIELDS`): a lingering REQUIRED P2 field would make
+    the SCHEMAFULL table reject every P7 write that omits it, and ``OVERWRITE``
+    cannot express a removal.
+    """
+    return f"REMOVE FIELD IF EXISTS {name} ON {table}"
+
+
 def _memory_statements(dim: int, analyzer_name: str) -> list[str]:
-    """The ``memory`` table: fields + HNSW + FULLTEXT + a ``valid_until`` index."""
-    return [
-        _define_table(MEMORY_TABLE),
-        _define_field(MEMORY_TABLE, "note_text", "string"),
-        _define_field(MEMORY_TABLE, "refs", "array<string>"),
-        _define_field(MEMORY_TABLE, "kind", "string"),
-        _define_field(MEMORY_TABLE, "trust", "float"),
-        _define_field(MEMORY_TABLE, "embedding", "array<float>"),
-        _define_field(MEMORY_TABLE, "provenance", "object FLEXIBLE"),
-        _define_field(MEMORY_TABLE, "created_at", "datetime"),
-        # The recall path filters superseded notes on this temporal-validity bound.
-        _define_field(MEMORY_TABLE, "valid_until", "option<datetime>"),
-        # Audited additive columns (Spectron concept-coverage): a uniform
-        # importance prior and a hard expiry, both indexless for now.
-        _define_field(
-            MEMORY_TABLE, "importance", "float", constraint=f"DEFAULT {_MEMORY_DEFAULT_IMPORTANCE}"
-        ),
-        _define_field(MEMORY_TABLE, "expires_at", "option<datetime>"),
-        _hnsw_index(MEMORY_TABLE, "embedding", dim),
-        _fulltext_index(MEMORY_TABLE, "note_text", analyzer_name),
-        _plain_index(MEMORY_TABLE, f"{MEMORY_TABLE}_valid_until", ("valid_until",)),
+    """The ``memory`` table: the P7 wire vocabulary + HNSW + FULLTEXT + a valid_until index.
+
+    Emits, in order: the SCHEMAFULL table; the ``REMOVE FIELD IF EXISTS`` for each
+    obsolete P2 column (:data:`_OBSOLETE_MEMORY_FIELDS`); one ``DEFINE FIELD`` per
+    :data:`_MEMORY_FIELD_SPECS` entry (retained P2 columns unchanged, new columns
+    additive — see that constant for the OVERWRITE-vs-IF-NOT-EXISTS rationale);
+    the HNSW vector index at the configured ``dim``; the BM25 FULLTEXT index on
+    :data:`MEMORY_FULLTEXT_FIELDS`; and the temporal-validity index the recall
+    path's live/superseded filter uses.
+    """
+    statements: list[str] = [_define_table(MEMORY_TABLE)]
+    statements += [_remove_field(MEMORY_TABLE, name) for name in _OBSOLETE_MEMORY_FIELDS]
+    statements += [
+        _define_field(MEMORY_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _MEMORY_FIELD_SPECS
     ]
+    statements.append(_hnsw_index(MEMORY_TABLE, _MEMORY_VECTOR_FIELD, dim))
+    statements += [
+        _fulltext_index(MEMORY_TABLE, field, analyzer_name) for field in MEMORY_FULLTEXT_FIELDS
+    ]
+    statements.append(
+        _plain_index(MEMORY_TABLE, f"{MEMORY_TABLE}_valid_until", (_MEMORY_VALID_UNTIL_FIELD,))
+    )
+    return statements
 
 
 def _trace_statements() -> list[str]:
@@ -460,6 +586,29 @@ def _command_statements() -> list[str]:
     ]
 
 
+def _task_statements() -> list[str]:
+    """The ``task`` table: the six-status wire vocabulary + a plain status index.
+
+    Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
+    :data:`_TASK_FIELD_SPECS` entry (``status`` carrying the closed-domain
+    ASSERT, the ``option`` unowned/unclaimed/not-superseded columns, the
+    ``DEFAULT []`` ``blocked_by`` dependency list, and the ``FLEXIBLE``
+    ``provenance`` audit blob); and the plain index on ``status`` backing the
+    fleet-visible ``query_tasks(status=...)`` filter. UNLIKE ``chunk`` /
+    ``memory`` the table carries no HNSW/FULLTEXT index — a task is coordinated
+    by exact state, never retrieved semantically.
+    """
+    statements: list[str] = [_define_table(TASK_TABLE)]
+    statements += [
+        _define_field(TASK_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _TASK_FIELD_SPECS
+    ]
+    statements.append(
+        _plain_index(TASK_TABLE, f"{TASK_TABLE}_{_TASK_STATUS_FIELD}", (_TASK_STATUS_FIELD,))
+    )
+    return statements
+
+
 def _code_node_statements() -> list[str]:
     """The ``code_node`` table: fields + the bare/qualified/(tier,file) indexes.
 
@@ -554,6 +703,7 @@ def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str
     statements += _snapshot_statements()
     statements += _snapshot_entry_statements()
     statements += _command_statements()
+    statements += _task_statements()
     # ``finding`` still has no field-level probe (P9 scope); it stays a bare
     # SCHEMAFULL placeholder.
     statements += [_define_table(table) for table in _STRUCTURAL_TABLES]
@@ -577,6 +727,55 @@ def generate_manifest_ddl() -> str:
         a single SurrealDB ``query()`` call.
     """
     statements: list[str] = _file_statements() + _meta_statements()
+    return ";\n".join(statements) + ";\n"
+
+
+def generate_memory_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str:
+    """Generate just the ``memory`` table DDL — the P7 memory backend's schema slice.
+
+    Mirrors :func:`generate_manifest_ddl` / :func:`generate_graph_ddl`: a schema
+    SLICE the :class:`~loremaster.memory.local.LocalMemoryBackend` applies on its
+    OWN connection at :meth:`ensure_ready`, independent of the full
+    :func:`generate_ddl`. UNLIKE the manifest / graph slices it DOES need the
+    embedding ``dim`` and the analyzer, because the ``memory`` table carries an
+    HNSW vector index and a BM25 FULLTEXT index. The ``code_ident`` analyzer the
+    FULLTEXT index references is emitted here too, so the slice is self-contained
+    on a fresh per-project database. Every statement is ``IF NOT EXISTS`` /
+    ``REMOVE FIELD IF EXISTS``, so applying it twice — or alongside
+    :func:`generate_ddl`, in either order — is a safe no-op.
+
+    Args:
+        dim: The embedding width, wired into the ``memory`` HNSW ``DIMENSION`` clause.
+        analyzer_name: The code-identifier analyzer name the FULLTEXT index
+            references; defaults to :data:`DEFAULT_ANALYZER_NAME`.
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string ready to hand to a
+        single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
+    """
+    statements: list[str] = [_analyzer_statement(analyzer_name)]
+    statements += _memory_statements(dim, analyzer_name)
+    return ";\n".join(statements) + ";\n"
+
+
+def generate_task_ddl() -> str:
+    """Generate just the ``task`` table DDL — the P7 task ledger's schema slice.
+
+    Mirrors :func:`generate_manifest_ddl` / :func:`generate_graph_ddl`: a schema
+    SLICE the :class:`~loremaster.tasks.TaskLedger` applies on its OWN
+    connection at :meth:`ensure_ready`, independent of the full
+    :func:`generate_ddl`. UNLIKE the ``memory`` slice it needs NEITHER the
+    embedding ``dim`` NOR the analyzer, because the ``task`` table carries no
+    HNSW vector or BM25 FULLTEXT index (tasks are coordinated by exact state,
+    never retrieved semantically). Every statement is ``IF NOT EXISTS``, so
+    applying it twice — or alongside :func:`generate_ddl`, in either order — is
+    a safe no-op.
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string ready to hand to a
+        single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
+    """
+    statements: list[str] = _task_statements()
     return ";\n".join(statements) + ";\n"
 
 
