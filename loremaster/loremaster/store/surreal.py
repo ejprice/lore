@@ -92,10 +92,12 @@ from surrealdb import AsyncSurreal, RecordID
 from loremaster.index.records import Record
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
+    _SERVER_LOG_HINT,
     TXN_STATEMENT_WARN_THRESHOLD,
     SurrealConnectionError,
     SurrealStoreError,
     TxnFragment,
+    _classify_engine_error,
     _SurrealConnection,
     compose,
     execute_transaction,
@@ -469,6 +471,14 @@ class SurrealStore:
         :class:`SurrealStoreError`. Either way it is LOUD, never a silent empty
         result.
 
+        Message hygiene (ledger #31, mirroring :func:`~loremaster.store._txn.
+        execute_transaction`): a domain rejection's raw engine text can echo a
+        bound VALUE back verbatim (an ``ASSERT``/coercion rejection), and that text
+        flows to MCP clients in P8 — so the raised :class:`SurrealStoreError`
+        carries only a CLASSIFIED, generic label
+        (:func:`~loremaster.store._txn._classify_engine_error`) plus a "see the
+        server log" hint; the full engine detail is logged server-side instead.
+
         The ``except`` also catches a raw ``KeyError``: probe-verified live (a
         socket drop with a query in flight), the installed SDK's OWN response
         routing raises ``builtins.KeyError(<request-uuid>)`` straight out of
@@ -491,8 +501,20 @@ class SurrealStore:
                 ) from error
             # A domain/schema rejection of the write — the connection is healthy
             # and must not be thrown away for a fault that is not the transport's.
+            # Message hygiene (ledger #31, mirroring ``execute_transaction``): the
+            # raw engine text can echo a bound VALUE back verbatim (an ASSERT /
+            # coercion rejection), and that text flows to MCP clients in P8 — so the
+            # FULL detail is logged server-side and the RAISED error carries only a
+            # CLASSIFIED, generic label plus a "see the server log" correlation
+            # hint, never the raw engine text itself.
+            error_class = _classify_engine_error(error)
+            logger.error(
+                "store.query.rejected",
+                extra={"url": self._url, "error_class": error_class, "engine_error": str(error)},
+            )
             raise SurrealStoreError(
-                f"SurrealDB query rejected against {self._url!r}: {error}"
+                f"SurrealDB query rejected against {self._url!r} ({error_class}); "
+                f"{_SERVER_LOG_HINT}"
             ) from error
 
     # -- writes -------------------------------------------------------------

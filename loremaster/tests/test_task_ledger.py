@@ -53,7 +53,9 @@ Expected until the module lands: collection ERROR in THIS FILE —
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -68,6 +70,11 @@ from _surreal_harness import (
     unique_database,
 )
 from _task_fakes import FakeTaskDatabase, FakeTaskLedger
+from loremaster.store._txn import (
+    SurrealConnectionError,
+    SurrealStoreError,
+    _SurrealConnection,
+)
 from loremaster.tasks import (
     ClaimResult,
     IllegalTransitionError,
@@ -76,6 +83,7 @@ from loremaster.tasks import (
     TaskLedgerError,
     TaskNotFoundError,
 )
+from surrealdb.errors import ErrorKind, ServerError
 
 # --- the domain's status vocabulary (the convention this contract decides) ----
 # Named constants, never bare literals in assertions. A later schema DDL phase
@@ -1356,3 +1364,115 @@ class TestProvenanceAppendOnly:
                     f"iteration {iteration}: the WINNING supersede's event was lost from "
                     f"provenance — persisted={persisted.provenance!r}"
                 )
+
+
+# ===========================================================================
+# P8a #7: the SINGLE-statement ``_query`` seam's classified-error posture.
+#
+# ``TaskLedger._query`` splits a caught error into transport (self-heal +
+# ``SurrealConnectionError``) vs domain (keep the connection + ``SurrealStoreError``),
+# mirroring ``SurrealStore._query``. What it did NOT do was launder the DOMAIN
+# branch's message: it interpolated the raw ``{error}`` straight into the raised
+# ``SurrealStoreError``. A domain ``ASSERT``/coercion rejection's engine text can
+# echo a bound VALUE back verbatim (the ledger #31 leak the multi-statement
+# ``execute_transaction`` path already closes), and that text flows to MCP clients
+# in P8. These pins fix the seam at BOTH branches, deterministically and without a
+# live server: a fake connection raises a scripted ``ServerError`` (domain- or
+# transport-``kind``), the same fault-injection shape ``test_surreal_store.py``'s
+# ``TestQueryMessageHygiene`` uses.
+# ===========================================================================
+
+# A synthetic ASSERT rejection carrying a value that must NEVER reach the raised
+# message (mirrors ``test_surreal_store.py``'s ``_SENSITIVE_ENGINE_TEXT``).
+_TASK_SENSITIVE_MARKER = "TOP-SECRET-TASK-BOUND-VALUE-7c1f9a"
+_TASK_SENSITIVE_ENGINE_TEXT = (
+    f"Found '{_TASK_SENSITIVE_MARKER}' for field `status`, with record "
+    f"`task:abc123`, but expected the value to fulfil the following "
+    f"assertion: $value INSIDE ['open', 'claimed']"
+)
+# The transport-``kind`` rejection the SDK raises when a mid-life socket drop left
+# the reconnected session unauthenticated (``NotAllowed``) — a transport fault,
+# never a rejection of the write we sent.
+_TASK_TRANSPORT_ENGINE_TEXT = "Anonymous access to the task query is not allowed"
+
+
+@dataclass
+class _RejectingConnection:
+    """A fake SDK connection whose ``query`` raises a scripted error — the seam
+    fault-injector for ``_query``'s classified-error posture. ``close`` is a
+    tolerant no-op so a ledger holding this handle still tears down cleanly.
+    """
+
+    error: BaseException
+
+    async def query(self, statement: str, params: dict[str, Any]) -> Any:
+        raise self.error
+
+    async def close(self) -> None:
+        return None
+
+
+class TestQueryClassifiedErrorPosture:
+    """The single-statement ``_query`` seam classifies like ``execute_transaction``
+    (ledger #31): a DOMAIN rejection keeps the healthy connection and raises a
+    ``SurrealStoreError`` naming a generic engine CLASS + a server-log hint, NEVER
+    the raw engine text; a TRANSPORT fault self-heals (drops the handle) and raises
+    ``SurrealConnectionError``. Real-only seam test — built inline with an injected
+    fake connection (the fake ledger exposes no ``_query`` seam to fault-inject),
+    mirroring ``test_surreal_store.py``'s ``TestQueryMessageHygiene``.
+    """
+
+    @staticmethod
+    def _ledger_rejecting_with(error: BaseException) -> TaskLedger:
+        ledger = TaskLedger(
+            url="ws://127.0.0.1:19555/rpc",  # never dialed — the fake handle short-circuits
+            namespace="ns",
+            database="db",
+            user="root",
+            password="root",
+        )
+        ledger._connection = cast("_SurrealConnection", _RejectingConnection(error=error))
+        return ledger
+
+    async def test_domain_rejection_message_never_echoes_the_raw_engine_text(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ledger = self._ledger_rejecting_with(
+            ServerError(ErrorKind.INTERNAL, _TASK_SENSITIVE_ENGINE_TEXT)
+        )
+        connection_before = ledger._connection
+        with caplog.at_level(logging.ERROR, logger="loremaster.tasks"):
+            with pytest.raises(SurrealStoreError) as exc_info:
+                await ledger._query("UPDATE task SET status = $s", {"s": "poison"})
+
+        message = str(exc_info.value)
+        # A domain rejection is a STORE error, not a connection error, and the
+        # healthy connection is never thrown away.
+        assert type(exc_info.value) is SurrealStoreError
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        assert ledger._connection is connection_before
+        # The raw engine text / the value it carries NEVER reaches the message.
+        assert _TASK_SENSITIVE_ENGINE_TEXT not in message
+        assert _TASK_SENSITIVE_MARKER not in message
+        # It DOES carry a classified label + the server-log correlation hint.
+        assert "assert violation" in message.lower()
+        assert "server log" in message.lower()
+        # The FULL engine detail is recoverable server-side (logged before raising).
+        error_records = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert error_records, "the full engine detail must be logged server-side"
+        logged = " ".join(
+            str(value)
+            for value in (error_records[0].getMessage(), getattr(error_records[0], "engine_error", ""))
+        )
+        assert _TASK_SENSITIVE_MARKER in logged
+
+    async def test_transport_failure_drops_the_handle_and_raises_connection_error(self) -> None:
+        # The transport branch self-heals: a ``NotAllowed`` (mid-life socket drop
+        # reconnected unauthenticated) drops the cached handle so the NEXT call
+        # reconnects, and surfaces the connection type — never a raw SDK exception.
+        ledger = self._ledger_rejecting_with(
+            ServerError(ErrorKind.NOT_ALLOWED, _TASK_TRANSPORT_ENGINE_TEXT)
+        )
+        with pytest.raises(SurrealConnectionError):
+            await ledger._query("SELECT * FROM task", {})
+        assert ledger._connection is None  # the dead handle was dropped (self-heal)

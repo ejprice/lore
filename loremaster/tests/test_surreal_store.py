@@ -88,6 +88,7 @@ from loremaster.symbols import _SCROLL_LIMIT  # the real scroll caller's read ca
 from lorescribe.models import Chunk
 from pydantic import ValidationError
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
+from surrealdb.errors import ErrorKind, ServerError
 
 # A factory (yielded by the ``two_stores`` fixture) that builds one more ready
 # store on the SAME database — a second live connection for the isolation test.
@@ -2386,3 +2387,106 @@ class TestRecordTraceErrorPosture:
         # And it STAYS healed — a further write also lands (handle really replaced).
         await _record()
         assert len(await _recorded_traces(store)) >= 1
+
+
+# ===========================================================================
+# P8a #7: the SINGLE-statement ``_query`` seam's message hygiene.
+#
+# ``SurrealStore._query`` already SPLITS a caught error into transport (self-heal
+# + ``SurrealConnectionError``) vs domain (keep the connection +
+# ``SurrealStoreError``) — see ``TestDomainRejectionErrorType`` /
+# ``TestMidLifeConnectionRecovery``. What it did NOT do was launder the DOMAIN
+# branch's message: it interpolated the raw ``{error}`` straight into the raised
+# ``SurrealStoreError``. A domain ``ASSERT``/coercion rejection's engine text can
+# echo a bound VALUE back verbatim (the exact ledger #31 leak the MULTI-statement
+# ``execute_transaction`` path already closes — see ``TestTxnRollbackMessageHygiene``),
+# and that text flows to MCP clients in P8. This pins the SAME classified posture
+# at the single-statement seam: raw text logged server-side, a CLASSIFIED, generic
+# label + a "see the server log" hint raised, never the raw engine text.
+#
+# Deterministic and live-server-free: a fake connection raises a DOMAIN-kind
+# ``ServerError`` carrying the poison text — mirroring ``TestTxnRollbackMessageHygiene``'s
+# scripted-fake approach rather than depending on a real engine rejection.
+# ===========================================================================
+
+
+@dataclass
+class _RejectingConnection:
+    """A fake SDK connection whose ``query`` raises a scripted error — the seam
+    fault-injector for ``_query``'s classified-error posture.
+
+    A DOMAIN-kind ``ServerError`` (a ``kind`` outside ``_CONNECTION_ERROR_KINDS``)
+    drives the message-hygiene branch under test; ``close`` is a tolerant no-op so
+    a store holding this handle still tears down cleanly.
+    """
+
+    error: BaseException
+
+    async def query(self, statement: str, params: dict[str, Any]) -> Any:
+        raise self.error
+
+    async def close(self) -> None:
+        return None
+
+
+class TestQueryMessageHygiene:
+    """The single-statement ``_query`` domain branch classifies like
+    ``execute_transaction`` (ledger #31): the RAISED ``SurrealStoreError`` names a
+    generic engine CLASS + a server-log hint, NEVER the raw engine text (which can
+    echo a bound value); the full detail is logged server-side. Real-only seam
+    test — built inline with an injected fake connection (the ``store`` fixture's
+    real engine can't be made to echo a KNOWN poison value on demand), mirroring
+    ``TestTxnRollbackMessageHygiene``.
+    """
+
+    @staticmethod
+    def _store_rejecting_with(error: BaseException) -> SurrealStore:
+        store = SurrealStore(
+            url=_DEAD_URL,
+            namespace="ns",
+            database="db",
+            dim=PRODUCTION_DIM,
+            user="root",
+            password="root",
+        )
+        store._connection = cast("_SurrealConnection", _RejectingConnection(error=error))
+        return store
+
+    async def test_domain_rejection_message_never_echoes_the_raw_engine_text(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        store = self._store_rejecting_with(ServerError(ErrorKind.INTERNAL, _SENSITIVE_ENGINE_TEXT))
+        connection_before = store._connection
+        with caplog.at_level(logging.ERROR, logger="loremaster.store.surreal"):
+            with pytest.raises(SurrealStoreError) as exc_info:
+                await store._query("UPDATE chunk SET name = $name", {"name": "poison"})
+
+        message = str(exc_info.value)
+        # A domain rejection is a STORE error, not a connection error, and never
+        # tears down the healthy connection (mirrors TestDomainRejectionErrorType).
+        assert type(exc_info.value) is SurrealStoreError
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        assert store._connection is connection_before
+        # The raw engine text / the value it carries NEVER reaches the message.
+        assert _SENSITIVE_ENGINE_TEXT not in message
+        assert _SENSITIVE_MARKER not in message
+        # It DOES carry a classified label + the server-log correlation hint.
+        assert "assert violation" in message.lower()
+        assert "server log" in message.lower()
+        # The FULL engine detail is recoverable server-side (logged before raising).
+        error_records = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert error_records, "the full engine detail must be logged server-side"
+        logged = " ".join(
+            str(value)
+            for value in (error_records[0].getMessage(), getattr(error_records[0], "engine_error", ""))
+        )
+        assert _SENSITIVE_MARKER in logged
+
+    async def test_field_coercion_rejection_is_classified_distinctly(self) -> None:
+        store = self._store_rejecting_with(ServerError(ErrorKind.INTERNAL, _COERCION_ENGINE_TEXT))
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await store._query("UPDATE chunk SET sub_ordinal = $v", {"v": "not-an-int"})
+
+        message = str(exc_info.value)
+        assert _COERCION_ENGINE_TEXT not in message
+        assert "field coercion" in message.lower()
