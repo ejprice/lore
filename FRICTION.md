@@ -20,6 +20,16 @@ consumed-by-<phase or commit> / superseded).
 
 ## Open
 
+- **2026-07-04 · hygiene-7b (P8a wave 2b) · lore_tests_for · zero_hits/oversized** —
+  asked for the covering tests of graph_surreal.py / index/surreal_manifest.py /
+  index/snapshots.py while adding posture seam tests: returned empty for some
+  inputs and an oversized undifferentiated dump for others (same
+  file-vs-symbol input-shape family as the 2026-07-03 tests_for entry and the
+  P7 bare-name fix — the file-path arm remains unreliable). Workaround: grep
+  for the test files by import. **Feeds:** P8d input-resolution family — the
+  file-path arm needs the same answers_to bridge the symbol arm got, or an
+  explicit teaching miss.
+
 - **2026-07-04 · hygiene-7 (P8a wave 2) · lore_get_symbol · zero_hits
   (stale on recently-touched file)** — `lore_get_symbol('loremaster.tasks._query')`
   returned not-found for a symbol that exists (tasks.py:430, grep-confirmed);
