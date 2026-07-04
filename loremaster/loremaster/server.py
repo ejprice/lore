@@ -71,6 +71,7 @@ from loremaster.extension import (
     FieldIndexSpec,
     ToolSpec,
 )
+from loremaster.findings import DEFAULT_KIND as _DEFAULT_FINDING_KIND
 
 # The consumer-visible tool RETURN models, imported at RUNTIME (not just under
 # TYPE_CHECKING): each built-in tool wrapper is annotated with its real model
@@ -116,11 +117,14 @@ from loremaster.memory.backend import (
 from loremaster.read_file import FileSpan
 from loremaster.search import DetailSelector, SearchResult
 from loremaster.store.candidate import Candidate
-from loremaster.symbols import ResolvedSymbol, VerifyResult
+from loremaster.store_read import StoreFileSpan
+from loremaster.symbols import VERIFY_REBUILD_CAVEAT, ResolvedSymbol, VerifyResult
 
 if TYPE_CHECKING:
     from loresigil.base import Embedder
 
+    from loremaster.diff import DiffEngine, SnapshotSummary
+    from loremaster.findings import ChainHead, Finding, FindingLedger
     from loremaster.graph_surreal import SurrealCodeGraph
     from loremaster.index.indexer import Indexer
     from loremaster.index.reconcile import ReconcileEngine
@@ -133,6 +137,7 @@ if TYPE_CHECKING:
     from loremaster.read_file import ReadFileTool
     from loremaster.search import SearchPipeline
     from loremaster.store.surreal import SurrealStore
+    from loremaster.store_read import StoreReadTool
     from loremaster.symbols import SymbolTool, VerifyTool
     from loremaster.tasks import ClaimResult, Task, TaskLedger
 
@@ -817,6 +822,17 @@ TOKEN_BUDGET_CALIBRATION = 1.78
 # honest "nothing matched" rather than a bare empty string.
 _NO_MEMORIES_RECALLED = "(no project memories matched this query)"
 _NO_TASKS_MATCHED = "(no tasks matched this query)"
+# P8b wire-up: the same honest "nothing matched" convention for the lore_diff
+# snapshot listing and the lore_findings query.
+_NO_SNAPSHOTS_FOUND = "(no snapshots recorded yet)"
+_NO_FINDINGS_MATCHED = "(no findings matched this query)"
+
+# lore_diff's default snapshot-listing page size (the DiffEngine clamps out-of-range
+# values to its own [1, 500] bound, so this is a best-effort default, not a hard cap).
+_DEFAULT_DIFF_LIST_LIMIT = 20
+# lore_findings' default query page size — the head of the number-ordered log
+# (mirrors the ledger's own ``DEFAULT_QUERY_LIMIT``).
+_DEFAULT_FINDINGS_QUERY_LIMIT = 100
 # P7 recall render — the visible marker on a recalled ref whose chunk no longer
 # exists (a refactor deleted it), so the agent re-verifies rather than trusting a
 # stale pointer. Contains "drifted" so a case-insensitive scan finds it.
@@ -846,6 +862,58 @@ def _require_arg[REQUIRED_ARG](value: REQUIRED_ARG | None, name: str) -> REQUIRE
     """
     if value is None:
         raise ValueError(f"the {name!r} argument is required for this task action")
+    return value
+
+
+# The seven finding-ledger actions ``lore_findings`` dispatches on (report + the
+# two read verbs + the four state-machine edges), mirroring ``_TASK_ACTIONS``.
+_FINDING_ACTION_REPORT = "report"
+_FINDING_ACTION_QUERY = "query"
+_FINDING_ACTION_GET = "get"
+_FINDING_ACTION_CHAIN_HEAD = "chain_head"
+_FINDING_ACTION_ACKNOWLEDGE = "acknowledge"
+_FINDING_ACTION_RESOLVE = "resolve"
+_FINDING_ACTION_WONTFIX = "wontfix"
+_FINDING_ACTIONS = (
+    _FINDING_ACTION_REPORT,
+    _FINDING_ACTION_QUERY,
+    _FINDING_ACTION_GET,
+    _FINDING_ACTION_CHAIN_HEAD,
+    _FINDING_ACTION_ACKNOWLEDGE,
+    _FINDING_ACTION_RESOLVE,
+    _FINDING_ACTION_WONTFIX,
+)
+
+
+def _require_finding_arg[REQUIRED_ARG](value: REQUIRED_ARG | None, name: str) -> REQUIRED_ARG:
+    """Return ``value`` when present and NON-EMPTY; raise a caller-error naming it.
+
+    The finding-tool counterpart of :func:`_require_arg`, stricter on strings: a
+    ``report`` needs a subject / body / area / category / created_by that are not
+    merely present but non-blank (an empty ``subject`` is a caller error, never a
+    silently-stored empty field).
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError(
+            f"the {name!r} argument is required and must be non-empty for this findings action"
+        )
+    return value
+
+
+def _require_finding_ref(value: int | str | None) -> int | str:
+    """Narrow a finding ``id_or_number`` to its non-empty ``int | str`` form.
+
+    The address a ``get`` / ``chain_head`` / status-edge action needs: a stable
+    ``number`` (an ``int``) OR an opaque ``id`` (a ``str``). Rejected when ``None``
+    or a blank string — a caller error naming the argument, never a lookup on an
+    empty id. Kept CONCRETE (not the generic :func:`_require_finding_arg`) so the
+    ``int | str`` the ledger expects is preserved through the type checker.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError(
+            "the 'id_or_number' argument is required and must be a non-empty finding "
+            "number or id for this findings action"
+        )
     return value
 
 
@@ -948,6 +1016,11 @@ _INSTRUCTIONS = (
     "- lore_read_file(tier, path, ...): the EXACT on-disk text of a file span with a "
     "[SOURCE:...] header. Use after a lore_search_code / lore_get_symbol hit to read "
     "surrounding context.\n"
+    "- lore_read(tier, path, ...): the same [SOURCE:...]-cited span but served from the "
+    "INDEX (the exact bytes lore embedded), hash-verified and FRESHNESS-flagged — its "
+    "header carries a visible STALE notice when the index is behind the file on disk. "
+    "Prefer lore_read_file for the live text; reach for lore_read to see precisely what "
+    "was indexed (and whether it has drifted).\n"
     "- lore_what_imports(target): the DIRECT importers of a module (one reverse import "
     "edge).\n"
     "- lore_blast_radius(target, ...): the TRANSITIVE reverse-dependency closure "
@@ -976,6 +1049,16 @@ _INSTRUCTIONS = (
     "counts) read straight from the manifest — zero embeds, cheap.\n"
     "- lore_reindex(tier=None): force a whole-tier reconcile sweep (or all tiers). The "
     "heavy 'make everything current now' hammer — not a per-file wait.\n"
+    "- lore_diff(since=None, until=None): what changed between two index SNAPSHOTS. Call it "
+    "with no 'since' FIRST to list the recorded snapshot ids, then pass a 'since' (and "
+    "optionally 'until'; omit 'until' to diff against the live 'now') to see the "
+    "added/removed/modified files + per-function chunk deltas. The view names its 'legacy' "
+    "(reduced-precision) and 'in-flight' (mid-reindex, excluded) markers — expect them.\n"
+    "- lore_findings(action, ...): the durable, fleet-visible FINDING ledger (friction / "
+    "capability gaps / bugs), dispatched on 'action' like lore_tasks: 'report' a finding "
+    "(subject/body/area/category/created_by; kind defaults 'friction'), 'query' by "
+    "status/kind/area, 'get'/'chain_head' one, or drive its review state machine with "
+    "'acknowledge'/'resolve'/'wontfix' (by id_or_number + actor). Renders summarised rows.\n"
     "- lore_save_memory(text, ...) / lore_recall_memory(query, ...): the project-memory "
     "store (see MEMORY below).\n"
     "\n"
@@ -1152,6 +1235,9 @@ class AppContext:
         read_file_tool: ReadFileTool,
         symbol_tool: SymbolTool,
         verify_tool: VerifyTool,
+        store_read_tool: StoreReadTool,
+        diff_engine: DiffEngine,
+        finding_ledger: FindingLedger,
         memory_backend: MemoryBackend,
         task_ledger: TaskLedger,
     ) -> None:
@@ -1171,11 +1257,21 @@ class AppContext:
         self._read_file_tool = read_file_tool
         self._symbol_tool = symbol_tool
         self._verify_tool = verify_tool
+        # P8b wire-up: the store-backed span reader (lore_read) and the snapshot
+        # diff engine (lore_diff). ``store_read_tool`` is a pure tool over the
+        # store + manifest (no connection of its own); ``diff_engine`` owns its OWN
+        # SurrealDB connection (like ``_snapshot_stamper``), closed in ``aclose``.
+        self._store_read_tool = store_read_tool
+        self._diff_engine = diff_engine
         # P7 cutover — plain, settable public attributes (like ``search_pipeline``):
         # the SurrealDB memory backend the memory tools dispatch through, and the
         # durable fleet task ledger the two task tools ride.
         self.memory_backend = memory_backend
         self.task_ledger = task_ledger
+        # P8b wire-up: the durable, fleet-visible finding ledger the lore_findings
+        # tool rides — the second ledger alongside ``task_ledger`` (same posture:
+        # a settable public attribute owning its OWN SurrealDB connection).
+        self.finding_ledger = finding_ledger
         # The parent extension context (per-extension namespaced state lives here),
         # set when the lifespan ran the startup hooks, so shutdown reuses it.
         self._extension_ctx: ExtensionContext | None = None
@@ -1264,9 +1360,255 @@ class AppContext:
         is no not-found error to route through the rebuilding gate. A downed store
         still surfaces LOUDLY: ``SurrealConnectionError`` propagates unchanged, so
         an outage can never masquerade as a ``not_found`` verdict.
+
+        REBUILD CAVEAT (P8b, operator-dispositioned serve-and-say-so): a
+        ``not_found`` DURING an active schema rebuild may be a TRANSIENT false
+        negative (the symbol not-yet-re-embedded). Unlike the six corpus read tools
+        — which RAISE a rebuilding error so the agent retries — verify still ANSWERS
+        ``not_found`` (that is its whole job) but stamps the
+        :data:`~loremaster.symbols.VERIFY_REBUILD_CAVEAT` line onto the result (via
+        ``model_copy``) so the caller knows the absence may be transient. A
+        ``confirmed`` / ``mismatch`` verdict resolved a real row, so it is
+        trustworthy mid-rebuild and NEVER carries the caveat. Reads the SAME rebuild
+        signal (:meth:`_rebuild_notice`) the sibling read paths gate on.
         """
-        return await self._verify_tool.verify(
+        result = await self._verify_tool.verify(
             qualified_name, expected_file_path, expected_signature_fragment
+        )
+        if result.status == "not_found":
+            notice = await self._rebuild_notice()
+            if notice is not None:
+                return result.model_copy(
+                    update={"rebuilding_caveat": f"{VERIFY_REBUILD_CAVEAT} ({notice})"}
+                )
+        return result
+
+    async def read(
+        self,
+        tier: str,
+        path: str,
+        line_start: int | None = None,
+        line_end: int | None = None,
+    ) -> StoreFileSpan:
+        """Read a span straight from the unified store — the hash-verified read twin.
+
+        The store-backed sibling of :meth:`read_file`: it serves the EXACT bytes lore
+        INDEXED (the ``file_text`` row) rather than the live filesystem, hash-verified
+        against their stored digest and flagged ``stale`` when the index is behind
+        disk. ``tier`` is VALIDATED FIRST via :meth:`_validate_tier` — the audit found
+        :class:`~loremaster.store_read.StoreReadTool` alone reports an unknown tier as
+        a bare not-found, so the wiring gives it the sibling tools' unknown-tier error
+        NAMING the configured tiers (a correctable typo, not a silent miss). A
+        not-found DURING a rebuild is routed through :meth:`_rebuilding_error_or`
+        (mirroring :meth:`read_file`), so a not-yet-re-embedded body reads as a
+        retryable rebuilding signal, not a genuine absence.
+
+        Args:
+            tier: The source tier to read from (validated against the configured tiers).
+            path: The tier-relative file path.
+            line_start: First line (1-based, inclusive); ``None`` ⇒ 1.
+            line_end: Last line (1-based, inclusive); ``None`` ⇒ EOF.
+
+        Returns:
+            The resolved :class:`~loremaster.store_read.StoreFileSpan` (its ``header``
+            carries a visible STALE notice when the served bytes are behind disk).
+
+        Raises:
+            ReindexTierError: ``tier`` is not a configured tier (names the valid ones).
+            StoreReadError: A not-found / containment / integrity / out-of-range
+                failure — surfaced as a tool error, never a raw traceback (a
+                not-found mid-rebuild is re-cast as a retryable rebuilding error).
+            SurrealConnectionError: The store or manifest connection is down.
+        """
+        from loremaster.store_read import StoreReadError
+
+        self._validate_tier(tier)
+        try:
+            return await self._store_read_tool.read(tier, path, line_start, line_end)
+        except StoreReadError as exc:
+            # A not-found span DURING a rebuild may be a not-yet-re-embedded body —
+            # raise the rebuilding error (so the agent retries) rather than let a
+            # bare not-found mislead it. When idle, the original error is re-raised.
+            raise await self._rebuilding_error_or(exc) from exc
+
+    async def diff(
+        self,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = _DEFAULT_DIFF_LIST_LIMIT,
+    ) -> str:
+        """List snapshots (no ``since``) or diff two generations, RENDERED summarised.
+
+        A thin dispatcher over the :class:`~loremaster.diff.DiffEngine`:
+
+        * ``since`` omitted ⇒ ``list_snapshots(limit)`` rendered as a summarised
+          listing (never a raw store dump), so a caller learns the real snapshot ids
+          to diff between.
+        * ``since`` given ⇒ ``diff(since, until)`` rendered (``until`` omitted = the
+          live "now" state). The rendered view names the legacy / in-flight markers.
+
+        The engine's typed errors (:class:`~loremaster.diff.SnapshotNotFoundError`
+        for a malformed/unknown id) and infrastructure faults
+        (:class:`~loremaster.store.surreal.SurrealConnectionError`) surface unchanged.
+        """
+        if since is None:
+            summaries = await self._diff_engine.list_snapshots(limit)
+            return self._render_snapshot_rows(summaries)
+        result = await self._diff_engine.diff(since, until)
+        return result.render()
+
+    @staticmethod
+    def _render_snapshot_rows(summaries: list[SnapshotSummary]) -> str:
+        """Render snapshot summaries as a compact digest (id/created/counts/git).
+
+        Never a raw SurrealDB row — just the headline facts a caller needs to pick a
+        ``since``/``until`` id: the exact snapshot id, its creation time, the file /
+        chunk totals, and the git ref/branch when the codebase is a git checkout.
+        """
+        if not summaries:
+            return _NO_SNAPSHOTS_FOUND
+        rows: list[str] = []
+        for summary in summaries:
+            git = (
+                f", {summary.git_branch or '?'}@{summary.git_ref[:12]}"
+                if summary.git_ref
+                else ""
+            )
+            rows.append(
+                f"- {summary.id} (created {summary.created_at}, "
+                f"{summary.files_total} files / {summary.chunks_total} chunks{git})"
+            )
+        return "\n".join(rows)
+
+    async def findings(
+        self,
+        *,
+        action: str,
+        id_or_number: int | str | None = None,
+        subject: str | None = None,
+        body: str | None = None,
+        area: str | None = None,
+        category: str | None = None,
+        created_by: str | None = None,
+        kind: str | None = None,
+        actor: str | None = None,
+        note: str | None = None,
+        status: str | None = None,
+        limit: int = _DEFAULT_FINDINGS_QUERY_LIMIT,
+        supersedes: int | str | None = None,
+    ) -> str:
+        """Dispatch a finding-ledger action, rendering SUMMARISED results as a string.
+
+        A thin dispatcher over the durable :class:`~loremaster.findings.FindingLedger`
+        (dispatch style mirrors :meth:`tasks`), over the seven actions:
+
+        * ``report`` — file a finding (``subject`` / ``area`` / ``category`` /
+          ``created_by`` required and NON-EMPTY; ``body`` OPTIONAL — an omitted or
+          ``None`` body reports as ``""``, matching the ledger's documented
+          plain-string domain that allows a subject-only quick capture; ``kind``
+          defaults ``"friction"``; optional ``supersedes``). Renders the new
+          finding's ``#number`` + id.
+        * ``query`` — browse by ``status`` / ``kind`` / ``area`` / ``limit`` filters.
+        * ``get`` / ``chain_head`` — one finding by ``id_or_number`` (chain_head follows
+          the supersedes chain forward to the newest record).
+        * ``acknowledge`` / ``resolve`` / ``wontfix`` — drive a legal status edge by
+          ``id_or_number`` + ``actor`` (+ optional ``note`` on the terminal edges).
+
+        The ledger's typed errors (:class:`~loremaster.findings.FindingNotFoundError`
+        / :class:`~loremaster.findings.IllegalTransitionError` /
+        :class:`~loremaster.findings.FindingChainCycleError`) surface unchanged.
+        """
+        if action == _FINDING_ACTION_REPORT:
+            report = await self.finding_ledger.report(
+                _require_finding_arg(subject, "subject"),
+                # body is OPTIONAL (audit-waveb-1 finding #1): the schema + ledger
+                # deliberately allow an empty body (a subject-only finding is a
+                # valid quick capture), so the MCP boundary must match that domain
+                # rather than be stricter than it — an omitted/None body reports
+                # as "", never rejected.
+                body if body is not None else "",
+                kind=kind or _DEFAULT_FINDING_KIND,
+                area=_require_finding_arg(area, "area"),
+                category=_require_finding_arg(category, "category"),
+                created_by=_require_finding_arg(created_by, "created_by"),
+                supersedes=supersedes,
+            )
+            return f"reported finding #{report.number} (id {report.id}, status open)"
+        if action == _FINDING_ACTION_QUERY:
+            rows = await self.finding_ledger.query(
+                status=status, kind=kind, area=area, limit=limit
+            )
+            return self._render_finding_rows(rows)
+        if action == _FINDING_ACTION_GET:
+            finding = await self.finding_ledger.get(_require_finding_ref(id_or_number))
+            return self._render_finding_rows([finding])
+        if action == _FINDING_ACTION_CHAIN_HEAD:
+            head = await self.finding_ledger.chain_head(_require_finding_ref(id_or_number))
+            return self._render_chain_head(head)
+        if action == _FINDING_ACTION_ACKNOWLEDGE:
+            acked = await self.finding_ledger.acknowledge(
+                _require_finding_ref(id_or_number),
+                _require_finding_arg(actor, "actor"),
+            )
+            return self._render_finding_transition(acked, actor)
+        if action == _FINDING_ACTION_RESOLVE:
+            resolved = await self.finding_ledger.resolve(
+                _require_finding_ref(id_or_number),
+                _require_finding_arg(actor, "actor"),
+                note,
+            )
+            return self._render_finding_transition(resolved, actor)
+        if action == _FINDING_ACTION_WONTFIX:
+            closed = await self.finding_ledger.wontfix(
+                _require_finding_ref(id_or_number),
+                _require_finding_arg(actor, "actor"),
+                note,
+            )
+            return self._render_finding_transition(closed, actor)
+        raise ValueError(
+            f"unknown findings action {action!r}; valid actions are {list(_FINDING_ACTIONS)}"
+        )
+
+    @staticmethod
+    def _render_finding_transition(finding: Finding, actor: str | None) -> str:
+        """Render a finding status transition (names the number, new status, actor)."""
+        return f"finding #{finding.number} transitioned to {finding.status} by {actor}"
+
+    @classmethod
+    def _render_chain_head(cls, head: ChainHead) -> str:
+        """Render a supersedes-chain head, SURFACING a fork rather than hiding it.
+
+        The concurrent hardening builder made :meth:`~loremaster.findings.FindingLedger.
+        chain_head` fork-aware — it returns the head of the lowest-numbered branch
+        plus the sibling successors the deterministic walk did NOT follow. Rendering
+        only the head would silently drop that signal, so a forked chain appends a
+        line naming the other branches' entry numbers (call chain_head on each to
+        reach its own head).
+        """
+        rendered = cls._render_finding_rows([head.finding])
+        if head.forked:
+            others = ", ".join(f"#{number}" for number in head.fork_successor_numbers)
+            rendered += (
+                f"\n(chain FORKED — this is the head of the lowest-numbered branch; "
+                f"other branches start at {others} — call chain_head on each to reach its head)"
+            )
+        return rendered
+
+    @staticmethod
+    def _render_finding_rows(findings: list[Finding]) -> str:
+        """Render finding rows as a summarised digest (never a raw SurrealDB row).
+
+        Mirrors :meth:`_render_task_rows`: the opaque id carries no ``finding:``
+        record prefix and no ``RecordID`` leaks — just the fleet-visible fields
+        (number / status / subject / kind / area / category / author).
+        """
+        if not findings:
+            return _NO_FINDINGS_MATCHED
+        return "\n".join(
+            f"- [#{finding.number} {finding.status}] {finding.subject} "
+            f"(id {finding.id}, kind {finding.kind}, area {finding.area}, "
+            f"category {finding.category}, by {finding.created_by})"
+            for finding in findings
         )
 
     async def save_memory(
@@ -1875,13 +2217,19 @@ class AppContext:
         # The stamper owns its OWN connection — close it too, or it outlives
         # the server as a leaked socket (readied last, closed first).
         await self._snapshot_stamper.close()
+        # P8b wire-up: the diff engine owns its OWN connection (like the stamper) —
+        # close it too. The store-read tool holds no connection of its own (it rides
+        # the store + manifest, closed below), so it needs no explicit close.
+        await self._diff_engine.close()
         await self.manifest.close()
         await self.code_graph.close()
         await self.write_store.close()
         # The P7 memory backend + task ledger each own a SurrealDB connection —
-        # close them too, or they outlive the server as leaked sockets.
+        # close them too, or they outlive the server as leaked sockets. The P8b
+        # finding ledger is the same (its own connection alongside the task ledger).
         await self.memory_backend.close()
         await self.task_ledger.close()
+        await self.finding_ledger.close()
 
 
 # The ``in_progress`` rebuild-status state value the read-tools' rebuilding-notice
@@ -2162,6 +2510,8 @@ async def build_app_context(
         Exception: Re-raises a failing extension ``on_startup`` (after unwinding).
     """
     from loremaster.config import resolve_secret
+    from loremaster.diff import DiffEngine
+    from loremaster.findings import FindingLedger
     from loremaster.graph_surreal import SurrealCodeGraph
     from loremaster.index.indexer import Indexer, graph_roots
     from loremaster.index.reconcile import ReconcileEngine
@@ -2175,6 +2525,7 @@ async def build_app_context(
     from loremaster.source.local_directory import LocalDirectorySourceProvider
     from loremaster.source.snapshot import SnapshotLayout
     from loremaster.store.surreal import SurrealStore
+    from loremaster.store_read import StoreReadTool
     from loremaster.symbols import SymbolTool, VerifyTool
     from loremaster.tasks import TaskLedger
 
@@ -2277,6 +2628,21 @@ async def build_app_context(
         )
         await snapshot_stamper.ensure_ready()
         write_stack_readied.append(snapshot_stamper)
+        # P8b wire-up: the snapshot diff engine (lore_diff). Mirrors the stamper's
+        # construction — the SAME url/ns/db/creds + the store + manifest — but owns
+        # its OWN connection for the ``snapshot`` / ``snapshot_entry`` READ queries,
+        # readied here and closed in aclose like its sibling ports.
+        diff_engine = DiffEngine(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+            store=write_store,
+            manifest=manifest,
+        )
+        await diff_engine.ensure_ready()
+        write_stack_readied.append(diff_engine)
 
         # P7 memory cutover: the SurrealDB-backed memory backend over the SAME
         # per-project database + resolved credentials the write stack uses. Its
@@ -2307,6 +2673,18 @@ async def build_app_context(
         )
         await task_ledger.ensure_ready()
         write_stack_readied.append(task_ledger)
+        # P8b wire-up: the durable, fleet-visible FINDING ledger (lore_findings) —
+        # the second ledger over the same unified database, constructed exactly like
+        # ``task_ledger`` (its DDL is applied by ``ensure_ready``).
+        finding_ledger = FindingLedger(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+        )
+        await finding_ledger.ensure_ready()
+        write_stack_readied.append(finding_ledger)
         # Replay the durable ledger into the backend ONCE at boot (FP-06): the
         # first boot re-embeds the seeded rows, a second over an in-sync store is a
         # pure no-op (zero document embeds — the divergence guard). Inside the ready
@@ -2393,6 +2771,10 @@ async def build_app_context(
     # lore_verify's anti-hallucination check rides the SAME resolver as get_symbol
     # over the SAME unified store — so a claim resolves to the identical row.
     verify_tool = VerifyTool(store=write_store)
+    # P8b wire-up: lore_read's store-backed span reader — a PURE tool over the SAME
+    # unified store + manifest (it owns no connection of its own; both collaborators
+    # are already readied above), so it serves the exact bytes lore INDEXED.
+    store_read_tool = StoreReadTool(store=write_store, manifest=manifest)
 
     watcher = LiveWatcher(
         indexer=indexer,
@@ -2418,6 +2800,9 @@ async def build_app_context(
         read_file_tool=read_file_tool,
         symbol_tool=symbol_tool,
         verify_tool=verify_tool,
+        store_read_tool=store_read_tool,
+        diff_engine=diff_engine,
+        finding_ledger=finding_ledger,
         memory_backend=memory_backend,
         task_ledger=task_ledger,
     )
@@ -2541,7 +2926,11 @@ async def build_app_context(
             await watcher.stop()
         await memory_backend.close()
         await task_ledger.close()
+        # P8b wire-up: the finding ledger + diff engine each own a connection —
+        # close them on the failure path too (both readied before this point).
+        await finding_ledger.close()
         await snapshot_stamper.close()
+        await diff_engine.close()
         await manifest.close()
         await code_graph.close()
         await write_store.close()
@@ -3001,6 +3390,14 @@ _REINDEX_ANNOTATIONS = ToolAnnotations(
 # supersede), so they are NOT read-only; a claim is a compare-and-set and a
 # create mints a fresh row each call, so neither is idempotent.
 _TASK_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
+)
+# lore_findings (P8b) mutates the durable finding ledger (report / acknowledge /
+# resolve / wontfix), so — like the task tools — it is NOT read-only; a report
+# mints a fresh finding each call and a transition drives a state edge, so neither
+# is idempotent. (Its query/get/chain_head actions read, but a dispatch tool that
+# CAN write is annotated by its strongest capability, exactly as lore_tasks is.)
+_FINDINGS_TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
 )
 
@@ -3558,6 +3955,258 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             owner=owner,
             blocked=blocked,
             blocked_by=blocked_by,
+        )
+
+    @mcp.tool(
+        name="lore_read",
+        description=(
+            "Read the EXACT bytes lore INDEXED for a file span — the store-backed twin "
+            "of lore_read_file — with a [SOURCE:tier:path:start-end] provenance header, "
+            "hash-verified against its stored digest. Unlike lore_read_file (which reads "
+            "the LIVE file on disk), this serves precisely what was embedded, so it can "
+            "show you the indexed text even when the working tree has moved on — and its "
+            "header carries a visible STALE notice when it has. Reach for it to see what "
+            "the index actually holds; prefer lore_read_file for the current on-disk text."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    async def read(
+        context: Context[Any, AppContext, Any],
+        tier: Annotated[
+            str,
+            Field(
+                description=(
+                    "The source tier (root) the file lives in, as named in the project "
+                    "config — validated against the configured tiers (an unknown tier "
+                    "lists the valid ones). It is the 'tier' in a [SOURCE:tier:...] citation."
+                )
+            ),
+        ],
+        path: Annotated[
+            str,
+            Field(
+                description=(
+                    "Tier-relative path of the file (e.g. 'pkg/router.py'). "
+                    "Containment-guarded — never an absolute path or a '../' escape."
+                )
+            ),
+        ],
+        line_start: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "First line to read, 1-based inclusive. Omit to start at line 1."
+                )
+            ),
+        ] = None,
+        line_end: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "Last line to read, 1-based inclusive. Omit to read to EOF; an end "
+                    "past EOF is clamped (a tolerant 'from line N onward' read)."
+                )
+            ),
+        ] = None,
+    ) -> StoreFileSpan:
+        return await _app_context(context).read(tier, path, line_start, line_end)
+
+    @mcp.tool(
+        name="lore_diff",
+        description=(
+            "Show what changed between two index SNAPSHOTS. Call it with NO 'since' "
+            "first to LIST the recorded snapshots (their ids, timestamps, file/chunk "
+            "counts) — then pass a 'since' id (and optionally 'until'; omit 'until' to "
+            "diff against the live 'now' state) to see the added / removed / modified "
+            "files plus per-function chunk deltas. The rendered view names its 'legacy' "
+            "(reduced-precision, pre-window-ledger) and 'in-flight' (mid-reindex, "
+            "excluded from the comparison) markers, so expect them. Read-only."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    async def diff(
+        context: Context[Any, AppContext, Any],
+        since: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The BASE snapshot id to diff FROM (e.g. 'snapshot:sn<hex>', exactly "
+                    "as the listing returns it). Omit to LIST snapshots instead of diffing."
+                )
+            ),
+        ] = None,
+        until: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The TARGET snapshot id to diff TO. Omit (when 'since' is given) to "
+                    "diff against the live 'now' state. Ignored when 'since' is omitted."
+                )
+            ),
+        ] = None,
+        limit: Annotated[
+            int,
+            Field(
+                description=(
+                    "For the LISTING (no 'since'), the max number of snapshots to return, "
+                    f"newest first (default {_DEFAULT_DIFF_LIST_LIMIT}; clamped to the "
+                    "engine's [1, 500] bound). Ignored when diffing."
+                )
+            ),
+        ] = _DEFAULT_DIFF_LIST_LIMIT,
+    ) -> str:
+        return await _app_context(context).diff(since=since, until=until, limit=limit)
+
+    @mcp.tool(
+        name="lore_findings",
+        description=(
+            "Manage the project's durable, fleet-visible FINDING ledger (friction, "
+            "capability gaps, bugs) — dispatch on 'action' like lore_tasks: 'report' a "
+            "finding (needs subject / area / category / created_by; body is optional "
+            "and defaults to an empty string — a subject-only quick capture is valid; "
+            "kind defaults 'friction'), 'query' by status / kind / area, 'get' or "
+            "'chain_head' one by id_or_number, or drive its review state machine — "
+            "'acknowledge' / 'resolve' "
+            "/ 'wontfix' (by id_or_number + actor, with an optional note). Returns "
+            "summarised rows, never a raw store dump."
+        ),
+        annotations=_FINDINGS_TOOL_ANNOTATIONS,
+    )
+    async def findings(
+        context: Context[Any, AppContext, Any],
+        action: Annotated[
+            str,
+            Field(
+                description=(
+                    "The operation: 'report' (file a finding), 'query' (list by filters), "
+                    "'get' / 'chain_head' (one finding), or a status edge — 'acknowledge' "
+                    "/ 'resolve' / 'wontfix'."
+                )
+            ),
+        ],
+        id_or_number: Annotated[
+            int | str | None,
+            Field(
+                description=(
+                    "The target finding — its stable number (an int, e.g. 7) OR its opaque "
+                    "id (a str). Required for 'get' / 'chain_head' / the status edges."
+                )
+            ),
+        ] = None,
+        subject: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The finding's short title — required (non-empty) for 'report'."
+                )
+            ),
+        ] = None,
+        body: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The finding's longer free-text description — OPTIONAL for "
+                    "'report'; an omitted or None body reports as an empty string "
+                    "(a subject-only quick capture is a valid finding)."
+                )
+            ),
+        ] = None,
+        area: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The tool/subsystem the finding is about (e.g. 'lore_tests_for') — "
+                    "required (non-empty) for 'report'; an optional exact filter for 'query'."
+                )
+            ),
+        ] = None,
+        category: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The finding category (e.g. 'capability_gap') — required (non-empty) "
+                    "for 'report'."
+                )
+            ),
+        ] = None,
+        created_by: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The identity filing the finding, recorded in provenance — required "
+                    "(non-empty) for 'report'."
+                )
+            ),
+        ] = None,
+        kind: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'report', the finding kind (defaults to 'friction' when omitted). "
+                    "For 'query', an optional exact-kind filter (omit for every kind)."
+                )
+            ),
+        ] = None,
+        actor: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The identity performing a status edge, recorded in provenance — "
+                    "required for 'acknowledge' / 'resolve' / 'wontfix'."
+                )
+            ),
+        ] = None,
+        note: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "An optional free-text note recorded with a 'resolve' / 'wontfix' "
+                    "transition. Ignored by the other actions."
+                )
+            ),
+        ] = None,
+        status: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'query', an optional exact-status filter (open / acknowledged / "
+                    "resolved / wontfix). Omit otherwise."
+                )
+            ),
+        ] = None,
+        limit: Annotated[
+            int,
+            Field(
+                description=(
+                    "For 'query', the max number of findings to return, ordered by number "
+                    f"ascending (default {_DEFAULT_FINDINGS_QUERY_LIMIT})."
+                )
+            ),
+        ] = _DEFAULT_FINDINGS_QUERY_LIMIT,
+        supersedes: Annotated[
+            int | str | None,
+            Field(
+                description=(
+                    "For 'report', an optional id OR number of an existing finding this "
+                    "one reframes; the new finding links back to it."
+                )
+            ),
+        ] = None,
+    ) -> str:
+        return await _app_context(context).findings(
+            action=action,
+            id_or_number=id_or_number,
+            subject=subject,
+            body=body,
+            area=area,
+            category=category,
+            created_by=created_by,
+            kind=kind,
+            actor=actor,
+            note=note,
+            status=status,
+            limit=limit,
+            supersedes=supersedes,
         )
 
     @mcp.tool(

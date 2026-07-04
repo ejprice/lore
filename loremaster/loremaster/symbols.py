@@ -392,6 +392,19 @@ _CLAIM_SIGNATURE = "signature"
 # row that is never a real symbol chunk), so verify degrades instead of crashing.
 _HEADER_TERMINATOR = ":"
 
+# The caveat line the SERVER layer stamps onto a ``not_found`` :class:`VerifyResult`
+# when it detects that a schema rebuild is re-embedding the corpus. During that
+# window a symbol may simply be not-yet-re-embedded, so ``not_found`` is a possible
+# TRANSIENT false negative — the caveat says so (operator disposition:
+# serve-and-say-so, never suppress the answer). ``verify`` itself never sets this
+# (it has no manifest to consult); it defaults ``None`` so every wave-A construction
+# stays valid, and the server sets it via ``model_copy`` (see ``AppContext.verify``).
+VERIFY_REBUILD_CAVEAT: Final = (
+    "CAVEAT: a schema rebuild is in progress — this not_found may be a TRANSIENT "
+    "false negative (the symbol may be not-yet-re-embedded). Re-run verify once the "
+    "rebuild settles before trusting this absence."
+)
+
 
 class VerifiedSummary(BaseModel):
     """The resolved-symbol summary ``verify`` echoes back — the stored TRUTH.
@@ -463,6 +476,15 @@ class VerifyResult(BaseModel):
             nothing resolved.
         mismatches: The failed expectations; empty unless ``status`` is
             ``mismatch``.
+        rebuilding_caveat: An OPTIONAL caveat line (defaulting ``None``) the SERVER
+            layer stamps onto a ``not_found`` verdict when a schema rebuild is
+            re-embedding the corpus — during that window a ``not_found`` may be a
+            TRANSIENT false negative (the symbol not-yet-re-embedded). ``verify``
+            never sets it (it has no manifest to consult). The ``status`` invariant
+            below now BINDS this field too: a non-``None`` caveat is legal ONLY when
+            ``status`` is ``not_found`` — a ``confirmed``/``mismatch`` verdict can
+            never carry one, since only a schema-rebuild-affected absence is ever
+            transient.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -470,15 +492,21 @@ class VerifyResult(BaseModel):
     status: Literal["confirmed", "mismatch", "not_found"]
     summary: VerifiedSummary | None = None
     mismatches: list[VerifyMismatch] = Field(default_factory=list)
+    rebuilding_caveat: str | None = None
 
     @model_validator(mode="after")
     def _check_status_invariant(self) -> VerifyResult:
-        """Make the ``status`` ↔ ``summary`` ↔ ``mismatches`` contract structural.
+        """Make the ``status`` ↔ ``summary`` ↔ ``mismatches`` ↔ ``rebuilding_caveat``
+        contract structural.
 
-        Enforces, at construction, the two biconditionals the docstring promises so
-        a malformed verdict can never be built (not merely avoided by the ``verify``
-        path): ``summary`` is ``None`` EXACTLY on ``not_found``, and ``mismatches``
-        is non-empty EXACTLY on ``mismatch``.
+        Enforces, at construction, the invariants the docstring promises so a
+        malformed verdict can never be built (not merely avoided by the ``verify``
+        path): ``summary`` is ``None`` EXACTLY on ``not_found``; ``mismatches`` is
+        non-empty EXACTLY on ``mismatch``; and ``rebuilding_caveat`` may be
+        non-``None`` ONLY when ``status`` is ``not_found`` (audit-waveb-1 finding
+        #3 — the server only ever stamps a caveat onto a ``not_found`` verdict
+        during an active rebuild window, so a ``confirmed``/``mismatch`` result
+        carrying one would be a defect, not a legitimate value).
         """
         if (self.summary is None) != (self.status == _STATUS_NOT_FOUND):
             raise ValueError(
@@ -491,6 +519,12 @@ class VerifyResult(BaseModel):
                 "mismatches must be non-empty exactly when status is "
                 f"{_STATUS_MISMATCH!r}; got status={self.status!r} with "
                 f"{len(self.mismatches)} mismatch(es)"
+            )
+        if self.rebuilding_caveat is not None and self.status != _STATUS_NOT_FOUND:
+            raise ValueError(
+                "rebuilding_caveat must be None unless status is "
+                f"{_STATUS_NOT_FOUND!r}; got status={self.status!r} with a "
+                "non-None rebuilding_caveat"
             )
         return self
 

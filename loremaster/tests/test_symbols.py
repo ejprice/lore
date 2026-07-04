@@ -91,6 +91,7 @@ from loremaster.index.records import Record, chunk_to_record, sha512_hex
 from loremaster.store.surreal import SurrealConnectionError, SurrealStore
 from loremaster.symbols import (
     _SCROLL_LIMIT,
+    VERIFY_REBUILD_CAVEAT,
     GetSymbolError,
     ResolvedSymbol,
     SymbolResolver,
@@ -1147,6 +1148,80 @@ class TestVerifyResultInvariantIsStructural:
     def test_valid_not_found_is_accepted(self) -> None:
         result = VerifyResult(status="not_found")
         assert result.summary is None
+
+
+class TestVerifyResultRebuildingCaveat:
+    """The optional ``rebuilding_caveat`` marker (P8b wire-up, item 4).
+
+    ``verify``'s ``not_found`` can be a TRANSIENT false negative while a schema
+    rebuild is re-embedding the corpus. The model carries an OPTIONAL
+    ``rebuilding_caveat`` line the SERVER layer sets when it detects that window;
+    the field defaults ``None`` so every wave-A construction stays valid, and it
+    is orthogonal to the ``status`` ↔ ``summary`` ↔ ``mismatches`` invariant.
+    """
+
+    @staticmethod
+    def _summary() -> VerifiedSummary:
+        return VerifiedSummary(
+            qualified_name="X",
+            chunk_type="class",
+            tier="custom",
+            file_path="pkg/x.py",
+            line_start=1,
+            line_end=2,
+            header="class X:",
+        )
+
+    def test_caveat_defaults_to_none(self) -> None:
+        # Wave-A constructions never pass it — the default must keep them valid.
+        assert VerifyResult(status="not_found").rebuilding_caveat is None
+        assert VerifyResult(status="confirmed", summary=self._summary()).rebuilding_caveat is None
+
+    def test_not_found_may_carry_a_caveat_line(self) -> None:
+        result = VerifyResult(status="not_found", rebuilding_caveat=VERIFY_REBUILD_CAVEAT)
+        assert result.status == "not_found"
+        assert result.summary is None
+        assert result.rebuilding_caveat == VERIFY_REBUILD_CAVEAT
+
+    def test_caveat_does_not_break_the_status_invariant(self) -> None:
+        # Setting the caveat on a not_found does not relax the summary/mismatch
+        # biconditionals — a summary-bearing not_found is still rejected.
+        with pytest.raises(ValidationError):
+            VerifyResult(
+                status="not_found",
+                summary=self._summary(),
+                rebuilding_caveat=VERIFY_REBUILD_CAVEAT,
+            )
+
+    def test_caveat_constant_is_a_teaching_line(self) -> None:
+        # The shared caveat line must name the rebuild and the transient risk so a
+        # reader understands WHY the not_found may be wrong.
+        lowered = VERIFY_REBUILD_CAVEAT.lower()
+        assert "rebuild" in lowered
+        assert "transient" in lowered or "false" in lowered
+
+    def test_confirmed_carrying_a_caveat_is_rejected(self) -> None:
+        # audit-waveb-1 finding #3: the model previously permitted a caveat on a
+        # confirmed verdict even though the SERVER only ever stamps one onto
+        # not_found (mid schema-rebuild). Tie the caveat to not_found
+        # STRUCTURALLY so a malformed verdict can never be BUILT, not merely
+        # avoided by the server's own call sites.
+        with pytest.raises(ValidationError):
+            VerifyResult(
+                status="confirmed", summary=self._summary(), rebuilding_caveat="x"
+            )
+
+    def test_mismatch_carrying_a_caveat_is_rejected(self) -> None:
+        # Same rule, the other non-not_found status: a mismatch verdict resolved
+        # a real symbol (just against the wrong claim), so it is never a
+        # transient rebuild artifact either.
+        with pytest.raises(ValidationError):
+            VerifyResult(
+                status="mismatch",
+                summary=self._summary(),
+                mismatches=[VerifyMismatch(claim="signature", claimed="a", actual="b")],
+                rebuilding_caveat="x",
+            )
 
 
 class TestVerifyStoreDownIsNeverSilentNotFound:

@@ -948,6 +948,11 @@ _BARE_TOOL_NAMES = {
     # graph tools above already read.
     "impact",
     "map",
+    # P8b wire-up: the three wave-A cores surfaced as MCP verbs — the store-backed
+    # hash-verified span reader, the snapshot diff engine, and the finding ledger.
+    "read",
+    "diff",
+    "findings",
 }
 _EXPECTED_TOOLS = {f"{_TOOL_PREFIX}{name}" for name in _BARE_TOOL_NAMES}
 
@@ -1004,8 +1009,13 @@ _READ_ONLY_TOOLS = {
     # state — read-only exactly like their five graph-tool neighbours above.
     "lore_impact",
     "lore_map",
+    # P8b wire-up: lore_read serves a stored span (a read), lore_diff reads the
+    # snapshot ledger (a read). lore_findings MUTATES the finding ledger, so it is
+    # NOT here — it lives in ``_MUTATING_TOOLS`` below (like lore_tasks' family).
+    "lore_read",
+    "lore_diff",
 }
-_MUTATING_TOOLS = {"lore_save_memory", "lore_reindex"}
+_MUTATING_TOOLS = {"lore_save_memory", "lore_reindex", "lore_findings"}
 
 # Tools that take NO consumer-facing parameters (so there are no per-field
 # descriptions to assert). ``lore_index_status`` is parameterless.
@@ -1164,6 +1174,38 @@ class TestToolDescriptions:
         assert "confirmed" in description
         assert "mismatch" in description
         assert "not_found" in description
+
+    async def test_read_description_teaches_the_store_twin_and_staleness(
+        self, tmp_path: Path
+    ) -> None:
+        # lore_read serves the INDEXED bytes (not disk) with a provenance header
+        # and an explicit staleness signal — both must be teachable.
+        tools = await self._tools_by_name(tmp_path)
+        description = tools["lore_read"].description.lower()
+        assert "[source:" in description
+        assert "stale" in description
+
+    async def test_diff_description_teaches_list_then_diff_and_the_markers(
+        self, tmp_path: Path
+    ) -> None:
+        # lore_diff: list snapshots first, then diff between two; the legacy /
+        # in-flight markers must be named so callers expect them.
+        tools = await self._tools_by_name(tmp_path)
+        description = tools["lore_diff"].description.lower()
+        assert "snapshot" in description
+        assert "legacy" in description
+        assert "in-flight" in description or "in flight" in description
+
+    async def test_findings_description_teaches_the_actions(
+        self, tmp_path: Path
+    ) -> None:
+        # lore_findings dispatches on ``action``; the report/query/transition verbs
+        # must be teachable from the description (mirrors lore_tasks).
+        tools = await self._tools_by_name(tmp_path)
+        description = tools["lore_findings"].description.lower()
+        assert "report" in description
+        assert "query" in description
+        assert "resolve" in description or "acknowledge" in description
 
 
 class TestToolInputFieldDescriptions:
@@ -1356,6 +1398,8 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
         "status",
         "summary",
         "mismatches",
+        # P8b wire-up (item 4): the optional server-set rebuild caveat line.
+        "rebuilding_caveat",
         "qualified_name",
         "chunk_type",
         "tier",
@@ -1366,6 +1410,18 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
         "claim",
         "claimed",
         "actual",
+    },
+    # P8b wire-up: lore_read returns a StoreFileSpan MODEL (the store-backed twin of
+    # lore_read_file) — its fields include the two store-only marks (``stale`` /
+    # ``integrity_verified``) lore_read_file's FileSpan cannot supply.
+    "lore_read": {
+        "tier",
+        "path",
+        "line_start",
+        "line_end",
+        "text",
+        "stale",
+        "integrity_verified",
     },
     # lore_recall_memory is intentionally omitted: the P7 cutover re-shapes its
     # return (it no longer carries the retired store's flat ``metadata`` note), so
@@ -1628,6 +1684,240 @@ class TestToolBehaviourEndToEnd:
         span = await indexed_context.read_file("custom", "pkg/router.py", 1, 1)
         assert span.text.startswith("import os")
         assert span.header.startswith("[SOURCE:custom:pkg/router.py:1-1]")
+
+    # -- lore_read (StoreReadTool) ----------------------------------------- #
+
+    async def test_read_serves_a_hash_verified_store_span(
+        self, indexed_context: AppContext
+    ) -> None:
+        # lore_read serves the INDEXED bytes from the store (not disk), hash-verified,
+        # with the same [SOURCE:...] provenance header its lore_read_file twin gives.
+        span = await indexed_context.read("custom", "pkg/router.py", 1, 1)
+        assert span.text.startswith("import os")
+        assert span.header.startswith("[SOURCE:custom:pkg/router.py:1-1]")
+        assert span.integrity_verified is True
+        # A freshly-indexed file is in step with the index — never stale.
+        assert span.stale is False
+
+    async def test_read_unknown_tier_names_the_valid_tiers(
+        self, indexed_context: AppContext
+    ) -> None:
+        # The audit: StoreReadTool alone reports an unknown tier as a bare not-found.
+        # The wiring must first validate the tier so a typo lists the real tiers.
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
+            await indexed_context.read("kustom", "pkg/router.py")
+        message = str(exc_info.value).lower()
+        assert "tier" in message
+        assert "custom" in message
+
+    async def test_read_missing_file_is_a_clean_tool_error(
+        self, indexed_context: AppContext
+    ) -> None:
+        # A miss (known tier, no indexed body) surfaces as a teaching tool error —
+        # never a raw traceback — naming the next step.
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
+            await indexed_context.read("custom", "pkg/does_not_exist.py")
+        assert "not found" in str(exc_info.value).lower()
+
+    # -- lore_diff (DiffEngine) -------------------------------------------- #
+
+    async def test_diff_with_no_since_lists_snapshots(
+        self, indexed_context: AppContext
+    ) -> None:
+        # No ``since`` ⇒ a summarised snapshot listing (empty store ⇒ the empty
+        # notice, never a raw dump / crash).
+        rendered = await indexed_context.diff()
+        assert isinstance(rendered, str)
+        assert rendered  # a string either way (a listing or the empty-notice line)
+
+    async def test_diff_between_a_snapshot_and_now_renders(
+        self, indexed_context: AppContext
+    ) -> None:
+        # Stamp a snapshot, then diff it against the live "now" state — the rendered
+        # view names the since -> (now) transition.
+        since = await indexed_context._snapshot_stamper.stamp()
+        rendered = await indexed_context.diff(since=str(since))
+        assert isinstance(rendered, str)
+        assert "diff:" in rendered
+
+    async def test_diff_unknown_since_is_a_clean_tool_error(
+        self, indexed_context: AppContext
+    ) -> None:
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
+            await indexed_context.diff(since="snapshot:definitely_absent")
+        assert str(exc_info.value)  # a typed DiffError, not a raw traceback
+
+    # -- lore_findings (FindingLedger) ------------------------------------- #
+
+    async def test_findings_report_then_query_roundtrips(
+        self, indexed_context: AppContext
+    ) -> None:
+        reported = await indexed_context.findings(
+            action="report",
+            subject="lore_tests_for misses XML edges",
+            body="the graph heuristic drops framework-mediated calls",
+            area="lore_tests_for",
+            category="capability_gap",
+            created_by="builder-wireup-1",
+        )
+        assert "reported finding #" in reported
+        listed = await indexed_context.findings(action="query", status="open")
+        assert "lore_tests_for misses XML edges" in listed
+
+    @pytest.mark.parametrize("field_name", ["subject", "area", "category", "created_by"])
+    async def test_findings_report_requires_nonempty_fields(
+        self, indexed_context: AppContext, field_name: str
+    ) -> None:
+        # An empty (not merely absent) required field is a caller error naming it.
+        # Parametrised over the FOUR required fields — ``subject`` / ``area`` /
+        # ``category`` / ``created_by``. ``body`` is DELIBERATELY excluded from
+        # this required set (audit-waveb-1 finding #1): the schema + FindingLedger
+        # deliberately allow an empty body (a subject-only finding is a valid
+        # quick capture), so the MCP boundary must match that domain rather than
+        # be stricter than it. See
+        # test_findings_report_without_body_defaults_to_empty_string below, which
+        # pins the complementary behavior (an omitted body succeeds).
+        kwargs: dict[str, str] = {
+            "subject": "s",
+            "area": "a",
+            "category": "c",
+            "created_by": "me",
+        }
+        kwargs[field_name] = ""
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
+            await indexed_context.findings(action="report", **kwargs)
+        assert field_name in str(exc_info.value).lower()
+
+    async def test_findings_report_without_body_defaults_to_empty_string(
+        self, indexed_context: AppContext
+    ) -> None:
+        # Fix (audit-waveb-1 finding #1): the schema + FindingLedger deliberately
+        # allow an empty body (store/surreal_schema.py's ``body`` field carries no
+        # non-empty ASSERT — "a finding may carry an empty body, the subject alone
+        # can name it"). The MCP boundary previously contradicted that domain by
+        # requiring a non-empty body; omitting it entirely must now succeed, and
+        # the stored finding must round-trip with an empty body.
+        reported = await indexed_context.findings(
+            action="report",
+            subject="subject alone should be enough to file this",
+            area="lore_findings",
+            category="friction",
+            created_by="me",
+        )
+        assert "reported finding #" in reported
+        number = int(reported.split("#", 1)[1].split(" ", 1)[0])
+        listed = await indexed_context.findings(action="query", status="open")
+        assert "subject alone should be enough to file this" in listed
+        finding = await indexed_context.finding_ledger.get(number)
+        assert finding.body == ""
+
+    async def test_findings_lifecycle_acknowledge_then_resolve(
+        self, indexed_context: AppContext
+    ) -> None:
+        reported = await indexed_context.findings(
+            action="report",
+            subject="stale flag not rendered",
+            body="body",
+            area="lore_read",
+            category="bug",
+            created_by="me",
+        )
+        number = reported.split("#", 1)[1].split(" ", 1)[0]
+        acked = await indexed_context.findings(
+            action="acknowledge", id_or_number=int(number), actor="me"
+        )
+        assert "acknowledged" in acked
+        resolved = await indexed_context.findings(
+            action="resolve", id_or_number=int(number), actor="me", note="fixed"
+        )
+        assert "resolved" in resolved
+
+    async def test_findings_get_and_chain_head_by_number(
+        self, indexed_context: AppContext
+    ) -> None:
+        reported = await indexed_context.findings(
+            action="report",
+            subject="diff engine could leak a connection",
+            body="body",
+            area="lore_diff",
+            category="bug",
+            created_by="me",
+        )
+        number = int(reported.split("#", 1)[1].split(" ", 1)[0])
+        got = await indexed_context.findings(action="get", id_or_number=number)
+        assert "diff engine could leak a connection" in got
+        # A lone finding is its OWN chain head — rendered, and NOT flagged forked.
+        head = await indexed_context.findings(action="chain_head", id_or_number=number)
+        assert "diff engine could leak a connection" in head
+        assert "FORKED" not in head
+
+    async def test_findings_chain_head_surfaces_a_fork(
+        self, indexed_context: AppContext
+    ) -> None:
+        # Two findings superseding the SAME original fork the chain; chain_head must
+        # SURFACE the sibling branch it did not walk (the hardening builder's model),
+        # and the wiring must render that fork marker rather than hide it.
+        original = await indexed_context.findings(
+            action="report", subject="the original framing", body="b",
+            area="lore_findings", category="friction", created_by="me",
+        )
+        original_number = int(original.split("#", 1)[1].split(" ", 1)[0])
+        for reframe in ("first reframe", "second reframe"):
+            await indexed_context.findings(
+                action="report", subject=reframe, body="b", area="lore_findings",
+                category="friction", created_by="me", supersedes=original_number,
+            )
+        head = await indexed_context.findings(
+            action="chain_head", id_or_number=original_number
+        )
+        assert "FORKED" in head
+
+    async def test_findings_unknown_action_is_a_clean_error(
+        self, indexed_context: AppContext
+    ) -> None:
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
+            await indexed_context.findings(action="obliterate")
+        assert "obliterate" in str(exc_info.value)
+
+    # -- verify rebuild caveat (item 4) ------------------------------------ #
+
+    @staticmethod
+    async def _seed_in_progress_rebuild(ctx: AppContext) -> None:
+        """Open a rebuild window by seeding the manifest-meta a real rebuild writes."""
+        import json
+
+        from loremaster.index.schema import SCHEMA_REBUILD_STATUS_META_KEY
+
+        await ctx.manifest.meta_set(
+            SCHEMA_REBUILD_STATUS_META_KEY,
+            json.dumps({"state": "in_progress", "done": 3, "total": 118}),
+        )
+
+    async def test_verify_not_found_carries_the_rebuild_caveat_mid_rebuild(
+        self, indexed_context: AppContext
+    ) -> None:
+        await self._seed_in_progress_rebuild(indexed_context)
+        result = await indexed_context.verify("definitely_absent_symbol")
+        assert result.status == "not_found"
+        assert result.rebuilding_caveat is not None
+        assert "rebuild" in result.rebuilding_caveat.lower()
+
+    async def test_verify_not_found_has_no_caveat_when_idle(
+        self, indexed_context: AppContext
+    ) -> None:
+        result = await indexed_context.verify("definitely_absent_symbol")
+        assert result.status == "not_found"
+        assert result.rebuilding_caveat is None
+
+    async def test_verify_confirmed_never_carries_a_caveat_even_mid_rebuild(
+        self, indexed_context: AppContext
+    ) -> None:
+        # A symbol that RESOLVES is trustworthy even during a rebuild — the caveat
+        # is only for the transient-false-negative not_found case.
+        await self._seed_in_progress_rebuild(indexed_context)
+        result = await indexed_context.verify("champion_routing")
+        assert result.status == "confirmed"
+        assert result.rebuilding_caveat is None
 
     async def test_save_then_recall_memory_roundtrips(
         self, indexed_context: AppContext
@@ -1939,6 +2229,20 @@ class TestRegisteredToolWrappers:
         assert structured["status"] == "not_found"
         assert structured["summary"] is None
         assert structured["mismatches"] == []
+
+    async def test_read_wrapper_yields_structured_store_span(
+        self, indexed: tuple[Any, AppContext]
+    ) -> None:
+        mcp, ctx = indexed
+        structured = await self._structured(
+            mcp, "lore_read", ctx, tier="custom", path="pkg/router.py", line_start=1, line_end=1
+        )
+        # A scalar StoreFileSpan — structuredContent carries the span + its two marks.
+        assert isinstance(structured, dict)
+        assert structured["tier"] == "custom"
+        assert structured["text"].startswith("import os")
+        assert structured["stale"] is False
+        assert structured["integrity_verified"] is True
 
     async def test_index_status_wrapper_yields_structured_model(
         self, indexed: tuple[Any, AppContext]
