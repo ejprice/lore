@@ -80,7 +80,7 @@ from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -100,8 +100,10 @@ from loremaster.index.surreal_manifest import STATE_INDEXED, SurrealManifest
 from loremaster.store._txn import TxnFragment, compose
 from loremaster.store.surreal import (
     _CONNECTION_ERRORS,
+    SurrealConnectionError,
     SurrealStore,
     SurrealStoreError,
+    _SurrealConnection,
 )
 from loremaster.store.surreal_schema import (
     FILE_STATES,
@@ -109,6 +111,7 @@ from loremaster.store.surreal_schema import (
     SNAPSHOT_ENTRY_TABLE,
     SNAPSHOT_TABLE,
 )
+from surrealdb.errors import ErrorKind, ServerError
 
 try:
     from loremaster.index.snapshots import SnapshotStamper, capture_git_identity
@@ -896,3 +899,140 @@ class TestSnapshotStamperWarnsOnPossibleChunkTruncation:
         assert len(events) == 1
         assert events[0].levelno == logging.WARNING
         assert events[0].file_path == _ORDER_SERVICE_PATH  # type: ignore[attr-defined]
+
+
+# ===========================================================================
+# P8a-5b: the SINGLE-statement ``_query`` seam's classified-error posture
+# (follow-up to P8a #7 — ledger #31's launder-the-domain-message posture,
+# applied here to close the THIRD of three leak sites hygiene-7 flagged but
+# was not authorized to touch: ``store/surreal.py``, ``memory/local.py``, and
+# ``tasks.py`` already adopted this exact posture — see ``git show b262ab4``).
+#
+# ``SnapshotStamper._query`` already splits a caught error into transport
+# (self-heal + ``SurrealConnectionError``) vs domain (keep the connection +
+# ``SurrealStoreError``) — see ``TestSnapshotStamperMidLifeConnectionRecovery``.
+# What it did NOT do was launder the DOMAIN branch's message: it interpolated
+# the raw ``{error}`` straight into the raised ``SurrealStoreError``. A domain
+# ``ASSERT``/coercion rejection's engine text can echo a bound VALUE back
+# verbatim, and that text flows to MCP clients in P8 — this pins the SAME
+# classified posture at this seam: the full detail is logged server-side and
+# the raised error carries only a CLASSIFIED, generic label + a "see the
+# server log" hint, never the raw engine text.
+#
+# Deterministic and live-server-free: a fake connection raises a scripted
+# ``ServerError`` — the identical fault-injection shape
+# ``test_surreal_store.py``'s ``TestQueryMessageHygiene`` /
+# ``test_memory_backend.py``'s ``TestQueryClassifiedErrorPosture`` use.
+# ===========================================================================
+
+# A port with nothing listening — the "server is down" adversary (the SAME
+# dead port ``test_surreal_manifest.py`` / ``test_surreal_store.py`` use).
+_DEAD_URL = "ws://127.0.0.1:19555/rpc"
+
+# A synthetic ASSERT rejection carrying a value that must NEVER reach the
+# raised message (mirrors ``test_surreal_store.py``'s ``_SENSITIVE_ENGINE_TEXT``).
+_SNAPSHOT_SENSITIVE_MARKER = "TOP-SECRET-SNAPSHOT-BOUND-VALUE-6a1d8c"
+_SNAPSHOT_SENSITIVE_ENGINE_TEXT = (
+    f"Found '{_SNAPSHOT_SENSITIVE_MARKER}' for field `git_ref`, with record "
+    f"`snapshot:abc123`, but expected the value to fulfil the following "
+    f"assertion: $value != NONE"
+)
+# The transport-``kind`` rejection the SDK raises when a mid-life socket drop
+# left the reconnected session unauthenticated (``NotAllowed``) — a transport
+# fault, never a rejection of the write we sent.
+_SNAPSHOT_TRANSPORT_ENGINE_TEXT = "Anonymous access to the snapshot query is not allowed"
+
+
+@dataclass
+class _RejectingConnection:
+    """A fake SDK connection whose ``query`` raises a scripted error — the seam
+    fault-injector for ``_query``'s classified-error posture. ``close`` is a
+    tolerant no-op so a stamper holding this handle still tears down cleanly.
+    """
+
+    error: BaseException
+
+    async def query(self, statement: str, params: dict[str, Any]) -> Any:
+        raise self.error
+
+    async def close(self) -> None:
+        return None
+
+
+class TestQueryClassifiedErrorPosture:
+    """The single-statement ``_query`` seam classifies like ``execute_transaction``
+    (ledger #31): a DOMAIN rejection keeps the healthy connection and raises a
+    ``SurrealStoreError`` naming a generic engine CLASS + a server-log hint, NEVER
+    the raw engine text; a TRANSPORT fault self-heals (drops the handle) and
+    raises ``SurrealConnectionError``. Real-only seam test — built inline with an
+    injected fake connection (the stamper's dependencies — ``store``/``manifest``
+    — are never touched by ``_query`` itself), mirroring
+    ``test_memory_backend.py``'s ``TestQueryClassifiedErrorPosture``.
+    """
+
+    @staticmethod
+    def _stamper_rejecting_with(error: BaseException) -> SnapshotStamper:
+        store = SurrealStore(
+            url=_DEAD_URL, namespace="ns", database="db", dim=PRODUCTION_DIM,
+            user="root", password="root",
+        )
+        manifest = SurrealManifest(
+            url=_DEAD_URL, namespace="ns", database="db", user="root", password="root",
+        )
+        stamper = SnapshotStamper(
+            url=_DEAD_URL,
+            namespace="ns",
+            database="db",
+            user="root",
+            password="root",
+            store=store,
+            manifest=manifest,
+            project_root=Path(),
+        )
+        stamper._connection = cast("_SurrealConnection", _RejectingConnection(error=error))
+        return stamper
+
+    async def test_domain_rejection_message_never_echoes_the_raw_engine_text(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        stamper = self._stamper_rejecting_with(
+            ServerError(ErrorKind.INTERNAL, _SNAPSHOT_SENSITIVE_ENGINE_TEXT)
+        )
+        connection_before = stamper._connection
+        with caplog.at_level(logging.ERROR, logger="loremaster.index.snapshots"):
+            with pytest.raises(SurrealStoreError) as exc_info:
+                await stamper._query(
+                    f"UPDATE {SNAPSHOT_TABLE} SET git_ref = $ref", {"ref": "poison"}
+                )
+
+        message = str(exc_info.value)
+        # A domain rejection is a STORE error, not a connection error, and the
+        # healthy connection is never thrown away.
+        assert type(exc_info.value) is SurrealStoreError
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        assert stamper._connection is connection_before
+        # The raw engine text / the value it carries NEVER reaches the message.
+        assert _SNAPSHOT_SENSITIVE_ENGINE_TEXT not in message
+        assert _SNAPSHOT_SENSITIVE_MARKER not in message
+        # It DOES carry a classified label + the server-log correlation hint.
+        assert "assert violation" in message.lower()
+        assert "server log" in message.lower()
+        # The FULL engine detail is recoverable server-side (logged before raising).
+        error_records = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert error_records, "the full engine detail must be logged server-side"
+        logged = " ".join(
+            str(value)
+            for value in (error_records[0].getMessage(), getattr(error_records[0], "engine_error", ""))
+        )
+        assert _SNAPSHOT_SENSITIVE_MARKER in logged
+
+    async def test_transport_failure_drops_the_handle_and_raises_connection_error(self) -> None:
+        # The transport branch self-heals: a ``NotAllowed`` (mid-life socket drop
+        # reconnected unauthenticated) drops the cached handle so the NEXT call
+        # reconnects, and surfaces the connection type — never a raw SDK exception.
+        stamper = self._stamper_rejecting_with(
+            ServerError(ErrorKind.NOT_ALLOWED, _SNAPSHOT_TRANSPORT_ENGINE_TEXT)
+        )
+        with pytest.raises(SurrealConnectionError):
+            await stamper._query(f"SELECT * FROM {SNAPSHOT_TABLE}")
+        assert stamper._connection is None  # the dead handle was dropped (self-heal)

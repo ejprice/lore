@@ -74,7 +74,9 @@ from surrealdb import AsyncSurreal
 
 from loremaster.index.manifest import FileRow
 from loremaster.store._txn import (
+    _SERVER_LOG_HINT,
     TxnFragment,
+    _classify_engine_error,
     compose,
     execute_transaction,
     is_connection_error,
@@ -309,8 +311,20 @@ class SurrealManifest:
                 ) from error
             # A domain/schema rejection of the write — the connection is healthy
             # and must not be thrown away for a fault that is not the transport's.
+            # Message hygiene (ledger #31, mirroring ``execute_transaction`` /
+            # ``SurrealStore._query``): the raw engine text can echo a bound
+            # VALUE back verbatim (an ASSERT/coercion rejection) and flows to
+            # MCP clients in P8, so the FULL detail is logged server-side and
+            # the RAISED error carries only a CLASSIFIED, generic label plus a
+            # "see the server log" hint, never the raw text.
+            error_class = _classify_engine_error(error)
+            logger.error(
+                "manifest.query.rejected",
+                extra={"url": self._url, "error_class": error_class, "engine_error": str(error)},
+            )
             raise SurrealStoreError(
-                f"SurrealDB query rejected against {self._url!r}: {error}"
+                f"SurrealDB query rejected against {self._url!r} ({error_class}); "
+                f"{_SERVER_LOG_HINT}"
             ) from error
 
     # -- record-id / row helpers ---------------------------------------------

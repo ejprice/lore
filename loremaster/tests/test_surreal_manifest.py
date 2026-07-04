@@ -93,7 +93,9 @@ loremaster.index.surreal_manifest``.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 import pytest
@@ -125,6 +127,7 @@ from loremaster.store.surreal import (
 )
 from loremaster.store.surreal_schema import FILE_STATES, FILE_TABLE, generate_manifest_ddl
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
+from surrealdb.errors import ErrorKind, ServerError
 
 # A port with nothing listening — the "server is down" adversary (same dead
 # port ``test_surreal_store.py`` uses, so a shared firewall/port-reservation
@@ -1238,3 +1241,129 @@ class TestQuerySeamSdkKeyErrorClassification:
             assert get_call_count() == 2
         finally:
             await live_manifest.close()
+
+
+# ===========================================================================
+# P8a-5b: the SINGLE-statement ``_query`` seam's classified-error posture
+# (follow-up to P8a #7 — ledger #31's launder-the-domain-message posture,
+# applied here to close the SECOND of three leak sites hygiene-7 flagged but
+# was not authorized to touch: ``store/surreal.py``, ``memory/local.py``, and
+# ``tasks.py`` already adopted this exact posture — see ``git show b262ab4``).
+#
+# ``SurrealManifest._query`` already splits a caught error into transport
+# (self-heal + ``SurrealConnectionError``) vs domain (keep the connection +
+# ``SurrealStoreError``) — see ``TestResilience`` /
+# ``TestQuerySeamSdkKeyErrorClassification`` above. What it did NOT do was
+# launder the DOMAIN branch's message: it interpolated the raw ``{error}``
+# straight into the raised ``SurrealStoreError``. A domain ``ASSERT``/coercion
+# rejection's engine text can echo a bound VALUE back verbatim, and that text
+# flows to MCP clients in P8 — this pins the SAME classified posture at this
+# seam: the full detail is logged server-side and the raised error carries
+# only a CLASSIFIED, generic label + a "see the server log" hint, never the
+# raw engine text.
+#
+# Deterministic and live-server-free: a fake connection raises a scripted
+# ``ServerError`` — the identical fault-injection shape
+# ``test_surreal_store.py``'s ``TestQueryMessageHygiene`` /
+# ``test_memory_backend.py``'s ``TestQueryClassifiedErrorPosture`` use.
+# ===========================================================================
+
+# A synthetic ASSERT rejection carrying a value that must NEVER reach the
+# raised message (mirrors ``test_surreal_store.py``'s ``_SENSITIVE_ENGINE_TEXT``).
+_MANIFEST_SENSITIVE_MARKER = "TOP-SECRET-MANIFEST-BOUND-VALUE-2e6a4f"
+_MANIFEST_SENSITIVE_ENGINE_TEXT = (
+    f"Found '{_MANIFEST_SENSITIVE_MARKER}' for field `state`, with record "
+    f"`file:[community, models/purchase_order.py]`, but expected the value to "
+    f"fulfil the following assertion: $value INSIDE ['indexed', 'dirty', "
+    f"'embedding', 'failed']"
+)
+# The transport-``kind`` rejection the SDK raises when a mid-life socket drop
+# left the reconnected session unauthenticated (``NotAllowed``) — a transport
+# fault, never a rejection of the write we sent.
+_MANIFEST_TRANSPORT_ENGINE_TEXT = "Anonymous access to the manifest query is not allowed"
+
+
+@dataclass
+class _RejectingConnection:
+    """A fake SDK connection whose ``query`` raises a scripted error — the seam
+    fault-injector for ``_query``'s classified-error posture. ``close`` is a
+    tolerant no-op so a manifest holding this handle still tears down cleanly.
+    """
+
+    error: BaseException
+
+    async def query(self, statement: str, params: dict[str, Any]) -> Any:
+        raise self.error
+
+    async def close(self) -> None:
+        return None
+
+
+class TestQueryClassifiedErrorPosture:
+    """The single-statement ``_query`` seam classifies like ``execute_transaction``
+    (ledger #31): a DOMAIN rejection keeps the healthy connection and raises a
+    ``SurrealStoreError`` naming a generic engine CLASS + a server-log hint, NEVER
+    the raw engine text; a TRANSPORT fault self-heals (drops the handle) and
+    raises ``SurrealConnectionError``. Real-only seam test — built inline with an
+    injected fake connection (the real engine can't be made to echo a KNOWN
+    poison value on demand), mirroring ``test_memory_backend.py``'s
+    ``TestQueryClassifiedErrorPosture``.
+    """
+
+    @staticmethod
+    def _manifest_rejecting_with(error: BaseException) -> SurrealManifest:
+        manifest = SurrealManifest(
+            url=_DEAD_URL,
+            namespace="ns",
+            database="db",
+            user="root",
+            password="root",
+        )
+        manifest._connection = cast("_SurrealConnection", _RejectingConnection(error=error))
+        return manifest
+
+    async def test_domain_rejection_message_never_echoes_the_raw_engine_text(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        manifest = self._manifest_rejecting_with(
+            ServerError(ErrorKind.INTERNAL, _MANIFEST_SENSITIVE_ENGINE_TEXT)
+        )
+        connection_before = manifest._connection
+        with caplog.at_level(logging.ERROR, logger="loremaster.index.surreal_manifest"):
+            with pytest.raises(SurrealStoreError) as exc_info:
+                await manifest._query(
+                    f"UPDATE type::record('{FILE_TABLE}', $id) SET state = $state",
+                    {"id": [TIER_A, _PROBE_PATH], "state": "poison"},
+                )
+
+        message = str(exc_info.value)
+        # A domain rejection is a STORE error, not a connection error, and the
+        # healthy connection is never thrown away.
+        assert type(exc_info.value) is SurrealStoreError
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        assert manifest._connection is connection_before
+        # The raw engine text / the value it carries NEVER reaches the message.
+        assert _MANIFEST_SENSITIVE_ENGINE_TEXT not in message
+        assert _MANIFEST_SENSITIVE_MARKER not in message
+        # It DOES carry a classified label + the server-log correlation hint.
+        assert "assert violation" in message.lower()
+        assert "server log" in message.lower()
+        # The FULL engine detail is recoverable server-side (logged before raising).
+        error_records = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert error_records, "the full engine detail must be logged server-side"
+        logged = " ".join(
+            str(value)
+            for value in (error_records[0].getMessage(), getattr(error_records[0], "engine_error", ""))
+        )
+        assert _MANIFEST_SENSITIVE_MARKER in logged
+
+    async def test_transport_failure_drops_the_handle_and_raises_connection_error(self) -> None:
+        # The transport branch self-heals: a ``NotAllowed`` (mid-life socket drop
+        # reconnected unauthenticated) drops the cached handle so the NEXT call
+        # reconnects, and surfaces the connection type — never a raw SDK exception.
+        manifest = self._manifest_rejecting_with(
+            ServerError(ErrorKind.NOT_ALLOWED, _MANIFEST_TRANSPORT_ENGINE_TEXT)
+        )
+        with pytest.raises(SurrealConnectionError):
+            await manifest._query(f"SELECT * FROM {FILE_TABLE}")
+        assert manifest._connection is None  # the dead handle was dropped (self-heal)

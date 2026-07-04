@@ -100,9 +100,11 @@ from loremaster.graph import (
 )
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
+    _SERVER_LOG_HINT,
     SurrealConnectionError,
     SurrealStoreError,
     TxnFragment,
+    _classify_engine_error,
     _SurrealConnection,
     compose,
     execute_transaction,
@@ -507,8 +509,20 @@ class SurrealCodeGraph:
                 raise SurrealConnectionError(
                     f"SurrealDB query failed against {self._url!r}: {error}"
                 ) from error
+            # A domain/schema rejection — keep the healthy connection. Message
+            # hygiene (ledger #31, mirroring ``execute_transaction``): the raw
+            # engine text can echo a bound VALUE back verbatim (an ASSERT/coercion
+            # rejection) and flows to MCP clients in P8, so the FULL detail is
+            # logged server-side and the RAISED error carries only a CLASSIFIED,
+            # generic label plus a "see the server log" hint, never the raw text.
+            error_class = _classify_engine_error(error)
+            logger.error(
+                "graph.query.rejected",
+                extra={"url": self._url, "error_class": error_class, "engine_error": str(error)},
+            )
             raise SurrealStoreError(
-                f"SurrealDB query rejected against {self._url!r}: {error}"
+                f"SurrealDB query rejected against {self._url!r} ({error_class}); "
+                f"{_SERVER_LOG_HINT}"
             ) from error
 
     async def _run_transaction(self, statement: str, params: dict[str, Any]) -> None:
