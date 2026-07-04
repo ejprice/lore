@@ -98,13 +98,17 @@ consumed-by-<phase or commit> / superseded).
   (focus= re-centers usefully). **Feeds:** P7/P8 — rank should down-weight or
   segregate test-file nodes (the references() prod/test split already knows
   how); consider a default prod-only view with tests behind a flag.
+  *Triaged 2026-07-04 (P7 cycle-1 close): proposed FIX-FORWARD as a P7-tail
+  side-stream (ledger task #6) after the cutover wave, before the phase-close
+  redeploy — operator to confirm P7 vs P8.*
 
 - **2026-07-04 · team-lead (v2 FIRST LIVE USE) · lore_map · capability_gap
   (rendering)** — per-module symbol lists render EVERY symbol (80+ names for
   _surreal_fakes) — a dump, not a rollup; the budget then starves module
   COVERAGE (155 elided) to afford symbol noise. **Feeds:** P7/P8 — cap
   symbols per module (top-N by rank + "+K more"), spending budget on breadth
-  over depth.
+  over depth. *Triaged 2026-07-04 (P7 cycle-1 close): same disposition as the
+  ranking entry above — one serving-layer polish wave, ledger task #6.*
 
 - **2026-07-03 · team-lead (P7 prep) · lore_impact · wrong_result (bare-name
   covering-tests drop)** — `lore_impact("RecalledMemory")` (bare name) returned
@@ -115,8 +119,21 @@ consumed-by-<phase or commit> / superseded).
   teaching the miss). Workaround: re-asked with the module-qualified name.
   **Feeds:** P7/P8 — route the tests_for join through the same answers_to
   resolution as the ref counts, or render an explicit "tests unresolved for
-  bare names — qualify the name" notice. Triage with the two lore_map entries
-  at cycle 1 close.
+  bare names — qualify the name" notice. *Triaged 2026-07-04 (P7 cycle-1
+  close): rides the same P7-tail polish wave as the two lore_map entries
+  (ledger task #6) — operator to confirm P7 vs P8.*
+
+- **2026-07-04 · team-lead + cutover-contract (P7 cutover) · lore_impact ·
+  affordance_gap (depth-2 rollup misread)** — the depth-2 module rollup for
+  MemoryStore attributed 12 consumer refs to test_schema_rebuild; the
+  team-lead briefed a fixture migration there, but ground truth shows the
+  file constructs NO MemoryStore (the refs are transitive, through its
+  server.py import). Depth>1 rollups count the RIPPLE, not direct
+  consumers — nothing renders that distinction, so a reader naturally takes
+  module counts as direct usage. Workaround: agent verified at ground truth
+  and reported the empty migration. **Feeds:** task #6's polish wave — label
+  depth>1 rollups explicitly ("transitive via …" or a direct/transitive
+  split), or render depth-1 direct consumers alongside.
 
 ## Consumed
 
