@@ -1065,7 +1065,14 @@ class SurrealStore:
 
         Raises:
             SurrealConnectionError: The server is unreachable or the socket died.
-            SurrealStoreError: The engine rejected the read (a domain fault).
+            SurrealStoreError: The engine rejected the read (a domain fault), OR the
+                stored row is PARTIAL — it exists but is missing (or NULL for) its
+                ``text``/``sha512`` column (an out-of-band / legacy corruption the
+                faithful ``file_text_fragment`` writer can never produce). A partial
+                row is refused with a typed, laundered store error (naming only the
+                tier/path, never the row body) rather than a bare ``KeyError`` or a
+                silent ``None`` that would flow downstream as a phantom integrity
+                failure.
         """
         rows = self._as_rows(
             await self._query(
@@ -1077,9 +1084,21 @@ class SurrealStore:
         if not rows:
             return None
         row = rows[0]
+        # A partial row (an explicit projection yields the column as NULL, a
+        # ``SELECT *`` omits the key entirely) is refused loudly and store-typed —
+        # ``.get(...) is None`` catches both shapes. The message names the tier/path
+        # and the diagnosis, never the (possibly sensitive) row body.
+        text = row.get(_FILE_TEXT_TEXT_KEY)
+        sha512 = row.get(_FILE_TEXT_SHA_KEY)
+        if text is None or sha512 is None:
+            raise SurrealStoreError(
+                f"file_text row for {file_path!r} in tier {tier!r} is a partial "
+                f"file_text row (missing its {_FILE_TEXT_TEXT_KEY!r}/"
+                f"{_FILE_TEXT_SHA_KEY!r} column) — refusing to serve an incomplete row"
+            )
         return {
-            _FILE_TEXT_TEXT_KEY: row[_FILE_TEXT_TEXT_KEY],
-            _FILE_TEXT_SHA_KEY: row[_FILE_TEXT_SHA_KEY],
+            _FILE_TEXT_TEXT_KEY: text,
+            _FILE_TEXT_SHA_KEY: sha512,
         }
 
     async def scroll(self, filters: dict[str, str], limit: int) -> list[dict[str, Any]]:

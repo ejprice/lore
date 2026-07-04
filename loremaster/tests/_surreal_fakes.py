@@ -836,11 +836,23 @@ class FakeSurrealStore:
         store on a downed connection), then returns the stored row as a COPY so a
         caller can never mutate the fake's own stored state (the adversarial-double
         doctrine — a keyed read is never a live reference into the backing store).
-        Nothing stored for the pair yields ``None``.
+        Nothing stored for the pair yields ``None``. A PARTIAL stored row (missing /
+        NULL ``text`` or ``sha512``) RAISES the SAME typed, laundered
+        :class:`SurrealStoreError` the real store raises (audit-read finding 3
+        parity) — never a bare ``KeyError``, so a consumer's malformed-row bug can
+        never pass green on the fake and break for real.
         """
         self._maybe_trip_connection_failure()
         row = self.db.file_text.get((tier, file_path))
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        if row.get("text") is None or row.get("sha512") is None:
+            raise SurrealStoreError(
+                f"file_text row for {file_path!r} in tier {tier!r} is a partial "
+                f"file_text row (missing its 'text'/'sha512' column) — refusing to "
+                f"serve an incomplete row"
+            )
+        return dict(row)
 
     # -- trace write path (P8a observability) -----------------------------
 

@@ -314,9 +314,11 @@ _NON_EMPTY_STRING_ASSERT = "ASSERT string::len(string::trim($value)) > 0"
 # single source of truth :func:`_finding_statements` emits one ``DEFINE FIELD`` per,
 # mirroring :data:`_TASK_FIELD_SPECS`. ``number`` is a plain ``int`` carrying a
 # separate UNIQUE index (the stable, human-addressable id — never two ``#5``s);
-# ``kind``/``subject``/``created_by`` are required, non-empty (the trim-aware
-# ASSERT); ``status`` defaults to ``open`` and carries the closed-domain ASSERT;
-# ``body``/``area``/``category`` are plain strings; ``created_at`` self-stamps via
+# ``kind``/``subject``/``created_by``/``area``/``category`` are required,
+# non-empty (the trim-aware ASSERT — an empty area/category names no real tool
+# surface, audit-findings #2); ``status`` defaults to ``open`` and carries the
+# closed-domain ASSERT; ``body`` is a plain string (a finding may carry an empty
+# body — the subject alone can name it); ``created_at`` self-stamps via
 # ``DEFAULT time::now()``; ``supersedes`` is a REAL optional record link to the
 # finding this one reframes (never a bare id string — so the chain walk can
 # dot-traverse it); ``provenance`` is ``FLEXIBLE`` so the who/when audit blob
@@ -331,8 +333,8 @@ _FINDING_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ),
     ("subject", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
     ("body", _CHUNK_STRING_TYPE, ""),
-    ("area", _CHUNK_STRING_TYPE, ""),
-    ("category", _CHUNK_STRING_TYPE, ""),
+    ("area", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("category", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
     ("created_by", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
     ("created_at", "datetime", "DEFAULT time::now()"),
     ("supersedes", f"option<record<{FINDING_TABLE}>>", ""),

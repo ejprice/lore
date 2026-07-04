@@ -62,6 +62,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from loremaster.findings import (
+    ChainHead,
     Finding,
     FindingChainCycleError,
     FindingNotFoundError,
@@ -168,20 +169,19 @@ class FakeFindingLedger:
             raise FindingNotFoundError(f"no finding addressed by id {id_or_number!r}")
         return by_id
 
-    def _successor(self, finding_id: str) -> Finding | None:
-        """The finding that supersedes ``finding_id`` (its chain successor), or None.
+    def _successors(self, finding_id: str) -> list[Finding]:
+        """EVERY finding that supersedes ``finding_id`` (its chain successors).
 
-        A finding X's successor is the finding whose ``supersedes`` names X. When
-        more than one names it (a forked chain), the lowest-numbered is chosen so
-        the walk is deterministic — mirroring the real ledger's
-        ``ORDER BY number ASC LIMIT 1`` successor query.
+        A finding X's successor is a finding whose ``supersedes`` names X. Ordered
+        by ``number`` ASC so ``[0]`` is the deterministic lowest-numbered branch the
+        walk follows and ``[1:]`` are the sibling arms of a FORK it surfaces —
+        mirroring the real ledger's ``ORDER BY number ASC`` (never a ``LIMIT 1``, so
+        the higher-numbered arm stays visible).
         """
         successors = [
             finding for finding in self.db.findings.values() if finding.supersedes == finding_id
         ]
-        if not successors:
-            return None
-        return min(successors, key=lambda finding: finding.number)
+        return sorted(successors, key=lambda finding: finding.number)
 
     # -- report / read ------------------------------------------------------
 
@@ -196,6 +196,17 @@ class FakeFindingLedger:
         created_by: str,
         supersedes: int | str | None = None,
     ) -> ReportResult:
+        # Refuse an empty/whitespace area or category BEFORE any yield or mint —
+        # the ledger-side guard mirrored to parity (audit-findings #2): the real
+        # ledger raises ValueError here before the store round-trip, so the fake
+        # must too, else the parity pin would let a caller bug pass green on the
+        # fake and break for real.
+        for field_name, field_value in (("area", area), ("category", category)):
+            if not field_value.strip():
+                raise ValueError(
+                    f"finding {field_name} must be a non-empty, non-whitespace "
+                    f"string, got {field_value!r}"
+                )
         # The race window is honestly OPEN before the mint (adversarial property
         # 3): two concurrent reporters can both reach this point before either
         # bumps the counter.
@@ -255,22 +266,34 @@ class FakeFindingLedger:
         rows.sort(key=lambda finding: finding.number)
         return [finding.model_copy(deep=True) for finding in rows[:limit]]
 
-    async def chain_head(self, id_or_number: int | str) -> Finding:
+    async def chain_head(self, id_or_number: int | str) -> ChainHead:
         await asyncio.sleep(0)
         current = self._resolve(id_or_number)
         visited: set[str] = {current.id}
+        # The numbers of every sibling successor the deterministic walk skipped —
+        # surfaced sorted on the returned ChainHead (mirrors the real ledger).
+        fork_successor_numbers: set[int] = set()
         while True:
-            successor = self._successor(current.id)
-            if successor is None:
+            successors = self._successors(current.id)
+            if not successors:
                 # A finding nobody supersedes is its own head.
-                return current.model_copy(deep=True)
-            if successor.id in visited:
+                return ChainHead(
+                    finding=current.model_copy(deep=True),
+                    forked=bool(fork_successor_numbers),
+                    fork_successor_numbers=sorted(fork_successor_numbers),
+                )
+            # number-ASC: [0] is the lowest-numbered branch we walk; the rest are
+            # the fork siblings we surface but do not follow.
+            walked = successors[0]
+            for sibling in successors[1:]:
+                fork_successor_numbers.add(sibling.number)
+            if walked.id in visited:
                 raise FindingChainCycleError(
                     f"supersedes chain from finding {current.id!r} contains a cycle "
-                    f"(revisited {successor.id!r}) — the finding data is corrupt"
+                    f"(revisited {walked.id!r}) — the finding data is corrupt"
                 )
-            visited.add(successor.id)
-            current = successor
+            visited.add(walked.id)
+            current = walked
 
     # -- state machine ------------------------------------------------------
 

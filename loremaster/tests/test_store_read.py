@@ -48,17 +48,24 @@ from _surreal_harness import (
     connect_admin,
     drop_database,
     make_env,
+    run,
     unique_database,
 )
 from loremaster.index.records import sha512_hex
 from loremaster.index.surreal_manifest import (
     STATE_DIRTY,
+    STATE_EMBEDDING,
+    STATE_FAILED,
     STATE_INDEXED,
     SurrealManifest,
 )
 from loremaster.read_file import ReadFileTool
 from loremaster.source.snapshot import SnapshotLayout
-from loremaster.store.surreal import SurrealConnectionError, SurrealStore
+from loremaster.store.surreal import (
+    SurrealConnectionError,
+    SurrealStore,
+    SurrealStoreError,
+)
 from loremaster.store_read import (
     StoreFileSpan,
     StoreReadContainmentError,
@@ -79,6 +86,23 @@ _PATH = "models/purchase_order.py"
 # 127.0.0.1:1, so the connect is refused immediately (ECONNREFUSED → the store's
 # typed ``SurrealConnectionError``), never a hang.
 _DEAD_URL = "ws://127.0.0.1:1/rpc"
+
+
+class _DownManifest:
+    """A manifest whose ``get`` always raises ``SurrealConnectionError`` — the fake
+    arm's manifest-down double.
+
+    ``FakeSurrealManifest`` exposes no failure-arming control surface (only the
+    store fake invents one), and this coverage is tests-only, so the fake arm
+    supplies this minimal double rather than growing the shared fake. It mirrors the
+    store fake's armed-failure posture: the transport fault RAISES before any value
+    is returned, so a downed manifest can never masquerade as a not-found.
+    """
+
+    async def get(self, tier: str, file_path: str) -> Any:
+        raise SurrealConnectionError(
+            f"manifest connection is down (test double): {tier!r}/{file_path!r}"
+        )
 
 
 @dataclass
@@ -170,6 +194,31 @@ class ReadBench:
             password="spikeroot",
         )
         return StoreReadTool(store=real_downed, manifest=self.manifest)
+
+    def down_manifest_tool(self) -> StoreReadTool:
+        """A :class:`StoreReadTool` whose MANIFEST read raises ``SurrealConnectionError``.
+
+        The store-down test's structural twin for the MANIFEST leg: the store is the
+        bench's own HEALTHY, seeded store (``read`` reaches the manifest only AFTER a
+        successful ``file_text`` fetch + integrity check), so a failure here can only
+        be the manifest's — pinning the docstring's ``Raises:`` promise that a downed
+        manifest (not just a downed store) propagates loudly and is never swallowed as
+        a not-found. Uniform across backends: the fake arm supplies a failing manifest
+        double; the real arm points a manifest at a dead RPC URL so its first ``get``
+        is refused.
+        """
+        if self.backend == "fake":
+            return StoreReadTool(
+                store=self.store, manifest=cast(SurrealManifest, _DownManifest())
+            )
+        real_down_manifest = SurrealManifest(
+            url=_DEAD_URL,
+            namespace="lore_test",
+            database="never_reached",
+            user="root",
+            password="spikeroot",
+        )
+        return StoreReadTool(store=self.store, manifest=real_down_manifest)
 
 
 @pytest_asyncio.fixture(params=["real", "fake"])
@@ -396,6 +445,20 @@ class TestStoreReadFreshness:
         assert span.text == _SOURCE  # served anyway — degraded, not withheld
         assert span.integrity_verified is True  # the body still verified
 
+    @pytest.mark.parametrize("state", [STATE_DIRTY, STATE_EMBEDDING, STATE_FAILED])
+    async def test_each_non_indexed_state_marks_stale(
+        self, read_bench: ReadBench, state: str
+    ) -> None:
+        # audit-read finding 4: all three non-indexed states (dirty/embedding/failed)
+        # fold to stale via the single ``state != indexed`` inequality. Pin EACH
+        # explicitly so a future per-state branch can't silently regress one of the
+        # two (embedding/failed) that only the shared inequality covered before.
+        await read_bench.seed(TIER_A, _PATH, _SOURCE, state=state)
+        span = await read_bench.tool().read(TIER_A, _PATH)
+        assert span.stale is True
+        assert span.text == _SOURCE  # served anyway — degraded, not withheld
+        assert span.integrity_verified is True
+
     async def test_manifest_digest_mismatch_marks_stale(
         self, read_bench: ReadBench
     ) -> None:
@@ -468,6 +531,131 @@ class TestStoreReadConnectionDown:
         with pytest.raises(SurrealConnectionError) as exc_info:
             await read_bench.down_tool().read(TIER_A, _PATH)
         assert not isinstance(exc_info.value, StoreReadError)
+
+
+class TestStoreReadManifestDown:
+    """A downed MANIFEST connection (not just a downed store) propagates loudly as
+    ``SurrealConnectionError`` — NEVER masqueraded as a not-found. Pins the read
+    docstring's ``Raises:`` promise ("the store OR manifest connection is down"),
+    the structural twin of the store-down arm that the audit (audit-read finding 4)
+    flagged as covered only by structure, not a direct test."""
+
+    async def test_manifest_down_raises_connection_error_not_not_found(
+        self, read_bench: ReadBench
+    ) -> None:
+        # The store is healthy + seeded (the file_text fetch succeeds); only the
+        # manifest is down, so the raise can only be the manifest leg's.
+        await read_bench.seed(TIER_A, _PATH, _SOURCE)
+        with pytest.raises(SurrealConnectionError):
+            await read_bench.down_manifest_tool().read(TIER_A, _PATH)
+
+    async def test_manifest_down_error_is_not_a_store_read_error(
+        self, read_bench: ReadBench
+    ) -> None:
+        # A downed manifest is a transport fault, distinct from every StoreReadError
+        # mode — a caller catching StoreReadNotFoundError must NOT swallow it.
+        await read_bench.seed(TIER_A, _PATH, _SOURCE)
+        with pytest.raises(SurrealConnectionError) as exc_info:
+            await read_bench.down_manifest_tool().read(TIER_A, _PATH)
+        assert not isinstance(exc_info.value, StoreReadError)
+
+
+class TestStoreFileTextPartialRow:
+    """P8b hardening (audit-read finding 3): a ``file_text`` row that exists but is
+    missing (or NULL for) its ``text``/``sha512`` column is an out-of-band/legacy
+    corruption. ``SurrealStore.file_text`` must refuse it with a TYPED, store-layer
+    ``SurrealStoreError`` naming (tier, path) + 'partial file_text row' — never a
+    bare ``KeyError``, never a misleading ``None`` that flows into the integrity
+    check as a phantom corruption — and never echoing the row body (laundered
+    posture). The fake mirrors it; ``StoreReadTool`` surfaces it unchanged.
+    """
+
+    _SECRET_BODY = "API_KEY = 'partial-row-secret-do-not-leak'\n"
+
+    @staticmethod
+    async def _inject_partial_row(env: SurrealEnv, tier: str, path: str, body: str) -> None:
+        """Hand-write a ``file_text`` row that carries ``text`` but NO ``sha512``.
+
+        The only faithful way to a partial row on a SCHEMAFULL table (a normal
+        CREATE would be rejected for the missing required field): define ``text``
+        FIRST, create the row, THEN define ``sha512`` — ``DEFINE FIELD IF NOT
+        EXISTS`` never retro-validates the pre-existing row, so it survives without
+        its ``sha512``. This reproduces the audit's out-of-band/legacy corruption
+        exactly.
+        """
+        admin = await connect_admin(env)
+        try:
+            await run(admin, "DEFINE TABLE file_text SCHEMAFULL")
+            await run(admin, "DEFINE FIELD text ON file_text TYPE string")
+            await run(
+                admin,
+                "CREATE type::record('file_text', $id) CONTENT { text: $t }",
+                {"id": [tier, path], "t": body},
+            )
+            await run(admin, "DEFINE FIELD IF NOT EXISTS sha512 ON file_text TYPE string")
+        finally:
+            await admin.close()
+
+    def _real_store(self, env: SurrealEnv) -> SurrealStore:
+        return SurrealStore(
+            url=env.url, namespace=env.namespace, database=env.database,
+            dim=env.dim, user=env.user, password=env.password,
+        )
+
+    async def test_real_partial_row_raises_typed_store_error(self) -> None:
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        await self._inject_partial_row(env, TIER_A, _PATH, self._SECRET_BODY)
+        store = self._real_store(env)
+        try:
+            with pytest.raises(SurrealStoreError) as exc_info:
+                await store.file_text(TIER_A, _PATH)
+            message = str(exc_info.value)
+            # Names the (tier, path) and the partial-row diagnosis, never the body.
+            assert TIER_A in message and _PATH in message
+            assert "partial file_text row" in message
+            assert "API_KEY" not in message
+            assert "partial-row-secret" not in message
+        finally:
+            await store.close()
+            await drop_database(env)
+
+    async def test_partial_row_is_not_a_connection_error(self) -> None:
+        # A malformed row is a DOMAIN fault, not a transport one — a caller catching
+        # SurrealConnectionError must NOT swallow it.
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        await self._inject_partial_row(env, TIER_A, _PATH, self._SECRET_BODY)
+        store = self._real_store(env)
+        try:
+            with pytest.raises(SurrealStoreError) as exc_info:
+                await store.file_text(TIER_A, _PATH)
+            assert not isinstance(exc_info.value, SurrealConnectionError)
+        finally:
+            await store.close()
+            await drop_database(env)
+
+    async def test_fake_partial_row_raises_typed_store_error(self) -> None:
+        # Fake-arm parity: a partial stored row raises the SAME typed store error, so
+        # a consumer bug can never pass green on the fake and break for real.
+        store = fake_surreal_trio(dim=PRODUCTION_DIM).store
+        store.db.file_text[(TIER_A, _PATH)] = {"text": self._SECRET_BODY}  # no sha512
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await store.file_text(TIER_A, _PATH)
+        message = str(exc_info.value)
+        assert TIER_A in message and _PATH in message
+        assert "partial file_text row" in message
+        assert "API_KEY" not in message
+
+    async def test_store_read_surfaces_the_partial_row_error_unchanged(self) -> None:
+        # store_read.py catches no store error — a partial-row SurrealStoreError from
+        # file_text propagates straight through StoreReadTool.read (via the fake).
+        trio = fake_surreal_trio(dim=PRODUCTION_DIM)
+        trio.store.db.file_text[(TIER_A, _PATH)] = {"text": self._SECRET_BODY}  # no sha512
+        tool = StoreReadTool(
+            store=cast(SurrealStore, trio.store),
+            manifest=cast(SurrealManifest, trio.manifest),
+        )
+        with pytest.raises(SurrealStoreError):
+            await tool.read(TIER_A, _PATH)
 
 
 class TestStoreReadFileParity:

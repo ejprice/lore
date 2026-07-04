@@ -1233,6 +1233,8 @@ async def _create_finding(
     status: str = _FINDING_STATUS_OPEN,
     kind: str = _FINDING_KIND,
     subject: str = _FINDING_SUBJECT,
+    area: str = _FINDING_AREA,
+    category: str = _FINDING_CATEGORY,
     created_by: str = _FINDING_CREATED_BY,
     supersedes_id: str | None = None,
     omit_created_at: bool = False,
@@ -1244,7 +1246,9 @@ async def _create_finding(
     omitting ``status`` exercises its ``DEFAULT 'open'``. ``supersedes`` is written
     as a REAL ``type::record`` link when given, or ``NONE`` when absent. Uses
     ``CONTENT`` (not ``SET``) so a future protected-key column can never break the
-    write — the same discipline ``loremaster.findings`` follows.
+    write — the same discipline ``loremaster.findings`` follows. ``area`` /
+    ``category`` are overridable so the trim-aware non-empty ASSERT they carry (P8b
+    hardening) can be probed with an empty/whitespace value.
     """
     fields = [
         "number: $number",
@@ -1262,8 +1266,8 @@ async def _create_finding(
         "kind": kind,
         "subject": subject,
         "body": _FINDING_BODY,
-        "area": _FINDING_AREA,
-        "category": _FINDING_CATEGORY,
+        "area": area,
+        "category": category,
         "created_by": created_by,
         "provenance": _FINDING_PROVENANCE,
     }
@@ -1320,10 +1324,25 @@ class TestFindingTableFieldDefinitions:
         assert "ASSERT" in _field_statement(ddl, FINDING_TABLE, "subject")
         assert "ASSERT" in _field_statement(ddl, FINDING_TABLE, "created_by")
 
-    def test_body_area_category_are_plain_strings(self) -> None:
+    def test_body_is_a_plain_string(self) -> None:
+        # ``body`` stays a plain, unconstrained string — a finding may legitimately
+        # carry an empty body (the subject alone can name the finding).
         ddl = generate_ddl(dim=NONDEFAULT_DIM)
-        for field in ("body", "area", "category"):
-            assert "TYPE string" in _field_statement(ddl, FINDING_TABLE, field)
+        body = _field_statement(ddl, FINDING_TABLE, "body")
+        assert "TYPE string" in body
+        assert "ASSERT" not in body
+
+    def test_area_and_category_are_required_non_empty(self) -> None:
+        # P8b hardening (audit-findings #2): ``area``/``category`` are the tool /
+        # subsystem the finding addresses and its category — an empty one names no
+        # real finding, so both carry the SAME trim-aware non-empty ASSERT
+        # ``kind``/``subject``/``created_by`` already use, not a bare plain string.
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        for field in ("area", "category"):
+            statement = _field_statement(ddl, FINDING_TABLE, field)
+            assert "TYPE string" in statement
+            assert "ASSERT" in statement
+            assert "string::trim" in statement
 
     def test_created_at_is_a_server_defaulted_datetime(self) -> None:
         ddl = generate_ddl(dim=NONDEFAULT_DIM)
@@ -1455,6 +1474,33 @@ class TestFindingRoundTrip:
         await run(connection, generate_ddl(dim=env.dim))
         with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
             await _create_finding(connection, finding_id="empty_subj", number=1, subject="   ")
+
+    @pytest.mark.parametrize("empty_area", ["", " ", "\t"])
+    async def test_area_assert_rejects_empty_or_whitespace(
+        self,
+        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+        empty_area: str,
+    ) -> None:
+        # P8b hardening (audit-findings #2): an empty/whitespace-only area names no
+        # real tool surface — the trim-aware ASSERT rejects it as loudly as an empty
+        # subject/kind.
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_finding(connection, finding_id="empty_area", number=1, area=empty_area)
+
+    @pytest.mark.parametrize("empty_category", ["", " ", "\t"])
+    async def test_category_assert_rejects_empty_or_whitespace(
+        self,
+        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+        empty_category: str,
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_finding(
+                connection, finding_id="empty_cat", number=1, category=empty_category
+            )
 
     async def test_supersedes_link_resolves_to_the_real_parent(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture

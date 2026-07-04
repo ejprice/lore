@@ -42,7 +42,7 @@ FROM this contract):
                      supersedes=None) -> ReportResult
         async get(id_or_number) -> Finding
         async query(*, status=None, kind=None, area=None, limit=…) -> list[Finding]
-        async chain_head(id_or_number) -> Finding
+        async chain_head(id_or_number) -> ChainHead   # head + fork-surfacing marks
         async acknowledge(id_or_number, actor) -> Finding
         async resolve(id_or_number, actor, note=None) -> Finding
         async wontfix(id_or_number, actor, note=None) -> Finding
@@ -78,6 +78,7 @@ from _surreal_harness import (
     unique_database,
 )
 from loremaster.findings import (
+    ChainHead,
     Finding,
     FindingChainCycleError,
     FindingLedger,
@@ -381,6 +382,55 @@ class TestReportAndGet:
         assert not _provenance_mentions(second.provenance, "attacker")
 
 
+class TestReportRejectsEmptyAreaCategory:
+    """P8b hardening (audit-findings #2): ``report`` refuses an empty/whitespace-only
+    ``area`` or ``category`` with a typed ``ValueError`` BEFORE the store round-trip,
+    so a caller gets a clean, early domain error (mirroring ``query``'s ``limit``
+    guard) rather than a laundered store ``ASSERT`` rejection. Parity-pinned: the
+    schema ASSERT is the store-side backstop, this is the ledger-side guard, and
+    BOTH backends enforce it identically.
+    """
+
+    @pytest.mark.parametrize("empty_area", ["", " ", "\t"])
+    async def test_report_rejects_empty_or_whitespace_area(
+        self, finding_ledger: FindingLedger, empty_area: str
+    ) -> None:
+        with pytest.raises(ValueError):
+            await finding_ledger.report(
+                SUBJECT_TESTS_FOR,
+                BODY_TESTS_FOR,
+                area=empty_area,
+                category=CATEGORY_CAPABILITY,
+                created_by=REPORTER,
+            )
+
+    @pytest.mark.parametrize("empty_category", ["", " ", "\t"])
+    async def test_report_rejects_empty_or_whitespace_category(
+        self, finding_ledger: FindingLedger, empty_category: str
+    ) -> None:
+        with pytest.raises(ValueError):
+            await finding_ledger.report(
+                SUBJECT_TESTS_FOR,
+                BODY_TESTS_FOR,
+                area=AREA_TESTS_FOR,
+                category=empty_category,
+                created_by=REPORTER,
+            )
+
+    async def test_rejected_report_mints_no_number(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        # The early guard fails BEFORE the counter bump — a refused report consumes
+        # no number, so the next good report is still #1 (gapless).
+        with pytest.raises(ValueError):
+            await finding_ledger.report(
+                SUBJECT_TESTS_FOR, BODY_TESTS_FOR,
+                area="", category=CATEGORY_CAPABILITY, created_by=REPORTER,
+            )
+        good = await _report(finding_ledger)
+        assert good.number == 1
+
+
 class TestStableNumbering:
     """Numbers are minted consecutively and are STABLE addresses — the
     enumerate-in-order and address-by-number affordances the di-scout entry pins.
@@ -535,7 +585,7 @@ class TestSupersedes:
         # A finding nobody supersedes is its own head.
         original = await _report(finding_ledger, SUBJECT_TESTS_FOR)
         head = await finding_ledger.chain_head(original.number)
-        assert head.id == original.id
+        assert head.finding.id == original.id
 
     async def test_chain_head_follows_supersedes_forward_to_newest(
         self, finding_ledger: FindingLedger
@@ -550,9 +600,9 @@ class TestSupersedes:
             category=CATEGORY_CAPABILITY, created_by=REPORTER, supersedes=second.number,
         )
         # From ANY point in the chain, the head is the newest (third).
-        assert (await finding_ledger.chain_head(first.number)).id == third.id
-        assert (await finding_ledger.chain_head(second.id)).id == third.id
-        assert (await finding_ledger.chain_head(third.number)).id == third.id
+        assert (await finding_ledger.chain_head(first.number)).finding.id == third.id
+        assert (await finding_ledger.chain_head(second.id)).finding.id == third.id
+        assert (await finding_ledger.chain_head(third.number)).finding.id == third.id
 
     async def test_chain_head_unknown_raises_not_found(
         self, finding_ledger: FindingLedger
@@ -560,6 +610,93 @@ class TestSupersedes:
         await _report(finding_ledger)
         with pytest.raises(FindingNotFoundError):
             await finding_ledger.chain_head(9999)
+
+
+class TestChainHeadFork:
+    """P8b hardening (audit-findings #1): two findings may each ``supersedes`` the
+    SAME original — a FORK reachable through the public API. ``chain_head`` still
+    walks the deterministic lowest-numbered branch, but its result SURFACES the
+    fork (``forked`` + the unwalked sibling numbers) instead of silently dropping
+    the higher-numbered arm and billing the lowest branch's head as "the newest".
+    """
+
+    async def _fork(
+        self, ledger: FindingLedger
+    ) -> tuple[ReportResult, ReportResult, ReportResult]:
+        """Build a fork: X, then Y and Z both superseding X (Y minted before Z, so
+        ``y.number < z.number`` — the deterministic walk follows Y)."""
+        original = await _report(ledger, "original X")
+        low = await ledger.report(
+            "successor Y (low)", BODY_TESTS_FOR, area=AREA_TESTS_FOR,
+            category=CATEGORY_CAPABILITY, created_by=REPORTER, supersedes=original.number,
+        )
+        high = await ledger.report(
+            "successor Z (high)", BODY_TESTS_FOR, area=AREA_TESTS_FOR,
+            category=CATEGORY_CAPABILITY, created_by=REPORTER, supersedes=original.number,
+        )
+        return original, low, high
+
+    async def test_chain_head_returns_a_fork_aware_result(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        original = await _report(finding_ledger, SUBJECT_TESTS_FOR)
+        head = await finding_ledger.chain_head(original.number)
+        # Even the lone/linear case returns the fork-aware value object, not a bare
+        # Finding — a caller always gets the same shape.
+        assert isinstance(head, ChainHead)
+        assert isinstance(head.finding, Finding)
+        assert head.finding.id == original.id
+        assert head.forked is False
+        assert head.fork_successor_numbers == []
+
+    async def test_linear_chain_head_is_not_forked(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        first = await _report(finding_ledger, SUBJECT_TESTS_FOR)
+        second = await finding_ledger.report(
+            "restatement v2", BODY_TESTS_FOR, area=AREA_TESTS_FOR,
+            category=CATEGORY_CAPABILITY, created_by=REPORTER, supersedes=first.number,
+        )
+        third = await finding_ledger.report(
+            "restatement v3", BODY_TESTS_FOR, area=AREA_TESTS_FOR,
+            category=CATEGORY_CAPABILITY, created_by=REPORTER, supersedes=second.number,
+        )
+        head = await finding_ledger.chain_head(first.number)
+        assert head.finding.id == third.id
+        assert head.forked is False
+        assert head.fork_successor_numbers == []
+
+    async def test_forked_chain_head_walks_lowest_branch_deterministically(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        _original, low, _high = await self._fork(finding_ledger)
+        head = await finding_ledger.chain_head(_original.number)
+        # The walk deterministically follows the LOWEST-numbered successor (Y).
+        assert head.finding.id == low.id
+
+    async def test_forked_chain_head_surfaces_the_other_branch(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        original, _low, high = await self._fork(finding_ledger)
+        head = await finding_ledger.chain_head(original.number)
+        # The fork is SURFACED, not silently dropped: forked=True and the newer
+        # (higher-numbered) arm's number is named so a consumer can walk it.
+        assert head.forked is True
+        assert high.number in head.fork_successor_numbers
+
+    async def test_fork_surfacing_is_addressable_from_any_entry_point(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        # Entering the walk at the shared original OR any point before the fork
+        # surfaces the same sibling branch.
+        original, low, high = await self._fork(finding_ledger)
+        head = await finding_ledger.chain_head(original.id)  # by opaque id too
+        assert head.forked is True
+        assert head.finding.id == low.id
+        # The surfaced sibling can itself be walked to its (own) head.
+        sibling_head = await finding_ledger.chain_head(high.number)
+        assert sibling_head.finding.id == high.id
+        assert sibling_head.forked is False
 
 
 # The full legal transition matrix (the brief's finding state machine, verbatim).

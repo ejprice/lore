@@ -53,6 +53,11 @@ The public surface:
         id: str
         number: int
 
+    ChainHead:                             # the fork-aware supersedes-chain head
+        finding: Finding                   # head of the lowest-numbered branch
+        forked: bool                       # did the chain fork off the walked path?
+        fork_successor_numbers: list[int]  # the unwalked sibling arms' numbers
+
     FindingLedger(*, url, namespace, database, user, password):
         async ensure_ready() -> None
         async close() -> None
@@ -60,7 +65,7 @@ The public surface:
                      supersedes=None) -> ReportResult
         async get(id_or_number) -> Finding
         async query(*, status=None, kind=None, area=None, limit=…) -> list[Finding]
-        async chain_head(id_or_number) -> Finding
+        async chain_head(id_or_number) -> ChainHead   # head + fork-surfacing marks
         async acknowledge(id_or_number, actor) -> Finding
         async resolve(id_or_number, actor, note=None) -> Finding
         async wontfix(id_or_number, actor, note=None) -> Finding
@@ -301,6 +306,42 @@ class ReportResult(BaseModel):
     number: int
 
 
+class ChainHead(BaseModel):
+    """The result of walking a supersedes chain to its head — fork-aware.
+
+    :meth:`FindingLedger.chain_head` walks successors FORWARD. The walk is
+    DETERMINISTIC: at every hop it follows the LOWEST-numbered successor, so
+    :attr:`finding` is always the head of the lowest-numbered branch. But a chain
+    can FORK — two findings may each ``report(supersedes=X)`` the same original X
+    (reachable through the public API, unlike a cycle) — and then the
+    higher-numbered arm is NOT on the walked path. Rather than silently drop it
+    (the old behaviour, which billed the lowest branch's head as "the newest
+    record"), this result SURFACES the fork: :attr:`forked` flags it and
+    :attr:`fork_successor_numbers` names the sibling successors the walk did not
+    follow, so a consumer can walk them too.
+
+    Attributes:
+        finding: The head reached by the deterministic lowest-numbered walk — the
+            terminal finding of the lowest-numbered branch. A finding nobody
+            supersedes is its own head.
+        forked: ``True`` when ANY hop on the walk had more than one successor, so
+            :attr:`finding` is the head of the LOWEST-numbered branch only and at
+            least one other (higher-numbered, newer) arm exists off the walked
+            path. ``False`` for a linear chain or a lone finding.
+        fork_successor_numbers: The STABLE numbers of the sibling successors the
+            deterministic walk did NOT follow, ascending and de-duplicated — each
+            the entry point of another branch (call :meth:`FindingLedger.chain_head`
+            on it to reach that branch's own head). Empty when the chain did not
+            fork.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    finding: Finding
+    forked: bool = False
+    fork_successor_numbers: list[int] = Field(default_factory=list)
+
+
 class FindingLedgerError(RuntimeError):
     """Base class for every error :class:`FindingLedger` raises."""
 
@@ -523,6 +564,28 @@ class FindingLedger:
 
     # -- report / read ------------------------------------------------------
 
+    @staticmethod
+    def _require_non_empty_area_category(area: str, category: str) -> None:
+        """Refuse an empty / whitespace-only ``area`` or ``category`` before any I/O.
+
+        The ledger-side guard mirroring the store's trim-aware ASSERT
+        (audit-findings #2): an empty ``area``/``category`` names no real tool
+        surface, so it is refused EARLY — before the counter bump / store
+        round-trip — with a clean :class:`ValueError` (the same input-validation
+        family :meth:`query`'s ``limit`` guard raises), rather than deferred to a
+        laundered store ``ASSERT`` rejection. The schema ASSERT remains the
+        store-side backstop for any non-ledger writer.
+
+        Raises:
+            ValueError: ``area`` or ``category`` is empty or whitespace-only.
+        """
+        for name, value in ((_COL_AREA, area), (_COL_CATEGORY, category)):
+            if not value.strip():
+                raise ValueError(
+                    f"finding {name} must be a non-empty, non-whitespace string, "
+                    f"got {value!r}"
+                )
+
     async def report(
         self,
         subject: str,
@@ -560,8 +623,10 @@ class FindingLedger:
             number.
 
         Raises:
+            ValueError: ``area`` or ``category`` is empty / whitespace-only.
             FindingNotFoundError: ``supersedes`` was given but names no finding.
         """
+        self._require_non_empty_area_category(area, category)
         supersedes_id: str | None = None
         if supersedes is not None:
             target = await self._resolve_or_raise(supersedes)
@@ -678,6 +743,14 @@ class FindingLedger:
         ``finding_id`` de-synchronises retries so N racers do not re-collide in
         lockstep. A transport fault (:class:`SurrealConnectionError`) or any
         NON-retryable rejection propagates immediately — retrying it would never help.
+
+        Worst-case attempt count is the PRODUCT, not the sum, of the two retry
+        budgets: each of this loop's :data:`_REPORT_MINT_MAX_ATTEMPTS` (12)
+        iterations runs a whole transaction that itself retries a write-write
+        conflict up to :data:`~loremaster.store._txn._MAX_TXN_CONFLICT_ATTEMPTS` (5)
+        times inside :func:`~loremaster.store._txn.execute_transaction` — so up to
+        12 × 5 = 60 transaction attempts. Bounded and measured-safe (the live N=16
+        concurrent-mint probe stayed clean), never unbounded.
         """
         # A stable 0..(slots-1) jitter slot unique to THIS reporter (its finding_id
         # is unique), so concurrent retriers spread across the next few ticks.
@@ -764,20 +837,28 @@ class FindingLedger:
         rows = self._as_rows(await self._query(statement, params))
         return [self._row_to_finding(row) for row in rows]
 
-    async def chain_head(self, id_or_number: int | str) -> Finding:
-        """Follow the supersedes chain FORWARD to its head (the newest record).
+    async def chain_head(self, id_or_number: int | str) -> ChainHead:
+        """Follow the supersedes chain FORWARD to its head, surfacing any fork.
 
-        The successor of a finding X is the finding whose ``supersedes`` names X; the
+        The successor of a finding X is a finding whose ``supersedes`` names X; the
         walk follows successors transitively until one has none — that terminal
-        finding is the head. A finding nobody supersedes is its OWN head. A cycle
-        (corrupt data) is detected (a revisited id, or an implausibly long walk) and
-        raised as :class:`FindingChainCycleError` rather than hung on.
+        finding is the head. The walk is DETERMINISTIC: when a finding has MORE
+        than one successor (a FORK — two findings each ``report(supersedes=X)`` the
+        same original, reachable through the public API), it follows the
+        LOWEST-numbered branch, and the returned :class:`ChainHead`'s
+        :attr:`~ChainHead.forked` flag + :attr:`~ChainHead.fork_successor_numbers`
+        surface the sibling arm(s) the walk did NOT follow — so a *higher-numbered*
+        (newer) branch and its head are never silently dropped (audit-findings #1).
+        A finding nobody supersedes is its OWN head. A cycle (corrupt data) is
+        detected (a revisited id, or an implausibly long walk) and raised as
+        :class:`FindingChainCycleError` rather than hung on.
 
         Args:
             id_or_number: Any finding in the chain, addressed by number or opaque id.
 
         Returns:
-            The head :class:`Finding` — the newest record in the supersedes chain.
+            A :class:`ChainHead` naming the head of the LOWEST-numbered branch and
+            whether — and at which sibling numbers — the chain forked.
 
         Raises:
             FindingNotFoundError: Nothing is addressed by ``id_or_number``.
@@ -786,18 +867,30 @@ class FindingLedger:
         row = await self._resolve_or_raise(id_or_number)
         current_id = self._bare_id(row.get(_ID_KEY))
         visited = {current_id}
+        # The numbers of every sibling successor the deterministic walk skipped —
+        # a set (de-duped) surfaced sorted on the returned ChainHead.
+        fork_successor_numbers: set[int] = set()
         for _ in range(_MAX_CHAIN_HOPS):
-            successor = await self._select_successor(current_id)
-            if successor is None:
-                return self._row_to_finding(row)
-            successor_id = self._bare_id(successor.get(_ID_KEY))
+            successors = await self._select_successors(current_id)
+            if not successors:
+                return ChainHead(
+                    finding=self._row_to_finding(row),
+                    forked=bool(fork_successor_numbers),
+                    fork_successor_numbers=sorted(fork_successor_numbers),
+                )
+            # ORDER BY number ASC: [0] is the lowest-numbered branch we walk; the
+            # rest are the fork siblings we surface but do not follow.
+            walked = successors[0]
+            for sibling in successors[1:]:
+                fork_successor_numbers.add(int(sibling[_COL_NUMBER]))
+            successor_id = self._bare_id(walked.get(_ID_KEY))
             if successor_id in visited:
                 raise FindingChainCycleError(
                     f"supersedes chain from finding {current_id!r} contains a cycle "
                     f"(revisited {successor_id!r}) — the finding data is corrupt"
                 )
             visited.add(successor_id)
-            row = successor
+            row = walked
             current_id = successor_id
         raise FindingChainCycleError(
             f"supersedes chain from finding {self._bare_id(row.get(_ID_KEY))!r} exceeded "
@@ -1035,22 +1128,25 @@ class FindingLedger:
         )
         return rows[0] if rows else None
 
-    async def _select_successor(self, finding_id: str) -> dict[str, Any] | None:
-        """Return the finding that supersedes ``finding_id`` (its chain successor), or None.
+    async def _select_successors(self, finding_id: str) -> list[dict[str, Any]]:
+        """Return EVERY finding that supersedes ``finding_id`` (its chain successors).
 
-        A finding X's successor is the finding whose ``supersedes`` link names X.
-        When more than one names it (a forked chain), the lowest-numbered is chosen
-        (``ORDER BY number ASC LIMIT 1``) so :meth:`chain_head`'s walk is deterministic.
+        A finding X's successor is a finding whose ``supersedes`` link names X.
+        Ordered by ``number`` ASC, so ``[0]`` is the deterministic lowest-numbered
+        branch :meth:`chain_head` walks and ``[1:]`` are the sibling arms of a FORK
+        it surfaces. A linear chain yields at most one row; a fork (two findings
+        each superseding X — reachable through the public API) yields several. The
+        walk relies on this FULL list (never a ``LIMIT 1``) so the higher-numbered
+        arm is visible, not silently dropped.
         """
-        rows = self._as_rows(
+        return self._as_rows(
             await self._query(
                 f"SELECT * FROM {FINDING_TABLE} WHERE {_COL_SUPERSEDES} = "
                 f"type::record('{FINDING_TABLE}', ${_ROW_ID_PARAM}) "
-                f"ORDER BY {_COL_NUMBER} ASC LIMIT 1",
+                f"ORDER BY {_COL_NUMBER} ASC",
                 {_ROW_ID_PARAM: finding_id},
             )
         )
-        return rows[0] if rows else None
 
     def _row_to_finding(self, row: dict[str, Any]) -> Finding:
         """Map a raw ``finding`` row into a FRESH :class:`Finding` value object.
