@@ -1,48 +1,46 @@
-"""Contract tests for ``loremaster.graph.CodeGraph`` — the typed code-graph.
+"""Contract tests for ``loremaster.graph.CodeGraph`` — the astroid DERIVATION CORE.
 
-The code-graph is a KùzuDB **side-structure** (NO new vector index) derived from
-the AST chunks lorescribe's :class:`~lorescribe.python_ast.PythonAstChunker` emits.
-It is generic over *any* Python AST chunks (zero Odoo) and is kept fresh by a
-transactional per-file rebuild (delete + rebuild) so the live watcher / reconcile
-pass can refresh one file at a time.
+After the P8 Kùzu-shell surgery, :class:`~loremaster.graph.CodeGraph` is a PURE
+astroid derivation core: it turns a file's lorescribe AST chunks into typed graph
+NODES (:class:`~loremaster.graph._NodeSpec`) and reference EDGES
+(:class:`~loremaster.graph._EdgeSpec`) and owns ZERO storage. The KùzuDB
+storage/query shell (``CREATE``/``MATCH``, ``build_file_graph``, the query methods)
+was removed; the live engine is the async
+:class:`~loremaster.graph_surreal.SurrealCodeGraph`, which REUSES this exact
+derivation core through its ``_AstroidDerivation`` delegate and pins the STORAGE +
+QUERY behaviour in ``test_graph_surreal.py``.
 
-THE DELIBERATE CONTRACT CHANGE — RESOLVED edges
------------------------------------------------
-The previous SQLite engine derived ``imports`` / ``inherits`` / ``calls`` from
-stdlib ``ast`` re-parsing of chunk source, so an edge ``dst`` was the BARE written
-name (``BaseService``, ``json``, ``load_config``) and every reference — even a
-stdlib/third-party one — was kept. This engine derives them from astroid INFERENCE
-(:func:`lorescribe.astroid_parse.resolve_module`) and applies a keep/drop rule:
+THE SEAM UNDER CONTRACT — ``_derive_nodes`` / ``_derive_edges``
+--------------------------------------------------------------
+These tests drive the derivation core at the SAME seam ``graph_surreal.py``
+consumes (``self._derivation._derive_nodes`` / ``_derive_edges``): they assert on
+the returned ``_NodeSpec`` / ``_EdgeSpec`` lists, NOT on any stored row. This is
+what preserves the CONTRACT meaning after the kuzu shell is gone — the derivation
+produces exactly the nodes/edges the store used to persist. Tier/file_path are
+STORAGE stamps applied by the shell, so the node specs carry only the derived
+identity (kind + qualified_name + chunk_id); the reference specs carry only
+src/dst/kind/resolved.
+
+THE DELIBERATE CONTRACT — RESOLVED edges
+----------------------------------------
+``imports`` / ``inherits`` / ``calls`` are derived from astroid INFERENCE
+(:func:`lorescribe.astroid_parse.resolve_module`) with a keep/drop rule:
 
 * ``(resolved and in_project)`` → KEEP, ``dst`` = the inferred fully-qualified
-  name (an in-project base is now ``demo.service.BaseService``, NOT bare
-  ``BaseService``; an in-project ``from demo.errors import LoadError`` is now the
+  name (an in-project base is ``demo.service.BaseService``, NOT bare
+  ``BaseService``; an in-project ``from demo.errors import LoadError`` is the
   symbol ``demo.errors.LoadError``).
 * ``(not resolved)`` → KEEP, ``dst`` = the bare written name (the conservative
   fallback so an un-inferable reference is never dropped).
 * ``(resolved and not in_project)`` → DROP (``json``, ``pathlib.Path``,
   ``pydantic.BaseModel`` — stdlib / third-party noise).
 
-These tests pin the RESOLVED contract. Every expected FQN is an INDEPENDENT oracle:
-the fixtures are authored here on disk, so the true FQNs are known from the source,
-never re-derived from the engine's own logic.
-
-Resolution requires the file ON DISK under project roots, so the resolved-edge
-fixtures write a real package to ``tmp_path`` and construct ``CodeGraph`` with
-``tier_roots`` + ``project_roots``. The structural ``defines`` / node tests need no
-roots (they are derived from the chunk set alone).
-
-Schema
-------
-Two Kùzu NODE tables (references are stored as RECORDS, not RELs, so an edge can be
-created before its endpoints exist — order-independence — and a repeated FQN across
-files stays a distinct node — collision-correctness):
-
-* ``CodeNode(id, kind, qualified_name, file_path, chunk_id, tier)`` —
-  ``kind ∈ {module, class, method, function}``.
-* ``Ref(id, src_qname, dst, kind, resolved, tier, file_path)`` —
-  ``kind ∈ {imports, calls, inherits, defines}``; ``resolved`` flags an
-  astroid-inferred in-project FQN ``dst``.
+Every expected FQN is an INDEPENDENT oracle: the fixtures are authored here on
+disk, so the true FQNs are known from the source, never re-derived from the
+engine's own logic. Resolution requires the file ON DISK under project roots, so
+the resolved-edge fixtures write a real package to ``tmp_path`` and construct
+``CodeGraph`` with ``tier_roots`` + ``project_roots``. The structural ``defines``
+/ node tests need no roots (they are derived from the chunk set alone).
 """
 
 from __future__ import annotations
@@ -52,7 +50,6 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from conftest import kz_query, kz_row
 
 # Target module under contract.
 from loremaster.graph import (
@@ -64,11 +61,7 @@ from loremaster.graph import (
     KIND_FUNCTION,
     KIND_METHOD,
     KIND_MODULE,
-    REASON_NO_REFERENCES,
-    REASON_ONLY_REFERENCED_BY_TESTS,
     CodeGraph,
-    DeadCodeNode,
-    ReferenceSummary,
 )
 from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_memo
 from lorescribe.models import Chunk, ChunkContext
@@ -82,11 +75,12 @@ def _reset_astroid_resolution_state() -> Iterator[None]:
     astroid's manager (module cache + import-spec caches) and this package's
     ``sys.path`` / package-parent-dir memo are PROCESS-GLOBAL. Production bounds
     them at sweep boundaries via :meth:`CodeGraph.reset_resolution_cache`; the
-    graph no longer wipes the cache per file (that was the O(files × deps)
-    cold-build cost this change removes). Without this autouse reset, one test's
-    throwaway ``tmp_path`` package would leak its warm cache / search-path entries
-    into the next test's resolution and cross-contaminate it. Resetting before AND
-    after each test keeps every case hermetic regardless of order or selection.
+    derivation core no longer wipes the cache per file (that was the O(files ×
+    deps) cold-build cost this change removes). Without this autouse reset, one
+    test's throwaway ``tmp_path`` package would leak its warm cache / search-path
+    entries into the next test's resolution and cross-contaminate it. Resetting
+    before AND after each test keeps every case hermetic regardless of order or
+    selection.
     """
     clear_resolution_cache()
     reset_search_path_memo()
@@ -94,12 +88,39 @@ def _reset_astroid_resolution_state() -> Iterator[None]:
     clear_resolution_cache()
     reset_search_path_memo()
 
+
+# ---------------------------------------------------------------------------
+# Construction seam. The derivation core is a PURE object (no on-disk database);
+# every construction routes through these two helpers so the whole file speaks a
+# single vocabulary for building/tearing-down a derivation core.
+# ---------------------------------------------------------------------------
+
+
+def _new_graph(
+    tmp_path: Path,
+    *,
+    tier_roots: dict[str, Path] | None = None,
+    project_roots: list[Path] | None = None,
+) -> CodeGraph:
+    """Construct a derivation-core :class:`CodeGraph` for a test.
+
+    ``tmp_path`` is retained in the signature for call-site stability (the demo
+    packages the resolved-edge tests write live under it); the derivation core
+    itself owns no on-disk database.
+    """
+    return CodeGraph(tier_roots=tier_roots, project_roots=project_roots)
+
+
+def _close_graph(graph: CodeGraph) -> None:
+    """Tear down a derivation core — a no-op (the core owns no database)."""
+
+
 # ---------------------------------------------------------------------------
 # Real fixtures: production-realistic Python sources chunked via the REAL
-# PythonAstChunker (the producer↔consumer seam). The graph consumes exactly what
-# the chunker emits; hand-rolling Chunk objects would let a chunker-shape drift
-# slip past, so we drive the real chunker. Resolved-edge tests additionally write
-# the same sources to disk so astroid can infer their references.
+# PythonAstChunker (the producer↔consumer seam). The derivation consumes exactly
+# what the chunker emits; hand-rolling Chunk objects would let a chunker-shape
+# drift slip past, so we drive the real chunker. Resolved-edge tests additionally
+# write the same sources to disk so astroid can infer their references.
 # ---------------------------------------------------------------------------
 
 # Hard token cap from the embedder spec — over-length inputs are rejected.
@@ -159,7 +180,8 @@ APP_SOURCE: str = textwrap.dedent(
 )
 
 # A realistic test module exercising ``IndexService`` — its file path matches the
-# test glob, ``test_boot`` references ``boot``, and it imports the app module.
+# test glob, ``test_boot`` references ``boot``, and it imports the app module. It
+# is written to disk so the demo package resolves as a whole.
 TEST_SOURCE: str = textwrap.dedent(
     '''\
     """Tests for the index service."""
@@ -180,7 +202,7 @@ ERRORS_PATH: str = "demo/errors.py"
 APP_PATH: str = "demo/service.py"
 TEST_PATH: str = "tests/test_service.py"
 
-# The importable module names the indexer derives and passes to build_file_graph.
+# The importable module names the indexer derives and passes to the derivation.
 APP_MODULE: str = "demo.service"
 TEST_MODULE: str = "tests.test_service"
 
@@ -228,35 +250,35 @@ def _write_project(root: Path) -> None:
 
 
 @pytest.fixture()
-def graph(tmp_path) -> CodeGraph:  # type: ignore[no-untyped-def]
-    """A structural-only CodeGraph (no roots) backed by an on-disk Kùzu file.
+def graph(tmp_path: Path) -> CodeGraph:
+    """A structural-only derivation core (no roots).
 
     Used by tests that only need the structural ``defines`` edges and the node set
-    — they pass no project roots, so the graph emits no resolved references.
+    — they pass no project roots, so the core emits no resolved references.
     """
-    return CodeGraph(str(tmp_path / "graph.kuzu"))
+    return _new_graph(tmp_path)
 
 
 @pytest.fixture()
-def resolved_graph(tmp_path):  # type: ignore[no-untyped-def]
-    """A resolution-enabled CodeGraph over an on-disk demo package.
+def resolved_graph(tmp_path: Path) -> Iterator[tuple[CodeGraph, Path]]:
+    """A resolution-enabled derivation core over an on-disk demo package.
 
-    Yields ``(graph, project_root)``. The package is written to disk and the graph
+    Yields ``(graph, project_root)``. The package is written to disk and the core
     is wired with ``tier_roots`` + ``project_roots`` so astroid resolves the demo
-    module's references; building ``APP_PATH`` therefore emits RESOLVED ``imports``
-    / ``inherits`` / ``calls`` edges per the keep/drop rule.
+    module's references; deriving ``APP_PATH``'s edges therefore emits RESOLVED
+    ``imports`` / ``inherits`` / ``calls`` per the keep/drop rule.
     """
     project_root = tmp_path / "project"
     _write_project(project_root)
-    graph = CodeGraph(
-        str(tmp_path / "graph.kuzu"),
+    graph = _new_graph(
+        tmp_path,
         tier_roots={SAMPLE_TIER: project_root, OTHER_TIER: project_root},
         project_roots=[project_root],
     )
     try:
         yield graph, project_root
     finally:
-        graph.close()
+        _close_graph(graph)
 
 
 @pytest.fixture()
@@ -265,154 +287,79 @@ def app_chunks() -> list[Chunk]:
     return _chunk(APP_PATH, APP_SOURCE)
 
 
-@pytest.fixture()
-def test_chunks() -> list[Chunk]:
-    """The real chunk set for the test module."""
-    return _chunk(TEST_PATH, TEST_SOURCE)
+# ---------------------------------------------------------------------------
+# Derivation-read helpers — the kuzu-free seam. They read the derived node/edge
+# specs directly (the exact ``_derive_nodes`` / ``_derive_edges`` surface
+# ``graph_surreal`` consumes), replacing the old ``kz_query``-backed row readers.
+# ---------------------------------------------------------------------------
 
 
-def _refs(graph: CodeGraph, kind: str, src: str) -> set[str]:
-    """The ``dst`` set of ``Ref`` records of ``kind`` with ``src_qname == src``."""
-    result = kz_query(
-        graph.connection,
-        "MATCH (r:Ref) WHERE r.kind = $kind AND r.src_qname = $src RETURN r.dst",
-        {"kind": kind, "src": src},
+def _derived_qnames(graph: CodeGraph, module: str, chunks: list[Chunk], kind: str) -> set[str]:
+    """The qualified-name set of derived node specs of ``kind``."""
+    return {
+        node.qualified_name
+        for node in graph._derive_nodes(module, chunks)  # noqa: SLF001 - derivation seam
+        if node.kind == kind
+    }
+
+
+def _derived_refs(
+    graph: CodeGraph,
+    module: str,
+    chunks: list[Chunk],
+    kind: str,
+    src: str,
+    *,
+    tier: str,
+    file_path: str,
+) -> set[str]:
+    """The ``dst`` set of derived edge specs of ``kind`` with ``src == src``."""
+    edges = graph._derive_edges(  # noqa: SLF001 - derivation seam
+        module, chunks, tier=tier, file_path=file_path
     )
-    dsts: set[str] = set()
-    while result.has_next():
-        dsts.add(str(kz_row(result)[0]))
-    return dsts
+    return {edge.dst for edge in edges if edge.kind == kind and edge.src == src}
 
 
-def _node_qnames(graph: CodeGraph, kind: str) -> set[str]:
-    """The qualified-name set of ``CodeNode`` rows of ``kind``."""
-    result = kz_query(
-        graph.connection,
-        "MATCH (n:CodeNode) WHERE n.kind = $kind RETURN n.qualified_name",
-        {"kind": kind},
-    )
-    names: set[str] = set()
-    while result.has_next():
-        names.add(str(kz_row(result)[0]))
-    return names
-
-
-class TestSchemaAndConstruction:
-    """The graph is a Kùzu side-structure with the documented node tables."""
-
-    def test_creates_codenode_and_ref_tables(self, graph: CodeGraph) -> None:
-        """A fresh graph has exactly the ``CodeNode`` and ``Ref`` node tables."""
-        result = kz_query(graph.connection, "CALL show_tables() RETURN *")
-        columns = result.get_column_names()
-        name_index = columns.index("name")
-        names = set()
-        while result.has_next():
-            names.add(str(kz_row(result)[name_index]))
-        assert {"CodeNode", "Ref"} <= names
-
-    def test_codenode_table_has_documented_columns(self, graph: CodeGraph) -> None:
-        """``CodeNode`` carries id, kind, qualified_name, file_path, chunk_id, tier."""
-        assert self._column_names(graph, "CodeNode") >= {
-            "id",
-            "kind",
-            "qualified_name",
-            "file_path",
-            "chunk_id",
-            "tier",
-        }
-
-    def test_ref_table_has_documented_columns(self, graph: CodeGraph) -> None:
-        """``Ref`` carries src_qname, dst, kind, resolved, tier, file_path."""
-        assert self._column_names(graph, "Ref") >= {
-            "src_qname",
-            "dst",
-            "kind",
-            "resolved",
-            "tier",
-            "file_path",
-        }
-
-    def test_connection_property_returns_a_live_kuzu_connection(
-        self, graph: CodeGraph
-    ) -> None:
-        """The ``connection`` property exposes a usable Kùzu connection.
-
-        The divergence-reconcile wipe and the lifecycle close-probe both drive this
-        property, so it must return a live connection that answers a trivial query.
-        """
-        result = kz_query(graph.connection, "RETURN 1 AS one")
-        assert result.has_next()
-        assert int(kz_row(result)[0]) == 1
-
-    @staticmethod
-    def _column_names(graph: CodeGraph, table: str) -> set[str]:
-        """The property-name set of a Kùzu node table, via ``CALL table_info``."""
-        result = kz_query(graph.connection, f"CALL table_info('{table}') RETURN *")
-        columns = result.get_column_names()
-        name_index = columns.index("name")
-        names: set[str] = set()
-        while result.has_next():
-            names.add(str(kz_row(result)[name_index]))
-        return names
-
-
-class TestBuildFileGraphNodes:
-    """``build_file_graph`` derives the right node set from real AST chunks."""
+class TestDerivedNodes:
+    """``_derive_nodes`` derives the right node set from real AST chunks."""
 
     def test_synthesises_a_module_node(self, graph: CodeGraph, app_chunks: list[Chunk]) -> None:
-        """A file yields exactly one ``module`` node, qualified from its module name."""
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        result = kz_query(
-            graph.connection,
-            "MATCH (n:CodeNode) WHERE n.kind = $kind "
-            "RETURN n.qualified_name, n.tier, n.file_path",
-            {"kind": KIND_MODULE},
-        )
-        rows = []
-        while result.has_next():
-            rows.append(tuple(kz_row(result)))
-        assert len(rows) == 1
-        assert rows[0] == (APP_MODULE, SAMPLE_TIER, APP_PATH)
+        """A file yields exactly one ``module`` node, qualified from its module name.
+
+        Tier/file_path are storage stamps the shell applies, so the derived module
+        node's identity is its qualified name alone.
+        """
+        nodes = graph._derive_nodes(APP_MODULE, app_chunks)  # noqa: SLF001 - derivation seam
+        module_nodes = [node for node in nodes if node.kind == KIND_MODULE]
+        assert len(module_nodes) == 1
+        assert module_nodes[0].qualified_name == APP_MODULE
 
     def test_creates_a_class_node_per_class(
         self, graph: CodeGraph, app_chunks: list[Chunk]
     ) -> None:
         """Each top-level class becomes a ``class`` node with a dotted qualified name."""
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        assert _node_qnames(graph, KIND_CLASS) == {FQN_BASE, FQN_INDEX}
+        assert _derived_qnames(graph, APP_MODULE, app_chunks, KIND_CLASS) == {FQN_BASE, FQN_INDEX}
 
     def test_creates_a_method_node_per_method(
         self, graph: CodeGraph, app_chunks: list[Chunk]
     ) -> None:
         """Each method becomes a ``method`` node qualified by its class."""
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        assert _node_qnames(graph, KIND_METHOD) == {FQN_START, FQN_BOOT}
+        assert _derived_qnames(graph, APP_MODULE, app_chunks, KIND_METHOD) == {FQN_START, FQN_BOOT}
 
     def test_creates_a_function_node_per_top_level_function(
         self, graph: CodeGraph, app_chunks: list[Chunk]
     ) -> None:
         """Each top-level function becomes a ``function`` node."""
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        assert _node_qnames(graph, KIND_FUNCTION) == {FQN_LOAD_CONFIG}
+        assert _derived_qnames(graph, APP_MODULE, app_chunks, KIND_FUNCTION) == {FQN_LOAD_CONFIG}
 
     def test_module_node_chunk_id_is_none(
         self, graph: CodeGraph, app_chunks: list[Chunk]
     ) -> None:
-        """The synthesised module node carries ``chunk_id is None`` (it has no chunk).
-
-        The empty-string on-the-wire encoding for the chunk-less module node must
-        round-trip back to ``None`` through the public node decode.
-        """
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        # blast_radius decodes nodes via the public path; the module node is reached
-        # as a reverse dependent of one of its own defined symbols.
-        modules = [
-            node
-            for node in graph.blast_radius(FQN_BASE, depth=3, max_results=50)
-            if node.kind == KIND_MODULE
-        ]
-        assert modules, "the module node must be reachable as a reverse dependent"
-        assert all(node.chunk_id is None for node in modules)
+        """The synthesised module node carries ``chunk_id is None`` (it has no chunk)."""
+        nodes = graph._derive_nodes(APP_MODULE, app_chunks)  # noqa: SLF001 - derivation seam
+        module_nodes = [node for node in nodes if node.kind == KIND_MODULE]
+        assert module_nodes, "a module node must be derived"
+        assert all(node.chunk_id is None for node in module_nodes)
 
 
 class TestStructuralDefinesEdges:
@@ -422,19 +369,19 @@ class TestStructuralDefinesEdges:
         self, graph: CodeGraph, app_chunks: list[Chunk]
     ) -> None:
         """The module ``defines`` each top-level class and function (not methods)."""
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        assert _refs(graph, EDGE_DEFINES, APP_MODULE) == {
-            FQN_BASE,
-            FQN_INDEX,
-            FQN_LOAD_CONFIG,
-        }
+        assert _derived_refs(
+            graph, APP_MODULE, app_chunks, EDGE_DEFINES, APP_MODULE,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        ) == {FQN_BASE, FQN_INDEX, FQN_LOAD_CONFIG}
 
     def test_defines_edges_class_to_its_methods(
         self, graph: CodeGraph, app_chunks: list[Chunk]
     ) -> None:
         """A class ``defines`` exactly its own methods."""
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        assert _refs(graph, EDGE_DEFINES, FQN_INDEX) == {FQN_BOOT}
+        assert _derived_refs(
+            graph, APP_MODULE, app_chunks, EDGE_DEFINES, FQN_INDEX,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        ) == {FQN_BOOT}
 
     def test_defines_emitted_without_project_roots(
         self, graph: CodeGraph, app_chunks: list[Chunk]
@@ -445,17 +392,27 @@ class TestStructuralDefinesEdges:
         structural ``defines`` edges must still be present (the object stays useful
         without roots), while the resolution-only kinds are absent.
         """
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        assert _refs(graph, EDGE_DEFINES, APP_MODULE)  # structural defines present
-        # No resolution → no inherits/imports/calls for this file.
-        assert _refs(graph, EDGE_INHERITS, FQN_INDEX) == set()
-        assert _refs(graph, EDGE_IMPORTS, APP_MODULE) == set()
+        assert _derived_refs(
+            graph, APP_MODULE, app_chunks, EDGE_DEFINES, APP_MODULE,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        )  # structural defines present
+        # No resolution → no inherits/imports for this file.
+        assert _derived_refs(
+            graph, APP_MODULE, app_chunks, EDGE_INHERITS, FQN_INDEX,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        ) == set()
+        assert _derived_refs(
+            graph, APP_MODULE, app_chunks, EDGE_IMPORTS, APP_MODULE,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        ) == set()
 
 
 class TestResolvedEdges:
     """``imports`` / ``inherits`` / ``calls`` are astroid-RESOLVED (the contract change)."""
 
-    def test_inherits_edge_is_the_resolved_fqn_not_bare(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
+    def test_inherits_edge_is_the_resolved_fqn_not_bare(
+        self, resolved_graph: tuple[CodeGraph, Path]
+    ) -> None:
         """``IndexService`` inherits ``demo.service.BaseService`` — the FQN, NOT bare.
 
         Independent oracle: ``BaseService`` is defined in APP_SOURCE in the SAME
@@ -464,12 +421,16 @@ class TestResolvedEdges:
         resolved FQN.
         """
         graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        bases = _refs(graph, EDGE_INHERITS, FQN_INDEX)
+        bases = _derived_refs(
+            graph, APP_MODULE, _chunk(APP_PATH, APP_SOURCE), EDGE_INHERITS, FQN_INDEX,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        )
         assert bases == {FQN_BASE}
         assert "BaseService" not in bases, "the bare name must NOT be stored — resolution wins"
 
-    def test_in_project_import_resolves_to_symbol_fqn(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
+    def test_in_project_import_resolves_to_symbol_fqn(
+        self, resolved_graph: tuple[CodeGraph, Path]
+    ) -> None:
         """``from demo.errors import LoadError`` resolves to the symbol FQN.
 
         Independent oracle: ERRORS_SOURCE defines ``LoadError`` in ``demo/errors.py``
@@ -477,10 +438,14 @@ class TestResolvedEdges:
         target, not the bare module name.
         """
         graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        assert FQN_LOAD_ERROR in _refs(graph, EDGE_IMPORTS, APP_MODULE)
+        assert FQN_LOAD_ERROR in _derived_refs(
+            graph, APP_MODULE, _chunk(APP_PATH, APP_SOURCE), EDGE_IMPORTS, APP_MODULE,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        )
 
-    def test_external_imports_are_dropped(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
+    def test_external_imports_are_dropped(
+        self, resolved_graph: tuple[CodeGraph, Path]
+    ) -> None:
         """``json`` and ``pathlib`` (resolved + external) are DROPPED, not kept.
 
         Independent oracle: both are stdlib, so they resolve EXTERNAL and the
@@ -488,14 +453,18 @@ class TestResolvedEdges:
         precision win.
         """
         graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        imports = _refs(graph, EDGE_IMPORTS, APP_MODULE)
+        imports = _derived_refs(
+            graph, APP_MODULE, _chunk(APP_PATH, APP_SOURCE), EDGE_IMPORTS, APP_MODULE,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        )
         assert "json" not in imports
         assert "pathlib" not in imports
         # Only the in-project symbol import survives.
         assert imports == {FQN_LOAD_ERROR}
 
-    def test_in_project_call_resolves_to_callee_fqn(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
+    def test_in_project_call_resolves_to_callee_fqn(
+        self, resolved_graph: tuple[CodeGraph, Path]
+    ) -> None:
         """``IndexService.boot`` calls resolve to in-project callee FQNs.
 
         Independent oracle: ``boot`` calls ``load_config(path)`` (→ the top-level
@@ -504,20 +473,26 @@ class TestResolvedEdges:
         as resolved FQNs.
         """
         graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        called = _refs(graph, EDGE_CALLS, FQN_BOOT)
+        called = _derived_refs(
+            graph, APP_MODULE, _chunk(APP_PATH, APP_SOURCE), EDGE_CALLS, FQN_BOOT,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        )
         assert FQN_LOAD_CONFIG in called
         assert FQN_START in called
 
-    def test_external_calls_are_dropped(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
+    def test_external_calls_are_dropped(
+        self, resolved_graph: tuple[CodeGraph, Path]
+    ) -> None:
         """``load_config``'s stdlib calls (``json.loads`` / ``Path``) are DROPPED.
 
         Independent oracle: ``load_config`` calls only stdlib (``json.loads``,
         ``Path(...).read_text()``), all resolved EXTERNAL, so it has NO kept calls.
         """
         graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        assert _refs(graph, EDGE_CALLS, FQN_LOAD_CONFIG) == set()
+        assert _derived_refs(
+            graph, APP_MODULE, _chunk(APP_PATH, APP_SOURCE), EDGE_CALLS, FQN_LOAD_CONFIG,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        ) == set()
 
     def test_unresolvable_reference_falls_back_to_bare_name(self, tmp_path: Path) -> None:
         """An un-inferable reference is KEPT as its bare name (``resolved=False``).
@@ -541,67 +516,80 @@ class TestResolvedEdges:
             '''
         )
         (project_root / "pkg" / "widget.py").write_text(mystery_source, encoding="utf-8")
-        graph = CodeGraph(
-            str(tmp_path / "graph.kuzu"),
+        graph = _new_graph(
+            tmp_path,
             tier_roots={SAMPLE_TIER: project_root},
             project_roots=[project_root],
         )
         try:
-            graph.build_file_graph(
-                SAMPLE_TIER,
-                "pkg/widget.py",
-                _chunk("pkg/widget.py", mystery_source),
-                module_name="pkg.widget",
+            bases = _derived_refs(
+                graph, "pkg.widget", _chunk("pkg/widget.py", mystery_source),
+                EDGE_INHERITS, "pkg.widget.Widget",
+                tier=SAMPLE_TIER, file_path="pkg/widget.py",
             )
-            bases = _refs(graph, EDGE_INHERITS, "pkg.widget.Widget")
             # The bare written base is kept (never dropped) because astroid could
             # not infer it — the conservative fallback.
             assert "MysteryBase" in bases
         finally:
-            graph.close()
+            _close_graph(graph)
 
-    def test_resolved_flag_records_resolution_status(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
+    def test_resolved_flag_records_resolution_status(
+        self, resolved_graph: tuple[CodeGraph, Path]
+    ) -> None:
         """The ``resolved`` flag is ``True`` on the in-project inferred inherits edge."""
         graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        result = graph.connection.execute(
-            "MATCH (r:Ref) WHERE r.kind = $kind AND r.src_qname = $src "
-            "RETURN r.dst, r.resolved",
-            {"kind": EDGE_INHERITS, "src": FQN_INDEX},
+        edges = graph._derive_edges(  # noqa: SLF001 - derivation seam
+            APP_MODULE, _chunk(APP_PATH, APP_SOURCE), tier=SAMPLE_TIER, file_path=APP_PATH
         )
-        rows = {}
-        while result.has_next():
-            dst, resolved = result.get_next()
-            rows[str(dst)] = bool(resolved)
-        assert rows.get(FQN_BASE) is True
+        resolved_by_dst = {
+            edge.dst: edge.resolved
+            for edge in edges
+            if edge.kind == EDGE_INHERITS and edge.src == FQN_INDEX
+        }
+        assert resolved_by_dst.get(FQN_BASE) is True
 
 
-class TestPerFileRebuildTransactional:
-    """A per-file rebuild (delete + rebuild) leaves correct state and NO orphans."""
+class TestDerivationFreshness:
+    """The derivation is deterministic and re-derives fresh from the current chunks.
 
-    def test_rebuild_replaces_nodes_no_duplicates(
+    The kuzu shell's per-file replace semantics (delete + rebuild leaves no orphan)
+    reduce, at the derivation seam, to two properties: the derivation is a pure,
+    self-deduped function of the chunk set, and re-deriving from EDITED chunks
+    yields ONLY the surviving symbols/edges — no fabricated leftover. The storage
+    delete/tier-scoping behaviour is pinned against the live SurrealDB engine in
+    ``test_graph_surreal.py`` (it has no derivation analog — the specs carry no
+    tier/file_path).
+    """
+
+    def test_derivation_is_deterministic_and_deduped(
         self, graph: CodeGraph, app_chunks: list[Chunk]
     ) -> None:
-        """Building the same file twice does not double its nodes."""
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        first = self._file_node_count(graph, SAMPLE_TIER, APP_PATH)
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        second = self._file_node_count(graph, SAMPLE_TIER, APP_PATH)
-        assert first == second
-        assert first > 0  # sanity: the file actually produced nodes
+        """Deriving the same file twice yields identical, non-duplicated node specs."""
+        first = graph._derive_nodes(APP_MODULE, app_chunks)  # noqa: SLF001 - derivation seam
+        second = graph._derive_nodes(APP_MODULE, app_chunks)  # noqa: SLF001 - derivation seam
+        first_keys = [(node.kind, node.qualified_name) for node in first]
+        second_keys = [(node.kind, node.qualified_name) for node in second]
+        assert first_keys == second_keys  # deterministic
+        assert len(first_keys) == len(set(first_keys))  # no duplicate (kind, qualified_name)
+        assert first_keys  # sanity: the file actually produced nodes
 
-    def test_rebuild_after_edit_drops_removed_symbols(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """Editing a file to remove a class drops its nodes AND its resolved edges.
+    def test_fresh_derivation_drops_removed_symbols(
+        self, resolved_graph: tuple[CodeGraph, Path]
+    ) -> None:
+        """Re-deriving from EDITED chunks drops removed symbols AND their resolved edges.
 
-        The freshness contract: a delete + rebuild must leave NO orphan reference
-        pointing at a symbol that no longer exists in the file. Run on the
-        resolution-enabled graph so the removed ``inherits`` edge is a RESOLVED one.
+        The freshness contract: a re-derive from the trimmed chunks must leave NO
+        node or reference pointing at a symbol that no longer exists in the file.
+        Run on the resolution-enabled core so the removed ``inherits`` edge is a
+        RESOLVED one (the disk edit is re-read via astroid's per-target evict).
         """
         graph, project_root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        assert _refs(graph, EDGE_INHERITS, FQN_INDEX) == {FQN_BASE}, "seed: inherits edge present"
+        assert _derived_refs(
+            graph, APP_MODULE, _chunk(APP_PATH, APP_SOURCE), EDGE_INHERITS, FQN_INDEX,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        ) == {FQN_BASE}, "seed: inherits edge present"
 
-        # Edit on disk AND rebuild from the trimmed chunks: only the helper survives.
+        # Edit on disk AND re-derive from the trimmed chunks: only the helper survives.
         trimmed = textwrap.dedent(
             '''\
             """Trimmed: only the helper survives."""
@@ -614,375 +602,21 @@ class TestPerFileRebuildTransactional:
             '''
         )
         (project_root / "demo" / "service.py").write_text(trimmed, encoding="utf-8")
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, trimmed), module_name=APP_MODULE)
+        trimmed_chunks = _chunk(APP_PATH, trimmed)
 
-        remaining = _node_qnames(graph, KIND_CLASS) | _node_qnames(graph, KIND_METHOD) | _node_qnames(
-            graph, KIND_FUNCTION
+        remaining = (
+            _derived_qnames(graph, APP_MODULE, trimmed_chunks, KIND_CLASS)
+            | _derived_qnames(graph, APP_MODULE, trimmed_chunks, KIND_METHOD)
+            | _derived_qnames(graph, APP_MODULE, trimmed_chunks, KIND_FUNCTION)
         )
         assert FQN_INDEX not in remaining
         assert FQN_START not in remaining
         assert FQN_LOAD_CONFIG in remaining
-        # No orphan inherits edge to the deleted subclass survives.
-        assert _refs(graph, EDGE_INHERITS, FQN_INDEX) == set()
-
-    def test_delete_file_graph_removes_all_rows(
-        self, graph: CodeGraph, app_chunks: list[Chunk]
-    ) -> None:
-        """``delete_file_graph`` removes every node and reference for that (tier, file)."""
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, app_chunks, module_name=APP_MODULE)
-        graph.delete_file_graph(SAMPLE_TIER, APP_PATH)
-        assert self._file_node_count(graph, SAMPLE_TIER, APP_PATH) == 0
-        # And the file's own references are gone (its module/class/method srcs removed).
-        result = kz_query(
-            graph.connection,
-            "MATCH (r:Ref) WHERE r.tier = $tier AND r.file_path = $file_path RETURN count(r)",
-            {"tier": SAMPLE_TIER, "file_path": APP_PATH},
-        )
-        assert int(kz_row(result)[0]) == 0
-
-    def test_delete_is_tier_scoped(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """Deleting one tier's copy of a path leaves another tier's copy intact (C1)."""
-        graph, _root = resolved_graph
-        chunks = _chunk(APP_PATH, APP_SOURCE)
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, chunks, module_name=APP_MODULE)
-        graph.build_file_graph(OTHER_TIER, APP_PATH, chunks, module_name=APP_MODULE)
-        graph.delete_file_graph(SAMPLE_TIER, APP_PATH)
-        assert self._file_node_count(graph, OTHER_TIER, APP_PATH) > 0
-
-    @staticmethod
-    def _file_node_count(graph: CodeGraph, tier: str, file_path: str) -> int:
-        """The number of ``CodeNode`` rows for one ``(tier, file_path)``."""
-        result = kz_query(
-            graph.connection,
-            "MATCH (n:CodeNode) WHERE n.tier = $tier AND n.file_path = $file_path "
-            "RETURN count(n)",
-            {"tier": tier, "file_path": file_path},
-        )
-        return int(kz_row(result)[0])
-
-
-class TestIndexedFileCount:
-    """``indexed_file_count`` counts DISTINCT ``(tier, file_path)`` over CodeNode."""
-
-    def test_zero_for_fresh_graph(self, graph: CodeGraph) -> None:
-        """A fresh/wiped graph reports zero indexed files (the FP-04 trigger)."""
-        assert graph.indexed_file_count() == 0
-
-    def test_counts_distinct_tier_file_pairs(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """The same path under two tiers counts as two distinct files (C1)."""
-        graph, _root = resolved_graph
-        chunks = _chunk(APP_PATH, APP_SOURCE)
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, chunks, module_name=APP_MODULE)
-        assert graph.indexed_file_count() == 1
-        graph.build_file_graph(OTHER_TIER, APP_PATH, chunks, module_name=APP_MODULE)
-        assert graph.indexed_file_count() == 2
-
-
-class TestWhatImports:
-    """``what_imports`` reverses the import edge: who pulls in a target?"""
-
-    def test_returns_modules_that_import_the_resolved_symbol(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """The app imports ``demo.errors.LoadError``; ``what_imports`` finds it by FQN.
-
-        Under the resolved contract the in-project import dst is the SYMBOL FQN, so
-        a query for that FQN finds the importing module.
-        """
-        graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        importers = {node.qualified_name for node in graph.what_imports(FQN_LOAD_ERROR)}
-        assert APP_MODULE in importers
-
-    def test_what_imports_matches_by_bare_name_seam(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """A bare-name query reaches the resolved symbol import via the bare seam.
-
-        ``what_imports`` matches a ``dst`` by FQN OR bare last segment, so a query
-        for the bare ``LoadError`` reaches the ``demo.errors.LoadError`` import.
-        """
-        graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        importers = {node.qualified_name for node in graph.what_imports("LoadError")}
-        assert APP_MODULE in importers
-
-    def test_returns_empty_for_unimported_target(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """A target nobody imports yields an empty result, not an error."""
-        graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        assert list(graph.what_imports("nonexistent.module")) == []
-
-
-class TestBlastRadius:
-    """``blast_radius`` is a BOUNDED reverse-reference transitive closure."""
-
-    def test_finds_direct_reverse_dependents(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """A symbol's direct dependents (one hop back) are in its blast radius.
-
-        ``IndexService`` inherits ``demo.service.BaseService`` (a RESOLVED reverse
-        edge), so the blast radius of ``BaseService`` includes ``IndexService``.
-        """
-        graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        affected = {
-            node.qualified_name
-            for node in graph.blast_radius(FQN_BASE, depth=3, max_results=100)
-        }
-        assert FQN_INDEX in affected
-
-    def test_respects_depth_bound(self, tmp_path: Path) -> None:
-        """A deep inheritance chain is truncated at ``depth`` hops, never beyond.
-
-        Build a linear chain ``N0 <- N1 <- ... <- N7`` on disk (each inherits the
-        previous, RESOLVED in-project edges) and assert the reverse closure from
-        ``N0`` stops exactly at ``depth`` hops.
-        """
-        chain_length = 8
-        depth_bound = 3
-        lines = ['"""A deep linear inheritance chain."""', "", "", "class N0:", "    pass", ""]
-        for index in range(1, chain_length):
-            lines += ["", f"class N{index}(N{index - 1}):", "    pass", ""]
-        chain_source = "\n".join(lines) + "\n"
-
-        project_root = tmp_path / "project"
-        (project_root / "demo").mkdir(parents=True)
-        (project_root / "demo" / "__init__.py").write_text("", encoding="utf-8")
-        (project_root / "demo" / "chain.py").write_text(chain_source, encoding="utf-8")
-        graph = CodeGraph(
-            str(tmp_path / "graph.kuzu"),
-            tier_roots={SAMPLE_TIER: project_root},
-            project_roots=[project_root],
-        )
-        try:
-            graph.build_file_graph(
-                SAMPLE_TIER, "demo/chain.py", _chunk("demo/chain.py", chain_source),
-                module_name="demo.chain",
-            )
-            affected = {
-                node.qualified_name
-                for node in graph.blast_radius("demo.chain.N0", depth=depth_bound, max_results=1000)
-            }
-            assert "demo.chain.N1" in affected  # 1 hop
-            assert f"demo.chain.N{depth_bound}" in affected  # exactly at the bound
-            assert f"demo.chain.N{depth_bound + 1}" not in affected  # beyond the bound
-            assert f"demo.chain.N{chain_length - 1}" not in affected  # far beyond
-        finally:
-            graph.close()
-
-    def test_respects_max_results_cap(self, tmp_path: Path) -> None:
-        """A huge fan-out is capped at ``max_results`` — the closure cannot blow up.
-
-        A star: many subclasses of one base (all RESOLVED in-project inherits). The
-        base's reverse closure has ``fan_out`` dependents; the cap clamps it.
-        """
-        fan_out = 200
-        cap = 25
-        lines = ['"""A wide fan-out: many subclasses of one base."""', "", "class Hub:", "    pass", ""]
-        for index in range(fan_out):
-            lines += ["", f"class Leaf{index}(Hub):", "    pass", ""]
-        star_source = "\n".join(lines) + "\n"
-
-        project_root = tmp_path / "project"
-        (project_root / "demo").mkdir(parents=True)
-        (project_root / "demo" / "__init__.py").write_text("", encoding="utf-8")
-        (project_root / "demo" / "star.py").write_text(star_source, encoding="utf-8")
-        graph = CodeGraph(
-            str(tmp_path / "graph.kuzu"),
-            tier_roots={SAMPLE_TIER: project_root},
-            project_roots=[project_root],
-        )
-        try:
-            graph.build_file_graph(
-                SAMPLE_TIER, "demo/star.py", _chunk("demo/star.py", star_source),
-                module_name="demo.star",
-            )
-            affected = list(graph.blast_radius("demo.star.Hub", depth=5, max_results=cap))
-            assert len(affected) <= cap  # hard ceiling
-            assert len(affected) > 0  # clamps, not zeroes
-        finally:
-            graph.close()
-
-
-# ===========================================================================
-# 4b. what_imports / blast_radius by MODULE TARGET — the PARITY ANCHOR.
-#
-# Kùzu's ``what_imports``/``_reverse_neighbours`` already support a
-# "STARTS WITH '<module>.'" prefix arm so a MODULE-NAME query finds every
-# ``from <module> import <symbol>`` importer (the stored ``imports`` edge
-# ``dst`` is the resolved SYMBOL fqn, e.g. ``demo.reflib.widget``, never the bare
-# module name). That arm WORKS today but was never pinned by an explicit test —
-# this section locks it down so the SurrealDB port (``graph_surreal.py``) has an
-# oracle it cannot silently drift from. These tests must PASS unmodified; a
-# failure here means the Kùzu ORACLE itself moved, not the port.
-#
-# ORACLE: every expected importer set is read straight off the ALREADY-AUTHORED
-# fixture sources this file uses elsewhere (REFCONSUMER_SOURCE / REFTEST_SOURCE /
-# MODLIB_APP_SOURCE / TEST_SOURCE) — never re-derived from the engine.
-# ===========================================================================
-
-
-class TestWhatImportsModuleTarget:
-    """``what_imports`` queried BY MODULE NAME finds ``from module import X`` importers."""
-
-    def test_module_target_finds_multiple_from_import_importers(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """``what_imports("demo.reflib")`` finds every ``from demo.reflib import`` site.
-
-        Independent oracle, read off REFCONSUMER_SOURCE (``from demo.reflib import
-        widget``) and REFTEST_SOURCE (``from demo.reflib import widget, lonely``):
-        both ``demo.consumer`` and ``tests.test_reflib`` import a symbol FROM
-        ``demo.reflib``, queried BY THE MODULE'S OWN NAME (neither importer's own
-        FQN).
-        """
-        graph, _root = reflib_graph
-        importers = {node.qualified_name for node in graph.what_imports(REFLIB_MODULE)}
-        assert importers == {REFCONSUMER_MODULE, REFTEST_MODULE}
-
-    def test_module_target_finds_single_from_import_importer(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
-        """``what_imports("pkg.helpers")`` finds ``pkg.app`` (the only importer).
-
-        Independent oracle: MODLIB_APP_SOURCE reads ``from pkg.helpers import
-        build`` — the sole importer of the ``pkg.helpers`` module, queried by the
-        module's own name.
-        """
-        graph, _root = modlib_graph
-        importers = {node.qualified_name for node in graph.what_imports(MODLIB_HELPERS_MODULE)}
-        assert importers == {MODLIB_APP_MODULE}
-
-    def test_dotted_module_target_finds_its_from_import_importer(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """A multi-segment dotted module target still resolves its importer.
-
-        Independent oracle: TEST_SOURCE reads ``from demo.service import
-        IndexService`` — ``tests.test_service`` imports a SYMBOL from the dotted
-        module ``demo.service``, queried by the module's own dotted name. Only the
-        app + test files need to be built (the ``Ref.dst`` string match needs no
-        node for ``demo.errors`` itself — same convention as this file's other
-        ``what_imports`` tests, e.g. ``test_returns_modules_that_import_the_
-        resolved_symbol``).
-        """
-        graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        graph.build_file_graph(
-            SAMPLE_TIER, TEST_PATH, _chunk(TEST_PATH, TEST_SOURCE), module_name=TEST_MODULE
-        )
-        importers = {node.qualified_name for node in graph.what_imports(APP_MODULE)}
-        assert TEST_MODULE in importers
-
-    def test_module_target_prefix_does_not_leak_across_sibling_modules(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
-        """A naive string-prefix match must NOT confuse ``pkg.a`` with ``pkg.ab``.
-
-        Independent oracle: MODLIB_APP_SOURCE imports ``pkg.ab.ab_symbol`` (``from
-        pkg.ab import ab_symbol``) but NEVER imports anything from ``pkg.a``. The
-        literal string ``"pkg.a"`` IS a Python string-prefix of
-        ``"pkg.ab.ab_symbol"`` — an anchor-less ``STARTS WITH`` would wrongly
-        report ``pkg.app`` as an importer of ``pkg.a``. Kùzu's arm is already
-        trailing-dot anchored (the same anchor convention ``dead_code``'s module
-        roll-up pins in ``test_module_prefix_scoping_uses_trailing_dot_anchor``),
-        so ``pkg.a`` returns nothing and ``pkg.ab`` returns exactly ``pkg.app``.
-        """
-        graph, _root = modlib_graph
-        assert list(graph.what_imports(MODLIB_A_MODULE)) == []
-        ab_importers = {node.qualified_name for node in graph.what_imports(MODLIB_AB_MODULE)}
-        assert ab_importers == {MODLIB_APP_MODULE}
-
-    def test_symbol_target_lookup_is_unaffected_by_the_module_target_arm(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """Regression guard: a SYMBOL-target query keeps ITS pre-existing behaviour.
-
-        Independent oracle, unchanged from ``TestWhatImports``: ``widget``'s two
-        importers by its OWN fqn (``demo.reflib.widget``, not the module name).
-        The module-prefix arm is strictly additive — it must never replace or
-        shadow the existing FQN/bare match.
-        """
-        graph, _root = reflib_graph
-        importers = {node.qualified_name for node in graph.what_imports(FQN_WIDGET)}
-        assert importers == {REFCONSUMER_MODULE, REFTEST_MODULE}
-
-
-class TestBlastRadiusModuleTarget:
-    """``blast_radius`` reaches reverse-import dependents when a MODULE enters the walk."""
-
-    def test_module_target_at_the_root_reaches_its_from_import_importers(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """``blast_radius("demo.reflib", depth=3)`` reaches both module-level importers.
-
-        Independent oracle: identical to the ``what_imports`` oracle above — both
-        ``demo.consumer`` and ``tests.test_reflib`` import a symbol from
-        ``demo.reflib``, a single hop back from the module target itself.
-        ``depth=3`` is generous (matching this file's own
-        ``test_finds_direct_reverse_dependents`` convention for a 1-hop
-        assertion) so the case pins reachability, not an unrelated depth bound.
-        """
-        graph, _root = reflib_graph
-        affected = {
-            node.qualified_name
-            for node in graph.blast_radius(REFLIB_MODULE, depth=3, max_results=100)
-        }
-        assert REFCONSUMER_MODULE in affected
-        assert REFTEST_MODULE in affected
-
-    def test_module_enters_the_frontier_mid_walk_and_still_reaches_its_importer(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """``blast_radius(symbol)`` still finds a 2nd-hop importer of the 1st-hop MODULE.
-
-        Independent oracle, the audit's exact live-reproduced scenario: ``demo.
-        service`` imports the symbol ``demo.errors.LoadError`` (1 hop back from
-        LoadError reaches the MODULE node ``demo.service``, per APP_SOURCE's ``from
-        demo.errors import LoadError``); ``tests.test_service`` in turn imports a
-        SYMBOL from ``demo.service`` (TEST_SOURCE's ``from demo.service import
-        IndexService``), reachable only via the module-prefix arm once ``demo.
-        service`` — a bare module qualified_name, not a symbol fqn — enters the BFS
-        frontier at hop 2.
-        """
-        graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        graph.build_file_graph(
-            SAMPLE_TIER, TEST_PATH, _chunk(TEST_PATH, TEST_SOURCE), module_name=TEST_MODULE
-        )
-        affected = {
-            node.qualified_name
-            for node in graph.blast_radius(FQN_LOAD_ERROR, depth=3, max_results=100)
-        }
-        assert APP_MODULE in affected  # 1st hop: demo.service imports LoadError
-        assert TEST_MODULE in affected  # 2nd hop: test_service imports FROM demo.service
-
-
-class TestTestsFor:
-    """``tests_for`` links test nodes to a target by reference OR the name heuristic."""
-
-    def test_finds_test_by_reference_edge(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """A test module referencing the target's symbol is a test for it.
-
-        ``tests/test_service.py`` imports ``demo.service.IndexService`` and calls
-        ``boot``; it is a test-glob path with a resolved reference into the target,
-        so it is a test for ``IndexService``.
-        """
-        graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        graph.build_file_graph(
-            SAMPLE_TIER, TEST_PATH, _chunk(TEST_PATH, TEST_SOURCE), module_name=TEST_MODULE
-        )
-        related_files = {node.file_path for node in graph.tests_for(FQN_INDEX)}
-        assert TEST_PATH in related_files
-
-    def test_finds_test_by_name_heuristic(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """``test_boot`` is linked to symbol ``boot`` by the test_x ↔ x heuristic.
-
-        The app defines ``IndexService.boot``; the test file defines ``test_boot``.
-        Asked for tests of the symbol whose bare name is ``boot``, the heuristic
-        returns the ``test_boot`` node.
-        """
-        graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        graph.build_file_graph(
-            SAMPLE_TIER, TEST_PATH, _chunk(TEST_PATH, TEST_SOURCE), module_name=TEST_MODULE
-        )
-        related_names = {node.qualified_name for node in graph.tests_for(FQN_BOOT)}
-        assert any(name.endswith("test_boot") for name in related_names)
-
-    def test_does_not_return_non_test_nodes(self, resolved_graph) -> None:  # type: ignore[no-untyped-def]
-        """With no test file indexed, a symbol has no tests — non-test nodes excluded.
-
-        ``BaseService`` is defined and depended upon, but no test-glob file
-        references it, so ``tests_for`` returns nothing — it must not leak ordinary
-        application nodes that merely have references.
-        """
-        graph, _root = resolved_graph
-        graph.build_file_graph(SAMPLE_TIER, APP_PATH, _chunk(APP_PATH, APP_SOURCE), module_name=APP_MODULE)
-        assert list(graph.tests_for(FQN_BASE)) == []
+        # No orphan inherits edge to the deleted subclass is derived.
+        assert _derived_refs(
+            graph, APP_MODULE, trimmed_chunks, EDGE_INHERITS, FQN_INDEX,
+            tier=SAMPLE_TIER, file_path=APP_PATH,
+        ) == set()
 
 
 class TestImportableModuleName:
@@ -1061,10 +695,10 @@ class TestImportableModuleName:
 
 
 class TestGenericNoOdoo:
-    """The graph is generic over any Python AST chunks — zero Odoo coupling."""
+    """The derivation is generic over any Python AST chunks — zero Odoo coupling."""
 
     def test_handles_an_arbitrary_python_module(self, tmp_path: Path) -> None:
-        """A plain, non-Odoo module graphs cleanly with no domain-specific handling."""
+        """A plain, non-Odoo module derives cleanly with no domain-specific handling."""
         source = textwrap.dedent(
             '''\
             """A generic utility module — nothing Odoo about it."""
@@ -1080,32 +714,24 @@ class TestGenericNoOdoo:
         (project_root / "util").mkdir(parents=True)
         (project_root / "util" / "__init__.py").write_text("", encoding="utf-8")
         (project_root / "util" / "paths.py").write_text(source, encoding="utf-8")
-        graph = CodeGraph(
-            str(tmp_path / "graph.kuzu"),
+        graph = _new_graph(
+            tmp_path,
             tier_roots={SAMPLE_TIER: project_root},
             project_roots=[project_root],
         )
         try:
-            graph.build_file_graph(
-                SAMPLE_TIER, "util/paths.py", _chunk("util/paths.py", source),
-                module_name="util.paths",
-            )
-            kinds = (
-                {KIND_MODULE} if _node_qnames(graph, KIND_MODULE) else set()
-            ) | (
-                {KIND_CLASS} if _node_qnames(graph, KIND_CLASS) else set()
-            ) | (
-                {KIND_METHOD} if _node_qnames(graph, KIND_METHOD) else set()
-            ) | (
-                {KIND_FUNCTION} if _node_qnames(graph, KIND_FUNCTION) else set()
-            )
+            chunks = _chunk("util/paths.py", source)
+            kinds = {node.kind for node in graph._derive_nodes("util.paths", chunks)}  # noqa: SLF001
             # Only the four generic kinds appear — no Odoo-flavoured node kind.
             assert kinds <= {KIND_MODULE, KIND_CLASS, KIND_METHOD, KIND_FUNCTION}
-            assert kinds  # something was graphed
+            assert kinds  # something was derived
             # ``os`` is stdlib → resolved external → DROPPED (the precision win).
-            assert "os" not in _refs(graph, EDGE_IMPORTS, "util.paths")
+            assert "os" not in _derived_refs(
+                graph, "util.paths", chunks, EDGE_IMPORTS, "util.paths",
+                tier=SAMPLE_TIER, file_path="util/paths.py",
+            )
         finally:
-            graph.close()
+            _close_graph(graph)
 
 
 class TestResolutionCachePoisoningGuard:
@@ -1121,15 +747,15 @@ class TestResolutionCachePoisoningGuard:
 
     The fix moves the guarantee UPSTREAM: the chunker's structural parse no longer
     follows / resolves imports, so it leaves NO cached import FAILURE in astroid's
-    shared manager (pinned at the unit level by
-    ``TestStructuralParseLeavesNoNegativeImportResidue``). With the poison gone,
-    the graph drops the per-file whole-cache wipe and the dependency cache PERSISTS
-    across files within a sweep — parsed ~once per sweep, not once per file.
+    shared manager. With the poison gone, the derivation drops the per-file
+    whole-cache wipe and the dependency cache PERSISTS across files within a sweep
+    — parsed ~once per sweep, not once per file.
 
-    These tests pin the POST-FIX property DIRECTLY: a cross-module in-project
-    reference still resolves to its FQN after the real chunker has run over many
-    in-project modules — and it does so WITHOUT any per-file cache clear. They fail
-    if the chunker's structural parse ever starts poisoning the resolver again.
+    These tests pin the POST-FIX property DIRECTLY at the derivation seam: a
+    cross-module in-project reference still resolves to its FQN after the real
+    chunker has run over many in-project modules — and it does so WITHOUT any
+    per-file cache clear. They fail if the chunker's structural parse ever starts
+    poisoning the resolver again.
     """
 
     @staticmethod
@@ -1161,22 +787,26 @@ class TestResolutionCachePoisoningGuard:
     ) -> None:
         root = tmp_path / "proj"
         base_src, service_src = self._write_two_module_pkg(root)
-        graph = CodeGraph(
-            str(tmp_path / "graph.kuzu"),
+        graph = _new_graph(
+            tmp_path,
             tier_roots={SAMPLE_TIER: root},
             project_roots=[root],
         )
         try:
             # Production order: run the REAL chunker over BOTH modules first
-            # (the structural parse that USED to poison the manager), THEN graph.
+            # (the structural parse that USED to poison the manager), THEN derive.
             _chunk("pkg/base.py", base_src)
             _chunk("pkg/service.py", service_src)
-            graph.build_file_graph(
-                SAMPLE_TIER, "pkg/service.py", _chunk("pkg/service.py", service_src),
-                module_name="pkg.service",
+            inherits = _derived_refs(
+                graph, "pkg.service", _chunk("pkg/service.py", service_src),
+                EDGE_INHERITS, "pkg.service.Service",
+                tier=SAMPLE_TIER, file_path="pkg/service.py",
             )
-            inherits = _refs(graph, EDGE_INHERITS, "pkg.service.Service")
-            calls = _refs(graph, EDGE_CALLS, "pkg.service.Service.run")
+            calls = _derived_refs(
+                graph, "pkg.service", _chunk("pkg/service.py", service_src),
+                EDGE_CALLS, "pkg.service.Service.run",
+                tier=SAMPLE_TIER, file_path="pkg/service.py",
+            )
             # Cross-module references must carry the in-project FQN. The bare name is
             # the degraded form that appears iff the chunker poisons the resolver.
             assert "pkg.base.Base" in inherits, (
@@ -1187,7 +817,7 @@ class TestResolutionCachePoisoningGuard:
             )
             assert "Base" not in inherits and "helper" not in calls
         finally:
-            graph.close()
+            _close_graph(graph)
 
     def test_resolution_survives_without_a_per_file_cache_clear(
         self,
@@ -1208,20 +838,24 @@ class TestResolutionCachePoisoningGuard:
 
         root = tmp_path / "proj"
         base_src, service_src = self._write_two_module_pkg(root)
-        graph = CodeGraph(
-            str(tmp_path / "graph.kuzu"),
+        graph = _new_graph(
+            tmp_path,
             tier_roots={SAMPLE_TIER: root},
             project_roots=[root],
         )
         try:
             _chunk("pkg/base.py", base_src)
             _chunk("pkg/service.py", service_src)
-            graph.build_file_graph(
-                SAMPLE_TIER, "pkg/service.py", _chunk("pkg/service.py", service_src),
-                module_name="pkg.service",
+            inherits = _derived_refs(
+                graph, "pkg.service", _chunk("pkg/service.py", service_src),
+                EDGE_INHERITS, "pkg.service.Service",
+                tier=SAMPLE_TIER, file_path="pkg/service.py",
             )
-            inherits = _refs(graph, EDGE_INHERITS, "pkg.service.Service")
-            calls = _refs(graph, EDGE_CALLS, "pkg.service.Service.run")
+            calls = _derived_refs(
+                graph, "pkg.service", _chunk("pkg/service.py", service_src),
+                EDGE_CALLS, "pkg.service.Service.run",
+                tier=SAMPLE_TIER, file_path="pkg/service.py",
+            )
             assert "pkg.base.Base" in inherits, (
                 "with the per-file clear neutered, the chunker poisoned resolution; "
                 f"got {inherits!r}"
@@ -1231,7 +865,7 @@ class TestResolutionCachePoisoningGuard:
                 f"got {calls!r}"
             )
         finally:
-            graph.close()
+            _close_graph(graph)
 
     def test_common_dependency_is_parsed_once_across_a_sweep(
         self,
@@ -1240,7 +874,7 @@ class TestResolutionCachePoisoningGuard:
         """A dependency shared by N files is parsed ~once per sweep, not once per file.
 
         The performance invariant. ``N`` in-project consumers all inherit from one
-        common ``base`` module. Building all N file slices in one sweep must parse
+        common ``base`` module. Deriving all N file slices in one sweep must parse
         ``base.py`` from disk AT MOST ONCE — the warm dependency cache is reused
         across files. Under the OLD per-file whole-cache wipe this was ``N`` (the
         clear threw ``base`` away between every file), so this test FAILS pre-fix
@@ -1273,14 +907,14 @@ class TestResolutionCachePoisoningGuard:
                 base_parse_count["n"] += 1
             return original_file_build(self, path, modname)
 
-        graph = CodeGraph(
-            str(tmp_path / "graph.kuzu"),
+        graph = _new_graph(
+            tmp_path,
             tier_roots={SAMPLE_TIER: root},
             project_roots=[root],
         )
         try:
-            # Chunk everything first (production order), then graph each consumer in
-            # one sweep. The dependency must be parsed from file at most once.
+            # Chunk everything first (production order), then derive each consumer
+            # in one sweep. The dependency must be parsed from file at most once.
             for index in range(consumer_count):
                 src = (root / "pkg" / f"c{index}.py").read_text(encoding="utf-8")
                 _chunk(f"pkg/c{index}.py", src)
@@ -1288,14 +922,12 @@ class TestResolutionCachePoisoningGuard:
             try:
                 for index in range(consumer_count):
                     src = (root / "pkg" / f"c{index}.py").read_text(encoding="utf-8")
-                    graph.build_file_graph(
-                        SAMPLE_TIER,
-                        f"pkg/c{index}.py",
-                        _chunk(f"pkg/c{index}.py", src),
-                        module_name=f"pkg.c{index}",
+                    inherits = _derived_refs(
+                        graph, f"pkg.c{index}", _chunk(f"pkg/c{index}.py", src),
+                        EDGE_INHERITS, f"pkg.c{index}.C{index}",
+                        tier=SAMPLE_TIER, file_path=f"pkg/c{index}.py",
                     )
                     # Sanity: each consumer still resolves its base in-project.
-                    inherits = _refs(graph, EDGE_INHERITS, f"pkg.c{index}.C{index}")
                     assert "pkg.base.Base" in inherits, (
                         f"c{index} failed to resolve base in-project: {inherits!r}"
                     )
@@ -1307,818 +939,4 @@ class TestResolutionCachePoisoningGuard:
                 f"across {consumer_count} files (expected <= 1)"
             )
         finally:
-            graph.close()
-
-
-# ---------------------------------------------------------------------------
-# Reference counter + dead/orphaned-code detector fixtures.
-#
-# THE CORE SEMANTIC RULE (load-bearing): a reference from a TEST file does NOT
-# count as a true reference. A symbol whose only consumers are its tests is DEAD.
-# Every count is split by the ORIGIN of the reference (the referencing file =
-# Ref.file_path): production (not a test path) vs test (is a test path). A node is
-# DEAD ⇔ production_references == 0; the (prod==0 AND test>0) case is its own
-# labelled reason ``only_referenced_by_tests``.
-#
-# Each fixture is authored here on disk so the TRUE reference counts are an
-# INDEPENDENT oracle, read off the source — never re-derived from the method.
-# ---------------------------------------------------------------------------
-
-# A library module exercised below: a `widget` helper called by a production
-# consumer AND by a test, plus a `lonely` helper called ONLY by a test, plus an
-# `orphan` helper nobody calls, plus a self-recursive `countdown`.
-REFLIB_SOURCE: str = textwrap.dedent(
-    '''\
-    """A small library with mixed reference profiles."""
-    from __future__ import annotations
-
-
-    def widget(value):
-        """Called from production AND from a test."""
-        return value + 1
-
-
-    def lonely(value):
-        """Called ONLY from a test — dead in production."""
-        return value - 1
-
-
-    def orphan(value):
-        """Called by nobody — truly dead."""
-        return value * 2
-
-
-    def countdown(value):
-        """Self-recursive: its only caller is itself."""
-        if value <= 0:
-            return 0
-        return countdown(value - 1)
-    '''
-)
-
-# A production consumer that calls `widget` (and only `widget`) from reflib.
-REFCONSUMER_SOURCE: str = textwrap.dedent(
-    '''\
-    """A production module consuming the library."""
-    from __future__ import annotations
-
-    from demo.reflib import widget
-
-
-    def run(value):
-        """A real production caller of ``widget``."""
-        return widget(value)
-    '''
-)
-
-# A test module exercising both `widget` and `lonely` — a TEST origin, so neither
-# of these references counts toward production.
-REFTEST_SOURCE: str = textwrap.dedent(
-    '''\
-    """Tests for the library."""
-    from __future__ import annotations
-
-    from demo.reflib import widget, lonely
-
-
-    def test_widget():
-        """Exercises widget (also called in production)."""
-        return widget(1)
-
-
-    def test_lonely():
-        """Exercises lonely (called ONLY here)."""
-        return lonely(1)
-    '''
-)
-
-REFLIB_PATH: str = "demo/reflib.py"
-REFCONSUMER_PATH: str = "demo/consumer.py"
-REFTEST_PATH: str = "tests/test_reflib.py"
-REFLIB_MODULE: str = "demo.reflib"
-REFCONSUMER_MODULE: str = "demo.consumer"
-REFTEST_MODULE: str = "tests.test_reflib"
-
-# Independent oracles — the TRUE FQNs of the library's symbols, read off source.
-FQN_WIDGET: str = "demo.reflib.widget"
-FQN_LONELY: str = "demo.reflib.lonely"
-FQN_ORPHAN: str = "demo.reflib.orphan"
-FQN_COUNTDOWN: str = "demo.reflib.countdown"
-FQN_RUN: str = "demo.consumer.run"
-
-
-def _write_reflib_project(root: Path) -> None:
-    """Materialise the reference-counter demo package on disk for astroid.
-
-    ``demo/`` is a real package holding ``reflib.py`` (the library) and
-    ``consumer.py`` (the production caller); ``tests/`` holds the test module that
-    references the library (a TEST-origin reference, which must NOT count as a true
-    reference).
-    """
-    (root / "demo").mkdir(parents=True, exist_ok=True)
-    (root / "demo" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "demo" / "reflib.py").write_text(REFLIB_SOURCE, encoding="utf-8")
-    (root / "demo" / "consumer.py").write_text(REFCONSUMER_SOURCE, encoding="utf-8")
-    (root / "tests").mkdir(parents=True, exist_ok=True)
-    (root / "tests" / "test_reflib.py").write_text(REFTEST_SOURCE, encoding="utf-8")
-
-
-@pytest.fixture()
-def reflib_graph(tmp_path):  # type: ignore[no-untyped-def]
-    """A resolution-enabled CodeGraph over the reference-counter demo package.
-
-    Yields ``(graph, project_root)`` with ALL three modules (library, production
-    consumer, test) already built, so the reference profile is fully populated:
-    ``widget`` has one production + one test reference, ``lonely`` has a test-only
-    reference, ``orphan`` has none, ``countdown`` has only its self-edge.
-    """
-    project_root = tmp_path / "project"
-    _write_reflib_project(project_root)
-    graph = CodeGraph(
-        str(tmp_path / "graph.kuzu"),
-        tier_roots={SAMPLE_TIER: project_root, OTHER_TIER: project_root},
-        project_roots=[project_root],
-    )
-    # Build through the REAL chunker, in the production indexer's order.
-    graph.build_file_graph(
-        SAMPLE_TIER, REFLIB_PATH, _chunk(REFLIB_PATH, REFLIB_SOURCE), module_name=REFLIB_MODULE
-    )
-    graph.build_file_graph(
-        SAMPLE_TIER,
-        REFCONSUMER_PATH,
-        _chunk(REFCONSUMER_PATH, REFCONSUMER_SOURCE),
-        module_name=REFCONSUMER_MODULE,
-    )
-    graph.build_file_graph(
-        SAMPLE_TIER, REFTEST_PATH, _chunk(REFTEST_PATH, REFTEST_SOURCE), module_name=REFTEST_MODULE
-    )
-    try:
-        yield graph, project_root
-    finally:
-        graph.close()
-
-
-class TestReferences:
-    """``references`` counts references TO a symbol, split by production vs test."""
-
-    def test_splits_production_and_test_references(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """``widget`` is referenced from production (consumer) AND from a test.
-
-        Independent oracle, read off the source: ``widget`` is referenced by two
-        DISTINCT production sources — the consumer MODULE (``import widget``) and the
-        function ``demo.consumer.run`` (``widget(value)`` call) — and two DISTINCT
-        test sources — the test MODULE (``import widget``) and ``test_widget`` (the
-        call). The crux is the production/test SPLIT and that production is non-zero
-        (alive); the count is the distinct referencing-source count per origin.
-        """
-        graph, _root = reflib_graph
-        summary = graph.references(FQN_WIDGET)
-        assert isinstance(summary, ReferenceSummary)
-        assert summary.qualified_name == FQN_WIDGET
-        assert summary.production_references == 2
-        assert summary.test_references == 2
-        # The load-bearing invariant: production is non-zero (widget is alive) and
-        # the two origins are split, never conflated.
-        assert summary.production_references > 0
-        assert summary.test_references > 0
-
-    def test_referencing_nodes_are_distinct(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """The ``referencing`` list holds the distinct referencing nodes (deduped).
-
-        Independent oracle: ``widget``'s referrers are ``demo.consumer.run`` and the
-        test's ``test_widget``; the production caller node must appear, exactly once.
-        """
-        graph, _root = reflib_graph
-        summary = graph.references(FQN_WIDGET)
-        referencing_names = [node.qualified_name for node in summary.referencing]
-        assert FQN_RUN in referencing_names
-        # No duplicate referencing node for the same source.
-        assert len(referencing_names) == len(set(referencing_names))
-
-    def test_unreferenced_symbol_is_empty_not_error(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """A symbol nobody references yields a zero summary, not an error.
-
-        ``orphan`` is called by nobody, so both counts are 0 and ``referencing`` is
-        empty — a valid, non-error result.
-        """
-        graph, _root = reflib_graph
-        summary = graph.references(FQN_ORPHAN)
-        assert summary.production_references == 0
-        assert summary.test_references == 0
-        assert summary.referencing == []
-
-    def test_self_reference_is_excluded(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """A self-recursive function's only caller is itself — that is NOT a reference.
-
-        ``countdown`` calls only itself; the self-edge (src_qname == target) is
-        excluded, so both reference counts are 0.
-        """
-        graph, _root = reflib_graph
-        summary = graph.references(FQN_COUNTDOWN)
-        assert summary.production_references == 0
-        assert summary.test_references == 0
-
-    def test_defines_edge_is_not_a_reference(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """The structural ``defines`` parent edge does NOT count as a reference.
-
-        ``orphan`` IS defined by its module (a ``defines`` edge points at it), yet it
-        has zero references — proving ``defines`` is excluded (counting it would make
-        nothing ever dead).
-        """
-        graph, _root = reflib_graph
-        # Sanity: a defines edge to orphan exists in the store.
-        assert FQN_ORPHAN in _refs(graph, EDGE_DEFINES, REFLIB_MODULE)
-        # Yet references() reports zero — defines is not counted.
-        assert graph.references(FQN_ORPHAN).production_references == 0
-        assert graph.references(FQN_ORPHAN).test_references == 0
-
-
-class TestDeadCode:
-    """``dead_code`` is the orphan sweep: nodes with zero PRODUCTION references."""
-
-    def test_reports_test_only_symbol_with_reason(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """A function called ONLY from a test is DEAD, reason ``only_referenced_by_tests``.
-
-        Independent oracle, read off the source: ``lonely`` is referenced ONLY from
-        the test file — by two distinct test sources (the test MODULE's ``import
-        lonely`` and ``test_lonely``'s call) and ZERO production sources. So it is
-        dead with reason ``only_referenced_by_tests`` and a non-zero test count.
-        """
-        graph, _root = reflib_graph
-        dead = graph.dead_code([SAMPLE_TIER])
-        by_name = {node.qualified_name: node for node in dead}
-        assert FQN_LONELY in by_name
-        lonely = by_name[FQN_LONELY]
-        assert isinstance(lonely, DeadCodeNode)
-        assert lonely.reason == REASON_ONLY_REFERENCED_BY_TESTS
-        assert lonely.test_references == 2  # the test module import + the test call
-
-    def test_orphan_symbol_has_no_references_reason(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """A function called by nobody is DEAD with reason ``no_references``."""
-        graph, _root = reflib_graph
-        dead = graph.dead_code([SAMPLE_TIER])
-        by_name = {node.qualified_name: node for node in dead}
-        assert FQN_ORPHAN in by_name
-        assert by_name[FQN_ORPHAN].reason == REASON_NO_REFERENCES
-        assert by_name[FQN_ORPHAN].test_references == 0
-
-    def test_excludes_symbol_with_production_caller(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """A function with a real production caller is NOT dead.
-
-        ``widget`` is called by ``demo.consumer.run`` (production), so despite also
-        being test-referenced it has production_references == 1 → alive → absent.
-        """
-        graph, _root = reflib_graph
-        dead_names = {node.qualified_name for node in graph.dead_code([SAMPLE_TIER])}
-        assert FQN_WIDGET not in dead_names
-
-    def test_self_recursive_function_is_dead(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """A recursive function with no other caller is DEAD (self-edge excluded).
-
-        ``countdown`` only calls itself; the self-edge does not count, so it has zero
-        production references → dead with reason ``no_references``.
-        """
-        graph, _root = reflib_graph
-        by_name = {node.qualified_name: node for node in graph.dead_code([SAMPLE_TIER])}
-        assert FQN_COUNTDOWN in by_name
-        assert by_name[FQN_COUNTDOWN].reason == REASON_NO_REFERENCES
-
-    def test_production_caller_keeps_run_alive(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """The production caller node ``run`` itself: nobody calls it, so it IS dead.
-
-        This is a deliberate cross-check that the sweep is symmetric — ``run`` is a
-        top-level production function that nothing references, so it is reported.
-        """
-        graph, _root = reflib_graph
-        dead_names = {node.qualified_name for node in graph.dead_code([SAMPLE_TIER])}
-        assert FQN_RUN in dead_names
-
-    def test_conservative_bare_reference_keeps_symbol_alive(self, tmp_path: Path) -> None:
-        """An un-inferable (bare, resolved=False) PRODUCTION reference keeps a symbol alive.
-
-        Independent oracle: a production module references a name astroid cannot
-        infer to an FQN, so the reference is stored as the bare name
-        (``resolved=False``). The conservative fallback must still count: the
-        referenced symbol is NOT dead. Here a production module calls a helper via a
-        dynamically-built alias astroid cannot follow, falling back to the bare name
-        matching the target's last segment.
-        """
-        project_root = tmp_path / "project"
-        (project_root / "pkg").mkdir(parents=True)
-        (project_root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-        # The target lives here; its bare name is ``mystery_target``.
-        (project_root / "pkg" / "target.py").write_text(
-            textwrap.dedent(
-                '''\
-                """The target of an un-inferable production reference."""
-
-
-                def mystery_target(value):
-                    return value
-                '''
-            ),
-            encoding="utf-8",
-        )
-        # A PRODUCTION caller that references the bare name without an inferable
-        # import binding, so astroid falls back to the bare written name.
-        caller_source = textwrap.dedent(
-            '''\
-            """A production caller whose reference astroid cannot infer."""
-
-
-            def use(obj):
-                return obj.mystery_target(1)  # bare attribute call, un-inferable
-            '''
-        )
-        (project_root / "pkg" / "caller.py").write_text(caller_source, encoding="utf-8")
-        graph = CodeGraph(
-            str(tmp_path / "graph.kuzu"),
-            tier_roots={SAMPLE_TIER: project_root},
-            project_roots=[project_root],
-        )
-        try:
-            graph.build_file_graph(
-                SAMPLE_TIER,
-                "pkg/target.py",
-                _chunk("pkg/target.py", (project_root / "pkg" / "target.py").read_text()),
-                module_name="pkg.target",
-            )
-            graph.build_file_graph(
-                SAMPLE_TIER,
-                "pkg/caller.py",
-                _chunk("pkg/caller.py", caller_source),
-                module_name="pkg.caller",
-            )
-            # The bare production reference must count: the target stays alive.
-            summary = graph.references("pkg.target.mystery_target")
-            assert summary.production_references >= 1, (
-                f"bare production reference must count; got {summary!r}"
-            )
-            dead_names = {node.qualified_name for node in graph.dead_code([SAMPLE_TIER])}
-            assert "pkg.target.mystery_target" not in dead_names
-        finally:
-            graph.close()
-
-    def test_excludes_test_nodes_by_default(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """A test node is not dead just because nothing calls it — excluded by default.
-
-        ``test_lonely`` / ``test_widget`` are unreferenced functions in a test file;
-        by default they must NOT be reported (a test isn't dead because nothing
-        calls it).
-        """
-        graph, _root = reflib_graph
-        dead_paths = {node.file_path for node in graph.dead_code([SAMPLE_TIER])}
-        assert REFTEST_PATH not in dead_paths
-
-    def test_includes_test_nodes_with_flag(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """With ``include_tests=True`` the unreferenced test functions ARE reported."""
-        graph, _root = reflib_graph
-        dead_paths = {
-            node.file_path for node in graph.dead_code([SAMPLE_TIER], include_tests=True)
-        }
-        assert REFTEST_PATH in dead_paths
-
-    def test_excludes_dunder_methods_by_default(self, tmp_path: Path) -> None:
-        """A dunder method (``__*__``) is excluded by default (protocol-invoked).
-
-        Independent oracle: ``__init__`` is never called by an explicit call edge, so
-        it always looks orphaned; by default it must not be reported, but a plain
-        unreferenced method in the same class must be.
-        """
-        project_root = tmp_path / "project"
-        (project_root / "pkg").mkdir(parents=True)
-        (project_root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-        source = textwrap.dedent(
-            '''\
-            """A class with a dunder and a plain unreferenced method."""
-
-
-            class Thing:
-                def __init__(self):
-                    self.value = 0
-
-                def plain_unused(self):
-                    return self.value
-            '''
-        )
-        (project_root / "pkg" / "thing.py").write_text(source, encoding="utf-8")
-        graph = CodeGraph(
-            str(tmp_path / "graph.kuzu"),
-            tier_roots={SAMPLE_TIER: project_root},
-            project_roots=[project_root],
-        )
-        try:
-            graph.build_file_graph(
-                SAMPLE_TIER, "pkg/thing.py", _chunk("pkg/thing.py", source),
-                module_name="pkg.thing",
-            )
-            default_names = {node.qualified_name for node in graph.dead_code([SAMPLE_TIER])}
-            assert "pkg.thing.Thing.__init__" not in default_names
-            # The plain unreferenced method IS reported by default (sanity).
-            assert "pkg.thing.Thing.plain_unused" in default_names
-            # With the flag, the dunder appears too.
-            with_flag = {
-                node.qualified_name
-                for node in graph.dead_code([SAMPLE_TIER], include_dunders=True)
-            }
-            assert "pkg.thing.Thing.__init__" in with_flag
-        finally:
-            graph.close()
-
-    def test_excludes_entry_modules_by_default(self, tmp_path: Path) -> None:
-        """``__main__`` and ``__init__`` package modules are excluded by default.
-
-        Independent oracle: a ``__main__`` module and an ``__init__`` package module
-        are never imported by dotted name, so they always look orphaned. By default
-        neither module node is reported; with ``include_entrypoints=True`` both are.
-        """
-        project_root = tmp_path / "project"
-        (project_root / "pkg").mkdir(parents=True)
-        (project_root / "pkg" / "__init__.py").write_text(
-            '"""The package init."""\n', encoding="utf-8"
-        )
-        (project_root / "pkg" / "__main__.py").write_text(
-            '"""The CLI entrypoint."""\n\n\ndef main():\n    return 0\n', encoding="utf-8"
-        )
-        graph = CodeGraph(
-            str(tmp_path / "graph.kuzu"),
-            tier_roots={SAMPLE_TIER: project_root},
-            project_roots=[project_root],
-        )
-        try:
-            graph.build_file_graph(
-                SAMPLE_TIER, "pkg/__init__.py",
-                _chunk("pkg/__init__.py", (project_root / "pkg" / "__init__.py").read_text()),
-                module_name="pkg",
-            )
-            graph.build_file_graph(
-                SAMPLE_TIER, "pkg/__main__.py",
-                _chunk("pkg/__main__.py", (project_root / "pkg" / "__main__.py").read_text()),
-                module_name="pkg.__main__",
-            )
-            default_modules = {
-                node.qualified_name
-                for node in graph.dead_code([SAMPLE_TIER])
-                if node.kind == KIND_MODULE
-            }
-            assert "pkg" not in default_modules  # the __init__ package module
-            assert "pkg.__main__" not in default_modules  # the __main__ module
-            with_flag = {
-                node.qualified_name
-                for node in graph.dead_code([SAMPLE_TIER], include_entrypoints=True)
-                if node.kind == KIND_MODULE
-            }
-            assert "pkg" in with_flag
-            assert "pkg.__main__" in with_flag
-        finally:
-            graph.close()
-
-    def test_scoped_to_passed_tiers(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """``dead_code`` only considers nodes in the passed tiers.
-
-        The fixture built everything under ``SAMPLE_TIER`` only. Asking for
-        ``OTHER_TIER`` (empty) yields no dead nodes; asking for ``SAMPLE_TIER``
-        yields the known dead set.
-        """
-        graph, _root = reflib_graph
-        assert graph.dead_code([OTHER_TIER]) == []
-        sample_names = {node.qualified_name for node in graph.dead_code([SAMPLE_TIER])}
-        assert FQN_ORPHAN in sample_names
-
-    def test_empty_tiers_returns_empty(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """An empty tiers list yields an empty result, not a crash."""
-        graph, _root = reflib_graph
-        assert graph.dead_code([]) == []
-
-    def test_respects_max_results_cap(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """The result is capped at ``max_results`` — the sweep cannot blow up.
-
-        The fixture has several dead nodes (orphan, lonely, countdown, run, …); a
-        cap of 1 must clamp the list to exactly one entry.
-        """
-        graph, _root = reflib_graph
-        assert len(graph.dead_code([SAMPLE_TIER], max_results=1)) == 1
-
-    def test_lifecycle_flip_on_rebuild(self, reflib_graph) -> None:  # type: ignore[no-untyped-def]
-        """Removing the last production caller flips a symbol to dead; re-adding revives.
-
-        ``widget`` starts alive (production caller ``run``). Rebuild ``consumer.py``
-        to drop the call → ``widget`` becomes dead. Rebuild it back → ``widget`` is
-        alive again. The dead set must track the per-file rebuild both ways.
-        """
-        graph, project_root = reflib_graph
-        # Baseline: widget is alive (has a production caller).
-        assert FQN_WIDGET not in {n.qualified_name for n in graph.dead_code([SAMPLE_TIER])}
-
-        # Remove the production call by rebuilding consumer.py without it.
-        no_call_source = textwrap.dedent(
-            '''\
-            """The consumer no longer calls widget."""
-            from __future__ import annotations
-
-
-            def run(value):
-                """No longer references the library."""
-                return value
-            '''
-        )
-        (project_root / "demo" / "consumer.py").write_text(no_call_source, encoding="utf-8")
-        graph.build_file_graph(
-            SAMPLE_TIER, REFCONSUMER_PATH, _chunk(REFCONSUMER_PATH, no_call_source),
-            module_name=REFCONSUMER_MODULE,
-        )
-        # widget now has zero production references → dead, test-only.
-        after_removal = {n.qualified_name: n for n in graph.dead_code([SAMPLE_TIER])}
-        assert FQN_WIDGET in after_removal
-        assert after_removal[FQN_WIDGET].reason == REASON_ONLY_REFERENCED_BY_TESTS
-
-        # Re-add the production caller → widget alive again.
-        (project_root / "demo" / "consumer.py").write_text(REFCONSUMER_SOURCE, encoding="utf-8")
-        graph.build_file_graph(
-            SAMPLE_TIER, REFCONSUMER_PATH, _chunk(REFCONSUMER_PATH, REFCONSUMER_SOURCE),
-            module_name=REFCONSUMER_MODULE,
-        )
-        assert FQN_WIDGET not in {n.qualified_name for n in graph.dead_code([SAMPLE_TIER])}
-
-
-# ===========================================================================
-# Module-node dead-code roll-up (the v0.4 dogfooding bug).
-#
-# References are SYMBOL-level: ``from pkg.helpers import build`` records an edge to
-# ``pkg.helpers.build``, NOT to the bare module ``pkg.helpers``. So the old rule —
-# "a MODULE is dead unless the bare module name is referenced" — wrongly flagged a
-# heavily-used module dead. The corrected rule: a MODULE node is dead only if
-# NEITHER it NOR ANY symbol it defines (a node whose qualified_name starts with
-# ``"<module>."``) has a production reference.
-#
-# These fixtures author a real on-disk package so astroid resolves the symbol-level
-# imports/calls in-project (the same machinery the resolved-edge tests use). Every
-# expected FQN, reason, and count is an INDEPENDENT oracle read straight off the
-# authored source below — never re-derived from the engine.
-# ===========================================================================
-
-# ``pkg.helpers`` — a USED module: its function ``build`` is imported and called by
-# the production module ``pkg.app``. The MODULE ``pkg.helpers`` is NEVER referenced
-# by its bare name; only its symbol is. Under the bug this module is wrongly dead.
-MODLIB_HELPERS_SOURCE: str = textwrap.dedent(
-    '''\
-    """A helper module whose SYMBOL (not its bare module name) is used."""
-    from __future__ import annotations
-
-
-    def build(value):
-        """Imported and called by the production app — keeps this module alive."""
-        return value + 1
-    '''
-)
-
-# ``pkg.orphan_mod`` — a FULLY orphaned module: neither it nor its single symbol
-# ``never_used`` is referenced by anyone (production OR test). Must STILL be dead.
-MODLIB_ORPHAN_SOURCE: str = textwrap.dedent(
-    '''\
-    """A module nobody references — neither it nor its symbol is used anywhere."""
-    from __future__ import annotations
-
-
-    def never_used(value):
-        """Called by nobody, anywhere."""
-        return value * 2
-    '''
-)
-
-# ``pkg.probe_mod`` — a module whose ONLY references (to its symbol ``probe``)
-# come from the test file. Must be dead with reason ``only_referenced_by_tests``.
-# (The module name deliberately does NOT match the ``test_*.py`` glob — naming it
-# ``test_*`` would make it a test-PATH node, excluded for a different reason and
-# masking the test-only-reference case under contract here.)
-MODLIB_TEST_ONLY_SOURCE: str = textwrap.dedent(
-    '''\
-    """A module exercised ONLY by the test suite — dead in production."""
-    from __future__ import annotations
-
-
-    def probe(value):
-        """Imported and called ONLY from the test module."""
-        return value - 1
-    '''
-)
-
-# ``pkg.a`` — the prefix-scoping victim: its symbol is NOT referenced. The only
-# nearby reference is to a DIFFERENT module ``pkg.ab``'s symbol. A trailing-dot
-# anchor must keep ``pkg.a`` dead (``pkg.a.`` does not prefix-match ``pkg.ab.X``).
-MODLIB_A_SOURCE: str = textwrap.dedent(
-    '''\
-    """Module pkg.a — its symbol is unreferenced; pkg.ab must not save it."""
-    from __future__ import annotations
-
-
-    def a_symbol(value):
-        """Referenced by nobody — pkg.a must stay dead."""
-        return value
-    '''
-)
-
-# ``pkg.ab`` — a sibling module whose symbol ``ab_symbol`` IS production-referenced
-# (by ``pkg.app``). Its liveness must NOT leak to ``pkg.a`` via a sloppy prefix.
-MODLIB_AB_SOURCE: str = textwrap.dedent(
-    '''\
-    """Module pkg.ab — its symbol IS used; pkg.ab is alive, pkg.a is not."""
-    from __future__ import annotations
-
-
-    def ab_symbol(value):
-        """Imported and called by the production app — keeps pkg.ab alive."""
-        return value + 10
-    '''
-)
-
-# ``pkg.app`` — the production consumer: imports + calls ``pkg.helpers.build`` and
-# ``pkg.ab.ab_symbol``. These are the only PRODUCTION references in the package.
-MODLIB_APP_SOURCE: str = textwrap.dedent(
-    '''\
-    """The production app — the source of the package's production references."""
-    from __future__ import annotations
-
-    from pkg.helpers import build
-    from pkg.ab import ab_symbol
-
-
-    def run(value):
-        """Calls the two used symbols (helpers.build, ab.ab_symbol)."""
-        return build(value) + ab_symbol(value)
-    '''
-)
-
-# ``tests/test_probe.py`` — the TEST consumer: imports + calls
-# ``pkg.probe_mod.probe`` and ONLY that. A test-origin reference, so it must not
-# count toward production but DOES count toward the module's test references.
-MODLIB_TEST_SOURCE: str = textwrap.dedent(
-    '''\
-    """Tests that exercise probe only (a test-origin reference)."""
-    from __future__ import annotations
-
-    from pkg.probe_mod import probe
-
-
-    def test_probe():
-        """Exercises probe — the only reference to pkg.probe_mod."""
-        return probe(1)
-    '''
-)
-
-# Tier-relative POSIX paths and importable module names (the indexer's view).
-MODLIB_HELPERS_PATH: str = "pkg/helpers.py"
-MODLIB_ORPHAN_PATH: str = "pkg/orphan_mod.py"
-MODLIB_TEST_ONLY_PATH: str = "pkg/probe_mod.py"
-MODLIB_A_PATH: str = "pkg/a.py"
-MODLIB_AB_PATH: str = "pkg/ab.py"
-MODLIB_APP_PATH: str = "pkg/app.py"
-MODLIB_TEST_PATH: str = "tests/test_probe.py"
-
-MODLIB_HELPERS_MODULE: str = "pkg.helpers"
-MODLIB_ORPHAN_MODULE: str = "pkg.orphan_mod"
-MODLIB_TEST_ONLY_MODULE: str = "pkg.probe_mod"
-MODLIB_A_MODULE: str = "pkg.a"
-MODLIB_AB_MODULE: str = "pkg.ab"
-MODLIB_APP_MODULE: str = "pkg.app"
-MODLIB_TEST_MODULE: str = "tests.test_probe"
-
-
-def _write_modlib_project(root: Path) -> None:
-    """Materialise the module-roll-up demo package on disk for astroid resolution.
-
-    ``pkg/`` is a real package whose modules have the reference profiles the
-    module-deadness rule must distinguish: a symbol-used module (``helpers``), a
-    fully-orphaned module (``orphan_mod``), a test-only module (``probe_mod``),
-    and a prefix-scoping pair (``a`` unreferenced, ``ab`` symbol-used).
-    """
-    (root / "pkg").mkdir(parents=True, exist_ok=True)
-    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "pkg" / "helpers.py").write_text(MODLIB_HELPERS_SOURCE, encoding="utf-8")
-    (root / "pkg" / "orphan_mod.py").write_text(MODLIB_ORPHAN_SOURCE, encoding="utf-8")
-    (root / "pkg" / "probe_mod.py").write_text(MODLIB_TEST_ONLY_SOURCE, encoding="utf-8")
-    (root / "pkg" / "a.py").write_text(MODLIB_A_SOURCE, encoding="utf-8")
-    (root / "pkg" / "ab.py").write_text(MODLIB_AB_SOURCE, encoding="utf-8")
-    (root / "pkg" / "app.py").write_text(MODLIB_APP_SOURCE, encoding="utf-8")
-    (root / "tests").mkdir(parents=True, exist_ok=True)
-    (root / "tests" / "test_probe.py").write_text(MODLIB_TEST_SOURCE, encoding="utf-8")
-
-
-@pytest.fixture()
-def modlib_graph(tmp_path):  # type: ignore[no-untyped-def]
-    """A resolution-enabled CodeGraph over the module-roll-up demo package.
-
-    Yields ``(graph, project_root)`` with all modules built through the REAL
-    chunker in the indexer's order, so the symbol-level reference profile is fully
-    populated and the module roll-up can be exercised end-to-end.
-    """
-    project_root = tmp_path / "project"
-    _write_modlib_project(project_root)
-    graph = CodeGraph(
-        str(tmp_path / "graph.kuzu"),
-        tier_roots={SAMPLE_TIER: project_root},
-        project_roots=[project_root],
-    )
-    for path, source, module in (
-        (MODLIB_HELPERS_PATH, MODLIB_HELPERS_SOURCE, MODLIB_HELPERS_MODULE),
-        (MODLIB_ORPHAN_PATH, MODLIB_ORPHAN_SOURCE, MODLIB_ORPHAN_MODULE),
-        (MODLIB_TEST_ONLY_PATH, MODLIB_TEST_ONLY_SOURCE, MODLIB_TEST_ONLY_MODULE),
-        (MODLIB_A_PATH, MODLIB_A_SOURCE, MODLIB_A_MODULE),
-        (MODLIB_AB_PATH, MODLIB_AB_SOURCE, MODLIB_AB_MODULE),
-        (MODLIB_APP_PATH, MODLIB_APP_SOURCE, MODLIB_APP_MODULE),
-        (MODLIB_TEST_PATH, MODLIB_TEST_SOURCE, MODLIB_TEST_MODULE),
-    ):
-        graph.build_file_graph(SAMPLE_TIER, path, _chunk(path, source), module_name=module)
-    try:
-        yield graph, project_root
-    finally:
-        graph.close()
-
-
-class TestDeadCodeModuleRollUp:
-    """A MODULE is dead only if neither it nor any symbol it defines is used.
-
-    The v0.4 dogfooding bug: references are symbol-level, so a module whose symbol
-    is used but whose bare name is not was wrongly reported dead. These cases pin
-    the corrected roll-up: union production/test sources across the module's own
-    references AND every defined symbol's references.
-    """
-
-    def test_module_with_referenced_symbol_is_not_dead(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
-        """The regression: a module whose SYMBOL has a production ref is NOT dead.
-
-        Independent oracle: ``pkg.helpers`` is never referenced by its bare module
-        name, but its symbol ``pkg.helpers.build`` is imported AND called by the
-        production module ``pkg.app`` (two production sources for the symbol). So the
-        MODULE must be alive — absent from the dead set — even though
-        ``references('pkg.helpers')`` on the bare name is zero.
-        """
-        graph, _root = modlib_graph
-        # Ground truth: the bare module name has zero references (the bug's trap)…
-        assert graph.references(MODLIB_HELPERS_MODULE).production_references == 0
-        # …yet its symbol is production-referenced.
-        assert graph.references("pkg.helpers.build").production_references >= 1
-        dead_modules = {
-            node.qualified_name
-            for node in graph.dead_code([SAMPLE_TIER])
-            if node.kind == KIND_MODULE
-        }
-        assert MODLIB_HELPERS_MODULE not in dead_modules
-
-    def test_fully_orphaned_module_is_dead(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
-        """A module whose neither self nor symbols are referenced is STILL dead.
-
-        Independent oracle: ``pkg.orphan_mod`` and its only symbol
-        ``never_used`` are referenced by nobody (production or test), so the module
-        must be reported dead with reason ``no_references`` and zero test references.
-        """
-        graph, _root = modlib_graph
-        by_name = {
-            node.qualified_name: node
-            for node in graph.dead_code([SAMPLE_TIER])
-            if node.kind == KIND_MODULE
-        }
-        assert MODLIB_ORPHAN_MODULE in by_name
-        orphan = by_name[MODLIB_ORPHAN_MODULE]
-        assert isinstance(orphan, DeadCodeNode)
-        assert orphan.reason == REASON_NO_REFERENCES
-        assert orphan.test_references == 0
-
-    def test_module_referenced_only_by_tests(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
-        """A module whose symbols are referenced ONLY by tests is dead, test-only.
-
-        Independent oracle: ``pkg.probe_mod``'s symbol ``probe`` is imported AND
-        called from the test module ``tests.test_probe`` — two DISTINCT test sources
-        (the test MODULE's import + ``test_probe``'s call) and ZERO production
-        sources. So the module is dead with reason ``only_referenced_by_tests`` and
-        ``test_references == 2`` (the unioned test-source count).
-        """
-        graph, _root = modlib_graph
-        by_name = {
-            node.qualified_name: node
-            for node in graph.dead_code([SAMPLE_TIER])
-            if node.kind == KIND_MODULE
-        }
-        assert MODLIB_TEST_ONLY_MODULE in by_name
-        test_only = by_name[MODLIB_TEST_ONLY_MODULE]
-        assert test_only.reason == REASON_ONLY_REFERENCED_BY_TESTS
-        assert test_only.test_references == 2
-
-    def test_module_prefix_scoping_uses_trailing_dot_anchor(self, modlib_graph) -> None:  # type: ignore[no-untyped-def]
-        """``pkg.a`` is NOT kept alive by a reference to ``pkg.ab``'s symbol.
-
-        Independent oracle: ``pkg.a``'s symbol ``a_symbol`` is unreferenced; the only
-        nearby use is ``pkg.ab.ab_symbol`` (production-referenced). A trailing-dot
-        anchor (``pkg.a.``) must NOT prefix-match ``pkg.ab.ab_symbol``, so ``pkg.a``
-        stays dead while its sibling ``pkg.ab`` is alive.
-        """
-        graph, _root = modlib_graph
-        dead_modules = {
-            node.qualified_name
-            for node in graph.dead_code([SAMPLE_TIER])
-            if node.kind == KIND_MODULE
-        }
-        # The victim stays dead — the sibling's liveness must not leak across.
-        assert MODLIB_A_MODULE in dead_modules
-        # The sibling whose symbol IS used is alive (the prefix is real for it).
-        assert MODLIB_AB_MODULE not in dead_modules
+            _close_graph(graph)
