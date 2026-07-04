@@ -101,6 +101,7 @@ consumed-by-<phase or commit> / superseded).
   *Triaged 2026-07-04 (P7 cycle-1 close): proposed FIX-FORWARD as a P7-tail
   side-stream (ledger task #6) after the cutover wave, before the phase-close
   redeploy — operator to confirm P7 vs P8.*
+  *CONSUMED-BY 9171021 (P7-tail polish, 2026-07-04) — fix shipped; entry retires to Consumed at the P8 friction-table migration.*
 
 - **2026-07-04 · team-lead (v2 FIRST LIVE USE) · lore_map · capability_gap
   (rendering)** — per-module symbol lists render EVERY symbol (80+ names for
@@ -109,6 +110,7 @@ consumed-by-<phase or commit> / superseded).
   symbols per module (top-N by rank + "+K more"), spending budget on breadth
   over depth. *Triaged 2026-07-04 (P7 cycle-1 close): same disposition as the
   ranking entry above — one serving-layer polish wave, ledger task #6.*
+  *CONSUMED-BY 9171021 (P7-tail polish, 2026-07-04) — fix shipped; entry retires to Consumed at the P8 friction-table migration.*
 
 - **2026-07-03 · team-lead (P7 prep) · lore_impact · wrong_result (bare-name
   covering-tests drop)** — `lore_impact("RecalledMemory")` (bare name) returned
@@ -122,6 +124,7 @@ consumed-by-<phase or commit> / superseded).
   bare names — qualify the name" notice. *Triaged 2026-07-04 (P7 cycle-1
   close): rides the same P7-tail polish wave as the two lore_map entries
   (ledger task #6) — operator to confirm P7 vs P8.*
+  *CONSUMED-BY 9171021 (P7-tail polish, 2026-07-04) — fix shipped; entry retires to Consumed at the P8 friction-table migration.*
 
 - **2026-07-04 · team-lead + cutover-contract (P7 cutover) · lore_impact ·
   affordance_gap (depth-2 rollup misread)** — the depth-2 module rollup for
@@ -134,8 +137,90 @@ consumed-by-<phase or commit> / superseded).
   and reported the empty migration. **Feeds:** task #6's polish wave — label
   depth>1 rollups explicitly ("transitive via …" or a direct/transitive
   split), or render depth-1 direct consumers alongside.
+  *CONSUMED-BY 9171021 (P7-tail polish, 2026-07-04) — fix shipped; entry retires to Consumed at the P8 friction-table migration.*
+
+- **2026-07-04 · operator + team-lead (P7) · token budgets (map/search/schemas) ·
+  wrong_result (measured miscalibration)** — lore enforces token budgets in
+  VOYAGE tokens (`_count_tokens_single` → the pinned voyage-4 tokenizer) but
+  consumers pay in CLAUDE tokens. Measured live against the count_tokens
+  endpoint (claude-sonnet-5) over six samples — three lore-shaped (map rollup,
+  code span, search hit: 1.610–1.652) and three dense Odoo source files
+  (1.7k–3.5k lines, operator-directed: 1.654–1.720; dense comment-light code
+  runs highest). Full range 1.61–1.72. Every budget silently under-counts by
+  ~64–72%: a "1500-token" map ≈ 2,400+ Sonnet-5 tokens. Harness:
+  scratchpad/token_calibration.py. Workaround: none (defect stands until fixed).
+  **Feeds:** task #6 polish wave. FINAL VALUE (operator-directed large-corpus
+  survey, 2026-07-04 — the six-sample pilot was NOT accepted as gospel):
+  **TOKEN_BUDGET_CALIBRATION = 1.78** = max of per-project token-weighted p95
+  ratios over a deterministic 10% stratified sample (1,116 files, 2.85M claude
+  tokens; lore 1.704 / odoo 1.776 / di 1.729; token-weighted means 1.53–1.62;
+  file max 2.63; DI .sql hottest extension at p95 2.06). Tool committed as
+  scripts/token_survey.py (+32 unit tests); receipts in
+  scratchpad/token_survey/survey_summary.md + per-file JSONL. Re-run the survey
+  at the P8 token-accounting eval gate and whenever the yardstick model changes.
+  *CONSUMED-BY 9171021 (P7-tail polish, 2026-07-04) — fix shipped; entry retires to Consumed at the P8 friction-table migration.*
+
+- **2026-07-04 · di-scout · watcher/config · capability_gap** — DI's deployed
+  lore.yaml can't keep up with dirs born mid-project: `.venv-timesfm25` (3,394 dirs,
+  all inotify-watched) and `demand/chronos-2-finetuned` (50 GB, walked each
+  reconcile) are unexcluded because `exclude_dirs` is NAME-based and hand-curated;
+  the name `data` also prunes `validation/findings/data`, and `models` would prune
+  real source. Workaround: manual lore.yaml edits after the fact (nobody has).
+  **Feeds:** P8 — path-anchored excludes; default heuristics (prune any dir with
+  `pyvenv.cfg`; binary-majority dirs); watch-scope telemetry in `lore_index_status`
+  (watch count + top offenders) so drift is visible instead of silent.
+
+- **2026-07-04 · di-scout · chunkers/search_code · capability_gap** — DI's 20
+  `demand/config/*.yaml` fleet definitions cannot be search-indexed: unclaimed
+  suffix → dispatch tier-4 returns `[]` silently (verified live: yaml literals
+  invisible to search; read_file serves the same file fine). Workaround:
+  `chunkers: {".yaml": {chunker: text}}` override (flat, key-path-blind,
+  undocumented). **Feeds:** a yaml/toml chunker (or document the text-override and
+  make lore-deploy's generated lore.yaml include config files); surface
+  "included-but-unclaimed" files in lore_index_status instead of silence.
+
+- **2026-07-04 · di-scout · search_code vs read_file (walk scope) · affordance_gap** —
+  load-bearing generated docs inside an excluded data dir
+  (`demand/data/reports/*.md`, 15 files cited by STATE.md as audit receipts) are
+  readable via lore_read_file but invisible to lore_search_code; there is no way to
+  say "exclude this dir's blobs but index these globs" (include globs cannot pierce
+  an exclude_dirs prune). Workaround: follow doc pointers by hand into read_file.
+  **Feeds:** P8 — precedence rule (explicit include glob pierces exclude_dirs) or
+  glob-granular excludes.
+
+- **2026-07-04 · di-scout · lore_recall_memory / findings surface · capability_gap** —
+  DI's decision + findings ledgers need ledger READS: enumerate-in-order, follow the
+  supersedes chain to its head, address a record by stable number, export a
+  reviewable doc. Memory v2 writes all the needed structure (kind, supersedes,
+  trust, labels) but recall remains `query+k` semantic-top-k, so DECISIONS.md /
+  INDEX.md must stay hand-maintained — and live probes show search answers chain
+  questions only by piggybacking on those hand-maintained docs. Workaround: keep the
+  md ledgers as source of truth. **Feeds:** P8 findings surface — generalise
+  `kind=friction` to finding/decision records with chain-head + ordered-browse
+  queries; a browse/enumerate affordance on the memory read side.
+
+- **2026-07-04 · di-scout · lore_references (and input-resolution family) ·
+  affordance_gap** — a bare symbol name that fails resolution returns a
+  zeros-and-empty result indistinguishable from "genuinely unreferenced":
+  `lore_references("CoverageCalibrator")` = 0/0/[] vs the qualified name = 1
+  production / 5 test (live DI, grep-verified). An agent (or lore_impact's verdict)
+  reads that as DEAD. Workaround: always pass fully-qualified names — nothing tells
+  you to. **Feeds:** P7-tail/P8 — resolve-or-error (suffix-match candidates, "did
+  you mean", or an explicit `unresolved` marker in the payload), never silent zeros;
+  extend the existing tests_for path-normalisation fix to every name-input tool.
+  *PARTIAL 9171021 (2026-07-04): tests_for bare-name now rides the answers_to bridge; the resolve-or-error family (references/get_symbol did-you-mean) remains open → P8.*
+
+- **2026-07-04 · di-scout · lore_save_memory/lore_recall_memory · affordance_gap** —
+  on a store of multi-KB session-digest notes (live DI), specific-fact recall
+  missed 4/7 probes; atomic facts drown inside digests and recall offers no
+  kind/label filter to narrow (v2 save writes labels the v2 read side cannot use).
+  Workaround: none for the reader; the facts stay in doc files. **Feeds:** P7/P8 —
+  recall filters (kind=, labels=) to close the save/recall asymmetry; save-side
+  affordance against digest dumps (length guidance or auto-split); consider
+  note-chunking at embed time.
 
 ## Consumed
+  *PARTIAL 9171021 (2026-07-04): read-side kind=/labels= recall filters SHIPPED; save-side digest guidance/auto-split remains open → P8.*
 
 - **2026-07-03 · team-lead · (whole surface) · distrust_unverified** — avoided
   lore for an entire heavy build session on an unmeasured staleness prior;
