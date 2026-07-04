@@ -337,5 +337,237 @@ class TestSummary:
         assert ts.recommended_ceiling([s]) == pytest.approx(1.70)
 
 
+# --------------------------------------------------------------------------- #
+# Multi-model plumbing — yardstick-model comparison
+# --------------------------------------------------------------------------- #
+class TestFileMeasurementModelField:
+    def test_default_model_is_backward_compatible(self) -> None:
+        # Existing (pre-multi-model) call sites never pass `model=`; the field
+        # must default so they keep constructing valid rows.
+        m = ts.FileMeasurement(project="t", path="f.py", ext=".py", bytes=10, voyage=100, claude=165)
+        assert m.model == ts.ANTHROPIC_MODEL
+        assert m.ratio == pytest.approx(1.65)
+
+    def test_to_row_includes_model(self) -> None:
+        m = ts.FileMeasurement(
+            project="t", path="f.py", ext=".py", bytes=10, voyage=100, claude=165, model="claude-opus-4-8"
+        )
+        row = m.to_row()
+        assert row["model"] == "claude-opus-4-8"
+
+
+class TestResolveAvailableModels:
+    def test_all_ok_survive_in_order(self) -> None:
+        survivors, dropped = ts.resolve_available_models(
+            {"claude-sonnet-5": None, "claude-opus-4-8": None, "claude-fable-5": None}
+        )
+        assert survivors == ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"]
+        assert dropped == []
+
+    def test_failed_model_is_dropped_with_verbatim_error(self) -> None:
+        survivors, dropped = ts.resolve_available_models(
+            {
+                "claude-sonnet-5": None,
+                "claude-fable-5": "count_tokens failed (400): org retention policy",
+            }
+        )
+        assert survivors == ["claude-sonnet-5"]
+        assert dropped == [("claude-fable-5", "count_tokens failed (400): org retention policy")]
+
+    def test_all_failed_yields_no_survivors(self) -> None:
+        survivors, dropped = ts.resolve_available_models({"m1": "boom"})
+        assert survivors == []
+        assert dropped == [("m1", "boom")]
+
+
+class TestFilterByModel:
+    def _m(self, model: str, path: str = "f.py") -> ts.FileMeasurement:
+        return ts.FileMeasurement(
+            project="t", path=path, ext=".py", bytes=10, voyage=100, claude=150, model=model
+        )
+
+    def test_filters_and_preserves_order(self) -> None:
+        measurements = [
+            self._m("claude-sonnet-5", "a.py"),
+            self._m("claude-opus-4-8", "a.py"),
+            self._m("claude-sonnet-5", "b.py"),
+        ]
+        sonnet_only = ts.filter_by_model(measurements, "claude-sonnet-5")
+        assert [m.path for m in sonnet_only] == ["a.py", "b.py"]
+        assert all(m.model == "claude-sonnet-5" for m in sonnet_only)
+
+    def test_no_match_returns_empty(self) -> None:
+        assert ts.filter_by_model([self._m("claude-sonnet-5")], "claude-fable-5") == []
+
+
+class TestMaxPairwiseRelativeDelta:
+    def test_two_values(self) -> None:
+        assert ts.max_pairwise_relative_delta({"a": 100.0, "b": 110.0}) == pytest.approx(0.10)
+
+    def test_three_values_uses_global_min_max(self) -> None:
+        # Middle value must not affect the result — only min/max matter.
+        assert ts.max_pairwise_relative_delta({"a": 100.0, "b": 105.0, "c": 130.0}) == pytest.approx(0.30)
+
+    def test_single_value_is_zero(self) -> None:
+        assert ts.max_pairwise_relative_delta({"a": 42.0}) == 0.0
+
+    def test_empty_is_zero(self) -> None:
+        assert ts.max_pairwise_relative_delta({}) == 0.0
+
+    def test_identical_values_is_zero(self) -> None:
+        assert ts.max_pairwise_relative_delta({"a": 1.7, "b": 1.7, "c": 1.7}) == 0.0
+
+    def test_zero_baseline_raises(self) -> None:
+        with pytest.raises(ValueError):
+            ts.max_pairwise_relative_delta({"a": 0.0, "b": 5.0})
+
+
+class TestCompareModels:
+    def test_requires_at_least_two_models(self) -> None:
+        with pytest.raises(ValueError):
+            ts.compare_models(
+                "lore",
+                total_claude_by_model={"claude-sonnet-5": 100},
+                ratio_by_model={"claude-sonnet-5": 1.6},
+                ceiling_by_model={"claude-sonnet-5": 1.7},
+            )
+
+    def test_computes_pairwise_deltas_and_passes_through_maps(self) -> None:
+        result = ts.compare_models(
+            "lore",
+            total_claude_by_model={"claude-sonnet-5": 1000, "claude-opus-4-8": 1010},
+            ratio_by_model={"claude-sonnet-5": 1.60, "claude-opus-4-8": 1.62},
+            ceiling_by_model={"claude-sonnet-5": 1.70, "claude-opus-4-8": 1.75},
+        )
+        assert result.scope == "lore"
+        assert result.models == ("claude-sonnet-5", "claude-opus-4-8")
+        assert result.total_claude_by_model == {"claude-sonnet-5": 1000, "claude-opus-4-8": 1010}
+        assert result.max_delta_total_claude == pytest.approx(0.01)
+        assert result.max_delta_ratio == pytest.approx((1.62 - 1.60) / 1.60)
+        assert result.max_delta_ceiling == pytest.approx((1.75 - 1.70) / 1.70)
+
+
+class TestComputeAgreement:
+    def _row(self, project: str, path: str, model: str, claude: int) -> ts.FileMeasurement:
+        return ts.FileMeasurement(
+            project=project, path=path, ext=".py", bytes=10, voyage=100, claude=claude, model=model
+        )
+
+    def test_all_identical_across_models(self) -> None:
+        measurements = [
+            self._row("lore", "a.py", "claude-sonnet-5", 165),
+            self._row("lore", "a.py", "claude-opus-4-8", 165),
+            self._row("lore", "a.py", "claude-fable-5", 165),
+        ]
+        stats = ts.compute_agreement(measurements, ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"], scope="lore")
+        assert stats.n_complete == 1
+        assert stats.n_incomplete == 0
+        assert stats.share_identical == pytest.approx(1.0)
+        assert stats.max_relative_spread == pytest.approx(0.0)
+
+    def test_divergent_counts_produce_spread(self) -> None:
+        measurements = [
+            self._row("lore", "a.py", "claude-sonnet-5", 100),
+            self._row("lore", "a.py", "claude-opus-4-8", 110),
+            self._row("lore", "b.py", "claude-sonnet-5", 200),
+            self._row("lore", "b.py", "claude-opus-4-8", 200),
+        ]
+        stats = ts.compute_agreement(measurements, ["claude-sonnet-5", "claude-opus-4-8"], scope="lore")
+        assert stats.n_complete == 2
+        assert stats.share_identical == pytest.approx(0.5)  # only b.py agrees
+        assert stats.max_relative_spread == pytest.approx(0.10)  # (110-100)/100
+
+    def test_incomplete_file_excluded_from_complete_stats(self) -> None:
+        measurements = [
+            self._row("lore", "a.py", "claude-sonnet-5", 100),
+            self._row("lore", "a.py", "claude-opus-4-8", 100),
+            self._row("lore", "b.py", "claude-sonnet-5", 200),  # opus missing for b.py
+        ]
+        stats = ts.compute_agreement(measurements, ["claude-sonnet-5", "claude-opus-4-8"], scope="lore")
+        assert stats.n_complete == 1
+        assert stats.n_incomplete == 1
+        assert stats.share_identical == pytest.approx(1.0)
+
+    def test_single_model_is_trivially_identical(self) -> None:
+        measurements = [self._row("lore", "a.py", "claude-sonnet-5", 100)]
+        stats = ts.compute_agreement(measurements, ["claude-sonnet-5"], scope="lore")
+        assert stats.n_complete == 1
+        assert stats.share_identical == pytest.approx(1.0)
+        assert stats.max_relative_spread == pytest.approx(0.0)
+
+    def test_no_complete_files_zeroes_out(self) -> None:
+        stats = ts.compute_agreement([], ["claude-sonnet-5", "claude-opus-4-8"], scope="lore")
+        assert stats.n_complete == 0
+        assert stats.share_identical == 0.0
+        assert stats.max_relative_spread == 0.0
+
+
+class TestCompareToBaseline:
+    def _m(self, path: str, claude: int, model: str = "claude-sonnet-5") -> ts.FileMeasurement:
+        return ts.FileMeasurement(
+            project="lore", path=path, ext=".py", bytes=10, voyage=100, claude=claude, model=model
+        )
+
+    def test_identical_counts_are_zero_drift(self) -> None:
+        baseline = {"a.py": 165, "b.py": 200}
+        new = [self._m("a.py", 165), self._m("b.py", 200)]
+        drift = ts.compare_to_baseline(baseline, new, scope="lore", model="claude-sonnet-5")
+        assert drift.n_matched == 2
+        assert drift.n_identical == 2
+        assert drift.max_abs_diff == 0
+        assert drift.max_rel_diff == pytest.approx(0.0)
+
+    def test_drift_is_measured(self) -> None:
+        baseline = {"a.py": 100}
+        new = [self._m("a.py", 105)]
+        drift = ts.compare_to_baseline(baseline, new, scope="lore", model="claude-sonnet-5")
+        assert drift.n_matched == 1
+        assert drift.n_identical == 0
+        assert drift.max_abs_diff == 5
+        assert drift.max_rel_diff == pytest.approx(0.05)
+        assert drift.mean_abs_diff == pytest.approx(5.0)
+
+    def test_unmatched_paths_counted_both_sides(self) -> None:
+        baseline = {"a.py": 100, "only_old.py": 50}
+        new = [self._m("a.py", 100), self._m("only_new.py", 20)]
+        drift = ts.compare_to_baseline(baseline, new, scope="lore", model="claude-sonnet-5")
+        assert drift.n_matched == 1
+        assert drift.n_unmatched_baseline == 1
+        assert drift.n_unmatched_new == 1
+
+    def test_no_overlap_zeroes_out(self) -> None:
+        drift = ts.compare_to_baseline({"a.py": 1}, [self._m("only_new.py", 2)], scope="lore", model="claude-sonnet-5")
+        assert drift.n_matched == 0
+        assert drift.max_abs_diff == 0
+        assert drift.max_rel_diff == pytest.approx(0.0)
+
+    def test_only_matching_model_counted(self) -> None:
+        baseline = {"a.py": 100}
+        new = [self._m("a.py", 999, model="claude-opus-4-8"), self._m("a.py", 100, model="claude-sonnet-5")]
+        drift = ts.compare_to_baseline(baseline, new, scope="lore", model="claude-sonnet-5")
+        assert drift.n_matched == 1
+        assert drift.n_identical == 1
+
+
+class TestLoadBaselineClaudeCounts:
+    def test_missing_file_returns_none(self, tmp_path: Path) -> None:
+        assert ts.load_baseline_claude_counts(tmp_path / "nope.jsonl") is None
+
+    def test_loads_path_to_claude_map(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "survey_lore.jsonl"
+        jsonl.write_text(
+            '{"project": "lore", "path": "a.py", "claude": 165, "voyage": 100}\n'
+            '{"project": "lore", "path": "b.py", "claude": 200, "voyage": 120}\n'
+        )
+        counts = ts.load_baseline_claude_counts(jsonl)
+        assert counts == {"a.py": 165, "b.py": 200}
+
+    def test_skips_blank_lines(self, tmp_path: Path) -> None:
+        jsonl = tmp_path / "s.jsonl"
+        jsonl.write_text('{"path": "a.py", "claude": 1}\n\n{"path": "b.py", "claude": 2}\n')
+        counts = ts.load_baseline_claude_counts(jsonl)
+        assert counts == {"a.py": 1, "b.py": 2}
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))

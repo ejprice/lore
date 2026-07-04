@@ -42,7 +42,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import httpx
 
@@ -63,6 +63,10 @@ ROOT_DIR_LABEL: str = "<root>"
 #: Anthropic token-counting endpoint (billed as free; no completion generated).
 ANTHROPIC_COUNT_TOKENS_URL: str = "https://api.anthropic.com/v1/messages/count_tokens"
 ANTHROPIC_MODEL: str = "claude-sonnet-5"
+#: The yardstick question — do these three share one tokenizer generation?
+#: (see docs/design/2026-07-04-token-survey-results.md). Order is preserved
+#: through probing/reporting so the report reads in this priority order.
+DEFAULT_MODELS: tuple[str, ...] = ("claude-sonnet-5", "claude-opus-4-8", "claude-fable-5")
 ANTHROPIC_VERSION: str = "2023-06-01"
 ANTHROPIC_API_KEY_ENV: str = "ANTHROPIC_API_KEY"
 #: The operator-authorised env file the key is sourced from when not already set.
@@ -120,7 +124,15 @@ class SkipRecord:
 
 @dataclass(frozen=True)
 class FileMeasurement:
-    """A counted file: token counts in both currencies and their ratio."""
+    """A counted file: token counts in both currencies and their ratio.
+
+    One instance is *one (file, model)* pair — a multi-model survey produces
+    ``len(models)`` measurements per sampled file, all sharing the same
+    ``project``/``path``/``voyage`` but a distinct ``model``/``claude``. This
+    keeps :func:`summarize` untouched (it already operates on any homogeneous
+    list of measurements); callers select a model's slice with
+    :func:`filter_by_model` before summarizing.
+    """
 
     project: str
     path: str
@@ -128,6 +140,9 @@ class FileMeasurement:
     bytes: int
     voyage: int
     claude: int
+    #: Which Claude model produced ``claude``. Defaults to the historical
+    #: single-model constant so pre-existing call sites need no changes.
+    model: str = ANTHROPIC_MODEL
 
     @property
     def ratio(self) -> float:
@@ -142,6 +157,7 @@ class FileMeasurement:
             "ext": self.ext,
             "bytes": self.bytes,
             "voyage": self.voyage,
+            "model": self.model,
             "claude": self.claude,
             "ratio": round(self.ratio, 6),
         }
@@ -425,6 +441,278 @@ def recommended_ceiling(summaries: Sequence[RatioSummary]) -> float:
 
 
 # --------------------------------------------------------------------------- #
+# Multi-model (yardstick) plumbing — pure, unit-tested
+# --------------------------------------------------------------------------- #
+def resolve_available_models(
+    probe_results: Mapping[str, str | None],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Split a model-probe result into survivors and dropped-with-reason.
+
+    Args:
+        probe_results: ``{model: None}`` for a model that probed cleanly, or
+            ``{model: error_message}`` (verbatim) for one that failed.
+
+    Returns:
+        ``(survivors, dropped)`` — ``survivors`` preserves the input mapping's
+        iteration order; ``dropped`` pairs each failed model with its verbatim
+        error message, for the run to flag and continue without it.
+    """
+    survivors = [model for model, error in probe_results.items() if error is None]
+    dropped = [(model, error) for model, error in probe_results.items() if error is not None]
+    return survivors, dropped
+
+
+def filter_by_model(measurements: Sequence[FileMeasurement], model: str) -> list[FileMeasurement]:
+    """The subset of ``measurements`` counted by ``model``, order preserved."""
+    return [measurement for measurement in measurements if measurement.model == model]
+
+
+def max_pairwise_relative_delta(values_by_key: Mapping[str, float]) -> float:
+    """The max pairwise relative delta ``(max - min) / min`` across ``values_by_key``.
+
+    Only the global min and max matter (the pair realising the max delta is
+    always the extremes) — a middle value can never widen it further.
+
+    Args:
+        values_by_key: One value per key (e.g. per model). Fewer than two
+            values has no pairwise delta.
+
+    Returns:
+        ``0.0`` for 0 or 1 values, or when all values are identical.
+
+    Raises:
+        ValueError: If the minimum value is exactly ``0`` and values differ
+            (a relative delta against a zero baseline is undefined).
+    """
+    values = list(values_by_key.values())
+    if len(values) < 2:
+        return 0.0
+    lo, hi = min(values), max(values)
+    if lo == hi:
+        return 0.0
+    if lo == 0.0:
+        raise ValueError("cannot compute a relative delta against a zero baseline")
+    return (hi - lo) / lo
+
+
+@dataclass(frozen=True)
+class CrossModelComparison:
+    """Cross-model spread stats for one scope (a project slug, or ``overall``)."""
+
+    scope: str
+    models: tuple[str, ...]
+    total_claude_by_model: dict[str, int]
+    token_weighted_ratio_by_model: dict[str, float]
+    ceiling_by_model: dict[str, float]
+    max_delta_total_claude: float
+    max_delta_ratio: float
+    max_delta_ceiling: float
+
+
+def compare_models(
+    scope: str,
+    total_claude_by_model: Mapping[str, int],
+    ratio_by_model: Mapping[str, float],
+    ceiling_by_model: Mapping[str, float],
+) -> CrossModelComparison:
+    """Compute the max pairwise cross-model delta on three axes for one scope.
+
+    Args:
+        scope: A project slug, or ``"overall"``.
+        total_claude_by_model: Raw summed Claude-token totals, per model.
+        ratio_by_model: The token-weighted ``claude/voyage`` ratio, per model.
+        ceiling_by_model: The ceiling-relevant statistic for this scope, per
+            model — the project's own token-weighted p95 for a per-project
+            scope, or the actual :func:`recommended_ceiling` for ``"overall"``.
+
+    Raises:
+        ValueError: If fewer than two models are given (nothing to compare).
+    """
+    if len(total_claude_by_model) < 2:
+        raise ValueError("compare_models requires at least two models")
+    return CrossModelComparison(
+        scope=scope,
+        models=tuple(total_claude_by_model.keys()),
+        total_claude_by_model=dict(total_claude_by_model),
+        token_weighted_ratio_by_model=dict(ratio_by_model),
+        ceiling_by_model=dict(ceiling_by_model),
+        max_delta_total_claude=max_pairwise_relative_delta(
+            {model: float(total) for model, total in total_claude_by_model.items()}
+        ),
+        max_delta_ratio=max_pairwise_relative_delta(ratio_by_model),
+        max_delta_ceiling=max_pairwise_relative_delta(ceiling_by_model),
+    )
+
+
+@dataclass(frozen=True)
+class AgreementStats:
+    """Per-file cross-model agreement for one scope.
+
+    ``n_complete`` files had a successful count from *every* requested model;
+    ``n_incomplete`` files were missing at least one model's count (a per-file
+    partial failure) and are excluded from the agreement/spread stats below.
+    """
+
+    scope: str
+    models: tuple[str, ...]
+    n_complete: int
+    n_incomplete: int
+    share_identical: float
+    max_relative_spread: float
+
+
+def compute_agreement(
+    measurements: Sequence[FileMeasurement], models: Sequence[str], *, scope: str
+) -> AgreementStats:
+    """Group per-model measurements by ``(project, path)`` and score agreement.
+
+    Args:
+        measurements: Any mix of per-model measurements (e.g. one project's,
+            or the whole corpus's).
+        models: The models a file must have a count from to be "complete".
+        scope: A label for the resulting :class:`AgreementStats` (a project
+            slug, or ``"overall"``).
+    """
+    by_file: dict[tuple[str, str], dict[str, int]] = {}
+    for measurement in measurements:
+        by_file.setdefault((measurement.project, measurement.path), {})[
+            measurement.model
+        ] = measurement.claude
+
+    required = set(models)
+    complete: list[dict[str, int]] = []
+    n_incomplete = 0
+    for counts in by_file.values():
+        if required.issubset(counts.keys()):
+            complete.append(counts)
+        else:
+            n_incomplete += 1
+
+    if not complete:
+        return AgreementStats(
+            scope=scope,
+            models=tuple(models),
+            n_complete=0,
+            n_incomplete=n_incomplete,
+            share_identical=0.0,
+            max_relative_spread=0.0,
+        )
+
+    identical = 0
+    max_spread = 0.0
+    for counts in complete:
+        values = [counts[model] for model in models]
+        if len(set(values)) == 1:
+            identical += 1
+        lo, hi = min(values), max(values)
+        spread = 0.0 if lo == 0 else (hi - lo) / lo
+        max_spread = max(max_spread, spread)
+
+    return AgreementStats(
+        scope=scope,
+        models=tuple(models),
+        n_complete=len(complete),
+        n_incomplete=n_incomplete,
+        share_identical=identical / len(complete),
+        max_relative_spread=max_spread,
+    )
+
+
+@dataclass(frozen=True)
+class DriftStats:
+    """Drift between a baseline (prior single-model) survey and a fresh recount."""
+
+    scope: str
+    model: str
+    n_matched: int
+    n_unmatched_baseline: int
+    n_unmatched_new: int
+    n_identical: int
+    max_abs_diff: int
+    max_rel_diff: float
+    mean_abs_diff: float
+
+
+def compare_to_baseline(
+    baseline_counts_by_path: Mapping[str, int],
+    new_measurements: Sequence[FileMeasurement],
+    *,
+    scope: str,
+    model: str,
+) -> DriftStats:
+    """Compare a baseline ``{path: claude_tokens}`` map to a fresh recount.
+
+    Only ``new_measurements`` counted by ``model`` are considered (a
+    multi-model measurement list is filtered internally), matched to the
+    baseline by ``path``. This is an endpoint-stability receipt: the same
+    file, same model, counted on a different day, should not drift.
+    """
+    new_by_path = {
+        measurement.path: measurement.claude
+        for measurement in new_measurements
+        if measurement.model == model
+    }
+    baseline_paths = set(baseline_counts_by_path)
+    new_paths = set(new_by_path)
+    matched = baseline_paths & new_paths
+
+    if not matched:
+        return DriftStats(
+            scope=scope,
+            model=model,
+            n_matched=0,
+            n_unmatched_baseline=len(baseline_paths - new_paths),
+            n_unmatched_new=len(new_paths - baseline_paths),
+            n_identical=0,
+            max_abs_diff=0,
+            max_rel_diff=0.0,
+            mean_abs_diff=0.0,
+        )
+
+    abs_diffs: list[int] = []
+    rel_diffs: list[float] = []
+    identical = 0
+    for path in matched:
+        old = baseline_counts_by_path[path]
+        new = new_by_path[path]
+        diff = abs(new - old)
+        abs_diffs.append(diff)
+        rel_diffs.append(0.0 if old == 0 else diff / old)
+        if diff == 0:
+            identical += 1
+
+    return DriftStats(
+        scope=scope,
+        model=model,
+        n_matched=len(matched),
+        n_unmatched_baseline=len(baseline_paths - new_paths),
+        n_unmatched_new=len(new_paths - baseline_paths),
+        n_identical=identical,
+        max_abs_diff=max(abs_diffs),
+        max_rel_diff=max(rel_diffs),
+        mean_abs_diff=statistics.fmean(abs_diffs),
+    )
+
+
+def load_baseline_claude_counts(jsonl_path: Path) -> dict[str, int] | None:
+    """Load ``{path: claude_tokens}`` from a legacy single-model survey JSONL.
+
+    Returns:
+        ``None`` if ``jsonl_path`` does not exist (baseline comparison is
+        optional — the first-ever run has nothing to compare against).
+    """
+    if not jsonl_path.is_file():
+        return None
+    counts: dict[str, int] = {}
+    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        counts[row["path"]] = int(row["claude"])
+    return counts
+
+
+# --------------------------------------------------------------------------- #
 # Live token counting (network surface — test-exempt)
 # --------------------------------------------------------------------------- #
 def load_api_key(env_file: Path = DEFAULT_ENV_FILE) -> str:
@@ -474,7 +762,14 @@ class ClaudeTokenCounter:
             "anthropic-version": ANTHROPIC_VERSION,
             "content-type": "application/json",
         }
+        # Track ownership so a client shared across several per-model counters
+        # (see MultiModelClaudeCounter) is only closed once, by its owner.
+        self._owns_client = client is None
         self._client = client or httpx.Client(timeout=60.0)
+
+    @property
+    def model(self) -> str:
+        return self._model
 
     def count(self, text: str) -> int:
         """Return the Claude ``input_tokens`` for ``text``.
@@ -521,6 +816,59 @@ class ClaudeTokenCounter:
         time.sleep(delay)
 
     def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+
+class MultiModelClaudeCounter:
+    """One :class:`ClaudeTokenCounter` per model, sharing a single ``httpx.Client``.
+
+    Answers the yardstick question directly: for the *same text*, does the
+    Claude token count depend on which model is asked? A shared HTTP client
+    keeps connection pooling working across models; per-file counting still
+    goes through one model at a time (see ``SurveyRunner``), so at most
+    ``MAX_CONCURRENCY`` requests are ever in flight regardless of model count.
+    """
+
+    def __init__(
+        self, api_key: str, models: Sequence[str], *, max_retries: int = MAX_RETRIES
+    ) -> None:
+        self._client = httpx.Client(timeout=60.0)
+        self._counters: dict[str, ClaudeTokenCounter] = {
+            model: ClaudeTokenCounter(
+                api_key, model=model, client=self._client, max_retries=max_retries
+            )
+            for model in models
+        }
+
+    @property
+    def models(self) -> tuple[str, ...]:
+        """The models still active (probed OK and not yet dropped), in order."""
+        return tuple(self._counters.keys())
+
+    def count(self, text: str, model: str) -> int:
+        """Return the Claude ``input_tokens`` for ``text`` under ``model``."""
+        return self._counters[model].count(text)
+
+    def probe(self, probe_text: str = "ping") -> dict[str, str | None]:
+        """Attempt one trivial count per model; ``None`` on success, else the
+        verbatim error message — never raises, so a bad model never aborts the
+        others' probes.
+        """
+        results: dict[str, str | None] = {}
+        for model, counter in self._counters.items():
+            try:
+                counter.count(probe_text)
+                results[model] = None
+            except RuntimeError as exc:
+                results[model] = str(exc)
+        return results
+
+    def drop(self, model: str) -> None:
+        """Remove ``model`` from future counting (e.g. after a failed probe)."""
+        self._counters.pop(model, None)
+
+    def close(self) -> None:
         self._client.close()
 
 
@@ -546,7 +894,7 @@ class SurveyRunner:
 
     def __init__(
         self,
-        claude_counter: ClaudeTokenCounter,
+        claude_counter: MultiModelClaudeCounter,
         voyage_counter: VoyageTokenCounter,
         jsonl_path: Path,
         *,
@@ -556,6 +904,7 @@ class SurveyRunner:
         progress_callback: ProgressCallback | None = None,
     ) -> None:
         self._claude = claude_counter
+        self._models = claude_counter.models
         self._voyage = voyage_counter
         self._jsonl_path = jsonl_path
         self._fraction = fraction
@@ -566,7 +915,7 @@ class SurveyRunner:
         self._counter_lock = Lock()
 
     def run(self, spec: ProjectSpec) -> ProjectResult:
-        """Discover, sample, and count one project."""
+        """Discover, sample, and count one project (every active model, per file)."""
         entries, discovery_skips = FileDiscovery(spec).discover()
         strata = stratify(entries)
         sample = sample_stratified(strata, self._fraction, self._seed)
@@ -586,51 +935,68 @@ class SurveyRunner:
                 pool.submit(self._measure_one, spec.slug, entry): entry
                 for entry in sample
             }
+            # Progress is counted per FILE, not per (file, model) outcome — a
+            # 3-model run still reports "counted 200/933" in file terms.
             for future in concurrent.futures.as_completed(futures):
                 entry = futures[future]
-                outcome = future.result()
-                if isinstance(outcome, FileMeasurement):
-                    result.measurements.append(outcome)
-                    self._write_row(outcome)
-                elif outcome.reason.startswith("failed"):
-                    result.failures.append(outcome)
-                else:
-                    result.count_skips.append(outcome)
+                outcomes = future.result()
+                for outcome in outcomes:
+                    if isinstance(outcome, FileMeasurement):
+                        result.measurements.append(outcome)
+                        self._write_row(outcome)
+                    elif outcome.reason.startswith("failed"):
+                        result.failures.append(outcome)
+                    else:
+                        result.count_skips.append(outcome)
                 done += 1
                 if self._progress and done % PROGRESS_EVERY == 0:
                     self._progress(spec.slug, done, len(sample))
 
-        result.measurements.sort(key=lambda measurement: measurement.path)
+        result.measurements.sort(key=lambda measurement: (measurement.path, measurement.model))
         if self._progress:
             self._progress(spec.slug, done, len(sample))
         return result
 
     def _measure_one(
         self, slug: str, entry: FileEntry
-    ) -> "FileMeasurement | SkipRecord":
-        """Count one file in both currencies (worker thread)."""
+    ) -> list["FileMeasurement | SkipRecord"]:
+        """Count one file in Voyage currency once, then every active model (worker thread).
+
+        Concurrency is bounded per file, not per (file, model) call: this
+        worker thread holds at most one in-flight HTTP request at a time (the
+        loop over models is sequential), so the pool's ``max_workers`` bounds
+        total concurrent Anthropic calls across every model, not just per model.
+        """
         try:
             text = entry.path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError) as exc:
-            return SkipRecord(entry.relpath, f"binary_or_unreadable:{type(exc).__name__}")
+            return [SkipRecord(entry.relpath, f"binary_or_unreadable:{type(exc).__name__}")]
         if not text.strip():
-            return SkipRecord(entry.relpath, "empty:whitespace-only")
+            return [SkipRecord(entry.relpath, "empty:whitespace-only")]
         with self._counter_lock:
             voyage = self._voyage.count(text)
         if voyage <= 0:
-            return SkipRecord(entry.relpath, "empty:zero-voyage-tokens")
-        try:
-            claude = self._claude.count(text)
-        except RuntimeError as exc:
-            return SkipRecord(entry.relpath, f"failed:{exc}")
-        return FileMeasurement(
-            project=slug,
-            path=entry.relpath,
-            ext=entry.ext,
-            bytes=entry.size_bytes,
-            voyage=voyage,
-            claude=claude,
-        )
+            return [SkipRecord(entry.relpath, "empty:zero-voyage-tokens")]
+
+        outcomes: list["FileMeasurement | SkipRecord"] = []
+        for model in self._models:
+            try:
+                claude = self._claude.count(text, model)
+            except RuntimeError as exc:
+                outcomes.append(SkipRecord(entry.relpath, f"failed:{model}:{exc}"))
+                continue
+            outcomes.append(
+                FileMeasurement(
+                    project=slug,
+                    path=entry.relpath,
+                    ext=entry.ext,
+                    bytes=entry.size_bytes,
+                    voyage=voyage,
+                    claude=claude,
+                    model=model,
+                )
+            )
+        return outcomes
 
     def _write_row(self, measurement: FileMeasurement) -> None:
         """Append one JSONL row (thread-safe)."""
@@ -807,6 +1173,162 @@ def per_extension_summaries(
     }
 
 
+def _project_result_for_model(result: ProjectResult, model: str) -> ProjectResult:
+    """A single-model view of a multi-model :class:`ProjectResult`.
+
+    Discovery/sampling counts are model-independent (shared); file-level count
+    skips (binary, empty, zero-voyage) occur once per file before the
+    per-model loop and are likewise shared. Only ``measurements`` and
+    ``failures`` are per-model and need filtering — this lets each model's
+    section reuse :func:`build_markdown_summary` unchanged.
+    """
+    failed_prefix = f"failed:{model}:"
+    return ProjectResult(
+        slug=result.slug,
+        note=result.note,
+        discovered=result.discovered,
+        sampled=result.sampled,
+        measurements=filter_by_model(result.measurements, model),
+        discovery_skips=result.discovery_skips,
+        count_skips=result.count_skips,
+        failures=[f for f in result.failures if f.reason.startswith(failed_prefix)],
+    )
+
+
+def build_yardstick_markdown(
+    requested_models: Sequence[str],
+    active_models: Sequence[str],
+    dropped_models: Sequence[tuple[str, str]],
+    project_summaries_by_model: dict[str, dict[str, RatioSummary]],
+    ext_summaries_by_model: dict[str, dict[str, dict[str, RatioSummary]]],
+    overall_by_model: dict[str, RatioSummary],
+    ceiling_by_model: dict[str, float],
+    comparisons: Sequence[CrossModelComparison],
+    agreement_overall: AgreementStats,
+    agreement_by_project: dict[str, AgreementStats],
+    drifts: Sequence[DriftStats],
+    results: dict[str, ProjectResult],
+) -> str:
+    """Render the cross-model yardstick report: does the model matter?
+
+    Structure: model availability -> per-model recommended ceilings -> the
+    cross-model delta table (the operator's actual question) -> per-file
+    agreement -> the sonnet-5 endpoint-stability receipt -> full per-model
+    detail (each reusing :func:`build_markdown_summary` unchanged).
+    """
+    lines: list[str] = ["# Token-Calibration Yardstick Survey — Cross-Model Summary", ""]
+
+    lines.append("## Models")
+    lines.append("")
+    lines.append(f"- Requested: {', '.join(requested_models)}")
+    lines.append(f"- Active (survived probe): {', '.join(active_models) or '(none)'}")
+    if dropped_models:
+        lines.append("- Dropped (probe failed — verbatim error):")
+        for model, error in dropped_models:
+            lines.append(f"  - `{model}`: {error}")
+    lines.append("")
+
+    lines.append("## Recommended ceiling, per model")
+    lines.append("")
+    lines.append("| model | ceiling |")
+    lines.append("|---|---|")
+    for model in active_models:
+        if model in ceiling_by_model:
+            lines.append(f"| {model} | {ceiling_by_model[model]:.2f} |")
+    lines.append("")
+    if len(ceiling_by_model) >= 2:
+        lines.append(
+            f"Max pairwise relative delta across per-model ceilings: "
+            f"{max_pairwise_relative_delta(ceiling_by_model) * 100:.2f}%"
+        )
+        lines.append("")
+
+    lines.append("## Cross-model comparison (max pairwise relative delta)")
+    lines.append("")
+    lines.append("| scope | models | Δ total-claude | Δ tok-wt ratio | Δ ceiling-input |")
+    lines.append("|---|---|---|---|---|")
+    if comparisons:
+        for comparison in comparisons:
+            lines.append(
+                f"| {comparison.scope} | {', '.join(comparison.models)} "
+                f"| {comparison.max_delta_total_claude * 100:.3f}% "
+                f"| {comparison.max_delta_ratio * 100:.3f}% "
+                f"| {comparison.max_delta_ceiling * 100:.3f}% |"
+            )
+    else:
+        lines.append("| (fewer than two active models — no comparison possible) | | | | |")
+    lines.append("")
+    lines.append(
+        "`ceiling-input` = each project's own token-weighted p95; for the "
+        "`overall` row it is the actual recommended ceiling (max p95 across "
+        "projects), per model."
+    )
+    lines.append("")
+
+    lines.append("## Per-file agreement (share of files where ALL active models count IDENTICALLY)")
+    lines.append("")
+    lines.append("| scope | n complete | n incomplete | share identical | max relative spread |")
+    lines.append("|---|---|---|---|---|")
+    lines.append(
+        f"| overall | {agreement_overall.n_complete} | {agreement_overall.n_incomplete} "
+        f"| {agreement_overall.share_identical * 100:.2f}% "
+        f"| {agreement_overall.max_relative_spread * 100:.3f}% |"
+    )
+    for slug, stats in agreement_by_project.items():
+        lines.append(
+            f"| {slug} | {stats.n_complete} | {stats.n_incomplete} "
+            f"| {stats.share_identical * 100:.2f}% | {stats.max_relative_spread * 100:.3f}% |"
+        )
+    lines.append("")
+
+    if drifts:
+        lines.append(f"## Endpoint-stability receipt ({ANTHROPIC_MODEL} vs prior single-model survey)")
+        lines.append("")
+        lines.append(
+            "| project | matched | unmatched (baseline-only) | unmatched (new-only) "
+            "| identical | max abs diff | max rel diff | mean abs diff |"
+        )
+        lines.append("|---|---|---|---|---|---|---|---|")
+        for drift in drifts:
+            lines.append(
+                f"| {drift.scope} | {drift.n_matched} | {drift.n_unmatched_baseline} "
+                f"| {drift.n_unmatched_new} | {drift.n_identical} | {drift.max_abs_diff} "
+                f"| {drift.max_rel_diff * 100:.3f}% | {_fmt(drift.mean_abs_diff)} |"
+            )
+        lines.append("")
+
+    lines.append("## Per-model detail")
+    lines.append("")
+    for model in active_models:
+        if model not in project_summaries_by_model:
+            lines.append(f"### {model}")
+            lines.append("")
+            lines.append("(no measurements — every file failed for this model)")
+            lines.append("")
+            continue
+        lines.append(f"### {model}")
+        lines.append("")
+        per_model_results = {
+            slug: _project_result_for_model(result, model) for slug, result in results.items()
+        }
+        model_markdown = build_markdown_summary(
+            project_summaries_by_model[model],
+            ext_summaries_by_model[model],
+            overall_by_model[model],
+            ceiling_by_model[model],
+            per_model_results,
+        )
+        # Demote: this per-model report owns its own H1, but only the
+        # yardstick report as a whole should have one.
+        model_lines = model_markdown.splitlines()
+        if model_lines and model_lines[0].startswith("# "):
+            model_lines = model_lines[1:]
+        lines.extend(model_lines)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -841,6 +1363,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Append progress lines to this file (e.g. REPORT-calib-tool.md).",
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=list(DEFAULT_MODELS),
+        help="Claude models to count against (the yardstick question).",
+    )
+    parser.add_argument(
+        "--jsonl-prefix",
+        default="survey",
+        help="Filename prefix for this run's per-file JSONL (avoid clobbering a prior run's).",
+    )
+    parser.add_argument(
+        "--summary-filename",
+        default="survey_summary.md",
+        help="Filename for the markdown summary (avoid clobbering a prior run's).",
+    )
+    parser.add_argument(
+        "--baseline-prefix",
+        default="survey",
+        help=(
+            "Filename prefix of a prior single-model run's JSONL, used only for the "
+            f"{ANTHROPIC_MODEL} endpoint-stability drift receipt (skipped if absent)."
+        ),
     )
     return parser
 
@@ -893,18 +1439,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             with args.progress_file.open("a", encoding="utf-8") as handle:
                 handle.write(f"- {message}\n")
 
-    project_summaries: dict[str, RatioSummary] = {}
-    ext_summaries: dict[str, dict[str, RatioSummary]] = {}
+    def note(message: str) -> None:
+        print(message, file=sys.stderr)
+        if args.progress_file is not None:
+            with args.progress_file.open("a", encoding="utf-8") as handle:
+                handle.write(f"- {message}\n")
+
+    claude = MultiModelClaudeCounter(api_key, args.models, max_retries=MAX_RETRIES)
+    probe_results = claude.probe()
+    active_models, dropped_models = resolve_available_models(probe_results)
+    for model, error in dropped_models:
+        note(f"MODEL DROPPED (probe failed): {model}: {error}")
+        claude.drop(model)
+    if not active_models:
+        print("No models survived the probe.", file=sys.stderr)
+        claude.close()
+        return 1
+    note(f"Active models: {', '.join(active_models)}")
+
     results: dict[str, ProjectResult] = {}
     all_measurements: list[FileMeasurement] = []
 
-    claude_counter = ClaudeTokenCounter(api_key, max_retries=MAX_RETRIES)
     try:
         for spec in specs:
-            jsonl_path = out_dir / f"survey_{spec.slug}.jsonl"
+            jsonl_path = out_dir / f"{args.jsonl_prefix}_{spec.slug}.jsonl"
             jsonl_path.write_text("", encoding="utf-8")  # fresh, deterministic run
             runner = SurveyRunner(
-                claude_counter,
+                claude,
                 voyage_counter,
                 jsonl_path,
                 fraction=args.fraction,
@@ -914,10 +1475,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             result = runner.run(spec)
             results[spec.slug] = result
-            if result.measurements:
-                project_summaries[spec.slug] = summarize(result.measurements, label=spec.slug)
-                ext_summaries[spec.slug] = per_extension_summaries(result.measurements)
-                all_measurements.extend(result.measurements)
+            all_measurements.extend(result.measurements)
             print(
                 f"[{spec.slug}] discovered={result.discovered} sampled={result.sampled} "
                 f"measured={len(result.measurements)} skips={len(result.count_skips)} "
@@ -925,21 +1483,106 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
     finally:
-        claude_counter.close()
+        claude.close()
 
     if not all_measurements:
         print("No measurements produced.", file=sys.stderr)
         return 1
 
-    overall = summarize(all_measurements, label="overall")
-    ceiling = recommended_ceiling(list(project_summaries.values()))
-    markdown = build_markdown_summary(
-        project_summaries, ext_summaries, overall, ceiling, results
+    # --- Per-model stats -------------------------------------------------- #
+    project_summaries_by_model: dict[str, dict[str, RatioSummary]] = {}
+    ext_summaries_by_model: dict[str, dict[str, dict[str, RatioSummary]]] = {}
+    overall_by_model: dict[str, RatioSummary] = {}
+    ceiling_by_model: dict[str, float] = {}
+
+    for model in active_models:
+        per_project: dict[str, RatioSummary] = {}
+        per_ext: dict[str, dict[str, RatioSummary]] = {}
+        for spec in specs:
+            model_measurements = filter_by_model(results[spec.slug].measurements, model)
+            if model_measurements:
+                per_project[spec.slug] = summarize(model_measurements, label=f"{spec.slug}:{model}")
+                per_ext[spec.slug] = per_extension_summaries(model_measurements)
+        if per_project:
+            project_summaries_by_model[model] = per_project
+            ext_summaries_by_model[model] = per_ext
+            overall_by_model[model] = summarize(
+                filter_by_model(all_measurements, model), label=f"overall:{model}"
+            )
+            ceiling_by_model[model] = recommended_ceiling(list(per_project.values()))
+
+    models_with_data = [m for m in active_models if m in project_summaries_by_model]
+    if not models_with_data:
+        print("No model produced any measurements.", file=sys.stderr)
+        return 1
+
+    # --- Cross-model comparison -------------------------------------------- #
+    comparisons: list[CrossModelComparison] = []
+    for spec in specs:
+        slug = spec.slug
+        models_here = [m for m in models_with_data if slug in project_summaries_by_model[m]]
+        if len(models_here) >= 2:
+            comparisons.append(
+                compare_models(
+                    slug,
+                    {m: project_summaries_by_model[m][slug].total_claude for m in models_here},
+                    {m: project_summaries_by_model[m][slug].token_weighted_ratio for m in models_here},
+                    {m: project_summaries_by_model[m][slug].token_weighted_p95 for m in models_here},
+                )
+            )
+    if len(models_with_data) >= 2:
+        comparisons.append(
+            compare_models(
+                "overall",
+                {m: overall_by_model[m].total_claude for m in models_with_data},
+                {m: overall_by_model[m].token_weighted_ratio for m in models_with_data},
+                # The "overall" ceiling-input is the ACTUAL derived ceiling
+                # (max p95 across projects), not a pooled p95 — it is the tool's
+                # real output, so its cross-model delta is the one that matters.
+                dict(ceiling_by_model),
+            )
+        )
+
+    # --- Per-file agreement -------------------------------------------------#
+    agreement_overall = compute_agreement(all_measurements, models_with_data, scope="overall")
+    agreement_by_project = {
+        spec.slug: compute_agreement(results[spec.slug].measurements, models_with_data, scope=spec.slug)
+        for spec in specs
+    }
+
+    # --- Endpoint-stability receipt (sonnet-5 vs the prior single-model run) #
+    drifts: list[DriftStats] = []
+    if ANTHROPIC_MODEL in models_with_data:
+        for spec in specs:
+            baseline_path = out_dir / f"{args.baseline_prefix}_{spec.slug}.jsonl"
+            baseline_counts = load_baseline_claude_counts(baseline_path)
+            if baseline_counts is not None:
+                new_for_model = filter_by_model(results[spec.slug].measurements, ANTHROPIC_MODEL)
+                drifts.append(
+                    compare_to_baseline(
+                        baseline_counts, new_for_model, scope=spec.slug, model=ANTHROPIC_MODEL
+                    )
+                )
+
+    markdown = build_yardstick_markdown(
+        args.models,
+        models_with_data,
+        dropped_models,
+        project_summaries_by_model,
+        ext_summaries_by_model,
+        overall_by_model,
+        ceiling_by_model,
+        comparisons,
+        agreement_overall,
+        agreement_by_project,
+        drifts,
+        results,
     )
-    summary_path = out_dir / "survey_summary.md"
+    summary_path = out_dir / args.summary_filename
     summary_path.write_text(markdown, encoding="utf-8")
     print(f"Summary written to {summary_path}", file=sys.stderr)
-    print(f"Recommended ceiling: {ceiling:.2f}", file=sys.stderr)
+    for model in models_with_data:
+        print(f"Recommended ceiling [{model}]: {ceiling_by_model[model]:.2f}", file=sys.stderr)
     return 0
 
 
