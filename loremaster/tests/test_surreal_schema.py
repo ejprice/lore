@@ -54,6 +54,7 @@ from loremaster.store.surreal_schema import (
     COMMAND_TABLE,
     SNAPSHOT_ENTRY_TABLE,
     SNAPSHOT_TABLE,
+    TRACE_TABLE,
     generate_ddl,
 )
 
@@ -958,4 +959,197 @@ class TestCommandDefaultsAndConstraints:
                 connection,
                 "CREATE type::record('command', $id) SET payload = $payload",
                 {"id": "cmd_missing_kind", "payload": _COMMAND_PAYLOAD},
+            )
+
+
+# --- P8a: ``trace`` observability-row field-level fixtures --------------------
+#
+# The plan pins ``trace`` as lore's OBSERVABILITY row: six core columns capturing
+# one served tool invocation (``tool``/``params_hash``/``hit_count``/
+# ``latency_ms``/``session``/``ts``) plus the two audited optional accounting
+# columns (``token_cost``/``model``) already landed in P2. P8a promotes ``trace``
+# from that token_cost/model-ONLY table to the full six-core-field definition.
+# The fixtures below are realistic lore-domain values (a real tool name, a real
+# SHA-512 params digest, a real fleet session id), never convenience placeholders.
+_TRACE_TOOL = "lore_search_code"
+_TRACE_PARAMS_HASH = sha512_hex("query=PurchaseOrder.action_confirm&k=8&tier=custom")
+_TRACE_HIT_COUNT = 8
+# Deliberately FRACTIONAL: the plan types ``latency_ms`` as ``number`` (not
+# ``int``), so a real sub-millisecond-resolution latency must round-trip intact —
+# an ``int`` column would silently truncate it.
+_TRACE_LATENCY_MS = 42.5
+_TRACE_SESSION = "orchestrator-session-7f3a"
+_TRACE_TOKEN_COST = 1536
+_TRACE_MODEL = "voyage-4-large"
+
+
+async def _create_trace(
+    connection: SurrealConnection,
+    *,
+    trace_id: str,
+    tool: str = _TRACE_TOOL,
+    params_hash: str = _TRACE_PARAMS_HASH,
+    hit_count: int = _TRACE_HIT_COUNT,
+    latency_ms: float = _TRACE_LATENCY_MS,
+    session: str = _TRACE_SESSION,
+    token_cost: int | None = None,
+    model: str | None = None,
+) -> None:
+    """CREATE a ``trace`` row, omitting any optional field the caller left unset.
+
+    Omitting ``ts`` from the CONTENT entirely (never emitted here) exercises the
+    schema's own ``DEFAULT time::now()`` — the server-side timestamp generation the
+    plan pins — and omitting ``token_cost``/``model`` when unset exercises the
+    ``option`` columns' clean-NONE storage, exactly as an async ``record_trace``
+    writer would.
+
+    Uses ``CONTENT $content`` (a single bound object), NOT ``SET session =
+    $session``: ``session`` is a SurrealDB PROTECTED variable name, so a top-level
+    bound param called ``$session`` is rejected outright (``'session' is a
+    protected variable and cannot be set``). As an object KEY inside ``$content``
+    it is perfectly legal — the same reason ``record_trace`` builds a CONTENT
+    object rather than a SET clause.
+    """
+    content: dict[str, Any] = {
+        "tool": tool,
+        "params_hash": params_hash,
+        "hit_count": hit_count,
+        "latency_ms": latency_ms,
+        "session": session,
+    }
+    if token_cost is not None:
+        content["token_cost"] = token_cost
+    if model is not None:
+        content["model"] = model
+    await run(
+        connection,
+        "CREATE type::record('trace', $id) CONTENT $content",
+        {"id": trace_id, "content": content},
+    )
+
+
+class TestTraceTableFieldDefinitions:
+    """P8a: ``trace`` carries its six core observability fields plus the two
+    audited optional accounting columns — no longer the token_cost/model-ONLY
+    placeholder P2 landed (offline, string-level assertions on the generator's
+    own output — no server needed).
+    """
+
+    def test_trace_core_scalar_fields_are_defined(self) -> None:
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        assert "TYPE string" in _field_statement(ddl, TRACE_TABLE, "tool")
+        assert "TYPE string" in _field_statement(ddl, TRACE_TABLE, "params_hash")
+        assert "TYPE int" in _field_statement(ddl, TRACE_TABLE, "hit_count")
+        # ``number`` (not ``int``): a fractional latency must survive — see the
+        # ``_TRACE_LATENCY_MS`` fixture rationale.
+        assert "TYPE number" in _field_statement(ddl, TRACE_TABLE, "latency_ms")
+        assert "TYPE string" in _field_statement(ddl, TRACE_TABLE, "session")
+
+    def test_trace_ts_is_a_server_defaulted_datetime(self) -> None:
+        # The observability timestamp self-stamps via ``DEFAULT time::now()`` —
+        # the SAME idiom ``snapshot.created_at`` / ``command.created_at`` use — so
+        # the async writer never has to compute the ingestion instant itself.
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        ts = _field_statement(ddl, TRACE_TABLE, "ts")
+        assert "TYPE datetime" in ts
+        assert "DEFAULT" in ts and "time::now()" in ts
+
+    def test_trace_optional_accounting_columns_are_defined(self) -> None:
+        # The two audited additive columns (Spectron concept-coverage) stay
+        # ``option`` so an async writer may omit them and store NONE cleanly.
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        assert "option<int>" in _field_statement(ddl, TRACE_TABLE, "token_cost")
+        assert "option<string>" in _field_statement(ddl, TRACE_TABLE, "model")
+
+
+class TestTraceRoundTrip:
+    """The ``trace`` table (live behavioural): the six core fields round-trip, the
+    ``ts`` DEFAULT auto-stamps, the optional accounting columns store NONE cleanly
+    when omitted and round-trip when given, and the table enforces real SCHEMAFULL
+    field discipline (an undeclared field is rejected).
+    """
+
+    async def test_trace_probe_round_trips_core_fields(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        await _create_trace(connection, trace_id="trace_core")
+        row = _one(await run(connection, "SELECT * FROM type::record('trace', 'trace_core')"))
+        assert row["tool"] == _TRACE_TOOL
+        assert row["params_hash"] == _TRACE_PARAMS_HASH
+        assert row["hit_count"] == _TRACE_HIT_COUNT
+        # Fractional latency survives the ``number`` column intact (no truncation).
+        assert row["latency_ms"] == _TRACE_LATENCY_MS
+        assert row["session"] == _TRACE_SESSION
+
+    async def test_trace_ts_is_auto_populated_when_omitted(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        before = datetime.now(UTC)
+        await _create_trace(connection, trace_id="trace_ts")  # never sets ts
+        after = datetime.now(UTC)
+        row = _one(await run(connection, "SELECT * FROM type::record('trace', 'trace_ts')"))
+        ts = row["ts"]
+        assert isinstance(ts, datetime)
+        # Sanity BOUND, not exact equality: the engine's own clock stamped
+        # something inside this test's wall-clock window — catches "no DEFAULT at
+        # all" (None fails the isinstance check) and "wrong epoch/unit" alike.
+        assert before - _CLOCK_SKEW_ALLOWANCE <= _as_utc(ts) <= after + _CLOCK_SKEW_ALLOWANCE
+
+    async def test_trace_optional_columns_absent_when_omitted(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        await _create_trace(connection, trace_id="trace_no_accounting")
+        row = _one(
+            await run(connection, "SELECT * FROM type::record('trace', 'trace_no_accounting')")
+        )
+        # An omitted ``option`` column reads back NONE (the SDK decodes it to
+        # ``None``, whether absent from the row or explicitly None).
+        assert row.get("token_cost") is None
+        assert row.get("model") is None
+
+    async def test_trace_optional_columns_round_trip_when_given(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        await _create_trace(
+            connection,
+            trace_id="trace_accounting",
+            token_cost=_TRACE_TOKEN_COST,
+            model=_TRACE_MODEL,
+        )
+        row = _one(
+            await run(connection, "SELECT * FROM type::record('trace', 'trace_accounting')")
+        )
+        assert row["token_cost"] == _TRACE_TOKEN_COST
+        assert row["model"] == _TRACE_MODEL
+
+    async def test_trace_rejects_undeclared_field(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        # Proves ``trace`` is a REAL SCHEMAFULL table with declared fields, not a
+        # bare placeholder that accepts anything written at it.
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        with pytest.raises(Exception):  # noqa: B017 - engine SCHEMAFULL rejection surface
+            await run(
+                connection,
+                "CREATE type::record('trace', $id) CONTENT $content",
+                {
+                    "id": "trace_rogue",
+                    "content": {
+                        "tool": _TRACE_TOOL,
+                        "params_hash": _TRACE_PARAMS_HASH,
+                        "hit_count": _TRACE_HIT_COUNT,
+                        "latency_ms": _TRACE_LATENCY_MS,
+                        "session": _TRACE_SESSION,
+                        "rogue_field": "not in the schema",
+                    },
+                },
             )

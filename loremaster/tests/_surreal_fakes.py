@@ -191,6 +191,10 @@ class _FakeSurrealDatabase:
     manifest_rows: dict[tuple[str, str], FileRow] = field(default_factory=dict)
     meta: dict[str, str] = field(default_factory=dict)
     graph_slices: dict[tuple[str, str], _GraphSlice] = field(default_factory=dict)
+    # P8a: append-only observability trace rows (the ``trace`` table). Ordered by
+    # insertion here; ``FakeSurrealStore.recorded_traces`` deliberately reorders on
+    # read-back (the real engine returns rows unordered without an ``ORDER BY``).
+    traces: list[dict[str, Any]] = field(default_factory=list)
 
     # -- chunk helpers ----------------------------------------------------
     def replace_file_chunks(
@@ -236,6 +240,11 @@ class _FakeSurrealDatabase:
         """Every distinct ``file_path`` with at least one stored chunk."""
         return {chunk.file_path for chunk in self.chunks.values()}
 
+    # -- trace helpers (P8a observability write path) ---------------------
+    def append_trace(self, row: dict[str, Any]) -> None:
+        """Append one observability trace row (append-only; never keyed/deduped)."""
+        self.traces.append(row)
+
     def snapshot(self) -> _FakeSurrealDatabase:
         """A deep copy for atomic rollback (the engine's snapshot isolation)."""
         return copy.deepcopy(self)
@@ -247,6 +256,10 @@ class _FakeSurrealDatabase:
         self.manifest_rows = snapshot.manifest_rows
         self.meta = snapshot.meta
         self.graph_slices = snapshot.graph_slices
+        # Traces are never written inside a composed apply (record_trace is a
+        # standalone write), so snapshot.traces always equals the current list —
+        # restoring it is a correct no-op that keeps every table symmetric.
+        self.traces = snapshot.traces
 
 
 def _now_iso() -> str:
@@ -777,6 +790,71 @@ class FakeSurrealStore:
             key=lambda chunk: chunk.payload["__point_id"],
         )
         return [self._clean_payload(chunk) for chunk in matches[:limit]]
+
+    # -- trace write path (P8a observability) -----------------------------
+
+    async def record_trace(
+        self,
+        *,
+        tool: str,
+        params_hash: str,
+        hit_count: int,
+        latency_ms: float,
+        session: str,
+        token_cost: int | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Persist one observability trace row — signature-identical to
+        :meth:`SurrealStore.record_trace` (pinned by ``test_surreal_fakes.py``'s
+        signature-parity test).
+
+        Honours :meth:`arm_connection_failure` (a down connection RAISES
+        :class:`SurrealConnectionError` BEFORE any row is appended — the injected
+        append-failure the real store's transport can surface, never a silent
+        success), then appends the row. The two optional accounting columns are
+        stored ONLY when given, mirroring the real ``option`` column's
+        clean-NONE-on-omission (so an omitted column's ``.get(...)`` is ``None`` on
+        read-back). ``ts`` is stamped HERE — the fake's analogue of the schema's
+        server-side ``DEFAULT time::now()`` — so a read-back row always carries a
+        tz-aware datetime the async writer never supplied. Traces are append-only
+        EVENTS, never keyed/deduped, so two identical calls persist two distinct
+        rows.
+        """
+        self._maybe_trip_connection_failure()
+        row: dict[str, Any] = {
+            "tool": tool,
+            "params_hash": params_hash,
+            "hit_count": hit_count,
+            "latency_ms": latency_ms,
+            "session": session,
+            "ts": datetime.now(UTC),
+        }
+        if token_cost is not None:
+            row["token_cost"] = token_cost
+        if model is not None:
+            row["model"] = model
+        self.db.append_trace(row)
+
+    def recorded_traces(self) -> list[dict[str, Any]]:
+        """Every persisted trace row (test oracle — the fake's stand-in for the
+        real store's ``SELECT * FROM trace``, which has no public API in P8a since
+        aggregates are P8d).
+
+        Returns the rows in a DELIBERATELY NON-insertion order (reversed): the real
+        engine returns rows unordered without an ``ORDER BY``, so a consumer that
+        assumed insertion order would be a latent bug — this adversarial reorder
+        makes that assumption go RED (the P5 positional-consumption lesson applied
+        to traces). Deterministic call-to-call. Each row is a COPY, so a caller can
+        never mutate the fake's stored state; an omitted optional column is absent
+        (its ``.get(...)`` is ``None``), exactly as the real ``option`` column reads
+        back, and no internal bookkeeping key ever rides along (unlike a chunk row,
+        a trace row carries none). KNOWN MODELLING BOUNDARY: the real
+        ``SELECT *`` row also carries an SDK-level ``id`` (a ``RecordID``), which
+        this oracle intentionally does NOT model — no P8a consumer reads it (the
+        write path is fire-and-forget); a future consumer that wants ``row['id']``
+        must FIRST add fake parity here plus a contract test.
+        """
+        return [dict(row) for row in reversed(self.db.traces)]
 
     # -- inspection helpers (test-only, not part of the production API) ---
 

@@ -45,10 +45,12 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
 import pytest_asyncio
+from _surreal_fakes import FakeSurrealStore, fake_surreal_trio
 from _surreal_harness import (
     PRODUCTION_DIM,
     SLUG,
@@ -57,7 +59,11 @@ from _surreal_harness import (
     SurrealEnv,
     call_until_recovered,
     chunk_record,
+    connect_admin,
+    drop_database,
+    make_env,
     surreal_env,  # noqa: F401 - re-exported pytest fixture
+    unique_database,
     unit_vector,
 )
 from loremaster.graph_surreal import SurrealCodeGraph
@@ -77,7 +83,7 @@ from loremaster.store.surreal import (
     VectorDimensionError,
     _SurrealConnection,
 )
-from loremaster.store.surreal_schema import CHUNK_TABLE, generate_ddl
+from loremaster.store.surreal_schema import CHUNK_TABLE, TRACE_TABLE, generate_ddl
 from loremaster.symbols import _SCROLL_LIMIT  # the real scroll caller's read cap
 from lorescribe.models import Chunk
 from pydantic import ValidationError
@@ -2110,3 +2116,273 @@ class TestTxnRetryBehaviourUnchanged:
             await _run_execute_transaction(fake)
 
         assert fake.calls == 1
+
+
+# ===========================================================================
+# P8a: the ``trace`` observability write path — ``record_trace``.
+#
+# ``trace`` is lore's per-tool-invocation OBSERVABILITY row, written async by the
+# mcp role (the async fire-and-forget EMISSION that schedules these writes, and
+# the aggregates over them, are a later serving-layer phase — P8d). P8a delivers
+# only the awaitable STORE-side write: ``record_trace`` persists one row — the six
+# core fields plus the two optional accounting columns — with ``ts`` stamped
+# server-side by the schema's ``DEFAULT time::now()`` so the writer never computes
+# it. These pins run against BOTH the real store and the adversarial in-memory
+# fake via the parametrized ``trace_store`` fixture — the fake-vs-real PARITY PIN
+# (mirrors ``test_task_ledger.py``'s ``task_ledger_factory``): a behaviour the
+# fake gets wrong, or too friendly, shows up as a real-vs-fake divergence rather
+# than a fake-only green.
+#
+# ``session`` is a SurrealDB PROTECTED variable, so the write MUST bind a single
+# CONTENT object (``session`` as an object KEY) rather than ``SET session =
+# $session`` (rejected: "'session' is a protected variable and cannot be set").
+# ===========================================================================
+
+# Realistic lore-domain trace fixtures (a real tool name, a real SHA-512 params
+# digest, a real fleet session id) — never convenience placeholders.
+_TRACE_TOOL = "lore_search_code"
+_TRACE_PARAMS_HASH = sha512_hex("query=PurchaseOrder.action_confirm&k=8&tier=custom")
+_TRACE_HIT_COUNT = 8
+# Fractional: the schema types ``latency_ms`` as ``number``; an ``int`` column
+# would silently truncate a sub-millisecond latency.
+_TRACE_LATENCY_MS = 42.5
+_TRACE_SESSION = "orchestrator-session-7f3a"
+_TRACE_TOKEN_COST = 1536
+_TRACE_MODEL = "voyage-4-large"
+
+# The recent-``ts`` sanity window — mirrors ``test_task_ledger``'s
+# ``_TIMESTAMP_TOLERANCE`` / ``test_surreal_schema``'s ``_CLOCK_SKEW_ALLOWANCE``:
+# loose enough for container/CI clock jitter, tight enough to catch a
+# wrong-epoch / stale-clock / no-default stamp.
+_TRACE_TS_TOLERANCE = timedelta(seconds=30)
+
+
+@pytest_asyncio.fixture(params=["real", "fake"])
+async def trace_store(request: pytest.FixtureRequest) -> AsyncIterator[SurrealStore]:
+    """A ready store for the ``record_trace`` parity pins — parametrized over BOTH
+    the real SurrealDB-backed :class:`SurrealStore` and the adversarial in-memory
+    :class:`FakeSurrealStore`.
+
+    Mirrors ``test_task_ledger.py``'s ``task_ledger_factory``: the ``"real"``
+    branch deliberately does NOT depend on the ``surreal_env`` fixture (resolving
+    one async fixture from inside another async fixture's own body re-enters
+    pytest-asyncio 1.4's shared function-scoped ``Runner`` — a documented live
+    ``RuntimeError``), so it calls the SAME underlying harness helpers
+    ``surreal_env`` itself calls (``make_env`` / ``connect_admin`` /
+    ``drop_database``) directly, keeping the identical isolated-throwaway-database
+    guarantee without touching pytest's fixture graph. The ``"fake"`` branch never
+    touches the SurrealDB harness at all.
+    """
+    if request.param == "real":
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        setup_connection = await connect_admin(env)
+        await setup_connection.close()
+        live_store = SurrealStore(
+            url=env.url,
+            namespace=env.namespace,
+            database=env.database,
+            dim=env.dim,
+            user=env.user,
+            password=env.password,
+        )
+        await live_store.ensure_ready()
+        try:
+            yield live_store
+        finally:
+            await live_store.close()
+            await drop_database(env)
+    else:
+        fake_store = fake_surreal_trio(dim=PRODUCTION_DIM).store
+        await fake_store.ensure_ready()
+        # FakeSurrealStore satisfies the record_trace contract behaviourally (that
+        # IS this parity pin); it shares no base class with SurrealStore, so the
+        # cast tells mypy what the suite proves.
+        yield cast(SurrealStore, fake_store)
+
+
+async def _recorded_traces(trace_store: Any) -> list[dict[str, Any]]:
+    """Read back every persisted trace row, uniformly across real + fake.
+
+    The real store has NO public trace-read API — P8a is write-path only;
+    aggregates are P8d — so the REAL rows are read through the store's own private
+    ``_query`` seam (a TEST introspection, not a store API), while the FAKE exposes
+    a ``recorded_traces`` oracle. NEITHER backend promises insertion order (the
+    real engine returns rows unordered without an ``ORDER BY``; the fake
+    deliberately reorders), so every caller compares as an UNORDERED collection.
+    """
+    if isinstance(trace_store, FakeSurrealStore):
+        return trace_store.recorded_traces()
+    raw = await trace_store._query(f"SELECT * FROM {TRACE_TABLE}")
+    return [row for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
+
+
+class TestRecordTrace:
+    """``record_trace`` persists one observability row — the six core fields,
+    server-stamped ``ts``, and the two optional accounting columns. Parity: every
+    case runs against BOTH the real store and the adversarial fake.
+    """
+
+    async def test_record_trace_persists_all_six_core_fields(
+        self, trace_store: SurrealStore
+    ) -> None:
+        await trace_store.record_trace(
+            tool=_TRACE_TOOL,
+            params_hash=_TRACE_PARAMS_HASH,
+            hit_count=_TRACE_HIT_COUNT,
+            latency_ms=_TRACE_LATENCY_MS,
+            session=_TRACE_SESSION,
+        )
+        rows = await _recorded_traces(trace_store)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["tool"] == _TRACE_TOOL
+        assert row["params_hash"] == _TRACE_PARAMS_HASH
+        assert row["hit_count"] == _TRACE_HIT_COUNT
+        assert row["latency_ms"] == _TRACE_LATENCY_MS  # fractional survives (number)
+        assert row["session"] == _TRACE_SESSION
+
+    async def test_record_trace_generates_ts_server_side(
+        self, trace_store: SurrealStore
+    ) -> None:
+        # ``record_trace`` takes NO ts argument — the ts is generated server-side
+        # (the schema's ``DEFAULT time::now()``), so the async writer never has to
+        # compute the ingestion instant itself. It must come back tz-aware and
+        # inside this call's wall-clock window.
+        before = datetime.now(UTC)
+        await trace_store.record_trace(
+            tool=_TRACE_TOOL,
+            params_hash=_TRACE_PARAMS_HASH,
+            hit_count=_TRACE_HIT_COUNT,
+            latency_ms=_TRACE_LATENCY_MS,
+            session=_TRACE_SESSION,
+        )
+        after = datetime.now(UTC)
+        rows = await _recorded_traces(trace_store)
+        assert len(rows) == 1
+        ts = rows[0]["ts"]
+        assert isinstance(ts, datetime)
+        assert ts.tzinfo is not None, "ts must be timezone-aware (fleet-comparable), not naive"
+        assert before - _TRACE_TS_TOLERANCE <= ts <= after + _TRACE_TS_TOLERANCE
+
+    async def test_record_trace_stores_optional_accounting_columns_when_given(
+        self, trace_store: SurrealStore
+    ) -> None:
+        await trace_store.record_trace(
+            tool=_TRACE_TOOL,
+            params_hash=_TRACE_PARAMS_HASH,
+            hit_count=_TRACE_HIT_COUNT,
+            latency_ms=_TRACE_LATENCY_MS,
+            session=_TRACE_SESSION,
+            token_cost=_TRACE_TOKEN_COST,
+            model=_TRACE_MODEL,
+        )
+        rows = await _recorded_traces(trace_store)
+        assert len(rows) == 1
+        assert rows[0]["token_cost"] == _TRACE_TOKEN_COST
+        assert rows[0]["model"] == _TRACE_MODEL
+
+    async def test_record_trace_stores_none_cleanly_when_optionals_omitted(
+        self, trace_store: SurrealStore
+    ) -> None:
+        # The two ``option`` columns store NONE cleanly when omitted (absent/None
+        # on read-back) — a writer that skips accounting never poisons the row.
+        await trace_store.record_trace(
+            tool=_TRACE_TOOL,
+            params_hash=_TRACE_PARAMS_HASH,
+            hit_count=_TRACE_HIT_COUNT,
+            latency_ms=_TRACE_LATENCY_MS,
+            session=_TRACE_SESSION,
+        )
+        rows = await _recorded_traces(trace_store)
+        assert len(rows) == 1
+        assert rows[0].get("token_cost") is None
+        assert rows[0].get("model") is None
+
+    async def test_record_trace_appends_distinct_rows_never_dedups(
+        self, trace_store: SurrealStore
+    ) -> None:
+        # A trace is an append-only observability EVENT, never keyed/deduped: two
+        # identical-content ``record_trace`` calls persist TWO distinct rows (the
+        # anti-dedup seam, mirroring the task ledger's distinct-duplicate-subjects
+        # pin). Compared as an unordered count — neither backend promises order.
+        for _ in range(2):
+            await trace_store.record_trace(
+                tool=_TRACE_TOOL,
+                params_hash=_TRACE_PARAMS_HASH,
+                hit_count=_TRACE_HIT_COUNT,
+                latency_ms=_TRACE_LATENCY_MS,
+                session=_TRACE_SESSION,
+            )
+        rows = await _recorded_traces(trace_store)
+        assert len(rows) == 2
+
+    async def test_record_trace_fractional_latency_round_trips(
+        self, trace_store: SurrealStore
+    ) -> None:
+        # Explicit pin on the ``number`` typing: a sub-millisecond latency must not
+        # be truncated to an int on the way in or out.
+        fractional_latency_ms = 0.375
+        await trace_store.record_trace(
+            tool=_TRACE_TOOL,
+            params_hash=_TRACE_PARAMS_HASH,
+            hit_count=1,
+            latency_ms=fractional_latency_ms,
+            session=_TRACE_SESSION,
+        )
+        rows = await _recorded_traces(trace_store)
+        assert len(rows) == 1
+        assert rows[0]["latency_ms"] == fractional_latency_ms
+
+
+class TestRecordTraceErrorPosture:
+    """``record_trace`` never leaks a raw engine error: a domain/schema rejection
+    surfaces as :class:`SurrealStoreError` (healthy connection kept), a transport
+    failure self-heals — the classified posture the store's ``_query`` seam
+    establishes. Real-only: the fake has no engine to reject and no socket to kill
+    (its own resilience contract lives in ``test_surreal_fakes.py``).
+    """
+
+    async def test_domain_rejection_raises_store_error_and_keeps_connection(
+        self, store: SurrealStore
+    ) -> None:
+        # A wrong-TYPE ``hit_count`` is a genuine SCHEMAFULL coercion rejection
+        # (``hit_count`` is ``int``), surfacing as a STORE error — never
+        # miscategorized as a connection failure, and the healthy connection is
+        # never thrown away (mirrors ``TestDomainRejectionErrorType``).
+        connection_before = store._connection
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await store.record_trace(
+                tool=_TRACE_TOOL,
+                params_hash=_TRACE_PARAMS_HASH,
+                hit_count="not-an-int",  # type: ignore[arg-type]  # deliberate poison
+                latency_ms=_TRACE_LATENCY_MS,
+                session=_TRACE_SESSION,
+            )
+        assert type(exc_info.value) is SurrealStoreError
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        assert store._connection is connection_before
+        # Nothing partially persisted.
+        assert await _recorded_traces(store) == []
+
+    async def test_record_trace_recovers_from_a_mid_life_socket_drop(
+        self, store: SurrealStore
+    ) -> None:
+        # CLAUDE.md lifecycle pin: ``record_trace`` holds a reference to the store's
+        # shared connection; when that socket dies mid-life the next call must
+        # self-heal (reconnect) within a bounded number of calls, never wedge.
+        async def _record() -> None:
+            await store.record_trace(
+                tool=_TRACE_TOOL,
+                params_hash=_TRACE_PARAMS_HASH,
+                hit_count=_TRACE_HIT_COUNT,
+                latency_ms=_TRACE_LATENCY_MS,
+                session=_TRACE_SESSION,
+            )
+
+        await _record()  # healthy baseline — connection established
+        await _kill_socket(store)  # degradation: the socket dies, handle goes stale
+
+        await call_until_recovered(_record, _HEALABLE_ERRORS, label="store")
+        # And it STAYS healed — a further write also lands (handle really replaced).
+        await _record()
+        assert len(await _recorded_traces(store)) >= 1

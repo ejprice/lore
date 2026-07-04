@@ -109,6 +109,14 @@ from loremaster.store.surreal_schema import (
     CHUNK_TABLE,
     DEFAULT_ANALYZER_NAME,
     FILE_TEXT_TABLE,
+    TRACE_HIT_COUNT_FIELD,
+    TRACE_LATENCY_MS_FIELD,
+    TRACE_MODEL_FIELD,
+    TRACE_PARAMS_HASH_FIELD,
+    TRACE_SESSION_FIELD,
+    TRACE_TABLE,
+    TRACE_TOKEN_COST_FIELD,
+    TRACE_TOOL_FIELD,
     generate_ddl,
 )
 
@@ -630,6 +638,70 @@ class SurrealStore:
                 f"UPSERT type::record('{CHUNK_TABLE}', $id) CONTENT $content",
                 {"id": record.point_id, "content": self._chunk_content(record, vector)},
             )
+
+    async def record_trace(
+        self,
+        *,
+        tool: str,
+        params_hash: str,
+        hit_count: int,
+        latency_ms: float,
+        session: str,
+        token_cost: int | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Persist one observability trace row — the mcp role's async write path.
+
+        The ``trace`` table is lore's per-tool-invocation OBSERVABILITY row (see
+        ``surreal_schema._TRACE_FIELD_SPECS``): the six core fields describe one
+        served request, and the two optional accounting columns
+        (``token_cost``/``model``) ride alongside when supplied. ``ts`` is stamped
+        SERVER-SIDE by the schema's ``DEFAULT time::now()`` — this method never
+        computes or sends it — so a caller need only describe the invocation.
+
+        A single awaitable insert through the store's self-healing,
+        error-classifying :meth:`_query` seam: a transport failure self-heals and
+        raises :class:`SurrealConnectionError`; a domain/schema rejection (e.g. a
+        wrong-type field) keeps the healthy connection and raises
+        :class:`SurrealStoreError` — never a raw engine error, never a silent
+        success. The row is written with ``CONTENT`` (a single bound object)
+        rather than ``SET session = $session`` because ``session`` is a SurrealDB
+        PROTECTED variable name: a top-level ``$session`` bound param is rejected
+        outright ("'session' is a protected variable and cannot be set"), while
+        ``session`` as a CONTENT object KEY is legal. Each call appends a DISTINCT
+        row — a trace is an append-only event, never keyed/deduped. The async
+        fire-and-forget EMISSION that schedules these writes, and the aggregates
+        over the rows, are a later serving-layer phase (P8d).
+
+        Args:
+            tool: The tool name that was served (e.g. ``"lore_search_code"``).
+            params_hash: A stable digest of the call's parameters.
+            hit_count: How many results the call returned.
+            latency_ms: The call's wall-clock latency in milliseconds; fractional
+                is preserved (the column is ``number``, not ``int``).
+            session: The fleet/session identity that issued the call.
+            token_cost: Optional per-call token accounting; omitted stores NONE.
+            model: Optional model that produced the call; omitted stores NONE.
+
+        Raises:
+            SurrealConnectionError: The server is unreachable or the socket died.
+            SurrealStoreError: The engine rejected the write (a domain/schema
+                rejection); the healthy connection is left untouched.
+        """
+        content: dict[str, Any] = {
+            TRACE_TOOL_FIELD: tool,
+            TRACE_PARAMS_HASH_FIELD: params_hash,
+            TRACE_HIT_COUNT_FIELD: hit_count,
+            TRACE_LATENCY_MS_FIELD: latency_ms,
+            TRACE_SESSION_FIELD: session,
+        }
+        # Omit the optional accounting columns when unset so the ``option`` fields
+        # store NONE cleanly (a caller that skips accounting never poisons the row).
+        if token_cost is not None:
+            content[TRACE_TOKEN_COST_FIELD] = token_cost
+        if model is not None:
+            content[TRACE_MODEL_FIELD] = model
+        await self._query(f"CREATE {TRACE_TABLE} CONTENT $content", {"content": content})
 
     def replace_file_fragment(
         self,

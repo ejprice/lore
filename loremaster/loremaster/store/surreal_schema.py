@@ -76,9 +76,10 @@ ANSWERS_TO_RELATION = "answers_to"
 # promoted to full field-level definitions in P5-C1b (see
 # ``_snapshot_statements`` / ``_snapshot_entry_statements`` /
 # ``_command_statements`` below); ``finding`` stays a bare placeholder until
-# P9. Neither ``trace`` nor ``meta`` are here either — ``trace`` grows two
-# audited optional columns below, ``meta`` grows its ``k``/``v`` fields (P3,
-# the ``SurrealManifest`` port).
+# P9. Neither ``trace`` nor ``meta`` are here either — ``trace`` grows its six
+# core observability columns plus two audited optional accounting columns (P8a,
+# see ``_trace_statements``), ``meta`` grows its ``k``/``v`` fields (P3, the
+# ``SurrealManifest`` port).
 _STRUCTURAL_TABLES = (FINDING_TABLE,)
 
 # The closed domain a ``file.state`` may take — a file is exactly one of these at
@@ -268,6 +269,46 @@ _TASK_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
 # The ``task`` column the plain status index is built on (the fleet-visible
 # ``query_tasks(status=...)`` filter).
 _TASK_STATUS_FIELD = "status"
+
+# --- P8a ``trace`` table (lore's per-tool-invocation OBSERVABILITY row) --------
+#
+# ``trace`` is the row the mcp role writes async on every served tool call: six
+# core columns capturing one invocation, plus the two audited optional accounting
+# columns (:data:`TRACE_TOKEN_COST_FIELD` / :data:`TRACE_MODEL_FIELD`) landed in
+# P2. The field NAMES are public constants (not bare literals) so the store's
+# ``record_trace`` CONTENT keys and this DDL read from ONE source of truth and can
+# never drift — the same discipline :data:`CHUNK_COLUMNS` keeps for ``chunk``.
+#
+# Aggregates over these rows surface in a LATER phase (P8d); P8a defines only the
+# table + its write path. The table carries no HNSW/FULLTEXT index — a trace is an
+# append-only observability event, never retrieved semantically.
+TRACE_TOOL_FIELD = "tool"
+TRACE_PARAMS_HASH_FIELD = "params_hash"
+TRACE_HIT_COUNT_FIELD = "hit_count"
+TRACE_LATENCY_MS_FIELD = "latency_ms"
+TRACE_SESSION_FIELD = "session"
+TRACE_TS_FIELD = "ts"
+TRACE_TOKEN_COST_FIELD = "token_cost"
+TRACE_MODEL_FIELD = "model"
+
+# The ``trace`` table's fields as ``(name, type_expr, constraint)`` triples — the
+# single source of truth :func:`_trace_statements` emits one ``DEFINE FIELD`` per,
+# mirroring :data:`_TASK_FIELD_SPECS`. ``latency_ms`` is ``number`` (not ``int``)
+# so a sub-millisecond fractional latency survives intact; ``ts`` self-stamps via
+# ``DEFAULT time::now()`` — the SAME idiom ``snapshot.created_at`` /
+# ``command.created_at`` use — so the async writer never computes the ingestion
+# instant itself; ``token_cost`` / ``model`` stay ``option`` so a writer may omit
+# them and store NONE cleanly.
+_TRACE_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    (TRACE_TOOL_FIELD, _CHUNK_STRING_TYPE, ""),
+    (TRACE_PARAMS_HASH_FIELD, _CHUNK_STRING_TYPE, ""),
+    (TRACE_HIT_COUNT_FIELD, "int", ""),
+    (TRACE_LATENCY_MS_FIELD, "number", ""),
+    (TRACE_SESSION_FIELD, _CHUNK_STRING_TYPE, ""),
+    (TRACE_TS_FIELD, "datetime", "DEFAULT time::now()"),
+    (TRACE_TOKEN_COST_FIELD, "option<int>", ""),
+    (TRACE_MODEL_FIELD, "option<string>", ""),
+)
 
 # ---------------------------------------------------------------------------
 # Code-graph (S13 Model A) field specs — the single source of truth for
@@ -491,14 +532,24 @@ def _memory_statements(dim: int, analyzer_name: str) -> list[str]:
 
 
 def _trace_statements() -> list[str]:
-    """The ``trace`` table with two audited optional accounting columns."""
-    return [
-        _define_table(TRACE_TABLE),
-        # Audited additive columns (Spectron concept-coverage): per-trace token
-        # accounting and the model that produced it, both optional.
-        _define_field(TRACE_TABLE, "token_cost", "option<int>"),
-        _define_field(TRACE_TABLE, "model", "option<string>"),
+    """The ``trace`` observability table: the six core fields + two optional columns.
+
+    Emits, in order: the SCHEMAFULL table, then one ``DEFINE FIELD`` per
+    :data:`_TRACE_FIELD_SPECS` entry — the six core columns capturing one served
+    tool invocation (``tool`` / ``params_hash`` / ``hit_count`` / ``latency_ms`` /
+    ``session`` / ``ts``, ``ts`` carrying the ``DEFAULT time::now()`` self-stamp)
+    plus the two audited optional accounting columns (``token_cost`` / ``model``,
+    Spectron concept-coverage). Mirrors :func:`_task_statements`. UNLIKE ``chunk`` /
+    ``memory`` the table carries no HNSW/FULLTEXT index — a trace is an append-only
+    observability event, never retrieved semantically; aggregates over these rows
+    are a LATER phase (P8d).
+    """
+    statements: list[str] = [_define_table(TRACE_TABLE)]
+    statements += [
+        _define_field(TRACE_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _TRACE_FIELD_SPECS
     ]
+    return statements
 
 
 def _snapshot_statements() -> list[str]:

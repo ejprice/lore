@@ -48,6 +48,7 @@ from __future__ import annotations
 import inspect
 import math
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -877,6 +878,137 @@ class TestCanonicalPayloadShape:
         )
         assert payload["extra_key"] == "kept"
         assert "metadata" not in payload
+
+
+class TestRecordTraceFake:
+    """The fake's P8a ``record_trace`` observability write path — signature parity
+    with the real store, the injected down-connection append-failure (via the
+    SHARED ``arm_connection_failure`` trip counter — the real store's transport can
+    fail ANY write), and the adversarial NON-insertion read-back order (the P5
+    positional-consumption lesson applied to traces: the real engine returns rows
+    unordered without an ``ORDER BY``, so a consumer assuming insertion order is a
+    latent bug the fake must expose, not hide).
+    """
+
+    def test_record_trace_signature_matches_real_store(self) -> None:
+        real_params = _params_excluding_self(SurrealStore.record_trace)
+        fake_params = _params_excluding_self(FakeSurrealStore.record_trace)
+        assert list(fake_params) == list(real_params) == [
+            "tool",
+            "params_hash",
+            "hit_count",
+            "latency_ms",
+            "session",
+            "token_cost",
+            "model",
+        ]
+        for name, real_param in real_params.items():
+            fake_param = fake_params[name]
+            # KEYWORD_ONLY on both sides — a caller may never pass these
+            # positionally, on the fake any more than on the real store.
+            assert fake_param.kind == real_param.kind == inspect.Parameter.KEYWORD_ONLY, name
+            assert fake_param.default == real_param.default, name
+        assert inspect.iscoroutinefunction(FakeSurrealStore.record_trace)
+
+    async def test_record_trace_persists_and_reads_back_core_fields(
+        self, store: FakeSurrealStore
+    ) -> None:
+        await store.record_trace(
+            tool="lore_impact", params_hash="digest-a", hit_count=3,
+            latency_ms=1.5, session="orchestrator-session-7f3a",
+        )
+        rows = store.recorded_traces()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["tool"] == "lore_impact"
+        assert row["params_hash"] == "digest-a"
+        assert row["hit_count"] == 3
+        assert row["latency_ms"] == 1.5  # fractional preserved (mirrors ``number``)
+        assert row["session"] == "orchestrator-session-7f3a"
+        # ts is stamped (the fake's analogue of the schema's server-side default).
+        assert isinstance(row["ts"], datetime)
+        assert row["ts"].tzinfo is not None
+
+    async def test_record_trace_omitted_optionals_read_back_none(
+        self, store: FakeSurrealStore
+    ) -> None:
+        await store.record_trace(
+            tool="lore_map", params_hash="digest-b", hit_count=0,
+            latency_ms=0.0, session="s",
+        )
+        row = store.recorded_traces()[0]
+        # Mirrors the real ``option`` column: an omitted accounting column is
+        # absent, so ``.get(...)`` is ``None`` — never a leaked placeholder.
+        assert row.get("token_cost") is None
+        assert row.get("model") is None
+        assert store.recorded_traces()[0]  # sanity: a row exists to read
+
+    async def test_record_trace_stores_optional_columns_when_given(
+        self, store: FakeSurrealStore
+    ) -> None:
+        await store.record_trace(
+            tool="lore_search_code", params_hash="digest-c", hit_count=5,
+            latency_ms=9.0, session="s", token_cost=1536, model="voyage-4-large",
+        )
+        row = store.recorded_traces()[0]
+        assert row["token_cost"] == 1536
+        assert row["model"] == "voyage-4-large"
+
+    async def test_armed_fake_raises_on_record_trace_then_recovers(
+        self, store: FakeSurrealStore
+    ) -> None:
+        store.arm_connection_failure()
+
+        with pytest.raises(SurrealConnectionError):
+            await store.record_trace(
+                tool="t", params_hash="h", hit_count=1, latency_ms=1.0, session="s"
+            )
+        # The armed trip persisted NOTHING (it raised before the append) — a down
+        # connection is never a silent success.
+        assert store.recorded_traces() == []
+
+        # Recovery: the very next call is healthy again and lands its row.
+        await store.record_trace(
+            tool="t", params_hash="h", hit_count=1, latency_ms=1.0, session="s"
+        )
+        assert len(store.recorded_traces()) == 1
+
+    async def test_record_trace_shares_the_arm_counter_with_the_read_methods(
+        self, store: FakeSurrealStore
+    ) -> None:
+        # The SAME shared trip counter the read methods consume — a genuinely down
+        # connection does not care which operation asks next.
+        store.arm_connection_failure(times=2)
+        with pytest.raises(SurrealConnectionError):
+            await store.scroll(filters={}, limit=10)  # trip 1 (a read)
+        with pytest.raises(SurrealConnectionError):
+            await store.record_trace(
+                tool="t", params_hash="h", hit_count=1, latency_ms=1.0, session="s"
+            )  # trip 2 (the write) — proves the shared counter
+        # Exhausted: the third call, a write, is healthy again.
+        await store.record_trace(
+            tool="t", params_hash="h", hit_count=1, latency_ms=1.0, session="s"
+        )
+        assert len(store.recorded_traces()) == 1
+
+    async def test_recorded_traces_are_not_returned_in_insertion_order(
+        self, store: FakeSurrealStore
+    ) -> None:
+        # Adversarial ordering: distinguish each row by a per-insert params_hash,
+        # then prove the read-back is deterministic but NOT insertion order — a
+        # fake that walked its backing list in insertion order would hide a
+        # consumer bug the real (unordered) engine would eventually expose.
+        insertion_hashes = [f"digest-{index}" for index in range(4)]
+        for params_hash in insertion_hashes:
+            await store.record_trace(
+                tool="t", params_hash=params_hash, hit_count=1, latency_ms=1.0, session="s"
+            )
+        first = [row["params_hash"] for row in store.recorded_traces()]
+        second = [row["params_hash"] for row in store.recorded_traces()]
+
+        assert first == second  # deterministic call-to-call
+        assert set(first) == set(insertion_hashes)  # no row lost or duplicated
+        assert first != insertion_hashes  # NOT a naive insertion-order walk
 
 
 # --------------------------------------------------------------------------- #
