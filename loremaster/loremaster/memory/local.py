@@ -45,7 +45,7 @@ from loremaster.memory.backend import (
     IMPORTANCE_DEFAULTS_BY_KIND,
     ONGOING_DEFAULT_TTL,
     REINFORCEMENT_STEP,
-    ChunkExistsFn,
+    ExistingChunksFn,
     MemoryNotFoundError,
     MemoryRef,
     MemorySource,
@@ -195,9 +195,10 @@ class LocalMemoryBackend:
         password: The SurrealDB root/service password.
         embedder: The :class:`~loresigil.base.Embedder` used to embed note
             text (document side) and recall queries (query side).
-        chunk_exists: An async ``chunk_key -> bool`` oracle; a recalled ref
-            whose chunk no longer exists is flagged ``drifted=True`` (never
-            filtered out).
+        existing_chunks: An async ``chunk_keys -> set[str]`` BATCH oracle
+            returning the subset of the passed keys that still exist; a recalled
+            ref whose key is absent from that subset is flagged ``drifted=True``
+            (never filtered out). ONE call resolves drift for a whole recall.
         ledger: The optional durable write-through
             :class:`~loremaster.memory.ledger.MemoryLedger` (the FP-06 source
             of truth a Surreal failure/wipe cannot touch).
@@ -213,7 +214,7 @@ class LocalMemoryBackend:
         user: str,
         password: str,
         embedder: Embedder,
-        chunk_exists: ChunkExistsFn,
+        existing_chunks: ExistingChunksFn,
         ledger: MemoryLedger | None = None,
     ) -> None:
         """Store the backend's wiring. Does not open any connection yet.
@@ -226,7 +227,7 @@ class LocalMemoryBackend:
             user: The SurrealDB root/service username.
             password: The SurrealDB root/service password.
             embedder: The document/query embedder.
-            chunk_exists: The async chunk-existence drift oracle.
+            existing_chunks: The async BATCH chunk-existence drift oracle.
             ledger: The optional durable write-through ledger.
         """
         self._url = url
@@ -236,7 +237,7 @@ class LocalMemoryBackend:
         self._user = user
         self._password = password
         self._embedder = embedder
-        self._chunk_exists = chunk_exists
+        self._existing_chunks = existing_chunks
         self._ledger = ledger
         # The memory FULLTEXT index is built with this analyzer (see
         # ``generate_memory_ddl``); recall analyzes the query with the SAME one.
@@ -562,7 +563,11 @@ class LocalMemoryBackend:
         query_vector = await self._embedder.embed_query(query)
         filter_conditions, params = self._build_recall_filter(include, as_of, labels, kind)
         rows = await self._hybrid_search(query_vector, query, k, filter_conditions, params)
-        memories = [await self._row_to_recalled(row) for row in rows]
+        # Resolve drift for EVERY recalled ref in ONE oracle call (the batch read),
+        # then annotate each row's refs against that shared existing-chunk set —
+        # never one existence fetch per ref.
+        existing_chunks = await self._resolve_existing_chunks(rows)
+        memories = [self._row_to_recalled(row, existing_chunks) for row in rows]
         await self._reinforce(memories)
         return memories
 
@@ -763,16 +768,19 @@ class LocalMemoryBackend:
                 {"id": memory.id, "ceiling": _IMPORTANCE_CEILING, "step": REINFORCEMENT_STEP},
             )
 
-    async def _row_to_recalled(self, row: dict[str, Any]) -> RecalledMemory:
+    def _row_to_recalled(
+        self, row: dict[str, Any], existing_chunks: set[str]
+    ) -> RecalledMemory:
         """Map a fused ``search::rrf`` row into a summarised :class:`RecalledMemory`.
 
         A FRESH value object (never the raw row): the stored ``labels`` are split
-        into drift-annotated ``refs`` (the ``lore_ref=`` labels) and the plain
-        ``labels``, and ``source`` is re-validated back into a
-        :class:`MemorySource`.
+        into drift-annotated ``refs`` (the ``lore_ref=`` labels, drift decided by
+        membership in ``existing_chunks`` — the subset the batch oracle already
+        resolved for the whole recall) and the plain ``labels``, and ``source`` is
+        re-validated back into a :class:`MemorySource`.
         """
-        stored_labels = [str(label) for label in (row.get(_COL_LABELS) or ())]
-        refs, plain_labels = await self._split_labels(stored_labels)
+        stored_labels = self._stored_labels(row)
+        refs, plain_labels = self._split_labels(stored_labels, existing_chunks)
         return RecalledMemory(
             id=self._bare_id(row.get(_ID_KEY)),
             text=str(row.get(_COL_NOTE_TEXT, "")),
@@ -791,14 +799,52 @@ class LocalMemoryBackend:
             superseded_by=row.get(_COL_SUPERSEDED_BY),
         )
 
-    async def _split_labels(
-        self, labels: list[str]
+    async def _resolve_existing_chunks(self, rows: list[dict[str, Any]]) -> set[str]:
+        """Resolve drift for the WHOLE recall in ONE batch-oracle call.
+
+        Collects the UNIQUE ``lore_ref`` chunk-keys across every recalled row and
+        asks the injected batch oracle which of them still exist — a single
+        existence query for N refs, never one point-fetch per ref. Returns the
+        existing subset the per-row :meth:`_split_labels` annotation tests
+        membership against. A recall carrying NO refs skips the oracle entirely
+        (nothing to resolve, so no query is issued).
+
+        Raises:
+            SurrealConnectionError: The store is down — the batch query RAISES
+                loudly rather than silently reporting every ref missing.
+        """
+        chunk_keys: set[str] = set()
+        for row in rows:
+            chunk_keys.update(self._ref_chunk_keys(self._stored_labels(row)))
+        if not chunk_keys:
+            return set()
+        return await self._existing_chunks(sorted(chunk_keys))
+
+    @staticmethod
+    def _stored_labels(row: dict[str, Any]) -> list[str]:
+        """The row's stored labels as plain strings (``lore_ref`` + plain alike)."""
+        return [str(label) for label in (row.get(_COL_LABELS) or ())]
+
+    @classmethod
+    def _ref_chunk_keys(cls, labels: list[str]) -> list[str]:
+        """The chunk-keys of a row's ``lore_ref`` labels (non-ref labels ignored)."""
+        keys: list[str] = []
+        for label in labels:
+            parsed = cls._parse_lore_ref(label)
+            if parsed is not None:
+                keys.append(parsed[0])
+        return keys
+
+    def _split_labels(
+        self, labels: list[str], existing_chunks: set[str]
     ) -> tuple[list[RecalledRef], list[str]]:
         """Split stored labels into drift-annotated refs + the plain labels.
 
-        A ``lore_ref=`` label becomes a :class:`RecalledRef` (its chunk existence
-        probed via the injected oracle → ``drifted``); every other label stays a
-        plain label. Drift is a FLAG, never a filter.
+        A ``lore_ref=`` label becomes a :class:`RecalledRef` whose ``drifted`` is
+        decided by MEMBERSHIP in ``existing_chunks`` (the subset the batch oracle
+        reported still exists for this recall) — a key absent from that set has
+        drifted. Every other label stays a plain label. Drift is a FLAG, never a
+        filter.
         """
         refs: list[RecalledRef] = []
         plain: list[str] = []
@@ -808,7 +854,7 @@ class LocalMemoryBackend:
                 plain.append(label)
                 continue
             chunk_key, key_version = parsed
-            drifted = not await self._chunk_exists(chunk_key)
+            drifted = chunk_key not in existing_chunks
             refs.append(RecalledRef(chunk_key=chunk_key, key_version=key_version, drifted=drifted))
         return refs, plain
 

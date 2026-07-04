@@ -480,6 +480,39 @@ class FakeSurrealStore:
             return len(self.db.chunks)
         return sum(1 for chunk in self.db.chunks.values() if chunk.tier == tier)
 
+    @property
+    def existing_point_ids_queries(self) -> int:
+        """How many underlying queries :meth:`existing_point_ids` has issued.
+
+        The single-query PROOF surface for the batch drift read: a caller that
+        resolves N ids must drive exactly ONE query, never one point-fetch per
+        id. Lazily initialised (``getattr`` default ``0``) so this stays a pure
+        APPEND to the fake — no constructor field to thread through, nothing an
+        untouched test can observe changing.
+        """
+        return getattr(self, "_existing_point_ids_queries", 0)
+
+    async def existing_point_ids(self, ids: Sequence[str]) -> set[str]:
+        """Return the subset of ``ids`` currently stored — signature-identical to
+        :meth:`~loremaster.store.surreal.SurrealStore.existing_point_ids` (the P8a
+        #9 batch existence read the memory backend's drift oracle rides).
+
+        A single membership sweep over the shared in-memory chunk table (keyed by
+        point id): the ids present come back, the rest have drifted. An empty
+        ``ids`` short-circuits to the empty set issuing NO query (mirrors the real
+        store's early return), so :attr:`existing_point_ids_queries` stays a
+        faithful count of the queries a caller actually drove. Honours
+        :meth:`arm_connection_failure` (a down connection RAISES
+        :class:`SurrealConnectionError` BEFORE the lookup — the read-path "loud on
+        failure" contract), so this fake can never be more forgiving than the real
+        store on a downed connection.
+        """
+        if not ids:
+            return set()
+        self._maybe_trip_connection_failure()
+        self._existing_point_ids_queries = self.existing_point_ids_queries + 1
+        return {point_id for point_id in ids if point_id in self.db.chunks}
+
     # -- read path: hybrid search / scroll / failure injection (P6) -------
 
     def arm_connection_failure(self, times: int = 1) -> None:

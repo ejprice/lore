@@ -114,7 +114,6 @@ from loremaster.memory.backend import (
 from loremaster.read_file import FileSpan
 from loremaster.search import DetailSelector, SearchResult
 from loremaster.store.candidate import Candidate
-from loremaster.store.surreal_schema import CHUNK_TABLE
 from loremaster.symbols import ResolvedSymbol
 
 if TYPE_CHECKING:
@@ -125,7 +124,7 @@ if TYPE_CHECKING:
     from loremaster.index.reconcile import ReconcileEngine
     from loremaster.index.surreal_manifest import SurrealManifest
     from loremaster.memory.backend import (
-        ChunkExistsFn,
+        ExistingChunksFn,
         MemoryBackend,
         RecalledMemory,
     )
@@ -812,8 +811,6 @@ _MEMORY_SOURCE_KIND_OPERATOR = "operator"
 # consumer's real cost (up to ~78%). Applied in the budget-counting path
 # (AppContext._count_tokens_single): counted = ceil(voyage_count * calibration).
 TOKEN_BUDGET_CALIBRATION = 1.78
-# The ``chunk`` table's record-id column the drift oracle point-fetches by.
-_CHUNK_ID_COLUMN = "id"
 # The rendered digest lines for an empty memory recall / task query — a plain,
 # honest "nothing matched" rather than a bare empty string.
 _NO_MEMORIES_RECALLED = "(no project memories matched this query)"
@@ -902,27 +899,22 @@ def _metadata_to_labels(metadata: dict[str, Any] | None) -> list[str]:
     return labels
 
 
-def _make_chunk_exists(store: SurrealStore) -> ChunkExistsFn:
-    """Build the memory backend's drift oracle over the unified chunk store.
+def _make_existing_chunks(store: SurrealStore) -> ExistingChunksFn:
+    """Build the memory backend's BATCH drift oracle over the unified chunk store.
 
-    Returns an async ``chunk_key -> bool`` closure doing the cheapest HONEST
-    existence check: a point-fetch by record id on the ``chunk`` table (mirrors the
-    backend's own ``_row_exists`` shape). The unified store exposes no public
-    point-get primitive, so the closure rides the store's own error-classified
-    ``_query`` transport. A recalled ref whose chunk this reports missing is
+    Returns an async ``chunk_keys -> set[str]`` closure delegating to the store's
+    PUBLIC batch existence read (:meth:`SurrealStore.existing_point_ids`) — ONE
+    query resolves every referenced chunk-key in a recall, never one point-fetch
+    per ref. A recalled ref whose key this omits from the returned subset is
     drift-flagged (never filtered), so a refactor that deleted a referenced chunk
-    surfaces as "re-verify", not a silent stale pointer.
+    surfaces as "re-verify", not a silent stale pointer; a DOWN store RAISES
+    rather than silently reporting the whole batch missing.
     """
 
-    async def _chunk_exists(chunk_key: str) -> bool:
-        result = await store._query(
-            f"SELECT VALUE {_CHUNK_ID_COLUMN} FROM type::record('{CHUNK_TABLE}', $chunk_key)",
-            {"chunk_key": chunk_key},
-        )
-        values = result if isinstance(result, list) else []
-        return any(value is not None for value in values)
+    async def _existing_chunks(chunk_keys: Sequence[str]) -> set[str]:
+        return await store.existing_point_ids(chunk_keys)
 
-    return _chunk_exists
+    return _existing_chunks
 
 
 # The in-band consumer guidance the FastMCP server advertises to the connecting
@@ -2262,9 +2254,10 @@ async def build_app_context(
 
         # P7 memory cutover: the SurrealDB-backed memory backend over the SAME
         # per-project database + resolved credentials the write stack uses. Its
-        # drift oracle is the cheapest HONEST existence check — a point-fetch by
-        # record id on the chunk table of the live write store (``_make_chunk_exists``);
-        # its durable spine is the ledger above.
+        # drift oracle is the cheapest HONEST existence check — a BATCH existence
+        # read over the chunk table of the live write store (``_make_existing_chunks``),
+        # so a whole recall's refs resolve in ONE query; its durable spine is the
+        # ledger above.
         memory_backend = LocalMemoryBackend(
             url=config.surreal.url,
             namespace=config.surreal.namespace,
@@ -2273,7 +2266,7 @@ async def build_app_context(
             user=surreal_user,
             password=surreal_password,
             embedder=embedder,
-            chunk_exists=_make_chunk_exists(write_store),
+            existing_chunks=_make_existing_chunks(write_store),
             ledger=memory_ledger,
         )
         await memory_backend.ensure_ready()

@@ -39,7 +39,7 @@ implementation.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -77,10 +77,13 @@ TrustLevel = Literal["authoritative", "experiential"]
 #: The default ``trust`` a :class:`MemorySource` carries when not specified.
 DEFAULT_TRUST: TrustLevel = "experiential"
 
-#: The async chunk-existence oracle a backend is constructed with — the drift
-#: input for :class:`RecalledRef.drifted`. ``True`` means the referenced chunk
-#: still exists in the code index.
-ChunkExistsFn = Callable[[str], Awaitable[bool]]
+#: The async BATCH chunk-existence oracle a backend is constructed with — the
+#: drift input for :class:`RecalledRef.drifted`. Given the collection of a
+#: recall's ref chunk-keys, it returns the SUBSET that still exist in the code
+#: index; a key ABSENT from the returned set has drifted (its referenced chunk
+#: was deleted). ONE call resolves drift for every ref in a recall (a single
+#: existence query for N refs, never one point-fetch per ref).
+ExistingChunksFn = Callable[[Sequence[str]], Awaitable[set[str]]]
 
 
 # --- Deterministic memory-id derivation (storage-agnostic, v0.3-compatible) ---

@@ -52,7 +52,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -118,6 +118,7 @@ from loremaster.store._txn import (
     SurrealStoreError,
     _SurrealConnection,
 )
+from loremaster.store.surreal_schema import MEMORY_TABLE
 from loresigil.base import EmbedResult
 from loresigil.testing import FakeEmbedder
 from pydantic import ValidationError
@@ -266,18 +267,29 @@ BackendFactory = Callable[..., Awaitable[LocalMemoryBackend]]
 
 
 class FakeChunkOracle:
-    """A controllable, dict-backed async chunk-existence oracle (the drift input).
+    """A controllable, dict-backed async BATCH chunk-existence oracle (the drift input).
 
-    The backend is constructed with an async ``chunk_exists(chunk_key) -> bool``.
-    A chunk key in ``existing`` is present (a live ``lore_ref`` → ``drifted=False``);
-    any other key is missing (the referenced chunk was deleted → ``drifted=True``).
+    The backend is constructed with an async ``existing_chunks(chunk_keys) ->
+    set[str]`` oracle: given the collection of a recall's ref chunk-keys, it
+    returns the SUBSET that still exist. A key in ``existing`` is present (a live
+    ``lore_ref`` → ``drifted=False``); any other key is absent from the returned
+    set (the referenced chunk was deleted → ``drifted=True``). ONE call resolves
+    drift for EVERY ref in a recall.
+
+    Records :attr:`calls` (how many times it was invoked) and :attr:`last_keys`
+    (the keys of the most recent call) so a test can PROVE a recall resolves all
+    its refs in a single batched call rather than one lookup per ref.
     """
 
     def __init__(self, existing: set[str] | None = None) -> None:
         self._existing = set(existing or ())
+        self.calls = 0
+        self.last_keys: set[str] = set()
 
-    async def __call__(self, chunk_key: str) -> bool:
-        return chunk_key in self._existing
+    async def __call__(self, chunk_keys: Sequence[str]) -> set[str]:
+        self.calls += 1
+        self.last_keys = set(chunk_keys)
+        return {chunk_key for chunk_key in chunk_keys if chunk_key in self._existing}
 
 
 class CountingEmbedder(FakeEmbedder):
@@ -381,7 +393,7 @@ async def make_backend(
                 user=env.user,
                 password=env.password,
                 embedder=embedder_override if embedder_override is not None else embedder,
-                chunk_exists=oracle,
+                existing_chunks=oracle,
                 ledger=active_ledger,
             )
             created.append(backend)
@@ -402,7 +414,7 @@ async def make_backend(
             oracle = chunk_oracle if chunk_oracle is not None else FakeChunkOracle()
             fake_backend = FakeMemoryBackend(
                 embedder=embedder_override if embedder_override is not None else embedder,
-                chunk_exists=oracle,
+                existing_chunks=oracle,
                 ledger=active_ledger,
                 store_unreachable=(url == _DEAD_URL),
                 url=url or "",
@@ -1044,6 +1056,90 @@ class TestDriftDetection:
         assert item.refs[0].drifted is True
 
 
+class TestDriftBatchSemantics:
+    """The per-ref drift semantics recall preserves EXACTLY across MULTIPLE
+    recalled rows that SHARE a ref key — fresh / drifted / duplicate-key.
+
+    This pins the behaviour the single-query batch drift resolution must
+    reproduce ref-for-ref: a recall over N rows bearing M refs (some duplicated
+    across rows) must flag each occurrence identically to the one-ref-at-a-time
+    check. Behaviour-only (asserts the recalled ``drifted`` flags through the
+    public recall surface), so it is green whether drift is resolved
+    per-ref or in ONE batched oracle call — the invariant the refactor keeps.
+    """
+
+    _FRESH_KEY = "loremaster:loremaster/store/surreal.py:symbol:SurrealStore:0"
+    _GONE_KEY = "loremaster:loremaster/store/gone.py:symbol:Removed:0"
+    _GONE_KEY_2 = "loremaster:loremaster/index/gone.py:symbol:AlsoRemoved:0"
+
+    async def test_mixed_fresh_and_drifted_refs_across_rows_sharing_a_key(
+        self, make_backend: BackendFactory
+    ) -> None:
+        # The oracle knows ONLY the fresh key; every other ref has drifted.
+        backend = await make_backend(chunk_oracle=FakeChunkOracle({self._FRESH_KEY}))
+        fresh_note = "Row whose single ref still exists."
+        gone_note = "Row whose single ref a refactor deleted."
+        mixed_note = "Row carrying one live ref and one deleted ref."
+        await backend.remember(
+            fresh_note, kind="fact", labels=[lore_ref_label(self._FRESH_KEY)]
+        )
+        await backend.remember(
+            gone_note, kind="gotcha", labels=[lore_ref_label(self._GONE_KEY)]
+        )
+        # The fresh key is DUPLICATED here (shared with the fresh row) — one
+        # membership test per unique key must still flag each occurrence right.
+        await backend.remember(
+            mixed_note,
+            kind="fact",
+            labels=[lore_ref_label(self._FRESH_KEY), lore_ref_label(self._GONE_KEY_2)],
+        )
+
+        recalled = {item.text: item for item in await backend.recall("row ref", k=_READ_ALL)}
+
+        # fresh: the live chunk → not drifted.
+        assert [(ref.chunk_key, ref.drifted) for ref in recalled[fresh_note].refs] == [
+            (self._FRESH_KEY, False)
+        ]
+        # drifted: the deleted chunk → flagged True, but STILL recalled.
+        assert [(ref.chunk_key, ref.drifted) for ref in recalled[gone_note].refs] == [
+            (self._GONE_KEY, True)
+        ]
+        # mixed: the shared fresh key stays not-drifted; the second key drifted.
+        assert {ref.chunk_key: ref.drifted for ref in recalled[mixed_note].refs} == {
+            self._FRESH_KEY: False,
+            self._GONE_KEY_2: True,
+        }
+
+    async def test_recall_resolves_all_refs_in_a_single_oracle_call(
+        self, make_backend: BackendFactory
+    ) -> None:
+        # THE batching invariant: N refs across the recalled rows → ONE oracle
+        # call, carrying the UNIQUE set of ref keys (the duplicated fresh key is
+        # de-duplicated to a single membership test).
+        oracle = FakeChunkOracle({self._FRESH_KEY})
+        backend = await make_backend(chunk_oracle=oracle)
+        await backend.remember(
+            "Row A — fresh ref.", kind="fact", labels=[lore_ref_label(self._FRESH_KEY)]
+        )
+        await backend.remember(
+            "Row B — drifted ref.", kind="gotcha", labels=[lore_ref_label(self._GONE_KEY)]
+        )
+        await backend.remember(
+            "Row C — one shared fresh ref plus one drifted ref.",
+            kind="fact",
+            labels=[lore_ref_label(self._FRESH_KEY), lore_ref_label(self._GONE_KEY_2)],
+        )
+
+        recalled = await backend.recall("row ref", k=_READ_ALL)
+
+        # Every row that carries refs was still recalled (drift never filters).
+        assert sum(len(item.refs) for item in recalled) == 4
+        # ONE call resolved all refs — not one lookup per ref (four ref occurrences).
+        assert oracle.calls == 1
+        # ...and it received exactly the UNIQUE ref keys across all recalled rows.
+        assert oracle.last_keys == {self._FRESH_KEY, self._GONE_KEY, self._GONE_KEY_2}
+
+
 class TestRecallRefsAndLabels:
     """Recalled refs are the (chunk_key, key_version) shape the search pipeline eats.
 
@@ -1483,7 +1579,7 @@ class TestQueryClassifiedErrorPosture:
             user="root",
             password="root",
             embedder=FakeEmbedder(dim=PRODUCTION_DIM),
-            chunk_exists=FakeChunkOracle(),
+            existing_chunks=FakeChunkOracle(),
         )
         backend._connection = cast("_SurrealConnection", _RejectingConnection(error=error))
         return backend
@@ -1530,3 +1626,273 @@ class TestQueryClassifiedErrorPosture:
         with pytest.raises(SurrealConnectionError):
             await backend._query("SELECT * FROM memory", {})
         assert backend._connection is None  # the dead handle was dropped (self-heal)
+
+
+# ===========================================================================
+# P8a #9 COVERAGE GAPS (notes-9): three pins for EXISTING behaviours that had
+# no test — a refs-bearing ledger replay row, the memory trust-rejection
+# fallback, and the shutdown-time connection close. These pin CURRENT behaviour
+# (no production change); a RED here would expose a real defect.
+# ===========================================================================
+
+
+@pytest_asyncio.fixture()
+async def real_backend(
+    embedder: FakeEmbedder, ledger_path: str
+) -> AsyncIterator[LocalMemoryBackend]:
+    """A ready REAL SurrealDB-backed ``LocalMemoryBackend`` over a fresh isolated db.
+
+    The real-only counterpart to ``memory_backend`` (which is parametrised
+    fake+real): a couple of pins below exercise a path that exists ONLY on the
+    real backend — a stored row whose ``source`` fails validation on recall, and
+    the awaited underlying-connection close on shutdown — neither of which the
+    in-memory fake models (it stores an already-valid ``MemorySource`` and holds
+    no socket). Built the same way ``make_backend``'s "real" branch builds one
+    (direct harness helpers, never the ``surreal_env`` fixture — see the import
+    block's comment for why), and reaps its throwaway database on exit.
+    """
+    env: SurrealEnv = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    setup_connection = await connect_admin(env)
+    await setup_connection.close()
+    backend = LocalMemoryBackend(
+        url=env.url,
+        namespace=env.namespace,
+        database=env.database,
+        dim=env.dim,
+        user=env.user,
+        password=env.password,
+        embedder=embedder,
+        existing_chunks=FakeChunkOracle(),
+        ledger=MemoryLedger(ledger_path),
+    )
+    await backend.ensure_ready()
+    try:
+        yield backend
+    finally:
+        await backend.close()
+        await drop_database(env)
+
+
+class TestRefsBearingReplay:
+    """``restore_from_ledger`` reconstructs a row's chunk refs — the gap the
+    existing replay suite left (every row it seeds carries an EMPTY refs_stamp and
+    no ``labels`` metadata). A refs-bearing row must replay with its ``lore_ref``
+    refs intact, drift-annotated on the recall that follows, and its deterministic
+    id folding those refs. BOTH reconstruction sources are pinned: the v2
+    ``labels`` metadata, and the pre-v2 ``refs_stamp`` (the
+    ``_labels_from_refs_stamp`` path). Parametrised fake+real via ``make_backend``.
+    """
+
+    _REF_NOTE = "Correction pinned to a specific chunk, replayed from the ledger."
+    _REF_CHUNK_KEY = "loremaster:loremaster/search.py:symbol:SearchTool:0"
+
+    async def test_replay_reconstructs_refs_from_labels_metadata(
+        self, make_backend: BackendFactory, ledger_path: str
+    ) -> None:
+        # A v2 ledger row: its metadata carries the flat ``lore_ref=`` label. The
+        # replay reconstructs the ref from that label; the recall that follows
+        # drift-annotates it (oracle KNOWS the key → not drifted) and the row keeps
+        # its folded deterministic id.
+        ledger = MemoryLedger(ledger_path)
+        refs = [(self._REF_CHUNK_KEY, DEFAULT_KEY_VERSION)]
+        memory_id = expected_memory_id(self._REF_NOTE, refs)
+        ledger.record(
+            memory_id=memory_id,
+            text=self._REF_NOTE,
+            metadata={"kind": "fact", "labels": [lore_ref_label(self._REF_CHUNK_KEY)]},
+            refs_stamp=expected_refs_stamp(refs),
+        )
+        backend = await make_backend(
+            ledger=ledger, chunk_oracle=FakeChunkOracle({self._REF_CHUNK_KEY})
+        )
+
+        assert await backend.restore_from_ledger() == 1
+
+        item = next(
+            i
+            for i in await backend.recall(self._REF_NOTE, k=_READ_ALL)
+            if i.text == self._REF_NOTE
+        )
+        # The refs survived the replay intact — exactly one, at the default version,
+        # NOT drifted (the oracle knows the key), and the id folded the ref.
+        assert len(item.refs) == 1
+        assert item.refs[0].chunk_key == self._REF_CHUNK_KEY
+        assert item.refs[0].key_version == DEFAULT_KEY_VERSION
+        assert item.refs[0].drifted is False
+        assert item.id == memory_id
+
+    async def test_replay_reconstructs_refs_from_refs_stamp_for_a_pre_v2_row(
+        self, make_backend: BackendFactory, ledger_path: str
+    ) -> None:
+        # A PRE-v2 ledger row: NO ``labels`` metadata, but a non-empty refs_stamp
+        # carrying the EXPLICIT version. The replay must reconstruct the ``lore_ref``
+        # from the refs_stamp (``_labels_from_refs_stamp``) — and, with an oracle
+        # that does NOT know the key, flag it drifted (a FLAG, never a filter: the
+        # row is still recalled).
+        ledger = MemoryLedger(ledger_path)
+        versioned_refs = [(self._REF_CHUNK_KEY, 3)]
+        memory_id = expected_memory_id(self._REF_NOTE, versioned_refs)
+        ledger.record(
+            memory_id=memory_id,
+            text=self._REF_NOTE,
+            metadata={"author": "operator"},  # pre-v2: no kind, no labels
+            refs_stamp=expected_refs_stamp(versioned_refs),
+        )
+        backend = await make_backend(ledger=ledger)  # default oracle knows nothing
+
+        assert await backend.restore_from_ledger() == 1
+
+        item = next(
+            i
+            for i in await backend.recall(self._REF_NOTE, k=_READ_ALL)
+            if i.text == self._REF_NOTE
+        )
+        assert len(item.refs) == 1
+        assert item.refs[0].chunk_key == self._REF_CHUNK_KEY
+        # The explicit version rode the refs_stamp through the replay.
+        assert item.refs[0].key_version == 3
+        # Drift is a flag, not a filter — still recalled, but flagged.
+        assert item.refs[0].drifted is True
+        assert item.id == memory_id
+
+
+class TestTrustGateRejection:
+    """A stored ``source`` whose ``trust`` fails the two-value enum gate falls back
+    to the experiential-operator default, and the memory stays USABLE — never
+    dropped, never crashing recall/replay. Pins the ``ValidationError`` branch of
+    ``_source_from_value`` / ``_source_from_metadata`` that no test exercised.
+    """
+
+    _NOTE = "A memory whose stored provenance was corrupted to an illegal trust."
+    _ILLEGAL_TRUST_SOURCE = {"kind": "spec", "trust": "super-duper-trusted"}
+
+    async def test_replay_of_a_row_with_a_rejected_trust_falls_back_to_experiential(
+        self, make_backend: BackendFactory, ledger_path: str
+    ) -> None:
+        # The RECONSTRUCTION gate (BOTH backends): a ledger row whose metadata
+        # ``source`` carries an out-of-vocabulary ``trust`` replays with the
+        # experiential-operator default rather than propagating the bad value or
+        # failing the whole replay.
+        ledger = MemoryLedger(ledger_path)
+        memory_id = expected_memory_id(self._NOTE)
+        ledger.record(
+            memory_id=memory_id,
+            text=self._NOTE,
+            metadata={"kind": "fact", "source": dict(self._ILLEGAL_TRUST_SOURCE)},
+            refs_stamp="",
+        )
+        backend = await make_backend(ledger=ledger)
+
+        assert await backend.restore_from_ledger() == 1
+
+        item = next(
+            i for i in await backend.recall(self._NOTE, k=_READ_ALL) if i.text == self._NOTE
+        )
+        # The trust gate rejected the illegal value; the row is still recalled,
+        # carrying the experiential-operator fallback (never the bad trust).
+        assert item.source.trust == "experiential"
+        assert item.source.kind == "operator"
+
+    async def test_recall_of_a_row_with_a_rejected_trust_falls_back_but_still_returns(
+        self, real_backend: LocalMemoryBackend, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The RECALL gate (REAL backend only — the fake stores an already-valid
+        # ``MemorySource`` and never re-validates on recall): a row already in the
+        # store whose ``source`` was corrupted to an illegal trust must still be
+        # recalled, with the experiential fallback, and the rejection LOGGED
+        # (recoverable server-side), never swallowed silently or crashing recall.
+        memory_id = await real_backend.remember(self._NOTE, kind="fact")
+        # Corrupt the stored provenance directly. The schema's ``source`` column is
+        # ``object FLEXIBLE`` with no engine-side trust ASSERT, so the bad value
+        # lands; the gate lives in the READ-side value-object validation.
+        await real_backend._query(
+            f"UPDATE type::record('{MEMORY_TABLE}', $id) SET source = $bad",
+            {"id": memory_id, "bad": dict(self._ILLEGAL_TRUST_SOURCE)},
+        )
+
+        with caplog.at_level(logging.WARNING, logger="loremaster.memory.local"):
+            recalled = await real_backend.recall(self._NOTE, k=_READ_ALL)
+
+        item = next(i for i in recalled if i.text == self._NOTE)
+        assert item.source.trust == "experiential"
+        assert item.source.kind == "operator"
+        # The rejection is observable server-side, not a silent swallow.
+        assert any(
+            "memory.source.malformed" in record.getMessage() for record in caplog.records
+        ), "a rejected stored source must be logged, not silently swallowed"
+
+
+@dataclass
+class _CloseSpyConnection:
+    """A fake SDK connection that tallies awaited ``close`` calls — the shutdown
+    seam spy for :meth:`LocalMemoryBackend.close` (mirrors ``_RejectingConnection``'s
+    inline-fake shape). ``query`` returns an empty result so a backend holding this
+    handle stays usable before it is closed.
+    """
+
+    close_awaited: int = 0
+
+    async def query(self, statement: str, params: dict[str, Any]) -> Any:
+        return []
+
+    async def close(self) -> None:
+        self.close_awaited += 1
+
+
+class TestShutdownClosesConnection:
+    """``close`` AWAITS the underlying SDK connection's ``close`` and drops the
+    cached handle (self-heal parity) — the shutdown seam the server's teardown
+    relies on (``AppContext`` awaits ``memory_backend.close()``). Real-backend
+    seam, driven with an injected spy connection (the fake holds no socket).
+    """
+
+    @staticmethod
+    def _backend_with_spy(spy: _CloseSpyConnection) -> LocalMemoryBackend:
+        backend = LocalMemoryBackend(
+            url=_DEAD_URL,
+            namespace="ns",
+            database="db",
+            dim=PRODUCTION_DIM,
+            user="root",
+            password="root",
+            embedder=FakeEmbedder(dim=PRODUCTION_DIM),
+            existing_chunks=FakeChunkOracle(),
+        )
+        backend._connection = cast("_SurrealConnection", spy)
+        return backend
+
+    async def test_close_awaits_the_underlying_connection_close(self) -> None:
+        spy = _CloseSpyConnection()
+        backend = self._backend_with_spy(spy)
+
+        await backend.close()
+
+        # The socket was genuinely released (awaited), not leaked, and the cached
+        # handle dropped so any post-close call reconnects rather than reusing a
+        # dead one.
+        assert spy.close_awaited == 1
+        assert backend._connection is None
+
+    async def test_close_is_idempotent_and_tolerates_a_never_connected_backend(
+        self,
+    ) -> None:
+        # A second close is a no-op (handle already dropped, no second underlying
+        # close); a never-connected backend closes cleanly too — teardown must
+        # never crash on either.
+        spy = _CloseSpyConnection()
+        backend = self._backend_with_spy(spy)
+        await backend.close()
+        await backend.close()
+        assert spy.close_awaited == 1
+
+        never_connected = LocalMemoryBackend(
+            url=_DEAD_URL,
+            namespace="ns",
+            database="db",
+            dim=PRODUCTION_DIM,
+            user="root",
+            password="root",
+            embedder=FakeEmbedder(dim=PRODUCTION_DIM),
+            existing_chunks=FakeChunkOracle(),
+        )
+        await never_connected.close()  # tolerant of a backend that never connected

@@ -84,7 +84,7 @@ from loremaster.memory.backend import (
     IMPORTANCE_DEFAULTS_BY_KIND,
     ONGOING_DEFAULT_TTL,
     REINFORCEMENT_STEP,
-    ChunkExistsFn,
+    ExistingChunksFn,
     MemoryNotFoundError,
     MemoryRef,
     MemorySource,
@@ -234,7 +234,9 @@ class FakeMemoryBackend:
         embedder: The document/query embedder (the SAME injected embedder a
             real backend would use — recall scores are its real cosine
             similarity, never fabricated).
-        chunk_exists: The async chunk-existence drift oracle.
+        existing_chunks: The async BATCH chunk-existence drift oracle
+            (``chunk_keys -> set[str]``); ONE call resolves drift for a whole
+            recall, exactly as the real backend's does.
         ledger: The optional durable write-through ledger — a REAL
             :class:`~loremaster.memory.ledger.MemoryLedger`, never a fake one.
         store_unreachable: When ``True``, every ``remember`` writes its ledger
@@ -248,13 +250,13 @@ class FakeMemoryBackend:
         self,
         *,
         embedder: Embedder,
-        chunk_exists: ChunkExistsFn,
+        existing_chunks: ExistingChunksFn,
         ledger: MemoryLedger | None = None,
         store_unreachable: bool = False,
         url: str = "",
     ) -> None:
         self._embedder = embedder
-        self._chunk_exists = chunk_exists
+        self._existing_chunks = existing_chunks
         self._ledger = ledger
         self._store_unreachable = store_unreachable
         self._url = url
@@ -397,7 +399,11 @@ class FakeMemoryBackend:
         scored = [(self._score(query_vector, row), row) for row in candidates]
         scored.sort(key=lambda pair: (-pair[0], pair[1].id))
         top = scored[: max(k, 0)]
-        memories = [await self._to_recalled(row, score) for score, row in top]
+        # Resolve drift for EVERY recalled ref in ONE batch-oracle call, then
+        # annotate each row against that shared existing-chunk set — mirrors the
+        # real backend's single-query drift resolution (never per-ref lookups).
+        existing_chunks = await self._resolve_existing_chunks([row for _, row in top])
+        memories = [self._to_recalled(row, score, existing_chunks) for score, row in top]
         await self._reinforce(memories)
         return memories
 
@@ -475,14 +481,18 @@ class FakeMemoryBackend:
         """
         return sum(q * v for q, v in zip(query_vector, row.vector, strict=True))
 
-    async def _to_recalled(self, row: _StoredMemory, score: float) -> RecalledMemory:
+    def _to_recalled(
+        self, row: _StoredMemory, score: float, existing_chunks: set[str]
+    ) -> RecalledMemory:
         """Build a FRESH :class:`RecalledMemory` from a row's CURRENT state.
 
         Never cached/reused across calls (adversarial property 3): a caller
         that stashes this object must never see a later reinforcement bump
-        leak into it.
+        leak into it. Refs are drift-annotated by MEMBERSHIP in
+        ``existing_chunks`` (the subset the batch oracle already resolved for the
+        whole recall), exactly as the real backend does.
         """
-        refs, plain_labels = await self._split_labels(row.labels)
+        refs, plain_labels = self._split_labels(row.labels, existing_chunks)
         return RecalledMemory(
             id=row.id,
             text=row.text,
@@ -501,8 +511,34 @@ class FakeMemoryBackend:
             superseded_by=row.superseded_by,
         )
 
-    async def _split_labels(self, labels: list[str]) -> tuple[list[RecalledRef], list[str]]:
-        """Split stored labels into drift-annotated refs + the plain labels."""
+    async def _resolve_existing_chunks(self, rows: list[_StoredMemory]) -> set[str]:
+        """Resolve drift for the WHOLE recall in ONE batch-oracle call.
+
+        Collects the UNIQUE ``lore_ref`` chunk-keys across every recalled row and
+        asks the injected batch oracle which still exist — a single call for N
+        refs, never one per ref. A recall carrying NO refs skips the oracle
+        entirely (nothing to resolve), matching the real backend.
+        """
+        chunk_keys: set[str] = set()
+        for row in rows:
+            for label in row.labels:
+                parsed = _parse_lore_ref_label(label)
+                if parsed is not None:
+                    chunk_keys.add(parsed[0])
+        if not chunk_keys:
+            return set()
+        return await self._existing_chunks(sorted(chunk_keys))
+
+    def _split_labels(
+        self, labels: list[str], existing_chunks: set[str]
+    ) -> tuple[list[RecalledRef], list[str]]:
+        """Split stored labels into drift-annotated refs + the plain labels.
+
+        A ``lore_ref=`` label's ``drifted`` is decided by MEMBERSHIP in
+        ``existing_chunks`` (the batch oracle's resolved subset) — a key absent
+        from that set has drifted; every other label stays plain. Drift is a
+        FLAG, never a filter.
+        """
         refs: list[RecalledRef] = []
         plain: list[str] = []
         for label in labels:
@@ -511,7 +547,7 @@ class FakeMemoryBackend:
                 plain.append(label)
                 continue
             chunk_key, key_version = parsed
-            drifted = not await self._chunk_exists(chunk_key)
+            drifted = chunk_key not in existing_chunks
             refs.append(RecalledRef(chunk_key=chunk_key, key_version=key_version, drifted=drifted))
         return refs, plain
 

@@ -1001,6 +1001,44 @@ class SurrealStore:
             )
         return self._first_count(result)
 
+    async def existing_point_ids(self, ids: Sequence[str]) -> set[str]:
+        """Return the subset of ``ids`` that currently exist — the batch drift read.
+
+        ONE query resolves N ids (``SELECT VALUE record::id(id) ... WHERE id IN
+        $ids``), collapsing what would otherwise be N point-fetches: the memory
+        backend's drift oracle asks this once per recall for every referenced
+        chunk-key at once. The returned set is exactly the ids still present; the
+        ids NOT in it have drifted (a refactor deleted the referenced chunk).
+        Mirrors :meth:`delete_points`'s id-list idiom — each id is bound as a
+        :class:`RecordID` under the ``chunk`` table, and the projection is
+        ``record::id`` so the bare ids come back as plain strings
+        (:class:`RecordID` is unhashable, so it can never enter the returned set).
+
+        An empty ``ids`` issues NO request and returns the empty set (the common
+        "this recall carried no refs" case). A DOWN server RAISES rather than
+        silently reporting the whole batch missing — a silent empty set would be
+        misread as "every ref was deleted".
+
+        Args:
+            ids: The BARE chunk point ids (``chunk_key``\\ s) to test for existence.
+
+        Returns:
+            The subset of ``ids`` that currently exist as chunk points.
+
+        Raises:
+            SurrealConnectionError: The server is unreachable or the socket died.
+            SurrealStoreError: The engine rejected the read (a domain fault).
+        """
+        if not ids:
+            return set()
+        record_ids = [RecordID(CHUNK_TABLE, point_id) for point_id in ids]
+        result = await self._query(
+            f"SELECT VALUE record::id({_ID_KEY}) FROM {CHUNK_TABLE} WHERE {_ID_KEY} IN $ids",
+            {"ids": record_ids},
+        )
+        values = result if isinstance(result, list) else []
+        return {str(value) for value in values if value is not None}
+
     async def scroll(self, filters: dict[str, str], limit: int) -> list[dict[str, Any]]:
         """Return the chunk rows matching ``filters`` — a bounded FILTER-ONLY lookup.
 

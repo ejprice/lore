@@ -2490,3 +2490,192 @@ class TestQueryMessageHygiene:
         message = str(exc_info.value)
         assert _COERCION_ENGINE_TEXT not in message
         assert "field coercion" in message.lower()
+
+
+@pytest_asyncio.fixture(params=["real", "fake"])
+async def existence_store(request: pytest.FixtureRequest) -> AsyncIterator[SurrealStore]:
+    """A ready store for the ``existing_point_ids`` parity pins — parametrized over
+    BOTH the real SurrealDB-backed :class:`SurrealStore` and the adversarial
+    in-memory :class:`FakeSurrealStore`.
+
+    Mirrors ``trace_store``: the ``"real"`` branch calls the harness helpers
+    (``make_env`` / ``connect_admin`` / ``drop_database``) directly rather than
+    depending on the ``surreal_env`` fixture (resolving an async fixture from
+    inside another async fixture's body re-enters pytest-asyncio 1.4's shared
+    ``Runner``), and reaps its throwaway database on exit; the ``"fake"`` branch
+    never touches the SurrealDB harness at all.
+    """
+    if request.param == "real":
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        setup_connection = await connect_admin(env)
+        await setup_connection.close()
+        live_store = SurrealStore(
+            url=env.url,
+            namespace=env.namespace,
+            database=env.database,
+            dim=env.dim,
+            user=env.user,
+            password=env.password,
+        )
+        await live_store.ensure_ready()
+        try:
+            yield live_store
+        finally:
+            await live_store.close()
+            await drop_database(env)
+    else:
+        fake_store = fake_surreal_trio(dim=PRODUCTION_DIM).store
+        await fake_store.ensure_ready()
+        # FakeSurrealStore satisfies the existing_point_ids contract behaviourally
+        # (that IS this parity pin); the cast tells mypy what the suite proves.
+        yield cast(SurrealStore, fake_store)
+
+
+# ===========================================================================
+# P8a #9 (notes-9b): the public BATCH existence read ``existing_point_ids``.
+#
+# The memory backend's drift oracle resolves N recalled refs in ONE query (not N
+# point-fetches). ``existing_point_ids(ids) -> set[str]`` returns exactly the
+# subset of ``ids`` that currently exist as chunk points; the keys NOT returned
+# have drifted. Empty input short-circuits to the empty set with NO query; a down
+# server RAISES (loud on failure, never a silent empty set the drift oracle would
+# misread as "every ref was deleted"). Pinned fake+real; the single-query claim is
+# proven against the fake's query counter.
+# ===========================================================================
+
+
+class TestExistingPointIds:
+    """``existing_point_ids(ids)`` — the public batch existence read the memory
+    backend's drift oracle rides (P8a #9 item 1). Parity: every case runs against
+    BOTH the real store and the adversarial in-memory fake.
+    """
+
+    async def test_empty_input_returns_empty_set(
+        self, existence_store: SurrealStore
+    ) -> None:
+        # No ids to resolve → the empty set (and, for the real store, no query
+        # is issued — mirrors ``delete_points([])``'s early return).
+        assert await existence_store.existing_point_ids([]) == set()
+
+    async def test_returns_only_the_existing_subset(
+        self, existence_store: SurrealStore
+    ) -> None:
+        present = chunk_record(tier=TIER_A, file_path="models/a.py", identity="Present")
+        also_present = chunk_record(tier=TIER_B, file_path="models/b.py", identity="Also")
+        await existence_store.upsert(
+            [
+                (present, unit_vector(0, PRODUCTION_DIM)),
+                (also_present, unit_vector(1, PRODUCTION_DIM)),
+            ]
+        )
+        absent = chunk_record(tier=TIER_A, file_path="models/gone.py", identity="Gone").point_id
+
+        result = await existence_store.existing_point_ids(
+            [present.point_id, absent, also_present.point_id]
+        )
+        # Exactly the stored subset — the absent id (the drift case) is omitted.
+        assert result == {present.point_id, also_present.point_id}
+
+    async def test_all_present_returns_every_id(
+        self, existence_store: SurrealStore
+    ) -> None:
+        records = [
+            chunk_record(tier=TIER_A, file_path=f"models/m{index}.py", identity=f"M{index}")
+            for index in range(3)
+        ]
+        await existence_store.upsert(
+            [(record, unit_vector(index, PRODUCTION_DIM)) for index, record in enumerate(records)]
+        )
+        ids = [record.point_id for record in records]
+        assert await existence_store.existing_point_ids(ids) == set(ids)
+
+    async def test_none_present_returns_empty_set(
+        self, existence_store: SurrealStore
+    ) -> None:
+        # Every id asked for was never stored (or a refactor purged the file) → the
+        # whole batch has drifted, so the existing subset is empty.
+        absent_ids = [
+            chunk_record(tier=TIER_A, file_path=f"deleted/{index}.py", identity=f"D{index}").point_id
+            for index in range(4)
+        ]
+        assert await existence_store.existing_point_ids(absent_ids) == set()
+
+    async def test_deduplicates_repeated_ids(
+        self, existence_store: SurrealStore
+    ) -> None:
+        # A ref key can appear on several recalled memories; the same id passed
+        # twice resolves to one membership result (a set is inherently deduped).
+        record = chunk_record(tier=TIER_A, file_path="models/dup.py", identity="Dup")
+        await existence_store.upsert([(record, unit_vector(0, PRODUCTION_DIM))])
+        result = await existence_store.existing_point_ids(
+            [record.point_id, record.point_id, record.point_id]
+        )
+        assert result == {record.point_id}
+
+    async def test_is_point_scoped_not_a_table_probe(
+        self, existence_store: SurrealStore
+    ) -> None:
+        # A stored chunk must not make a DIFFERENT id report existing — the batch
+        # read is membership BY ID, never a "the table is non-empty" probe.
+        present = chunk_record(tier=TIER_A, file_path="a.py", identity="Present")
+        await existence_store.upsert([(present, unit_vector(2, PRODUCTION_DIM))])
+        other = chunk_record(tier=TIER_B, file_path="b.py", identity="Other").point_id
+        assert await existence_store.existing_point_ids([other]) == set()
+
+
+class TestExistingPointIdsIsOneQuery:
+    """``existing_point_ids`` resolves ALL ids in a SINGLE query — the whole point
+    of the batch read (N point-fetches collapse to one). Proven against the fake's
+    query counter (the real store's one ``WHERE id IN $ids`` statement is the same
+    guarantee, unobservable from outside without a socket spy).
+    """
+
+    async def test_many_ids_resolve_in_exactly_one_query(self) -> None:
+        fake_store = fake_surreal_trio(dim=PRODUCTION_DIM).store
+        await fake_store.ensure_ready()
+        records = [
+            chunk_record(tier=TIER_A, file_path=f"models/n{index}.py", identity=f"N{index}")
+            for index in range(20)
+        ]
+        await fake_store.upsert(
+            [(record, unit_vector(index, PRODUCTION_DIM)) for index, record in enumerate(records)]
+        )
+        stored_ids = [record.point_id for record in records]
+        absent_ids = [
+            chunk_record(tier=TIER_A, file_path=f"gone/{index}.py", identity=f"G{index}").point_id
+            for index in range(20)
+        ]
+
+        result = await fake_store.existing_point_ids(stored_ids + absent_ids)
+
+        assert result == set(stored_ids)
+        # ONE query resolved all 40 ids — not one point-fetch per id.
+        assert fake_store.existing_point_ids_queries == 1
+
+    async def test_empty_input_issues_no_query(self) -> None:
+        fake_store = fake_surreal_trio(dim=PRODUCTION_DIM).store
+        await fake_store.ensure_ready()
+        assert await fake_store.existing_point_ids([]) == set()
+        # The empty batch short-circuits — no query is issued at all.
+        assert fake_store.existing_point_ids_queries == 0
+
+
+class TestExistingPointIdsResilience:
+    """``existing_point_ids`` is LOUD on failure — a down server RAISES a typed
+    connection error, never a silent empty set (which the drift oracle would
+    misread as "every ref was deleted"). Real-only: the fake has no socket to kill.
+    """
+
+    async def test_down_server_raises_never_silent_empty(
+        self, surreal_env: SurrealEnv  # noqa: F811 - imported fixture as param
+    ) -> None:
+        down_store = SurrealStore(
+            url=_DEAD_URL,
+            namespace=surreal_env.namespace,
+            database=surreal_env.database,
+            dim=surreal_env.dim,
+            user=surreal_env.user,
+            password=surreal_env.password,
+        )
+        with pytest.raises(SurrealConnectionError):
+            await down_store.existing_point_ids(["loremaster:loremaster/x.py:symbol:X:0"])
