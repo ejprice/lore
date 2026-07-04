@@ -4,48 +4,49 @@ These tests defined the behaviour of a feature that did NOT yet exist when the
 contract was authored. They were written BLIND to the eventual implementation:
 the expectations came from the idempotent-startup requirement, never from how
 the then-current code happened to behave — RED *behaviourally*, pinned onto the
-public constructors that existed at the time (the SQLite ``Manifest``,
-``CodeGraph``, ``build_app_context``).
+public constructors that existed at the time (the SQLite ``Manifest`` and
+``build_app_context``).
 
 HISTORICAL NOTE (post-P5): the SQLite ``Manifest`` class named throughout the
 bug narrative below was DELETED after the Surreal port — its half of this
 contract now lives on through ``MemoryLedger`` (the surviving
 ``open_resilient_sqlite`` consumer; see ``test_memory_durability.py``'s
 ``TestLedgerResilientOpen``) and ``test_surreal_manifest.py``. The Kùzu
-``CodeGraph`` half remains pinned HERE until its own P8 retirement. The
-narrative is kept as-written: it documents WHY the resilient open exists.
+``CodeGraph`` half that once shared this file was RETIRED in P8: the code-graph
+is now a derivation over SurrealDB with no on-disk single-file DB, so its
+resilient-open helper and resilience contract are gone. Only the SQLite /
+memory-ledger half remains here. The narrative is kept as-written: it documents
+WHY the resilient open exists.
 
 The two bugs this contract closed
 ---------------------------------
 
 * **FP-01 — clean container wedge.** On a fresh deploy the state volume is empty,
   so ``_DEFAULT_MANIFEST_DIR`` does not exist. The server passes
-  ``_DEFAULT_MANIFEST_DIR / f"{slug}.db"`` straight to ``Manifest(...)`` →
-  ``sqlite3.connect`` which raises ``OperationalError: unable to open database
-  file`` when the parent dir is absent (only the CLI ever ``mkdir``s it). The
-  server can never start on a clean volume. Pinned end-state: opening a manifest
-  / graph whose PARENT DIR is absent must SUCCEED, and ``build_app_context`` over
-  a nonexistent state dir must not raise and must produce a working manifest +
-  graph.
+  ``_DEFAULT_MANIFEST_DIR / f"{slug}.memory.db"`` straight to ``sqlite3.connect``
+  which raises ``OperationalError: unable to open database file`` when the parent
+  dir is absent (only the CLI ever ``mkdir``s it). The server can never start on
+  a clean volume. Pinned end-state: opening a sqlite DB whose PARENT DIR is
+  absent must SUCCEED, and ``build_app_context`` over a nonexistent state dir
+  must not raise and must produce a working memory ledger.
 
-* **FP-08 — corruption wedge loop.** A corrupt / truncated ``<slug>.db`` (or
-  ``<slug>.graph.db``) makes ``Manifest.__init__`` / ``CodeGraph.__init__`` raise
-  ``sqlite3.DatabaseError: file is not a database`` on the first statement. There
-  is NO integrity check / recovery, so EVERY startup re-wedges until a human
-  deletes the file. Both DBs are REBUILDABLE (a fresh empty manifest → full
-  reindex; a fresh graph → rebuilt by reindex), so the correct behaviour is
-  delete-and-recreate. Pinned end-state: opening a corrupt manifest / graph must
-  SUCCEED by detecting the corruption, deleting the bad file, and recreating a
-  fresh empty DB; afterwards the DB is queryable (``all_files() == []`` / an
-  empty graph) and a subsequent normal write works.
+* **FP-08 — corruption wedge loop.** A corrupt / truncated ``<slug>.memory.db``
+  makes ``sqlite3.connect`` raise ``sqlite3.DatabaseError: file is not a
+  database`` on the first statement. There is NO integrity check / recovery, so
+  EVERY startup re-wedges until a human deletes the file. Pinned end-state:
+  opening a corrupt sqlite DB must SUCCEED by detecting the corruption, deleting
+  the bad file, and recreating a fresh empty DB; afterwards the DB is queryable
+  and a subsequent normal write works. THE exception — the memory ledger is the
+  ONLY durable copy of user memories, so a TRANSIENT open fault must never delete
+  it (see ``TestTransientErrorDoesNotDeleteHealthyDatabase``).
 
 The critical anti-regression guard
 -----------------------------------
 
 A VALID existing DB must open UNCHANGED — its rows must survive. The recovery
-path must not be over-eager and nuke a healthy database. ``test_healthy_*`` pins
-this; without it a "recreate on every open" implementation would pass FP-08 while
-silently destroying every real index.
+path must not be over-eager and nuke a healthy database. Without this guard a
+"recreate on every open" implementation would pass FP-08 while silently
+destroying every real memory ledger.
 
 Realistic corruption fixture (independent oracle)
 -------------------------------------------------
@@ -59,12 +60,9 @@ corruption test FIRST proves, against ``sqlite3`` directly, that the fixture
 genuinely triggers ``DatabaseError`` (the RED witness that "today it raises"),
 THEN asserts the resilient constructor recovers.
 
-How to run (worktree shadowing is REQUIRED — the venv lives in the sibling repo)::
+How to run::
 
-    cd /home/ejprice/PycharmProjects/lore.worktrees/fix-idempotent
-    PYTHONPATH=loremaster:loresigil:lorescribe \\
-        /home/ejprice/PycharmProjects/lore/.venv/bin/python \\
-        -m pytest loremaster/tests/test_resilient_db.py -q -p no:cacheprovider
+    uv run pytest loremaster/tests/test_resilient_db.py -q -p no:cacheprovider
 """
 
 from __future__ import annotations
@@ -72,48 +70,15 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
-import textwrap
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-# Production constructors under test — these EXIST and import cleanly today, so
-# referencing them keeps the suite RED on *behaviour*, never on a missing symbol.
-from loremaster.graph import CodeGraph
+# The surviving production constructor under test — it EXISTS and imports cleanly
+# today, so referencing it keeps the suite RED on *behaviour*, never on a missing
+# symbol.
 from loremaster.index.sqlite_resilient import open_resilient_sqlite
-
-# The real producer the indexer uses to derive graph chunks — grounds the
-# "subsequent write works" assertion in the production chunk path (clause 1/5).
-from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_memo
-from lorescribe.models import Chunk, ChunkContext
-from lorescribe.python_ast import PythonAstChunker
-
-
-@pytest.fixture(autouse=True)
-def _reset_astroid_resolution_state() -> Iterator[None]:
-    """Reset astroid's process-global resolution state around EVERY test here.
-
-    Several tests in this file build a RESOLUTION-enabled :class:`CodeGraph`
-    directly (the chunk→resolution seam) and assert the in-project import edge
-    survives. astroid's manager (module cache + import-spec caches) and this
-    package's ``sys.path`` / package-parent-dir memo are PROCESS-GLOBAL. Production
-    bounds them at SWEEP boundaries (the indexer resets once per full sweep via
-    :meth:`CodeGraph.reset_resolution_cache`) and the graph no longer wipes the
-    cache per file — so a graph built OUTSIDE a sweep, as these tests do, inherits
-    whatever residue an earlier test (e.g. the chunker's structural parse in
-    ``test_graph.py``) left in the shared manager. Without this autouse reset that
-    residue degrades the seed's cross-module resolution to a bare name and the
-    durable-edge assertion fails purely by test ORDER. Resetting before AND after
-    each test keeps every case hermetic regardless of order or selection.
-    """
-    clear_resolution_cache()
-    reset_search_path_memo()
-    yield
-    clear_resolution_cache()
-    reset_search_path_memo()
-
 
 # ---------------------------------------------------------------------------
 # Production-realistic constants — same conventions as test_manifest.py /
@@ -125,142 +90,15 @@ def _reset_astroid_resolution_state() -> Iterator[None]:
 # Pulled from the SQLite file-format spec, not from any lore code (independent).
 _SQLITE_HEADER_MAGIC: bytes = b"SQLite format 3\x00"
 
-# The on-disk file names the SERVER passes: the manifest is ``<slug>.db`` and the
-# graph ``<slug>.graph.kuzu`` (a single Kùzu DB file) under the state dir. A
-# realistic slug from a real lore.yaml deployment, not a ``foo`` placeholder.
+# The on-disk file names the SERVER passes: the manifest / memory ledger are
+# ``<slug>.db`` / ``<slug>.memory.db`` under the state dir. A realistic slug from
+# a real lore.yaml deployment, not a ``foo`` placeholder.
 _SLUG: str = "lore-loremaster"
 _MANIFEST_FILENAME: str = f"{_SLUG}.db"
-_GRAPH_FILENAME: str = f"{_SLUG}.graph.kuzu"
 
-# A real Python module the production PythonAstChunker splits into chunks — the
-# graph's input lives at the lorescribe→loremaster producer↔consumer seam.
-_GRAPH_TIER: str = "local"
-_GRAPH_MODULE: str = "demo.service"
-_GRAPH_FILE_PATH: str = "demo/service.py"
-
-# The in-project dependency the demo module imports a symbol FROM. Under the
-# RESOLVED edge contract a stdlib import (``json``) is dropped as external, so the
-# durable-edge assertions key on an IN-PROJECT import that survives resolution.
-_GRAPH_ERRORS_PATH: str = "demo/errors.py"
-_GRAPH_ERRORS_SOURCE: str = '"""Demo errors."""\n\n\nclass LoadError(Exception):\n    pass\n'
-# The independent oracle for the surviving import: the in-project symbol FQN.
-_GRAPH_IMPORT_FQN: str = "demo.errors.LoadError"
-
-_GRAPH_SOURCE: str = textwrap.dedent(
-    '''\
-    """A demo service module."""
-    from __future__ import annotations
-
-    from demo.errors import LoadError
-
-
-    class IndexService:
-        """Indexes documents."""
-
-        def boot(self, path):
-            """Boot the service from a config file."""
-            raise LoadError(path)
-    '''
-)
-
-# The embedder's ~4-chars-per-token stand-in and a real Voyage cap (clause 1).
+# A real Voyage per-input token cap, consumed by the build_app_context server-seam
+# harness below (clause 1: a real cap, not a placeholder).
 _VOYAGE_MAX_INPUT_TOKENS: int = 8192
-
-
-def _approx_token_count(text: str) -> int:
-    """Behavioural stand-in for the embedder's injected token counter (~4 cpt)."""
-    return max(1, len(text) // 4)
-
-
-def _graph_chunks() -> list[Chunk]:
-    """Chunk the demo module through the REAL PythonAstChunker (clause 1/3 seam)."""
-    context = ChunkContext(
-        slug=_SLUG,
-        file_path=_GRAPH_FILE_PATH,
-        count_tokens=_approx_token_count,
-        max_input_tokens=_VOYAGE_MAX_INPUT_TOKENS,
-    )
-    return PythonAstChunker().chunk(_GRAPH_SOURCE, context)
-
-
-def _write_graph_project(root: Path) -> None:
-    """Materialise the demo package on disk so astroid resolves the in-project import.
-
-    Writes ``demo/__init__.py`` + ``demo/errors.py`` + ``demo/service.py`` under
-    ``root`` so ``from demo.errors import LoadError`` resolves IN-PROJECT to the
-    surviving import edge the durable-edge assertions key on.
-    """
-    (root / "demo").mkdir(parents=True, exist_ok=True)
-    (root / "demo" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "demo" / "errors.py").write_text(_GRAPH_ERRORS_SOURCE, encoding="utf-8")
-    (root / "demo" / "service.py").write_text(_GRAPH_SOURCE, encoding="utf-8")
-
-
-def _seed_graph_with_in_project_import(graph_path: Path, project_root: Path) -> None:
-    """Seed a CodeGraph at ``graph_path`` with one surviving RESOLVED import edge.
-
-    Writes the demo package under ``project_root`` and builds the service file with
-    resolution wired, so the graph carries the in-project ``demo.errors.LoadError``
-    import — the durable edge a healthy reopen / a transient blip must preserve.
-    """
-    _write_graph_project(project_root)
-    graph = CodeGraph(
-        str(graph_path),
-        tier_roots={_GRAPH_TIER: project_root},
-        project_roots=[project_root],
-    )
-    try:
-        graph.build_file_graph(
-            _GRAPH_TIER, _GRAPH_FILE_PATH, _graph_chunks(), module_name=_GRAPH_MODULE
-        )
-        assert graph.what_imports(_GRAPH_IMPORT_FQN), "seed must carry the in-project import edge"
-    finally:
-        graph.close()
-
-
-def _write_corrupt_kuzu(path: Path) -> int:
-    """Write a NON-EMPTY malformed Kùzu image at ``path`` and return its size.
-
-    A genuine Kùzu database is created (so the file has real on-disk structure),
-    then its head is clobbered with garbage so ``kuzu.Database`` reports it as "not
-    a valid Kuzu database file" on open — the realistic torn-write corruption,
-    distinct from an absent file. The caller asserts this fixture genuinely raises
-    before relying on the recovery contract.
-
-    Args:
-        path: The file path to write the corrupt image to.
-
-    Returns:
-        The size in bytes of the written corrupt image (always > 0).
-    """
-    import kuzu
-
-    database = kuzu.Database(str(path))
-    connection = kuzu.Connection(database)
-    connection.execute("CREATE NODE TABLE Seed(id SERIAL, v STRING, PRIMARY KEY(id))")
-    connection.execute("CREATE (s:Seed {v: 'real'})")
-    connection.close()
-    database.close()
-
-    original = bytearray(path.read_bytes())
-    # Clobber a generous head span so Kùzu's magic/header validation fails on open.
-    clobber = b"NOT-A-KUZU-DB\x00\xff\xfe" * 64
-    original[0 : len(clobber)] = clobber
-    path.write_bytes(bytes(original))
-    return path.stat().st_size
-
-
-def _assert_kuzu_raises_on_raw_open(path: Path) -> None:
-    """RED witness: prove ``path`` genuinely fails a raw ``kuzu.Database`` open.
-
-    Independent of any lore code — opens with ``kuzu`` directly and asserts the
-    corruption is real (the open raises ``RuntimeError``). Anchors the corruption
-    fixture so a later green on the resilient constructor means real recovery.
-    """
-    import kuzu
-
-    with pytest.raises(RuntimeError):
-        kuzu.Database(str(path))
 
 
 # ---------------------------------------------------------------------------
@@ -316,181 +154,22 @@ def _assert_raises_on_raw_open(path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# FP-01 — absent parent dir must not wedge the open
-# ---------------------------------------------------------------------------
-class TestAbsentStateDirGraph:
-    """FP-01: a CodeGraph opened under an absent parent dir must SUCCEED.
-
-    Same clean-container failure as the manifest, on the ``<slug>.graph.db`` path.
-    """
-
-    def test_graph_open_under_absent_parent_dir_does_not_raise(
-        self, tmp_path: Path
-    ) -> None:
-        """A CodeGraph over an absent parent dir must create the dir and open."""
-        graph_path = tmp_path / "state" / "lore" / _GRAPH_FILENAME
-        assert not graph_path.parent.exists(), "fixture must start with an absent state dir"
-
-        graph: CodeGraph | None = None
-        try:
-            graph = CodeGraph(str(graph_path))
-        except sqlite3.OperationalError as error:
-            pytest.fail(
-                "CodeGraph over an absent parent dir must create the dir and open, "
-                f"not raise OperationalError: {error}"
-            )
-        finally:
-            if graph is not None:
-                graph.close()
-
-    def test_graph_open_under_absent_parent_dir_yields_empty_queryable_graph(
-        self, tmp_path: Path
-    ) -> None:
-        """A freshly created graph under an absent dir is EMPTY and queryable."""
-        graph_path = tmp_path / "state" / "lore" / _GRAPH_FILENAME
-
-        graph = CodeGraph(str(graph_path))
-        try:
-            # Empty via the public query API (independent of internal row counts):
-            # nothing imports anything, nothing has a blast radius.
-            assert graph.what_imports("json") == [], "a fresh graph imports nothing"
-            assert graph.blast_radius("IndexService", depth=2, max_results=50) == [], (
-                "a fresh graph has no reverse-dependency edges"
-            )
-        finally:
-            graph.close()
-
-
-# ---------------------------------------------------------------------------
-# FP-08 — corrupt existing DB must self-heal (delete + recreate)
-# ---------------------------------------------------------------------------
-class TestCorruptGraphRecovers:
-    """FP-08: a corrupt ``<slug>.graph.kuzu`` must be deleted and recreated.
-
-    Same self-heal contract for the Kùzu code-graph, which is fully rebuildable by
-    a reindex, so a fresh empty graph after recovery is correct. A corrupt Kùzu
-    file makes ``kuzu.Database`` raise ``RuntimeError`` on open (not a SQLite
-    ``DatabaseError``); the resilient open must catch it, delete the bad file, and
-    recreate a fresh empty database.
-    """
-
-    def test_corruption_fixture_genuinely_raises_on_raw_open(
-        self, tmp_path: Path
-    ) -> None:
-        """RED witness for the Kùzu corruption fixture (clause 2 tautology guard)."""
-        corrupt_path = tmp_path / _GRAPH_FILENAME
-        size = _write_corrupt_kuzu(corrupt_path)
-        assert size > 0, "corruption fixture must be a NON-EMPTY malformed image"
-        _assert_kuzu_raises_on_raw_open(corrupt_path)
-
-    def test_graph_open_over_corrupt_file_does_not_raise(
-        self, tmp_path: Path
-    ) -> None:
-        """Opening a CodeGraph over a corrupt Kùzu file must recover, not raise."""
-        corrupt_path = tmp_path / _GRAPH_FILENAME
-        _write_corrupt_kuzu(corrupt_path)
-        _assert_kuzu_raises_on_raw_open(corrupt_path)
-
-        graph: CodeGraph | None = None
-        try:
-            graph = CodeGraph(str(corrupt_path))
-        except RuntimeError as error:
-            pytest.fail(
-                "CodeGraph over a corrupt file must delete-and-recreate, "
-                f"not raise RuntimeError: {error}"
-            )
-        finally:
-            if graph is not None:
-                graph.close()
-
-    def test_graph_recovered_from_corruption_is_empty_and_writable(
-        self, tmp_path: Path
-    ) -> None:
-        """After recovery the graph is empty and accepts a real per-file build.
-
-        The "subsequent normal write works" guarantee, exercised through the
-        production producer↔consumer seam: a real on-disk package → real chunks →
-        the recreated graph's ``build_file_graph`` → a query that finds the symbol.
-        """
-        corrupt_path = tmp_path / _GRAPH_FILENAME
-        _write_corrupt_kuzu(corrupt_path)
-        project_root = tmp_path / "project"
-        _write_graph_project(project_root)
-
-        graph = CodeGraph(
-            str(corrupt_path),
-            tier_roots={_GRAPH_TIER: project_root},
-            project_roots=[project_root],
-        )
-        try:
-            # Fresh empty graph after recovery (public query API, no row peeking).
-            assert graph.what_imports(_GRAPH_IMPORT_FQN) == [], (
-                "a graph recreated from corruption must start empty"
-            )
-            assert graph.indexed_file_count() == 0, "recovered graph must hold no files"
-
-            # A subsequent normal write works end-to-end across the seam.
-            graph.build_file_graph(
-                _GRAPH_TIER, _GRAPH_FILE_PATH, _graph_chunks(), module_name=_GRAPH_MODULE
-            )
-
-            # The demo module imports the in-project ``demo.errors.LoadError`` — after
-            # the build, the reverse import edge must resolve (independent oracle:
-            # _GRAPH_SOURCE's own ``from demo.errors import LoadError`` statement).
-            importers = graph.what_imports(_GRAPH_IMPORT_FQN)
-            assert importers, "the post-recovery build must register the in-project import edge"
-            assert any(node.file_path == _GRAPH_FILE_PATH for node in importers), (
-                "the importing module node must be the demo file we just built"
-            )
-        finally:
-            graph.close()
-
-
-# ---------------------------------------------------------------------------
-# Anti-regression — a VALID existing DB must open UNCHANGED
-# ---------------------------------------------------------------------------
-class TestHealthyGraphSurvives:
-    """A VALID code-graph opens UNCHANGED — its nodes/edges survive a reopen."""
-
-    def test_reopening_a_healthy_graph_preserves_its_edges(
-        self, tmp_path: Path
-    ) -> None:
-        """A graph with a real RESOLVED import edge must reopen with that edge intact."""
-        graph_path = tmp_path / _GRAPH_FILENAME
-        project_root = tmp_path / "project"
-        _seed_graph_with_in_project_import(graph_path, project_root)
-
-        # Reopen WITHOUT roots — the durable edge must already be on disk; the
-        # reopen must not recreate the db nor need resolution to surface it.
-        reopened = CodeGraph(str(graph_path))
-        try:
-            importers = reopened.what_imports(_GRAPH_IMPORT_FQN)
-            assert importers, (
-                "a healthy graph must reopen UNCHANGED — its import edge must "
-                "survive, the resilient open must NOT recreate a valid db"
-            )
-            assert any(node.file_path == _GRAPH_FILE_PATH for node in importers)
-        finally:
-            reopened.close()
-
-
-# ---------------------------------------------------------------------------
 # FP-01 at the SERVER seam — build_app_context over an absent state dir
 # ---------------------------------------------------------------------------
 #
-# The unit-level CodeGraph tests above pin the graph-side building block (the
-# manifest side is covered at the unit level in test_surreal_manifest.py); this
-# class pins the END-STATE the requirement actually cares about: the SERVER
+# The manifest side is covered at the unit level in test_surreal_manifest.py;
+# this class pins the END-STATE the requirement actually cares about: the SERVER
 # startup path (build_app_context) over a nonexistent state dir must not raise
-# and must produce a working manifest + graph. It mirrors the hermetic harness
-# in test_schema_rebuild.py (FakeEmbedder + a real throwaway Qdrant collection +
-# tmp paths) so it drives the SAME construction path the server runs.
+# and must produce a working memory ledger + Surreal manifest. It mirrors the
+# hermetic harness in test_schema_rebuild.py (FakeEmbedder + a real throwaway
+# Qdrant collection + tmp paths) so it drives the SAME construction path the
+# server runs.
 #
 # Marked ``real-Qdrant``: build_app_context runs the probe gate + ensure_collection,
 # which require a reachable Qdrant at conftest.QDRANT_URL with the API key. When
-# Qdrant is unavailable the probe gate fails BEFORE the manifest/graph are built,
+# Qdrant is unavailable the probe gate fails BEFORE the memory ledger is built,
 # so this case cannot witness the FP-01 fix — it is then xfail-skipped, and the
-# unit-level absent-dir tests above remain the authoritative FP-01 coverage.
+# unit-level owner-only-dir tests below remain the authoritative FP-01 coverage.
 # ---------------------------------------------------------------------------
 class TestBuildAppContextCreatesStateDir:
     """FP-01 server seam: build_app_context over an absent state dir must succeed."""
@@ -501,8 +180,8 @@ class TestBuildAppContextCreatesStateDir:
     ) -> None:
         """Arrange: a manifest_path (memory-ledger anchor) under a state dir that
         does NOT exist. Act: build_app_context with that path, a FakeEmbedder, a
-        throwaway Qdrant. Assert: it does not raise, the manifest is
-        empty/queryable, the graph empty.
+        throwaway Qdrant. Assert: it does not raise, the state dir + memory ledger
+        are created, and the Surreal manifest is empty/queryable.
         """
         # real-Qdrant — the probe gate + ensure_collection need a live Qdrant.
         from loremaster.server import LoreServer, build_app_context
@@ -797,54 +476,6 @@ class TestTransientErrorDoesNotDeleteHealthyDatabase:
     (as a DatabaseError subclass) and DELETES the healthy db.
     """
 
-    def test_transient_open_fault_propagates_and_does_not_delete_graph(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A TRANSIENT Kùzu open fault on a healthy graph must NOT nuke it.
-
-        The Kùzu code-graph carries the same fail-closed contract as the SQLite
-        manifest: ``kuzu.Database`` raises a plain ``RuntimeError`` for BOTH
-        corruption AND transient faults (I/O error, permission, lock), so the
-        resilient open MUST only delete-and-recreate on a recognised corruption
-        signature and re-raise any other ``RuntimeError``. A transient blip on a
-        healthy graph must propagate and leave the file (and its RESOLVED edges)
-        intact — never deleted. Exercised through the real chunk→resolution seam.
-        """
-        import loremaster.index.kuzu_resilient as kuzu_resilient
-
-        graph_path = tmp_path / _GRAPH_FILENAME
-        project_root = tmp_path / "project"
-        _seed_graph_with_in_project_import(graph_path, project_root)
-        size_before = graph_path.stat().st_size
-
-        # Inject a TRANSIENT (non-corruption) open fault: a RuntimeError whose
-        # message is NOT a corruption signature — the open must fail closed.
-        real_database = kuzu_resilient.kuzu.Database  # type: ignore[attr-defined]
-
-        def _transient_database(*args: object, **kwargs: object) -> object:
-            raise RuntimeError("IO operation failed: permission denied")
-
-        monkeypatch.setattr(kuzu_resilient.kuzu, "Database", _transient_database)  # type: ignore[attr-defined]
-
-        with pytest.raises(RuntimeError, match="permission denied"):
-            CodeGraph(str(graph_path))
-
-        assert graph_path.exists(), (
-            "a transient (non-corruption) RuntimeError must NOT delete a healthy graph"
-        )
-        assert graph_path.stat().st_size == size_before, (
-            "the healthy graph file must be byte-for-byte intact after a transient blip"
-        )
-        monkeypatch.setattr(kuzu_resilient.kuzu, "Database", real_database)  # type: ignore[attr-defined]
-        monkeypatch.undo()
-        recovered = CodeGraph(str(graph_path))
-        try:
-            assert recovered.what_imports(_GRAPH_IMPORT_FQN), (
-                "the graph's import edge must SURVIVE a transient blip (not recreated empty)"
-            )
-        finally:
-            recovered.close()
-
     def test_locked_database_does_not_destroy_durable_memory_ledger(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1136,14 +767,14 @@ class TestStateDirCreatedOwnerOnly:
 # The disclosure-bit boundary (``mode & 0o077 == 0``) is pinned independently of
 # the exact owner bits so a future "owner rw only" formulation still satisfies the
 # real invariant: nothing leaks to other local users. And the hardening is pinned
-# through the REAL production constructors (CodeGraph / MemoryLedger), not only
-# the bare helper, so the guarantee covers the path the server runs (clause 3/4:
-# the production open seam, with the memory ledger as the at-risk artifact).
+# through the REAL production constructor (MemoryLedger), not only the bare
+# helper, so the guarantee covers the path the server runs (clause 3/4: the
+# production open seam, with the memory ledger as the at-risk artifact).
 #
 # These mode assertions are BEHAVIOURALLY RED today: a default-mode connect yields
 # 0o644, which ``== 0o600`` and ``& 0o077 == 0`` both reject. They are NOT
-# structurally red — ``open_resilient_sqlite`` / ``CodeGraph`` / ``MemoryLedger``
-# all exist and import cleanly; only the FILE permission is wrong.
+# structurally red — ``open_resilient_sqlite`` / ``MemoryLedger`` both exist and
+# import cleanly; only the FILE permission is wrong.
 # ---------------------------------------------------------------------------
 
 # The required owner-only permission bits for a DB FILE the open creates or opens:
@@ -1198,7 +829,7 @@ class TestDatabaseFilesAreOwnerOnly:
     must be owner-rw only — never group/world-readable — on both a freshly
     created file and an existing world-readable one (the deploy-time tighten
     guarantee). Pinned both at the bare ``open_resilient_sqlite`` helper and
-    through the real CodeGraph / MemoryLedger production constructors.
+    through the real MemoryLedger production constructor.
     """
 
     def test_freshly_created_db_file_is_mode_0600(self, tmp_path: Path) -> None:
@@ -1258,8 +889,7 @@ class TestDatabaseFilesAreOwnerOnly:
         THE deploy-time guarantee: a valid db file written world-readable by a
         prior default-mode build is re-permissioned to owner-only on the next open,
         WITHOUT being deleted and WITHOUT losing its data. The healthy-db-survives
-        contract (TestHealthyGraphSurvives pins the same guarantee on the Kùzu
-        side) and this tighten contract must hold together: the chmod must not
+        contract and this tighten contract must hold together: the chmod must not
         trip the resilient open into a delete/recreate.
 
         Arrange: a healthy sqlite db with one real row, chmod'd to 0o644.
@@ -1295,24 +925,6 @@ class TestDatabaseFilesAreOwnerOnly:
             )
         finally:
             raw.close()
-
-    def test_graph_constructor_yields_owner_only_db_file(self, tmp_path: Path) -> None:
-        """A db file created through the real ``CodeGraph(path)`` is 0o600.
-
-        The graph db carries the same open path; pinning it confirms the hardening
-        is in open_resilient_sqlite (shared by both constructors), not bolted onto
-        one caller (clause 3/4: the production open seam, second consumer).
-        """
-        graph_path = tmp_path / "state" / "lore" / _GRAPH_FILENAME
-
-        graph = CodeGraph(str(graph_path))
-        try:
-            assert _file_mode(graph_path) == _OWNER_ONLY_FILE_MODE, (
-                f"a CodeGraph-created db file must be {_OWNER_ONLY_FILE_MODE:#o} "
-                f"(owner-only), got {_file_mode(graph_path):#o}"
-            )
-        finally:
-            graph.close()
 
     def test_memory_ledger_db_file_is_owner_only(self, tmp_path: Path) -> None:
         """The MEMORY-LEDGER db file — the at-risk plaintext artifact — is 0o600.

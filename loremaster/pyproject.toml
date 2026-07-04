@@ -13,7 +13,6 @@ dependencies = [
     "pydantic>=2.13",
     "pydantic-settings>=2.14",
     "pyyaml>=6.0.2",
-    "kuzu>=0.11.3",
     "surrealdb>=2.0",
 ]
 

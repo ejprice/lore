@@ -105,9 +105,9 @@ class ProjectConfig(_StrictModel):
 
     Attributes:
         slug: The project identifier; drives the ``lore_<slug>`` collection name
-            AND the on-disk state-DB paths (``<slug>.db`` / ``<slug>.memory.db``
-            / ``<slug>.graph.kuzu``). Constrained to the safe :data:`SLUG_PATTERN`
-            charset because it is interpolated straight into filesystem paths and
+            AND the on-disk state-DB paths (``<slug>.db`` / ``<slug>.memory.db``).
+            Constrained to the safe :data:`SLUG_PATTERN` charset because it is
+            interpolated straight into filesystem paths and
             a Qdrant collection name: a traversal, separator, whitespace,
             uppercase, or leading-separator slug is a path/collection hazard and
             must be rejected at load, not silently written to the wrong place.
