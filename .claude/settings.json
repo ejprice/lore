@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/teammate-idle-gate.sh\"",
+            "timeout": 10,
+            "statusMessage": "idle-gate: ground-truth check"
+          }
+        ]
+      }
+    ]
+  }
+}

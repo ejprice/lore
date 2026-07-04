@@ -34,3 +34,7 @@ htmlcov/
 
 # Per-project / per-deploy lore config (host-specific paths). Commit lore.yaml.sample instead.
 /lore.yaml
+
+# Claude Code: personal overrides + worktrees stay local
+.claude/settings.local.json
+.claude/worktrees/
