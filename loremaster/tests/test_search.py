@@ -57,6 +57,7 @@ from __future__ import annotations
 import re
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -69,12 +70,12 @@ from _surreal_fakes import (
     fake_surreal_trio,
 )
 from loremaster.config import LoreConfig
-from loremaster.extension import Extension, ExtensionContext
+from loremaster.extension import DEFAULT_KEY_VERSION, Extension, ExtensionContext
 from loremaster.graph_surreal import SurrealCodeGraph
 from loremaster.index.manifest import STATE_DIRTY, STATE_EMBEDDING, STATE_INDEXED
 from loremaster.index.records import chunk_to_record, point_id, sha512_hex
 from loremaster.index.surreal_manifest import SurrealManifest
-from loremaster.memory.store import MemoryRef, RecalledMemory
+from loremaster.memory.backend import MemorySource, RecalledMemory, RecalledRef
 from loremaster.search import SearchPipeline, SearchResult
 from loremaster.server import LoreServer
 from loremaster.store.candidate import Candidate
@@ -398,20 +399,61 @@ class _RecordingSurrealStore(FakeSurrealStore):
         )
 
 
-class _FakeMemoryStore:
-    """A minimal recall double standing in for the pipeline's ``memory_store`` seam.
+def _backend_recalled(
+    *,
+    text: str,
+    chunk_keys: list[str],
+    score: float,
+    kind: str = "fact",
+    importance: float = 0.5,
+) -> RecalledMemory:
+    """Build a backend-vocabulary :class:`RecalledMemory` for the pipeline seam.
 
-    The pipeline consumes ``recall_memory(query) -> list[RecalledMemory]``; this
+    The P7 cutover moves the pipeline's memory dependency onto the
+    :class:`~loremaster.memory.backend.MemoryBackend` protocol, whose ``recall``
+    returns :class:`~loremaster.memory.backend.RecalledMemory` value objects
+    (``refs`` are versioned, drift-annotated
+    :class:`~loremaster.memory.backend.RecalledRef`\\ s) — a richer shape than the
+    retired store's flat note. The pipeline reads only ``.text`` / ``.score`` /
+    ``.refs[].chunk_key`` off each, so this helper fills the remaining required
+    wire fields with realistic, well-formed values (id via the same uuid5 shape
+    production mints; a live, experiential ``operator`` source).
+    """
+    now = datetime.now(UTC)
+    return RecalledMemory(
+        id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"memory:{text}:{','.join(chunk_keys)}")),
+        text=text,
+        score=score,
+        kind=kind,
+        importance=importance,
+        refs=[
+            RecalledRef(chunk_key=key, key_version=DEFAULT_KEY_VERSION, drifted=False)
+            for key in chunk_keys
+        ],
+        source=MemorySource(kind="operator"),
+        valid_from=now,
+        created_at=now,
+    )
+
+
+class _FakeMemoryBackend:
+    """A minimal, backend-shaped recall double for the pipeline's memory seam (P7).
+
+    The pipeline now consumes the :class:`~loremaster.memory.backend.MemoryBackend`
+    protocol: it calls ``recall(query, *, k=...)`` and reads
+    :class:`~loremaster.memory.backend.RecalledMemory` value objects. This double
     returns a fixed, score-ordered list so the memory-boost (item 4) and visible
-    injection (item 5) behaviours are deterministic without a live embedder/Qdrant.
-    (MemoryStore internals are P7 — explicitly out of scope for this cycle.)
+    injection (item 5) behaviours stay deterministic without a live
+    embedder/SurrealDB. (The full backend contract is pinned in
+    ``test_memory_backend.py``; here only the pipeline's CONSUMPTION of the seam —
+    that it calls ``recall`` and honours the returned refs/score/text — matters.)
     """
 
     def __init__(self, recalled: list[RecalledMemory]) -> None:
         self._recalled = recalled
         self.recall_calls = 0
 
-    async def recall_memory(self, query: str, k: int = 5) -> list[RecalledMemory]:
+    async def recall(self, query: str, *, k: int = 5) -> list[RecalledMemory]:
         self.recall_calls += 1
         return list(self._recalled[:k])
 
@@ -855,11 +897,11 @@ class TestMemoryBoost:
         boost_target = next(r for r in control_hits[1:] if r.chunk_key != control_top_key)
 
         # A recalled memory referencing the lower-ranked hit's key must lift it.
-        memory_store = _FakeMemoryStore(
+        memory_store = _FakeMemoryBackend(
             [
-                RecalledMemory(
+                _backend_recalled(
                     text="the pricing/routing correction",
-                    refs=[MemoryRef(chunk_key=boost_target.chunk_key)],
+                    chunk_keys=[boost_target.chunk_key],
                     score=0.9,
                 )
             ]
@@ -886,11 +928,11 @@ class TestMemoryBoost:
         assert len(control_hits) >= 2
         # Boost the top TWO hits equally; their RELATIVE order must be preserved.
         top_two = [control_hits[0].chunk_key, control_hits[1].chunk_key]
-        memory_store = _FakeMemoryStore(
+        memory_store = _FakeMemoryBackend(
             [
-                RecalledMemory(
+                _backend_recalled(
                     text="boost both leaders",
-                    refs=[MemoryRef(chunk_key=k) for k in top_two],
+                    chunk_keys=list(top_two),
                     score=0.9,
                 )
             ]
@@ -928,7 +970,7 @@ class TestVisibleMemoryInjection:
         indexed, server = await _index_single(tmp_path, embedder)
         return _make_pipeline(
             indexed=indexed, embedder=embedder, server=server,
-            memory_store=_FakeMemoryStore(recalled),
+            memory_store=_FakeMemoryBackend(recalled),
         )
 
     async def test_matching_memory_injected_as_visible_provenance_line(
@@ -938,7 +980,7 @@ class TestVisibleMemoryInjection:
         memory_text = "champion_routing lives in routing.py, not pricing.py"
         pipeline = await self._pipeline_with_memories(
             tmp_path, embedder,
-            [RecalledMemory(text=memory_text, refs=[MemoryRef(chunk_key=ref_key)], score=0.9)],
+            [_backend_recalled(text=memory_text, chunk_keys=[ref_key], score=0.9)],
         )
 
         results = await pipeline.search_code("champion routing warehouse", k=5)
@@ -959,9 +1001,9 @@ class TestVisibleMemoryInjection:
         # guidance for a cited source span.
         pipeline = await self._pipeline_with_memories(
             tmp_path, embedder,
-            [RecalledMemory(
+            [_backend_recalled(
                 text="a project convention note",
-                refs=[MemoryRef(chunk_key="22222222-2222-5222-8222-222222222222")],
+                chunk_keys=["22222222-2222-5222-8222-222222222222"],
                 score=0.9,
             )],
         )
@@ -978,9 +1020,9 @@ class TestVisibleMemoryInjection:
         # Three matching memories recalled; only the TWO highest-scored are injected
         # (a deterministic cap), in descending-score order.
         recalled = [
-            RecalledMemory(text="mem-high", refs=[MemoryRef(chunk_key="a" * 32)], score=0.95),
-            RecalledMemory(text="mem-mid", refs=[MemoryRef(chunk_key="b" * 32)], score=0.80),
-            RecalledMemory(text="mem-low", refs=[MemoryRef(chunk_key="c" * 32)], score=0.50),
+            _backend_recalled(text="mem-high", chunk_keys=["a" * 32], score=0.95),
+            _backend_recalled(text="mem-mid", chunk_keys=["b" * 32], score=0.80),
+            _backend_recalled(text="mem-low", chunk_keys=["c" * 32], score=0.50),
         ]
         pipeline = await self._pipeline_with_memories(tmp_path, embedder, recalled)
 
@@ -1000,9 +1042,9 @@ class TestVisibleMemoryInjection:
         # guidance surfaces first), then the ranked code hits follow.
         pipeline = await self._pipeline_with_memories(
             tmp_path, embedder,
-            [RecalledMemory(
+            [_backend_recalled(
                 text="a leading note",
-                refs=[MemoryRef(chunk_key="d" * 32)], score=0.9,
+                chunk_keys=["d" * 32], score=0.9,
             )],
         )
         results = await pipeline.search_code("champion routing warehouse", k=5)
@@ -1345,10 +1387,10 @@ class TestRenderSanitiser:
         # The memory-line path is a non-fenced field too: a memory whose text carries
         # an ANSI escape / newline must not smuggle framing into the output.
         indexed, server = await _index_single(tmp_path, embedder)
-        memory_store = _FakeMemoryStore(
-            [RecalledMemory(
+        memory_store = _FakeMemoryBackend(
+            [_backend_recalled(
                 text="note with \x1b]0;evil\x07 and a\nnewline",
-                refs=[MemoryRef(chunk_key="e" * 32)], score=0.9,
+                chunk_keys=["e" * 32], score=0.9,
             )]
         )
         pipeline = _make_pipeline(
@@ -1382,10 +1424,10 @@ class TestRenderSanitiser:
         # NO-BREAK SPACE / BOM) smuggled into memory text must not survive into
         # the visible injected line.
         indexed, server = await _index_single(tmp_path, embedder)
-        memory_store = _FakeMemoryStore(
-            [RecalledMemory(
+        memory_store = _FakeMemoryBackend(
+            [_backend_recalled(
                 text="note with a \ufeffhidden marker",
-                refs=[MemoryRef(chunk_key="f" * 32)], score=0.9,
+                chunk_keys=["f" * 32], score=0.9,
             )]
         )
         pipeline = _make_pipeline(

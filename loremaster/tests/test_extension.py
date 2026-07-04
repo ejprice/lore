@@ -1060,7 +1060,10 @@ class TestRuntimeExtensionContextStoreIsUnifiedSurreal:
             # It is the VERY object the search pipeline reads — not a same-shaped
             # sibling instance that happens to point at a different database.
             assert runtime_ctx.store is ctx.write_store
-            assert runtime_ctx.store is not ctx.store
+            # The P7 cutover removed AppContext's vestigial `store` attribute
+            # entirely (pinned in test_memory_cutover.py); there is no longer a
+            # legacy handle to compare against, so assert it stays gone.
+            assert not hasattr(ctx, "store")
         finally:
             await ctx.aclose()
             await self._drop_surreal_db(server.config.project.slug)

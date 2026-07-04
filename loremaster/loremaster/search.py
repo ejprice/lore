@@ -4,7 +4,7 @@
 dependency-injected (the unified SurrealDB store, the embedder, the composed
 :class:`~loremaster.server.LoreServer` that resolves the extension hooks, the
 manifest, the code graph, an optional
-:class:`~loremaster.memory.store.MemoryStore`, an optional config-gated reranker
+:class:`~loremaster.memory.backend.MemoryBackend`, an optional config-gated reranker
 seam, and the config), so a test wires the in-memory
 :func:`~_surreal_fakes.fake_surreal_trio` + a :class:`~loresigil.testing.FakeEmbedder`
 while the live server wires the deployed SurrealDB / embedder resources.
@@ -88,7 +88,7 @@ if TYPE_CHECKING:
     from loremaster.config import LoreConfig
     from loremaster.graph_surreal import SurrealCodeGraph
     from loremaster.index.surreal_manifest import SurrealManifest
-    from loremaster.memory.store import MemoryStore, RecalledMemory
+    from loremaster.memory.backend import MemoryBackend, RecalledMemory
     from loremaster.server import LoreServer
     from loremaster.store.surreal import SurrealStore
 
@@ -139,6 +139,13 @@ _MEMORY_BOOST = 1.0
 # highest-score first — a deterministic cap so a noisy recall can never flood the
 # response with guidance lines.
 _MEMORY_INJECTION_CAP = 2
+
+# item 4/5: how many memories a single pipeline recall pulls from the backend.
+# One recall drives BOTH the silent boost (over every returned memory's refs) and
+# the visible injection (capped at :data:`_MEMORY_INJECTION_CAP`), so this is
+# sized to cover a handful of the most relevant notes — matching the backend's
+# own default recall width — never per-hit fan-out.
+_MEMORY_RECALL_K = 5
 
 # item 5: the provenance marker that stamps an injected memory line (so it is
 # tellable apart from a real citation) and the (overview) detail level such an
@@ -302,9 +309,10 @@ class SearchPipeline:
             ``state`` set at startup is visible to the search seams.
         code_graph: The :class:`~loremaster.graph_surreal.SurrealCodeGraph` the
             per-hit ref-join enrichment (item 7) joins against.
-        memory_store: Optional :class:`~loremaster.memory.store.MemoryStore` for
-            the memory boost + visible injection; ``None`` disables both (the
-            generic, no-memory deploy).
+        memory_store: Optional :class:`~loremaster.memory.backend.MemoryBackend`
+            for the memory boost + visible injection; ``None`` disables both
+            (the generic, no-memory deploy). Its ``recall(query, k=...)`` is the
+            single memory read the pipeline drives.
         reranker: Optional config-gated cross-encoder reranker seam (item 9);
             called ONLY when ``config.search.reranker`` is set.
     """
@@ -319,7 +327,7 @@ class SearchPipeline:
         config: LoreConfig,
         extension_context: ExtensionContext,
         code_graph: SurrealCodeGraph,
-        memory_store: MemoryStore | None = None,
+        memory_store: MemoryBackend | None = None,
         reranker: _Reranker | None = None,
     ) -> None:
         self._store = store
@@ -511,7 +519,10 @@ class SearchPipeline:
         """
         if self._memory_store is None:
             return []
-        return list(await self._memory_store.recall_memory(query))
+        # P7 cutover: the memory dependency is the SurrealDB-backed
+        # ``MemoryBackend`` protocol, whose read is ``recall(query, k=...)``
+        # (the retired ``MemoryStore.recall_memory`` shape is gone).
+        return list(await self._memory_store.recall(query, k=_MEMORY_RECALL_K))
 
     def _apply_memory_boost(
         self,

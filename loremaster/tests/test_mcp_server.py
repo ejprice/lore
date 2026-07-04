@@ -73,6 +73,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from _task_fakes import FakeTaskDatabase, FakeTaskLedger
 from _surreal_harness import (
     drop_database as drop_surreal_database,
 )
@@ -83,6 +84,8 @@ from _surreal_harness import (
     surreal_user,
 )
 from loremaster.config import LoreConfig
+from loremaster.memory.store import MemoryRef, MemoryStore
+from loremaster.tasks import IllegalTransitionError, TaskNotFoundError
 from loremaster.map import _BUDGET_FLOOR as _PRODUCTION_MAP_BUDGET_FLOOR
 from loremaster.map import _ELISION_FRAGMENT as _PRODUCTION_MAP_ELISION_FRAGMENT
 from loremaster.server import (
@@ -406,6 +409,19 @@ def _store(client: AsyncQdrantClient, slug: str) -> QdrantStore:
     store = QdrantStore(client=client, slug=slug)
     client._lore_created.append(store.collection_name)  # type: ignore[attr-defined]
     return store
+
+
+def _render_text(value: object) -> str:
+    """The agent-visible TEXT projection of a tool result.
+
+    The P7 cutover re-shapes the memory + task tool returns; this contract pins
+    the SURFACED CONTENT (the note text, a chunk key, a kind, a drift signal, an
+    owner) without over-committing to the exact serialisation (a rendered markdown
+    digest vs. a list of summarised value objects both surface the same content).
+    A ``str`` result is itself; anything else is projected via ``repr`` (which
+    still names every field value a summarised value object carries).
+    """
+    return value if isinstance(value, str) else repr(value)
 
 
 async def _make_context(
@@ -1398,7 +1414,10 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
     "lore_search_code": {"formatted", "chunk_key", "detail_level", "stale", "score"},
     "lore_read_file": {"tier", "path", "line_start", "line_end", "text"},
     "lore_get_symbol": {"qualified_name", "chunk_type", "tier", "file_path", "source"},
-    "lore_recall_memory": {"text", "metadata", "refs", "score"},
+    # lore_recall_memory is intentionally omitted: the P7 cutover re-shapes its
+    # return (it no longer carries the retired store's flat ``metadata`` note), so
+    # its surfaced fields are pinned behaviourally in TestRecallMemoryCutover
+    # rather than as a fixed field-name table here.
     "lore_reindex": {"files_indexed", "files_failed", "files_skipped"},
     "lore_index_status": {"files_indexed", "files_failed", "files_skipped"},
     "lore_what_imports": {"qualified_name", "kind", "file_path", "tier"},
@@ -1629,9 +1648,14 @@ class TestToolBehaviourEndToEnd:
     async def test_save_then_recall_memory_roundtrips(
         self, indexed_context: AppContext
     ) -> None:
-        await indexed_context.save_memory("champion routing lives in pkg/router.py")
-        recalled = await indexed_context.recall_memory("where is champion routing", k=5)
-        assert any("pkg/router.py" in m.text for m in recalled)
+        # P7 cutover: save_memory takes the memory ``kind``; recall_memory surfaces
+        # the note text (its exact return SHAPE is pinned in TestRecallMemoryCutover).
+        note = "champion routing lives in pkg/router.py"
+        await getattr(indexed_context, "save_memory")(note, kind="fact")
+        rendered = _render_text(
+            await getattr(indexed_context, "recall_memory")("where is champion routing", k=5)
+        )
+        assert note in rendered
 
     async def test_what_imports_traverses_graph(self, indexed_context: AppContext) -> None:
         # The router imports the in-project ``pkg.base.BaseRouter`` (a stdlib
@@ -2929,3 +2953,280 @@ class TestBuildAppContextWiresSnapshotStamper:
         # aclose owns the stamper's lifecycle too — its connection is closed on
         # teardown (a leaked stamper socket would outlive the server).
         assert spy.close_calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# P7 CUTOVER — the memory tool handlers gain the v2 wire vocabulary and the two
+# fleet-coordination task tools (lore_claim_task / lore_tasks) land on the
+# served surface. The memory + task LOGIC is exhaustively pinned in
+# test_memory_backend.py (87) / test_task_ledger.py (160); these classes pin the
+# MCP-LAYER contract: the handler param/return surface, and honest rendering.
+# --------------------------------------------------------------------------- #
+
+# A realistic bare-uuid5 chunk key (the shape ``records.point_id`` mints) — used
+# as a memory ``refs`` entry so the deterministic-id oracle is grounded in the
+# same key shape production folds into an id.
+_CUTOVER_CHUNK_KEY = "5f6b3d21-9c4a-5e88-a1b2-c3d4e5f60718"
+
+
+@pytest_asyncio.fixture()
+async def cutover_ctx(tmp_path: Path, qdrant: AsyncQdrantClient) -> AsyncIterator[AppContext]:
+    """A real AppContext over an EMPTY corpus — the P7 memory/task tool seam.
+
+    The memory + task handlers are corpus-independent, so the build skips indexing;
+    it still runs the genuine ``build_app_context`` wiring the cutover changes.
+    """
+    slug = _slug()
+    live = tmp_path / "live"
+    live.mkdir(parents=True, exist_ok=True)
+    config = _config(slug, live)
+    ctx = await _make_context(config=config, client=qdrant, tmp_path=tmp_path)
+    try:
+        yield ctx
+    finally:
+        await ctx.aclose()
+
+
+class TestSaveMemoryCutover:
+    """save_memory gains the v2 wire params (kind / refs / importance / …), validates
+    them honestly, and PRESERVES the v0.3 deterministic id derivation."""
+
+    async def test_save_memory_returns_a_uuid5_id(self, cutover_ctx: AppContext) -> None:
+        # The id is the deterministic uuid5 the memory model has always minted.
+        memory_id = await getattr(cutover_ctx, "save_memory")(
+            "the loader retry budget is 3 attempts, in pkg/loader.py", kind="fact"
+        )
+        parsed = uuid.UUID(str(memory_id))
+        assert parsed.version == 5, "save_memory must return a deterministic uuid5 id"
+
+    async def test_save_memory_with_refs_mints_the_v03_deterministic_id(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        # A save with a chunk ref must mint the SAME id the v0.3 store would — an
+        # OLD (text, refs) pins to the SAME memory, so a re-save dedups across the
+        # cutover. Independent oracle: the production id helpers over the same refs.
+        note = "the discount rounding rule lives in pkg/pricing/rules.py"
+        memory_id = await getattr(cutover_ctx, "save_memory")(note, refs=[_CUTOVER_CHUNK_KEY])
+        expected = MemoryStore._memory_id(
+            note, MemoryStore._refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)])
+        )
+        assert memory_id == expected, (
+            "a save with refs must mint the v0.3 deterministic id (text+refs → same id)"
+        )
+
+    async def test_save_memory_no_refs_matches_the_v03_empty_stamp_id(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        # Backward-compat pin (must SURVIVE the cutover): a bare save with no refs
+        # mints the v0.3 empty-stamp id, so an old note and a new one collapse.
+        note = "champion routing warehouse selection lives in pkg/routing.py"
+        memory_id = await getattr(cutover_ctx, "save_memory")(note)
+        expected = MemoryStore._memory_id(note, MemoryStore._refs_stamp([]))
+        assert memory_id == expected, (
+            "a bare save must still mint the v0.3 deterministic id (backward compat)"
+        )
+
+    async def test_save_memory_rejects_an_unknown_kind(self, cutover_ctx: AppContext) -> None:
+        # A bad ``kind`` is a caller error surfaced as a tool-level error NAMING the
+        # offending value — never a silent default to 'fact'.
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
+            await getattr(cutover_ctx, "save_memory")("a note", kind="bogus_kind")
+        assert "bogus_kind" in str(exc_info.value), (
+            "an invalid kind must raise a tool-level error naming the bad value"
+        )
+
+    async def test_save_memory_rejects_out_of_range_importance(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        # importance is a fraction in [0, 1]; 1.5 is out of range → a tool-level
+        # error naming the offending value, never a silent clamp.
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
+            await getattr(cutover_ctx, "save_memory")("a note", importance=1.5)
+        assert "1.5" in str(exc_info.value), (
+            "an out-of-range importance must raise a tool-level error naming the value"
+        )
+
+
+class TestRecallMemoryCutover:
+    """recall_memory surfaces text + refs (chunk keys) + kind + importance, flags a
+    drifted ref, and NEVER surfaces a superseded note."""
+
+    async def test_recall_surfaces_text_refs_and_kind(self, cutover_ctx: AppContext) -> None:
+        note = "champion routing lives in pkg/routing.py, not pricing.py"
+        await getattr(cutover_ctx, "save_memory")(note, kind="decision", refs=[_CUTOVER_CHUNK_KEY])
+        rendered = _render_text(
+            await getattr(cutover_ctx, "recall_memory")("where does champion routing live", k=5)
+        )
+        # The recall surfaces the note text, its chunk ref, and the memory kind.
+        assert note in rendered, "recall must surface the saved note text"
+        assert _CUTOVER_CHUNK_KEY in rendered, "recall must surface the note's chunk ref key"
+        assert "decision" in rendered, "recall must surface the memory kind"
+
+    async def test_recall_flags_a_drifted_ref(self, cutover_ctx: AppContext) -> None:
+        # A ref to a chunk that does NOT exist in the (empty) index is a DRIFTED ref
+        # — the recall surfaces a drift signal so the agent re-verifies, never
+        # silently drops the reference.
+        note = "the fee schedule moved to pkg/pricing/fees.py"
+        missing_chunk = "11111111-2222-5333-8444-555566667777"
+        await getattr(cutover_ctx, "save_memory")(note, kind="gotcha", refs=[missing_chunk])
+        rendered = _render_text(
+            await getattr(cutover_ctx, "recall_memory")("where is the fee schedule", k=5)
+        )
+        assert "drifted" in rendered.lower(), (
+            "a recalled ref whose chunk no longer exists must be flagged as drifted"
+        )
+
+    async def test_recall_never_surfaces_a_superseded_note(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        # A superseded note is history, never a live recall hit.
+        stale = "pricing logic lives in sale.py"
+        current = "pricing logic now lives in pkg/pricing.py"
+        stale_id = await getattr(cutover_ctx, "save_memory")(stale, kind="fact")
+        await getattr(cutover_ctx, "save_memory")(current, kind="fact", supersedes=stale_id)
+        rendered = _render_text(
+            await getattr(cutover_ctx, "recall_memory")("where does pricing logic live", k=5)
+        )
+        assert current in rendered, "the live successor note must be recalled"
+        assert stale not in rendered, "a superseded note must NEVER be recalled"
+
+
+class TestTaskToolsRegistered:
+    """The two fleet-coordination tools are registered on the served surface."""
+
+    async def test_lore_claim_task_is_registered(self, tmp_path: Path) -> None:
+        config = _config(_slug(), tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        names = {tool.name for tool in await mcp.list_tools()}
+        assert "lore_claim_task" in names, "lore_claim_task must be on the served surface"
+
+    async def test_lore_tasks_is_registered(self, tmp_path: Path) -> None:
+        config = _config(_slug(), tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        names = {tool.name for tool in await mcp.list_tools()}
+        assert "lore_tasks" in names, "lore_tasks must be on the served surface"
+
+
+class TestClaimTaskTool:
+    """lore_claim_task renders a win (names the owner) / a loss (names the current
+    holder, mutates nothing) / a clean not-found, riding AppContext.task_ledger."""
+
+    async def test_claim_win_names_the_owner(self, cutover_ctx: AppContext) -> None:
+        ledger = FakeTaskLedger(db=FakeTaskDatabase())
+        task_id = await ledger.create_task(
+            "wire the P7 memory cutover", "move recall onto the SurrealDB backend",
+            created_by="team-lead",
+        )
+        setattr(cutover_ctx, "task_ledger", ledger)
+
+        rendered = _render_text(await getattr(cutover_ctx, "claim_task")(task_id, "agent-alpha"))
+
+        assert "agent-alpha" in rendered, "a winning claim must name the new owner"
+        # The seam actually mutated the ledger: the row is now owned by the claimer.
+        claimed = await ledger.get_task(task_id)
+        assert claimed.owner == "agent-alpha"
+
+    async def test_claim_loss_names_holder_and_mutates_nothing(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        ledger = FakeTaskLedger(db=FakeTaskDatabase())
+        task_id = await ledger.create_task(
+            "index the task ledger", "build the durable task table", created_by="team-lead",
+        )
+        await ledger.claim_task(task_id, "holder-one")  # already held by another agent
+        setattr(cutover_ctx, "task_ledger", ledger)
+
+        rendered = _render_text(await getattr(cutover_ctx, "claim_task")(task_id, "agent-two"))
+
+        assert "holder-one" in rendered, "a losing claim must name the current holder"
+        after = await ledger.get_task(task_id)
+        assert after.owner == "holder-one", "a losing claim must mutate nothing"
+
+    async def test_claim_unknown_task_id_is_clean_not_found(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        setattr(cutover_ctx, "task_ledger", FakeTaskLedger(db=FakeTaskDatabase()))
+        with pytest.raises(TaskNotFoundError) as exc_info:
+            await getattr(cutover_ctx, "claim_task")("no_such_task_id", "agent-alpha")
+        assert "no_such_task_id" in str(exc_info.value), (
+            "an unknown task id must surface a not-found naming the id"
+        )
+
+
+class TestTasksTool:
+    """lore_tasks dispatches create|query|transition|supersede, renders SUMMARISED
+    rows (never raw store rows), and surfaces the ledger's typed errors."""
+
+    async def test_tasks_create_returns_an_opaque_id(self, cutover_ctx: AppContext) -> None:
+        setattr(cutover_ctx, "task_ledger", FakeTaskLedger(db=FakeTaskDatabase()))
+        rendered = _render_text(
+            await getattr(cutover_ctx, "tasks")(
+                action="create",
+                subject="re-scope the cutover wave",
+                description="split memory + task landing",
+                created_by="team-lead",
+            )
+        )
+        # An opaque id is surfaced — never a raw ``task:<id>`` record-prefixed row.
+        assert "task:" not in rendered, "create must surface an opaque id, not a raw record id"
+
+    async def test_tasks_query_renders_summarised_rows_not_raw(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        ledger = FakeTaskLedger(db=FakeTaskDatabase())
+        await ledger.create_task(
+            "index the P7 cutover", "populate the task table", created_by="team-lead",
+        )
+        await ledger.create_task(
+            "wire the task tools", "land lore_claim_task + lore_tasks", created_by="team-lead",
+        )
+        setattr(cutover_ctx, "task_ledger", ledger)
+
+        rendered = _render_text(await getattr(cutover_ctx, "tasks")(action="query"))
+
+        assert "index the P7 cutover" in rendered, "query must surface the task subject"
+        assert "open" in rendered, "query must surface the task status"
+        # A summarised row, NEVER a raw SurrealDB row (a RecordID / ``task:`` prefix).
+        assert "RecordID" not in rendered and "task:" not in rendered, (
+            "query must render summarised rows, never a raw store row dump"
+        )
+
+    async def test_tasks_illegal_transition_surfaces_typed_error(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        ledger = FakeTaskLedger(db=FakeTaskDatabase())
+        task_id = await ledger.create_task(
+            "a fresh open task", "the birth state is open", created_by="team-lead",
+        )
+        setattr(cutover_ctx, "task_ledger", ledger)
+        # open -> done is NOT a legal edge (open -> claimed is claim-only); the
+        # illegal transition surfaces the ledger's typed error naming both states.
+        with pytest.raises(IllegalTransitionError) as exc_info:
+            await getattr(cutover_ctx, "tasks")(
+                action="transition", task_id=task_id, status="done", actor="agent-alpha",
+            )
+        message = str(exc_info.value)
+        assert "open" in message and "done" in message, (
+            "an illegal transition must surface a typed error naming both states"
+        )
+
+    async def test_tasks_supersede_stamps_the_old_task(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        ledger = FakeTaskLedger(db=FakeTaskDatabase())
+        task_id = await ledger.create_task(
+            "the original framing", "to be re-scoped", created_by="team-lead",
+        )
+        setattr(cutover_ctx, "task_ledger", ledger)
+
+        await getattr(cutover_ctx, "tasks")(
+            action="supersede",
+            task_id=task_id,
+            subject="the re-scoped framing",
+            description="the successor task",
+            created_by="team-lead",
+        )
+        # The old task is stamped superseded (its history preserved) and a successor
+        # was minted — the seam drove the ledger's real supersede.
+        old = await ledger.get_task(task_id)
+        assert old.superseded_by is not None, "supersede must stamp the old task's successor"

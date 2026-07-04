@@ -47,7 +47,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar, cast
 
 from lorescribe.javascript import JavascriptChunker
 from lorescribe.markdown import MarkdownChunker
@@ -63,6 +63,7 @@ from pydantic import BaseModel, Field
 
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, load_config
 from loremaster.extension import (
+    DEFAULT_KEY_VERSION,
     DetailLevel,
     Extension,
     ExtensionContext,
@@ -100,10 +101,19 @@ from loremaster.map import MapEngine, MapResult
 from loremaster.map import _BUDGET_CAP as _MAP_BUDGET_CAP
 from loremaster.map import _BUDGET_DEFAULT as _MAP_DEFAULT_BUDGET
 from loremaster.map import _BUDGET_FLOOR as _MAP_BUDGET_FLOOR
-from loremaster.memory.store import RecalledMemory
+# P7 memory cutover: the memory + task tool handlers speak the SurrealDB-backed
+# wire vocabulary. ``IMPORTANCE_DEFAULTS_BY_KIND`` is the single source of truth
+# for the valid memory-kind set + the by-kind importance defaults; ``MemorySource``
+# is built at runtime when a save carries an explicit ``trust``.
+from loremaster.memory.backend import (
+    IMPORTANCE_DEFAULTS_BY_KIND,
+    MemorySource,
+    TrustLevel,
+)
 from loremaster.read_file import FileSpan
 from loremaster.search import DetailSelector, SearchResult
 from loremaster.store.candidate import Candidate
+from loremaster.store.surreal_schema import CHUNK_TABLE
 from loremaster.symbols import ResolvedSymbol
 
 if TYPE_CHECKING:
@@ -113,12 +123,17 @@ if TYPE_CHECKING:
     from loremaster.index.indexer import Indexer
     from loremaster.index.reconcile import ReconcileEngine
     from loremaster.index.surreal_manifest import SurrealManifest
-    from loremaster.memory.store import MemoryStore
+    from loremaster.memory.backend import (
+        ChunkExistsFn,
+        MemoryBackend,
+        RecalledMemory,
+    )
     from loremaster.read_file import ReadFileTool
     from loremaster.search import SearchPipeline
     from loremaster.store.qdrant import QdrantStore
     from loremaster.store.surreal import SurrealStore
     from loremaster.symbols import SymbolTool
+    from loremaster.tasks import ClaimResult, Task, TaskLedger
 
 # The parent-context ``state`` key under which the per-extension lifespan-state
 # namespaces live (fix B / §A1.10). ``ctx.state[_EXTENSION_STATE_KEY][name]`` is
@@ -775,6 +790,106 @@ _MAX_BLAST_MAX_RESULTS = 500
 # The memory collection's slug suffix → ``lore_<slug>_memory``.
 _MEMORY_SLUG_SUFFIX = "_memory"
 
+# P7 memory cutover — the valid memory-kind vocabulary + the default kind a bare
+# ``save_memory`` records. Derived from the backend's by-kind importance table so
+# the two never drift; a kind outside this set is a caller error the handler
+# rejects BY NAME (never a silent default to ``fact``).
+_VALID_MEMORY_KINDS = frozenset(IMPORTANCE_DEFAULTS_BY_KIND)
+_DEFAULT_MEMORY_KIND = "fact"
+# The provenance ``kind`` a save carries when the caller marks an explicit
+# ``trust`` but no richer source (an operator note — matches the local backend's
+# own default source kind).
+_MEMORY_SOURCE_KIND_OPERATOR = "operator"
+# The ``chunk`` table's record-id column the drift oracle point-fetches by.
+_CHUNK_ID_COLUMN = "id"
+# The rendered digest lines for an empty memory recall / task query — a plain,
+# honest "nothing matched" rather than a bare empty string.
+_NO_MEMORIES_RECALLED = "(no project memories matched this query)"
+_NO_TASKS_MATCHED = "(no tasks matched this query)"
+# P7 recall render — the visible marker on a recalled ref whose chunk no longer
+# exists (a refactor deleted it), so the agent re-verifies rather than trusting a
+# stale pointer. Contains "drifted" so a case-insensitive scan finds it.
+_DRIFT_MARKER = "(drifted — re-verify)"
+
+# The four fleet task-tool actions ``lore_tasks`` dispatches on.
+_TASK_ACTION_CREATE = "create"
+_TASK_ACTION_QUERY = "query"
+_TASK_ACTION_TRANSITION = "transition"
+_TASK_ACTION_SUPERSEDE = "supersede"
+_TASK_ACTIONS = (
+    _TASK_ACTION_CREATE,
+    _TASK_ACTION_QUERY,
+    _TASK_ACTION_TRANSITION,
+    _TASK_ACTION_SUPERSEDE,
+)
+
+# A generic "required argument" narrower for the task-tool dispatch (a create
+# needs a subject, a transition needs a target status, …). Kept generic so one
+# helper serves every action without per-arg boilerplate.
+_REQUIRED_ARG = TypeVar("_REQUIRED_ARG")
+
+
+def _require_arg(value: _REQUIRED_ARG | None, name: str) -> _REQUIRED_ARG:
+    """Return ``value`` when present; raise a caller-error naming a missing arg.
+
+    A task action that omits a field it needs (e.g. ``create`` with no
+    ``subject``) is a caller error surfaced as a tool-level error naming the
+    missing argument — never a silent write of a ``None`` field.
+    """
+    if value is None:
+        raise ValueError(f"the {name!r} argument is required for this task action")
+    return value
+
+
+def _refs_to_labels(refs: list[str]) -> list[str]:
+    """Translate bare chunk-key refs into the backend's ``lore_ref=`` labels.
+
+    Reuses :meth:`~loremaster.memory.local.LocalMemoryBackend._lore_ref_label` — the
+    single source of truth for the ``lore_ref=<chunk_key>@<version>`` seam — so a
+    save's refs fold into the SAME deterministic id the v0.3 store minted (an OLD
+    ``(text, refs)`` re-saves to the same memory). Bare refs carry the base
+    :data:`~loremaster.extension.DEFAULT_KEY_VERSION`.
+    """
+    from loremaster.memory.local import LocalMemoryBackend
+
+    return [LocalMemoryBackend._lore_ref_label(ref, DEFAULT_KEY_VERSION) for ref in refs]
+
+
+def _metadata_to_labels(metadata: dict[str, Any] | None) -> list[str]:
+    """Flatten the DEPRECATED free-form ``metadata`` into flat ``key=value`` labels.
+
+    The v0.3 ``save_memory`` carried a free-form ``metadata`` dict; the v2 backend
+    speaks flat labels instead. A still-supplied ``metadata`` is flattened to
+    ``key=value`` labels (plain labels — NOT ``lore_ref=``, so they never affect
+    the deterministic id) rather than silently dropped.
+    """
+    if not metadata:
+        return []
+    return [f"{key}={value}" for key, value in metadata.items()]
+
+
+def _make_chunk_exists(store: SurrealStore) -> ChunkExistsFn:
+    """Build the memory backend's drift oracle over the unified chunk store.
+
+    Returns an async ``chunk_key -> bool`` closure doing the cheapest HONEST
+    existence check: a point-fetch by record id on the ``chunk`` table (mirrors the
+    backend's own ``_row_exists`` shape). The unified store exposes no public
+    point-get primitive, so the closure rides the store's own error-classified
+    ``_query`` transport. A recalled ref whose chunk this reports missing is
+    drift-flagged (never filtered), so a refactor that deleted a referenced chunk
+    surfaces as "re-verify", not a silent stale pointer.
+    """
+
+    async def _chunk_exists(chunk_key: str) -> bool:
+        result = await store._query(
+            f"SELECT VALUE {_CHUNK_ID_COLUMN} FROM type::record('{CHUNK_TABLE}', $chunk_key)",
+            {"chunk_key": chunk_key},
+        )
+        values = result if isinstance(result, list) else []
+        return any(value is not None for value in values)
+
+    return _chunk_exists
+
 
 # The in-band consumer guidance the FastMCP server advertises to the connecting
 # agent (mcp-builder: a substantial, behavioral ``instructions`` block). This is
@@ -991,7 +1106,8 @@ class AppContext:
 
     Built by :func:`build_app_context` after the probe gate passes. Holds every
     runtime service (embedder, stores, manifest, graph, the search pipeline, the
-    read tools, the memory store, the indexer, the reconcile engine, the watcher)
+    read tools, the SurrealDB memory backend, the fleet task ledger, the indexer,
+    the reconcile engine, the watcher)
     plus the spawned background tasks, and exposes one async HANDLER per MCP tool.
     The FastMCP tool functions are thin wrappers that fetch this context from the
     lifespan and call the matching handler — so the handlers are the single, fully
@@ -1004,9 +1120,7 @@ class AppContext:
         *,
         server: LoreServer,
         embedder: Embedder,
-        store: QdrantStore,
         write_store: SurrealStore,
-        memory_store_handle: QdrantStore,
         manifest: SurrealManifest,
         code_graph: SurrealCodeGraph,
         snapshot_stamper: Any,
@@ -1016,15 +1130,14 @@ class AppContext:
         search_pipeline: SearchPipeline,
         read_file_tool: ReadFileTool,
         symbol_tool: SymbolTool,
-        memory_store: MemoryStore,
+        memory_backend: MemoryBackend,
+        task_ledger: TaskLedger,
         qdrant_client: Any,
     ) -> None:
         self._server = server
         self._config: LoreConfig = server.config
         self.embedder = embedder
-        self.store = store
         self.write_store = write_store
-        self._memory_store_handle = memory_store_handle
         self.manifest = manifest
         self.code_graph = code_graph
         # The server-owned snapshot stamper (C4-audit #2): constructed, readied,
@@ -1036,7 +1149,11 @@ class AppContext:
         self.search_pipeline = search_pipeline
         self._read_file_tool = read_file_tool
         self._symbol_tool = symbol_tool
-        self._memory_store = memory_store
+        # P7 cutover — plain, settable public attributes (like ``search_pipeline``):
+        # the SurrealDB memory backend the memory tools dispatch through, and the
+        # durable fleet task ledger the two task tools ride.
+        self.memory_backend = memory_backend
+        self.task_ledger = task_ledger
         self._qdrant_client = qdrant_client
         # The parent extension context (per-extension namespaced state lives here),
         # set when the lifespan ran the startup hooks, so shutdown reuses it.
@@ -1112,14 +1229,203 @@ class AppContext:
             raise await self._rebuilding_error_or(exc) from exc
 
     async def save_memory(
-        self, text: str, *, metadata: dict[str, Any] | None = None
+        self,
+        text: str,
+        *,
+        refs: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        kind: str = _DEFAULT_MEMORY_KIND,
+        trust: str | None = None,
+        importance: float | None = None,
+        supersedes: str | None = None,
+        labels: list[str] | None = None,
     ) -> str:
-        """Persist a project-memory note; returns its deterministic id."""
-        return await self._memory_store.save_memory(text, metadata=metadata)
+        """Persist a project-memory note via the SurrealDB backend; returns its id.
 
-    async def recall_memory(self, query: str, k: int = _DEFAULT_RECALL_K) -> list[RecalledMemory]:
-        """Recall the nearest saved notes for ``query`` (summarised)."""
-        return await self._memory_store.recall_memory(query, k)
+        The id is the v0.3 deterministic ``uuid5`` (text + refs stamp), so a re-save
+        of the same ``(text, refs)`` collapses to one memory across the cutover.
+        ``refs`` (bare chunk keys) become ``lore_ref=`` labels that fold into the id;
+        the DEPRECATED ``metadata`` dict is flattened to ``key=value`` labels; an
+        explicit ``trust`` builds an operator :class:`MemorySource`. Validation is
+        HONEST: an unknown ``kind`` (or, via the backend, an out-of-range
+        ``importance``) raises a tool-level error NAMING the offending value — never
+        a silent default.
+
+        Args:
+            text: The note to remember (a durable fact/correction about this project).
+            refs: Bare chunk keys the note pins to; each folds into the id.
+            metadata: DEPRECATED free-form dict, flattened to ``key=value`` labels.
+            kind: The memory kind (one of :data:`_VALID_MEMORY_KINDS`).
+            trust: Optional two-value trust ("authoritative"/"experiential").
+            importance: Optional importance override in ``[0, 1]``.
+            supersedes: The id of an existing memory this note replaces.
+            labels: Extra flat labels stored alongside the note.
+
+        Returns:
+            The deterministic ``uuid5`` memory id.
+
+        Raises:
+            ValueError: ``kind`` is outside :data:`_VALID_MEMORY_KINDS`, or the
+                backend rejects an out-of-range ``importance``.
+        """
+        if kind not in _VALID_MEMORY_KINDS:
+            raise ValueError(
+                f"unknown memory kind {kind!r}; valid kinds are "
+                f"{sorted(_VALID_MEMORY_KINDS)}"
+            )
+        # An explicit trust rides an operator-note source; no trust ⇒ let the
+        # backend apply its own default source (never fabricate one here).
+        source = (
+            # A bad trust string is still rejected at runtime by MemorySource's
+            # pydantic validation (surfacing as a tool error) — the cast only
+            # satisfies the static Literal type at this call site.
+            MemorySource(
+                kind=_MEMORY_SOURCE_KIND_OPERATOR, trust=cast(TrustLevel, trust)
+            )
+            if trust is not None
+            else None
+        )
+        composed_labels = [
+            *_refs_to_labels(refs or []),
+            *_metadata_to_labels(metadata),
+            *(labels or []),
+        ]
+        return await self.memory_backend.remember(
+            text,
+            kind=kind,
+            importance=importance,
+            source=source,
+            labels=composed_labels or None,
+            supersedes=supersedes,
+        )
+
+    async def recall_memory(self, query: str, k: int = _DEFAULT_RECALL_K) -> str:
+        """Recall the nearest saved notes for ``query`` as a summarised markdown digest.
+
+        Delegates to the backend's ``recall`` (superseded/expired rows never
+        surface — the backend already excludes them, so this NEVER re-filters) and
+        renders each note's text + kind + importance + score + refs, drift-marking a
+        ref whose chunk no longer exists.
+        """
+        recalled = await self.memory_backend.recall(query, k=k)
+        return self._render_recalled_memories(recalled)
+
+    @staticmethod
+    def _render_recalled_memories(recalled: list[RecalledMemory]) -> str:
+        """Render recalled memories as a compact markdown digest (never a raw row)."""
+        if not recalled:
+            return _NO_MEMORIES_RECALLED
+        blocks: list[str] = []
+        for memory in recalled:
+            # Drift-mark each ref whose chunk the oracle reported missing so the
+            # agent re-verifies; the chunk key itself always stays visible.
+            rendered_refs = ", ".join(
+                f"{ref.chunk_key} {_DRIFT_MARKER}" if ref.drifted else ref.chunk_key
+                for ref in memory.refs
+            )
+            lines = [
+                f"- {memory.text}",
+                f"  kind: {memory.kind} · importance: {memory.importance:.2f} · "
+                f"score: {memory.score:.4f}",
+            ]
+            if rendered_refs:
+                lines.append(f"  refs: {rendered_refs}")
+            blocks.append("\n".join(lines))
+        return "\n".join(blocks)
+
+    async def claim_task(self, task_id: str, owner: str) -> str:
+        """Atomically claim ``task_id`` for ``owner`` (the fleet-coordination primitive).
+
+        Delegates to the durable :class:`~loremaster.tasks.TaskLedger`'s
+        compare-and-set and renders the outcome: a WIN names the new owner + claim
+        time; a LOSS names the current holder and mutates nothing. An unknown id
+        surfaces the ledger's typed :class:`~loremaster.tasks.TaskNotFoundError`
+        (naming the id) unchanged.
+        """
+        result = await self.task_ledger.claim_task(task_id, owner)
+        return self._render_claim_result(result)
+
+    @staticmethod
+    def _render_claim_result(result: ClaimResult) -> str:
+        """Render an atomic-claim outcome (win names owner+time; loss names holder)."""
+        task = result.task
+        if result.claimed:
+            return (
+                f"claimed: task {task.id} is now owned by {task.owner} "
+                f"(claimed_at {task.claimed_at})"
+            )
+        return (
+            f"not claimed: task {task.id} is already held by {task.owner} "
+            f"(status {task.status})"
+        )
+
+    async def tasks(
+        self,
+        *,
+        action: str,
+        task_id: str | None = None,
+        subject: str | None = None,
+        description: str | None = None,
+        created_by: str | None = None,
+        actor: str | None = None,
+        status: str | None = None,
+        owner: str | None = None,
+        blocked: bool | None = None,
+        blocked_by: list[str] | None = None,
+    ) -> str:
+        """Dispatch a fleet task action (create|query|transition|supersede).
+
+        A thin dispatcher over :class:`~loremaster.tasks.TaskLedger` that renders
+        SUMMARISED results (never a raw SurrealDB row) and lets the ledger's typed
+        errors (:class:`~loremaster.tasks.IllegalTransitionError` /
+        :class:`~loremaster.tasks.TaskNotFoundError`) surface unchanged.
+        """
+        if action == _TASK_ACTION_CREATE:
+            new_id = await self.task_ledger.create_task(
+                _require_arg(subject, "subject"),
+                _require_arg(description, "description"),
+                blocked_by=blocked_by,
+                created_by=_require_arg(created_by, "created_by"),
+            )
+            return f"created task {new_id} (status open)"
+        if action == _TASK_ACTION_QUERY:
+            rows = await self.task_ledger.query_tasks(
+                status=status, owner=owner, blocked=blocked
+            )
+            return self._render_task_rows(rows)
+        if action == _TASK_ACTION_TRANSITION:
+            task = await self.task_ledger.transition(
+                _require_arg(task_id, "task_id"),
+                _require_arg(status, "status"),
+                actor=_require_arg(actor, "actor"),
+            )
+            return f"task {task.id} transitioned to {task.status} by {actor}"
+        if action == _TASK_ACTION_SUPERSEDE:
+            successor_id = await self.task_ledger.supersede_task(
+                _require_arg(task_id, "task_id"),
+                subject=_require_arg(subject, "subject"),
+                description=_require_arg(description, "description"),
+                created_by=_require_arg(created_by, "created_by"),
+            )
+            return f"superseded task {task_id}; successor {successor_id} (status open)"
+        raise ValueError(
+            f"unknown task action {action!r}; valid actions are {list(_TASK_ACTIONS)}"
+        )
+
+    @staticmethod
+    def _render_task_rows(rows: list[Task]) -> str:
+        """Render task rows as a summarised digest (id/subject/status/owner/blockers).
+
+        Never a raw SurrealDB row: the opaque id has no ``task:`` record prefix and
+        no ``RecordID`` leaks — just the fleet-visible fields.
+        """
+        if not rows:
+            return _NO_TASKS_MATCHED
+        return "\n".join(
+            f"- [{task.status}] {task.subject} (id {task.id}, owner {task.owner}, "
+            f"blocked_by {task.blocked_by})"
+            for task in rows
+        )
 
     async def reindex(self, tier: str | None = None) -> IndexSummary:
         """Force a reconcile sweep (optionally one tier) and return the summary.
@@ -1509,6 +1815,10 @@ class AppContext:
         await self.manifest.close()
         await self.code_graph.close()
         await self.write_store.close()
+        # The P7 memory backend + task ledger each own a SurrealDB connection —
+        # close them too, or they outlive the server as leaked sockets.
+        await self.memory_backend.close()
+        await self.task_ledger.close()
 
 
 # The ``in_progress`` rebuild-status state value the read-tools' rebuilding-notice
@@ -1799,7 +2109,7 @@ async def build_app_context(
     from loremaster.index.surreal_manifest import SurrealManifest
     from loremaster.index.watcher import LiveWatcher
     from loremaster.memory.ledger import MemoryLedger
-    from loremaster.memory.store import MemoryStore
+    from loremaster.memory.local import LocalMemoryBackend
     from loremaster.read_file import ReadFileTool
     from loremaster.search import SearchPipeline
     from loremaster.source.local_directory import LocalDirectorySourceProvider
@@ -1807,6 +2117,7 @@ async def build_app_context(
     from loremaster.store.qdrant import QdrantStore
     from loremaster.store.surreal import SurrealStore
     from loremaster.symbols import SymbolTool
+    from loremaster.tasks import TaskLedger
 
     config = server.config
     slug = config.project.slug
@@ -1869,10 +2180,10 @@ async def build_app_context(
         await write_store.ensure_ready()
         write_stack_readied.append(write_store)
 
-        memory_store_handle = QdrantStore(client=qdrant_client, slug=f"{slug}{_MEMORY_SLUG_SUFFIX}")
         # FP-06 durable write-through: the memory ledger lives alongside the
-        # manifest on the state volume (``<slug>.memory.db``), so a Qdrant wipe of
-        # the memory collection is recoverable by re-embedding from the ledger.
+        # manifest on the state volume (``<slug>.memory.db``) — the SAME durable
+        # spine the retired Qdrant MemoryStore wrote, so the P7 backend replays the
+        # exact rows an older deploy left on disk (durable-spine continuity).
         memory_ledger = MemoryLedger(str(manifest_path.with_name(f"{slug}.memory.db")))
 
         # 2) Core services — the Surreal write stack (manifest + code graph live in
@@ -1920,6 +2231,40 @@ async def build_app_context(
         )
         await snapshot_stamper.ensure_ready()
         write_stack_readied.append(snapshot_stamper)
+
+        # P7 memory cutover: the SurrealDB-backed memory backend over the SAME
+        # per-project database + resolved credentials the write stack uses. Its
+        # drift oracle is the cheapest HONEST existence check — a point-fetch by
+        # record id on the chunk table of the live write store (``_make_chunk_exists``);
+        # its durable spine is the ledger above.
+        memory_backend = LocalMemoryBackend(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            dim=config.embedding.dim,
+            user=surreal_user,
+            password=surreal_password,
+            embedder=embedder,
+            chunk_exists=_make_chunk_exists(write_store),
+            ledger=memory_ledger,
+        )
+        await memory_backend.ensure_ready()
+        write_stack_readied.append(memory_backend)
+        # The durable, fleet-visible task ledger over the same unified database.
+        task_ledger = TaskLedger(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+        )
+        await task_ledger.ensure_ready()
+        write_stack_readied.append(task_ledger)
+        # Replay the durable ledger into the backend ONCE at boot (FP-06): the
+        # first boot re-embeds the seeded rows, a second over an in-sync store is a
+        # pure no-op (zero document embeds — the divergence guard). Inside the ready
+        # guard so a restore failure closes the whole write stack.
+        await memory_backend.restore_from_ledger()
     except BaseException:
         # Close what opened, newest-first, before re-raising the typed error —
         # so a mid-ready failure leaks no live write-stack connection.
@@ -1943,19 +2288,6 @@ async def build_app_context(
         indexer=indexer, manifest=manifest, store=write_store, config=config,
         code_graph=code_graph, snapshot_stamper=snapshot_stamper,
     )
-    memory_store = MemoryStore(
-        store=memory_store_handle, embedder=embedder, ledger=memory_ledger
-    )
-    await memory_store.ensure_ready()
-    # FP-06 backfill: capture any PRE-v0.3.6 memories (already in Qdrant but not
-    # in the ledger, written by an older build) into the durable ledger BEFORE
-    # restore, so they too are protected against a wipe. A no-op once the ledger
-    # already covers the store (the steady-state post-v0.3.6 boot).
-    await memory_store.backfill_ledger_from_store()
-    # Rebuild a wiped/short memory collection from the durable ledger at boot
-    # (a no-op when the collection and ledger already agree) — the headline
-    # FP-06 'a Qdrant wipe loses zero memories' guarantee on process restart.
-    await memory_store.restore_if_diverged()
     # The RUNTIME extension context over the LIVE services — the real embedder,
     # manifest, and the embedder's working ``count_tokens`` (NOT the composition
     # placeholder from LoreServer.extension_context, whose embedder/manifest are
@@ -1967,8 +2299,8 @@ async def build_app_context(
         # ctx.store is the UNIFIED SurrealStore (P6 close-out ctx.store flip):
         # the same ``write_store`` object the search pipeline reads, so an
         # extension hook that queries ctx.store sees the live corpus, not the
-        # legacy Qdrant handle the indexer stopped writing at P5. Memory stays
-        # on Qdrant until P7 — that is a SEPARATE handle (``memory_store``),
+        # legacy Qdrant handle the indexer stopped writing at P5. Memory now lives
+        # in the SurrealDB ``memory_backend`` (P7 cutover) — a SEPARATE object,
         # never reachable through ctx.store.
         store=write_store,
         embedder=embedder,
@@ -1989,7 +2321,7 @@ async def build_app_context(
         # §6 item 7: per-hit graph enrichment joins the SAME SurrealCodeGraph the
         # indexer/reconcile write into (already in scope above).
         code_graph=code_graph,
-        memory_store=memory_store,
+        memory_store=memory_backend,
         # §6 item 9: the reranker seam is config-gated. P6 ships no live reranker
         # client (seam-only), so pass ``None`` — even a configured ``search.
         # reranker`` stays inert until a future build injects the client here.
@@ -2025,9 +2357,7 @@ async def build_app_context(
     app_context = AppContext(
         server=server,
         embedder=embedder,
-        store=store,
         write_store=write_store,
-        memory_store_handle=memory_store_handle,
         manifest=manifest,
         code_graph=code_graph,
         snapshot_stamper=snapshot_stamper,
@@ -2037,7 +2367,8 @@ async def build_app_context(
         search_pipeline=search_pipeline,
         read_file_tool=read_file_tool,
         symbol_tool=symbol_tool,
-        memory_store=memory_store,
+        memory_backend=memory_backend,
+        task_ledger=task_ledger,
         qdrant_client=qdrant_client,
     )
 
@@ -2158,6 +2489,8 @@ async def build_app_context(
             app_context.reconcile_task.cancel()
         if app_context.watcher_started:
             await watcher.stop()
+        await memory_backend.close()
+        await task_ledger.close()
         await snapshot_stamper.close()
         await manifest.close()
         await code_graph.close()
@@ -2488,7 +2821,7 @@ class _ProcessLifespanGuard:
 
 
 def build_mcp_server(server: LoreServer) -> Any:
-    """Construct the FastMCP server: lifespan + the fourteen built-ins + extension tools.
+    """Construct the FastMCP server: lifespan + the sixteen built-ins + extension tools.
 
     The lifespan builds the live :class:`AppContext` from config (the real
     embedder via :func:`~loremaster.embedding.make_embedder_from_config`, a real
@@ -2621,10 +2954,16 @@ _SAVE_MEMORY_ANNOTATIONS = ToolAnnotations(
 _REINDEX_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False
 )
+# The fleet task tools mutate the durable ledger (claim / create / transition /
+# supersede), so they are NOT read-only; a claim is a compare-and-set and a
+# create mints a fresh row each call, so neither is idempotent.
+_TASK_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
+)
 
 
 def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
-    """Register the fourteen built-in MCP tools, then the extension-contributed tools.
+    """Register the sixteen built-in MCP tools, then the extension-contributed tools.
 
     Kept separate so the registration list is one readable place. Every built-in
     tool pulls the live :class:`AppContext` off the request's lifespan context and
@@ -2639,7 +2978,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     vs mutating). The consumer-facing ``instructions`` block (:data:`_INSTRUCTIONS`)
     carries the cross-tool model (freshness, citations, memory stance).
 
-    After the fourteen built-ins, every registered :class:`Extension`'s seam-3
+    After the sixteen built-ins, every registered :class:`Extension`'s seam-3
     :class:`ToolSpec`\\ s are registered as real FastMCP tools
     (:func:`_register_extension_tools`) — purely additive, with a name-collision
     guard so an extension tool can never silently shadow a built-in or another
@@ -2835,18 +3174,84 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ],
+        refs: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Optional chunk Key:s this note pins to (the stable bare-uuid5 keys "
+                    "from a search hit). Each folds into the note's deterministic id, so "
+                    "the same text pinned to a different chunk is a distinct memory. "
+                    "Omit if the note is not about a specific chunk."
+                )
+            ),
+        ] = None,
         metadata: Annotated[
             dict[str, Any] | None,
             Field(
                 description=(
-                    "Optional structured metadata stored alongside the note "
-                    "(e.g. {'topic': 'pricing'}). Pass a chunk Key: here to pin the "
-                    "note to a specific indexed chunk. Omit if none."
+                    "DEPRECATED free-form metadata (e.g. {'topic': 'pricing'}); it is "
+                    "flattened to flat key=value labels. Prefer 'labels' / 'refs'. Omit "
+                    "if none."
+                )
+            ),
+        ] = None,
+        kind: Annotated[
+            str,
+            Field(
+                description=(
+                    "The memory kind: one of fact / decision / gotcha / uncertainty / "
+                    "ongoing (default 'fact'). An unknown kind is rejected by name."
+                )
+            ),
+        ] = _DEFAULT_MEMORY_KIND,
+        trust: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional trust level of the note's provenance: 'authoritative' (a "
+                    "spec/doc) or 'experiential' (an operator note, the default). Omit "
+                    "to leave the backend default."
+                )
+            ),
+        ] = None,
+        importance: Annotated[
+            float | None,
+            Field(
+                description=(
+                    "Optional importance override, a fraction in [0, 1]. Omit to take "
+                    "the by-kind default. An out-of-range value is rejected by name."
+                )
+            ),
+        ] = None,
+        supersedes: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional id of an existing memory this note replaces; the old note "
+                    "is kept for audit, closed, and wired forward. Omit for a plain save."
+                )
+            ),
+        ] = None,
+        labels: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Optional flat labels stored alongside the note (e.g. ['topic=fees']) "
+                    "for later label-filtered recall. Omit if none."
                 )
             ),
         ] = None,
     ) -> str:
-        return await _app_context(context).save_memory(text, metadata=metadata)
+        return await _app_context(context).save_memory(
+            text,
+            refs=refs,
+            metadata=metadata,
+            kind=kind,
+            trust=trust,
+            importance=importance,
+            supersedes=supersedes,
+            labels=labels,
+        )
 
     @mcp.tool(
         name="lore_recall_memory",
@@ -2882,8 +3287,161 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 ),
             ),
         ] = _DEFAULT_RECALL_K,
-    ) -> list[RecalledMemory]:
+    ) -> str:
         return await _app_context(context).recall_memory(query, k)
+
+    @mcp.tool(
+        name="lore_claim_task",
+        description=(
+            "Atomically CLAIM a task for yourself from the project's shared, durable "
+            "fleet task ledger — the coordination primitive that lets many agents work "
+            "the same backlog without colliding. Exactly one claimant ever wins an open, "
+            "unblocked task: a win names you as owner; a loss names the agent already "
+            "holding it and changes nothing. Use it to take ownership of a unit of work "
+            "before starting it. Create / query / transition tasks with lore_tasks."
+        ),
+        annotations=_TASK_TOOL_ANNOTATIONS,
+    )
+    async def claim_task(
+        context: Context[Any, AppContext, Any],
+        task_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "The opaque id of the task to claim (as returned by lore_tasks "
+                    "create/query). Must be an open, unblocked, unowned task to win."
+                )
+            ),
+        ],
+        owner: Annotated[
+            str,
+            Field(
+                description=(
+                    "Your agent/session identity to record as the task's owner on a "
+                    "winning claim (e.g. 'agent-alpha')."
+                )
+            ),
+        ],
+    ) -> str:
+        return await _app_context(context).claim_task(task_id, owner)
+
+    @mcp.tool(
+        name="lore_tasks",
+        description=(
+            "Manage the project's shared, durable fleet task ledger: dispatch on "
+            "'action' to CREATE a task, QUERY the ledger (by status / owner / blocked), "
+            "TRANSITION a task through its legal state machine, or SUPERSEDE (reframe) a "
+            "task. Returns summarised rows, never a raw store dump. This is the "
+            "create/read/change side of fleet coordination; to atomically take ownership "
+            "of a task, use lore_claim_task."
+        ),
+        annotations=_TASK_TOOL_ANNOTATIONS,
+    )
+    async def tasks(
+        context: Context[Any, AppContext, Any],
+        action: Annotated[
+            str,
+            Field(
+                description=(
+                    "The operation: 'create' (mint an open task), 'query' (list tasks), "
+                    "'transition' (drive a legal status edge), or 'supersede' (reframe a "
+                    "task, minting a successor)."
+                )
+            ),
+        ],
+        task_id: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The target task id — required for 'transition' and 'supersede'. "
+                    "Omit for 'create' / 'query'."
+                )
+            ),
+        ] = None,
+        subject: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The task's short title — required for 'create' and 'supersede'."
+                )
+            ),
+        ] = None,
+        description: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The task's longer free-text description — required for 'create' and "
+                    "'supersede'."
+                )
+            ),
+        ] = None,
+        created_by: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The identity creating the task, recorded in provenance — required "
+                    "for 'create' and 'supersede'."
+                )
+            ),
+        ] = None,
+        actor: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The identity performing a 'transition', recorded in provenance — "
+                    "required for 'transition'."
+                )
+            ),
+        ] = None,
+        status: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'transition', the target status to move the task to. For "
+                    "'query', an optional exact-status filter. Omit otherwise."
+                )
+            ),
+        ] = None,
+        owner: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'query', an optional filter to tasks currently owned by this "
+                    "identity. Omit otherwise."
+                )
+            ),
+        ] = None,
+        blocked: Annotated[
+            bool | None,
+            Field(
+                description=(
+                    "For 'query', an optional filter to genuinely blocked (True) or "
+                    "unblocked (False) tasks. Omit for no dependency filter."
+                )
+            ),
+        ] = None,
+        blocked_by: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "For 'create', optional ids of tasks the new task depends on (it "
+                    "cannot be claimed until every blocker is done/wontfix)."
+                )
+            ),
+        ] = None,
+    ) -> str:
+        return await _app_context(context).tasks(
+            action=action,
+            task_id=task_id,
+            subject=subject,
+            description=description,
+            created_by=created_by,
+            actor=actor,
+            status=status,
+            owner=owner,
+            blocked=blocked,
+            blocked_by=blocked_by,
+        )
 
     @mcp.tool(
         name="lore_reindex",
@@ -3256,7 +3814,7 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
     would merely warn and keep the first registration, a silent shadow).
 
     Args:
-        mcp: The FastMCP server (the fourteen built-ins are already registered).
+        mcp: The FastMCP server (the sixteen built-ins are already registered).
         server: The composed :class:`LoreServer` whose extensions contribute tools.
 
     Raises:
@@ -3274,7 +3832,7 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
             raise ValueError(
                 f"extension tool {spec.name!r} collides with an already-registered tool; "
                 f"refusing to shadow it on the MCP surface (rename the extension tool — a "
-                f"tool name must be unique across the fourteen built-ins and every extension)."
+                f"tool name must be unique across the sixteen built-ins and every extension)."
             )
         wrapper = _extension_tool_wrapper(spec)
         mcp.add_tool(wrapper, name=spec.name, description=spec.description)
