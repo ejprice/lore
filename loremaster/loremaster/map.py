@@ -58,14 +58,14 @@ from pydantic import BaseModel, ConfigDict
 from loremaster.graph import KIND_MODULE, CodeGraph
 
 # --------------------------------------------------------------------------- #
-# Budget bounds (contract: floor 200, default 1500, cap 6000).
+# Budget bounds (contract: floor 200, default 2500, cap 6000).
 # --------------------------------------------------------------------------- #
 
 # ``budget`` clamps to this inclusive range rather than raising — the SAME
 # tool-surface convention ``ImpactEngine`` uses for ``depth``: a caller-supplied
 # out-of-range value is a best-effort request, not a hard error.
 _BUDGET_FLOOR = 200
-_BUDGET_DEFAULT = 1500
+_BUDGET_DEFAULT = 2500  # re-denominated 2026-07-04 under 1.78 calibration, operator-approved
 _BUDGET_CAP = 6000
 
 # --------------------------------------------------------------------------- #

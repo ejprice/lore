@@ -15,8 +15,8 @@ transcription of the design below, NOT re-design):
   chunker's own token-budget convention) and ``rebuild_notice`` is an async
   callable returning ``None`` (settled) or a human-readable notice string (a
   rebuild is in progress), exactly as ``ImpactEngine`` defines it.
-* Query: ``await engine.map(budget=1500, focus=None) -> MapResult``.
-  ``budget`` clamps to ``[200, 6000]`` (floor 200, default 1500, cap 6000) —
+* Query: ``await engine.map(budget=2500, focus=None) -> MapResult``.
+  ``budget`` clamps to ``[200, 6000]`` (floor 200, default 2500, cap 6000) —
   clamp, never raise, the same tool-surface convention ``ImpactEngine`` uses
   for ``depth``.
 * ``MapResult`` (pydantic, ``extra="forbid"``): ``entries`` (list of
@@ -106,9 +106,9 @@ def _reset_astroid_resolution_state() -> Iterator[None]:
 # Contract constants THIS module DEFINES (reported for team-lead/audit review).
 # --------------------------------------------------------------------------- #
 
-# Budget clamps (GIVEN: floor 200, default 1500, cap 6000).
+# Budget clamps (GIVEN: floor 200, default 2500, cap 6000).
 _BUDGET_FLOOR = 200
-_BUDGET_DEFAULT = 1500
+_BUDGET_DEFAULT = 2500  # re-denominated 2026-07-04 under 1.78 calibration, operator-approved
 _BUDGET_CAP = 6000
 
 # The explicit elision-trailer fragment rendered when ``budget`` squeezes

@@ -973,7 +973,7 @@ _INSTRUCTIONS = (
     "per-module rollup, plus a live / dead (heuristic) verdict carrying an explicit "
     "astroid-bounds caveat. A 'dead' verdict is a LEAD to investigate, never a deletion "
     "order. Reach for this before removing or refactoring something lore_dead_code flagged.\n"
-    "- lore_map(budget=1500, focus=None): a PageRank-ranked, token-budgeted map of which "
+    "- lore_map(budget=2500, focus=None): a PageRank-ranked, token-budgeted map of which "
     "modules matter most in this project (each with its rendered symbol names), optionally "
     "re-centered on one symbol's own neighbourhood via focus. Reach for this FIRST when you "
     "don't yet know where to look.\n"
