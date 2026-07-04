@@ -20,6 +20,36 @@ consumed-by-<phase or commit> / superseded).
 
 ## Open
 
+- **2026-07-04 · builder-verify-2 (P8b) · (whole surface) · distrust_unverified** —
+  the wave-A `VerifyResult`/`verify()` code (uncommitted over c0132d0) shipped with
+  TWO real mypy `str`→`Literal["confirmed","mismatch","not_found"]` `[arg-type]`
+  errors at its own construction sites (`VerifyResult(status=_STATUS_NOT_FOUND)` and
+  `status=status`) — the status constants were plain `= "…"` assignments (inferred
+  `str`, not `Literal`), and the ternary-assigned `status` local was widened to `str`.
+  The cold audit (verify-1) ran pytest but NOT `mypy`, so a green suite masked a
+  type-gate failure. Fix rode along with this defect fix (`Final` on the three
+  status constants + a `Literal[...]` annotation on the local; behaviour-identical).
+  **Signal:** the per-builder gate bundle must include `mypy` on the touched module,
+  not just pytest+ruff — a green targeted suite is not proof the type gate holds.
+  Not a lore-tool gap; a process/quality-gate gap. **Feeds:** P8d gate checklist.
+
+- **2026-07-04 · builder-diff-1 (P8b) · lore_get_symbol · wrong_result/affordance_gap** —
+  `lore_get_symbol('loremaster.index.surreal_manifest.FileRow')` returned a clean
+  not-found while building the diff engine — CORRECT (FileRow is DEFINED in
+  `loremaster/index/manifest.py`, only USED by surreal_manifest.py), so my
+  using-module qualifier legitimately resolved nothing. The gap: the not-found
+  gave no hint that the BARE name `FileRow` matches in a sibling module, so I
+  had to fall back to `lore_search_code` to locate the real definition (which
+  recovered instantly). Net: lore was otherwise SUFFICIENT for the whole build
+  (no grep fallback anywhere — get_symbol/search_code/read_file/tests_for
+  covered every archetype: snapshots.py, impact.py, _txn.py, surreal_schema
+  DDL, store.scroll, manifest.all_files). Workaround: bare-name search_code.
+  **Feeds:** P8d teaching-miss family — a get_symbol miss on a module-qualified
+  name should, when the bare identity matches elsewhere, name the sibling
+  module ("FileRow is defined in loremaster.index.manifest — retry there or use
+  the bare name") instead of a bare not-found. Same teaching-miss family as the
+  hygiene-7 get_symbol entry below, different root cause (wrong module, not lag).
+
 - **2026-07-04 · hygiene-7b (P8a wave 2b) · lore_tests_for · zero_hits/oversized** —
   asked for the covering tests of graph_surreal.py / index/surreal_manifest.py /
   index/snapshots.py while adding posture seam tests: returned empty for some
@@ -269,6 +299,52 @@ consumed-by-<phase or commit> / superseded).
   P8 — widen tests_for to also credit a helper's tests via its containing
   module/class co-location or an indirect call chain, not just a direct
   reference edge to the exact symbol.
+
+- **2026-07-04 · builder-verify-1 · lore_search_code · affordance_gap** —
+  `lore_search_code("get_symbol tool registration ToolSpec render output in
+  server", filters={"path": "loremaster/server.py"})` returned ZERO code chunks
+  and surfaced two unrelated `[MEMORY]` hits (SMOKE-TEST probes) instead. Root
+  cause: the stored `file_path` is the tier-relative `loremaster/loremaster/
+  server.py` (repeated package dir), so a `path` filter of `loremaster/server.py`
+  matched nothing — and rather than signalling "no code matched this path
+  filter", the memory-boost path filled the result set with off-topic memories,
+  reading as "lore found nothing useful here." Fell back to grep for the
+  get_symbol registration idiom in server.py (used successfully). **Feeds:** P8 —
+  a `path`/`file_path` filter that matches no chunk should say so (empty-with-
+  reason, or suffix-tolerant path matching mirroring get_symbol's own common-tail
+  rule), and memory hits should never silently stand in for a zero-code-match
+  filtered search.
+
+- **2026-07-04 · builder-findings-1 · store/_txn conflict-retry budget (finding
+  ledger #2) · capability_gap** — the finding ledger's race-safe consecutive
+  `number` mint funnels EVERY concurrent reporter through ONE `finding_counter`
+  row (gapless numbering demands a single sequence point), so N-way contention on
+  that row drains `execute_transaction`'s bounded conflict-retry
+  (`_MAX_TXN_CONFLICT_ATTEMPTS=5`, linear 0.01s backoff) — a budget tuned for the
+  task ledger's 2-way claim/transition races. Measured LIVE (ws://127.0.0.1:18000):
+  43% of trials txn-exhausted at N=8 concurrent reports, 1/30 at N=6. Workaround:
+  a hand-rolled bounded app-level retry in `FindingLedger._apply_mint` (12 attempts
+  + per-reporter `finding_id`-derived jitter to break lockstep) → 40/40 clean at
+  N=8/12/16. **Feeds:** P8c drift auto-file (which may BURST-file findings) and any
+  future single-hot-row minter — either make `_txn`'s retry budget/backoff a
+  per-`execute_transaction` argument, or extract a shared "hot-counter mint" helper,
+  so the next high-contention writer doesn't re-hand-roll this.
+
+- **2026-07-04 · builder-diff-2 · loremaster.search._sanitise_line (render
+  hostile-char launder) · capability_gap** — F4 (hostile identity/path forges
+  render sections) needed the SAME hostile-char sanitiser `search.py` already
+  owns (`_sanitise_line`, the ZWNJ/ZWJ/WORD-JOINER + bidi + newline class), but it
+  is a MODULE-PRIVATE helper of `search.py`. `diff.py`'s `render()` had to reach
+  across module boundaries with a private import (`from loremaster.search import
+  _sanitise_line`) — accepted THIS wave (re-implementing would fork the hostile-char
+  regex and let the two drift, which is exactly the bug), but it is a shared-seam
+  smell. AND the exposure is tree-wide: `impact.py`'s renderer interpolates
+  store-derived strings into its output the SAME unsanitised way (the render
+  archetype the audit flagged), so it carries the identical forgeability. **Feeds:**
+  P8d — promote `_sanitise_line` (+ its `_CONTROL_CHAR_PATTERN` char class) to a
+  PUBLIC shared render seam (e.g. `loremaster/render.py` or `search`'s public
+  surface), and SWEEP every store-derived render boundary through it — starting
+  with `impact.py` — so no renderer re-hand-rolls or skips the launder.
 
 ## Consumed
   *PARTIAL 9171021 (2026-07-04): read-side kind=/labels= recall filters SHIPPED; save-side digest guidance/auto-split remains open → P8.*
