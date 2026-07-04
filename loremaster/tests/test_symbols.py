@@ -89,10 +89,21 @@ from _surreal_fakes import FakeSurrealStore, fake_surreal_trio
 from _surreal_harness import PRODUCTION_DIM, SLUG, TIER_A, chunk_record, unit_vector
 from loremaster.index.records import Record, chunk_to_record, sha512_hex
 from loremaster.store.surreal import SurrealConnectionError, SurrealStore
-from loremaster.symbols import _SCROLL_LIMIT, GetSymbolError, ResolvedSymbol, SymbolTool
+from loremaster.symbols import (
+    _SCROLL_LIMIT,
+    GetSymbolError,
+    ResolvedSymbol,
+    SymbolResolver,
+    SymbolTool,
+    VerifiedSummary,
+    VerifyMismatch,
+    VerifyResult,
+    VerifyTool,
+)
 from lorescribe.models import Chunk, ChunkContext
 from lorescribe.python_ast import PythonAstChunker
 from loresigil.testing import FakeEmbedder
+from pydantic import ValidationError
 
 _FILE_PATH = "pkg/calc.py"
 
@@ -667,3 +678,555 @@ class TestStoreScrollPrimitive:
                 filters={"identity": "imports", "chunk_type": symbol_type}, limit=10
             )
             assert rows == [], f"imports must not match chunk_type {symbol_type!r}"
+
+
+# A REAL source whose free function carries a MULTI-LINE signature — the header
+# extraction must keep the whole signature (every physical line up to and
+# including the one ending with ``:``) and stop before the body.
+_MULTILINE_SOURCE = '''"""Multi-line signature module."""
+
+
+def wide_signature(
+    first_operand,
+    second_operand,
+):
+    """A function whose signature spans several physical lines."""
+    return first_operand + second_operand
+'''
+_MULTILINE_FILE_PATH = "pkg/wide.py"
+_EXPECTED_MULTILINE_FUNCTION = "wide_signature"
+
+
+@pytest_asyncio.fixture()
+async def verify_tool(store: SurrealStore) -> VerifyTool:
+    """A :class:`VerifyTool` over a store pre-loaded with the real symbols of ``_SOURCE``."""
+    await _upsert_source(store, _SOURCE, _FILE_PATH)
+    return VerifyTool(store=store)
+
+
+class TestVerifyConfirmed:
+    """A resolvable symbol whose supplied expectations all hold is ``confirmed``.
+
+    The summary echoes the stored truth (the on-disk anchor + the definition
+    HEADER, never the full body) and no mismatches are reported.
+    """
+
+    async def test_bare_existence_is_confirmed_with_a_summary(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        # No expectations supplied: verify answers the pure "does this exist?"
+        # question — a resolvable symbol is confirmed and its stored truth echoed.
+        result: VerifyResult = await verify_tool.verify(_EXPECTED_METHOD)
+        assert result.status == "confirmed"
+        assert result.mismatches == []
+        assert result.summary is not None
+        assert result.summary.qualified_name == _EXPECTED_METHOD
+        assert result.summary.chunk_type == "method"
+        assert result.summary.tier == TIER_A
+        assert result.summary.file_path == _FILE_PATH
+
+    async def test_summary_carries_the_header_not_the_full_body(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        # The summary is a HEADER, never a full dump: the signature line is present
+        # but the method body (``return a + b``) is not.
+        result = await verify_tool.verify(_EXPECTED_METHOD)
+        assert result.summary is not None
+        assert "def add(self, a, b):" in result.summary.header
+        assert "return a + b" not in result.summary.header
+
+    async def test_correct_file_path_claim_is_confirmed(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        result = await verify_tool.verify(_EXPECTED_METHOD, expected_file_path=_FILE_PATH)
+        assert result.status == "confirmed"
+        assert result.mismatches == []
+
+    async def test_whole_segment_suffix_file_path_claim_is_confirmed(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        # ``calc.py`` is a whole-path-segment suffix of ``pkg/calc.py`` — a match.
+        result = await verify_tool.verify(_EXPECTED_METHOD, expected_file_path="calc.py")
+        assert result.status == "confirmed"
+
+    async def test_over_qualified_file_path_claim_is_confirmed_either_direction(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        # The claim is LONGER than the stored path but shares its whole tail —
+        # suffix-matching is symmetric, so this confirms too.
+        result = await verify_tool.verify(
+            _EXPECTED_METHOD, expected_file_path="src/pkg/calc.py"
+        )
+        assert result.status == "confirmed"
+
+    async def test_correct_signature_fragment_claim_is_confirmed(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        result = await verify_tool.verify(
+            _EXPECTED_METHOD, expected_signature_fragment="def add(self, a, b)"
+        )
+        assert result.status == "confirmed"
+
+    async def test_both_expectations_holding_is_confirmed(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        result = await verify_tool.verify(
+            _EXPECTED_METHOD,
+            expected_file_path="pkg/calc.py",
+            expected_signature_fragment="def add",
+        )
+        assert result.status == "confirmed"
+        assert result.mismatches == []
+
+
+class TestVerifyNotFound:
+    """An unresolvable name is a not_found RESULT — never an exception, never a wrong hit."""
+
+    async def test_unknown_symbol_is_a_not_found_result(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        result = await verify_tool.verify("Calculator.nonexistent_method")
+        assert result.status == "not_found"
+        assert result.summary is None
+        assert result.mismatches == []
+
+    async def test_not_found_never_raises_get_symbol_error(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        # The contrast with get_symbol: verify's whole job is answering
+        # "does this exist?" — a miss must be a RESULT, not a raised error.
+        result = await verify_tool.verify("totally.absent.Symbol")
+        assert result.status == "not_found"
+
+    async def test_imports_block_is_not_found(self, verify_tool: VerifyTool) -> None:
+        # The imports chunk is not a symbol chunk type, so it never resolves.
+        result = await verify_tool.verify("imports")
+        assert result.status == "not_found"
+
+    async def test_expectations_on_a_missing_symbol_still_not_found(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        # Expectations are moot when nothing resolves: not_found wins, and no
+        # mismatch is fabricated against a symbol that does not exist.
+        result = await verify_tool.verify(
+            "Calculator.ghost",
+            expected_file_path="pkg/calc.py",
+            expected_signature_fragment="def ghost",
+        )
+        assert result.status == "not_found"
+        assert result.mismatches == []
+        assert result.summary is None
+
+
+class TestVerifyFilePathMismatch:
+    """A resolvable symbol whose claimed path does not whole-segment-suffix-match
+    the stored path is a ``mismatch`` naming the ACTUAL path."""
+
+    async def test_wrong_file_path_is_a_mismatch_naming_the_actual(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        result = await verify_tool.verify(
+            _EXPECTED_METHOD, expected_file_path="other/place.py"
+        )
+        assert result.status == "mismatch"
+        assert result.summary is not None
+        [mismatch] = result.mismatches
+        assert mismatch.claim == "file_path"
+        assert mismatch.claimed == "other/place.py"
+        assert mismatch.actual == _FILE_PATH
+
+    async def test_partial_segment_suffix_is_a_mismatch(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        # ``alc.py`` is a partial (mid-segment) suffix of ``calc.py`` — NOT a
+        # whole-segment match, so it must be reported as a mismatch.
+        result = await verify_tool.verify(_EXPECTED_METHOD, expected_file_path="alc.py")
+        assert result.status == "mismatch"
+        [mismatch] = result.mismatches
+        assert mismatch.claim == "file_path"
+        assert mismatch.actual == _FILE_PATH
+
+    async def test_wrong_leading_segment_is_a_mismatch(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        # Same filename, wrong directory segment: the common tail differs.
+        result = await verify_tool.verify(
+            _EXPECTED_METHOD, expected_file_path="other/calc.py"
+        )
+        assert result.status == "mismatch"
+
+
+class TestVerifySignatureMismatch:
+    """A signature fragment absent from the definition header is a ``mismatch``
+    showing the ACTUAL header."""
+
+    async def test_absent_fragment_is_a_mismatch_showing_the_actual_header(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        result = await verify_tool.verify(
+            _EXPECTED_METHOD, expected_signature_fragment="def add(self, a, b, c)"
+        )
+        assert result.status == "mismatch"
+        [mismatch] = result.mismatches
+        assert mismatch.claim == "signature"
+        assert mismatch.claimed == "def add(self, a, b, c)"
+        assert "def add(self, a, b):" in mismatch.actual
+
+    async def test_body_only_fragment_is_a_mismatch(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        # ``return a + b`` is in the BODY, not the header — the substring test is
+        # against the header only, so a body-only fragment is a mismatch.
+        result = await verify_tool.verify(
+            _EXPECTED_METHOD, expected_signature_fragment="return a + b"
+        )
+        assert result.status == "mismatch"
+        [mismatch] = result.mismatches
+        assert mismatch.claim == "signature"
+        assert "return a + b" not in mismatch.actual
+
+    async def test_both_claims_wrong_reports_both_mismatches(
+        self, verify_tool: VerifyTool
+    ) -> None:
+        result = await verify_tool.verify(
+            _EXPECTED_METHOD,
+            expected_file_path="nope/wrong.py",
+            expected_signature_fragment="def subtract",
+        )
+        assert result.status == "mismatch"
+        claims = {mismatch.claim for mismatch in result.mismatches}
+        assert claims == {"file_path", "signature"}
+
+
+class TestVerifyMultiLineHeaderExtraction:
+    """A multi-line signature is kept WHOLE in the header (every physical line up
+    to and including the one ending in ``:``), and the body is excluded."""
+
+    @pytest_asyncio.fixture()
+    async def multiline_tool(self, store: SurrealStore) -> VerifyTool:
+        await _upsert_source(store, _MULTILINE_SOURCE, _MULTILINE_FILE_PATH)
+        return VerifyTool(store=store)
+
+    async def test_multi_line_signature_fragment_is_confirmed(
+        self, multiline_tool: VerifyTool
+    ) -> None:
+        # A fragment from the SECOND physical line of the signature must be found
+        # — proving the header keeps the whole multi-line signature, not line one.
+        result = await multiline_tool.verify(
+            _EXPECTED_MULTILINE_FUNCTION,
+            expected_signature_fragment="second_operand",
+        )
+        assert result.status == "confirmed"
+
+    async def test_header_stops_at_the_signature_and_excludes_the_body(
+        self, multiline_tool: VerifyTool
+    ) -> None:
+        result = await multiline_tool.verify(_EXPECTED_MULTILINE_FUNCTION)
+        assert result.summary is not None
+        header = result.summary.header
+        assert "def wide_signature(" in header
+        assert "first_operand" in header
+        assert "second_operand" in header
+        # The body line is past the signature-closing ``:`` — excluded.
+        assert "return first_operand + second_operand" not in header
+
+
+# A method whose signature line carries a TRAILING COMMENT after the ``:`` — the
+# shape that defeats a ``line.rstrip().endswith(":")`` text scan: ``rstrip`` strips
+# whitespace, not the comment, so the ``:`` is no longer the last character and the
+# scan runs past the signature into the body (audit finding #1, false CONFIRM).
+_TRAILING_COMMENT_SOURCE = '''"""Trailing comment module."""
+
+
+class Calc:
+    """A calculator."""
+
+    def add(self, a, b):  # noqa: D401  add two numbers
+        """Return the sum."""
+        return a + b + 9999
+'''
+_TRAILING_COMMENT_FILE_PATH = "pkg/trailing.py"
+
+# A multi-line signature whose FIRST physical line ends in ``:`` inside a trailing
+# comment — the dual shape: a text scan stops at line 1 and drops the real params on
+# the later lines, truncating the header (audit finding #2, false MISMATCH).
+_COMMENT_COLON_SOURCE = '''"""Comment-colon module."""
+
+
+def tricky(  # configure the thing:
+    first_operand,
+    second_operand,
+):
+    """Body."""
+    return first_operand
+'''
+_COMMENT_COLON_FILE_PATH = "pkg/tricky.py"
+
+# A one-line def whose body shares the signature's physical line — there is nothing
+# strictly before the body, so the header must still carry the def line itself.
+_ONE_LINER_SOURCE = '''"""One-liner module."""
+
+
+def one_liner(x): return x + 1
+'''
+_ONE_LINER_FILE_PATH = "pkg/one_liner.py"
+
+# A decorated def — the decorators PRECEDE the def line and ARE part of the returned
+# header by design (documented behaviour, pinned here).
+_DECORATED_SOURCE = '''"""Decorated module."""
+
+import functools
+
+
+@functools.cache
+def decorated(value):
+    """Body."""
+    return value
+'''
+_DECORATED_FILE_PATH = "pkg/decorated.py"
+
+
+class TestVerifyHeaderIsCommentAndStringSafe:
+    """The definition header is derived from the parsed AST (the body boundary),
+    not a ``:``-terminator text scan — so a trailing comment after the signature
+    ``:`` (or a ``:`` inside a comment on the opening line) can neither leak the
+    body into the header (a false CONFIRM) nor truncate the signature (a false
+    MISMATCH)."""
+
+    @pytest_asyncio.fixture()
+    async def trailing_tool(self, store: SurrealStore) -> VerifyTool:
+        await _upsert_source(store, _TRAILING_COMMENT_SOURCE, _TRAILING_COMMENT_FILE_PATH)
+        return VerifyTool(store=store)
+
+    async def test_trailing_comment_after_colon_does_not_leak_body_into_header(
+        self, trailing_tool: VerifyTool
+    ) -> None:
+        # Finding #1: ``def add(...):  # noqa …`` — the header must stop at the
+        # signature line; the docstring and body must NOT ride along in it.
+        result = await trailing_tool.verify("Calc.add")
+        assert result.summary is not None
+        header = result.summary.header
+        assert "def add(self, a, b):" in header
+        assert "# noqa" in header  # the trailing comment rides on the signature line
+        assert "Return the sum." not in header  # docstring excluded
+        assert "return a + b + 9999" not in header  # body excluded
+
+    async def test_trailing_comment_body_fragment_is_a_mismatch_not_a_false_confirm(
+        self, trailing_tool: VerifyTool
+    ) -> None:
+        # The worst-direction failure an anti-hallucination verb can make: a BODY
+        # string must NEVER be CONFIRMED as the signature just because a trailing
+        # comment defeated the ``:`` terminator.
+        result = await trailing_tool.verify(
+            "Calc.add", expected_signature_fragment="return a + b + 9999"
+        )
+        assert result.status == "mismatch"
+        [mismatch] = result.mismatches
+        assert mismatch.claim == "signature"
+        assert "return a + b + 9999" not in mismatch.actual
+
+    async def test_trailing_comment_docstring_fragment_is_a_mismatch(
+        self, trailing_tool: VerifyTool
+    ) -> None:
+        result = await trailing_tool.verify(
+            "Calc.add", expected_signature_fragment="Return the sum."
+        )
+        assert result.status == "mismatch"
+
+    @pytest_asyncio.fixture()
+    async def comment_colon_tool(self, store: SurrealStore) -> VerifyTool:
+        await _upsert_source(store, _COMMENT_COLON_SOURCE, _COMMENT_COLON_FILE_PATH)
+        return VerifyTool(store=store)
+
+    async def test_colon_in_opening_comment_keeps_later_params_confirmable(
+        self, comment_colon_tool: VerifyTool
+    ) -> None:
+        # Finding #2: the opening line ends in ``:`` inside a comment; a real param
+        # on a LATER physical line must still be a CONFIRMED part of the signature.
+        result = await comment_colon_tool.verify(
+            "tricky", expected_signature_fragment="second_operand"
+        )
+        assert result.status == "confirmed"
+
+    async def test_colon_in_opening_comment_header_keeps_whole_signature(
+        self, comment_colon_tool: VerifyTool
+    ) -> None:
+        result = await comment_colon_tool.verify("tricky")
+        assert result.summary is not None
+        header = result.summary.header
+        assert "def tricky(" in header
+        assert "first_operand" in header
+        assert "second_operand" in header
+        assert "return first_operand" not in header  # body excluded
+
+    @pytest_asyncio.fixture()
+    async def one_liner_tool(self, store: SurrealStore) -> VerifyTool:
+        await _upsert_source(store, _ONE_LINER_SOURCE, _ONE_LINER_FILE_PATH)
+        return VerifyTool(store=store)
+
+    async def test_one_line_def_header_still_includes_the_def_line(
+        self, one_liner_tool: VerifyTool
+    ) -> None:
+        # The body shares the signature's physical line — the header must still
+        # carry the def line rather than collapsing to empty.
+        result = await one_liner_tool.verify(
+            "one_liner", expected_signature_fragment="def one_liner(x)"
+        )
+        assert result.status == "confirmed"
+        assert result.summary is not None
+        assert "def one_liner(x)" in result.summary.header
+
+    @pytest_asyncio.fixture()
+    async def decorated_tool(self, store: SurrealStore) -> VerifyTool:
+        await _upsert_source(store, _DECORATED_SOURCE, _DECORATED_FILE_PATH)
+        return VerifyTool(store=store)
+
+    async def test_decorators_are_part_of_the_header(
+        self, decorated_tool: VerifyTool
+    ) -> None:
+        # Documented behaviour: decorators precede the def and ARE returned in the
+        # header (they are strictly before the body).
+        result = await decorated_tool.verify("decorated")
+        assert result.summary is not None
+        header = result.summary.header
+        assert "@functools.cache" in header
+        assert "def decorated(value):" in header
+        assert "return value" not in header  # body excluded
+
+
+class TestVerifyResultInvariantIsStructural:
+    """The ``status`` ↔ ``summary`` ↔ ``mismatches`` invariant is enforced by the
+    :class:`VerifyResult` model itself, not only by the ``verify`` constructor path
+    (audit polish P1): ``summary`` is ``None`` EXACTLY on ``not_found`` and
+    ``mismatches`` is non-empty EXACTLY on ``mismatch``."""
+
+    @staticmethod
+    def _summary() -> VerifiedSummary:
+        return VerifiedSummary(
+            qualified_name="X",
+            chunk_type="class",
+            tier="custom",
+            file_path="pkg/x.py",
+            line_start=1,
+            line_end=2,
+            header="class X:",
+        )
+
+    @staticmethod
+    def _mismatch() -> VerifyMismatch:
+        return VerifyMismatch(claim="signature", claimed="a", actual="b")
+
+    def test_confirmed_carrying_mismatches_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            VerifyResult(
+                status="confirmed", summary=self._summary(), mismatches=[self._mismatch()]
+            )
+
+    def test_mismatch_without_any_mismatch_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            VerifyResult(status="mismatch", summary=self._summary(), mismatches=[])
+
+    def test_not_found_carrying_a_summary_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            VerifyResult(status="not_found", summary=self._summary())
+
+    def test_confirmed_without_a_summary_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            VerifyResult(status="confirmed", summary=None)
+
+    def test_valid_confirmed_is_accepted(self) -> None:
+        result = VerifyResult(status="confirmed", summary=self._summary())
+        assert result.status == "confirmed"
+
+    def test_valid_mismatch_is_accepted(self) -> None:
+        result = VerifyResult(
+            status="mismatch", summary=self._summary(), mismatches=[self._mismatch()]
+        )
+        assert result.status == "mismatch"
+
+    def test_valid_not_found_is_accepted(self) -> None:
+        result = VerifyResult(status="not_found")
+        assert result.summary is None
+
+
+class TestVerifyStoreDownIsNeverSilentNotFound:
+    """A downed store must propagate loudly — an outage must NEVER masquerade as
+    not_found. Conflating them would make an agent treat a transient outage as
+    proof a real symbol does not exist."""
+
+    async def test_armed_connection_failure_raises_for_a_symbol_that_exists(
+        self, verify_tool: VerifyTool, fake_store: FakeSurrealStore
+    ) -> None:
+        fake_store.arm_connection_failure(times=1)
+        with pytest.raises(SurrealConnectionError):
+            await verify_tool.verify(_EXPECTED_METHOD)
+
+    async def test_recovers_after_the_armed_trip_is_consumed(
+        self, verify_tool: VerifyTool, fake_store: FakeSurrealStore
+    ) -> None:
+        # Degradation -> recovery: a single-trip arm must not wedge the tool.
+        fake_store.arm_connection_failure(times=1)
+        with pytest.raises(SurrealConnectionError):
+            await verify_tool.verify(_EXPECTED_METHOD)
+
+        result = await verify_tool.verify(_EXPECTED_METHOD)
+
+        assert result.status == "confirmed"
+
+
+class TestVerifySharesResolverWithGetSymbol:
+    """``verify`` and ``get_symbol`` ride the SAME resolver, so a module-qualified
+    collision resolves to the SAME row through both tools."""
+
+    _FILE_A = "loremaster/loremaster/config.py"
+    _SOURCE_A = '''"""loremaster config module."""
+
+
+class EmbeddingConfig:
+    """The loremaster embedding config."""
+
+    MARKER_A = "loremaster-config-marker"
+'''
+
+    _FILE_B = "loresigil/loresigil/factory.py"
+    _SOURCE_B = '''"""loresigil factory module."""
+
+
+class EmbeddingConfig:
+    """The loresigil embedding config."""
+
+    MARKER_B = "loresigil-factory-marker"
+'''
+
+    @pytest_asyncio.fixture()
+    async def colliding_store(self, store: SurrealStore) -> SurrealStore:
+        await _upsert_source(store, self._SOURCE_A, self._FILE_A)
+        await _upsert_source(store, self._SOURCE_B, self._FILE_B)
+        return store
+
+    async def test_collision_resolves_to_the_same_row_through_both_tools(
+        self, colliding_store: SurrealStore
+    ) -> None:
+        symbol_tool = SymbolTool(store=colliding_store)
+        verify_tool = VerifyTool(store=colliding_store)
+
+        # The non-first-scrolled sibling: a shared resolver picks the file whose
+        # module path matches, identically for both tools.
+        resolved = await symbol_tool.get_symbol("loresigil.factory.EmbeddingConfig")
+        verified = await verify_tool.verify("loresigil.factory.EmbeddingConfig")
+
+        assert verified.status == "confirmed"
+        assert verified.summary is not None
+        assert resolved.file_path == verified.summary.file_path == self._FILE_B
+        assert resolved.line_start == verified.summary.line_start
+        assert resolved.line_end == verified.summary.line_end
+
+    async def test_both_tools_hold_the_shared_resolver_type(
+        self, colliding_store: SurrealStore
+    ) -> None:
+        # Both tools construct the SAME resolver seam — a structural pin that the
+        # extraction is genuinely shared, not two parallel copies.
+        symbol_tool = SymbolTool(store=colliding_store)
+        verify_tool = VerifyTool(store=colliding_store)
+        assert isinstance(symbol_tool._resolver, SymbolResolver)  # noqa: SLF001
+        assert isinstance(verify_tool._resolver, SymbolResolver)  # noqa: SLF001

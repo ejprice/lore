@@ -116,7 +116,7 @@ from loremaster.memory.backend import (
 from loremaster.read_file import FileSpan
 from loremaster.search import DetailSelector, SearchResult
 from loremaster.store.candidate import Candidate
-from loremaster.symbols import ResolvedSymbol
+from loremaster.symbols import ResolvedSymbol, VerifyResult
 
 if TYPE_CHECKING:
     from loresigil.base import Embedder
@@ -133,7 +133,7 @@ if TYPE_CHECKING:
     from loremaster.read_file import ReadFileTool
     from loremaster.search import SearchPipeline
     from loremaster.store.surreal import SurrealStore
-    from loremaster.symbols import SymbolTool
+    from loremaster.symbols import SymbolTool, VerifyTool
     from loremaster.tasks import ClaimResult, Task, TaskLedger
 
 # The parent-context ``state`` key under which the per-extension lifespan-state
@@ -940,6 +940,11 @@ _INSTRUCTIONS = (
     "of a named Python symbol (class / method / function). Use this — NOT "
     "lore_search_code — when you know the name and want the authoritative definition "
     "(it is collision-correct, not a fuzzy ranked guess).\n"
+    "- lore_verify(qualified_name, expected_file_path=None, expected_signature_fragment=None): "
+    "the anti-hallucination check — confirm a symbol/signature/location CLAIM against the "
+    "stored truth BEFORE you repeat it. Returns confirmed / mismatch / not_found with the "
+    "stored facts (a mismatch names the ACTUAL path or header). Unlike lore_get_symbol, a "
+    "miss is a plain not_found RESULT, not an error.\n"
     "- lore_read_file(tier, path, ...): the EXACT on-disk text of a file span with a "
     "[SOURCE:...] header. Use after a lore_search_code / lore_get_symbol hit to read "
     "surrounding context.\n"
@@ -1146,6 +1151,7 @@ class AppContext:
         search_pipeline: SearchPipeline,
         read_file_tool: ReadFileTool,
         symbol_tool: SymbolTool,
+        verify_tool: VerifyTool,
         memory_backend: MemoryBackend,
         task_ledger: TaskLedger,
     ) -> None:
@@ -1164,6 +1170,7 @@ class AppContext:
         self.search_pipeline = search_pipeline
         self._read_file_tool = read_file_tool
         self._symbol_tool = symbol_tool
+        self._verify_tool = verify_tool
         # P7 cutover — plain, settable public attributes (like ``search_pipeline``):
         # the SurrealDB memory backend the memory tools dispatch through, and the
         # durable fleet task ledger the two task tools ride.
@@ -1241,6 +1248,26 @@ class AppContext:
             # — raise the rebuilding error so the agent retries. When idle, the
             # not-found is genuine and re-raised unchanged.
             raise await self._rebuilding_error_or(exc) from exc
+
+    async def verify(
+        self,
+        qualified_name: str,
+        expected_file_path: str | None = None,
+        expected_signature_fragment: str | None = None,
+    ) -> VerifyResult:
+        """Verify a symbol/signature/location CLAIM against the stored truth.
+
+        Delegates to the :class:`~loremaster.symbols.VerifyTool` (which rides the
+        SAME resolver as ``get_symbol``, so a name resolves to the same row through
+        both). ``not_found`` is a RESULT here, never an exception — answering
+        "does this exist?" is verify's whole job — so, unlike ``get_symbol``, there
+        is no not-found error to route through the rebuilding gate. A downed store
+        still surfaces LOUDLY: ``SurrealConnectionError`` propagates unchanged, so
+        an outage can never masquerade as a ``not_found`` verdict.
+        """
+        return await self._verify_tool.verify(
+            qualified_name, expected_file_path, expected_signature_fragment
+        )
 
     async def save_memory(
         self,
@@ -2148,7 +2175,7 @@ async def build_app_context(
     from loremaster.source.local_directory import LocalDirectorySourceProvider
     from loremaster.source.snapshot import SnapshotLayout
     from loremaster.store.surreal import SurrealStore
-    from loremaster.symbols import SymbolTool
+    from loremaster.symbols import SymbolTool, VerifyTool
     from loremaster.tasks import TaskLedger
 
     config = server.config
@@ -2363,6 +2390,9 @@ async def build_app_context(
     # SurrealDB store's scroll() primitive, so it depends on write_store
     # (the SurrealStore), NOT the legacy Qdrant handle.
     symbol_tool = SymbolTool(store=write_store)
+    # lore_verify's anti-hallucination check rides the SAME resolver as get_symbol
+    # over the SAME unified store — so a claim resolves to the identical row.
+    verify_tool = VerifyTool(store=write_store)
 
     watcher = LiveWatcher(
         indexer=indexer,
@@ -2387,6 +2417,7 @@ async def build_app_context(
         search_pipeline=search_pipeline,
         read_file_tool=read_file_tool,
         symbol_tool=symbol_tool,
+        verify_tool=verify_tool,
         memory_backend=memory_backend,
         task_ledger=task_ledger,
     )
@@ -3161,6 +3192,61 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         ],
     ) -> ResolvedSymbol:
         return await _app_context(context).get_symbol(qualified_name)
+
+    @mcp.tool(
+        name="lore_verify",
+        description=(
+            "Verify a symbol / signature / location CLAIM against the stored truth "
+            "BEFORE you repeat it — the anti-hallucination check. Give the qualified "
+            "name (and optionally the file path and/or a signature fragment you "
+            "believe are true) and it answers 'confirmed' / 'mismatch' / 'not_found' "
+            "with the stored facts: the on-disk anchor + the definition header, and "
+            "for a mismatch the ACTUAL path or header. Unlike lore_get_symbol (which "
+            "raises when nothing resolves), a miss here is a plain 'not_found' result "
+            "— its whole job is answering 'does this exist, exactly as I think?'."
+        ),
+        annotations=_READ_ONLY_ANNOTATIONS,
+    )
+    async def verify(
+        context: Context[Any, AppContext, Any],
+        qualified_name: Annotated[
+            str,
+            Field(
+                description=(
+                    "A Python dotted name to verify — either MODULE-QUALIFIED "
+                    "(e.g. 'loremaster.symbols.SymbolTool.get_symbol') or a BARE "
+                    "identity (e.g. 'SymbolTool.get_symbol'). Resolved exactly as "
+                    "lore_get_symbol; module-qualify it to disambiguate a name that "
+                    "collides across files."
+                )
+            ),
+        ],
+        expected_file_path: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional: the tier-relative file path you believe defines the "
+                    "symbol (e.g. 'loremaster/symbols.py'). Matches if it is a "
+                    "whole-path-segment suffix of the stored path in either direction; "
+                    "a mismatch names the ACTUAL path. Omit to skip the location check."
+                )
+            ),
+        ] = None,
+        expected_signature_fragment: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional: a substring you believe appears in the definition's "
+                    "header (the class/def signature, kept whole across multiple "
+                    "lines). A mismatch shows the ACTUAL header. Omit to skip the "
+                    "signature check."
+                )
+            ),
+        ] = None,
+    ) -> VerifyResult:
+        return await _app_context(context).verify(
+            qualified_name, expected_file_path, expected_signature_fragment
+        )
 
     @mcp.tool(
         name="lore_save_memory",

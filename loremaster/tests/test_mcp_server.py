@@ -933,6 +933,7 @@ _BARE_TOOL_NAMES = {
     "search_code",
     "read_file",
     "get_symbol",
+    "verify",
     "save_memory",
     "recall_memory",
     "reindex",
@@ -991,6 +992,7 @@ _READ_ONLY_TOOLS = {
     "lore_search_code",
     "lore_read_file",
     "lore_get_symbol",
+    "lore_verify",
     "lore_recall_memory",
     "lore_index_status",
     "lore_what_imports",
@@ -1151,6 +1153,17 @@ class TestToolDescriptions:
         tools = await self._tools_by_name(tmp_path)
         assert "direct" in tools["lore_what_imports"].description.lower()
         assert "transitive" in tools["lore_blast_radius"].description.lower()
+
+    async def test_verify_description_teaches_when_and_the_verdicts(
+        self, tmp_path: Path
+    ) -> None:
+        # verify = confirm a CLAIM before repeating it; its three verdicts and its
+        # not_found-vs-get_symbol contrast must be teachable from the description.
+        tools = await self._tools_by_name(tmp_path)
+        description = tools["lore_verify"].description.lower()
+        assert "confirmed" in description
+        assert "mismatch" in description
+        assert "not_found" in description
 
 
 class TestToolInputFieldDescriptions:
@@ -1336,6 +1349,24 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
     "lore_search_code": {"formatted", "chunk_key", "detail_level", "stale", "score"},
     "lore_read_file": {"tier", "path", "line_start", "line_end", "text"},
     "lore_get_symbol": {"qualified_name", "chunk_type", "tier", "file_path", "source"},
+    # lore_verify is a SCALAR VerifyResult return: its own fields are top-level
+    # properties (status / summary / mismatches); the nested VerifiedSummary and
+    # VerifyMismatch fields surface under $defs.
+    "lore_verify": {
+        "status",
+        "summary",
+        "mismatches",
+        "qualified_name",
+        "chunk_type",
+        "tier",
+        "file_path",
+        "line_start",
+        "line_end",
+        "header",
+        "claim",
+        "claimed",
+        "actual",
+    },
     # lore_recall_memory is intentionally omitted: the P7 cutover re-shapes its
     # return (it no longer carries the retired store's flat ``metadata`` note), so
     # its surfaced fields are pinned behaviourally in TestRecallMemoryCutover
@@ -1558,6 +1589,40 @@ class TestToolBehaviourEndToEnd:
         assert symbol.qualified_name == "champion_routing"
         assert symbol.file_path == "pkg/router.py"
         assert "def champion_routing" in symbol.source
+
+    async def test_verify_confirms_a_true_claim(
+        self, indexed_context: AppContext
+    ) -> None:
+        result = await indexed_context.verify(
+            "champion_routing",
+            expected_file_path="pkg/router.py",
+            expected_signature_fragment="def champion_routing",
+        )
+        assert result.status == "confirmed"
+        assert result.mismatches == []
+        assert result.summary is not None
+        assert result.summary.file_path == "pkg/router.py"
+        assert "def champion_routing" in result.summary.header
+
+    async def test_verify_flags_a_wrong_path_claim_naming_the_actual(
+        self, indexed_context: AppContext
+    ) -> None:
+        result = await indexed_context.verify(
+            "champion_routing", expected_file_path="totally/wrong.py"
+        )
+        assert result.status == "mismatch"
+        [mismatch] = result.mismatches
+        assert mismatch.claim == "file_path"
+        assert mismatch.actual == "pkg/router.py"
+
+    async def test_verify_missing_symbol_is_a_not_found_result_not_an_error(
+        self, indexed_context: AppContext
+    ) -> None:
+        # Unlike get_symbol (which RAISES), verify returns not_found as a RESULT.
+        result = await indexed_context.verify("definitely_absent_symbol")
+        assert result.status == "not_found"
+        assert result.summary is None
+        assert result.mismatches == []
 
     async def test_read_file_returns_real_span(self, indexed_context: AppContext) -> None:
         span = await indexed_context.read_file("custom", "pkg/router.py", 1, 1)
@@ -1829,6 +1894,51 @@ class TestRegisteredToolWrappers:
         assert isinstance(structured, dict)
         assert structured["qualified_name"] == "champion_routing"
         assert structured["file_path"] == "pkg/router.py"
+
+    async def test_verify_wrapper_confirms_over_mcp(
+        self, indexed: tuple[Any, AppContext]
+    ) -> None:
+        mcp, ctx = indexed
+        structured = await self._structured(
+            mcp,
+            "lore_verify",
+            ctx,
+            qualified_name="champion_routing",
+            expected_file_path="pkg/router.py",
+        )
+        # A scalar VerifyResult — structuredContent carries status + the nested summary.
+        assert isinstance(structured, dict)
+        assert structured["status"] == "confirmed"
+        assert structured["mismatches"] == []
+        assert structured["summary"]["file_path"] == "pkg/router.py"
+
+    async def test_verify_wrapper_reports_a_mismatch_over_mcp(
+        self, indexed: tuple[Any, AppContext]
+    ) -> None:
+        mcp, ctx = indexed
+        structured = await self._structured(
+            mcp,
+            "lore_verify",
+            ctx,
+            qualified_name="champion_routing",
+            expected_file_path="wrong/place.py",
+        )
+        assert structured["status"] == "mismatch"
+        assert structured["mismatches"]
+        assert structured["mismatches"][0]["claim"] == "file_path"
+        assert structured["mismatches"][0]["actual"] == "pkg/router.py"
+
+    async def test_verify_wrapper_not_found_over_mcp(
+        self, indexed: tuple[Any, AppContext]
+    ) -> None:
+        mcp, ctx = indexed
+        structured = await self._structured(
+            mcp, "lore_verify", ctx, qualified_name="definitely_absent_symbol"
+        )
+        # not_found is a RESULT that serialises cleanly (summary is null, no error).
+        assert structured["status"] == "not_found"
+        assert structured["summary"] is None
+        assert structured["mismatches"] == []
 
     async def test_index_status_wrapper_yields_structured_model(
         self, indexed: tuple[Any, AppContext]
