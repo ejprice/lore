@@ -52,10 +52,13 @@ from _surreal_harness import (
 from loremaster.index.records import sha512_hex
 from loremaster.store.surreal_schema import (
     COMMAND_TABLE,
+    FINDING_COUNTER_TABLE,
+    FINDING_TABLE,
     SNAPSHOT_ENTRY_TABLE,
     SNAPSHOT_TABLE,
     TRACE_TABLE,
     generate_ddl,
+    generate_finding_ddl,
 )
 
 # The tables the approved P2 plan requires (the INDEPENDENT source — the plan,
@@ -1180,3 +1183,356 @@ class TestTraceRoundTrip:
                     },
                 },
             )
+
+
+# --- P8b: ``finding`` ledger field-level + counter fixtures -------------------
+#
+# The plan (P8b, moved forward from the old P9 placeholder scope) promotes
+# ``finding`` from the bare-``SCHEMAFULL`` placeholder that P2 landed to lore's
+# FINDING ledger row: a stable human-addressable ``number`` (UNIQUE), the friction
+# ``kind``, the four-status review vocabulary, subject/body/area/category, an audit
+# ``provenance`` blob, a ``created_at`` self-stamp, and a REAL ``supersedes`` record
+# link to the finding it reframes. A sibling ``finding_counter`` table backs the
+# race-safe consecutive number mint (``loremaster.findings`` UPSERTs its single row
+# inside the same transaction as the finding CREATE). The fixtures below are
+# realistic lore-domain values (a real friction subject, a real tool area), never
+# convenience placeholders.
+_FINDING_STATUS_OPEN = "open"
+_FINDING_STATUS_ACKNOWLEDGED = "acknowledged"
+_FINDING_STATUS_RESOLVED = "resolved"
+_FINDING_STATUS_WONTFIX = "wontfix"
+_FINDING_STATUSES = (
+    _FINDING_STATUS_OPEN,
+    _FINDING_STATUS_ACKNOWLEDGED,
+    _FINDING_STATUS_RESOLVED,
+    _FINDING_STATUS_WONTFIX,
+)
+_FINDING_STATUS_INVALID = "reopened"
+
+_FINDING_KIND = "friction"
+_FINDING_SUBJECT = "tests_for reports only direct edges, missing indirect coverage"
+_FINDING_BODY = (
+    "lore_tests_for(symbol) returns direct test nodes but misses tests exercising "
+    "the symbol transitively through a helper."
+)
+_FINDING_AREA = "lore_tests_for"
+_FINDING_CATEGORY = "capability_gap"
+_FINDING_CREATED_BY = "di-scout-session-4a1c"
+_FINDING_PROVENANCE: dict[str, Any] = {
+    "created_by": _FINDING_CREATED_BY,
+    "created_at": "2026-07-04T00:00:00+00:00",
+    "events": [],
+}
+
+
+async def _create_finding(
+    connection: SurrealConnection,
+    *,
+    finding_id: str,
+    number: int,
+    status: str = _FINDING_STATUS_OPEN,
+    kind: str = _FINDING_KIND,
+    subject: str = _FINDING_SUBJECT,
+    created_by: str = _FINDING_CREATED_BY,
+    supersedes_id: str | None = None,
+    omit_created_at: bool = False,
+    omit_status: bool = False,
+) -> None:
+    """CREATE a ``finding`` row via a CONTENT object literal.
+
+    Omitting ``created_at`` exercises the schema's own ``DEFAULT time::now()``;
+    omitting ``status`` exercises its ``DEFAULT 'open'``. ``supersedes`` is written
+    as a REAL ``type::record`` link when given, or ``NONE`` when absent. Uses
+    ``CONTENT`` (not ``SET``) so a future protected-key column can never break the
+    write — the same discipline ``loremaster.findings`` follows.
+    """
+    fields = [
+        "number: $number",
+        "kind: $kind",
+        "subject: $subject",
+        "body: $body",
+        "area: $area",
+        "category: $category",
+        "created_by: $created_by",
+        "provenance: $provenance",
+    ]
+    params: dict[str, Any] = {
+        "id": finding_id,
+        "number": number,
+        "kind": kind,
+        "subject": subject,
+        "body": _FINDING_BODY,
+        "area": _FINDING_AREA,
+        "category": _FINDING_CATEGORY,
+        "created_by": created_by,
+        "provenance": _FINDING_PROVENANCE,
+    }
+    if not omit_status:
+        fields.append("status: $status")
+        params["status"] = status
+    if not omit_created_at:
+        fields.append("created_at: $created_at")
+        params["created_at"] = datetime.now(UTC)
+    if supersedes_id is not None:
+        fields.append("supersedes: type::record('finding', $supersedes_id)")
+        params["supersedes_id"] = supersedes_id
+    else:
+        fields.append("supersedes: NONE")
+    await run(
+        connection,
+        f"CREATE type::record('finding', $id) CONTENT {{ {', '.join(fields)} }}",
+        params,
+    )
+
+
+class TestFindingTableFieldDefinitions:
+    """P8b: ``finding`` carries its full field set — no longer the bare-``SCHEMAFULL``
+    placeholder P2 landed (offline, string-level assertions on the generator's own
+    output — no server needed).
+    """
+
+    def test_number_is_int_with_a_unique_index(self) -> None:
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        assert "TYPE int" in _field_statement(ddl, FINDING_TABLE, "number")
+        # The stable human-addressable id needs a UNIQUE index (never two #5s).
+        matches = _index_statements(ddl, FINDING_TABLE, fields_pattern=r"number\b")
+        assert matches, "expected a DEFINE INDEX on finding.number"
+        assert any("UNIQUE" in statement for statement in matches)
+
+    def test_kind_is_a_required_non_empty_string(self) -> None:
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        kind = _field_statement(ddl, FINDING_TABLE, "kind")
+        assert "TYPE string" in kind
+        # Non-empty SEMANTICALLY: a trim-aware ASSERT, not a bare non-option type.
+        assert "ASSERT" in kind
+
+    def test_status_domain_is_constrained_and_defaults_open(self) -> None:
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        status = _field_statement(ddl, FINDING_TABLE, "status")
+        assert "TYPE string" in status
+        assert "DEFAULT" in status and f"'{_FINDING_STATUS_OPEN}'" in status
+        assert "ASSERT" in status
+        for value in _FINDING_STATUSES:
+            assert f"'{value}'" in status
+
+    def test_subject_and_created_by_are_required_non_empty(self) -> None:
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        assert "ASSERT" in _field_statement(ddl, FINDING_TABLE, "subject")
+        assert "ASSERT" in _field_statement(ddl, FINDING_TABLE, "created_by")
+
+    def test_body_area_category_are_plain_strings(self) -> None:
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        for field in ("body", "area", "category"):
+            assert "TYPE string" in _field_statement(ddl, FINDING_TABLE, field)
+
+    def test_created_at_is_a_server_defaulted_datetime(self) -> None:
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        created_at = _field_statement(ddl, FINDING_TABLE, "created_at")
+        assert "TYPE datetime" in created_at
+        assert "DEFAULT" in created_at and "time::now()" in created_at
+
+    def test_supersedes_is_a_real_optional_record_link(self) -> None:
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        supersedes = _field_statement(ddl, FINDING_TABLE, "supersedes")
+        # A REAL optional record link to a sibling finding — never a bare id
+        # string (which would silently break dot-traversal / the chain walk).
+        assert f"option<record<{FINDING_TABLE}>>" in supersedes
+
+    def test_provenance_is_a_flexible_object(self) -> None:
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        assert "FLEXIBLE" in _field_statement(ddl, FINDING_TABLE, "provenance")
+
+    def test_finding_counter_table_backs_the_number_mint(self) -> None:
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        assert f"DEFINE TABLE IF NOT EXISTS {FINDING_COUNTER_TABLE} SCHEMAFULL" in ddl
+        next_field = _field_statement(ddl, FINDING_COUNTER_TABLE, "next")
+        assert "TYPE int" in next_field
+        assert "DEFAULT" in next_field and "0" in next_field
+
+
+class TestFindingLedgerDdlSlice:
+    """``generate_finding_ddl`` is the ledger's own schema SLICE (the analogue of
+    ``generate_task_ddl``): the ``finding`` table + fields + indexes AND the
+    ``finding_counter`` table, self-contained, applied by ``FindingLedger.ensure_ready``.
+    """
+
+    def test_slice_carries_finding_and_counter_tables(self) -> None:
+        ddl = generate_finding_ddl()
+        assert f"DEFINE TABLE IF NOT EXISTS {FINDING_TABLE} SCHEMAFULL" in ddl
+        assert f"DEFINE TABLE IF NOT EXISTS {FINDING_COUNTER_TABLE} SCHEMAFULL" in ddl
+        # The load-bearing fields + the UNIQUE number index are all present.
+        assert "TYPE int" in _field_statement(ddl, FINDING_TABLE, "number")
+        assert f"option<record<{FINDING_TABLE}>>" in _field_statement(ddl, FINDING_TABLE, "supersedes")
+        assert any(
+            "UNIQUE" in statement
+            for statement in _index_statements(ddl, FINDING_TABLE, fields_pattern=r"number\b")
+        )
+
+    def test_slice_needs_no_embedding_width_or_analyzer(self) -> None:
+        # UNLIKE the memory slice, findings carry no HNSW/FULLTEXT index — the
+        # slice is a pure zero-argument function of the table shape.
+        ddl = generate_finding_ddl()
+        assert "HNSW" not in ddl
+        assert "FULLTEXT" not in ddl
+
+
+class TestFindingRoundTrip:
+    """The ``finding`` table (live behavioural): a full row round-trips, the number
+    UNIQUE index rejects a duplicate, the status ASSERT rejects an out-of-domain
+    value, the non-empty ASSERTs reject empties, the ``supersedes`` link resolves to
+    the real parent, the ``created_at``/``status`` DEFAULTs auto-populate, and the
+    table enforces real SCHEMAFULL discipline.
+    """
+
+    async def test_finding_probe_round_trips(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        await _create_finding(connection, finding_id="f1", number=1)
+        row = _one(await run(connection, "SELECT * FROM type::record('finding', 'f1')"))
+        assert row["number"] == 1
+        assert row["kind"] == _FINDING_KIND
+        assert row["status"] == _FINDING_STATUS_OPEN
+        assert row["subject"] == _FINDING_SUBJECT
+        assert row["area"] == _FINDING_AREA
+        assert row["category"] == _FINDING_CATEGORY
+        assert row.get("supersedes") is None
+
+    async def test_number_unique_index_rejects_a_duplicate(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        await _create_finding(connection, finding_id="f1", number=7)
+        # A SECOND finding claiming the SAME number must be rejected loudly — the
+        # UNIQUE index is the backstop the race-safe mint relies on.
+        with pytest.raises(Exception):  # noqa: B017 - engine UNIQUE index rejection surface
+            await _create_finding(connection, finding_id="f2", number=7)
+
+    async def test_status_assert_rejects_unknown_value(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_finding(
+                connection, finding_id="bad", number=1, status=_FINDING_STATUS_INVALID
+            )
+
+    @pytest.mark.parametrize("status", _FINDING_STATUSES)
+    async def test_finding_accepts_each_valid_status(
+        self,
+        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+        status: str,
+    ) -> None:
+        # Positive control alongside the negative test: an overly-strict ASSERT
+        # (e.g. one accepting only the DEFAULT) would silently pass the negative
+        # test while breaking every real transition.
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        await _create_finding(
+            connection, finding_id=f"f_{status}", number=1, status=status
+        )
+        row = _one(await run(connection, f"SELECT * FROM type::record('finding', 'f_{status}')"))
+        assert row["status"] == status
+
+    @pytest.mark.parametrize("empty_kind", ["", " ", "\t"])
+    async def test_kind_assert_rejects_empty_or_whitespace(
+        self,
+        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+        empty_kind: str,
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_finding(connection, finding_id="empty_kind", number=1, kind=empty_kind)
+
+    async def test_subject_assert_rejects_empty(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_finding(connection, finding_id="empty_subj", number=1, subject="   ")
+
+    async def test_supersedes_link_resolves_to_the_real_parent(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        await _create_finding(connection, finding_id="orig", number=1)
+        await _create_finding(
+            connection, finding_id="succ", number=2, supersedes_id="orig"
+        )
+        row = _one(await run(connection, "SELECT * FROM type::record('finding', 'succ')"))
+        # The link must resolve to the ACTUAL parent row — hop through it and read
+        # the parent's OWN data, rather than trusting an opaque id string.
+        parent = _one(await run(connection, "SELECT * FROM $ref", {"ref": row["supersedes"]}))
+        assert parent["number"] == 1
+        assert parent["subject"] == _FINDING_SUBJECT
+
+    async def test_created_at_and_status_defaults_auto_populate(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        before = datetime.now(UTC)
+        await _create_finding(
+            connection, finding_id="defaults", number=1, omit_created_at=True, omit_status=True
+        )
+        after = datetime.now(UTC)
+        row = _one(await run(connection, "SELECT * FROM type::record('finding', 'defaults')"))
+        created_at = row["created_at"]
+        assert isinstance(created_at, datetime)
+        assert before - _CLOCK_SKEW_ALLOWANCE <= _as_utc(created_at) <= after + _CLOCK_SKEW_ALLOWANCE
+        # An omitted status falls back to the schema DEFAULT.
+        assert row["status"] == _FINDING_STATUS_OPEN
+
+    async def test_finding_rejects_undeclared_field(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        await run(connection, generate_ddl(dim=env.dim))
+        with pytest.raises(Exception):  # noqa: B017 - engine SCHEMAFULL rejection surface
+            await run(
+                connection,
+                "CREATE type::record('finding', $id) CONTENT { number: 1, kind: 'friction', "
+                "status: 'open', subject: 's', body: 'b', area: 'a', category: 'c', "
+                "created_by: 'x', rogue_field: 'not in the schema' }",
+                {"id": "rogue"},
+            )
+
+
+class TestFindingAppliedOverBarePlaceholder:
+    """The intended upgrade path: the deployed DB already carries the bare P2
+    ``DEFINE TABLE finding SCHEMAFULL`` placeholder (no fields). Applying
+    ``generate_ddl`` over that EXISTING empty table must add the full field set via
+    ``DEFINE FIELD IF NOT EXISTS`` — never a rebuild, never a rejection.
+    """
+
+    async def test_full_field_set_lands_over_the_bare_table(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = admin_db
+        # 1. Materialise ONLY the bare placeholder the deployed DB already has.
+        await run(connection, f"DEFINE TABLE IF NOT EXISTS {FINDING_TABLE} SCHEMAFULL")
+        info_before = await run(connection, f"INFO FOR TABLE {FINDING_TABLE}")
+        assert not info_before.get("fields", {}), "precondition: the bare table has no fields yet"
+
+        # 2. Apply the full DDL over the existing table — the DEFINE FIELD IF NOT
+        # EXISTS statements upgrade it in place.
+        await run(connection, generate_ddl(dim=env.dim))
+        info_after = await run(connection, f"INFO FOR TABLE {FINDING_TABLE}")
+        defined_fields = set(info_after.get("fields", {}))
+        for expected in (
+            "number", "kind", "status", "subject", "body", "area",
+            "category", "created_by", "created_at", "supersedes", "provenance",
+        ):
+            assert expected in defined_fields, f"field {expected!r} was not added over the bare table"
+
+        # 3. A full finding row now round-trips through the upgraded table.
+        await _create_finding(connection, finding_id="upgraded", number=1)
+        row = _one(await run(connection, "SELECT * FROM type::record('finding', 'upgraded')"))
+        assert row["number"] == 1
+        assert row["status"] == _FINDING_STATUS_OPEN

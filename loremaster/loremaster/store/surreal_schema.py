@@ -55,6 +55,14 @@ META_TABLE = "meta"
 SNAPSHOT_TABLE = "snapshot"
 SNAPSHOT_ENTRY_TABLE = "snapshot_entry"
 FINDING_TABLE = "finding"
+# The single-row counter table backing the finding ledger's race-safe consecutive
+# ``number`` mint: :class:`~loremaster.findings.FindingLedger` UPSERTs its one
+# ``singleton`` row (``next += 1``) inside the SAME transaction as the finding
+# CREATE, so two concurrent reporters contend on ONE row and the shared
+# optimistic-concurrency retry serialises them into gapless consecutive numbers.
+FINDING_COUNTER_TABLE = "finding_counter"
+# The fixed record id of that single counter row (``finding_counter:singleton``).
+FINDING_COUNTER_SINGLETON_ID = "singleton"
 TRACE_TABLE = "trace"
 COMMAND_TABLE = "command"
 TASK_TABLE = "task"
@@ -71,16 +79,18 @@ NAME_TABLE = "name"
 REFERS_RELATION = "refers"
 ANSWERS_TO_RELATION = "answers_to"
 
-# The plain SCHEMAFULL tables the plan requires to exist but that carry no
-# field-level probe yet. ``snapshot``/``snapshot_entry``/``command`` were
-# promoted to full field-level definitions in P5-C1b (see
+# The bare-``SCHEMAFULL``-placeholder tables (no field-level probe) the plan
+# requires to exist. This tuple is now EMPTY: every table that was ever a
+# placeholder has graduated to a real field-level slice —
+# ``snapshot``/``snapshot_entry``/``command`` in P5-C1b (see
 # ``_snapshot_statements`` / ``_snapshot_entry_statements`` /
-# ``_command_statements`` below); ``finding`` stays a bare placeholder until
-# P9. Neither ``trace`` nor ``meta`` are here either — ``trace`` grows its six
-# core observability columns plus two audited optional accounting columns (P8a,
-# see ``_trace_statements``), ``meta`` grows its ``k``/``v`` fields (P3, the
-# ``SurrealManifest`` port).
-_STRUCTURAL_TABLES = (FINDING_TABLE,)
+# ``_command_statements``), ``trace`` in P8a (six core + two accounting columns,
+# ``_trace_statements``), ``meta`` in P3 (the ``SurrealManifest`` port), and
+# ``finding`` in P8b — the FINDING ledger row (``_finding_statements``, its
+# ``finding_counter`` sibling, and :mod:`loremaster.findings`), moved forward from
+# the old P9 placeholder scope. The tuple is kept (empty) as the extension seam for
+# any FUTURE bare-placeholder table the plan may need before it grows fields.
+_STRUCTURAL_TABLES: tuple[str, ...] = ()
 
 # The closed domain a ``file.state`` may take — a file is exactly one of these at
 # any time. An out-of-domain state is rejected by the field ASSERT, so the
@@ -269,6 +279,76 @@ _TASK_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
 # The ``task`` column the plain status index is built on (the fleet-visible
 # ``query_tasks(status=...)`` filter).
 _TASK_STATUS_FIELD = "status"
+
+# --- P8b ``finding`` table (lore's durable, fleet-visible FINDING ledger) ------
+#
+# The closed FOUR-status review vocabulary a ``finding`` row moves through — the
+# exact set :mod:`loremaster.findings` (the ledger's value objects + state machine)
+# is built from. An out-of-domain status is rejected by the field ASSERT, mirroring
+# how :data:`_TASK_STATUSES` guards ``task.status``. Findings are addressed by a
+# stable ``number`` and filtered by exact state, never retrieved semantically, so —
+# unlike ``memory`` — the table carries no embedding/HNSW/FULLTEXT column.
+_FINDING_STATUS_OPEN = "open"
+_FINDING_STATUS_ACKNOWLEDGED = "acknowledged"
+_FINDING_STATUS_RESOLVED = "resolved"
+_FINDING_STATUS_WONTFIX = "wontfix"
+_FINDING_STATUSES = (
+    _FINDING_STATUS_OPEN,
+    _FINDING_STATUS_ACKNOWLEDGED,
+    _FINDING_STATUS_RESOLVED,
+    _FINDING_STATUS_WONTFIX,
+)
+
+# The ``ASSERT`` domain clause for ``finding.status`` — built once from the closed
+# vocabulary above so the four statuses are named a single time (mirrors
+# :data:`_TASK_STATUS_ALLOWED`).
+_FINDING_STATUS_ALLOWED = ", ".join(f"'{status}'" for status in _FINDING_STATUSES)
+
+# The trim-aware non-empty ASSERT the finding ledger's required free-text columns
+# carry — the SAME clause ``command.kind`` uses: it rejects a whitespace-only value
+# (which names no real finding) as loudly as the exact empty string, while the
+# plain (non-``option``) type rejects an entirely missing one.
+_NON_EMPTY_STRING_ASSERT = "ASSERT string::len(string::trim($value)) > 0"
+
+# The ``finding`` table's fields as ``(name, type_expr, constraint)`` triples — the
+# single source of truth :func:`_finding_statements` emits one ``DEFINE FIELD`` per,
+# mirroring :data:`_TASK_FIELD_SPECS`. ``number`` is a plain ``int`` carrying a
+# separate UNIQUE index (the stable, human-addressable id — never two ``#5``s);
+# ``kind``/``subject``/``created_by`` are required, non-empty (the trim-aware
+# ASSERT); ``status`` defaults to ``open`` and carries the closed-domain ASSERT;
+# ``body``/``area``/``category`` are plain strings; ``created_at`` self-stamps via
+# ``DEFAULT time::now()``; ``supersedes`` is a REAL optional record link to the
+# finding this one reframes (never a bare id string — so the chain walk can
+# dot-traverse it); ``provenance`` is ``FLEXIBLE`` so the who/when audit blob
+# round-trips intact.
+_FINDING_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("number", "int", ""),
+    ("kind", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    (
+        "status",
+        _CHUNK_STRING_TYPE,
+        f"DEFAULT '{_FINDING_STATUS_OPEN}' ASSERT $value IN [{_FINDING_STATUS_ALLOWED}]",
+    ),
+    ("subject", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("body", _CHUNK_STRING_TYPE, ""),
+    ("area", _CHUNK_STRING_TYPE, ""),
+    ("category", _CHUNK_STRING_TYPE, ""),
+    ("created_by", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("created_at", "datetime", "DEFAULT time::now()"),
+    ("supersedes", f"option<record<{FINDING_TABLE}>>", ""),
+    ("provenance", "object FLEXIBLE", ""),
+)
+
+# The ``finding`` columns the UNIQUE (``number``) and the plain (``status``) indexes
+# are built on. The UNIQUE index makes the number a real, collision-free stable id
+# AND is the backstop the race-safe mint relies on; the ``status`` index backs the
+# fleet-visible ``query(status=...)`` filter (mirrors the ``task`` status index).
+_FINDING_NUMBER_FIELD = "number"
+_FINDING_STATUS_FIELD = "status"
+
+# The ``finding_counter`` table's single ``next`` int column, defaulted to 0 so the
+# FIRST ``UPSERT ... SET next += 1`` on the newly-created singleton row yields 1.
+_FINDING_COUNTER_NEXT_FIELD = "next"
 
 # --- P8a ``trace`` table (lore's per-tool-invocation OBSERVABILITY row) --------
 #
@@ -672,6 +752,52 @@ def _task_statements() -> list[str]:
     return statements
 
 
+def _finding_statements() -> list[str]:
+    """The ``finding`` table: the field set + a UNIQUE number index + a status index.
+
+    Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
+    :data:`_FINDING_FIELD_SPECS` entry (``number`` the stable id, the required
+    non-empty ``kind``/``subject``/``created_by``, the closed-domain ``status``, the
+    ``DEFAULT time::now()`` ``created_at``, the optional ``supersedes`` record link,
+    and the ``FLEXIBLE`` ``provenance`` blob); the UNIQUE index on ``number`` (the
+    stable, human-addressable id — never two of the same, AND the backstop the
+    race-safe mint leans on); and the plain index on ``status`` backing the
+    fleet-visible ``query(status=...)`` filter. UNLIKE ``chunk`` / ``memory`` the
+    table carries no HNSW/FULLTEXT index — a finding is addressed by number and
+    filtered by exact state, never retrieved semantically.
+    """
+    statements: list[str] = [_define_table(FINDING_TABLE)]
+    statements += [
+        _define_field(FINDING_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _FINDING_FIELD_SPECS
+    ]
+    statements.append(
+        _unique_index(FINDING_TABLE, f"{FINDING_TABLE}_{_FINDING_NUMBER_FIELD}", (_FINDING_NUMBER_FIELD,))
+    )
+    statements.append(
+        _plain_index(FINDING_TABLE, f"{FINDING_TABLE}_{_FINDING_STATUS_FIELD}", (_FINDING_STATUS_FIELD,))
+    )
+    return statements
+
+
+def _finding_counter_statements() -> list[str]:
+    """The ``finding_counter`` table: the single ``next`` int column defaulting to 0.
+
+    Backs the finding ledger's race-safe consecutive ``number`` mint. Its ONE
+    ``singleton`` row is UPSERTed (``next += 1 RETURN AFTER``) inside the SAME
+    transaction as the finding CREATE, so two concurrent reporters contend on this
+    ONE row and the shared optimistic-concurrency retry serialises them into gapless
+    consecutive numbers (the UNIQUE index on ``finding.number`` is the backstop).
+    ``DEFAULT 0`` means the FIRST bump on the freshly-created singleton yields 1.
+    """
+    return [
+        _define_table(FINDING_COUNTER_TABLE),
+        _define_field(
+            FINDING_COUNTER_TABLE, _FINDING_COUNTER_NEXT_FIELD, "int", constraint="DEFAULT 0"
+        ),
+    ]
+
+
 def _code_node_statements() -> list[str]:
     """The ``code_node`` table: fields + the bare/qualified/(tier,file) indexes.
 
@@ -767,8 +893,10 @@ def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str
     statements += _snapshot_entry_statements()
     statements += _command_statements()
     statements += _task_statements()
-    # ``finding`` still has no field-level probe (P9 scope); it stays a bare
-    # SCHEMAFULL placeholder.
+    statements += _finding_statements()
+    statements += _finding_counter_statements()
+    # Any residual bare-``SCHEMAFULL`` placeholder tables (currently none — every
+    # table has graduated to a field-level slice; see :data:`_STRUCTURAL_TABLES`).
     statements += [_define_table(table) for table in _STRUCTURAL_TABLES]
     return ";\n".join(statements) + ";\n"
 
@@ -839,6 +967,28 @@ def generate_task_ddl() -> str:
         single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
     """
     statements: list[str] = _task_statements()
+    return ";\n".join(statements) + ";\n"
+
+
+def generate_finding_ddl() -> str:
+    """Generate just the ``finding`` + ``finding_counter`` DDL — the P8b finding
+    ledger's schema slice.
+
+    Mirrors :func:`generate_task_ddl`: a schema SLICE the
+    :class:`~loremaster.findings.FindingLedger` applies on its OWN connection at
+    :meth:`ensure_ready`, independent of the full :func:`generate_ddl`. Like the
+    task slice it needs NEITHER the embedding ``dim`` NOR the analyzer, because the
+    ``finding`` table carries no HNSW vector or BM25 FULLTEXT index (findings are
+    addressed by number and filtered by exact state, never retrieved semantically).
+    Includes the ``finding_counter`` sibling table that backs the race-safe number
+    mint. Every statement is ``IF NOT EXISTS``, so applying it twice — or alongside
+    :func:`generate_ddl`, in either order — is a safe no-op.
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string ready to hand to a
+        single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
+    """
+    statements: list[str] = _finding_statements() + _finding_counter_statements()
     return ";\n".join(statements) + ";\n"
 
 
