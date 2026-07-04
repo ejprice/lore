@@ -145,14 +145,29 @@ _COMMAND_PAYLOAD: dict[str, Any] = {
 }
 
 
-def _snapshot_entry_chunk_hashes() -> list[dict[str, str]]:
-    """Realistic ``chunk_hashes``: per-chunk identity + sha512, the shape a
-    snapshot-diff scan needs to detect a changed chunk without re-reading its
-    full body.
+def _snapshot_entry_chunk_hashes() -> list[dict[str, str | int]]:
+    """Realistic ``chunk_hashes``: per-chunk identity + ``sub_ordinal`` + sha512,
+    the shape a snapshot-diff scan needs to detect a changed chunk (and tell
+    same-identity WINDOW siblings apart) without re-reading its full body.
+
+    ``sub_ordinal`` is the within-file disambiguator lorescribe stamps on every
+    chunk (0 for the sole/first window; 1, 2, … for the later windows of a long
+    function or split markdown section): ``(identity, sub_ordinal)`` — never
+    ``identity`` alone — is the natural key, so a snapshot that dropped it would
+    collapse siblings last-write-wins. Two DISTINCT single-window identities
+    here, each carrying its own ``sub_ordinal`` 0.
     """
     return [
-        {"identity": "PurchaseOrder.action_confirm", "hash": sha512_hex(_ACTION_CONFIRM_BODY)},
-        {"identity": "PurchaseOrder.button_confirm", "hash": sha512_hex(_BUTTON_CONFIRM_BODY)},
+        {
+            "identity": "PurchaseOrder.action_confirm",
+            "sub_ordinal": 0,
+            "hash": sha512_hex(_ACTION_CONFIRM_BODY),
+        },
+        {
+            "identity": "PurchaseOrder.button_confirm",
+            "sub_ordinal": 0,
+            "hash": sha512_hex(_BUTTON_CONFIRM_BODY),
+        },
     ]
 
 
@@ -257,7 +272,7 @@ async def _create_snapshot_entry(
     tier: str,
     file_path: str,
     sha512: str,
-    chunk_hashes: list[dict[str, str]],
+    chunk_hashes: list[dict[str, str | int]],
 ) -> None:
     """CREATE a ``snapshot_entry`` row linked to its parent via ``type::record``."""
     await run(
@@ -643,6 +658,18 @@ class TestStructuralTableFieldDefinitions:
 
         chunk_hashes = _field_statement(ddl, SNAPSHOT_ENTRY_TABLE, "chunk_hashes")
         assert "FLEXIBLE" in chunk_hashes
+
+    def test_snapshot_entry_chunk_hashes_carries_the_sub_ordinal_disambiguator(self) -> None:
+        # F1: lorescribe emits same-``identity`` sibling chunks disambiguated only
+        # by ``sub_ordinal`` (windowed long functions / split markdown sections).
+        # A ledger that stored only ``{identity, hash}`` collapses those siblings
+        # last-write-wins, silently masking a within-window drift, so the
+        # bracket-wildcard field set must carry ``sub_ordinal`` (int) alongside
+        # ``identity`` / ``hash`` — the SAME idiom, so the FLEXIBLE outer still
+        # tolerates any extra key while this nested path is typed.
+        ddl = generate_ddl(dim=NONDEFAULT_DIM)
+        sub_ordinal = _field_statement(ddl, SNAPSHOT_ENTRY_TABLE, "chunk_hashes[*].sub_ordinal")
+        assert "TYPE int" in sub_ordinal
 
     def test_snapshot_entry_has_nonunique_snapshot_index(self) -> None:
         ddl = generate_ddl(dim=NONDEFAULT_DIM)

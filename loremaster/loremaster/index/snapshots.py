@@ -415,8 +415,19 @@ class SnapshotStamper:
                         "limit": _MAX_CHUNKS_PER_FILE,
                     },
                 )
+            # ``sub_ordinal`` is the WITHIN-FILE disambiguator (P8b/F1): a
+            # windowed long function / split markdown section emits several
+            # chunks that SHARE one ``identity`` and differ only by
+            # ``sub_ordinal`` (the ``(identity, sub_ordinal)`` natural key).
+            # Persisting it — not just ``{identity, hash}`` — is what lets a
+            # snapshot↔snapshot diff tell those siblings apart instead of
+            # collapsing them last-write-wins and masking a within-window drift.
             chunk_hashes = [
-                {"identity": chunk_row["identity"], "hash": chunk_row["content_hash"]}
+                {
+                    "identity": chunk_row["identity"],
+                    "sub_ordinal": chunk_row["sub_ordinal"],
+                    "hash": chunk_row["content_hash"],
+                }
                 for chunk_row in chunk_rows
             ]
             chunks_total += len(chunk_hashes)

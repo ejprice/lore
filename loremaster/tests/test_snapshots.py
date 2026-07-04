@@ -549,6 +549,80 @@ class TestSnapshotStamperWritesSnapshotAndEntries:
             assert stored_pairs == live_pairs
 
 
+class TestSnapshotStamperPreservesSubOrdinalForSiblingChunks:
+    """F1 (writer layer): a file whose ONE identity is split into WINDOW siblings
+    (same ``identity``, distinct ``sub_ordinal`` — a long function or split
+    markdown section) must have EACH window's ``(identity, sub_ordinal, hash)``
+    preserved in ``chunk_hashes``. Storing only ``{identity, hash}`` collapses
+    the siblings last-write-wins, and a snapshot↔snapshot diff can then never
+    detect a change confined to one window."""
+
+    async def test_stamp_preserves_each_window_sibling_with_its_sub_ordinal(
+        self, stamp_bench: _StampBench
+    ) -> None:
+        # ONE identity 'big', TWO windows (sub_ordinal 0 and 1) with DISTINCT
+        # bodies — exactly what markdown/python windowing of a large block emits.
+        windows = [
+            chunk_record(
+                tier=_TIER,
+                file_path=_PRICING_PATH,
+                identity="big",
+                chunk_type="md_section",
+                sub_ordinal=0,
+                ident_text="big",
+                source_text="WINDOW-0-BODY",
+            ),
+            chunk_record(
+                tier=_TIER,
+                file_path=_PRICING_PATH,
+                identity="big",
+                chunk_type="md_section",
+                sub_ordinal=1,
+                ident_text="big",
+                source_text="WINDOW-1-BODY",
+            ),
+        ]
+        records_with_vectors = [
+            (record, unit_vector(axis=index % _DIM, dim=_DIM))
+            for index, record in enumerate(windows)
+        ]
+        fragment = stamp_bench.store.replace_file_fragment(
+            _TIER, _PRICING_PATH, records_with_vectors
+        )
+        await stamp_bench.store.apply([fragment])
+        whole = "WINDOW-0-BODYWINDOW-1-BODY"
+        await _upsert_manifest_row(
+            stamp_bench.manifest, tier=_TIER, file_path=_PRICING_PATH, source=whole, n_chunks=2
+        )
+
+        snapshot_id = await stamp_bench.stamper.stamp()
+        entries = await _entry_rows_for(stamp_bench.env, snapshot_id)
+        assert len(entries) == 1
+        chunk_hashes = entries[0]["chunk_hashes"]
+
+        # Every entry carries its window disambiguator …
+        assert all("sub_ordinal" in item for item in chunk_hashes)
+        # … and the two same-identity siblings are BOTH present, distinguished
+        # only by sub_ordinal (a lossy {identity, hash} ledger would keep one).
+        by_sub_ordinal = {item["sub_ordinal"]: item for item in chunk_hashes}
+        assert set(by_sub_ordinal) == {0, 1}
+        assert by_sub_ordinal[0]["identity"] == "big"
+        assert by_sub_ordinal[1]["identity"] == "big"
+        # The two windows have genuinely different bodies ⇒ different hashes; the
+        # ledger keeps both, so a change to window 1 alone stays detectable.
+        assert by_sub_ordinal[0]["hash"] != by_sub_ordinal[1]["hash"]
+
+        # Cross-check against the REAL chunk table (the producer↔consumer seam).
+        live = await stamp_bench.store.scroll(
+            {"tier": _TIER, "file_path": _PRICING_PATH}, limit=100
+        )
+        live_triples = {(row["identity"], row["sub_ordinal"], row["content_hash"]) for row in live}
+        stored_triples = {
+            (item["identity"], item["sub_ordinal"], item["hash"]) for item in chunk_hashes
+        }
+        assert stored_triples == live_triples
+
+
 class TestSnapshotStamperHandlesEmptyManifest:
     """A degenerate driver table: zero indexed files still yields a
     well-formed, zero-total snapshot with zero entries — never a crash."""

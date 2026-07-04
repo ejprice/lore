@@ -575,17 +575,28 @@ def _snapshot_entry_statements() -> list[str]:
 
     ``snapshot`` is a real ``record<snapshot>`` link (not a bare id string) so
     a reader can ``FETCH``/dot-traverse straight to the parent row.
-    ``chunk_hashes`` is a ``FLEXIBLE`` array of ``{identity, hash}`` objects — a
-    per-chunk identity/digest pair a snapshot-diff scan needs to detect a
-    changed chunk without re-reading its whole body. Live-verified dialect
-    quirk (3.1.5): a bare ``array<object> FLEXIBLE`` outer type still enforces
-    strict per-index nested-field paths (``chunk_hashes[1].hash`` etc.) unless
-    the two known keys are ALSO given their own bracket-wildcard
+    ``chunk_hashes`` is a ``FLEXIBLE`` array of ``{identity, sub_ordinal, hash}``
+    objects — the per-chunk identity/digest a snapshot-diff scan needs to detect
+    a changed chunk without re-reading its whole body. ``sub_ordinal`` is the
+    WITHIN-FILE disambiguator (P8b/F1): lorescribe's natural key is
+    ``(identity, sub_ordinal)``, since a windowed long function / split markdown
+    section emits several chunks that SHARE one ``identity`` and differ only by
+    ``sub_ordinal`` — a ledger storing ``{identity, hash}`` alone collapses those
+    siblings last-write-wins and silently masks a within-window drift, so it is a
+    first-class nested field here, not left to the FLEXIBLE bag. Live-verified
+    dialect quirk (3.1.5): a bare ``array<object> FLEXIBLE`` outer type still
+    enforces strict per-index nested-field paths (``chunk_hashes[1].hash`` etc.)
+    unless the known keys are ALSO given their own bracket-wildcard
     (``chunk_hashes[*].<key>``) field definitions — with those present,
-    ``FLEXIBLE`` on the outer field still tolerates any additional,
-    undeclared key an object may carry. The plain (non-UNIQUE) index on
-    ``snapshot`` backs a purge/diff scan by parent; it must stay non-unique
-    since many entries legitimately share one snapshot.
+    ``FLEXIBLE`` on the outer field still tolerates any additional, undeclared
+    key an object may carry. Corollary of the non-``option`` ``[*].sub_ordinal``
+    typing (live-verified): every NEW ``chunk_hashes`` write must carry
+    ``sub_ordinal`` on every element; a pre-F1 (old-schema) row that lacks it
+    survives untouched because ``DEFINE FIELD IF NOT EXISTS`` does NOT
+    retro-validate existing rows — the diff reader degrades honestly on those
+    legacy rows. The plain (non-UNIQUE) index on ``snapshot`` backs a purge/diff
+    scan by parent; it must stay non-unique since many entries legitimately share
+    one snapshot.
     """
     return [
         _define_table(SNAPSHOT_ENTRY_TABLE),
@@ -595,6 +606,7 @@ def _snapshot_entry_statements() -> list[str]:
         _define_field(SNAPSHOT_ENTRY_TABLE, "sha512", "string"),
         _define_field(SNAPSHOT_ENTRY_TABLE, "chunk_hashes", "array<object> FLEXIBLE"),
         _define_field(SNAPSHOT_ENTRY_TABLE, "chunk_hashes[*].identity", "string"),
+        _define_field(SNAPSHOT_ENTRY_TABLE, "chunk_hashes[*].sub_ordinal", "int"),
         _define_field(SNAPSHOT_ENTRY_TABLE, "chunk_hashes[*].hash", "string"),
         _plain_index(SNAPSHOT_ENTRY_TABLE, f"{SNAPSHOT_ENTRY_TABLE}_snapshot", ("snapshot",)),
     ]
