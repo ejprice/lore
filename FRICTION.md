@@ -20,6 +20,33 @@ consumed-by-<phase or commit> / superseded).
 
 ## Open
 
+- **2026-07-04 · builder-wireup-1 (P8b) · lore_findings ↔ chain_head · api_drift** —
+  wiring `lore_findings` onto `FindingLedger`, I read `chain_head(...) -> Finding` off
+  the module I'd just read, wrote the dispatch branch against it, and it passed the
+  behavioural tests — but `mypy` (in-gate) caught that the CONCURRENT builder
+  (builder-hardening-1) had already changed `chain_head` to return a fork-aware
+  `ChainHead` (head + `forked` + `fork_successor_numbers`), so my `finding: Finding =
+  await chain_head(...)` was a silent type error a pytest-only pass would have shipped.
+  Two lessons, both cheap insurance: (1) mypy-in-gate is what catches a foreign
+  return-type change under a live suite (the verify-2 friction two entries down is the
+  same shape — pytest-green masking a type-gate failure); (2) when a core returns a
+  RICHER value than you assumed, render the extra signal (I surfaced the fork marker)
+  rather than `.finding`-unwrap it back to the old shape — the richer type exists to
+  say something. **Feeds:** lore v2 concurrent-build doctrine — brief a wiring builder
+  that a core under concurrent edit may have a DIFFERENT signature than the last commit
+  shows; re-`get_symbol` the exact return type at wire time, and keep mypy in the gate.
+
+- **2026-07-04 · builder-wireup-1 (P8b) · lore_read ↔ _validate_tier · affordance_gap** —
+  `StoreReadTool.read` alone reports an unknown tier as a bare `StoreReadNotFoundError`
+  ("no indexed body… run search_code") — indistinguishable from a real miss, so a
+  tier TYPO reads as "file absent" with no hint the tier is wrong. The store lookup is
+  a keyed `[tier, path]` read that CANNOT tell an unknown tier from an unindexed path,
+  so the tool has no way to disambiguate on its own; the fix lives at the WIRING layer
+  (`AppContext.read` calls the server's existing `_validate_tier` FIRST, raising the
+  sibling `ReindexTierError` naming the configured tiers). **Feeds:** any store-keyed
+  read tool — tier validity is a SERVER-owned fact (the configured roots), not a
+  store-owned one; the pure tool can't name the valid tiers, so the wiring must.
+
 - **2026-07-04 · builder-verify-2 (P8b) · (whole surface) · distrust_unverified** —
   the wave-A `VerifyResult`/`verify()` code (uncommitted over c0132d0) shipped with
   TWO real mypy `str`→`Literal["confirmed","mismatch","not_found"]` `[arg-type]`
@@ -345,6 +372,31 @@ consumed-by-<phase or commit> / superseded).
   PUBLIC shared render seam (e.g. `loremaster/render.py` or `search`'s public
   surface), and SWEEP every store-derived render boundary through it — starting
   with `impact.py` — so no renderer re-hand-rolls or skips the launder.
+
+- **2026-07-04 · builder-hardening-1 · SurrealDB SELECT-projection of a
+  missing column · capability_gap** — audit-read finding 3 reasoned a partial
+  `file_text` row would raise a "bare KeyError" in `SurrealStore.file_text`. Live
+  probe (ws://127.0.0.1:18000) refined it: an EXPLICIT projection
+  (`SELECT text, sha512 …`) of a row missing `sha512` returns the key PRESENT with
+  value `None` — so the old code returned `{text, sha512: None}` with NO KeyError,
+  and that `None` flowed downstream into `store_read.py`'s integrity check as a
+  *phantom* `StoreReadIntegrityError` (misleading "corrupt body" for a merely
+  malformed row); the bare KeyError only appears at `store_read.py`'s `row['sha512']`
+  when the row arrives via a `SELECT *` (which OMITS the absent key). Two shapes of
+  the same corruption. Fix made the guard `.get(...) is None`, catching BOTH.
+  **Feeds:** any store reader projecting SCHEMAFULL columns — a missing/legacy
+  column reads back as `None`, not a KeyError; guard on value-is-None, and don't
+  trust a bare-KeyError mental model of "partial row".
+
+- **2026-07-04 · builder-hardening-1 · lore_references param name
+  inconsistency · affordance_gap** — `lore_references` takes its argument as
+  `name`, but the sibling `lore_get_symbol` takes `qualified_name`; calling
+  `lore_references(qualified_name=…)` (the natural guess after using get_symbol in
+  the same breath) hard-errors with a pydantic "Field required [name]". Minor, but
+  it cost a round-trip. **Feeds:** lore v2 tool-surface polish — align the
+  symbol-addressing param name across `lore_references` / `lore_get_symbol` /
+  `lore_tests_for` (or accept an alias), so a symbol name learned from one tool
+  drops straight into the next.
 
 ## Consumed
   *PARTIAL 9171021 (2026-07-04): read-side kind=/labels= recall filters SHIPPED; save-side digest guidance/auto-split remains open → P8.*
