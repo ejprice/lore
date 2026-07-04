@@ -258,6 +258,18 @@ consumed-by-<phase or commit> / superseded).
   affordance against digest dumps (length guidance or auto-split); consider
   note-chunking at embed time.
 
+- **2026-07-04 · warmup-1 · lore_tests_for · affordance_gap** —
+  `lore_tests_for("loremaster.search._sanitise_line")` returns empty (`[]`)
+  despite 19 passing tests in `TestRenderSanitiser` (test_search.py) exercising
+  it every run — they drive it indirectly via the search-rendering pipeline
+  (`_search_one_hostile_chunk`) rather than calling `_sanitise_line` by name, so
+  the graph's naming/reference heuristic finds no edge to the covering tests.
+  Workaround: `git show <prior commit>` + grep to locate the covering test class
+  by hand (used here for the efa5da7 sanitiser-extension pattern). **Feeds:**
+  P8 — widen tests_for to also credit a helper's tests via its containing
+  module/class co-location or an indirect call chain, not just a direct
+  reference edge to the exact symbol.
+
 ## Consumed
   *PARTIAL 9171021 (2026-07-04): read-side kind=/labels= recall filters SHIPPED; save-side digest guidance/auto-split remains open → P8.*
 
