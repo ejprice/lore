@@ -20,6 +20,35 @@ consumed-by-<phase or commit> / superseded).
 
 ## Open
 
+- **2026-07-04 · hygiene-7 (P8a wave 2) · lore_get_symbol · zero_hits
+  (stale on recently-touched file)** — `lore_get_symbol('loremaster.tasks._query')`
+  returned not-found for a symbol that exists (tasks.py:430, grep-confirmed);
+  the file had been edited minutes earlier by the same fleet wave, so the miss
+  reads as index lag presented as authoritative absence. Workaround: grep.
+  **Feeds:** P8d teaching-miss family — a get_symbol miss on a file with an
+  in-flight/recent index state should say "file recently changed, index may
+  lag — verify with read/grep", never a bare not-found. (Same family as the
+  search-side wait_for_fresh affordance.)
+
+- **2026-07-04 · sanitiser-residual (P8a wave 1) · lore_impact · wrong_result
+  (private-leaf blast radius)** — `lore_impact("loremaster.search._sanitise_line",
+  depth=2)` rolled up modules that never call it (test_qdrant_store 10,
+  memory.store, server, store._txn, test_watcher, loresigil.tei): the depth>1
+  rollup walks the transitive IMPORT ripple, which for a leaf-level private
+  function overstates the blast radius to near-uselessness; depth=1
+  `direct_consumers` came back `[]` for the same underscore-private function
+  even though search.py calls it from 7 sites. Workaround: grep -rn for the
+  authoritative call-site list. **Feeds:** P8d verdict-bearing-output doctrine —
+  either resolve private-symbol consumers properly or render an explicit
+  "private symbol — consumer resolution unreliable, use grep" notice instead of
+  empty-and-confident.
+
+- **2026-07-04 · sanitiser-residual (P8a wave 1) · lore_search_code ·
+  zero_hits (module-level constant)** — the module-level tuple constant
+  `_BIDI_AND_ZERO_WIDTH_CHARS` in test_search.py could not be surfaced via
+  semantic search (fell back to grep -n for its line). Module-level
+  assignments appear under-represented vs def/class chunks. **Feeds:** P8d
+  chunker/coverage review — constants are legitimate search targets.
 
 - **2026-07-03 · team-lead · lore_search_code · capability_gap** — P5's
   discovery questions were structural seam-sweeps ("every call site of the
