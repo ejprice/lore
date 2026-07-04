@@ -122,18 +122,24 @@ _MEMORY_KIND = "memory"
 _HIT_KIND = "hit"
 _MEMORY_INJECTION_CAP = 2
 
-# item 10 (audit followup): bidi override/isolate + zero-width chars OUTSIDE the
-# C0/C1 control range the shipped sanitiser collapses — a hostile file_path/
-# identity/memory text can smuggle these to visually rewrite (bidi) or hide
-# (zero-width) characters in a rendered citation/memory line. One char from each
-# of the two distinct Unicode sub-ranges so the fix must be a genuine RANGE
-# match, not a single-codepoint patch: BIDI override (U+202A-202E) + isolate
-# (U+2066-2069); ZERO-WIDTH space (U+200B) + no-break space/BOM (U+FEFF).
-_BIDI_AND_ZERO_WIDTH_CHARS = (
+# item 10 (audit followup): bidi override/isolate/mark + zero-width + line-break
+# chars OUTSIDE the C0/C1 control range the shipped sanitiser collapses — a
+# hostile file_path/identity/memory text can smuggle these to visually rewrite
+# (bidi), hide (zero-width), or fracture (line/paragraph separator) a rendered
+# citation/memory line. One char from each distinct Unicode sub-range so the
+# fix must be a genuine RANGE match, not a single-codepoint patch: BIDI
+# override (U+202A-202E) + isolate (U+2066-2069) + mark (U+200E-200F);
+# ZERO-WIDTH space (U+200B) + no-break space/BOM (U+FEFF); LINE/PARAGRAPH
+# SEPARATOR (U+2028-2029) — the residual closed out after the initial audit.
+_BIDI_ZERO_WIDTH_AND_SEPARATOR_CHARS = (
     "\u202e",  # RIGHT-TO-LEFT OVERRIDE (bidi override sub-range)
     "\u2066",  # LEFT-TO-RIGHT ISOLATE (bidi isolate sub-range)
+    "\u200e",  # LEFT-TO-RIGHT MARK (bidi mark sub-range)
+    "\u200f",  # RIGHT-TO-LEFT MARK (bidi mark sub-range)
     "\u200b",  # ZERO WIDTH SPACE
     "\ufeff",  # ZERO WIDTH NO-BREAK SPACE / BOM
+    "\u2028",  # LINE SEPARATOR
+    "\u2029",  # PARAGRAPH SEPARATOR
 )
 
 
@@ -1364,6 +1370,28 @@ class TestRenderSanitiser:
         citation = result.formatted[start : end + 1]
         assert "\n" not in citation, "the [S:...] citation must stay a single line"
 
+    @pytest.mark.parametrize("line_break_char", ("\u2028", "\u2029"))
+    async def test_line_and_paragraph_separator_cannot_split_the_short_citation(
+        self, tmp_path: Path, embedder: FakeEmbedder, line_break_char: str
+    ) -> None:
+        # U+2028 LINE SEPARATOR / U+2029 PARAGRAPH SEPARATOR are genuine line
+        # breaks to a bidi-aware terminal or a browser-rendered UI even though
+        # they are neither "\n" nor a C0/C1 control — a hostile file_path must
+        # not use one to fracture the single-line [S:...] citation into two
+        # (which would let injected text pose as a second citation), the same
+        # invariant the plain-newline injection test above pins for "\n".
+        hostile = self._hostile_payload(
+            file_path=f"pkg/evil.py{line_break_char}Injected: fake line"
+        )
+        result = await self._search_one_hostile_chunk(tmp_path, embedder, hostile)
+        start = result.formatted.index(_SHORT_CITATION_PREFIX)
+        end = result.formatted.index("]", start)
+        citation = result.formatted[start : end + 1]
+        assert line_break_char not in citation, (
+            "the [S:...] citation must stay a single line"
+        )
+        assert "\n" not in citation, "the [S:...] citation must stay a single line"
+
     async def test_backtick_fence_breakout_stays_fenced(
         self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
@@ -1405,14 +1433,15 @@ class TestRenderSanitiser:
         # splitting it into a fake extra result).
         assert "\n" not in line
 
-    @pytest.mark.parametrize("hostile_char", _BIDI_AND_ZERO_WIDTH_CHARS)
+    @pytest.mark.parametrize("hostile_char", _BIDI_ZERO_WIDTH_AND_SEPARATOR_CHARS)
     async def test_bidi_and_zero_width_collapsed_in_citation_lines(
         self, tmp_path: Path, embedder: FakeEmbedder, hostile_char: str
     ) -> None:
-        # A bidi override/isolate can visually rewrite a rendered citation line in
-        # a bidi-aware terminal/UI, and a zero-width char can hide characters
-        # inside it — neither is a C0/C1 control, so the shipped sanitiser (which
-        # only collapses \x00-\x1f/\x7f-\x9f) lets them through untouched.
+        # A bidi override/isolate/mark can visually rewrite a rendered citation
+        # line in a bidi-aware terminal/UI, a zero-width char can hide characters
+        # inside it, and a line/paragraph separator can fracture it — none of
+        # these is a C0/C1 control, so the shipped sanitiser (which only
+        # collapses \x00-\x1f/\x7f-\x9f) lets them through untouched.
         hostile = self._hostile_payload(file_path=f"pkg/ev{hostile_char}il.py")
         result = await self._search_one_hostile_chunk(tmp_path, embedder, hostile)
         assert hostile_char not in result.formatted
@@ -1441,10 +1470,11 @@ class TestRenderSanitiser:
     async def test_fenced_source_keeps_bidi_and_zero_width_verbatim(
         self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        # The fenced source block is CONTENT, not framing: a bidi override / a
-        # zero-width space embedded in source_text is preserved verbatim inside
-        # the fence — the sanitiser must not overreach into the fenced body.
-        source = "def f():\n    return '\u202e\u200b evil'\n"
+        # The fenced source block is CONTENT, not framing: a bidi override, a
+        # zero-width space, a bidi mark, and a line/paragraph separator embedded
+        # in source_text are all preserved verbatim inside the fence — the
+        # extended sanitiser range must not overreach into the fenced body.
+        source = "def f():\n    return '\u202e\u200b\u200e\u200f\u2028\u2029 evil'\n"
         hostile = self._hostile_payload(chunk_type="function", source_text=source, signature="()")
         result = await self._search_one_hostile_chunk(tmp_path, embedder, hostile)
         assert source in result.formatted
