@@ -34,9 +34,9 @@ such bug:
    ``store_unreachable`` below.
 
 IDENTITY: memory ids are minted via the SAME production pure helpers this fake
-imports — :meth:`~loremaster.memory.store.MemoryStore._refs_stamp` /
-:meth:`~loremaster.memory.store.MemoryStore._memory_id` /
-:meth:`~loremaster.memory.store.MemoryStore._refs_from_stamp` — so a wrong id
+imports — :func:`~loremaster.memory.backend.derive_refs_stamp` /
+:func:`~loremaster.memory.backend.derive_memory_id` /
+:func:`~loremaster.memory.backend.refs_from_stamp` — so a wrong id
 here would be a wrong id in the SAME source of truth production uses, not a
 fake-only drift. The ``lore_ref=<chunk_key>[@version]`` label parsing, by
 contrast, is the WIRE CONTRACT itself (documented in
@@ -86,12 +86,15 @@ from loremaster.memory.backend import (
     REINFORCEMENT_STEP,
     ChunkExistsFn,
     MemoryNotFoundError,
+    MemoryRef,
     MemorySource,
     RecalledMemory,
     RecalledRef,
+    derive_memory_id,
+    derive_refs_stamp,
+    refs_from_stamp,
 )
 from loremaster.memory.ledger import MemoryLedger, MemoryRecord
-from loremaster.memory.store import MemoryRef, MemoryStore
 from loremaster.store._txn import SurrealConnectionError
 from loresigil.base import Embedder
 from pydantic import ValidationError
@@ -160,8 +163,8 @@ def _build_lore_ref_label(chunk_key: str, key_version: int) -> str:
 def _refs_from_labels(labels: list[str]) -> list[MemoryRef]:
     """The versioned :class:`MemoryRef`\\ s a memory's ``lore_ref`` labels fold into.
 
-    Feeds :meth:`MemoryStore._refs_stamp` — reproducing the v0.3 deterministic-id
-    derivation EXACTLY (the SAME production pure helper
+    Feeds :func:`~loremaster.memory.backend.derive_refs_stamp` — reproducing the
+    v0.3 deterministic-id derivation EXACTLY (the SAME production pure helper
     :class:`~loremaster.memory.local.LocalMemoryBackend` itself calls).
     """
     refs: list[MemoryRef] = []
@@ -177,7 +180,7 @@ def _labels_from_refs_stamp(refs_stamp: str) -> list[str]:
     """Reconstruct ``lore_ref=`` labels from a ledger row's refs stamp (replay)."""
     return [
         _build_lore_ref_label(ref.chunk_key, ref.key_version)
-        for ref in MemoryStore._refs_from_stamp(refs_stamp)
+        for ref in refs_from_stamp(refs_stamp)
     ]
 
 
@@ -297,8 +300,8 @@ class FakeMemoryBackend:
         resolved_importance = self._resolve_importance(kind, importance)
         resolved_source = source if source is not None else MemorySource(kind=_DEFAULT_SOURCE_KIND)
         resolved_labels = list(labels or ())
-        refs_stamp = MemoryStore._refs_stamp(_refs_from_labels(resolved_labels))
-        memory_id = MemoryStore._memory_id(text, refs_stamp)
+        refs_stamp = derive_refs_stamp(_refs_from_labels(resolved_labels))
+        memory_id = derive_memory_id(text, refs_stamp)
         now = _utc_now()
         resolved_expires = self._resolve_expiry(kind, expires_at, now)
 

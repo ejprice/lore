@@ -94,9 +94,13 @@ from loremaster.memory.backend import (
     REINFORCEMENT_STEP,  # noqa: F401 - contract anchor (independence: NOT asserted against)
     MemoryBackend,  # noqa: F401 - the protocol the local backend must satisfy
     MemoryNotFoundError,
+    MemoryRef,
     MemorySource,
     RecalledMemory,
     RecalledRef,  # noqa: F401 - contract anchor for the recalled-ref shape
+    derive_memory_id,
+    derive_refs_stamp,
+    refs_from_stamp,
 )
 
 # The EXISTING durable ledger (reused, not redesigned — the FP-06 source of
@@ -1235,3 +1239,167 @@ class TestLedgerReplay:
 
         assert restored == 0
         assert counting_embedder.documents_embedded == 0, "an empty-ledger restore embeds nothing"
+
+
+# ===========================================================================
+# P8a-2 MOVE PARITY: the pure deterministic-id helpers moved OUT of the
+# Qdrant-era ``MemoryStore`` (in loremaster/memory/store.py — classmethods
+# ``_refs_stamp`` / ``_refs_from_stamp`` / ``_memory_id``) and INTO
+# ``loremaster.memory.backend`` as module-level functions
+# (``derive_refs_stamp`` / ``refs_from_stamp`` / ``derive_memory_id``), so the
+# Qdrant module can later be deleted. These pins are BYTE-EXACT: every golden
+# value below was computed from the CURRENT ``MemoryStore`` classmethods and
+# hard-pinned as a LITERAL, so the contract survives ``store.py``'s deletion
+# (nothing here imports ``loremaster.memory.store`` — the frozen literals ARE
+# the old path). ``MemoryRef`` (the versioned ``chunk_key`` + ``key_version``
+# reference the stamp folds in) moved with them.
+# ===========================================================================
+
+
+class TestMovedMemoryIdHelpersParity:
+    """Byte-exact parity pins for the id helpers moved store.py → backend.py.
+
+    The golden stamps / ids are frozen LITERALS (computed from the pre-move
+    ``MemoryStore`` classmethods), asserted against the NEW backend functions.
+    Includes the edge cases the move must not perturb: empty refs, order
+    insensitivity, a ``chunk_key`` that itself contains the ``@`` field
+    separator, and unicode / empty note text.
+    """
+
+    # -- refs_stamp ---------------------------------------------------------
+
+    def test_empty_refs_stamp_is_the_empty_string(self) -> None:
+        # An empty ref list stamps the empty string (folds into a bare id).
+        assert derive_refs_stamp([]) == ""
+
+    def test_single_ref_stamp_carries_the_default_key_version(self) -> None:
+        # A bare ref (no explicit version) stamps ``chunk_key@DEFAULT_KEY_VERSION``.
+        chunk_key = "loremaster:loremaster/memory/local.py:symbol:LocalMemoryBackend:0"
+        assert derive_refs_stamp([MemoryRef(chunk_key=chunk_key)]) == (
+            f"{chunk_key}@{DEFAULT_KEY_VERSION}"
+        )
+
+    def test_single_ref_stamp_carries_an_explicit_key_version(self) -> None:
+        assert (
+            derive_refs_stamp([MemoryRef(chunk_key="pkg/mod.py:Foo.bar", key_version=3)])
+            == "pkg/mod.py:Foo.bar@3"
+        )
+
+    def test_refs_stamp_is_order_insensitive(self) -> None:
+        # The SAME set of refs in ANY order dedups to ONE stamp (sorted before
+        # joining) — so two orderings mint the SAME memory id.
+        forward = derive_refs_stamp(
+            [
+                MemoryRef(chunk_key="a_chunk", key_version=1),
+                MemoryRef(chunk_key="b_chunk", key_version=2),
+            ]
+        )
+        reversed_ = derive_refs_stamp(
+            [
+                MemoryRef(chunk_key="b_chunk", key_version=2),
+                MemoryRef(chunk_key="a_chunk", key_version=1),
+            ]
+        )
+        assert forward == reversed_ == "a_chunk@1,b_chunk@2"
+
+    # -- refs_from_stamp (the inverse) --------------------------------------
+
+    def test_empty_stamp_reconstructs_no_refs(self) -> None:
+        assert refs_from_stamp("") == []
+
+    def test_stamp_reconstructs_the_versioned_refs(self) -> None:
+        assert refs_from_stamp("a_chunk@1,b_chunk@2") == [
+            MemoryRef(chunk_key="a_chunk", key_version=1),
+            MemoryRef(chunk_key="b_chunk", key_version=2),
+        ]
+
+    def test_chunk_key_containing_the_field_separator_round_trips(self) -> None:
+        # ``rpartition`` splits on the LAST ``@`` so a ``chunk_key`` that itself
+        # contains ``@`` (e.g. a ``user@host`` shaped key) survives the round trip.
+        refs = [MemoryRef(chunk_key="user@host:path", key_version=5)]
+        stamp = derive_refs_stamp(refs)
+        assert stamp == "user@host:path@5"
+        assert refs_from_stamp(stamp) == refs
+
+    def test_stamp_round_trip_is_order_normalised(self) -> None:
+        # from_stamp(stamp(refs)) yields the refs in the stamp's SORTED order.
+        refs = [
+            MemoryRef(chunk_key="z_chunk", key_version=9),
+            MemoryRef(chunk_key="a_chunk", key_version=1),
+        ]
+        assert refs_from_stamp(derive_refs_stamp(refs)) == [
+            MemoryRef(chunk_key="a_chunk", key_version=1),
+            MemoryRef(chunk_key="z_chunk", key_version=9),
+        ]
+
+    # -- memory_id (deterministic uuid5) — frozen golden literals -----------
+
+    def test_memory_id_ascii_no_stamp(self) -> None:
+        assert (
+            derive_memory_id("PG 18 mounts the data volume at /var/lib/postgresql", "")
+            == "9907af1b-5a77-53c1-a600-c09400ba6600"
+        )
+
+    def test_memory_id_ascii_with_stamp(self) -> None:
+        assert (
+            derive_memory_id(
+                "PG 18 mounts the data volume at /var/lib/postgresql", "a_chunk@1,b_chunk@2"
+            )
+            == "1bc26fcc-e469-584a-b83a-977467292bf8"
+        )
+
+    def test_memory_id_unicode_note_text_no_stamp(self) -> None:
+        # A non-ASCII note (arrows, accents, emoji, CJK) hashes identically before
+        # and after the move — the uuid5 name is the raw unicode string.
+        assert (
+            derive_memory_id("SurrealDB RecordID → str(id) everywhere; café ☕ naïve — 日本語", "")
+            == "0ed95165-983e-56e2-aad4-023ba8b1ceae"
+        )
+
+    def test_memory_id_unicode_note_text_with_stamp(self) -> None:
+        assert (
+            derive_memory_id(
+                "SurrealDB RecordID → str(id) everywhere; café ☕ naïve — 日本語",
+                "a_chunk@1,b_chunk@2",
+            )
+            == "ff67ea31-7066-5e4c-8a9e-62d8b55d3244"
+        )
+
+    def test_memory_id_empty_note_text_no_stamp(self) -> None:
+        assert derive_memory_id("", "") == "21b8f686-bdd7-5438-af5b-3dfd49cd02a5"
+
+    def test_memory_id_empty_note_text_with_stamp(self) -> None:
+        assert derive_memory_id("", "a_chunk@1,b_chunk@2") == (
+            "3f735716-59d8-5843-a3ac-b4ce33870f7b"
+        )
+
+    # -- end-to-end: reproduce THIS FILE'S pre-existing independent literals --
+
+    def test_end_to_end_reproduces_the_files_pinned_literals(self) -> None:
+        # The moved functions, composed (stamp → id), reproduce the LITERAL ids
+        # this module pinned INDEPENDENTLY (``_LITERAL_ID_*`` computed from the
+        # documented convention, not from any code under test) — a cross-check
+        # tying the moved helpers to the file's own oracle.
+        assert derive_memory_id(PG_NOTE, derive_refs_stamp([])) == _LITERAL_ID_NO_REFS
+        assert (
+            derive_memory_id(PG_NOTE, derive_refs_stamp([MemoryRef(chunk_key=PINNED_CHUNK_KEY)]))
+            == _LITERAL_ID_REF_V1
+        )
+        assert (
+            derive_memory_id(
+                PG_NOTE,
+                derive_refs_stamp([MemoryRef(chunk_key=PINNED_CHUNK_KEY, key_version=3)]),
+            )
+            == _LITERAL_ID_REF_V3
+        )
+
+    def test_end_to_end_matches_the_independent_oracle_helpers(self) -> None:
+        # The moved functions agree with this module's independent oracle
+        # reconstructions (``expected_refs_stamp`` / ``expected_memory_id``) for a
+        # representative memory carrying a versioned ref.
+        chunk_key = "odoo:custom:models/account.py:symbol:AccountMove:0"
+        ref = MemoryRef(chunk_key=chunk_key, key_version=3)
+        assert derive_refs_stamp([ref]) == expected_refs_stamp([(chunk_key, 3)])
+        assert derive_memory_id(PG_NOTE, derive_refs_stamp([ref])) == (
+            expected_memory_id(PG_NOTE, [(chunk_key, 3)])
+        )

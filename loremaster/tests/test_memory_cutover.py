@@ -57,9 +57,8 @@ from _surreal_harness import (
     surreal_user,
 )
 from loremaster.config import LoreConfig
-from loremaster.memory.backend import MemoryBackend
+from loremaster.memory.backend import MemoryBackend, derive_memory_id, derive_refs_stamp
 from loremaster.memory.ledger import MemoryLedger
-from loremaster.memory.store import MemoryStore
 from loremaster.server import AppContext, LoreServer, build_app_context
 from loremaster.tasks import TaskLedger
 from loresigil.testing import FakeEmbedder
@@ -262,8 +261,8 @@ def _seed_ledger(path: Path) -> list[str]:
     ids: list[str] = []
     try:
         for text in (_SEED_MEMORY_TEXT, _SEED_MEMORY_TEXT_2):
-            refs_stamp = MemoryStore._refs_stamp([])  # no refs → the empty stamp
-            memory_id = MemoryStore._memory_id(text, refs_stamp)
+            refs_stamp = derive_refs_stamp([])  # no refs → the empty stamp
+            memory_id = derive_memory_id(text, refs_stamp)
             ledger.record(
                 memory_id=memory_id,
                 text=text,

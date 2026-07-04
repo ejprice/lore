@@ -84,7 +84,7 @@ from _surreal_harness import (
     surreal_user,
 )
 from loremaster.config import LoreConfig
-from loremaster.memory.store import MemoryRef, MemoryStore
+from loremaster.memory.backend import MemoryRef, derive_memory_id, derive_refs_stamp
 from loremaster.tasks import IllegalTransitionError, TaskNotFoundError
 from loremaster.map import _BUDGET_FLOOR as _PRODUCTION_MAP_BUDGET_FLOOR
 from loremaster.map import _ELISION_FRAGMENT as _PRODUCTION_MAP_ELISION_FRAGMENT
@@ -3007,8 +3007,8 @@ class TestSaveMemoryCutover:
         # cutover. Independent oracle: the production id helpers over the same refs.
         note = "the discount rounding rule lives in pkg/pricing/rules.py"
         memory_id = await getattr(cutover_ctx, "save_memory")(note, refs=[_CUTOVER_CHUNK_KEY])
-        expected = MemoryStore._memory_id(
-            note, MemoryStore._refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)])
+        expected = derive_memory_id(
+            note, derive_refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)])
         )
         assert memory_id == expected, (
             "a save with refs must mint the v0.3 deterministic id (text+refs → same id)"
@@ -3021,7 +3021,7 @@ class TestSaveMemoryCutover:
         # mints the v0.3 empty-stamp id, so an old note and a new one collapse.
         note = "champion routing warehouse selection lives in pkg/routing.py"
         memory_id = await getattr(cutover_ctx, "save_memory")(note)
-        expected = MemoryStore._memory_id(note, MemoryStore._refs_stamp([]))
+        expected = derive_memory_id(note, derive_refs_stamp([]))
         assert memory_id == expected, (
             "a bare save must still mint the v0.3 deterministic id (backward compat)"
         )
@@ -3356,7 +3356,7 @@ class TestSaveMemoryReservedMetadataGuard:
         memory_id = await getattr(cutover_ctx, "save_memory")(
             note, metadata={"author": "ejprice", "reviewed": "yes"}
         )
-        expected_empty_stamp_id = MemoryStore._memory_id(note, MemoryStore._refs_stamp([]))
+        expected_empty_stamp_id = derive_memory_id(note, derive_refs_stamp([]))
         assert memory_id == expected_empty_stamp_id, (
             "a benign metadata key is a plain label, never a ref — it must not "
             "fold into the deterministic id (id must equal the bare empty-stamp id)"
@@ -3370,8 +3370,8 @@ class TestSaveMemoryReservedMetadataGuard:
         # Independent oracle: the production id helpers over the same ref.
         note = "champion routing warehouse selection lives in pkg/routing.py"
         memory_id = await getattr(cutover_ctx, "save_memory")(note, refs=[_CUTOVER_CHUNK_KEY])
-        expected_with_ref_id = MemoryStore._memory_id(
-            note, MemoryStore._refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)])
+        expected_with_ref_id = derive_memory_id(
+            note, derive_refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)])
         )
         assert memory_id == expected_with_ref_id, (
             "the legitimate refs= path must still mint the v0.3 deterministic id "

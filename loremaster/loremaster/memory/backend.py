@@ -4,6 +4,15 @@ This module replaces the Qdrant-only :mod:`loremaster.memory.store` payload
 shapes with the Spectron-derived, snake_case memory wire vocabulary the local
 SurrealDB-backed implementation (:mod:`loremaster.memory.local`) speaks:
 
+* :class:`MemoryRef` + :func:`derive_refs_stamp` / :func:`refs_from_stamp` /
+  :func:`derive_memory_id` — the pure, storage-agnostic deterministic-id
+  derivation. These moved here from the Qdrant-era
+  :mod:`loremaster.memory.store` (where they were ``MemoryStore`` classmethods)
+  so the local SurrealDB backend, the fakes, and the durable ledger replay share
+  ONE id-minting source of truth and the Qdrant module can later be deleted. The
+  id scheme is UNCHANGED (``uuid5`` over ``memory:{text}:{refs_stamp}``), so a
+  restore re-mints byte-identical ids — pinned by
+  ``test_memory_backend.TestMovedMemoryIdHelpersParity``.
 * :class:`MemorySource` — the provenance of a memory note (``kind``/``ref``/
   ``trust``). ``trust`` is a two-value **enum**
   (``"authoritative"``/``"experiential"``), NOT the P2 schema's float trust
@@ -28,12 +37,14 @@ implementation.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from loremaster.extension import DEFAULT_KEY_VERSION
 from loremaster.memory.ledger import MemoryLedger
 
 # --- Plan-pinned constants (P7 requirement, NOT tunable at call sites) ------
@@ -69,6 +80,110 @@ DEFAULT_TRUST: TrustLevel = "experiential"
 #: input for :class:`RecalledRef.drifted`. ``True`` means the referenced chunk
 #: still exists in the code index.
 ChunkExistsFn = Callable[[str], Awaitable[bool]]
+
+
+# --- Deterministic memory-id derivation (storage-agnostic, v0.3-compatible) ---
+#
+# The pure id-minting contract every backend + the durable ledger replay share.
+# Moved here from :mod:`loremaster.memory.store` (formerly ``MemoryStore``
+# classmethods) so the Qdrant module can later be deleted while these survive as
+# the ONE source of truth. The scheme is UNCHANGED, so a restore re-mints
+# byte-identical ids (pinned by ``test_memory_backend``'s parity suite).
+
+# UUID5 name components, joined by ``_ID_SEPARATOR``. ``memory`` namespaces the id
+# so a memory id can never collide with a structural chunk point id.
+_ID_PREFIX = "memory"
+_ID_SEPARATOR = ":"
+
+# Within the refs stamp, the per-ref fields and the inter-ref join. Sorting the
+# refs before stamping makes the id order-insensitive (the same set of refs in
+# any order dedups to one id).
+_REF_FIELD_SEPARATOR = "@"
+_REF_JOIN = ","
+
+
+class MemoryRef(BaseModel):
+    """A versioned reference from a memory to an indexed chunk-key.
+
+    Attributes:
+        chunk_key: The semantic chunk-key this memory references (e.g. the value
+            an :meth:`~loremaster.extension.Extension.chunk_key` seam produces).
+        key_version: The keying-scheme version the ``chunk_key`` was minted under.
+            Defaults to :data:`~loremaster.extension.DEFAULT_KEY_VERSION` so a ref
+            is never silently unversioned; a keying change bumps this, making the
+            stored reference migratable instead of a silent orphan.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_key: str
+    key_version: int = DEFAULT_KEY_VERSION
+
+
+def derive_refs_stamp(refs: list[MemoryRef]) -> str:
+    """Fold a memory's versioned refs into an order-insensitive stamp.
+
+    Each ref becomes ``chunk_key@key_version``; the set is sorted (so the same
+    refs in any order produce the same stamp) and joined by ``,``. An empty ref
+    list stamps the empty string. This is the EXACT stamp persisted to the ledger
+    and folded into the deterministic id, so a restore re-mints the SAME id and
+    overwrites in place.
+
+    Args:
+        refs: The memory's versioned refs.
+
+    Returns:
+        The order-insensitive refs stamp.
+    """
+    stamped_refs = sorted(
+        f"{ref.chunk_key}{_REF_FIELD_SEPARATOR}{ref.key_version}" for ref in refs
+    )
+    return _REF_JOIN.join(stamped_refs)
+
+
+def refs_from_stamp(refs_stamp: str) -> list[MemoryRef]:
+    """Reconstruct the versioned refs from a persisted refs stamp.
+
+    The inverse of :func:`derive_refs_stamp`: split the stamp on the join
+    separator, then each piece on the LAST field separator back into a
+    ``(chunk_key, key_version)`` :class:`MemoryRef` (so a ``chunk_key`` that
+    itself contains ``@`` survives the round trip). An empty stamp yields no refs.
+
+    Args:
+        refs_stamp: The order-insensitive refs stamp persisted in the ledger.
+
+    Returns:
+        The reconstructed versioned refs (empty for an empty stamp).
+    """
+    if not refs_stamp:
+        return []
+    refs: list[MemoryRef] = []
+    for piece in refs_stamp.split(_REF_JOIN):
+        chunk_key, _, version = piece.rpartition(_REF_FIELD_SEPARATOR)
+        refs.append(MemoryRef(chunk_key=chunk_key, key_version=int(version)))
+    return refs
+
+
+def derive_memory_id(text: str, refs_stamp: str) -> str:
+    """Derive the deterministic ``uuid5`` id for a note + its refs stamp.
+
+    The id is ``uuid5(NAMESPACE_URL, "memory:{text}:{refs_stamp}")`` where the
+    refs stamp comes from :func:`derive_refs_stamp`. Identical (text, refs) ⇒
+    identical id (dedup); the same text with different refs ⇒ a distinct id
+    (distinct corrections). Taking the precomputed stamp (rather than the raw
+    refs) keeps the ledger row and the id in lock-step — the ledger stores the
+    SAME stamp the id is minted from.
+
+    Args:
+        text: The note text.
+        refs_stamp: The order-insensitive refs stamp (from
+            :func:`derive_refs_stamp`).
+
+    Returns:
+        The deterministic point id as a canonical UUID string.
+    """
+    name = _ID_SEPARATOR.join((_ID_PREFIX, text, refs_stamp))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
 
 
 class MemorySource(BaseModel):

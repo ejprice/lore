@@ -10,11 +10,13 @@ is the durable, separate memory collection and the deterministic, dedup-safe id.
 
 The contract:
 
-* :class:`MemoryRef` — a **versioned** reference from a memory to an indexed
-  chunk-key. Every ref carries a ``key_version`` (defaulting to the base
-  :data:`~loremaster.extension.DEFAULT_KEY_VERSION`), so a change to the keying
-  scheme is *migratable* — a stored memory pointing at an old key version is
-  detectable, never a silent orphan. This is the migration-safe correction case.
+* :class:`~loremaster.memory.backend.MemoryRef` — a **versioned** reference from
+  a memory to an indexed chunk-key. It (and the deterministic-id helpers below)
+  now live in :mod:`loremaster.memory.backend`, the storage-agnostic id-minting
+  source of truth; this module re-exports ``MemoryRef`` and delegates its
+  ``_refs_stamp`` / ``_refs_from_stamp`` / ``_memory_id`` classmethods to
+  backend's ``derive_refs_stamp`` / ``refs_from_stamp`` / ``derive_memory_id``,
+  so the two paths cannot drift while this Qdrant-era module awaits deletion.
 * :class:`RecalledMemory` — the summarised value object :meth:`MemoryStore.recall_memory`
   returns: the note text + caller metadata + its refs + the similarity score.
   Recall never leaks a raw :class:`~qdrant_client.models.ScoredPoint`.
@@ -38,15 +40,19 @@ wiped/short memory collection.
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from loresigil.base import Embedder
 from pydantic import BaseModel, ConfigDict, Field
 
-from loremaster.extension import DEFAULT_KEY_VERSION
 from loremaster.index.records import Record
+from loremaster.memory.backend import (
+    MemoryRef,
+    derive_memory_id,
+    derive_refs_stamp,
+    refs_from_stamp,
+)
 from loremaster.memory.ledger import MemoryLedger, MemoryRecord
 from loremaster.store.qdrant import QdrantStore
 
@@ -70,35 +76,6 @@ _PAYLOAD_CREATED_AT = "created_at"
 
 # The constant ``kind`` stamped on every memory point.
 _KIND_MEMORY = "memory"
-
-# UUID5 name components, joined by this separator. ``memory`` namespaces the id so
-# a memory id can never collide with a structural chunk point id.
-_ID_PREFIX = "memory"
-_ID_SEPARATOR = ":"
-
-# Within the refs stamp, the per-ref fields and the inter-ref join. Sorting the
-# refs before stamping makes the id order-insensitive (the same set of refs in
-# any order dedups to one point).
-_REF_FIELD_SEPARATOR = "@"
-_REF_JOIN = ","
-
-
-class MemoryRef(BaseModel):
-    """A versioned reference from a memory to an indexed chunk-key.
-
-    Attributes:
-        chunk_key: The semantic chunk-key this memory references (e.g. the value
-            an :meth:`~loremaster.extension.Extension.chunk_key` seam produces).
-        key_version: The keying-scheme version the ``chunk_key`` was minted under.
-            Defaults to :data:`~loremaster.extension.DEFAULT_KEY_VERSION` so a ref
-            is never silently unversioned; a keying change bumps this, making the
-            stored reference migratable instead of a silent orphan.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    chunk_key: str
-    key_version: int = DEFAULT_KEY_VERSION
 
 
 class RecalledMemory(BaseModel):
@@ -418,11 +395,10 @@ class MemoryStore:
     def _refs_stamp(cls, refs: list[MemoryRef]) -> str:
         """Fold a memory's versioned refs into an order-insensitive stamp.
 
-        Each ref becomes ``chunk_key@key_version``; the set is sorted (so the same
-        refs in any order produce the same stamp) and joined by ``,``. An empty
-        ref list stamps the empty string. This is the EXACT stamp persisted to the
-        ledger and folded into the deterministic id, so a restore re-mints the
-        SAME id and overwrites in place.
+        Thin delegator to :func:`~loremaster.memory.backend.derive_refs_stamp`
+        (the storage-agnostic id-minting source of truth); kept so this Qdrant-era
+        module stays green until its deletion, with NO duplicated stamping logic.
+        See the backend function for the full contract.
 
         Args:
             refs: The memory's versioned refs.
@@ -430,19 +406,15 @@ class MemoryStore:
         Returns:
             The order-insensitive refs stamp.
         """
-        stamped_refs = sorted(
-            f"{ref.chunk_key}{_REF_FIELD_SEPARATOR}{ref.key_version}" for ref in refs
-        )
-        return _REF_JOIN.join(stamped_refs)
+        return derive_refs_stamp(refs)
 
     @classmethod
     def _refs_from_stamp(cls, refs_stamp: str) -> list[MemoryRef]:
         """Reconstruct the versioned refs from a persisted refs stamp.
 
-        The inverse of :meth:`_refs_stamp`: split the stamp on the join separator,
-        then each piece on the field separator back into a ``(chunk_key,
-        key_version)`` :class:`MemoryRef`. An empty stamp yields no refs. Used by
-        the restore path to repopulate the Qdrant payload's refs from the ledger.
+        Thin delegator to :func:`~loremaster.memory.backend.refs_from_stamp` (the
+        inverse of :meth:`_refs_stamp`); kept for backward-compat until this
+        module is deleted, with NO duplicated parsing logic.
 
         Args:
             refs_stamp: The order-insensitive refs stamp persisted in the ledger.
@@ -450,13 +422,7 @@ class MemoryStore:
         Returns:
             The reconstructed versioned refs (empty for an empty stamp).
         """
-        if not refs_stamp:
-            return []
-        refs: list[MemoryRef] = []
-        for piece in refs_stamp.split(_REF_JOIN):
-            chunk_key, _, version = piece.rpartition(_REF_FIELD_SEPARATOR)
-            refs.append(MemoryRef(chunk_key=chunk_key, key_version=int(version)))
-        return refs
+        return refs_from_stamp(refs_stamp)
 
     @classmethod
     def _refs_from_payload(cls, payload: dict[str, Any]) -> list[MemoryRef]:
@@ -481,12 +447,10 @@ class MemoryStore:
     def _memory_id(cls, text: str, refs_stamp: str) -> str:
         """Derive the deterministic ``uuid5`` id for a note + its refs stamp.
 
-        The id is ``uuid5(NAMESPACE_URL, "memory:{text}:{refs_stamp}")`` where the
-        refs stamp comes from :meth:`_refs_stamp`. Identical (text, refs) ⇒
-        identical id (dedup); the same text with different refs ⇒ a distinct id
-        (distinct corrections). Taking the precomputed stamp (rather than the raw
-        refs) keeps the ledger row and the id in lock-step — the ledger stores the
-        SAME stamp the id is minted from.
+        Thin delegator to :func:`~loremaster.memory.backend.derive_memory_id` (the
+        storage-agnostic id-minting source of truth); kept so this Qdrant-era
+        module stays green until its deletion, with NO duplicated id logic. See
+        the backend function for the full contract.
 
         Args:
             text: The note text.
@@ -495,5 +459,4 @@ class MemoryStore:
         Returns:
             The deterministic point id as a canonical UUID string.
         """
-        name = _ID_SEPARATOR.join((_ID_PREFIX, text, refs_stamp))
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
+        return derive_memory_id(text, refs_stamp)

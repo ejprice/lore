@@ -5,8 +5,9 @@ vocabulary (:mod:`loremaster.memory.backend`) against a per-project SurrealDB
 database. It:
 
 * mints a deterministic ``uuid5`` memory id that is BACKWARD-COMPATIBLE with the
-  v0.3 ledger convention (reusing :class:`~loremaster.memory.store.MemoryStore`'s
-  own ``refs_stamp`` / id derivation, so a restore re-mints byte-identical ids);
+  v0.3 ledger convention (reusing :mod:`loremaster.memory.backend`'s
+  ``derive_refs_stamp`` / ``derive_memory_id`` helpers, so a restore re-mints
+  byte-identical ids);
 * write-throughs the durable :class:`~loremaster.memory.ledger.MemoryLedger`
   row FIRST (FP-06), before the volatile SurrealDB write, so a Surreal failure
   never loses a memory;
@@ -46,12 +47,15 @@ from loremaster.memory.backend import (
     REINFORCEMENT_STEP,
     ChunkExistsFn,
     MemoryNotFoundError,
+    MemoryRef,
     MemorySource,
     RecalledMemory,
     RecalledRef,
+    derive_memory_id,
+    derive_refs_stamp,
+    refs_from_stamp,
 )
 from loremaster.memory.ledger import MemoryLedger, MemoryRecord
-from loremaster.memory.store import MemoryRef, MemoryStore
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
@@ -435,8 +439,8 @@ class LocalMemoryBackend:
         resolved_importance = self._resolve_importance(kind, importance)
         resolved_source = source if source is not None else MemorySource(kind=_DEFAULT_SOURCE_KIND)
         resolved_labels = list(labels or ())
-        refs_stamp = MemoryStore._refs_stamp(self._refs_from_labels(resolved_labels))
-        memory_id = MemoryStore._memory_id(text, refs_stamp)
+        refs_stamp = derive_refs_stamp(self._refs_from_labels(resolved_labels))
+        memory_id = derive_memory_id(text, refs_stamp)
         now = datetime.now(UTC)
         resolved_expires = self._resolve_expiry(kind, expires_at, now)
 
@@ -991,8 +995,9 @@ class LocalMemoryBackend:
         """The versioned :class:`MemoryRef`\\ s a memory's ``lore_ref`` labels fold into.
 
         Only ``lore_ref=`` labels contribute (non-ref labels never affect the id);
-        the resulting refs feed :meth:`MemoryStore._refs_stamp`, reproducing the
-        v0.3 deterministic-id derivation EXACTLY (backward compat with the ledger).
+        the resulting refs feed
+        :func:`~loremaster.memory.backend.derive_refs_stamp`, reproducing the v0.3
+        deterministic-id derivation EXACTLY (backward compat with the ledger).
         """
         refs: list[MemoryRef] = []
         for label in labels:
@@ -1007,7 +1012,7 @@ class LocalMemoryBackend:
         """Reconstruct ``lore_ref=`` labels from a ledger row's refs stamp (replay)."""
         return [
             cls._lore_ref_label(ref.chunk_key, ref.key_version)
-            for ref in MemoryStore._refs_from_stamp(refs_stamp)
+            for ref in refs_from_stamp(refs_stamp)
         ]
 
     @staticmethod
