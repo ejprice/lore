@@ -247,6 +247,7 @@ class MemoryBackend(Protocol):
         include: str | None = None,
         as_of: datetime | None = None,
         labels: list[str] | None = None,
+        kind: str | None = None,
         lens: str | None = None,
     ) -> list[RecalledMemory]:
         """Embed ``query`` and return the nearest matching memories.
@@ -261,6 +262,8 @@ class MemoryBackend(Protocol):
                 even if it is no longer live now).
             labels: An ALL-semantics label filter (every requested label must
                 be present on a row for it to match).
+            kind: When set, restrict to memories of this exact kind; composes
+                with ``labels`` as an INTERSECTION (both must match).
             lens: Unsupported by the local backend in P7.
 
         Returns:

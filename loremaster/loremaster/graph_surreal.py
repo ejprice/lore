@@ -1216,7 +1216,18 @@ class SurrealCodeGraph:
         related: dict[str, GraphNode] = {}
 
         # 1) Test files carrying a reference (any kind) to the target.
+        # Ride the SAME gated ``answers_to`` bare-name bridge :meth:`references` and
+        # :meth:`_reverse_neighbours` use: a genuinely BARE query
+        # (``symbol_or_file == target_bare``) additionally reaches every RESOLVED
+        # FQN sharing that bare name via the target node's own ``answers_to``
+        # fan-out (:meth:`_bare_name_answerers`), so a bare identity surfaces the
+        # SAME covering tests as its module-qualified form -- the 0-vs-137 friction
+        # (FRICTION.md 2026-07-03). A dotted/already-qualified query is NOT bridged
+        # (it stays scoped to its literal dst), exactly as the sibling readers gate.
         name_ids = [self._name_id(symbol_or_file), self._name_id(target_bare)]
+        if symbol_or_file == target_bare:
+            for fqn in await self._bare_name_answerers([target_bare]):
+                name_ids.append(self._name_id(fqn))
         ref_rows = self._rows(
             await self._query(
                 f"SELECT {_COL_SRC_TIER}, {_COL_SRC_FILE_PATH} FROM {REFERS_RELATION} "

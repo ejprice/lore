@@ -44,6 +44,7 @@ import importlib.metadata
 import inspect
 import json
 import logging
+import math
 import os
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping, Sequence
 from pathlib import Path
@@ -800,6 +801,18 @@ _DEFAULT_MEMORY_KIND = "fact"
 # ``trust`` but no richer source (an operator note — matches the local backend's
 # own default source kind).
 _MEMORY_SOURCE_KIND_OPERATOR = "operator"
+# lore denominates map/read budgets in VOYAGE tokens (the pinned voyage-4
+# tokenizer counts every rendered block), but the CONSUMER pays in CLAUDE tokens.
+# TOKEN_BUDGET_CALIBRATION is the live-measured voyage->claude ratio: SURVEY-FINAL
+# 2026-07-04 against the Anthropic count_tokens endpoint on claude-sonnet-5 -- the
+# MAX per-project TOKEN-WEIGHTED p95 over a deterministic 10% stratified sample,
+# 1,116 files (lore 1.704 / odoo 1.776 / di 1.729); tool scripts/token_survey.py;
+# supersedes the six-sample pilot (1.61-1.72). Pinned at the observed MAXIMUM --
+# CEILING semantics: a budget is a promise that must hold for the WORST observed
+# content shape, so an uncalibrated budget never silently under-counts the
+# consumer's real cost (up to ~78%). Applied in the budget-counting path
+# (AppContext._count_tokens_single): counted = ceil(voyage_count * calibration).
+TOKEN_BUDGET_CALIBRATION = 1.78
 # The ``chunk`` table's record-id column the drift oracle point-fetches by.
 _CHUNK_ID_COLUMN = "id"
 # The rendered digest lines for an empty memory recall / task query — a plain,
@@ -862,10 +875,32 @@ def _metadata_to_labels(metadata: dict[str, Any] | None) -> list[str]:
     speaks flat labels instead. A still-supplied ``metadata`` is flattened to
     ``key=value`` labels (plain labels — NOT ``lore_ref=``, so they never affect
     the deterministic id) rather than silently dropped.
+
+    N1 guard (cutover-audit): a flattened label whose text starts with the
+    backend's RESERVED ``lore_ref=`` prefix would be indistinguishable from a real
+    chunk ref and would silently fold into the deterministic id — a silent
+    promotion of decorative metadata into a chunk ref. Such a label is REJECTED
+    loudly here, NAMING the reserved prefix, BEFORE any ledger/store write. The
+    predicate keys on the flattened LABEL's prefix (not an exact ``key ==
+    "lore_ref"`` match) so a key that itself embeds the separator (label
+    ``lore_ref=nested=…``) is caught too. The prefix is imported from the backend's
+    own source of truth (never restated) so the two can never drift. The sanctioned
+    ``refs=`` param is unaffected — it flows through :func:`_refs_to_labels`.
     """
     if not metadata:
         return []
-    return [f"{key}={value}" for key, value in metadata.items()]
+    from loremaster.memory.local import _LORE_REF_LABEL_PREFIX
+
+    labels = [f"{key}={value}" for key, value in metadata.items()]
+    for label in labels:
+        if label.startswith(_LORE_REF_LABEL_PREFIX):
+            raise ValueError(
+                f"metadata flattens to the label {label!r}, which starts with the "
+                f"reserved {_LORE_REF_LABEL_PREFIX!r} prefix — that prefix is "
+                f"reserved for chunk refs that fold into the deterministic memory "
+                f"id; pass chunk references through the refs= parameter instead."
+            )
+    return labels
 
 
 def _make_chunk_exists(store: SurrealStore) -> ChunkExistsFn:
@@ -1299,15 +1334,25 @@ class AppContext:
             supersedes=supersedes,
         )
 
-    async def recall_memory(self, query: str, k: int = _DEFAULT_RECALL_K) -> str:
+    async def recall_memory(
+        self,
+        query: str,
+        k: int = _DEFAULT_RECALL_K,
+        *,
+        kind: str | None = None,
+        labels: list[str] | None = None,
+    ) -> str:
         """Recall the nearest saved notes for ``query`` as a summarised markdown digest.
 
         Delegates to the backend's ``recall`` (superseded/expired rows never
         surface — the backend already excludes them, so this NEVER re-filters) and
         renders each note's text + kind + importance + score + refs, drift-marking a
-        ref whose chunk no longer exists.
+        ref whose chunk no longer exists. ``kind`` and ``labels`` are pass-through
+        filters onto the backend's own semantics (``kind`` an exact match,
+        ``labels`` an ALL-match); omitting both leaves the unfiltered recall path
+        byte-identical to before their addition.
         """
-        recalled = await self.memory_backend.recall(query, k=k)
+        recalled = await self.memory_backend.recall(query, k=k, kind=kind, labels=labels)
         return self._render_recalled_memories(recalled)
 
     @staticmethod
@@ -1623,7 +1668,10 @@ class AppContext:
         return await self._impact_engine.impact(target, depth, max_consumers)
 
     async def map(
-        self, budget: int = _MAP_DEFAULT_BUDGET, focus: str | None = None
+        self,
+        budget: int = _MAP_DEFAULT_BUDGET,
+        focus: str | None = None,
+        tests: bool = False,
     ) -> MapResult:
         """Return the rank-ordered, budget-fitted "orient me here" map of the graph.
 
@@ -1631,9 +1679,11 @@ class AppContext:
         SAME ``code_graph`` + ``_rebuild_notice`` probe ``impact`` uses above) —
         a ranking is never served mid-rebuild. ``MapRebuildingError`` /
         ``MapFocusNotFoundError`` propagate UNCHANGED, mirroring ``impact``'s
-        error-passthrough convention immediately above.
+        error-passthrough convention immediately above. ``tests=True`` appends the
+        segregated, ``[test]``-marked test-infra section (the default map excludes
+        it, surfacing an always-on ``tests=true`` affordance line instead).
         """
-        return await self._map_engine.map(budget, focus)
+        return await self._map_engine.map(budget, focus, tests)
 
     # -- rebuilding-notice seam (shared by the six corpus read tools) -------
     #
@@ -1724,8 +1774,15 @@ class AppContext:
         explicit ``int()`` cast keeps this typecheck-clean: ``loresigil`` ships
         no ``py.typed`` marker, so ``count_tokens``'s real ``list[int]`` return
         type is unfollowed and widens to ``Any`` at the call site.
+
+        The raw voyage count is re-denominated into ~Claude-token currency via
+        :data:`TOKEN_BUDGET_CALIBRATION` (ceiling semantics: ``math.ceil`` so a
+        fractional remainder always rounds the promised cost UP, never down) so a
+        budget of B buys at most ~B Claude tokens for the worst observed content
+        shape -- the consumer pays in Claude tokens, not voyage tokens.
         """
-        return int(self.embedder.count_tokens([text])[0])
+        voyage_count = int(self.embedder.count_tokens([text])[0])
+        return math.ceil(voyage_count * TOKEN_BUDGET_CALIBRATION)
 
     # -- extension tools (seam 3) ------------------------------------------
 
@@ -3287,8 +3344,27 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 ),
             ),
         ] = _DEFAULT_RECALL_K,
+        kind: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional exact-match filter on the memory kind: one of fact / "
+                    "decision / gotcha / uncertainty / ongoing. Omit to recall every kind."
+                )
+            ),
+        ] = None,
+        labels: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Optional ALL-semantics label filter (every requested label must be "
+                    "present on a note for it to match, e.g. ['topic=fees']); composes "
+                    "with 'kind' as an intersection. Omit for no label filter."
+                )
+            ),
+        ] = None,
     ) -> str:
-        return await _app_context(context).recall_memory(query, k)
+        return await _app_context(context).recall_memory(query, k, kind=kind, labels=labels)
 
     @mcp.tool(
         name="lore_claim_task",
@@ -3774,8 +3850,20 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
+        tests: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Include the segregated, [test]-marked test-infra section. The "
+                    "default map excludes test modules from the rendering (their "
+                    "import edges still feed production rank) and surfaces an "
+                    "always-on 'tests=true' affordance line naming the top test "
+                    "hub(s); set true to append the rolled-up test section."
+                )
+            ),
+        ] = False,
     ) -> MapResult:
-        return await _app_context(context).map(budget, focus)
+        return await _app_context(context).map(budget, focus, tests)
 
     # After the fourteen built-ins, register the extension-contributed seam-3 tools.
     _register_extension_tools(mcp, server)

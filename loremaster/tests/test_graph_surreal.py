@@ -2545,6 +2545,71 @@ class TestBlastRadiusBareNameBridge:
 
 
 # ===========================================================================
+# 16b. tests_for bare-name bridge — tests_for() must reach the SAME covering-
+#      test set via a BARE query as it does via the module-qualified FQN, the
+#      identical bridge references()/blast_radius() already ride above through
+#      the target node's OWN answers_to fan-out.
+#
+# THE BUG (live-reproduced, FRICTION.md 2026-07-03 — team-lead P7 prep):
+# ``lore_impact("RecalledMemory")`` (bare name) returned the correct 2 prod /
+# 10 test REFERENCE counts via the answers_to bridge but ``tests: 0`` covering
+# tests, while the qualified ``loremaster.memory.store.RecalledMemory`` form
+# returned 137 covering tests from the SAME graph. ``tests_for`` binds
+# ``name_ids = [_name_id(symbol_or_file), _name_id(bare(symbol_or_file))]`` — a
+# literal bare + FQN name-id lookup — and never rides the ``answers_to``
+# bridge the way ``what_imports``/``references``/``blast_radius`` do, so a
+# query that is ALREADY bare degenerates to a same-string lookup and misses
+# every test that only resolves through the FQN's ``answers_to`` fan-out.
+# ===========================================================================
+
+
+class TestTestsForBareNameBridge:
+    """``tests_for`` must reach the SAME covering-test set via a bare-name
+    query as it does via the module-qualified FQN — the 0-vs-137 friction
+    (FRICTION.md 2026-07-03) reproduced at fixture scale.
+    """
+
+    async def test_fqn_query_finds_the_known_covering_test(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """Sanity precondition: the QUALIFIED query finds covering tests TODAY.
+
+        Must pass now — proves the fixture/oracle is sound before the bare-
+        query pin below asserts equality against it. Independent oracle:
+        ``REFTEST_SOURCE`` (this file, unchanged) imports and calls ``widget``
+        from ``tests/test_reflib.py`` — a resolved reference from a test-glob
+        path into ``FQN_WIDGET``.
+        """
+        graph, _env = reflib_graph
+        fqn_tests = {node.qualified_name for node in await graph.tests_for(FQN_WIDGET)}
+        assert fqn_tests, (
+            "the qualified query must find at least one covering test — if "
+            "this fails the fixture itself is broken, not the bridge under test"
+        )
+
+    async def test_bare_target_yields_the_same_covering_tests_as_the_qualified_form(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """THE PIN: ``tests_for("widget")`` must equal ``tests_for(FQN_WIDGET)``.
+
+        RED today (live-reproduced): the bare query's literal name-id lookup
+        never rides the ``answers_to`` bridge, so it returns an EMPTY set
+        while the qualified form returns the real covering-test set — the
+        0-vs-137 friction (FRICTION.md 2026-07-03) reproduced at fixture
+        scale. Set equality (not mere non-emptiness) is the pin: the bare
+        query must find the SAME tests, not merely SOME tests.
+        """
+        graph, _env = reflib_graph
+        bare_tests = {node.qualified_name for node in await graph.tests_for("widget")}
+        fqn_tests = {node.qualified_name for node in await graph.tests_for(FQN_WIDGET)}
+        assert bare_tests == fqn_tests, (
+            f"a bare-name query must reach the SAME covering-test set as the "
+            f"qualified form via the answers_to bridge; bare={bare_tests!r} "
+            f"fqn={fqn_tests!r}"
+        )
+
+
+# ===========================================================================
 # 17. references() bare-name FQN-collision fan-out — a bare query MERGES every
 #     colliding target's referencing profile into ONE summary. This is the
 #     RESOLVED-edge counterpart to ``TestFqnCollision`` above (which pins the

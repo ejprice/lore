@@ -162,6 +162,7 @@ _MAX_QUERY_TOKENS = 64
 _QUERY_VECTOR_PARAM = "__qvec"
 _AS_OF_PARAM = "__as_of"
 _LABEL_PARAM_PREFIX = "__lbl"
+_KIND_PARAM = "__kind"
 _FULLTEXT_PARAM_PREFIX = "__ft"
 _WRITE_PARAM_PREFIX = "mem_"
 
@@ -506,17 +507,20 @@ class LocalMemoryBackend:
         include: str | None = None,
         as_of: datetime | None = None,
         labels: list[str] | None = None,
+        kind: str | None = None,
         lens: str | None = None,
     ) -> list[RecalledMemory]:
         """Embed ``query`` and return the nearest matching memories, reinforced.
 
         Live-only by default; ``include="superseded"`` lifts the ``valid_until``
         filter; ``as_of=T`` recalls a row whose ``[valid_from, valid_until)``
-        window contains ``T``; ``labels`` is an ALL-semantics filter. Retrieval is
-        one-query HYBRID (HNSW ⊕ BM25 via ``search::rrf``). The returned importance
-        is PRE-bump; each returned memory's stored importance is then reinforced
-        (visible on the NEXT recall). Each ref is drift-flagged via the injected
-        oracle (a flag, never a filter).
+        window contains ``T``; ``labels`` is an ALL-semantics filter; ``kind``
+        restricts to rows of that exact kind and composes with ``labels`` as an
+        INTERSECTION (both must match). Retrieval is one-query HYBRID (HNSW ⊕
+        BM25 via ``search::rrf``). The returned importance is PRE-bump; each
+        returned memory's stored importance is then reinforced (visible on the
+        NEXT recall). Each ref is drift-flagged via the injected oracle (a flag,
+        never a filter).
 
         Args:
             query: The recall query text.
@@ -524,6 +528,7 @@ class LocalMemoryBackend:
             include: ``None`` (live-only) or ``"superseded"``.
             as_of: When set, recall as of this instant.
             labels: An ALL-semantics label filter.
+            kind: When set, restrict to memories of this exact kind.
             lens: Unsupported by the local backend in P7.
 
         Returns:
@@ -538,7 +543,7 @@ class LocalMemoryBackend:
                 f"lens is unsupported in P7"
             )
         query_vector = await self._embedder.embed_query(query)
-        filter_conditions, params = self._build_recall_filter(include, as_of, labels)
+        filter_conditions, params = self._build_recall_filter(include, as_of, labels, kind)
         rows = await self._hybrid_search(query_vector, query, k, filter_conditions, params)
         memories = [await self._row_to_recalled(row) for row in rows]
         await self._reinforce(memories)
@@ -681,7 +686,10 @@ class LocalMemoryBackend:
 
     @staticmethod
     def _build_recall_filter(
-        include: str | None, as_of: datetime | None, labels: list[str] | None
+        include: str | None,
+        as_of: datetime | None,
+        labels: list[str] | None,
+        kind: str | None = None,
     ) -> tuple[list[str], dict[str, Any]]:
         """Build the recall WHERE conditions (shared by both hybrid arms) + params.
 
@@ -690,7 +698,10 @@ class LocalMemoryBackend:
         live-only ``valid_until`` filter (keeping the expiry gate); the default is
         live-only (``valid_until`` unset AND not past its expiry). An ALL-semantics
         ``labels`` filter (every requested label present) is appended in every
-        mode. The condition list is never empty, so the arms always have a WHERE.
+        mode, as is an exact ``kind`` filter when supplied -- ``kind`` and
+        ``labels`` compose as an INTERSECTION (both conditions are ANDed into the
+        same list). The condition list is never empty, so the arms always have a
+        WHERE.
         """
         conditions: list[str] = []
         params: dict[str, Any] = {}
@@ -710,6 +721,9 @@ class LocalMemoryBackend:
             param = f"{_LABEL_PARAM_PREFIX}{index}"
             params[param] = label
             conditions.append(f"${param} IN {_COL_LABELS}")
+        if kind is not None:
+            params[_KIND_PARAM] = kind
+            conditions.append(f"{_COL_KIND} = ${_KIND_PARAM}")
         return conditions, params
 
     async def _reinforce(self, memories: list[RecalledMemory]) -> None:

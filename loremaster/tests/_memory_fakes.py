@@ -368,6 +368,7 @@ class FakeMemoryBackend:
         include: str | None = None,
         as_of: datetime | None = None,
         labels: list[str] | None = None,
+        kind: str | None = None,
         lens: str | None = None,
     ) -> list[RecalledMemory]:
         """Embed ``query`` and return the nearest matching memories, reinforced.
@@ -388,7 +389,7 @@ class FakeMemoryBackend:
         candidates = [
             row
             for row in self._rows.values()
-            if self._matches_filter(row, include, as_of, labels)
+            if self._matches_filter(row, include, as_of, labels, kind)
         ]
         scored = [(self._score(query_vector, row), row) for row in candidates]
         scored.sort(key=lambda pair: (-pair[0], pair[1].id))
@@ -429,14 +430,17 @@ class FakeMemoryBackend:
         include: str | None,
         as_of: datetime | None,
         labels: list[str] | None,
+        kind: str | None = None,
     ) -> bool:
-        """The recall WHERE-equivalent: live-only default, include, as_of, labels.
+        """The recall WHERE-equivalent: live-only default, include, as_of, labels, kind.
 
         Mirrors :meth:`LocalMemoryBackend._build_recall_filter`'s three temporal
         modes exactly: ``as_of=T`` checks the ``[valid_from, valid_until)``
         window (no expiry gate); otherwise live-only unless
         ``include="superseded"`` (plus the expiry gate in both non-``as_of``
-        cases). Labels are an ALL-semantics filter appended in every mode.
+        cases). Labels are an ALL-semantics filter appended in every mode;
+        ``kind`` (when supplied) is an exact-match filter that composes with
+        ``labels`` as an INTERSECTION (both must match).
         """
         if as_of is not None:
             if row.valid_from > as_of:
@@ -453,6 +457,8 @@ class FakeMemoryBackend:
             row_labels = set(row.labels)
             if not all(label in row_labels for label in labels):
                 return False
+        if kind is not None and row.kind != kind:
+            return False
         return True
 
     @staticmethod

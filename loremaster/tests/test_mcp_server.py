@@ -3230,3 +3230,254 @@ class TestTasksTool:
         # was minted — the seam drove the ledger's real supersede.
         old = await ledger.get_task(task_id)
         assert old.superseded_by is not None, "supersede must stamp the old task's successor"
+
+
+# =========================================================================== #
+# P7-TAIL POLISH WAVE (ledger task #6) — the cutover-audit N1 guard. The
+# DEPRECATED ``metadata`` dict is flattened to flat ``key=value`` labels; a key
+# whose flattened label starts with the RESERVED ``lore_ref=`` prefix is
+# otherwise promoted by the backend into a REAL chunk ref — silently folding into
+# the deterministic id and minting a drift-checked ref the caller never asked
+# for (a silent identity change / data loss). save_memory must REJECT it loudly.
+# Reserved prefix imported from the backend's OWN source of truth so the guard
+# and the id-folding logic can never drift apart (clause 5).
+# =========================================================================== #
+
+from loremaster.memory.local import _LORE_REF_LABEL_PREFIX as _RESERVED_LORE_REF_PREFIX
+
+# The metadata KEY that flattens to exactly the reserved prefix — derived from
+# the prefix itself (``"lore_ref="`` minus its ``=`` separator), never a
+# hand-copied literal, so if the backend ever renames the seam this fixture
+# follows it.
+_RESERVED_METADATA_KEY = _RESERVED_LORE_REF_PREFIX.rstrip("=")
+
+
+def _ledger_row_count(ctx: AppContext) -> int:
+    """The durable write-through ledger's current row count for ``ctx``.
+
+    ``MemoryBackend.ledger`` is typed ``MemoryLedger | None`` (a backend MAY
+    run ledger-less); every fixture that reaches this helper (``cutover_ctx``)
+    wires a real ledger, so the ``None`` case is a hard fixture-wiring bug,
+    never a silently-tolerated 0.
+    """
+    ledger = ctx.memory_backend.ledger
+    assert ledger is not None, "cutover_ctx must wire a real durable ledger"
+    return len(ledger.all_records())
+
+
+class TestSaveMemoryReservedMetadataGuard:
+    """N1 guard (cutover-audit): save_memory REJECTS a deprecated-metadata key
+    whose flattened ``key=value`` label would start with the reserved
+    ``lore_ref=`` prefix — loud beats silent data loss — while a benign metadata
+    key and the sanctioned ``refs=`` param still work untouched. The rejection
+    (SF-3, REPORT-polish-audit.md) is pinned to the guard's ACTUAL exception
+    type (``ValueError``) plus two no-write postconditions -- the rejected note
+    never becomes recallable and the durable ledger's row count is unchanged --
+    so a guard that persisted-then-raised could never pass these tests."""
+
+    async def test_metadata_lore_ref_key_is_rejected_naming_the_reserved_prefix(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        # metadata={"lore_ref": "<chunk_key>"} flattens to "lore_ref=<chunk_key>",
+        # indistinguishable from a real ref that folds into the deterministic id.
+        # The guard must REJECT it and NAME the reserved prefix so the caller
+        # learns why (never a silent promotion into a chunk ref).
+        rejected_note = "the loader retry budget is 3 attempts, in pkg/loader.py"
+        ledger_rows_before = _ledger_row_count(cutover_ctx)
+
+        # SF-3 (REPORT-polish-audit.md): narrowed from a bare
+        # ``pytest.raises(Exception)`` -- the guard's OWN exception type is a
+        # ValueError (server.py's ``_metadata_to_labels``), and a bare
+        # ``Exception`` would also pass a guard that persisted-then-raised
+        # some unrelated error.
+        with pytest.raises(ValueError) as exc_info:
+            await getattr(cutover_ctx, "save_memory")(
+                rejected_note,
+                metadata={_RESERVED_METADATA_KEY: _CUTOVER_CHUNK_KEY},
+            )
+        assert _RESERVED_LORE_REF_PREFIX in str(exc_info.value), (
+            "the rejection must NAME the reserved prefix so the caller understands "
+            "why the deprecated-metadata key was refused"
+        )
+        # No-write receipts (SF-3): the guard must fire BEFORE any write, not
+        # merely eventually raise -- a rejected note must never become
+        # recallable, and the durable write-through ledger must be untouched.
+        rendered = _render_text(await getattr(cutover_ctx, "recall_memory")(rejected_note, k=5))
+        assert rejected_note not in rendered, (
+            "a rejected save must never surface on recall -- the guard fires "
+            "before the write, so nothing was ever stored to find"
+        )
+        assert _ledger_row_count(cutover_ctx) == ledger_rows_before, (
+            "a rejected save must leave the durable ledger's row count "
+            "UNCHANGED -- proving the guard fires before any write"
+        )
+
+    async def test_metadata_key_embedding_the_prefix_is_rejected_by_label_not_key(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        # A guard that only checks ``key == "lore_ref"`` MISSES this: a key that
+        # itself embeds the separator (label "lore_ref=nested=<value>") ALSO starts
+        # with the reserved prefix and ALSO folds into the id. The guard must key on
+        # the flattened LABEL's prefix, not an exact-key match — this is the
+        # discriminating case for that predicate.
+        offending_key = f"{_RESERVED_METADATA_KEY}=nested"
+        rejected_note = "a durable project note"
+        ledger_rows_before = _ledger_row_count(cutover_ctx)
+
+        with pytest.raises(ValueError) as exc_info:
+            await getattr(cutover_ctx, "save_memory")(
+                rejected_note,
+                metadata={offending_key: "ignored"},
+            )
+        assert _RESERVED_LORE_REF_PREFIX in str(exc_info.value), (
+            "any metadata key whose flattened label starts with the reserved "
+            "prefix must be rejected, naming the prefix"
+        )
+        # No-write receipts (SF-3): same two independent postconditions as the
+        # exact-key case above -- this discriminating (nested-key) case must
+        # ALSO leave no trace, not just raise.
+        rendered = _render_text(await getattr(cutover_ctx, "recall_memory")(rejected_note, k=5))
+        assert rejected_note not in rendered, (
+            "a rejected save must never surface on recall -- the guard fires "
+            "before the write, so nothing was ever stored to find"
+        )
+        assert _ledger_row_count(cutover_ctx) == ledger_rows_before, (
+            "a rejected save must leave the durable ledger's row count "
+            "UNCHANGED -- proving the guard fires before any write"
+        )
+
+    async def test_benign_metadata_key_succeeds_and_never_folds_into_the_id(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        # The SAME call without the offending key succeeds — a plain metadata label
+        # is decorative, never a chunk ref, so it must NOT change the deterministic
+        # id. Independent oracle: the v0.3 empty-stamp id over the same text.
+        note = "the discount rounding rule lives in pkg/pricing/rules.py"
+        memory_id = await getattr(cutover_ctx, "save_memory")(
+            note, metadata={"author": "ejprice", "reviewed": "yes"}
+        )
+        expected_empty_stamp_id = MemoryStore._memory_id(note, MemoryStore._refs_stamp([]))
+        assert memory_id == expected_empty_stamp_id, (
+            "a benign metadata key is a plain label, never a ref — it must not "
+            "fold into the deterministic id (id must equal the bare empty-stamp id)"
+        )
+
+    async def test_legitimate_refs_param_still_folds_into_the_deterministic_id(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        # The guard must fence ONLY the deprecated metadata seam — the sanctioned
+        # ``refs=`` param must still fold into the v0.3 deterministic id unharmed.
+        # Independent oracle: the production id helpers over the same ref.
+        note = "champion routing warehouse selection lives in pkg/routing.py"
+        memory_id = await getattr(cutover_ctx, "save_memory")(note, refs=[_CUTOVER_CHUNK_KEY])
+        expected_with_ref_id = MemoryStore._memory_id(
+            note, MemoryStore._refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)])
+        )
+        assert memory_id == expected_with_ref_id, (
+            "the legitimate refs= path must still mint the v0.3 deterministic id "
+            "(text+refs → same id); the N1 guard fences metadata only"
+        )
+
+
+# =========================================================================== #
+# CONTRACT-FINAL WAVE — recall_memory gains kind=/labels= filters (operator-
+# approved). The FILTER LOGIC itself is exhaustively pinned in
+# test_memory_backend.py's ``TestRecallFiltering`` (labels= ALL-semantics, and
+# this same wave's new kind= pins); this class pins the MCP-LAYER handler
+# surface only: ``AppContext.recall_memory`` must ACCEPT and APPLY kind=/
+# labels=, mirroring how it already threads ``k=`` through untouched.
+# =========================================================================== #
+
+# Two notes share the label ``area=map`` (one gotcha, one fact); the third is
+# a fact labelled ``area=impact`` — the fixture every pin in this class routes
+# through, so the corpus shape can never silently drift per-test.
+_MAP_GOTCHA_NOTE = "lore_map's teaching trailer must name focus=<module> for the full list"
+_MAP_FACT_NOTE = "lore_map ranks entries rank DESC, ties broken by module ASC"
+_IMPACT_FACT_NOTE = "lore_impact depth>1 rollups must be labeled transitive"
+# One query recalls against all three notes at once (the notes are lexically
+# close enough to co-occur in the top-k without a filter) -- so any exclusion
+# observed below is the FILTER doing the work, never the ranking.
+_RECALL_FILTER_QUERY = "how do the map and impact tools rank and label their output"
+# Comfortably above the 3-note corpus, so nothing is silently k-truncated.
+_RECALL_FILTER_K = 10
+
+
+async def _seed_map_impact_notes(ctx: AppContext) -> None:
+    """Save the three smoke notes ``TestRecallMemoryFilters`` filters over."""
+    await getattr(ctx, "save_memory")(_MAP_GOTCHA_NOTE, kind="gotcha", labels=["area=map"])
+    await getattr(ctx, "save_memory")(_MAP_FACT_NOTE, kind="fact", labels=["area=map"])
+    await getattr(ctx, "save_memory")(_IMPACT_FACT_NOTE, kind="fact", labels=["area=impact"])
+
+
+class TestRecallMemoryFilters:
+    """recall_memory accepts kind=/labels= filters and applies them (never
+    silently ignores them): kind alone, labels alone (ALL-semantics per the
+    backend contract), no filter (existing behaviour unchanged), and the two
+    combined (intersection, not union)."""
+
+    async def test_kind_filter_excludes_other_kinds(self, cutover_ctx: AppContext) -> None:
+        await _seed_map_impact_notes(cutover_ctx)
+
+        rendered = _render_text(
+            await getattr(cutover_ctx, "recall_memory")(
+                _RECALL_FILTER_QUERY, k=_RECALL_FILTER_K, kind="gotcha"
+            )
+        )
+
+        assert _MAP_GOTCHA_NOTE in rendered, "kind='gotcha' must surface the gotcha note"
+        assert _MAP_FACT_NOTE not in rendered, "kind='gotcha' must exclude a fact note"
+        assert _IMPACT_FACT_NOTE not in rendered, "kind='gotcha' must exclude a fact note"
+
+    async def test_labels_filter_returns_only_the_matching_label(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        await _seed_map_impact_notes(cutover_ctx)
+
+        rendered = _render_text(
+            await getattr(cutover_ctx, "recall_memory")(
+                _RECALL_FILTER_QUERY, k=_RECALL_FILTER_K, labels=["area=impact"]
+            )
+        )
+
+        assert _IMPACT_FACT_NOTE in rendered, (
+            "labels=['area=impact'] must surface the impact-labelled note"
+        )
+        assert _MAP_GOTCHA_NOTE not in rendered, "a differently-labelled note must be excluded"
+        assert _MAP_FACT_NOTE not in rendered, "a differently-labelled note must be excluded"
+
+    async def test_no_filters_returns_every_note_unchanged(
+        self, cutover_ctx: AppContext
+    ) -> None:
+        # Existing behaviour must be UNCHANGED by the new params' addition.
+        await _seed_map_impact_notes(cutover_ctx)
+
+        rendered = _render_text(
+            await getattr(cutover_ctx, "recall_memory")(_RECALL_FILTER_QUERY, k=_RECALL_FILTER_K)
+        )
+
+        assert _MAP_GOTCHA_NOTE in rendered, "an unfiltered recall must still surface every note"
+        assert _MAP_FACT_NOTE in rendered, "an unfiltered recall must still surface every note"
+        assert _IMPACT_FACT_NOTE in rendered, "an unfiltered recall must still surface every note"
+
+    async def test_kind_and_labels_filters_intersect(self, cutover_ctx: AppContext) -> None:
+        # kind="fact" ALONE would also match the impact note; labels=["area=map"]
+        # ALONE would also match the gotcha note -- only the note satisfying
+        # BOTH filters (the map fact) may survive the intersection.
+        await _seed_map_impact_notes(cutover_ctx)
+
+        rendered = _render_text(
+            await getattr(cutover_ctx, "recall_memory")(
+                _RECALL_FILTER_QUERY,
+                k=_RECALL_FILTER_K,
+                kind="fact",
+                labels=["area=map"],
+            )
+        )
+
+        assert _MAP_FACT_NOTE in rendered, "the note matching BOTH filters must be returned"
+        assert _MAP_GOTCHA_NOTE not in rendered, (
+            "wrong kind must be excluded despite matching labels"
+        )
+        assert _IMPACT_FACT_NOTE not in rendered, (
+            "wrong labels must be excluded despite matching kind"
+        )

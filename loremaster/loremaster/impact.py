@@ -83,6 +83,14 @@ _RETRY_HINT = "retry the impact query once the rebuild settles"
 # entries out of a rendered list (no-silent-caps doctrine).
 _ELISION_TEMPLATE = "+{count} more (elided by max_consumers={cap})"
 
+# The suffix a depth>1 rollup carries when its module is reached ONLY transitively
+# (never a DIRECT consumer of the target). Labelling it keeps a reader from
+# mistaking the transitive ripple for direct-consumer usage (design doc S9 /
+# FRICTION.md 2026-07-04: a fixture migration mis-scoped because a depth-2 module
+# count read as direct usage). CONDITIONAL by construction -- only a module absent
+# from the depth-1 reverse set earns it, so the marker genuinely distinguishes.
+_TRANSITIVE_ROLLUP_SUFFIX = ", transitive"
+
 _T = TypeVar("_T")
 
 
@@ -225,6 +233,7 @@ class ImpactEngine:
 
         direct_consumers: list[str] = []
         module_rollups: list[ModuleRollup] = []
+        transitive_modules: set[str] = set()
         elided = 0
         if depth == 1:
             direct_consumers, elided = self._cap(
@@ -232,6 +241,7 @@ class ImpactEngine:
             )
         else:
             rollups = await self._module_rollups(target, depth)
+            transitive_modules = await self._transitive_only_modules(target, rollups)
             module_rollups, elided = self._cap(rollups, max_consumers)
 
         if not await self._target_is_known(
@@ -253,6 +263,7 @@ class ImpactEngine:
             covering_tests=covering_tests,
             direct_consumers=direct_consumers,
             module_rollups=module_rollups,
+            transitive_modules=transitive_modules,
             elided=elided,
             max_consumers=max_consumers,
         )
@@ -335,6 +346,27 @@ class ImpactEngine:
         rollups.sort(key=lambda rollup: (-rollup.consumer_count, rollup.module))
         return rollups
 
+    async def _transitive_only_modules(
+        self, target: str, rollups: list[ModuleRollup]
+    ) -> set[str]:
+        """The rollup modules reached ONLY transitively (not direct consumers).
+
+        A DIRECT consumer is one reachable at ``depth == 1`` (a single reverse
+        hop). This runs the SAME cheap depth-1 :meth:`blast_radius` probe the
+        rollups are built from, derives the direct-consumer module set with the
+        identical :meth:`module_qualified_name` grouping, and returns every rollup
+        module NOT in it — the transitive-only ripple. Deterministic: the input
+        ``rollups`` are already the pinned sorted order and set membership does not
+        perturb it.
+        """
+        direct_nodes = await self._graph.blast_radius(
+            target, _DEPTH_MIN, _BLAST_RADIUS_NODE_CAP
+        )
+        direct_modules = {
+            self._graph.module_qualified_name(node.file_path) for node in direct_nodes
+        }
+        return {rollup.module for rollup in rollups if rollup.module not in direct_modules}
+
     async def _target_is_known(
         self,
         summary: ReferenceSummary,
@@ -377,6 +409,18 @@ class ImpactEngine:
             return items, 0
         return items[:max_consumers], len(items) - max_consumers
 
+    @staticmethod
+    def _format_rollup(rollup: ModuleRollup, transitive_modules: set[str]) -> str:
+        """Render one module rollup, tagging the transitive-only ones.
+
+        A module reached only through the depth>1 ripple (in ``transitive_modules``)
+        carries :data:`_TRANSITIVE_ROLLUP_SUFFIX` inside its count parenthetical so
+        it can never be read as a direct-consumer entry; a direct consumer renders
+        bare (``module (count)``).
+        """
+        suffix = _TRANSITIVE_ROLLUP_SUFFIX if rollup.module in transitive_modules else ""
+        return f"{rollup.module} ({rollup.consumer_count}{suffix})"
+
     # -- rendering ---------------------------------------------------------
 
     @staticmethod
@@ -389,6 +433,7 @@ class ImpactEngine:
         covering_tests: list[str],
         direct_consumers: list[str],
         module_rollups: list[ModuleRollup],
+        transitive_modules: set[str],
         elided: int,
         max_consumers: int,
     ) -> str:
@@ -414,7 +459,8 @@ class ImpactEngine:
             lines.append(f"consumers: {', '.join(direct_consumers)}")
         if module_rollups:
             rollup_text = ", ".join(
-                f"{rollup.module} ({rollup.consumer_count})" for rollup in module_rollups
+                ImpactEngine._format_rollup(rollup, transitive_modules)
+                for rollup in module_rollups
             )
             lines.append(f"modules: {rollup_text}")
         if elided:

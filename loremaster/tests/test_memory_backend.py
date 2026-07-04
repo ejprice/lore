@@ -893,6 +893,67 @@ class TestRecallFiltering:
         assert all(top.score >= item.score for item in recalled)
 
 
+    async def test_kind_filter_returns_only_that_kind(
+        self, memory_backend: LocalMemoryBackend
+    ) -> None:
+        # Two lexically CLOSE notes (same "Deploy note: the retry budget"
+        # opening) so the exclusion below is genuinely the KIND filter's doing,
+        # never just the ranking pushing the wrong-kind note out of the window.
+        gotcha_note = "Deploy note: the retry budget bug is a real gotcha for on-call."
+        fact_note = "Deploy note: the retry budget is 3 attempts by design."
+        await memory_backend.remember(gotcha_note, kind="gotcha")
+        await memory_backend.remember(fact_note, kind="fact")
+
+        # ``kind`` does not exist on LocalMemoryBackend.recall's TYPED signature
+        # yet (this wave's RED); routed via getattr so the RED stays behavioural
+        # (a runtime TypeError) rather than a static typecheck failure -- the
+        # SAME dynamic-access convention this wave's other new-param pins use.
+        recalled = await getattr(memory_backend, "recall")(
+            gotcha_note, k=_READ_ALL, kind="gotcha"
+        )
+
+        assert any(item.text == gotcha_note for item in recalled), (
+            "kind='gotcha' must surface a live gotcha-kind memory"
+        )
+        assert all(item.text != fact_note for item in recalled), (
+            "kind='gotcha' must exclude a live fact-kind memory even though the "
+            "two notes are lexically close enough to both rank within k"
+        )
+
+    async def test_kind_filter_combines_with_labels_as_an_intersection(
+        self, memory_backend: LocalMemoryBackend
+    ) -> None:
+        # kind="gotcha" ALONE would also match wrong_label_same_kind;
+        # labels=["team=infra"] ALONE would also match wrong_kind_same_label --
+        # only ``target`` (matching BOTH) may survive the intersection.
+        target = "Deploy note tagged infra, a gotcha about the security review."
+        wrong_kind_same_label = "Deploy note tagged infra, a plain fact about the review."
+        wrong_label_same_kind = "Deploy note tagged billing, a gotcha about a different review."
+        await memory_backend.remember(target, kind="gotcha", labels=["team=infra"])
+        await memory_backend.remember(
+            wrong_kind_same_label, kind="fact", labels=["team=infra"]
+        )
+        await memory_backend.remember(
+            wrong_label_same_kind, kind="gotcha", labels=["team=billing"]
+        )
+
+        # Same dynamic-access rationale as above: ``kind`` is not yet on the
+        # typed signature.
+        recalled = await getattr(memory_backend, "recall")(
+            target, k=_READ_ALL, kind="gotcha", labels=["team=infra"]
+        )
+
+        assert any(item.text == target for item in recalled), (
+            "the note matching BOTH kind and labels must be returned"
+        )
+        assert all(item.text != wrong_kind_same_label for item in recalled), (
+            "a matching label but wrong kind must be excluded (intersection, not union)"
+        )
+        assert all(item.text != wrong_label_same_kind for item in recalled), (
+            "a matching kind but wrong label must be excluded (intersection, not union)"
+        )
+
+
 class TestReinforcementOnRecall:
     """Recall reinforces: a returned memory's stored importance bumps by the step.
 

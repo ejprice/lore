@@ -508,3 +508,186 @@ class TestDeterminismAndBounds:
         # Token-compact: a one-symbol depth-1 impact over a 4-file corpus must
         # render well under a hundred lines (a proxy pin against raw dumps).
         assert len(result.formatted.splitlines()) < 40
+
+
+# =========================================================================== #
+# P7-TAIL POLISH WAVE (ledger task #6) — the semantic law for the map/impact
+# frictions the P8 tool-surface redesign must honor. Behavioural expectations
+# below come from the BINDING spec (docs/design/2026-07-04-map-test-segregation.md
+# §8/§9) and the FRICTION.md receipts (2026-07-03/04 lore_impact entries) — NEVER
+# from how the current engine happens to render. These classes ADD pins; they
+# never weaken the existing behaviour above.
+# =========================================================================== #
+
+# The module-qualified form of the same target the bare ``_TARGET`` names — the
+# TWO forms whose covering-tests result the answers_to bridge must reconcile
+# (FRICTION.md's "0-vs-137" bare-name drop). Derived from the corpus BY
+# CONSTRUCTION: ``champion_routing`` is defined in ``reflib.py`` → module
+# ``reflib`` → qualified name ``reflib.champion_routing``.
+_QUALIFIED_TARGET = f"reflib.{_TARGET}"
+
+# The design-doc §9 requirement: a depth>1 module rollup reached ONLY
+# transitively must be LABELED transitive so a reader cannot mistake the ripple
+# for direct-consumer usage (the receipt: a fixture migration mis-scoped because
+# a depth-2 count read as direct usage). Source of the marker word: the spec /
+# FRICTION.md phrasing ("transitive via …" / a direct/transitive split), matched
+# case-insensitively so the exact rendering wording stays P8's to choose.
+_TRANSITIVE_MARKER = "transitive"
+
+# The corpus's two consumer roles, pinned BY CONSTRUCTION (see the source
+# fixtures above): ``consumer`` imports ``reflib`` (a DIRECT depth-1 consumer of
+# the target); ``consumer2`` imports ``consumer`` and never ``reflib`` (reaches
+# the target ONLY at depth >= 2 — the transitive-only ripple).
+_DIRECT_CONSUMER_MODULE = "consumer"
+_TRANSITIVE_CONSUMER_MODULE = "consumer2"
+
+
+def _rollup_entry(formatted: str, module: str) -> str:
+    """Return the single ``module (count[, transitive])`` entry for ``module``.
+
+    The "modules: " line joins every rollup with ", " -- the SAME separator
+    used inside a transitive entry's own parenthetical (", transitive") -- so
+    a naive substring/split check cannot tell "does module X's OWN entry
+    carry the marker" from "does the marker appear ANYWHERE on the line".
+    Anchoring on ``"{module} ("`` and slicing to the matching close-paren
+    isolates exactly one module's entry, killing the label-everything mutant
+    (``_transitive_only_modules`` suffixing every rollup) that a whole-line
+    substring check lets through.
+    """
+    start = formatted.find(f"{module} (")
+    assert start != -1, f"no rollup entry found for module {module!r} in: {formatted!r}"
+    end = formatted.find(")", start)
+    assert end != -1, f"unterminated rollup entry for module {module!r} in: {formatted!r}"
+    return formatted[start : end + 1]
+
+
+# --------------------------------------------------------------------------- #
+# Spec §8 / FRICTION 2026-07-03 — the bare-name covering-tests bridge.
+# --------------------------------------------------------------------------- #
+class TestBareNameCoveringTestsBridge:
+    """Contract: covering tests resolve through the SAME answers_to bare-name
+    bridge as the reference counts — ``impact`` on a BARE identity surfaces the
+    same covering tests as the module-qualified form, never a silent ``tests:
+    0`` when the qualified form has tests (FRICTION.md's 0-vs-137 drop).
+
+    Primary behaviour pinned = the BRIDGE (bare ≡ qualified). The spec's
+    FALLBACK route (an explicit "tests unresolved for bare names — qualify"
+    notice instead of a silent 0) is NOT pinned here: were the implementation to
+    take that route, this equality would fail and the fallback would need its
+    own pin. See REPORT-polish-contract.md — against the in-memory graph double
+    this bridge already holds (the double's ``tests_for`` rides bare names), so
+    this class is a GREEN regression-lock at the engine seam; the LIVE friction
+    lives in the REAL ``graph_surreal.tests_for`` (which looks up only literal
+    bare/FQN name-ids, never ``answers_to``) and its RED reproduction belongs in
+    ``test_graph_surreal.py`` — flagged for the team-lead as a writable-set gap.
+    """
+
+    async def test_bare_target_yields_the_same_covering_tests_as_the_qualified_form(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Arrange: the corpus has a covering test (tests/test_reflib.py) for the
+        # target champion_routing, reachable under BOTH its bare and qualified name.
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        # Act: query the SAME target two ways — bare vs module-qualified.
+        result_bare = await engine.impact(_TARGET, depth=1)
+        result_qualified = await engine.impact(_QUALIFIED_TARGET, depth=1)
+
+        # Assert: the qualified form has covering tests by construction, and the
+        # bare form must reconcile to the SAME set via the answers_to bridge — a
+        # bare identity may never surface FEWER covering tests than its qualifier.
+        assert result_qualified.covering_tests, (
+            "the corpus has a covering test by construction (tests/test_reflib.py)"
+        )
+        assert set(result_bare.covering_tests) == set(result_qualified.covering_tests), (
+            "a bare target must ride the answers_to bridge to the SAME covering "
+            "tests as its module-qualified form (the 0-vs-137 friction)"
+        )
+
+    async def test_bare_target_never_renders_a_silent_tests_zero(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # The friction's harm was the RENDER: a bare query showed "tests: 0" while
+        # the qualifier showed 137 — a silent 0 reads as a real answer. When the
+        # qualified form has tests, the bare render must NOT claim zero.
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        result_bare = await engine.impact(_TARGET, depth=1)
+
+        assert result_bare.covering_tests, (
+            "the bare target must resolve its covering tests, not drop them"
+        )
+        assert "tests: 0" not in result_bare.formatted, (
+            "a bare target with covering tests must never render a silent 'tests: 0'"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Spec §9 / FRICTION 2026-07-04 — depth>1 rollups are labeled TRANSITIVE.
+# --------------------------------------------------------------------------- #
+class TestDepthTwoTransitiveLabeling:
+    """Contract: a depth>1 module rollup reached only transitively is LABELED
+    transitive, so a reader cannot mistake the ripple for direct-consumer usage
+    (FRICTION.md 2026-07-04: a fixture migration mis-scoped because a depth-2
+    module count read as direct usage). The marker is CONDITIONAL — it appears
+    only when a transitive-only consumer exists, so it genuinely distinguishes."""
+
+    async def test_depth_two_marks_the_transitive_only_consumer(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Arrange: consumer2 imports consumer imports reflib (the target's module)
+        # — consumer2 reaches the target ONLY via the depth-2 transitive edge.
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        # Act
+        result = await engine.impact(_TARGET, depth=2)
+
+        # Assert: the transitive-only consumer is reached at depth 2...
+        assert any(
+            _TRANSITIVE_CONSUMER_MODULE in rollup.module for rollup in result.module_rollups
+        ), "consumer2 reaches the target only transitively — it appears at depth 2"
+        # ...and the render marks ONLY the transitive-only consumer's entry --
+        # a "label every rollup" mutant (suffixing consumer TOO) must not
+        # survive: the DIRECT consumer's own entry must stay bare while the
+        # transitive-only consumer's entry carries the marker.
+        direct_entry = _rollup_entry(result.formatted, _DIRECT_CONSUMER_MODULE)
+        transitive_entry = _rollup_entry(result.formatted, _TRANSITIVE_CONSUMER_MODULE)
+        assert _TRANSITIVE_MARKER not in direct_entry.lower(), (
+            f"{_DIRECT_CONSUMER_MODULE!r} is a DIRECT depth-1 consumer of the "
+            f"target -- its rollup entry {direct_entry!r} must NOT carry the "
+            "transitive label"
+        )
+        assert _TRANSITIVE_MARKER in transitive_entry.lower(), (
+            f"{_TRANSITIVE_CONSUMER_MODULE!r} reaches the target ONLY via the "
+            f"depth-2 ripple -- its rollup entry {transitive_entry!r} must "
+            "carry the transitive label"
+        )
+
+    async def test_depth_one_renders_direct_consumers_and_emits_no_modules_rollup_line(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # SF-2 (REPORT-polish-audit.md): this test was VACUOUS under its old
+        # name/assertion. At depth == 1, impact populates ONLY
+        # direct_consumers -- module_rollups stays empty by construction (see
+        # this file's own docstring: "module_rollups (depth > 1: ...)") -- so
+        # the ONE place a transitive suffix could ever render (the "modules: "
+        # rollup line) is never emitted AT ALL, regardless of whether the
+        # suffix logic is correct, broken, or absent. The absence of the
+        # marker here proves depth gates module_rollups; it does NOT prove
+        # the label itself is conditional on real transitivity (the depth-2
+        # pin above is what proves that).
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_TARGET, depth=1)
+
+        assert any(
+            _DIRECT_CONSUMER_MODULE in name for name in result.direct_consumers
+        ), "depth 1 must still render the direct consumer by name"
+        assert "modules:" not in result.formatted, (
+            "depth 1 populates ONLY direct_consumers -- the modules: rollup "
+            "line must not be emitted at all (nothing exists yet to roll up)"
+        )
