@@ -19,7 +19,6 @@ survey run, not by unit tests.
 
 from __future__ import annotations
 
-import math
 import os
 import sys
 from pathlib import Path
@@ -459,7 +458,11 @@ class TestComputeAgreement:
             self._row("lore", "a.py", "claude-opus-4-8", 165),
             self._row("lore", "a.py", "claude-fable-5", 165),
         ]
-        stats = ts.compute_agreement(measurements, ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"], scope="lore")
+        stats = ts.compute_agreement(
+            measurements,
+            ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"],
+            scope="lore",
+        )
         assert stats.n_complete == 1
         assert stats.n_incomplete == 0
         assert stats.share_identical == pytest.approx(1.0)
@@ -536,7 +539,9 @@ class TestCompareToBaseline:
         assert drift.n_unmatched_new == 1
 
     def test_no_overlap_zeroes_out(self) -> None:
-        drift = ts.compare_to_baseline({"a.py": 1}, [self._m("only_new.py", 2)], scope="lore", model="claude-sonnet-5")
+        drift = ts.compare_to_baseline(
+            {"a.py": 1}, [self._m("only_new.py", 2)], scope="lore", model="claude-sonnet-5"
+        )
         assert drift.n_matched == 0
         assert drift.max_abs_diff == 0
         assert drift.max_rel_diff == pytest.approx(0.0)

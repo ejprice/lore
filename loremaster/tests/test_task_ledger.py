@@ -80,7 +80,6 @@ from loremaster.tasks import (
     IllegalTransitionError,
     Task,
     TaskLedger,
-    TaskLedgerError,
     TaskNotFoundError,
 )
 from surrealdb.errors import ErrorKind, ServerError

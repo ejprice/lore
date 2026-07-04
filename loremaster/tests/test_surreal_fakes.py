@@ -59,10 +59,12 @@ from loremaster.graph_surreal import SurrealCodeGraph
 from loremaster.index.records import Record
 from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import (
+    _RRF_K as _PRODUCTION_RRF_K,
+)
+from loremaster.store.surreal import (
     SurrealConnectionError,
     SurrealStore,
     SurrealStoreError,
-    _RRF_K as _PRODUCTION_RRF_K,
 )
 from loremaster.store.surreal_schema import CHUNK_FILTER_KEYS
 from loremaster.symbols import _SCROLL_LIMIT  # the real scroll caller's read cap
@@ -1126,9 +1128,9 @@ class TestAllNodesParity:
 # fixture above has no dst to bridge to.
 # --------------------------------------------------------------------------- #
 
+import textwrap  # noqa: E402
 from collections.abc import Iterator  # noqa: E402 - see module note above
 from pathlib import Path  # noqa: E402
-import textwrap  # noqa: E402
 
 from loremaster.graph import ReferenceSummary  # noqa: E402
 from lorescribe.astroid_parse import (  # noqa: E402

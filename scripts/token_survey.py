@@ -39,13 +39,12 @@ import random
 import statistics
 import sys
 import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Callable, Iterable, Mapping, Sequence
 
 import httpx
-
 from loresigil.tokens import VoyageTokenCounter
 
 # --------------------------------------------------------------------------- #
@@ -938,7 +937,6 @@ class SurveyRunner:
             # Progress is counted per FILE, not per (file, model) outcome — a
             # 3-model run still reports "counted 200/933" in file terms.
             for future in concurrent.futures.as_completed(futures):
-                entry = futures[future]
                 outcomes = future.result()
                 for outcome in outcomes:
                     if isinstance(outcome, FileMeasurement):
@@ -959,7 +957,10 @@ class SurveyRunner:
 
     def _measure_one(
         self, slug: str, entry: FileEntry
-    ) -> list["FileMeasurement | SkipRecord"]:
+    ) -> list["FileMeasurement | SkipRecord"]:  # noqa: UP037 -- unquoting would drop
+        # this string from the ast.Constant set this pinned survey tool's byte-
+        # identity receipt walks; kept quoted deliberately (see F841/UP037 note
+        # in the lint-cleanup report).
         """Count one file in Voyage currency once, then every active model (worker thread).
 
         Concurrency is bounded per file, not per (file, model) call: this
@@ -978,7 +979,7 @@ class SurveyRunner:
         if voyage <= 0:
             return [SkipRecord(entry.relpath, "empty:zero-voyage-tokens")]
 
-        outcomes: list["FileMeasurement | SkipRecord"] = []
+        outcomes: list["FileMeasurement | SkipRecord"] = []  # noqa: UP037 -- see note above
         for model in self._models:
             try:
                 claude = self._claude.count(text, model)

@@ -90,13 +90,13 @@ from loremaster.index.surreal_manifest import (
 from loremaster.store._txn import TXN_STATEMENT_HARD_CAP, TxnParamCollisionError
 from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import (
+    _MAX_HYBRID_K,
     CHUNK_FRAGMENT_PARAM_PREFIX,
     FILE_TEXT_FRAGMENT_PARAM_PREFIX,
     FILE_TEXT_MAX_BYTES,
     SurrealConnectionError,
     SurrealStoreError,
     VectorDimensionError,
-    _MAX_HYBRID_K,
 )
 from loremaster.store.surreal_schema import CHUNK_FILTER_KEYS, CHUNK_FULLTEXT_FIELDS
 from lorescribe.models import Chunk

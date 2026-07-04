@@ -64,11 +64,13 @@ import importlib
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
 from loremaster.config import LoreConfig
+from loremaster.graph import CodeGraph
 from loremaster.server import LoreServer
 from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_memo
 from lorescribe.models import ChunkContext
@@ -600,8 +602,6 @@ class TestDeterminismAndShape:
 # migrated.
 # =========================================================================== #
 
-from loremaster.graph import CodeGraph
-
 # --- rendering fragments the spec DEFINES (single source of truth = the design
 # doc; kept as named constants so P8 may re-word rendering with one edit here). --
 
@@ -1080,8 +1080,6 @@ class TestSymbolCaps:
 # These pins ride the SAME budget seam as TestBudgetEnforcement above. This
 # class ADDS pins; no existing budget NUMBER changes — only the counting currency.
 # =========================================================================== #
-
-from types import SimpleNamespace
 
 # The measured voyage→claude ratio, pinned as a LITERAL so a silent re-tune
 # breaks a test (the addendum's explicit anti-drift requirement). Provenance:

@@ -35,9 +35,9 @@ from loremaster.extension import (
     FieldIndexSpec,
     ToolSpec,
 )
+from loremaster.store.candidate import Candidate
 from lorescribe.base import Chunker
 from lorescribe.javascript import JsBlock
-from loremaster.store.candidate import Candidate
 from lorescribe.models import Chunk, ChunkContext, ProfileResult
 from pydantic import BaseModel, ConfigDict
 

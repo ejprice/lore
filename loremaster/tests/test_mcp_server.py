@@ -73,7 +73,6 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from _task_fakes import FakeTaskDatabase, FakeTaskLedger
 from _surreal_harness import (
     drop_database as drop_surreal_database,
 )
@@ -83,11 +82,11 @@ from _surreal_harness import (
     surreal_url,
     surreal_user,
 )
+from _task_fakes import FakeTaskDatabase, FakeTaskLedger
 from loremaster.config import LoreConfig
-from loremaster.memory.backend import MemoryRef, derive_memory_id, derive_refs_stamp
-from loremaster.tasks import IllegalTransitionError, TaskNotFoundError
 from loremaster.map import _BUDGET_FLOOR as _PRODUCTION_MAP_BUDGET_FLOOR
 from loremaster.map import _ELISION_FRAGMENT as _PRODUCTION_MAP_ELISION_FRAGMENT
+from loremaster.memory.backend import MemoryRef, derive_memory_id, derive_refs_stamp
 from loremaster.server import (
     AppContext,
     LoreServer,
@@ -97,6 +96,7 @@ from loremaster.server import (
     configure_logging_from_config,
     run_probe_gate,
 )
+from loremaster.tasks import IllegalTransitionError, TaskNotFoundError
 from loresigil.testing import FakeEmbedder
 
 _DIM = 2048
@@ -3143,7 +3143,10 @@ class TestTasksTool:
 # and the id-folding logic can never drift apart (clause 5).
 # =========================================================================== #
 
-from loremaster.memory.local import _LORE_REF_LABEL_PREFIX as _RESERVED_LORE_REF_PREFIX
+# Kept local to this wave (matches the build_asgi_app import above) rather than
+# hoisted to the top-level import block, for the same reason: co-located with
+# the wave of tests it supports in this large file.
+from loremaster.memory.local import _LORE_REF_LABEL_PREFIX as _RESERVED_LORE_REF_PREFIX  # noqa: E402
 
 # The metadata KEY that flattens to exactly the reserved prefix — derived from
 # the prefix itself (``"lore_ref="`` minus its ``=`` separator), never a

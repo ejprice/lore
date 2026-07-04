@@ -42,6 +42,11 @@ PROVENANCE (ledger task P8a-9, EVAL BASELINE, 2026-07-04):
 This script evaluates MCP servers by running test questions against them using Claude.
 """
 
+# ruff: noqa: E501 -- two long lines (EVALUATION_PROMPT, REPORT_HEADER) are content
+# inside pinned multi-line string literals; a per-line noqa would land INSIDE the
+# string and change its bytes, which this pinned eval instrument forbids. Every
+# other E501 in this file is fixed by wrapping code, not by this directive.
+
 import argparse
 import asyncio
 import json
@@ -54,7 +59,6 @@ from pathlib import Path
 from typing import Any
 
 from anthropic import Anthropic
-
 from connections import create_connection
 
 EVALUATION_PROMPT = """You are an AI assistant with access to tools.
@@ -439,19 +443,46 @@ Examples:
     )
 
     parser.add_argument("eval_file", type=Path, help="Path to evaluation XML file")
-    parser.add_argument("-t", "--transport", choices=["stdio", "sse", "http"], default="stdio", help="Transport type (default: stdio)")
-    parser.add_argument("-m", "--model", default="claude-3-7-sonnet-20250219", help="Claude model to use (default: claude-3-7-sonnet-20250219)")
+    parser.add_argument(
+        "-t",
+        "--transport",
+        choices=["stdio", "sse", "http"],
+        default="stdio",
+        help="Transport type (default: stdio)",
+    )
+    parser.add_argument(
+        "-m",
+        "--model",
+        default="claude-3-7-sonnet-20250219",
+        help="Claude model to use (default: claude-3-7-sonnet-20250219)",
+    )
 
     stdio_group = parser.add_argument_group("stdio options")
     stdio_group.add_argument("-c", "--command", help="Command to run MCP server (stdio only)")
     stdio_group.add_argument("-a", "--args", nargs="+", help="Arguments for the command (stdio only)")
-    stdio_group.add_argument("-e", "--env", nargs="+", help="Environment variables in KEY=VALUE format (stdio only)")
+    stdio_group.add_argument(
+        "-e",
+        "--env",
+        nargs="+",
+        help="Environment variables in KEY=VALUE format (stdio only)",
+    )
 
     remote_group = parser.add_argument_group("sse/http options")
     remote_group.add_argument("-u", "--url", help="MCP server URL (sse/http only)")
-    remote_group.add_argument("-H", "--header", nargs="+", dest="headers", help="HTTP headers in 'Key: Value' format (sse/http only)")
+    remote_group.add_argument(
+        "-H",
+        "--header",
+        nargs="+",
+        dest="headers",
+        help="HTTP headers in 'Key: Value' format (sse/http only)",
+    )
 
-    parser.add_argument("-o", "--output", type=Path, help="Output file for evaluation report (default: stdout)")
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="Output file for evaluation report (default: stdout)",
+    )
 
     args = parser.parse_args()
 

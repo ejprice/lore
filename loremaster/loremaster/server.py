@@ -48,7 +48,7 @@ import math
 import os
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from lorescribe.javascript import JavascriptChunker
 from lorescribe.markdown import MarkdownChunker
@@ -87,21 +87,23 @@ from loremaster.graph import (
     GraphNode,
     ReferenceSummary,
 )
+from loremaster.impact import _DEFAULT_MAX_CONSUMERS as _IMPACT_DEFAULT_MAX_CONSUMERS
+from loremaster.impact import _DEPTH_MAX as _IMPACT_DEPTH_MAX
+from loremaster.impact import _DEPTH_MIN as _IMPACT_DEPTH_MIN
+
 # P6-tail (lore_impact / lore_map): ImpactEngine/MapEngine and their scalar
 # result models. The bound/cap constants are IMPORTED (not re-typed) from the
 # engines' own modules -- single source of truth for the tool-surface Field
 # constraints below (mirrors the ``_PYTHON_SUFFIX as PYTHON_SUFFIX`` pattern
 # already used for the indexer's constant just below).
 from loremaster.impact import ImpactEngine, ImpactResult
-from loremaster.impact import _DEFAULT_MAX_CONSUMERS as _IMPACT_DEFAULT_MAX_CONSUMERS
-from loremaster.impact import _DEPTH_MAX as _IMPACT_DEPTH_MAX
-from loremaster.impact import _DEPTH_MIN as _IMPACT_DEPTH_MIN
 from loremaster.index.indexer import _PYTHON_SUFFIX as PYTHON_SUFFIX
 from loremaster.index.indexer import IndexSummary
-from loremaster.map import MapEngine, MapResult
 from loremaster.map import _BUDGET_CAP as _MAP_BUDGET_CAP
 from loremaster.map import _BUDGET_DEFAULT as _MAP_DEFAULT_BUDGET
 from loremaster.map import _BUDGET_FLOOR as _MAP_BUDGET_FLOOR
+from loremaster.map import MapEngine, MapResult
+
 # P7 memory cutover: the memory + task tool handlers speak the SurrealDB-backed
 # wire vocabulary. ``IMPORTANCE_DEFAULTS_BY_KIND`` is the single source of truth
 # for the valid memory-kind set + the by-kind importance defaults; ``MemorySource``
@@ -835,10 +837,7 @@ _TASK_ACTIONS = (
 # A generic "required argument" narrower for the task-tool dispatch (a create
 # needs a subject, a transition needs a target status, …). Kept generic so one
 # helper serves every action without per-arg boilerplate.
-_REQUIRED_ARG = TypeVar("_REQUIRED_ARG")
-
-
-def _require_arg(value: _REQUIRED_ARG | None, name: str) -> _REQUIRED_ARG:
+def _require_arg[REQUIRED_ARG](value: REQUIRED_ARG | None, name: str) -> REQUIRED_ARG:
     """Return ``value`` when present; raise a caller-error naming a missing arg.
 
     A task action that omits a field it needs (e.g. ``create`` with no

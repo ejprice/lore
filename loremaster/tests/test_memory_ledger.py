@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from loremaster.memory.backend import MemoryRef
 from loremaster.memory.ledger import MemoryLedger
 

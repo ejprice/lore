@@ -42,9 +42,9 @@ from _extension_helpers import (
     minimal_config,
 )
 from loremaster.server import LoreServer
+from loremaster.store.candidate import Candidate
 from lorescribe.base import Chunker
 from lorescribe.models import Chunk, ChunkContext
-from loremaster.store.candidate import Candidate
 from pydantic import ValidationError
 
 # A real XML file on this host: a small file the base XmlChunker collapses to a
