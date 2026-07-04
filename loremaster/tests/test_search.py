@@ -131,6 +131,10 @@ _MEMORY_INJECTION_CAP = 2
 # override (U+202A-202E) + isolate (U+2066-2069) + mark (U+200E-200F);
 # ZERO-WIDTH space (U+200B) + no-break space/BOM (U+FEFF); LINE/PARAGRAPH
 # SEPARATOR (U+2028-2029) — the residual closed out after the initial audit.
+# Sibling zero-widths flagged by that audit as backlog (efa5da7's commit
+# message) and now closed out: ZWNJ (U+200C), ZWJ (U+200D), and WORD JOINER
+# (U+2060) — all zero-width formatting chars that can hide characters inside
+# a rendered field just like U+200B/U+FEFF above.
 _BIDI_ZERO_WIDTH_AND_SEPARATOR_CHARS = (
     "\u202e",  # RIGHT-TO-LEFT OVERRIDE (bidi override sub-range)
     "\u2066",  # LEFT-TO-RIGHT ISOLATE (bidi isolate sub-range)
@@ -140,6 +144,9 @@ _BIDI_ZERO_WIDTH_AND_SEPARATOR_CHARS = (
     "\ufeff",  # ZERO WIDTH NO-BREAK SPACE / BOM
     "\u2028",  # LINE SEPARATOR
     "\u2029",  # PARAGRAPH SEPARATOR
+    "\u200c",  # ZERO WIDTH NON-JOINER (ZWNJ)
+    "\u200d",  # ZERO WIDTH JOINER (ZWJ)
+    "\u2060",  # WORD JOINER
 )
 
 
@@ -1470,10 +1477,11 @@ class TestRenderSanitiser:
         self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
         # The fenced source block is CONTENT, not framing: a bidi override, a
-        # zero-width space, a bidi mark, and a line/paragraph separator embedded
-        # in source_text are all preserved verbatim inside the fence — the
-        # extended sanitiser range must not overreach into the fenced body.
-        source = "def f():\n    return '\u202e\u200b\u200e\u200f\u2028\u2029 evil'\n"
+        # zero-width space, a bidi mark, a line/paragraph separator, ZWNJ/ZWJ,
+        # and WORD JOINER embedded in source_text are all preserved verbatim
+        # inside the fence — the extended sanitiser range must not overreach
+        # into the fenced body.
+        source = "def f():\n    return '\u202e\u200b\u200e\u200f\u2028\u2029\u200c\u200d\u2060 evil'\n"
         hostile = self._hostile_payload(chunk_type="function", source_text=source, signature="()")
         result = await self._search_one_hostile_chunk(tmp_path, embedder, hostile)
         assert source in result.formatted
