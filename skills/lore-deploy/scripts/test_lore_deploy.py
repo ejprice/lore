@@ -112,6 +112,12 @@ def test_start_when_already_running_still_rewires_mcp_json(
 
     monkeypatch.setattr(lore_deploy, "_launch_container", _recording_launch_container)
 
+    # Already running + serving: stub the MCP bind-probe as accepting so verb_start
+    # takes the fast already-running no-op branch instead of entering the real
+    # _await_bind wait loop (which would poll an unbound port for the full 600s bind
+    # timeout). Orthogonal to what this test asserts (.mcp.json rewire + no relaunch).
+    monkeypatch.setattr(lore_deploy, "_probe_mcp_port", lambda *args, **kwargs: True)
+
     env_file = tmp_path / "secrets.env"
     # The env-file need not exist: verb_start only checks env_file.exists() on the
     # non-running code path (past the early-return bug site), never on the running path.
@@ -293,6 +299,12 @@ class TestVerbStartStaleImageRecreateBehavior:
 
         monkeypatch.setattr(lore_deploy, "_launch_container", _recording_launch)
 
+        # After the relaunch, verb_start waits for the MCP port to bind; stub that
+        # wait as succeeding so the test does not poll an unbound port for the full
+        # 600s bind timeout. Orthogonal to what this test asserts (stop/rm/relaunch
+        # + reconnect reminder).
+        monkeypatch.setattr(lore_deploy, "_await_bind", lambda *args, **kwargs: lore_deploy._EXIT_OK)
+
         env_file = tmp_path / "secrets.env"
         # env-file need not exist: recreate path checks image/env only after the
         # stale detection; but the implementation may check env_file.exists() before
@@ -393,6 +405,12 @@ class TestVerbStartStaleImageRecreateBehavior:
 
         monkeypatch.setattr(lore_deploy, "_launch_container", _recording_launch)
 
+        # Already running + serving: stub the MCP bind-probe as accepting so
+        # verb_start takes the fast no-op branch rather than the real 600s
+        # _await_bind wait loop. Orthogonal to what this test asserts (no
+        # stop/rm/relaunch, no reconnect reminder).
+        monkeypatch.setattr(lore_deploy, "_probe_mcp_port", lambda *args, **kwargs: True)
+
         env_file = tmp_path / "secrets.env"
 
         # --- Act ---
@@ -479,6 +497,12 @@ class TestVerbStartStaleImageRecreateBehavior:
         # _merge_mcp_from_config shelled out via _run; stub it to avoid subprocess.
         monkeypatch.setattr(lore_deploy, "_merge_mcp_from_config",
                             lambda project, slug, config_path: _LORE_SERVER_PORT)
+
+        # After the fresh launch, verb_start waits for the MCP port to bind; stub
+        # that wait as succeeding so the test does not poll an unbound port for the
+        # full 600s bind timeout. Orthogonal to what this test asserts (launch
+        # happened + reconnect reminder printed).
+        monkeypatch.setattr(lore_deploy, "_await_bind", lambda *args, **kwargs: lore_deploy._EXIT_OK)
 
         env_file = tmp_path / "secrets.env"
         env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
@@ -976,6 +1000,12 @@ class TestVerbStartRecreateValidatesBeforeTeardown:
             return True
 
         monkeypatch.setattr(lore_deploy, "_image_exists", _recording_image_exists)
+
+        # After the teardown+relaunch, verb_start waits for the MCP port to bind;
+        # stub that wait as succeeding so the test does not poll an unbound port for
+        # the full 600s bind timeout. It runs AFTER the teardown, so it does not
+        # perturb the ordering-invariant transcript this test asserts on.
+        monkeypatch.setattr(lore_deploy, "_await_bind", lambda *args, **kwargs: lore_deploy._EXIT_OK)
 
         # --- Act ---
         return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
