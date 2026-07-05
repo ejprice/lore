@@ -130,6 +130,7 @@ def _config(*, slug: str, static_source: Path, static_version: str = _STATIC_VER
     """
     payload: dict[str, Any] = {
         "schema_version": 1,
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "project": {"slug": slug, "root": "."},
         "embedding": {
             "backend": "tei",

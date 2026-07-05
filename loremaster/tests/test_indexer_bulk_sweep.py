@@ -295,6 +295,7 @@ def _config(
         embedding["batch"] = batch
     payload: dict[str, Any] = {
         "schema_version": 1,
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "project": {"slug": slug, "root": "."},
         "embedding": embedding,
         "roots": roots,
@@ -996,6 +997,7 @@ if _HARNESS_AVAILABLE:
     def _harness_config(*, slug: str, live_path: Path) -> LoreConfig:
         payload: dict[str, Any] = {
             "schema_version": 1,
+            "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
             "project": {"slug": slug, "root": "."},
             "embedding": {
                 "backend": "tei",

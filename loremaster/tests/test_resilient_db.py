@@ -259,6 +259,7 @@ def _build_realistic_config(tmp_path: Path) -> Any:
     slug = f"test_{uuid.uuid4().hex}"
     payload: dict[str, Any] = {
         "schema_version": 1,
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "project": {"slug": slug, "root": "."},
         "embedding": {
             "backend": "tei",

@@ -64,6 +64,7 @@ def minimal_config(extensions: dict[str, dict[str, Any]] | None = None) -> LoreC
         extensions = {"fake": {"flavour": "vanilla"}}
     payload: dict[str, Any] = {
         "schema_version": 1,
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "project": {"slug": "lore_ext_test", "root": "."},
         "embedding": {
             "backend": "tei",

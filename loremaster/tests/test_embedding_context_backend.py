@@ -102,6 +102,7 @@ def _base_lore_config_payload(
     """A minimal, valid full ``LoreConfig`` payload carrying ``embedding_fields``."""
     return {
         "schema_version": 1,
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "project": {"slug": slug, "root": "."},
         "embedding": embedding_fields,
         "include": ["src/**/*.py"],

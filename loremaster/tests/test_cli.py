@@ -120,6 +120,7 @@ def _write_lore_yaml(
         surreal_block["database"] = surreal_database
     payload: dict[str, Any] = {
         "schema_version": 1,
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "project": {"slug": slug, "root": str(project_root)},
         "embedding": {
             "backend": "tei",

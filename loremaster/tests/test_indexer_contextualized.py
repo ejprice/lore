@@ -176,6 +176,7 @@ def _oversize_module() -> str:
 def _config(*, slug: str, live_path: Path) -> LoreConfig:
     payload: dict[str, Any] = {
         "schema_version": 1,
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "project": {"slug": slug, "root": "."},
         "embedding": {
             "backend": "tei",

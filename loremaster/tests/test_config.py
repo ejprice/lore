@@ -40,6 +40,10 @@ from pydantic import ValidationError
 _CANONICAL_CONFIG: dict[str, Any] = {
     "schema_version": 1,
     "project": {"slug": "demand_intelligence", "root": "."},
+    # The REQUIRED P8c Anthropic block (api_key_env is an env-var NAME only). The
+    # suite conftest sets a dummy ``ANTHROPIC_API_KEY`` so ``load_config``'s eager
+    # resolution passes for every fixture that boots through it.
+    "anthropic": {"api_key_env": "ANTHROPIC_API_KEY", "yardstick_model": "claude-sonnet-5"},
     "embedding": {
         "backend": "tei",
         "base_url": "http://tei.example:8080",
@@ -460,6 +464,25 @@ class TestResolveSecret:
         with pytest.raises(KeyError):
             resolve_secret("LORE_TEI_KEY")
 
+    def test_raises_when_set_but_whitespace_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Whitespace-only ("   ") is truthy in Python, so a naive `if not value`
+        # check lets it slip past — it must be rejected the same as unset/empty.
+        monkeypatch.setenv("LORE_TEI_KEY", "   ")
+        with pytest.raises(KeyError) as excinfo:
+            resolve_secret("LORE_TEI_KEY")
+        assert "LORE_TEI_KEY" in str(excinfo.value)
+
+    def test_value_with_surrounding_whitespace_and_real_content_is_unmodified(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A secret may legitimately contain leading/trailing whitespace as part
+        # of its actual bytes (e.g. copy-paste padding) — resolve_secret must
+        # never strip or otherwise mutate the returned value.
+        monkeypatch.setenv("LORE_TEI_KEY", "  s3cr3t-token  ")
+        assert resolve_secret("LORE_TEI_KEY") == "  s3cr3t-token  "
+
 
 # ---------------------------------------------------------------------------
 # FIX 1 — ProjectConfig.slug must be constrained to a safe charset
@@ -757,3 +780,212 @@ class TestEmbeddingBatchConfig:
         payload = _deep_copy_config()
         config = LoreConfig.model_validate(payload)
         assert isinstance(config.embedding.batch, BatchConfig)
+
+
+# ---------------------------------------------------------------------------
+# P8c — the REQUIRED Anthropic block + fail-fast key resolution
+# ---------------------------------------------------------------------------
+#
+# ``LoreConfig`` gains a REQUIRED ``anthropic`` section (NO default — unlike the
+# optional-with-default ``logging`` / ``surreal`` / ``search`` blocks). It
+# carries the token-calibration probe configuration:
+#
+#   class AnthropicConfig(_StrictModel):
+#       api_key_env: str                        # REQUIRED — env-var NAME only
+#       yardstick_model: str = "claude-sonnet-5"
+#
+#   class LoreConfig(_StrictModel):
+#       ...
+#       anthropic: AnthropicConfig              # REQUIRED — no default
+#
+# Two behaviours are pinned, blind to any implementation:
+#
+# 1. SCHEMA (via ``model_validate``): the block is REQUIRED (a config without it
+#    fails, naming ``anthropic``); ``yardstick_model`` defaults to the pinned
+#    ``claude-sonnet-5`` when omitted; a typo'd sub-key is rejected (strict).
+# 2. FAIL-FAST (via ``load_config`` — the file-load boot seam): the key is
+#    resolved EAGERLY at load. A missing OR empty env var aborts the load with a
+#    ``ValueError`` naming BOTH the yaml field ``anthropic.api_key_env`` AND the
+#    env-var name — never a lazy 401 at first probe. (``model_validate`` stays a
+#    pure schema check: it does NOT touch the environment, mirroring how the TEI
+#    / auth keys resolve lazily in their consumers today.)
+#
+# Secrets are referenced by env-var NAME only and set/unset by the tests
+# themselves via monkeypatch — never a real key. A DEDICATED env-var name that
+# the suite-wide conftest fixture does NOT set is used for the missing/empty
+# cases so they stay independent of that fixture.
+# ---------------------------------------------------------------------------
+
+# The env-var NAME the happy-path Anthropic tests reference. A test-only name so
+# a monkeypatch never clobbers a developer's real ``ANTHROPIC_API_KEY``.
+_ANTHROPIC_KEY_ENV: str = "LORE_ANTHROPIC_KEY_TEST"
+
+# A dedicated env-var NAME the tests keep UNSET/empty to exercise the fail-fast
+# path. Distinct from the suite conftest's dummy ``ANTHROPIC_API_KEY`` so these
+# cases never accidentally resolve against it.
+_ANTHROPIC_ABSENT_ENV: str = "LORE_ANTHROPIC_KEY_ABSENT"
+
+# The contract's pinned default yardstick model (SURVEY-FINAL / YARDSTICK-FINAL,
+# 2026-07-04). Stated here as the SPEC the test verifies — NOT copied from the
+# implementation (clause 2).
+_EXPECTED_DEFAULT_YARDSTICK_MODEL: str = "claude-sonnet-5"
+
+
+def _config_with_anthropic(
+    api_key_env: str = _ANTHROPIC_KEY_ENV, **block_overrides: Any
+) -> dict[str, Any]:
+    """A canonical config payload carrying an ``anthropic`` block.
+
+    Built by overwriting the canonical config's ``anthropic`` key so the test is
+    order-independent: it works whether or not ``_CANONICAL_CONFIG`` itself
+    already carries the block. ``block_overrides`` inject extra/typo'd keys.
+    """
+    payload = _deep_copy_config()
+    block: dict[str, Any] = {"api_key_env": api_key_env}
+    block.update(block_overrides)
+    payload["anthropic"] = block
+    return payload
+
+
+class TestAnthropicConfigSchema:
+    """The REQUIRED ``anthropic`` block's schema behaviour (via ``model_validate``)."""
+
+    def test_valid_block_is_parsed(self) -> None:
+        config = LoreConfig.model_validate(_config_with_anthropic())
+        assert config.anthropic.api_key_env == _ANTHROPIC_KEY_ENV
+
+    def test_yardstick_model_defaults_to_the_pinned_baseline(self) -> None:
+        # Omitting ``yardstick_model`` yields the generation-anchored default.
+        config = LoreConfig.model_validate(_config_with_anthropic())
+        assert config.anthropic.yardstick_model == _EXPECTED_DEFAULT_YARDSTICK_MODEL
+
+    def test_yardstick_model_is_preserved_when_set(self) -> None:
+        payload = _config_with_anthropic(yardstick_model="claude-opus-4-8")
+        config = LoreConfig.model_validate(payload)
+        assert config.anthropic.yardstick_model == "claude-opus-4-8"
+
+    def test_missing_block_fails_naming_the_field(self) -> None:
+        # The block is REQUIRED (no default): a config without it must fail load,
+        # and the error must name ``anthropic`` so the operator knows what to add.
+        payload = _deep_copy_config()
+        payload.pop("anthropic", None)
+        with pytest.raises(ValidationError) as excinfo:
+            LoreConfig.model_validate(payload)
+        assert "anthropic" in str(excinfo.value)
+
+    def test_block_rejects_unknown_sub_key(self) -> None:
+        # A known section stays strict (``extra="forbid"``): a typo'd key INSIDE
+        # the block fails loud and NAMES the offending key. Asserting the key
+        # name makes this red-for-the-right-reason before the field exists (a
+        # bare ``pytest.raises`` would spuriously catch the "extra top-level
+        # ``anthropic``" error the strict base raises pre-implementation).
+        payload = _config_with_anthropic(bogus_sub_key=True)
+        with pytest.raises(ValidationError) as excinfo:
+            LoreConfig.model_validate(payload)
+        assert "bogus_sub_key" in str(excinfo.value)
+
+    def test_missing_api_key_env_within_block_is_rejected(self) -> None:
+        # ``api_key_env`` itself is REQUIRED inside the block — an ``anthropic``
+        # block that omits it must fail (a keyless block is un-resolvable). The
+        # error must NAME ``api_key_env``: at RED the strict base rejects the
+        # whole block (echoing only the keys present, which do NOT include
+        # ``api_key_env``), so this assertion is red-for-the-right-reason.
+        payload = _deep_copy_config()
+        payload["anthropic"] = {"yardstick_model": "claude-sonnet-5"}
+        with pytest.raises(ValidationError) as excinfo:
+            LoreConfig.model_validate(payload)
+        assert "api_key_env" in str(excinfo.value)
+
+    def test_anthropic_config_class_is_named_and_importable(self) -> None:
+        # Mirrors the sibling-section naming convention (LoggingConfig,
+        # SurrealConfig, BatchConfig): imported inside the test body so a
+        # not-yet-existing symbol fails ONLY this test, not the file's collection.
+        from loremaster.config import AnthropicConfig
+
+        config = LoreConfig.model_validate(_config_with_anthropic())
+        assert isinstance(config.anthropic, AnthropicConfig)
+
+    def test_model_validate_does_not_touch_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pure schema construction must NOT resolve the secret — only the
+        # ``load_config`` boot seam does (mirroring the lazy TEI/auth idiom). An
+        # UNSET key must still let ``model_validate`` succeed.
+        monkeypatch.delenv(_ANTHROPIC_ABSENT_ENV, raising=False)
+        config = LoreConfig.model_validate(
+            _config_with_anthropic(api_key_env=_ANTHROPIC_ABSENT_ENV)
+        )
+        assert config.anthropic.api_key_env == _ANTHROPIC_ABSENT_ENV
+
+
+class TestAnthropicFailFast:
+    """``load_config`` resolves the Anthropic key EAGERLY and fails loud at boot."""
+
+    def _write_config(self, tmp_path: Path, payload: dict[str, Any]) -> Path:
+        config_path = tmp_path / "lore.yaml"
+        config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+        return config_path
+
+    def test_loads_when_env_var_is_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(_ANTHROPIC_KEY_ENV, "sk-ant-dummy-value")
+        config_path = self._write_config(tmp_path, _config_with_anthropic())
+        config = load_config(config_path)
+        assert config.anthropic.api_key_env == _ANTHROPIC_KEY_ENV
+
+    def test_unset_env_var_fails_load_naming_field_and_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(_ANTHROPIC_ABSENT_ENV, raising=False)
+        payload = _config_with_anthropic(api_key_env=_ANTHROPIC_ABSENT_ENV)
+        config_path = self._write_config(tmp_path, payload)
+        with pytest.raises(ValueError) as excinfo:
+            load_config(config_path)
+        message = str(excinfo.value)
+        # The error must name BOTH the yaml field (contiguously — the strict
+        # base's pre-implementation "extra key" error cannot produce this exact
+        # substring, so the assertion is red-for-the-right-reason) AND the env var.
+        assert "anthropic.api_key_env" in message
+        assert _ANTHROPIC_ABSENT_ENV in message
+
+    def test_empty_env_var_fails_load_naming_field_and_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An empty string is effectively a missing key (resolve_secret's own
+        # contract) — it must fail the SAME way as unset.
+        monkeypatch.setenv(_ANTHROPIC_ABSENT_ENV, "")
+        payload = _config_with_anthropic(api_key_env=_ANTHROPIC_ABSENT_ENV)
+        config_path = self._write_config(tmp_path, payload)
+        with pytest.raises(ValueError) as excinfo:
+            load_config(config_path)
+        message = str(excinfo.value)
+        assert "anthropic.api_key_env" in message
+        assert _ANTHROPIC_ABSENT_ENV in message
+
+    def test_whitespace_only_env_var_fails_load_naming_field_and_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A whitespace-only value is effectively a missing key too — it must
+        # fail the SAME way as unset/empty, not slip through to a later,
+        # confusing failure at the API call.
+        monkeypatch.setenv(_ANTHROPIC_ABSENT_ENV, "   ")
+        payload = _config_with_anthropic(api_key_env=_ANTHROPIC_ABSENT_ENV)
+        config_path = self._write_config(tmp_path, payload)
+        with pytest.raises(ValueError) as excinfo:
+            load_config(config_path)
+        message = str(excinfo.value)
+        assert "anthropic.api_key_env" in message
+        assert _ANTHROPIC_ABSENT_ENV in message
+
+    def test_fail_fast_error_chains_from_the_original_keyerror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The ValueError is raised ``from`` resolve_secret's KeyError so the
+        # operator sees the underlying cause in the traceback.
+        monkeypatch.delenv(_ANTHROPIC_ABSENT_ENV, raising=False)
+        payload = _config_with_anthropic(api_key_env=_ANTHROPIC_ABSENT_ENV)
+        config_path = self._write_config(tmp_path, payload)
+        with pytest.raises(ValueError) as excinfo:
+            load_config(config_path)
+        assert isinstance(excinfo.value.__cause__, KeyError)

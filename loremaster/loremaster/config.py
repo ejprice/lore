@@ -442,6 +442,41 @@ class SearchConfig(_StrictModel):
     reranker: RerankerConfig | None = None
 
 
+# The default model the token-calibration yardstick probes run against.
+# Provenance: SURVEY-FINAL (2026-07-04) derived the calibration baseline against
+# ``claude-sonnet-5``; YARDSTICK-FINAL (2026-07-04) then proved token counts are
+# byte-identical across the current generation (sonnet-5 / opus-4-8 / fable-5),
+# so the baseline is GENERATION-anchored, not model-anchored — swapping to any
+# same-generation sibling leaves the calibration numbers unchanged.
+DEFAULT_YARDSTICK_MODEL: str = "claude-sonnet-5"
+
+
+class AnthropicConfig(_StrictModel):
+    """Anthropic API configuration — REQUIRED (P8c token-calibration probes).
+
+    Unlike the optional-with-default sub-sections (:class:`LoggingConfig`,
+    :class:`SurrealConfig`, :class:`SearchConfig`), this block is REQUIRED on
+    :class:`LoreConfig`: lore needs an Anthropic key to run its calibration
+    yardstick, so a ``lore.yaml`` without an ``anthropic:`` section fails at load
+    naming the missing field rather than deferring to an opaque 401 later.
+
+    The API key is referenced by environment-variable *name* only (mirroring
+    :attr:`EmbeddingConfig.api_key_env` and :attr:`AuthKey.key_env`) — the secret
+    itself is never inlined. :func:`load_config` resolves it EAGERLY at load via
+    :func:`resolve_secret`, so a missing or empty key fails boot immediately.
+
+    Attributes:
+        api_key_env: The *name* of the environment variable holding the Anthropic
+            API key (e.g. ``ANTHROPIC_API_KEY``) — never the key itself.
+        yardstick_model: The model the token-calibration probes run against.
+            Defaults to :data:`DEFAULT_YARDSTICK_MODEL` (``claude-sonnet-5``); see
+            that constant for the generation-anchored provenance.
+    """
+
+    api_key_env: str
+    yardstick_model: str = DEFAULT_YARDSTICK_MODEL
+
+
 class LoreConfig(_StrictModel):
     """The complete, validated parse of a project's tiered ``lore.yaml``.
 
@@ -453,6 +488,9 @@ class LoreConfig(_StrictModel):
         schema_version: The config schema version.
         project: Project identity.
         embedding: Embedding-backend configuration.
+        anthropic: Anthropic API configuration (P8c). REQUIRED — a ``lore.yaml``
+            without an ``anthropic:`` section fails at load, and its
+            ``api_key_env`` is resolved eagerly by :func:`load_config`.
         roots: The source roots/tiers with per-tier freshness policies (D5).
             Defaults to an empty list (a bare single-tree generic deploy).
         include: Glob patterns (relative to the project root) selecting files to
@@ -476,6 +514,10 @@ class LoreConfig(_StrictModel):
     schema_version: int
     project: ProjectConfig
     embedding: EmbeddingConfig
+    # REQUIRED (no default): lore needs an Anthropic key for its calibration
+    # yardstick, so a missing ``anthropic:`` section fails at load naming the
+    # field. Its ``api_key_env`` is resolved EAGERLY in ``load_config``.
+    anthropic: AnthropicConfig
     # OPTIONAL with a default instance (like ``logging``), so an existing
     # ``lore.yaml`` with no ``surreal:`` section still validates and gets the
     # localhost production defaults; the dev-server harness sets it explicitly.
@@ -545,6 +587,13 @@ class LoreConfig(_StrictModel):
 def load_config(path: str | Path) -> LoreConfig:
     """Read a ``lore.yaml`` file and return the validated :class:`LoreConfig`.
 
+    Secrets required at boot are resolved EAGERLY here (fail-fast): the
+    ``anthropic.api_key_env`` variable is read immediately so a missing or empty
+    key aborts the load rather than surfacing as an opaque 401 at first probe.
+    This is the boot seam — the schema-only :meth:`LoreConfig.model_validate`
+    deliberately does NOT touch the environment (mirroring how the TEI/auth keys
+    resolve lazily in their own consumers).
+
     Args:
         path: The filesystem path to the YAML config.
 
@@ -553,31 +602,53 @@ def load_config(path: str | Path) -> LoreConfig:
 
     Raises:
         pydantic.ValidationError: If the YAML contents violate the schema.
+        ValueError: If ``anthropic.api_key_env`` names an environment variable
+            that is unset or empty — the message names BOTH the yaml field and
+            the variable, chained from the underlying :class:`KeyError`.
         FileNotFoundError: If ``path`` does not exist.
     """
     text = Path(path).read_text(encoding="utf-8")
     raw: Any = yaml.safe_load(text)
-    return LoreConfig.model_validate(raw)
+    config = LoreConfig.model_validate(raw)
+    # Fail-fast: resolve the REQUIRED Anthropic key at load. resolve_secret
+    # raises KeyError (naming the variable) when it is unset or empty; re-raise
+    # as a ValueError that ALSO names the yaml field so the operator can fix the
+    # config and the environment in one step.
+    try:
+        resolve_secret(config.anthropic.api_key_env)
+    except KeyError as error:
+        raise ValueError(
+            f"anthropic.api_key_env references environment variable "
+            f"{config.anthropic.api_key_env!r}, which is unset or empty; "
+            f"export it before starting lore."
+        ) from error
+    return config
 
 
 def resolve_secret(env_var_name: str) -> str:
     """Resolve a secret value from the environment by variable name.
 
+    The returned value is never stripped or otherwise mutated — a secret whose
+    real content happens to include leading/trailing whitespace passes through
+    byte-exact. Only the *emptiness check* looks past whitespace, to catch a
+    variable that was set to nothing but spaces/tabs.
+
     Args:
         env_var_name: The name of the environment variable to read.
 
     Returns:
-        The variable's value.
+        The variable's value, unmodified.
 
     Raises:
-        KeyError: If the variable is unset *or* set to an empty string — an
-            empty API key is effectively missing. The message names the variable
-            so the operator can remediate immediately.
+        KeyError: If the variable is unset, set to an empty string, or set to
+            a whitespace-only string — an empty or blank API key is effectively
+            missing. The message names the variable so the operator can
+            remediate immediately.
     """
     value = os.environ.get(env_var_name)
-    if not value:
+    if not value or not value.strip():
         raise KeyError(
-            f"Required secret environment variable {env_var_name!r} is unset or empty; "
-            f"export it before starting lore."
+            f"Required secret environment variable {env_var_name!r} is unset, empty, "
+            f"or whitespace-only; export it before starting lore."
         )
     return value

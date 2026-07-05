@@ -175,6 +175,7 @@ def _config(*, slug: str, live_path: Path) -> LoreConfig:
     """A validated config with one live tier (mirrors test_search's fixture)."""
     payload: dict[str, Any] = {
         "schema_version": 1,
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "project": {"slug": slug, "root": "."},
         "embedding": {
             "backend": "tei",
