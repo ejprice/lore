@@ -2,7 +2,13 @@
 > 2026-07-04), preserved by the P8c lead after the pre-build REPORT purge deleted
 > the repo-root original. Lead spot-verified 4 of its load-bearing claims against
 > on-disk source before delivery (one benign citation slip: watcher rows omit the
-> index/ path segment). AWAITING OPERATOR STRIKES — approved rows implement P8e/P8f.
+> index/ path segment).
+>
+> **OPERATOR RULING (2026-07-05): ACCEPTED AS-IS** — all dispositions adopted
+> wholesale; the 5 derive-at-boot items + the validate-against-reality set + the
+> 9-dead-field cleanup are the approved P8e/P8f work list, hazard guards binding
+> as written. (Scaffold-defect routing not separately ruled — defaults to the P8e
+> scaffold rework window.)
 
 # REPORT-scout-13-1 — Config-dynamism disposition table (ledger #13, P8c)
 
