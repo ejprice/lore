@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +169,40 @@ def built_server(tmp_path: Path) -> Any:
     """A FastMCP built via the production path, no live backend required."""
     config = _config(f"test_{tmp_path.name}", tmp_path / "live")
     return build_mcp_server(LoreServer(config))
+
+
+@pytest.fixture(autouse=True)
+def _restore_server_module_after_reload() -> Iterator[None]:
+    """Restore ``loremaster.server``'s namespace after every test in this file.
+
+    Several tests here call ``importlib.reload(server_module)`` to re-derive
+    ``__version__`` under a mutated ``LORE_VERSION`` env. ``reload()``
+    re-executes the module IN PLACE, so it mints BRAND-NEW class/function
+    objects (``ProbeGateError``, ``run_probe_gate``, ``LoreServer``, …) into the
+    shared ``loremaster.server.__dict__`` — and object identity is destroyed
+    permanently. Any OTHER test file that imported those symbols BEFORE the
+    reload keeps its now-stale reference: e.g. ``test_mcp_server`` holds the
+    pre-reload ``ProbeGateError`` and ``run_probe_gate``, but that same
+    ``run_probe_gate``'s ``__globals__`` IS this reloaded module dict, so it now
+    raises the POST-reload ``ProbeGateError`` — which the pre-reload
+    ``pytest.raises(ProbeGateError)`` no longer catches. A ``reload()`` can never
+    give the identity back, so the tests' own ``finally: importlib.reload(...)``
+    cannot undo the leak (it just mints yet another new class).
+
+    ``reload()`` reuses the same module object and the same ``__dict__`` object,
+    so restoring that dict's CONTENTS wholesale (``clear`` + ``update`` from a
+    pre-test snapshot) rebinds the module to the exact objects every
+    already-imported reference still holds — making the reload invisible to the
+    rest of the suite regardless of test order. Autouse so it wraps the reloading
+    and non-reloading tests alike (a non-reloading test snapshots and restores an
+    unchanged dict — a cheap no-op).
+    """
+    snapshot = dict(server_module.__dict__)
+    try:
+        yield
+    finally:
+        server_module.__dict__.clear()
+        server_module.__dict__.update(snapshot)
 
 
 # --------------------------------------------------------------------------- #
