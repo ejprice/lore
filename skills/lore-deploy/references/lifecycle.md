@@ -22,8 +22,9 @@ step needs manual intervention.
   project dir name when `--env-file` is omitted). An explicit `--env-file` is
   honored verbatim. There is **no** shared project-agnostic `~/docker/mcp/lore.env`
   — relying on one resolved to a missing file and `podman run` exited 125. Required
-  keys: the embedder bearer (`api_key_env`, default `LORE_TEI_KEY`) and the Qdrant
-  key (`QDRANT__SERVICE__API_KEY`). When auth is enabled, also `LORE_<SLUG>_KEY`.
+  keys: the embedder bearer (`api_key_env`, default `LORE_TEI_KEY`), the SurrealDB
+  root credentials (`SURREAL_USER` / `SURREAL_PASS`), and `ANTHROPIC_API_KEY`
+  (resolved eagerly at server start). When auth is enabled, also `LORE_<SLUG>_KEY`.
 
 ## `setup` — once per project (idempotent; expensive parts no-op on re-run)
 
@@ -45,10 +46,18 @@ step needs manual intervention.
 4. **Hard-probe `/embed`** (`scripts/probe_embed.py`). STOP if unreachable
    (allow the fp32 warmup ~20–40 s — poll `/health` first) or if the observed
    dimension ≠ `config.dim`.
-5. **Ensure collections** (`scripts/ensure_collections.py`). Creates
-   `lore_<slug>` + `lore_<slug>_memory` at `size=dim`/cosine with payload
-   indexes if absent. **STOP on a dim mismatch** between an existing collection
-   and `config.dim` — never auto-recreate.
+5. **Pre-flight the SurrealDB store** (inline `_probe_surreal`, stdlib-only).
+   Confirm the unified store answers `/health` — an HTTP GET derived from
+   `surreal.url` (`ws(s)://host:port/rpc` → `http(s)://host:port/health`, same
+   host:port). If it does not answer **and** the `lore-surreal` container exists
+   but is stopped, `podman start lore-surreal` and re-poll `/health` for a bounded
+   budget (reboot recovery — the container's restart policy is `no`). Still
+   unreachable, or no such container to start, **STOP** (`_EXIT_ERROR`, loud,
+   naming the URL + the container). This gates on store **REACHABILITY only** —
+   schema + embedding-dimension ownership (including the
+   rebuild-on-fingerprint-change) lives in the server. The skill **never** creates,
+   recreates, or removes the store container or touches its data dir;
+   start-if-stopped is its only permitted mutation.
 6. **Build the image if missing.** `podman image exists localhost/lore:latest`
    → if absent, `podman build --build-arg LORE_VERSION="$(git describe --tags --always --dirty)" -t localhost/lore:latest -f Containerfile .`
    from the lore workspace root — the `--build-arg` bakes the git-derived version
@@ -82,8 +91,11 @@ step needs manual intervention.
    **wait for bind** (below), then re-merge `.mcp.json` and print the
    MCP-reconnect reminder.
 2. **Pre-flight (not-running path):** hard-probe `/embed` (STOP if down/wrong dim);
-   confirm the collection exists (if not, tell the user to run `setup` first — do
-   NOT silently cold-build on `start`).
+   pre-flight the SurrealDB store's `/health` (`_probe_surreal` — STOP if
+   unreachable, with the bounded start-if-stopped reboot recovery from `setup`
+   step 5). `start` gates only on the store being **reachable** — it never
+   inspects collection/dim state (the server owns schema + dim, including the
+   rebuild-on-fingerprint-change).
 3. **Launch the container** (see the run invocation below). On startup the
    server runs the **delta-reconcile**: walk included roots → mtime+size
    fast-path → re-index only the changed delta, purge deletions. No cold
@@ -185,10 +197,9 @@ podman run -d --name lore-<slug> \
 |---|---|
 | `/embed` unreachable after warmup poll | STOP — print the URL + remediation; do not start a server with no embedder. |
 | probe dim ≠ `config.dim` | STOP — dimension mismatch; do not index. |
-| existing collection size ≠ `config.dim` | STOP — **never auto-recreate**; print remediation (the operator decides: recreate+reindex, or fix the config). |
+| SurrealDB store `/health` unreachable on `setup`/`start` | STOP — `_EXIT_ERROR`, loud on stderr naming `surreal.url` + the `lore-surreal` container. One recovery attempt: start-if-stopped (`podman start lore-surreal`) + a bounded re-poll; **never** create/recreate/remove the container or touch its data dir. Dim/schema is the server's concern, not the deploy's. |
 | missing/empty secret env var | STOP — name the variable. |
 | image missing on `start` | STOP — tell the user to run `setup` (which builds it). |
-| collection missing on `start` | STOP — tell the user to run `setup` (cold index). |
 | recreate precondition unmet (image or env-file missing on the stale-image path) | STOP — `_EXIT_ERROR`, leave the running container untouched (never tear down before validating). |
 | relaunch (`podman run`) fails after teardown on recreate | STOP — `_EXIT_ERROR`, loud on stderr; never propagate an uncaught `CalledProcessError`. |
 | MCP port never accepts within `--bind-timeout` (default 600s) on `start` | STOP — `_EXIT_ERROR`, loud on stderr with the tail of `podman logs --tail 5`; skipped entirely by `--no-wait`. |

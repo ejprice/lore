@@ -47,7 +47,7 @@ python3 ~/.claude/skills/lore-deploy/scripts/lore_deploy.py <verb> --project <ab
 
 | Verb | What it does (idempotent) |
 |---|---|
-| `setup` | Once per project. Scaffold `lore.yaml`, verify env keys, **hard-probe `/embed`**, ensure both Qdrant collections, build the image if missing, **cold-index**, merge `.mcp.json`. Re-running detects the existing config + collection + manifest and **no-ops** (never re-scaffolds, never nukes the index). |
+| `setup` | Once per project. Scaffold `lore.yaml`, verify env keys, **hard-probe `/embed`**, **pre-flight the SurrealDB store's `/health`**, build the image if missing, **cold-index**, merge `.mcp.json`. Re-running detects the existing config + manifest and **no-ops** (never re-scaffolds, never nukes the index). |
 | `start` | Launch the container (delta-reconcile runs on startup) + merge `.mcp.json`, then **waits for the MCP port to actually accept connections** before declaring success — a "running" container can still be mid-boot delta-reconcile with the port unbound (see "Port-probe / wait-for-bind" below). Already-running-and-bound ⇒ fast no-op. |
 | `stop` | Stop + remove the container. Collections + manifest **persist**. Not-running ⇒ no-op. |
 | `status` | Report running/stopped + `index_status()` freshness (in-flight/failed files), AND **probes the live MCP port** to report `ACCEPTING`/`NOT ACCEPTING` — container state alone does not prove the server is reachable. For a stopped container it reads the manifest directly and skips the probe. |
@@ -121,18 +121,24 @@ check.
 - **Secrets are env-refs only.** `lore.yaml` carries the *name* of an
   environment variable (`api_key_env: LORE_TEI_KEY`), never the key itself. The
   container receives secrets via `--env-file`. Never inline a bearer token.
-- **STOP on a dim mismatch — never auto-recreate.** If the live `/embed` probe
-  dimension, `config.dim`, and an existing collection's vector size disagree,
-  the deploy **stops with a remediation message**. Auto-recreating a collection
-  silently nukes a real index — the one thing this skill must never do. The
-  `ensure_collections.py` helper enforces this.
+- **STOP if the SurrealDB store is unreachable.** `setup`/`start` pre-flight the
+  unified store's `/health` (a plain HTTP GET derived from `surreal.url`) and
+  **stop with a remediation message** if it does not answer — fail loud at
+  `setup`/`start`, not later as an opaque error. The one mutation the skill may
+  make is **start-if-stopped reboot recovery** (`podman start lore-surreal` when
+  the container exists but sits Exited after a host reboot); it **never creates,
+  recreates, or removes** that container or touches its data dir. **Schema +
+  embedding-dimension ownership lives in the server, not here** — the loremaster
+  server provisions the SurrealDB schema (threading `config.dim` into every
+  index) and reconciles any dim/schema change via its embedding-schema-fingerprint
+  rebuild. The deploy no longer gates on dim or recreates any store object.
 - **STOP if `/embed` is unreachable or returns the wrong dimension.** A RAG
   server with no embedder is useless; fail loud at `setup`/`start`, not later as
   an opaque error.
-- **Collections + manifest persist across `stop`/`start`.** `stop` removes only
-  the container. The `~/.local/state/lore/<slug>.db` manifest and the
-  `lore_<slug>` / `lore_<slug>_memory` collections survive, which is what makes
-  restart a cheap delta-reconcile.
+- **The store + manifest persist across `stop`/`start`.** `stop` removes only
+  the lore container. The `~/.local/state/lore/<slug>.db` manifest and the
+  SurrealDB store's data (the separate, always-on `lore-surreal` container)
+  survive, which is what makes restart a cheap delta-reconcile.
 
 ## Deferred (do not attempt here)
 
@@ -167,13 +173,12 @@ server's own `instructions`.
 
 - `scripts/lore_deploy.py` — the verb dispatcher (the entrypoint above). Also
   where the MCP port-probe / wait-for-bind logic lives (`_probe_mcp_port` /
-  `_wait_for_bind`, stdlib-only) — it's inline rather than a sibling script
-  because `status` and `start` both need it and neither shells out for it.
+  `_wait_for_bind`, stdlib-only) **and** the SurrealDB store `/health` pre-flight
+  (`_probe_surreal`, stdlib-only) — both inline rather than sibling scripts
+  because the verbs that need them (`status`/`start`, `setup`/`start`) do not
+  shell out for them.
 - `scripts/probe_embed.py` — hard-probe the `/embed` endpoint; prints the
   observed dimension or exits non-zero (unreachable / wrong dim / 5xx).
-- `scripts/ensure_collections.py` — ensure both collections exist at the right
-  dim/cosine with payload indexes, reusing the in-repo `QdrantStore`; **exits
-  non-zero on a dim mismatch without recreating** anything.
 - `scripts/merge_mcp_json.py` — idempotently merge the project's `.mcp.json`
   `mcpServers.lore_<slug>` entry (preserves every other server + key).
 

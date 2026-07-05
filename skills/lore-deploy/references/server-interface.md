@@ -11,7 +11,9 @@ deploy artifacts depend on; the running server is the source of truth.
 - reads `LORE_CONFIG` (path to the mounted `lore.yaml`),
 - configures lore-namespace structured logging (`LoggingConfig` / `LORE_LOG_LEVEL`),
 - runs the **startup probe gate** (probe `/embed`; refuse to start on
-  unreachable / dim ≠ `config.dim` / dim ≠ collection size — never auto-recreate),
+  unreachable / dim ≠ `config.dim` / dim ≠ the stored SurrealDB index size —
+  never auto-recreate; the server owns schema + dim, incl. the
+  embedding-schema-fingerprint rebuild),
 - runs the **startup delta-reconcile** + spawns the watcher (this heavy startup
   runs **once per process**, shared across MCP sessions — a ref-counted guard),
 - serves FastMCP **streamable-http** on `config.server.{host,port,path}`
@@ -72,8 +74,9 @@ and enable `auth` in `lore.yaml`. Confirm the mount path matches
 
 ## 6. Secrets env-file (per-slug)
 
-The container's secrets (the embedder bearer `LORE_TEI_KEY`, the Qdrant key
-`QDRANT__SERVICE__API_KEY`, and — when auth is on — `LORE_<SLUG>_KEY`) are passed
+The container's secrets (the embedder bearer `LORE_TEI_KEY`, the SurrealDB root
+credentials `SURREAL_USER` / `SURREAL_PASS`, `ANTHROPIC_API_KEY`, and — when auth
+is on — `LORE_<SLUG>_KEY`) are passed
 via `--env-file`. The path is **per-slug**: `~/docker/mcp/lore-secrets/<slug>.env`,
 one file per project, resolved from the project dir name when `--env-file` is
 omitted. An explicit `--env-file` is honored verbatim. There is **no** shared

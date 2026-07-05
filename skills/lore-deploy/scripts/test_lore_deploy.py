@@ -482,8 +482,10 @@ class TestVerbStartStaleImageRecreateBehavior:
         monkeypatch.setattr(lore_deploy, "_image_exists", lambda image: True)
 
         # Pre-flight probes: succeed silently so the launch path is reached.
+        # The store gate is the SurrealDB /health pre-flight (_probe_surreal),
+        # which replaced the retired qdrant _ensure_collections step at P8a.
         monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
-        monkeypatch.setattr(lore_deploy, "_ensure_collections", lambda *a, **k: lore_deploy._EXIT_OK)
+        monkeypatch.setattr(lore_deploy, "_probe_surreal", lambda *a, **k: lore_deploy._EXIT_OK)
 
         monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
 
@@ -1157,4 +1159,292 @@ class TestEnvFileResolution:
         assert namespace.env_file != str(_OLD_BAD_DEFAULT), (
             f"--env-file default must not be the old project-agnostic path "
             f"{_OLD_BAD_DEFAULT} (Defect A)"
+        )
+
+
+# ===========================================================================
+# Defect C — the SurrealDB store-reachability pre-flight (P8a store unification).
+# ===========================================================================
+#
+# At P8a Qdrant was retired; the unified store is the persistent ``lore-surreal``
+# SurrealDB container.  The old ``_ensure_collections`` gate (which imported
+# ``qdrant_client`` and read ``config.qdrant.url``) is dead on BOTH counts —
+# ``setup``/``start`` exited 2 with "No module named 'qdrant_client'".  The new
+# gate, ``_probe_surreal``, checks store REACHABILITY only (HTTP ``GET /health``)
+# — schema + dim ownership (including the embedding-schema-fingerprint rebuild)
+# lives in the loremaster server, not this skill.  Its ONE permitted mutation is
+# start-if-stopped reboot recovery (``podman start lore-surreal`` when the
+# container exists but sits Exited after a host reboot); it NEVER creates,
+# recreates, or removes that container or touches its data dir.
+#
+# Contract pinned here (the spec, NOT the current body):
+#   - ``_surreal_health_url`` maps ``ws(s)://host:port/rpc`` -> ``http(s)://host:port/health``.
+#   - ``_probe_surreal`` returns _EXIT_OK on a clean /health 200 with NO podman call.
+#   - On failure it starts the container ONLY if it exists-but-stopped, then re-polls;
+#     it never issues run/rm/create/stop against lore-surreal.
+#   - Absent container or still-unreachable -> _EXIT_ERROR, LOUD stderr naming the
+#     URL + the container name.
+#   - Both ``verb_start`` and ``verb_setup`` gate on it (a failed probe aborts before launch).
+
+
+class TestSurrealHealthUrl:
+    """``_surreal_health_url`` maps the SurrealDB RPC URL to its /health HTTP URL."""
+
+    def test_ws_rpc_maps_to_http_health(self) -> None:
+        """``ws://host:port/rpc`` -> ``http://host:port/health`` (scheme + path only)."""
+        assert (
+            lore_deploy._surreal_health_url("ws://127.0.0.1:18500/rpc")
+            == "http://127.0.0.1:18500/health"
+        )
+
+    def test_wss_rpc_maps_to_https_health(self) -> None:
+        """``wss://host:port/rpc`` -> ``https://host:port/health`` (TLS variant)."""
+        assert (
+            lore_deploy._surreal_health_url("wss://surreal.example:8000/rpc")
+            == "https://surreal.example:8000/health"
+        )
+
+
+class TestProbeSurreal:
+    """``_probe_surreal`` gate: reachability probe + bounded start-if-stopped recovery."""
+
+    _RPC_URL = "ws://127.0.0.1:18500/rpc"
+
+    def _stub_url_read(self, monkeypatch) -> None:
+        """Stub the config read so the probe reads our fixed surreal.url."""
+        monkeypatch.setattr(
+            lore_deploy, "_read_config_field", lambda config_path, expr: self._RPC_URL
+        )
+
+    def _record_run(self, monkeypatch) -> list[list[str]]:
+        """Install a recording _run that succeeds; return the transcript list."""
+        run_calls: list[list[str]] = []
+
+        def _recording_run(cmd: list[str], **kwargs) -> object:
+            run_calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(lore_deploy, "_run", _recording_run)
+        return run_calls
+
+    @staticmethod
+    def _mutating(run_calls: list[list[str]]) -> list[list[str]]:
+        """podman commands that would create/destroy/stop the store (forbidden)."""
+        forbidden = {"run", "rm", "create", "stop"}
+        return [c for c in run_calls if set(c) & forbidden]
+
+    # --- healthy on the first probe: OK, and NOT a single podman call ---
+    def test_healthy_first_probe_returns_ok_without_podman(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """A clean /health 200 returns _EXIT_OK and never shells out to podman."""
+        self._stub_url_read(monkeypatch)
+        monkeypatch.setattr(lore_deploy, "_probe_surreal_health", lambda url, **kw: True)
+        run_calls = self._record_run(monkeypatch)
+        state_calls: list[str] = []
+        monkeypatch.setattr(
+            lore_deploy, "_container_state",
+            lambda name: state_calls.append(name) or None,
+        )
+
+        rc = lore_deploy._probe_surreal(tmp_path / "lore.yaml")
+
+        assert rc == lore_deploy._EXIT_OK
+        assert run_calls == [], f"a healthy probe must not touch podman; got {run_calls}"
+        assert state_calls == [], "a healthy probe must not inspect the container state"
+        assert "OK" in capsys.readouterr().out
+
+    # --- reboot recovery: stopped container -> podman start -> healthy on re-poll ---
+    def test_reboot_recovery_starts_stopped_container(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """/health down + container Exited -> ``podman start lore-surreal`` -> re-probe OK."""
+        self._stub_url_read(monkeypatch)
+        # First probe False (down), second probe True (came up after start).
+        health_results = iter([False, True])
+        monkeypatch.setattr(
+            lore_deploy, "_probe_surreal_health", lambda url, **kw: next(health_results)
+        )
+        monkeypatch.setattr(lore_deploy, "_container_state", lambda name: "exited")
+        run_calls = self._record_run(monkeypatch)
+        # No real sleeping in the bounded wait loop.
+        monkeypatch.setattr(lore_deploy.time, "sleep", lambda seconds: None)
+
+        rc = lore_deploy._probe_surreal(tmp_path / "lore.yaml")
+
+        assert rc == lore_deploy._EXIT_OK
+        start_calls = [
+            c for c in run_calls
+            if "start" in c and lore_deploy.SURREAL_CONTAINER_NAME in c
+        ]
+        assert start_calls, (
+            f"reboot recovery must `podman start {lore_deploy.SURREAL_CONTAINER_NAME}`; "
+            f"run_calls={run_calls}"
+        )
+        assert self._mutating(run_calls) == [], (
+            f"the store container must never be run/rm/create/stop'd; got {run_calls}"
+        )
+
+    # --- absent container: fail loud, ZERO podman mutation ---
+    def test_absent_container_fails_loud_without_mutation(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """/health down + no container -> _EXIT_ERROR, no podman call, loud stderr."""
+        self._stub_url_read(monkeypatch)
+        monkeypatch.setattr(lore_deploy, "_probe_surreal_health", lambda url, **kw: False)
+        monkeypatch.setattr(lore_deploy, "_container_state", lambda name: None)
+        run_calls = self._record_run(monkeypatch)
+
+        rc = lore_deploy._probe_surreal(tmp_path / "lore.yaml")
+
+        assert rc == lore_deploy._EXIT_ERROR
+        assert run_calls == [], (
+            f"an absent store container must not trigger any podman command; got {run_calls}"
+        )
+        err = capsys.readouterr().err
+        assert lore_deploy.SURREAL_CONTAINER_NAME in err, "remediation must name the container"
+        assert "18500" in err, "remediation must name the store URL"
+
+    # --- running-but-unhealthy: start-if-stopped does not apply ---
+    def test_running_but_unhealthy_does_not_restart(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """/health down + container already running -> _EXIT_ERROR, no restart attempt.
+
+        start-if-stopped is the ONLY mutation; a running-but-unhealthy node is not
+        something this gate may stop/recreate — it fails loud instead.
+        """
+        self._stub_url_read(monkeypatch)
+        monkeypatch.setattr(lore_deploy, "_probe_surreal_health", lambda url, **kw: False)
+        monkeypatch.setattr(lore_deploy, "_container_state", lambda name: "running")
+        run_calls = self._record_run(monkeypatch)
+
+        rc = lore_deploy._probe_surreal(tmp_path / "lore.yaml")
+
+        assert rc == lore_deploy._EXIT_ERROR
+        assert run_calls == [], (
+            f"a running-but-unhealthy store must not be restarted/recreated; got {run_calls}"
+        )
+
+
+class TestVerbStartGatesOnSurreal:
+    """``verb_start`` must gate the launch on ``_probe_surreal`` (store reachability)."""
+
+    def test_start_proceeds_when_surreal_probe_ok(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """(a) surreal healthy on the probe -> start proceeds to _launch_container."""
+        project = _make_project(tmp_path, "surrealok")
+        monkeypatch.setattr(lore_deploy, "_container_state", lambda name: None)  # fresh launch
+        monkeypatch.setattr(lore_deploy, "_image_exists", lambda image: True)
+        monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
+
+        probe_calls: list[Path] = []
+        monkeypatch.setattr(
+            lore_deploy, "_probe_surreal",
+            lambda config_path: probe_calls.append(config_path) or lore_deploy._EXIT_OK,
+        )
+        monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
+
+        launch_calls: list[tuple] = []
+        monkeypatch.setattr(
+            lore_deploy, "_launch_container",
+            lambda proj, config_path, env_file: launch_calls.append((proj, config_path, env_file)),
+        )
+        monkeypatch.setattr(
+            lore_deploy, "_merge_mcp_from_config",
+            lambda project, slug, config_path: _LORE_SERVER_PORT,
+        )
+        monkeypatch.setattr(lore_deploy, "_await_bind", lambda *a, **k: lore_deploy._EXIT_OK)
+
+        env_file = tmp_path / "secrets.env"
+        env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
+
+        rc = lore_deploy.verb_start(project, env_file)
+
+        assert rc == lore_deploy._EXIT_OK
+        assert len(probe_calls) == 1, "start must gate on _probe_surreal exactly once"
+        assert len(launch_calls) == 1, "a passing surreal probe must proceed to launch"
+
+    def test_start_aborts_when_surreal_probe_fails(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """(c) surreal probe fails -> _EXIT_ERROR and _launch_container NEVER called."""
+        project = _make_project(tmp_path, "surrealdown")
+        monkeypatch.setattr(lore_deploy, "_container_state", lambda name: None)
+        monkeypatch.setattr(lore_deploy, "_image_exists", lambda image: True)
+        monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
+        monkeypatch.setattr(
+            lore_deploy, "_probe_surreal", lambda config_path: lore_deploy._EXIT_ERROR
+        )
+        monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
+
+        launch_calls: list[tuple] = []
+        monkeypatch.setattr(
+            lore_deploy, "_launch_container",
+            lambda proj, config_path, env_file: launch_calls.append((proj, config_path, env_file)),
+        )
+
+        env_file = tmp_path / "secrets.env"
+        env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
+
+        rc = lore_deploy.verb_start(project, env_file)
+
+        assert rc == lore_deploy._EXIT_ERROR, "a failed surreal probe must abort start"
+        assert launch_calls == [], "a failed surreal probe must NOT launch the container"
+
+
+class TestVerbSetupGatesOnSurreal:
+    """``verb_setup`` must gate on the same ``_probe_surreal`` store-reachability check."""
+
+    def test_setup_aborts_when_surreal_probe_fails(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """(d) setup gates on _probe_surreal: a failed probe aborts before image/cold-index."""
+        project = _make_project(tmp_path, "setupsurreal")
+        # NOT already provisioned: point MANIFEST_DIR at an empty dir so <slug>.db is absent,
+        # so setup does not early-no-op before reaching the store gate.
+        monkeypatch.setattr(lore_deploy, "MANIFEST_DIR", tmp_path / "state")
+        monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
+
+        probe_calls: list[Path] = []
+        monkeypatch.setattr(
+            lore_deploy, "_probe_surreal",
+            lambda config_path: probe_calls.append(config_path) or lore_deploy._EXIT_ERROR,
+        )
+        # Guard: the image-build / cold-index steps live AFTER the gate; they must
+        # not be reached once the probe fails.
+        image_calls: list[str] = []
+        monkeypatch.setattr(
+            lore_deploy, "_image_exists", lambda image: image_calls.append(image) or True
+        )
+
+        env_file = tmp_path / "secrets.env"
+        env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
+
+        rc = lore_deploy.verb_setup(project, env_file)
+
+        assert rc == lore_deploy._EXIT_ERROR, "a failed surreal probe must abort setup"
+        assert len(probe_calls) == 1, "setup must gate on _probe_surreal exactly once"
+        assert image_calls == [], "a failed probe must abort before image-build / cold-index"
+
+
+class TestNoEnsureCollectionsResidue:
+    """The retired qdrant ensure-collections gate must leave no residue (dead-code check)."""
+
+    def test_no_ensure_collections_symbols_in_dispatcher(self) -> None:
+        """The dispatcher must expose neither ``_ensure_collections`` nor ``ENSURE_SCRIPT``."""
+        assert not hasattr(lore_deploy, "_ensure_collections"), (
+            "_ensure_collections delegator must be deleted (qdrant-dead gate)"
+        )
+        assert not hasattr(lore_deploy, "ENSURE_SCRIPT"), (
+            "ENSURE_SCRIPT constant must be deleted (its target script is gone)"
+        )
+
+    def test_ensure_collections_script_is_deleted(self) -> None:
+        """``scripts/ensure_collections.py`` must be gone (imported dead qdrant_client)."""
+        script = Path(lore_deploy.__file__).resolve().parent / "ensure_collections.py"
+        assert not script.exists(), (
+            "ensure_collections.py must be deleted — it imported the uninstalled "
+            "qdrant_client and read the removed config.qdrant.url"
         )

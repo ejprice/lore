@@ -4,23 +4,25 @@
 One entrypoint for the four verbs — ``setup`` / ``start`` / ``stop`` /
 ``status`` — each idempotent and safe to re-run (the whole contract). The
 heavy/strict steps delegate to the sibling scripts (``probe_embed.py``,
-``ensure_collections.py``, ``merge_mcp_json.py``) so the logic lives in one
-place per concern.
+``merge_mcp_json.py``) so the logic lives in one place per concern; the
+SurrealDB store-reachability pre-flight is inline (a stdlib-only ``/health``
+probe), since the deploy gates only on the store being REACHABLE — schema and
+embedding-dimension ownership now live entirely in the loremaster server.
 
 The container runs the SHARED image ``localhost/lore:latest`` with the project
 identity supplied entirely at run time (``-v <project>:/workspace:ro`` +
-``--env-file`` + ``-e LORE_CONFIG``). Collections + the SQLite manifest persist
-on the host across stop/start, so ``start`` is a cheap delta-reconcile, never a
-cold rebuild.
+``--env-file`` + ``-e LORE_CONFIG``). The SurrealDB store data + the SQLite
+manifest persist on the host across stop/start, so ``start`` is a cheap
+delta-reconcile, never a cold rebuild.
 
 Unix philosophy: structured status line on stdout, loud (non-zero exit) on
 failure. See ``../references/lifecycle.md`` for the per-verb spec and
 ``../references/server-interface.md`` for the not-yet-final server assumptions.
 
 Most steps shell out to ``podman``/``python`` so this dispatcher itself needs
-only the standard library; the steps that import loremaster (config parse,
-collection ensure) are run with ``--python <interp>`` pointing at the loremaster
-venv (the dispatcher resolves a sensible default).
+only the standard library; the step that imports loremaster (a schema-only
+config parse) is run with ``--python <interp>`` pointing at the loremaster venv
+(the dispatcher resolves a sensible default).
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -44,8 +47,17 @@ from pathlib import Path
 IMAGE = "localhost/lore:latest"
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROBE_SCRIPT = SCRIPT_DIR / "probe_embed.py"
-ENSURE_SCRIPT = SCRIPT_DIR / "ensure_collections.py"
 MERGE_SCRIPT = SCRIPT_DIR / "merge_mcp_json.py"
+
+# The persistent SurrealDB backing-store container — the unified store since P8a
+# (chunks, search, memory, the code graph and the task ledger all live in it).
+# The deploy gates only on this container's REACHABILITY: it NEVER creates,
+# recreates, or removes it, and never touches its data dir. start-if-stopped
+# (reboot recovery — the box was rebooted and the container, restart policy
+# "no", sits Exited) is the ONLY mutation this skill is permitted to make.
+# Schema + embedding-dimension ownership — including the
+# embedding-schema-fingerprint rebuild — belongs to the loremaster server.
+SURREAL_CONTAINER_NAME = "lore-surreal"
 
 MANIFEST_DIR = Path.home() / ".local" / "state" / "lore"
 SNAPSHOT_ROOT = Path.home() / "docker" / "mcp" / "lore-snapshot"
@@ -83,6 +95,17 @@ _PROBE_TIMEOUT_S = 3.0
 _DEFAULT_BIND_TIMEOUT_S = 600.0
 _BIND_POLL_INTERVAL_S = 3.0
 _BIND_PROGRESS_INTERVAL_S = 30.0
+
+# ---------------------------------------------------------------------------
+# SurrealDB store-reachability pre-flight (setup/start) constants.
+#
+# The gate is a single short ``GET /health`` against the store; on failure it
+# may perform ONE bounded start-if-stopped reboot recovery (podman start), then
+# re-poll /health for a short window while the node's storage engine comes ready.
+# ---------------------------------------------------------------------------
+_SURREAL_PROBE_TIMEOUT_S = 3.0
+_SURREAL_START_BUDGET_S = 15.0
+_SURREAL_START_POLL_INTERVAL_S = 1.0
 
 # A minimal, well-formed MCP `initialize` JSON-RPC request. The probe's success
 # criterion doesn't care about the reply shape (any HTTP response — even a
@@ -272,8 +295,63 @@ def _wait_for_bind(
         time.sleep(poll_interval_s)
 
 
+def _surreal_health_url(rpc_url: str) -> str:
+    """Map a SurrealDB ``ws(s)://host:port/rpc`` RPC URL to its ``/health`` HTTP URL.
+
+    SurrealDB serves the HTTP ``/health`` route on the SAME host:port as the
+    WebSocket ``/rpc`` endpoint, so only the scheme and the path change:
+    ``ws`` → ``http``, ``wss`` → ``https`` (any other scheme is left untouched),
+    and the path becomes ``/health``. stdlib-only (``urllib.parse``).
+    """
+    parts = urllib.parse.urlsplit(rpc_url)
+    scheme = {"ws": "http", "wss": "https"}.get(parts.scheme, parts.scheme)
+    return urllib.parse.urlunsplit((scheme, parts.netloc, "/health", "", ""))
+
+
+def _probe_surreal_health(health_url: str, *, timeout_s: float = _SURREAL_PROBE_TIMEOUT_S) -> bool:
+    """Return True iff ``GET health_url`` answers HTTP 200 right now.
+
+    SurrealDB's ``/health`` returns 200 only when the node is up and its storage
+    engine is ready. So — unlike the MCP bind-probe, where ANY HTTP response
+    proves the port is bound — this gate requires a clean 200: a non-2xx status
+    or any transport failure (connection refused / reset / timeout) is False.
+    Never raises; a failure just means "not reachable (yet)".
+    """
+    request = urllib.request.Request(health_url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            # bool(): urlopen's response is loosely typed, so ``.status == 200``
+            # is inferred as Any; coerce to the declared bool return.
+            return bool(response.status == 200)
+    except urllib.error.HTTPError:
+        return False  # a non-2xx /health means the node is not ready
+    except OSError:
+        return False  # connection refused / timed out / reset — nothing serving there
+
+
+def _wait_for_surreal_health(
+    health_url: str,
+    *,
+    timeout_s: float,
+    poll_interval_s: float,
+) -> bool:
+    """Poll ``_probe_surreal_health`` until it answers 200 or ``timeout_s`` elapses.
+
+    Used only after a reboot-recovery ``podman start lore-surreal`` to give the
+    node a bounded window to bring its storage engine ready. Returns True the
+    moment /health answers 200; False once the budget is exhausted.
+    """
+    start = time.monotonic()
+    while True:
+        if _probe_surreal_health(health_url):
+            return True
+        if time.monotonic() - start >= timeout_s:
+            return False
+        time.sleep(poll_interval_s)
+
+
 def _loremaster_python() -> str:
-    """Resolve an interpreter that can import loremaster (config parse, ensure step).
+    """Resolve an interpreter that can import loremaster (schema-only config parse).
 
     Preference order: an explicit ``LORE_PYTHON`` env override; the lore
     workspace ``.venv`` if discoverable next to the worktree; otherwise the
@@ -622,8 +700,10 @@ def verb_setup(project: Path, env_file: Path) -> int:
     if (rc := _probe_embed(config_path, env_file)) != _EXIT_OK:
         return rc
 
-    # 5. Ensure collections (STOP on dim mismatch; never auto-recreate).
-    if (rc := _ensure_collections(config_path, env_file)) != _EXIT_OK:
+    # 5. Pre-flight the unified SurrealDB store (STOP if unreachable). The skill
+    #    gates only on store REACHABILITY; schema + dim ownership (including the
+    #    rebuild-on-fingerprint-change) lives in the loremaster server.
+    if (rc := _probe_surreal(config_path)) != _EXIT_OK:
         return rc
 
     # 6. Build the image if missing.
@@ -768,10 +848,12 @@ def verb_start(
         print(f"start: secrets env-file {env_file} not found.", file=sys.stderr)
         return _EXIT_ERROR
 
-    # Pre-flight: embedder reachable + the collection exists (no silent cold-build on start).
+    # Pre-flight: embedder reachable + the unified SurrealDB store reachable.
+    # Schema + dim ownership (including rebuild-on-fingerprint-change) lives in
+    # the server; the deploy gates only on store REACHABILITY (surreal /health).
     if (rc := _probe_embed(config_path, env_file)) != _EXIT_OK:
         return rc
-    if (rc := _ensure_collections(config_path, env_file)) != _EXIT_OK:
+    if (rc := _probe_surreal(config_path)) != _EXIT_OK:
         return rc
 
     _launch_container(project, config_path, env_file)
@@ -790,7 +872,7 @@ def verb_start(
 
 
 def verb_stop(project: Path) -> int:
-    """``stop`` — stop + remove the container (collections + manifest persist; idempotent)."""
+    """``stop`` — stop + remove the container (store data + manifest persist; idempotent)."""
     slug = project.name
     state = _container_state(f"lore-{slug}")
     if state is None:
@@ -798,7 +880,7 @@ def verb_stop(project: Path) -> int:
         return _EXIT_OK
     _run(["podman", "stop", f"lore-{slug}"], check=False)
     _run(["podman", "rm", f"lore-{slug}"], check=False)
-    print(f"stop: lore-{slug} stopped (collections + manifest preserved).")
+    print(f"stop: lore-{slug} stopped (store data + manifest preserved).")
     return _EXIT_OK
 
 
@@ -881,17 +963,62 @@ def _probe_embed(config_path: Path, env_file: Path) -> int:
     return _EXIT_OK
 
 
-def _ensure_collections(config_path: Path, env_file: Path) -> int:
-    """Run ensure_collections.py under the loremaster venv + the env-file's secrets."""
-    result = _run(
-        ["env", *_env_file_kv(env_file), _loremaster_python(), str(ENSURE_SCRIPT),
-         "--config", str(config_path)],
-        check=False, capture=True,
+def _probe_surreal(config_path: Path) -> int:
+    """Pre-flight the unified SurrealDB store: it must answer ``/health`` before we launch.
+
+    The store is the persistent ``lore-surreal`` container (SurrealDB, RocksDB
+    data bind-mounted on the host). This gate confirms REACHABILITY only —
+    schema and embedding-dimension ownership (including the
+    embedding-schema-fingerprint rebuild) lives in the loremaster server, not in
+    this skill, so the skill never creates, recreates, or removes the store
+    container and never touches its data dir.
+
+    Reads ``surreal.url`` (a ``ws(s)://host:port/rpc`` endpoint) from the config
+    and probes the sibling ``http(s)://host:port/health`` route (SurrealDB serves
+    HTTP on the same port as the WebSocket RPC). On a clean ``GET /health`` → 200
+    it returns :data:`_EXIT_OK`. Otherwise it attempts a single
+    **reboot-recovery**: if a container named ``lore-surreal`` exists but is not
+    running (its restart policy is ``no``, so a host reboot leaves it Exited), it
+    runs ``podman start lore-surreal`` and re-polls ``/health`` for a bounded
+    budget. Still unreachable — or no such container to start — returns
+    :data:`_EXIT_ERROR` with a loud stderr remediation naming both the URL and
+    the container. No secret is needed (an unauthenticated ``GET /health``), so —
+    unlike the retired collection-ensure step — this delegator takes no env-file.
+    """
+    rpc_url = _read_config_field(config_path, "c.surreal.url")
+    health_url = _surreal_health_url(rpc_url)
+
+    if _probe_surreal_health(health_url):
+        print("probe: surreal /health OK.")
+        return _EXIT_OK
+
+    # Not answering. The ONLY mutation allowed is start-if-stopped: a container
+    # that exists but sits Exited (e.g. after a host reboot). A running-but-sick
+    # node or an absent container is not something this gate may recreate.
+    state = _container_state(SURREAL_CONTAINER_NAME)
+    if state is not None and state != "running":
+        print(
+            f"probe: surreal /health not answering and {SURREAL_CONTAINER_NAME} is "
+            f"{state} — starting it (reboot recovery)…"
+        )
+        _run(["podman", "start", SURREAL_CONTAINER_NAME], check=False)
+        if _wait_for_surreal_health(
+            health_url,
+            timeout_s=_SURREAL_START_BUDGET_S,
+            poll_interval_s=_SURREAL_START_POLL_INTERVAL_S,
+        ):
+            print(f"probe: {SURREAL_CONTAINER_NAME} auto-started; surreal /health OK.")
+            return _EXIT_OK
+
+    print(
+        f"probe: SurrealDB store unreachable at {health_url} (from surreal.url "
+        f"{rpc_url!r}). The unified store must be serving before setup/start. Start "
+        f"it with `podman start {SURREAL_CONTAINER_NAME}` — this skill never creates, "
+        f"recreates, or removes that container or its data dir; if the container does "
+        f"not exist, provision it out-of-band first.",
+        file=sys.stderr,
     )
-    sys.stderr.write(result.stderr)
-    if result.returncode == _EXIT_OK:
-        print("ensure: collections present at the configured dim.")
-    return result.returncode
+    return _EXIT_ERROR
 
 
 def _merge_mcp(project: Path, slug: str, port: int, mount_path: str) -> None:
@@ -921,7 +1048,7 @@ def _merge_mcp_from_config(project: Path, slug: str, config_path: Path) -> int:
 def _env_file_kv(env_file: Path) -> list[str]:
     """Read a KEY=VALUE env-file into ``KEY=VALUE`` args for ``env`` (secrets stay out of argv logs).
 
-    Only used to hand secrets to the child probe/ensure processes — the values
+    Only used to hand secrets to the child embed-probe process — the values
     are read from the file, never from this script's own argv.
     """
     pairs: list[str] = []
