@@ -48,6 +48,17 @@ _ERROR_BODY_SNIPPET: int = 200
 AsyncSleep = Callable[[float], Awaitable[None]]
 
 
+class TerminalCountError(RuntimeError):
+    """A permanent, non-retryable ``count_tokens`` failure (a 4xx other than 429).
+
+    Raised on a bad API key / malformed request (401 / 400 / …): retrying cannot heal it,
+    so it is a distinct type a caller can catch to STOP instead of treating the failure as
+    a transient outage. It subclasses :class:`RuntimeError` so the counter's documented
+    ``RuntimeError`` contract still holds — retry-exhaustion stays a *plain* ``RuntimeError``
+    (retryable), and only this typed subclass signals the terminal case.
+    """
+
+
 def load_api_key(env_file: Path = DEFAULT_ENV_FILE) -> str:
     """Resolve the Anthropic API key from the environment or the operator env file.
 
@@ -113,8 +124,10 @@ class AsyncClaudeTokenCounter:
         """Return the Claude ``input_tokens`` for ``text``.
 
         Raises:
-            RuntimeError: If the endpoint keeps failing past ``max_retries``, or on a
-                non-retryable response (a 4xx other than 429).
+            TerminalCountError: On a non-retryable response (a 4xx other than 429) — a
+                permanent condition retrying cannot heal.
+            RuntimeError: If the endpoint keeps failing past ``max_retries`` (retry
+                exhaustion — a plain ``RuntimeError``, distinct from the terminal case).
         """
         payload = self._payload(text)
         last_error = ""
@@ -134,7 +147,7 @@ class AsyncClaudeTokenCounter:
                 last_error = f"http:{status}"
                 await self._sleep_backoff(attempt, response.headers.get("retry-after"))
                 continue
-            raise RuntimeError(
+            raise TerminalCountError(
                 f"count_tokens failed ({response.status_code}): {response.text[:_ERROR_BODY_SNIPPET]}"
             )
         raise RuntimeError(f"count_tokens exhausted retries ({last_error})")

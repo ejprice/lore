@@ -170,6 +170,39 @@ class TestRetryContract:
         assert len(attempts) == 1  # no retry on a non-429 4xx
         await counter.aclose()
 
+    async def test_non_retryable_4xx_raises_typed_terminal_error(self) -> None:
+        """A permanent 4xx (bad key / 400) raises the TYPED terminal error so a caller can
+        tell it apart from retry-exhaustion — while staying a ``RuntimeError`` subclass so
+        the counter's documented ``RuntimeError`` contract is unbroken."""
+        assert issubclass(counting.TerminalCountError, RuntimeError)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, text="invalid x-api-key")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        counter = counting.AsyncClaudeTokenCounter("k", client=client)
+        with pytest.raises(counting.TerminalCountError):
+            await counter.count("hi")
+        await counter.aclose()
+
+    async def test_exhausted_retries_raises_plain_not_terminal(self) -> None:
+        """Retry-exhaustion (429/5xx forever) is NOT a terminal error — it raises a plain
+        ``RuntimeError`` that is *not* a ``TerminalCountError``, so the engine keeps retrying
+        it as a transient outage instead of disabling the probe."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, json={})
+
+        async def fake_sleep(delay: float) -> None:
+            return None
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        counter = counting.AsyncClaudeTokenCounter("k", client=client, max_retries=2, sleep=fake_sleep)
+        with pytest.raises(RuntimeError) as exc_info:
+            await counter.count("hi")
+        assert not isinstance(exc_info.value, counting.TerminalCountError)
+        await counter.aclose()
+
     async def test_exhausting_retries_raises(self) -> None:
         attempts: list[int] = []
 
