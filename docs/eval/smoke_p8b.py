@@ -509,13 +509,60 @@ async def check_legacy_index_status(session: ClientSession) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Check 7 — P8c: lore_index_status carries the boot token-calibration section
+# ---------------------------------------------------------------------------
+# The four serving states CalibrationEngine.status()['state'] can report (copied
+# verbatim from loremaster.calibration.engine STATE_* so a vocabulary drift there
+# fails this script loudly). The deployed exit criterion: index_status visibly
+# shows the calibration state (cached / measured / cached_retrying, and
+# drift_adopted under synthetic drift), so the state string must surface verbatim.
+CALIBRATION_STATES = frozenset({"cached", "measured", "drift_adopted", "cached_retrying"})
+
+
+async def check_index_status_calibration(session: ClientSession) -> None:
+    """lore_index_status carries a calibration section with a valid state + constants."""
+    result = await call_tool(session, "lore_index_status", {})
+    payload = parse_json_result(result, "lore_index_status (calibration)")
+    calibration = payload.get("calibration")
+    if not isinstance(calibration, dict):
+        raise SmokeCheckFailed(
+            f"lore_index_status: expected a 'calibration' section (a dict), got: {calibration!r} "
+            f"— the P8c calibration engine must be wired + started at boot"
+        )
+    state = calibration.get("state")
+    if state not in CALIBRATION_STATES:
+        raise SmokeCheckFailed(
+            f"lore_index_status calibration.state {state!r} is not one of the four "
+            f"serving states {sorted(CALIBRATION_STATES)}"
+        )
+    for field in ("served_constant", "committed_constant"):
+        if not isinstance(calibration.get(field), (int, float)):
+            raise SmokeCheckFailed(
+                f"lore_index_status calibration.{field} must be a number, got: "
+                f"{calibration.get(field)!r}"
+            )
+    print(
+        f"PASS: lore_index_status() carries calibration -> state={state!r}, "
+        f"served={calibration['served_constant']}, committed={calibration['committed_constant']}, "
+        f"model={calibration.get('model')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Run modes
 # ---------------------------------------------------------------------------
 async def run_mechanics_check() -> None:
-    """--mechanics: connection + tools/list (no new-tool assertion) + check 6 only."""
+    """--mechanics: connection + tools/list (no new-tool assertion) + checks 6-7 only.
+
+    The P8c calibration section (check 7) is a READ-ONLY ``lore_index_status`` probe
+    with no finding-filing side effects, so it belongs in the mechanics path too —
+    without it the default mode was silently weaker (a server missing the calibration
+    section passed mechanics), the gap flagged by REPORT-auditor-wiring-1 F2.
+    """
     async with connect(MCP_SERVER_URL) as session:
         await check_tools(session, mechanics=True)
         await check_legacy_index_status(session)
+        await check_index_status_calibration(session)
 
 
 async def run_full_smoke() -> None:
@@ -529,6 +576,7 @@ async def run_full_smoke() -> None:
         await check_diff(session)
         await check_findings(session)
         await check_legacy_index_status(session)
+        await check_index_status_calibration(session)
 
 
 def main() -> int:

@@ -60,7 +60,7 @@ from lorescribe.text import TextChunker
 from lorescribe.xml_generic import XmlChunker
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, load_config
 from loremaster.extension import (
@@ -123,6 +123,7 @@ from loremaster.symbols import VERIFY_REBUILD_CAVEAT, ResolvedSymbol, VerifyResu
 if TYPE_CHECKING:
     from loresigil.base import Embedder
 
+    from loremaster.calibration.engine import CalibrationEngine
     from loremaster.diff import DiffEngine, SnapshotSummary
     from loremaster.findings import ChainHead, Finding, FindingLedger
     from loremaster.graph_surreal import SurrealCodeGraph
@@ -1205,6 +1206,100 @@ class SchemaRebuildingError(RuntimeError):
     """
 
 
+class CalibrationStatus(BaseModel):
+    """The boot token-calibration status surfaced by ``index_status`` (P8c).
+
+    A structured mirror of :meth:`~loremaster.calibration.engine.CalibrationEngine.
+    status` — its keys map 1:1 onto these fields, so ``CalibrationStatus(**engine.
+    status())`` round-trips. The ``state`` string surfaces VERBATIM (the deployed
+    exit criterion: ``index_status`` visibly shows ``cached`` / ``measured`` /
+    ``drift_adopted`` / ``cached_retrying``). Attached as an optional nested section
+    on :class:`IndexStatusSummary`, mirroring the ``embedding_schema`` /
+    ``schema_rebuild`` idiom.
+
+    Attributes:
+        state: The serving state — one of ``cached`` / ``measured`` /
+            ``drift_adopted`` / ``cached_retrying``.
+        served_constant: The float the budget path multiplies by right now.
+        committed_constant: The generation-anchored constant shipped in ``server.py``.
+        model: The yardstick model the probe counts against.
+        ratio_shift: The measured ``live/baseline − 1`` shift, or ``None`` until a
+            probe lands.
+        last_probe_at: ISO timestamp of the last probe, or ``None``.
+        baseline_generated_at: ISO timestamp the baseline was generated at, or ``None``.
+        note: A human-readable note (e.g. an adopted-scaled-constant explanation), or
+            ``None``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: str
+    served_constant: float
+    committed_constant: float
+    model: str
+    ratio_shift: float | None = None
+    last_probe_at: str | None = None
+    baseline_generated_at: str | None = None
+    note: str | None = None
+
+
+class IndexStatusSummary(IndexSummary):
+    """``index_status``'s return shape — an :class:`~loremaster.index.indexer.
+    IndexSummary` plus the server-level ``calibration`` section.
+
+    Calibration is a SERVER-BOOT concern (the Anthropic token yardstick), not an
+    indexer concern, so the section is added here as a subclass rather than on the
+    indexer's own model. The inherited base fields (``files_indexed`` …) surface
+    unchanged; FastMCP publishes ``calibration`` additively under ``$defs``.
+    """
+
+    calibration: CalibrationStatus | None = None
+
+
+class _CalibrationFindingsAdapter:
+    """Adapt the durable :class:`~loremaster.findings.FindingLedger` to the calibration
+    engine's narrow :class:`~loremaster.calibration.engine.FindingsPort`.
+
+    The engine files at most ONE drift finding per drift episode, deduped against a
+    live one. ``has_open_drift_finding`` treats an ``open`` OR ``acknowledged``
+    finding as still-live (an acknowledged-but-unresolved drift must not be re-filed);
+    the ledger's ``query`` filters a single exact status, so both are checked.
+    ``report_drift_finding`` forwards to ``FindingLedger.report`` (kwargs line up 1:1,
+    minus ``supersedes``).
+    """
+
+    def __init__(self, finding_ledger: FindingLedger) -> None:
+        self._finding_ledger = finding_ledger
+
+    async def has_open_drift_finding(self, area: str) -> bool:
+        """True iff an ``open`` OR ``acknowledged`` finding exists for ``area``."""
+        from loremaster.findings import STATUS_ACKNOWLEDGED, STATUS_OPEN
+
+        if await self._finding_ledger.query(area=area, status=STATUS_OPEN):
+            return True
+        return bool(await self._finding_ledger.query(area=area, status=STATUS_ACKNOWLEDGED))
+
+    async def report_drift_finding(
+        self,
+        *,
+        subject: str,
+        body: str,
+        area: str,
+        category: str,
+        kind: str,
+        created_by: str,
+    ) -> None:
+        """File a drift finding on the durable ledger (kind/area/category from the engine)."""
+        await self._finding_ledger.report(
+            subject,
+            body,
+            kind=kind,
+            area=area,
+            category=category,
+            created_by=created_by,
+        )
+
+
 class AppContext:
     """The live runtime services bundle the MCP tools dispatch through.
 
@@ -1240,6 +1335,7 @@ class AppContext:
         finding_ledger: FindingLedger,
         memory_backend: MemoryBackend,
         task_ledger: TaskLedger,
+        calibration_engine: CalibrationEngine | None = None,
     ) -> None:
         self._server = server
         self._config: LoreConfig = server.config
@@ -1272,6 +1368,13 @@ class AppContext:
         # tool rides — the second ledger alongside ``task_ledger`` (same posture:
         # a settable public attribute owning its OWN SurrealDB connection).
         self.finding_ledger = finding_ledger
+        # P8c wire-up: the boot token-calibration engine (voyage->claude budget
+        # scaling). The budget path reads its ``served_constant`` (falling back to
+        # the committed ``TOKEN_BUDGET_CALIBRATION`` when absent), ``index_status``
+        # renders its ``status()``, and the lifespan starts/stops its background
+        # probe. ``None`` when a test builds a context without one (the probe never
+        # runs, so the committed constant serves).
+        self._calibration_engine = calibration_engine
         # The parent extension context (per-extension namespaced state lives here),
         # set when the lifespan ran the startup hooks, so shutdown reuses it.
         self._extension_ctx: ExtensionContext | None = None
@@ -1891,17 +1994,21 @@ class AppContext:
                 f"to reconcile everything."
             )
 
-    async def index_status(self) -> IndexSummary:
+    async def index_status(self) -> IndexStatusSummary:
         """Return the freshness roll-up read purely from the manifest (zero embeds).
 
-        Attaches the :class:`~loremaster.index.indexer.EmbeddingSchemaStatus` and
-        :class:`~loremaster.index.indexer.SchemaRebuildStatus` sections, both read
-        straight from the manifest meta (cheap — no embeds, no store hit):
+        Attaches the :class:`~loremaster.index.indexer.EmbeddingSchemaStatus`,
+        :class:`~loremaster.index.indexer.SchemaRebuildStatus`, and P8c
+        :class:`CalibrationStatus` sections — all cheap reads (no embeds, no store hit):
 
         * ``embedding_schema`` carries the stamped fingerprint (``None`` until the
           first rebuild completes) and the current epoch constant.
         * ``schema_rebuild`` parses the ``schema_rebuild_status`` JSON blob into the
           model, defaulting to ``state="idle"`` when no rebuild has been recorded.
+        * ``calibration`` is the boot calibration engine's
+          :meth:`~loremaster.calibration.engine.CalibrationEngine.status` snapshot
+          (``None`` when no engine is wired), so the ``state`` string surfaces
+          verbatim (``cached`` / ``measured`` / ``drift_adopted`` / ``cached_retrying``).
         """
         from loremaster.index.indexer import EmbeddingSchemaStatus, SchemaRebuildStatus
         from loremaster.index.schema import (
@@ -1926,10 +2033,19 @@ class AppContext:
                 schema_rebuild = SchemaRebuildStatus.model_validate_json(raw_status)
             except (ValueError, TypeError):
                 schema_rebuild = SchemaRebuildStatus()
-        return summary.model_copy(update={
-            "embedding_schema": embedding_schema,
-            "schema_rebuild": schema_rebuild,
-        })
+        engine = self._calibration_engine
+        calibration = CalibrationStatus(**engine.status()) if engine is not None else None
+        return IndexStatusSummary(
+            files_indexed=summary.files_indexed,
+            files_failed=summary.files_failed,
+            files_skipped=summary.files_skipped,
+            tiers_rebuilt=summary.tiers_rebuilt,
+            tiers_skipped=summary.tiers_skipped,
+            outcomes=summary.outcomes,
+            embedding_schema=embedding_schema,
+            schema_rebuild=schema_rebuild,
+            calibration=calibration,
+        )
 
     async def what_imports(self, target: str) -> list[GraphNode]:
         """Return the module nodes that import ``target`` (reverse import edge)."""
@@ -2123,14 +2239,25 @@ class AppContext:
         no ``py.typed`` marker, so ``count_tokens``'s real ``list[int]`` return
         type is unfollowed and widens to ``Any`` at the call site.
 
-        The raw voyage count is re-denominated into ~Claude-token currency via
-        :data:`TOKEN_BUDGET_CALIBRATION` (ceiling semantics: ``math.ceil`` so a
+        The raw voyage count is re-denominated into ~Claude-token currency via a
+        multiplicative calibration constant (ceiling semantics: ``math.ceil`` so a
         fractional remainder always rounds the promised cost UP, never down) so a
         budget of B buys at most ~B Claude tokens for the worst observed content
         shape -- the consumer pays in Claude tokens, not voyage tokens.
+
+        The constant is the boot :class:`~loremaster.calibration.engine.
+        CalibrationEngine`'s live ``served_constant`` when an engine is wired (so a
+        detected token-generation drift is adopted without a redeploy), falling back
+        to the committed :data:`TOKEN_BUDGET_CALIBRATION` when no engine is present
+        (a test/context that builds none). ``getattr`` — not a plain attribute read
+        — so the ``TestTokenBudgetCalibration`` guard's ``SimpleNamespace(embedder=
+        ...)`` stand-in (no engine attribute) resolves to the committed constant
+        rather than raising ``AttributeError``.
         """
         voyage_count = int(self.embedder.count_tokens([text])[0])
-        return math.ceil(voyage_count * TOKEN_BUDGET_CALIBRATION)
+        engine = getattr(self, "_calibration_engine", None)
+        calibration = engine.served_constant if engine is not None else TOKEN_BUDGET_CALIBRATION
+        return math.ceil(voyage_count * calibration)
 
     # -- extension tools (seam 3) ------------------------------------------
 
@@ -2180,6 +2307,32 @@ class AppContext:
 
     # -- lifecycle ---------------------------------------------------------
 
+    async def start_calibration_probe(self) -> None:
+        """Start the boot token-calibration probe (non-blocking) and log the wiring.
+
+        Called from the PRODUCTION lifespan after the context is built (never from
+        ``build_app_context`` itself, so a test that drives the DI core directly
+        never fires the network probe). The engine's ``start`` schedules its probe
+        as a background task and returns at once — boot never blocks on the count.
+        Emits the structured ``startup.calibration.committed`` boot log line (state
+        read AFTER adopting any prior-run cache). A context built without a
+        calibration engine (a test seam injecting ``None``) is a silent no-op.
+        """
+        engine = self._calibration_engine
+        if engine is None:
+            return
+        await engine.start()
+        status = engine.status()
+        logger.info(
+            "startup.calibration.committed",
+            extra={
+                "committed": status["committed_constant"],
+                "state": status["state"],
+                "served": status["served_constant"],
+                "model": status["model"],
+            },
+        )
+
     async def aclose(self) -> None:
         """Stop background tasks, run extension shutdown hooks, close clients.
 
@@ -2209,6 +2362,12 @@ class AppContext:
             except asyncio.CancelledError:
                 pass
             self.reconcile_task = None
+        # P8c: cancel the boot calibration probe cleanly (idempotent — a no-op when
+        # the probe was never started, e.g. a test that built the context but did
+        # not run the lifespan). An engine stuck retrying an unreachable endpoint
+        # must not wedge shutdown; ``stop`` cancels + awaits the parked task.
+        if self._calibration_engine is not None:
+            await self._calibration_engine.stop()
         if self.watcher is not None and self.watcher_started:
             await self.watcher.stop()
             self.watcher_started = False
@@ -2463,6 +2622,7 @@ async def build_app_context(
     manifest_path: Path,
     snapshot_root: Path,
     start_tasks: bool = False,
+    calibration_engine: CalibrationEngine | None = None,
 ) -> AppContext:
     """Run the probe gate, construct the runtime services, optionally spawn tasks.
 
@@ -2786,6 +2946,25 @@ async def build_app_context(
         code_graph=code_graph,
     )
 
+    # P8c: the boot token-calibration engine (closes config-audit F3 — the first
+    # prod consumer of ``config.anthropic``). CONSTRUCTED here (loads the packaged
+    # baseline + corpus — no network), but its background probe is NOT started here:
+    # the lifespan calls ``AppContext.start_calibration_probe`` so a test that drives
+    # this DI core directly never reaches the network. Tests inject their own engine
+    # (``calibration_engine``); production passes ``None`` → the real engine over
+    # ``config.anthropic`` + a findings-ledger adapter, cached at the shared per-slug
+    # state dir (``manifest_path.parent``; the engine namespaces its own file by model).
+    if calibration_engine is None:
+        from loremaster.calibration.engine import CalibrationEngine
+
+        calibration_engine = CalibrationEngine(
+            committed_constant=TOKEN_BUDGET_CALIBRATION,
+            model=config.anthropic.yardstick_model,
+            api_key=resolve_secret(config.anthropic.api_key_env),
+            state_dir=manifest_path.parent,
+            findings_port=_CalibrationFindingsAdapter(finding_ledger),
+        )
+
     app_context = AppContext(
         server=server,
         embedder=embedder,
@@ -2805,6 +2984,7 @@ async def build_app_context(
         finding_ledger=finding_ledger,
         memory_backend=memory_backend,
         task_ledger=task_ledger,
+        calibration_engine=calibration_engine,
     )
 
     # 3) Extension startup hooks (fix A: unwind on partial failure). Reuse the
@@ -2922,6 +3102,11 @@ async def build_app_context(
             # that later runs a sweep against the just-closed manifest/store —
             # the same orphan-task-vs-closed-DB failure task #16 fixed (audit #2).
             app_context.reconcile_task.cancel()
+        # P8c: the calibration probe is started by the lifespan, not here, so this
+        # is a no-op on the ordinary build-failure path — but stop it defensively so
+        # the invariant "a built engine is always cleanly cancelled" holds regardless.
+        with contextlib.suppress(Exception):
+            await calibration_engine.stop()
         if app_context.watcher_started:
             await watcher.stop()
         await memory_backend.close()
@@ -3358,6 +3543,10 @@ def build_mcp_server(server: LoreServer) -> Any:
             snapshot_root=_DEFAULT_SNAPSHOT_ROOT,
             start_tasks=True,
         )
+        # P8c: start the boot token-calibration probe HERE (the production lifespan),
+        # not inside build_app_context — so the DI core the tests drive directly
+        # never fires the network probe. Non-blocking (schedules a background task).
+        await app_context.start_calibration_probe()
         return app_context, None
 
     # ONE guard per built server → one shared heavy startup per process. Captured
@@ -4291,7 +4480,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
-    async def index_status(context: Context[Any, AppContext, Any]) -> IndexSummary:
+    async def index_status(context: Context[Any, AppContext, Any]) -> IndexStatusSummary:
         return await _app_context(context).index_status()
 
     @mcp.tool(

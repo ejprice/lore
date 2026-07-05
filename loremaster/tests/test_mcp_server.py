@@ -399,6 +399,7 @@ async def _make_context(
     tmp_path: Path,
     embedder: FakeEmbedder | None = None,
     start_tasks: bool = False,
+    calibration_engine: Any = None,
 ) -> AppContext:
     """Build a live :class:`AppContext` with injected fakes (the test wiring seam).
 
@@ -406,6 +407,13 @@ async def _make_context(
     readies the SurrealDB write stack, and (when ``start_tasks``) spawns the watcher +
     reconcile tasks — the same path the lifespan takes, but with the embedder /
     paths injected so a test needs no real TEI endpoint.
+
+    ``calibration_engine`` is forwarded to ``build_app_context``: ``None`` (the
+    default) constructs the real :class:`~loremaster.calibration.engine.
+    CalibrationEngine` over ``config.anthropic`` — its background probe is NOT
+    started here (the lifespan owns that), so it serves the committed constant and
+    touches no network. A test that needs a specific served constant / status /
+    stop-spy injects its own engine double.
     """
     return await build_app_context(
         server=LoreServer(config),
@@ -413,6 +421,7 @@ async def _make_context(
         manifest_path=tmp_path / "m.db",
         snapshot_root=tmp_path / "snap",
         start_tasks=start_tasks,
+        calibration_engine=calibration_engine,
     )
 
 
@@ -2734,8 +2743,17 @@ class TestLifespanRunsOncePerProcess:
     """
 
     async def test_heavy_startup_runs_once_across_two_sessions(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _inert_calibration_counter: None,
     ) -> None:
+        # ``_inert_calibration_counter`` (conftest) forces the calibration probe's
+        # counter construction to a network-free double: this test drives the REAL
+        # production lifespan, which now starts the boot probe — without the double
+        # it would fire a live ``count_tokens`` POST to ``api.anthropic.com`` with the
+        # dummy key (the leak the wiring introduced). Scoped to THIS test, not the
+        # module, so the file's other tests keep their exact collaborators.
         import loremaster.embedding as embedding_module
         import loremaster.server as server_module
 
@@ -3268,6 +3286,142 @@ class TestBuildAppContextWiresSnapshotStamper:
         # aclose owns the stamper's lifecycle too — its connection is closed on
         # teardown (a leaked stamper socket would outlive the server).
         assert spy.close_calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# P8c — the boot token-calibration engine is wired into the server: constructed
+# in build_app_context from config.anthropic (closes config-audit F3), its
+# status surfaced by index_status, and cleanly stopped by aclose. The engine's
+# OWN behaviour is exhaustively pinned in test_calibration_engine.py and the
+# server SEAMS in test_calibration_wiring.py; these classes pin the end-to-end
+# BUILD wiring over a real (SurrealDB-backed) AppContext.
+# --------------------------------------------------------------------------- #
+_CALIBRATION_STATES = ("cached", "measured", "drift_adopted", "cached_retrying")
+
+
+class _FakeStatusEngine:
+    """An injectable calibration-engine double with a fixed served constant + status."""
+
+    def __init__(self, *, state: str, served: float = 1.78, committed: float = 1.78) -> None:
+        self._state = state
+        self._served = served
+        self._committed = committed
+        self.stopped = False
+        self.started = False
+
+    @property
+    def served_constant(self) -> float:
+        return self._served
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "state": self._state,
+            "served_constant": self._served,
+            "committed_constant": self._committed,
+            "model": "claude-sonnet-5",
+            "ratio_shift": None if self._state == "cached" else 0.05,
+            "last_probe_at": None if self._state == "cached" else "2026-07-04T00:00:00+00:00",
+            "baseline_generated_at": "2026-07-04T00:00:00+00:00",
+            "note": None,
+        }
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+class TestCalibrationEngineWiring:
+    """build_app_context constructs the engine from config.anthropic; index_status
+    surfaces its status; aclose stops it cleanly."""
+
+    async def test_build_app_context_constructs_engine_from_config_anthropic(
+        self, tmp_path: Path
+    ) -> None:
+        # No injection → the REAL engine, over config.anthropic + a findings-ledger
+        # adapter. The probe is NOT started here (the lifespan owns that), so it
+        # serves the committed constant and touches no network.
+        from loremaster.calibration.engine import CalibrationEngine
+        from loremaster.server import TOKEN_BUDGET_CALIBRATION, _CalibrationFindingsAdapter
+
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        ctx = await build_app_context(
+            server=LoreServer(config),
+            embedder=FakeEmbedder(dim=_DIM),
+            manifest_path=tmp_path / "m.db",
+            snapshot_root=tmp_path / "snap",
+            start_tasks=False,
+        )
+        try:
+            engine = ctx._calibration_engine  # noqa: SLF001 — the wiring under test
+            assert isinstance(engine, CalibrationEngine), (
+                "build_app_context must construct the real CalibrationEngine when "
+                "none is injected (the production path, F3 closure)"
+            )
+            status = engine.status()
+            # Committed constant + yardstick model flow straight from config.anthropic.
+            assert status["committed_constant"] == TOKEN_BUDGET_CALIBRATION
+            assert status["model"] == config.anthropic.yardstick_model
+            # Unstarted → serves the committed constant (state cached).
+            assert engine.served_constant == TOKEN_BUDGET_CALIBRATION
+            assert status["state"] == "cached"
+            # Wired to file drift through the durable finding ledger (the adapter).
+            port = engine._findings_port  # noqa: SLF001 — the seam under test
+            assert isinstance(port, _CalibrationFindingsAdapter)
+            assert port._finding_ledger is ctx.finding_ledger  # noqa: SLF001
+        finally:
+            await ctx.aclose()
+
+    @pytest.mark.parametrize("state", _CALIBRATION_STATES)
+    async def test_index_status_surfaces_the_calibration_state_verbatim(
+        self, tmp_path: Path, state: str
+    ) -> None:
+        # The deployed exit criterion: index_status visibly shows the engine's
+        # serving state verbatim in every reachable state, plus served/committed.
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        engine = _FakeStatusEngine(state=state, served=1.9, committed=1.78)
+        ctx = await _make_context(
+            config=config, tmp_path=tmp_path, calibration_engine=engine
+        )
+        try:
+            status = await ctx.index_status()
+            assert status.calibration is not None, "index_status must carry a calibration section"
+            assert status.calibration.state == state
+            assert status.calibration.served_constant == 1.9
+            assert status.calibration.committed_constant == 1.78
+            assert status.calibration.model == "claude-sonnet-5"
+        finally:
+            await ctx.aclose()
+
+    async def test_index_status_calibration_is_none_without_an_engine(
+        self, tmp_path: Path
+    ) -> None:
+        # A context whose engine was cleared (the no-engine branch) renders
+        # calibration=None, not a crash.
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        ctx._calibration_engine = None  # noqa: SLF001 — exercise the None branch
+        try:
+            status = await ctx.index_status()
+            assert status.calibration is None
+        finally:
+            await ctx.aclose()
+
+    async def test_aclose_stops_the_calibration_engine(self, tmp_path: Path) -> None:
+        # Shutdown must stop the engine cleanly (an engine that never settles must
+        # not wedge shutdown — the spy's stop() records the clean cancellation).
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        engine = _FakeStatusEngine(state="cached")
+        ctx = await _make_context(
+            config=config, tmp_path=tmp_path, calibration_engine=engine
+        )
+        await ctx.aclose()
+        assert engine.stopped is True, "aclose must stop the calibration engine"
 
 
 # --------------------------------------------------------------------------- #

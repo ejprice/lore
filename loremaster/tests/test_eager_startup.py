@@ -57,6 +57,9 @@ the guard and ``build_asgi_app`` consumes it).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import socket
 import uuid
 from pathlib import Path
 from typing import Any
@@ -76,10 +79,20 @@ from loremaster.config import LoreConfig
 from loremaster.server import (
     LoreServer,
     _ProcessLifespanGuard,
+    build_app_context,
     build_asgi_app,
     build_mcp_server,
 )
 from loresigil.testing import FakeEmbedder
+
+# Every test in this module drives the PRODUCTION lifespan (or its composition),
+# which now calls ``AppContext.start_calibration_probe`` → the background token
+# probe. Force that probe's counter construction to the network-free inert double
+# (``_inert_calibration_counter``, defined in conftest.py) so a lifespan-driven
+# test can never fire a live ``count_tokens`` POST to ``api.anthropic.com`` with
+# the dummy key. The permanent oracle for this is
+# ``TestLifespanStartupIsHermetic`` below (its own record+raise DNS guard).
+pytestmark = pytest.mark.usefixtures("_inert_calibration_counter")
 
 # The configured embedding dimensionality the FakeEmbedder must report so the
 # startup probe gate (probe dim == config.dim) passes. Mirrors the value the rest
@@ -108,6 +121,14 @@ _SIMULATED_SESSIONS_AFTER_EAGER = 2
 # How many times the eager build factory must have run after a single
 # process-startup + N session leases: EXACTLY ONCE (eager builds, sessions reuse).
 _EXPECTED_BUILD_COUNT_PER_PROCESS = 1
+
+# The hermeticity pin's record+raise DNS guard allow-list (localhost only, so the
+# real SurrealDB dev server still connects) + the bounded window it awaits the
+# network-free probe settling within. A REGRESSED leak records its first outbound
+# connect synchronously — well inside this window — so the timeout only bounds the
+# wait; it is never reached on the fixed (inert-probe) path, which settles at once.
+_LOCAL_DNS_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", ""})
+_PROBE_SETTLE_TIMEOUT_S = 10.0
 
 
 def _slug() -> str:
@@ -700,6 +721,111 @@ class TestEagerStartupEndToEnd:
                 "released → AppContext + SurrealDB write stack torn down)"
             )
         finally:
+            await drop_surreal_database(make_env(database=database, dim=_DIM))
+
+
+# --------------------------------------------------------------------------- #
+# Hermeticity pin — a lifespan-driven startup makes ZERO outbound network calls
+# --------------------------------------------------------------------------- #
+class TestLifespanStartupIsHermetic:
+    """PERMANENT regression pin: a lifespan-driven startup reaches nothing but localhost.
+
+    The calibration wiring made the production lifespan call
+    :meth:`~loremaster.server.AppContext.start_calibration_probe` → ``engine.start()``
+    → a background token probe that, with a REAL counter, POSTs to
+    ``api.anthropic.com``. Before this pin, lifespan-driven tests fired that live
+    call with the dummy key and still PASSED (the engine swallows the failure by
+    design), silently masking the breach.
+
+    This pin installs its OWN record+raise ``socket.getaddrinfo`` guard — an oracle
+    INDEPENDENT of the ``_inert_calibration_counter`` fix — runs the lifespan's exact
+    startup sequence (``build_app_context`` then ``start_calibration_probe``, verbatim
+    from the production ``_build_context``) against a real throwaway SurrealDB +
+    FakeEmbedder, drives the probe to settle, and asserts NOTHING but localhost was
+    dialled. Keep the fix and it stays GREEN (the inert probe never dials); remove it
+    and this goes RED (the real counter's first connect records ``api.anthropic.com``).
+
+    It drives the two startup steps directly rather than through the composed ASGI
+    lifespan so it can DETERMINISTICALLY await the probe under the guard — the ASGI
+    wrapper backgrounds the probe against a shutdown-cancel race, which would make a
+    leak nondeterministic to observe.
+    """
+
+    async def test_lifespan_driven_startup_makes_no_outbound_network_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
+        monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
+        database = unique_database()
+
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "boot.py").write_text(
+            "def boot():\n    return 1\n", encoding="utf-8"
+        )
+        config = _config(
+            slug,
+            live,
+            surreal={
+                "url": surreal_url(),
+                "namespace": _SURREAL_TEST_NAMESPACE,
+                "database": database,
+                "user_env": _SURREAL_USER_ENV,
+                "password_env": _SURREAL_PASS_ENV,
+            },
+        )
+
+        # The independent oracle: record + BLOCK every non-local DNS resolution.
+        # Localhost is let through so the real SurrealDB dev server still connects.
+        recorded_hosts: list[str] = []
+        real_getaddrinfo = socket.getaddrinfo
+
+        def _record_and_block(host: Any, *args: Any, **kwargs: Any) -> Any:
+            hostname = (
+                host.decode("ascii", "replace")
+                if isinstance(host, (bytes, bytearray))
+                else str(host or "")
+            )
+            if hostname in _LOCAL_DNS_HOSTS or hostname.startswith("127."):
+                return real_getaddrinfo(host, *args, **kwargs)
+            recorded_hosts.append(hostname)
+            raise socket.gaierror(socket.EAI_NONAME, f"blocked non-local DNS: {hostname!r}")
+
+        monkeypatch.setattr(socket, "getaddrinfo", _record_and_block)
+
+        app_context = await build_app_context(
+            server=LoreServer(config),
+            embedder=FakeEmbedder(dim=_DIM),
+            manifest_path=tmp_path / "state" / "m.db",
+            snapshot_root=tmp_path / "snap",
+            start_tasks=False,
+        )
+        try:
+            # The production lifespan's EXACT startup sequence: build the context,
+            # then start the calibration probe (schedules the background token count).
+            await app_context.start_calibration_probe()
+            engine = app_context._calibration_engine  # noqa: SLF001 — the seam under pin
+            assert engine is not None, (
+                "the production build must construct a real calibration engine — the "
+                "seam whose probe this pin proves is network-free"
+            )
+            # Drive the (network-free) probe to completion within a bounded window. A
+            # regressed leak records its first connect synchronously, well inside it;
+            # should it then retry forever under the guard the wait_for times out — the
+            # recorded list has already caught the breach either way.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    engine.wait_until_settled(), timeout=_PROBE_SETTLE_TIMEOUT_S
+                )
+
+            assert recorded_hosts == [], (
+                f"a lifespan-driven startup attempted outbound network to "
+                f"{sorted(set(recorded_hosts))} — the calibration probe must never "
+                f"reach the live endpoint under test (hermeticity regression)"
+            )
+        finally:
+            await app_context.aclose()
             await drop_surreal_database(make_env(database=database, dim=_DIM))
 
 
