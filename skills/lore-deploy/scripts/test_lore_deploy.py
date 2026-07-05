@@ -304,6 +304,11 @@ class TestVerbStartStaleImageRecreateBehavior:
         # 600s bind timeout. Orthogonal to what this test asserts (stop/rm/relaunch
         # + reconnect reminder).
         monkeypatch.setattr(lore_deploy, "_await_bind", lambda *args, **kwargs: lore_deploy._EXIT_OK)
+        # The recreate path now pre-flights /embed + the SurrealDB store BEFORE
+        # teardown; stub both as reachable so this test stays about the recreate
+        # sequence (their own gating is covered by TestRecreateGatesOnStorePreflight).
+        monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
+        monkeypatch.setattr(lore_deploy, "_probe_surreal", lambda *a, **k: lore_deploy._EXIT_OK)
 
         env_file = tmp_path / "secrets.env"
         # env-file need not exist: recreate path checks image/env only after the
@@ -924,6 +929,10 @@ class TestVerbStartRecreateValidatesBeforeTeardown:
         fixture.install_run_recorder()
         fixture.create_env_file()
         fixture.install_image_present(True)
+        # Recreate now pre-flights /embed + the store before teardown; stub both
+        # reachable so this test reaches the failing launch it is about.
+        monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
+        monkeypatch.setattr(lore_deploy, "_probe_surreal", lambda *a, **k: lore_deploy._EXIT_OK)
         fixture.install_failing_launch()  # podman run -> CalledProcessError(125)
 
         # --- Act (must NOT raise) ---
@@ -1008,6 +1017,12 @@ class TestVerbStartRecreateValidatesBeforeTeardown:
         # the full 600s bind timeout. It runs AFTER the teardown, so it does not
         # perturb the ordering-invariant transcript this test asserts on.
         monkeypatch.setattr(lore_deploy, "_await_bind", lambda *args, **kwargs: lore_deploy._EXIT_OK)
+        # The recreate now also pre-flights /embed + the store before teardown;
+        # stub both reachable (silently — this test's ordering invariant is about
+        # the image/env-file guards; the probes' own before-teardown ordering is
+        # pinned by TestRecreateGatesOnStorePreflight).
+        monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
+        monkeypatch.setattr(lore_deploy, "_probe_surreal", lambda *a, **k: lore_deploy._EXIT_OK)
 
         # --- Act ---
         return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
@@ -1447,4 +1462,146 @@ class TestNoEnsureCollectionsResidue:
         assert not script.exists(), (
             "ensure_collections.py must be deleted — it imported the uninstalled "
             "qdrant_client and read the removed config.qdrant.url"
+        )
+
+
+# ===========================================================================
+# Round 2 — the stale-image recreate path gates on the store + embedder
+# pre-flights BEFORE teardown (the outage guard, extended).
+# ===========================================================================
+#
+# The RUNNING + stale-image recreate branch already validated image + env-file
+# BEFORE `podman stop`/`rm` (Defect B).  But a RELAUNCHED server also refuses to
+# come up if `/embed` or the SurrealDB store is unreachable (its startup probe
+# gate), so those are launch preconditions too.  Gating them before teardown
+# keeps a stale-but-serving container alive when the relaunch would fail anyway
+# — a stale-but-serving container beats a dead one.  Contract pinned here:
+#   - `_probe_embed` AND `_probe_surreal` run BEFORE the first stop/rm.
+#   - A failing probe -> _EXIT_ERROR, running (stale) container UNTOUCHED
+#     (no stop, no rm, no launch).
+#   - Both probes passing -> the recreate proceeds (stop + rm + relaunch).
+
+
+class TestRecreateGatesOnStorePreflight:
+    """Contract: the stale-image recreate path validates store + embedder before teardown."""
+
+    _SLUG = "demand_intelligence"  # a real on-host lore slug (see lore-secrets/)
+
+    def test_recreate_aborts_when_surreal_probe_fails_no_teardown(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """RUNNING + stale + store `/health` down -> abort, no stop/rm/launch, container untouched."""
+        fixture = _RecreatePathFixture(monkeypatch, tmp_path, self._SLUG)
+        fixture.wire_running_and_stale()
+        fixture.install_run_recorder()
+        fixture.install_launch_recorder()
+        fixture.install_image_present(True)   # image + env-file are fine ...
+        fixture.create_env_file()
+        # ... but the SurrealDB store pre-flight fails.
+        monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
+        monkeypatch.setattr(
+            lore_deploy, "_probe_surreal", lambda config_path: lore_deploy._EXIT_ERROR
+        )
+        # If the (buggy) path skips the gate and tears down, it would hit the real
+        # 600s bind-wait next — mock it so the RED failure is fast, not a hang.
+        monkeypatch.setattr(lore_deploy, "_await_bind", lambda *a, **k: lore_deploy._EXIT_OK)
+
+        return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
+
+        assert return_code == lore_deploy._EXIT_ERROR, (
+            f"a failed store pre-flight must abort the recreate; got {return_code}"
+        )
+        assert fixture.stop_calls() == [], (
+            f"a failed store pre-flight must NOT stop the live container; "
+            f"run_calls={fixture.run_calls}"
+        )
+        assert fixture.rm_calls() == [], (
+            f"a failed store pre-flight must NOT rm the live container; "
+            f"run_calls={fixture.run_calls}"
+        )
+        assert fixture.launch_calls == [], (
+            f"a failed store pre-flight must NOT relaunch; got {len(fixture.launch_calls)} attempt(s)"
+        )
+
+    def test_recreate_aborts_when_embed_probe_fails_no_teardown(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """RUNNING + stale + `/embed` down -> abort, no stop/rm/launch (embed is a precondition too)."""
+        fixture = _RecreatePathFixture(monkeypatch, tmp_path, self._SLUG)
+        fixture.wire_running_and_stale()
+        fixture.install_run_recorder()
+        fixture.install_launch_recorder()
+        fixture.install_image_present(True)
+        fixture.create_env_file()
+        # Embed fails; surreal would pass, but embed runs first and must short-circuit.
+        monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_ERROR)
+        monkeypatch.setattr(lore_deploy, "_probe_surreal", lambda config_path: lore_deploy._EXIT_OK)
+        monkeypatch.setattr(lore_deploy, "_await_bind", lambda *a, **k: lore_deploy._EXIT_OK)
+
+        return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
+
+        assert return_code == lore_deploy._EXIT_ERROR
+        assert fixture.stop_calls() == [], (
+            f"a failed embed pre-flight must NOT stop the live container; run_calls={fixture.run_calls}"
+        )
+        assert fixture.rm_calls() == []
+        assert fixture.launch_calls == []
+
+    def test_recreate_proceeds_and_validates_before_teardown_when_probes_ok(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """RUNNING + stale + both probes OK -> recreate proceeds; both probes precede teardown.
+
+        Ordering invariant: a guard placed AFTER the stop/rm cannot prevent the
+        outage, so both pre-flights must be observed before the first destructive
+        podman command.
+        """
+        fixture = _RecreatePathFixture(monkeypatch, tmp_path, self._SLUG)
+        fixture.wire_running_and_stale()
+        fixture.install_launch_recorder()
+        fixture.install_image_present(True)
+        fixture.create_env_file()
+
+        # One ordered transcript across the pre-flights AND the podman commands.
+        transcript: list[str] = []
+
+        def _recording_run(cmd: list[str], **kwargs) -> object:
+            if "stop" in cmd and fixture.container_name in cmd:
+                transcript.append("teardown:stop")
+            elif "rm" in cmd and fixture.container_name in cmd:
+                transcript.append("teardown:rm")
+            fixture.run_calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(lore_deploy, "_run", _recording_run)
+        monkeypatch.setattr(
+            lore_deploy, "_probe_embed",
+            lambda *a, **k: (transcript.append("check:embed"), lore_deploy._EXIT_OK)[1],
+        )
+        monkeypatch.setattr(
+            lore_deploy, "_probe_surreal",
+            lambda config_path: (transcript.append("check:surreal"), lore_deploy._EXIT_OK)[1],
+        )
+        monkeypatch.setattr(lore_deploy, "_await_bind", lambda *a, **k: lore_deploy._EXIT_OK)
+
+        return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
+
+        assert return_code == lore_deploy._EXIT_OK, (
+            f"a clean recreate (both probes OK) must return _EXIT_OK; got {return_code}"
+        )
+        assert "teardown:stop" in transcript and "teardown:rm" in transcript, (
+            f"a clean recreate must stop and rm the stale container; transcript={transcript}"
+        )
+        assert len(fixture.launch_calls) == 1, (
+            f"a clean recreate must relaunch exactly once; got {len(fixture.launch_calls)}"
+        )
+        first_teardown_index = next(
+            i for i, event in enumerate(transcript) if event.startswith("teardown:")
+        )
+        before_teardown = transcript[:first_teardown_index]
+        assert "check:embed" in before_teardown, (
+            f"the /embed pre-flight must precede the first teardown; transcript={transcript}"
+        )
+        assert "check:surreal" in before_teardown, (
+            f"the SurrealDB store pre-flight must precede the first teardown; transcript={transcript}"
         )

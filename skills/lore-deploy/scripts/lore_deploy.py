@@ -811,6 +811,16 @@ def verb_start(
                     file=sys.stderr,
                 )
                 return _EXIT_ERROR
+            # The embedder + the SurrealDB store are launch preconditions too: a
+            # relaunched server refuses to come up if `/embed` or the store is
+            # unreachable (its startup probe gate). Validating them BEFORE teardown
+            # keeps the stale-but-serving container alive when a relaunch would fail
+            # anyway — same outage-guard logic as the image/env-file checks above,
+            # same order the not-running launch path uses (embed then store).
+            if (rc := _probe_embed(config_path, env_file)) != _EXIT_OK:
+                return rc
+            if (rc := _probe_surreal(config_path)) != _EXIT_OK:
+                return rc
 
             print(f"start: {container_name} is running a stale image — recreating.")
             _run(["podman", "stop", container_name], check=False)
