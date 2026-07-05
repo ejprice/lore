@@ -2,7 +2,7 @@
 name: lore-deploy
 description: >-
   Deploy, start, stop, and check the per-project "lore" RAG MCP server (the
-  loremaster container backed by the shared Qdrant pod + the self-hosted
+  loremaster container backed by the shared SurrealDB store + the self-hosted
   voyage-4-nano embedder). Use this whenever the user wants to set up lore for a
   project, spin lore up or down for a coding session, check whether lore is
   running / how fresh its index is, or wire a project's .mcp.json to its lore
@@ -22,13 +22,14 @@ description: >-
 `lore` (the `loremaster` MCP server) gives Claude Code a per-project semantic
 index of code + docs, kept fresh by a live file watcher, plus a project memory
 store. One **shared image** (`localhost/lore:latest`) runs as **N config-driven
-containers** — one per project, each keyed to its own Qdrant collection. This
-skill manages that container's lifecycle for one project.
+containers** — one per project, each keyed to its own per-slug database in the
+shared SurrealDB store (the always-on `lore-surreal` container). This skill
+manages that container's lifecycle for one project.
 
 The lifecycle is **on-demand, not always-on** (plan A1.11/D12): lore runs only
 while ≥1 Claude is working the project and is stopped otherwise, so no idle
 container holds the embedder pool. The expensive cold index is paid **once** at
-`setup`; thereafter the Qdrant collections and the SQLite manifest **persist
+`setup`; thereafter the SurrealDB store's data and the SQLite manifest **persist
 across stop/start**, so a restart is a cheap delta-reconcile (re-index only what
 changed since last run), never a cold rebuild.
 

@@ -28,21 +28,24 @@ step needs manual intervention.
 
 ## `setup` — once per project (idempotent; expensive parts no-op on re-run)
 
-1. **Detect an existing deployment.** If `lore.yaml` exists AND the `lore_<slug>`
-   collection exists AND the manifest has indexed rows → print
+1. **Detect an existing deployment.** If `lore.yaml` exists AND the manifest
+   (`~/.local/state/lore/<slug>.db`) is present → print
    `setup: already provisioned (no-op)` and exit 0. (Do NOT re-scaffold, do NOT
-   re-index, do NOT touch the collection.)
+   re-index, do NOT touch the store.)
 2. **Scaffold `lore.yaml`** (only if absent): slug from the dir name, `root: .`,
    the embedding block (tei / voyage-4-nano / dim 2048 / 8192 / batch 32 /
    concurrency 2 / `truncate: false` / `connect_timeout_s: 5` /
-   `tokenizer: voyage-4-nano` / `api_key_env: LORE_TEI_KEY`), the qdrant block
-   (`http://127.0.0.1:16333`, `api_key_env: QDRANT__SERVICE__API_KEY`), a **free
+   `tokenizer: voyage-4-nano` / `api_key_env: LORE_TEI_KEY`), the surreal block
+   (`ws://127.0.0.1:18500/rpc`, `namespace: lore`, `user_env: SURREAL_USER` /
+   `password_env: SURREAL_PASS`), the REQUIRED anthropic block
+   (`api_key_env: ANTHROPIC_API_KEY`, `yardstick_model: claude-sonnet-5`), a **free
    server port** (probe upward from 9201 for the first unbound port), include
    globs for the project's real file types, and `exclude_dirs` **seeded from the
    project `.gitignore`** (plus `.git`, `__pycache__`, `.pytest_cache`). The
    schema is `loremaster.config.LoreConfig`; validate it parses before writing.
 3. **Verify env keys present.** Read the secrets env-file; STOP with a clear
-   message if `LORE_TEI_KEY` or `QDRANT__SERVICE__API_KEY` is missing/empty.
+   message if it is absent (the required keys are `LORE_TEI_KEY`, the SurrealDB
+   root credentials `SURREAL_USER`/`SURREAL_PASS`, and `ANTHROPIC_API_KEY`).
 4. **Hard-probe `/embed`** (`scripts/probe_embed.py`). STOP if unreachable
    (allow the fp32 warmup ~20–40 s — poll `/health` first) or if the observed
    dimension ≠ `config.dim`.
@@ -146,8 +149,9 @@ podman run -d --name lore-<slug> \
   localhost/lore:latest
 ```
 
-- `--network=host` — Qdrant is host-loopback-only (`127.0.0.1:16333`); the
-  container reaches it (and the LAN TEI endpoint) only via the host netns.
+- `--network=host` — the SurrealDB store is host-loopback-only
+  (`127.0.0.1:18500`); the container reaches it (and the LAN TEI endpoint) only
+  via the host netns.
 - `--userns=keep-id` **+ `--user $(id -u):$(id -g)`** — pins the container
   process to the host `uid:gid`, which keep-id maps 1:1, so the bind-mounted
   manifest dir (owned by the host user) is **writable**. Bare `--userns=keep-id`
