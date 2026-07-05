@@ -248,6 +248,17 @@ class LocalMemoryBackend:
         # never each open their own underlying SDK connection (mirrors
         # ``SurrealStore``'s double-checked lock).
         self._connect_lock = asyncio.Lock()
+        # Serialises the memory-table RECREATE against the MCP write/read path.
+        # :meth:`rebuild_embeddings` holds it for the ENTIRE drop→DDL→ledger-restore
+        # span, and :meth:`remember` / :meth:`recall` / :meth:`invalidate` take the
+        # SAME lock around their store-touching section, so a write can never land in
+        # the brief ``REMOVE TABLE`` → ``ensure_ready`` window (which would auto-create
+        # ``memory`` SCHEMALESS and both fail-loud the recreate AND brick recall until
+        # the process restarts). Distinct from ``_connect_lock`` and NOT re-entrant, so
+        # every LOCKED public method calls only UNLOCKED internals — ``ensure_ready`` /
+        # ``restore_from_ledger`` / ``_recreate_memory_table`` never re-take it (they
+        # run either at boot with no serving concurrency, or already under this lock).
+        self._rebuild_lock = asyncio.Lock()
 
     @property
     def ledger(self) -> MemoryLedger | None:
@@ -458,43 +469,51 @@ class LocalMemoryBackend:
         now = datetime.now(UTC)
         resolved_expires = self._resolve_expiry(kind, expires_at, now)
 
-        # Unknown ``supersedes`` is a caller error raised BEFORE any write, so an
-        # orphan successor never lands even in the durable ledger.
-        if supersedes is not None and not await self._row_exists(supersedes):
-            raise MemoryNotFoundError(
-                f"cannot supersede unknown memory {supersedes!r}: no such memory exists"
-            )
+        # The whole store-touching section runs under the rebuild lock, so a
+        # remember can never interleave with the table recreate's drop→re-define
+        # window (see :attr:`_rebuild_lock`): during a rebuild this BLOCKS, then
+        # lands cleanly against the healthy recreated table (and its own UPSERT is
+        # a direct write, never routed through the restore divergence guard). The
+        # ``supersedes`` existence check is inside the lock too, so a rebuild's
+        # transiently-dropped table never spuriously reports the target missing.
+        async with self._rebuild_lock:
+            # Unknown ``supersedes`` is a caller error raised BEFORE any write, so an
+            # orphan successor never lands even in the durable ledger.
+            if supersedes is not None and not await self._row_exists(supersedes):
+                raise MemoryNotFoundError(
+                    f"cannot supersede unknown memory {supersedes!r}: no such memory exists"
+                )
 
-        # Durable write-through FIRST: the ledger row is the copy a Surreal
-        # failure/wipe cannot touch, keyed on the deterministic id so a re-save
-        # collapses to one row and a restore re-mints in place.
-        if self._ledger is not None:
-            self._ledger.record(
-                memory_id=memory_id,
+            # Durable write-through FIRST: the ledger row is the copy a Surreal
+            # failure/wipe cannot touch, keyed on the deterministic id so a re-save
+            # collapses to one row and a restore re-mints in place.
+            if self._ledger is not None:
+                self._ledger.record(
+                    memory_id=memory_id,
+                    text=text,
+                    metadata=self._ledger_metadata(
+                        kind, resolved_importance, resolved_labels, resolved_source,
+                        resolved_expires, supersedes,
+                    ),
+                    refs_stamp=refs_stamp,
+                )
+
+            vector = await self._embed_document(text, memory_id)
+            content = self._build_content(
                 text=text,
-                metadata=self._ledger_metadata(
-                    kind, resolved_importance, resolved_labels, resolved_source,
-                    resolved_expires, supersedes,
-                ),
-                refs_stamp=refs_stamp,
+                kind=kind,
+                labels=resolved_labels,
+                source=resolved_source,
+                importance=resolved_importance,
+                now=now,
+                expires_at=resolved_expires,
+                supersedes=supersedes,
+                vector=vector,
             )
-
-        vector = await self._embed_document(text, memory_id)
-        content = self._build_content(
-            text=text,
-            kind=kind,
-            labels=resolved_labels,
-            source=resolved_source,
-            importance=resolved_importance,
-            now=now,
-            expires_at=resolved_expires,
-            supersedes=supersedes,
-            vector=vector,
-        )
-        fragments = [self._upsert_fragment(memory_id, content)]
-        if supersedes is not None:
-            fragments.append(self._close_superseded_fragment(supersedes, memory_id, now))
-        await self._apply(fragments)
+            fragments = [self._upsert_fragment(memory_id, content)]
+            if supersedes is not None:
+                fragments.append(self._close_superseded_fragment(supersedes, memory_id, now))
+            await self._apply(fragments)
         return memory_id
 
     async def invalidate(self, memory_id: str) -> None:
@@ -506,14 +525,19 @@ class LocalMemoryBackend:
         Raises:
             MemoryNotFoundError: ``memory_id`` does not exist.
         """
-        if not await self._row_exists(memory_id):
-            raise MemoryNotFoundError(
-                f"cannot invalidate unknown memory {memory_id!r}: no such memory exists"
+        # Under the rebuild lock (see :attr:`_rebuild_lock`) so the existence check
+        # and the retire UPDATE never straddle the table recreate's drop→re-define
+        # window — a transiently-dropped table would otherwise report a live memory
+        # as missing, or the UPDATE would touch a half-built table.
+        async with self._rebuild_lock:
+            if not await self._row_exists(memory_id):
+                raise MemoryNotFoundError(
+                    f"cannot invalidate unknown memory {memory_id!r}: no such memory exists"
+                )
+            await self._query(
+                f"UPDATE type::record('{MEMORY_TABLE}', $id) SET {_COL_VALID_UNTIL} = $now",
+                {"id": memory_id, "now": datetime.now(UTC)},
             )
-        await self._query(
-            f"UPDATE type::record('{MEMORY_TABLE}', $id) SET {_COL_VALID_UNTIL} = $now",
-            {"id": memory_id, "now": datetime.now(UTC)},
-        )
 
     # -- reads --------------------------------------------------------------
 
@@ -560,15 +584,22 @@ class LocalMemoryBackend:
                 f"the local memory backend does not support a recall lens (got {lens!r}); "
                 f"lens is unsupported in P7"
             )
+        # The query embed does not touch the ``memory`` table, so it stays OUTSIDE
+        # the lock; the store-reading section (hybrid search + reinforcement UPDATE)
+        # runs UNDER the rebuild lock (see :attr:`_rebuild_lock`) so a recall can
+        # never read the table mid-recreate — it BLOCKS while a rebuild holds the
+        # lock, then returns against the healthy recreated table, never an empty /
+        # error result off the dropped table.
         query_vector = await self._embedder.embed_query(query)
-        filter_conditions, params = self._build_recall_filter(include, as_of, labels, kind)
-        rows = await self._hybrid_search(query_vector, query, k, filter_conditions, params)
-        # Resolve drift for EVERY recalled ref in ONE oracle call (the batch read),
-        # then annotate each row's refs against that shared existing-chunk set —
-        # never one existence fetch per ref.
-        existing_chunks = await self._resolve_existing_chunks(rows)
-        memories = [self._row_to_recalled(row, existing_chunks) for row in rows]
-        await self._reinforce(memories)
+        async with self._rebuild_lock:
+            filter_conditions, params = self._build_recall_filter(include, as_of, labels, kind)
+            rows = await self._hybrid_search(query_vector, query, k, filter_conditions, params)
+            # Resolve drift for EVERY recalled ref in ONE oracle call (the batch read),
+            # then annotate each row's refs against that shared existing-chunk set —
+            # never one existence fetch per ref.
+            existing_chunks = await self._resolve_existing_chunks(rows)
+            memories = [self._row_to_recalled(row, existing_chunks) for row in rows]
+            await self._reinforce(memories)
         return memories
 
     async def restore_from_ledger(self) -> int:
@@ -601,6 +632,90 @@ class LocalMemoryBackend:
             await self._replay_record(record)
             replayed += 1
         return replayed
+
+    async def rebuild_embeddings(self) -> int:
+        """Re-embed every stored memory from its durable ledger ``note_text`` at the
+        CURRENT embedding schema — the MEMORY arm of the embedding-schema rebuild.
+
+        The memory MIRROR of the chunk-tier rebuild
+        (:meth:`~loremaster.index.indexer.Indexer.rebuild_all`): the durable
+        ledger's ``note_text`` is to memory what the on-disk source files are to
+        chunks — the dim-independent content the re-embed reads from. Recreates the
+        ``memory`` table at the current dim (:meth:`_recreate_memory_table` drops
+        the old rows AND the possibly-stale-width HNSW index, then re-defines both
+        at ``self._dim``), then replays the ledger — re-embedding EVERY note at the
+        new schema. It therefore HEALS both a same-dim schema change (a model /
+        prompt swap) AND a DIM change; the latter is where chunks punt to an
+        operator-level full recreate, but memory's re-embeddable ledger lets it
+        self-heal in place, so a dim change is never fail-loud or refused (the
+        operator's explicit contract). No memory is lost: the ledger is the
+        durable source a Surreal wipe cannot touch, written FIRST on every
+        :meth:`remember`, so a note that reached only the ledger is still replayed.
+
+        Idempotent + resumable: an interrupted pass leaves the CALLER's fingerprint
+        stamp un-advanced (the stamp is the COMBINED completion evidence for both
+        arms), so the next boot re-detects the mismatch and re-runs; a re-run
+        recreates + replays from the ledger again, converging with no duplicates
+        (deterministic ids). A ledger-less backend is a no-op — recreating would
+        drop store rows with no durable source to restore them from.
+
+        Returns:
+            The number of ledger rows re-embedded into the fresh table (``0`` when
+            no ledger is configured or the ledger is empty).
+        """
+        if self._ledger is None:
+            # No durable source to re-embed from — recreating the table would drop
+            # the store rows with no way to restore them. A ledger-less backend
+            # cannot be safely rebuilt, so leave it untouched (mirrors the guard in
+            # :meth:`restore_from_ledger`).
+            return 0
+        # Hold the rebuild lock for the ENTIRE drop→DDL→ledger-restore span, so no
+        # concurrent MCP ``remember`` / ``recall`` / ``invalidate`` can interleave
+        # with the table recreate (see :attr:`_rebuild_lock`). The lock is NOT
+        # re-entrant, so the internals invoked here — :meth:`_recreate_memory_table`
+        # (→ :meth:`ensure_ready`) and :meth:`restore_from_ledger` (→ :meth:`_apply`)
+        # — must NOT re-acquire it; they run UNLOCKED, correctly nested under this
+        # single hold.
+        async with self._rebuild_lock:
+            await self._recreate_memory_table()
+            return await self.restore_from_ledger()
+
+    async def _recreate_memory_table(self) -> None:
+        """Drop the ``memory`` table, then re-apply the schema slice at the CURRENT dim.
+
+        ``REMOVE TABLE IF EXISTS`` clears the old rows AND the possibly-stale-width
+        HNSW index; :meth:`ensure_ready` then re-applies the SAME
+        :func:`~loremaster.store.surreal_schema.generate_memory_ddl` slice, whose
+        ``IF NOT EXISTS`` statements now define the table + a NEW-dim HNSW /
+        FULLTEXT / ``valid_until`` index from scratch (nothing survived the drop to
+        short-circuit them) — so the subsequent replay re-embeds into an index
+        sized for the current dim.
+
+        Two separate transactions, not one: SurrealDB builds the HNSW / FULLTEXT
+        indexes ASYNCHRONOUSLY, so a single ``REMOVE TABLE … DEFINE INDEX``
+        transaction races the drop against the still-settling index build and the
+        engine rejects it with a retryable conflict. Dropping first, then applying
+        the proven ``ensure_ready`` DDL, sidesteps that.
+
+        The drop→re-define window is NOT self-safe: a store write landing in it
+        would auto-create ``memory`` SCHEMALESS, so ``ensure_ready``'s
+        ``DEFINE FIELD … FLEXIBLE`` is rejected, the recreate rolls back, and the
+        table is left schemaless/index-less (fail-loud rebuild + bricked recall).
+        So the window is closed by MUTUAL EXCLUSION, not left to chance:
+        :meth:`rebuild_embeddings` holds :attr:`_rebuild_lock` across this WHOLE
+        recreate (and the following ledger restore), and :meth:`remember` /
+        :meth:`recall` / :meth:`invalidate` take the SAME lock around their store
+        section, so no MCP write/read interleaves the window. This method therefore
+        must NOT take the lock itself — its caller already holds it, and the lock is
+        not re-entrant. The durable ledger still write-throughs FIRST on every
+        :meth:`remember`, so a note that reached only the ledger is replayed by
+        :meth:`restore_from_ledger` — no memory is lost.
+        """
+        await self._query(f"REMOVE TABLE IF EXISTS {MEMORY_TABLE}")
+        await self.ensure_ready()
+        logger.debug(
+            "memory.schema.recreated", extra={"database": self._database, "dim": self._dim}
+        )
 
     # -- hybrid retrieval ---------------------------------------------------
 

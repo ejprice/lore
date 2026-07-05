@@ -431,6 +431,22 @@ class FakeMemoryBackend:
             replayed += 1
         return replayed
 
+    async def rebuild_embeddings(self) -> int:
+        """Clear the in-memory store, then replay the ledger — the fake's mirror of
+        :meth:`~loremaster.memory.local.LocalMemoryBackend.rebuild_embeddings`.
+
+        There is no table / HNSW index to resize here, so clearing the ``_rows``
+        dict stands in for the real backend's drop+recreate; the subsequent
+        ledger replay re-embeds every note document-side (the CountingEmbedder spy
+        sees the re-embeds). A ledger-less fake is a no-op, matching the real
+        backend's guard.
+        """
+        await asyncio.sleep(0)
+        if self._ledger is None:
+            return 0
+        self._rows.clear()
+        return await self.restore_from_ledger()
+
     # -- recall helpers -----------------------------------------------------
 
     @staticmethod

@@ -406,3 +406,17 @@ class MemoryBackend(Protocol):
             The number of ledger rows replayed.
         """
         ...
+
+    async def rebuild_embeddings(self) -> int:
+        """Re-embed every stored memory from its durable ledger ``note_text`` at the
+        current embedding schema — the memory arm of the embedding-schema rebuild.
+
+        Recreates the backing table at the current dim and replays the ledger, so a
+        fingerprint or dim change HEALS in place without losing a memory or being
+        refused. A backend with no durable ledger is a no-op (nothing safe to
+        re-embed from).
+
+        Returns:
+            The number of memories re-embedded.
+        """
+        ...

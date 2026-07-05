@@ -87,9 +87,12 @@ from _surreal_harness import (
 from loremaster.config import LoreConfig
 from loremaster.index.indexer import Indexer
 from loremaster.index.surreal_manifest import SurrealManifest
+from loremaster.memory.ledger import MemoryLedger
+from loremaster.memory.local import LocalMemoryBackend
 from loremaster.server import LoreServer, build_app_context
 from loremaster.source.local_directory import LocalDirectorySourceProvider
 from loremaster.store.surreal import SurrealStore
+from loremaster.store.surreal_schema import MEMORY_TABLE
 from loresigil.testing import FakeEmbedder
 
 # ---------------------------------------------------------------------------
@@ -2510,3 +2513,703 @@ class TestFailedRebuildReportsFailed:
         assert settled_state != _REBUILD_STATE_FAILED_EXPECTED, (
             "a successful rebuild must never be marked failed"
         )
+
+
+# ===========================================================================
+# The MEMORY arm of the embedding-schema rebuild (ledger row 71da3289)
+# ===========================================================================
+#
+# When the embedding-schema fingerprint changes, the ``memory`` table joins the
+# SAME background rebuild pass as code chunks: every stored memory re-embeds from
+# its durable ledger ``note_text`` at the new schema, under the SAME writer lock,
+# with the SAME status surfacing + self-heal semantics. Unlike chunks — whose
+# in-place rebuild re-embeds CONTENT at the same dim and leaves a true DIM change
+# to the operator-level full recreate — memory's durable source (the ledger text)
+# is re-embeddable, so ``rebuild_embeddings`` recreates the ``memory`` table at
+# the current dim and restores from the ledger: it HEALS a fingerprint change AND
+# a dim change, never refuses, never loses a row (the operator's explicit
+# contract). These lifecycle tests drive the REAL ``build_app_context`` boot so
+# the producer↔consumer handoff (ledger → backend → rebuild task) is the genuine
+# seam under test — a mock on either side would miss it.
+
+
+def _memory_ledger_path(manifest_path: Path, slug: str) -> Path:
+    """The durable memory-ledger SQLite path ``build_app_context`` derives."""
+    return manifest_path.with_name(f"{slug}.memory.db")
+
+
+async def _settle(task: Any) -> None:
+    """Await a spawned rebuild task to its terminal state, swallowing its raise."""
+    if task is not None:
+        try:
+            await task
+        except Exception:
+            pass
+
+
+def _recalled_texts(recalled: list[Any]) -> list[str]:
+    """The ``text`` of each recalled memory (for membership assertions)."""
+    return [getattr(memory, "text", "") for memory in recalled]
+
+
+async def _existing_chunks_empty(keys: Any) -> set[str]:
+    """A drift oracle that reports nothing exists — the window tests carry no refs."""
+    return set()
+
+
+class _WindowBarrierMemoryBackend(LocalMemoryBackend):
+    """A :class:`~loremaster.memory.local.LocalMemoryBackend` that pauses INSIDE the
+    table-recreate window so a test can drive a concurrent ``remember`` / ``recall``
+    into it deterministically.
+
+    The recreate runs ``REMOVE TABLE`` then :meth:`ensure_ready` as two steps; this
+    override fires ``window_open`` after the REMOVE and blocks on ``resume_rebuild``
+    before the ensure_ready — holding the drop→re-define window open on the test's
+    signal. It also records when a concurrent ``remember`` / ``recall`` ENTERS its
+    method (``remember_entered`` / ``recall_entered``), so the driver can tell a
+    blocked op from a completed one WITHOUT racing.
+
+    The override deliberately does NOT acquire the rebuild lock: on the fixed code
+    the lock is ALREADY held by the enclosing ``rebuild_embeddings`` for the whole
+    recreate+restore span, so re-taking it here would self-deadlock (``asyncio.Lock``
+    is not re-entrant) — the exact non-re-entrancy the fix's public/private split
+    must respect. It mirrors the production two-step verbatim (minus the debug log).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.window_open = asyncio.Event()
+        self.resume_rebuild = asyncio.Event()
+        self.remember_entered = asyncio.Event()
+        self.recall_entered = asyncio.Event()
+
+    async def _recreate_memory_table(self) -> None:
+        """REMOVE the table, hold the window open on the barrier, then re-define."""
+        await self._query(f"REMOVE TABLE IF EXISTS {MEMORY_TABLE}")
+        self.window_open.set()
+        await self.resume_rebuild.wait()
+        await self.ensure_ready()
+
+    async def remember(self, *args: Any, **kwargs: Any) -> str:
+        """Flag entry, then delegate to the real write path (which takes the lock)."""
+        self.remember_entered.set()
+        return await super().remember(*args, **kwargs)
+
+    async def recall(self, *args: Any, **kwargs: Any) -> list[Any]:
+        """Flag entry, then delegate to the real read path (which takes the lock)."""
+        self.recall_entered.set()
+        return await super().recall(*args, **kwargs)
+
+
+def _make_memory_backend(
+    backend_cls: type[LocalMemoryBackend],
+    slug: str,
+    tmp_path: Path,
+    *,
+    dim: int = _DIM,
+) -> tuple[LocalMemoryBackend, MemoryLedger]:
+    """Build a direct memory backend of ``backend_cls`` over ``slug``'s throwaway db.
+
+    Direct construction (mirroring the auditor's probes and ``store_factory``) is
+    required for the recreate-window tests: the barrier lives in a
+    :class:`_WindowBarrierMemoryBackend` subclass, which ``build_app_context`` (it
+    builds a plain ``LocalMemoryBackend``) cannot inject. Returns the backend and
+    its real durable :class:`MemoryLedger`; the caller closes both and drops the db.
+    """
+    ledger = MemoryLedger(str(tmp_path / f"{slug}.memory.db"))
+    backend = backend_cls(
+        url=surreal_url(),
+        namespace=TEST_NAMESPACE,
+        database=slug,
+        dim=dim,
+        user=surreal_user(),
+        password=surreal_password(),
+        embedder=FakeEmbedder(dim=dim),
+        existing_chunks=_existing_chunks_empty,
+        ledger=ledger,
+    )
+    return backend, ledger
+
+
+class TestMemoryJoinsSchemaRebuild:
+    """The ``memory`` table re-embeds through the schema-fingerprint rebuild.
+
+    Contract (blind to the implementation):
+        * A fingerprint change over a stored memory ⇒ the memory is re-embedded
+          from its durable ledger ``note_text`` through the spawned background
+          rebuild task (count parity, still recallable) — NOT skipped by the
+          deterministic-id divergence guard.
+        * A DIM change HEALS the memory table in place (recreated at the new
+          width) — recall at the new dim still returns the note; the operator
+          rejected any fail-loud/refuse path.
+        * A matching fingerprint leaves memory untouched (no needless re-embed —
+          the FP-06 divergence-guard parity).
+        * An interrupted rebuild self-heals on the next boot (crash-safety: the
+          fingerprint is the COMBINED completion evidence, stamped only after
+          both arms succeed).
+        * A memory whose ledger row is durable but whose store row is missing
+          (the write-through-FIRST state of a concurrent ``remember``) is picked
+          up by the rebuild — never lost.
+        * The chunk rebuild is unchanged by the memory join (both arms re-embed).
+    """
+
+    _NOTE_1 = "hostname -I is GNU inetutils here; use ip -4 -o addr show scope global."
+    _NOTE_2 = "cron env is stripped — set PATH explicitly or a wrong-major psql runs."
+    _MODEL_B = "voyageai/voyage-4-large"  # a DIFFERENT model → a DIFFERENT fingerprint
+
+    async def test_fingerprint_change_reembeds_every_memory_from_ledger(
+        self, tmp_path: Path
+    ) -> None:
+        """A fingerprint change re-embeds every memory from its ledger note_text.
+
+        Arrange: boot under fingerprint A over an EMPTY corpus, remember two
+                 notes (store + durable ledger), close.
+        Act: boot under fingerprint B (a DIFFERENT model, same dim) over the SAME
+             database + ledger; settle the spawned rebuild task.
+        Assert: the rebuild re-embedded both notes DOCUMENT-side (the boot restore
+                over the in-sync store embeds nothing, so every document embed is
+                the rebuild's), and BOTH notes remain recallable (no memory lost).
+        """
+        # real-Surreal
+        slug = _slug()
+        live = tmp_path / "live"
+        live.mkdir(parents=True, exist_ok=True)  # empty corpus: the only embeds are memory
+        manifest_path = tmp_path / "m.db"
+        snapshot_root = tmp_path / "snap"
+
+        try:
+            first = await build_app_context(
+                server=LoreServer(_config(slug=slug, live_path=live, model=_MODEL)),
+                embedder=FakeEmbedder(dim=_DIM),
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            await _settle(getattr(first, "schema_rebuild_task", None))
+            await first.memory_backend.remember(self._NOTE_1, kind="fact")
+            await first.memory_backend.remember(self._NOTE_2, kind="fact")
+            await first.aclose()
+
+            second_embedder = RecordingEmbedder(dim=_DIM)
+            second = await build_app_context(
+                server=LoreServer(_config(slug=slug, live_path=live, model=self._MODEL_B)),
+                embedder=second_embedder,
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            try:
+                task = getattr(second, "schema_rebuild_task", None)
+                assert task is not None, (
+                    "a fingerprint change must spawn the background rebuild task the "
+                    "memory rebuild rides"
+                )
+                await _settle(task)
+
+                assert second_embedder.total_embedded >= 2, (
+                    "the schema rebuild must re-embed EVERY memory from its ledger "
+                    f"note_text; saw {second_embedder.total_embedded} document embeds "
+                    "(0 means the memory table never joined the rebuild)"
+                )
+                for note in (self._NOTE_1, self._NOTE_2):
+                    recalled = await second.memory_backend.recall(note, k=5)
+                    assert any(note in text for text in _recalled_texts(recalled)), (
+                        f"a re-embedded memory must remain recallable: {note!r}"
+                    )
+            finally:
+                await second.aclose()
+        finally:
+            await _drop_slug_database(slug)
+
+    async def test_dim_change_heals_memory_in_place(self, tmp_path: Path) -> None:
+        """A DIM change re-embeds memory at the new width and recall still works.
+
+        The operator-named case: memory must HEAL a dim change, never be refused.
+        A bare row-purge could not — the surviving OLD-dim HNSW index rejects a
+        NEW-dim vector — so ``rebuild_embeddings`` recreates the ``memory`` table
+        at the current dim. Oracle: after the dim change, recall (which embeds the
+        query at the NEW dim and runs KNN over the memory index) RETURNS the note;
+        a stale old-dim index would make that KNN reject the wrong-width query.
+        """
+        # real-Surreal
+        slug = _slug()
+        live = tmp_path / "live"
+        live.mkdir(parents=True, exist_ok=True)  # empty corpus: only the memory table's dim changes
+        manifest_path = tmp_path / "m.db"
+        snapshot_root = tmp_path / "snap"
+        dim_a, dim_b = _DIM, 512
+
+        try:
+            first = await build_app_context(
+                server=LoreServer(_config(slug=slug, live_path=live, dim=dim_a)),
+                embedder=FakeEmbedder(dim=dim_a),
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            await _settle(getattr(first, "schema_rebuild_task", None))
+            await first.memory_backend.remember(self._NOTE_1, kind="fact")
+            await first.aclose()
+
+            second = await build_app_context(
+                server=LoreServer(_config(slug=slug, live_path=live, dim=dim_b)),
+                embedder=FakeEmbedder(dim=dim_b),
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            try:
+                task = getattr(second, "schema_rebuild_task", None)
+                assert task is not None, "a dim change must spawn the rebuild task"
+                await _settle(task)
+
+                recalled = await second.memory_backend.recall(self._NOTE_1, k=5)
+                assert any(self._NOTE_1 in text for text in _recalled_texts(recalled)), (
+                    "after a dim change the memory must re-embed at the NEW width and "
+                    "remain recallable (the memory HNSW index was resized in place); a "
+                    "surviving old-dim index would reject the wrong-width recall query"
+                )
+            finally:
+                await second.aclose()
+        finally:
+            await _drop_slug_database(slug)
+
+    async def test_matching_fingerprint_leaves_memory_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """A steady-state boot (matching fingerprint) does NOT re-embed memory.
+
+        The memory analogue of the FP-06 divergence guard: no fingerprint change ⇒
+        no rebuild task ⇒ the memory table is not needlessly dropped/re-embedded,
+        and the boot restore over the in-sync store embeds nothing.
+        """
+        # real-Surreal
+        slug = _slug()
+        live = tmp_path / "live"
+        live.mkdir(parents=True, exist_ok=True)
+        manifest_path = tmp_path / "m.db"
+        snapshot_root = tmp_path / "snap"
+        config = _config(slug=slug, live_path=live)
+
+        try:
+            first = await build_app_context(
+                server=LoreServer(config),
+                embedder=FakeEmbedder(dim=_DIM),
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            await _settle(getattr(first, "schema_rebuild_task", None))
+            await first.memory_backend.remember(self._NOTE_1, kind="fact")
+            await first.aclose()
+
+            second_embedder = RecordingEmbedder(dim=_DIM)
+            second = await build_app_context(
+                server=LoreServer(config),
+                embedder=second_embedder,
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            try:
+                assert getattr(second, "schema_rebuild_task", None) is None, (
+                    "a matching fingerprint must NOT spawn a rebuild task"
+                )
+                assert second_embedder.total_embedded == 0, (
+                    "a steady-state boot must re-embed NOTHING — the memory table is "
+                    f"not needlessly rebuilt; saw {second_embedder.total_embedded} embeds"
+                )
+                recalled = await second.memory_backend.recall(self._NOTE_1, k=5)
+                assert any(self._NOTE_1 in text for text in _recalled_texts(recalled))
+            finally:
+                await second.aclose()
+        finally:
+            await _drop_slug_database(slug)
+
+    async def test_interrupted_memory_rebuild_recovers_on_next_boot(
+        self, tmp_path: Path
+    ) -> None:
+        """An interrupted memory rebuild self-heals on the next boot.
+
+        A rebuild whose embed step raises leaves the fingerprint UNSTAMPED (the
+        stamp is the COMBINED completion evidence), so the next boot re-detects the
+        mismatch and re-runs — re-embedding every note from the durable ledger. No
+        memory is lost across the crash (the ledger is the durable source a Surreal
+        wipe cannot touch).
+        """
+        # real-Surreal
+        from loremaster.index.schema import embedding_schema_fingerprint
+
+        slug = _slug()
+        live = tmp_path / "live"
+        live.mkdir(parents=True, exist_ok=True)
+        manifest_path = tmp_path / "m.db"
+        snapshot_root = tmp_path / "snap"
+
+        try:
+            first = await build_app_context(
+                server=LoreServer(_config(slug=slug, live_path=live, model=_MODEL)),
+                embedder=FakeEmbedder(dim=_DIM),
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            await _settle(getattr(first, "schema_rebuild_task", None))
+            await first.memory_backend.remember(self._NOTE_1, kind="fact")
+            await first.memory_backend.remember(self._NOTE_2, kind="fact")
+            await first.aclose()
+
+            # Boot 2 (fingerprint B) with a BOMB embedder → the memory rebuild raises.
+            bombed = await build_app_context(
+                server=LoreServer(_config(slug=slug, live_path=live, model=self._MODEL_B)),
+                embedder=_BombEmbedder(dim=_DIM),
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            try:
+                task = getattr(bombed, "schema_rebuild_task", None)
+                assert task is not None, "the fingerprint change must spawn a rebuild"
+                with pytest.raises(Exception):
+                    await task
+
+                # Crash-safety: the failed rebuild did NOT advance the fingerprint
+                # stamp, so the next boot re-detects the mismatch.
+                current_b = embedding_schema_fingerprint(
+                    _config(slug=slug, live_path=live, model=self._MODEL_B)
+                )
+                async with _open_manifest(slug) as manifest:
+                    stored = await manifest.meta_get(SCHEMA_FINGERPRINT_META_KEY)
+                assert stored != current_b, (
+                    "an interrupted rebuild must NOT advance the fingerprint stamp "
+                    "(else the next boot would treat the half-rebuilt memory as current)"
+                )
+            finally:
+                await bombed.aclose()
+
+            # Boot 3 (fingerprint B) with a GOOD embedder → the rebuild completes.
+            healed_embedder = RecordingEmbedder(dim=_DIM)
+            healed = await build_app_context(
+                server=LoreServer(_config(slug=slug, live_path=live, model=self._MODEL_B)),
+                embedder=healed_embedder,
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            try:
+                await _settle(getattr(healed, "schema_rebuild_task", None))
+                for note in (self._NOTE_1, self._NOTE_2):
+                    recalled = await healed.memory_backend.recall(note, k=5)
+                    assert any(note in text for text in _recalled_texts(recalled)), (
+                        f"an interrupted memory must be recallable after recovery: {note!r}"
+                    )
+            finally:
+                await healed.aclose()
+        finally:
+            await _drop_slug_database(slug)
+
+    async def test_ledger_only_memory_is_picked_up_by_rebuild(
+        self, tmp_path: Path
+    ) -> None:
+        """A memory whose ledger row is durable but store row is missing survives.
+
+        Models the write-through-FIRST ordering a concurrent ``remember`` leaves
+        during a rebuild (the ledger row lands before the store write): ``rebuild_
+        embeddings`` re-reads the ledger fresh, so such a note is re-embedded into
+        the rebuilt table — never lost, even though no store row existed for it
+        when the rebuild began.
+        """
+        # real-Surreal
+        from loremaster.memory.backend import derive_memory_id, derive_refs_stamp
+        from loremaster.memory.ledger import MemoryLedger
+
+        slug = _slug()
+        live = tmp_path / "live"
+        live.mkdir(parents=True, exist_ok=True)
+        manifest_path = tmp_path / "m.db"
+        snapshot_root = tmp_path / "snap"
+
+        try:
+            ctx = await build_app_context(
+                server=LoreServer(_config(slug=slug, live_path=live)),
+                embedder=FakeEmbedder(dim=_DIM),
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            try:
+                await _settle(getattr(ctx, "schema_rebuild_task", None))
+                # A normally-remembered note (store + ledger).
+                await ctx.memory_backend.remember(self._NOTE_1, kind="fact")
+
+                # A note that reached ONLY the durable ledger (the write-through-
+                # first state of a concurrent remember mid-rebuild) — no store row.
+                refs_stamp = derive_refs_stamp([])
+                ledger_only_id = derive_memory_id(self._NOTE_2, refs_stamp)
+                ledger = MemoryLedger(str(_memory_ledger_path(manifest_path, slug)))
+                try:
+                    ledger.record(
+                        memory_id=ledger_only_id,
+                        text=self._NOTE_2,
+                        metadata={},
+                        refs_stamp=refs_stamp,
+                    )
+                finally:
+                    ledger.close()
+
+                # The rebuild re-reads the ledger fresh → BOTH notes land in the store.
+                await ctx.memory_backend.rebuild_embeddings()
+
+                for note in (self._NOTE_1, self._NOTE_2):
+                    recalled = await ctx.memory_backend.recall(note, k=5)
+                    assert any(note in text for text in _recalled_texts(recalled)), (
+                        f"a ledger-durable memory must survive the rebuild: {note!r}"
+                    )
+            finally:
+                await ctx.aclose()
+        finally:
+            await _drop_slug_database(slug)
+
+    async def test_chunk_rebuild_still_re_embeds_alongside_memory(
+        self, tmp_path: Path
+    ) -> None:
+        """The memory join does not regress the chunk rebuild: both arms re-embed.
+
+        Over a POPULATED corpus + a stored memory, a fingerprint change re-embeds
+        every chunk (``rebuild_all``) AND every memory (``rebuild_embeddings``);
+        the index stays populated and the memory stays recallable.
+        """
+        # real-Surreal
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        manifest_path = tmp_path / "m.db"
+        snapshot_root = tmp_path / "snap"
+
+        try:
+            first = await build_app_context(
+                server=LoreServer(_config(slug=slug, live_path=live, model=_MODEL)),
+                embedder=FakeEmbedder(dim=_DIM),
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            await first.reindex(None)  # populate the chunk index under the writer lock
+            await _settle(getattr(first, "schema_rebuild_task", None))
+            await first.memory_backend.remember(self._NOTE_1, kind="fact")
+            first_status = await first.index_status()
+            assert first_status.files_indexed >= 1, (
+                "test setup: the seed build must populate the chunk index"
+            )
+            await first.aclose()
+
+            second_embedder = RecordingEmbedder(dim=_DIM)
+            second = await build_app_context(
+                server=LoreServer(_config(slug=slug, live_path=live, model=self._MODEL_B)),
+                embedder=second_embedder,
+                manifest_path=manifest_path,
+                snapshot_root=snapshot_root,
+                start_tasks=False,
+            )
+            try:
+                task = getattr(second, "schema_rebuild_task", None)
+                assert task is not None, "a fingerprint change must spawn the rebuild"
+                await _settle(task)
+
+                assert second_embedder.total_embedded >= 2, (
+                    "both the chunk rebuild and the memory rebuild must re-embed; saw "
+                    f"{second_embedder.total_embedded} document embeds"
+                )
+                status = await second.index_status()
+                assert status.files_indexed >= 1, (
+                    "the chunk index must stay populated after the rebuild"
+                )
+                recalled = await second.memory_backend.recall(self._NOTE_1, k=5)
+                assert any(self._NOTE_1 in text for text in _recalled_texts(recalled)), (
+                    "the memory must remain recallable after a rebuild that also "
+                    "re-embedded the chunk corpus"
+                )
+            finally:
+                await second.aclose()
+        finally:
+            await _drop_slug_database(slug)
+
+    # -- the recreate-window serialization guard (audit-dimgate finding 1) ------
+    #
+    # The rebuild's ``REMOVE TABLE -> ensure_ready`` recreate must be MUTUALLY
+    # EXCLUSIVE with the MCP memory write/read path. Without a memory-local rebuild
+    # lock, a ``remember`` store UPSERT landing in that window auto-creates
+    # ``memory`` SCHEMALESS, so ensure_ready's ``DEFINE FIELD ... FLEXIBLE`` is
+    # rejected, the recreate rolls back, ``rebuild_embeddings`` fails LOUD (leaving
+    # the fingerprint unstamped) AND the table is left schemaless/index-less so
+    # ``recall`` RAISES until the process restarts. These tests drive a REAL
+    # concurrent op into the window (held open by ``_WindowBarrierMemoryBackend``)
+    # and assert the lock serializes it: no poison, no fail-loud, no bricked recall.
+    #
+    # RED→GREEN mechanism (no timing bursts): the ONLY branch is on whether the fix's
+    # ``_rebuild_lock`` attribute exists. Pre-fix (no lock) the op is un-serialized —
+    # we AWAIT it to completion so its poisoning/empty-read is deterministic before
+    # the window closes → the assertions fail (RED). Post-fix the op BLOCKS on the
+    # held lock and cannot complete until the recreate finishes, so awaiting it would
+    # deadlock; a few scheduler turns (harmless if early — the op still can't run)
+    # let it settle onto the lock, then the recreate completes and the op lands.
+
+    async def test_remember_racing_the_recreate_window_never_bricks_the_rebuild(
+        self, tmp_path: Path
+    ) -> None:
+        """A ``remember`` racing the table recreate must not poison it / fail-loud.
+
+        Arrange: a backend with a baseline note (store + ledger), the recreate
+                 window held open after its REMOVE.
+        Act: fire a REAL concurrent ``remember`` into the window, then close it.
+        Assert: the rebuild does NOT raise (the window was serialized), the racing
+                remember LANDS (durable in the ledger, recallable — correctly
+                re-embedded, not skipped by the restore divergence guard), and the
+                baseline stays recallable. Pre-fix the recreate hits the FLEXIBLE
+                rejection and ``rebuild_embeddings`` raises → RED.
+        """
+        # real-Surreal
+        slug = _slug()
+        backend, ledger = _make_memory_backend(_WindowBarrierMemoryBackend, slug, tmp_path)
+        window = backend  # a _WindowBarrierMemoryBackend, statically a LocalMemoryBackend
+        assert isinstance(window, _WindowBarrierMemoryBackend)
+        try:
+            await backend.ensure_ready()
+            await backend.remember(self._NOTE_1, kind="fact")  # baseline: store + ledger
+
+            serialized = getattr(backend, "_rebuild_lock", None) is not None
+
+            task_rebuild = asyncio.create_task(backend.rebuild_embeddings())
+            await window.window_open.wait()  # REMOVE done; (fixed: rebuild lock held)
+
+            task_remember = asyncio.create_task(backend.remember(self._NOTE_2, kind="fact"))
+            await window.remember_entered.wait()
+
+            if not serialized:
+                # PRE-FIX: no lock — let the racer complete its store UPSERT, which
+                # auto-creates ``memory`` SCHEMALESS and poisons the pending recreate.
+                await task_remember
+            else:
+                # POST-FIX: the racer is blocked on the held rebuild lock; a few turns
+                # settle it onto the lock (it still cannot run until the window closes).
+                for _ in range(5):
+                    await asyncio.sleep(0)
+
+            window.resume_rebuild.set()
+            rebuild_result, remember_result = await asyncio.gather(
+                task_rebuild, task_remember, return_exceptions=True
+            )
+
+            assert not isinstance(rebuild_result, Exception), (
+                "a remember() racing the recreate window must NOT fail-loud the rebuild "
+                f"— the drop→re-define window is not serialized; rebuild raised {rebuild_result!r}"
+            )
+            assert not isinstance(remember_result, Exception), (
+                f"the racing remember must block-then-land, never raise; got {remember_result!r}"
+            )
+
+            # The racer is durable in the ledger (write-through survived the race)...
+            ledger_ids = {record.memory_id for record in ledger.all_records()}
+            assert remember_result in ledger_ids, (
+                "the racing remember's ledger write-through must be durable"
+            )
+            # ...and every note is recallable against the healthy recreated table
+            # (the racer correctly re-embedded, not skipped by the divergence guard).
+            for note in (self._NOTE_1, self._NOTE_2):
+                recalled = await backend.recall(note, k=5)
+                assert any(note in text for text in _recalled_texts(recalled)), (
+                    f"a memory must remain recallable after the raced recreate: {note!r}"
+                )
+        finally:
+            await backend.close()
+            ledger.close()
+            await _drop_slug_database(slug)
+
+    async def test_recall_racing_the_recreate_window_blocks_then_returns_the_note(
+        self, tmp_path: Path
+    ) -> None:
+        """A ``recall`` racing the table recreate must block-then-succeed, never lose the note.
+
+        Pre-fix a recall running in the ``REMOVE TABLE`` window reads the DROPPED
+        table and comes back EMPTY (a silently lost recall) — RED. With the lock the
+        recall blocks until the table is healthy again, then returns the note.
+        """
+        # real-Surreal
+        slug = _slug()
+        backend, ledger = _make_memory_backend(_WindowBarrierMemoryBackend, slug, tmp_path)
+        window = backend
+        assert isinstance(window, _WindowBarrierMemoryBackend)
+        try:
+            await backend.ensure_ready()
+            await backend.remember(self._NOTE_1, kind="fact")
+
+            serialized = getattr(backend, "_rebuild_lock", None) is not None
+
+            task_rebuild = asyncio.create_task(backend.rebuild_embeddings())
+            await window.window_open.wait()
+
+            task_recall = asyncio.create_task(backend.recall(self._NOTE_1, k=5))
+            await window.recall_entered.wait()
+
+            if not serialized:
+                # PRE-FIX: the recall reads the dropped table now and returns empty.
+                await task_recall
+            else:
+                for _ in range(5):
+                    await asyncio.sleep(0)
+
+            window.resume_rebuild.set()
+            rebuild_result, recall_result = await asyncio.gather(
+                task_rebuild, task_recall, return_exceptions=True
+            )
+
+            assert not isinstance(rebuild_result, Exception), (
+                f"the recreate must not fail-loud: {rebuild_result!r}"
+            )
+            assert not isinstance(recall_result, Exception), (
+                "a recall racing the recreate window must block-then-succeed, never raise; "
+                f"got {recall_result!r}"
+            )
+            assert any(self._NOTE_1 in text for text in _recalled_texts(recall_result)), (
+                "a recall racing the recreate window must return the note (blocked until the "
+                "table was healthy), never an empty result read off the dropped table"
+            )
+        finally:
+            await backend.close()
+            ledger.close()
+            await _drop_slug_database(slug)
+
+    async def test_rebuild_embeddings_holds_the_lock_without_reentrant_deadlock(
+        self, tmp_path: Path
+    ) -> None:
+        """rebuild_embeddings holds the memory lock across recreate + restore without deadlock.
+
+        The lock is held for the WHOLE drop→DDL→ledger-restore span, so its internal
+        helpers (``ensure_ready`` / ``restore_from_ledger`` and their ``_apply`` /
+        ``_query`` calls) must run UNLOCKED — ``asyncio.Lock`` is not re-entrant, so a
+        re-entrant acquire would self-deadlock. A deadlock would hang forever;
+        ``wait_for`` turns it into a clear failure instead. (The plain
+        ``LocalMemoryBackend`` — no window barrier — exercises the real recreate.)
+        """
+        # real-Surreal
+        slug = _slug()
+        backend, ledger = _make_memory_backend(LocalMemoryBackend, slug, tmp_path)
+        try:
+            await backend.ensure_ready()
+            await backend.remember(self._NOTE_1, kind="fact")
+            await backend.remember(self._NOTE_2, kind="fact")
+
+            replayed = await asyncio.wait_for(backend.rebuild_embeddings(), timeout=60)
+            assert replayed >= 2, (
+                "the rebuild must replay every ledger note under the lock without "
+                f"self-deadlocking; replayed {replayed}"
+            )
+            for note in (self._NOTE_1, self._NOTE_2):
+                recalled = await backend.recall(note, k=5)
+                assert any(note in text for text in _recalled_texts(recalled)), (
+                    f"a note must be recallable after the locked rebuild: {note!r}"
+                )
+        finally:
+            await backend.close()
+            ledger.close()
+            await _drop_slug_database(slug)

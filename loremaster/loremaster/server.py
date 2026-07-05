@@ -3095,18 +3095,29 @@ async def _maybe_spawn_schema_rebuild(
     app_context.schema_rebuild_task = asyncio.get_running_loop().create_task(
         _run_schema_rebuild(
             indexer=indexer,
+            memory_backend=app_context.memory_backend,
             watcher=watcher,
             fingerprint=current_fingerprint,
             index_was_empty=index_was_empty,
+            # Re-embed memory only on a GENUINE schema change (a prior fingerprint
+            # was stamped and now differs) — not on a fresh / legacy index, where
+            # the boot restore already built the memory table at the current schema.
+            reembed_memory=stored_fingerprint is not None,
         )
     )
     return True
 
 
 async def _run_schema_rebuild(
-    *, indexer: Indexer, watcher: Any, fingerprint: str, index_was_empty: bool
+    *,
+    indexer: Indexer,
+    memory_backend: Any,
+    watcher: Any,
+    fingerprint: str,
+    index_was_empty: bool,
+    reembed_memory: bool,
 ) -> None:
-    """Re-embed every tier under the watcher's single-writer lock (the rebuild task).
+    """Re-embed every tier + the memory table under the writer lock (the rebuild task).
 
     The concurrency-critical coroutine: it acquires the SAME
     :class:`asyncio.Lock` the watcher's live drain and periodic ``run_sweep`` use
@@ -3125,16 +3136,50 @@ async def _run_schema_rebuild(
     (legacy / unknown provenance) carries genuinely stale vectors, so it gets the
     full :meth:`~loremaster.index.indexer.Indexer.rebuild_all`.
 
+    The MEMORY table joins the SAME pass: ``memory_backend.rebuild_embeddings``
+    re-embeds every note from its durable ledger text at the new schema BEFORE the
+    fingerprint is stamped, so the stamp is the COMBINED completion evidence for both
+    arms (an interrupted memory rebuild re-triggers on the next boot). Unlike the
+    chunk arm, the memory arm recreates its table at the current dim, so it also
+    heals a DIM change in place — never fail-loud, never a lost memory.
+
     Args:
-        indexer: The indexer whose ``rebuild_all`` performs the re-embed.
+        indexer: The indexer whose ``rebuild_all`` performs the chunk re-embed.
+        memory_backend: The memory backend whose ``rebuild_embeddings`` re-embeds
+            every stored note from its durable ledger text at the new schema.
         watcher: The live watcher exposing the single-writer lock.
         fingerprint: The target fingerprint stamped on successful completion.
         index_was_empty: Whether the index had no stored rows when the task was
             spawned (captured at spawn time so the decision is deterministic, not
             racing a concurrent populate).
+        reembed_memory: Whether to run the memory arm — ``True`` only on a genuine
+            schema change (a prior fingerprint was stamped and now differs). On a
+            fresh / legacy index (no prior stamp) the boot's ``restore_from_ledger``
+            already built the memory table at the current schema, so the memory
+            re-embed is skipped as redundant (recreating would also needlessly
+            block a concurrent recall on the rebuild lock).
     """
     async with watcher.writer_lock:
         try:
+            # The MEMORY arm: re-embed every note from its durable ledger text at
+            # the new schema (recreating the memory table at the current dim, so a
+            # dim change heals in place). Gated on ``reembed_memory`` — a GENUINE
+            # schema change, where a PRIOR fingerprint was stamped and now differs
+            # (independent of ``index_was_empty``, a chunk-side discriminator: the
+            # memory table can be non-empty when the CODE index is empty). When NO
+            # prior fingerprint existed (a fresh deploy, or a legacy pre-feature
+            # index), the boot's own ``restore_from_ledger`` has ALREADY populated
+            # the memory table at the current schema, so re-embedding would be
+            # redundant — and recreating would needlessly block concurrent recalls
+            # on the rebuild lock that now serialises the drop→re-define window —
+            # so it is skipped, mirroring the status
+            # semantics (``_maybe_spawn_schema_rebuild`` surfaces ``in_progress``
+            # only when a prior fingerprint existed). Runs BEFORE the stamp, so the
+            # stamp stays the COMBINED completion evidence for both arms: an
+            # interrupted memory rebuild leaves it un-advanced and the next boot
+            # re-triggers (crash-safety, mirroring the chunk arm below).
+            if reembed_memory:
+                await memory_backend.rebuild_embeddings()
             if index_was_empty:
                 # Nothing stale to re-embed — just stamp the current fingerprint so
                 # the index is marked current-schema (the same end state the
