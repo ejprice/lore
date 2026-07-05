@@ -163,10 +163,14 @@ async def connect(url: str) -> AsyncIterator[ClientSession]:
     rather than assuming one fixed shape.
     """
     async with streamablehttp_client(url=url, headers=NO_AUTH_HEADERS) as transport:
-        if len(transport) == 2:
-            read, write = transport
-        elif len(transport) == 3:
-            read, write, _ = transport
+        # Widened to a variable-length tuple type so mypy doesn't narrow len() to the
+        # installed SDK's fixed 3-tuple literal and mark the 2-tuple branch unreachable
+        # -- the defensive length check must stay live across SDK versions at runtime.
+        parts: tuple[Any, ...] = transport
+        if len(parts) == 2:
+            read, write = parts
+        elif len(parts) == 3:
+            read, write, _ = parts
         else:
             raise SmokeCheckFailed(f"unexpected streamablehttp_client transport tuple: {transport!r}")
         async with ClientSession(read, write) as session:

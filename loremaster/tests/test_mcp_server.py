@@ -1787,15 +1787,21 @@ class TestToolBehaviourEndToEnd:
         # be stricter than it. See
         # test_findings_report_without_body_defaults_to_empty_string below, which
         # pins the complementary behavior (an omitted body succeeds).
-        kwargs: dict[str, str] = {
+        values: dict[str, str] = {
             "subject": "s",
             "area": "a",
             "category": "c",
             "created_by": "me",
         }
-        kwargs[field_name] = ""
+        values[field_name] = ""
         with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
-            await indexed_context.findings(action="report", **kwargs)
+            await indexed_context.findings(
+                action="report",
+                subject=values["subject"],
+                area=values["area"],
+                category=values["category"],
+                created_by=values["created_by"],
+            )
         assert field_name in str(exc_info.value).lower()
 
     async def test_findings_report_without_body_defaults_to_empty_string(
