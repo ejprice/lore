@@ -313,23 +313,70 @@ def _resolve_env_file(project: Path, explicit: str | None) -> Path:
 # ---------------------------------------------------------------------------
 # Config parsing via the loremaster venv (one source of truth for the schema).
 # ---------------------------------------------------------------------------
-def _read_config_field(config_path: Path, expr: str) -> str:
-    """Read a single field from a lore.yaml via the loremaster config model.
+def _schema_load_snippet(config_path: Path) -> str:
+    """Return a Python snippet binding ``c`` to the schema-validated ``LoreConfig``.
 
-    ``expr`` is a Python expression over the loaded ``c`` (e.g.
-    ``c.project.slug``). Returns the stringified value. Raises on a parse error
-    so a malformed config fails loud.
+    Schema-only by design: it constructs the model via ``LoreConfig.model_validate``
+    (NOT :func:`load_config`), so it NEVER resolves a secret from the environment.
+    Every consumer here reads config FIELD values — a slug, a port, or the *name*
+    of a secret's env-var — never a resolved secret VALUE, so requiring
+    ``ANTHROPIC_API_KEY`` to be exported just to read the server port (what
+    ``load_config``'s EAGER resolution forced) was wrong: it broke
+    ``setup`` / ``start`` / ``status`` on any host where that key is not exported.
+    Secret presence is a boot concern (``load_config`` fails loud at server start,
+    naming the variable), not a config-field-read concern.
     """
-    code = (
-        "import sys;from loremaster.config import load_config;"
-        f"c=load_config({str(config_path)!r});print({expr})"
+    return (
+        "import yaml;from pathlib import Path;"
+        "from loremaster.config import LoreConfig;"
+        f"c=LoreConfig.model_validate(yaml.safe_load("
+        f"Path({str(config_path)!r}).read_text(encoding='utf-8')))"
     )
+
+
+def _read_config_field(config_path: Path, expr: str) -> str:
+    """Read a single field VALUE from a lore.yaml via the loremaster config model.
+
+    ``expr`` is a Python expression over the schema-validated ``c`` (e.g.
+    ``c.project.slug``). Returns the stringified value. Validation is SCHEMA-ONLY
+    (see :func:`_schema_load_snippet`): the helper reads field values, never a
+    resolved secret, so it must not — and does not — require any secret env-var to
+    be set. Raises ``RuntimeError`` on a parse/validation error so a malformed
+    config fails loud.
+    """
+    code = f"{_schema_load_snippet(config_path)};print({expr})"
     result = _run([_loremaster_python(), "-c", code], check=False, capture=True)
     if result.returncode != 0:
         raise RuntimeError(
             f"failed to read {expr!r} from {config_path}: {result.stderr.strip()}"
         )
     return result.stdout.strip()
+
+
+def _validate_config_schema(config_path: Path) -> None:
+    """Validate a lore.yaml's SHAPE against the real ``LoreConfig`` — schema only.
+
+    Runs ``LoreConfig.model_validate`` (NOT :func:`load_config`) in the loremaster
+    venv (see :func:`_schema_load_snippet`), so the written template is checked for
+    structural validity WITHOUT resolving any secret. This is deliberate and is the
+    smallest honest scaffold check: the scaffold emits env-var *names* only (never a
+    secret), so whether ``ANTHROPIC_API_KEY`` happens to be exported in the
+    operator's shell at scaffold time is irrelevant to whether the emitted file is
+    well-formed. Secret presence is a boot concern — ``setup`` checks the env-file
+    separately and ``load_config`` resolves ``anthropic.api_key_env`` eagerly at
+    server start (failing loud, naming the variable). Raises ``RuntimeError`` —
+    naming the pydantic error — when the shape is invalid, so a bad scaffold fails
+    loud.
+    """
+    result = _run(
+        [_loremaster_python(), "-c", _schema_load_snippet(config_path)],
+        check=False,
+        capture=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"scaffolded {config_path} failed schema validation: {result.stderr.strip()}"
+        )
 
 
 def _read_server_block(config_path: Path) -> tuple[str, int, str]:
@@ -449,9 +496,24 @@ embedding:
   api_key_env: LORE_TEI_KEY
   tokenizer: voyage-4-nano
 
-qdrant:
-  url: http://127.0.0.1:16333
-  api_key_env: QDRANT__SERVICE__API_KEY
+# Anthropic API (REQUIRED): api_key_env is the env-var NAME only, never the key
+# itself. load_config resolves it EAGERLY at server start — export
+# ANTHROPIC_API_KEY (e.g. in this project's lore-secrets env-file) before `start`,
+# or boot fails loud naming the variable. yardstick_model is the token-calibration
+# baseline (generation-anchored to claude-sonnet-5).
+anthropic:
+  api_key_env: ANTHROPIC_API_KEY
+  yardstick_model: claude-sonnet-5
+
+# Unified store (SurrealDB): chunks, search, memory, the code graph and the task
+# ledger all live here; the database name defaults to the slug. Credentials are
+# env-var NAMES only (SURREAL_USER / SURREAL_PASS). CUSTOMIZE the url to your
+# lore-surreal RPC endpoint.
+surreal:
+  url: ws://127.0.0.1:18500/rpc           # CUSTOMIZE — your SurrealDB /rpc endpoint
+  namespace: lore
+  user_env: SURREAL_USER
+  password_env: SURREAL_PASS
 
 roots: []
 
@@ -486,8 +548,12 @@ server:
   port: {port}
 """
     config_path.write_text(content, encoding="utf-8")
-    # Fail loud if the scaffold does not parse against the real model.
-    _read_config_field(config_path, "c.project.slug")
+    # Fail loud if the scaffold does not parse against the real model. Schema-only
+    # (LoreConfig.model_validate, NOT load_config): the scaffold emits env-var
+    # *names*, never secrets, so validation must not require ANTHROPIC_API_KEY to
+    # be exported — that eager key resolution is a boot concern (see setup's
+    # env-file check + load_config's fail-fast at server start).
+    _validate_config_schema(config_path)
 
 
 # ---------------------------------------------------------------------------
