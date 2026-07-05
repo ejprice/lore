@@ -1,0 +1,57 @@
+{
+  "claude_total": 26187,
+  "endpoint": "https://api.anthropic.com/v1/messages/count_tokens",
+  "files": {
+    "comment_light_python.py.txt": {
+      "claude_tokens": 3719,
+      "sha256": "1d69a49710973b50986b57003e0efe6a126d153a7f9b673f2c8b7517824d0064",
+      "voyage_tokens": 2289
+    },
+    "dense_python.py.txt": {
+      "claude_tokens": 5991,
+      "sha256": "bebba0efbbe537ceef4aafb7799cc5a4122d4c332fb0b7ebcab235717ff62062",
+      "voyage_tokens": 3690
+    },
+    "frontend_widget.js.txt": {
+      "claude_tokens": 988,
+      "sha256": "a68adfed2e0ed8dd5d3fecd55ad58ade32ca88fe588997a88f19c5acba8b6855",
+      "voyage_tokens": 600
+    },
+    "markdown_prose.md.txt": {
+      "claude_tokens": 3816,
+      "sha256": "2e984f301ed12083065fc43633799e85e492ee4fc053e092dc222af2a05a2baa",
+      "voyage_tokens": 2522
+    },
+    "markdown_technical.md.txt": {
+      "claude_tokens": 7885,
+      "sha256": "ec6617dde45b1f176721edacd414535b099ff5a8fb8316e3f0a975c79bab2ecc",
+      "voyage_tokens": 5446
+    },
+    "service_config.yaml.txt": {
+      "claude_tokens": 568,
+      "sha256": "58cb8471e2fbfb94c1c0e2033cc8e5f9c838487bc96462eb0af59a06e3b5eab4",
+      "voyage_tokens": 389
+    },
+    "styles.css.txt": {
+      "claude_tokens": 770,
+      "sha256": "a5ce102e90f2686f06bfdaf03ba1ba819aa94e22f717feed0dccc6ca9df875b3",
+      "voyage_tokens": 557
+    },
+    "warehouse_query.sql.txt": {
+      "claude_tokens": 959,
+      "sha256": "43ba21172a36962040d64e959da4468be267be932a2a02c65c4b7200ef4b54e7",
+      "voyage_tokens": 512
+    },
+    "warehouse_schema.sql.txt": {
+      "claude_tokens": 1491,
+      "sha256": "39df816f7175a247be31084e7c09ab1e53d847839f25f3abc9adadc719557629",
+      "voyage_tokens": 676
+    }
+  },
+  "generated_at": "2026-07-05T01:00:47.002277+00:00",
+  "generation_note": "YARDSTICK-FINAL 2026-07-04: counts byte-identical across claude-sonnet-5/claude-opus-4-8/claude-fable-5; baseline is generation-anchored",
+  "generator": "scripts/calibration_baseline.py",
+  "model": "claude-sonnet-5",
+  "schema_version": 1,
+  "voyage_total": 16681
+}

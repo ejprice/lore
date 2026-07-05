@@ -1,0 +1,61 @@
+# Warehouse ETL service configuration.
+service:
+  name: warehouse-etl
+  version: 4.2.1
+  environment: production
+  log_level: info
+
+database:
+  host: warehouse-db.internal
+  port: 5432
+  name: warehouse
+  pool:
+    min_size: 4
+    max_size: 32
+    timeout_seconds: 30
+  read_replicas:
+    - host: warehouse-db-ro-1.internal
+      weight: 2
+    - host: warehouse-db-ro-2.internal
+      weight: 1
+
+pipeline:
+  batch_size: 5000
+  max_retries: 6
+  retry_backoff_seconds: 1.5
+  parallelism: 8
+  stages:
+    - name: extract
+      source: s3://landing/shipments/
+      format: parquet
+    - name: transform
+      rules:
+        - drop_nulls: [customer_id, product_key]
+        - dedupe_on: [shipment_key]
+        - cast:
+            quantity: numeric
+            revenue: numeric
+    - name: load
+      target: warehouse.fact_shipment
+      mode: upsert
+      conflict_keys: [date_key, customer_key, product_key]
+
+observability:
+  metrics:
+    enabled: true
+    endpoint: http://collector.internal:4318
+  tracing:
+    enabled: true
+    sample_rate: 0.05
+  alerts:
+    - name: pipeline_lag
+      threshold_minutes: 15
+      severity: warning
+    - name: load_failure_rate
+      threshold_ratio: 0.02
+      severity: critical
+
+feature_flags:
+  enable_incremental_load: true
+  enable_schema_drift_guard: true
+  enable_late_arriving_dims: false

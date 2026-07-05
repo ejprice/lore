@@ -1,0 +1,65 @@
+-- Warehouse dimensional model: fact_shipment + conformed dimensions.
+-- Star schema, surrogate keys, slowly-changing dimension type 2 on customer.
+
+CREATE SCHEMA IF NOT EXISTS warehouse;
+
+CREATE TABLE warehouse.dim_date (
+    date_key        INTEGER      NOT NULL PRIMARY KEY,
+    full_date       DATE         NOT NULL,
+    day_of_week     SMALLINT     NOT NULL,
+    day_name        VARCHAR(9)   NOT NULL,
+    is_weekend      BOOLEAN      NOT NULL DEFAULT FALSE,
+    iso_week        SMALLINT     NOT NULL,
+    month_number    SMALLINT     NOT NULL,
+    month_name      VARCHAR(9)   NOT NULL,
+    quarter         SMALLINT     NOT NULL,
+    fiscal_year     SMALLINT     NOT NULL,
+    is_holiday      BOOLEAN      NOT NULL DEFAULT FALSE,
+    CONSTRAINT ck_dim_date_month CHECK (month_number BETWEEN 1 AND 12),
+    CONSTRAINT ck_dim_date_quarter CHECK (quarter BETWEEN 1 AND 4)
+);
+
+CREATE TABLE warehouse.dim_customer (
+    customer_key    BIGINT       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    customer_id     VARCHAR(24)  NOT NULL,
+    customer_name   VARCHAR(200) NOT NULL,
+    segment         VARCHAR(40)  NOT NULL,
+    region          VARCHAR(40)  NOT NULL,
+    credit_limit    NUMERIC(14,2) NOT NULL DEFAULT 0,
+    valid_from      TIMESTAMPTZ  NOT NULL,
+    valid_to        TIMESTAMPTZ  NULL,
+    is_current      BOOLEAN      NOT NULL DEFAULT TRUE,
+    UNIQUE (customer_id, valid_from)
+);
+
+CREATE INDEX ix_dim_customer_current
+    ON warehouse.dim_customer (customer_id)
+    WHERE is_current;
+
+CREATE TABLE warehouse.dim_product (
+    product_key     BIGINT       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    sku             VARCHAR(32)  NOT NULL UNIQUE,
+    description     VARCHAR(240) NOT NULL,
+    category        VARCHAR(60)  NOT NULL,
+    unit_of_measure VARCHAR(12)  NOT NULL,
+    list_price      NUMERIC(12,4) NOT NULL,
+    hazmat          BOOLEAN      NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE warehouse.fact_shipment (
+    shipment_key    BIGINT       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    date_key        INTEGER      NOT NULL REFERENCES warehouse.dim_date (date_key),
+    customer_key    BIGINT       NOT NULL REFERENCES warehouse.dim_customer (customer_key),
+    product_key     BIGINT       NOT NULL REFERENCES warehouse.dim_product (product_key),
+    origin_region   VARCHAR(40)  NOT NULL,
+    quantity        NUMERIC(14,3) NOT NULL,
+    gross_weight_kg NUMERIC(14,3) NOT NULL,
+    freight_cost    NUMERIC(14,2) NOT NULL,
+    revenue         NUMERIC(14,2) NOT NULL,
+    margin          NUMERIC(14,2) NOT NULL,
+    CONSTRAINT ck_fact_shipment_qty CHECK (quantity > 0)
+);
+
+CREATE INDEX ix_fact_shipment_date ON warehouse.fact_shipment (date_key);
+CREATE INDEX ix_fact_shipment_cust ON warehouse.fact_shipment (customer_key);
+CREATE INDEX ix_fact_shipment_prod ON warehouse.fact_shipment (product_key);

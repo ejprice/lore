@@ -1,0 +1,258 @@
+def _require_finding_ref(value: int | str | None) -> int | str:
+    """Narrow a finding ``id_or_number`` to its non-empty ``int | str`` form.
+
+    The address a ``get`` / ``chain_head`` / status-edge action needs: a stable
+    ``number`` (an ``int``) OR an opaque ``id`` (a ``str``). Rejected when ``None``
+    or a blank string — a caller error naming the argument, never a lookup on an
+    empty id. Kept CONCRETE (not the generic :func:`_require_finding_arg`) so the
+    ``int | str`` the ledger expects is preserved through the type checker.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError(
+            "the 'id_or_number' argument is required and must be a non-empty finding "
+            "number or id for this findings action"
+        )
+    return value
+
+
+def _refs_to_labels(refs: list[str]) -> list[str]:
+    """Translate bare chunk-key refs into the backend's ``lore_ref=`` labels.
+
+    Reuses :meth:`~loremaster.memory.local.LocalMemoryBackend._lore_ref_label` — the
+    single source of truth for the ``lore_ref=<chunk_key>@<version>`` seam — so a
+    save's refs fold into the SAME deterministic id the v0.3 store minted (an OLD
+    ``(text, refs)`` re-saves to the same memory). Bare refs carry the base
+    :data:`~loremaster.extension.DEFAULT_KEY_VERSION`.
+    """
+    from loremaster.memory.local import LocalMemoryBackend
+
+    return [LocalMemoryBackend._lore_ref_label(ref, DEFAULT_KEY_VERSION) for ref in refs]
+
+
+def _metadata_to_labels(metadata: dict[str, Any] | None) -> list[str]:
+    """Flatten the DEPRECATED free-form ``metadata`` into flat ``key=value`` labels.
+
+    The v0.3 ``save_memory`` carried a free-form ``metadata`` dict; the v2 backend
+    speaks flat labels instead. A still-supplied ``metadata`` is flattened to
+    ``key=value`` labels (plain labels — NOT ``lore_ref=``, so they never affect
+    the deterministic id) rather than silently dropped.
+
+    N1 guard (cutover-audit): a flattened label whose text starts with the
+    backend's RESERVED ``lore_ref=`` prefix would be indistinguishable from a real
+    chunk ref and would silently fold into the deterministic id — a silent
+    promotion of decorative metadata into a chunk ref. Such a label is REJECTED
+    loudly here, NAMING the reserved prefix, BEFORE any ledger/store write. The
+    predicate keys on the flattened LABEL's prefix (not an exact ``key ==
+    "lore_ref"`` match) so a key that itself embeds the separator (label
+    ``lore_ref=nested=…``) is caught too. The prefix is imported from the backend's
+    own source of truth (never restated) so the two can never drift. The sanctioned
+    ``refs=`` param is unaffected — it flows through :func:`_refs_to_labels`.
+    """
+    if not metadata:
+        return []
+    from loremaster.memory.local import _LORE_REF_LABEL_PREFIX
+
+    labels = [f"{key}={value}" for key, value in metadata.items()]
+    for label in labels:
+        if label.startswith(_LORE_REF_LABEL_PREFIX):
+            raise ValueError(
+                f"metadata flattens to the label {label!r}, which starts with the "
+                f"reserved {_LORE_REF_LABEL_PREFIX!r} prefix — that prefix is "
+                f"reserved for chunk refs that fold into the deterministic memory "
+                f"id; pass chunk references through the refs= parameter instead."
+            )
+    return labels
+
+
+def _make_existing_chunks(store: SurrealStore) -> ExistingChunksFn:
+    """Build the memory backend's BATCH drift oracle over the unified chunk store.
+
+    Returns an async ``chunk_keys -> set[str]`` closure delegating to the store's
+    PUBLIC batch existence read (:meth:`SurrealStore.existing_point_ids`) — ONE
+    query resolves every referenced chunk-key in a recall, never one point-fetch
+    per ref. A recalled ref whose key this omits from the returned subset is
+    drift-flagged (never filtered), so a refactor that deleted a referenced chunk
+    surfaces as "re-verify", not a silent stale pointer; a DOWN store RAISES
+    rather than silently reporting the whole batch missing.
+    """
+
+    async def _existing_chunks(chunk_keys: Sequence[str]) -> set[str]:
+        return await store.existing_point_ids(chunk_keys)
+
+    return _existing_chunks
+
+
+# The in-band consumer guidance the FastMCP server advertises to the connecting
+# agent (mcp-builder: a substantial, behavioral ``instructions`` block). This is
+# the consumer's single source of truth — what lore is, when to reach for which
+# tool, the citation convention, the freshness / read-your-writes model, and the
+# project-memory stance — so a consumer needs zero out-of-band documentation. The
+# odoo-code server proves the pattern (rich behavioral instructions delivered
+# in-band); this is its generic-RAG analog. Edited here ⇒ keep the substring
+# contracts in ``test_mcp_server.py::TestServerInstructions`` green.
+_INSTRUCTIONS = (
+    "lore is a PER-PROJECT semantic RAG over THIS repository's code and docs, plus a "
+    "durable project-memory store. It indexes the project's source (Python, Markdown, "
+    "SQL, XML, JS, CSS, text), keeps a manifest of per-file freshness, and builds an "
+    "import/definition/test graph. Use it instead of guessing: it returns the EXACT, "
+    "cited source on disk so you quote real code rather than recalling a plausible "
+    "lookalike. Results are summarised value objects, NEVER raw store dumps.\n"
+    "\n"
+    "WHEN TO USE WHICH TOOL:\n"
+    "- lore_search_code(query, ...): semantic, memory-boosted search across code + "
+    "docs. Your default entry point when you don't already know the exact name/path. "
+    "Returns ranked, cited hits.\n"
+    "- lore_get_symbol(qualified_name): the EXACT stored definition + on-disk location "
+    "of a named Python symbol (class / method / function). Use this — NOT "
+    "lore_search_code — when you know the name and want the authoritative definition "
+    "(it is collision-correct, not a fuzzy ranked guess).\n"
+    "- lore_verify(qualified_name, expected_file_path=None, expected_signature_fragment=None): "
+    "the anti-hallucination check — confirm a symbol/signature/location CLAIM against the "
+    "stored truth BEFORE you repeat it. Returns confirmed / mismatch / not_found with the "
+    "stored facts (a mismatch names the ACTUAL path or header). Unlike lore_get_symbol, a "
+    "miss is a plain not_found RESULT, not an error.\n"
+    "- lore_read_file(tier, path, ...): the EXACT on-disk text of a file span with a "
+    "[SOURCE:...] header. Use after a lore_search_code / lore_get_symbol hit to read "
+    "surrounding context.\n"
+    "- lore_read(tier, path, ...): the same [SOURCE:...]-cited span but served from the "
+    "INDEX (the exact bytes lore embedded), hash-verified and FRESHNESS-flagged — its "
+    "header carries a visible STALE notice when the index is behind the file on disk. "
+    "Prefer lore_read_file for the live text; reach for lore_read to see precisely what "
+    "was indexed (and whether it has drifted).\n"
+    "- lore_what_imports(target): the DIRECT importers of a module (one reverse import "
+    "edge).\n"
+    "- lore_blast_radius(target, ...): the TRANSITIVE reverse-dependency closure "
+    "(bounded depth + result cap) — 'what could a change here break?'. Reach for "
+    "lore_blast_radius (transitive) over lore_what_imports (direct) when you need the "
+    "ripple, not just the neighbours.\n"
+    "- lore_tests_for(symbol_or_file): the test nodes covering a symbol or file.\n"
+    "- lore_references(name): the reference counter for ONE symbol — production vs test "
+    "reference count + who references it. A symbol with zero production references is "
+    "dead even if its tests still call it. Distinct from lore_what_imports (modules only) "
+    "/ lore_blast_radius (transitive ripple from a symbol outward).\n"
+    "- lore_dead_code(...): CANDIDATE dead/orphaned definitions in the project's live tiers "
+    "— zero production references (test-only consumers count as dead). A HEURISTIC detector, "
+    "not proof: dynamic dispatch, decorators, and public API used outside the tree can evade "
+    "it. By default excludes test nodes, dunder methods, and __main__/__init__ entrypoints.\n"
+    "- lore_impact(target, depth=1): who depends on target, in ONE call — production/test "
+    "reference counts, covering tests, and (depth 1) direct consumer names or (depth > 1) a "
+    "per-module rollup, plus a live / dead (heuristic) verdict carrying an explicit "
+    "astroid-bounds caveat. A 'dead' verdict is a LEAD to investigate, never a deletion "
+    "order. Reach for this before removing or refactoring something lore_dead_code flagged.\n"
+    "- lore_map(budget=2500, focus=None): a PageRank-ranked, token-budgeted map of which "
+    "modules matter most in this project (each with its rendered symbol names), optionally "
+    "re-centered on one symbol's own neighbourhood via focus. Reach for this FIRST when you "
+    "don't yet know where to look.\n"
+    "- lore_index_status(): the freshness/health roll-up (indexed / in-flight / failed "
+    "counts) read straight from the manifest — zero embeds, cheap.\n"
+    "- lore_reindex(tier=None): force a whole-tier reconcile sweep (or all tiers). The "
+    "heavy 'make everything current now' hammer — not a per-file wait.\n"
+    "- lore_diff(since=None, until=None): what changed between two index SNAPSHOTS. Call it "
+    "with no 'since' FIRST to list the recorded snapshot ids, then pass a 'since' (and "
+    "optionally 'until'; omit 'until' to diff against the live 'now') to see the "
+    "added/removed/modified files + per-function chunk deltas. The view names its 'legacy' "
+    "(reduced-precision) and 'in-flight' (mid-reindex, excluded) markers — expect them.\n"
+    "- lore_findings(action, ...): the durable, fleet-visible FINDING ledger (friction / "
+    "capability gaps / bugs), dispatched on 'action' like lore_tasks: 'report' a finding "
+    "(subject/body/area/category/created_by; kind defaults 'friction'), 'query' by "
+    "status/kind/area, 'get'/'chain_head' one, or drive its review state machine with "
+    "'acknowledge'/'resolve'/'wontfix' (by id_or_number + actor). Renders summarised rows.\n"
+    "- lore_save_memory(text, ...) / lore_recall_memory(query, ...): the project-memory "
+    "store (see MEMORY below).\n"
+    "\n"
+    "WORKFLOW LADDER when you don't already know exactly where to look: orient with "
+    "lore_map, locate specifics with lore_search_code, pin the exact definition with "
+    "lore_get_symbol, then verify safety with lore_impact before you touch anything — "
+    "lore_map -> lore_search_code -> lore_get_symbol -> lore_impact is the default chain.\n"
+    "\n"
+    "TOOL LOADING: if your harness exposes MCP tools behind a deferred loader (a ToolSearch- "
+    "style tool that must select these before they are callable), load lore's tools "
+    "explicitly up front — a lore tool that never gets ToolSearch-loaded is invisible to "
+    "you, so ask for it rather than assuming lore is unavailable.\n"
+    "\n"
+    "CITATIONS: every lore_search_code / lore_read_file result carries a "
+    "[SOURCE:file:line] citation plus a stable 'Key:' line (the chunk key) and a fenced "
+    "source block. Echo the [SOURCE:...] citation when you quote code, and pass a "
+    "'Key:' value back to lore_save_memory to pin a correction to a specific chunk.\n"
+    "\n"
+    "FRESHNESS / READ-YOUR-WRITES: a live inotify watcher re-indexes an edited file "
+    "within ~seconds of a save — the normal freshness path. A periodic reconcile sweep "
+    "(default ~10 min) is ONLY the backstop for events the watcher missed (downtime, "
+    "queue overflow), not the edit-to-fresh latency. If you edit a file and "
+    "IMMEDIATELY query it, you can race the embed window: pass "
+    "lore_search_code(..., wait_for_fresh=True) — it bounded-waits for the in-flight "
+    "file(s) matching your path filter, then serves fresh (or stale-flagged on timeout; "
+    "it never hangs). Use lore_reindex(tier=...) only to force a whole tier current; "
+    "for the edit-then-query case wait_for_fresh is the right, cheaper tool.\n"
+    "\n"
+    "MEMORY: lore_save_memory / lore_recall_memory is PROJECT-SCOPED memory about THIS "
+    "repository — embedded and semantically recalled, SHARED across every agent working "
+    "this "
+    "project, and it SURVIVES restarts (it persists in a dedicated collection). Use it "
+    "for durable facts and corrections about this codebase (e.g. 'the order total lives "
+    "in models/sale.py, not where it looks'). This is DISTINCT from your own global / "
+    "cross-project assistant memory: lore-memory is the project's shared notebook, not "
+    "your personal one."
+)
+
+
+def configure_logging_from_config(config: LoreConfig) -> None:
+    """Configure structured logging from the project config (env overrides level).
+
+    The run-time precedence: ``LORE_LOG_LEVEL`` (an operator's env override) beats
+    ``config.logging.level`` (the config default). The format is taken from
+    ``config.logging.format``. Delegates to
+    :func:`~loremaster.logging_setup.configure_logging`, which is idempotent and
+    scopes its handlers to the lore namespace (it does not touch uvicorn's root
+    logger).
+
+    Args:
+        config: The validated project configuration carrying the ``logging`` block.
+    """
+    from loremaster.logging_setup import configure_logging
+
+    level = os.environ.get("LORE_LOG_LEVEL", config.logging.level)
+    configure_logging(level=level, fmt=config.logging.format)
+
+
+class ProbeGateError(RuntimeError):
+    """Raised when the startup probe gate refuses to start the server.
+
+    The message carries a remediation hint (what was observed vs expected, and —
+    for a collection mismatch — that the index was left INTACT, never
+    auto-recreated). The server must NOT come up when this is raised.
+    """
+
+
+class ReindexTierError(ValueError):
+    """Raised when ``reindex(tier=...)`` is given a tier the project does not declare.
+
+    Subclasses :class:`ValueError` (a bad argument value). The message NAMES the
+    offending tier AND the valid tiers, so a typo (which would otherwise be
+    silently ignored — a false-success sweep over every tier) is caught and
+    remediable. ``tier=None`` (reindex all) never raises.
+    """
+
+
+async def run_probe_gate(*, embedder: Embedder, config: LoreConfig) -> int:
+    """Probe the embedder and verify dim coherence before the server starts.
+
+    The gate (plan Deliverable 3 "startup probe gate"):
+
+    1. ``await embedder.probe()`` — reaches the live endpoint (the embedder owns
+       the connect timeout + fp32-warmup polling). A raise means the endpoint is
+       unreachable → REFUSE.
+    2. The observed dim must equal ``config.embedding.dim`` → else REFUSE (a
+       wrong-dim deploy would silently corrupt retrieval).
+
+    The existing-store vector-size coherence check is now owned downstream, not
+    here: a populated chunk store whose dim drifted from ``config.embedding.dim``
+    is caught by the embedding-schema-fingerprint rebuild machinery
+    (``embedding_schema_fingerprint`` folds ``dim`` in, so a mismatch triggers a
+    rebuild), and the memory backend refuses a wrong-dim memory table in its own
+    ``ensure_ready``. The gate itself is now store-agnostic.
+
+    Args:
+        embedder: The active embedder to probe.
+        config: The validated project config (``embedding.dim`` is the source of
+            truth the probe must agree with).

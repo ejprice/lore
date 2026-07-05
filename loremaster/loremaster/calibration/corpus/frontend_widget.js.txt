@@ -1,0 +1,72 @@
+// Shipment-margin sparkline widget. Renders a rolling window of weekly margins
+// and highlights the top decile. No framework dependency; plain DOM + canvas.
+
+const DEFAULT_OPTIONS = {
+  width: 320,
+  height: 64,
+  strokeWidth: 2,
+  topDecileColor: "#1f9d55",
+  baseColor: "#8795a1",
+  padding: 4,
+};
+
+class MarginSparkline {
+  constructor(container, options = {}) {
+    this.container = container;
+    this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = this.options.width;
+    this.canvas.height = this.options.height;
+    this.container.appendChild(this.canvas);
+    this.ctx = this.canvas.getContext("2d");
+    this.series = [];
+  }
+
+  setSeries(points) {
+    if (!Array.isArray(points) || points.length === 0) {
+      throw new Error("MarginSparkline.setSeries expects a non-empty array");
+    }
+    this.series = points.map((p) => ({
+      week: String(p.week),
+      margin: Number(p.margin) || 0,
+      decile: Number.isFinite(p.decile) ? p.decile : null,
+    }));
+    this.render();
+  }
+
+  _scale() {
+    const margins = this.series.map((p) => p.margin);
+    const min = Math.min(...margins);
+    const max = Math.max(...margins);
+    const span = max - min || 1;
+    const { width, height, padding } = this.options;
+    const innerW = width - padding * 2;
+    const innerH = height - padding * 2;
+    return this.series.map((p, i) => ({
+      x: padding + (innerW * i) / Math.max(this.series.length - 1, 1),
+      y: padding + innerH - (innerH * (p.margin - min)) / span,
+      decile: p.decile,
+    }));
+  }
+
+  render() {
+    const { ctx, options } = this;
+    ctx.clearRect(0, 0, options.width, options.height);
+    const pts = this._scale();
+    ctx.lineWidth = options.strokeWidth;
+    ctx.strokeStyle = options.baseColor;
+    ctx.beginPath();
+    pts.forEach((pt, i) => (i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)));
+    ctx.stroke();
+    pts
+      .filter((pt) => pt.decile === 1)
+      .forEach((pt) => {
+        ctx.fillStyle = options.topDecileColor;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, options.strokeWidth + 1, 0, Math.PI * 2);
+        ctx.fill();
+      });
+  }
+}
+
+export { MarginSparkline, DEFAULT_OPTIONS };

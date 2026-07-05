@@ -693,6 +693,7 @@ name = "loremaster"
 version = "0.1.0"
 source = { editable = "loremaster" }
 dependencies = [
+    { name = "httpx" },
     { name = "lorescribe" },
     { name = "loresigil" },
     { name = "mcp", extra = ["cli"] },
@@ -705,6 +706,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
     { name = "lorescribe", editable = "lorescribe" },
     { name = "loresigil", editable = "loresigil" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.27" },

@@ -1,0 +1,91 @@
+/* Warehouse dashboard theme — light/dark aware, grid-based KPI layout. */
+
+:root {
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --text: #1a202c;
+  --muted: #64748b;
+  --accent: #1f9d55;
+  --danger: #e3342f;
+  --border: #e2e8f0;
+  --radius: 8px;
+  --gap: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --border: #334155;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--gap);
+  padding: var(--gap);
+}
+
+.kpi-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: calc(var(--gap) * 0.75);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.kpi-card__label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.kpi-card__value {
+  font-size: 1.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-card__delta {
+  font-size: 0.875rem;
+}
+
+.kpi-card__delta--up {
+  color: var(--accent);
+}
+
+.kpi-card__delta--down {
+  color: var(--danger);
+}
+
+.kpi-card__delta--up::before {
+  content: "\25B2 ";
+}
+
+.kpi-card__delta--down::before {
+  content: "\25BC ";
+}
+
+@media (max-width: 640px) {
+  .dashboard {
+    grid-template-columns: 1fr;
+  }
+}

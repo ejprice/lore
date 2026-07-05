@@ -1,0 +1,59 @@
+-- Top-decile customer margin trend with rolling 13-week window and YoY delta.
+-- Exercises CTEs, window functions, conditional aggregation, and a self anti-join.
+
+WITH weekly AS (
+    SELECT
+        d.fiscal_year,
+        d.iso_week,
+        c.customer_id,
+        c.segment,
+        c.region,
+        SUM(f.revenue)                              AS revenue,
+        SUM(f.margin)                               AS margin,
+        SUM(f.freight_cost)                         AS freight_cost,
+        SUM(f.gross_weight_kg)                      AS weight_kg,
+        COUNT(*)                                    AS shipment_count
+    FROM warehouse.fact_shipment AS f
+    JOIN warehouse.dim_date      AS d ON d.date_key = f.date_key
+    JOIN warehouse.dim_customer  AS c ON c.customer_key = f.customer_key
+    WHERE c.is_current
+      AND d.fiscal_year >= EXTRACT(YEAR FROM CURRENT_DATE) - 2
+    GROUP BY d.fiscal_year, d.iso_week, c.customer_id, c.segment, c.region
+),
+ranked AS (
+    SELECT
+        weekly.*,
+        AVG(margin) OVER (
+            PARTITION BY customer_id
+            ORDER BY fiscal_year, iso_week
+            ROWS BETWEEN 12 PRECEDING AND CURRENT ROW
+        )                                           AS rolling_13w_margin,
+        NTILE(10) OVER (
+            PARTITION BY fiscal_year, iso_week
+            ORDER BY margin DESC
+        )                                           AS margin_decile,
+        LAG(margin, 52) OVER (
+            PARTITION BY customer_id
+            ORDER BY fiscal_year, iso_week
+        )                                           AS margin_prior_year
+    FROM weekly
+)
+SELECT
+    r.fiscal_year,
+    r.iso_week,
+    r.customer_id,
+    r.segment,
+    r.region,
+    r.revenue,
+    r.margin,
+    r.rolling_13w_margin,
+    r.margin_prior_year,
+    CASE
+        WHEN r.margin_prior_year IS NULL OR r.margin_prior_year = 0 THEN NULL
+        ELSE ROUND((r.margin - r.margin_prior_year) / r.margin_prior_year, 4)
+    END                                             AS yoy_margin_pct,
+    r.freight_cost / NULLIF(r.weight_kg, 0)         AS freight_per_kg
+FROM ranked AS r
+WHERE r.margin_decile = 1
+ORDER BY r.fiscal_year DESC, r.iso_week DESC, r.margin DESC
+LIMIT 500;
