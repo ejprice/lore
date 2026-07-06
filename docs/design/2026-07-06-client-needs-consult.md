@@ -522,5 +522,14 @@ the gate fails on are (a) partly deliberate rigor the clients endorse buying, an
 client-value work. Going-forward bar: the 35-pair surface-neutral set graded by
 accuracy, tokens-per-correct-answer, and taxed-calls≈0.
 
-## Operator ruling
-*(pending)*
+## Operator ruling (2026-07-06)
+1. **P8d and P8d′ are CLOSED.** The gate is re-graded by the client-value metrics
+   this consult establishes; the measured residual over the pre-flip 11-pair legs is
+   the accepted price of client-endorsed rigor plus the enumerated S1–S7 frictions.
+   The 35-pair surface-neutral set graded by accuracy / tokens-per-correct-answer /
+   taxed-calls≈0 is the standing bar; the 11-pair calls-leg retires as a gate.
+2. **The slate S1–S7 runs as its own cycle with a fresh lead**, sub-planned at
+   ~/.claude/plans/lore-v2-SLATE-RESUME.md, sequenced BEFORE the detection layer,
+   the ledger verbs, and P8e (which is a separate concern: roles/topology/drills).
+3. This document is the slate cycle's spec of record; its convergence findings are
+   binding design constraints on that cycle and advisory law thereafter.
