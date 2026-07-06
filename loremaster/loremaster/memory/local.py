@@ -68,6 +68,22 @@ from loremaster.store._txn import (
     execute_transaction,
     is_connection_error,
 )
+
+# The shared hybrid-search lexical-arm bounding mechanism (finding #69): this
+# module used to carry its OWN independent copy of finding #66/#67's
+# constants (``_MAX_QUERY_TEXT_CHARS`` / a hardcoded ``_MAX_QUERY_TOKENS``) —
+# exactly the "copy-paste twin" pattern that let this defect class recur. See
+# :mod:`loremaster.store.query_text` for the measured rationale.
+# ``truncate_at_word_boundary`` is explicitly re-exported (see ``__all__``
+# below — the redundant ``as X`` alias mypy's ``no_implicit_reexport`` also
+# accepts is a lint smell under this repo's ruff config, PLC0414): the
+# sharing pin (``test_query_text.py::TestSharedMechanismPin``) asserts THIS
+# module's attribute IS the shared function, not a hand-copied twin.
+from loremaster.store.query_text import (
+    MAX_FULLTEXT_OR_CLAUSES,
+    max_query_tokens,
+    truncate_at_word_boundary,
+)
 from loremaster.store.surreal_schema import (
     DEFAULT_ANALYZER_NAME,
     MEMORY_FULLTEXT_FIELDS,
@@ -76,6 +92,13 @@ from loremaster.store.surreal_schema import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The public surface. ``truncate_at_word_boundary`` is imported (not defined)
+# here, so naming it EXPLICITLY marks it as a re-export for mypy-strict
+# (``no_implicit_reexport``) — the sharing pin
+# (``test_query_text.py::TestSharedMechanismPin``) accesses it as
+# ``loremaster.memory.local.truncate_at_word_boundary`` from another module.
+__all__ = ["LocalMemoryBackend", "truncate_at_word_boundary"]
 
 # Default cap on the number of memories a recall returns when the caller does
 # not specify ``k`` (mirrors the legacy Qdrant-era memory store's default).
@@ -156,10 +179,47 @@ _MAX_HNSW_EF = 1024
 _MAX_HYBRID_K = 1000
 # The textbook Reciprocal-Rank-Fusion smoothing constant.
 _RRF_K = 60
-# The query-text DoS guards (mirrors ``store.surreal``): the analyzed token list
-# drives a per-token FULLTEXT OR-predicate, so both are capped before use.
-_MAX_QUERY_TEXT_CHARS = 4096
-_MAX_QUERY_TOKENS = 64
+
+# The lexical arm's OWN query-text guards (finding #69, mirroring finding
+# #66/#67's fix in ``store.surreal``) — distinct from the k/EF DoS guards
+# above. This module used to hand-copy ``store.surreal``'s OLD, pre-fix
+# constants (``_MAX_QUERY_TEXT_CHARS=4096`` / ``_MAX_QUERY_TOKENS=64``,
+# verbatim, with a comment saying "mirrors store.surreal") — the copy-paste
+# seam that let the SAME class of defect recur independently of whichever fix
+# landed on the chunk-store side first. Fixed by SHARING the mechanism
+# (:mod:`loremaster.store.query_text`) instead of hand-maintaining a third
+# copy: :data:`_MAX_QUERY_TOKENS` is DERIVED from the shared clause budget and
+# THIS consumer's OWN fulltext-field count (:data:`MEMORY_FULLTEXT_FIELDS`,
+# currently 1 field) — self-correcting if that field count ever changes,
+# rather than a hardcoded number that can silently drift unsafe.
+#
+# Live-measured end-to-end through THIS module's OWN predicate shape
+# (``scratchpad/probe_long_query_69.py``, against spike-surreal, never
+# production) — NOT the chunk store's 39-token/117-clause boundary, because
+# this module's ``_build_fulltext_predicate`` is a DIFFERENT shape (a
+# CONJUNCTIVE AND-chain over 1 fulltext field, not the chunk store's
+# disjunctive OR-chain over 3): the engine ACCEPTS 114 analyzed
+# tokens/AND-clauses and is REJECTED at 115. ``_MAX_FULLTEXT_OR_CLAUSES``
+# (imported from the shared module) is the SAME clause budget the chunk store
+# derives its own cap from — roughly HALF the smaller of the two
+# independently-measured safe ceilings (114 here, 117 there) — so
+# :data:`_MAX_QUERY_TOKENS` below (60, at today's 1-field width) sits with
+# generous margin under BOTH measured boundaries.
+#
+# ``_MAX_LEXICAL_QUERY_CHARS`` is a WORD-BOUNDARY text pre-truncation (never
+# splits a word — see :func:`~loremaster.store.query_text.truncate_at_word_boundary`)
+# applied before the ``search::analyze`` round-trip: a PERFORMANCE bound on
+# that round-trip (never send an unbounded amount of text just to discard
+# most of the resulting tokens), not the safety guarantee — the token clamp
+# above is what actually protects correctness. Sized independently of
+# ``store.surreal``'s own 300-char bound (which is tuned for that store's
+# smaller 20-token cap): 900 chars comfortably covers this module's larger
+# 60-token cap at ordinary English word lengths, with headroom. The VECTOR
+# arm never sees either of these caps — it embeds the caller's full,
+# untruncated query text upstream of :meth:`LocalMemoryBackend._hybrid_search`.
+_MAX_FULLTEXT_OR_CLAUSES = MAX_FULLTEXT_OR_CLAUSES
+_MAX_QUERY_TOKENS = max_query_tokens(len(MEMORY_FULLTEXT_FIELDS))
+_MAX_LEXICAL_QUERY_CHARS = 900
 
 # The bound-parameter names/prefixes the backend uses. ``__``-prefixed read
 # params can't collide with a caller value; the ``mem_`` write prefix namespaces
@@ -734,6 +794,16 @@ class LocalMemoryBackend:
         ``search::rrf`` arg comes back ``None``, so the arms are spliced inline),
         and the engine's native ``search::rrf`` fuses them to ``k``. Returns the
         fused rows (embedding omitted) sorted best-first, deterministically.
+
+        ``query_text`` fed to the LEXICAL (BM25) arm is word-boundary
+        truncated and its analyzed token count clamped
+        (:data:`_MAX_LEXICAL_QUERY_CHARS` / :data:`_MAX_QUERY_TOKENS`, shared
+        derivation in :mod:`loremaster.store.query_text`) so a realistically
+        long recall query — e.g. a long note being searched for — can never
+        trip the SurrealQL parser's own expression-recursion-depth limit on
+        this arm's AND-predicate (finding #69); ``query_vector`` always
+        embeds the caller's FULL, untruncated text (computed upstream by
+        :meth:`recall`) and is never affected by either cap.
         """
         k = min(k, _MAX_HYBRID_K)
         overfetch = min(max(k * _OVERFETCH_FACTOR, k), _MAX_HNSW_EF)
@@ -748,7 +818,8 @@ class LocalMemoryBackend:
         ]
         vector_subquery = f"SELECT * FROM {MEMORY_TABLE} WHERE {' AND '.join(vector_conditions)}"
 
-        tokens = await self._analyze_query(query_text[:_MAX_QUERY_TEXT_CHARS])
+        lexical_query_text = truncate_at_word_boundary(query_text, _MAX_LEXICAL_QUERY_CHARS)
+        tokens = await self._analyze_query(lexical_query_text)
         predicate, fulltext_params = self._build_fulltext_predicate(tokens[:_MAX_QUERY_TOKENS])
         params.update(fulltext_params)
         fulltext_conditions = [*filter_conditions, predicate]

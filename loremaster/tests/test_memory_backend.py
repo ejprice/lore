@@ -108,16 +108,27 @@ from loremaster.memory.backend import (
 # The EXISTING durable ledger (reused, not redesigned — the FP-06 source of
 # truth the backend write-throughs to and replays from).
 from loremaster.memory.ledger import MemoryLedger
-from loremaster.memory.local import LocalMemoryBackend
+
+# ``_MAX_LEXICAL_QUERY_CHARS`` / ``_MAX_QUERY_TOKENS`` imported directly (finding
+# #69's own tests pin the recall path's derived clamps, mirroring
+# ``test_surreal_store.py``'s identical import of the chunk store's twins).
+from loremaster.memory.local import (
+    _MAX_LEXICAL_QUERY_CHARS,
+    _MAX_QUERY_TOKENS,
+    LocalMemoryBackend,
+)
 
 # The shared error-classification vocabulary the ``_query`` seam raises (the same
 # transport-vs-domain split ``store._txn`` establishes) — imported here to pin the
 # single-statement seam's classified posture directly.
 from loremaster.store._txn import (
+    _ERROR_CLASS_QUERY_TOO_COMPLEX,
     SurrealConnectionError,
     SurrealStoreError,
+    _classify_engine_error,
     _SurrealConnection,
 )
+from loremaster.store.query_text import truncate_at_word_boundary
 from loremaster.store.surreal_schema import MEMORY_TABLE
 from loresigil.base import EmbedResult
 from loresigil.testing import FakeEmbedder
@@ -1896,3 +1907,177 @@ class TestShutdownClosesConnection:
             existing_chunks=FakeChunkOracle(),
         )
         await never_connected.close()  # tolerant of a backend that never connected
+
+
+# ===========================================================================
+# Finding #69: ``MemoryBackend._hybrid_search`` (the recall path) copy-pasted
+# finding #66/#67's OLD, independently-hand-maintained constants
+# (``_MAX_QUERY_TEXT_CHARS=4096`` / ``_MAX_QUERY_TOKENS=64``, its own comment
+# said "mirrors store.surreal"). Fix: SHARE the mechanism
+# (``loremaster.store.query_text`` — see ``test_query_text.py``'s
+# ``TestSharedMechanismPin``) rather than mint a third hand-copied twin.
+#
+# IMPORTANT — measured, not assumed (repo law: verify, don't assume a defect
+# transfers 1:1 across a rename/reshape): the recall arm's OWN predicate shape
+# differs from the chunk store's. ``MEMORY_FULLTEXT_FIELDS`` has 1 field (not
+# 3), and ``LocalMemoryBackend._build_fulltext_predicate`` is CONJUNCTIVE — an
+# AND-chain of single-field terms ("every query word must be present"), not
+# the chunk store's disjunctive OR-chain ("any token matches"). Live-measured
+# end-to-end through THIS exact statement shape
+# (``scratchpad/probe_long_query_69.py``, against spike-surreal, never
+# production): 114 tokens/AND-clauses OK, 115 REJECTED — not the chunk
+# store's 39/40. The OLD ``_MAX_QUERY_TOKENS=64`` clamp was ALREADY (by
+# coincidence, not by design) below that boundary, so the token-count
+# rejection mechanism could not actually reproduce for this consumer: a live
+# probe of a 200-real-unique-word (3089-char) ``recall()`` call through the
+# UNMODIFIED pre-fix code succeeded in ~5ms, no rejection. The fix below still
+# applies — it closes the copy-paste twin, fixes the naive ``text[:N]``
+# char-slice's word-splitting defect, and future-proofs against a
+# ``MEMORY_FULLTEXT_FIELDS`` width increase silently re-opening this class of
+# rejection (2 fields x the OLD 64-token cap = 128 clauses, already PAST the
+# measured 115 boundary) — but the tests below pin the FIX's own safety
+# margin, never a "was hard-failing, now isn't" regression the live
+# measurement does not support.
+# ===========================================================================
+
+# Distinct, single-token synthetic lexemes (all-lowercase ASCII letters only —
+# no digits, no case changes — so the ``code_ident`` analyzer's tokenizers
+# never split one into two): 200 of them, far beyond both the derived
+# :data:`~loremaster.memory.local._MAX_QUERY_TOKENS` clamp (60) and the
+# live-measured 115-token rejection boundary, so a query built from all of
+# them exercises the worst realistic case deterministically.
+_MEM_SYNTHETIC_LEXEMES = tuple(
+    f"synlex{chr(97 + index // 26)}{chr(97 + index % 26)}" for index in range(200)
+)
+
+# A realistically long, multi-sentence "note being searched for" (finding
+# #69's own body names this exact shape) — deliberately over 900 chars so
+# BOTH the word-boundary pre-truncation AND the token clamp actually engage,
+# not just one of them.
+_MEM_LONG_RECALL_QUERY = (
+    "What was the operator ruling on the P8d closure and how does the slate "
+    "cycle get sequenced before the detection layer lands, and which commits "
+    "carry the surface flip receipts we should cite when asked about it later, "
+    "and can you also summarize how the client-needs consult informed the "
+    "accuracy-versus-efficiency tradeoff the lead ultimately ruled on, and "
+    "separately, what is the current status of the SurrealDB unification "
+    "effort across the store and memory backends, including any outstanding "
+    "findings from the recent slate-fixer sweep that touched the hybrid "
+    "search lexical arm's query-text bounding constants and the shared "
+    "clause-budget derivation module that both the chunk store and the "
+    "memory recall path are now expected to import from instead of "
+    "maintaining their own independently hand-copied twin of the same "
+    "historically buggy constants that this very finding was filed against, "
+    "and this trailing clause exists purely to push the fixture comfortably "
+    "past the 900-character word-boundary truncation threshold under test."
+)
+
+# A punctuation-heavy, non-ASCII (French + Japanese) long query — proves the
+# fix is content-agnostic, not tuned to plain ASCII English (mirrors
+# ``test_surreal_store.py``'s ``_NON_ASCII_LONG_QUERY``).
+_MEM_NON_ASCII_LONG_QUERY = (
+    "Quelle était la décision de l'opérateur sur la clôture de P8d, et comment "
+    "le cycle « slate » est-il séquencé avant la couche de détection ? "
+    "日本語のテスト文字列もここに含まれています、質問はとても長くなりますが大丈夫です。 "
+    "Encore quelques mots supplémentaires pour dépasser confortablement le seuil mesuré, "
+    "et voici même davantage de texte non-ASCII pour être certain de dépasser trois cent "
+    "quarante caractères — なぜなら、この境界値を確実に超える必要があるからです。"
+) * 3
+
+
+class TestRecallLongQueryNeverRejects:
+    """A realistically long (or synthetically token-heavy) recall query must
+    NEVER hard-fail ``recall`` — see the module-level finding #69 note above
+    for the measured boundary this fix's constants are derived from.
+    """
+
+    async def test_query_at_the_new_token_clamp_boundary_succeeds(
+        self, real_backend: LocalMemoryBackend
+    ) -> None:
+        query_text = " ".join(_MEM_SYNTHETIC_LEXEMES[:_MAX_QUERY_TOKENS])  # exactly at the clamp
+        await real_backend.remember(text=query_text, kind="fact")
+        results = await real_backend.recall(query_text, k=5)
+        assert any(memory.text == query_text for memory in results)
+
+    async def test_query_far_beyond_the_derived_clamp_is_bounded_not_rejected(
+        self, real_backend: LocalMemoryBackend
+    ) -> None:
+        # 200 distinct real tokens — far beyond both the new 60-token clamp
+        # and the char cap, so both mechanisms engage; must still succeed,
+        # bounded not rejected, and the vector arm (full, untruncated text
+        # embedded upstream) still finds the exact-text target.
+        query_text = " ".join(_MEM_SYNTHETIC_LEXEMES)
+        await real_backend.remember(text=query_text, kind="fact")
+        results = await real_backend.recall(query_text, k=5)
+        assert any(memory.text == query_text for memory in results)
+
+    async def test_a_long_plain_english_recall_query_succeeds_end_to_end(
+        self, real_backend: LocalMemoryBackend
+    ) -> None:
+        assert len(_MEM_LONG_RECALL_QUERY) > 900
+        await real_backend.remember(text=_MEM_LONG_RECALL_QUERY, kind="fact")
+        results = await real_backend.recall(_MEM_LONG_RECALL_QUERY, k=5)
+        assert any(memory.text == _MEM_LONG_RECALL_QUERY for memory in results)
+
+    async def test_non_ascii_punctuation_heavy_long_query_does_not_raise(
+        self, real_backend: LocalMemoryBackend
+    ) -> None:
+        assert len(_MEM_NON_ASCII_LONG_QUERY) > 900
+        # No corpus needed — the only assertion that matters is "does not raise".
+        results = await real_backend.recall(_MEM_NON_ASCII_LONG_QUERY, k=5)
+        assert results == []
+
+    async def test_short_query_below_the_char_bound_is_untouched_by_truncation(
+        self, real_backend: LocalMemoryBackend
+    ) -> None:
+        # A short, realistic query sits well under _MAX_LEXICAL_QUERY_CHARS —
+        # truncation must be a complete no-op, and the token clamp must never
+        # even engage — exactly the pre-fix behaviour for any query this short.
+        query_text = "operator ruling P8d closure"
+        assert len(query_text) < _MAX_LEXICAL_QUERY_CHARS
+        assert truncate_at_word_boundary(query_text, _MAX_LEXICAL_QUERY_CHARS) == query_text
+        direct_tokens = await real_backend._analyze_query(query_text)
+        assert len(direct_tokens) <= _MAX_QUERY_TOKENS  # the clamp never even triggers
+
+
+class TestRecursionDepthClassificationAtRecallSeam:
+    """The recall path's ``_query`` seam must launder a genuine engine
+    rejection through the SAME shared classifier the chunk store uses
+    (:func:`~loremaster.store._txn._classify_engine_error`) — finding #69
+    explicitly asked this to be VERIFIED for the recall call site, not
+    assumed shared just because the import already existed.
+    """
+
+    def test_classifier_recognises_the_live_recursion_depth_rejection_text(self) -> None:
+        # The EXACT raw engine text captured live against spike-surreal for
+        # THIS consumer's own predicate shape (scratchpad/probe_long_query_69.py)
+        # — a pure, fast unit test of the (already-shared) classifier, no live
+        # server needed.
+        raw_engine_text = (
+            "Parse error: Exceeded expression recursion depth limit\n"
+            " --> [1:3378]\n"
+            "  |\n"
+            "1 | ...ote_text @@ $__ft114)))], 5, 60)\n"
+            "  |              ^ this expression nests or chains operators too deeply\n"
+        )
+        assert _classify_engine_error(raw_engine_text) == _ERROR_CLASS_QUERY_TOO_COMPLEX
+
+    async def test_bypassing_both_clamps_still_raises_a_classified_store_error(
+        self, real_backend: LocalMemoryBackend, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Force BOTH lexical-arm clamps back up past the measured-safe ceiling
+        # (114) — simulating a future regression — and confirm the genuine
+        # engine rejection still comes back laundered, not raw, and the
+        # connection stays healthy (a domain rejection, not a transport
+        # fault, mirroring ``TestQueryClassifiedErrorPosture``'s contract).
+        monkeypatch.setattr("loremaster.memory.local._MAX_QUERY_TOKENS", 200)
+        monkeypatch.setattr("loremaster.memory.local._MAX_LEXICAL_QUERY_CHARS", 4096)
+        connection_before = real_backend._connection
+        query_text = " ".join(_MEM_SYNTHETIC_LEXEMES)  # 200 real tokens, now fully unclamped
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await real_backend.recall(query_text, k=5)
+        message = str(exc_info.value)
+        assert "query too complex" in message
+        assert "recursion depth" not in message  # the raw engine text never echoes
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        assert real_backend._connection is connection_before  # healthy, never dropped

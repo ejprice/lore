@@ -108,6 +108,19 @@ from loremaster.store._txn import (
     is_connection_error,
 )
 from loremaster.store.candidate import Candidate, CandidateOrigin
+
+# The shared hybrid-search lexical-arm bounding mechanism (finding #66/#67,
+# now also #69 on the memory-recall side): the clause-budget-to-token-cap
+# derivation and the word-boundary truncation helper live in ONE module so a
+# future hybrid-search consumer never has to re-measure this from scratch or
+# hand-copy a twin. See :mod:`loremaster.store.query_text` for the measured
+# rationale (both this store's OR-chain and memory recall's AND-chain land in
+# the same ~114-120-clause rejection neighbourhood).
+from loremaster.store.query_text import (
+    MAX_FULLTEXT_OR_CLAUSES,
+    max_query_tokens,
+    truncate_at_word_boundary,
+)
 from loremaster.store.surreal_schema import (
     CHUNK_COLUMNS,
     CHUNK_FILTER_KEYS,
@@ -197,11 +210,14 @@ _MAX_HNSW_EF = 1024
 # extra recursion levels, so the safe budget below is denominated against the
 # real end-to-end measurement, not the isolated one.
 #
-# ``_MAX_FULLTEXT_OR_CLAUSES`` is roughly HALF the measured 117-clause safe
-# ceiling — generous margin for engine-version drift, a future
-# ``CHUNK_FULLTEXT_FIELDS`` field addition, or an active ``filters=`` scope
-# AND-wrapping its own clause on top. ``_MAX_QUERY_TOKENS`` is DERIVED from it
-# (clauses / field count) rather than hardcoded, so it self-corrects if the
+# ``_MAX_FULLTEXT_OR_CLAUSES`` (imported from the shared
+# ``loremaster.store.query_text`` — see that module for the full rationale,
+# including the memory-recall arm's independent measurement) is roughly HALF
+# the measured 117-clause safe ceiling — generous margin for engine-version
+# drift, a future ``CHUNK_FULLTEXT_FIELDS`` field addition, or an active
+# ``filters=`` scope AND-wrapping its own clause on top. ``_MAX_QUERY_TOKENS``
+# is DERIVED from it (:func:`~loremaster.store.query_text.max_query_tokens`,
+# clauses / field count) rather than hardcoded, so it self-corrects if the
 # field count ever changes — this is the DETERMINISTIC guarantee: the
 # OR-predicate can never exceed the clause budget regardless of the query
 # text's vocabulary (chars-per-token varies with word length; token count does
@@ -217,9 +233,12 @@ _MAX_HNSW_EF = 1024
 # is exactly why the token clamp above (not this char clamp) is what actually
 # protects correctness. The VECTOR arm never sees either of these caps — it
 # embeds the caller's full, untruncated text upstream of this store
-# (``query_vector`` arrives already computed).
-_MAX_FULLTEXT_OR_CLAUSES = 60
-_MAX_QUERY_TOKENS = _MAX_FULLTEXT_OR_CLAUSES // len(CHUNK_FULLTEXT_FIELDS)
+# (``query_vector`` arrives already computed). Kept as this store's OWN local
+# value (not shared) — sized for THIS store's 20-token cap; a different
+# consumer with a different derived token cap sizes its own independently
+# (see ``loremaster.memory.local._MAX_LEXICAL_QUERY_CHARS``).
+_MAX_FULLTEXT_OR_CLAUSES = MAX_FULLTEXT_OR_CLAUSES
+_MAX_QUERY_TOKENS = max_query_tokens(len(CHUNK_FULLTEXT_FIELDS))
 _MAX_LEXICAL_QUERY_CHARS = 300
 
 # The Reciprocal-Rank-Fusion smoothing constant (the standard RRF ``k``); larger
@@ -1333,36 +1352,15 @@ class SurrealStore:
             f"search::rrf([({vector_subquery}), ({fulltext_subquery})], {int(k)}, {_RRF_K})"
         )
 
-    @staticmethod
-    def _truncate_at_word_boundary(text: str, max_chars: int) -> str:
-        """Truncate ``text`` to at most ``max_chars``, never splitting a word.
-
-        Backs off to the last WHITESPACE run (space, tab, newline, or carriage
-        return) at or before the cutoff, so the lexical arm always tokenizes
-        whole words — a hostile multi-line query is still a valid word
-        boundary. ``text`` at or under ``max_chars`` is returned UNCHANGED —
-        the short-query no-regression contract (finding #66): a query that
-        never neared either cap must round-trip byte-identical.
-
-        Args:
-            text: The raw query text (the lexical arm's input only — the
-                vector arm always embeds the caller's FULL text upstream of
-                this call and is never truncated).
-            max_chars: The truncation ceiling.
-
-        Returns:
-            ``text`` unchanged, or its longest whole-word prefix within
-            ``max_chars`` — or, if the window contains no whitespace at all
-            (one pathological giant token), the raw ``max_chars``-char slice
-            as the best truncation available.
-        """
-        if len(text) <= max_chars:
-            return text
-        window = text[:max_chars]
-        boundary = max(window.rfind(character) for character in (" ", "\t", "\n", "\r"))
-        if boundary <= 0:
-            return window
-        return window[:boundary]
+    # Bound DIRECTLY to the shared function (finding #69's sharing pin,
+    # ``test_query_text.py::TestSharedMechanismPin``): this is not a wrapper
+    # that calls it, it IS it — ``SurrealStore._truncate_at_word_boundary is
+    # loremaster.store.query_text.truncate_at_word_boundary`` holds by
+    # construction, so the two can never silently drift into a hand-copied
+    # twin again. See :func:`~loremaster.store.query_text.truncate_at_word_boundary`
+    # for the full behavioural contract (word-boundary backoff, hostile
+    # whitespace, the short-query no-op regression contract).
+    _truncate_at_word_boundary = staticmethod(truncate_at_word_boundary)
 
     async def _analyze_query(self, query_text: str) -> list[str]:
         """Tokenize ``query_text`` with the engine's own ``code_ident`` analyzer.
