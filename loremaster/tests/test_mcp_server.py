@@ -176,6 +176,30 @@ def test_orphan_helper():
     assert orphan_helper() == 42
 """
 
+# Finding #60's elision-count fixture: three functions with ZERO references
+# anywhere (not even from a test) -- guarantees dead_code_total() >= 3
+# regardless of whether the enclosing module itself also rolls up as dead.
+# Used to prove ``AppContext.dead_code``'s ``elided`` count is honest both
+# when ``max_results`` binds (capped below 3) and when it doesn't (default).
+_PY_MANY_ORPHANS = """\
+\"\"\"Three functions with zero references anywhere -- planted dead code.\"\"\"
+
+
+def orphan_one():
+    \"\"\"Never referenced by anything.\"\"\"
+    return 1
+
+
+def orphan_two():
+    \"\"\"Never referenced by anything.\"\"\"
+    return 2
+
+
+def orphan_three():
+    \"\"\"Never referenced by anything.\"\"\"
+    return 3
+"""
+
 
 # --------------------------------------------------------------------------- #
 # lore_impact / lore_map corpora (P6-tail tool wiring).
@@ -1652,7 +1676,13 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
         "newest_snapshot",
         "traces",
     },
+    # #60 phase 2: DeadCodeSweepResult wraps the DeadCodeNode list with an
+    # honest elided count (a SCALAR return, mirroring lore_impact/lore_map) --
+    # "nodes"/"elided" are the wrapper's own top-level properties; the rest
+    # are DeadCodeNode's fields, surfacing under $defs.
     "lore_dead_code": {
+        "nodes",
+        "elided",
         "id",
         "kind",
         "qualified_name",
@@ -2324,13 +2354,17 @@ class TestToolBehaviourEndToEnd:
         ctx = await _make_context(config=config, tmp_path=tmp_path)
         await ctx.indexer.index_all()
         try:
+            # #60 phase 2: AppContext.dead_code now returns a DeadCodeSweepResult
+            # wrapper (nodes + an honest elided count), not a bare list.
             dead = await ctx.dead_code()
-            names = {node.qualified_name for node in dead}
+            names = {node.qualified_name for node in dead.nodes}
             assert "pkg.utils.orphan_helper" in names, (
                 f"orphan_helper is only referenced by tests and must appear in dead_code; "
                 f"got: {names}"
             )
-            orphan = next(n for n in dead if n.qualified_name == "pkg.utils.orphan_helper")
+            orphan = next(
+                n for n in dead.nodes if n.qualified_name == "pkg.utils.orphan_helper"
+            )
             assert orphan.reason == REASON_ONLY_REFERENCED_BY_TESTS
         finally:
             await ctx.aclose()
@@ -2341,7 +2375,7 @@ class TestToolBehaviourEndToEnd:
         # ``pkg.base.BaseRouter`` has a production reference from ``pkg.router``
         # (it imports it). It must NOT appear in dead_code.
         dead = await indexed_context.dead_code()
-        names = {node.qualified_name for node in dead}
+        names = {node.qualified_name for node in dead.nodes}
         assert "pkg.base.BaseRouter" not in names, (
             "BaseRouter is referenced by production code and must not be dead"
         )
@@ -2357,6 +2391,47 @@ class TestToolBehaviourEndToEnd:
         # directly (bypassing validation) to prove the handler itself does not raise.
         dead = await indexed_context.code_graph.dead_code([], max_results=0)
         assert dead == []  # empty is fine, not an error
+
+    async def test_dead_code_reports_zero_elided_when_max_results_does_not_bind(
+        self, indexed_context: AppContext
+    ) -> None:
+        # Finding #60, "no false elision signal" half: the default max_results
+        # (100) cannot bind on this fixture's tiny corpus, so elided must be 0 —
+        # never some stale/nonzero artifact of the counting itself.
+        dead = await indexed_context.dead_code()
+        assert dead.elided == 0
+
+    async def test_dead_code_counts_elided_nodes_when_max_results_binds(
+        self, tmp_path: Path
+    ) -> None:
+        # Finding #60, "counted signal" half: a capped dead_code result must
+        # carry an honest elided count -- a bare list makes "these are all the
+        # dead symbols" indistinguishable from "these are the first
+        # max_results of many more". Three independently-dead functions
+        # (zero references anywhere) guarantee dead_code_total() >= 3
+        # regardless of whether the enclosing module itself also rolls up as
+        # dead.
+        slug = _slug()
+        live = tmp_path / "live_many_orphans"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "orphans.py").write_text(_PY_MANY_ORPHANS, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            full = await ctx.dead_code()
+            assert len(full.nodes) >= 3, (
+                "the three planted orphans must all surface as dead; got "
+                f"{[n.qualified_name for n in full.nodes]}"
+            )
+            assert full.elided == 0, "an unbound (default-cap) sweep must show zero elision"
+
+            capped = await ctx.dead_code(max_results=1)
+            assert len(capped.nodes) == 1
+            assert capped.elided == len(full.nodes) - 1
+            assert capped.elided >= 2
+        finally:
+            await ctx.aclose()
 
     async def test_index_reconcile_true_brings_a_new_file_current(
         self, indexed_context: AppContext, tmp_path: Path
@@ -2755,20 +2830,46 @@ class TestRegisteredToolWrappers:
     # TestImpactMapRegisteredToolWrappers below already drives lore_impact's
     # own wrapper end to end.
 
-    async def test_dead_code_wrapper_yields_structured_list(
+    async def test_dead_code_wrapper_yields_structured_result_with_elided_count(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        # The call returns a list (possibly empty) — structuredContent wraps under ``result``.
+        # #60 phase 2: DeadCodeSweepResult is a SCALAR return (mirrors
+        # ImpactResult/MapResult) -- structuredContent carries ``nodes``/
+        # ``elided`` directly as top-level properties, not wrapped under
+        # ``result`` (that wrapping was the bare-list convention this tool
+        # used before #60's phase 2 wiring).
         structured = await self._structured(mcp, "lore_dead_code", ctx)
         assert isinstance(structured, dict)
-        assert "result" in structured
-        assert isinstance(structured["result"], list)
+        assert isinstance(structured["nodes"], list)
+        assert isinstance(structured["elided"], int)
+        # This fixture's tiny corpus cannot bind the default max_results=100.
+        assert structured["elided"] == 0
         # Every element must have the DeadCodeNode fields.
-        for item in structured["result"]:
+        for item in structured["nodes"]:
             assert isinstance(item, dict)
             assert "qualified_name" in item
             assert "reason" in item
+
+    async def test_dead_code_wrapper_reports_elided_count_when_max_results_binds(
+        self, tmp_path: Path
+    ) -> None:
+        # Finding #60: the served (wire-level) output must carry the counted
+        # signal when max_results binds, not just the AppContext-level return.
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "orphans.py").write_text(_PY_MANY_ORPHANS, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        mcp = build_mcp_server(LoreServer(config))
+        try:
+            structured = await self._structured(mcp, "lore_dead_code", ctx, max_results=1)
+            assert len(structured["nodes"]) == 1
+            assert structured["elided"] >= 2
+        finally:
+            await ctx.aclose()
 
 
 # --------------------------------------------------------------------------- #

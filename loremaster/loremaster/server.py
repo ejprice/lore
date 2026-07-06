@@ -1473,6 +1473,31 @@ class IndexStatusSummary(IndexSummary):
     traces: TraceSummary = Field(default_factory=TraceSummary)
 
 
+class DeadCodeSweepResult(BaseModel):
+    """``lore_dead_code``'s return shape: the capped node list plus an honest
+    elided count (finding #60).
+
+    Unlike ``lore_map``'s ``elided_modules`` / ``lore_impact``'s ``elided``,
+    the bare ``list[DeadCodeNode]`` this replaces carried NO way to tell "these
+    are all the dead symbols" from "these are the first ``max_results`` of many
+    more" — a caller had to trust the sweep was complete with zero signal
+    either way. Mirrors the SAME idiom (a squeezed-out COUNT, never a silent
+    cap) ``ImpactResult.elided`` / ``MapResult.elided_modules`` already use.
+
+    Attributes:
+        nodes: Up to ``max_results`` dead/orphaned symbols — unchanged from
+            the prior bare-list wire shape.
+        elided: The count of dead nodes squeezed out by ``max_results``, never
+            silent — ``0`` whenever the sweep found no more than
+            ``max_results`` (never a stale or approximate figure).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    nodes: list[DeadCodeNode]
+    elided: int
+
+
 class _CalibrationFindingsAdapter:
     """Adapt the durable :class:`~loremaster.findings.FindingLedger` to the calibration
     engine's narrow :class:`~loremaster.calibration.engine.FindingsPort`.
@@ -2817,12 +2842,18 @@ class AppContext:
         self,
         *,
         max_results: int = DEFAULT_DEAD_CODE_MAX_RESULTS,
-    ) -> list[DeadCodeNode]:
+    ) -> DeadCodeSweepResult:
         """Return the candidate dead/orphaned nodes in the project's LIVE tiers.
 
         Computes the live tiers from ``self._config.effective_roots`` (only
         ``WATCH_LIVE`` tiers are swept — static-snapshot tiers are skipped). Then
-        delegates to ``CodeGraph.dead_code``.
+        delegates to ``CodeGraph.dead_code`` for the capped node list and
+        ``CodeGraph.dead_code_total`` for the honest elided count (finding #60)
+        — both share the identical liveness/exclusion decision via the engine's
+        own ``_dead_code_candidates`` generator, so the two numbers can never
+        diverge. This is a SEPARATE graph scan from ``dead_code`` (documented on
+        ``dead_code_total`` itself); acceptable here since this tool is not a
+        hot path — see REPORT-slate-builder-s1.md's #60 resolution note.
 
         P8d Wave 4a (§5 params cut): the ``include_tests``/``include_dunders``/
         ``include_entrypoints`` flags are CUT — their defaults (all ``False``,
@@ -2837,7 +2868,9 @@ class AppContext:
         live_tiers = [
             root.tier for root in self._config.effective_roots if root.watch == WATCH_LIVE
         ]
-        return await self.code_graph.dead_code(live_tiers, max_results=max_results)
+        nodes = await self.code_graph.dead_code(live_tiers, max_results=max_results)
+        total = await self.code_graph.dead_code_total(live_tiers)
+        return DeadCodeSweepResult(nodes=nodes, elided=total - len(nodes))
 
     async def impact(
         self,
@@ -5347,12 +5380,14 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 description=(
                     f"Maximum number of dead nodes to return (default "
                     f"{DEFAULT_DEAD_CODE_MAX_RESULTS}, min {_MIN_COUNT}, max "
-                    f"{MAX_DEAD_CODE_MAX_RESULTS}). Raise it for a broader sweep; "
-                    "lower it to keep the result set reviewable."
+                    f"{MAX_DEAD_CODE_MAX_RESULTS}). Nodes squeezed out by max_results "
+                    "are counted in the returned 'elided' field, never silently "
+                    "dropped — raise it for a broader sweep; lower it to keep the "
+                    "result set reviewable."
                 ),
             ),
         ] = DEFAULT_DEAD_CODE_MAX_RESULTS,
-    ) -> list[DeadCodeNode]:
+    ) -> DeadCodeSweepResult:
         return await _app_context(context).dead_code(max_results=max_results)
 
     @mcp.tool(
