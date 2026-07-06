@@ -65,12 +65,16 @@ rendered free text). Therefore:
   both directions; proof of receipt is the recipient's artifact (or its process on
   the process table). An idle agent with a live gate-pytest + self-watcher is the
   benign waiting-on-own-wake mode — do not double-drive it.
-- Every brief carries: writable-set + do-not-touch, the lore protocol above with the
-  ToolSearch load line, "NEVER run the full suite", the findings duty line, the
-  shared-board line ("never touch lore_tasks rows you don't own"), and the store
-  idioms (CONTENT for protected-key writes; str(RecordID); statement[0]-only
-  validation; CONTENT datetimes are Python datetimes; missing SELECT-projection reads
-  None; time:: family for datetime aggregates under GROUP BY).
+- Briefs use the versioned base protocol: the agent's FIRST action is
+  `Read ~/.claude/orchestration/brief-base.md`, and its report opens with the
+  `brief-base v<N> read` receipt (missing receipt ⇒ treat as unbriefed). The brief
+  itself carries only: identity/mission, writable-set + do-not-touch, task-specific
+  steps/receipts, the lore ToolSearch load line, and any override of the base. This
+  repo's specifics (gates, dogfood protocol, store idioms below) ride THIS file —
+  never re-transcribed into briefs. Store idioms: CONTENT for protected-key writes
+  (`session` is protected); str(RecordID); statement[0]-only validation; CONTENT
+  datetimes are Python datetimes; missing SELECT-projection reads None; time:: family
+  for datetime aggregates under GROUP BY.
 - Reports: REPORT-<agent-name>.md at repo root, EXACT name; delete all before any
   image build. One concern per commit; cold REFUTE audit before every wave commit
   (builder ≠ grader; P8d receipts: 3 of 4 waves shipped a defect green at every
