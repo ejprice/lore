@@ -846,3 +846,65 @@ class TestLifecycle:
         await _wait_state(engine, "measured")
         await engine.stop()
         await engine.stop()  # second stop after the task already finished — no-op
+
+
+# --- P8d Wave 4a: caller_model read-side ratio lookup -------------------------
+#
+# ``cached_ratio_for_model`` is the MINIMAL read-side accessor the caller-model
+# budget re-denomination plugs into (server.py's ``_count_tokens_single``). It
+# must NEVER start a probe, NEVER block on the network, and NEVER mutate shared
+# engine state — a pure best-effort read of a per-model cache file (the same
+# ``state_dir/calibration/<model>.json`` shape ``_write_cache``/``_load_cache``
+# already use for the engine's OWN yardstick model).
+
+
+class TestCachedRatioForModel:
+    def test_own_model_returns_the_live_served_constant(self, tmp_path: Path) -> None:
+        # The engine's own yardstick model never touches disk for this lookup —
+        # it is the authoritative in-process value (may differ from a stale
+        # on-disk cache if a write ever failed).
+        engine = _build_engine(tmp_path, counter_factory=_programmed_factory({}))
+        assert engine.cached_ratio_for_model(_MODEL) == pytest.approx(engine.served_constant)
+
+    def test_unknown_model_with_no_cache_file_returns_none(self, tmp_path: Path) -> None:
+        engine = _build_engine(tmp_path, counter_factory=_programmed_factory({}))
+        assert engine.cached_ratio_for_model("claude-haiku-4-5") is None
+
+    def test_reads_a_valid_prior_cache_file_for_a_different_model(self, tmp_path: Path) -> None:
+        other_model = "claude-opus-4-8"
+        cache_dir = tmp_path / "calibration"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / f"{other_model}.json").write_text(
+            json.dumps({"served_constant": 1.4, "model": other_model}), encoding="utf-8"
+        )
+        engine = _build_engine(tmp_path, counter_factory=_programmed_factory({}))
+        assert engine.cached_ratio_for_model(other_model) == pytest.approx(1.4)
+
+    def test_corrupt_cache_file_for_a_different_model_returns_none(self, tmp_path: Path) -> None:
+        other_model = "claude-haiku-4-5"
+        cache_dir = tmp_path / "calibration"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / f"{other_model}.json").write_text("not json at all", encoding="utf-8")
+        engine = _build_engine(tmp_path, counter_factory=_programmed_factory({}))
+        assert engine.cached_ratio_for_model(other_model) is None
+
+    def test_non_positive_served_constant_for_a_different_model_returns_none(
+        self, tmp_path: Path
+    ) -> None:
+        other_model = "claude-haiku-4-5"
+        cache_dir = tmp_path / "calibration"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / f"{other_model}.json").write_text(
+            json.dumps({"served_constant": 0.0, "model": other_model}), encoding="utf-8"
+        )
+        engine = _build_engine(tmp_path, counter_factory=_programmed_factory({}))
+        assert engine.cached_ratio_for_model(other_model) is None
+
+    def test_never_starts_a_probe_or_touches_the_network(self, tmp_path: Path) -> None:
+        # A counter_factory that raises if ever called proves the lookup is a
+        # pure disk read — never a live measurement.
+        def _forbidden_factory() -> Any:
+            raise AssertionError("cached_ratio_for_model must never start a probe")
+
+        engine = _build_engine(tmp_path, counter_factory=_forbidden_factory)
+        assert engine.cached_ratio_for_model("claude-haiku-4-5") is None

@@ -305,10 +305,14 @@ def engine_factory() -> Callable[..., Any]:
         *,
         count_tokens: Callable[[str], int] = _DEFAULT_COUNT_TOKENS,
         rebuild_notice: Callable[[], Awaitable[str | None]] | None = None,
+        changed_since_resolver: Callable[[str], Awaitable[frozenset[str]]] | None = None,
     ) -> Any:
         map_module = importlib.import_module("loremaster.map")
         return map_module.MapEngine(
-            graph=graph, count_tokens=count_tokens, rebuild_notice=rebuild_notice
+            graph=graph,
+            count_tokens=count_tokens,
+            rebuild_notice=rebuild_notice,
+            changed_since_resolver=changed_since_resolver,
         )
 
     return _build
@@ -1230,3 +1234,151 @@ class TestTokenBudgetCalibration:
             "the explicit module-elision trailer must still render under the "
             "tighter calibrated budget — never a silent drop"
         )
+
+
+# =========================================================================== #
+# P8d Wave 4a (net-new, plan §5) — ``changed_since``. PURELY ADDITIVE to every
+# semantic pinned above (docs/design/2026-07-04-map-test-segregation.md): it
+# tags affected modules ``[changed]`` and appends one summary line, never
+# touching ranking, exclusion, elision, focus-inversion, or symbol caps.
+# =========================================================================== #
+
+_CHANGED_TAG = "[changed]"
+_CHANGED_SINCE_ID = "snapshot:sn_deadbeef"
+
+
+class TestChangedSince:
+    async def test_changed_modules_are_tagged(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+
+        async def _resolver(since: str) -> frozenset[str]:
+            assert since == _CHANGED_SINCE_ID
+            return frozenset({_HUB_MODULE})
+
+        engine = engine_factory(trio.graph, changed_since_resolver=_resolver)
+
+        result = await engine.map(changed_since=_CHANGED_SINCE_ID)
+
+        hub_line = next(
+            line for line in result.formatted.splitlines() if line.startswith(_HUB_MODULE)
+        )
+        assert _CHANGED_TAG in hub_line
+        island_line = next(
+            line for line in result.formatted.splitlines() if line.startswith(_ISLAND_MODULE)
+        )
+        assert _CHANGED_TAG not in island_line
+
+    async def test_changed_since_omitted_never_calls_the_resolver(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+
+        async def _forbidden(_since: str) -> frozenset[str]:
+            raise AssertionError("resolver must not be called when changed_since is omitted")
+
+        engine = engine_factory(trio.graph, changed_since_resolver=_forbidden)
+        result = await engine.map()
+        assert _CHANGED_TAG not in result.formatted
+
+    async def test_unknown_changed_since_propagates_the_resolvers_error(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        errors = _errors()
+
+        async def _resolver(_since: str) -> frozenset[str]:
+            raise errors.MapChangedSinceError("no such snapshot — see lore_diff")
+
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph, changed_since_resolver=_resolver)
+
+        with pytest.raises(errors.MapChangedSinceError) as exc_info:
+            await engine.map(changed_since="snapshot:bogus")
+        assert "lore_diff" in str(exc_info.value)
+
+    async def test_changed_since_with_no_resolver_wired_raises_cleanly(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        errors = _errors()
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)  # no changed_since_resolver
+
+        with pytest.raises(errors.MapChangedSinceError):
+            await engine.map(changed_since=_CHANGED_SINCE_ID)
+
+    async def test_changed_since_preserves_ranking_order_and_never_silently_elides(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # The binding law: changed_since only ADDS a marker + optional summary
+        # line. What is NOT an honest property (audit-w4a finding #2): strict
+        # byte-identical elision. The [changed] tag is appended INSIDE
+        # `_render_module_line`, which the greedy budget walk counts -- so
+        # tagging a kept module lengthens its line and can, at a tight
+        # budget, push a tail module out that the unfocused call would have
+        # kept. What DOES hold, and is pinned here instead: (1) rank ORDER is
+        # preserved among whatever survives the cut (never reordered/dropped
+        # out of turn), and (2) elision is never silent in either call.
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+
+        async def _resolver(_since: str) -> frozenset[str]:
+            return frozenset({_HUB_MODULE})
+
+        engine = engine_factory(trio.graph, changed_since_resolver=_resolver)
+
+        unfocused = await engine.map()
+        changed = await engine.map(changed_since=_CHANGED_SINCE_ID)
+
+        # At this generous default budget nothing is elided (both kept 6/6),
+        # so this is also a same-membership check -- changed_since must never
+        # reorder or drop a module on its own.
+        assert [e.module for e in unfocused.entries] == [e.module for e in changed.entries]
+        assert unfocused.elided_modules == 0
+        assert changed.elided_modules == 0
+        assert _ELISION_FRAGMENT not in unfocused.formatted
+        assert _ELISION_FRAGMENT not in changed.formatted
+
+        # [changed] never appears without changed_since.
+        assert _CHANGED_TAG not in unfocused.formatted
+        hub_line = next(
+            line for line in changed.formatted.splitlines() if line.startswith(_HUB_MODULE)
+        )
+        assert _CHANGED_TAG in hub_line
+
+    async def test_changed_since_tag_can_shift_elision_but_it_stays_announced(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # A tight, injected-counter budget where the corpus genuinely
+        # overflows (mirrors TestBudgetEnforcement.
+        # test_budget_is_honored_by_injected_counter's count_tokens=len +
+        # _BUDGET_FLOOR trick) -- this is the cheap real-elision corpus F2
+        # asked for. It proves the [changed] tag's extra bytes are allowed to
+        # shift WHICH module the greedy walk drops (never asserted
+        # byte-identical), while ranking order among survivors and the
+        # never-silent elision announcement both still hold.
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+
+        async def _resolver(_since: str) -> frozenset[str]:
+            return frozenset({_HUB_MODULE})
+
+        engine = engine_factory(trio.graph, changed_since_resolver=_resolver, count_tokens=len)
+
+        unfocused = await engine.map(budget=_BUDGET_FLOOR)
+        changed = await engine.map(budget=_BUDGET_FLOOR, changed_since=_CHANGED_SINCE_ID)
+
+        assert unfocused.elided_modules > 0, "six modules must overflow this floor budget"
+        assert _ELISION_FRAGMENT in unfocused.formatted
+        assert changed.elided_modules > 0, (
+            "the [changed]-tagged hub line is only heavier, never lighter -- "
+            "it must overflow the same floor budget too"
+        )
+        assert _ELISION_FRAGMENT in changed.formatted
+
+        # Ranking order preserved among whatever changed_since kept: its kept
+        # list must be a PREFIX, in the same relative order, of what the
+        # unfocused call kept (never reordered, never a gap) -- even though
+        # its LENGTH may differ (never asserted byte-identical, per F2).
+        changed_order = [e.module for e in changed.entries]
+        unfocused_order = [e.module for e in unfocused.entries]
+        filtered_unfocused_order = [module for module in unfocused_order if module in changed_order]
+        assert filtered_unfocused_order == changed_order

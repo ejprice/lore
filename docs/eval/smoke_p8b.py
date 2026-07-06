@@ -229,6 +229,44 @@ def parse_finding_rows(rendered: str) -> list[dict[str, str]]:
     return rows
 
 
+def parse_finding_detail(rendered: str) -> dict[str, str]:
+    """Parse a SINGLE finding's ``get``/``chain_head`` detail render.
+
+    P8d Wave 4a (finding #38, hardened by audit-w4a finding #1): unlike
+    ``query``'s summarised rows, ``get``/``chain_head`` render the row, then a
+    ``body:`` label followed by the body VERBATIM inside a backtick fence
+    (sized to survive any backtick run embedded in the body itself, mirroring
+    ``search.py``'s own source-body fence), then the single-line
+    ``created_at:``/``provenance:`` trailers. Only the FIRST line is the
+    finding-row shape ``parse_finding_rows`` expects; the fenced body is never
+    re-parsed as a row or a trailer (that would raise on a hostile body
+    engineered to contain a row-shaped or trailer-shaped line).
+    """
+    lines = rendered.splitlines()
+    if not lines:
+        raise SmokeCheckFailed("finding detail render is empty")
+    row_match = _FINDING_ROW_PATTERN.match(lines[0])
+    if row_match is None:
+        raise SmokeCheckFailed(f"finding detail: row line does not match expected shape: {lines[0]!r}")
+    if len(lines) < 2 or lines[1] != "body:":
+        raise SmokeCheckFailed(f"finding detail: no 'body:' label line found in: {rendered!r}")
+    if len(lines) < 3 or not lines[2] or set(lines[2]) != {"`"}:
+        raise SmokeCheckFailed(f"finding detail: no opening body fence found in: {rendered!r}")
+    fence = lines[2]
+    try:
+        close_index = lines.index(fence, 3)
+    except ValueError as exc:
+        raise SmokeCheckFailed(
+            f"finding detail: no matching closing body fence found in: {rendered!r}"
+        ) from exc
+    trailer_lines = lines[close_index + 1 :]
+    if not any(line.startswith("created_at: ") for line in trailer_lines):
+        raise SmokeCheckFailed(f"finding detail: no 'created_at:' line found in: {rendered!r}")
+    if not any(line.startswith("provenance: ") for line in trailer_lines):
+        raise SmokeCheckFailed(f"finding detail: no 'provenance:' line found in: {rendered!r}")
+    return row_match.groupdict()
+
+
 # ---------------------------------------------------------------------------
 # Check 1 — connection + tools/list
 # ---------------------------------------------------------------------------
@@ -370,12 +408,19 @@ async def check_diff(session: ClientSession) -> None:
         print("PASS: lore_diff() list mode -> 0 snapshots recorded (structure honored, count 0)")
         return
 
-    rows = listing_text.splitlines()
+    all_lines = listing_text.splitlines()
+    # P8d Wave 4a (finding #8): a trailing "(showing N of M — raise limit for
+    # more)" line is appended (never "- "-prefixed) when more snapshots exist
+    # than were shown — an honest pagination notice, not a malformed row.
+    pagination_trailer = [line for line in all_lines if line.startswith("(showing ")]
+    rows = [line for line in all_lines if line not in pagination_trailer]
     malformed_rows = [row for row in rows if not row.startswith("- ")]
     if malformed_rows:
         raise SmokeCheckFailed(f"lore_diff list mode: row(s) not '- '-prefixed: {malformed_rows}")
     newest_row = rows[0]
     print(f"PASS: lore_diff() list mode -> {len(rows)} snapshot row(s); newest: {newest_row}")
+    if pagination_trailer:
+        print(f"  pagination: {pagination_trailer[0]}")
 
     newest_id_match = _SNAPSHOT_ROW_ID_PATTERN.match(newest_row)
     if newest_id_match is None:
@@ -450,14 +495,19 @@ async def check_findings(session: ClientSession) -> None:
     )
     require_no_tool_error(get_result, "lore_findings (get)")
     get_text = _joined_text(get_result).strip()
-    get_rows = parse_finding_rows(get_text)
-    if len(get_rows) != 1 or int(get_rows[0]["number"]) != finding_number:
+    # P8d Wave 4a (finding #38): get renders the row PLUS body/provenance detail.
+    get_row = parse_finding_detail(get_text)
+    if int(get_row["number"]) != finding_number:
         raise SmokeCheckFailed(f"lore_findings get #{finding_number}: unexpected render: {get_text!r}")
-    if get_rows[0]["subject"] != FINDING_SUBJECT:
+    if get_row["subject"] != FINDING_SUBJECT:
         raise SmokeCheckFailed(
-            f"lore_findings get #{finding_number}: subject mismatch, got {get_rows[0]['subject']!r}"
+            f"lore_findings get #{finding_number}: subject mismatch, got {get_row['subject']!r}"
         )
-    print(f"PASS: lore_findings(action='get', id_or_number={finding_number}) -> same finding")
+    if FINDING_BODY not in get_text:
+        raise SmokeCheckFailed(
+            f"lore_findings get #{finding_number}: body not rendered verbatim: {get_text!r}"
+        )
+    print(f"PASS: lore_findings(action='get', id_or_number={finding_number}) -> same finding + body")
 
     chain_result = await call_tool(
         session, "lore_findings", {"action": "chain_head", "id_or_number": finding_number}
@@ -466,8 +516,8 @@ async def check_findings(session: ClientSession) -> None:
     chain_text = _joined_text(chain_result).strip()
     forked = "(chain FORKED" in chain_text
     chain_main_text = chain_text.split("\n(chain FORKED", 1)[0]
-    chain_rows = parse_finding_rows(chain_main_text)
-    if len(chain_rows) != 1 or int(chain_rows[0]["number"]) != finding_number:
+    chain_row = parse_finding_detail(chain_main_text)
+    if int(chain_row["number"]) != finding_number:
         raise SmokeCheckFailed(
             f"lore_findings chain_head #{finding_number}: unexpected render: {chain_text!r}"
         )

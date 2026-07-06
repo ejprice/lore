@@ -209,6 +209,45 @@ class CalibrationEngine:
         with self._lock:
             return self._served_constant
 
+    def cached_ratio_for_model(self, model: str) -> float | None:
+        """Read-only per-model ratio lookup (P8d Wave 4a caller-model seam).
+
+        NEVER starts a probe, NEVER touches the network, NEVER blocks the read
+        path, and NEVER mutates shared engine state — a pure best-effort read,
+        safe to call from a concurrent request handler.
+
+        ``model`` equal to THIS engine's own yardstick model returns the live,
+        lock-guarded :attr:`served_constant` (the authoritative in-process
+        value — it may be fresher than whatever last landed on disk). Any
+        OTHER model name is looked up in a prior probe's on-disk cache file at
+        ``state_dir/calibration/<model>.json`` (the SAME shape
+        :meth:`_write_cache` writes for this engine's own model — a fleet of
+        per-model boots each drop their own file there over time). A missing
+        file, unreadable/corrupt JSON, or a served value that is not a finite
+        positive float is treated as "no cached ratio" rather than an error.
+
+        Args:
+            model: The caller-supplied model name to look up a ratio for.
+
+        Returns:
+            The cached (or live) multiplicative ratio, or ``None`` when no
+            valid cached ratio exists for ``model`` — the caller falls back to
+            the generation constant and renders an honest note.
+        """
+        if model == self._model:
+            return self.served_constant
+        path = self._state_dir / "calibration" / f"{model}.json"
+        if not path.is_file():
+            return None
+        try:
+            blob = json.loads(path.read_text(encoding=_UTF8))
+            served = float(blob["served_constant"])
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+        if not math.isfinite(served) or served <= 0:
+            return None
+        return served
+
     def status(self) -> dict[str, Any]:
         """A snapshot dict for the ``index_status`` render (consumed by a later agent)."""
         with self._lock:

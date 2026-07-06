@@ -133,6 +133,14 @@ _NO_SYMBOLS_PLACEHOLDER = "(no symbols)"
 # (secondary insurance — placement is the primary fix, per the design doc).
 _TEST_TAG = "[test]"
 
+# P8d Wave 4a (net-new, §5): the ``[changed]`` tag on a module containing a file
+# added/removed/modified since ``changed_since`` — purely ADDITIVE to the
+# pinned test-segregation/elision/focus/cap semantics (docs/design/
+# 2026-07-04-map-test-segregation.md): it never alters ranking, exclusion, or
+# caps, only marks affected lines and appends one optional summary line.
+_CHANGED_TAG = "[changed]"
+_CHANGED_SINCE_SUMMARY_TEMPLATE = "changed since {since!r}: {count} module(s) marked {tag}"
+
 # §3: the always-on, never-silent test-infra elision line. It NAMES the top test
 # hub(s), carries the omitted-module COUNT, and teaches the literal ``tests=true``
 # expansion affordance — one glance tells the reader what scaffolding exists and
@@ -167,6 +175,16 @@ class MapFocusNotFoundError(Exception):
     (``lore_search``) — the teaching-miss standard mirroring
     :class:`~loremaster.impact.ImpactTargetNotFoundError` /
     :class:`~loremaster.symbols.GetSymbolError`.
+    """
+
+
+class MapChangedSinceError(Exception):
+    """Raised when ``changed_since`` names no snapshot the store has ever recorded.
+
+    P8d Wave 4a (net-new, §5): ``changed_since`` is a snapshot id, exactly as
+    ``lore_diff`` lists them. An unknown/malformed value is a teaching-miss
+    naming ``lore_diff`` as the next step (its listing surfaces the real ids)
+    — never a bare propagated store error.
     """
 
 
@@ -238,6 +256,13 @@ class MapEngine:
             rebuild is in progress. ``None`` for the whole parameter means
             "never rebuilding" (the bare-test wiring) — no probe is ever
             called.
+        changed_since_resolver: An optional async callable that resolves a
+            ``changed_since`` value (a snapshot id, as ``lore_diff`` lists
+            them) to the :class:`frozenset` of changed MODULE qualified names,
+            or raises :class:`MapChangedSinceError` for an unresolvable value.
+            ``None`` for the whole parameter (the bare-test wiring) means
+            ``changed_since`` is never resolved — a caller passing it anyway
+            gets a clean :class:`MapChangedSinceError`, never a silent no-op.
     """
 
     def __init__(
@@ -246,16 +271,19 @@ class MapEngine:
         graph: Any,
         count_tokens: Callable[[str], int],
         rebuild_notice: Callable[[], Awaitable[str | None]] | None = None,
+        changed_since_resolver: Callable[[str], Awaitable[frozenset[str]]] | None = None,
     ) -> None:
         self._graph = graph
         self._count_tokens = count_tokens
         self._rebuild_notice = rebuild_notice
+        self._changed_since_resolver = changed_since_resolver
 
     async def map(
         self,
         budget: int = _BUDGET_DEFAULT,
         focus: str | None = None,
         tests: bool = False,
+        changed_since: str | None = None,
     ) -> MapResult:
         """Return the rank-ordered, budget-fitted map of the code graph.
 
@@ -272,6 +300,12 @@ class MapEngine:
                 test-infra section (§4). The default (``False``) EXCLUDES test
                 modules from the rendering — their edges still feed rank mass —
                 and surfaces the always-on ``tests=true`` elision line instead.
+            changed_since: An optional snapshot id (as ``lore_diff`` lists
+                them), net-new P8d Wave 4a (§5). When given, every module
+                containing a file added/removed/modified since that snapshot
+                is tagged ``[changed]`` and one summary line is appended —
+                purely ADDITIVE to every pinned semantic above (never alters
+                ranking, exclusion, caps, or the elision lines).
 
         Returns:
             The composed :class:`MapResult`.
@@ -281,9 +315,12 @@ class MapEngine:
                 returned a non-``None`` notice) — checked BEFORE any query.
             MapFocusNotFoundError: ``focus`` matches no node the graph has
                 ever indexed.
+            MapChangedSinceError: ``changed_since`` names no snapshot the
+                store has ever recorded (points at ``lore_diff``'s listing).
         """
         await self._raise_if_rebuilding()
         budget = self._clamp_budget(budget)
+        changed_modules = await self._resolve_changed_modules(changed_since)
 
         modules, out_edges, symbols_by_module, module_is_test, symbol_owners = (
             await self._extract_module_graph()
@@ -349,8 +386,39 @@ class MapEngine:
             symbol_cap=symbol_cap,
             lifted_modules=lifted_modules,
             test_elision_line=test_elision_line,
+            changed_modules=changed_modules,
         )
+        if changed_modules:
+            changed_rendered = sum(
+                1 for entry in kept_entries if entry.module in changed_modules
+            )
+            if changed_rendered:
+                formatted = (
+                    f"{formatted}\n"
+                    + _CHANGED_SINCE_SUMMARY_TEMPLATE.format(
+                        since=changed_since, count=changed_rendered, tag=_CHANGED_TAG
+                    )
+                )
         return MapResult(entries=kept_entries, elided_modules=elided, formatted=formatted)
+
+    # -- changed_since (P8d Wave 4a, net-new) ----------------------------
+
+    async def _resolve_changed_modules(self, changed_since: str | None) -> frozenset[str]:
+        """Resolve ``changed_since`` to its changed-module set, or ``frozenset()``.
+
+        ``None`` (the default — omitted) never calls the injected resolver at
+        all, so a bare-test wiring with no resolver configured is unaffected.
+        A resolver-less engine asked for a REAL ``changed_since`` value raises
+        a clean :class:`MapChangedSinceError` rather than silently no-op'ing.
+        """
+        if changed_since is None:
+            return frozenset()
+        if self._changed_since_resolver is None:
+            raise MapChangedSinceError(
+                f"changed_since={changed_since!r} was given but this map has no "
+                "diff/snapshot engine wired to resolve it"
+            )
+        return await self._changed_since_resolver(changed_since)
 
     # -- gates ----------------------------------------------------------
 
@@ -592,7 +660,13 @@ class MapEngine:
         return symbol_text, trailer
 
     def _render_module_line(
-        self, entry: MapEntry, *, is_test: bool, symbol_cap: int, lifted: bool
+        self,
+        entry: MapEntry,
+        *,
+        is_test: bool,
+        symbol_cap: int,
+        lifted: bool,
+        is_changed: bool = False,
     ) -> str:
         """One compact, SELF-DESCRIBING rollup line: module, rank, symbols.
 
@@ -600,11 +674,13 @@ class MapEngine:
         (``symbols: ...``) so a caller reads what each value IS without a
         legend. A test module rendering in a mixed/inverted context carries the
         ``[test]`` tag (§6) so scaffolding can never be mistaken for production,
-        even when it renders first.
+        even when it renders first. ``is_changed`` (P8d Wave 4a, purely
+        additive) carries the ``[changed]`` tag alongside it when both apply.
         """
-        tag = f" {_TEST_TAG}" if is_test else ""
+        active_tags = [tag for tag, present in ((_TEST_TAG, is_test), (_CHANGED_TAG, is_changed)) if present]
+        tags = "".join(f" {tag}" for tag in active_tags)
         symbol_text, trailer = self._render_symbols(entry, symbol_cap, lifted)
-        return f"{entry.module}{tag}  (rank {entry.rank:.4f})  symbols: {symbol_text}{trailer}"
+        return f"{entry.module}{tags}  (rank {entry.rank:.4f})  symbols: {symbol_text}{trailer}"
 
     @staticmethod
     def _test_elision_line(omitted_test_entries: Sequence[MapEntry]) -> str:
@@ -641,6 +717,7 @@ class MapEngine:
         symbol_cap: int,
         lifted_modules: set[str],
         test_elision_line: str | None,
+        changed_modules: frozenset[str] = frozenset(),
     ) -> tuple[list[MapEntry], int, str]:
         """Greedily render ``entries`` (already rank-ordered) within ``budget``.
 
@@ -665,6 +742,8 @@ class MapEngine:
                 module's full list).
             test_elision_line: The always-on test-infra elision line, or
                 ``None`` when the corpus has no omitted test modules.
+            changed_modules: Modules to tag ``[changed]`` (P8d Wave 4a, purely
+                additive — never affects ranking, exclusion, or caps).
 
         Returns:
             ``(kept_entries, elided_count, formatted_text)``.
@@ -678,6 +757,7 @@ class MapEngine:
                 is_test=module_is_test.get(entry.module, False),
                 symbol_cap=symbol_cap,
                 lifted=entry.module in lifted_modules,
+                is_changed=entry.module in changed_modules,
             )
             trial_lines = [*kept_lines, line, *mandatory_tail]
             if self._count_tokens("\n".join(trial_lines)) > budget:

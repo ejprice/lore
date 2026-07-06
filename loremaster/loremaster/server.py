@@ -48,7 +48,7 @@ import math
 import os
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping, Sequence
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from lorescribe.javascript import JavascriptChunker
@@ -64,6 +64,7 @@ from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, load_config
+from loremaster.diff import SnapshotNotFoundError
 from loremaster.extension import (
     DEFAULT_KEY_VERSION,
     DetailLevel,
@@ -102,7 +103,7 @@ from loremaster.index.indexer import IndexSummary
 from loremaster.map import _BUDGET_CAP as _MAP_BUDGET_CAP
 from loremaster.map import _BUDGET_DEFAULT as _MAP_DEFAULT_BUDGET
 from loremaster.map import _BUDGET_FLOOR as _MAP_BUDGET_FLOOR
-from loremaster.map import MapEngine, MapResult
+from loremaster.map import MapChangedSinceError, MapEngine, MapResult
 
 # P7 memory cutover: the memory + task tool handlers speak the SurrealDB-backed
 # wire vocabulary. ``IMPORTANCE_DEFAULTS_BY_KIND`` is the single source of truth
@@ -113,7 +114,15 @@ from loremaster.memory.backend import (
     MemorySource,
     TrustLevel,
 )
-from loremaster.search import DetailSelector, SearchResult
+from loremaster.search import (
+    _FENCE_CHAR,
+    _MIN_FENCE_WIDTH,
+    NOTICE_KIND,
+    DetailSelector,
+    SearchResult,
+    _max_backtick_run,
+    _sanitise_line,
+)
 from loremaster.store.candidate import Candidate
 from loremaster.store_read import StoreFileSpan
 from loremaster.symbols import VERIFY_REBUILD_CAVEAT, ResolvedSymbol, VerifyResult
@@ -843,8 +852,59 @@ _DEFAULT_RECALL_K = 5
 # _MAX_BLAST_MAX_RESULTS were REMOVED here — lore_blast_radius folded into
 # lore_impact, whose own depth bound is _IMPACT_DEPTH_MIN/_IMPACT_DEPTH_MAX.
 _MIN_COUNT = 1
-_MAX_SEARCH_K = 100
+# P8d Wave 4a (§5): k's cap revises 100 -> 50 (default 8 unchanged).
+_MAX_SEARCH_K = 50
 _MAX_RECALL_K = 100
+
+# P8d Wave 4a (§5/§8.5, net-new): lore_search's enforced response-token budget —
+# the ≈650-voyage-token target re-denominated under the 1.78 calibration
+# (650 * 1.78 ≈ 1157, rounded to 1100). Mirrors lore_map's OWN budget
+# conventions verbatim (same floor/cap currency, same clamp-never-raise
+# posture) rather than inventing a second budget policy.
+_SEARCH_BUDGET_FLOOR = _MAP_BUDGET_FLOOR
+_SEARCH_BUDGET_CAP = _MAP_BUDGET_CAP
+_SEARCH_BUDGET_DEFAULT = 1100
+
+# The announced elision trailer template a truncated lore_search hit list
+# carries (no-silent-caps doctrine, mirrors lore_map's own elision trailer).
+# audit-w4a finding #3: the elided list can carry non-"hit" kinds too (an
+# injected memory line, the filter-miss notice itself) -- "entries" is the
+# honest noun for whatever kind got squeezed out; the arithmetic is unchanged.
+_SEARCH_ELISION_TEMPLATE = (
+    "+{elided} entries elided by budget={budget} — raise budget or narrow the query/path"
+)
+
+# P8d Wave 4a (findings #25/#32): the filter-miss teach rendered when a path/
+# tier filter matches no CODE hit (never a bare empty, never masked by a
+# memory-only result). Subtree/prefix scoping is NOT supported at the store
+# layer (payload filters are exact-equality only — store/surreal.py's
+# ``_build_where``), so the honest fix is an exact indexed path, not a directory.
+_FILTER_MISS_MARKER = "[FILTER MISS]"
+_FILTER_MISS_NO_SUBTREE_HINT = (
+    "subtree/prefix scoping is not supported — pass an exact indexed file path"
+)
+# How many "nearest indexed path" suggestions the filter-miss teach names.
+_FILTER_MISS_NEAREST_LIMIT = 3
+
+# P8d Wave 4a (caller-model re-denomination): the honest render note when a
+# caller_model has no measured/cached ratio — served with the generation
+# constant instead of BLOCKING the read path on a fresh measurement (offline
+# posture is law).
+_CALLER_MODEL_NO_RATIO_TEMPLATE = (
+    "caller_model {model!r} has no measured ratio — served with the generation constant"
+)
+
+# P8d Wave 4a (finding #31): saves over this length get a render WARNING
+# teaching atomic-fact saves + a split suggestion; the save still succeeds
+# (guidance, never rejection). Picked from the finding's own evidence
+# (test_findings.py's migrated recall finding: "atomic facts drown inside
+# multi-KB session digests") — an atomic fact is comfortably sub-1KB, so a
+# few hundred characters is already a generous single-fact ceiling.
+_MEMORY_DIGEST_WARNING_CHARS = 500
+_MEMORY_DIGEST_WARNING_TEMPLATE = (
+    "note: this memory is {length} chars — long saves recall less precisely; "
+    "consider splitting into smaller atomic facts (one save per fact)"
+)
 # The memory collection's slug suffix → ``lore_<slug>_memory``.
 _MEMORY_SLUG_SUFFIX = "_memory"
 
@@ -870,6 +930,31 @@ _MEMORY_SOURCE_KIND_OPERATOR = "operator"
 # consumer's real cost (up to ~78%). Applied in the budget-counting path
 # (AppContext._count_tokens_single): counted = ceil(voyage_count * calibration).
 TOKEN_BUDGET_CALIBRATION = 1.78
+
+
+def _resolve_calibration_constant(engine: Any, caller_model: str | None) -> float:
+    """The multiplicative calibration constant for one ``_count_tokens_single`` call.
+
+    A MODULE-LEVEL function (not a method) — ``AppContext._count_tokens_single``
+    is exercised directly against a bare ``SimpleNamespace(embedder=...)``
+    standing in for ``self`` (a pre-existing test guard), so this helper must
+    never be reached via ``self.<name>``.
+
+    ``caller_model=None`` (the default) is UNCHANGED from before this param
+    existed: the engine's live ``served_constant``, or the committed
+    :data:`TOKEN_BUDGET_CALIBRATION` with no engine wired. A named
+    ``caller_model`` prefers that model's cached ratio (a pure read, never a
+    probe); absent a cache OR an engine, it falls back the same way.
+    """
+    if engine is None:
+        return TOKEN_BUDGET_CALIBRATION
+    if caller_model is not None:
+        cached = engine.cached_ratio_for_model(caller_model)
+        if cached is not None:
+            return float(cached)
+    return float(engine.served_constant)
+
+
 # The rendered digest lines for an empty memory recall / task query — a plain,
 # honest "nothing matched" rather than a bare empty string.
 _NO_MEMORIES_RECALLED = "(no project memories matched this query)"
@@ -1550,6 +1635,7 @@ class AppContext:
             graph=code_graph,
             count_tokens=self._count_tokens_single,
             rebuild_notice=self._rebuild_notice,
+            changed_since_resolver=self._resolve_changed_modules,
         )
 
     # -- tool handlers (the single end-to-end surface) ---------------------
@@ -1558,17 +1644,204 @@ class AppContext:
         self,
         query: str,
         k: int = _DEFAULT_SEARCH_K,
-        filters: dict[str, str] | None = None,
         *,
+        path: str | None = None,
+        tier: str | None = None,
         wait_for_fresh: bool = False,
         detail_level: str = "auto",
+        budget: int = _SEARCH_BUDGET_DEFAULT,
+        caller_model: str | None = None,
     ) -> list[SearchResult]:
-        """Memory-boosted semantic search; returns summarised, cited results."""
+        """Memory-boosted semantic search; returns summarised, cited results.
+
+        P8d Wave 4a: the ``filters: dict[str, str]`` param is CUT in favour of
+        the two explicit keys real callers actually use — ``path`` / ``tier``
+        (grep-verified: no other filter key is load-bearing). A response-token
+        budget is enforced (default :data:`_SEARCH_BUDGET_DEFAULT`, clamped to
+        ``[_SEARCH_BUDGET_FLOOR, _SEARCH_BUDGET_CAP]``): the served hit list
+        truncates with an ANNOUNCED elision, never a silent cut. A ``path``/
+        ``tier`` filter matching no CODE hit renders a teaching notice (never
+        a bare or memory-masked empty). ``caller_model`` re-denominates the
+        budget count under that model's cached ratio when one exists.
+        """
+        filters = self._build_search_filters(path, tier)
         results = await self.search_pipeline.search_code(
             query, k, filters, wait_for_fresh=wait_for_fresh, detail_level=detail_level
         )
         await self._raise_if_empty_during_rebuild(results)
+
+        miss_notice = await self._filter_miss_notice(path, tier, results)
+        if miss_notice is not None:
+            results = [*results, miss_notice]
+
+        clamped_budget = max(_SEARCH_BUDGET_FLOOR, min(_SEARCH_BUDGET_CAP, budget))
+        results = self._enforce_search_budget(results, clamped_budget, caller_model)
+
+        note = self._caller_model_note(caller_model)
+        if note is not None:
+            results = [
+                *results,
+                SearchResult(
+                    formatted=note,
+                    chunk_key="",
+                    detail_level="summary",
+                    stale=False,
+                    score=0.0,
+                    kind=NOTICE_KIND,
+                ),
+            ]
         return results
+
+    @staticmethod
+    def _build_search_filters(path: str | None, tier: str | None) -> dict[str, str] | None:
+        """Build the internal ``filters`` dict the search pipeline still speaks.
+
+        The engine's dict-based filter shape is unchanged (an internal
+        implementation detail); only the AGENT-facing surface moved to
+        explicit ``path``/``tier`` params (P8d Wave 4a, §5 params cut).
+        """
+        filters: dict[str, str] = {}
+        if path is not None:
+            filters["path"] = path
+        if tier is not None:
+            filters["tier"] = tier
+        return filters or None
+
+    async def _filter_miss_notice(
+        self, path: str | None, tier: str | None, results: list[SearchResult]
+    ) -> SearchResult | None:
+        """The filter-miss teach (findings #25/#32), or ``None`` when it does not apply.
+
+        Fires when a ``path``/``tier`` filter was given AND no HIT-kind result
+        came back — a memory-only result list under a filter counts as a miss
+        too (no code-match masking): a recalled memory is provenance, never a
+        code citation, so it must never silently stand in for "the filter
+        matched something real".
+        """
+        if path is None and tier is None:
+            return None
+        if any(result.kind == "hit" for result in results):
+            return None
+        filter_desc = ", ".join(
+            f"{key}={value!r}"
+            for key, value in (("path", path), ("tier", tier))
+            if value is not None
+        )
+        nearest = await self._nearest_indexed_paths(path) if path is not None else []
+        hint = f" Nearest indexed path(s): {', '.join(nearest)}." if nearest else ""
+        message = (
+            f"{_FILTER_MISS_MARKER} no code hits matched filter {filter_desc} — "
+            f"{_FILTER_MISS_NO_SUBTREE_HINT}.{hint}"
+        )
+        return SearchResult(
+            formatted=message,
+            chunk_key="",
+            detail_level="summary",
+            stale=False,
+            score=0.0,
+            kind=NOTICE_KIND,
+        )
+
+    async def _nearest_indexed_paths(
+        self, path: str, limit: int = _FILTER_MISS_NEAREST_LIMIT
+    ) -> list[str]:
+        """The ``limit`` real indexed paths most similar to ``path``.
+
+        Cheap: a linear scan of the already-cheap :meth:`manifest.all_files`
+        (the SAME primitive :meth:`search.SearchPipeline._all_rows_indexed_for_path`
+        already uses), scored by :meth:`_path_similarity` — never a new index,
+        never a store-layer prefix query (the store's payload filters are
+        exact-equality only; subtree/prefix scoping is not supported there).
+        """
+        requested = PurePosixPath(path)
+        rows = await self.manifest.all_files()
+        scored = [
+            (self._path_similarity(requested, PurePosixPath(row.file_path)), row.file_path)
+            for row in rows
+        ]
+        candidates = sorted(
+            (pair for pair in scored if pair[0] > 0), key=lambda pair: (-pair[0], pair[1])
+        )
+        seen: list[str] = []
+        for _score, file_path in candidates:
+            if file_path not in seen:
+                seen.append(file_path)
+            if len(seen) >= limit:
+                break
+        return seen
+
+    @staticmethod
+    def _path_similarity(a: PurePosixPath, b: PurePosixPath) -> int:
+        """A cheap "did you mean one of these" score between two paths.
+
+        The stronger of two signals: common LEADING segments (same directory,
+        different filename — a sibling file) or common TRAILING segments
+        (same filename, different directory — a moved/renamed file; mirrors
+        :meth:`symbols.SymbolResolver._module_path_matches`'s common-tail
+        rule). Not a filesystem distance metric — just good enough to name a
+        real nearby path rather than a bare "not found".
+        """
+        a_parts, b_parts = a.parts, b.parts
+        prefix = 0
+        for left, right in zip(a_parts, b_parts):
+            if left != right:
+                break
+            prefix += 1
+        suffix = 0
+        for left, right in zip(reversed(a_parts), reversed(b_parts)):
+            if left != right:
+                break
+            suffix += 1
+        return max(prefix, suffix)
+
+    def _enforce_search_budget(
+        self, results: list[SearchResult], budget: int, caller_model: str | None
+    ) -> list[SearchResult]:
+        """Greedily keep ``results`` within ``budget`` CLAUDE-denominated tokens.
+
+        Mirrors :meth:`~loremaster.map.MapEngine._render`'s greedy-walk +
+        pop-until-it-fits idiom exactly: walk the already-ordered list,
+        stop the moment the next entry would exceed ``budget``, then (if
+        anything was elided) pop already-kept entries — lowest-priority
+        (trailing) first — until the announced elision trailer itself fits
+        too. What's SERVED is what's counted: the structured list actually
+        drops the elided entries, never a display-only truncation.
+        """
+
+        def _count(text: str) -> int:
+            return self._count_tokens_single(text, caller_model=caller_model)
+
+        kept: list[SearchResult] = []
+        kept_texts: list[str] = []
+        for result in results:
+            trial = [*kept_texts, result.formatted]
+            if _count("\n".join(trial)) > budget:
+                break
+            kept.append(result)
+            kept_texts.append(result.formatted)
+
+        elided = len(results) - len(kept)
+        if not elided:
+            return kept
+
+        notice_text = _SEARCH_ELISION_TEMPLATE.format(elided=elided, budget=budget)
+        while kept and _count("\n".join([*kept_texts, notice_text])) > budget:
+            kept.pop()
+            kept_texts.pop()
+            elided += 1
+            notice_text = _SEARCH_ELISION_TEMPLATE.format(elided=elided, budget=budget)
+
+        kept.append(
+            SearchResult(
+                formatted=notice_text,
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.0,
+                kind=NOTICE_KIND,
+            )
+        )
+        return kept
 
     async def get_symbol(self, qualified_name: str) -> ResolvedSymbol:
         """Resolve a qualified Python name to its exact stored definition + location."""
@@ -1692,17 +1965,23 @@ class AppContext:
         """
         if since is None:
             summaries = await self._diff_engine.list_snapshots(limit)
-            return self._render_snapshot_rows(summaries)
+            total = await self._diff_engine.count_snapshots()
+            return self._render_snapshot_rows(summaries, total)
         result = await self._diff_engine.diff(since, until)
         return result.render()
 
     @staticmethod
-    def _render_snapshot_rows(summaries: list[SnapshotSummary]) -> str:
+    def _render_snapshot_rows(summaries: list[SnapshotSummary], total: int) -> str:
         """Render snapshot summaries as a compact digest (id/created/counts/git).
 
         Never a raw SurrealDB row — just the headline facts a caller needs to pick a
         ``since``/``until`` id: the exact snapshot id, its creation time, the file /
         chunk totals, and the git ref/branch when the codebase is a git checkout.
+
+        P8d Wave 4a (finding #8): when ``total`` exceeds the shown count, an
+        honest "showing N of M" trailer names the gap and teaches raising
+        ``limit`` — the same no-silent-caps doctrine ``lore_map``'s elision
+        trailer already applies to modules squeezed out by budget.
         """
         if not summaries:
             return _NO_SNAPSHOTS_FOUND
@@ -1717,6 +1996,8 @@ class AppContext:
                 f"- {summary.id} (created {summary.created_at}, "
                 f"{summary.files_total} files / {summary.chunks_total} chunks{git})"
             )
+        if total > len(summaries):
+            rows.append(f"(showing {len(summaries)} of {total} — raise limit for more)")
         return "\n".join(rows)
 
     async def findings(  # noqa: PLR0911 - P8d rewrites this render; restructuring now would churn
@@ -1780,7 +2061,7 @@ class AppContext:
             return self._render_finding_rows(rows)
         if action == _FINDING_ACTION_GET:
             finding = await self.finding_ledger.get(_require_finding_ref(id_or_number))
-            return self._render_finding_rows([finding])
+            return self._render_finding_detail(finding)
         if action == _FINDING_ACTION_CHAIN_HEAD:
             head = await self.finding_ledger.chain_head(_require_finding_ref(id_or_number))
             return self._render_chain_head(head)
@@ -1824,7 +2105,7 @@ class AppContext:
         line naming the other branches' entry numbers (call chain_head on each to
         reach its own head).
         """
-        rendered = cls._render_finding_rows([head.finding])
+        rendered = cls._render_finding_detail(head.finding)
         if head.forked:
             others = ", ".join(f"#{number}" for number in head.fork_successor_numbers)
             rendered += (
@@ -1848,6 +2129,47 @@ class AppContext:
             f"(id {finding.id}, kind {finding.kind}, area {finding.area}, "
             f"category {finding.category}, by {finding.created_by})"
             for finding in findings
+        )
+
+    @classmethod
+    def _render_finding_detail(cls, finding: Finding) -> str:
+        """Render ONE finding's FULL detail: the summary row + body + provenance.
+
+        P8d Wave 4a (finding #38): ``get``/``chain_head`` drill into a SINGLE
+        finding — a caller reaching for one by id/number wants the whole
+        record, not just the summary row ``query`` renders for a browsing
+        list. ``query`` is UNCHANGED (still :meth:`_render_finding_rows` —
+        summarised, never the body).
+
+        audit-w4a finding #1 (fixed): ``body`` is agent-supplied free text and
+        is normally multi-line — rendered raw it makes the ``created_at``/
+        ``provenance`` trailers ambiguous, and a hostile body containing a
+        line byte-identical to a real :meth:`_render_finding_rows` row (or to
+        a ``provenance:`` trailer) could forge a phantom finding. The fix
+        mirrors ``search.py``'s own documented pattern for a source body
+        (:func:`~loremaster.search._sanitise_line`'s docstring: *"Source
+        bodies are NOT run through this — they stay verbatim inside a
+        backtick fence"*): ``body`` renders VERBATIM inside a backtick fence
+        sized longer than any backtick run already inside it (the same
+        CommonMark rule :func:`~loremaster.search._max_backtick_run` /
+        ``SearchPipeline._fence_width`` apply to a source body), so an
+        embedded fence-shaped line can never escape early. The single-line
+        trailers (``created_at`` is a safe ISO timestamp; ``provenance`` is a
+        dict repr that can carry agent notes) run through
+        :func:`~loremaster.search._sanitise_line` — the same cross-module
+        pattern ``diff.py`` adopted this wave (finding #34) for the identical
+        archetype.
+        """
+        row = cls._render_finding_rows([finding])
+        fence = _FENCE_CHAR * max(_MIN_FENCE_WIDTH, _max_backtick_run(finding.body) + 1)
+        return (
+            f"{row}\n"
+            f"body:\n"
+            f"{fence}\n"
+            f"{finding.body}\n"
+            f"{fence}\n"
+            f"created_at: {_sanitise_line(finding.created_at.isoformat())}\n"
+            f"provenance: {_sanitise_line(str(finding.provenance))}"
         )
 
     async def remember(
@@ -1884,7 +2206,11 @@ class AppContext:
             labels: Extra flat labels stored alongside the note.
 
         Returns:
-            The deterministic ``uuid5`` memory id.
+            The deterministic ``uuid5`` memory id — ALONE for a save at or
+            under :data:`_MEMORY_DIGEST_WARNING_CHARS` (unchanged contract);
+            the id plus an appended guidance line (finding #31) for a save
+            over that length — GUIDANCE, never a rejection, the save already
+            succeeded by the time the warning is composed.
 
         Raises:
             ValueError: ``kind`` is outside :data:`_VALID_MEMORY_KINDS`, or the
@@ -1912,7 +2238,7 @@ class AppContext:
             *_metadata_to_labels(metadata),
             *(labels or []),
         ]
-        return await self.memory_backend.remember(
+        memory_id = await self.memory_backend.remember(
             text,
             kind=kind,
             importance=importance,
@@ -1920,6 +2246,10 @@ class AppContext:
             labels=composed_labels or None,
             supersedes=supersedes,
         )
+        if len(text) > _MEMORY_DIGEST_WARNING_CHARS:
+            warning = _MEMORY_DIGEST_WARNING_TEMPLATE.format(length=len(text))
+            return f"{memory_id}\n{warning}"
+        return memory_id
 
     async def recall(
         self,
@@ -1979,17 +2309,35 @@ class AppContext:
 
     @staticmethod
     def _render_claim_result(result: ClaimResult) -> str:
-        """Render an atomic-claim outcome (win names owner+time; loss names holder)."""
+        """Render an atomic-claim outcome (win names owner+time; loss names WHY).
+
+        P8d Wave 4a (finding #7, the phantom-holder site): a loss has TWO
+        distinct shapes the old render conflated — an OWNED loss (someone
+        else already holds it: name them) and a BLOCKED/UNOWNED loss (the
+        task has no owner at all — blocked by an unresolved dependency, or
+        superseded). The old text ("already held by {task.owner}") rendered
+        "already held by None" for the second shape, fabricating a holder
+        that never existed; this branches on ``task.owner`` so a loss NEVER
+        names a holder that isn't real.
+        """
         task = result.task
         if result.claimed:
             return (
                 f"claimed: task {task.id} is now owned by {task.owner} "
                 f"(claimed_at {task.claimed_at})"
             )
-        return (
-            f"not claimed: task {task.id} is already held by {task.owner} "
-            f"(status {task.status})"
-        )
+        if task.owner is not None:
+            return (
+                f"not claimed: task {task.id} is already held by {task.owner} "
+                f"(status {task.status})"
+            )
+        if task.superseded_by is not None:
+            reason = f"superseded by {task.superseded_by}"
+        elif task.blocked_by:
+            reason = f"blocked_by {task.blocked_by} unresolved"
+        else:
+            reason = f"status {task.status}"
+        return f"not claimed: task {task.id} is unowned but not claimable ({reason})"
 
     async def tasks(
         self,
@@ -2044,20 +2392,38 @@ class AppContext:
             f"unknown task action {action!r}; valid actions are {list(_TASK_ACTIONS)}"
         )
 
-    @staticmethod
-    def _render_task_rows(rows: list[Task]) -> str:
+    @classmethod
+    def _render_task_rows(cls, rows: list[Task]) -> str:
         """Render task rows as a summarised digest (id/subject/status/owner/blockers).
 
         Never a raw SurrealDB row: the opaque id has no ``task:`` record prefix and
         no ``RecordID`` leaks — just the fleet-visible fields.
+
+        P8d Wave 4a (finding #7): a superseded task's ``status`` field often
+        stays unchanged (e.g. still ``"open"``) — supersede stamps only
+        ``superseded_by``, never ``status`` — so a bare ``[open]`` marker was
+        indistinguishable from a genuinely open task, hiding the chain. A
+        superseded row instead renders ``[superseded → <successor id>]``.
         """
         if not rows:
             return _NO_TASKS_MATCHED
         return "\n".join(
-            f"- [{task.status}] {task.subject} (id {task.id}, owner {task.owner}, "
-            f"blocked_by {task.blocked_by})"
+            f"- {cls._task_status_marker(task)} {task.subject} "
+            f"(id {task.id}, owner {task.owner}, blocked_by {task.blocked_by})"
             for task in rows
         )
+
+    @staticmethod
+    def _task_status_marker(task: Task) -> str:
+        """The bracketed status marker for one task row (P8d Wave 4a, finding #7).
+
+        ``[superseded → <successor id>]`` when the row is superseded (visible
+        chain, never a bare status that would hide it); otherwise the plain
+        ``[<status>]``, unchanged.
+        """
+        if task.superseded_by is not None:
+            return f"[superseded → {task.superseded_by}]"
+        return f"[{task.status}]"
 
     async def index(
         self,
@@ -2312,9 +2678,6 @@ class AppContext:
     async def dead_code(
         self,
         *,
-        include_tests: bool = False,
-        include_dunders: bool = False,
-        include_entrypoints: bool = False,
         max_results: int = DEFAULT_DEAD_CODE_MAX_RESULTS,
     ) -> list[DeadCodeNode]:
         """Return the candidate dead/orphaned nodes in the project's LIVE tiers.
@@ -2322,6 +2685,11 @@ class AppContext:
         Computes the live tiers from ``self._config.effective_roots`` (only
         ``WATCH_LIVE`` tiers are swept — static-snapshot tiers are skipped). Then
         delegates to ``CodeGraph.dead_code``.
+
+        P8d Wave 4a (§5 params cut): the ``include_tests``/``include_dunders``/
+        ``include_entrypoints`` flags are CUT — their defaults (all ``False``,
+        the repo-wide sweep + HEURISTIC banner the plan wants) are now the
+        ONLY behaviour, never a caller-tunable knob.
 
         Not wrapped in ``_raise_if_empty_during_rebuild``: an empty result is the
         SUCCESS case for this tool — it means no dead code was found, NOT that a
@@ -2331,13 +2699,7 @@ class AppContext:
         live_tiers = [
             root.tier for root in self._config.effective_roots if root.watch == WATCH_LIVE
         ]
-        return await self.code_graph.dead_code(
-            live_tiers,
-            include_tests=include_tests,
-            include_dunders=include_dunders,
-            include_entrypoints=include_entrypoints,
-            max_results=max_results,
-        )
+        return await self.code_graph.dead_code(live_tiers, max_results=max_results)
 
     async def impact(
         self,
@@ -2364,18 +2726,74 @@ class AppContext:
         budget: int = _MAP_DEFAULT_BUDGET,
         focus: str | None = None,
         tests: bool = False,
+        *,
+        changed_since: str | None = None,
+        caller_model: str | None = None,
     ) -> MapResult:
         """Return the rank-ordered, budget-fitted "orient me here" map of the graph.
 
         Delegates to ``self._map_engine`` (constructed in ``__init__`` over the
         SAME ``code_graph`` + ``_rebuild_notice`` probe ``impact`` uses above) —
         a ranking is never served mid-rebuild. ``MapRebuildingError`` /
-        ``MapFocusNotFoundError`` propagate UNCHANGED, mirroring ``impact``'s
-        error-passthrough convention immediately above. ``tests=True`` appends the
-        segregated, ``[test]``-marked test-infra section (the default map excludes
-        it, surfacing an always-on ``tests=true`` affordance line instead).
+        ``MapFocusNotFoundError``/``MapChangedSinceError`` propagate UNCHANGED,
+        mirroring ``impact``'s error-passthrough convention immediately above.
+        ``tests=True`` appends the segregated, ``[test]``-marked test-infra
+        section (the default map excludes it, surfacing an always-on
+        ``tests=true`` affordance line instead). ``changed_since`` (P8d Wave
+        4a, net-new §5) tags modules touched since that snapshot ``[changed]``
+        — purely additive, never altering the pinned test/elision/focus/cap
+        semantics.
+
+        ``caller_model`` (P8d Wave 4a) is a PER-CALL re-denomination: rather
+        than mutate the shared ``self._map_engine`` (unsafe under concurrent
+        calls with different models), a caller_model call builds a throwaway
+        ``MapEngine`` wrapping the SAME graph/rebuild-probe/changed-since
+        resolver with a per-call counting closure — the shared engine's own
+        wiring is never touched. The default (``caller_model=None``) path is
+        byte-identical to before this param existed: the shared engine, untouched.
         """
-        return await self._map_engine.map(budget, focus, tests)
+        engine = self._map_engine
+        if caller_model is not None:
+            engine = MapEngine(
+                graph=self.code_graph,
+                count_tokens=lambda text: self._count_tokens_single(
+                    text, caller_model=caller_model
+                ),
+                rebuild_notice=self._rebuild_notice,
+                changed_since_resolver=self._resolve_changed_modules,
+            )
+        result = await engine.map(budget, focus, tests, changed_since=changed_since)
+        note = self._caller_model_note(caller_model)
+        if note is not None:
+            result = result.model_copy(update={"formatted": f"{result.formatted}\n{note}"})
+        return result
+
+    async def _resolve_changed_modules(self, changed_since: str) -> frozenset[str]:
+        """Resolve a ``changed_since`` snapshot id to its changed MODULE set.
+
+        Reuses the existing diff/snapshot machinery verbatim (never a new
+        index): ``self._diff_engine.diff(changed_since)`` against the LIVE
+        state names every added/removed/modified file since that snapshot;
+        each file's owning module is derived via the SAME
+        ``code_graph.module_qualified_name`` :class:`~loremaster.map.MapEngine`
+        itself already uses. An unknown/malformed snapshot id is re-cast into
+        the map-specific :class:`~loremaster.map.MapChangedSinceError` naming
+        ``lore_diff`` as the next step (its listing surfaces the real ids) —
+        never a bare propagated store error.
+        """
+        try:
+            diff = await self._diff_engine.diff(changed_since)
+        except SnapshotNotFoundError as exc:
+            raise MapChangedSinceError(
+                f"changed_since {changed_since!r} does not name a known snapshot "
+                f"({exc}). Next step: call lore_diff() with no arguments to list "
+                "the real snapshot ids."
+            ) from exc
+        changed_files = (*diff.added, *diff.removed, *diff.modified)
+        return frozenset(
+            self.code_graph.module_qualified_name(file_ref.file_path)
+            for file_ref in changed_files
+        )
 
     # -- rebuilding-notice seam (shared by the surviving corpus read tools) -
     #
@@ -2466,7 +2884,7 @@ class AppContext:
 
         return await rebuilding_notice(self.manifest)
 
-    def _count_tokens_single(self, text: str) -> int:
+    def _count_tokens_single(self, text: str, *, caller_model: str | None = None) -> int:
         """Adapt the embedder's BATCH token counter to ``MapEngine``'s single-string form.
 
         The embedder counts a batch (``list[str] -> list[int]``); ``MapEngine``
@@ -2492,11 +2910,42 @@ class AppContext:
         — so the ``TestTokenBudgetCalibration`` guard's ``SimpleNamespace(embedder=
         ...)`` stand-in (no engine attribute) resolves to the committed constant
         rather than raising ``AttributeError``.
+
+        Args:
+            text: The single rendered block to count.
+            caller_model: P8d Wave 4a (per-call, NEVER shared/mutated engine
+                state — safe under concurrency): when given and the engine has
+                a cached ratio for it, that ratio re-denominates this call
+                INSTEAD of the served constant; a model with no cached ratio
+                falls back to the served constant (never a blocking probe).
+                ``None`` (the default) is byte-identical to the pre-Wave-4a
+                behaviour.
         """
         voyage_count = int(self.embedder.count_tokens([text])[0])
         engine = getattr(self, "_calibration_engine", None)
-        calibration = engine.served_constant if engine is not None else TOKEN_BUDGET_CALIBRATION
+        # A MODULE-LEVEL function call (never ``self.<method>``): this method is
+        # exercised with a bare ``SimpleNamespace(embedder=...)`` standing in for
+        # ``self`` (``TestTokenBudgetCalibration``'s pre-existing guard), which
+        # carries no other AppContext methods — routing the calibration lookup
+        # through a helper bound to ``self`` would break that stand-in.
+        calibration = _resolve_calibration_constant(engine, caller_model)
         return math.ceil(voyage_count * calibration)
+
+    def _caller_model_note(self, caller_model: str | None) -> str | None:
+        """The honest render note for an unmeasured ``caller_model``, or ``None``.
+
+        ``None`` when ``caller_model`` was omitted, or when the engine (if any)
+        HAS a cached ratio for it — i.e. only fires exactly when
+        :meth:`_resolve_calibration_constant` silently fell back to the served
+        constant, so the caller is never left guessing which currency a
+        budgeted response was actually counted in.
+        """
+        if caller_model is None:
+            return None
+        engine = getattr(self, "_calibration_engine", None)
+        if engine is not None and engine.cached_ratio_for_model(caller_model) is not None:
+            return None
+        return _CALLER_MODEL_NO_RATIO_TEMPLATE.format(model=caller_model)
 
     # -- extension tools (seam 3) ------------------------------------------
 
@@ -3930,13 +4379,22 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 ),
             ),
         ] = _DEFAULT_SEARCH_K,
-        filters: Annotated[
-            dict[str, str] | None,
+        path: Annotated[
+            str | None,
             Field(
                 description=(
-                    "Optional server-side payload filters to scope the search, "
-                    "e.g. {'tier': 'custom'} or {'path': 'pkg/router.py'}. A 'path' "
-                    "(or 'file_path') filter is also what wait_for_fresh waits on. "
+                    "Optional exact indexed file path to scope the search to, e.g. "
+                    "'pkg/router.py'. Exact-match only — subtree/directory prefixes are "
+                    "not supported (a miss teaches the nearest real indexed path). Also "
+                    "what wait_for_fresh waits on. Omit for an unscoped search."
+                )
+            ),
+        ] = None,
+        tier: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional exact source tier to scope the search to (e.g. 'custom'). "
                     "Omit for an unscoped search."
                 )
             ),
@@ -3963,9 +4421,42 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = "auto",
+        budget: Annotated[
+            int,
+            Field(
+                ge=_SEARCH_BUDGET_FLOOR,
+                le=_SEARCH_BUDGET_CAP,
+                description=(
+                    f"Claude-token ceiling for the served hit list (default "
+                    f"{_SEARCH_BUDGET_DEFAULT}, min {_SEARCH_BUDGET_FLOOR}, max "
+                    f"{_SEARCH_BUDGET_CAP}). Hits squeezed out by the budget are "
+                    "counted and named in an explicit elision notice, never silently "
+                    "dropped — raise it for a broader survey."
+                ),
+            ),
+        ] = _SEARCH_BUDGET_DEFAULT,
+        caller_model: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional Claude model name to re-denominate the response budget "
+                    "under THAT model's measured token ratio instead of the generation "
+                    "default. A model with no measured ratio yet is served with the "
+                    "generation constant and an honest notice — never a blocking "
+                    "measurement. Omit to use the generation default."
+                )
+            ),
+        ] = None,
     ) -> list[SearchResult]:
         return await _app_context(context).search(
-            query, k, filters, wait_for_fresh=wait_for_fresh, detail_level=detail_level
+            query,
+            k,
+            path=path,
+            tier=tier,
+            wait_for_fresh=wait_for_fresh,
+            detail_level=detail_level,
+            budget=budget,
+            caller_model=caller_model,
         )
 
     @mcp.tool(
@@ -4689,46 +5180,15 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "consumers at all is reason 'no_references'). This is a HEURISTIC / "
             "CANDIDATE detector, NOT proof of actual deadness: dynamic dispatch, "
             "decorators, reflection, and symbols used by consumers outside the indexed "
-            "tree can evade it. By default excludes test nodes (their own test files), "
+            "tree can evade it. Always excludes test nodes (their own test files), "
             "dunder methods (__init__, __repr__, …), and __main__/__init__ entry modules "
-            "— these are always excluded to suppress known false positives; use the "
-            "include_* flags to include them. Use lore_impact to investigate a "
-            "specific suspect symbol before removing it."
+            "— known false positives suppressed unconditionally. Use lore_impact to "
+            "investigate a specific suspect symbol before removing it."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     async def dead_code(
         context: Context[Any, AppContext, Any],
-        include_tests: Annotated[
-            bool,
-            Field(
-                description=(
-                    "When True, include nodes whose own file_path is a test file "
-                    "(test_*.py, *_test.py, or under a tests/ directory). Default False "
-                    "— test nodes are excluded because they are not dead by definition."
-                )
-            ),
-        ] = False,
-        include_dunders: Annotated[
-            bool,
-            Field(
-                description=(
-                    "When True, include method nodes whose bare name is a dunder "
-                    "(__init__, __repr__, __str__, …). Default False — dunders are "
-                    "runtime/protocol-invoked and never carry an explicit call edge."
-                )
-            ),
-        ] = False,
-        include_entrypoints: Annotated[
-            bool,
-            Field(
-                description=(
-                    "When True, include __main__ entry modules and __init__ package "
-                    "modules. Default False — these are run as scripts or imported by "
-                    "the Python import system, not by dotted-name import edges."
-                )
-            ),
-        ] = False,
         max_results: Annotated[
             int,
             Field(
@@ -4743,12 +5203,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             ),
         ] = DEFAULT_DEAD_CODE_MAX_RESULTS,
     ) -> list[DeadCodeNode]:
-        return await _app_context(context).dead_code(
-            include_tests=include_tests,
-            include_dunders=include_dunders,
-            include_entrypoints=include_entrypoints,
-            max_results=max_results,
-        )
+        return await _app_context(context).dead_code(max_results=max_results)
 
     @mcp.tool(
         name="lore_impact",
@@ -4765,7 +5220,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "verb for this project — absorbs what were previously separate "
             "direct-importer / transitive-closure / reference-count / covering-test "
             "tools. Reach for this before removing or refactoring something "
-            "lore_dead_code flagged."
+            "lore_dead_code flagged. Results reflect the INDEX: after a "
+            "same-session rename/edit, reconcile (lore_index) before trusting "
+            "this as a deletion gate."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -4852,8 +5309,36 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = False,
+        changed_since: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional snapshot id, exactly as lore_diff lists them. When "
+                    "given, every module containing a file added/removed/modified "
+                    "since that snapshot is tagged [changed] plus one summary line — "
+                    "purely additive, never altering the ranking/elision/focus/cap "
+                    "behaviour above. An unknown snapshot id teaches lore_diff's "
+                    "listing rather than raising a bare store error."
+                )
+            ),
+        ] = None,
+        caller_model: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional Claude model name to re-denominate the token budget "
+                    "under THAT model's measured ratio instead of the generation "
+                    "default. A model with no measured ratio yet is served with the "
+                    "generation constant and an honest notice appended to the "
+                    "rendered map — never a blocking measurement. Omit to use the "
+                    "generation default."
+                )
+            ),
+        ] = None,
     ) -> MapResult:
-        return await _app_context(context).map(budget, focus, tests)
+        return await _app_context(context).map(
+            budget, focus, tests, changed_since=changed_since, caller_model=caller_model
+        )
 
     # After the built-ins, register the extension-contributed seam-3 tools.
     _register_extension_tools(mcp, server)

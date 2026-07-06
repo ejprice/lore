@@ -58,7 +58,8 @@ The pinned contract (unchanged from the pre-port version, plus P6 additions):
 * **Clean not-found, never a crash, never a wrong hit.** An unknown name or a
   non-symbol chunk type (``imports``) raises :class:`GetSymbolError` naming the
   qualified name and pointing at concrete next steps (``search_code`` /
-  module-qualify / ``reindex``).
+  module-qualify / ``lore_index(reconcile=True)`` — F4 audit-w4a: never the bare,
+  post-flip-nonexistent ``reindex`` verb).
 * **A downed store is LOUD, never a silent not-found (P6 new pin).**
   :class:`TestStoreDownIsNeverSilentNotFound` arms
   :meth:`FakeSurrealStore.arm_connection_failure` and pins that
@@ -317,6 +318,17 @@ class TestGetSymbolModuleQualifiedName:
         with pytest.raises(GetSymbolError):
             await tool.get_symbol(f"other.mod.{_EXPECTED_CLASS}")
 
+    async def test_wrong_module_prefix_names_the_actual_module_holding_the_bare_name(
+        self, tool: SymbolTool
+    ) -> None:
+        # P8d Wave 4a (finding #17): the bare name resolves fine elsewhere —
+        # the miss must name the REAL module(s) holding it, not just say "not
+        # found" and leave the caller guessing.
+        with pytest.raises(GetSymbolError) as exc_info:
+            await tool.get_symbol(f"other.mod.{_EXPECTED_CLASS}")
+        message = str(exc_info.value)
+        assert "pkg.calc" in message
+
 
 class TestRepeatedPackageDirBug:
     """The exact reported failure: a deep file path with a repeated package dir.
@@ -560,7 +572,23 @@ class TestUnknownSymbol:
         # bare "not found" that leaves the caller guessing.
         assert missing_name in message
         assert "lore_search" in message
-        assert "reindex" in message
+        # F4 (audit-w4a): post-flip there is no `lore_reindex` tool — the bare
+        # "reindex" verb must be GONE; the live guidance is
+        # `lore_index(reconcile=True)`, already named via `_INDEX_LAG_HINT`
+        # in this same message.
+        assert "reindex" not in message
+        assert "lore_index" in message
+        assert "reconcile" in message
+
+    async def test_not_found_names_the_index_lag_possibility(self, tool: SymbolTool) -> None:
+        # P8d Wave 4a (finding #18): a not-found DURING active editing may
+        # simply be an index-lag artifact — the error should teach the
+        # wait_for_fresh / lore_index reconcile next steps, not just "reindex".
+        with pytest.raises(GetSymbolError) as exc_info:
+            await tool.get_symbol("Calculator.nonexistent_method")
+        message = str(exc_info.value)
+        assert "wait_for_fresh" in message
+        assert "lore_index" in message
 
 
 class TestTolerantRowReading:

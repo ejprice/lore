@@ -1784,7 +1784,7 @@ class TestRebuildingNoticeSeam:
         # FakeEmbedder — see _NO_MATCH_FILTER). Empty + in_progress must RAISE.
         with pytest.raises(Exception) as excinfo:  # noqa: PT011 - message asserted below
             await app_ctx.search(
-                "champion routing widget", k=5, filters=dict(_NO_MATCH_FILTER)
+                "champion routing widget", k=5, path=_NO_MATCH_FILTER["file_path"]
             )
 
         message = str(excinfo.value)
@@ -1848,7 +1848,7 @@ class TestRebuildingNoticeSeam:
         agent_visible_text = ""
         try:
             results = await app_ctx.search(
-                "champion routing widget", k=5, filters=dict(_NO_MATCH_FILTER)
+                "champion routing widget", k=5, path=_NO_MATCH_FILTER["file_path"]
             )
             # The tool RETURNED (did not raise). Convert it the way the SDK does and
             # read what actually reaches the agent — a bare [] drops any attribute.
@@ -1873,11 +1873,18 @@ class TestRebuildingNoticeSeam:
     async def test_a8b_search_code_empty_idle_is_plain_empty_no_raise(
         self, tmp_path: Path, app_context_factory: Any
     ) -> None:
-        """A8b: search_code empty + NO rebuild → plain empty list, NO raise, NO notice.
+        """A8b: search_code empty + NO rebuild → NO raise, NEVER dressed as rebuilding.
 
         The false-positive guard: when the store is idle (or the rebuild is done),
-        an empty result is a TRUE 'no matches' and must stay a plain empty list —
-        never raised, never dressed up as rebuild-in-progress.
+        an empty CODE-HIT result is a TRUE 'no matches' and must never raise, and
+        must never be dressed up as rebuild-in-progress.
+
+        P8d Wave 4a (findings #25/#32): a path/tier filter matching no code hit
+        now renders an honest teaching notice (never a bare/silent empty) — this
+        is NOT the false-positive rebuild-dressing bug A8b guards against (the
+        notice never mentions rebuilding), so the two coexist: this test still
+        asserts zero HIT-kind results and no rebuild text, just not a literally
+        empty list anymore.
         """
         # real-Surreal
         slug = _slug()
@@ -1891,19 +1898,20 @@ class TestRebuildingNoticeSeam:
         # NO rebuild status seeded → schema_rebuild.state is idle.
 
         # Same deterministic-empty trick as A8a: a server-side filter matching no
-        # indexed point yields a TRUE empty result regardless of the embedder.
+        # indexed point yields a TRUE empty (of CODE HITS) result regardless of
+        # the embedder.
         results = await app_ctx.search(
-            "champion routing widget", k=5, filters=dict(_NO_MATCH_FILTER)
+            "champion routing widget", k=5, path=_NO_MATCH_FILTER["file_path"]
         )
 
-        # The substantive result is empty (true no-match: the filter excludes all)
-        # and the call did NOT raise.
-        assert len(results) == 0, (
-            "the no-match file_path filter excludes every point → empty result"
+        # The substantive (hit) result is empty (true no-match: the filter
+        # excludes all code hits) and the call did NOT raise.
+        assert not [r for r in results if r.kind == "hit"], (
+            "the no-match file_path filter excludes every point → no HIT results"
         )
         assert not _mentions_rebuilding(repr(results)), (
-            "an empty search_code when NOT rebuilding must stay a plain empty list "
-            f"with NO rebuilding text; result repr was {results!r}"
+            "an empty search_code when NOT rebuilding must never be dressed up "
+            f"with rebuilding text; result repr was {results!r}"
         )
 
     async def test_a8c_impact_empty_in_progress_raises_rebuilding_error(

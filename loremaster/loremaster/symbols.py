@@ -76,6 +76,14 @@ _DOTTED_SEP = "."
 _MAX_IDENTITY_SEGMENTS = 2
 _PY_SUFFIX = ".py"
 
+# P8d Wave 4a (finding #18, index-lag honesty): a not-found may simply be a
+# not-yet-re-embedded file rather than a genuine absence — static text (no
+# mtime probing) naming the two real recovery verbs.
+_INDEX_LAG_HINT = (
+    "If this file was recently edited, the index may be lagging — retry "
+    "lore_search(wait_for_fresh=True) or lore_index(reconcile=True)."
+)
+
 
 class GetSymbolError(Exception):
     """Raised when a qualified name resolves to no stored Python symbol.
@@ -244,7 +252,51 @@ class SymbolResolver:
         Returns:
             The matched row, or ``None`` when nothing resolves.
         """
+        for module_segments, candidates in await self._module_qualified_candidates(qualified_name):
+            for row in candidates:
+                if self._module_path_matches(row, module_segments):
+                    return row
+        return None
+
+    async def find_siblings(self, qualified_name: str) -> list[dict[str, Any]]:
+        """The sibling rows sharing ``qualified_name``'s bare tail, ANY module.
+
+        P8d Wave 4a (finding #17): when a module-qualified lookup misses
+        (:meth:`resolve` returned ``None``), this answers "does the BARE name
+        exist somewhere else?" — the first identity-length whose bare tail has
+        ANY stored row wins (mirroring :meth:`_find_module_qualified`'s own
+        length-priority order), regardless of whether ITS module path matches
+        the caller's prefix. :class:`SymbolTool` uses this to name the real
+        module(s) holding the symbol instead of a bare not-found. ``[]`` for a
+        bare (non-dotted) name — there is no "other module" to suggest.
+
+        Args:
+            qualified_name: The full dotted name the caller passed.
+
+        Returns:
+            Every row sharing the bare tail at the first non-empty identity
+            length, or ``[]`` when nothing shares any candidate tail.
+        """
+        for _module_segments, candidates in await self._module_qualified_candidates(
+            qualified_name
+        ):
+            if candidates:
+                return candidates
+        return []
+
+    async def _module_qualified_candidates(
+        self, qualified_name: str
+    ) -> list[tuple[list[str], list[dict[str, Any]]]]:
+        """The ``(module_segments, candidate_rows)`` pairs a dotted name tries, in order.
+
+        Shared by :meth:`_find_module_qualified` (which additionally filters by
+        module-path match) and :meth:`find_siblings` (which does not) — a
+        SINGLE place walks the trailing-1-then-2-segment identity-length
+        priority so the two can never drift apart on which candidates a given
+        dotted name considers.
+        """
         segments = qualified_name.split(_DOTTED_SEP)
+        pairs: list[tuple[list[str], list[dict[str, Any]]]] = []
         for identity_length in range(1, _MAX_IDENTITY_SEGMENTS + 1):
             if identity_length >= len(segments):
                 # No leading module segments remain — that is the exact case,
@@ -252,13 +304,27 @@ class SymbolResolver:
                 break
             module_segments = segments[:-identity_length]
             candidate_identity = _DOTTED_SEP.join(segments[-identity_length:])
-            for row in await self._find_all_by_identity(candidate_identity):
-                if self._module_path_matches(row, module_segments):
-                    return row
-        return None
+            pairs.append((module_segments, await self._find_all_by_identity(candidate_identity)))
+        return pairs
 
     @staticmethod
-    def _module_path_matches(row: dict[str, Any], module_segments: list[str]) -> bool:
+    def _module_segments_from_file_path(file_path: str) -> list[str]:
+        """Derive the dotted module path segments a stored ``file_path`` maps to.
+
+        ``pkg/calc.py`` -> ``["pkg", "calc"]``; ``pkg/__init__.py`` -> ``["pkg"]``
+        (``__init__`` is the package itself, never its own segment).
+        """
+        pure_path = PurePosixPath(file_path)
+        segments = list(pure_path.parts[:-1])
+        stem = pure_path.name
+        if stem.endswith(_PY_SUFFIX):
+            stem = stem[: -len(_PY_SUFFIX)]
+        if stem and stem != "__init__":
+            segments.append(stem)
+        return segments
+
+    @classmethod
+    def _module_path_matches(cls, row: dict[str, Any], module_segments: list[str]) -> bool:
         """Whether the row's module path is a trailing match of ``module_segments``.
 
         The stored ``file_path`` (e.g. ``pkg/calc.py``) maps to a dotted module
@@ -283,14 +349,7 @@ class SymbolResolver:
         file_path = row.get(_FILE_PATH_KEY)
         if not isinstance(file_path, str):
             return False
-        pure_path = PurePosixPath(file_path)
-        file_module_segments = list(pure_path.parts[:-1])
-        stem = pure_path.name
-        if stem.endswith(_PY_SUFFIX):
-            stem = stem[: -len(_PY_SUFFIX)]
-        # ``__init__`` is the package itself: ``pkg/__init__.py`` -> module ``pkg``.
-        if stem and stem != "__init__":
-            file_module_segments.append(stem)
+        file_module_segments = cls._module_segments_from_file_path(file_path)
         if not module_segments or not file_module_segments:
             return False
         # Compare the common tail: the shorter path's segments must equal the
@@ -338,19 +397,38 @@ class SymbolTool:
 
         Raises:
             GetSymbolError: If no Python symbol chunk resolves — a clean
-                not-found, naming the qualified name.
+                not-found, naming the qualified name. When the BARE tail
+                resolves under a DIFFERENT module (P8d Wave 4a, finding #17),
+                the message names the real module(s) holding it instead of a
+                bare miss.
             SurrealConnectionError: The store's connection is down — propagates
                 straight through, never masquerading as a clean not-found.
         """
         row = await self._resolver.resolve(qualified_name)
         if row is not None:
             return self._to_resolved(row)
+        siblings = await self._resolver.find_siblings(qualified_name)
+        if siblings:
+            modules = sorted(
+                {
+                    ".".join(SymbolResolver._module_segments_from_file_path(sibling[_FILE_PATH_KEY]))
+                    for sibling in siblings
+                    if isinstance(sibling.get(_FILE_PATH_KEY), str)
+                }
+            )
+            if modules:
+                raise GetSymbolError(
+                    f"no Python symbol named {qualified_name!r} is indexed under that "
+                    f"module path, but the bare name is defined in: {', '.join(modules)}. "
+                    f"Next step: module-qualify with one of those modules, or try "
+                    f"lore_search({qualified_name!r}). {_INDEX_LAG_HINT}"
+                )
         raise GetSymbolError(
             f"no Python symbol named {qualified_name!r} is indexed "
             f"(searched chunk types {SYMBOL_CHUNK_TYPES!r}). Next step: try "
-            f"lore_search({qualified_name!r}) for a semantic match, module-qualify "
-            f"the name if it collides across files (e.g. 'pkg.mod.Name'), or run "
-            f"reindex() if the file was just added."
+            f"lore_search({qualified_name!r}) for a semantic match, or module-qualify "
+            f"the name if it collides across files (e.g. 'pkg.mod.Name'). "
+            f"{_INDEX_LAG_HINT}"
         )
 
     @staticmethod

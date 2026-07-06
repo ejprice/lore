@@ -97,11 +97,13 @@ DetailSelector = Literal["auto", "summary", "source"]
 _DETAIL_AUTO = "auto"
 
 # The discriminator on every :class:`SearchResult`: a real code hit vs a visible,
-# provenance-stamped injected memory line (item 5). The two must be tellable apart
-# so an agent never mistakes response-level guidance for a cited source span.
-ResultKind = Literal["hit", "memory"]
+# provenance-stamped injected memory line (item 5) vs a server-composed teaching
+# NOTICE (P8d Wave 4a: a filter-miss teach, a budget-elision trailer, or a
+# caller_model honesty note — never a cited source span, never memory guidance).
+ResultKind = Literal["hit", "memory", "notice"]
 HIT_KIND: ResultKind = "hit"
 MEMORY_KIND: ResultKind = "memory"
+NOTICE_KIND: ResultKind = "notice"
 
 # The per-chunk freshness warning (plan: "⚠ re-indexing — may be stale"). A
 # returned chunk whose file is in-flight is flagged with this — never blocked.

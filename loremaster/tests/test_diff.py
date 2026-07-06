@@ -392,6 +392,28 @@ class TestListSnapshots:
         assert clamped[0].id == ids[2]
 
 
+class TestCountSnapshots:
+    """``count_snapshots`` — the cheap total the P8d Wave 4a listing pagination
+    trailer needs (finding #8: the default 20-row listing must say "showing
+    N of M", never silently cap without a total to compare against)."""
+
+    async def test_empty_store_is_zero(self, diff_bench: _DiffBench) -> None:
+        assert await diff_bench.engine.count_snapshots() == 0
+
+    async def test_counts_every_snapshot_regardless_of_list_limit(
+        self, diff_bench: _DiffBench
+    ) -> None:
+        await _index_file(diff_bench, file_path=_PRICING_PATH, chunk_sources=_PRICING_A)
+        for _ in range(3):
+            await diff_bench.stamper.stamp()
+
+        assert await diff_bench.engine.count_snapshots() == 3
+        # The count is independent of any list_snapshots limit.
+        limited = await diff_bench.engine.list_snapshots(limit=1)
+        assert len(limited) == 1
+        assert await diff_bench.engine.count_snapshots() == 3
+
+
 # ===========================================================================
 # diff — file level
 # ===========================================================================

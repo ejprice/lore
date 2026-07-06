@@ -125,6 +125,10 @@ _MAX_LIST_LIMIT = 500
 # never collide with a caller-supplied filter param on the same statement.
 _LIMIT_PARAM = "diff_limit"
 
+# The field a ``SELECT count() ... GROUP ALL`` result carries the total under
+# (mirrors ``store/surreal.py``'s own ``_COUNT_KEY`` idiom for the same shape).
+_COUNT_KEY = "count"
+
 # A defensive bound on how many chunk rows a single changed file's live-fidelity
 # read may pull from the store — mirrors ``SnapshotStamper._MAX_CHUNKS_PER_FILE``.
 # Real files sit far below this; hitting it EXACTLY is a possible-truncation
@@ -661,6 +665,28 @@ class DiffEngine:
             )
         )
         return [self._row_to_summary(row) for row in rows]
+
+    async def count_snapshots(self) -> int:
+        """The TOTAL number of recorded snapshots — independent of any list limit.
+
+        P8d Wave 4a (finding #8): the default snapshot LISTING silently capped
+        at 20 rows with no total to compare against ("75 snapshots exist, 20
+        shown" was unknowable). A bounded ``SELECT count() ... GROUP ALL``
+        (mirrors :meth:`~loremaster.store.surreal.SurrealStore.count`'s own
+        idiom) gives the honest denominator for an explicit "showing N of M"
+        trailer — never a second unbounded scan.
+
+        Returns:
+            The total snapshot count; ``0`` for an empty store.
+
+        Raises:
+            SurrealConnectionError: The server is unreachable or the socket died.
+        """
+        result = await self._query(f"SELECT count() FROM {SNAPSHOT_TABLE} GROUP ALL")
+        rows = self._as_rows(result)
+        if not rows:
+            return 0
+        return int(rows[0].get(_COUNT_KEY, 0))
 
     @staticmethod
     def _row_to_summary(row: dict[str, Any]) -> SnapshotSummary:
