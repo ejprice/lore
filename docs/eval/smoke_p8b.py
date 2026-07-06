@@ -79,10 +79,8 @@ PRE_EXISTING_TOOL_NAMES = frozenset(
         "lore_tasks",
         "lore_reindex",
         "lore_index_status",
-        "lore_what_imports",
-        "lore_blast_radius",
-        "lore_tests_for",
-        "lore_references",
+        # P8d Wave 2: lore_what_imports / lore_blast_radius / lore_tests_for /
+        # lore_references folded into lore_impact; no longer on the wire surface.
         "lore_dead_code",
         "lore_impact",
         "lore_map",

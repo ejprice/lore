@@ -66,6 +66,7 @@ Auth wiring (D9/D11)
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -179,10 +180,12 @@ def test_orphan_helper():
 # lore_impact / lore_map corpora (P6-tail tool wiring).
 # --------------------------------------------------------------------------- #
 # A target with a REAL production reference for the impact e2e/wrapper tests
-# (mirrors ``test_what_imports_traverses_graph`` / ``test_references_returns_
-# production_test_split``, which already prove ``pkg.base.BaseRouter`` has a
-# genuine production reference from ``pkg.router`` — reused here rather than
-# re-deriving a second oracle target).
+# (``pkg.base.BaseRouter`` has a genuine production reference from
+# ``pkg.router`` via the in-project import in ``_PY_MODULE`` below — reused
+# here rather than re-deriving a second oracle target; the sibling tests that
+# once independently proved this same fact, test_what_imports_traverses_graph
+# and test_references_returns_production_test_split, were both removed in
+# P8d Wave 2's impact fold).
 _IMPACT_TARGET_LIVE = _PY_MODULE_IMPORT_FQN
 _IMPACT_UNKNOWN_TARGET = "totally.bogus.symbol"
 _MAP_UNKNOWN_FOCUS = "totally.bogus.symbol"
@@ -952,10 +955,15 @@ _BARE_TOOL_NAMES = {
     "recall",
     "reindex",
     "index_status",
-    "what_imports",
-    "blast_radius",
-    "tests_for",
-    "references",
+    # P8d Wave 2 (the impact fold): what_imports / blast_radius / tests_for /
+    # references FOLD into lore_impact (depth=1 renders direct consumers +
+    # covering tests + reference counts; depth>1 renders the module rollup) —
+    # they no longer publish their own tool names. The graph_surreal ENGINE
+    # methods survive unchanged (impact.py / map.py call them directly). The
+    # AppContext.what_imports handler briefly survived unregistered (kept for
+    # test_schema_rebuild.py's TestRebuildingNoticeSeam A8c pin) but was
+    # deleted outright once fixer-w2f repointed that pin at lore_impact — no
+    # residual what_imports surface remains anywhere in AppContext.
     "dead_code",
     # P6-tail (lore_impact / lore_map): the "who depends on this?" / "orient
     # me here" verdict-bearing rollups over the same unified graph the other
@@ -1025,6 +1033,74 @@ class TestToolRegistration:
         )
 
 
+# A token matching the tool-name SHAPE (``lore_`` + lowercase/underscore) that is
+# NOT itself a tool name but is still legitimate to appear in served text (e.g. a
+# config key or file name that happens to share the shape) belongs here, each
+# entry carrying a one-line justification. Empty today: every ``lore_``-shaped
+# token actually served by the live surface names a currently-registered tool.
+_LEGITIMATE_NON_TOOL_LORE_TOKENS: frozenset[str] = frozenset()
+
+
+class TestNoDeadToolNamesInAgentFacingText:
+    """No text FastMCP actually serves to a connecting agent may name a dead tool.
+
+    Two flip waves in a row shipped the SAME defect archetype: a live,
+    agent-facing string pointing at a tool name the very same wave had just
+    deleted. Wave 1's bare -> ``lore_``-prefixed rename sweep left
+    ``lore_read``'s not-found/stale text teaching the dead ``search_code``
+    (REPORT-audit-w1.md F1/F4/F5). Wave 2's impact fold repeated it twice over:
+    ``lore_dead_code``'s description told an agent to "Use lore_references"
+    after Wave 2 folded ``lore_references`` into ``lore_impact``
+    (REPORT-audit-w2.md F1), and ``lore_findings``' ``area`` parameter example
+    named the dead ``lore_tests_for`` (F2). Both slipped every existing gate:
+    the exact-set pin above (:class:`TestToolRegistration`) checks tool NAMES,
+    never description TEXT; mypy/ruff don't parse free text; ``TestToolDescriptions``
+    only asserts POSITIVE substrings, never the ABSENCE of a dead one.
+
+    This test closes the whole defect CLASS rather than the two instances: it
+    extracts every token matching the tool-name shape from every piece of text
+    FastMCP actually serves — the server ``instructions``, every tool's
+    top-level ``description``, AND every tool's per-parameter ``inputSchema``
+    field description (F2 lives in a PARAMETER description, not a top-level
+    one — a scan limited to top-level text alone would have missed it) — and
+    asserts every such token names a tool CURRENTLY on the registered surface.
+    A future rename/fold that leaves one stale reference anywhere in served
+    text fails this test immediately, with no adversarial audit required to
+    catch it by hand.
+    """
+
+    _TOOL_NAME_TOKEN = re.compile(r"\blore_[a-z_]+\b")
+
+    async def test_every_lore_prefixed_token_in_served_text_is_a_live_tool_name(
+        self, tmp_path: Path
+    ) -> None:
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        tools = await mcp.list_tools()
+        names = {tool.name for tool in tools}
+
+        texts: dict[str, str] = {"_INSTRUCTIONS": mcp.instructions or ""}
+        for tool in tools:
+            texts[f"{tool.name}.description"] = tool.description or ""
+            properties = (tool.inputSchema or {}).get("properties", {})
+            for field_name, field_schema in properties.items():
+                texts[f"{tool.name}.{field_name}"] = field_schema.get("description") or ""
+
+        offenders: dict[str, set[str]] = {}
+        for label, text in texts.items():
+            tokens = set(self._TOOL_NAME_TOKEN.findall(text))
+            tokens -= _LEGITIMATE_NON_TOOL_LORE_TOKENS
+            dead = tokens - names
+            if dead:
+                offenders[label] = dead
+
+        assert not offenders, (
+            "served agent-facing text names a tool that is NOT on the registered "
+            f"surface (a dead/renamed tool) -- {offenders}"
+        )
+
+
 # --------------------------------------------------------------------------- #
 # In-band consumer guidance (server instructions + per-tool descriptions +
 # input-schema field descriptions + tool annotations)
@@ -1038,10 +1114,6 @@ _READ_ONLY_TOOLS = {
     "lore_verify",
     "lore_recall",
     "lore_index_status",
-    "lore_what_imports",
-    "lore_blast_radius",
-    "lore_tests_for",
-    "lore_references",
     "lore_dead_code",
     # P6-tail: both are pure reads over the graph, never mutating index/memory
     # state — read-only exactly like their five graph-tool neighbours above.
@@ -1197,11 +1269,18 @@ class TestToolDescriptions:
         assert "exact" in tools["lore_get_symbol"].description.lower()
         assert "semantic" in tools["lore_search"].description.lower()
 
-    async def test_what_imports_vs_blast_radius_disambiguated(self, tmp_path: Path) -> None:
-        # what_imports = DIRECT importers; blast_radius = TRANSITIVE closure.
+    async def test_impact_direct_vs_transitive_disambiguated_by_depth(
+        self, tmp_path: Path
+    ) -> None:
+        # P8d Wave 2 fold: what_imports (DIRECT importers) and blast_radius
+        # (TRANSITIVE closure) no longer publish their own tools — the SAME
+        # direct-vs-transitive distinction is now made by lore_impact's own
+        # 'depth' parameter (depth=1 direct, depth>1 transitive rollup), so
+        # its ONE description must still teach both halves.
         tools = await self._tools_by_name(tmp_path)
-        assert "direct" in tools["lore_what_imports"].description.lower()
-        assert "transitive" in tools["lore_blast_radius"].description.lower()
+        description = tools["lore_impact"].description.lower()
+        assert "direct" in description
+        assert "transitive" in description
 
     async def test_verify_description_teaches_when_and_the_verdicts(
         self, tmp_path: Path
@@ -1350,12 +1429,15 @@ class TestInputParamConstraints:
 
     async def test_numeric_params_publish_minimum(self, tmp_path: Path) -> None:
         tools = await self._tools_by_name(tmp_path)
-        # k on search + recall, depth + max_results on blast_radius all
-        # carry a minimum of 1 (a count/depth below 1 is meaningless).
+        # k on search + recall, depth on lore_impact (P8d Wave 2: the folded
+        # blast_radius tool is gone, but its ge=1 depth constraint lives on
+        # unchanged as lore_impact's own 'depth' param), max_results on
+        # lore_dead_code all carry a minimum of 1 (a count/depth below 1 is
+        # meaningless).
         search_k = tools["lore_search"].inputSchema["properties"]["k"]
         recall_k = tools["lore_recall"].inputSchema["properties"]["k"]
-        depth = tools["lore_blast_radius"].inputSchema["properties"]["depth"]
-        max_results = tools["lore_blast_radius"].inputSchema["properties"]["max_results"]
+        depth = tools["lore_impact"].inputSchema["properties"]["depth"]
+        max_results = tools["lore_dead_code"].inputSchema["properties"]["max_results"]
         assert search_k.get("minimum") == 1
         assert recall_k.get("minimum") == 1
         assert depth.get("minimum") == 1
@@ -1368,15 +1450,15 @@ class TestInputParamConstraints:
 
         mcp = await self._server(tmp_path)
         search_model = self._arg_model(mcp, "lore_search")
-        blast_model = self._arg_model(mcp, "lore_blast_radius")
-        # k=0 (search) and depth=-1 (blast_radius) are schema-rejected at validation.
+        impact_model = self._arg_model(mcp, "lore_impact")
+        # k=0 (search) and depth=-1 (lore_impact) are schema-rejected at validation.
         with pytest.raises(ValidationError):
             search_model.model_validate({"query": "x", "k": 0})
         with pytest.raises(ValidationError):
-            blast_model.model_validate({"target": "x", "depth": -1})
+            impact_model.model_validate({"target": "x", "depth": -1})
         # A positive value passes — the bound rejects below-1, not all values.
         search_model.model_validate({"query": "x", "k": 1})
-        blast_model.model_validate({"target": "x", "depth": 1})
+        impact_model.model_validate({"target": "x", "depth": 1})
 
 
 class TestToolAnnotations:
@@ -1467,15 +1549,6 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
     # rather than as a fixed field-name table here.
     "lore_reindex": {"files_indexed", "files_failed", "files_skipped"},
     "lore_index_status": {"files_indexed", "files_failed", "files_skipped"},
-    "lore_what_imports": {"qualified_name", "kind", "file_path", "tier"},
-    "lore_blast_radius": {"qualified_name", "kind", "file_path", "tier"},
-    "lore_tests_for": {"qualified_name", "kind", "file_path", "tier"},
-    "lore_references": {
-        "qualified_name",
-        "production_references",
-        "test_references",
-        "referencing",
-    },
     "lore_dead_code": {
         "id",
         "kind",
@@ -1486,9 +1559,12 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
         "test_references",
         "reason",
     },
-    # P6-tail: ImpactResult is a SCALAR return (mirrors lore_references /
-    # lore_index_status), so its own fields are top-level properties; its
-    # nested ModuleRollup fields surface under $defs.
+    # P6-tail: ImpactResult is a SCALAR return (mirrors lore_index_status), so
+    # its own fields are top-level properties; its nested ModuleRollup fields
+    # surface under $defs. P8d Wave 2: absorbs the folded lore_references /
+    # lore_what_imports / lore_blast_radius / lore_tests_for capability —
+    # no new fields (direct_consumers/covering_tests/module_rollups already
+    # carried them).
     "lore_impact": {
         "target",
         "verdict",
@@ -1970,45 +2046,24 @@ class TestToolBehaviourEndToEnd:
         )
         assert note in rendered
 
-    async def test_what_imports_traverses_graph(self, indexed_context: AppContext) -> None:
-        # The router imports the in-project ``pkg.base.BaseRouter`` (a stdlib
-        # import like ``os`` is dropped by the RESOLVED keep/drop rule).
-        importers = await indexed_context.what_imports(_PY_MODULE_IMPORT_FQN)
-        assert any(n.qualified_name == "pkg.router" for n in importers)
-
-    async def test_blast_radius_traverses_graph(self, indexed_context: AppContext) -> None:
-        # ChampionRouter inherits nothing, but the module DEFINES it, so the
-        # module is a reverse-dependency of the class within depth 1.
-        radius = await indexed_context.blast_radius("pkg.router.ChampionRouter", depth=2, max_results=20)
-        names = {n.qualified_name for n in radius}
-        assert "pkg.router" in names
-
-    async def test_tests_for_returns_list(self, indexed_context: AppContext) -> None:
-        # No test files in this corpus, so the result is an empty list — the tool
-        # returns a well-formed (empty) list, never an error.
-        result = await indexed_context.tests_for("champion_routing")
-        assert isinstance(result, list)
-
-    async def test_references_returns_production_test_split(
-        self, indexed_context: AppContext
-    ) -> None:
-        # ``pkg.base.BaseRouter`` is imported by ``pkg.router`` (a production file),
-        # so it has at least one production reference and zero test references.
-        summary = await indexed_context.references("pkg.base.BaseRouter")
-        assert summary.qualified_name == "pkg.base.BaseRouter"
-        assert summary.production_references >= 1
-        assert summary.test_references == 0
-
-    async def test_references_zero_is_valid_not_error(
-        self, indexed_context: AppContext
-    ) -> None:
-        # A symbol with zero references returns an all-zero summary — NOT an error.
-        # Empty is the SUCCESS case (a truly unreferenced symbol); the handler must
-        # never raise ``SchemaRebuildingError`` for an empty references result.
-        summary = await indexed_context.references("pkg.router.champion_routing")
-        assert summary.production_references == 0
-        assert summary.test_references == 0
-        assert isinstance(summary.referencing, list)
+    # P8d Wave 2 (the impact fold): test_blast_radius_traverses_graph /
+    # test_tests_for_returns_list / test_references_returns_production_test_split /
+    # test_references_zero_is_valid_not_error were REMOVED here — their
+    # AppContext handlers (blast_radius / tests_for / references) are deleted
+    # (folded into lore_impact; confirmed by the deletion-gate grep in
+    # REPORT-builder-flip-w2.md that nothing outside their own wrapper + these
+    # tests called them). The underlying graph_surreal ENGINE behaviour they
+    # exercised remains fully covered by test_graph_surreal.py's
+    # TestBlastRadius / TestTestsFor / TestReferences classes, untouched.
+    #
+    # fixer-w2f follow-on: test_what_imports_traverses_graph (same family) was
+    # REMOVED here too — the AppContext.what_imports HANDLER it exercised
+    # (kept alive unregistered purely for test_schema_rebuild.py's
+    # TestRebuildingNoticeSeam A8c pin) is now deleted; A8c was repointed at
+    # lore_impact instead (see test_schema_rebuild.py). The underlying
+    # graph_surreal ENGINE's ``what_imports`` method remains covered by
+    # test_graph_surreal.py's own tests, untouched — this deletion only
+    # removes the AppContext-handler-level wrapper test.
 
     async def test_dead_code_surfaces_test_only_symbol(
         self, tmp_path: Path    ) -> None:
@@ -2292,21 +2347,10 @@ class TestRegisteredToolWrappers:
         assert structured["files_indexed"] >= 1
         assert structured["files_failed"] == 0
 
-    async def test_references_wrapper_yields_structured_model(
-        self, indexed: tuple[Any, AppContext]
-    ) -> None:
-        mcp, ctx = indexed
-        # ``pkg.base.BaseRouter`` is imported by a production file → production_references >= 1.
-        structured = await self._structured(
-            mcp, "lore_references", ctx, name="pkg.base.BaseRouter"
-        )
-        # A scalar ReferenceSummary — structuredContent is the model dict.
-        assert isinstance(structured, dict)
-        assert structured["qualified_name"] == "pkg.base.BaseRouter"
-        assert "production_references" in structured
-        assert structured["production_references"] >= 1
-        assert "test_references" in structured
-        assert "referencing" in structured
+    # P8d Wave 2: test_references_wrapper_yields_structured_model REMOVED —
+    # the lore_references TOOL wrapper is deleted (folded into lore_impact).
+    # TestImpactMapRegisteredToolWrappers below already drives lore_impact's
+    # own wrapper end to end.
 
     async def test_dead_code_wrapper_yields_structured_list(
         self, indexed: tuple[Any, AppContext]
@@ -2618,9 +2662,12 @@ class TestImpactMapRebuildingGate:
     """Verdict-bearing lore_impact / lore_map calls NEVER serve mid-rebuild —
     the graded honest-emptiness doctrine applied at the TOOL-WIRING level.
 
-    Unlike the four EXISTING corpus-read tools (search_code / what_imports /
-    blast_radius / tests_for), which only raise when their result WOULD BE
-    empty (``AppContext._raise_if_empty_during_rebuild``), ``ImpactEngine`` /
+    Unlike the reactive corpus-read tools (``search_code`` raises only when
+    its own result WOULD BE empty, via ``AppContext._raise_if_empty_during_
+    rebuild``; ``get_symbol``/``read`` raise only on a not-found exception,
+    via ``_rebuilding_error_or`` — what_imports/blast_radius/tests_for rode
+    the same reactive ``_raise_if_empty_during_rebuild`` seam before P8d
+    Wave 2 folded them into lore_impact/lore_map), ``ImpactEngine`` /
     ``MapEngine`` gate UNCONDITIONALLY — even a target/corpus that would serve
     a perfectly healthy, non-empty verdict must still raise while a rebuild is
     in flight. This proves the AppContext wiring actually threads a LIVE

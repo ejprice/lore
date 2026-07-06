@@ -91,6 +91,62 @@ _ELISION_TEMPLATE = "+{count} more (elided by max_consumers={cap})"
 # from the depth-1 reverse set earns it, so the marker genuinely distinguishes.
 _TRANSITIVE_ROLLUP_SUFFIX = ", transitive"
 
+# P8d Wave 2 (the impact fold) honest-render additions -- see
+# REPORT-builder-flip-w2.md for the full investigation these consume.
+
+# Finding #19 (2nd symptom, CONFIRMED reproducing live): a depth>1 module
+# rollup is genuinely computed by walking the shared graph's module-prefix
+# "imports" arm (graph_surreal.py's ``_reverse_neighbours`` -- a deliberate,
+# tested, Kuzu-parity feature ``blast_radius``/``lore_map`` both rely on, NOT
+# a graph bug) -- once a MODULE-kind node enters the BFS frontier (a
+# module-level import of the target IS a legitimate depth-1 reference), EVERY
+# importer of ANYTHING defined in that module counts, whether or not it uses
+# the specific target symbol. Fixing the shared BFS would touch
+# graph_surreal.py's traversal core under the map-test-segregation BINDING
+# design law for a risk/blast-radius beyond this wave's fold scope -- the fix
+# here is HONEST RENDER: always caveat a depth>1 rollup so a large count is
+# never mistaken for confirmed usage of the exact symbol queried.
+_MODULE_ROLLUP_RIPPLE_CAVEAT = (
+    "module rollups (depth>1) follow the transitive MODULE-level import "
+    "graph, not confirmed calls to this exact symbol -- a module that "
+    "imports something else from the same file can inflate a count; "
+    "depth=1 lists only CONFIRMED direct consumers."
+)
+
+# Findings #1/#2: ``tests_for``'s name/reference heuristic can miss a
+# genuinely covering test (indirectly-exercised helpers, config.py-shaped
+# modules). Improving that DETECTION heuristic is OUT of scope for this wave;
+# what a genuine zero-covering-tests result must never do is render as a
+# bare, confident-looking "tests: 0" -- it must say it is a heuristic miss,
+# never a verified absence.
+_NO_COVERING_TESTS_TEXT = "none detected (heuristic -- indirect coverage is not traced)"
+
+# Finding #39: the rendered covering-tests list caps at a sane top-N (the
+# SAME sorted-name order ``_covering_tests`` already returns, so the kept
+# entries are deterministic) with an explicit, non-silent elision trailer
+# (no-silent-caps doctrine). The STRUCTURED ``covering_tests`` field stays the
+# FULL, uncapped list -- only the compact rendered TEXT block caps, so a
+# programmatic caller loses nothing; the trailer points back at that field.
+_MAX_RENDERED_COVERING_TESTS = 15
+_COVERING_TESTS_ELISION_TEMPLATE = (
+    "+{count} more (see the full covering_tests field for all {total})"
+)
+
+# Finding #30: a bare (unqualified) target may collide with a same-named
+# symbol in another module; ``references()`` UNIONS every collidee's profile
+# silently (graph_surreal.py's documented, deliberate answers_to bridge).
+# Rendered whenever the query was bare so a reader knows this may be a UNION,
+# never presented as one unambiguous symbol's exact profile. The stronger ask
+# (name the actual colliding candidate modules) needs a new engine-level
+# introspection surface (``_bare_name_answerers`` is private/internal to
+# graph_surreal.py) -- flagged as a follow-on rather than built here.
+_BARE_NAME_UNION_CAVEAT = (
+    "target is a bare name -- if it collides with a same-named symbol in "
+    "another module, this profile is the UNION of every collidee's "
+    "references; qualify with a module-prefixed name (lore_search) for one "
+    "symbol's exact profile."
+)
+
 _T = TypeVar("_T")
 
 
@@ -451,10 +507,25 @@ class ImpactEngine:
             f"verdict: {verdict}",
             f"{production_references} prod / {test_references} test references",
         ]
+        if "." not in target:
+            # Finding #30: a bare target may be a same-named-symbol UNION —
+            # teach it, never present the union as one unambiguous profile.
+            lines.append(_BARE_NAME_UNION_CAVEAT)
         if covering_tests:
-            lines.append(f"tests: {len(covering_tests)} ({', '.join(covering_tests)})")
+            kept, more = ImpactEngine._cap(covering_tests, _MAX_RENDERED_COVERING_TESTS)
+            tests_line = f"tests: {len(covering_tests)} ({', '.join(kept)}"
+            if more:
+                # Finding #39: cap the RENDERED list only — the structured
+                # covering_tests field stays the full, uncapped list.
+                tests_line += ", " + _COVERING_TESTS_ELISION_TEMPLATE.format(
+                    count=more, total=len(covering_tests)
+                )
+            tests_line += ")"
+            lines.append(tests_line)
         else:
-            lines.append("tests: 0")
+            # Findings #1/#2: a genuine miss is a HEURISTIC gap, never a bare
+            # confident-looking "tests: 0".
+            lines.append(f"tests: {_NO_COVERING_TESTS_TEXT}")
         if direct_consumers:
             lines.append(f"consumers: {', '.join(direct_consumers)}")
         if module_rollups:
@@ -463,6 +534,9 @@ class ImpactEngine:
                 for rollup in module_rollups
             )
             lines.append(f"modules: {rollup_text}")
+            # Finding #19 (2nd symptom): every depth>1 rollup caveats the
+            # module-level import-ripple overstatement risk.
+            lines.append(_MODULE_ROLLUP_RIPPLE_CAVEAT)
         if elided:
             lines.append(_ELISION_TEMPLATE.format(count=elided, cap=max_consumers))
         lines.append(_CAVEAT_TEXT)

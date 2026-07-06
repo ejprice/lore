@@ -1548,17 +1548,28 @@ class TestStartupDecision:
 # A8 — Empty-reply-during-rebuild notice (the "don't mislead with []" rule)
 # ===========================================================================
 #
-# Shared-seam contract (the helper the implementer wires into ALL SIX corpus
-# read tools — search_code, get_symbol, what_imports, blast_radius, tests_for,
-# read_file):
+# Shared-seam contract (the helper every corpus read tool ultimately reads,
+# directly or indirectly):
 #
 #     loremaster.index.schema.rebuilding_notice(manifest) -> str | None
 #
 # Returns a human-readable message (mentioning that the store is REBUILDING and
 # the progress, e.g. "done/total") when the manifest's schema_rebuild state is
-# "in_progress"; returns None when idle/done. Each read tool calls it ONLY when
-# its substantive result would be empty, and surfaces the message in the
-# agent-visible reply instead of a bare empty list.
+# "in_progress"; returns None when idle/done.
+#
+# P8d Wave 2 (the impact fold) folded what_imports/blast_radius/tests_for/
+# references into lore_impact and lore_map, and (fixer-w2f follow-on) deleted
+# the AppContext.what_imports handler outright once its only remaining
+# caller was this test file. Two gating shapes now ride the SAME helper:
+# search_code calls it ONLY when its substantive result would be empty
+# (``AppContext._raise_if_empty_during_rebuild``), surfacing the message in
+# the agent-visible reply instead of a bare empty list; get_symbol/read call
+# it on a not-found exception (``_rebuilding_error_or``); lore_impact/lore_map
+# call it UNCONDITIONALLY before running any query at all (the engines'
+# own proactive gate), regardless of whether the eventual result would be
+# empty. A8a/A8b below pin the reactive (search_code) shape; A8c pins the
+# proactive (lore_impact) shape as the SECOND tool family sharing the
+# identical underlying signal.
 #
 # The contract pins OBSERVABLE behavior — the agent-visible text must say the
 # store is rebuilding + carry progress. It does NOT mandate the structured shape
@@ -1680,9 +1691,11 @@ class TestRebuildingNoticeSeam:
     attribute on a returned list (e.g. a ``_NoticeList.schema_rebuild_notice``) is
     DROPPED by ``convert_result`` on the wire (the result serialises to a bare
     ``[]``), so the agent would never see it — that earlier shape was an
-    in-process illusion. ``get_symbol`` / ``read_file`` already raise on not-found;
-    the four list-returning tools (search_code / what_imports / blast_radius /
-    tests_for) must raise too, uniformly.
+    in-process illusion. ``get_symbol`` / ``read`` already raise on not-found;
+    ``search_code`` (reactively, only when its own result would be empty) and
+    ``lore_impact`` / ``lore_map`` (proactively, before any query runs at all —
+    what_imports/blast_radius/tests_for were folded into these two in P8d Wave 2)
+    must raise too, uniformly.
 
     When NOT rebuilding, an empty result stays a plain empty list (no raise, no
     notice) — the false-positive guard.
@@ -1893,15 +1906,25 @@ class TestRebuildingNoticeSeam:
             f"with NO rebuilding text; result repr was {results!r}"
         )
 
-    async def test_a8c_what_imports_empty_in_progress_raises_rebuilding_error(
+    async def test_a8c_impact_empty_in_progress_raises_rebuilding_error(
         self, tmp_path: Path, app_context_factory: Any
     ) -> None:
-        """A8c: a SECOND list tool (what_imports) honours the SAME raise-based seam.
+        """A8c: a SECOND tool family (impact) honours the SAME rebuild signal.
 
-        Proves the rebuilding contract is a shared seam wired into more than one
-        list-returning tool — not a one-off in search_code. An empty what_imports
-        (nobody imports a nonexistent target) DURING a rebuild must RAISE with the
-        rebuilding + progress message, exactly like search_code.
+        P8d Wave 2 (the impact fold) folded ``lore_what_imports`` into
+        ``lore_impact`` and (fixer-w2f follow-on) deleted the AppContext
+        handler that used to carry this pin. ``ImpactEngine`` gates on the
+        IDENTICAL ``rebuilding_notice(manifest)`` signal
+        (:meth:`AppContext._rebuild_notice`) that ``search`` reads, just
+        UNCONDITIONALLY before running any query (see
+        ``ImpactEngine._raise_if_rebuilding``) rather than reactively on an
+        already-empty result — proves the contract is a shared seam wired
+        into more than one tool family, not a one-off in search_code.
+        ``src.widget.Widget.render`` is a genuinely-indexed, zero-consumer
+        leaf (nobody calls ``.render()`` elsewhere in the tiny corpus) — its
+        own substantive result WOULD be empty, and DURING a rebuild the call
+        must RAISE with the rebuilding + progress message before it ever gets
+        that far.
         """
         # real-Surreal
         from loremaster.index.schema import embedding_schema_fingerprint
@@ -1918,27 +1941,31 @@ class TestRebuildingNoticeSeam:
         current_fp = embedding_schema_fingerprint(config)
         await _seed_in_progress_rebuild(slug, from_fp="8" * 64, to_fp=current_fp)
 
-        # A target nobody imports → empty reverse-import set → must RAISE in_progress.
+        # A genuinely-indexed, zero-consumer leaf -- must RAISE in_progress
+        # (impact gates BEFORE any query, so this holds regardless of the
+        # target's own emptiness).
         with pytest.raises(Exception) as excinfo:  # noqa: PT011 - message asserted below
-            await app_ctx.what_imports("no.such.module.ever_imported")
+            await app_ctx.impact("src.widget.Widget.render")
 
         message = str(excinfo.value)
         assert _mentions_rebuilding(message), (
-            "an empty what_imports DURING a rebuild must RAISE the SAME rebuilding "
-            f"error as search_code (shared seam); got message {message!r}"
+            "an impact query DURING a rebuild must RAISE the SAME rebuilding "
+            f"signal as search_code (shared seam); got message {message!r}"
         )
         assert str(_REBUILD_TOTAL) in message, (
             f"the rebuilding error must carry progress (total={_REBUILD_TOTAL}); "
             f"got message {message!r}"
         )
 
-    async def test_a8c_what_imports_empty_idle_is_plain_empty_no_raise(
+    async def test_a8c_impact_empty_idle_is_plain_empty_no_raise(
         self, tmp_path: Path, app_context_factory: Any
     ) -> None:
-        """A8c negative: what_imports empty + idle → plain empty list, NO raise.
+        """A8c negative: impact on a zero-consumer leaf + idle → plain result, NO raise.
 
-        The same false-positive guard as A8b, for the second tool — confirms the
-        shared seam is gated on in_progress for what_imports too.
+        The same false-positive guard as A8b, for the second tool family —
+        confirms the shared seam is gated on in_progress for impact too. An
+        idle, genuinely-empty consumer list is a valid ``dead (heuristic)``
+        verdict, never dressed up as a rebuild.
         """
         # real-Surreal
         slug = _slug()
@@ -1951,12 +1978,15 @@ class TestRebuildingNoticeSeam:
         await app_ctx.reindex(None)
         # NO rebuild status → idle.
 
-        importers = await app_ctx.what_imports("no.such.module.ever_imported")
+        result = await app_ctx.impact("src.widget.Widget.render")
 
-        assert len(importers) == 0, "nobody imports the nonexistent target → empty"
-        assert not _mentions_rebuilding(repr(importers)), (
-            "an empty what_imports when NOT rebuilding must stay a plain empty list "
-            f"with NO rebuilding text; result repr was {importers!r}"
+        assert result.direct_consumers == [], (
+            "nobody calls Widget.render() elsewhere in the tiny corpus → "
+            "zero direct consumers"
+        )
+        assert not _mentions_rebuilding(repr(result)), (
+            "an empty-consumer impact result when NOT rebuilding must stay a "
+            f"plain result with NO rebuilding text; result repr was {result!r}"
         )
 
 

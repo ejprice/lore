@@ -268,7 +268,7 @@ class Finding(BaseModel):
         status: The finding's current state in the four-status review vocabulary.
         subject: The short human-readable title of the finding.
         body: The longer free-text description of the finding.
-        area: The tool/subsystem the finding is about (e.g. ``"lore_tests_for"``).
+        area: The tool/subsystem the finding is about (e.g. ``"lore_impact"``).
         category: The finding category (e.g. ``"capability_gap"``).
         created_by: The identity that filed the finding.
         created_at: The tz-aware UTC timestamp the finding was filed at.

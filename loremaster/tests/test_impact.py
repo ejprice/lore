@@ -691,3 +691,354 @@ class TestDepthTwoTransitiveLabeling:
             "depth 1 populates ONLY direct_consumers -- the modules: rollup "
             "line must not be emitted at all (nothing exists yet to roll up)"
         )
+
+
+# =========================================================================== #
+# P8D WAVE 2 (THE IMPACT FOLD) -- finding #19 investigation + the honest-render
+# findings (#1/#2 covering-tests, #39 elision cap, #30 bare-name teach) it
+# consumes. See REPORT-builder-flip-w2.md for the full live-repro receipts.
+# =========================================================================== #
+
+# Finding #19's ORIGINAL live repro target (FRICTION.md 2026-07-04,
+# "sanitiser-residual"): ``loremaster.search._sanitise_line``, a module-private
+# leaf function called from 7 production sites across search.py/diff.py. Live
+# re-repro THIS session (against the current HEAD, via lore_impact/lore_references
+# over the real index) shows depth=1 direct_consumers is ALREADY populated
+# correctly (8 distinct prod consumers) -- the empty-list symptom no longer
+# reproduces (fixed by an earlier commit that queries ``references()`` by BOTH
+# the qualified AND bare name id, landing before this wave). The corpus below
+# locks that fix in as a regression pin with the SAME repro shape (a private
+# leaf helper, several distinct production callers).
+_PRIVATE_LEAF_SOURCE = """\
+def _sanitize(text):
+    \"\"\"A module-private leaf helper (mirrors finding #19's repro shape).\"\"\"
+    return text.strip()
+"""
+
+_PRIVATE_CONSUMER_A_SOURCE = """\
+from privlib import _sanitize
+
+
+def format_a(text):
+    \"\"\"A production caller of the private leaf helper.\"\"\"
+    return _sanitize(text)
+"""
+
+_PRIVATE_CONSUMER_B_SOURCE = """\
+from privlib import _sanitize
+
+
+def format_b(text):
+    \"\"\"A second, independent production caller.\"\"\"
+    return _sanitize(text)
+"""
+
+_PRIVATE_CONSUMER_C_SOURCE = """\
+from privlib import _sanitize
+
+
+def format_c(text):
+    \"\"\"A third, independent production caller.\"\"\"
+    return _sanitize(text)
+"""
+
+_PRIVATE_TARGET = "privlib._sanitize"
+
+
+class TestPrivateLeafDirectConsumers:
+    """Finding #19 (first symptom): depth=1 ``direct_consumers`` must NEVER be
+    empty for a module-private leaf function with real production callers,
+    even though ``production_references`` counts them (the "objectively wrong
+    []" the finding's migration note calls out). Live re-repro against the
+    ORIGINAL finding target (this session, via lore_impact/lore_references)
+    shows this is ALREADY fixed; this pins the fix as a regression guard using
+    the same repro shape (several distinct production callers of a private
+    leaf helper) rather than re-deriving a fresh, unverified corpus.
+    """
+
+    async def test_direct_consumers_lists_every_production_caller_of_a_private_leaf(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        files = {
+            "privlib.py": _PRIVATE_LEAF_SOURCE,
+            "consumer_a.py": _PRIVATE_CONSUMER_A_SOURCE,
+            "consumer_b.py": _PRIVATE_CONSUMER_B_SOURCE,
+            "consumer_c.py": _PRIVATE_CONSUMER_C_SOURCE,
+        }
+        trio, _server = await _build_graph(tmp_path, files)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_PRIVATE_TARGET, depth=1)
+
+        # The bug (if it reproduced) would show production_references > 0
+        # while direct_consumers stayed empty -- assert them CONSISTENT, not
+        # just each independently non-zero.
+        assert result.production_references >= 3
+        assert len(result.direct_consumers) >= 3, (
+            "direct_consumers must list the private leaf's real production "
+            f"callers, never []; got {result.direct_consumers!r} against "
+            f"{result.production_references} counted production references"
+        )
+        for module in ("consumer_a", "consumer_b", "consumer_c"):
+            assert any(module in name for name in result.direct_consumers), (
+                f"{module!r} is a genuine production caller and must be named "
+                f"in direct_consumers; got {result.direct_consumers!r}"
+            )
+
+
+# Finding #19 (second symptom, CONFIRMED reproducing live via lore_impact
+# against loremaster.search._sanitise_line: server.py -- which imports
+# DiffEngine/SnapshotSummary from loremaster.diff, nothing to do with
+# _sanitise_line -- showed up as a depth-2 module_rollups consumer purely
+# because it imports SOMETHING from the SAME module as a genuine depth-1
+# consumer). Root cause (graph_surreal.py's ``_reverse_neighbours``): once a
+# MODULE-kind node enters the BFS frontier (a module-level import of the
+# target IS a legitimate depth-1 reference), the "module-prefix imports arm"
+# -- a DELIBERATE, tested, Kuzu-parity feature genuinely needed by
+# blast_radius/lore_map's own semantics, not a graph bug -- pulls in EVERY
+# importer of ANYTHING under that module, not only importers of the target
+# symbol. This is a real, reproducing overstatement; fixing the shared BFS
+# would touch graph_surreal.py's traversal core (used by lore_map too, under
+# the map-test-segregation BINDING design law) for a risk/blast-radius far
+# beyond this wave's fold scope. The chosen fix is HONEST RENDER (matching the
+# #1/#2/#30 pattern): a depth>1 rollup ALWAYS carries an explicit caveat that
+# its counts follow the module import graph, not confirmed calls to the exact
+# symbol -- never silently overstated as if every rollup member calls the
+# target.
+_ROLLUP_TARGET_SOURCE = """\
+def rollup_target(x):
+    \"\"\"The depth>1 rollup-honesty repro target (finding #19, 2nd symptom).\"\"\"
+    return x
+"""
+
+_ROLLUP_CONSUMER_SOURCE = """\
+from pkg.rlib import rollup_target
+
+
+def uses_target(x):
+    \"\"\"A genuine DIRECT (depth-1) consumer.\"\"\"
+    return rollup_target(x)
+
+
+def unrelated(x):
+    \"\"\"Lives in the SAME module as the direct consumer but shares NO
+    relation to rollup_target -- importers of THIS symbol are the
+    import-ripple noise the depth>1 rollup caveat must call out.
+    \"\"\"
+    return x * 2
+"""
+
+_ROLLUP_IMPORTER_SOURCE = """\
+from pkg.rconsumer import unrelated
+
+
+def call_it(x):
+    \"\"\"Imports something UNRELATED to rollup_target from the SAME module as
+    its direct consumer -- must show up in the depth-2 rollup ONLY because of
+    the shared module, never because it calls rollup_target.
+    \"\"\"
+    return unrelated(x)
+"""
+
+_ROLLUP_TARGET = "pkg.rlib.rollup_target"
+_ROLLUP_RIPPLE_IMPORTER_MODULE = "rimporter"
+
+
+class TestModuleRollupImportRippleCaveat:
+    """Finding #19 (second symptom): a depth>1 module rollup must carry an
+    explicit caveat that its counts follow the transitive MODULE import graph
+    -- not confirmed calls to the exact symbol -- so a reader never mistakes a
+    large/ripple-inflated count for confirmed usage of the queried symbol.
+    """
+
+    async def test_ripple_importer_appears_in_the_rollup_by_construction(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # First prove the corpus actually reproduces the ripple mechanism
+        # (the live finding's shape) before asserting the caveat renders.
+        files = {
+            "pkg/rlib.py": _ROLLUP_TARGET_SOURCE,
+            "pkg/rconsumer.py": _ROLLUP_CONSUMER_SOURCE,
+            "pkg/rimporter.py": _ROLLUP_IMPORTER_SOURCE,
+        }
+        trio, _server = await _build_graph(tmp_path, files)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_ROLLUP_TARGET, depth=2)
+
+        modules = [rollup.module for rollup in result.module_rollups]
+        assert any(_ROLLUP_RIPPLE_IMPORTER_MODULE in module for module in modules), (
+            "the corpus is constructed so rimporter reaches the target ONLY "
+            f"via the module-level import ripple; got rollups {modules!r} -- "
+            "if this fails, the corpus no longer reproduces the mechanism "
+            "the caveat below must warn about"
+        )
+
+    async def test_depth_two_rollup_carries_the_import_ripple_caveat(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        files = {
+            "pkg/rlib.py": _ROLLUP_TARGET_SOURCE,
+            "pkg/rconsumer.py": _ROLLUP_CONSUMER_SOURCE,
+            "pkg/rimporter.py": _ROLLUP_IMPORTER_SOURCE,
+        }
+        trio, _server = await _build_graph(tmp_path, files)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_ROLLUP_TARGET, depth=2)
+
+        assert "import graph" in result.formatted.lower(), (
+            "a depth>1 rollup must caveat that its counts follow the module "
+            f"import graph, not confirmed symbol usage; got {result.formatted!r}"
+        )
+
+    async def test_depth_one_never_carries_the_rollup_caveat(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # The ripple caveat is scoped to depth>1 -- depth 1 has no rollups to
+        # caveat, so it must not appear (never a generic always-on banner).
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_TARGET, depth=1)
+
+        assert "import graph" not in result.formatted.lower()
+
+
+class TestCoveringTestsHonestRender:
+    """Findings #1/#2: ``tests_for``'s name/reference heuristic can miss a
+    genuinely-covering test (indirectly-exercised helpers, config.py-shaped
+    modules) -- improving THAT detection heuristic is explicitly OUT of scope
+    for this wave. What IS in scope: a genuine zero-covering-tests result must
+    NEVER render as a bare, confident-looking ``tests: 0`` -- it must carry
+    the heuristic caveat so a reader knows "none detected" is not the same
+    claim as "verified uncovered".
+    """
+
+    async def test_zero_covering_tests_renders_the_heuristic_caveat_not_bare_zero(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # _ORPHAN (orphan_helper) has zero references AND zero covering tests
+        # by construction (_full_corpus's reflib.py defines it, nothing calls
+        # or tests it).
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_ORPHAN, depth=1)
+
+        assert not result.covering_tests
+        assert "tests: 0" not in result.formatted, (
+            "a genuine covering-tests miss must never render as a bare, "
+            f"confident-looking 'tests: 0'; got {result.formatted!r}"
+        )
+        assert "heuristic" in result.formatted.lower(), (
+            "the no-covering-tests render must carry the heuristic caveat "
+            "(tests_for can miss indirectly-exercised helpers -- #1/#2)"
+        )
+
+    async def test_nonzero_covering_tests_still_render_normally(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Regression guard: the honest-empty render must not leak onto the
+        # POSITIVE case (a real covering test must still render its name).
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_TARGET, depth=1)
+
+        assert any("test_reflib" in name for name in result.covering_tests)
+        assert any("test_reflib" in line for line in result.formatted.splitlines())
+
+
+class TestCoveringTestsElisionCap:
+    """Finding #39: the rendered covering-tests list must cap at a sane top-N
+    with an EXPLICIT, non-silent elision trailer (no-silent-caps doctrine) --
+    the structured ``covering_tests`` field stays the FULL, uncapped list (a
+    programmatic caller loses nothing); only the compact TEXT block caps.
+    """
+
+    async def test_covering_tests_render_caps_with_an_announced_elision(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        files = _full_corpus()
+        # Add enough additional covering tests to exceed any reasonable cap.
+        for i in range(20):
+            files[f"tests/test_extra_{i}.py"] = _TEST_REFLIB_SOURCE.replace(
+                "test_champion_routing", f"test_champion_routing_extra_{i}"
+            )
+        trio, _server = await _build_graph(tmp_path, files)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_TARGET, depth=1)
+
+        assert len(result.covering_tests) > 15, (
+            "the STRUCTURED covering_tests field must stay the FULL, "
+            f"uncapped list; got only {len(result.covering_tests)}"
+        )
+        assert "more" in result.formatted.lower(), (
+            "the rendered block must announce the elision explicitly (never "
+            f"a silent truncation); got {result.formatted!r}"
+        )
+        assert "covering_tests" in result.formatted, (
+            "the elision trailer must teach how to see the rest honestly -- "
+            "pointing at the (uncapped) structured covering_tests field"
+        )
+
+
+class TestBareNameUnionCaveat:
+    """Finding #30: a bare (unqualified) target may collide with a same-named
+    symbol in another module; ``references()`` UNIONS every collidee's profile
+    silently (by design -- see graph_surreal.py's ``references`` docstring).
+    The render must TEACH this rather than present the union as if it were one
+    unambiguous symbol's exact profile. The stronger ask (name the actual
+    colliding candidate modules) needs a new engine-level introspection surface
+    (``_bare_name_answerers`` is private/internal) -- flagged in
+    REPORT-builder-flip-w2.md as a follow-on, out of this wave's writable set.
+    """
+
+    async def test_bare_target_render_carries_the_union_caveat(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_TARGET, depth=1)  # _TARGET is bare.
+
+        assert "bare name" in result.formatted.lower(), (
+            "a bare-target query must teach that it may be a same-named-symbol "
+            f"union, not a single unambiguous profile; got {result.formatted!r}"
+        )
+
+    async def test_qualified_target_never_carries_the_bare_name_caveat(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_QUALIFIED_TARGET, depth=1)  # module-qualified.
+
+        assert "bare name" not in result.formatted.lower(), (
+            "an already-qualified target names ONE unambiguous symbol -- the "
+            "bare-name union caveat must not render for it"
+        )
+
+
+class TestUnknownBareTarget:
+    """Finding #30 (the no-match half): an unresolvable BARE name must still
+    raise the existing ``ImpactTargetNotFoundError`` teaching path -- never an
+    all-zero render that looks like a valid (if dead) verdict. Mirrors
+    ``TestUnknownTarget`` above (which pins the dotted-name case) for a
+    single-segment, no-dot bare name.
+    """
+
+    async def test_unknown_bare_target_raises_naming_it_and_the_next_step(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        with pytest.raises(_errors().ImpactTargetNotFoundError) as exc_info:
+            await engine.impact("totallybogus", depth=1)
+        message = str(exc_info.value)
+        assert "totallybogus" in message
+        assert "lore_search" in message

@@ -85,8 +85,6 @@ from loremaster.graph import (
     DEFAULT_DEAD_CODE_MAX_RESULTS,
     MAX_DEAD_CODE_MAX_RESULTS,
     DeadCodeNode,
-    GraphNode,
-    ReferenceSummary,
 )
 from loremaster.impact import _DEFAULT_MAX_CONSUMERS as _IMPACT_DEFAULT_MAX_CONSUMERS
 from loremaster.impact import _DEPTH_MAX as _IMPACT_DEPTH_MAX
@@ -831,10 +829,6 @@ class LoreServer:
 # The MCP mount path is taken from ``config.server.path``; FastMCP's
 # ``streamable_http_path`` must match so the app mounts where ``.mcp.json`` points.
 
-# Default bounds for the graph-traversal tools (the plan's "bounded depth + result
-# cap" so a pathological fan-out cannot blow the context budget).
-_DEFAULT_BLAST_DEPTH = 3
-_DEFAULT_BLAST_MAX_RESULTS = 50
 # Default ``k`` for the search/recall tools when the caller does not specify one.
 _DEFAULT_SEARCH_K = 8
 _DEFAULT_RECALL_K = 5
@@ -844,11 +838,12 @@ _DEFAULT_RECALL_K = 5
 # than producing a confusing empty/over-large result). A count or hop-depth below 1
 # is meaningless; the upper caps keep a single call's result + traversal bounded so a
 # typo (k=100000) cannot blow the context budget.
+# P8d Wave 2: _DEFAULT_BLAST_DEPTH/_DEFAULT_BLAST_MAX_RESULTS/_MAX_BLAST_DEPTH/
+# _MAX_BLAST_MAX_RESULTS were REMOVED here — lore_blast_radius folded into
+# lore_impact, whose own depth bound is _IMPACT_DEPTH_MIN/_IMPACT_DEPTH_MAX.
 _MIN_COUNT = 1
 _MAX_SEARCH_K = 100
 _MAX_RECALL_K = 100
-_MAX_BLAST_DEPTH = 25
-_MAX_BLAST_MAX_RESULTS = 500
 # The memory collection's slug suffix → ``lore_<slug>_memory``.
 _MEMORY_SLUG_SUFFIX = "_memory"
 
@@ -1074,26 +1069,18 @@ _INSTRUCTIONS = (
     "verb. Use after a lore_search / lore_get_symbol hit to read surrounding context. "
     "Its header carries a visible STALE notice when the index is behind the file on "
     "disk; pass wait_for_fresh=True to lore_search (or run lore_reindex) to refresh.\n"
-    "- lore_what_imports(target): the DIRECT importers of a module (one reverse import "
-    "edge).\n"
-    "- lore_blast_radius(target, ...): the TRANSITIVE reverse-dependency closure "
-    "(bounded depth + result cap) — 'what could a change here break?'. Reach for "
-    "lore_blast_radius (transitive) over lore_what_imports (direct) when you need the "
-    "ripple, not just the neighbours.\n"
-    "- lore_tests_for(symbol_or_file): the test nodes covering a symbol or file.\n"
-    "- lore_references(name): the reference counter for ONE symbol — production vs test "
-    "reference count + who references it. A symbol with zero production references is "
-    "dead even if its tests still call it. Distinct from lore_what_imports (modules only) "
-    "/ lore_blast_radius (transitive ripple from a symbol outward).\n"
     "- lore_dead_code(...): CANDIDATE dead/orphaned definitions in the project's live tiers "
     "— zero production references (test-only consumers count as dead). A HEURISTIC detector, "
     "not proof: dynamic dispatch, decorators, and public API used outside the tree can evade "
     "it. By default excludes test nodes, dunder methods, and __main__/__init__ entrypoints.\n"
     "- lore_impact(target, depth=1): who depends on target, in ONE call — production/test "
-    "reference counts, covering tests, and (depth 1) direct consumer names or (depth > 1) a "
-    "per-module rollup, plus a live / dead (heuristic) verdict carrying an explicit "
-    "astroid-bounds caveat. A 'dead' verdict is a LEAD to investigate, never a deletion "
-    "order. Reach for this before removing or refactoring something lore_dead_code flagged.\n"
+    "reference counts, covering tests, DIRECT importers/callers (depth 1) or a TRANSITIVE "
+    "per-module rollup of the wider ripple (depth > 1), plus a live / dead (heuristic) "
+    "verdict carrying an explicit astroid-bounds caveat. The single graph-read verb — "
+    "absorbs what were previously separate direct-importer / transitive-closure / "
+    "reference-count / covering-test tools. A 'dead' verdict is a LEAD to investigate, "
+    "never a deletion order. Reach for this before removing or refactoring something "
+    "lore_dead_code flagged.\n"
     "- lore_map(budget=2500, focus=None): a PageRank-ranked, token-budgeted map of which "
     "modules matter most in this project (each with its rendered symbol names), optionally "
     "re-centered on one symbol's own neighbourhood via focus. Reach for this FIRST when you "
@@ -1245,7 +1232,7 @@ async def run_probe_gate(*, embedder: Embedder, config: LoreConfig) -> int:
 class SchemaRebuildingError(RuntimeError):
     """Raised by a corpus read tool whose result is EMPTY while a rebuild is in flight.
 
-    The agent-visible, serialization-ROBUST way the six corpus read tools surface
+    The agent-visible, serialization-ROBUST way the corpus read tools surface
     a schema rebuild: an exception propagates through the MCP SDK as a ``ToolError``
     the agent SEES, whereas a custom attribute on a returned list is DROPPED by the
     SDK's ``convert_result`` (the result serialises to a bare ``[]``) and never
@@ -1439,10 +1426,15 @@ class AppContext:
         # reference-backed verdict drifts toward false-dead, the P6-impact-green
         # FRICTION lesson) and share the SAME ``_rebuild_notice`` probe method
         # below, so a verdict/ranking is never served mid-rebuild -- the identical
-        # gating discipline the six corpus-read tool handlers above apply via
-        # ``_raise_if_empty_during_rebuild`` / ``_rebuilding_error_or``, just
+        # gating discipline the corpus-read tool handlers above apply (search via
+        # ``_raise_if_empty_during_rebuild``; get_symbol/read via
+        # ``_rebuilding_error_or``; verify inline against the same probe), just
         # enforced INSIDE the engine (it checks before running any query) rather
-        # than wrapped around an already-computed result.
+        # than wrapped around an already-computed result. P8d Wave 2 follow-on
+        # (fixer-w2f): what_imports's AppContext handler -- the last tool that
+        # rode ``_raise_if_empty_during_rebuild`` alongside search -- is deleted;
+        # test_schema_rebuild.py's shared-seam A8c pin now targets ``impact``
+        # (this proactive-gate mechanism) instead.
         self._impact_engine = ImpactEngine(graph=code_graph, rebuild_notice=self._rebuild_notice)
         self._map_engine = MapEngine(
             graph=code_graph,
@@ -1498,8 +1490,10 @@ class AppContext:
 
         REBUILD CAVEAT (P8b, operator-dispositioned serve-and-say-so): a
         ``not_found`` DURING an active schema rebuild may be a TRANSIENT false
-        negative (the symbol not-yet-re-embedded). Unlike the six corpus read tools
-        — which RAISE a rebuilding error so the agent retries — verify still ANSWERS
+        negative (the symbol not-yet-re-embedded). Unlike the other corpus read
+        tools (search/get_symbol/read/impact/map, post-P8d-Wave-2 -- what_imports
+        was the sixth before its handler was deleted) — which RAISE a rebuilding
+        error so the agent retries — verify still ANSWERS
         ``not_found`` (that is its whole job) but stamps the
         :data:`~loremaster.symbols.VERIFY_REBUILD_CAVEAT` line onto the result (via
         ``model_copy``) so the caller knows the absence may be transient. A
@@ -2079,40 +2073,6 @@ class AppContext:
             calibration=calibration,
         )
 
-    async def what_imports(self, target: str) -> list[GraphNode]:
-        """Return the module nodes that import ``target`` (reverse import edge)."""
-        importers = await self.code_graph.what_imports(target)
-        await self._raise_if_empty_during_rebuild(importers)
-        return importers
-
-    async def blast_radius(
-        self,
-        target: str,
-        depth: int = _DEFAULT_BLAST_DEPTH,
-        max_results: int = _DEFAULT_BLAST_MAX_RESULTS,
-    ) -> list[GraphNode]:
-        """Return the BOUNDED reverse-edge transitive closure from ``target``."""
-        radius = await self.code_graph.blast_radius(target, depth, max_results)
-        await self._raise_if_empty_during_rebuild(radius)
-        return radius
-
-    async def tests_for(self, symbol_or_file: str) -> list[GraphNode]:
-        """Return the test nodes related to a symbol or file."""
-        tests = await self.code_graph.tests_for(symbol_or_file)
-        await self._raise_if_empty_during_rebuild(tests)
-        return tests
-
-    async def references(self, name: str) -> ReferenceSummary:
-        """Return the reference profile of ``name``, split by production vs test origin.
-
-        Not wrapped in ``_raise_if_empty_during_rebuild``: an all-zero summary (a
-        symbol with zero references, or an unknown name) is the SUCCESS case for this
-        tool — it means the symbol is unreferenced, NOT that a rebuild masked a real
-        result. Raising on an empty ``referencing`` list would false-positive on
-        legitimately orphaned symbols.
-        """
-        return await self.code_graph.references(name)
-
     async def dead_code(
         self,
         *,
@@ -2181,27 +2141,38 @@ class AppContext:
         """
         return await self._map_engine.map(budget, focus, tests)
 
-    # -- rebuilding-notice seam (shared by the six corpus read tools) -------
+    # -- rebuilding-notice seam (shared by the surviving corpus read tools) -
     #
-    # All six corpus read tools surface a rebuild UNIFORMLY by RAISING — the only
+    # Every corpus read tool surfaces a rebuild UNIFORMLY by RAISING — the only
     # agent-visible, serialization-robust channel (a raised exception becomes an
     # MCP ToolError the agent sees; a custom attribute on a returned list is
-    # dropped by the SDK's convert_result, so the agent would see a bare []). The
-    # four list tools call _raise_if_empty_during_rebuild on an empty result; the
-    # two not-found-raising tools (get_symbol / read) route their own error
-    # through _rebuilding_error_or. Both gate on rebuilding_notice being non-None
-    # (state in_progress), so an idle no-match stays a plain empty result / a plain
+    # dropped by the SDK's convert_result, so the agent would see a bare []).
+    # P8d Wave 2 (the impact fold): blast_radius/tests_for/references/what_imports
+    # are all gone (folded into lore_impact, which gates via its OWN
+    # _rebuild_notice probe — see impact()/map() below — never this seam).
+    # ``what_imports``'s AppContext handler briefly survived unregistered, kept
+    # alive only by test_schema_rebuild.py's TestRebuildingNoticeSeam A8c pin —
+    # that test now targets ``impact`` instead (proving the SAME underlying
+    # rebuilding_notice signal reaches a second tool family via the engines'
+    # proactive gate), so the handler was deleted outright. ``search`` (the
+    # published corpus search) is now the SOLE caller of
+    # _raise_if_empty_during_rebuild below. The two not-found-raising tools
+    # (get_symbol / read) route their own error through _rebuilding_error_or.
+    # All three still gate on rebuilding_notice being non-None (state
+    # in_progress), so an idle no-match stays a plain empty result / a plain
     # not-found — never a false-positive rebuild signal.
 
     async def _raise_if_empty_during_rebuild(self, results: list[Any]) -> None:
         """Raise a :class:`SchemaRebuildingError` when ``results`` is empty mid-rebuild.
 
-        The shared seam for the four list-returning corpus read tools
-        (search, what_imports, blast_radius, tests_for). An empty result while
-        a rebuild is in progress would mislead the agent into believing the project
-        genuinely has no match; raising instead surfaces the rebuilding notice on a
-        wire-survivable channel so the agent retries. A non-empty result, or an idle
-        store, is a no-op (the caller returns the plain result unchanged).
+        The shared seam for the sole surviving list-returning corpus read tool
+        (search — what_imports/blast_radius/tests_for were folded into
+        lore_impact in P8d Wave 2; what_imports's handler was the last to go).
+        An empty result while a rebuild is in progress would mislead the agent
+        into believing the project genuinely has no match; raising instead
+        surfaces the rebuilding notice on a wire-survivable channel so the
+        agent retries. A non-empty result, or an idle store, is a no-op (the
+        caller returns the plain result unchanged).
 
         Args:
             results: The substantive list result of a corpus read tool.
@@ -2249,11 +2220,11 @@ class AppContext:
         Both engines call this BEFORE running any query and raise their own
         typed rebuilding error (carrying this notice verbatim plus a retry hint)
         when it is non-``None`` — the SAME manifest-meta signal
-        (:func:`~loremaster.index.schema.rebuilding_notice`) the six corpus read
-        tools above probe via ``_raise_if_empty_during_rebuild`` /
-        ``_rebuilding_error_or``, just read directly rather than only on an
-        already-empty result (lore_impact/lore_map gate UNCONDITIONALLY, per
-        their own docstrings).
+        (:func:`~loremaster.index.schema.rebuilding_notice`) the corpus read
+        tools above probe too (search via ``_raise_if_empty_during_rebuild``;
+        get_symbol/read via ``_rebuilding_error_or``; verify inline), just read
+        directly rather than only on an already-empty result (lore_impact/
+        lore_map gate UNCONDITIONALLY, per their own docstrings).
         """
         from loremaster.index.schema import rebuilding_notice
 
@@ -4314,7 +4285,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str | None,
             Field(
                 description=(
-                    "The tool/subsystem the finding is about (e.g. 'lore_tests_for') — "
+                    "The tool/subsystem the finding is about (e.g. 'lore_impact') — "
                     "required (non-empty) for 'report'; an optional exact filter for 'query'."
                 )
             ),
@@ -4448,138 +4419,20 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     async def index_status(context: Context[Any, AppContext, Any]) -> IndexStatusSummary:
         return await _app_context(context).index_status()
 
-    @mcp.tool(
-        name="lore_what_imports",
-        description=(
-            "Return the DIRECT importers of a target module — the modules one "
-            "reverse import edge away. Use it to answer 'who imports this?'. For the "
-            "full TRANSITIVE ripple (importers of importers, bounded), use "
-            "lore_blast_radius instead."
-        ),
-        annotations=_READ_ONLY_ANNOTATIONS,
-    )
-    async def what_imports(
-        context: Context[Any, AppContext, Any],
-        target: Annotated[
-            str,
-            Field(
-                description=(
-                    "The imported module's dotted path (e.g. 'pkg.router') or an "
-                    "importable name. Returns the modules that import it directly."
-                )
-            ),
-        ],
-    ) -> list[GraphNode]:
-        return await _app_context(context).what_imports(target)
-
-    @mcp.tool(
-        name="lore_blast_radius",
-        description=(
-            "Return the bounded TRANSITIVE reverse-dependency closure of a symbol or "
-            "module — everything that could be affected if you change it, following "
-            "reverse edges up to 'depth' hops (capped at 'max_results'). Answers "
-            "'what could a change here break?'. Use this over lore_what_imports when "
-            "you need the ripple, not just the immediate importers."
-        ),
-        annotations=_READ_ONLY_ANNOTATIONS,
-    )
-    async def blast_radius(
-        context: Context[Any, AppContext, Any],
-        target: Annotated[
-            str,
-            Field(
-                description=(
-                    "The symbol or module to start from — a dotted name "
-                    "(e.g. 'pkg.router.ChampionRouter' or 'pkg.router'). Traversal "
-                    "follows reverse-dependency edges outward from here."
-                )
-            ),
-        ],
-        depth: Annotated[
-            int,
-            Field(
-                ge=_MIN_COUNT,
-                le=_MAX_BLAST_DEPTH,
-                description=(
-                    f"Maximum number of reverse-edge hops to follow (default "
-                    f"{_DEFAULT_BLAST_DEPTH}, min {_MIN_COUNT}, max "
-                    f"{_MAX_BLAST_DEPTH}). Higher = a wider ripple; bounded to keep "
-                    "the result from blowing up the context budget."
-                ),
-            ),
-        ] = _DEFAULT_BLAST_DEPTH,
-        max_results: Annotated[
-            int,
-            Field(
-                ge=_MIN_COUNT,
-                le=_MAX_BLAST_MAX_RESULTS,
-                description=(
-                    f"Hard cap on the number of nodes returned (default "
-                    f"{_DEFAULT_BLAST_MAX_RESULTS}, min {_MIN_COUNT}, max "
-                    f"{_MAX_BLAST_MAX_RESULTS}), so a pathological fan-out stays "
-                    "bounded."
-                ),
-            ),
-        ] = _DEFAULT_BLAST_MAX_RESULTS,
-    ) -> list[GraphNode]:
-        return await _app_context(context).blast_radius(target, depth, max_results)
-
-    @mcp.tool(
-        name="lore_tests_for",
-        description=(
-            "Return the test nodes related to a symbol or file (via graph edges and "
-            "a naming heuristic). Use it to find the tests covering code you're about "
-            "to change, or to locate where a behavior is exercised. Returns a "
-            "well-formed (possibly empty) list — never an error when nothing matches."
-        ),
-        annotations=_READ_ONLY_ANNOTATIONS,
-    )
-    async def tests_for(
-        context: Context[Any, AppContext, Any],
-        symbol_or_file: Annotated[
-            str,
-            Field(
-                description=(
-                    "A symbol's dotted name (e.g. 'pkg.router.ChampionRouter') or a "
-                    "tier-relative file path (e.g. 'pkg/router.py') whose tests you "
-                    "want."
-                )
-            ),
-        ],
-    ) -> list[GraphNode]:
-        return await _app_context(context).tests_for(symbol_or_file)
-
-    @mcp.tool(
-        name="lore_references",
-        description=(
-            "Return the reference counter for ONE named symbol — how many times it is "
-            "referenced, split into PRODUCTION references (from non-test files, the count "
-            "that decides liveness) vs TEST references (from test files), plus the distinct "
-            "nodes that reference it. A symbol whose only consumers are its tests has zero "
-            "production references and is considered dead even though tests still call it. "
-            "Use this tool to check whether a specific symbol is live or orphaned. "
-            "Distinct from lore_what_imports (module-level importers only, not a per-symbol "
-            "count) and lore_blast_radius (transitive ripple outward from a symbol, not a "
-            "reference-count profile). Returns a well-formed result even when the symbol "
-            "has zero references — an empty referencing list is the success case, not an error."
-        ),
-        annotations=_READ_ONLY_ANNOTATIONS,
-    )
-    async def references(
-        context: Context[Any, AppContext, Any],
-        name: Annotated[
-            str,
-            Field(
-                description=(
-                    "The fully-qualified dotted name of the symbol to profile "
-                    "(e.g. 'pkg.router.ChampionRouter' or 'pkg.utils.helper'). "
-                    "Returns the split production/test reference counts and the "
-                    "distinct nodes that reference it."
-                )
-            ),
-        ],
-    ) -> ReferenceSummary:
-        return await _app_context(context).references(name)
+    # P8d Wave 2 (the impact fold): the lore_what_imports / lore_blast_radius /
+    # lore_tests_for / lore_references @mcp.tool registrations were REMOVED
+    # here — their capability is absorbed by lore_impact's depth parameter
+    # (depth=1 direct consumers, depth>1 transitive rollup) + its
+    # covering_tests/production_references/test_references fields. Deletion
+    # gate (REPORT-builder-flip-w2.md): grep-confirmed nothing outside these
+    # wrappers + their own tests called the corresponding AppContext handlers
+    # (impact.py/map.py call the graph_surreal ENGINE methods directly, never
+    # these handlers). The what_imports HANDLER itself briefly survived
+    # unregistered purely for test_schema_rebuild.py's shared-seam pin; P8d
+    # Wave 2 follow-on (fixer-w2f) repointed that pin at lore_impact (which
+    # rides the identical rebuilding_notice signal via its own proactive gate)
+    # and deleted the handler outright — no residual what_imports surface
+    # remains anywhere in AppContext.
 
     @mcp.tool(
         name="lore_dead_code",
@@ -4593,7 +4446,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "tree can evade it. By default excludes test nodes (their own test files), "
             "dunder methods (__init__, __repr__, …), and __main__/__init__ entry modules "
             "— these are always excluded to suppress known false positives; use the "
-            "include_* flags to include them. Use lore_references to investigate a "
+            "include_* flags to include them. Use lore_impact to investigate a "
             "specific suspect symbol before removing it."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
@@ -4656,15 +4509,17 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         description=(
             "Answer 'who depends on this, and is it safe to touch?' for ONE symbol "
             "or module in a single call: production/test reference counts, the "
-            "covering tests, and — depending on 'depth' — either the direct "
-            "consumer names (depth 1) or a per-module rollup of the wider ripple "
-            "(depth > 1), plus an explicit verdict ('live' or 'dead (heuristic)') "
+            "covering tests, and — depending on 'depth' — either the DIRECT "
+            "consumer names (depth 1, 'who imports/calls this') or a per-module "
+            "TRANSITIVE rollup of the wider ripple (depth > 1, 'what could a change "
+            "here break'), plus an explicit verdict ('live' or 'dead (heuristic)') "
             "that always carries an astroid-bounds caveat: a 'dead' verdict is a "
             "LEAD to investigate, never a deletion order, since dynamic / "
-            "framework-mediated call sites can undercount. Reach for this before "
-            "removing or refactoring something lore_dead_code flagged, or whenever "
-            "you need the FULL picture rather than lore_references' raw counts or "
-            "lore_blast_radius' bare node list."
+            "framework-mediated call sites can undercount. The single graph-read "
+            "verb for this project — absorbs what were previously separate "
+            "direct-importer / transitive-closure / reference-count / covering-test "
+            "tools. Reach for this before removing or refactoring something "
+            "lore_dead_code flagged."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -4706,7 +4561,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "rendered symbol names), optionally re-centered on one symbol's own "
             "neighbourhood via 'focus'. Reach for this FIRST when you don't yet "
             "know where to start — before lore_search (which needs a query) "
-            "or lore_blast_radius (which needs a known target) — to get the lay "
+            "or lore_impact (which needs a known target) — to get the lay "
             "of the land, or re-run it focused to see what surrounds a symbol "
             "you're about to change."
         ),

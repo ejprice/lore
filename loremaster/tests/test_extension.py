@@ -558,10 +558,9 @@ _BUILTIN_TOOLS = {
     "lore_recall",
     "lore_reindex",
     "lore_index_status",
-    "lore_what_imports",
-    "lore_blast_radius",
-    "lore_tests_for",
-    "lore_references",
+    # P8d Wave 2: lore_what_imports / lore_blast_radius / lore_tests_for /
+    # lore_references folded into lore_impact and no longer publish their own
+    # tool names — dropped from this subset accordingly.
     "lore_dead_code",
 }
 
