@@ -391,7 +391,7 @@ class TestScoutModuleIsFastMcpFree:
             "assert not bad, f'scout import pulled in FastMCP: {bad}'\n"
         )
         result = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True
+            [sys.executable, "-c", code], capture_output=True, text=True, check=False
         )
         assert result.returncode == 0, (
             f"importing loremaster.scout must not import FastMCP (rc="

@@ -262,8 +262,7 @@ class PythonAstChunker(Chunker):
             header_end = methods[0].line_start - 1
         else:
             header_end = parsed_class.line_end
-        if header_end < header_start:
-            header_end = header_start
+        header_end = max(header_end, header_start)
         while header_end > header_start and lines[header_end - 1].strip() == "":
             header_end -= 1
 

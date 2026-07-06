@@ -43,9 +43,9 @@ anything Odoo-specific.
 from __future__ import annotations
 
 import io
-import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol, cast
+from xml.etree import ElementTree
 
 from defusedxml.ElementTree import fromstring as safe_fromstring
 from defusedxml.ElementTree import iterparse as safe_iterparse

@@ -29,7 +29,13 @@ import httpx
 
 from loresigil.base import Embedder, EmbedResult
 from loresigil.batching import build_batches, run_in_windows
-from loresigil.resilient import RequestFn, ResilientEmbedder, mean_pool, split_to_fit
+from loresigil.resilient import (
+    HTTP_UNPROCESSABLE_ENTITY,
+    RequestFn,
+    ResilientEmbedder,
+    mean_pool,
+    split_to_fit,
+)
 from loresigil.tokens import VoyageTokenCounter
 
 logger = logging.getLogger(__name__)
@@ -247,7 +253,7 @@ class TEIEmbedder(Embedder):
         body: dict[str, object] = {"inputs": [sentinel], "prompt_name": prompt_name}
         response = await self._client.post(self._endpoint, json=body)
 
-        if response.status_code != 422:
+        if response.status_code != HTTP_UNPROCESSABLE_ENTITY:
             # A 2xx means the sentinel was under-cap with the prompt — we cannot
             # determine the overhead.  Fail closed rather than assume reserve=0.
             raise RuntimeError(

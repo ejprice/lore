@@ -1196,7 +1196,7 @@ def _project_result_for_model(result: ProjectResult, model: str) -> ProjectResul
     )
 
 
-def build_yardstick_markdown(
+def build_yardstick_markdown(  # noqa: PLR0912, PLR0915 - committed survey instrument, deliberately linear
     requested_models: Sequence[str],
     active_models: Sequence[str],
     dropped_models: Sequence[tuple[str, str]],
@@ -1415,7 +1415,7 @@ def resolve_specs(requested: Sequence[str], manifest_path: Path) -> tuple[list[P
     return specs, notices
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0912, PLR0915 - survey instrument, linear
     args = build_arg_parser().parse_args(argv)
     out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -2092,7 +2092,7 @@ class TestResilience:
         # Recovery: the next call reconnects (transparently, or after one transient
         # heal-able error), then serves the correct count.
         healed = await call_until_recovered(
-            lambda: graph.indexed_file_count(),
+            graph.indexed_file_count,
             _HEALABLE_ERRORS,
             label="graph",
         )

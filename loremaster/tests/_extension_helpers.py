@@ -24,9 +24,9 @@ Contents:
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 from typing import Any, Literal
+from xml.etree import ElementTree
 
 from loremaster.config import LoreConfig
 from loremaster.extension import (

@@ -241,7 +241,9 @@ class ResilientEmbedder:
         # Apply the finiteness quarantine to each returned vector.
         return [self._quarantine(vector) for vector in raw_vectors]
 
-    async def _request_with_retry(self, texts: list[str]) -> list[list[float]] | None:
+    async def _request_with_retry(  # noqa: PLR0911 - deliberate exhaustive error-classification returns
+        self, texts: list[str]
+    ) -> list[list[float]] | None:
         """Send ``texts`` once, retrying transient failures with exponential backoff.
 
         Returns:

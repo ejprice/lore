@@ -450,7 +450,7 @@ class FakeMemoryBackend:
     # -- recall helpers -----------------------------------------------------
 
     @staticmethod
-    def _matches_filter(
+    def _matches_filter(  # noqa: PLR0911 - test infra, not restructured in a lint pass
         row: _StoredMemory,
         include: str | None,
         as_of: datetime | None,

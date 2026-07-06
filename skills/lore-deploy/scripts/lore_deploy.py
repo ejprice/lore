@@ -673,7 +673,7 @@ def _launch_container(project: Path, config_path: Path, env_file: Path) -> None:
 # ---------------------------------------------------------------------------
 # Verbs.
 # ---------------------------------------------------------------------------
-def verb_setup(project: Path, env_file: Path) -> int:
+def verb_setup(project: Path, env_file: Path) -> int:  # noqa: PLR0911 - P8e reworks this skill
     """``setup`` — idempotent one-time provisioning (expensive parts no-op on re-run)."""
     config_path = project / "lore.yaml"
     slug = project.name
@@ -732,7 +732,7 @@ def verb_setup(project: Path, env_file: Path) -> int:
     return _EXIT_OK
 
 
-def verb_start(
+def verb_start(  # noqa: PLR0911, PLR0912 - P8e reworks this skill
     project: Path,
     env_file: Path,
     *,

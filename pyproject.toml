@@ -27,9 +27,26 @@ dev = [
 [tool.ruff]
 line-length = 110
 target-version = "py314"
+# Session debris under scratchpad/ is untracked and not part of the workspace
+# packages; dist/ is already skipped via .gitignore-derived defaults.
+extend-exclude = ["scratchpad"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+# The "pylint gate" is ruff's PL family (real pylint is upstream-blocked on
+# astroid<4.1 — do not suggest installing it). Curation is operator-ruled
+# 2026-07-05: PLC0415 (lazy imports) and PLR0913 (too-many-arguments) are
+# ignored tree-wide as deliberate house idioms; PLR2004 (magic-value-comparison)
+# stays live for production code but is per-file-ignored for tests/scripts/
+# skills/docs below. Every other PL rule is enabled tree-wide.
+select = ["E", "F", "I", "UP", "PL"]
+ignore = ["PLC0415", "PLR0913"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["PLR2004"]
+"**/test_*.py" = ["PLR2004"]
+"scripts/**" = ["PLR2004"]
+"skills/**" = ["PLR2004"]
+"docs/**" = ["PLR2004"]
 
 # ---------------------------------------------------------------------------
 # Mypy

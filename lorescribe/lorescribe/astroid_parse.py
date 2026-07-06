@@ -468,6 +468,13 @@ _PACKAGE_PARENT_DIR_MEMO: dict[tuple[str, ...], frozenset[str]] = {}
 # depends on it, never the reverse.
 _PACKAGE_INIT_MARKER = "__init__.py"
 
+# astroid's private ``AstroidManager._mod_file_cache`` (undocumented, no public
+# API) is keyed by a ``(modname, contextfile)`` 2-tuple — see
+# ``astroid.typing.AstroidManagerBrain``. This is the length of that key shape,
+# checked defensively before indexing ``key[1]`` since the attribute is an
+# internal astroid implementation detail that could change shape underneath us.
+_MOD_FILE_CACHE_KEY_LENGTH = 2
+
 
 def reset_search_path_memo() -> None:
     """Reset the package-parent-dir memo (test hook for module-level state).
@@ -537,7 +544,7 @@ def evict_resolved_file(path: str) -> None:
     stale_specs = [
         key
         for key in manager._mod_file_cache
-        if len(key) == 2
+        if len(key) == _MOD_FILE_CACHE_KEY_LENGTH
         and key[1] is not None
         and os.path.abspath(str(key[1])) == absolute_path
     ]

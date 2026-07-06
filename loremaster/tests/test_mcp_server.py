@@ -3090,7 +3090,7 @@ class TestRunAndMain:
         assert hasattr(server_module, "main")
         assert callable(server_module.main)
 
-    def test_run_configures_lore_logging_before_fastmcp_root_handler(
+    def test_run_configures_lore_logging_before_fastmcp_root_handler(  # noqa: PLR0915 - test infra
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``run`` installs the lore JSON handler BEFORE FastMCP's root handler.

@@ -1640,7 +1640,7 @@ class AppContext:
             )
         return "\n".join(rows)
 
-    async def findings(
+    async def findings(  # noqa: PLR0911 - P8d rewrites this render; restructuring now would churn
         self,
         *,
         action: str,
@@ -2672,7 +2672,7 @@ async def reconcile_store_divergence(
         await _restore_rebuilding_window(manifest, prior_status)
 
 
-async def build_app_context(
+async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restructuring now would churn
     *,
     server: LoreServer,
     embedder: Embedder,

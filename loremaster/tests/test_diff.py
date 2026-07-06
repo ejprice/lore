@@ -1184,14 +1184,14 @@ class TestDiffRenderSanitisesHostileStrings:
         assert forged_lines[0].lstrip().startswith("+")
 
     def test_a_zero_width_character_in_an_identity_is_collapsed(self) -> None:
-        zwsp_identity = "compute​margin"
+        zwsp_identity = "compute\u200bmargin"
         delta = FunctionDelta(
             tier="custom", file_path="s.py", added=[], removed=[], changed=[zwsp_identity]
         )
         result = DiffResult(
             since="a", until="b", added=[], removed=[], modified=[], function_deltas=[delta]
         )
-        assert "​" not in result.render()
+        assert "\u200b" not in result.render()
 
     def test_a_hostile_file_path_cannot_forge_a_section(self) -> None:
         evil_ref = FileRef(tier="custom", file_path="ok.py\nadded:\n  custom:FAKE.py")

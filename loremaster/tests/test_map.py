@@ -393,7 +393,7 @@ class TestBudgetEnforcement:
         # genuinely overflow the budget, so `elided_modules > 0` is
         # satisfiable without padding the render to force an elision.
         trio, _server = await _build_graph(tmp_path, _full_corpus())
-        engine = engine_factory(trio.graph, count_tokens=lambda s: len(s))
+        engine = engine_factory(trio.graph, count_tokens=len)
 
         # Act
         result = await engine.map(budget=_BUDGET_FLOOR)
@@ -446,7 +446,7 @@ class TestBudgetEnforcement:
         # render (the char/4 default would demand ~800 chars, unreachable
         # honestly for this tiny corpus).
         trio, _server = await _build_graph(tmp_path, _full_corpus())
-        engine = engine_factory(trio.graph, count_tokens=lambda s: len(s))
+        engine = engine_factory(trio.graph, count_tokens=len)
 
         result = await engine.map(budget=requested)
 
