@@ -22,7 +22,7 @@ fixed here:
    on top. Fix: test nodes keep feeding RANK MASS into production (a
    test-hammered module IS real signal), but are EXCLUDED from the default
    RENDERING. Tests are reached via a targeted call — ``tests=True``, ``focus=``
-   on a test symbol, or ``tests_for``.
+   on a test symbol, or ``lore_impact``'s covering-tests view.
 2. **Never-silent elision** (§3). The default map always renders a test-infra
    elision line naming the top test hub(s) + an omitted count + the literal
    ``tests=true`` affordance — Sonnet's budget discipline carrying Opus's
