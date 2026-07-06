@@ -58,6 +58,33 @@ SYMBOL_CHUNK_TYPES: tuple[str, ...] = ("class", "method", "function")
 # unbounded scan.
 _SCROLL_LIMIT = 8
 
+# S2 fix (2026-07-06, REPORT-slate-scout-s2.md §3-4c): the METHOD chunk type,
+# named locally rather than imported (this module's own convention already
+# hand-lists ``SYMBOL_CHUNK_TYPES`` rather than importing lorescribe's
+# ``CHUNK_TYPE_*`` constants).
+_METHOD_CHUNK_TYPE = "method"
+
+# The bound on the suffix-match scan (below) that scopes ALL stored METHOD rows
+# (no identity filter — a method's stored identity is always ``ClassName.
+# method``, never a bare tail, so an identity-filtered scroll can never find one
+# by its bare method name alone). Generous but bounded — the SAME "never an
+# unbounded scan" convention as ``_SCROLL_LIMIT`` above and
+# ``map.py``'s ``_FOCUS_PROBE_MAX_RESULTS`` / ``diff.py``'s ``_MAX_LIST_LIMIT``
+# elsewhere in this codebase, sized larger because this scan expects to filter
+# down from MANY rows rather than fetch a near-unique match. This is a
+# DEGRADED-TEACHING hint only (see ``_find_method_rows_by_suffix``): it fires
+# solely on an already-missed resolution, so a corpus with more than this many
+# stored methods may not surface every real sibling beyond the bound — a
+# disclosed limitation, never a claim of exhaustiveness, and never a
+# correctness regression (an incomplete hint is strictly better than today's
+# unconditional silence).
+_SUFFIX_SCROLL_LIMIT = 500
+
+# Finding #62: the minimum segment count for
+# ``_module_segments_from_file_path``'s repeated-leading-segment check
+# (``segments[0] == segments[1]`` needs at least 2 elements to compare).
+_MIN_SEGMENTS_TO_CHECK_FOR_A_REPEAT = 2
+
 # Row keys read off the matched row (stamped by ``chunk_to_record``).
 _IDENTITY_KEY = "identity"
 _CHUNK_TYPE_KEY = "chunk_type"
@@ -330,6 +357,43 @@ class SymbolResolver:
             )
         return matches
 
+    async def _find_method_rows_by_suffix(self, tail: str) -> list[dict[str, Any]]:
+        """Every stored METHOD row whose identity ends with ``.{tail}`` (any class).
+
+        S2 fix (2026-07-06, REPORT-slate-scout-s2.md §3-4c): a stored method
+        identity is ALWAYS ``ClassName.method`` (never a bare tail), so an
+        exact-identity lookup on a bare method name — the only thing
+        :meth:`_module_qualified_candidates`'s trailing-1-segment candidate can
+        ever try — can never find one. Without this, a wrong-or-missing CLASS
+        guess (the live failure: ``LoreServer._enforce_search_budget`` when the
+        real owner is ``AppContext``) finds zero candidates at ANY identity
+        length and degrades SILENTLY — the asymmetry versus a wrong-MODULE
+        guess, which the SAME candidate machinery already teaches via
+        :meth:`find_siblings`. This closes it with a suffix match scoped to
+        METHOD-chunk rows only (class/function identities are already reachable
+        by their own exact bare tail, so they need no suffix arm).
+
+        No store-level suffix/``LIKE`` primitive exists (:meth:`~loremaster.
+        store.surreal.SurrealStore.scroll` is exact-match-only by design), so
+        this fetches a BOUNDED, unfiltered-by-identity window of method rows
+        (:data:`_SUFFIX_SCROLL_LIMIT`) and filters client-side — a degraded
+        teaching hint, not an exhaustive guarantee (see the constant's own
+        docstring for the disclosed bound).
+
+        Args:
+            tail: The bare (undotted) candidate method name to suffix-match.
+
+        Returns:
+            Every fetched method row whose identity ends with ``.{tail}``,
+            possibly empty; order is not significant.
+        """
+        rows = await self._store.scroll(
+            filters={_CHUNK_TYPE_KEY: _METHOD_CHUNK_TYPE},
+            limit=_SUFFIX_SCROLL_LIMIT,
+        )
+        suffix = f"{_DOTTED_SEP}{tail}"
+        return [row for row in rows if str(row.get(_IDENTITY_KEY, "")).endswith(suffix)]
+
     async def find_siblings(self, qualified_name: str) -> list[dict[str, Any]]:
         """The sibling rows sharing ``qualified_name``'s bare tail, ANY module.
 
@@ -366,6 +430,15 @@ class SymbolResolver:
         (which does not) — a SINGLE place walks the trailing-1-then-2-segment
         identity-length priority so the two can never drift apart on which
         candidates a given dotted name considers.
+
+        At ``identity_length == 1`` (a bare tail — the shape a wrong-or-missing
+        CLASS guess reduces to, e.g. ``LoreServer._enforce_search_budget``
+        trying bare ``_enforce_search_budget``), the exact-identity match ABOVE
+        can only ever find a class/function collision (a method's stored
+        identity is never bare). The candidate set is widened with a METHOD
+        suffix match (:meth:`_find_method_rows_by_suffix`, S2 fix) so a
+        same-named method under a DIFFERENT class also surfaces here — closing
+        the wrong-class/wrong-module asymmetry :meth:`find_siblings` teaches.
         """
         segments = qualified_name.split(_DOTTED_SEP)
         pairs: list[tuple[list[str], list[dict[str, Any]]]] = []
@@ -376,7 +449,12 @@ class SymbolResolver:
                 break
             module_segments = segments[:-identity_length]
             candidate_identity = _DOTTED_SEP.join(segments[-identity_length:])
-            pairs.append((module_segments, await self._find_all_by_identity(candidate_identity)))
+            candidates = await self._find_all_by_identity(candidate_identity)
+            if identity_length == 1:
+                candidates = candidates + await self._find_method_rows_by_suffix(
+                    candidate_identity
+                )
+            pairs.append((module_segments, candidates))
         return pairs
 
     @staticmethod
@@ -385,6 +463,27 @@ class SymbolResolver:
 
         ``pkg/calc.py`` -> ``["pkg", "calc"]``; ``pkg/__init__.py`` -> ``["pkg"]``
         (``__init__`` is the package itself, never its own segment).
+
+        Finding #62 (2026-07-06, REPORT-slate-scout-s2.md §3 side note): a
+        workspace-member directory whose Python package shares its OWN name —
+        this repo's own layout, ``loremaster/loremaster/server.py`` —
+        otherwise doubles here (``["loremaster", "loremaster", "server"]``),
+        which surfaced verbatim in :meth:`SymbolTool.get_symbol`'s miss-teach
+        message as ``loremaster.loremaster.server``. An immediately-repeated
+        LEADING segment is collapsed to one — a LOCAL heuristic, not the
+        canonical fix ``loremaster.map``'s finding #52 uses
+        (``module_names_by_file``, a GRAPH-level lookup keyed off the file's
+        own synthesized module node; this resolver has no graph dependency —
+        see REPORT-slate-builder-s2.md decisions-needed for the wiring change
+        that would be needed to share it). Confirmed safe for
+        :meth:`_module_path_matches`'s CALLER: that comparison is common-TAIL
+        based (``[-common_length:]``), so shortening a duplicated leading
+        segment cannot turn an existing match into a miss (the compared tail
+        is unchanged) — only fixes the segments a MISS TEACH message prints. A
+        project with a genuine, deliberately same-named NESTED subpackage
+        (``foo/foo/bar.py`` where both really are packages) would be
+        mis-collapsed too — a disclosed trade-off for a teaching-only value,
+        never presented as authoritative.
         """
         pure_path = PurePosixPath(file_path)
         segments = list(pure_path.parts[:-1])
@@ -393,6 +492,8 @@ class SymbolResolver:
             stem = stem[: -len(_PY_SUFFIX)]
         if stem and stem != "__init__":
             segments.append(stem)
+        if len(segments) >= _MIN_SEGMENTS_TO_CHECK_FOR_A_REPEAT and segments[0] == segments[1]:
+            segments = segments[1:]
         return segments
 
     @classmethod

@@ -652,6 +652,148 @@ class TestUnknownSymbol:
         assert "lore_index" in message
 
 
+# =========================================================================== #
+# S2 fix (2026-07-06, REPORT-slate-scout-s2.md §3-4c): the resolver had ZERO
+# tolerance for a wrong CLASS guess (only for a wrong MODULE/package prefix) --
+# a bare method-name tail is never itself a stored identity (methods are always
+# ``ClassName.method``), so the exact-match candidate arm could never find one,
+# and the miss degraded SILENTLY instead of teaching the real owner the same
+# way a wrong-module guess already does. Hostile fixture: two sibling classes
+# in ONE module, only one of which actually owns the guessed method name --
+# exactly the live repro against loremaster.server's AppContext/LoreServer.
+# =========================================================================== #
+class TestWrongClassGuessSameModuleTeaches:
+    """A wrong-CLASS, right-METHOD, SAME-MODULE guess must teach the real
+    module instead of a bare dead end (the reported wrong-class/wrong-module
+    asymmetry)."""
+
+    _FILE_PATH = "pkg/handlers.py"
+    _SOURCE = '''"""Two sibling classes; only one defines ``process``."""
+
+
+class AlphaHandler:
+    """Does NOT define process -- the caller's wrong guess."""
+
+    def helper(self, x):
+        """A non-colliding method, present so Alpha is a real, populated class."""
+        return x
+
+
+class BetaHandler:
+    """DOES define process -- the real, sole owner of the method name."""
+
+    def process(self, x):
+        """The real process method."""
+        return x
+'''
+
+    @pytest_asyncio.fixture()
+    async def wrong_class_tool(self, store: SurrealStore) -> SymbolTool:
+        """A SymbolTool over a store holding both sibling classes."""
+        await _upsert_source(store, self._SOURCE, self._FILE_PATH)
+        return SymbolTool(store=store)
+
+    async def test_wrong_class_guess_still_raises_not_found(
+        self, wrong_class_tool: SymbolTool
+    ) -> None:
+        # Never a false-positive hit: AlphaHandler genuinely does not own
+        # "process" -- the guess must still be a clean miss, teaching or not.
+        with pytest.raises(GetSymbolError):
+            await wrong_class_tool.get_symbol("AlphaHandler.process")
+
+    async def test_wrong_class_guess_teaches_the_real_module(
+        self, wrong_class_tool: SymbolTool
+    ) -> None:
+        with pytest.raises(GetSymbolError) as exc_info:
+            await wrong_class_tool.get_symbol("AlphaHandler.process")
+        message = str(exc_info.value)
+        # Before the fix: a bare generic dead end naming no module at all --
+        # exactly the asymmetry versus a wrong-MODULE guess (which already
+        # teaches, see TestGetSymbolModuleQualifiedName above).
+        assert "pkg.handlers" in message
+
+    async def test_module_qualified_wrong_class_guess_also_teaches(
+        self, wrong_class_tool: SymbolTool
+    ) -> None:
+        # The fuller real-world shape: a MODULE-qualified wrong-class guess,
+        # not just the bare Class.method form.
+        with pytest.raises(GetSymbolError) as exc_info:
+            await wrong_class_tool.get_symbol("pkg.handlers.AlphaHandler.process")
+        message = str(exc_info.value)
+        assert "pkg.handlers" in message
+
+    async def test_right_class_still_resolves_directly(
+        self, wrong_class_tool: SymbolTool
+    ) -> None:
+        # Regression guard: the hardening must never disturb the CORRECT form.
+        resolved = await wrong_class_tool.get_symbol("BetaHandler.process")
+        assert resolved.qualified_name == "BetaHandler.process"
+        assert resolved.chunk_type == "method"
+        assert "def process" in resolved.source
+        assert "def helper" not in resolved.source
+
+
+# =========================================================================== #
+# Finding #62 (2026-07-06, REPORT-slate-scout-s2.md §3 side note): the
+# sibling-teach path's module naming used the OLD path-derived
+# ``_module_segments_from_file_path`` directly, doubling a workspace-member
+# directory that shares its package's own name (this repo's own layout) into
+# ``loremaster.loremaster.server`` instead of the importable ``loremaster.
+# server``. Local heuristic fix (not the canonical ``module_names_by_file``
+# graph lookup map.py's #52 fix uses -- see decisions-needed): collapse an
+# immediately-repeated LEADING path segment.
+# =========================================================================== #
+class TestMissTeachDoesNotDoublePathJoin:
+    """A doubled-member-dir module's sibling teach must name the SINGLE
+    importable path, never the doubled path-join residual."""
+
+    def test_module_segments_collapses_a_repeated_leading_segment(self) -> None:
+        assert SymbolResolver._module_segments_from_file_path("pkg/pkg/mod.py") == [
+            "pkg",
+            "mod",
+        ]
+
+    def test_module_segments_leaves_a_non_repeated_path_untouched(self) -> None:
+        assert SymbolResolver._module_segments_from_file_path("pkg/calc.py") == [
+            "pkg",
+            "calc",
+        ]
+
+    def test_module_segments_only_collapses_an_immediately_leading_repeat(self) -> None:
+        # A repeat that is NOT the first two segments (here: "pkg" reappears
+        # as the FINAL stem, not adjacent to the first "pkg") must be left
+        # alone -- only an immediately-adjacent LEADING repeat is collapsed.
+        assert SymbolResolver._module_segments_from_file_path("pkg/sub/pkg.py") == [
+            "pkg",
+            "sub",
+            "pkg",
+        ]
+
+    _FILE_PATH = "pkg/pkg/mod.py"
+    _SOURCE = '''"""A doubled-member-dir module."""
+
+
+def only_here(x):
+    """The sole free function -- the sibling-teach target."""
+    return x
+'''
+
+    @pytest_asyncio.fixture()
+    async def doubled_tool(self, store: SurrealStore) -> SymbolTool:
+        await _upsert_source(store, self._SOURCE, self._FILE_PATH)
+        return SymbolTool(store=store)
+
+    async def test_wrong_module_prefix_teaches_the_single_path_form(
+        self, doubled_tool: SymbolTool
+    ) -> None:
+        with pytest.raises(GetSymbolError) as exc_info:
+            await doubled_tool.get_symbol("other.mod.only_here")
+        message = str(exc_info.value)
+        assert "pkg.mod" in message
+        # The doubled-path residual (finding #62) must never appear.
+        assert "pkg.pkg" not in message
+
+
 class TestTolerantRowReading:
     """A row carrying keys ``_to_resolved`` never reads must not break
     resolution — the forward-compatible contract an open ``dict`` row demands.
