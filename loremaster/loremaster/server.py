@@ -883,6 +883,31 @@ _SEARCH_ELISION_TEMPLATE = (
     "(score={score:.3f}) — raise budget to ~{suggested} to see all {total} entries"
 )
 
+# S6 (finding #59, client-needs consult docs/design/2026-07-06-client-needs-
+# consult.md §S6): "raise budget to ~N" is only a usable next call if N is
+# inside the tool schema's own ``le=_SEARCH_BUDGET_CAP`` bound -- the full
+# un-elided join can cost more than the cap, and suggesting it anyway hands
+# the caller a next call the schema will bounce (live-observed 6200-11001 in
+# the P8d' gate re-run). These two templates render the CAPPED case honestly:
+# name the cap explicitly, and say exactly how many of ``total`` entries the
+# cap DOES surface (computed by literally re-running the SAME enforcement at
+# the cap -- see ``_enforce_search_budget`` -- never a separate estimate that
+# could drift from what raising to the cap would actually show).
+_SEARCH_ELISION_CAPPED_TEMPLATE = (
+    "+{elided} entries elided by budget={budget} — top elided: {identity!r} "
+    "(score={score:.3f}) — the {cap} max cannot show all {total} "
+    "entries; raise budget to the {cap} max to see {visible} of {total} entries"
+)
+# The caller's budget already equals (or somehow exceeds) the cap -- "raise
+# budget to the max" would be a no-op instruction naming the value the caller
+# already passed, so this variant states the ceiling as a fact instead of a
+# next action.
+_SEARCH_ELISION_AT_CAP_TEMPLATE = (
+    "+{elided} entries elided by budget={budget} — top elided: {identity!r} "
+    "(score={score:.3f}) — already at the {cap} max, which cannot "
+    "show all {total} entries; the {cap} max surfaces {visible} of {total} entries"
+)
+
 # P8d Wave 4a (findings #25/#32): the filter-miss teach rendered when a path/
 # tier filter matches no CODE hit (never a bare empty, never masked by a
 # memory-only result). Subtree/prefix scoping is NOT supported at the store
@@ -1810,8 +1835,34 @@ class AppContext:
         top_elided = results[len(kept)]
         full_count = _count("\n".join(result.formatted for result in results))
 
+        # S6 (finding #59): `full_count` is only a usable "raise budget to"
+        # suggestion when it's inside the enforced cap. When it isn't, clamp
+        # the suggestion to the cap and compute exactly how many of
+        # `results` the cap DOES surface — by re-running THIS SAME
+        # enforcement at the cap, never a separate estimate. Guard against
+        # self-recursion when `budget` already IS the cap (that re-run would
+        # otherwise call itself with the same budget forever): `kept` from
+        # the walk above already IS that scenario in that case.
+        capped_visible: int | None = None
+        if full_count <= _SEARCH_BUDGET_CAP:
+            suggested_budget = full_count
+        else:
+            suggested_budget = _SEARCH_BUDGET_CAP
+            if budget >= _SEARCH_BUDGET_CAP:
+                capped_visible = len(kept)
+            else:
+                kept_at_cap = self._enforce_search_budget(results, _SEARCH_BUDGET_CAP, caller_model)
+                capped_visible = sum(1 for result in kept_at_cap if result.kind != NOTICE_KIND)
+
         def _notice(elided_count: int) -> str:
-            return self._search_elision_notice(elided_count, budget, top_elided, full_count, len(results))
+            return self._search_elision_notice(
+                elided_count,
+                budget,
+                top_elided,
+                suggested_budget,
+                len(results),
+                capped_visible,
+            )
 
         notice_text = _notice(elided)
         while kept and _count("\n".join([*kept_texts, notice_text])) > budget:
@@ -1854,14 +1905,40 @@ class AppContext:
         top_elided: SearchResult,
         suggested_budget: int,
         total: int,
+        capped_visible: int | None = None,
     ) -> str:
-        """Compose the T4 elision notice naming the top elided entry + a raise hint."""
-        return _SEARCH_ELISION_TEMPLATE.format(
+        """Compose the T4 elision notice naming the top elided entry + a raise hint.
+
+        S6 (finding #59): ``capped_visible`` is ``None`` when the full
+        un-elided join fits inside ``_SEARCH_BUDGET_CAP`` (the original,
+        unclamped "raise to N to see all" wording still applies). When it is
+        not ``None``, ``suggested_budget`` has been clamped to the cap and
+        cannot reveal every entry — the notice names the cap explicitly and
+        how many of ``total`` it DOES surface, rather than a raise-to value
+        the tool's own schema would reject.
+        """
+        identity = AppContext._result_identity(top_elided)
+        if capped_visible is None:
+            return _SEARCH_ELISION_TEMPLATE.format(
+                elided=elided,
+                budget=budget,
+                identity=identity,
+                score=top_elided.score,
+                suggested=suggested_budget,
+                total=total,
+            )
+        template = (
+            _SEARCH_ELISION_AT_CAP_TEMPLATE
+            if budget >= suggested_budget
+            else _SEARCH_ELISION_CAPPED_TEMPLATE
+        )
+        return template.format(
             elided=elided,
             budget=budget,
-            identity=AppContext._result_identity(top_elided),
+            identity=identity,
             score=top_elided.score,
-            suggested=suggested_budget,
+            cap=suggested_budget,
+            visible=capped_visible,
             total=total,
         )
 

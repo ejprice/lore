@@ -89,6 +89,7 @@ from loremaster.map import _BUDGET_FLOOR as _PRODUCTION_MAP_BUDGET_FLOOR
 from loremaster.map import _ELISION_FRAGMENT as _PRODUCTION_MAP_ELISION_FRAGMENT
 from loremaster.memory.backend import MemoryRef, derive_memory_id, derive_refs_stamp
 from loremaster.server import (
+    _SEARCH_BUDGET_CAP,
     AppContext,
     LoreServer,
     ProbeGateError,
@@ -4153,6 +4154,96 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         assert "score=" in notice.formatted
         assert "raise budget to ~" in notice.formatted
         assert "all 3 entries" in notice.formatted
+
+    async def test_raise_to_hint_never_exceeds_the_enforced_cap(
+        self, indexed_context: AppContext
+    ) -> None:
+        """S6 (finding #59): the "raise budget to ~N" hint must never name an
+        N beyond ``_SEARCH_BUDGET_CAP`` -- the tool's own schema rejects any
+        budget above it (``le=_SEARCH_BUDGET_CAP``), so an unclamped
+        suggestion hands the caller a next call the schema bounces
+        (live-observed 6200-11001 in the P8d' gate re-run, finding #59).
+        When the full un-elided join genuinely exceeds the cap, the notice
+        must say so honestly AND name exactly how many of the total entries
+        the cap DOES surface -- never silently overpromise "raise to N to
+        see all" when N could not be requested at all.
+        """
+        from loremaster.search import SearchResult
+
+        class _OverCapPipeline:
+            async def search_code(self, *args: Any, **kwargs: Any) -> list[SearchResult]:
+                # 4 hits, each ~4035 chars -- under the FakeEmbedder's len//4
+                # heuristic + the 1.78 calibration constant, the full
+                # un-elided join costs ~7183 Claude-tokens (over the 6000
+                # cap); the first 3 alone cost ~5387 (under it) -- so raising
+                # to the cap reveals exactly 3 of 4.
+                return [
+                    SearchResult(
+                        formatted=f"[SOURCE:pkg/hit_{i}.py:1]\nKey: hit-{i}\n" + "x" * 4000,
+                        chunk_key=f"hit-{i}",
+                        detail_level="source",
+                        stale=False,
+                        score=0.9 - i * 0.1,
+                        kind="hit",
+                    )
+                    for i in range(4)
+                ]
+
+        indexed_context.search_pipeline = _OverCapPipeline()  # type: ignore[assignment]
+        results = await indexed_context.search(
+            "anything", budget=_PRODUCTION_MAP_BUDGET_FLOOR
+        )
+        notice = next(r for r in results if r.kind == "notice" and "elided" in r.formatted)
+
+        raise_to = re.search(r"raise budget to (?:~|the )?(\d+)", notice.formatted)
+        assert raise_to, f"expected a raise-to hint; got {notice.formatted!r}"
+        assert int(raise_to.group(1)) <= _SEARCH_BUDGET_CAP, (
+            f"suggested a budget beyond the enforced cap; got {notice.formatted!r}"
+        )
+        assert f"{_SEARCH_BUDGET_CAP}" in notice.formatted
+        assert "cannot show all 4 entries" in notice.formatted, (
+            f"expected an honest cap-can't-show-everything statement; got {notice.formatted!r}"
+        )
+        assert "3 of 4 entries" in notice.formatted, (
+            f"expected the exact count the cap DOES surface; got {notice.formatted!r}"
+        )
+
+    async def test_raise_to_hint_when_caller_is_already_at_the_cap(
+        self, tmp_path: Path
+    ) -> None:
+        """Hostile fixture (S6): a direct ``_enforce_search_budget`` call AT
+        the cap, where even the cap can't show everything, must not recurse
+        forever (the "re-run at the cap" computation would otherwise call
+        itself with the SAME budget indefinitely) and must render an honest
+        "already at the max" notice rather than a redundant "raise to the
+        max you're already at" instruction.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            results = [
+                SearchResult(
+                    formatted=f"[SOURCE:pkg/hit_{i}.py:1]\nKey: hit-{i}\n" + "x" * 4000,
+                    chunk_key=f"hit-{i}",
+                    detail_level="source",
+                    stale=False,
+                    score=0.9 - i * 0.1,
+                    kind="hit",
+                )
+                for i in range(4)
+            ]
+            kept = ctx._enforce_search_budget(  # noqa: SLF001
+                list(results), _SEARCH_BUDGET_CAP, None
+            )
+            notice = next(r for r in kept if r.kind == "notice" and "elided" in r.formatted)
+            assert "already at" in notice.formatted, (
+                f"expected an 'already at the cap' notice; got {notice.formatted!r}"
+            )
+            assert "3 of 4 entries" in notice.formatted
+        finally:
+            await ctx.aclose()
 
     async def test_tight_budget_never_leaves_a_dangling_memories_header(
         self, tmp_path: Path
