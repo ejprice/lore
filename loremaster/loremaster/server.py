@@ -1674,11 +1674,20 @@ class AppContext:
             for key, value in (("path", path), ("tier", tier))
             if value is not None
         )
-        nearest = await self._nearest_indexed_paths(path) if path is not None else []
-        hint = f" Nearest indexed path(s): {', '.join(nearest)}." if nearest else ""
+        if path is not None:
+            nearest = await self._nearest_indexed_paths(path)
+            hint = f" Nearest indexed path(s): {', '.join(nearest)}." if nearest else ""
+            teach = _FILTER_MISS_NO_SUBTREE_HINT
+        else:
+            # tier is not None here (the early guard rules out both-None); the
+            # path-flavored subtree hint above is nonsensical for a tier typo
+            # (P8d' #54 -- live repro named the missed package, not a path).
+            assert tier is not None
+            teach = self._tier_miss_teach(tier)
+            hint = ""
         message = (
             f"{_FILTER_MISS_MARKER} no code hits matched filter {filter_desc} — "
-            f"{_FILTER_MISS_NO_SUBTREE_HINT}.{hint}"
+            f"{teach}.{hint}"
         )
         return SearchResult(
             formatted=message,
@@ -1688,6 +1697,19 @@ class AppContext:
             score=0.0,
             kind=NOTICE_KIND,
         )
+
+    def _tier_miss_teach(self, tier: str) -> str:
+        """The tier-appropriate teach for a tier-only filter miss (P8d' #54).
+
+        Names the missed ``tier`` value AND the actual configured tier(s), by
+        reusing :meth:`_validate_tier`'s own source of truth
+        (:attr:`~loremaster.config.LoreConfig.effective_roots`) — never a
+        hardcoded tier list that could drift from the project's real config.
+        Carries no path/subtree wording (that hint is for a path miss only).
+        """
+        valid_tiers = [root.tier for root in self._config.effective_roots]
+        valid = ", ".join(repr(name) for name in valid_tiers)
+        return f"{tier!r} is not a configured tier — configured tier(s): {valid}"
 
     async def _nearest_indexed_paths(
         self, path: str, limit: int = _FILTER_MISS_NEAREST_LIMIT

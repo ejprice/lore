@@ -4018,6 +4018,29 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
             "the teach should name a nearby real indexed path"
         )
 
+    async def test_unknown_tier_filter_renders_tier_appropriate_teaching_not_path_wording(
+        self, indexed_context: AppContext
+    ) -> None:
+        """A tier-only miss teaches tiers, never path/subtree wording (P8d' #54).
+
+        Live repro (docs/eval/p8d-flip-eval-raw.md task 9 feedback): tier=
+        "loresigil" (a package name, not a tier) rendered the PATH-flavored
+        ``_FILTER_MISS_NO_SUBTREE_HINT`` ("subtree/prefix scoping is not
+        supported ... pass an exact indexed file path") even though no path
+        was ever given -- confusing wording for a tier typo. The teach must
+        instead name the missed tier value and the actual configured tier(s).
+        """
+        results = await indexed_context.search("champion routing", tier="loresigil")
+        notices = [r for r in results if r.kind == "notice"]
+        assert notices, "a tier filter matching nothing must render a teaching notice"
+        message = notices[0].formatted
+        assert "loresigil" in message, "the teach must name the missed tier value"
+        assert "custom" in message, "the teach must name the actual configured tier(s)"
+        assert "subtree" not in message, "a tier-only miss must not carry path/subtree wording"
+        assert "exact indexed file path" not in message, (
+            "a tier-only miss must not carry path-teaching wording"
+        )
+
     async def test_memory_only_hits_under_a_filter_still_teach_the_miss(
         self, indexed_context: AppContext
     ) -> None:
