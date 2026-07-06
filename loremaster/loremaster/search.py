@@ -194,6 +194,55 @@ _ENRICHMENT_CAP = 10
 # computed (the graph raised mid-enrichment) — annotate the hit, never blanket-fail.
 _ENRICHMENT_UNAVAILABLE = "⚠ enrichment unavailable"  # "⚠ enrichment unavailable"
 
+# item 12 (S4, client-needs-consult): semantic search has no real "no match"
+# state — hybrid_search always returns nearest neighbors, so a nonsense query
+# renders identically to a confident one (both informants independently hit
+# this: a 0.03-scored 429-retry test rendered as a top hit for a feature this
+# repo doesn't have). ``_SEARCH_SCORE_FLOOR`` is a MEASURED constant (never
+# eyeballed from the informants' anecdotal probe scores) — see
+# ``scripts/search_score_survey.py`` (a stratified score survey over the
+# 35-pair eval set's real code-intent queries vs. a fixed adversarial nonsense
+# set, run against the live corpus) and REPORT-slate-builder-search.md for the
+# full methodology, the chosen percentile, and the measured false-flag rate.
+# A code hit scoring STRICTLY BELOW this floor is flagged (item 12a); the
+# floor itself reads as confident (boundary case). Only ``kind == "hit"``
+# entries are ever checked — memory entries carry the RECALL score (which can
+# be arbitrarily high or low) and notice entries a fixed ``score=0.0``; either
+# would be meaningless run through a code-confidence floor.
+#
+# MEASURED 2026-07-06: the 5th percentile of the 35-pair eval set's real-query
+# top-hit-score distribution (n=35, mean 0.0213, p5 0.0167, p95 0.0286) vs. a
+# 15-query adversarial nonsense set (mean 0.0245, p5 0.0164, p95 0.0320) — the
+# two distributions OVERLAP heavily (nonsense scores are NOT reliably lower;
+# hybrid_search's nearest-neighbor guarantee means a nonsense query can score
+# as high as a real one on lexical overlap alone). This conservative pin
+# (p5 of the REAL distribution) yields a 2.9% false-flag rate on real queries
+# (1/35) and only a 6.7% nonsense catch rate (1/15) — the floor is deliberately
+# NOT a reliable nonsense detector; it is a low-confidence-hit flag, favoring
+# almost never penalising a genuine hit over catching most noise (the
+# informants' own under-claim/over-claim asymmetry). Full methodology, both
+# distributions, and every per-query score are in REPORT-slate-builder-search.md
+# (re-run ``uv run python scripts/search_score_survey.py`` to reproduce).
+_SEARCH_SCORE_FLOOR = 0.0167
+
+# item 12a: the per-hit weak-match warning, appended to a below-floor hit's
+# ``formatted`` text exactly like :data:`STALE_WARNING` — a rendered
+# annotation, not a new ``ResultKind`` (the lead's embedded-text ruling: no
+# schema/model change, mirrors every other notice convention on the surface).
+_WEAK_MATCH_WARNING_TEMPLATE = (
+    "⚠ weak match — score {score:.3f} is below the {floor:.3f} confidence floor"
+)
+
+# item 12b: the aggregate top-level notice when EVERY shown code hit is weak
+# (client-needs-consult's Opus wording: "weak match — top score 0.03") — the
+# same counted-elision-family convention as the memory-elision/section-header
+# notices above: a plain NOTICE_KIND entry, never masquerading as a citation.
+_ALL_HITS_WEAK_TEMPLATE = (
+    "weak match — top score {top_score:.3f} is below the {floor:.3f} confidence "
+    "floor; every shown code hit is low-confidence — broaden the query or treat "
+    "these as speculative"
+)
+
 # item 10: the CommonMark backtick fence character, and the standard minimum fence
 # width. The wrapper fence must be a backtick run LONGER than any run inside the
 # source (so a ``` embedded in the source cannot close the fence early), bounded
@@ -266,6 +315,24 @@ def _refjoin_line(production_references: int, test_references: int, covering_tes
     return (
         f"{_ENRICHMENT_ARROW} {production_references} prod / {test_references} test "
         f"{_ENRICHMENT_MIDDOT} tests: {covering_tests}"
+    )
+
+
+def _weak_match_warning(score: float) -> str:
+    """Render the item-12a per-hit weak-match warning for ``score``."""
+    return _WEAK_MATCH_WARNING_TEMPLATE.format(score=score, floor=_SEARCH_SCORE_FLOOR)
+
+
+def _all_hits_weak_notice(top_score: float) -> SearchResult:
+    """The item-12b aggregate notice: every shown code hit is below the floor."""
+    text = _ALL_HITS_WEAK_TEMPLATE.format(top_score=top_score, floor=_SEARCH_SCORE_FLOOR)
+    return SearchResult(
+        formatted=text,
+        chunk_key="",
+        detail_level="summary",
+        stale=False,
+        score=0.0,
+        kind=NOTICE_KIND,
     )
 
 
@@ -446,8 +513,17 @@ class SearchPipeline:
         # memory entries as a trailing, segregated block (T3, P8d' #54 tweak
         # -- they never partition, and now never lead either).
         partitioned_hits = self._partition_by_detail(hits, detail_level)
+
+        # Step 9 (item 12b): if EVERY shown code hit is weak, say so top-level
+        # (client-needs-consult S4) -- placed right after the hits it
+        # describes, before the trailing memories: block. A subset of an
+        # all-weak set stays all-weak, so this check is stable across any
+        # LATER (server-side) budget trim: trimming can only drop hits, never
+        # promote one to confident.
+        weak_notice = self._all_weak_notice(partitioned_hits)
+
         memory_entries = self._inject_memories(recalled)
-        return [*partitioned_hits, *memory_entries]
+        return [*partitioned_hits, *([weak_notice] if weak_notice is not None else []), *memory_entries]
 
     # -- filter normalisation ---------------------------------------------------
 
@@ -743,6 +819,8 @@ class SearchPipeline:
                 formatted = f"{formatted}\n" + "\n".join(enrichment_lines)
         if stale:
             formatted = f"{formatted}\n{STALE_WARNING}"
+        if candidate.score < _SEARCH_SCORE_FLOOR:
+            formatted = f"{formatted}\n{_weak_match_warning(candidate.score)}"
 
         return SearchResult(
             formatted=formatted,
@@ -833,3 +911,19 @@ class SearchPipeline:
         if detail_level == _DETAIL_AUTO:
             return hits
         return [hit for hit in hits if hit.detail_level == detail_level]
+
+    # -- step 9 (item 12b): aggregate all-weak notice -----------------------
+
+    @staticmethod
+    def _all_weak_notice(hits: list[SearchResult]) -> SearchResult | None:
+        """The item-12b top-level notice, or ``None`` when it does not apply.
+
+        Fires only when there is at least one code hit AND every one of them
+        scores below :data:`_SEARCH_SCORE_FLOOR` — a query that returned zero
+        code hits (nothing to call "weak") or a mix of weak and confident hits
+        (the reader already has a confident anchor) gets no notice.
+        """
+        code_hits = [hit for hit in hits if hit.kind == HIT_KIND]
+        if not code_hits or any(hit.score >= _SEARCH_SCORE_FLOOR for hit in code_hits):
+            return None
+        return _all_hits_weak_notice(max(hit.score for hit in code_hits))

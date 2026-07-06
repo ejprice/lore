@@ -154,6 +154,18 @@ _BIDI_ZERO_WIDTH_AND_SEPARATOR_CHARS = (
 )
 
 
+# item 12 (S4) — weak-match banding: a per-hit flag on any code hit scoring
+# below a MEASURED confidence floor, plus an aggregate top-level notice when
+# EVERY shown code hit is weak. The floor VALUE is a measured constant
+# (scripts/search_score_survey.py — a stratified real-query vs. nonsense-query
+# score survey against the live corpus; see REPORT-slate-builder-search.md for
+# the full methodology + false-flag rate) and is RE-DECLARED here (the
+# contract this module pins), not imported — must equal
+# ``loremaster.search._SEARCH_SCORE_FLOOR`` exactly.
+_SEARCH_SCORE_FLOOR = 0.0167
+_WEAK_MATCH_MARKER = "weak match"
+
+
 def _refjoin_line(n_prod: int, n_test: int, n_tests: int) -> str:
     """The exact ref-join enrichment substring for the given graph counts (item 7).
 
@@ -737,10 +749,15 @@ class TestStoreCutover:
         )
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
-        # k bounds the number of store hits returned (no memory store ⇒ no
-        # extra visible-memory entries, so total == hits).
+        # k bounds the number of store HITS returned (no memory store ⇒ no
+        # extra visible-memory entries). item 12b's aggregate weak-match
+        # notice is metadata ABOUT the hits, not itself a store hit, so it is
+        # excluded from the k-ceiling count (same non-inflation rule as a
+        # memory entry) -- checked separately below.
         results = await pipeline.search_code("anything", k=2)
-        assert len(results) <= 2
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert len(hits) <= 2
+        assert all(r.kind in (_HIT_KIND, _NOTICE_KIND) for r in results)
 
 
 # --------------------------------------------------------------------------- #
@@ -970,8 +987,10 @@ class TestMemoryBoost:
         pipeline = _make_pipeline(indexed=indexed, embedder=embedder, server=server)
         results = await pipeline.search_code("routing", k=5)
         assert results
-        # No memory store ⇒ no boost AND no injected memory entries.
-        assert all(r.kind == _HIT_KIND for r in results)
+        # No memory store ⇒ no boost AND no injected memory entries (item
+        # 12b's aggregate weak-match notice is unrelated to memory injection
+        # and may legitimately co-occur, so only MEMORY_KIND is ruled out here).
+        assert not any(r.kind == _MEMORY_KIND for r in results)
 
 
 # --------------------------------------------------------------------------- #
@@ -1531,6 +1550,183 @@ class TestRenderSanitiser:
         hostile = self._hostile_payload(chunk_type="function", source_text=source, signature="()")
         result = await self._search_one_hostile_chunk(tmp_path, embedder, hostile)
         assert source in result.formatted
+
+
+# --------------------------------------------------------------------------- #
+# item 12 (S4) — weak-match banding: per-hit flag + aggregate all-weak notice
+# --------------------------------------------------------------------------- #
+class _FixedCandidatesStore(FakeSurrealStore):
+    """A store double whose ``hybrid_search`` returns a FIXED candidate list.
+
+    Lets a weak-match test pin an EXACT ``candidate.score`` directly (relative
+    to :data:`_SEARCH_SCORE_FLOOR`) instead of reverse-engineering the real
+    RRF fusion math to land a score on a specific side of a floor.
+    """
+
+    def __init__(self, *, dim: int, db: Any, candidates: list[Candidate]) -> None:
+        super().__init__(dim=dim, db=db)
+        self._candidates = candidates
+
+    async def hybrid_search(
+        self,
+        *,
+        query_vector: list[float],
+        query_text: str,
+        k: int,
+        filters: dict[str, str] | None = None,
+    ) -> list[Candidate]:
+        return list(self._candidates[:k])
+
+
+def _score_candidate(key: str, score: float, *, file_path: str = "pkg/mod.py") -> Candidate:
+    """A well-formed function-hit candidate at an exact, caller-chosen score.
+
+    ``signature=None`` keeps the candidate out of graph enrichment (item 7) so
+    these tests need no code-graph double.
+    """
+    return Candidate(
+        key=key,
+        score=score,
+        payload={
+            "tier": _TIER,
+            "file_path": file_path,
+            "identity": "some_function",
+            "chunk_type": "function",
+            "line_start": 1,
+            "line_end": 2,
+            "content_hash": "0" * 128,
+            "source_text": "def some_function():\n    pass\n",
+            "signature": None,
+        },
+        origin="fused",
+    )
+
+
+class TestWeakMatchBanding:
+    """A code hit below the measured floor is flagged; an all-weak result set
+
+    also carries a top-level notice. Memory/notice entries (``score=0.0`` or an
+    arbitrary recall score) are NEVER banded — only ``kind == "hit"`` entries
+    ever pass through the per-hit check.
+    """
+
+    async def _pipeline(
+        self,
+        tmp_path: Path,
+        embedder: FakeEmbedder,
+        candidates: list[Candidate],
+        *,
+        memory_store: Any | None = None,
+    ) -> SearchPipeline:
+        indexed, server = await _index_single(tmp_path, embedder, files={})
+        store = _FixedCandidatesStore(dim=embedder.dim, db=indexed.db, candidates=candidates)
+        return _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, store=store,
+            memory_store=memory_store,
+        )
+
+    async def test_hit_below_floor_is_flagged_weak(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        weak = _score_candidate("k1", _SEARCH_SCORE_FLOOR - 0.001)
+        pipeline = await self._pipeline(tmp_path, embedder, [weak])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert len(hits) == 1
+        assert _WEAK_MATCH_MARKER in hits[0].formatted
+
+    async def test_hit_above_floor_is_not_flagged(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        confident = _score_candidate("k1", _SEARCH_SCORE_FLOOR + 0.001)
+        pipeline = await self._pipeline(tmp_path, embedder, [confident])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert len(hits) == 1
+        assert _WEAK_MATCH_MARKER not in hits[0].formatted
+
+    async def test_score_exactly_at_the_floor_is_not_flagged(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # Boundary: the floor itself reads as confident (strict less-than), so
+        # a score exactly ON the measured floor is not penalised.
+        at_floor = _score_candidate("k1", _SEARCH_SCORE_FLOOR)
+        pipeline = await self._pipeline(tmp_path, embedder, [at_floor])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert _WEAK_MATCH_MARKER not in hits[0].formatted
+
+    async def test_all_weak_hits_carry_a_top_level_notice(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        weak_a = _score_candidate("k1", _SEARCH_SCORE_FLOOR - 0.001, file_path="pkg/a.py")
+        weak_b = _score_candidate("k2", _SEARCH_SCORE_FLOOR - 0.002, file_path="pkg/b.py")
+        pipeline = await self._pipeline(tmp_path, embedder, [weak_a, weak_b])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert any(_WEAK_MATCH_MARKER in n.formatted for n in notices), (
+            f"expected an all-weak top-level notice; got notices={notices!r}"
+        )
+
+    async def test_mixed_weak_and_confident_hits_no_top_level_notice(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        weak = _score_candidate("k1", _SEARCH_SCORE_FLOOR - 0.001, file_path="pkg/a.py")
+        confident = _score_candidate("k2", _SEARCH_SCORE_FLOOR + 0.05, file_path="pkg/b.py")
+        pipeline = await self._pipeline(tmp_path, embedder, [confident, weak])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        # The individual weak hit is still flagged...
+        hits = {r.chunk_key: r for r in results if r.kind == _HIT_KIND}
+        assert _WEAK_MATCH_MARKER in hits["k1"].formatted
+        assert _WEAK_MATCH_MARKER not in hits["k2"].formatted
+        # ...but since NOT every shown hit is weak, no aggregate notice fires.
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert not any(_WEAK_MATCH_MARKER in n.formatted for n in notices)
+
+    async def test_memory_and_notice_entries_are_never_banded(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # A recalled memory can carry ANY score (including one below the code
+        # floor) and a notice entry always carries score=0.0 — neither may
+        # ever be mistaken for a weak CODE hit (only kind=="hit" passes
+        # through the per-hit check in _to_result).
+        weak = _score_candidate("k1", _SEARCH_SCORE_FLOOR - 0.001)
+        memory_store = _FakeMemoryBackend(
+            [_backend_recalled(text="a low-score memory", chunk_keys=[], score=0.0001)]
+        )
+        pipeline = await self._pipeline(
+            tmp_path, embedder, [weak], memory_store=memory_store
+        )
+
+        results = await pipeline.search_code("anything", k=5)
+
+        memory_entries = [r for r in results if r.kind == _MEMORY_KIND]
+        notice_entries = [r for r in results if r.kind == _NOTICE_KIND]
+        assert memory_entries, "the recalled memory must still be injected"
+        assert not any(_WEAK_MATCH_MARKER in r.formatted for r in memory_entries)
+        # The memories: section header itself (score=0.0) is a notice, not a
+        # hit — it must not carry the weak-match marker either.
+        header = next(r for r in notice_entries if r.formatted == _MEMORY_SECTION_HEADER)
+        assert _WEAK_MATCH_MARKER not in header.formatted
+
+    async def test_no_hits_produces_no_all_weak_notice(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        pipeline = await self._pipeline(tmp_path, embedder, [])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        assert results == []
 
 
 # --------------------------------------------------------------------------- #
