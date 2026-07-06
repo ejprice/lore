@@ -1042,3 +1042,80 @@ class TestUnknownBareTarget:
         message = str(exc_info.value)
         assert "totallybogus" in message
         assert "lore_search" in message
+
+
+# --------------------------------------------------------------------------- #
+# 9 — finding #53: a from-imported MODULE target renders "live" (engine-level,
+# fake graph). ``impact()`` itself changes NOT AT ALL for this fix (P8d′
+# SPEC 1 §1.3): it is a pure passthrough over ``graph.references`` /
+# ``graph.tests_for``, so this pins that the FIX in graph_surreal.py (mirrored
+# in the fake graph's ``references``/``tests_for``) is what flips the render —
+# not any change to this engine.
+#
+# RED before the fix: ``references("rlib.factory")`` returns zero production
+# references (the module's own name is never the ``imports`` edge dst — only
+# ``rlib.factory.make_widget`` is), so ``impact()`` renders the exact
+# ``loresigil.factory`` false "dead (heuristic), 0 refs" verdict reproduced
+# live this session (``lore_impact("loresigil.factory")``).
+#
+# CORPUS: the exact loresigil.factory repro shape — a REAL package (with
+# ``__init__.py``) containing a submodule (``factory.py``) whose symbol is
+# from-imported both cross-package (a top-level ``consumer.py``) and by a
+# test file whose name deliberately does NOT match the module/symbol stem
+# (defeats the ``test_x`` <-> ``x`` name heuristic, mirroring the graph-level
+# fixture in test_graph_surreal.py's TestTestsForModuleTarget).
+# --------------------------------------------------------------------------- #
+
+_RLIB_FACTORY_SOURCE = """\
+def make_widget(value):
+    \"\"\"Reached via a cross-package from-import, never a plain module import.\"\"\"
+    return value
+"""
+
+_RLIB_CONSUMER_SOURCE = """\
+from rlib.factory import make_widget
+
+
+def run(value):
+    \"\"\"A production caller that imports the SYMBOL, not the module.\"\"\"
+    return make_widget(value)
+"""
+
+_RLIB_TEST_SOURCE = """\
+from rlib.factory import make_widget
+
+
+def test_widget_end_to_end():
+    assert make_widget(1) == 1
+"""
+
+_RLIB_MODULE_TARGET = "rlib.factory"
+
+
+def _rlib_module_target_corpus() -> dict[str, str]:
+    return {
+        "rlib/__init__.py": "",
+        "rlib/factory.py": _RLIB_FACTORY_SOURCE,
+        "consumer.py": _RLIB_CONSUMER_SOURCE,
+        "tests/test_widget_use.py": _RLIB_TEST_SOURCE,
+    }
+
+
+class TestModuleTargetImpact:
+    """finding #53: ``lore_impact`` on a from-imported MODULE renders "live",
+    names its consumer, and surfaces its covering test — never the false
+    "dead, 0 refs" verdict."""
+
+    async def test_module_target_renders_live_with_consumer_and_covering_test(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_graph(tmp_path, _rlib_module_target_corpus())
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_RLIB_MODULE_TARGET, depth=1)
+
+        assert result.verdict == _VERDICT_LIVE
+        assert result.production_references == 1
+        assert result.direct_consumers == ["consumer"]
+        assert any("test_widget_use" in name for name in result.covering_tests)
+        assert result.verdict in result.formatted

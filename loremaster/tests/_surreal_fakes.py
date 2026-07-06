@@ -1415,22 +1415,42 @@ class FakeSurrealCodeGraph:
         return list(found.values())[:max_results]
 
     async def tests_for(self, symbol_or_file: str) -> list[GraphNode]:
-        """The test-path nodes that reference ``symbol_or_file`` (any kind)."""
+        """The test-path nodes that reference ``symbol_or_file`` (any kind), OR
+        ``from``-import a MODULE ``symbol_or_file`` under its prefix.
+
+        The base ``references``/heuristic arm deliberately uses
+        :meth:`_bare_aware_equals` (literal-or-bare, ANY edge kind) rather than
+        :meth:`_matches` — ``_matches``'s own module-prefix reach is ungated by
+        kind, which would silently pass this method's engine-level tests
+        without the real fix (the adversarial-double law: the fake must fail
+        the SAME way the pre-fix real graph does before the fix lands). The
+        SEPARATE prefix arm below is imports-only, mirroring the REAL graph's
+        new ``tests_for`` arm (finding #53) exactly.
+        """
         target_bare = CodeGraph._bare_name(symbol_or_file)
         related: dict[str, GraphNode] = {}
         for (tier, file_path), slice_ in self.db.graph_slices.items():
             if not CodeGraph._is_test_path(file_path):
                 continue
-            references = any(
-                self._matches(edge.dst, symbol_or_file)
+            base_reference = any(
+                self._bare_aware_equals(edge.dst, symbol_or_file)
                 or CodeGraph._bare_name(edge.dst) == target_bare
+                for edge in slice_.edges
+            )
+            # Module-prefix arm (Kùzu parity, imports-only — mirrors
+            # SurrealCodeGraph.tests_for's new arm): a test file that
+            # ``from <module> import <symbol>``-imports the target module is
+            # related even though the import's dst is the resolved SYMBOL fqn,
+            # not the bare module name.
+            prefix_reference = any(
+                edge.kind == EDGE_IMPORTS and edge.dst.startswith(f"{symbol_or_file}.")
                 for edge in slice_.edges
             )
             heuristic = any(
                 CodeGraph._bare_name(node.qualified_name) == f"test_{target_bare}"
                 for node in slice_.nodes
             )
-            if references or heuristic:
+            if base_reference or prefix_reference or heuristic:
                 for node in slice_.nodes:
                     graph_node = self._graph_node(tier, file_path, node)
                     related[graph_node.id] = graph_node
@@ -1442,9 +1462,13 @@ class FakeSurrealCodeGraph:
         Matching reuses :meth:`_bare_aware_equals` (the SAME gated bare-name
         equality ``_matches`` uses for ``what_imports`` / ``blast_radius`` /
         ``tests_for``) — never a second, drifting copy of the literal-vs-bare
-        comparison. No module-prefix arm here: the real graph's own
-        ``references`` has none either (that reach is ``what_imports`` /
-        ``blast_radius``-only).
+        comparison. PLUS a module-prefix arm (finding #53, Kùzu parity): a
+        MODULE-name ``name`` also reaches every ``imports``-kind edge whose dst
+        is resolved UNDER ``name.`` (a ``from <module> import <symbol>``
+        importer) — mirroring the REAL graph's ``references`` (which gained the
+        same arm) rather than reusing ``_matches``'s own prefix reach, which is
+        ungated by kind and would leak a ``calls``/``inherits`` edge under the
+        prefix in as a false module reference.
         """
         production: set[str] = set()
         test: set[str] = set()
@@ -1453,7 +1477,11 @@ class FakeSurrealCodeGraph:
             for edge in slice_.edges:
                 if edge.kind not in _REFERENCE_KINDS:
                     continue
-                if not self._bare_aware_equals(edge.dst, name):
+                matches_literal_or_bare = self._bare_aware_equals(edge.dst, name)
+                matches_module_prefix = edge.kind == EDGE_IMPORTS and edge.dst.startswith(
+                    f"{name}."
+                )
+                if not (matches_literal_or_bare or matches_module_prefix):
                     continue
                 if edge.src == name:
                     continue  # self-reference excluded

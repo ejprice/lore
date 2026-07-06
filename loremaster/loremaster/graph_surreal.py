@@ -1216,9 +1216,13 @@ class SurrealCodeGraph:
 
         A node is a TEST node when its ``file_path`` is a test path. It relates to
         the target when EITHER a test file carries a reference (any kind) to the
-        target (by FQN or bare name), OR the ``test_x`` ↔ ``x`` name heuristic
-        links it (a ``test_boot`` node tests any symbol whose bare name is
-        ``boot``).
+        target (by FQN or bare name), OR a test file ``from <module> import
+        <symbol>``-imports a MODULE target (Kùzu parity, finding #53 — the SAME
+        imports-only module-prefix arm :meth:`references`/:meth:`what_imports`
+        carry: the import's dst is the resolved SYMBOL fqn, not the bare
+        module, so a literal/bare match alone misses it), OR the ``test_x`` ↔
+        ``x`` name heuristic links it (a ``test_boot`` node tests any symbol
+        whose bare name is ``boot``).
 
         Args:
             symbol_or_file: A qualified symbol name or a module name.
@@ -1254,6 +1258,27 @@ class SurrealCodeGraph:
             for row in ref_rows
             if self._is_test_path(str(row[_COL_SRC_FILE_PATH]))
         }
+        # Module-prefix arm (Kùzu parity, imports-only): a test file that
+        # ``from <module> import <symbol>``-imports the target module covers
+        # it even though the import's dst is the resolved SYMBOL fqn, not the
+        # bare module name. IMPORTS-only — a ``calls``/``inherits`` edge under
+        # the prefix references the SYMBOL, not the module.
+        prefix_name_ids = await self._names_with_value_prefix(
+            [f"{symbol_or_file}{_QUALIFIER_SEPARATOR}"]
+        )
+        if prefix_name_ids:
+            prefix_rows = self._rows(
+                await self._query(
+                    f"SELECT {_COL_SRC_TIER}, {_COL_SRC_FILE_PATH} FROM {REFERS_RELATION} "
+                    f"WHERE {_COL_KIND} = ${_P_KIND} AND {_EDGE_OUT} IN ${_P_NAMES}",
+                    {_P_KIND: EDGE_IMPORTS, _P_NAMES: prefix_name_ids},
+                )
+            )
+            test_pairs |= {
+                (str(row[_COL_SRC_TIER]), str(row[_COL_SRC_FILE_PATH]))
+                for row in prefix_rows
+                if self._is_test_path(str(row[_COL_SRC_FILE_PATH]))
+            }
         for pair_tier, pair_file in test_pairs:
             nodes = self._decode_nodes(
                 await self._query(
@@ -1303,6 +1328,19 @@ class SurrealCodeGraph:
         profile into an unambiguous query, the pre-existing gap in
         ``what_imports``'s own bridge deliberately not repeated here.
 
+        A MODULE-NAME ``name`` ALSO reaches every ``from <module> import
+        <symbol>`` importer (Kùzu parity, finding #53 — the SAME module-prefix
+        arm :meth:`what_imports` already carries): such an import records its
+        dst as the resolved SYMBOL fqn (``demo.reflib.widget``), not the bare
+        module, so the trailing-dot-anchored ``<module>.`` value-prefix arm
+        pulls those importers in. The arm is IMPORTS-only (a ``calls``/
+        ``inherits`` edge to a symbol under the prefix is a reference to the
+        SYMBOL, not the module) and UNGATED by any "is this a module?"
+        pre-check — the ``kind = imports`` filter IS the module-ness gate, so
+        the arm is strictly additive and harmless for a symbol target (nothing
+        is resolved under ``demo.reflib.widget.``). Self-reference exclusion
+        applies identically to rows this arm contributes.
+
         Args:
             name: The qualified name of the symbol to profile.
 
@@ -1336,6 +1374,23 @@ class SurrealCodeGraph:
                 },
             )
         )
+        # Module-prefix arm (Kùzu parity, imports-only — mirrors what_imports's
+        # own arm): a MODULE-name ``name`` also reaches every ``from <module>
+        # import <symbol>`` importer, whose ``imports`` edge dst is the resolved
+        # SYMBOL fqn (``name.symbol``), never the bare module. Fed through the
+        # SAME classification loop below (production/test split, self-reference
+        # exclusion, dedupe) — never a second, drifting copy of that logic.
+        prefix_name_ids = await self._names_with_value_prefix(
+            [f"{name}{_QUALIFIER_SEPARATOR}"]
+        )
+        if prefix_name_ids:
+            rows = rows + self._rows(
+                await self._query(
+                    f"SELECT {_EDGE_IN}, {_COL_SRC_FILE_PATH} FROM {REFERS_RELATION} "
+                    f"WHERE {_COL_KIND} = ${_P_KIND} AND {_EDGE_OUT} IN ${_P_NAMES}",
+                    {_P_KIND: EDGE_IMPORTS, _P_NAMES: prefix_name_ids},
+                )
+            )
         production: set[str] = set()
         test: set[str] = set()
         referencing_ids: dict[str, RecordID] = {}

@@ -1321,6 +1321,189 @@ class TestTestsFor:
 
 
 # ===========================================================================
+# 5b/6b. references / tests_for BY MODULE TARGET — finding #53 (the
+# ``lore_impact("loresigil.factory")`` false "dead / 0 refs" repro).
+#
+# THE DEFECT (live-reproduced this session against spike-surreal): a
+# ``from <module> import <symbol>`` importer's ``imports`` edge dst is the
+# resolved SYMBOL fqn (``rlib.factory.make_widget``), never the bare module
+# (``rlib.factory``) — ``what_imports``/``blast_radius`` already carry a
+# trailing-dot-anchored module-prefix arm to reach it (Kùzu parity); ``
+# references``/``tests_for`` did not, so a MODULE target undercounts to zero
+# even when a real production importer exists.
+#
+# ORACLE: every expected count/consumer is read straight off the fixture
+# sources below (never re-derived from either graph engine), mirroring
+# ``TestWhatImportsModuleTarget``'s own oracle convention.
+#
+# CORPUS ("rlib" — the exact loresigil.factory repro shape: a REAL package,
+# with ``__init__.py``, containing a submodule whose symbol is from-imported
+# both cross-package and same-package): each test ``_build()``s only the
+# files it needs off the shared, UNBUILT ``rlib_graph`` fixture (the
+# ``demo_graph`` pattern) so one scenario's importer never pollutes another's
+# exact-count assertion.
+# ===========================================================================
+
+RLIB_FACTORY_SOURCE: str = textwrap.dedent(
+    '''\
+    """Defines make_widget; also self-imports it as the first statement (a
+    self-reference exclusion stress for the MODULE-target arm — mirrors the
+    existing self-recursive ``countdown`` case, which pins the same exclusion
+    for a SYMBOL target)."""
+    from __future__ import annotations
+
+    from rlib.factory import make_widget as _self_reference
+
+
+    def make_widget(value):
+        """Reached via cross-package and same-package from-imports."""
+        return value
+    '''
+)
+RLIB_USER_SOURCE: str = textwrap.dedent(
+    '''\
+    """A SAME-package from-import of the target module's symbol."""
+    from __future__ import annotations
+
+    from rlib.factory import make_widget
+
+
+    def use(value):
+        """A real same-package caller of ``make_widget``."""
+        return make_widget(value)
+    '''
+)
+RLIB_CONSUMER_SOURCE: str = textwrap.dedent(
+    '''\
+    """A CROSS-package (top-level) from-import of the target module's symbol —
+    the exact loresigil.factory / loremaster.embedding repro shape."""
+    from __future__ import annotations
+
+    from rlib.factory import make_widget
+
+
+    def run(value):
+        """A real production caller that imports the SYMBOL, not the module."""
+        return make_widget(value)
+    '''
+)
+RLIB_PLAIN_IMPORTER_SOURCE: str = textwrap.dedent(
+    '''\
+    """BOTH a plain module import (base arm, dst = the module itself) AND a
+    from-import of the same module's symbol (prefix arm, dst = the resolved
+    symbol) — from the SAME source, which must count once, not twice."""
+    from __future__ import annotations
+
+    import rlib.factory
+    from rlib.factory import make_widget
+
+
+    def use_both():
+        """References the module directly AND its from-imported symbol."""
+        return rlib.factory, make_widget
+    '''
+)
+RLIB_TEST_WIDGET_USE_SOURCE: str = textwrap.dedent(
+    '''\
+    """A test file whose OWN name deliberately does not match the module/symbol
+    stem (defeats the ``test_x`` <-> ``x`` name heuristic), so a positive
+    ``tests_for`` result can only come from the module-prefix reference arm."""
+    from __future__ import annotations
+
+    from rlib.factory import make_widget
+
+
+    def test_widget_end_to_end():
+        assert make_widget(1) == 1
+    '''
+)
+
+RLIB_INIT_PATH: str = "rlib/__init__.py"
+RLIB_FACTORY_PATH: str = "rlib/factory.py"
+RLIB_USER_PATH: str = "rlib/user.py"
+RLIB_CONSUMER_PATH: str = "consumer.py"
+RLIB_PLAIN_IMPORTER_PATH: str = "plain_importer.py"
+RLIB_TEST_WIDGET_USE_PATH: str = "tests/test_widget_use.py"
+
+RLIB_PACKAGE_MODULE: str = "rlib"
+RLIB_FACTORY_MODULE: str = "rlib.factory"
+RLIB_USER_MODULE: str = "rlib.user"
+RLIB_CONSUMER_MODULE: str = "consumer"
+RLIB_PLAIN_IMPORTER_MODULE: str = "plain_importer"
+RLIB_TEST_WIDGET_USE_MODULE: str = "tests.test_widget_use"
+
+FQN_MAKE_WIDGET: str = "rlib.factory.make_widget"
+
+
+def _write_rlib_package(root: Path) -> None:
+    """Materialise the ``rlib`` package + its (cross/same-package/plain/test)
+    importers on disk for astroid — NOTHING is graphed yet (mirrors
+    ``_write_demo_package``'s "write everything, build selectively" split)."""
+    (root / "rlib").mkdir(parents=True, exist_ok=True)
+    (root / "rlib" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "rlib" / "factory.py").write_text(RLIB_FACTORY_SOURCE, encoding="utf-8")
+    (root / "rlib" / "user.py").write_text(RLIB_USER_SOURCE, encoding="utf-8")
+    (root / "consumer.py").write_text(RLIB_CONSUMER_SOURCE, encoding="utf-8")
+    (root / "plain_importer.py").write_text(RLIB_PLAIN_IMPORTER_SOURCE, encoding="utf-8")
+    (root / "tests").mkdir(parents=True, exist_ok=True)
+    (root / "tests" / "test_widget_use.py").write_text(
+        RLIB_TEST_WIDGET_USE_SOURCE, encoding="utf-8"
+    )
+
+
+@pytest_asyncio.fixture()
+async def rlib_graph(
+    surreal_env: SurrealEnv,  # noqa: F811
+    tmp_path: Path,
+) -> AsyncIterator[tuple[SurrealCodeGraph, SurrealEnv, Path]]:
+    """A resolution-enabled graph over the ``rlib`` package, NOTHING built yet.
+
+    Mirrors ``demo_graph``: every file is on DISK (so astroid can resolve
+    cross-file imports), but each test ``_build()``s only the subset it needs
+    into the GRAPH, so an exact ``production_references`` count is never
+    polluted by a sibling scenario's importer.
+    """
+    project_root = tmp_path / "project"
+    _write_rlib_package(project_root)
+    graph = await _make_graph(
+        surreal_env,
+        tier_roots={TIER_A: project_root},
+        project_roots=[project_root],
+    )
+    try:
+        yield graph, surreal_env, project_root
+    finally:
+        await graph.close()
+
+
+class TestTestsForModuleTarget:
+    """``tests_for`` reaches a test file that ``from``-imports a MODULE target.
+
+    RED today: ``tests_for`` has no module-prefix arm (see the section banner
+    above) — a test importing ``from rlib.factory import make_widget`` is
+    reachable only by luck of the ``test_x`` <-> ``x`` name heuristic, which
+    this fixture's test file NAME deliberately defeats (finding #53's live
+    repro: ``test_factory`` was found by name-luck, not by reference).
+    """
+
+    async def test_test_file_that_from_imports_the_module_is_found(
+        self, rlib_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        graph, _env, root = rlib_graph
+        await _build(graph, root, TIER_A, RLIB_FACTORY_PATH, RLIB_FACTORY_SOURCE, RLIB_FACTORY_MODULE)
+        await _build(
+            graph,
+            root,
+            TIER_A,
+            RLIB_TEST_WIDGET_USE_PATH,
+            RLIB_TEST_WIDGET_USE_SOURCE,
+            RLIB_TEST_WIDGET_USE_MODULE,
+        )
+        related = {node.qualified_name for node in await graph.tests_for(RLIB_FACTORY_MODULE)}
+        assert RLIB_TEST_WIDGET_USE_MODULE in related
+
+
+# ===========================================================================
 # 6. references — production vs test split; defines excluded; dead ⇔ prod==0.
 # ===========================================================================
 
@@ -1395,6 +1578,164 @@ class TestReferences:
         assert defines_to_orphan >= 1
         # …yet it does not count as a reference.
         assert (await graph.references(FQN_ORPHAN)).production_references == 0
+
+
+class TestReferencesModuleTarget:
+    """``references`` queried BY MODULE NAME finds ``from module import X`` importers.
+
+    RED today: ``references`` has no module-prefix arm (see the 5b/6b section
+    banner above) — this is the exact finding #53 defect
+    (``lore_impact("loresigil.factory")`` rendering "dead, 0 refs" while
+    ``loremaster.embedding`` genuinely ``from loresigil.factory import
+    make_embedder``s it). Kept in the SAME file as the rest of
+    ``TestReferences`` — only the QUERY ARGUMENT is new: a module's own dotted
+    name instead of a symbol's own FQN.
+    """
+
+    async def test_cross_package_from_import_is_counted(
+        self, rlib_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """The exact loresigil.factory repro shape: a TOP-LEVEL module
+        ``from``-imports the target package's submodule symbol.
+
+        Independent oracle: only ``consumer.py`` references ``rlib.factory``
+        (via ``make_widget``); the self-import inside ``factory.py`` itself
+        must NOT inflate the count (self-reference exclusion, jointly proven
+        here by the EXACT count of 1, not 2).
+        """
+        graph, _env, root = rlib_graph
+        await _build(graph, root, TIER_A, RLIB_FACTORY_PATH, RLIB_FACTORY_SOURCE, RLIB_FACTORY_MODULE)
+        await _build(graph, root, TIER_A, RLIB_CONSUMER_PATH, RLIB_CONSUMER_SOURCE, RLIB_CONSUMER_MODULE)
+
+        summary = await graph.references(RLIB_FACTORY_MODULE)
+
+        assert summary.production_references == 1
+        assert summary.test_references == 0
+        referencing_names = {node.qualified_name for node in summary.referencing}
+        assert referencing_names == {RLIB_CONSUMER_MODULE}
+
+    async def test_same_package_from_import_is_counted(
+        self, rlib_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """A SAME-package importer (``rlib/user.py``) counts too, source qname
+        is ``rlib.user`` (not excluded as if it were the target itself)."""
+        graph, _env, root = rlib_graph
+        await _build(graph, root, TIER_A, RLIB_FACTORY_PATH, RLIB_FACTORY_SOURCE, RLIB_FACTORY_MODULE)
+        await _build(graph, root, TIER_A, RLIB_USER_PATH, RLIB_USER_SOURCE, RLIB_USER_MODULE)
+
+        summary = await graph.references(RLIB_FACTORY_MODULE)
+
+        assert summary.production_references == 1
+        referencing_names = {node.qualified_name for node in summary.referencing}
+        assert referencing_names == {RLIB_USER_MODULE}
+
+    async def test_sibling_stem_no_leak(
+        self, modlib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """Mirrors ``test_module_target_prefix_does_not_leak_across_sibling_modules``
+        (:1022 pre-edit) for ``references`` instead of ``what_imports``.
+
+        Independent oracle: MODLIB_APP_SOURCE imports ``pkg.ab.ab_symbol`` but
+        never anything from ``pkg.a`` — the literal string ``"pkg.a"`` IS a
+        Python string-prefix of ``"pkg.ab.ab_symbol"``, so the anchor must be
+        trailing-dot, not bare ``STARTS WITH``.
+        """
+        graph, _env = modlib_graph
+        assert (await graph.references(MODLIB_A_MODULE)).production_references == 0
+        ab_summary = await graph.references(MODLIB_AB_MODULE)
+        assert ab_summary.production_references == 1
+        assert {n.qualified_name for n in ab_summary.referencing} == {MODLIB_APP_MODULE}
+
+    async def test_plain_import_and_from_import_from_same_source_dedupe_to_one(
+        self, rlib_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """``import rlib.factory`` (base arm, dst = the module itself) AND
+        ``from rlib.factory import make_widget`` (prefix arm, dst = the
+        resolved symbol) from the SAME source must count that source ONCE."""
+        graph, _env, root = rlib_graph
+        await _build(graph, root, TIER_A, RLIB_FACTORY_PATH, RLIB_FACTORY_SOURCE, RLIB_FACTORY_MODULE)
+        await _build(
+            graph,
+            root,
+            TIER_A,
+            RLIB_PLAIN_IMPORTER_PATH,
+            RLIB_PLAIN_IMPORTER_SOURCE,
+            RLIB_PLAIN_IMPORTER_MODULE,
+        )
+
+        summary = await graph.references(RLIB_FACTORY_MODULE)
+
+        assert summary.production_references == 1
+        assert {n.qualified_name for n in summary.referencing} == {RLIB_PLAIN_IMPORTER_MODULE}
+
+    async def test_symbol_target_is_unaffected_by_the_module_prefix_arm(
+        self, rlib_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """Byte-stability pin (§1.4.1): a corpus where the MODULE has a
+        from-import importer AND the SYMBOL itself is separately referenced —
+        ``references(<symbol fqn>)`` stays the literal pre-fix expectation
+        (the prefix arm is a no-op for an already-leaf symbol target: nothing
+        is resolved under ``rlib.factory.make_widget.``).
+
+        Independent oracle: ``consumer.py`` references ``make_widget`` via BOTH
+        an ``imports`` edge (module-level, src ``consumer``) and a ``calls``
+        edge (function-level, src ``consumer.run``) — two DISTINCT sources —
+        PLUS ``rlib/factory.py``'s own self-import (src ``rlib.factory`` itself,
+        NOT excluded as a self-reference: the referencing ENTITY is the
+        MODULE, the target is its OWN member symbol, a different qname) —
+        three DISTINCT sources total. This expectation is identical whether
+        authored before or after the module-target fix (the prefix arm is a
+        no-op for a leaf symbol target — every one of these three edges
+        matches the PRE-EXISTING literal/bare base arm); it is deliberately
+        green on both sides of it.
+        """
+        graph, _env, root = rlib_graph
+        await _build(graph, root, TIER_A, RLIB_FACTORY_PATH, RLIB_FACTORY_SOURCE, RLIB_FACTORY_MODULE)
+        await _build(graph, root, TIER_A, RLIB_CONSUMER_PATH, RLIB_CONSUMER_SOURCE, RLIB_CONSUMER_MODULE)
+
+        summary = await graph.references(FQN_MAKE_WIDGET)
+
+        assert summary.production_references == 3
+        assert {n.qualified_name for n in summary.referencing} == {
+            RLIB_FACTORY_MODULE,
+            RLIB_CONSUMER_MODULE,
+            f"{RLIB_CONSUMER_MODULE}.run",
+        }
+
+    async def test_self_reference_is_excluded_for_module_target(
+        self, rlib_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """``rlib/factory.py``'s own self-import of ``make_widget`` is NOT a
+        reference to ``rlib.factory`` — mirrors ``test_self_reference_is_
+        excluded`` (``countdown``) for the NEW module-prefix arm."""
+        graph, _env, root = rlib_graph
+        await _build(graph, root, TIER_A, RLIB_FACTORY_PATH, RLIB_FACTORY_SOURCE, RLIB_FACTORY_MODULE)
+
+        summary = await graph.references(RLIB_FACTORY_MODULE)
+
+        assert summary.production_references == 0
+        assert summary.test_references == 0
+        assert RLIB_FACTORY_MODULE not in {n.qualified_name for n in summary.referencing}
+
+    async def test_module_reached_only_via_from_import_is_not_reported_dead(
+        self, rlib_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """dead_code regression guard (§1.4.2): the exact loresigil.factory-
+        shaped module — reached ONLY via a from-import of its symbol — was
+        ALREADY correctly excluded from ``dead_code`` before this fix (the
+        module roll-up already counts from-imports, the asymmetry finding #53
+        documents); this fix must not disturb that.
+        """
+        graph, _env, root = rlib_graph
+        await _build(graph, root, TIER_A, RLIB_FACTORY_PATH, RLIB_FACTORY_SOURCE, RLIB_FACTORY_MODULE)
+        await _build(graph, root, TIER_A, RLIB_CONSUMER_PATH, RLIB_CONSUMER_SOURCE, RLIB_CONSUMER_MODULE)
+
+        dead_modules = {
+            node.qualified_name
+            for node in await graph.dead_code([TIER_A])
+            if node.kind == KIND_MODULE
+        }
+        assert RLIB_FACTORY_MODULE not in dead_modules
 
 
 # ===========================================================================
@@ -1710,12 +2051,23 @@ class TestDeadCodeModuleRollUp:
     ) -> None:
         """The regression: a module whose SYMBOL has a production ref is NOT dead.
 
-        Independent oracle: ``pkg.helpers`` is never referenced by its bare module
-        name, but ``pkg.helpers.build`` is imported AND called by ``pkg.app``. The
-        module must be alive even though ``references('pkg.helpers')`` is zero.
+        Independent oracle: ``pkg.helpers`` is never referenced by its OWN bare
+        module name (no ``import pkg.helpers`` anywhere), but ``pkg.app`` does
+        ``from pkg.helpers import build`` — ``pkg.helpers.build`` is imported
+        AND called. The module must be alive either way.
+
+        UPDATED (finding #53 fix, P8d′ SPEC 1): before the fix,
+        ``references('pkg.helpers')`` undercounted to zero even though this
+        exact from-import exists — the asymmetry ``dead_code``'s own
+        module-roll-up already resolved correctly (its liveness check counts
+        from-imports; ``references`` on a bare module target did not). The
+        module-prefix arm closes that gap, so ``references`` now agrees with
+        ``dead_code``: both see ``pkg.app``'s from-import.
         """
         graph, _env = modlib_graph
-        assert (await graph.references(MODLIB_HELPERS_MODULE)).production_references == 0
+        helpers_summary = await graph.references(MODLIB_HELPERS_MODULE)
+        assert helpers_summary.production_references == 1
+        assert {n.qualified_name for n in helpers_summary.referencing} == {MODLIB_APP_MODULE}
         assert (await graph.references("pkg.helpers.build")).production_references >= 1
         dead_modules = {n.qualified_name for n in await graph.dead_code([TIER_A]) if n.kind == KIND_MODULE}
         assert MODLIB_HELPERS_MODULE not in dead_modules
