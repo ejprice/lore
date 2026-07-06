@@ -79,6 +79,12 @@ rendered free text). Therefore:
   image build. One concern per commit; cold REFUTE audit before every wave commit
   (builder ≠ grader; P8d receipts: 3 of 4 waves shipped a defect green at every
   builder gate and only the cold audit caught it).
+- Lead context checklist (P8d retro + fresh-Fable review, 2026-07-06): consume report
+  SUMMARY BLOCKS first — Read(limit≈40) — and the body only for rulings/audits; point
+  briefs at spec/scout files, never transcribe them; agents drive their OWN ledger
+  rows (brief names the id); a stale notification for a stopped agent gets zero tool
+  calls; keep design/spec authorship in dedicated design agents, consumption by
+  pointer. Resume docs carry PHASE STATE ONLY — process law lives here.
 - lore_tasks state machine: claimed → in_progress → done (claimed→done is illegal).
 
 ## Deploy
