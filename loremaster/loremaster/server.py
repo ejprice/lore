@@ -880,7 +880,8 @@ _SEARCH_BUDGET_DEFAULT = 1100
 # minimum that would have elided nothing at all.
 _SEARCH_ELISION_TEMPLATE = (
     "+{elided} entries elided by budget={budget} — top elided: {identity!r} "
-    "(score={score:.3f}) — raise budget to ~{suggested} to see all {total} entries"
+    "(score={score:.3f}){worst_shown_clause} — raise budget to ~{suggested} to see all "
+    "{total} entries"
 )
 
 # S6 (finding #59, client-needs consult docs/design/2026-07-06-client-needs-
@@ -895,7 +896,7 @@ _SEARCH_ELISION_TEMPLATE = (
 # could drift from what raising to the cap would actually show).
 _SEARCH_ELISION_CAPPED_TEMPLATE = (
     "+{elided} entries elided by budget={budget} — top elided: {identity!r} "
-    "(score={score:.3f}) — the {cap} max cannot show all {total} "
+    "(score={score:.3f}){worst_shown_clause} — the {cap} max cannot show all {total} "
     "entries; raise budget to the {cap} max to see {visible} of {total} entries"
 )
 # The caller's budget already equals (or somehow exceeds) the cap -- "raise
@@ -904,7 +905,7 @@ _SEARCH_ELISION_CAPPED_TEMPLATE = (
 # next action.
 _SEARCH_ELISION_AT_CAP_TEMPLATE = (
     "+{elided} entries elided by budget={budget} — top elided: {identity!r} "
-    "(score={score:.3f}) — already at the {cap} max, which cannot "
+    "(score={score:.3f}){worst_shown_clause} — already at the {cap} max, which cannot "
     "show all {total} entries; the {cap} max surfaces {visible} of {total} entries"
 )
 
@@ -1185,9 +1186,10 @@ _INSTRUCTIONS = (
     "fleet ledgers — cited, freshness-honest.\n"
     "\n"
     "LADDER: lore_map (orient) -> lore_search (locate) -> lore_get_symbol / "
-    "lore_read (exact def/span) -> lore_impact (blast radius) -> "
-    "lore_verify (claim check) -> write. Map defaults to PRODUCTION; reach "
-    "tests via tests=true, focus=, or lore_impact's covering-tests view.\n"
+    "lore_read (exact def/span) -> lore_impact (blast radius, authoritative "
+    "for consumer/coverage — corroborate only on a miss) -> lore_verify "
+    "(claim check) -> write. Map defaults to PRODUCTION; reach tests via "
+    "tests=true, focus=, or lore_impact's covering-tests view.\n"
     "\n"
     "CITATIONS: search hits carry [SOURCE:file:line] (+ a short [S:...@hash6] "
     "token); read spans carry [SOURCE:tier:path:start-end]; echo them — Key: "
@@ -1207,7 +1209,7 @@ _INSTRUCTIONS = (
     "files gaps; lore_claim_task / lore_tasks coordinate fleet work.\n"
     "\n"
     "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's "
-    "tools first."
+    "tools first; batch independent calls in one turn, not serial turns."
 )
 
 
@@ -1854,6 +1856,20 @@ class AppContext:
                 kept_at_cap = self._enforce_search_budget(results, _SEARCH_BUDGET_CAP, caller_model)
                 capped_visible = sum(1 for result in kept_at_cap if result.kind != NOTICE_KIND)
 
+        def _worst_shown_score() -> float | None:
+            """S7: the cliff-edge datum — the lowest score among currently
+            KEPT hit-kind entries (``kept`` is mutated in place by the
+            pop-until-it-fits loop below, so this is re-evaluated live on
+            every ``_notice`` call, never a stale snapshot). Filtered to
+            ``kind == "hit"`` — memory/notice entries carry ``score=0.0`` by
+            construction and would corrupt a naive ``min()`` over all of
+            ``kept``. ``None`` when no hit-kind entry survives (nothing kept
+            at all, or only memory/notice entries did) — the caller omits
+            the clause rather than rendering a fabricated 0.0.
+            """
+            hit_scores = [result.score for result in kept if result.kind == "hit"]
+            return min(hit_scores) if hit_scores else None
+
         def _notice(elided_count: int) -> str:
             return self._search_elision_notice(
                 elided_count,
@@ -1862,6 +1878,7 @@ class AppContext:
                 suggested_budget,
                 len(results),
                 capped_visible,
+                worst_shown_score=_worst_shown_score(),
             )
 
         notice_text = _notice(elided)
@@ -1906,6 +1923,8 @@ class AppContext:
         suggested_budget: int,
         total: int,
         capped_visible: int | None = None,
+        *,
+        worst_shown_score: float | None = None,
     ) -> str:
         """Compose the T4 elision notice naming the top elided entry + a raise hint.
 
@@ -1916,14 +1935,24 @@ class AppContext:
         cannot reveal every entry — the notice names the cap explicitly and
         how many of ``total`` it DOES surface, rather than a raise-to value
         the tool's own schema would reject.
+
+        S7 (client-needs consult §S7): ``worst_shown_score`` is the cliff
+        edge — the lowest score among currently kept hit-kind entries —
+        alongside the existing top-elided score. ``None`` (no hit-kind entry
+        survived) omits the clause entirely rather than rendering a
+        fabricated 0.0.
         """
         identity = AppContext._result_identity(top_elided)
+        worst_shown_clause = (
+            "" if worst_shown_score is None else f" — worst shown: score={worst_shown_score:.3f}"
+        )
         if capped_visible is None:
             return _SEARCH_ELISION_TEMPLATE.format(
                 elided=elided,
                 budget=budget,
                 identity=identity,
                 score=top_elided.score,
+                worst_shown_clause=worst_shown_clause,
                 suggested=suggested_budget,
                 total=total,
             )
@@ -1937,6 +1966,7 @@ class AppContext:
             budget=budget,
             identity=identity,
             score=top_elided.score,
+            worst_shown_clause=worst_shown_clause,
             cap=suggested_budget,
             visible=capped_visible,
             total=total,

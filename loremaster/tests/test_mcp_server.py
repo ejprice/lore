@@ -1242,6 +1242,49 @@ class TestServerInstructions:
             "impact order (orient, then locate, then verify safety)"
         )
 
+    def test_instructions_teaches_impact_ladder_authority(self, tmp_path: Path) -> None:
+        # S7 (client-needs consult docs/design/2026-07-06-client-needs-
+        # consult.md §S7 + Fable's "ladder authority line"): the LADDER
+        # ordering alone caused a measured redundant-check habit -- session
+        # evidence showed models corroborating an already-correct lore_impact
+        # answer with map/search "because ladder". One sentence fixes it:
+        # impact is authoritative for consumer/coverage questions;
+        # corroborate only on a miss. Pinned on the SAME chain-teaching line
+        # (mirrors test_instructions_teaches_the_map_search_impact_ladder's
+        # own co-occurrence style) since the authority clause naturally
+        # extends the existing lore_impact mention there.
+        instructions = self._instructions(tmp_path)
+        lowered = instructions.lower()
+        assert "authoritative" in lowered, (
+            "the instructions must teach that lore_impact is authoritative for "
+            "consumer/coverage questions, not just present in the ladder"
+        )
+        chain_lines = [
+            line
+            for line in instructions.splitlines()
+            if "lore_map" in line and "lore_search" in line and "lore_impact" in line
+        ]
+        assert chain_lines
+        assert "authoritative" in chain_lines[0].lower(), (
+            "the authority clause should extend the existing ladder line, not "
+            "a disconnected new sentence"
+        )
+
+    def test_instructions_encourages_parallel_independent_calls(
+        self, tmp_path: Path
+    ) -> None:
+        # S7 (client-needs consult, Sonnet informant §2 continuity nuance):
+        # independent calls batched in ONE turn are cheap to integrate (one
+        # mental model, updated once); the same calls serialized across turns
+        # cost a re-orientation each time. One line encourages the cheaper
+        # shape.
+        instructions = self._instructions(tmp_path)
+        lowered = instructions.lower()
+        assert "one turn" in lowered or "parallel" in lowered, (
+            "the instructions must encourage batching independent calls in a "
+            "single turn rather than serializing them"
+        )
+
     def test_instructions_teaches_deferred_tool_loading(self, tmp_path: Path) -> None:
         # FRICTION (2026-07-03, team-lead, "(tool loading)", affordance_gap):
         # lore's own tools are commonly loaded behind a deferred ToolSearch in
@@ -4244,6 +4287,195 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
             assert "3 of 4 entries" in notice.formatted
         finally:
             await ctx.aclose()
+
+    async def test_elision_notice_carries_the_worst_shown_score(
+        self, tmp_path: Path
+    ) -> None:
+        """S7: the elision notice must also carry the worst-SHOWN score (the
+        cliff edge) alongside the existing top-elided score -- both
+        informants in the client-needs consult (docs/design/2026-07-06-
+        client-needs-consult.md §S7) independently name this as the datum
+        that lets a client decide "is the tail weak?" with zero extra calls.
+
+        Hostile fixture: a memory-kind entry survives the budget alongside
+        two hit-kind entries. Memory/notice entries carry ``score=0.0`` by
+        construction -- a naive ``min()`` over every KEPT entry would report
+        0.0 (the memory's placeholder score) instead of 0.35 (the genuinely
+        weakest SHOWN hit). The worst-shown score must filter to
+        ``kind == "hit"`` only.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            hit_keep_strong = SearchResult(
+                formatted="[SOURCE:pkg/a.py:1-5@abc111]\n" + "a" * 40,
+                chunk_key="keep-strong",
+                detail_level="source",
+                stale=False,
+                score=0.55,
+                kind="hit",
+            )
+            hit_keep_weak = SearchResult(
+                formatted="[SOURCE:pkg/b.py:1-5@abc222]\n" + "b" * 40,
+                chunk_key="keep-weak",
+                detail_level="source",
+                stale=False,
+                score=0.35,
+                kind="hit",
+            )
+            memory_entry = SearchResult(
+                formatted="[MEMORY] a fact that survives the budget too " + "m" * 20,
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.0,
+                kind="memory",
+            )
+            hit_elided = SearchResult(
+                formatted="[SOURCE:pkg/big.py:1]\nKey: big-hit\n" + "x" * 4000,
+                chunk_key="big-hit",
+                detail_level="source",
+                stale=False,
+                score=0.10,
+                kind="hit",
+            )
+            results = [hit_keep_strong, hit_keep_weak, memory_entry, hit_elided]
+            kept = ctx._enforce_search_budget(list(results), 300, None)  # noqa: SLF001
+            notice = next(r for r in kept if r.kind == "notice" and "elided" in r.formatted)
+
+            assert "worst shown: score=0.350" in notice.formatted, (
+                f"expected the weakest SHOWN hit's score (0.35), not the memory's "
+                f"placeholder 0.0; got {notice.formatted!r}"
+            )
+            assert "worst shown: score=0.000" not in notice.formatted, (
+                f"the memory entry's score=0.0 corrupted the worst-shown min; "
+                f"got {notice.formatted!r}"
+            )
+            assert "big-hit" in notice.formatted
+            assert "score=0.100" in notice.formatted, "expected the top-elided score too"
+        finally:
+            await ctx.aclose()
+
+    async def test_elision_notice_worst_shown_is_recomputed_after_the_pop_loop(
+        self, tmp_path: Path
+    ) -> None:
+        """S7 (audit gap, REPORT-slate-audit-server.md §C2): the shipped
+        ``test_elision_notice_carries_the_worst_shown_score`` fixture never
+        forces the pop-until-it-fits loop (server.py:1931-1935) to actually
+        pop a hit, so the dynamic "recompute after every pop" path was
+        unpinned -- correct in the code (verified live by the audit), but
+        with no regression guard. This fixture DOES force a pop: two hits
+        (``keep-strong``=0.9, ``keep-weak``=0.7) both survive the initial
+        greedy walk alongside one elided hit, so the FIRST notice render
+        reports worst-shown=0.700 (``keep-weak``) -- but appending that
+        notice to the two kept hits overflows the budget, so the pop loop
+        drops ``keep-weak`` (the trailing, lowest-priority kept entry) and
+        must recompute the notice from scratch. The final rendered
+        worst-shown score must be 0.900 (``keep-strong``, the survivor),
+        never the stale pre-pop 0.700 -- and the elision count must have
+        grown from 1 (the initial elision) to 2 (after the pop), proving a
+        pop genuinely happened rather than the fixture vacuously passing.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            hit_keep_strong = SearchResult(
+                formatted="[SOURCE:pkg/a.py:1-5@abc111]\n" + "a" * 40,
+                chunk_key="keep-strong",
+                detail_level="source",
+                stale=False,
+                score=0.9,
+                kind="hit",
+            )
+            hit_keep_weak = SearchResult(
+                formatted="[SOURCE:pkg/b.py:1-5@abc222]\n" + "b" * 40,
+                chunk_key="keep-weak",
+                detail_level="source",
+                stale=False,
+                score=0.7,
+                kind="hit",
+            )
+            hit_elided = SearchResult(
+                formatted="[SOURCE:pkg/big.py:1]\nKey: big-hit\n" + "c" * 4000,
+                chunk_key="big-hit",
+                detail_level="source",
+                stale=False,
+                score=0.5,
+                kind="hit",
+            )
+            results = [hit_keep_strong, hit_keep_weak, hit_elided]
+            # budget=100: the initial greedy walk keeps BOTH hits (their
+            # joined cost is ~61 Claude-tokens, under 100) and elides
+            # ``hit_elided`` -- but appending the first-built notice (which
+            # names worst-shown=0.700, the weaker of the two kept hits) to
+            # the two kept texts costs ~125, over budget, so the pop loop
+            # must fire at least once. Popping ``keep-weak`` (the trailing
+            # kept entry) leaves only ``keep-strong`` + the recomputed
+            # notice at ~93, which fits -- the loop stops there, one pop.
+            kept = ctx._enforce_search_budget(list(results), 100, None)  # noqa: SLF001
+            notice = next(r for r in kept if r.kind == "notice" and "elided" in r.formatted)
+
+            surviving_keys = {r.chunk_key for r in kept if r.kind == "hit"}
+            assert surviving_keys == {"keep-strong"}, (
+                f"expected the pop loop to drop 'keep-weak', leaving only "
+                f"'keep-strong'; kept hit keys were {surviving_keys!r} -- "
+                f"the fixture did not exercise the pop path"
+            )
+            assert "+2 entries elided" in notice.formatted, (
+                f"expected the elision count to have grown from 1 (initial) "
+                f"to 2 (after the pop) -- proves a pop actually happened; "
+                f"got {notice.formatted!r}"
+            )
+            assert "worst shown: score=0.900" in notice.formatted, (
+                f"expected the RECOMPUTED post-pop worst-shown score (0.900, "
+                f"the surviving 'keep-strong'), not the stale pre-pop value; "
+                f"got {notice.formatted!r}"
+            )
+            assert "worst shown: score=0.700" not in notice.formatted, (
+                f"the notice still carries the STALE pre-pop worst-shown "
+                f"score (0.700, 'keep-weak', which the pop loop dropped); "
+                f"got {notice.formatted!r}"
+            )
+        finally:
+            await ctx.aclose()
+
+    async def test_elision_notice_omits_worst_shown_when_no_hit_survives(
+        self, indexed_context: AppContext
+    ) -> None:
+        """Guard (S7): when NOTHING of kind "hit" survives the budget (every
+        hit is elided, or only notice/memory entries remain), the worst-shown
+        clause must be OMITTED entirely -- never a fabricated 0.0 standing in
+        for "no data".
+        """
+        from loremaster.search import SearchResult
+
+        class _HugeHitsPipeline:
+            async def search_code(self, *args: Any, **kwargs: Any) -> list[SearchResult]:
+                return [
+                    SearchResult(
+                        formatted=f"[SOURCE:pkg/hit_{i}.py:1]\nKey: hit-{i}\n" + "x" * 4000,
+                        chunk_key=f"hit-{i}",
+                        detail_level="source",
+                        stale=False,
+                        score=0.9 - i * 0.1,
+                        kind="hit",
+                    )
+                    for i in range(3)
+                ]
+
+        indexed_context.search_pipeline = _HugeHitsPipeline()  # type: ignore[assignment]
+        results = await indexed_context.search(
+            "anything", budget=_PRODUCTION_MAP_BUDGET_FLOOR
+        )
+        notice = next(r for r in results if r.kind == "notice" and "elided" in r.formatted)
+        assert "worst shown" not in notice.formatted, (
+            f"expected no worst-shown clause when nothing of kind 'hit' survived; "
+            f"got {notice.formatted!r}"
+        )
 
     async def test_tight_budget_never_leaves_a_dangling_memories_header(
         self, tmp_path: Path
