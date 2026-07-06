@@ -207,6 +207,16 @@ class TestCandidateModel:
         with pytest.raises(ValidationError):
             Candidate(key="k", score=0.1, payload={}, origin="vector", version=7)  # type: ignore[call-arg]
 
+    def test_vector_cosine_defaults_to_none(self) -> None:
+        # A caller that never projects the cosine substrate (a test double, an
+        # older store) must not be forced to supply it.
+        candidate = Candidate(key="k", score=0.1, payload={}, origin="fused")
+        assert candidate.vector_cosine is None
+
+    def test_vector_cosine_can_be_set(self) -> None:
+        candidate = Candidate(key="k", score=0.1, payload={}, origin="fused", vector_cosine=0.87)
+        assert candidate.vector_cosine == pytest.approx(0.87)
+
 
 class TestEnsureReady:
     """Connect + apply schema; idempotent; a probe write round-trips afterward."""
@@ -391,6 +401,38 @@ class TestHybridSearch:
         # Sanity bound on the derived fusion score: finite and non-negative.
         assert hit.score >= 0.0
         assert hit.score == hit.score  # not NaN
+
+    async def test_hybrid_search_projects_vector_cosine_per_hit(
+        self, store: SurrealStore
+    ) -> None:
+        # S4b Phase A (docs/design/2026-07-06-weak-match-discrimination.md §6):
+        # the store projects each fused hit's RAW pre-fusion query<->chunk
+        # cosine alongside the fused rrf score — the preferred form (an outer
+        # ``vector::similarity::cosine(embedding, $qv)`` projection over the
+        # fused ``search::rrf`` rows) confirmed live against spike-surreal
+        # (scratchpad/probe_cosine_projection_s4b.py): ``search::rrf`` passes
+        # ``embedding`` through from its ``SELECT *`` arm subqueries, so the
+        # outer projection computes correctly for every fused row regardless
+        # of which arm surfaced it.
+        dim = PRODUCTION_DIM
+        near = chunk_record(
+            tier=TIER_A, file_path="pkg/near.py", identity="near_fn",
+            ident_text="alpha beta", source_text="def near_fn():\n    pass\n",
+        )
+        far = chunk_record(
+            tier=TIER_A, file_path="pkg/far.py", identity="far_fn",
+            ident_text="gamma delta", source_text="def far_fn():\n    pass\n",
+        )
+        await store.upsert([(near, unit_vector(0, dim)), (far, unit_vector(1, dim))])
+
+        results = await store.hybrid_search(
+            query_vector=unit_vector(0, dim), query_text="alpha beta", k=5
+        )
+
+        near_hit = next(c for c in results if c.key == near.point_id)
+        far_hit = next(c for c in results if c.key == far.point_id)
+        assert near_hit.vector_cosine == pytest.approx(1.0, abs=1e-6)
+        assert far_hit.vector_cosine == pytest.approx(0.0, abs=1e-6)
 
     async def test_unicode_and_emoji_source_text_round_trips(self, store: SurrealStore) -> None:
         dim = PRODUCTION_DIM

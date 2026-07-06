@@ -775,6 +775,13 @@ class FakeSurrealStore:
                 score=scores[point_id],
                 payload=self._clean_payload(self.db.chunks[point_id]),
                 origin="fused",
+                # S4b: mirrors the real store's pre-fusion cosine projection
+                # (docs/design/2026-07-06-weak-match-discrimination.md §6) —
+                # reuses the SAME cosine already computed for vector-arm
+                # ranking above, never a second/divergent calculation.
+                vector_cosine=self._cosine_similarity(
+                    query_vector, self.db.chunks[point_id].vector
+                ),
             )
             for point_id in ranked_ids
         ]

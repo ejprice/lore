@@ -253,6 +253,35 @@ class TestCandidateContract:
         assert results
         assert all(candidate.origin == "fused" for candidate in results)
 
+    async def test_candidates_carry_the_vector_cosine_substrate(
+        self, store: FakeSurrealStore
+    ) -> None:
+        # S4b (docs/design/2026-07-06-weak-match-discrimination.md): the fake
+        # must faithfully mirror the real store's new pre-fusion cosine
+        # projection, not just the fused rrf score — it already computes
+        # cosine internally for vector-arm ranking (``_cosine_similarity``),
+        # so this is exposing an existing computation, not a new one.
+        near = chunk_record(
+            tier=TIER_A, file_path="pkg/near.py", identity="near_fn",
+            ident_text="alpha beta",
+        )
+        far = chunk_record(
+            tier=TIER_A, file_path="pkg/far.py", identity="far_fn",
+            ident_text="gamma delta",
+        )
+        await store.upsert([
+            (near, unit_vector(0, PRODUCTION_DIM)), (far, unit_vector(1, PRODUCTION_DIM)),
+        ])
+
+        results = await store.hybrid_search(
+            query_vector=unit_vector(0, PRODUCTION_DIM), query_text="alpha beta", k=5
+        )
+
+        near_hit = next(c for c in results if c.key == near.point_id)
+        far_hit = next(c for c in results if c.key == far.point_id)
+        assert near_hit.vector_cosine == pytest.approx(1.0, abs=1e-9)
+        assert far_hit.vector_cosine == pytest.approx(0.0, abs=1e-9)
+
     async def test_candidate_scores_are_finite_non_negative_and_rrf_scale(
         self, store: FakeSurrealStore
     ) -> None:

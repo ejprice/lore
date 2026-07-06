@@ -277,6 +277,15 @@ _LIMIT_PARAM = "__limit"
 _ID_KEY = "id"
 _RRF_SCORE_KEY = "rrf_score"
 _EMBEDDING_KEY = "embedding"
+# S4b (docs/design/2026-07-06-weak-match-discrimination.md §6 Phase A): the
+# projected pre-fusion query<->chunk cosine, computed OUTSIDE the fused
+# ``search::rrf`` rows (see :meth:`SurrealStore._hybrid_statement`) — a raw
+# magnitude, unlike the rank-fusion ``rrf_score``. Live-confirmed against
+# spike-surreal (``scratchpad/probe_cosine_projection_s4b.py``): ``search::rrf``
+# passes ``embedding`` through from its arm subqueries' ``SELECT *``, so an
+# OUTER projection over the fused rows computes correctly regardless of which
+# arm surfaced a given row.
+_VECTOR_COSINE_KEY = "vector_cosine"
 _COUNT_KEY = "count"
 
 # The chunk table's ``metadata`` column — a REQUIRED (non-``option``) FLEXIBLE
@@ -1346,9 +1355,19 @@ class SurrealStore:
         ``search::rrf`` accepts only INLINE subqueries (see module docstring), so
         the two arms are spliced directly into the call rather than bound as
         params. ``k`` is the caller's already-clamped fused result cap.
+
+        S4b (design doc §6 Phase A, form 1 — the preferred, live-confirmed
+        projection): an OUTER ``vector::similarity::cosine(embedding, $qvec)``
+        projection over the fused rows, computed BEFORE the ``embedding``
+        field itself is omitted, so every hit carries its raw pre-fusion
+        magnitude alongside the rank-fusion ``rrf_score`` — see
+        :data:`_VECTOR_COSINE_KEY`. ``$__qvec`` is already bound by the caller
+        (:meth:`hybrid_search`) for the vector arm's own KNN operator, so the
+        outer projection reuses that SAME bound param rather than a second one.
         """
         return (
-            f"SELECT * OMIT {_EMBEDDING_KEY} FROM "
+            f"SELECT *, vector::similarity::cosine({_EMBEDDING_KEY}, ${_QUERY_VECTOR_PARAM}) "
+            f"AS {_VECTOR_COSINE_KEY} OMIT {_EMBEDDING_KEY} FROM "
             f"search::rrf([({vector_subquery}), ({fulltext_subquery})], {int(k)}, {_RRF_K})"
         )
 
@@ -1521,7 +1540,7 @@ class SurrealStore:
                 {
                     field: value
                     for field, value in row.items()
-                    if field not in (_ID_KEY, _RRF_SCORE_KEY)
+                    if field not in (_ID_KEY, _RRF_SCORE_KEY, _VECTOR_COSINE_KEY)
                 }
             )
             candidates.append(
@@ -1530,6 +1549,7 @@ class SurrealStore:
                     score=float(row.get(_RRF_SCORE_KEY, 0.0)),
                     payload=payload,
                     origin=_FUSED_ORIGIN,
+                    vector_cosine=self._extract_vector_cosine(row),
                 )
             )
         # ``search::rrf`` returns equal-scored rows in an arbitrary order, so a
@@ -1538,6 +1558,22 @@ class SurrealStore:
         # (pagination/caching coherence) while best-first relevance is kept.
         candidates.sort(key=lambda candidate: (-candidate.score, candidate.key))
         return candidates
+
+    @staticmethod
+    def _extract_vector_cosine(row: dict[str, Any]) -> float | None:
+        """Pull the projected :data:`_VECTOR_COSINE_KEY` out of a fused row.
+
+        ``None`` when the field is absent or the engine returned a non-numeric
+        value (defensive — the projection in :meth:`_hybrid_statement` always
+        emits a float in practice, since ``embedding`` is a required, non-
+        ``option`` column; this guards a caller that never adds the
+        projection, or a future dialect surprise, from crashing candidate
+        construction).
+        """
+        raw = row.get(_VECTOR_COSINE_KEY)
+        if isinstance(raw, bool) or not isinstance(raw, int | float):
+            return None
+        return float(raw)
 
     @staticmethod
     def _bare_id(raw: Any) -> str:

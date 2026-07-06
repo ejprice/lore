@@ -40,6 +40,16 @@ class Candidate(BaseModel):
         payload: The stored chunk fields (tier, file_path, source_text, …), never
             the vector itself.
         origin: Which retrieval arm produced the hit — see :data:`CandidateOrigin`.
+        vector_cosine: The raw pre-fusion query<->chunk cosine similarity (the
+            HNSW arm's own magnitude, projected server-side alongside the fused
+            ``search::rrf`` row — see
+            :meth:`~loremaster.store.surreal.SurrealStore.hybrid_search`), or
+            ``None`` when a caller (a test double, an older store) never
+            projects it. Unlike ``score`` (a rank-fusion CODE that cannot
+            discriminate match quality — docs/design/2026-07-06-weak-match-
+            discrimination.md §1.2), this is a genuine magnitude in
+            ``[-1.0, 1.0]`` — the substrate the weak-match/absence-verdict
+            machinery in ``search.py`` is built on.
     """
 
     # ``forbid`` blocks any backend attribute from leaking onto a candidate.
@@ -49,3 +59,4 @@ class Candidate(BaseModel):
     score: float
     payload: dict[str, Any]
     origin: CandidateOrigin
+    vector_cosine: float | None = None
