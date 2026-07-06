@@ -70,13 +70,17 @@ from loremaster.graph_surreal import SurrealCodeGraph
 from loremaster.index.records import Record, chunk_to_record, sha512_hex
 from loremaster.index.surreal_manifest import SurrealManifest
 from loremaster.store._txn import (
+    _ERROR_CLASS_QUERY_TOO_COMPLEX,
     _MAX_TXN_CONFLICT_ATTEMPTS,
     _RETRYABLE_CONFLICT_MARKER,
+    _classify_engine_error,
     execute_transaction,
 )
 from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import (
     _CONNECTION_ERRORS,
+    _MAX_LEXICAL_QUERY_CHARS,
+    _MAX_QUERY_TOKENS,
     SurrealConnectionError,
     SurrealStore,
     SurrealStoreError,
@@ -1098,6 +1102,221 @@ class TestQueryTextEdgeCases:
         )
         assert len(results) == 1  # exactly the boundary k
         assert results[0].key == target.point_id  # the BM25+vector best
+
+
+# ---------------------------------------------------------------------------
+# Finding #66: hybrid_search's lexical (BM25) arm hard-rejected a realistically
+# long query. Root cause (live-measured against spike-surreal 3.1.5, NOT the
+# informal 245/340-char bisection — see scratchpad/probe_long_query_66*.py):
+# the SurrealQL parser's own "expression recursion depth limit" on
+# ``_build_fulltext_predicate``'s flat OR-chain, tripped at 40 analyzed tokens
+# (120 OR clauses at 3 fulltext fields/token) — NOT the old, too-permissive
+# 4096-char/64-token caps, which never actually protected against this. The
+# fix: word-boundary text truncation + a measured-with-margin token clamp
+# (:data:`_MAX_LEXICAL_QUERY_CHARS` / :data:`_MAX_QUERY_TOKENS`), and an
+# honest classifier extension for the (now vanishingly rare) residual case.
+# ---------------------------------------------------------------------------
+
+# Distinct, single-token synthetic lexemes (all-lowercase ASCII letters only —
+# no digits, no case changes — so the ``code_ident`` analyzer's blank/class/
+# camel tokenizers never split one into two): 60 of them, far beyond both the
+# new :data:`_MAX_QUERY_TOKENS` clamp and the OLD 40-token live rejection
+# boundary, so a query built from all of them exercises the worst realistic
+# case deterministically (no dependence on natural-English tokenization).
+_SYNTHETIC_LEXEMES = tuple(
+    f"lexeme{chr(97 + index // 26)}{chr(97 + index % 26)}" for index in range(60)
+)
+
+# The EXACT failure shape finding #66 was discovered from (REPORT-
+# slate-builder-search.md §New Finding): a multi-sentence, plain-English
+# LLM-style question. That report's live bisection found ~245 chars OK and
+# ~340 chars REJECTED for a query of this shape; this one is deliberately
+# >=340 chars so it reproduces the reported failure, not just the informal
+# midpoint.
+_REPORTED_SHAPE_LONG_QUERY = (
+    "What was the operator ruling on the P8d closure and how does the slate "
+    "cycle get sequenced before the detection layer lands, and which commits "
+    "carry the surface flip receipts we should cite when asked about it later, "
+    "and can you also summarize how the client-needs consult informed the "
+    "accuracy-versus-efficiency tradeoff the lead ultimately ruled on."
+)
+
+# A punctuation-heavy, non-ASCII (French + Japanese) long query — proves the
+# fix's word-boundary truncation and token clamp are content-agnostic, not
+# tuned to plain ASCII English.
+_NON_ASCII_LONG_QUERY = (
+    "Quelle était la décision de l'opérateur sur la clôture de P8d, et comment "
+    "le cycle « slate » est-il séquencé avant la couche de détection ? "
+    "日本語のテスト文字列もここに含まれています、質問はとても長くなりますが大丈夫です。 "
+    "Encore quelques mots supplémentaires pour dépasser confortablement le seuil mesuré, "
+    "et voici même davantage de texte non-ASCII pour être certain de dépasser trois cent "
+    "quarante caractères — なぜなら、この境界値を確実に超える必要があるからです。"
+)
+
+
+class TestTruncateAtWordBoundary:
+    """``SurrealStore._truncate_at_word_boundary`` — the lexical arm's
+    word-boundary text pre-truncation (finding #66). Pure/static: no live
+    store or server round-trip needed.
+    """
+
+    def test_text_at_or_under_the_cap_is_returned_unchanged(self) -> None:
+        assert SurrealStore._truncate_at_word_boundary("short query", 300) == "short query"
+        exactly_at_cap = "x" * 10
+        assert SurrealStore._truncate_at_word_boundary(exactly_at_cap, 10) == exactly_at_cap
+
+    def test_over_cap_backs_off_to_the_last_word_boundary_never_splitting_a_word(self) -> None:
+        text = "one two three four five"
+        # The cutoff (17) lands mid-"four" (which spans indices 14-17); the
+        # result must back off to the LAST full word before it, "three".
+        assert SurrealStore._truncate_at_word_boundary(text, 17) == "one two three"
+
+    def test_hostile_newline_and_tab_are_valid_word_boundaries(self) -> None:
+        # A tab and a newline are both valid boundaries, not just a literal
+        # space — a hostile multi-line query must not still be able to split a
+        # word at the cutoff.
+        text = "alpha\tbeta\ncharlie delta epsilon zeta eta theta iota kappa"
+        assert SurrealStore._truncate_at_word_boundary(text, 20) == "alpha\tbeta\ncharlie"
+
+    def test_single_giant_token_with_no_whitespace_falls_back_to_the_raw_slice(self) -> None:
+        # No whitespace anywhere in the window — there is no better boundary to
+        # back off to, so the raw slice is the best truncation available.
+        text = "x" * 500
+        assert SurrealStore._truncate_at_word_boundary(text, 300) == "x" * 300
+
+    def test_punctuation_and_non_ascii_text_truncates_as_a_clean_prefix(self) -> None:
+        text = _NON_ASCII_LONG_QUERY * 3
+        truncated = SurrealStore._truncate_at_word_boundary(text, 50)
+        assert len(truncated) <= 50
+        assert truncated == text[: len(truncated)]  # a genuine prefix, never mangled/reordered
+
+
+class TestLexicalArmLongQueryNeverRejects:
+    """A realistically long (or synthetically token-heavy) query must NEVER
+    hard-fail ``hybrid_search`` — measured live (scratchpad/
+    probe_long_query_66*.py), the OLD 64-token/4096-char caps let a query with
+    >=40 analyzed tokens straight through to the engine's hard "query
+    rejected" (the SurrealQL expression-recursion-depth limit on the BM25
+    OR-predicate).
+    """
+
+    async def test_query_at_the_new_token_clamp_boundary_succeeds(
+        self, store: SurrealStore
+    ) -> None:
+        dim = PRODUCTION_DIM
+        target = chunk_record(
+            tier=TIER_A, file_path="models/purchase_order.py", identity="PurchaseOrder.action_confirm"
+        )
+        await store.upsert([(target, unit_vector(0, dim))])
+        query_text = " ".join(_SYNTHETIC_LEXEMES[:_MAX_QUERY_TOKENS])  # exactly at the clamp
+        results = await store.hybrid_search(query_vector=unit_vector(0, dim), query_text=query_text, k=5)
+        assert any(candidate.key == target.point_id for candidate in results)
+
+    async def test_query_far_beyond_the_old_broken_cap_is_bounded_not_rejected(
+        self, store: SurrealStore
+    ) -> None:
+        dim = PRODUCTION_DIM
+        target = chunk_record(
+            tier=TIER_A, file_path="models/purchase_order.py", identity="PurchaseOrder.action_confirm"
+        )
+        await store.upsert([(target, unit_vector(0, dim))])
+        # 60 distinct real tokens: under the OLD (broken) 64-token/4096-char
+        # caps this sailed through to a live SurrealQL "expression recursion
+        # depth limit" rejection (measured: fails at 40 tokens). Must now
+        # succeed — the token clamp silently bounds the predicate to the first
+        # _MAX_QUERY_TOKENS tokens, and the vector arm still finds the target.
+        query_text = " ".join(_SYNTHETIC_LEXEMES)
+        results = await store.hybrid_search(query_vector=unit_vector(0, dim), query_text=query_text, k=5)
+        assert any(candidate.key == target.point_id for candidate in results)
+
+    async def test_a_340_char_plain_english_question_succeeds_end_to_end(
+        self, store: SurrealStore
+    ) -> None:
+        # The EXACT reported failure shape (REPORT-slate-builder-search.md
+        # §New Finding) — a multi-sentence LLM-style question, live-reproduced
+        # as a hard rejection before this fix.
+        assert len(_REPORTED_SHAPE_LONG_QUERY) >= 340
+        dim = PRODUCTION_DIM
+        target = chunk_record(
+            tier=TIER_A, file_path="models/purchase_order.py", identity="PurchaseOrder.action_confirm"
+        )
+        await store.upsert([(target, unit_vector(0, dim))])
+        results = await store.hybrid_search(
+            query_vector=unit_vector(0, dim), query_text=_REPORTED_SHAPE_LONG_QUERY, k=5
+        )
+        assert any(candidate.key == target.point_id for candidate in results)
+
+    async def test_non_ascii_punctuation_heavy_long_query_does_not_raise(
+        self, store: SurrealStore
+    ) -> None:
+        assert len(_NON_ASCII_LONG_QUERY) > 340
+        # No corpus needed — the ONLY assertion that matters is "does not
+        # raise" for content that is neither plain ASCII nor English.
+        results = await store.hybrid_search(
+            query_vector=unit_vector(0, PRODUCTION_DIM), query_text=_NON_ASCII_LONG_QUERY, k=5
+        )
+        assert results == []
+
+    async def test_short_query_below_the_char_bound_is_untouched_by_truncation(
+        self, store: SurrealStore
+    ) -> None:
+        # A short, realistic query sits well under _MAX_LEXICAL_QUERY_CHARS —
+        # truncation must be a complete no-op (byte-identical text reaches the
+        # analyzer), and the token clamp must never even engage — exactly the
+        # pre-fix behaviour for any query this short.
+        query_text = "PurchaseOrder action_confirm reconcile"
+        assert len(query_text) < _MAX_LEXICAL_QUERY_CHARS
+        assert (
+            SurrealStore._truncate_at_word_boundary(query_text, _MAX_LEXICAL_QUERY_CHARS)
+            == query_text
+        )
+        direct_tokens = await store._analyze_query(query_text)
+        assert len(direct_tokens) <= _MAX_QUERY_TOKENS  # the clamp never even triggers
+
+
+class TestResidualRejectionStillLaunders:
+    """If both of the lexical arm's own clamps were ever bypassed (e.g. a
+    future regression widens :data:`_MAX_QUERY_TOKENS` back up), the
+    SurrealQL parser's rejection must STILL never leak raw engine text — it
+    flows through the existing classify/log/launder seam (:meth:`SurrealStore.
+    _query`), now honestly extended with a "query too complex" label (finding
+    #66) instead of falling into the generic "unspecified rejection".
+    """
+
+    def test_classifier_recognises_the_live_recursion_depth_rejection_text(self) -> None:
+        # The EXACT raw engine text captured live against spike-surreal
+        # (scratchpad/probe_long_query_66b.py) — a pure, fast unit test of the
+        # classifier extension, no live server needed.
+        raw_engine_text = (
+            "Parse error: Exceeded expression recursion depth limit\n"
+            " --> [1:3139]\n"
+            "  |\n"
+            "1 | ...rce_text @@ $__ft39 OR llm_summary @@ $__ft39))], 5, 60)\n"
+            "  |              ^ this expression nests or chains operators too deeply\n"
+        )
+        assert _classify_engine_error(raw_engine_text) == _ERROR_CLASS_QUERY_TOO_COMPLEX
+
+    async def test_bypassing_both_clamps_still_raises_a_classified_store_error(
+        self, store: SurrealStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Force BOTH lexical-arm clamps back up past the measured-safe
+        # ceiling — simulating the exact pre-fix (broken) configuration — and
+        # confirm the genuine engine rejection still comes back laundered, not
+        # raw, and the connection stays healthy (a domain rejection, not a
+        # transport fault, per TestDomainRejectionErrorType's contract).
+        monkeypatch.setattr("loremaster.store.surreal._MAX_QUERY_TOKENS", 200)
+        monkeypatch.setattr("loremaster.store.surreal._MAX_LEXICAL_QUERY_CHARS", 4096)
+        connection_before = store._connection
+        query_text = " ".join(_SYNTHETIC_LEXEMES)  # 60 real tokens, now fully unclamped
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await store.hybrid_search(
+                query_vector=unit_vector(0, PRODUCTION_DIM), query_text=query_text, k=5
+            )
+        message = str(exc_info.value)
+        assert "query too complex" in message
+        assert "recursion depth" not in message  # the raw engine text never echoes
+        assert not isinstance(exc_info.value, SurrealConnectionError)
+        assert store._connection is connection_before  # healthy connection, never dropped
 
 
 # ---------------------------------------------------------------------------

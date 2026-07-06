@@ -348,6 +348,14 @@ _ERR_STATUS = "ERR"
 _ERROR_CLASS_RETRYABLE_CONFLICT = "retryable conflict"
 _ERROR_CLASS_ASSERT_VIOLATION = "assert violation"
 _ERROR_CLASS_FIELD_COERCION = "field coercion"
+# Finding #66: SurrealDB 3.1.5's own "expression recursion depth limit" on a
+# deeply-chained boolean expression — the shape ``store.surreal``'s BM25
+# OR-predicate collides with once it exceeds its measured-safe clause budget
+# (see ``store.surreal._MAX_FULLTEXT_OR_CLAUSES``). A TEACHING label (what
+# happened + what to do), not just a generic one, since the store's own
+# truncation should make this vanishingly rare in practice — a caller seeing it
+# anyway knows immediately what to retry with, rather than "see the server log".
+_ERROR_CLASS_QUERY_TOO_COMPLEX = "query too complex — reduce or shorten the search terms"
 _ERROR_CLASS_UNSPECIFIED = "unspecified rejection"
 
 # The substrings (verified live — see the module docstring's ``ASSERT``/coercion
@@ -358,6 +366,12 @@ _ERROR_CLASS_UNSPECIFIED = "unspecified rejection"
 # the raw text itself.
 _ASSERT_VIOLATION_MARKER = "assert"
 _FIELD_COERCION_MARKER = "coerce"
+# The live-verified substring of SurrealDB 3.1.5's own rejection text: "Parse
+# error: Exceeded expression recursion depth limit ... this expression nests or
+# chains operators too deeply" (finding #66, scratchpad/probe_long_query_66b.py
+# — the raw, pre-classification ``ValidationError`` text captured against
+# spike-surreal). Matched case-insensitively, same as the other markers.
+_QUERY_RECURSION_DEPTH_MARKER = "recursion depth"
 
 # The correlation hint appended to every classified rollback message, so an
 # operator holding only the (deliberately generic) exception text can still
@@ -394,6 +408,8 @@ def _classify_engine_error(raw_result: object) -> str:
         return _ERROR_CLASS_ASSERT_VIOLATION
     if _FIELD_COERCION_MARKER in lowered:
         return _ERROR_CLASS_FIELD_COERCION
+    if _QUERY_RECURSION_DEPTH_MARKER in lowered:
+        return _ERROR_CLASS_QUERY_TOO_COMPLEX
     return _ERROR_CLASS_UNSPECIFIED
 
 

@@ -44,11 +44,15 @@ so an agent supplies its filter keys, ``k`` and query text):
   raises :class:`SurrealStoreError` and never reaches a query.
 * **``scroll`` is bounded** — it takes a required ``limit`` emitted as a bound
   ``LIMIT`` param, so a read is never unbounded.
-* **``k`` and the query text are clamped** — see :data:`_MAX_HYBRID_K`,
-  :data:`_MAX_HNSW_EF`, :data:`_MAX_QUERY_TEXT_CHARS` and
-  :data:`_MAX_QUERY_TOKENS`. An unclamped huge ``k`` overran the engine's HNSW
-  search-list allocation and crashed the shared server, so the clamp is
-  load-bearing, not cosmetic.
+* **``k`` is clamped** — see :data:`_MAX_HYBRID_K`, :data:`_MAX_HNSW_EF`. An
+  unclamped huge ``k`` overran the engine's HNSW search-list allocation and
+  crashed the shared server, so the clamp is load-bearing, not cosmetic.
+* **The lexical arm's query text is separately clamped** — see
+  :data:`_MAX_LEXICAL_QUERY_CHARS` and :data:`_MAX_QUERY_TOKENS`. A realistic
+  multi-sentence query collides with the SurrealQL parser's own
+  expression-recursion-depth limit on the BM25 OR-predicate, not a size/DoS
+  concern (finding #66) — the vector arm embeds the caller's full text
+  upstream and is unaffected.
 * **Write-path sizes are bounded too** — a composed transaction's body-
   statement count is capped at
   :data:`~loremaster.store._txn.TXN_STATEMENT_HARD_CAP` (in ``compose()``) and
@@ -175,12 +179,48 @@ _MAX_HYBRID_K = 1000  # 10x the tool-layer cap — generous headroom, still boun
 # ``K`` for the index to return it, so both share this one ceiling.
 _MAX_HNSW_EF = 1024
 
-# The query-text DoS guards: the analyzed token list drives a per-token FULLTEXT
-# OR-predicate, so both the raw text length and the resulting token count are
-# capped before tokenization / predicate construction. Real queries (identifiers
-# or short natural-language phrases) sit far below both caps.
-_MAX_QUERY_TEXT_CHARS = 4096
-_MAX_QUERY_TOKENS = 64
+# The BM25 lexical arm's OWN query-text guards (finding #66) — distinct from the
+# k/EF DoS guards above. Live-measured against spike-surreal 3.1.5
+# (scratchpad/probe_long_query_66*.py): the realistic failure mode here is NOT
+# a size/DoS concern but the SurrealQL parser's own "expression recursion depth
+# limit" on :meth:`_build_fulltext_predicate`'s flat OR-chain — a routine
+# multi-sentence LLM question (~245+ ordinary-English chars) tripped a hard,
+# unrecoverable "query rejected" under the OLD caps (4096 chars / 64 tokens),
+# because neither was ever validated against the engine's actual behaviour.
+# Measured live end-to-end through :meth:`hybrid_search` (the REAL statement
+# shape, wrapped in ``search::rrf``): with :data:`CHUNK_FULLTEXT_FIELDS` at its
+# current width (3 fields) the engine ACCEPTS 39 analyzed tokens (117 OR
+# clauses) and is REJECTED at 40 tokens (120 clauses). An isolated bare
+# OR-chain with no surrounding ``search::rrf``/subquery nesting measured a
+# slightly higher raw ceiling of 122 clauses (probe_long_query_66c.py) —
+# confirming the statement's own wrapper, not the predicate's shape, eats a few
+# extra recursion levels, so the safe budget below is denominated against the
+# real end-to-end measurement, not the isolated one.
+#
+# ``_MAX_FULLTEXT_OR_CLAUSES`` is roughly HALF the measured 117-clause safe
+# ceiling — generous margin for engine-version drift, a future
+# ``CHUNK_FULLTEXT_FIELDS`` field addition, or an active ``filters=`` scope
+# AND-wrapping its own clause on top. ``_MAX_QUERY_TOKENS`` is DERIVED from it
+# (clauses / field count) rather than hardcoded, so it self-corrects if the
+# field count ever changes — this is the DETERMINISTIC guarantee: the
+# OR-predicate can never exceed the clause budget regardless of the query
+# text's vocabulary (chars-per-token varies with word length; token count does
+# not).
+#
+# ``_MAX_LEXICAL_QUERY_CHARS`` is a WORD-BOUNDARY text pre-truncation (never
+# splits a word — see :meth:`_truncate_at_word_boundary`) applied before the
+# ``search::analyze`` round-trip. It exists to keep that round-trip itself
+# cheap for a pathologically long query (never send megabytes of text just to
+# discard 99% of the resulting tokens) — it is a PERFORMANCE bound, not the
+# safety guarantee: a query built entirely of one-character "words" could
+# still yield more tokens than the clause budget within this many chars, which
+# is exactly why the token clamp above (not this char clamp) is what actually
+# protects correctness. The VECTOR arm never sees either of these caps — it
+# embeds the caller's full, untruncated text upstream of this store
+# (``query_vector`` arrives already computed).
+_MAX_FULLTEXT_OR_CLAUSES = 60
+_MAX_QUERY_TOKENS = _MAX_FULLTEXT_OR_CLAUSES // len(CHUNK_FULLTEXT_FIELDS)
+_MAX_LEXICAL_QUERY_CHARS = 300
 
 # The Reciprocal-Rank-Fusion smoothing constant (the standard RRF ``k``); larger
 # values flatten the rank-position weighting. The textbook default the P0 spike
@@ -1183,14 +1223,26 @@ class SurrealStore:
         fuses them to the final ``k``. A healthy but empty/no-match store returns
         ``[]``; a DOWN server RAISES (never a silent empty).
 
-        ``k`` (and the derived overfetch / EF), plus the query text length and
-        token count, are clamped to the store-level ceilings before being spliced
-        into the query — a DoS guard (an unclamped huge ``k`` crashed the engine).
+        ``k`` (and the derived overfetch / EF) is clamped to the store-level DoS
+        ceiling (an unclamped huge ``k`` crashed the engine) — see
+        :data:`_MAX_HYBRID_K`. ``query_text`` fed to the LEXICAL arm is
+        SEPARATELY word-boundary-truncated and its analyzed token count clamped
+        (:data:`_MAX_LEXICAL_QUERY_CHARS` / :data:`_MAX_QUERY_TOKENS`) so a
+        realistically long query — a multi-sentence question, exactly what an
+        LLM client sends — can never trip the SurrealQL parser's own
+        expression-recursion-depth limit on the BM25 OR-predicate (finding
+        #66); the vector arm always embeds the caller's FULL text (computed
+        upstream, before this call) and never truncates.
 
         Args:
-            query_vector: The query embedding (same width as the store's ``dim``).
+            query_vector: The query embedding (same width as the store's
+                ``dim``), computed by the caller from the FULL, untruncated
+                query text — never affected by the lexical arm's caps below.
             query_text: The natural query; identifier-shaped text is tokenized
                 via the engine analyzer before matching (the BM25-rescue step).
+                Word-boundary-truncated to :data:`_MAX_LEXICAL_QUERY_CHARS`
+                before tokenization, and the resulting tokens clamped to
+                :data:`_MAX_QUERY_TOKENS`, for the lexical arm ONLY.
             k: The maximum number of fused results (clamped to
                 :data:`_MAX_HYBRID_K`).
             filters: Optional field → exact-value scope (e.g. ``{"tier": …}``),
@@ -1223,10 +1275,16 @@ class SurrealStore:
         params[_QUERY_VECTOR_PARAM] = query_vector
         vector_subquery = self._vector_subquery(filter_where, overfetch, ef)
 
-        # The BM25 arm: cap the query text (DoS guard), identifier-tokenize it via
-        # the analyzer round-trip, cap the token count, then OR the word tokens
-        # under the same filter.
-        tokens = await self._analyze_query(query_text[:_MAX_QUERY_TEXT_CHARS])
+        # The BM25 arm: word-boundary-truncate the query text (finding #66 — a
+        # realistic multi-sentence query collides with the SurrealQL parser's
+        # own expression-recursion-depth limit on this arm's OR-predicate, not
+        # a size/DoS concern), identifier-tokenize the truncated text via the
+        # analyzer round-trip, clamp the token count to the measured-safe
+        # ceiling, then OR the word tokens under the same filter. The vector
+        # arm above never sees either cap — ``query_vector`` already carries
+        # the embedding of the caller's FULL, untruncated text.
+        lexical_query_text = self._truncate_at_word_boundary(query_text, _MAX_LEXICAL_QUERY_CHARS)
+        tokens = await self._analyze_query(lexical_query_text)
         fulltext_predicate, fulltext_params = self._build_fulltext_predicate(
             tokens[:_MAX_QUERY_TOKENS]
         )
@@ -1275,6 +1333,37 @@ class SurrealStore:
             f"search::rrf([({vector_subquery}), ({fulltext_subquery})], {int(k)}, {_RRF_K})"
         )
 
+    @staticmethod
+    def _truncate_at_word_boundary(text: str, max_chars: int) -> str:
+        """Truncate ``text`` to at most ``max_chars``, never splitting a word.
+
+        Backs off to the last WHITESPACE run (space, tab, newline, or carriage
+        return) at or before the cutoff, so the lexical arm always tokenizes
+        whole words — a hostile multi-line query is still a valid word
+        boundary. ``text`` at or under ``max_chars`` is returned UNCHANGED —
+        the short-query no-regression contract (finding #66): a query that
+        never neared either cap must round-trip byte-identical.
+
+        Args:
+            text: The raw query text (the lexical arm's input only — the
+                vector arm always embeds the caller's FULL text upstream of
+                this call and is never truncated).
+            max_chars: The truncation ceiling.
+
+        Returns:
+            ``text`` unchanged, or its longest whole-word prefix within
+            ``max_chars`` — or, if the window contains no whitespace at all
+            (one pathological giant token), the raw ``max_chars``-char slice
+            as the best truncation available.
+        """
+        if len(text) <= max_chars:
+            return text
+        window = text[:max_chars]
+        boundary = max(window.rfind(character) for character in (" ", "\t", "\n", "\r"))
+        if boundary <= 0:
+            return window
+        return window[:boundary]
+
     async def _analyze_query(self, query_text: str) -> list[str]:
         """Tokenize ``query_text`` with the engine's own ``code_ident`` analyzer.
 
@@ -1286,7 +1375,9 @@ class SurrealStore:
         :meth:`_query` seam so a mid-life socket drop heals here too.
 
         Args:
-            query_text: The raw (already length-capped) query string.
+            query_text: The raw query string, already word-boundary-truncated
+                by :meth:`_truncate_at_word_boundary` when called from
+                :meth:`hybrid_search`.
 
         Returns:
             The lower-cased word tokens (punctuation tokens removed).
