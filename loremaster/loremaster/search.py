@@ -243,6 +243,27 @@ _ALL_HITS_WEAK_TEMPLATE = (
     "these as speculative"
 )
 
+# item 13 (S3, finding #61 — confirmed live, not just a static-reading lead):
+# a non-``"auto"`` ``detail_level`` can legitimately zero EVERY code hit after
+# ``_partition_by_detail`` even though the pre-partition candidate set was
+# non-empty — the injected memory entries are appended UNCONDITIONALLY after
+# this (they are never partitioned), so without a notice the response renders
+# memories-only with zero explanation of why the code side went to zero
+# (client-needs-consult §S3; Opus's exact reported shape, live-reproduced —
+# see REPORT-slate-builder-search.md). Mirrors
+# ``AppContext._filter_miss_notice``'s teaching grammar (server.py) for the
+# analogous path/tier-filter-miss case, kept entirely in THIS module (no
+# server.py change needed): the server-side budget enforcer was investigated
+# and REFUTED as an alternate mechanism (it is a strict front-to-back prefix
+# walk over ``[*hits, *memory_entries]``, so it can never elide a leading hit
+# while keeping a trailing memory).
+_DETAIL_MISS_MARKER = "[DETAIL MISS]"
+_DETAIL_LEVEL_MISS_TEMPLATE = (
+    "{marker} 0 code hits matched detail_level={detail_level!r} — {total} candidate(s) "
+    'were found before filtering, none classify at this level — retry with '
+    'detail_level="auto" to see them'
+)
+
 # item 10: the CommonMark backtick fence character, and the standard minimum fence
 # width. The wrapper fence must be a backtick run LONGER than any run inside the
 # source (so a ``` embedded in the source cannot close the fence early), bounded
@@ -326,6 +347,21 @@ def _weak_match_warning(score: float) -> str:
 def _all_hits_weak_notice(top_score: float) -> SearchResult:
     """The item-12b aggregate notice: every shown code hit is below the floor."""
     text = _ALL_HITS_WEAK_TEMPLATE.format(top_score=top_score, floor=_SEARCH_SCORE_FLOOR)
+    return SearchResult(
+        formatted=text,
+        chunk_key="",
+        detail_level="summary",
+        stale=False,
+        score=0.0,
+        kind=NOTICE_KIND,
+    )
+
+
+def _detail_level_miss_notice(detail_level: str, total_before_filter: int) -> SearchResult:
+    """The item-13 notice: ``detail_level`` zeroed every code hit."""
+    text = _DETAIL_LEVEL_MISS_TEMPLATE.format(
+        marker=_DETAIL_MISS_MARKER, detail_level=detail_level, total=total_before_filter
+    )
     return SearchResult(
         formatted=text,
         chunk_key="",

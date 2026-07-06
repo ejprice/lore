@@ -126,6 +126,13 @@ _MEMORY_INJECTION_CAP = 3
 # T3: the section-label row segregating the trailing memories: block.
 _MEMORY_SECTION_HEADER = "memories:"
 
+# item 13 (S3, finding #61) — a non-auto detail_level can legitimately zero
+# every code hit while injected memories still render unconditionally
+# ("code-shaped query returned only memories, zero code hits, silently" --
+# client-needs-consult §S3, live-reproduced). The marker is this module's own
+# CONTRACT (not imported from the implementation).
+_DETAIL_MISS_MARKER = "[DETAIL MISS]"
+
 # item 10 (audit followup): bidi override/isolate/mark + zero-width + line-break
 # chars OUTSIDE the C0/C1 control range the shipped sanitiser collapses — a
 # hostile file_path/identity/memory text can smuggle these to visually rewrite
@@ -1727,6 +1734,115 @@ class TestWeakMatchBanding:
         results = await pipeline.search_code("anything", k=5)
 
         assert results == []
+
+
+# --------------------------------------------------------------------------- #
+# item 13 (S3, finding #61) — a non-auto detail_level miss never renders
+# memories-only silently
+# --------------------------------------------------------------------------- #
+class TestDetailLevelMissNotice:
+    """A ``detail_level`` filter that zeroes every code hit gets an explicit,
+
+    teaching NOTICE_KIND entry — never a silent memories-only response. The
+    S4b cosine weak-match/absence-verdict machinery (unrelated to this
+    notice) ships DARK by default, so any fused score here is fine — nothing
+    is ever flagged unless a test explicitly monkeypatches the gate open.
+    """
+
+    _CONFIDENT_SCORE = 0.5
+
+    async def _pipeline(
+        self,
+        tmp_path: Path,
+        embedder: FakeEmbedder,
+        candidates: list[Candidate],
+        *,
+        memory_store: Any | None = None,
+    ) -> SearchPipeline:
+        indexed, server = await _index_single(tmp_path, embedder, files={})
+        store = _FixedCandidatesStore(dim=embedder.dim, db=indexed.db, candidates=candidates)
+        return _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, store=store,
+            memory_store=memory_store,
+        )
+
+    async def test_all_hits_filtered_out_by_detail_level_produces_a_notice(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # Every candidate classifies "source" (chunk_type="function"); asking
+        # for "summary" zeroes partitioned_hits even though hits were found.
+        source_only = _score_candidate("k1", self._CONFIDENT_SCORE, chunk_type="function")
+        pipeline = await self._pipeline(tmp_path, embedder, [source_only])
+
+        results = await pipeline.search_code("anything", k=5, detail_level="summary")
+
+        assert not any(r.kind == _HIT_KIND for r in results), "the filter must still zero the hits"
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert any(_DETAIL_MISS_MARKER in n.formatted for n in notices), (
+            f"expected a detail-level-miss notice; got notices={notices!r}"
+        )
+
+    async def test_auto_detail_level_never_produces_the_notice(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        source_only = _score_candidate("k1", self._CONFIDENT_SCORE, chunk_type="function")
+        pipeline = await self._pipeline(tmp_path, embedder, [source_only])
+
+        results = await pipeline.search_code("anything", k=5, detail_level="auto")
+
+        assert any(r.kind == _HIT_KIND for r in results), "auto never filters"
+        assert not any(_DETAIL_MISS_MARKER in r.formatted for r in results)
+
+    async def test_partial_match_produces_no_notice(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # A mix of summary- and source-classified hits: requesting "summary"
+        # still yields a hit, so there is nothing to explain.
+        summary_hit = _score_candidate(
+            "k1", self._CONFIDENT_SCORE, file_path="pkg/a.py", chunk_type="imports"
+        )
+        source_hit = _score_candidate(
+            "k2", self._CONFIDENT_SCORE, file_path="pkg/b.py", chunk_type="function"
+        )
+        pipeline = await self._pipeline(tmp_path, embedder, [summary_hit, source_hit])
+
+        results = await pipeline.search_code("anything", k=5, detail_level="summary")
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert len(hits) == 1
+        assert not any(_DETAIL_MISS_MARKER in r.formatted for r in results)
+
+    async def test_genuinely_empty_hits_produces_no_detail_miss_notice(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # Zero candidates at all: nothing was "zeroed BY the filter" -- this
+        # is a different (unrelated) empty-result case, not S3's defect.
+        pipeline = await self._pipeline(tmp_path, embedder, [], memory_store=None)
+
+        results = await pipeline.search_code("anything", k=5, detail_level="summary")
+
+        assert not any(_DETAIL_MISS_MARKER in r.formatted for r in results)
+
+    async def test_notice_coexists_with_the_trailing_memories_block(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # The exact defect shape: a code-intent query with memories recalled
+        # AND a detail_level miss must show BOTH the notice and the memory
+        # block -- never memories-only with no explanation.
+        source_only = _score_candidate("k1", self._CONFIDENT_SCORE, chunk_type="function")
+        memory_store = _FakeMemoryBackend(
+            [_backend_recalled(text="a relevant memory", chunk_keys=[], score=0.9)]
+        )
+        pipeline = await self._pipeline(
+            tmp_path, embedder, [source_only], memory_store=memory_store
+        )
+
+        results = await pipeline.search_code("anything", k=5, detail_level="summary")
+
+        assert not any(r.kind == _HIT_KIND for r in results)
+        assert any(_DETAIL_MISS_MARKER in r.formatted for r in results if r.kind == _NOTICE_KIND)
+        assert any(r.kind == _MEMORY_KIND for r in results), "the memory block must still render"
+
 
 
 # --------------------------------------------------------------------------- #
