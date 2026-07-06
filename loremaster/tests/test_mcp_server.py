@@ -1174,9 +1174,14 @@ class TestServerInstructions:
 
     def test_instructions_names_every_tool(self, tmp_path: Path) -> None:
         # The consumer must learn WHEN to use WHICH tool from the instructions
-        # alone — so every registered tool is named there.
+        # alone — so every registered tool is named there. P8d Wave 4b: widened
+        # from _EXPECTED_TOOLS (12) to _ALL_BUILTIN_TOOL_NAMES (14) — the prior
+        # pin silently exempted lore_claim_task/lore_tasks from this contract
+        # even though they are built-in, registered tools; the new six-section
+        # block's LADDER/MEMORY sections carry all 14 naturally, so there is no
+        # reason to leave the two task tools unpinned here.
         instructions = self._instructions(tmp_path)
-        for tool_name in _EXPECTED_TOOLS:
+        for tool_name in _ALL_BUILTIN_TOOL_NAMES:
             assert tool_name in instructions, (
                 f"the instructions must mention {tool_name!r} so the consumer "
                 f"knows when to reach for it"

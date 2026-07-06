@@ -18,7 +18,7 @@ directly.
 ## Why lore
 
 - 🔎 **Semantic search over code *and* docs** — ranked `[SOURCE:file:line]` citations with stable keys; summarized, never raw dumps.
-- 🧬 **A typed code graph** — `lore_what_imports` / `lore_blast_radius` ("who breaks if I change this?"), `lore_tests_for` (covering tests), `lore_references` (per-symbol reference counter), `lore_dead_code` (candidate dead/orphaned definitions), `lore_get_symbol` (exact signature). Answers grounded in real edges, not vibes.
+- 🧬 **A typed code graph** — `lore_impact` ("who breaks if I change this?": one call returns prod/test reference counts, covering tests, transitive rollups, and a liveness verdict), `lore_dead_code` (candidate dead/orphaned definitions), `lore_get_symbol` (exact signature). Answers grounded in real edges, not vibes.
 - ⚡ **Always fresh** — an inotify watcher re-indexes on save (sub-second); a startup + periodic reconcile heals anything missed during downtime, tracked by a SHA-512 manifest.
 - 🧠 **Per-project memory** — `lore_remember` / `lore_recall`, so corrections and notes survive across sessions.
 - 🧩 **One image, N projects** — a single container image, one config-driven container per project, each keyed to its own vector collection. Never a per-project image.
@@ -37,9 +37,9 @@ A [`uv`](https://docs.astral.sh/uv/)-workspace monorepo (Python 3.14+):
 
 ## MCP tools
 
-`lore_search` · `lore_read` · `lore_get_symbol` · `lore_what_imports` · `lore_blast_radius` ·
-`lore_tests_for` · `lore_references` · `lore_dead_code` · `lore_impact` · `lore_map` ·
-`lore_remember` · `lore_recall` · `lore_reindex` · `lore_index_status`
+`lore_map` · `lore_search` · `lore_get_symbol` · `lore_verify` · `lore_read` ·
+`lore_impact` · `lore_dead_code` · `lore_diff` · `lore_index` · `lore_remember` ·
+`lore_recall` · `lore_findings` · `lore_claim_task` · `lore_tasks`
 
 ### Freshness & read-your-writes
 
@@ -47,8 +47,9 @@ The inotify watcher re-indexes an edited file within ~seconds; a periodic reconc
 sweep (default ~10 min) is the backstop for any events the watcher missed (not the
 normal freshness path). If an agent edits a file and *immediately* re-queries, use
 `lore_search(..., wait_for_fresh=True)` — it bounded-waits for in-flight files before
-returning (and serves stale-with-a-flag on timeout, never hangs). `lore_reindex(tier=...)`
-forces a full tier reconcile.
+returning (and serves stale-with-a-flag on timeout, never hangs). `lore_index()` with no
+arguments is a cheap status-only read that never sweeps; `lore_index(reconcile=True,
+tier=...)` forces a full (optionally tier-scoped) reconcile sweep first.
 
 ### lore memory vs. your assistant's memory
 

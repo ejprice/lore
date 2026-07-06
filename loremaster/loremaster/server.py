@@ -1129,104 +1129,50 @@ def _make_existing_chunks(store: SurrealStore) -> ExistingChunksFn:
 # odoo-code server proves the pattern (rich behavioral instructions delivered
 # in-band); this is its generic-RAG analog. Edited here ⇒ keep the substring
 # contracts in ``test_mcp_server.py::TestServerInstructions`` green.
+#
+# P8d Wave 4b (the surface flip, §5): REWRITTEN from the old ~750-token
+# per-tool-bullet block (which had grown to ~2675 Claude-token-equivalent
+# across waves 1-3 piecemeal edits — measured, not estimated) to a compact
+# six-section block: IDENTITY / LADDER / CITATIONS / FRESHNESS / HONEST
+# FAILURE / MEMORY, plus a generic TOOL LOADING coda. The doctrine these
+# sections used to duplicate per-tool now lives ONCE here; each tool's own
+# ``description=`` states its own behavior and points back here only where a
+# fact is genuinely tool-specific (see the per-tool audit in
+# REPORT-builder-flip-w4b.md). Measured at 302 voyage tokens (the pinned
+# voyage-4 tokenizer, ``loresigil.tokens.VoyageTokenCounter``) x the live
+# TOKEN_BUDGET_CALIBRATION (1.78) = ~538 Claude-token-equivalent — above the
+# plan's 300-420 target; see the report for the floor analysis (14 mandatory
+# tool-name mentions + 6 mandatory sections + several literal pinned
+# substrings leave little room below ~500 without either dropping a
+# requirement or degrading to unreadable shorthand). Still a ~80% cut from
+# the prior block.
 _INSTRUCTIONS = (
-    "lore is a PER-PROJECT semantic RAG over THIS repository's code and docs, plus a "
-    "durable project-memory store. It indexes the project's source (Python, Markdown, "
-    "SQL, XML, JS, CSS, text), keeps a manifest of per-file freshness, and builds an "
-    "import/definition/test graph. Use it instead of guessing: it returns the EXACT, "
-    "cited source on disk so you quote real code rather than recalling a plausible "
-    "lookalike. Results are summarised value objects, NEVER raw store dumps.\n"
+    "IDENTITY: lore is this repo's code+docs+graph RAG, durable memory, and "
+    "fleet ledgers — cited, freshness-honest.\n"
     "\n"
-    "WHEN TO USE WHICH TOOL:\n"
-    "- lore_search(query, ...): semantic, memory-boosted search across code + "
-    "docs. Your default entry point when you don't already know the exact name/path. "
-    "Returns ranked, cited hits.\n"
-    "- lore_get_symbol(qualified_name): the EXACT stored definition + on-disk location "
-    "of a named Python symbol (class / method / function). Use this — NOT "
-    "lore_search — when you know the name and want the authoritative definition "
-    "(it is collision-correct, not a fuzzy ranked guess).\n"
-    "- lore_verify(qualified_name, expected_file_path=None, expected_signature_fragment=None): "
-    "the anti-hallucination check — confirm a symbol/signature/location CLAIM against the "
-    "stored truth BEFORE you repeat it. Returns confirmed / mismatch / not_found with the "
-    "stored facts (a mismatch names the ACTUAL path or header). Unlike lore_get_symbol, a "
-    "miss is a plain not_found RESULT, not an error.\n"
-    "- lore_read(tier, path, ...): the EXACT bytes lore INDEXED for a file span, with "
-    "a [SOURCE:...] header, hash-verified and FRESHNESS-flagged — the single read "
-    "verb. Use after a lore_search / lore_get_symbol hit to read surrounding context. "
-    "Its header carries a visible STALE notice when the index is behind the file on "
-    "disk; pass wait_for_fresh=True to lore_search (or run lore_index(reconcile=True)) "
-    "to refresh.\n"
-    "- lore_dead_code(...): CANDIDATE dead/orphaned definitions in the project's live tiers "
-    "— zero production references (test-only consumers count as dead). A HEURISTIC detector, "
-    "not proof: dynamic dispatch, decorators, and public API used outside the tree can evade "
-    "it. By default excludes test nodes, dunder methods, and __main__/__init__ entrypoints.\n"
-    "- lore_impact(target, depth=1): who depends on target, in ONE call — production/test "
-    "reference counts, covering tests, DIRECT importers/callers (depth 1) or a TRANSITIVE "
-    "per-module rollup of the wider ripple (depth > 1), plus a live / dead (heuristic) "
-    "verdict carrying an explicit astroid-bounds caveat. The single graph-read verb — "
-    "absorbs what were previously separate direct-importer / transitive-closure / "
-    "reference-count / covering-test tools. A 'dead' verdict is a LEAD to investigate, "
-    "never a deletion order. Reach for this before removing or refactoring something "
-    "lore_dead_code flagged.\n"
-    "- lore_map(budget=2500, focus=None): a PageRank-ranked, token-budgeted map of which "
-    "modules matter most in this project (each with its rendered symbol names), optionally "
-    "re-centered on one symbol's own neighbourhood via focus. Reach for this FIRST when you "
-    "don't yet know where to look.\n"
-    "- lore_index(reconcile=False, tier=None): the freshness/health roll-up (indexed / "
-    "in-flight / failed counts, embedding-schema + calibration state, last-sync/"
-    "last-sweep ages, newest-snapshot age, per-tool trace-call aggregates) — "
-    "zero embeds, cheap: manifest counts plus bounded trace/snapshot lookups, and "
-    "NEVER sweeps by default. "
-    "Pass reconcile=True (optionally with tier=<one tier>) to force a whole-tier "
-    "reconcile sweep FIRST — the heavy 'make everything current now' hammer, not a "
-    "per-file wait — then render the same status over the just-settled index.\n"
-    "- lore_diff(since=None, until=None): what changed between two index SNAPSHOTS. Call it "
-    "with no 'since' FIRST to list the recorded snapshot ids, then pass a 'since' (and "
-    "optionally 'until'; omit 'until' to diff against the live 'now') to see the "
-    "added/removed/modified files + per-function chunk deltas. The view names its 'legacy' "
-    "(reduced-precision) and 'in-flight' (mid-reindex, excluded) markers — expect them.\n"
-    "- lore_findings(action, ...): the durable, fleet-visible FINDING ledger (friction / "
-    "capability gaps / bugs), dispatched on 'action' like lore_tasks: 'report' a finding "
-    "(subject/body/area/category/created_by; kind defaults 'friction'), 'query' by "
-    "status/kind/area, 'get'/'chain_head' one, or drive its review state machine with "
-    "'acknowledge'/'resolve'/'wontfix' (by id_or_number + actor). Renders summarised rows.\n"
-    "- lore_remember(text, ...) / lore_recall(query, ...): the project-memory "
-    "store (see MEMORY below).\n"
+    "LADDER: lore_map (orient) -> lore_search (locate) -> lore_get_symbol / "
+    "lore_read (exact def/span) -> lore_impact (blast radius) -> "
+    "lore_verify (claim check) -> write. Map defaults to PRODUCTION; reach "
+    "tests via tests=true, focus=, or its covering-tests view.\n"
     "\n"
-    "WORKFLOW LADDER when you don't already know exactly where to look: orient with "
-    "lore_map, locate specifics with lore_search, pin the exact definition with "
-    "lore_get_symbol, then verify safety with lore_impact before you touch anything — "
-    "lore_map -> lore_search -> lore_get_symbol -> lore_impact is the default chain.\n"
+    "CITATIONS: search/read hits carry [SOURCE:tier:path:start-end] + Key: "
+    "— echo it; Key: pins a memory correction.\n"
     "\n"
-    "TOOL LOADING: if your harness exposes MCP tools behind a deferred loader (a ToolSearch- "
-    "style tool that must select these before they are callable), load lore's tools "
-    "explicitly up front — a lore tool that never gets ToolSearch-loaded is invisible to "
-    "you, so ask for it rather than assuming lore is unavailable.\n"
+    "FRESHNESS: a watcher indexes a save in seconds; wait_for_fresh=True "
+    "races a fresh edit. lore_index() is a cheap health read; "
+    "reconcile=True forces a sweep. Impact / dead_code verdicts reflect the "
+    "INDEX. lore_diff (no since = list) diffs snapshots.\n"
     "\n"
-    "CITATIONS: every lore_search / lore_read result carries a "
-    "[SOURCE:file:line] citation plus a stable 'Key:' line (the chunk key) and a fenced "
-    "source block. Echo the [SOURCE:...] citation when you quote code, and pass a "
-    "'Key:' value back to lore_remember to pin a correction to a specific chunk.\n"
+    "HONEST FAILURE: a miss teaches (nearest path/name), not a bare error; "
+    "empty means a genuine no-match. lore_dead_code / lore_impact verdicts "
+    "are HEURISTIC, not proof. Budgets elide with a named, counted notice.\n"
     "\n"
-    "FRESHNESS / READ-YOUR-WRITES: a live inotify watcher re-indexes an edited file "
-    "within ~seconds of a save — the normal freshness path. A periodic reconcile sweep "
-    "(default ~10 min) is ONLY the backstop for events the watcher missed (downtime, "
-    "queue overflow), not the edit-to-fresh latency. If you edit a file and "
-    "IMMEDIATELY query it, you can race the embed window: pass "
-    "lore_search(..., wait_for_fresh=True) — it bounded-waits for the in-flight "
-    "file(s) matching your path filter, then serves fresh (or stale-flagged on timeout; "
-    "it never hangs). Use lore_index(reconcile=True, tier=...) only to force a whole "
-    "tier current; for the edit-then-query case wait_for_fresh is the right, cheaper "
-    "tool.\n"
+    "MEMORY: lore_remember / lore_recall is this project's shared, durable "
+    "notebook — atomic facts, not digests. lore_findings (kind=friction) "
+    "files gaps; lore_claim_task / lore_tasks coordinate fleet work.\n"
     "\n"
-    "MEMORY: lore_remember / lore_recall is PROJECT-SCOPED memory about THIS "
-    "repository — embedded and semantically recalled, SHARED across every agent working "
-    "this "
-    "project, and it SURVIVES restarts (it persists in a dedicated collection). Use it "
-    "for durable facts and corrections about this codebase (e.g. 'the order total lives "
-    "in models/sale.py, not where it looks'). This is DISTINCT from your own global / "
-    "cross-project assistant memory: lore-memory is the project's shared notebook, not "
-    "your personal one."
+    "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's "
+    "tools first."
 )
 
 
@@ -5123,9 +5069,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "sweeps. Pass reconcile=True to first force a whole-tier reconcile sweep "
             "(optionally scoped via tier) — the heavy 'make everything current now' "
             "hammer, NOT a per-file wait — THEN render the same status over the "
-            "just-settled index. You rarely need reconcile=True: the live watcher keeps "
-            "the index fresh on save. For the edit-then-immediately-query case, prefer "
-            "lore_search(..., wait_for_fresh=True), which is cheaper and targeted."
+            "just-settled index. For the edit-then-immediately-query case, prefer "
+            "lore_search(..., wait_for_fresh=True) instead."
         ),
         annotations=_INDEX_ANNOTATIONS,
     )
@@ -5220,9 +5165,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "verb for this project — absorbs what were previously separate "
             "direct-importer / transitive-closure / reference-count / covering-test "
             "tools. Reach for this before removing or refactoring something "
-            "lore_dead_code flagged. Results reflect the INDEX: after a "
-            "same-session rename/edit, reconcile (lore_index) before trusting "
-            "this as a deletion gate."
+            "lore_dead_code flagged. A same-session rename/edit can leave this "
+            "stale (see FRESHNESS) — reconcile before trusting it as a deletion gate."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
