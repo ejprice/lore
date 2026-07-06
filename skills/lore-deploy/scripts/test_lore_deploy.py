@@ -13,13 +13,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import lore_deploy
+import pytest
 
 
 def test_launch_container_uses_host_user_home_and_shared_manifest_mount(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The run invocation must run as the host user, set HOME, and share the manifest dir.
 
@@ -51,7 +53,7 @@ def test_launch_container_uses_host_user_home_and_shared_manifest_mount(
 
 
 def test_start_when_already_running_still_rewires_mcp_json(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """``verb_start`` must write/refresh ``.mcp.json`` even when the container is already running.
 
@@ -236,7 +238,10 @@ class TestVerbStartStaleImageRecreateBehavior:
 
     # --- A1 ---
     def test_verb_start_stale_running_container_is_recreated(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A1: RUNNING + STALE image → stop + rm + relaunch, re-merge .mcp.json, return _EXIT_OK,
         and print the MCP-reconnect reminder.
@@ -281,7 +286,7 @@ class TestVerbStartStaleImageRecreateBehavior:
         # Track podman stop / rm calls via _run recorder.
         run_calls: list[list[str]] = []
 
-        def _recording_run(cmd: list[str], **kwargs) -> object:
+        def _recording_run(cmd: list[str], **kwargs: bool) -> subprocess.CompletedProcess[str]:
             run_calls.append(cmd)
             # Return a minimal CompletedProcess-alike (returncode=0) so the
             # caller's check=False / capture paths don't crash.
@@ -292,7 +297,7 @@ class TestVerbStartStaleImageRecreateBehavior:
         monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
 
         # Record _launch_container calls (the real one would shell out to podman run).
-        launch_calls: list[tuple] = []
+        launch_calls: list[tuple[Path, Path, Path]] = []
 
         def _recording_launch(proj: Path, config_path: Path, env_file: Path) -> None:
             launch_calls.append((proj, config_path, env_file))
@@ -362,7 +367,10 @@ class TestVerbStartStaleImageRecreateBehavior:
 
     # --- A2 ---
     def test_verb_start_current_running_container_is_not_relaunched(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A2: RUNNING + CURRENT image → no stop/rm/relaunch, still re-merges .mcp.json,
         returns _EXIT_OK, and does NOT print the reconnect reminder.
@@ -395,7 +403,7 @@ class TestVerbStartStaleImageRecreateBehavior:
 
         run_calls: list[list[str]] = []
 
-        def _recording_run(cmd: list[str], **kwargs) -> object:
+        def _recording_run(cmd: list[str], **kwargs: bool) -> subprocess.CompletedProcess[str]:
             run_calls.append(cmd)
             import subprocess
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -403,7 +411,7 @@ class TestVerbStartStaleImageRecreateBehavior:
         monkeypatch.setattr(lore_deploy, "_run", _recording_run)
         monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
 
-        launch_calls: list[tuple] = []
+        launch_calls: list[tuple[Path, Path, Path]] = []
 
         def _recording_launch(proj: Path, config_path: Path, env_file: Path) -> None:
             launch_calls.append((proj, config_path, env_file))
@@ -467,7 +475,10 @@ class TestVerbStartStaleImageRecreateBehavior:
 
     # --- A3 ---
     def test_verb_start_fresh_launch_prints_reconnect_reminder(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A3: NOT running (fresh launch path) → launches and prints the reconnect reminder.
 
@@ -494,7 +505,7 @@ class TestVerbStartStaleImageRecreateBehavior:
 
         monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
 
-        launch_calls: list[tuple] = []
+        launch_calls: list[tuple[Path, Path, Path]] = []
 
         def _recording_launch(proj: Path, config_path: Path, env_file: Path) -> None:
             launch_calls.append((proj, config_path, env_file))
@@ -552,7 +563,10 @@ class TestVerbStatusImageCurrency:
 
     # --- A4 (current) ---
     def test_verb_status_running_current_image_reports_up_to_date(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A4a: running container on current image → status output contains a
         'current' / up-to-date indication (case-insensitive substring match).
@@ -609,7 +623,10 @@ class TestVerbStatusImageCurrency:
 
     # --- A4 (stale) ---
     def test_verb_status_running_stale_image_reports_stale(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A4b: running container on stale image → status output contains a
         'stale' / 'rebuild available' / 'outdated' indication.
@@ -672,7 +689,10 @@ class TestVerbStatusImageCurrency:
         )
 
     def test_verb_status_stopped_container_does_not_report_image_currency(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """verb_status for a stopped/absent container must not crash or report image currency.
 
@@ -738,7 +758,7 @@ class _RecreatePathFixture:
     (e.g. the ``lore-<slug>`` name format) cannot silently diverge across tests.
     """
 
-    def __init__(self, monkeypatch, tmp_path, slug: str) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, slug: str) -> None:
         self.monkeypatch = monkeypatch
         self.tmp_path = tmp_path
         self.slug = slug
@@ -747,7 +767,7 @@ class _RecreatePathFixture:
         # Ordered transcript of every podman command verb_start issues through _run.
         self.run_calls: list[list[str]] = []
         # Every _launch_container invocation (the relaunch attempt).
-        self.launch_calls: list[tuple] = []
+        self.launch_calls: list[tuple[Path, Path, Path]] = []
         # An env-file path that, by default, DOES NOT exist on disk (the outage
         # trigger).  Tests that need it present call .create_env_file().
         self.env_file = tmp_path / f"{slug}.env"
@@ -767,7 +787,7 @@ class _RecreatePathFixture:
     def install_run_recorder(self) -> None:
         """Record (and succeed) every podman command issued via _run."""
 
-        def _recording_run(cmd: list[str], **kwargs) -> object:
+        def _recording_run(cmd: list[str], **kwargs: bool) -> subprocess.CompletedProcess[str]:
             self.run_calls.append(list(cmd))
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -776,7 +796,7 @@ class _RecreatePathFixture:
     def install_launch_recorder(self) -> None:
         """Record _launch_container calls without shelling out (default: succeeds)."""
 
-        def _recording_launch(proj, config_path, env_file) -> None:
+        def _recording_launch(proj: Path, config_path: Path, env_file: Path) -> None:
             self.launch_calls.append((proj, config_path, env_file))
 
         self.monkeypatch.setattr(lore_deploy, "_launch_container", _recording_launch)
@@ -790,7 +810,7 @@ class _RecreatePathFixture:
         (not a generic Exception) so the test pins the real seam.
         """
 
-        def _failing_launch(proj, config_path, env_file) -> None:
+        def _failing_launch(proj: Path, config_path: Path, env_file: Path) -> None:
             self.launch_calls.append((proj, config_path, env_file))
             raise subprocess.CalledProcessError(
                 returncode=125,  # podman's "container/run setup failed" exit code
@@ -830,7 +850,10 @@ class TestVerbStartRecreateValidatesBeforeTeardown:
 
     # --- B1: the direct outage regression ---
     def test_recreate_with_missing_env_file_does_not_remove_running_container(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """B1: RUNNING + stale image + env-file ABSENT -> abort with _EXIT_ERROR,
         no stop, no rm, no launch.  The exact outage that occurred.
@@ -872,7 +895,10 @@ class TestVerbStartRecreateValidatesBeforeTeardown:
 
     # --- B2: the same invariant, image side of the precondition ---
     def test_recreate_with_missing_image_does_not_remove_running_container(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """B2: RUNNING + stale-by-id + image ABSENT -> abort with _EXIT_ERROR,
         no stop, no rm, no launch.
@@ -912,7 +938,10 @@ class TestVerbStartRecreateValidatesBeforeTeardown:
 
     # --- B3: a launch failure after valid preconditions is reported, not raised ---
     def test_recreate_launch_failure_is_reported_not_raised(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """B3: preconditions PASS but _launch_container fails (podman non-zero)
         -> verb_start returns _EXIT_ERROR and is LOUD on stderr; no uncaught raise.
@@ -963,7 +992,10 @@ class TestVerbStartRecreateValidatesBeforeTeardown:
 
     # --- B4: ordering invariant, not mere presence ---
     def test_recreate_happy_path_validates_before_teardown(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """B4: RUNNING + stale + all preconditions good -> the env-file/image checks
         happen BEFORE the first stop/rm (ordering invariant), then stop+rm+relaunch.
@@ -982,7 +1014,7 @@ class TestVerbStartRecreateValidatesBeforeTeardown:
         # commands, so we can assert that no probe occurs after the first teardown.
         transcript: list[str] = []
 
-        def _recording_run(cmd: list[str], **kwargs) -> object:
+        def _recording_run(cmd: list[str], **kwargs: bool) -> subprocess.CompletedProcess[str]:
             # Tag stop/rm against THIS container as destructive teardown events.
             if "stop" in cmd and fixture.container_name in cmd:
                 transcript.append("teardown:stop")
@@ -1098,7 +1130,7 @@ class TestEnvFileResolution:
     _REAL_SLUG = "demand_intelligence"
 
     # --- A-fix 1: per-slug default ---
-    def test_env_file_defaults_to_per_slug_secrets_path(self, tmp_path) -> None:
+    def test_env_file_defaults_to_per_slug_secrets_path(self, tmp_path: Path) -> None:
         """`--project .../demand_intelligence`, no `--env-file` -> resolves to
         ~/docker/mcp/lore-secrets/demand_intelligence.env, NOT ~/docker/mcp/lore.env.
 
@@ -1128,7 +1160,7 @@ class TestEnvFileResolution:
         )
 
     # --- A-fix 2: explicit override wins verbatim ---
-    def test_explicit_env_file_overrides_per_slug_default(self, tmp_path) -> None:
+    def test_explicit_env_file_overrides_per_slug_default(self, tmp_path: Path) -> None:
         """An explicit --env-file is honored verbatim — no per-slug rewriting.
 
         Operators sometimes point at a one-off secrets file; an explicit value
@@ -1144,7 +1176,7 @@ class TestEnvFileResolution:
         # A realistic operator-supplied override, distinct from the per-slug path.
         explicit = tmp_path / "custom" / "alt-secrets.env"
 
-        resolved = lore_deploy._resolve_env_file(project, explicit)
+        resolved = lore_deploy._resolve_env_file(project, str(explicit))
 
         assert Path(resolved) == explicit, (
             f"an explicit --env-file must be honored verbatim; expected {explicit}, "
@@ -1225,17 +1257,17 @@ class TestProbeSurreal:
 
     _RPC_URL = "ws://127.0.0.1:18500/rpc"
 
-    def _stub_url_read(self, monkeypatch) -> None:
+    def _stub_url_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Stub the config read so the probe reads our fixed surreal.url."""
         monkeypatch.setattr(
             lore_deploy, "_read_config_field", lambda config_path, expr: self._RPC_URL
         )
 
-    def _record_run(self, monkeypatch) -> list[list[str]]:
+    def _record_run(self, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         """Install a recording _run that succeeds; return the transcript list."""
         run_calls: list[list[str]] = []
 
-        def _recording_run(cmd: list[str], **kwargs) -> object:
+        def _recording_run(cmd: list[str], **kwargs: bool) -> subprocess.CompletedProcess[str]:
             run_calls.append(list(cmd))
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -1250,17 +1282,22 @@ class TestProbeSurreal:
 
     # --- healthy on the first probe: OK, and NOT a single podman call ---
     def test_healthy_first_probe_returns_ok_without_podman(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A clean /health 200 returns _EXIT_OK and never shells out to podman."""
         self._stub_url_read(monkeypatch)
         monkeypatch.setattr(lore_deploy, "_probe_surreal_health", lambda url, **kw: True)
         run_calls = self._record_run(monkeypatch)
         state_calls: list[str] = []
-        monkeypatch.setattr(
-            lore_deploy, "_container_state",
-            lambda name: state_calls.append(name) or None,
-        )
+
+        def _recording_state(name: str) -> str | None:
+            state_calls.append(name)
+            return None
+
+        monkeypatch.setattr(lore_deploy, "_container_state", _recording_state)
 
         rc = lore_deploy._probe_surreal(tmp_path / "lore.yaml")
 
@@ -1271,7 +1308,10 @@ class TestProbeSurreal:
 
     # --- reboot recovery: stopped container -> podman start -> healthy on re-poll ---
     def test_reboot_recovery_starts_stopped_container(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """/health down + container Exited -> ``podman start lore-surreal`` -> re-probe OK."""
         self._stub_url_read(monkeypatch)
@@ -1282,8 +1322,11 @@ class TestProbeSurreal:
         )
         monkeypatch.setattr(lore_deploy, "_container_state", lambda name: "exited")
         run_calls = self._record_run(monkeypatch)
-        # No real sleeping in the bounded wait loop.
-        monkeypatch.setattr(lore_deploy.time, "sleep", lambda seconds: None)
+        # No real sleeping in the bounded wait loop. ``time`` is the same module
+        # object lore_deploy imported (patching it here patches lore_deploy's view
+        # of it too), so this reaches through without accessing a name lore_deploy
+        # does not re-export.
+        monkeypatch.setattr(time, "sleep", lambda seconds: None)
 
         rc = lore_deploy._probe_surreal(tmp_path / "lore.yaml")
 
@@ -1302,7 +1345,10 @@ class TestProbeSurreal:
 
     # --- absent container: fail loud, ZERO podman mutation ---
     def test_absent_container_fails_loud_without_mutation(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """/health down + no container -> _EXIT_ERROR, no podman call, loud stderr."""
         self._stub_url_read(monkeypatch)
@@ -1322,7 +1368,10 @@ class TestProbeSurreal:
 
     # --- running-but-unhealthy: start-if-stopped does not apply ---
     def test_running_but_unhealthy_does_not_restart(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """/health down + container already running -> _EXIT_ERROR, no restart attempt.
 
@@ -1346,7 +1395,10 @@ class TestVerbStartGatesOnSurreal:
     """``verb_start`` must gate the launch on ``_probe_surreal`` (store reachability)."""
 
     def test_start_proceeds_when_surreal_probe_ok(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """(a) surreal healthy on the probe -> start proceeds to _launch_container."""
         project = _make_project(tmp_path, "surrealok")
@@ -1355,13 +1407,15 @@ class TestVerbStartGatesOnSurreal:
         monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
 
         probe_calls: list[Path] = []
-        monkeypatch.setattr(
-            lore_deploy, "_probe_surreal",
-            lambda config_path: probe_calls.append(config_path) or lore_deploy._EXIT_OK,
-        )
+
+        def _recording_probe_surreal(config_path: Path) -> int:
+            probe_calls.append(config_path)
+            return lore_deploy._EXIT_OK
+
+        monkeypatch.setattr(lore_deploy, "_probe_surreal", _recording_probe_surreal)
         monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
 
-        launch_calls: list[tuple] = []
+        launch_calls: list[tuple[Path, Path, Path]] = []
         monkeypatch.setattr(
             lore_deploy, "_launch_container",
             lambda proj, config_path, env_file: launch_calls.append((proj, config_path, env_file)),
@@ -1382,7 +1436,10 @@ class TestVerbStartGatesOnSurreal:
         assert len(launch_calls) == 1, "a passing surreal probe must proceed to launch"
 
     def test_start_aborts_when_surreal_probe_fails(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """(c) surreal probe fails -> _EXIT_ERROR and _launch_container NEVER called."""
         project = _make_project(tmp_path, "surrealdown")
@@ -1394,7 +1451,7 @@ class TestVerbStartGatesOnSurreal:
         )
         monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
 
-        launch_calls: list[tuple] = []
+        launch_calls: list[tuple[Path, Path, Path]] = []
         monkeypatch.setattr(
             lore_deploy, "_launch_container",
             lambda proj, config_path, env_file: launch_calls.append((proj, config_path, env_file)),
@@ -1413,7 +1470,10 @@ class TestVerbSetupGatesOnSurreal:
     """``verb_setup`` must gate on the same ``_probe_surreal`` store-reachability check."""
 
     def test_setup_aborts_when_surreal_probe_fails(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """(d) setup gates on _probe_surreal: a failed probe aborts before image/cold-index."""
         project = _make_project(tmp_path, "setupsurreal")
@@ -1423,16 +1483,21 @@ class TestVerbSetupGatesOnSurreal:
         monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
 
         probe_calls: list[Path] = []
-        monkeypatch.setattr(
-            lore_deploy, "_probe_surreal",
-            lambda config_path: probe_calls.append(config_path) or lore_deploy._EXIT_ERROR,
-        )
+
+        def _recording_probe_surreal(config_path: Path) -> int:
+            probe_calls.append(config_path)
+            return lore_deploy._EXIT_ERROR
+
+        monkeypatch.setattr(lore_deploy, "_probe_surreal", _recording_probe_surreal)
         # Guard: the image-build / cold-index steps live AFTER the gate; they must
         # not be reached once the probe fails.
         image_calls: list[str] = []
-        monkeypatch.setattr(
-            lore_deploy, "_image_exists", lambda image: image_calls.append(image) or True
-        )
+
+        def _recording_image_exists(image: str) -> bool:
+            image_calls.append(image)
+            return True
+
+        monkeypatch.setattr(lore_deploy, "_image_exists", _recording_image_exists)
 
         env_file = tmp_path / "secrets.env"
         env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
@@ -1488,7 +1553,10 @@ class TestRecreateGatesOnStorePreflight:
     _SLUG = "demand_intelligence"  # a real on-host lore slug (see lore-secrets/)
 
     def test_recreate_aborts_when_surreal_probe_fails_no_teardown(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """RUNNING + stale + store `/health` down -> abort, no stop/rm/launch, container untouched."""
         fixture = _RecreatePathFixture(monkeypatch, tmp_path, self._SLUG)
@@ -1524,7 +1592,10 @@ class TestRecreateGatesOnStorePreflight:
         )
 
     def test_recreate_aborts_when_embed_probe_fails_no_teardown(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """RUNNING + stale + `/embed` down -> abort, no stop/rm/launch (embed is a precondition too)."""
         fixture = _RecreatePathFixture(monkeypatch, tmp_path, self._SLUG)
@@ -1548,7 +1619,10 @@ class TestRecreateGatesOnStorePreflight:
         assert fixture.launch_calls == []
 
     def test_recreate_proceeds_and_validates_before_teardown_when_probes_ok(
-        self, monkeypatch, tmp_path, capsys
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """RUNNING + stale + both probes OK -> recreate proceeds; both probes precede teardown.
 
@@ -1565,7 +1639,7 @@ class TestRecreateGatesOnStorePreflight:
         # One ordered transcript across the pre-flights AND the podman commands.
         transcript: list[str] = []
 
-        def _recording_run(cmd: list[str], **kwargs) -> object:
+        def _recording_run(cmd: list[str], **kwargs: bool) -> subprocess.CompletedProcess[str]:
             if "stop" in cmd and fixture.container_name in cmd:
                 transcript.append("teardown:stop")
             elif "rm" in cmd and fixture.container_name in cmd:
@@ -1574,14 +1648,18 @@ class TestRecreateGatesOnStorePreflight:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(lore_deploy, "_run", _recording_run)
-        monkeypatch.setattr(
-            lore_deploy, "_probe_embed",
-            lambda *a, **k: (transcript.append("check:embed"), lore_deploy._EXIT_OK)[1],
-        )
-        monkeypatch.setattr(
-            lore_deploy, "_probe_surreal",
-            lambda config_path: (transcript.append("check:surreal"), lore_deploy._EXIT_OK)[1],
-        )
+
+        def _recording_probe_embed(config_path: Path, env_file: Path) -> int:
+            transcript.append("check:embed")
+            return lore_deploy._EXIT_OK
+
+        monkeypatch.setattr(lore_deploy, "_probe_embed", _recording_probe_embed)
+
+        def _recording_probe_surreal(config_path: Path) -> int:
+            transcript.append("check:surreal")
+            return lore_deploy._EXIT_OK
+
+        monkeypatch.setattr(lore_deploy, "_probe_surreal", _recording_probe_surreal)
         monkeypatch.setattr(lore_deploy, "_await_bind", lambda *a, **k: lore_deploy._EXIT_OK)
 
         return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)

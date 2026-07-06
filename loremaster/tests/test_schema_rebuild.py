@@ -3166,7 +3166,7 @@ class TestMemoryJoinsSchemaRebuild:
             assert not isinstance(rebuild_result, Exception), (
                 f"the recreate must not fail-loud: {rebuild_result!r}"
             )
-            assert not isinstance(recall_result, Exception), (
+            assert not isinstance(recall_result, BaseException), (
                 "a recall racing the recreate window must block-then-succeed, never raise; "
                 f"got {recall_result!r}"
             )
