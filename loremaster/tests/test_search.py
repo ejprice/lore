@@ -83,6 +83,8 @@ from loremaster.store.surreal import SurrealConnectionError, SurrealStore
 from lorescribe.models import Chunk, ChunkContext
 from loresigil.testing import FakeEmbedder
 
+from loremaster import search as search_module
+
 # Production embedding dim per the owner directive (FakeEmbedder at 2048).
 _DIM = 2048
 
@@ -128,7 +130,7 @@ _MEMORY_SECTION_HEADER = "memories:"
 
 # item 13 (S3, finding #61) — a non-auto detail_level can legitimately zero
 # every code hit while injected memories still render unconditionally
-# ("code-shaped query returned only memories, zero code hits, silently" --
+# ("code-shaped query returned only memories, zero code hits, silently" —
 # client-needs-consult §S3, live-reproduced). The marker is this module's own
 # CONTRACT (not imported from the implementation).
 _DETAIL_MISS_MARKER = "[DETAIL MISS]"
@@ -161,16 +163,16 @@ _BIDI_ZERO_WIDTH_AND_SEPARATOR_CHARS = (
 )
 
 
-# item 12 (S4) — weak-match banding: a per-hit flag on any code hit scoring
-# below a MEASURED confidence floor, plus an aggregate top-level notice when
-# EVERY shown code hit is weak. The floor VALUE is a measured constant
-# (scripts/search_score_survey.py — a stratified real-query vs. nonsense-query
-# score survey against the live corpus; see REPORT-slate-builder-search.md for
-# the full methodology + false-flag rate) and is RE-DECLARED here (the
-# contract this module pins), not imported — must equal
-# ``loremaster.search._SEARCH_SCORE_FLOOR`` exactly.
-_SEARCH_SCORE_FLOOR = 0.0167
+# item 12 (S4b, docs/design/2026-07-06-weak-match-discrimination.md) — RETIRES
+# S4's fused-RRF-score floor (a rank-fusion CODE, structurally incapable of
+# discriminating nonsense from real queries — §1.2) in favour of a PRE-FUSION
+# cosine substrate + gated absence verdict. Every gate constant ships DARK
+# (feature-gated off / floor=None) until a Phase C survey measures real
+# values — this module's own tests exercise both the dark-by-default world
+# AND the lit-up behaviour via ``monkeypatch`` on the module's gate constants
+# (never re-declared here; the whole POINT is that the module owns them).
 _WEAK_MATCH_MARKER = "weak match"
+_ABSENCE_VERDICT_MARKER = "no confident match"
 
 
 def _refjoin_line(n_prod: int, n_test: int, n_tests: int) -> str:
@@ -1565,9 +1567,12 @@ class TestRenderSanitiser:
 class _FixedCandidatesStore(FakeSurrealStore):
     """A store double whose ``hybrid_search`` returns a FIXED candidate list.
 
-    Lets a weak-match test pin an EXACT ``candidate.score`` directly (relative
-    to :data:`_SEARCH_SCORE_FLOOR`) instead of reverse-engineering the real
-    RRF fusion math to land a score on a specific side of a floor.
+    Lets a weak-match test pin an EXACT ``candidate.vector_cosine`` directly
+    (relative to :data:`_COSINE_WEAK_MATCH_FLOOR`) instead of reverse-
+    engineering the real RRF fusion / HNSW cosine math to land a value on a
+    specific side of a floor. (S4's retired ``_SEARCH_SCORE_FLOOR`` cross-ref
+    corrected — S4b audit finding #4: the store now pins ``vector_cosine``,
+    not the retired fused ``score``.)
     """
 
     def __init__(self, *, dim: int, db: Any, candidates: list[Candidate]) -> None:
@@ -1585,11 +1590,28 @@ class _FixedCandidatesStore(FakeSurrealStore):
         return list(self._candidates[:k])
 
 
-def _score_candidate(key: str, score: float, *, file_path: str = "pkg/mod.py") -> Candidate:
-    """A well-formed function-hit candidate at an exact, caller-chosen score.
+def _score_candidate(
+    key: str,
+    score: float,
+    *,
+    file_path: str = "pkg/mod.py",
+    chunk_type: str = "function",
+    vector_cosine: float | None = None,
+    identity: str = "some_function",
+    ident_text: str = "some_function",
+) -> Candidate:
+    """A well-formed candidate at an exact, caller-chosen score and chunk type.
 
+    ``chunk_type="function"`` (the default) classifies ``"source"``;
+    ``chunk_type="imports"`` classifies ``"summary"`` (see
+    ``LoreServer._base_classify_detail``'s ``_BASE_SUMMARY_CHUNK_TYPES``).
     ``signature=None`` keeps the candidate out of graph enrichment (item 7) so
-    these tests need no code-graph double.
+    these tests need no code-graph double. ``vector_cosine`` (S4b, docs/design/
+    2026-07-06-weak-match-discrimination.md) is the ``_FixedCandidatesStore``
+    cosine knob — ``None`` (the default) exercises the "no substrate data"
+    path; a caller-chosen float pins an exact cosine for the weak-match /
+    absence-verdict machinery without reverse-engineering real HNSW math.
+    ``ident_text`` backs the verbatim-identifier-anchor carve-out (D3).
     """
     return Candidate(
         key=key,
@@ -1597,25 +1619,117 @@ def _score_candidate(key: str, score: float, *, file_path: str = "pkg/mod.py") -
         payload={
             "tier": _TIER,
             "file_path": file_path,
-            "identity": "some_function",
-            "chunk_type": "function",
+            "identity": identity,
+            "chunk_type": chunk_type,
             "line_start": 1,
             "line_end": 2,
             "content_hash": "0" * 128,
             "source_text": "def some_function():\n    pass\n",
             "signature": None,
+            "ident_text": ident_text,
         },
         origin="fused",
+        vector_cosine=vector_cosine,
     )
 
 
-class TestWeakMatchBanding:
-    """A code hit below the measured floor is flagged; an all-weak result set
+class TestCosineWeakMatchDark:
+    """Ships DARK by default (design doc §7's ruling): no substrate line, no
 
-    also carries a top-level notice. Memory/notice entries (``score=0.0`` or an
-    arbitrary recall score) are NEVER banded — only ``kind == "hit"`` entries
-    ever pass through the per-hit check.
+    per-hit weak flag, no aggregate absence verdict ever renders while the
+    gate constants sit at their PENDING-MEASUREMENT defaults — regardless of
+    how low (or absent) a candidate's ``vector_cosine`` is.
     """
+
+    async def _pipeline(
+        self, tmp_path: Path, embedder: FakeEmbedder, candidates: list[Candidate]
+    ) -> SearchPipeline:
+        indexed, server = await _index_single(tmp_path, embedder, files={})
+        store = _FixedCandidatesStore(dim=embedder.dim, db=indexed.db, candidates=candidates)
+        return _make_pipeline(indexed=indexed, embedder=embedder, server=server, store=store)
+
+    async def test_no_substrate_line_regardless_of_cosine(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        candidate = _score_candidate("k1", 0.03, vector_cosine=0.9)
+        pipeline = await self._pipeline(tmp_path, embedder, [candidate])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert "sim " not in hits[0].formatted
+
+    async def test_no_weak_flag_regardless_of_how_low_the_cosine_is(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        near_zero_cosine = _score_candidate("k1", 0.03, vector_cosine=-1.0)
+        pipeline = await self._pipeline(tmp_path, embedder, [near_zero_cosine])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert _WEAK_MATCH_MARKER not in hits[0].formatted
+
+    async def test_no_absence_verdict_even_when_every_hit_is_weak_cosine(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        weak_a = _score_candidate("k1", 0.03, vector_cosine=-1.0, file_path="pkg/a.py")
+        weak_b = _score_candidate("k2", 0.02, vector_cosine=-1.0, file_path="pkg/b.py")
+        pipeline = await self._pipeline(tmp_path, embedder, [weak_a, weak_b])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert not any(_ABSENCE_VERDICT_MARKER in n.formatted for n in notices)
+
+
+class TestCosineSubstrateLit:
+    """With ``_COSINE_SUBSTRATE_ENABLED`` measured on (D1), every hit with a
+
+    captured cosine renders the compact always-on magnitude; a hit with no
+    cosine (an older store / test double) renders nothing extra.
+    """
+
+    async def _pipeline(
+        self, tmp_path: Path, embedder: FakeEmbedder, candidates: list[Candidate]
+    ) -> SearchPipeline:
+        indexed, server = await _index_single(tmp_path, embedder, files={})
+        store = _FixedCandidatesStore(dim=embedder.dim, db=indexed.db, candidates=candidates)
+        return _make_pipeline(indexed=indexed, embedder=embedder, server=server, store=store)
+
+    async def test_renders_the_compact_magnitude_when_cosine_is_present(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(search_module, "_COSINE_SUBSTRATE_ENABLED", True)
+        candidate = _score_candidate("k1", 0.03, vector_cosine=0.87)
+        pipeline = await self._pipeline(tmp_path, embedder, [candidate])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert "sim 0.87" in hits[0].formatted
+
+    async def test_renders_nothing_extra_when_cosine_is_absent(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(search_module, "_COSINE_SUBSTRATE_ENABLED", True)
+        candidate = _score_candidate("k1", 0.03, vector_cosine=None)
+        pipeline = await self._pipeline(tmp_path, embedder, [candidate])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert "sim " not in hits[0].formatted
+
+
+class TestCosineWeakMatchLit:
+    """With ``_COSINE_WEAK_MATCH_FLOOR`` measured (D2), a per-hit weak flag
+
+    fires unconditionally below the floor — no verbatim-anchor carve-out
+    here; that carve-out gates the AGGREGATE verdict only (D3).
+    """
+
+    _FLOOR = 0.5
 
     async def _pipeline(
         self,
@@ -1632,36 +1746,37 @@ class TestWeakMatchBanding:
             memory_store=memory_store,
         )
 
-    async def test_hit_below_floor_is_flagged_weak(
-        self, tmp_path: Path, embedder: FakeEmbedder
+    async def test_cosine_below_floor_is_flagged(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        weak = _score_candidate("k1", _SEARCH_SCORE_FLOOR - 0.001)
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        weak = _score_candidate("k1", 0.03, vector_cosine=self._FLOOR - 0.01)
         pipeline = await self._pipeline(tmp_path, embedder, [weak])
 
         results = await pipeline.search_code("anything", k=5)
 
         hits = [r for r in results if r.kind == _HIT_KIND]
-        assert len(hits) == 1
         assert _WEAK_MATCH_MARKER in hits[0].formatted
 
-    async def test_hit_above_floor_is_not_flagged(
-        self, tmp_path: Path, embedder: FakeEmbedder
+    async def test_cosine_above_floor_is_not_flagged(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        confident = _score_candidate("k1", _SEARCH_SCORE_FLOOR + 0.001)
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        confident = _score_candidate("k1", 0.03, vector_cosine=self._FLOOR + 0.01)
         pipeline = await self._pipeline(tmp_path, embedder, [confident])
 
         results = await pipeline.search_code("anything", k=5)
 
         hits = [r for r in results if r.kind == _HIT_KIND]
-        assert len(hits) == 1
         assert _WEAK_MATCH_MARKER not in hits[0].formatted
 
-    async def test_score_exactly_at_the_floor_is_not_flagged(
-        self, tmp_path: Path, embedder: FakeEmbedder
+    async def test_cosine_exactly_at_the_floor_is_not_flagged(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Boundary: the floor itself reads as confident (strict less-than), so
-        # a score exactly ON the measured floor is not penalised.
-        at_floor = _score_candidate("k1", _SEARCH_SCORE_FLOOR)
+        # Boundary: the floor itself reads as confident (strict less-than),
+        # mirroring S4's own retired convention.
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        at_floor = _score_candidate("k1", 0.03, vector_cosine=self._FLOOR)
         pipeline = await self._pipeline(tmp_path, embedder, [at_floor])
 
         results = await pipeline.search_code("anything", k=5)
@@ -1669,51 +1784,30 @@ class TestWeakMatchBanding:
         hits = [r for r in results if r.kind == _HIT_KIND]
         assert _WEAK_MATCH_MARKER not in hits[0].formatted
 
-    async def test_all_weak_hits_carry_a_top_level_notice(
-        self, tmp_path: Path, embedder: FakeEmbedder
+    async def test_missing_cosine_is_never_flagged(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        weak_a = _score_candidate("k1", _SEARCH_SCORE_FLOOR - 0.001, file_path="pkg/a.py")
-        weak_b = _score_candidate("k2", _SEARCH_SCORE_FLOOR - 0.002, file_path="pkg/b.py")
-        pipeline = await self._pipeline(tmp_path, embedder, [weak_a, weak_b])
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        no_cosine = _score_candidate("k1", 0.03, vector_cosine=None)
+        pipeline = await self._pipeline(tmp_path, embedder, [no_cosine])
 
         results = await pipeline.search_code("anything", k=5)
 
-        notices = [r for r in results if r.kind == _NOTICE_KIND]
-        assert any(_WEAK_MATCH_MARKER in n.formatted for n in notices), (
-            f"expected an all-weak top-level notice; got notices={notices!r}"
-        )
-
-    async def test_mixed_weak_and_confident_hits_no_top_level_notice(
-        self, tmp_path: Path, embedder: FakeEmbedder
-    ) -> None:
-        weak = _score_candidate("k1", _SEARCH_SCORE_FLOOR - 0.001, file_path="pkg/a.py")
-        confident = _score_candidate("k2", _SEARCH_SCORE_FLOOR + 0.05, file_path="pkg/b.py")
-        pipeline = await self._pipeline(tmp_path, embedder, [confident, weak])
-
-        results = await pipeline.search_code("anything", k=5)
-
-        # The individual weak hit is still flagged...
-        hits = {r.chunk_key: r for r in results if r.kind == _HIT_KIND}
-        assert _WEAK_MATCH_MARKER in hits["k1"].formatted
-        assert _WEAK_MATCH_MARKER not in hits["k2"].formatted
-        # ...but since NOT every shown hit is weak, no aggregate notice fires.
-        notices = [r for r in results if r.kind == _NOTICE_KIND]
-        assert not any(_WEAK_MATCH_MARKER in n.formatted for n in notices)
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert _WEAK_MATCH_MARKER not in hits[0].formatted
 
     async def test_memory_and_notice_entries_are_never_banded(
-        self, tmp_path: Path, embedder: FakeEmbedder
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A recalled memory can carry ANY score (including one below the code
-        # floor) and a notice entry always carries score=0.0 — neither may
-        # ever be mistaken for a weak CODE hit (only kind=="hit" passes
-        # through the per-hit check in _to_result).
-        weak = _score_candidate("k1", _SEARCH_SCORE_FLOOR - 0.001)
+        # A recalled memory can carry ANY score and a notice entry always
+        # carries score=0.0 — neither may ever be mistaken for a weak CODE
+        # hit (only kind=="hit" passes through the per-hit check).
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        weak = _score_candidate("k1", 0.03, vector_cosine=self._FLOOR - 0.01)
         memory_store = _FakeMemoryBackend(
             [_backend_recalled(text="a low-score memory", chunk_keys=[], score=0.0001)]
         )
-        pipeline = await self._pipeline(
-            tmp_path, embedder, [weak], memory_store=memory_store
-        )
+        pipeline = await self._pipeline(tmp_path, embedder, [weak], memory_store=memory_store)
 
         results = await pipeline.search_code("anything", k=5)
 
@@ -1721,19 +1815,200 @@ class TestWeakMatchBanding:
         notice_entries = [r for r in results if r.kind == _NOTICE_KIND]
         assert memory_entries, "the recalled memory must still be injected"
         assert not any(_WEAK_MATCH_MARKER in r.formatted for r in memory_entries)
-        # The memories: section header itself (score=0.0) is a notice, not a
-        # hit — it must not carry the weak-match marker either.
         header = next(r for r in notice_entries if r.formatted == _MEMORY_SECTION_HEADER)
         assert _WEAK_MATCH_MARKER not in header.formatted
 
-    async def test_no_hits_produces_no_all_weak_notice(
-        self, tmp_path: Path, embedder: FakeEmbedder
+
+class TestCosineAbsenceVerdictLit:
+    """With ``_COSINE_WEAK_MATCH_FLOOR`` measured (D2), the aggregate absence
+
+    verdict fires iff the MAX cosine among shown hits is below the floor AND
+    no shown hit carries a verbatim-identifier anchor (D3).
+    """
+
+    _FLOOR = 0.5
+
+    async def _pipeline(
+        self,
+        tmp_path: Path,
+        embedder: FakeEmbedder,
+        candidates: list[Candidate],
+        *,
+        memory_store: Any | None = None,
+    ) -> SearchPipeline:
+        indexed, server = await _index_single(tmp_path, embedder, files={})
+        store = _FixedCandidatesStore(dim=embedder.dim, db=indexed.db, candidates=candidates)
+        return _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, store=store,
+            memory_store=memory_store,
+        )
+
+    async def test_all_weak_hits_carry_the_absence_verdict(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        weak_a = _score_candidate(
+            "k1", 0.03, vector_cosine=self._FLOOR - 0.01, file_path="pkg/a.py",
+            identity="pkg.a.weak_fn", ident_text="weak_fn",
+        )
+        weak_b = _score_candidate(
+            "k2", 0.02, vector_cosine=self._FLOOR - 0.2, file_path="pkg/b.py",
+            identity="pkg.b.other_fn", ident_text="other_fn",
+        )
+        pipeline = await self._pipeline(tmp_path, embedder, [weak_a, weak_b])
+
+        results = await pipeline.search_code("something unrelated", k=5)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        notice = next((n for n in notices if _ABSENCE_VERDICT_MARKER in n.formatted), None)
+        assert notice is not None, f"expected an absence verdict; got notices={notices!r}"
+        # "nearest indexed" names the fused-order TOP hit's identity.
+        assert "pkg.a.weak_fn" in notice.formatted
+
+    async def test_mixed_weak_and_confident_hits_no_absence_verdict(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        weak = _score_candidate("k1", 0.03, vector_cosine=self._FLOOR - 0.01, file_path="pkg/a.py")
+        confident = _score_candidate(
+            "k2", 0.02, vector_cosine=self._FLOOR + 0.1, file_path="pkg/b.py"
+        )
+        pipeline = await self._pipeline(tmp_path, embedder, [confident, weak])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert not any(_ABSENCE_VERDICT_MARKER in n.formatted for n in notices)
+
+    async def test_verbatim_identifier_anchor_suppresses_the_verdict(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D3: even with every shown hit weak-cosine, an exact identifier
+        # lookup (the query pastes a symbol name verbatim) must NOT be told
+        # "no confident match" — that would be a confident-wrong channel
+        # aimed at the client's most confident queries.
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        weak = _score_candidate(
+            "k1", 0.03, vector_cosine=self._FLOOR - 0.01,
+            identity="pkg.OriginValidationMiddleware",
+            ident_text="OriginValidationMiddleware",
+        )
+        pipeline = await self._pipeline(tmp_path, embedder, [weak])
+
+        results = await pipeline.search_code("find OriginValidationMiddleware please", k=5)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert not any(_ABSENCE_VERDICT_MARKER in n.formatted for n in notices)
+
+    async def test_memory_entries_never_feed_the_absence_verdict(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        weak = _score_candidate("k1", 0.03, vector_cosine=self._FLOOR - 0.01)
+        memory_store = _FakeMemoryBackend(
+            [_backend_recalled(text="a memory that looks confident", chunk_keys=[], score=0.99)]
+        )
+        pipeline = await self._pipeline(tmp_path, embedder, [weak], memory_store=memory_store)
+
+        results = await pipeline.search_code("anything", k=5)
+
+        # The verdict still fires off the (weak) code hit alone — a
+        # high-scored MEMORY entry must never be mistaken for a confident
+        # code hit and suppress it.
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert any(_ABSENCE_VERDICT_MARKER in n.formatted for n in notices)
+
+    async def test_no_hits_produces_no_absence_verdict(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
         pipeline = await self._pipeline(tmp_path, embedder, [])
 
         results = await pipeline.search_code("anything", k=5)
 
         assert results == []
+
+    async def test_hostile_identity_in_nearest_indexed_is_sanitised(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # S4b audit finding #6/#5 (REPORT-slate-audit-searchstore.md): "nearest
+        # indexed" renders a STORED identity verbatim (D3's Opus addition) —
+        # repo law: any NEW render of stored free text needs a hostile
+        # fixture (newlines forging a second line, a row-shaped table
+        # forgery, backtick runs), not just a claim that ``_sanitise_line``
+        # (search.py:418) already covers it. Positively asserts the
+        # SANITISED (collapsed-to-a-single-space) form, not merely the
+        # absence of raw control bytes — Python's ``!r`` template formatting
+        # already escapes raw control/format characters on its own (verified
+        # empirically), so a bare "control byte absent" assertion would pass
+        # even with ``_sanitise_line`` deleted; asserting the collapsed text
+        # only holds when the sanitiser actually ran.
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        hostile_identity = "evil_fn\x1bmiddle\n|forged|row|\n```fenced```"
+        weak = _score_candidate(
+            "k1", 0.03, vector_cosine=self._FLOOR - 0.01,
+            identity=hostile_identity, ident_text="evil_fn",
+        )
+        pipeline = await self._pipeline(tmp_path, embedder, [weak])
+
+        results = await pipeline.search_code("something unrelated", k=5)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        notice = next((n for n in notices if _ABSENCE_VERDICT_MARKER in n.formatted), None)
+        assert notice is not None
+        assert len(notice.formatted.splitlines()) == 1, (
+            "the hostile identity must not forge an extra line in the notice"
+        )
+        assert "evil_fn middle |forged|row| ```fenced```" in notice.formatted
+        # Would appear if the raw hostile bytes reached ``!r`` unsanitised
+        # (repr's OWN escaping renders a real ESC/LF as this visible text).
+        assert "\\x1b" not in notice.formatted
+        assert "\\n" not in notice.formatted
+
+
+class TestCosineAbsencePredicate:
+    """The D2/D3 aggregate-verdict firing rule, extracted as its own pure
+    function (S4b audit finding #1, REPORT-slate-audit-searchstore.md
+    §Concern 6) so ``scripts/search_score_survey.py``'s Phase C floor
+    selection can IMPORT this exact predicate — never re-derive a
+    paraphrase that can silently drift from what production actually runs.
+    """
+
+    def test_fires_when_below_floor_and_no_anchor(self) -> None:
+        assert search_module._cosine_absence_predicate(0.3, 0.5, False) is True
+
+    def test_does_not_fire_at_or_above_the_floor(self) -> None:
+        assert search_module._cosine_absence_predicate(0.5, 0.5, False) is False
+        assert search_module._cosine_absence_predicate(0.6, 0.5, False) is False
+
+    def test_does_not_fire_when_a_verbatim_anchor_is_present_even_below_floor(
+        self,
+    ) -> None:
+        assert search_module._cosine_absence_predicate(0.1, 0.5, True) is False
+
+
+class TestRetiredFusedFloorIsGone:
+    """S4's fused-score-floor mechanism is fully retired — a corpse pin
+
+    (repo law: an audit-caught defect class becomes an invariant test, and a
+    known-non-discriminating flag left live implies interpretive authority it
+    doesn't have).
+    """
+
+    def test_the_retired_constants_no_longer_exist(self) -> None:
+        for name in (
+            "_SEARCH_SCORE_FLOOR",
+            "_WEAK_MATCH_WARNING_TEMPLATE",
+            "_ALL_HITS_WEAK_TEMPLATE",
+        ):
+            assert not hasattr(search_module, name), f"{name} should have been retired"
+
+    def test_the_retired_functions_no_longer_exist(self) -> None:
+        for name in ("_weak_match_warning", "_all_hits_weak_notice"):
+            assert not hasattr(search_module, name), f"{name} should have been retired"
+
+    def test_the_retired_pipeline_method_no_longer_exists(self) -> None:
+        assert not hasattr(search_module.SearchPipeline, "_all_weak_notice")
 
 
 # --------------------------------------------------------------------------- #
@@ -1842,7 +2117,6 @@ class TestDetailLevelMissNotice:
         assert not any(r.kind == _HIT_KIND for r in results)
         assert any(_DETAIL_MISS_MARKER in r.formatted for r in results if r.kind == _NOTICE_KIND)
         assert any(r.kind == _MEMORY_KIND for r in results), "the memory block must still render"
-
 
 
 # --------------------------------------------------------------------------- #

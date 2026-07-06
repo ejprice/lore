@@ -123,6 +123,9 @@ _PAYLOAD_CHUNK_TYPE = "chunk_type"
 _PAYLOAD_SOURCE_TEXT = "source_text"
 _PAYLOAD_CONTENT_HASH = "content_hash"
 _PAYLOAD_IDENTITY = "identity"
+# item 12d (S4b, D3): the chunk's identifier text — the verbatim-anchor
+# channel's haystack (see :func:`_has_verbatim_identifier_anchor`).
+_PAYLOAD_IDENT_TEXT = "ident_text"
 # The chunker stamps ``signature`` (a rendered ``(params) -> ret`` string) on
 # function/method chunks and ``None`` on everything else — so a non-``None`` str
 # here is exactly "this hit is a callable worth a graph ref-join" (item 7).
@@ -194,58 +197,72 @@ _ENRICHMENT_CAP = 10
 # computed (the graph raised mid-enrichment) — annotate the hit, never blanket-fail.
 _ENRICHMENT_UNAVAILABLE = "⚠ enrichment unavailable"  # "⚠ enrichment unavailable"
 
-# item 12 (S4, client-needs-consult): semantic search has no real "no match"
-# state — hybrid_search always returns nearest neighbors, so a nonsense query
-# renders identically to a confident one (both informants independently hit
-# this: a 0.03-scored 429-retry test rendered as a top hit for a feature this
-# repo doesn't have). ``_SEARCH_SCORE_FLOOR`` is a MEASURED constant (never
-# eyeballed from the informants' anecdotal probe scores) — see
-# ``scripts/search_score_survey.py`` (a stratified score survey over the
-# 35-pair eval set's real code-intent queries vs. a fixed adversarial nonsense
-# set, run against the live corpus) and REPORT-slate-builder-search.md for the
-# full methodology, the chosen percentile, and the measured false-flag rate.
-# A code hit scoring STRICTLY BELOW this floor is flagged (item 12a); the
-# floor itself reads as confident (boundary case). Only ``kind == "hit"``
-# entries are ever checked — memory entries carry the RECALL score (which can
-# be arbitrarily high or low) and notice entries a fixed ``score=0.0``; either
-# would be meaningless run through a code-confidence floor.
+# item 12 (S4b — RETIRES S4's fused-score floor, docs/design/2026-07-06-weak-
+# match-discrimination.md): the fused RRF score is a rank-fusion CODE, not a
+# magnitude (score = sum over arms of 1/(60 + rank_in_arm)) — structurally
+# incapable of discriminating nonsense from real queries (§1.2: the shipped
+# S4 floor false-flagged 2.9% of real queries while catching only 6.7% of
+# nonsense, and a live nonsense hit sailed through unflagged at 0.0286). S4's
+# fused-floor mechanism (``_SEARCH_SCORE_FLOOR``, the per-hit warning, the
+# aggregate all-weak notice) is RETIRED — replaced by the machinery below,
+# built on the store's PRE-FUSION cosine projection (:class:`Candidate.
+# vector_cosine <loremaster.store.candidate.Candidate>`), a genuine magnitude.
 #
-# MEASURED 2026-07-06: the 5th percentile of the 35-pair eval set's real-query
-# top-hit-score distribution (n=35, mean 0.0213, p5 0.0167, p95 0.0286) vs. a
-# 15-query adversarial nonsense set (mean 0.0245, p5 0.0164, p95 0.0320) — the
-# two distributions OVERLAP heavily (nonsense scores are NOT reliably lower;
-# hybrid_search's nearest-neighbor guarantee means a nonsense query can score
-# as high as a real one on lexical overlap alone). This conservative pin
-# (p5 of the REAL distribution) yields a 2.9% false-flag rate on real queries
-# (1/35) and only a 6.7% nonsense catch rate (1/15) — the floor is deliberately
-# NOT a reliable nonsense detector; it is a low-confidence-hit flag, favoring
-# almost never penalising a genuine hit over catching most noise (the
-# informants' own under-claim/over-claim asymmetry). Full methodology, both
-# distributions, and every per-query score are in REPORT-slate-builder-search.md
-# (re-run ``uv run python scripts/search_score_survey.py`` to reproduce).
-_SEARCH_SCORE_FLOOR = 0.0167
+# Every constant below is a PENDING-MEASUREMENT gate, dark by construction
+# until the Phase C survey (``scripts/search_score_survey.py``, design doc §6)
+# selects real values — never guessed, per this repo's law. Two gate shapes,
+# per the design doc's own "feature-gated off or floor=None semantics":
+# ``_COSINE_SUBSTRATE_ENABLED`` (a bool — D1's own gate, "ships iff within-
+# query cosine spread is measured informative") and
+# ``_COSINE_WEAK_MATCH_FLOOR`` (``None`` = not yet measured — gates BOTH the
+# per-hit weak line and the aggregate absence verdict, D2). Flipping either
+# requires the survey's measured receipts (REPORT-slate-builder-s4b.md),
+# never a guess landed alongside this commit.
+_COSINE_SUBSTRATE_ENABLED = False
+_COSINE_WEAK_MATCH_FLOOR: float | None = None
 
-# item 12a: the per-hit weak-match warning, appended to a below-floor hit's
-# ``formatted`` text exactly like :data:`STALE_WARNING` — a rendered
-# annotation, not a new ``ResultKind`` (the lead's embedded-text ruling: no
-# schema/model change, mirrors every other notice convention on the surface).
-_WEAK_MATCH_WARNING_TEMPLATE = (
-    "⚠ weak match — score {score:.3f} is below the {floor:.3f} confidence floor"
+# item 12a: the always-on per-hit magnitude (design doc §7.4 item 2) — a
+# claim-free number, read RELATIVELY within one response (no cross-call
+# calibration needed); ships only once :data:`_COSINE_SUBSTRATE_ENABLED` is
+# measured on.
+_COSINE_SUBSTRATE_TEMPLATE = "sim {cosine:.2f}"
+
+# item 12b: the per-hit weak-match warning (design doc §7.4 item 3) — fires
+# unconditionally below :data:`_COSINE_WEAK_MATCH_FLOOR` (no verbatim-anchor
+# carve-out here; that carve-out is the AGGREGATE verdict's condition only,
+# D3) — cheap, advisory, aids skimming a mixed list.
+_COSINE_WEAK_MATCH_WARNING_TEMPLATE = (
+    "⚠ weak match — semantic similarity {cosine:.2f} is below the {floor:.2f} "
+    "floor measured on real-query hits"
 )
 
-# item 12b: the aggregate top-level notice when EVERY shown code hit is weak
-# (client-needs-consult's Opus wording: "weak match — top score 0.03") — the
-# same counted-elision-family convention as the memory-elision/section-header
-# notices above: a plain NOTICE_KIND entry, never masquerading as a citation.
-_ALL_HITS_WEAK_TEMPLATE = (
-    "weak match — top score {top_score:.3f} is below the {floor:.3f} confidence "
-    "floor; every shown code hit is low-confidence — broaden the query or treat "
-    "these as speculative"
+# item 12c: the aggregate hedged absence verdict (design doc §7.4 item 3,
+# §7.5's exact recommended wording) — the absence-verdict analogue of the
+# counted-elision notice: converts "should I keep looking?" into a zero-call
+# decision. Fires iff the max cosine among SHOWN code hits is below the floor
+# AND no shown hit carries a verbatim-identifier anchor (D3) — "nearest
+# indexed" names the fused-order top hit's identity, turning "no answer" into
+# a redirect (Opus's addition, §7.3).
+_COSINE_ABSENCE_VERDICT_TEMPLATE = (
+    "no confident match: best hit similarity {best_cosine:.2f} is below the range "
+    "real answers measure on this corpus (≥{floor:.2f}) and no hit matches "
+    "your identifiers verbatim — likely no direct answer indexed; nearest "
+    "indexed: {nearest!r} — broaden the query or treat these hits as "
+    "adjacent-topic leads"
 )
+
+# item 12d (D3): the verbatim-identifier-anchor carve-out's tokenizer — a
+# simple, deterministic word-boundary split (mirrors ``scripts/
+# search_score_survey.py``'s own ``query_tokens``). An approximation of the
+# engine's ``code_ident`` analyzer, not a store round-trip: the conservative
+# failure mode (a missed anchor) just means the carve-out doesn't fire,
+# falling back to the ordinary absence verdict — never a confident-wrong flag
+# on an exact-identifier lookup.
+_QUERY_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+")
 
 # item 13 (S3, finding #61 — confirmed live, not just a static-reading lead):
 # a non-``"auto"`` ``detail_level`` can legitimately zero EVERY code hit after
-# ``_partition_by_detail`` even though the pre-partition candidate set was
+# ``_partition_pairs_by_detail`` even though the pre-partition candidate set was
 # non-empty — the injected memory entries are appended UNCONDITIONALLY after
 # this (they are never partitioned), so without a notice the response renders
 # memories-only with zero explanation of why the code side went to zero
@@ -339,14 +356,87 @@ def _refjoin_line(production_references: int, test_references: int, covering_tes
     )
 
 
-def _weak_match_warning(score: float) -> str:
-    """Render the item-12a per-hit weak-match warning for ``score``."""
-    return _WEAK_MATCH_WARNING_TEMPLATE.format(score=score, floor=_SEARCH_SCORE_FLOOR)
+def _cosine_substrate_line(cosine: float) -> str:
+    """Render the item-12a always-on per-hit magnitude for ``cosine``."""
+    return _COSINE_SUBSTRATE_TEMPLATE.format(cosine=cosine)
 
 
-def _all_hits_weak_notice(top_score: float) -> SearchResult:
-    """The item-12b aggregate notice: every shown code hit is below the floor."""
-    text = _ALL_HITS_WEAK_TEMPLATE.format(top_score=top_score, floor=_SEARCH_SCORE_FLOOR)
+def _cosine_weak_match_warning(cosine: float, floor: float) -> str:
+    """Render the item-12b per-hit weak-match warning for ``cosine`` vs ``floor``."""
+    return _COSINE_WEAK_MATCH_WARNING_TEMPLATE.format(cosine=cosine, floor=floor)
+
+
+def _query_tokens(query: str) -> frozenset[str]:
+    """The lower-cased word-token set of ``query`` (item 12d, the D3 anchor unit)."""
+    return frozenset(token.lower() for token in _QUERY_TOKEN_PATTERN.findall(query))
+
+
+def _has_verbatim_identifier_anchor(tokens: frozenset[str], ident_text: str) -> bool:
+    """True iff any of ``tokens`` appears as a WHOLE token in ``ident_text`` (D3).
+
+    A token-SET intersection, never a raw substring scan, so a short token
+    (e.g. ``"is"``) cannot spuriously match inside an unrelated longer
+    identifier fragment (e.g. ``"this_is_a_test"``).
+    """
+    if not tokens:
+        return False
+    return bool(tokens & _query_tokens(ident_text))
+
+
+def _cosine_absence_predicate(best_cosine: float, floor: float, has_verbatim_anchor: bool) -> bool:
+    """True iff the D2/D3 aggregate absence-verdict condition holds.
+
+    Fires iff ``best_cosine`` (the MAXIMUM cosine among shown code hits) is
+    strictly below ``floor`` AND no shown hit carries a verbatim-identifier
+    anchor (D3's exact-lookup protection). Extracted as its own pure function
+    — not left inlined in :func:`_cosine_absence_verdict` — so ``scripts/
+    search_score_survey.py``'s Phase C floor selection can IMPORT this exact
+    rule and measure the pre-registered ≤5%/≥60% bars (docs/design/2026-07-06-
+    weak-match-discrimination.md §7.2 D2) against the IDENTICAL predicate
+    production fires on, never a re-derived paraphrase that can silently
+    drift (S4b audit finding #1, REPORT-slate-audit-searchstore.md §Concern 6:
+    the survey previously measured ``top_hit_cosine`` with no anchor
+    carve-out at all — a different rule than this one).
+    """
+    return best_cosine < floor and not has_verbatim_anchor
+
+
+def _cosine_absence_verdict(
+    partitioned_pairs: list[tuple[SearchResult, Candidate]], query: str
+) -> SearchResult | None:
+    """The item-12c aggregate absence verdict, or ``None`` when it does not apply.
+
+    Dark while :data:`_COSINE_WEAK_MATCH_FLOOR` is ``None`` (not yet measured).
+    Once measured, fires per :func:`_cosine_absence_predicate`: there is at
+    least one shown code hit, the MAXIMUM cosine among them (never just the
+    top-fused-order hit's — a cosine-strong hit can sit below a cosine-weak
+    one) is strictly below the floor, AND no shown hit carries a
+    verbatim-identifier anchor (D3's exact-lookup protection). "Nearest
+    indexed" names the fused-order TOP hit's identity.
+    """
+    if _COSINE_WEAK_MATCH_FLOOR is None:
+        return None
+    code_pairs = [(hit, candidate) for hit, candidate in partitioned_pairs if hit.kind == HIT_KIND]
+    if not code_pairs:
+        return None
+    cosines = [
+        candidate.vector_cosine for _hit, candidate in code_pairs
+        if candidate.vector_cosine is not None
+    ]
+    if not cosines:
+        return None
+    best_cosine = max(cosines)
+    tokens = _query_tokens(query)
+    has_anchor = any(
+        _has_verbatim_identifier_anchor(tokens, str(candidate.payload.get(_PAYLOAD_IDENT_TEXT, "")))
+        for _hit, candidate in code_pairs
+    )
+    if not _cosine_absence_predicate(best_cosine, _COSINE_WEAK_MATCH_FLOOR, has_anchor):
+        return None
+    nearest = _sanitise_line(str(code_pairs[0][1].payload.get(_PAYLOAD_IDENTITY, "")))
+    text = _COSINE_ABSENCE_VERDICT_TEMPLATE.format(
+        best_cosine=best_cosine, floor=_COSINE_WEAK_MATCH_FLOOR, nearest=nearest
+    )
     return SearchResult(
         formatted=text,
         chunk_key="",
@@ -538,28 +628,48 @@ class SearchPipeline:
         candidates = await self._maybe_rerank(query, candidates, ctx)
 
         # Step 7: format each candidate (base/extension citation + capped graph
-        # enrichment + freshness flag).
+        # enrichment + freshness flag), keeping each hit paired with its
+        # originating candidate (S4b: the aggregate absence verdict needs the
+        # candidate's vector_cosine/ident_text, which SearchResult itself
+        # never carries -- no wire-shape change; see the module docstring).
         enrichment_targets = self._select_enrichment_targets(candidates)
-        hits = [
-            await self._to_result(candidate, ctx, enrich=candidate.key in enrichment_targets)
+        hit_candidate_pairs = [
+            (
+                await self._to_result(candidate, ctx, enrich=candidate.key in enrichment_targets),
+                candidate,
+            )
             for candidate in candidates
         ]
+        hits = [hit for hit, _candidate in hit_candidate_pairs]
 
-        # Step 8: partition the HITS by detail level, then append the visible
-        # memory entries as a trailing, segregated block (T3, P8d' #54 tweak
-        # -- they never partition, and now never lead either).
-        partitioned_hits = self._partition_by_detail(hits, detail_level)
+        # Step 8: partition the (hit, candidate) PAIRS by detail level in
+        # lockstep, then append the visible memory entries as a trailing,
+        # segregated block (T3, P8d' #54 tweak -- they never partition, and
+        # now never lead either).
+        partitioned_pairs = self._partition_pairs_by_detail(hit_candidate_pairs, detail_level)
+        partitioned_hits = [hit for hit, _candidate in partitioned_pairs]
 
-        # Step 9 (item 12b): if EVERY shown code hit is weak, say so top-level
-        # (client-needs-consult S4) -- placed right after the hits it
-        # describes, before the trailing memories: block. A subset of an
-        # all-weak set stays all-weak, so this check is stable across any
-        # LATER (server-side) budget trim: trimming can only drop hits, never
-        # promote one to confident.
-        weak_notice = self._all_weak_notice(partitioned_hits)
+        # Step 8b (item 13 / S3): a non-auto detail_level that zeroed EVERY
+        # code hit gets an explicit teaching notice -- never a silent
+        # memories-only response (finding #61, confirmed live). Mutually
+        # exclusive with step 9 below: this fires only when partitioned_hits
+        # is empty, in which case step 9's absence-verdict check (which
+        # requires >=1 code hit) can never also fire.
+        detail_miss_notice = self._detail_miss_check(hits, partitioned_hits, detail_level)
+
+        # Step 9 (item 12c, S4b): the gated cosine absence verdict -- dark
+        # until its floor is measured (see _cosine_absence_verdict) -- placed
+        # right after the hits it describes, before the trailing memories:
+        # block. Replaces S4's retired fused-score all-weak notice.
+        absence_notice = _cosine_absence_verdict(partitioned_pairs, query)
 
         memory_entries = self._inject_memories(recalled)
-        return [*partitioned_hits, *([weak_notice] if weak_notice is not None else []), *memory_entries]
+        return [
+            *partitioned_hits,
+            *([detail_miss_notice] if detail_miss_notice is not None else []),
+            *([absence_notice] if absence_notice is not None else []),
+            *memory_entries,
+        ]
 
     # -- filter normalisation ---------------------------------------------------
 
@@ -855,8 +965,20 @@ class SearchPipeline:
                 formatted = f"{formatted}\n" + "\n".join(enrichment_lines)
         if stale:
             formatted = f"{formatted}\n{STALE_WARNING}"
-        if candidate.score < _SEARCH_SCORE_FLOOR:
-            formatted = f"{formatted}\n{_weak_match_warning(candidate.score)}"
+        # item 12 (S4b): the cosine substrate/weak-flag machinery — both dark
+        # (no-op) until their own gate constant is measured on; see the
+        # constants' own docstrings for the exact gate semantics.
+        if _COSINE_SUBSTRATE_ENABLED and candidate.vector_cosine is not None:
+            formatted = f"{formatted}\n{_cosine_substrate_line(candidate.vector_cosine)}"
+        if (
+            _COSINE_WEAK_MATCH_FLOOR is not None
+            and candidate.vector_cosine is not None
+            and candidate.vector_cosine < _COSINE_WEAK_MATCH_FLOOR
+        ):
+            formatted = (
+                f"{formatted}\n"
+                f"{_cosine_weak_match_warning(candidate.vector_cosine, _COSINE_WEAK_MATCH_FLOOR)}"
+            )
 
         return SearchResult(
             formatted=formatted,
@@ -936,30 +1058,36 @@ class SearchPipeline:
     # -- step 8: detail-level partition -------------------------------------
 
     @staticmethod
-    def _partition_by_detail(
-        hits: list[SearchResult], detail_level: str
-    ) -> list[SearchResult]:
-        """Keep only the code hits matching the requested detail level (``auto`` = all).
+    def _partition_pairs_by_detail(
+        pairs: list[tuple[SearchResult, Candidate]], detail_level: str
+    ) -> list[tuple[SearchResult, Candidate]]:
+        """Keep only the (hit, candidate) pairs matching ``detail_level`` (``auto`` = all).
 
-        Applied to the code hits only; injected memory entries are prepended after
-        this and are never partitioned (they are response-level guidance).
+        S4b: partitions hit/candidate PAIRS in lockstep (rather than hits
+        alone) so the aggregate absence verdict (step 9) can read each shown
+        hit's originating candidate (``vector_cosine``/``ident_text``) after
+        filtering. Applied to the code hits only; injected memory entries are
+        appended after this and are never partitioned (they are response-level
+        guidance).
         """
         if detail_level == _DETAIL_AUTO:
-            return hits
-        return [hit for hit in hits if hit.detail_level == detail_level]
+            return pairs
+        return [(hit, candidate) for hit, candidate in pairs if hit.detail_level == detail_level]
 
-    # -- step 9 (item 12b): aggregate all-weak notice -----------------------
+    # -- step 8b (item 13 / S3): detail-level-miss notice --------------------
 
     @staticmethod
-    def _all_weak_notice(hits: list[SearchResult]) -> SearchResult | None:
-        """The item-12b top-level notice, or ``None`` when it does not apply.
+    def _detail_miss_check(
+        hits: list[SearchResult], partitioned_hits: list[SearchResult], detail_level: str
+    ) -> SearchResult | None:
+        """The item-13 notice, or ``None`` when it does not apply.
 
-        Fires only when there is at least one code hit AND every one of them
-        scores below :data:`_SEARCH_SCORE_FLOOR` — a query that returned zero
-        code hits (nothing to call "weak") or a mix of weak and confident hits
-        (the reader already has a confident anchor) gets no notice.
+        Fires ONLY when the pre-partition ``hits`` were non-empty but the
+        ``detail_level`` partition removed every one of them. ``"auto"`` can
+        never trigger this (it never filters); a genuinely empty ``hits``
+        (nothing was "zeroed BY the filter" — some other, unrelated cause) is
+        NOT this defect either.
         """
-        code_hits = [hit for hit in hits if hit.kind == HIT_KIND]
-        if not code_hits or any(hit.score >= _SEARCH_SCORE_FLOOR for hit in code_hits):
+        if detail_level == _DETAIL_AUTO or not hits or partitioned_hits:
             return None
-        return _all_hits_weak_notice(max(hit.score for hit in code_hits))
+        return _detail_level_miss_notice(detail_level, len(hits))
