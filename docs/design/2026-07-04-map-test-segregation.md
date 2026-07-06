@@ -14,7 +14,7 @@ presentation as part of the 12-tool surface consolidation — without this recor
 rationale below would live only in one session's transcript and its deletable agent
 reports, and P8 would predictably re-litigate or silently regress it.
 
-## The frictions (receipts in FRICTION.md)
+## The frictions (receipts: restated in full below; FRICTION.md retired into the finding ledger 2026-07-06)
 
 1. The unfocused `lore_map` ranked TEST INFRASTRUCTURE on top — `_surreal_harness`,
    `_surreal_fakes`, `_extension_helpers` at ranks 1-2-4; `server.py` fifth.

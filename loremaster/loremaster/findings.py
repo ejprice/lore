@@ -8,10 +8,11 @@ number OR by opaque id (:meth:`~FindingLedger.get`), follow a supersedes chain
 forward to its head (:meth:`~FindingLedger.chain_head`), and drive through a small
 review state machine (:meth:`~FindingLedger.acknowledge` /
 :meth:`~FindingLedger.resolve` / :meth:`~FindingLedger.wontfix`). It is the
-first-class home for the ``kind="friction"`` records that today live only in
-``FRICTION.md``, giving them the four affordances the di-scout entry named:
-enumerate-in-order, follow-the-supersedes-chain-to-its-head, address-by-a-stable-
-number, and reviewable export.
+first-class home for the ``kind="friction"`` records: the repo-root
+``FRICTION.md`` file that used to hold them was migrated into this ledger as
+rows #14-#36 and retired on 2026-07-06, giving them the four affordances the
+di-scout entry named: enumerate-in-order, follow-the-supersedes-chain-to-its-head,
+address-by-a-stable-number, and reviewable export.
 
 It rides the SAME store machinery :mod:`loremaster.tasks` uses:
 

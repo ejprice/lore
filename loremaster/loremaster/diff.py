@@ -87,9 +87,9 @@ from loremaster.index.surreal_manifest import STATE_INDEXED, SurrealManifest
 # sanitiser the search renderer uses, so a newline/ZWSP-bearing identity can never
 # forge a fake section or smuggle a hidden payload. Deliberate cross-module private
 # import THIS wave (accepted): the sanitiser is not yet a public shared seam —
-# promoting it (and sweeping impact.py, which shares this render archetype) is a
-# P8d item recorded in FRICTION.md. Re-implementing it here would fork the
-# hostile-char class and let the two drift.
+# promoting it (and sweeping impact.py, which shares this render archetype) is
+# tracked as finding #34 in the project finding ledger. Re-implementing it here
+# would fork the hostile-char class and let the two drift.
 from loremaster.search import _sanitise_line
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
