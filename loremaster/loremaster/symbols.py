@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import ast
 import textwrap
+from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import Any, Final, Literal, NamedTuple
 
@@ -204,10 +205,23 @@ class SymbolResolver:
         store: The :class:`~loremaster.store.surreal.SurrealStore` holding the
             project's indexed chunks. Injected so the same store (and a real
             client in tests) is reused; the resolver owns no store wiring itself.
+        code_graph: Finding #62's canonical fix. The code graph
+            (:class:`~loremaster.graph_surreal.SurrealCodeGraph` in
+            production, or a signature-compatible test double) to consult for
+            :meth:`canonical_module_names`'s graph-backed module lookup.
+            Untyped (``Any``) because only ``module_names_by_file()`` is
+            ever called on it — the SAME duck-typed convention
+            :class:`~loremaster.impact.ImpactEngine` already uses for its own
+            ``graph`` dependency. ``None`` (the default) means no graph is
+            available — every lookup then falls back to the path-derived
+            heuristic (:meth:`_module_segments_from_file_path`), exactly the
+            pre-#62-upgrade behaviour; this keeps every bare-test wiring
+            (``SymbolResolver(store=store)``) valid unchanged.
     """
 
-    def __init__(self, *, store: SurrealStore) -> None:
+    def __init__(self, *, store: SurrealStore, code_graph: Any | None = None) -> None:
         self._store = store
+        self._code_graph = code_graph
 
     async def resolve(self, qualified_name: str) -> dict[str, Any] | None:
         """Return the stored row ``qualified_name`` names, or ``None`` if none does.
@@ -496,6 +510,58 @@ class SymbolResolver:
             segments = segments[1:]
         return segments
 
+    async def canonical_module_names(self, rows: Sequence[dict[str, Any]]) -> set[str]:
+        """The DISTINCT canonical module name(s) owning each row's file.
+
+        Finding #62's canonical fix: :meth:`SymbolTool.get_symbol`'s sibling-
+        teach path (the only caller) needs "which module(s) really define
+        this bare name" — this consults the injected code graph's
+        ``module_names_by_file()`` ONCE for every row (the SAME graph-level
+        lookup :class:`~loremaster.map.MapEngine`'s finding #52 fix and
+        :meth:`~loremaster.server.AppContext._resolve_changed_modules` both
+        read), falling back PER ROW to the path-derived
+        :meth:`_module_segments_from_file_path` heuristic (finding #62's
+        ORIGINAL, narrower fix) when no graph was wired at construction, or
+        the mapping has no entry for a given ``(tier, file_path)`` (a
+        non-Python file, a half-purged store, or a bare-test wiring with no
+        graph dependency) — never a ``KeyError``, and the heuristic never
+        overrides an available canonical answer.
+
+        The heuristic fallback is kept deliberately, as defense-in-depth: it
+        only collapses an immediately-repeated LEADING path segment, so it
+        cannot reproduce the graph's on-disk ``__init__.py``-probed canonical
+        name in general — a ``src/`` layout with no repeated segment
+        anywhere is the decisive counter-example (see
+        ``TestCanonicalModuleNameTeaching`` in the test suite) — exactly why
+        the canonical route is preferred whenever a graph is available.
+
+        Args:
+            rows: The candidate rows (as returned by :meth:`find_siblings`)
+                to name the owning module of.
+
+        Returns:
+            The distinct module names, one per distinct owning file; empty
+            when ``rows`` carries no row with a string ``file_path``.
+        """
+        module_names_by_file: Mapping[tuple[str, str], str] = {}
+        if self._code_graph is not None:
+            module_names_by_file = await self._code_graph.module_names_by_file()
+        names: set[str] = set()
+        for row in rows:
+            file_path = row.get(_FILE_PATH_KEY)
+            if not isinstance(file_path, str):
+                continue
+            tier = row.get(_TIER_KEY)
+            canonical = (
+                module_names_by_file.get((tier, file_path)) if isinstance(tier, str) else None
+            )
+            names.add(
+                canonical
+                if canonical is not None
+                else ".".join(self._module_segments_from_file_path(file_path))
+            )
+        return names
+
     @classmethod
     def _module_path_matches(cls, row: dict[str, Any], module_segments: list[str]) -> bool:
         """Whether the row's module path is a trailing match of ``module_segments``.
@@ -546,10 +612,15 @@ class SymbolTool:
         store: The :class:`~loremaster.store.surreal.SurrealStore` holding the
             project's indexed chunks. Injected so the same store (and a real
             client in tests) is reused; the tool owns no store wiring itself.
+        code_graph: Finding #62's canonical fix — forwarded to
+            :class:`SymbolResolver` so the miss-teach path's module naming
+            can prefer the graph's canonical ``module_names_by_file()``
+            lookup over the path-derived heuristic. ``None`` (the default)
+            keeps the pre-#62-upgrade heuristic-only behaviour.
     """
 
-    def __init__(self, *, store: SurrealStore) -> None:
-        self._resolver = SymbolResolver(store=store)
+    def __init__(self, *, store: SurrealStore, code_graph: Any | None = None) -> None:
+        self._resolver = SymbolResolver(store=store, code_graph=code_graph)
 
     async def get_symbol(self, qualified_name: str) -> ResolvedSymbol:
         """Return the stored definition + location for ``qualified_name``.
@@ -582,13 +653,7 @@ class SymbolTool:
             return self._to_resolved(match)
         siblings = await self._resolver.find_siblings(qualified_name)
         if siblings:
-            modules = sorted(
-                {
-                    ".".join(SymbolResolver._module_segments_from_file_path(sibling[_FILE_PATH_KEY]))
-                    for sibling in siblings
-                    if isinstance(sibling.get(_FILE_PATH_KEY), str)
-                }
-            )
+            modules = sorted(await self._resolver.canonical_module_names(siblings))
             if modules:
                 raise GetSymbolError(
                     f"no Python symbol named {qualified_name!r} is indexed under that "

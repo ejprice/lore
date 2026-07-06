@@ -81,7 +81,7 @@ to the P8 read-surface work.
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import NamedTuple, cast
 
 import pytest
@@ -792,6 +792,131 @@ def only_here(x):
         assert "pkg.mod" in message
         # The doubled-path residual (finding #62) must never appear.
         assert "pkg.pkg" not in message
+
+
+# =========================================================================== #
+# Finding #62 (canonical upgrade, 2026-07-06, REPORT-slate-builder-s2.md
+# decisions-needed / REPORT-slate-scout-s2.md side note): the sibling-teach
+# path now consults the SAME graph-level ``module_names_by_file`` lookup
+# map.py's finding #52 fix and ``server.py``'s ``_resolve_changed_modules``
+# both read, via an injected ``code_graph`` dependency on ``SymbolResolver``/
+# ``SymbolTool`` -- falling back to the LOCAL heuristic above (kept as
+# defense-in-depth) only when no graph is wired, or the graph has no answer
+# for a given file.
+#
+# The decisive fixture is a layout the heuristic CANNOT fix by construction:
+# no path segment repeats anywhere, so ``_module_segments_from_file_path``'s
+# leading-repeat collapse is a no-op. ``src/`` carries no ``__init__.py`` (not
+# a package); ``src/mypkg/`` does (the TRUE on-disk importable package top).
+# ``CodeGraph.importable_module_name`` strips everything above that top
+# ("mypkg.calc"); the bare path-join keeps every segment ("src.mypkg.calc").
+# A teach message naming "mypkg.calc" could only have come from the graph.
+# =========================================================================== #
+class TestCanonicalModuleNamesForRows:
+    """Direct unit pins on ``SymbolResolver.canonical_module_names`` -- the
+    graph-then-heuristic seam, decoupled from the full ``get_symbol`` flow."""
+
+    _FILE_PATH = "src/mypkg/calc.py"
+    _NAIVE_MODULE = "src.mypkg.calc"
+    _CANONICAL_MODULE = "mypkg.calc"
+    _ROW = {"file_path": _FILE_PATH, "tier": TIER_A}
+
+    def test_heuristic_cannot_reach_the_canonical_name(self) -> None:
+        # Pins the fixture's own premise: no leading repeat exists anywhere
+        # in this path, so the OLD local heuristic is a no-op here -- wrong.
+        assert (
+            ".".join(SymbolResolver._module_segments_from_file_path(self._FILE_PATH))
+            == self._NAIVE_MODULE
+        )
+
+    async def test_no_graph_wired_uses_the_heuristic(self, store: SurrealStore) -> None:
+        resolver = SymbolResolver(store=store)
+        names = await resolver.canonical_module_names([self._ROW])
+        assert names == {self._NAIVE_MODULE}
+
+    async def test_graph_wired_with_an_answer_wins_over_the_heuristic(
+        self, tmp_path: Path, store: SurrealStore
+    ) -> None:
+        trio = fake_surreal_trio(
+            dim=PRODUCTION_DIM, tier_roots={TIER_A: tmp_path}, project_roots=[tmp_path]
+        )
+        await trio.graph.build_file_graph(
+            TIER_A, self._FILE_PATH, [], module_name=self._CANONICAL_MODULE
+        )
+        resolver = SymbolResolver(store=store, code_graph=trio.graph)
+        names = await resolver.canonical_module_names([self._ROW])
+        assert names == {self._CANONICAL_MODULE}
+
+    async def test_graph_wired_without_an_answer_falls_back_to_the_heuristic(
+        self, tmp_path: Path, store: SurrealStore
+    ) -> None:
+        # A graph IS wired, but its module_names_by_file() mapping has no
+        # entry for THIS file (never built) -- must fall back, never KeyError.
+        empty_trio = fake_surreal_trio(
+            dim=PRODUCTION_DIM, tier_roots={TIER_A: tmp_path}, project_roots=[tmp_path]
+        )
+        resolver = SymbolResolver(store=store, code_graph=empty_trio.graph)
+        names = await resolver.canonical_module_names([self._ROW])
+        assert names == {self._NAIVE_MODULE}
+
+    async def test_row_missing_a_string_file_path_is_skipped(self, store: SurrealStore) -> None:
+        resolver = SymbolResolver(store=store)
+        names = await resolver.canonical_module_names([{"file_path": None, "tier": TIER_A}])
+        assert names == set()
+
+
+class TestCanonicalModuleNameTeaching:
+    """Finding #62's canonical fix, end-to-end through ``get_symbol``'s
+    sibling-teach path (not just the resolver-level unit above)."""
+
+    _REL_PATH = "src/mypkg/calc.py"
+    _SOURCE = '''"""A src-layout module the heuristic cannot canonicalise."""
+
+
+def only_here(x):
+    """The sole free function -- the sibling-teach target."""
+    return x
+'''
+    _CANONICAL_MODULE = "mypkg.calc"
+    _NAIVE_MODULE = "src.mypkg.calc"
+
+    @pytest_asyncio.fixture()
+    async def graph_backed_tool(self, tmp_path: Path, store: SurrealStore) -> SymbolTool:
+        """A :class:`SymbolTool` wired to a graph whose canonical name for
+        ``_REL_PATH`` the heuristic cannot reach (no repeated segment
+        anywhere in the layout)."""
+        await _upsert_source(store, self._SOURCE, self._REL_PATH)
+        package_dir = tmp_path / "src" / "mypkg"
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("")
+        trio = fake_surreal_trio(
+            dim=PRODUCTION_DIM, tier_roots={TIER_A: tmp_path}, project_roots=[tmp_path]
+        )
+        canonical = trio.graph.importable_module_name(tmp_path, self._REL_PATH)
+        assert canonical == self._CANONICAL_MODULE  # the fixture's own premise
+        await trio.graph.build_file_graph(TIER_A, self._REL_PATH, [], module_name=canonical)
+        return SymbolTool(store=store, code_graph=trio.graph)
+
+    async def test_wrong_module_prefix_teaches_the_canonical_name(
+        self, graph_backed_tool: SymbolTool
+    ) -> None:
+        with pytest.raises(GetSymbolError) as exc_info:
+            await graph_backed_tool.get_symbol("other.mod.only_here")
+        message = str(exc_info.value)
+        assert self._CANONICAL_MODULE in message
+        assert self._NAIVE_MODULE not in message
+
+    async def test_no_graph_wired_falls_back_to_the_heuristic(
+        self, store: SurrealStore
+    ) -> None:
+        # A tool constructed the OLD way (code_graph omitted, the default)
+        # must still teach something -- the heuristic fallback, unchanged.
+        await _upsert_source(store, self._SOURCE, self._REL_PATH)
+        heuristic_tool = SymbolTool(store=store)
+        with pytest.raises(GetSymbolError) as exc_info:
+            await heuristic_tool.get_symbol("other.mod.only_here")
+        message = str(exc_info.value)
+        assert self._NAIVE_MODULE in message
 
 
 class TestTolerantRowReading:

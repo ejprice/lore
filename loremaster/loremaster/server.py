@@ -3783,8 +3783,15 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
     )
     # P6 store port: SymbolTool's get_symbol reads through the unified
     # SurrealDB store's scroll() primitive, so it depends on write_store
-    # (the SurrealStore), NOT the legacy Qdrant handle.
-    symbol_tool = SymbolTool(store=write_store)
+    # (the SurrealStore), NOT the legacy Qdrant handle. Finding #62's
+    # canonical fix: also wired to the SAME code_graph the indexer/search
+    # pipeline already share (readied above), so the sibling-teach path's
+    # module naming can prefer the graph's canonical module_names_by_file()
+    # lookup — the SAME one map.py's #52 fix and _resolve_changed_modules
+    # both read — over the local path-derived heuristic. VerifyTool needs no
+    # such dependency (its resolver never walks the teach path), so its
+    # construction below is unchanged.
+    symbol_tool = SymbolTool(store=write_store, code_graph=code_graph)
     # lore_verify's anti-hallucination check rides the SAME resolver as get_symbol
     # over the SAME unified store — so a claim resolves to the identical row.
     verify_tool = VerifyTool(store=write_store)
