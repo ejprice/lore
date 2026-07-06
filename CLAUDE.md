@@ -85,6 +85,11 @@ rendered free text). Therefore:
   rows (brief names the id); a stale notification for a stopped agent gets zero tool
   calls; keep design/spec authorship in dedicated design agents, consumption by
   pointer. Resume docs carry PHASE STATE ONLY — process law lives here.
+- Verification law (operator-amended 2026-07-06, F3): for AUDITED work, the cold audit
+  is the ground-truth instrument (it re-runs gates/probes); the lead keeps judgment
+  reads + one random receipt re-run per batch. For anything committed WITHOUT a cold
+  audit, the lead verifies in full: re-run the tests, read the diff, confirm the
+  number. The global Working Discipline carries the canonical wording.
 - lore_tasks state machine: claimed → in_progress → done (claimed→done is illegal).
 
 ## Deploy
