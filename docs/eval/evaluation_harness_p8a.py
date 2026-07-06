@@ -33,6 +33,37 @@ PROVENANCE (ledger task P8a-9, EVAL BASELINE, 2026-07-04):
        across every Claude API call in one task's agent loop (initial call +
        every tool-result round trip). "Response tokens" in the report ==
        accumulated output_tokens.
+    3. `agent_loop()`'s tool-execution loop -- BUG FIX (P8d', lore finding
+       #58, 2026-07-06). The stock script (carried into this pinned copy
+       unmodified until now) did
+         tool_use = next(block for block in response.content if block.type == "tool_use")
+       which pulls only the FIRST tool_use block out of a turn, yet the very
+       next line appends the model's ENTIRE turn (`messages.append({...,
+       "content": response.content})`) -- every content block Claude
+       returned, including any additional tool_use blocks from a parallel
+       tool call. Only one tool_result (for that first tool_use.id) was
+       ever appended to the following user message, so a second (or third,
+       ...) tool_use id in the same turn was left with no matching
+       tool_result -- the Anthropic API rejects the NEXT messages.create
+       call outright ("tool_use ids were found without tool_result blocks
+       immediately after"). Whether this fires is a MODEL-BEHAVIOR decision
+       (does Claude choose to batch tool calls into one turn), not a
+       server-behavior one, so it didn't trigger during the P8a 11-pair
+       baseline or the earlier 35-pair flip-eval -- but it crashed the
+       P8d' 35-pair gate re-run at task 21/35 with zero usable output (all
+       in-flight metrics for tasks 1-20 lost, since the report is only
+       written at the very end). Fix: collect EVERY tool_use block in
+       response.content (in content order), execute each one, and append
+       ONE user message carrying one tool_result block per tool_use id
+       before the next messages.create call -- exactly what the API
+       requires. For a turn with exactly one tool_use block (the only shape
+       every prior run of this harness has ever exercised), this produces a
+       history BYTE-IDENTICAL to the pre-fix code -- verified by a canned-
+       response probe (scratchpad/finding58_probe/, see
+       REPORT-fixer-harness.md), since the pinned instrument's baseline
+       comparability depends on that. Per-tool call counting
+       (`tool_metrics[name]["count"]`) still increments once per executed
+       call, so the per-call metrics the gate reports are unchanged.
 
   P8d's A/B gate MUST reuse this EXACT script (+ connections_p8a.py) and the
   EXACT pinned model above, unmodified, so the comparison is apples-to-apples
@@ -214,32 +245,34 @@ async def agent_loop(
     tool_metrics = {}
 
     while response.stop_reason == "tool_use":
-        tool_use = next(block for block in response.content if block.type == "tool_use")
-        tool_name = tool_use.name
-        tool_input = tool_use.input
+        tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
 
-        tool_start_ts = time.time()
-        try:
-            tool_result = await connection.call_tool(tool_name, tool_input)
-            tool_response = _serialize_tool_result(tool_result)
-        except Exception as e:
-            tool_response = f"Error executing tool {tool_name}: {str(e)}\n"
-            tool_response += traceback.format_exc()
-        tool_duration = time.time() - tool_start_ts
+        tool_result_blocks = []
+        for tool_use in tool_use_blocks:
+            tool_name = tool_use.name
+            tool_input = tool_use.input
 
-        if tool_name not in tool_metrics:
-            tool_metrics[tool_name] = {"count": 0, "durations": []}
-        tool_metrics[tool_name]["count"] += 1
-        tool_metrics[tool_name]["durations"].append(tool_duration)
+            tool_start_ts = time.time()
+            try:
+                tool_result = await connection.call_tool(tool_name, tool_input)
+                tool_response = _serialize_tool_result(tool_result)
+            except Exception as e:
+                tool_response = f"Error executing tool {tool_name}: {str(e)}\n"
+                tool_response += traceback.format_exc()
+            tool_duration = time.time() - tool_start_ts
 
-        messages.append({
-            "role": "user",
-            "content": [{
+            if tool_name not in tool_metrics:
+                tool_metrics[tool_name] = {"count": 0, "durations": []}
+            tool_metrics[tool_name]["count"] += 1
+            tool_metrics[tool_name]["durations"].append(tool_duration)
+
+            tool_result_blocks.append({
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
                 "content": tool_response,
-            }]
-        })
+            })
+
+        messages.append({"role": "user", "content": tool_result_blocks})
 
         response = await asyncio.to_thread(
             client.messages.create,
