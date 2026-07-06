@@ -48,7 +48,7 @@ real verdict.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
@@ -187,7 +187,54 @@ _BARE_FALLBACK_CAVEAT_TEMPLATE = (
 # never a blank or malformed caveat line.
 _BARE_FALLBACK_NO_NAMED_CANDIDATE = "another symbol not indexed under this name"
 
+# Concern 6 (REPORT-slate-audit-graphres.md), re-opening a narrower slice of
+# finding #65's silent-narrowing class: ``_widen_dotted_target`` resolves a
+# DOTTED target through ``SymbolResolver.resolve_with_candidates`` (findings
+# #63/#65's PRIMARY fix) but used to discard the match's own
+# ``candidate_count``/``disambiguated_by`` disclosure -- a target genuinely
+# ambiguous across modules (>= 2 same-identity stored rows the resolver had
+# to pick between) was silently widened to ONE winner with no signal that
+# other candidates existed. The widened FQN is an EXACT graph match, so the
+# bare-fallback caveat below (keyed on the GRAPH's own channel) never fires
+# for this case either -- closing the disclosure gap needs its OWN caveat.
+# DISCLOSE-AND-SERVE (lead ruling): the resolver's pick is still served --
+# refusing to profile a real, resolvable symbol would be a worse regression
+# -- but the render now names the REAL candidate count and the REAL
+# disambiguation rule the resolver reports (never prose guesswork),
+# mirroring S5's ``ResolvedSymbol.candidate_count``/``.disambiguated_by``
+# disclosure at the sibling get_symbol tool (cross-tool consistency is
+# client design law).
+_WIDEN_AMBIGUOUS_CAVEAT_TEMPLATE = (
+    "caveat: {original!r} widened to {widened!r} -- resolved 1 of "
+    "{candidate_count} same-identity candidates ({rule}); the other "
+    "candidate(s) were never profiled. Qualify further (lore_search) to "
+    "isolate a specific one."
+)
+# Disclosed fallback for the (contract-guaranteed unreachable --
+# ``ResolutionMatch.disambiguated_by`` is ``None`` only when
+# ``candidate_count == 1`` -- see symbols.py) case where the render is asked
+# to disclose ambiguity with no named rule: an honest hedge, never a
+# malformed caveat line or a crash.
+_WIDEN_AMBIGUOUS_NO_NAMED_RULE = "disambiguation rule not disclosed by the resolver"
+
 _T = TypeVar("_T")
+
+
+class _WidenResult(NamedTuple):
+    """``_widen_dotted_target``'s widened FQN plus the resolver's own
+    ambiguity disclosure (concern 6, REPORT-slate-audit-graphres.md).
+
+    ``candidate_count``/``disambiguated_by`` are carried straight through
+    from :class:`~loremaster.symbols.ResolutionMatch` -- never re-derived
+    here -- so :meth:`ImpactEngine._render` can disclose a genuinely
+    ambiguous widen (``candidate_count > 1``) instead of silently serving
+    the resolver's pick with no signal that other same-identity candidates
+    existed.
+    """
+
+    target: str
+    candidate_count: int
+    disambiguated_by: str | None
 
 
 class ImpactRebuildingError(Exception):
@@ -367,10 +414,11 @@ class ImpactEngine:
         # message unchanged; only ``query_target`` (what the graph is asked
         # about) may differ.
         query_target = target
+        widen_result: _WidenResult | None = None
         if "." in target:
-            widened = await self._widen_dotted_target(target)
-            if widened is not None:
-                query_target = widened
+            widen_result = await self._widen_dotted_target(target)
+            if widen_result is not None:
+                query_target = widen_result.target
 
         summary = await self._graph.references(query_target)
         covering_tests, covering_test_modules, covering_test_files = await self._covering_tests(
@@ -452,6 +500,13 @@ class ImpactEngine:
             max_consumers=max_consumers,
             bare_fallback_used=summary.bare_fallback_used,
             bare_fallback_candidates=summary.bare_fallback_candidates,
+            widened_target=(widen_result.target if widen_result is not None else None),
+            widen_candidate_count=(
+                widen_result.candidate_count if widen_result is not None else 1
+            ),
+            widen_disambiguated_by=(
+                widen_result.disambiguated_by if widen_result is not None else None
+            ),
         )
         return ImpactResult(
             target=target,
@@ -467,7 +522,7 @@ class ImpactEngine:
             formatted=formatted,
         )
 
-    async def _widen_dotted_target(self, target: str) -> str | None:
+    async def _widen_dotted_target(self, target: str) -> _WidenResult | None:
         """Resolve a DOTTED ``target`` through the chunk-store identity
         convention to its one true graph FQN (findings #63/#65's PRIMARY
         fix), or ``None`` to proceed with ``target`` unchanged.
@@ -487,15 +542,24 @@ class ImpactEngine:
         ``_class_node``/``_function_node``) would have named that same chunk.
         Never attempted for a bare target — see :meth:`impact`'s own gate.
 
+        Concern 6 (REPORT-slate-audit-graphres.md): the returned
+        :class:`_WidenResult` carries the resolver's OWN
+        ``candidate_count``/``disambiguated_by`` disclosure straight through
+        (never re-derived) so ``impact()`` can render an honest caveat when
+        the widen was genuinely ambiguous (``candidate_count > 1``) instead
+        of silently serving the resolver's pick with no signal that other
+        same-identity candidates existed.
+
         Args:
             target: The dotted (``"." in target``) query to widen.
 
         Returns:
-            The widened FQN, or ``None`` when no resolver is wired, the
-            resolver finds nothing (``target`` may already be a real full
-            FQN, or is genuinely unknown), or the matched row carries no
-            usable module/identity — in every such case ``impact()`` simply
-            proceeds with the original ``target``, never raising here.
+            The widened FQN plus its candidate disclosure, or ``None`` when
+            no resolver is wired, the resolver finds nothing (``target`` may
+            already be a real full FQN, or is genuinely unknown), or the
+            matched row carries no usable module/identity — in every such
+            case ``impact()`` simply proceeds with the original ``target``,
+            never raising here.
         """
         if self._symbol_resolver is None:
             return None
@@ -509,7 +573,11 @@ class ImpactEngine:
         identity = match.row.get("identity")
         if not isinstance(identity, str):
             return None
-        return f"{module}.{identity}"
+        return _WidenResult(
+            target=f"{module}.{identity}",
+            candidate_count=match.candidate_count,
+            disambiguated_by=match.disambiguated_by,
+        )
 
     # -- gates ---------------------------------------------------------------
 
@@ -718,6 +786,9 @@ class ImpactEngine:
         max_consumers: int,
         bare_fallback_used: bool,
         bare_fallback_candidates: list[str],
+        widened_target: str | None,
+        widen_candidate_count: int,
+        widen_disambiguated_by: str | None,
     ) -> str:
         """Render the compact, token-efficient impact block.
 
@@ -733,6 +804,24 @@ class ImpactEngine:
             f"verdict: {verdict}",
             f"{production_references} prod / {test_references} test references",
         ]
+        if widened_target is not None and widen_candidate_count > 1:
+            # Concern 6: disclose the RESOLVER's own ambiguity -- never
+            # silently serve one of several same-identity candidates with no
+            # signal that siblings existed. Fires independently of
+            # ``bare_fallback_used`` below; each caveat answers a different
+            # question ("was the widen step itself ambiguous" vs "did the
+            # GRAPH's own channel need the risky bare-fallback OR-term for
+            # the already-widened FQN"), so both may legitimately render for
+            # the same result.
+            rule = widen_disambiguated_by or _WIDEN_AMBIGUOUS_NO_NAMED_RULE
+            lines.append(
+                _WIDEN_AMBIGUOUS_CAVEAT_TEMPLATE.format(
+                    original=target,
+                    widened=widened_target,
+                    candidate_count=widen_candidate_count,
+                    rule=rule,
+                )
+            )
         if bare_fallback_used:
             # Findings #43/#65 (channel honesty — supersedes the old #30
             # syntax gate): the caveat keys on whether THIS result actually

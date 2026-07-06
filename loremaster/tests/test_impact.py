@@ -64,6 +64,7 @@ from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
 from loremaster.config import LoreConfig
 from loremaster.graph import GraphNode, ReferenceSummary
 from loremaster.server import LoreServer
+from loremaster.symbols import RESOLUTION_RULE_MODULE_QUALIFIED
 from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_memo
 from lorescribe.models import ChunkContext
 
@@ -344,15 +345,27 @@ class _StubSymbolResolver:
     identity, module-qualified common-tail matching) are pinned by
     ``test_symbols.py``; this double never re-implements them
     (packages-over-hand-rolling), it just returns a pre-scripted answer.
+
+    ``candidate_count``/``disambiguated_by`` default to the unambiguous case
+    (``1``/``None``) so every pre-existing call site (which only ever passes
+    ``row=``/``module=``) is unaffected -- concern 6
+    (REPORT-slate-audit-graphres.md) callers override them to script a
+    genuinely ambiguous resolver match.
     """
 
     row: dict[str, Any] | None
     module: str | None
+    candidate_count: int = 1
+    disambiguated_by: str | None = None
 
     async def resolve_with_candidates(self, qualified_name: str) -> Any:
         if self.row is None:
             return None
-        return SimpleNamespace(row=self.row)
+        return SimpleNamespace(
+            row=self.row,
+            candidate_count=self.candidate_count,
+            disambiguated_by=self.disambiguated_by,
+        )
 
     async def canonical_module_names(self, rows: list[dict[str, Any]]) -> set[str]:
         return {self.module} if self.module is not None else set()
@@ -1451,6 +1464,109 @@ class TestBareNameUnionCaveat:
         result = await engine.impact("resolve_pkg.alpha.ClassAlpha.resolve", depth=1)
 
         assert "bare-name fallback" not in result.formatted.lower()
+
+
+# --------------------------------------------------------------------------- #
+# 9c -- concern 6 (REPORT-slate-audit-graphres.md, ledger task
+# ad3e4211801f47dfb62cac6ec65126f0): ``_widen_dotted_target`` discarded
+# ``ResolutionMatch.candidate_count``/``.disambiguated_by`` -- a dotted target
+# genuinely ambiguous across modules (>= 2 same-identity stored rows the
+# resolver had to pick between) was silently widened to ONE winner with no
+# candidate-count disclosure, re-opening a narrower slice of the #65
+# silent-narrowing class this wave otherwise closed. DISCLOSE-AND-SERVE (lead
+# ruling): the resolver's pick is still served, but the rendered caveat now
+# names the REAL candidate count and the REAL disambiguation rule the
+# resolver reports (never prose guesswork) -- mirroring S5's
+# ``ResolvedSymbol.candidate_count``/``.disambiguated_by`` disclosure at the
+# sibling get_symbol tool. The invariant pin: a >1-candidate widen must NEVER
+# serve silently (first test below); the 1-candidate case must never grow
+# spurious disclosure noise (second test below, the auditor's fixture shape).
+# --------------------------------------------------------------------------- #
+class TestDottedTargetWideningAmbiguityDisclosure:
+    async def test_ambiguous_widen_still_serves_the_resolved_profile_but_discloses_it(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        """candidate_count > 1: DISCLOSE-AND-SERVE, never refuse-to-widen --
+        the resolved profile is still served (a real, resolvable symbol),
+        but the rendered caveat must name the real candidate count and the
+        real disambiguation rule, where concern 6 found total silence.
+        """
+        trio, _server = await _build_graph(tmp_path, _router_corpus())
+        resolver = _StubSymbolResolver(
+            row={"identity": "Router.dispatch", "file_path": "routerlib.py", "tier": _TIER},
+            module="routerlib",
+            candidate_count=2,
+            disambiguated_by=RESOLUTION_RULE_MODULE_QUALIFIED,
+        )
+        engine = engine_factory(trio.graph, symbol_resolver=resolver)
+
+        result = await engine.impact("Router.dispatch", depth=1)
+
+        # Still serves the resolved profile -- never a silent refusal-shaped
+        # empty result.
+        assert result.verdict == _VERDICT_LIVE
+        assert any("run" in name for name in result.direct_consumers)
+        # Discloses the REAL count and the REAL rule -- never prose guesswork.
+        assert "resolved 1 of 2" in result.formatted
+        assert RESOLUTION_RULE_MODULE_QUALIFIED in result.formatted
+
+    async def test_unambiguous_widen_never_carries_spurious_disclosure_noise(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        """The invariant pin's other half -- the auditor's own fixture shape,
+        inverted: candidate_count == 1 (the common, unambiguous case every
+        OTHER widening test in this file exercises) must never grow the new
+        caveat line. Additive risk-signal only, never noise on the
+        well-behaved path.
+        """
+        trio, _server = await _build_graph(tmp_path, _router_corpus())
+        resolver = _StubSymbolResolver(
+            row={"identity": "Router.dispatch", "file_path": "routerlib.py", "tier": _TIER},
+            module="routerlib",
+        )  # candidate_count defaults to 1, disambiguated_by to None.
+        engine = engine_factory(trio.graph, symbol_resolver=resolver)
+
+        result = await engine.impact("Router.dispatch", depth=1)
+
+        assert "resolved 1 of" not in result.formatted
+
+    async def test_widen_ambiguity_and_bare_fallback_caveats_compose_readably(
+        self, engine_factory: Callable[..., Any]
+    ) -> None:
+        """Both caveats can legitimately fire on the SAME result -- widening
+        ambiguity is about the RESOLVER's pick among same-identity stored
+        rows; bare-fallback channel honesty (``TestBareNameUnionCaveat``) is
+        about the GRAPH's own query channel for the already-widened FQN.
+        Neither one's presence implies the other's absence, so both must
+        render, each still substring-correct, never garbling into one
+        another.
+        """
+        summary = ReferenceSummary(
+            qualified_name="resolve_pkg.alpha.ClassAlpha.resolve",
+            production_references=1,
+            test_references=0,
+            referencing=[_graph_node(_FQN_USE_ALPHA, "resolve_pkg/alpha_consumer.py")],
+            bare_fallback_used=True,
+            bare_fallback_candidates=[_FQN_BETA_RESOLVE],
+        )
+        resolver = _StubSymbolResolver(
+            row={
+                "identity": "ClassAlpha.resolve",
+                "file_path": "resolve_pkg/alpha.py",
+                "tier": _TIER,
+            },
+            module="resolve_pkg.alpha",
+            candidate_count=2,
+            disambiguated_by=RESOLUTION_RULE_MODULE_QUALIFIED,
+        )
+        engine = engine_factory(_StubGraph(summary=summary), symbol_resolver=resolver)
+
+        result = await engine.impact("alpha.ClassAlpha.resolve", depth=1)
+
+        assert "resolved 1 of 2" in result.formatted
+        assert RESOLUTION_RULE_MODULE_QUALIFIED in result.formatted
+        assert "bare-name fallback" in result.formatted.lower()
+        assert _FQN_BETA_RESOLVE in result.formatted
 
 
 class TestUnknownBareTarget:
