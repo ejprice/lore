@@ -3,7 +3,7 @@
 The volatile SurrealDB memory store holds USER-AUTHORED project memories, and on
 its own it is the only copy: a SurrealDB wipe destroys every saved memory forever
 (unlike code vectors, a memory cannot be re-derived from source). This ledger is
-the durable source of truth — every ``save_memory`` write-through persists the
+the durable source of truth — every ``lore_remember`` write-through persists the
 memory here on the state volume BEFORE the volatile SurrealDB upsert, so a later
 restore can re-embed it.
 

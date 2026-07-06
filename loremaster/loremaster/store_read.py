@@ -76,7 +76,7 @@ _SOURCE_HEADER_TEMPLATE = "[SOURCE:{tier}:{path}:{line_start}-{line_end}]"
 # is the load-bearing token a caller/renderer keys off.
 _STALE_HEADER_NOTICE = (
     "STALE: served from the index, which may be behind the file on disk — "
-    "reindex to refresh, or verify with lore_search"
+    "run lore_index(reconcile=True) to refresh, or verify with lore_search"
 )
 
 # The keys of the ``{text, sha512}`` row :meth:`SurrealStore.file_text` returns —
@@ -316,8 +316,8 @@ class StoreReadTool:
         """
         return StoreReadNotFoundError(
             f"file {path!r} not found in tier {tier!r} (no indexed body in the store). "
-            f"Run lore_search to locate the current file, or reindex if the path "
-            f"should exist — the index may be ahead of or behind this path."
+            f"Run lore_search to locate the current file, or lore_index(reconcile=True) "
+            f"if the path should exist — the index may be ahead of or behind this path."
         )
 
     @staticmethod

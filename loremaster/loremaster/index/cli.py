@@ -49,8 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     Returns:
         The configured :class:`argparse.ArgumentParser`. ``--config`` is the path
         to ``lore.yaml``; ``--tier`` optionally restricts the run to one tier
-        (the explicit ``reindex(tier=…)`` escape hatch), defaulting to ``None``
-        (index every configured root).
+        (routed to the explicit ``Indexer.index_tier`` escape hatch), defaulting
+        to ``None`` (index every configured root).
 
     Note:
         The pre-P5 ``--manifest``/``--graph`` path flags are GONE: the manifest
