@@ -3298,6 +3298,110 @@ class TestImpactMapProductionInvariants:
         assert engine._graph is indexed_context.code_graph  # noqa: SLF001
         assert indexed_context.code_graph._derivation._resolution_enabled is True  # noqa: SLF001
 
+    async def test_impact_engine_carries_a_symbol_resolver_over_the_same_ctx_graph(
+        self, indexed_context: AppContext
+    ) -> None:
+        """Findings #63/#65 PRIMARY fix: ``ImpactEngine`` must be wired with a
+        chunk-store resolver (:class:`~loremaster.symbols.SymbolResolver`)
+        sharing the SAME rooted ``code_graph`` every other tool reads — never
+        a bare-test-only widening path with nothing wired in production.
+        """
+        from loremaster.symbols import SymbolResolver
+
+        engine = indexed_context._impact_engine  # noqa: SLF001 - structural wiring pin
+        resolver = engine._symbol_resolver  # noqa: SLF001
+        assert isinstance(resolver, SymbolResolver)
+        assert resolver._code_graph is indexed_context.code_graph  # noqa: SLF001
+        assert resolver._store is indexed_context.write_store  # noqa: SLF001
+
+
+# --------------------------------------------------------------------------- #
+# Findings #63/#65 end-to-end: the FULL production round trip (real indexer,
+# real SurrealCodeGraph, real SymbolResolver, real server wiring) over the
+# exact live collision shape REPORT-slate-fixer-63.md §3 / finding #65 proved
+# (a module-less "Class.method" query that would otherwise silently ride an
+# unrelated symbol's unresolved caller). Every layer is ALSO tested in
+# isolation (test_graph_surreal.py's channel-honesty fixture, test_impact.py's
+# widening + render tests, the wiring pin just above) -- this is the one test
+# proving they compose correctly through the REAL `AppContext.impact` a live
+# `lore_impact` call actually drives.
+# --------------------------------------------------------------------------- #
+_PY_RESOLVE_ALPHA = """\
+class ClassAlpha:
+    \"\"\"Alpha's own resolve.\"\"\"
+
+    def resolve(self, name):
+        return name
+"""
+
+_PY_RESOLVE_ALPHA_CONSUMER = """\
+from pkg.resolve_alpha import ClassAlpha
+
+
+def use_alpha(name):
+    \"\"\"A production caller astroid CAN resolve (local instantiation).\"\"\"
+    alpha = ClassAlpha()
+    return alpha.resolve(name)
+"""
+
+_PY_RESOLVE_BETA = """\
+class ClassBeta:
+    \"\"\"Beta's own resolve -- unrelated to alpha's, same bare name.\"\"\"
+
+    def resolve(self, name):
+        return name
+"""
+
+_PY_RESOLVE_BETA_CONSUMER = """\
+def use_beta(unknown_receiver, name):
+    \"\"\"A production caller astroid CANNOT resolve (untyped receiver) --
+    its dst falls back to the bare written name "resolve".\"\"\"
+    return unknown_receiver.resolve(name)
+"""
+
+
+class TestImpactResolutionWideningEndToEnd:
+    """Findings #63/#65: the module-less "Class.method" shape, driven through
+    the REAL production stack end-to-end.
+    """
+
+    @pytest_asyncio.fixture()
+    async def resolve_collide_context(self, tmp_path: Path) -> AsyncIterator[AppContext]:
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "resolve_alpha.py").write_text(_PY_RESOLVE_ALPHA, encoding="utf-8")
+        (live / "pkg" / "resolve_alpha_consumer.py").write_text(
+            _PY_RESOLVE_ALPHA_CONSUMER, encoding="utf-8"
+        )
+        (live / "pkg" / "resolve_beta.py").write_text(_PY_RESOLVE_BETA, encoding="utf-8")
+        (live / "pkg" / "resolve_beta_consumer.py").write_text(
+            _PY_RESOLVE_BETA_CONSUMER, encoding="utf-8"
+        )
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            yield ctx
+        finally:
+            await ctx.aclose()
+
+    async def test_module_less_target_resolves_to_the_real_caller_and_names_the_collidee(
+        self, resolve_collide_context: AppContext
+    ) -> None:
+        result = await resolve_collide_context.impact("ClassAlpha.resolve", depth=1)
+
+        # PRIMARY fix (#63/#65): widening finds alpha's OWN real caller --
+        # never a not-found, never silently serving beta's profile instead.
+        assert result.verdict == "live"
+        assert any("use_alpha" in name for name in result.direct_consumers)
+
+        # Channel honesty (#43/#65): beta's unresolved caller rides the SAME
+        # bare "resolve" fallback the graph always OR's in -- disclosed, with
+        # beta's real FQN named, never a silent confident-wrong merge.
+        assert "bare-name fallback" in result.formatted.lower()
+        assert "resolve_beta" in result.formatted
+
 
 # --------------------------------------------------------------------------- #
 # Double-lifespan guard (per-process heavy startup runs exactly once)

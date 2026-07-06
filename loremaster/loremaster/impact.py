@@ -13,16 +13,30 @@ lead to investigate, never a deletion order.
 :class:`ImpactEngine` is a PURE READ layer over the code graph
 (:class:`~loremaster.graph_surreal.SurrealCodeGraph` in production, or its
 in-memory test double) — it derives no new graph state and issues no new
-SurrealQL; it composes the graph's existing query surface:
+SurrealQL of its own; it composes the graph's existing query surface:
 
 * :meth:`~loremaster.graph_surreal.SurrealCodeGraph.references` — the
-  production/test reference-count split (the liveness signal).
+  production/test reference-count split (the liveness signal), plus (findings
+  #43/#65, this wave) whether the result rode the RISKY bare-fallback channel
+  and, when it did, the real colliding qualified name(s) — never presented as
+  one unambiguous profile with no signal that it might be a union.
 * :meth:`~loremaster.graph_surreal.SurrealCodeGraph.tests_for` — the covering
   tests (the "what exercises this" signal).
 * :meth:`~loremaster.graph_surreal.SurrealCodeGraph.blast_radius` — the
   transitive reverse-dependency closure, rolled up by module at ``depth > 1``
   (the ripple signal) and reused as a lightweight EXISTENCE probe (see
   :meth:`ImpactEngine._target_is_known`) for the depth-1 case.
+
+Findings #63/#65 (this wave): an OPTIONAL second collaborator,
+:class:`~loremaster.symbols.SymbolResolver` (duck-typed, ``None`` by
+default), resolves a DOTTED target through the chunk-store identity
+convention (:meth:`ImpactEngine._widen_dotted_target`) BEFORE any graph query
+runs — closing the gap where a module-less "Class.method" form (exactly what
+``lore_get_symbol`` resolves) either matched nothing in the graph (finding
+#63) or, worse, silently rode the graph's bare-fallback OR-term and returned
+an unrelated same-named symbol's profile with full apparent confidence
+(finding #65). This collaborator issues its OWN store reads (via the
+resolver, never SurrealQL authored here) but derives no new state either.
 
 Verdict-bearing output is NEVER served while the graph is mid-rebuild — a
 truthy ``rebuild_notice()`` result makes :meth:`ImpactEngine.impact` raise
@@ -150,20 +164,28 @@ _COVERING_TESTS_ELISION_TEMPLATE = "+{count} more (elided by max_covering_tests=
 # capped enumeration untouched.
 _COVERING_TESTS_FILE_ROLLUP_TEMPLATE = "tests: {count} across 1 file ({module})"
 
-# Finding #30: a bare (unqualified) target may collide with a same-named
-# symbol in another module; ``references()`` UNIONS every collidee's profile
-# silently (graph_surreal.py's documented, deliberate answers_to bridge).
-# Rendered whenever the query was bare so a reader knows this may be a UNION,
-# never presented as one unambiguous symbol's exact profile. The stronger ask
-# (name the actual colliding candidate modules) needs a new engine-level
-# introspection surface (``_bare_name_answerers`` is private/internal to
-# graph_surreal.py) -- flagged as a follow-on rather than built here.
-_BARE_NAME_UNION_CAVEAT = (
-    "target is a bare name -- if it collides with a same-named symbol in "
-    "another module, this profile is the UNION of every collidee's "
-    "references; qualify with a module-prefixed name (lore_search) for one "
-    "symbol's exact profile."
+# Findings #30/#43/#65 (channel honesty, SUPERSEDES the P8d Wave 2 syntactic
+# gate): the graph's ``references()`` now reports whether THIS result
+# actually rode the risky bare-fallback/answers_to-bridge channel
+# (``ReferenceSummary.bare_fallback_used``) and, when it did, the REAL
+# colliding qualified name(s) (``.bare_fallback_candidates`` -- closing #43's
+# "name the actual candidates" ask). The caveat below is rendered keyed on
+# THAT flag -- never on the syntactic presence of a "." in the query string
+# (the old gate): finding #65 proved a DOTTED, even fully-qualified, target
+# can silently ride the exact same risky channel a bare query does, with the
+# old gate never firing for it at all.
+_BARE_FALLBACK_CAVEAT_TEMPLATE = (
+    "caveat: this profile rode the bare-name fallback channel -- it may be a "
+    "UNION with {candidates}'s own references, not this symbol's exact "
+    "profile alone; qualify further (lore_search) to isolate one symbol's "
+    "profile."
 )
+# Disclosed fallback for the (theoretically reachable, never observed live)
+# case where the channel WAS used but the graph names no OTHER known
+# collidee (an astroid-unresolvable caller whose true target is not itself
+# indexed under that bare name) -- still an honest "this could be wrong",
+# never a blank or malformed caveat line.
+_BARE_FALLBACK_NO_NAMED_CANDIDATE = "another symbol not indexed under this name"
 
 _T = TypeVar("_T")
 
@@ -282,6 +304,17 @@ class ImpactEngine:
             rebuild is in progress. ``None`` for the whole parameter means
             "never rebuilding" (the bare-test wiring) — no probe is ever
             called.
+        symbol_resolver: Findings #63/#65's PRIMARY fix — the chunk-store
+            resolution seam (:class:`~loremaster.symbols.SymbolResolver` in
+            production, or a signature-compatible test double). Untyped
+            (``Any``, the SAME duck-typed convention as ``graph`` above)
+            because only :meth:`~loremaster.symbols.SymbolResolver.
+            resolve_with_candidates` and :meth:`~loremaster.symbols.
+            SymbolResolver.canonical_module_names` are ever called on it.
+            ``None`` (the default) disables resolution widening entirely —
+            every existing bare-test wiring (``ImpactEngine(graph=graph)``)
+            stays valid unchanged, and a DOTTED target that cannot be widened
+            behaves exactly as before (the finding #63 not-found teach).
     """
 
     def __init__(
@@ -289,9 +322,11 @@ class ImpactEngine:
         *,
         graph: Any,
         rebuild_notice: Callable[[], Awaitable[str | None]] | None = None,
+        symbol_resolver: Any = None,
     ) -> None:
         self._graph = graph
         self._rebuild_notice = rebuild_notice
+        self._symbol_resolver = symbol_resolver
 
     async def impact(
         self,
@@ -322,9 +357,24 @@ class ImpactEngine:
         await self._raise_if_rebuilding()
         depth = self._clamp_depth(depth)
 
-        summary = await self._graph.references(target)
+        # Findings #63/#65 PRIMARY fix: widen a DOTTED target through the
+        # chunk-store identity convention BEFORE any graph query runs, so a
+        # module-less "Class.method" form (or any module-qualified variant
+        # the resolver's own common-tail matching accepts) resolves to its
+        # ONE TRUE graph FQN before the bare-fallback OR-term is ever
+        # consulted. ``target`` itself is NEVER reassigned — the caller's own
+        # input is echoed back in ``ImpactResult.target`` and the not-found
+        # message unchanged; only ``query_target`` (what the graph is asked
+        # about) may differ.
+        query_target = target
+        if "." in target:
+            widened = await self._widen_dotted_target(target)
+            if widened is not None:
+                query_target = widened
+
+        summary = await self._graph.references(query_target)
         covering_tests, covering_test_modules, covering_test_files = await self._covering_tests(
-            target
+            query_target
         )
         # S1 (2026-07-06 client-needs consult): cap the STRUCTURED wire field
         # with the SAME discipline the render already applies -- the full,
@@ -351,14 +401,14 @@ class ImpactEngine:
             # module through this IDENTICAL mapping, never a second,
             # potentially doubled derivation.
             module_names_by_file = await self._graph.module_names_by_file()
-            rollups = await self._module_rollups(target, depth, module_names_by_file)
+            rollups = await self._module_rollups(query_target, depth, module_names_by_file)
             transitive_modules = await self._transitive_only_modules(
-                target, rollups, module_names_by_file
+                query_target, rollups, module_names_by_file
             )
             module_rollups, elided = self._cap(rollups, max_consumers)
 
         if not await self._target_is_known(
-            summary, covering_tests, direct_consumers, module_rollups, target
+            summary, covering_tests, direct_consumers, module_rollups, query_target
         ):
             message = (
                 f"no symbol or module named {target!r} appears in the code "
@@ -374,7 +424,9 @@ class ImpactEngine:
                 # neither, so this miss may be a resolvable symbol whose
                 # module qualifier was simply omitted. Name the one
                 # actionable widen-then-retry path rather than leaving a
-                # resolvable-shaped target looking like a dead end.
+                # resolvable-shaped target looking like a dead end. (Still
+                # the right teach even with a resolver wired: it already
+                # tried widening above and found nothing either.)
                 message += (
                     f" If {target!r} omits its containing module (a bare "
                     f"Class.method form), lore_get_symbol({target!r}) "
@@ -398,6 +450,8 @@ class ImpactEngine:
             transitive_modules=transitive_modules,
             elided=elided,
             max_consumers=max_consumers,
+            bare_fallback_used=summary.bare_fallback_used,
+            bare_fallback_candidates=summary.bare_fallback_candidates,
         )
         return ImpactResult(
             target=target,
@@ -412,6 +466,50 @@ class ImpactEngine:
             caveat=_CAVEAT_TEXT,
             formatted=formatted,
         )
+
+    async def _widen_dotted_target(self, target: str) -> str | None:
+        """Resolve a DOTTED ``target`` through the chunk-store identity
+        convention to its one true graph FQN (findings #63/#65's PRIMARY
+        fix), or ``None`` to proceed with ``target`` unchanged.
+
+        REUSES :class:`~loremaster.symbols.SymbolResolver` verbatim (never a
+        parallel resolution implementation — packages-over-hand-rolling):
+        :meth:`~loremaster.symbols.SymbolResolver.resolve_with_candidates`
+        resolves ``target`` against the chunk store's own identity
+        convention (a bare ``ClassName.method``, or a module-qualified
+        variant reaching it via common-tail matching), and
+        :meth:`~loremaster.symbols.SymbolResolver.canonical_module_names`
+        (finding #62's canonical fix) names the matched row's OWNING module
+        through the SAME graph-backed ``module_names_by_file`` lookup the
+        graph's own node-naming uses — so the widened FQN this builds
+        (``f"{module}.{identity}"``) is byte-identical to what
+        :meth:`~loremaster.graph.CodeGraph._method_node` (or
+        ``_class_node``/``_function_node``) would have named that same chunk.
+        Never attempted for a bare target — see :meth:`impact`'s own gate.
+
+        Args:
+            target: The dotted (``"." in target``) query to widen.
+
+        Returns:
+            The widened FQN, or ``None`` when no resolver is wired, the
+            resolver finds nothing (``target`` may already be a real full
+            FQN, or is genuinely unknown), or the matched row carries no
+            usable module/identity — in every such case ``impact()`` simply
+            proceeds with the original ``target``, never raising here.
+        """
+        if self._symbol_resolver is None:
+            return None
+        match = await self._symbol_resolver.resolve_with_candidates(target)
+        if match is None:
+            return None
+        modules = await self._symbol_resolver.canonical_module_names([match.row])
+        module = next(iter(modules), None)
+        if module is None:
+            return None
+        identity = match.row.get("identity")
+        if not isinstance(identity, str):
+            return None
+        return f"{module}.{identity}"
 
     # -- gates ---------------------------------------------------------------
 
@@ -618,6 +716,8 @@ class ImpactEngine:
         transitive_modules: set[str],
         elided: int,
         max_consumers: int,
+        bare_fallback_used: bool,
+        bare_fallback_candidates: list[str],
     ) -> str:
         """Render the compact, token-efficient impact block.
 
@@ -633,10 +733,18 @@ class ImpactEngine:
             f"verdict: {verdict}",
             f"{production_references} prod / {test_references} test references",
         ]
-        if "." not in target:
-            # Finding #30: a bare target may be a same-named-symbol UNION —
-            # teach it, never present the union as one unambiguous profile.
-            lines.append(_BARE_NAME_UNION_CAVEAT)
+        if bare_fallback_used:
+            # Findings #43/#65 (channel honesty — supersedes the old #30
+            # syntax gate): the caveat keys on whether THIS result actually
+            # rode the risky bare-fallback/answers_to-bridge channel, never
+            # on whether ``target`` itself contains a ".". Names the real
+            # colliding qualified name(s) when the graph reports any.
+            candidates = (
+                ", ".join(bare_fallback_candidates)
+                if bare_fallback_candidates
+                else _BARE_FALLBACK_NO_NAMED_CANDIDATE
+            )
+            lines.append(_BARE_FALLBACK_CAVEAT_TEMPLATE.format(candidates=candidates))
         if covering_tests:
             # F3 (REPORT-audit-tweaks.md): dominance is keyed on the actual
             # (tier, file_path) IDENTITY, never the module LABEL -- a label

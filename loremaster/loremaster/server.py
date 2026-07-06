@@ -126,7 +126,12 @@ from loremaster.search import (
 )
 from loremaster.store.candidate import Candidate
 from loremaster.store_read import StoreFileSpan
-from loremaster.symbols import VERIFY_REBUILD_CAVEAT, ResolvedSymbol, VerifyResult
+from loremaster.symbols import (
+    VERIFY_REBUILD_CAVEAT,
+    ResolvedSymbol,
+    SymbolResolver,
+    VerifyResult,
+)
 
 if TYPE_CHECKING:
     from loresigil.base import Embedder
@@ -1638,7 +1643,23 @@ class AppContext:
         # rode ``_raise_if_empty_during_rebuild`` alongside search -- is deleted;
         # test_schema_rebuild.py's shared-seam A8c pin now targets ``impact``
         # (this proactive-gate mechanism) instead.
-        self._impact_engine = ImpactEngine(graph=code_graph, rebuild_notice=self._rebuild_notice)
+        #
+        # Findings #63/#65 (impactres wave): ``ImpactEngine`` additionally gets
+        # its OWN ``SymbolResolver`` instance -- sharing the SAME ``write_store``
+        # + ``code_graph`` the ``symbol_tool`` construction site (in
+        # ``build_app_context``) already wires into ITS resolver, mirroring the
+        # existing convention that ``SymbolTool``/``VerifyTool`` each construct
+        # their own resolver instance over the shared store (never a reach into
+        # another tool's private attribute). This lets ``impact()`` widen a
+        # module-less "Class.method" target to its true graph FQN through the
+        # chunk-store identity convention BEFORE the graph's bare-fallback
+        # OR-term is ever consulted -- the PRIMARY fix closing #63/#65 together
+        # with the graph-level channel-honesty capability (graph_surreal.py).
+        self._impact_engine = ImpactEngine(
+            graph=code_graph,
+            rebuild_notice=self._rebuild_notice,
+            symbol_resolver=SymbolResolver(store=write_store, code_graph=code_graph),
+        )
         self._map_engine = MapEngine(
             graph=code_graph,
             count_tokens=self._count_tokens_single,

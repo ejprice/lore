@@ -11,10 +11,15 @@ takeover):
 
 * Engine: ``ImpactEngine`` in a NEW ``loremaster/loremaster/impact.py`` — a
   pure read layer over the code graph. Constructor (keyword-only):
-  ``ImpactEngine(*, graph, rebuild_notice=None)`` where ``rebuild_notice`` is
-  an async callable returning ``None`` (settled) or a human-readable notice
-  string (a rebuild is in progress). ``None`` for the whole dep = never
-  rebuilding (the bare-test wiring).
+  ``ImpactEngine(*, graph, rebuild_notice=None, symbol_resolver=None)`` where
+  ``rebuild_notice`` is an async callable returning ``None`` (settled) or a
+  human-readable notice string (a rebuild is in progress); ``None`` for the
+  whole dep = never rebuilding (the bare-test wiring). ``symbol_resolver``
+  (findings #63/#65, added this wave) is the chunk-store resolution seam
+  (a ``symbols.SymbolResolver``-shaped double) that widens a module-less
+  "Class.method" dotted target to its true graph FQN before any bare-fallback
+  matching runs; ``None`` (the default) disables widening entirely, matching
+  every pre-existing bare-test wiring unchanged.
 * Query: ``await engine.impact(target, depth=1, max_consumers=25) ->
   ImpactResult``. ``depth`` clamps to 1..4; ``max_consumers`` caps every
   rendered consumer list with an EXPLICIT elision marker (never a silent cap).
@@ -49,12 +54,15 @@ from __future__ import annotations
 import importlib
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
 from loremaster.config import LoreConfig
+from loremaster.graph import GraphNode, ReferenceSummary
 from loremaster.server import LoreServer
 from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_memo
 from lorescribe.models import ChunkContext
@@ -260,9 +268,12 @@ def engine_factory() -> Callable[..., Any]:
         graph: Any,
         *,
         rebuild_notice: Callable[[], Awaitable[str | None]] | None = None,
+        symbol_resolver: Any = None,
     ) -> Any:
         impact_module = importlib.import_module("loremaster.impact")
-        return impact_module.ImpactEngine(graph=graph, rebuild_notice=rebuild_notice)
+        return impact_module.ImpactEngine(
+            graph=graph, rebuild_notice=rebuild_notice, symbol_resolver=symbol_resolver
+        )
 
     return _build
 
@@ -270,6 +281,81 @@ def engine_factory() -> Callable[..., Any]:
 def _errors() -> Any:
     """The engine's typed errors, imported lazily for the same reason."""
     return importlib.import_module("loremaster.impact")
+
+
+@dataclass
+class _StubGraph:
+    """A minimal hand-built double exposing exactly the async surface
+    ``ImpactEngine`` needs, used ONLY to feed a pre-built
+    :class:`~loremaster.graph.ReferenceSummary` with the channel-honesty
+    fields (finding #65) already set.
+
+    The shared ``FakeSurrealCodeGraph`` (``_surreal_fakes.py``) does not
+    implement bare-fallback channel DETECTION (that fixture is out of this
+    wave's writable set -- it mirrors the real graph's MATCHING semantics,
+    not its new channel-tracking bookkeeping), so a render-level assertion
+    about ``bare_fallback_used``/``bare_fallback_candidates`` needs this
+    narrower, purpose-built double instead of the shared fixture.
+    """
+
+    summary: ReferenceSummary
+    covering_tests: list[GraphNode] = field(default_factory=list)
+    blast_radius_nodes: list[GraphNode] = field(default_factory=list)
+
+    async def references(self, target: str) -> ReferenceSummary:
+        return self.summary
+
+    async def tests_for(self, target: str) -> list[GraphNode]:
+        return self.covering_tests
+
+    async def blast_radius(
+        self, target: str, depth: int, max_results: int
+    ) -> list[GraphNode]:
+        return self.blast_radius_nodes
+
+    async def module_names_by_file(self) -> dict[tuple[str, str], str]:
+        return {}
+
+    @staticmethod
+    def module_qualified_name(file_path: str) -> str:
+        from loremaster.graph import CodeGraph
+
+        return CodeGraph.module_qualified_name(file_path)
+
+
+def _graph_node(qualified_name: str, file_path: str) -> GraphNode:
+    """A minimal :class:`GraphNode` for a hand-built ``ReferenceSummary``."""
+    return GraphNode(
+        id=f"custom:{file_path}:{qualified_name}",
+        kind="function",
+        qualified_name=qualified_name,
+        file_path=file_path,
+        chunk_id=qualified_name,
+        tier="custom",
+    )
+
+
+@dataclass
+class _StubSymbolResolver:
+    """A minimal double for ``symbols.py``'s ``SymbolResolver``, exposing
+    only the two methods ``ImpactEngine``'s resolution-widening step calls
+    (finding #63/#65's PRIMARY fix) -- proves impact.py's OWN widening
+    logic in isolation. The resolver's actual resolution RULES (exact
+    identity, module-qualified common-tail matching) are pinned by
+    ``test_symbols.py``; this double never re-implements them
+    (packages-over-hand-rolling), it just returns a pre-scripted answer.
+    """
+
+    row: dict[str, Any] | None
+    module: str | None
+
+    async def resolve_with_candidates(self, qualified_name: str) -> Any:
+        if self.row is None:
+            return None
+        return SimpleNamespace(row=self.row)
+
+    async def canonical_module_names(self, rows: list[dict[str, Any]]) -> set[str]:
+        return {self.module} if self.module is not None else set()
 
 
 # --------------------------------------------------------------------------- #
@@ -475,6 +561,120 @@ class TestUnknownTarget:
         assert "TotallyBogusClass.totally_bogus_method" in message
         assert "lore_search" in message
         assert "lore_get_symbol" in message
+
+
+_ROUTER_LIB_SOURCE = """\
+class Router:
+    \"\"\"Defines dispatch -- resolved via chunk-store identity "Router.dispatch"
+    (module-less, exactly the finding #63/#65 shape).\"\"\"
+
+    def dispatch(self, week):
+        \"\"\"Route the week.\"\"\"
+        return week * 2
+"""
+
+_ROUTER_CONSUMER_SOURCE = """\
+from routerlib import Router
+
+
+def run(week):
+    \"\"\"A production caller -- astroid resolves this call in-project, so the
+    graph's own FQN is "routerlib.Router.dispatch".\"\"\"
+    router = Router()
+    return router.dispatch(week)
+"""
+
+
+def _router_corpus() -> dict[str, str]:
+    return {"routerlib.py": _ROUTER_LIB_SOURCE, "routerconsumer.py": _ROUTER_CONSUMER_SOURCE}
+
+
+# --------------------------------------------------------------------------- #
+# 9b — finding #63/#65 PRIMARY fix: resolution widening through the
+# chunk-store identity convention BEFORE the graph's bare-fallback OR-term is
+# ever consulted. REUSES symbols.py's SymbolResolver seam (a stub double
+# here proves ImpactEngine's OWN widening logic; the resolver's actual
+# resolution rules are test_symbols.py's job to pin -- packages-over-
+# hand-rolling, never a parallel reimplementation).
+# --------------------------------------------------------------------------- #
+class TestDottedTargetResolutionWidening:
+    async def test_module_less_class_method_target_resolves_and_finds_the_real_caller(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        """``"Router.dispatch"`` (module omitted, chunk-store identity form)
+        must resolve to the graph's real FQN ``"routerlib.Router.dispatch"``
+        and find ``run``'s real reference -- where, absent the resolver
+        (see the companion test below), the SAME target only teaches a
+        widen-then-retry path and never actually resolves.
+        """
+        trio, _server = await _build_graph(tmp_path, _router_corpus())
+        resolver = _StubSymbolResolver(
+            row={"identity": "Router.dispatch", "file_path": "routerlib.py", "tier": _TIER},
+            module="routerlib",
+        )
+        engine = engine_factory(trio.graph, symbol_resolver=resolver)
+
+        result = await engine.impact("Router.dispatch", depth=1)
+
+        assert result.verdict == _VERDICT_LIVE
+        assert result.production_references == 1
+        assert any("run" in name for name in result.direct_consumers)
+
+    async def test_same_target_without_a_wired_resolver_still_only_teaches(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        """Regression guard: with NO resolver wired (every existing
+        ``engine_factory`` call site, unchanged), the SAME module-less
+        target still only TEACHES the widen-then-retry path (finding #63's
+        already-shipped fix) -- it must never silently resolve by accident
+        and it must never crash.
+        """
+        trio, _server = await _build_graph(tmp_path, _router_corpus())
+        engine = engine_factory(trio.graph)  # no symbol_resolver.
+
+        with pytest.raises(_errors().ImpactTargetNotFoundError) as exc_info:
+            await engine.impact("Router.dispatch", depth=1)
+        assert "lore_get_symbol" in str(exc_info.value)
+
+    async def test_resolver_present_but_genuinely_unresolvable_still_teaches(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        """A wired resolver that itself finds nothing (a genuinely unknown
+        target) must fall through to the EXACT SAME not-found teaching path
+        -- widening is additive, never a new failure mode.
+        """
+        trio, _server = await _build_graph(tmp_path, _router_corpus())
+        resolver = _StubSymbolResolver(row=None, module=None)
+        engine = engine_factory(trio.graph, symbol_resolver=resolver)
+
+        with pytest.raises(_errors().ImpactTargetNotFoundError) as exc_info:
+            await engine.impact("TotallyBogusClass.totally_bogus_method", depth=1)
+        message = str(exc_info.value)
+        assert "TotallyBogusClass.totally_bogus_method" in message
+        assert "lore_get_symbol" in message
+
+    async def test_bare_target_is_never_widened_even_with_a_resolver_wired(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        """A BARE (undotted) target deliberately asks for every same-named
+        symbol's UNION (finding #30) -- widening it to one arbitrarily
+        resolver-picked FQN would silently narrow that intentional union, a
+        regression. A resolver wired alongside a bare query must never be
+        consulted at all.
+        """
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        resolver = _StubSymbolResolver(
+            row={"identity": "orphan_helper", "file_path": "reflib.py", "tier": _TIER},
+            module="reflib",
+        )
+        engine = engine_factory(trio.graph, symbol_resolver=resolver)
+
+        # _TARGET ("champion_routing") is bare -- must resolve normally
+        # (its OWN profile), never get silently rewritten to orphan_helper.
+        result = await engine.impact(_TARGET, depth=1)
+
+        assert result.verdict == _VERDICT_LIVE
+        assert any("consumer" in name for name in result.direct_consumers)
 
 
 # --------------------------------------------------------------------------- #
@@ -1147,29 +1347,53 @@ class TestCoveringTestsFileRollupTierCollision:
         )
 
 
+_FQN_USE_ALPHA = "resolve_pkg.alpha_consumer.use_alpha"
+_FQN_BETA_RESOLVE = "resolve_pkg.beta.ClassBeta.resolve"
+
+
 class TestBareNameUnionCaveat:
-    """Finding #30: a bare (unqualified) target may collide with a same-named
-    symbol in another module; ``references()`` UNIONS every collidee's profile
-    silently (by design -- see graph_surreal.py's ``references`` docstring).
-    The render must TEACH this rather than present the union as if it were one
-    unambiguous symbol's exact profile. The stronger ask (name the actual
-    colliding candidate modules) needs a new engine-level introspection surface
-    (``_bare_name_answerers`` is private/internal) -- flagged in
-    REPORT-builder-flip-w2.md as a follow-on, out of this wave's writable set.
+    """Finding #30/#43/#65 -- SEMANTICS FLIPPED HONESTLY this wave (channel
+    honesty replaces syntax-gating). Originally (P8d Wave 2, #30/#43) this
+    class pinned a SYNTACTIC gate: ANY bare (undotted) target always rendered
+    a generic "may collide" hedge, and an already-dotted target never did --
+    regardless of whether a real collision existed. REPORT-slate-fixer-63.md
+    §3 proved that gate is actively WRONG: a DOTTED 2-segment target can
+    silently ride the exact same risky bare-fallback channel a bare query
+    does (finding #65's live collision, ``SymbolResolver.resolve`` silently
+    serving ``SnapshotLayout.resolve``'s profile) with ZERO caveat, because
+    the old gate keyed on the "." character, never on what channel the query
+    actually resolved through.
+
+    The fix (graph_surreal.py's ``references`` -- see test_graph_surreal.py's
+    ``TestReferencesBareFallbackChannelHonesty``) reports
+    ``ReferenceSummary.bare_fallback_used`` / ``.bare_fallback_candidates`` --
+    the ACTUAL channel a match rode, plus the real collidee names (closing
+    #43's "name the candidates" ask). ``_render`` now keys its caveat on
+    THAT, never on ``"." in target``. Consequence, asserted below: a bare
+    query with NO genuine collision no longer cries wolf (an honest
+    improvement over the old always-on hedge); a query -- bare OR dotted --
+    that genuinely rode the risky channel gets the caveat AND the real
+    candidate name(s), never a generic hedge. The shared ``FakeSurrealCodeGraph``
+    (``_surreal_fakes.py``) never sets these new fields (out of this wave's
+    writable set), so the "channel WAS used" half rides the local
+    ``_StubGraph`` double instead of the normal ``_build_graph`` fixture.
     """
 
-    async def test_bare_target_render_carries_the_union_caveat(
+    async def test_bare_target_with_no_real_collision_never_carries_a_caveat(
         self, tmp_path: Path, engine_factory: Callable[..., Any]
     ) -> None:
+        """The honest improvement: ``_TARGET`` is bare, but this corpus has
+        no other symbol anywhere sharing its bare name -- the real graph
+        (test_graph_surreal.py's ``TestReferencesBareFallbackChannelHonesty.
+        test_bare_query_with_a_unique_symbol_never_flags_the_channel``) never
+        flags this shape, so the render must not manufacture risk either.
+        """
         trio, _server = await _build_graph(tmp_path, _full_corpus())
         engine = engine_factory(trio.graph)
 
         result = await engine.impact(_TARGET, depth=1)  # _TARGET is bare.
 
-        assert "bare name" in result.formatted.lower(), (
-            "a bare-target query must teach that it may be a same-named-symbol "
-            f"union, not a single unambiguous profile; got {result.formatted!r}"
-        )
+        assert "bare-name fallback" not in result.formatted.lower()
 
     async def test_qualified_target_never_carries_the_bare_name_caveat(
         self, tmp_path: Path, engine_factory: Callable[..., Any]
@@ -1179,10 +1403,54 @@ class TestBareNameUnionCaveat:
 
         result = await engine.impact(_QUALIFIED_TARGET, depth=1)  # module-qualified.
 
-        assert "bare name" not in result.formatted.lower(), (
-            "an already-qualified target names ONE unambiguous symbol -- the "
-            "bare-name union caveat must not render for it"
+        assert "bare-name fallback" not in result.formatted.lower(), (
+            "an already-qualified target with no real collision must not "
+            "carry the bare-fallback caveat"
         )
+
+    async def test_channel_genuinely_used_renders_the_caveat_and_names_the_candidate(
+        self, engine_factory: Callable[..., Any]
+    ) -> None:
+        """The channel-honesty fix's core promise: when the graph reports the
+        risky channel actually served this result, the render must say so
+        AND name the real colliding symbol -- never a bare "confident"
+        profile, never a generic unfounded hedge either.
+        """
+        summary = ReferenceSummary(
+            qualified_name="resolve_pkg.alpha.ClassAlpha.resolve",
+            production_references=1,
+            test_references=0,
+            referencing=[_graph_node(_FQN_USE_ALPHA, "resolve_pkg/alpha_consumer.py")],
+            bare_fallback_used=True,
+            bare_fallback_candidates=[_FQN_BETA_RESOLVE],
+        )
+        engine = engine_factory(_StubGraph(summary=summary))
+
+        result = await engine.impact("resolve_pkg.alpha.ClassAlpha.resolve", depth=1)
+
+        assert "bare-name fallback" in result.formatted.lower()
+        assert _FQN_BETA_RESOLVE in result.formatted
+
+    async def test_channel_not_used_never_renders_the_caveat_even_for_a_dotted_target(
+        self, engine_factory: Callable[..., Any]
+    ) -> None:
+        """A dotted target whose result the graph reports as clean
+        (``bare_fallback_used=False``) must never carry the caveat -- the
+        gate is the channel flag, never the "." character.
+        """
+        summary = ReferenceSummary(
+            qualified_name="resolve_pkg.alpha.ClassAlpha.resolve",
+            production_references=1,
+            test_references=0,
+            referencing=[_graph_node(_FQN_USE_ALPHA, "resolve_pkg/alpha_consumer.py")],
+            bare_fallback_used=False,
+            bare_fallback_candidates=[],
+        )
+        engine = engine_factory(_StubGraph(summary=summary))
+
+        result = await engine.impact("resolve_pkg.alpha.ClassAlpha.resolve", depth=1)
+
+        assert "bare-name fallback" not in result.formatted.lower()
 
 
 class TestUnknownBareTarget:
