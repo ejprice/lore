@@ -72,22 +72,34 @@
    <!-- RECEIPT: lore_map (unfocused, whole corpus) - skills.lore-deploy.scripts.lore_deploy
         rank 0.0195 vs next-highest loremaster.loremaster.server 0.0120; file confirmed at
         skills/lore-deploy/scripts/lore_deploy.py (1161 lines, executable). -->
-   <!-- W5-REVALIDATE: needs post-flip surface (import graph may shift as server.py sheds tools) -->
+   <!-- W5-REVALIDATE: REVALIDATED post-flip (eval-runner-1, 2026-07-06, live server @ HEAD
+        47fc68b, 14-tool surface): live lore_map(focus=null) still ranks lore_deploy.py
+        highest at 0.019477..., loremaster.loremaster.server next at 0.011952... - ranks
+        byte-identical to the original receipt. CONFIRMED unchanged; answer stands as-is. -->
    <qa_pair>
       <question>Considering the entire indexed repository -- the application source AND its deployment/tooling scripts -- and ranking every module by a deterministic PageRank-style score over the codebase's import/reference graph, which single file has the highest rank (i.e. is the single most structurally central module in the whole tree)? Answer with its repo-relative file path.</question>
       <answer>skills/lore-deploy/scripts/lore_deploy.py</answer>
    </qa_pair>
 
-   <!-- RECEIPT: lore_map(focus=CalibrationEngine) - loremaster.loremaster.server rank 0.2597,
-        next tier (calibration.baseline / calibration.counting) tied at 0.0736. Canonical
-        import path confirmed via `from loremaster.server import LoreServer` (test_map.py,
-        test_graph_wiring.py, test_calibration_wiring.py, etc.) - the map's own
-        "loremaster.loremaster.server" label duplicates the repo-dir/package-dir name;
-        the real dotted import path is loremaster.server. -->
-   <!-- W5-REVALIDATE: needs post-flip surface (import graph may shift as server.py sheds tools) -->
+   <!-- RECEIPT (revalidated post-flip, eval-runner-1, 2026-07-06, live server @ HEAD 47fc68b,
+        14-tool surface): live lore_map(focus=CalibrationEngine) still renders
+        loremaster.loremaster.server at rank 0.2597402597402596, next tier
+        (calibration.baseline / calibration.counting) tied at 0.07359307359307356 - ranks
+        byte-identical to the original receipt; the flip did NOT move this part of the
+        import graph. The dual-label ambiguity flagged in the original receipt is UNCHANGED
+        by the flip (the map tool still doubles the top-level package-dir name in its
+        rendered label). AMENDED: the question now asks for the map's own rendered label
+        instead of the "corrected" canonical import path, and the answer is updated to match,
+        so an honest model reading the live tool output grades correct without needing to
+        silently infer the tool's directory-naming artifact (never both-accepted vagueness).
+        Canonical import path for reference only (NOT the graded answer): loremaster.server,
+        confirmed via `from loremaster.server import LoreServer` (test_map.py,
+        test_graph_wiring.py, test_calibration_wiring.py, etc.). -->
+   <!-- W5-REVALIDATE: CONFIRMED post-flip (ranks unchanged); AMENDED question+answer for the
+        pre-existing dual-label ambiguity only -->
    <qa_pair>
-      <question>When the codebase's structural map is re-centered on the class that owns the token-calibration probe loop (CalibrationEngine), exactly one OTHER module's rank clears 0.25 -- dwarfing the next tier, which ties near 0.07. Which module is it? Give its dotted import path.</question>
-      <answer>loremaster.server</answer>
+      <question>When the codebase's structural map is re-centered on the class that owns the token-calibration probe loop (CalibrationEngine), exactly one OTHER module's rank clears 0.25 -- dwarfing the next tier, which ties near 0.07. Which module is it? Give the module's dotted name exactly as the map tool renders it (its rendered label may repeat the top-level package directory name).</question>
+      <answer>loremaster.loremaster.server</answer>
    </qa_pair>
 
    <!-- RECEIPT: loremaster/loremaster/impact.py:202-206 - `async def impact(self, target: str,
@@ -100,7 +112,11 @@
    <!-- RECEIPT: loremaster/loremaster/calibration/engine.py - `class CalibrationEngine` is
         defined in this submodule; loremaster/loremaster/calibration/__init__.py carries no
         symbols (lore_map: "loremaster.loremaster.calibration  rank 0  symbols: (no symbols)"). -->
-   <!-- W5-REVALIDATE: needs post-flip surface (verify's not-found/did-you-mean rendering may change) -->
+   <!-- W5-REVALIDATE: REVALIDATED post-flip (eval-runner-1, 2026-07-06, live server @ HEAD
+        47fc68b, 14-tool surface): live lore_get_symbol("loremaster.calibration.engine.
+        CalibrationEngine") resolves to loremaster/loremaster/calibration/engine.py:151-157;
+        live lore_map confirms loremaster.loremaster.calibration (the __init__) still carries
+        "(no symbols)". CONFIRMED unchanged; answer stands as-is. -->
    <qa_pair>
       <question>A developer assumes the class that owns the token-calibration probe loop, start/stop/status, and served_constant -- CalibrationEngine -- is defined directly in the top-level loremaster.calibration package module (its __init__.py). It is not defined there. In which exact submodule IS it defined? Give the fully-qualified dotted module path.</question>
       <answer>loremaster.calibration.engine</answer>
@@ -109,7 +125,12 @@
    <!-- RECEIPT: lore_references("loremaster.diff.DiffEngine") -> production_references=1,
         referencing=[loremaster.server.build_app_context]; test_references=4 (all in
         loremaster/tests/test_diff.py). -->
-   <!-- W5-REVALIDATE: needs post-flip surface (AppContext wiring is part of the flip's read-merge/exact-set-pin work) -->
+   <!-- W5-REVALIDATE: REVALIDATED post-flip (eval-runner-1, 2026-07-06, live server @ HEAD
+        47fc68b, 14-tool surface): live lore_impact("loremaster.diff.DiffEngine", depth=1) ->
+        production_references=1, test_references=4, direct_consumers=
+        ["loremaster.server.build_app_context"] - identical to the original receipt; the
+        flip's AppContext read-merge/exact-set-pin work did NOT change this wiring.
+        CONFIRMED unchanged; answer stands as-is. -->
    <qa_pair>
       <question>Exactly one PRODUCTION (non-test) function in the entire codebase references the DiffEngine class directly (four more references come only from tests). What is that single production consumer's fully-qualified dotted name?</question>
       <answer>loremaster.server.build_app_context</answer>
@@ -146,7 +167,11 @@
         other state [than indexed] ... is mid-reindex, NOT deleted - it is collected into
         `in_flight` and EXCLUDED from the comparison"); DiffResult.in_flight field declared
         diff.py:284-305. -->
-   <!-- W5-REVALIDATE: needs post-flip surface (changed_since on lore_diff/map) -->
+   <!-- W5-REVALIDATE: REVALIDATED post-flip (eval-runner-1, 2026-07-06, live server @ HEAD
+        47fc68b, 14-tool surface): direct read of loremaster/loremaster/diff.py confirms
+        `in_flight: list[InFlightFile] = []` still declared on DiffResult (line 309) and still
+        populated/rendered identically (_live_state, _render_in_flight_section unchanged in
+        substance). CONFIRMED unchanged; answer stands as-is. -->
    <qa_pair>
       <question>When diffing a snapshot against the live "now" state, a manifest row whose state is anything OTHER than "indexed" (e.g. dirty, embedding, or failed) is mid-reindex -- it is neither compared nor reported as removed. Which named result field collects these excluded files?</question>
       <answer>in_flight</answer>
