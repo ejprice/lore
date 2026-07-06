@@ -556,3 +556,78 @@ class TestReconcileSummary:
         assert "custom" in summary.tiers_rebuilt
         assert "community" in summary.tiers_rebuilt
         assert summary.files_purged == 0
+
+
+# --------------------------------------------------------------------------- #
+# P8d Wave 3: reconcile() stamps the manifest's "last sweep" meta key
+# --------------------------------------------------------------------------- #
+class TestReconcileStampsLastSweep:
+    """``reconcile()`` is the ONE chokepoint every sweep path funnels through
+    (direct call, ``LiveWatcher.run_sweep``, startup), so it stamps
+    ``META_LAST_SWEEP_AT_KEY`` UNCONDITIONALLY at completion — a liveness signal
+    ("did the sweep mechanism last run") distinct from whether it changed
+    anything or fully succeeded (mirrors ``last_sync``'s per-file counterpart in
+    ``test_indexer.py::TestIndexFileStampsLastSync``).
+    """
+
+    async def test_stamps_last_sweep_on_a_productive_sweep(self, tmp_path: Path) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        engine = _make_engine(config=config, indexer=indexer, trio=trio)
+        from loremaster.index.indexer import META_LAST_SWEEP_AT_KEY
+
+        assert await trio.manifest.meta_get(META_LAST_SWEEP_AT_KEY) is None
+
+        await engine.reconcile()
+
+        stamped = await trio.manifest.meta_get(META_LAST_SWEEP_AT_KEY)
+        assert stamped is not None, "reconcile() must stamp last_sweep on completion"
+        from datetime import UTC, datetime
+
+        parsed = datetime.fromisoformat(stamped)
+        age = (datetime.now(UTC) - parsed).total_seconds()
+        assert 0 <= age < 30, f"last_sweep stamp should be fresh, got age={age}s"
+
+    async def test_stamps_last_sweep_even_on_a_zero_change_sweep(self, tmp_path: Path) -> None:
+        # A second, unchanged-tree sweep still proves the mechanism ran — the
+        # stamp is a liveness signal, not a "something changed" signal.
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        engine = _make_engine(config=config, indexer=indexer, trio=trio)
+        from loremaster.index.indexer import META_LAST_SWEEP_AT_KEY
+
+        await engine.reconcile()
+        first_stamp = await trio.manifest.meta_get(META_LAST_SWEEP_AT_KEY)
+        assert first_stamp is not None
+
+        # Clear the stamp before the second sweep. Asserting `second_stamp !=
+        # first_stamp` would be a strictly weaker check here: both calls run
+        # back-to-back against an in-memory fake with no I/O between them, so
+        # two `datetime.now(UTC).isoformat()` reads landing in the same
+        # microsecond tick is a real (if rare) risk on a coarse system clock —
+        # a flaky pass, not a deterministic one. Deleting the key first makes
+        # the assertion below unconditionally prove the zero-change sweep
+        # itself re-stamps: if `reconcile()` stopped stamping on a no-op
+        # sweep, the key would stay deleted (None) regardless of clock
+        # resolution.
+        await trio.manifest.meta_delete(META_LAST_SWEEP_AT_KEY)
+        assert await trio.manifest.meta_get(META_LAST_SWEEP_AT_KEY) is None
+
+        second_summary = await engine.reconcile()
+        assert second_summary.files_indexed == 0  # nothing changed, zero embeds
+        second_stamp = await trio.manifest.meta_get(META_LAST_SWEEP_AT_KEY)
+        assert second_stamp is not None, (
+            "reconcile() must stamp last_sweep even on a zero-change sweep"
+        )

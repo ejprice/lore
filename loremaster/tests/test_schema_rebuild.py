@@ -961,7 +961,7 @@ class TestFingerprintStampedOnlyAfterCompletion:
 # A6 — index_status reports schema fields (real Surreal)
 # ===========================================================================
 class TestIndexStatusReportsSchemaFields:
-    """``AppContext.index_status()`` surfaces the embedding schema fingerprint
+    """``AppContext.index()`` surfaces the embedding schema fingerprint
     and a schema-rebuild status section.
 
     The contract specifies the OUTPUT SHAPE — we construct the manifest state
@@ -985,7 +985,7 @@ class TestIndexStatusReportsSchemaFields:
         self, tmp_path: Path
     ) -> None:
         """With a fingerprint stamped in the manifest, index_status includes it."""
-        # real-Surreal (needs AppContext.index_status() which needs the store)
+        # real-Surreal (needs AppContext.index() which needs the store)
         from loremaster.index.schema import (
             EMBEDDING_SCHEMA_VERSION,
             embedding_schema_fingerprint,
@@ -1012,7 +1012,7 @@ class TestIndexStatusReportsSchemaFields:
                 start_tasks=False,
             )
             try:
-                status = await app_ctx.index_status()
+                status = await app_ctx.index()
 
                 # The status must carry the embedding_schema section.
                 assert hasattr(status, "embedding_schema"), (
@@ -1063,7 +1063,7 @@ class TestIndexStatusReportsSchemaFields:
                 start_tasks=False,
             )
             try:
-                status = await app_ctx.index_status()
+                status = await app_ctx.index()
 
                 assert hasattr(status, "schema_rebuild"), (
                     "index_status() result must have a 'schema_rebuild' attribute"
@@ -1105,7 +1105,7 @@ class TestIndexStatusReportsSchemaFields:
                 start_tasks=False,
             )
             try:
-                status = await app_ctx.index_status()
+                status = await app_ctx.index()
 
                 assert hasattr(status, "schema_rebuild"), (
                     "index_status() result must have a 'schema_rebuild' attribute"
@@ -1206,8 +1206,8 @@ class TestStartupDecision:
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
-            await seed_ctx.reindex(None)
-            seed_status = await seed_ctx.index_status()
+            await seed_ctx.index(reconcile=True)
+            seed_status = await seed_ctx.index()
             assert seed_status.files_indexed >= 1, (
                 "test setup: the seed build must populate the manifest with indexed rows"
             )
@@ -1405,8 +1405,8 @@ class TestStartupDecision:
             # over a fresh manifest spawns a rebuild (missing fp), which we drain so
             # it does not interfere — we then DELETE the stamp to simulate a legacy
             # index whose provenance is unknown.
-            await seed_ctx.reindex(None)  # bring everything current under the lock
-            seed_status = await seed_ctx.index_status()
+            await seed_ctx.index(reconcile=True)  # bring everything current under the lock
+            seed_status = await seed_ctx.index()
             assert seed_status.files_indexed >= 1, (
                 "the seed build must populate the manifest with indexed rows"
             )
@@ -1773,7 +1773,7 @@ class TestRebuildingNoticeSeam:
         app_ctx = await app_context_factory(config, manifest_path)
         # Index the corpus so the EMPTY result is "no match for this filter", not
         # "empty store". reindex(None) brings every tier current under the lock.
-        await app_ctx.reindex(None)
+        await app_ctx.index(reconcile=True)
 
         # Seed an in_progress rebuild AFTER the index so the read seam reads it.
         current_fp = embedding_schema_fingerprint(config)
@@ -1838,7 +1838,7 @@ class TestRebuildingNoticeSeam:
         manifest_path = tmp_path / "m.db"
 
         app_ctx = await app_context_factory(config, manifest_path)
-        await app_ctx.reindex(None)
+        await app_ctx.index(reconcile=True)
         current_fp = embedding_schema_fingerprint(config)
         await _seed_in_progress_rebuild(slug, from_fp="9" * 64, to_fp=current_fp)
 
@@ -1887,7 +1887,7 @@ class TestRebuildingNoticeSeam:
         manifest_path = tmp_path / "m.db"
 
         app_ctx = await app_context_factory(config, manifest_path)
-        await app_ctx.reindex(None)
+        await app_ctx.index(reconcile=True)
         # NO rebuild status seeded → schema_rebuild.state is idle.
 
         # Same deterministic-empty trick as A8a: a server-side filter matching no
@@ -1936,7 +1936,7 @@ class TestRebuildingNoticeSeam:
         manifest_path = tmp_path / "m.db"
 
         app_ctx = await app_context_factory(config, manifest_path)
-        await app_ctx.reindex(None)
+        await app_ctx.index(reconcile=True)
 
         current_fp = embedding_schema_fingerprint(config)
         await _seed_in_progress_rebuild(slug, from_fp="8" * 64, to_fp=current_fp)
@@ -1975,7 +1975,7 @@ class TestRebuildingNoticeSeam:
         manifest_path = tmp_path / "m.db"
 
         app_ctx = await app_context_factory(config, manifest_path)
-        await app_ctx.reindex(None)
+        await app_ctx.index(reconcile=True)
         # NO rebuild status → idle.
 
         result = await app_ctx.impact("src.widget.Widget.render")
@@ -2378,8 +2378,8 @@ class TestFailedRebuildReportsFailed:
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
-            await seed_ctx.reindex(None)
-            seed_status = await seed_ctx.index_status()
+            await seed_ctx.index(reconcile=True)
+            seed_status = await seed_ctx.index()
             assert seed_status.files_indexed >= 1, (
                 "the seed build must populate the manifest with indexed rows"
             )
@@ -2485,7 +2485,7 @@ class TestFailedRebuildReportsFailed:
                 snapshot_root=tmp_path / "snap",
                 start_tasks=False,
             )
-            status = await app_ctx.index_status()
+            status = await app_ctx.index()
 
             assert hasattr(status, "schema_rebuild"), (
                 "index_status() result must have a 'schema_rebuild' attribute"
@@ -3024,10 +3024,10 @@ class TestMemoryJoinsSchemaRebuild:
                 snapshot_root=snapshot_root,
                 start_tasks=False,
             )
-            await first.reindex(None)  # populate the chunk index under the writer lock
+            await first.index(reconcile=True)  # populate the chunk index under the writer lock
             await _settle(getattr(first, "schema_rebuild_task", None))
             await first.memory_backend.remember(self._NOTE_1, kind="fact")
-            first_status = await first.index_status()
+            first_status = await first.index()
             assert first_status.files_indexed >= 1, (
                 "test setup: the seed build must populate the chunk index"
             )
@@ -3050,7 +3050,7 @@ class TestMemoryJoinsSchemaRebuild:
                     "both the chunk rebuild and the memory rebuild must re-embed; saw "
                     f"{second_embedder.total_embedded} document embeds"
                 )
-                status = await second.index_status()
+                status = await second.index()
                 assert status.files_indexed >= 1, (
                     "the chunk index must stay populated after the rebuild"
                 )

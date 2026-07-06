@@ -47,6 +47,7 @@ import logging
 import math
 import os
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
@@ -1068,7 +1069,8 @@ _INSTRUCTIONS = (
     "a [SOURCE:...] header, hash-verified and FRESHNESS-flagged — the single read "
     "verb. Use after a lore_search / lore_get_symbol hit to read surrounding context. "
     "Its header carries a visible STALE notice when the index is behind the file on "
-    "disk; pass wait_for_fresh=True to lore_search (or run lore_reindex) to refresh.\n"
+    "disk; pass wait_for_fresh=True to lore_search (or run lore_index(reconcile=True)) "
+    "to refresh.\n"
     "- lore_dead_code(...): CANDIDATE dead/orphaned definitions in the project's live tiers "
     "— zero production references (test-only consumers count as dead). A HEURISTIC detector, "
     "not proof: dynamic dispatch, decorators, and public API used outside the tree can evade "
@@ -1085,10 +1087,14 @@ _INSTRUCTIONS = (
     "modules matter most in this project (each with its rendered symbol names), optionally "
     "re-centered on one symbol's own neighbourhood via focus. Reach for this FIRST when you "
     "don't yet know where to look.\n"
-    "- lore_index_status(): the freshness/health roll-up (indexed / in-flight / failed "
-    "counts) read straight from the manifest — zero embeds, cheap.\n"
-    "- lore_reindex(tier=None): force a whole-tier reconcile sweep (or all tiers). The "
-    "heavy 'make everything current now' hammer — not a per-file wait.\n"
+    "- lore_index(reconcile=False, tier=None): the freshness/health roll-up (indexed / "
+    "in-flight / failed counts, embedding-schema + calibration state, last-sync/"
+    "last-sweep ages, newest-snapshot age, per-tool trace-call aggregates) — "
+    "zero embeds, cheap: manifest counts plus bounded trace/snapshot lookups, and "
+    "NEVER sweeps by default. "
+    "Pass reconcile=True (optionally with tier=<one tier>) to force a whole-tier "
+    "reconcile sweep FIRST — the heavy 'make everything current now' hammer, not a "
+    "per-file wait — then render the same status over the just-settled index.\n"
     "- lore_diff(since=None, until=None): what changed between two index SNAPSHOTS. Call it "
     "with no 'since' FIRST to list the recorded snapshot ids, then pass a 'since' (and "
     "optionally 'until'; omit 'until' to diff against the live 'now') to see the "
@@ -1124,8 +1130,9 @@ _INSTRUCTIONS = (
     "IMMEDIATELY query it, you can race the embed window: pass "
     "lore_search(..., wait_for_fresh=True) — it bounded-waits for the in-flight "
     "file(s) matching your path filter, then serves fresh (or stale-flagged on timeout; "
-    "it never hangs). Use lore_reindex(tier=...) only to force a whole tier current; "
-    "for the edit-then-query case wait_for_fresh is the right, cheaper tool.\n"
+    "it never hangs). Use lore_index(reconcile=True, tier=...) only to force a whole "
+    "tier current; for the edit-then-query case wait_for_fresh is the right, cheaper "
+    "tool.\n"
     "\n"
     "MEMORY: lore_remember / lore_recall is PROJECT-SCOPED memory about THIS "
     "repository — embedded and semantically recalled, SHARED across every agent working "
@@ -1167,12 +1174,17 @@ class ProbeGateError(RuntimeError):
 
 
 class ReindexTierError(ValueError):
-    """Raised when ``reindex(tier=...)`` is given a tier the project does not declare.
+    """Raised by ``index(reconcile=..., tier=...)`` on a bad ``tier`` argument.
 
-    Subclasses :class:`ValueError` (a bad argument value). The message NAMES the
-    offending tier AND the valid tiers, so a typo (which would otherwise be
+    Two cases (P8d Wave 3 — this class survives the ``reindex``/``index_status``
+    merge unchanged, now guarding the merged ``index`` handler): (1) ``tier``
+    names a tier the project does not declare — the message NAMES the
+    offending tier AND the valid ones, so a typo (which would otherwise be
     silently ignored — a false-success sweep over every tier) is caught and
-    remediable. ``tier=None`` (reindex all) never raises.
+    remediable; (2) ``tier`` is given without ``reconcile=True`` — a
+    status-only call would otherwise silently ignore it. Subclasses
+    :class:`ValueError` (a bad argument value). ``tier=None`` (sweep all)
+    never raises.
     """
 
 
@@ -1249,12 +1261,15 @@ class CalibrationStatus(BaseModel):
     """The boot token-calibration status surfaced by ``index_status`` (P8c).
 
     A structured mirror of :meth:`~loremaster.calibration.engine.CalibrationEngine.
-    status` — its keys map 1:1 onto these fields, so ``CalibrationStatus(**engine.
-    status())`` round-trips. The ``state`` string surfaces VERBATIM (the deployed
-    exit criterion: ``index_status`` visibly shows ``cached`` / ``measured`` /
-    ``drift_adopted`` / ``cached_retrying``). Attached as an optional nested section
-    on :class:`IndexStatusSummary`, mirroring the ``embedding_schema`` /
-    ``schema_rebuild`` idiom.
+    status` — its keys map 1:1 onto these fields, so ``CalibrationStatus.
+    from_engine_status(engine.status())`` round-trips (that classmethod, not a raw
+    ``CalibrationStatus(**engine.status())`` splat, is the production construction
+    site — see its docstring for why: a FUTURE engine ``status()`` key must not
+    brick the render, audit finding 4 / F3). The ``state`` string surfaces VERBATIM
+    (the deployed exit criterion: ``index_status`` visibly shows ``cached`` /
+    ``measured`` / ``drift_adopted`` / ``cached_retrying``). Attached as an optional
+    nested section on :class:`IndexStatusSummary`, mirroring the ``embedding_schema``
+    / ``schema_rebuild`` idiom.
 
     Attributes:
         state: The serving state — one of ``cached`` / ``measured`` /
@@ -1281,18 +1296,113 @@ class CalibrationStatus(BaseModel):
     baseline_generated_at: str | None = None
     note: str | None = None
 
+    @classmethod
+    def from_engine_status(cls, payload: dict[str, Any]) -> CalibrationStatus:
+        """Construct from :meth:`CalibrationEngine.status`'s snapshot dict, resiliently.
+
+        The model stays ``extra="forbid"`` on the wire — this constructor does
+        not weaken that (a genuinely malformed agent-facing payload must still
+        be rejected). But ``engine.status()`` is an internal seam a FUTURE
+        engine version could grow a new key on without this model growing in
+        lockstep — a raw ``CalibrationStatus(**engine.status())`` splat would
+        then brick every status read (audit finding 4 / F3). This selects only
+        the fields the model declares; any OTHER key present is logged
+        loudly, named, as a drift signal (new engine data this model doesn't
+        yet expose) rather than crashing the render. A payload MISSING a
+        known field still raises (unchanged) — that is a genuine regression
+        worth surfacing, not extra-field drift.
+        """
+        known_fields = set(cls.model_fields)
+        extras = sorted(set(payload) - known_fields)
+        if extras:
+            logger.warning(
+                "index.calibration_status.unknown_engine_fields",
+                extra={"extras": extras},
+            )
+        selected = {key: value for key, value in payload.items() if key in known_fields}
+        return cls(**selected)
+
+
+class AgeStatus(BaseModel):
+    """A single "since when" fact: an ISO-8601 timestamp plus its age in seconds.
+
+    Both fields are ``None`` when the underlying event has never happened yet —
+    rendered honestly as "never" rather than crashing (a pre-existing deployment
+    has no ``last_sync``/``last_sweep`` stamp before its first live-apply/sweep,
+    and a fresh corpus has no snapshot yet). ``age_seconds`` is the RAW elapsed
+    time; the caller phrases it (e.g. "42m ago") — lore does not hand-roll a
+    duration formatter (no existing dependency does this either; the codebase's
+    idiom elsewhere, e.g. :attr:`CalibrationStatus.last_probe_at`, is likewise a
+    raw ISO timestamp, not a pre-rendered phrase).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    at: str | None = None
+    age_seconds: float | None = None
+
+
+class ToolTraceCount(BaseModel):
+    """One tool's call count from the ``trace`` table aggregate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str
+    calls: int
+
+
+class TraceSummary(BaseModel):
+    """The ``trace`` table's aggregate, as surfaced by ``lore_index`` (P8d Wave 3).
+
+    ``total``/``by_tool``/``latest_at`` are ``0``/``[]``/``None`` when nothing has
+    ever been traced — which is EVERY boot today, since no caller yet wires the
+    per-invocation :meth:`~loremaster.store.surreal.SurrealStore.record_trace`
+    emission (that wiring is a later phase per its own docstring; this section
+    only reads whatever rows already exist).
+
+    Attributes:
+        total: The total trace-row count across every tool (the sum of
+            ``by_tool``'s ``calls``).
+        by_tool: Per-tool call counts, sorted by tool name for a deterministic
+            render.
+        latest_at: The ISO-8601 timestamp of the single most recent trace row
+            across every tool, or ``None`` when the table is empty.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    total: int = 0
+    by_tool: list[ToolTraceCount] = Field(default_factory=list)
+    latest_at: str | None = None
+
 
 class IndexStatusSummary(IndexSummary):
-    """``index_status``'s return shape — an :class:`~loremaster.index.indexer.
-    IndexSummary` plus the server-level ``calibration`` section.
+    """``lore_index``'s return shape (P8d Wave 3 merge) — an
+    :class:`~loremaster.index.indexer.IndexSummary` plus the server-level
+    ``calibration``/``last_sync``/``last_sweep``/``newest_snapshot``/``traces``
+    sections.
 
     Calibration is a SERVER-BOOT concern (the Anthropic token yardstick), not an
     indexer concern, so the section is added here as a subclass rather than on the
     indexer's own model. The inherited base fields (``files_indexed`` …) surface
-    unchanged; FastMCP publishes ``calibration`` additively under ``$defs``.
+    unchanged; FastMCP publishes each new section additively under ``$defs``.
+
+    F3 safety pattern (auditor finding, closed here): every field below carries a
+    ``default_factory``/``None`` default, so constructing this model with ONLY the
+    base :class:`IndexSummary` fields (as the pre-existing
+    ``test_calibration_wiring.py`` unit tests do) still validates — adding a field
+    here is an explicit schema edit, but never a BREAKING one for an existing
+    caller that doesn't yet know about it. The NEXT field addition should follow
+    the same shape: a typed section with its own sane "nothing recorded" default,
+    never a bare required field that forces every existing construction site to
+    change in lockstep.
     """
 
     calibration: CalibrationStatus | None = None
+    last_sync: AgeStatus = Field(default_factory=AgeStatus)
+    last_sweep: AgeStatus = Field(default_factory=AgeStatus)
+    newest_snapshot: AgeStatus = Field(default_factory=AgeStatus)
+    traces: TraceSummary = Field(default_factory=TraceSummary)
 
 
 class _CalibrationFindingsAdapter:
@@ -1949,38 +2059,77 @@ class AppContext:
             for task in rows
         )
 
-    async def reindex(self, tier: str | None = None) -> IndexSummary:
-        """Force a reconcile sweep (optionally one tier) and return the summary.
+    async def index(
+        self,
+        *,
+        reconcile: bool = False,
+        tier: str | None = None,
+    ) -> IndexStatusSummary:
+        """Read the index freshness/health status, optionally sweeping first.
 
-        Runs under the watcher's single-writer lock so it never races a live
-        event's ``index_file`` — the read-your-writes / forced-refresh escape
-        hatch. With no watcher running (the test path), reconciles directly.
+        The single merged index tool (P8d Wave 3 — folds the former ``reindex``
+        + ``index_status`` handlers into one). ``reconcile=False`` (the
+        default) is a PURE STATUS READ — it NEVER sweeps, so a plain health
+        check stays cheap and side-effect-free. ``reconcile=True`` runs the
+        SAME "make everything current now" sweep the old ``reindex`` ran
+        (optionally scoped to ``tier``), THEN renders the freshness status over
+        the just-settled index (sweep-then-status).
 
-        A given ``tier`` is VALIDATED against the project's configured tiers
-        first: an unknown value raises :class:`ReindexTierError` naming the bad
-        tier and the valid ones (a typo would otherwise be silently ignored — a
-        sweep over every tier reporting false success). ``tier=None`` means all.
+        Design of the two params (rationale for the report): a bool
+        ``reconcile`` flag plus a separate optional ``tier`` filter, rather
+        than overloading ONE ``reconcile: str | None`` parameter with an
+        "all tiers" sentinel value that would look exactly like a real tier
+        name. The bool spells its own intent (sweep or don't) and ``tier``
+        keeps its pre-merge meaning verbatim (``None`` = every configured
+        tier), so the agent-facing schema never needs a magic string that
+        could be mistaken for a tier. ``tier`` is inert unless paired with
+        ``reconcile=True`` — passing one without the other is refused loudly
+        (see the raise below) rather than silently ignored.
+
+        P8e seam: in a future split-mode deployment this handler's sweep half
+        becomes a command row a remote role executes rather than an in-process
+        call (plan §5) — this wave sweeps in-process locally only.
 
         Args:
-            tier: Limit the sweep to one configured source tier, or ``None`` for
-                every tier.
+            reconcile: When ``True``, run a reconcile sweep before rendering
+                the status (the former ``reindex`` behaviour). ``False``
+                (default) never sweeps.
+            tier: Limit the sweep to one configured source tier. Only
+                meaningful with ``reconcile=True``; validated the same way the
+                old ``reindex(tier=...)`` was (an unknown tier raises
+                :class:`ReindexTierError` naming the valid ones).
 
         Returns:
-            The :class:`~loremaster.index.indexer.IndexSummary` for the sweep.
+            The :class:`IndexStatusSummary` — files_indexed/failed/skipped,
+            the embedding-schema/schema-rebuild/calibration sections, the
+            last-sync/last-sweep/newest-snapshot ages, and the trace
+            aggregates.
 
         Raises:
-            ReindexTierError: If ``tier`` is given but is not a configured tier.
+            ReindexTierError: ``tier`` is given without ``reconcile=True`` (a
+                status-only call would silently ignore it), or ``tier`` names
+                a tier the project does not configure.
         """
-        self._validate_tier(tier)
-        # The forced-refresh hammer waits for an in-flight schema rebuild to
-        # settle first: a rebuild re-embeds every tier, so reconciling on top of a
-        # half-finished rebuild would race it. Awaiting it here makes reindex the
-        # deterministic "everything is current now" barrier the callers expect.
-        await self._settle_schema_rebuild()
-        if self.watcher is not None and self.watcher_started:
-            await self.watcher.run_sweep()
-            return await self.indexer.index_status()
-        return await self.reconcile_engine.reconcile()
+        if tier is not None and not reconcile:
+            raise ReindexTierError(
+                f"tier={tier!r} was given but reconcile=False — a status-only "
+                "call never sweeps and would silently ignore it. Pass "
+                "reconcile=True to sweep that tier (or omit tier to sweep "
+                "every configured tier)."
+            )
+        if reconcile:
+            self._validate_tier(tier)
+            # The forced-refresh hammer waits for an in-flight schema rebuild
+            # to settle first: a rebuild re-embeds every tier, so reconciling
+            # on top of a half-finished rebuild would race it. Awaiting it
+            # here makes the sweep the deterministic "everything is current
+            # now" barrier the callers expect.
+            await self._settle_schema_rebuild()
+            if self.watcher is not None and self.watcher_started:
+                await self.watcher.run_sweep()
+            else:
+                await self.reconcile_engine.reconcile()
+        return await self._build_index_status()
 
     async def _settle_schema_rebuild(self) -> None:
         """Await a pending background schema-rebuild task so the index is settled.
@@ -1998,7 +2147,7 @@ class AppContext:
     def _validate_tier(self, tier: str | None) -> None:
         """Reject a ``tier`` the project does not declare (fail loud on a typo).
 
-        ``None`` (reindex all) is always valid. Otherwise ``tier`` must match one
+        ``None`` (sweep all) is always valid. Otherwise ``tier`` must match one
         of the configured tiers (:attr:`~loremaster.config.LoreConfig.effective_roots`,
         which synthesises the single-tree default tier when ``roots:`` is empty);
         an unknown value raises :class:`ReindexTierError` naming the valid tiers.
@@ -2015,17 +2164,19 @@ class AppContext:
         if tier not in valid_tiers:
             valid = ", ".join(repr(name) for name in valid_tiers)
             raise ReindexTierError(
-                f"unknown tier {tier!r}; reindex accepts only a configured tier "
+                f"unknown tier {tier!r}; the tier must be a configured tier "
                 f"({valid}) or None (all tiers). Check for a typo, or omit the tier "
                 f"to reconcile everything."
             )
 
-    async def index_status(self) -> IndexStatusSummary:
-        """Return the freshness roll-up read purely from the manifest (zero embeds).
+    async def _build_index_status(self) -> IndexStatusSummary:
+        """Assemble the full freshness/health status — the render both a plain
+        status read and a post-sweep read share (P8d Wave 3).
 
         Attaches the :class:`~loremaster.index.indexer.EmbeddingSchemaStatus`,
-        :class:`~loremaster.index.indexer.SchemaRebuildStatus`, and P8c
-        :class:`CalibrationStatus` sections — all cheap reads (no embeds, no store hit):
+        :class:`~loremaster.index.indexer.SchemaRebuildStatus`, P8c
+        :class:`CalibrationStatus`, and the P8d Wave 3 ages/traces sections —
+        all cheap reads (no embeds):
 
         * ``embedding_schema`` carries the stamped fingerprint (``None`` until the
           first rebuild completes) and the current epoch constant.
@@ -2034,9 +2185,25 @@ class AppContext:
         * ``calibration`` is the boot calibration engine's
           :meth:`~loremaster.calibration.engine.CalibrationEngine.status` snapshot
           (``None`` when no engine is wired), so the ``state`` string surfaces
-          verbatim (``cached`` / ``measured`` / ``drift_adopted`` / ``cached_retrying``).
+          verbatim (``cached`` / ``measured`` / ``drift_adopted`` /
+          ``cached_retrying`` / ``integrity_failed``).
+        * ``last_sync``/``last_sweep`` are ages since the manifest's
+          ``META_LAST_SYNC_AT_KEY``/``META_LAST_SWEEP_AT_KEY`` stamps (the
+          watcher's live-apply chokepoint and the reconcile engine's sweep-
+          completion chokepoint, respectively) — "never" (all-``None``) before
+          the first stamp, honestly, not a crash.
+        * ``newest_snapshot`` is the age of the newest ``DiffEngine.list_snapshots``
+          row (reused verbatim, ``limit=1`` — no new snapshot query).
+        * ``traces`` is the store's ``trace`` table aggregate (per-tool call
+          counts + the latest trace timestamp); "none recorded" (all-empty) on
+          a fresh/never-traced table.
         """
-        from loremaster.index.indexer import EmbeddingSchemaStatus, SchemaRebuildStatus
+        from loremaster.index.indexer import (
+            META_LAST_SWEEP_AT_KEY,
+            META_LAST_SYNC_AT_KEY,
+            EmbeddingSchemaStatus,
+            SchemaRebuildStatus,
+        )
         from loremaster.index.schema import (
             EMBEDDING_SCHEMA_VERSION,
             SCHEMA_FINGERPRINT_META_KEY,
@@ -2060,7 +2227,13 @@ class AppContext:
             except (ValueError, TypeError):
                 schema_rebuild = SchemaRebuildStatus()
         engine = self._calibration_engine
-        calibration = CalibrationStatus(**engine.status()) if engine is not None else None
+        calibration = (
+            CalibrationStatus.from_engine_status(engine.status()) if engine is not None else None
+        )
+        last_sync = await self._age_status(META_LAST_SYNC_AT_KEY)
+        last_sweep = await self._age_status(META_LAST_SWEEP_AT_KEY)
+        newest_snapshot = await self._newest_snapshot_age()
+        traces = await self._trace_summary()
         return IndexStatusSummary(
             files_indexed=summary.files_indexed,
             files_failed=summary.files_failed,
@@ -2071,7 +2244,70 @@ class AppContext:
             embedding_schema=embedding_schema,
             schema_rebuild=schema_rebuild,
             calibration=calibration,
+            last_sync=last_sync,
+            last_sweep=last_sweep,
+            newest_snapshot=newest_snapshot,
+            traces=traces,
         )
+
+    async def _age_status(self, meta_key: str) -> AgeStatus:
+        """Read a manifest ISO-timestamp meta key and compute its age since now."""
+        raw = await self.manifest.meta_get(meta_key)
+        return self._age_status_from_iso(raw)
+
+    @staticmethod
+    def _age_status_from_iso(raw: str | None) -> AgeStatus:
+        """Parse a stored ISO timestamp into an age-since-now.
+
+        Renders honestly "never" (an all-``None`` :class:`AgeStatus`) on
+        absence OR corruption — a pre-existing deployment has no stamp yet,
+        and a malformed stamp must not crash a status read (mirrors
+        ``schema_rebuild``'s malformed-blob-falls-back-to-idle idiom above).
+
+        A stamp that PARSES but is timezone-NAIVE is not "malformed" — every
+        writer in this codebase stamps ``datetime.now(UTC).isoformat()``
+        (tz-aware), so a naive stamp is honestly assumed to be UTC (this
+        codebase's own convention) rather than rendered "never" (it DID
+        parse; "never" would be a lie) or left to crash the aware−naive
+        subtraction below (audit finding 2). It is still data drift worth a
+        loud, named log line — something wrote a stamp outside the normal
+        path.
+        """
+        if raw is None:
+            return AgeStatus()
+        try:
+            stamped = datetime.fromisoformat(raw)
+        except ValueError:
+            return AgeStatus()
+        if stamped.tzinfo is None:
+            logger.warning("index.age_status.naive_stamp", extra={"raw": raw})
+            stamped = stamped.replace(tzinfo=UTC)
+        age_seconds = (datetime.now(UTC) - stamped).total_seconds()
+        return AgeStatus(at=raw, age_seconds=max(age_seconds, 0.0))
+
+    async def _newest_snapshot_age(self) -> AgeStatus:
+        """The newest snapshot's age — reuses ``DiffEngine.list_snapshots(1)``
+        verbatim (no new query; ``lore_diff`` already reads through the same
+        method with a caller-supplied limit)."""
+        snapshots = await self._diff_engine.list_snapshots(1)
+        if not snapshots:
+            return AgeStatus()
+        return self._age_status_from_iso(snapshots[0].created_at)
+
+    async def _trace_summary(self) -> TraceSummary:
+        """The store's ``trace`` table aggregate, sorted by tool name for a
+        deterministic render (the store itself makes no ordering promise)."""
+        rows = await self.write_store.trace_aggregates()
+        if not rows:
+            return TraceSummary()
+        by_tool = sorted(
+            (ToolTraceCount(tool=row["tool"], calls=row["calls"]) for row in rows),
+            key=lambda item: item.tool,
+        )
+        total = sum(item.calls for item in by_tool)
+        latest_values = [row["latest"] for row in rows if row.get("latest") is not None]
+        latest_at = max(latest_values).isoformat() if latest_values else None
+        return TraceSummary(total=total, by_tool=by_tool, latest_at=latest_at)
 
     async def dead_code(
         self,
@@ -3365,7 +3601,7 @@ async def _run_schema_rebuild(
         except Exception:
             # The rebuild's underlying work raised (e.g. a TEI endpoint down mid-
             # rebuild). Settle the status to the terminal FAILED state so
-            # index_status / lore_index_status report a dead rebuild instead of a
+            # index_status / lore_index report a dead rebuild instead of a
             # perpetual phantom in_progress (FP-11). The fingerprint is left
             # UNSTAMPED (mark_rebuild_failed only touches the status blob), so the
             # next startup re-detects the mismatch and re-triggers — crash-safety
@@ -3589,10 +3825,11 @@ def _app_context(context: Context[Any, AppContext, Any]) -> AppContext:
 
 # Tool annotations (mcp-builder: set readOnlyHint / idempotentHint / openWorldHint
 # appropriately so a host can reason about a tool before calling it). Every lore
-# tool is read-only EXCEPT lore_remember (persists a note) and reindex (mutates the
-# index state). openWorldHint is False throughout: lore queries THIS project's own
-# closed index, not an open external world. The read tools are idempotent (same
-# args → same observable result, modulo a live edit re-indexing underneath).
+# tool is read-only EXCEPT lore_remember (persists a note) and lore_index's
+# reconcile=True path (mutates the index state). openWorldHint is False
+# throughout: lore queries THIS project's own closed index, not an open external
+# world. The read tools are idempotent (same args → same observable result,
+# modulo a live edit re-indexing underneath).
 _READ_ONLY_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True, idempotentHint=True, openWorldHint=False
 )
@@ -3602,10 +3839,14 @@ _READ_ONLY_ANNOTATIONS = ToolAnnotations(
 _SAVE_MEMORY_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
 )
-# reindex mutates index state (it re-embeds changed files into the store) but is
-# non-destructive and idempotent over an unchanged tree (re-running settles to the
-# same indexed state). Not read-only — it writes vectors.
-_REINDEX_ANNOTATIONS = ToolAnnotations(
+# lore_index CAN mutate index state (reconcile=True re-embeds changed files into
+# the store) — a tool that CAN write is annotated by its strongest capability
+# even though the default (reconcile=False) call never does, exactly like
+# lore_findings/lore_tasks below. The sweep is non-destructive and idempotent
+# over an unchanged tree (re-running settles to the same indexed state). Not
+# read-only — it can write vectors. (P8d Wave 3: renamed from
+# _REINDEX_ANNOTATIONS — lore_reindex no longer exists as a separate tool.)
+_INDEX_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False
 )
 # The fleet task tools mutate the durable ledger (claim / create / transition /
@@ -4134,9 +4375,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "lore_get_symbol hit to read the surrounding context. Because it serves "
             "the embedded bytes rather than re-reading disk, its header carries a "
             "visible STALE notice whenever the index is behind the file on disk — when "
-            "it does, pass wait_for_fresh=True to lore_search (or run lore_reindex) to "
-            "bring the span current. Path is containment-guarded (a '../' traversal, "
-            "absolute path, or escaping symlink is rejected)."
+            "it does, pass wait_for_fresh=True to lore_search (or run "
+            "lore_index(reconcile=True)) to bring the span current. Path is "
+            "containment-guarded (a '../' traversal, absolute path, or escaping "
+            "symlink is rejected)."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -4380,44 +4622,48 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         )
 
     @mcp.tool(
-        name="lore_reindex",
+        name="lore_index",
         description=(
-            "Force a reconcile sweep that re-indexes any changed files NOW and "
-            "returns the freshness summary. This is the heavy 'make everything "
-            "current' hammer over a whole tier (or all tiers) — NOT a per-file wait. "
-            "You rarely need it: the live watcher keeps the index fresh on save. For "
-            "the edit-then-immediately-query case, prefer "
+            "Index freshness/health status, with an optional force-sweep (merges the "
+            "former separate reindex + index-status tools into this one). With NO "
+            "arguments: a CHEAP status-only read (files indexed / in-flight / failed "
+            "counts, embedding-schema + calibration state, last-sync/last-sweep ages, "
+            "newest-snapshot age, per-tool trace-call aggregates) — zero embeds, NEVER "
+            "sweeps. Pass reconcile=True to first force a whole-tier reconcile sweep "
+            "(optionally scoped via tier) — the heavy 'make everything current now' "
+            "hammer, NOT a per-file wait — THEN render the same status over the "
+            "just-settled index. You rarely need reconcile=True: the live watcher keeps "
+            "the index fresh on save. For the edit-then-immediately-query case, prefer "
             "lore_search(..., wait_for_fresh=True), which is cheaper and targeted."
         ),
-        annotations=_REINDEX_ANNOTATIONS,
+        annotations=_INDEX_ANNOTATIONS,
     )
-    async def reindex(
+    async def index(
         context: Context[Any, AppContext, Any],
+        reconcile: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Force a reconcile sweep before reading status. False (default) is "
+                    "a pure status read that NEVER sweeps and never mutates anything. "
+                    "True runs the sweep (scoped by 'tier'), THEN reads status over the "
+                    "just-settled index."
+                )
+            ),
+        ] = False,
         tier: Annotated[
             str | None,
             Field(
                 description=(
-                    "Limit the sweep to one source tier (e.g. 'custom'). Omit (None) "
-                    "to reconcile every tier."
+                    "Limit the sweep to one source tier (e.g. 'custom'). Only honoured "
+                    "with reconcile=True — omit (None) to sweep every tier. Passing "
+                    "tier without reconcile=True raises (it would otherwise be silently "
+                    "ignored by the status-only read)."
                 )
             ),
         ] = None,
-    ) -> IndexSummary:
-        return await _app_context(context).reindex(tier)
-
-    @mcp.tool(
-        name="lore_index_status",
-        description=(
-            "Return the index freshness + health roll-up (files indexed / in-flight "
-            "/ failed counts) read straight from the manifest — zero embeds, cheap. "
-            "Use it to check whether the index is current and healthy before "
-            "trusting a search, or to confirm a lore_reindex settled. Takes no "
-            "arguments."
-        ),
-        annotations=_READ_ONLY_ANNOTATIONS,
-    )
-    async def index_status(context: Context[Any, AppContext, Any]) -> IndexStatusSummary:
-        return await _app_context(context).index_status()
+    ) -> IndexStatusSummary:
+        return await _app_context(context).index(reconcile=reconcile, tier=tier)
 
     # P8d Wave 2 (the impact fold): the lore_what_imports / lore_blast_radius /
     # lore_tests_for / lore_references @mcp.tool registrations were REMOVED

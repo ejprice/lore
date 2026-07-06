@@ -514,6 +514,112 @@ class TestIndexFile:
 
 
 # --------------------------------------------------------------------------- #
+# P8d Wave 3: index_file stamps the manifest's "last live sync" meta key
+# --------------------------------------------------------------------------- #
+class TestIndexFileStampsLastSync:
+    """``index_file`` is called ONLY by the watcher's live-event drain (the sweep
+    walk in ``_walk_and_index`` never calls it — it has its own inline per-file
+    pipeline), so it is the exact chokepoint for "the live watcher last applied a
+    real-time filesystem event" — distinct from ``last_sweep`` (the reconcile
+    engine's own completion stamp, tested in ``test_reconcile.py``).
+
+    The stamp fires regardless of the per-file OUTCOME (indexed / skipped /
+    failed): ``last_sync`` answers "did the mechanism run", not "did it change
+    anything" — a fast-pathed no-op live event still proves the watcher is alive.
+    """
+
+    async def test_stamps_last_sync_on_a_real_index(self, tmp_path: Path) -> None:
+        slug = _slug()
+        root = tmp_path / "live"
+        _build_live_corpus(root)
+        config = _config(slug=slug, live_path=root)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM),
+            snapshot_root=tmp_path / "snap",
+        )
+        from loremaster.index.indexer import META_LAST_SYNC_AT_KEY
+
+        assert await trio.manifest.meta_get(META_LAST_SYNC_AT_KEY) is None, (
+            "unstamped before the first live apply"
+        )
+        source = (root / "src" / "widget.py").read_text(encoding="utf-8")
+        outcome = await indexer.index_file("custom", "src/widget.py", source)
+        assert outcome.state == STATE_INDEXED
+
+        stamped = await trio.manifest.meta_get(META_LAST_SYNC_AT_KEY)
+        assert stamped is not None, "index_file must stamp last_sync on a real index"
+        # A valid, recent ISO timestamp (parseable, not a placeholder).
+        from datetime import UTC, datetime
+
+        parsed = datetime.fromisoformat(stamped)
+        age = (datetime.now(UTC) - parsed).total_seconds()
+        assert 0 <= age < 30, f"last_sync stamp should be fresh, got age={age}s"
+
+    async def test_stamps_last_sync_even_on_fast_path_skip(self, tmp_path: Path) -> None:
+        # A skip (unchanged content) is still a live-watcher activity signal.
+        slug = _slug()
+        root = tmp_path / "live"
+        _build_live_corpus(root)
+        config = _config(slug=slug, live_path=root)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM),
+            snapshot_root=tmp_path / "snap",
+        )
+        from loremaster.index.indexer import META_LAST_SYNC_AT_KEY, STATE_SKIPPED
+
+        source = (root / "src" / "widget.py").read_text(encoding="utf-8")
+        await indexer.index_file("custom", "src/widget.py", source)
+        first_stamp = await trio.manifest.meta_get(META_LAST_SYNC_AT_KEY)
+        assert first_stamp is not None
+
+        # Clear the stamp before the second call. Asserting `second_stamp !=
+        # first_stamp` would be a strictly weaker check here: both calls are
+        # back-to-back against an in-memory fake with no I/O between them, so
+        # two `datetime.now(UTC).isoformat()` reads landing in the same
+        # microsecond tick is a real (if rare) risk on a coarse system clock —
+        # a flaky pass, not a deterministic one. Deleting the key first makes
+        # the assertion below unconditionally prove the fast-path branch
+        # itself re-stamps: if `index_file` stopped calling `_stamp_last_sync`
+        # on the skip path, the key would stay deleted (None) regardless of
+        # clock resolution.
+        await trio.manifest.meta_delete(META_LAST_SYNC_AT_KEY)
+        assert await trio.manifest.meta_get(META_LAST_SYNC_AT_KEY) is None
+
+        # Re-index the SAME content: hits the fast-path (STATE_SKIPPED), but the
+        # stamp must still be (re-)written (the watcher demonstrably ran).
+        outcome = await indexer.index_file("custom", "src/widget.py", source)
+        assert outcome.state == STATE_SKIPPED
+        second_stamp = await trio.manifest.meta_get(META_LAST_SYNC_AT_KEY)
+        assert second_stamp is not None, (
+            "index_file must stamp last_sync even on the fast-path skip branch"
+        )
+
+    async def test_stamps_last_sync_even_on_failure(self, tmp_path: Path) -> None:
+        # A poisoned file (an embed failure) still proves live-watcher liveness.
+        slug = _slug()
+        root = tmp_path / "live"
+        _build_live_corpus(root)
+        config = _config(slug=slug, live_path=root)
+        trio = _trio()
+        source = (root / "src" / "widget.py").read_text(encoding="utf-8")
+        texts = _probe_texts(config, "custom", "src/widget.py", source)
+        assert texts
+
+        embedder = FakeEmbedder(dim=_DIM, fail_inputs=set(texts))
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=embedder, snapshot_root=tmp_path / "snap",
+        )
+        from loremaster.index.indexer import META_LAST_SYNC_AT_KEY
+
+        outcome = await indexer.index_file("custom", "src/widget.py", source)
+        assert outcome.state == STATE_FAILED
+        stamped = await trio.manifest.meta_get(META_LAST_SYNC_AT_KEY)
+        assert stamped is not None, "last_sync must stamp even when the file fails"
+
+
+# --------------------------------------------------------------------------- #
 # NEW P5-C3b decisions: oversize file_text skip + cap-overflow failed-state
 # --------------------------------------------------------------------------- #
 class TestOversizeFileTextSkip:

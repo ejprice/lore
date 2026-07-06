@@ -692,7 +692,7 @@ class TestWipedCollectionHeals:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)  # bring every tier current under the lock
+        await seed.index(reconcile=True)  # bring every tier current under the lock
         await seed.aclose()
 
         # The manifest now claims the live tier is indexed with N>0 chunks. Read
@@ -719,7 +719,7 @@ class TestWipedCollectionHeals:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await restarted.reindex(None)  # settle any in-flight heal under the lock
+        await restarted.index(reconcile=True)  # settle any in-flight heal under the lock
 
         # ASSERT (independent oracle): the LIVE count converged to expected (>0).
         # This holds ONLY because the SWEEP re-embedded real content — the bare
@@ -756,7 +756,7 @@ class TestWipedCollectionHeals:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         await _wipe_tier(slug=slug, tier=_LIVE_TIER)
@@ -765,7 +765,7 @@ class TestWipedCollectionHeals:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await restarted.reindex(None)
+        await restarted.index(reconcile=True)
 
         # Independent oracle: the write-store's own rows for widget.py are back,
         # and carry the REAL authored source (not a placeholder/fabrication).
@@ -814,7 +814,7 @@ class TestOrphanOverCountHeals:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         async with _open_manifest(slug) as manifest:
@@ -837,7 +837,7 @@ class TestOrphanOverCountHeals:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await restarted.reindex(None)
+        await restarted.index(reconcile=True)
 
         # ASSERT (independent oracle): the live count converged DOWN to expected —
         # the orphans were purged by the heal's delete_by_tier + the sweep rebuilt.
@@ -882,7 +882,7 @@ class TestWipedGraphHeals:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         # The manifest claims files are indexed; confirm the graph was populated
@@ -909,7 +909,7 @@ class TestWipedGraphHeals:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await restarted.reindex(None)
+        await restarted.index(reconcile=True)
 
         # ASSERT (independent oracle 1): the LIVE graph is repopulated.
         healed_graph_files = await _live_graph_file_count(slug=slug, config=config, snapshot_root=snap)
@@ -967,7 +967,7 @@ class TestNoFalseHealWhenHealthy:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         # Sanity (independent oracle): the live count already matches expected, so a
@@ -1045,7 +1045,7 @@ class TestNoFalseHealWhenHealthy:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         # Sanity (independent oracles): the index is HEALTHY (live count == expected,
@@ -1136,7 +1136,7 @@ class TestReconcileIdempotent:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         async with _open_manifest(slug) as manifest:
@@ -1154,7 +1154,7 @@ class TestReconcileIdempotent:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await healed_ctx.reindex(None)
+        await healed_ctx.index(reconcile=True)
         await healed_ctx.aclose()
 
         # Confirm the index is GENUINELY healthy now (live count == expected, with
@@ -1235,7 +1235,7 @@ class TestPartialPerTierDivergence:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         async with _open_manifest(slug) as manifest:
@@ -1339,7 +1339,7 @@ class TestPartialPerTierDivergence:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         async with _open_manifest(slug) as manifest:
@@ -1355,7 +1355,7 @@ class TestPartialPerTierDivergence:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await restarted.reindex(None)
+        await restarted.index(reconcile=True)
 
         # ASSERT (live-count oracle): the wiped live tier healed back to expected
         # (real sweep), and the static tier's count is UNCHANGED (still exactly its
@@ -1418,7 +1418,7 @@ class TestReconcileDoesNotFabricatePoints:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         async with _open_manifest(slug) as manifest:
@@ -1518,7 +1518,7 @@ class TestCountVsMtimeInteraction:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         async with _open_manifest(slug) as manifest:
@@ -1540,7 +1540,7 @@ class TestCountVsMtimeInteraction:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await restarted.reindex(None)
+        await restarted.index(reconcile=True)
 
         # ASSERT (independent oracle): despite the unchanged mtime+size, the
         # count-driven heal reset the tier and the sweep re-embedded to expected.
@@ -1585,7 +1585,7 @@ class TestEmptyDecisionReadsLiveCount:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         # The manifest still lists indexed files (it is NOT consulted for the live
@@ -1697,7 +1697,7 @@ class TestGraphOnlyHealDoesNotReEmbed:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         # The collection is healthy: live count == expected, both > 0. This is the
@@ -1809,7 +1809,7 @@ class TestRebuildGraphOnlyIndexerMethod:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         count_before = await _live_count(slug=slug, tier=_LIVE_TIER)
@@ -1994,7 +1994,7 @@ class TestDivergenceHealSetsRebuildingNotice:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         # WIPE the tier empty behind the manifest (the count divergence).
@@ -2067,7 +2067,7 @@ class TestDivergenceHealSetsRebuildingNotice:
             config=config, manifest_path=manifest_path,
             snapshot_root=snap, start_tasks=True,
         )
-        await seed.reindex(None)
+        await seed.index(reconcile=True)
         await seed.aclose()
 
         # Sanity: the index is genuinely healthy (live == expected, > 0).

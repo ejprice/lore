@@ -482,7 +482,10 @@ class TestIntegrityMismatch:
             # Let the probe run to completion (it should stay 'cached', not adopt).
             await engine.wait_until_settled()
         status = engine.status()
-        assert status["state"] == "cached"
+        # P8d Wave 3 (finding #4): an integrity mismatch is now its OWN state —
+        # indistinguishable-from-never-probed was the bug; ``cached`` no longer
+        # covers this branch (fresh-boot-cached is a DIFFERENT, genuine state).
+        assert status["state"] == ce.STATE_INTEGRITY_FAILED
         assert status["served_constant"] == pytest.approx(_COMMITTED)  # committed, NOT adopted
         assert port.reported == []  # a content bug is not a drift finding
         assert "a.py.txt" in (status["note"] or "")  # the mismatched file is named

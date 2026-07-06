@@ -556,8 +556,9 @@ _BUILTIN_TOOLS = {
     "lore_get_symbol",
     "lore_remember",
     "lore_recall",
-    "lore_reindex",
-    "lore_index_status",
+    # P8d Wave 3: lore_reindex + lore_index_status FOLD into ONE lore_index
+    # tool — the two old names no longer publish, dropped from this subset.
+    "lore_index",
     # P8d Wave 2: lore_what_imports / lore_blast_radius / lore_tests_for /
     # lore_references folded into lore_impact and no longer publish their own
     # tool names — dropped from this subset accordingly.

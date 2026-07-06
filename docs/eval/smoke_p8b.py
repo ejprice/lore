@@ -77,8 +77,10 @@ PRE_EXISTING_TOOL_NAMES = frozenset(
         "lore_recall",
         "lore_claim_task",
         "lore_tasks",
-        "lore_reindex",
-        "lore_index_status",
+        # P8d Wave 3: lore_reindex + lore_index_status FOLD into ONE
+        # lore_index(reconcile=False, tier=None) tool; the two old names no
+        # longer publish.
+        "lore_index",
         # P8d Wave 2: lore_what_imports / lore_blast_radius / lore_tests_for /
         # lore_references folded into lore_impact; no longer on the wire surface.
         "lore_dead_code",
@@ -501,49 +503,53 @@ async def check_findings(session: ClientSession) -> None:
 # Check 6 — one legacy-tool sanity call
 # ---------------------------------------------------------------------------
 async def check_legacy_index_status(session: ClientSession) -> None:
-    """lore_index_status (pre-existing tool) still parses as a healthy object."""
-    result = await call_tool(session, "lore_index_status", {})
-    payload = parse_json_result(result, "lore_index_status")
+    """lore_index (pre-existing tool, P8d Wave 3 merge) still parses as a healthy object."""
+    result = await call_tool(session, "lore_index", {})
+    payload = parse_json_result(result, "lore_index")
     if not isinstance(payload, dict) or not payload:
-        raise SmokeCheckFailed(f"lore_index_status: expected a non-empty JSON object, got: {payload!r}")
-    print(f"PASS: lore_index_status() parses -> {json.dumps(payload, sort_keys=True)}")
+        raise SmokeCheckFailed(f"lore_index: expected a non-empty JSON object, got: {payload!r}")
+    print(f"PASS: lore_index() parses -> {json.dumps(payload, sort_keys=True)}")
 
 
 # ---------------------------------------------------------------------------
-# Check 7 — P8c: lore_index_status carries the boot token-calibration section
+# Check 7 — P8c: lore_index carries the boot token-calibration section
 # ---------------------------------------------------------------------------
-# The four serving states CalibrationEngine.status()['state'] can report (copied
+# The FIVE serving states CalibrationEngine.status()['state'] can report (copied
 # verbatim from loremaster.calibration.engine STATE_* so a vocabulary drift there
-# fails this script loudly). The deployed exit criterion: index_status visibly
+# fails this script loudly). The deployed exit criterion: lore_index visibly
 # shows the calibration state (cached / measured / cached_retrying, and
 # drift_adopted under synthetic drift), so the state string must surface verbatim.
-CALIBRATION_STATES = frozenset({"cached", "measured", "drift_adopted", "cached_retrying"})
+# P8d Wave 3 (finding #4): integrity_failed is the 5th state — an integrity
+# mismatch is no longer indistinguishable from never-probed ``cached``.
+CALIBRATION_STATES = frozenset(
+    {"cached", "measured", "drift_adopted", "cached_retrying", "integrity_failed"}
+)
 
 
 async def check_index_status_calibration(session: ClientSession) -> None:
-    """lore_index_status carries a calibration section with a valid state + constants."""
-    result = await call_tool(session, "lore_index_status", {})
-    payload = parse_json_result(result, "lore_index_status (calibration)")
+    """lore_index carries a calibration section with a valid state + constants."""
+    result = await call_tool(session, "lore_index", {})
+    payload = parse_json_result(result, "lore_index (calibration)")
     calibration = payload.get("calibration")
     if not isinstance(calibration, dict):
         raise SmokeCheckFailed(
-            f"lore_index_status: expected a 'calibration' section (a dict), got: {calibration!r} "
+            f"lore_index: expected a 'calibration' section (a dict), got: {calibration!r} "
             f"— the P8c calibration engine must be wired + started at boot"
         )
     state = calibration.get("state")
     if state not in CALIBRATION_STATES:
         raise SmokeCheckFailed(
-            f"lore_index_status calibration.state {state!r} is not one of the four "
+            f"lore_index calibration.state {state!r} is not one of the "
             f"serving states {sorted(CALIBRATION_STATES)}"
         )
     for field in ("served_constant", "committed_constant"):
         if not isinstance(calibration.get(field), (int, float)):
             raise SmokeCheckFailed(
-                f"lore_index_status calibration.{field} must be a number, got: "
+                f"lore_index calibration.{field} must be a number, got: "
                 f"{calibration.get(field)!r}"
             )
     print(
-        f"PASS: lore_index_status() carries calibration -> state={state!r}, "
+        f"PASS: lore_index() carries calibration -> state={state!r}, "
         f"served={calibration['served_constant']}, committed={calibration['committed_constant']}, "
         f"model={calibration.get('model')!r}"
     )

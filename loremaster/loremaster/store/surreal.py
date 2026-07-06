@@ -119,6 +119,7 @@ from loremaster.store.surreal_schema import (
     TRACE_TABLE,
     TRACE_TOKEN_COST_FIELD,
     TRACE_TOOL_FIELD,
+    TRACE_TS_FIELD,
     generate_ddl,
 )
 
@@ -724,6 +725,39 @@ class SurrealStore:
         if model is not None:
             content[TRACE_MODEL_FIELD] = model
         await self._query(f"CREATE {TRACE_TABLE} CONTENT $content", {"content": content})
+
+    async def trace_aggregates(self) -> list[dict[str, Any]]:
+        """Return per-tool call counts + each tool's latest trace timestamp.
+
+        ONE bounded ``GROUP BY`` aggregate over the whole ``trace`` table (P8d
+        Wave 3 — the "later serving-layer phase" the :meth:`record_trace`
+        docstring flagged): ``count()`` per group is the call count,
+        ``time::max(ts)`` per group is that tool's most recent trace instant.
+        Live-verified against the project's pinned SurrealDB (3.1.5): ``count()``
+        + ``time::max()`` combine correctly under ``GROUP BY`` for a ``datetime``
+        column, whereas ``math::max()``/``array::max()`` do NOT (they silently
+        return ``-inf``/``[None, ...]`` on a datetime field) — ``time::max`` is
+        the only correct choice here.
+
+        Returns:
+            One row per distinct ``tool`` that has EVER traced, each
+            ``{"tool": str, "calls": int, "latest": datetime}`` (``latest`` is a
+            tz-aware :class:`datetime.datetime`, the same native-object idiom
+            :meth:`record_trace` writes); ``[]`` for an empty trace table
+            (nothing recorded yet) — never an error. Row order is NOT
+            guaranteed; the caller sorts if it needs determinism.
+
+        Raises:
+            SurrealConnectionError: The server is unreachable or the socket died.
+            SurrealStoreError: The engine rejected the read (a domain fault).
+        """
+        return self._as_rows(
+            await self._query(
+                f"SELECT {TRACE_TOOL_FIELD} AS tool, count() AS calls, "
+                f"time::max({TRACE_TS_FIELD}) AS latest "
+                f"FROM {TRACE_TABLE} GROUP BY {TRACE_TOOL_FIELD}"
+            )
+        )
 
     def replace_file_fragment(
         self,

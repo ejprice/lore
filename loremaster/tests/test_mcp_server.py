@@ -761,7 +761,7 @@ class TestAppContextLifespan:
         # Fix #1 (HIGH): a fresh ``start`` (start_tasks=True) over a corpus that
         # was edited while offline must delta-index IMMEDIATELY — NOT wait out the
         # 600s periodic interval. Build with start_tasks=True over a live root that
-        # already holds an un-indexed .py file, then read index_status right away:
+        # already holds an un-indexed .py file, then read index() right away:
         # files_indexed must reflect the on-disk file (the initial reconcile ran).
         slug = _slug()
         live = tmp_path / "live"
@@ -775,7 +775,7 @@ class TestAppContextLifespan:
         )
         try:
             # Right after start (no sleep, no edit), the offline file is indexed.
-            status = await ctx.index_status()
+            status = await ctx.index()
             assert status.files_indexed >= 1, (
                 "the on-disk file must be indexed by the startup reconcile, not "
                 "left stale until the periodic interval"
@@ -872,7 +872,7 @@ class TestAppContextLifespan:
             # split during the P5 dual-store interim (C3+C5 audit bug #1) so
             # this gating half never hid behind the sibling's then-xfail; both
             # run green unmarked since the P6 read-path cutover.
-            status = await ctx.index_status()
+            status = await ctx.index()
             assert status.files_indexed >= 1, (
                 "watcher.enabled=False must not skip the initial startup sweep"
             )
@@ -953,8 +953,12 @@ _BARE_TOOL_NAMES = {
     # ``save_memory`` / ``recall_memory`` to the shorter ``remember`` / ``recall``.
     "remember",
     "recall",
-    "reindex",
-    "index_status",
+    # P8d Wave 3 (the index merge): ``reindex`` + ``index_status`` FOLD into
+    # ONE ``lore_index(reconcile=False, tier=None)`` tool — a no-arg call is a
+    # pure status read (never sweeps); ``reconcile=True`` runs the old
+    # ``reindex`` sweep first, then renders the same status. They no longer
+    # publish separate tool names.
+    "index",
     # P8d Wave 2 (the impact fold): what_imports / blast_radius / tests_for /
     # references FOLD into lore_impact (depth=1 renders direct consumers +
     # covering tests + reference counts; depth>1 renders the module rollup) —
@@ -1113,7 +1117,6 @@ _READ_ONLY_TOOLS = {
     "lore_get_symbol",
     "lore_verify",
     "lore_recall",
-    "lore_index_status",
     "lore_dead_code",
     # P6-tail: both are pure reads over the graph, never mutating index/memory
     # state — read-only exactly like their five graph-tool neighbours above.
@@ -1126,11 +1129,19 @@ _READ_ONLY_TOOLS = {
     "lore_read",
     "lore_diff",
 }
-_MUTATING_TOOLS = {"lore_remember", "lore_reindex", "lore_findings"}
+# P8d Wave 3: ``lore_index`` replaces ``lore_reindex`` here — the merged tool
+# CAN sweep (``reconcile=True``), so it is annotated by its strongest
+# capability exactly like ``lore_findings``/``lore_tasks``, even though a
+# no-arg call never mutates anything (mcp-builder: a tool that CAN write is
+# not read-only merely because one call shape happens not to).
+_MUTATING_TOOLS = {"lore_remember", "lore_index", "lore_findings"}
 
 # Tools that take NO consumer-facing parameters (so there are no per-field
-# descriptions to assert). ``lore_index_status`` is parameterless.
-_PARAMETERLESS_TOOLS = {"lore_index_status"}
+# descriptions to assert). Empty today: ``lore_index_status`` was the last
+# parameterless tool, and the P8d Wave 3 merge gave it a ``reconcile``/``tier``
+# pair (mirrors ``_LEGITIMATE_NON_TOOL_LORE_TOKENS`` above — the mechanism
+# stays for a genuinely future parameterless tool, it just has no member now).
+_PARAMETERLESS_TOOLS: set[str] = set()
 
 
 class TestServerInstructions:
@@ -1547,8 +1558,18 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
     # return (it no longer carries the retired store's flat ``metadata`` note), so
     # its surfaced fields are pinned behaviourally in TestRecallMemoryCutover
     # rather than as a fixed field-name table here.
-    "lore_reindex": {"files_indexed", "files_failed", "files_skipped"},
-    "lore_index_status": {"files_indexed", "files_failed", "files_skipped"},
+    # P8d Wave 3: the merged tool's fields — the pre-existing counts plus the
+    # redesigned sections (calibration already existed; ages/traces are NEW).
+    "lore_index": {
+        "files_indexed",
+        "files_failed",
+        "files_skipped",
+        "calibration",
+        "last_sync",
+        "last_sweep",
+        "newest_snapshot",
+        "traces",
+    },
     "lore_dead_code": {
         "id",
         "kind",
@@ -1559,7 +1580,7 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
         "test_references",
         "reason",
     },
-    # P6-tail: ImpactResult is a SCALAR return (mirrors lore_index_status), so
+    # P6-tail: ImpactResult is a SCALAR return (mirrors lore_index), so
     # its own fields are top-level properties; its nested ModuleRollup fields
     # surface under $defs. P8d Wave 2: absorbs the folded lore_references /
     # lore_what_imports / lore_blast_radius / lore_tests_for capability —
@@ -1668,8 +1689,8 @@ class TestToolOutputSchemas:
         await ctx.indexer.index_all()
         mcp = build_mcp_server(LoreServer(config))
         try:
-            # index_status: a scalar IndexSummary — structuredContent is the model dict.
-            status_tool = mcp._tool_manager.get_tool("lore_index_status")  # noqa: SLF001
+            # index: a scalar IndexStatusSummary — structuredContent is the model dict.
+            status_tool = mcp._tool_manager.get_tool("lore_index")  # noqa: SLF001
             _content, structured = await status_tool.run(
                 {},
                 context=_FakeToolContext(ctx),
@@ -1747,10 +1768,21 @@ class TestToolBehaviourEndToEnd:
         assert "[SOURCE:" in joined
         assert "pkg/router.py" in joined
 
-    async def test_index_status_reports_healthy(self, indexed_context: AppContext) -> None:
-        status = await indexed_context.index_status()
+    async def test_index_reports_healthy_with_no_args(self, indexed_context: AppContext) -> None:
+        status = await indexed_context.index()
         assert status.files_indexed >= 1
         assert status.files_failed == 0
+        # This fixture indexed via ``indexer.index_all()`` directly — never through
+        # the watcher's live-apply path nor a ``reconcile()`` sweep — so both age
+        # sections render honestly "never", not a crash.
+        assert status.last_sync.at is None
+        assert status.last_sync.age_seconds is None
+        assert status.last_sweep.at is None
+        assert status.last_sweep.age_seconds is None
+        # Nothing ever called record_trace in this fixture.
+        assert status.traces.total == 0
+        assert status.traces.by_tool == []
+        assert status.traces.latest_at is None
 
     async def test_get_symbol_resolves_exact_definition(
         self, indexed_context: AppContext
@@ -2117,21 +2149,25 @@ class TestToolBehaviourEndToEnd:
         dead = await indexed_context.code_graph.dead_code([], max_results=0)
         assert dead == []  # empty is fine, not an error
 
-    async def test_reindex_brings_a_new_file_current(
+    async def test_index_reconcile_true_brings_a_new_file_current(
         self, indexed_context: AppContext, tmp_path: Path
     ) -> None:
-        # Write a NEW file then reindex: it becomes searchable (read-your-writes).
+        # Write a NEW file then index(reconcile=True): it becomes searchable
+        # (read-your-writes) — the former ``reindex()`` behaviour, now reached via
+        # the merged tool's sweep flag.
         live = tmp_path / "live"
         (live / "pkg" / "extra.py").write_text(
             "def freshly_added_symbol():\n    return 7\n", encoding="utf-8"
         )
-        await indexed_context.reindex()
+        await indexed_context.index(reconcile=True)
         symbol = await indexed_context.get_symbol("freshly_added_symbol")
         assert symbol.file_path == "pkg/extra.py"
 
 
 class TestReindexTierValidation:
-    """``reindex(tier=...)`` validates the tier — a typo must fail loud (Item 3).
+    """``index(reconcile=True, tier=...)`` validates the tier — a typo must fail
+    loud (Item 3). Ported onto the P8d Wave 3 merged tool: the SAME validation
+    ``reindex(tier=...)`` ran survives unchanged inside the merged handler.
 
     Today an unknown ``tier`` is SILENTLY ignored (the sweep runs over all roots
     regardless), so a typo reports false success. The fix validates ``tier`` against
@@ -2162,7 +2198,7 @@ class TestReindexTierValidation:
         from loremaster.server import ReindexTierError
 
         with pytest.raises(ReindexTierError) as exc_info:
-            await indexed_context.reindex(tier="bogus")
+            await indexed_context.index(reconcile=True, tier="bogus")
         message = str(exc_info.value)
         assert "bogus" in message, "the error must name the bad tier the caller gave"
         # The configured tier ("custom") must be named so the caller can correct.
@@ -2175,14 +2211,139 @@ class TestReindexTierValidation:
         (Path(live) / "pkg" / "scoped.py").write_text(
             "def scoped_added_symbol():\n    return 11\n", encoding="utf-8"
         )
-        await indexed_context.reindex(tier="custom")
+        await indexed_context.index(reconcile=True, tier="custom")
         symbol = await indexed_context.get_symbol("scoped_added_symbol")
         assert symbol.file_path == "pkg/scoped.py"
 
     async def test_reindex_all_still_works(self, indexed_context: AppContext) -> None:
         # tier=None still means all — the unscoped sweep is unchanged.
-        summary = await indexed_context.reindex()
+        summary = await indexed_context.index(reconcile=True)
         assert summary.files_failed == 0
+
+    async def test_tier_without_reconcile_raises(self, indexed_context: AppContext) -> None:
+        # A caller passing ``tier`` but forgetting ``reconcile=True`` would
+        # otherwise silently get a status-only read that ignores ``tier``
+        # entirely — a teaching-miss the merged tool must refuse loudly instead.
+        from loremaster.server import ReindexTierError
+
+        with pytest.raises(ReindexTierError) as exc_info:
+            await indexed_context.index(tier="custom")
+        message = str(exc_info.value)
+        assert "custom" in message
+        assert "reconcile" in message, (
+            "the error must point the caller at reconcile=True as the fix"
+        )
+
+
+class TestMergedIndexTool:
+    """P8d Wave 3 — the ``lore_index`` redesign: last-sync/last-sweep ages,
+    newest-snapshot age, and trace aggregates, over a REAL corpus + REAL store.
+    """
+
+    @pytest_asyncio.fixture()
+    async def indexed_context(
+        self, tmp_path: Path    ) -> AsyncIterator[AppContext]:
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
+        (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            yield ctx
+        finally:
+            await ctx.aclose()
+
+    async def test_reconcile_true_stamps_last_sweep_but_not_last_sync(
+        self, indexed_context: AppContext, tmp_path: Path
+    ) -> None:
+        # reconcile()'s walk never calls index_file (it has its own inline
+        # per-file pipeline), so a sweep stamps last_sweep but leaves last_sync
+        # untouched — the two ages are genuinely independent signals.
+        (tmp_path / "live" / "pkg" / "extra.py").write_text(
+            "def fresh_symbol_for_sweep():\n    return 1\n", encoding="utf-8"
+        )
+        status = await indexed_context.index(reconcile=True)
+        assert status.last_sweep.at is not None
+        assert status.last_sweep.age_seconds is not None
+        assert 0 <= status.last_sweep.age_seconds < 30
+        assert status.last_sync.at is None
+        assert status.last_sync.age_seconds is None
+
+    async def test_a_live_apply_stamps_last_sync_but_not_last_sweep(
+        self, indexed_context: AppContext
+    ) -> None:
+        # Simulate what the watcher's drain does: call index_file directly
+        # (bypassing reconcile entirely) — only last_sync should move.
+        await indexed_context.indexer.index_file(
+            "custom", "pkg/extra_live.py", "def live_applied_symbol():\n    return 2\n"
+        )
+        status = await indexed_context.index()
+        assert status.last_sync.at is not None
+        assert status.last_sync.age_seconds is not None
+        assert 0 <= status.last_sync.age_seconds < 30
+        assert status.last_sweep.at is None
+
+    async def test_last_sync_age_survives_a_naive_iso_stamp(
+        self, indexed_context: AppContext
+    ) -> None:
+        # Every writer in this codebase stamps `datetime.now(UTC).isoformat()`
+        # (tz-aware) — but the meta value is a plain string, so nothing stops
+        # a future writer, a legacy-timestamp migration, or a manual meta edit
+        # from landing a timezone-NAIVE-but-otherwise-valid ISO stamp. The age
+        # render's own docstring promises "a malformed stamp must not crash a
+        # status read" (audit finding 2) — a naive stamp is honestly assumed
+        # UTC (this codebase's own convention), not crashed on nor silently
+        # rendered "never" (it DID parse; "never" would be a lie).
+        from loremaster.index.indexer import META_LAST_SYNC_AT_KEY
+
+        naive_stamp = "2026-07-06T00:00:00"  # valid ISO-8601, no offset/tzinfo
+        await indexed_context.manifest.meta_set(META_LAST_SYNC_AT_KEY, naive_stamp)
+
+        status = await indexed_context.index()
+
+        assert status.last_sync.at == naive_stamp
+        assert status.last_sync.age_seconds is not None
+        assert status.last_sync.age_seconds >= 0
+
+    async def test_newest_snapshot_age_after_a_productive_sweep(
+        self, indexed_context: AppContext, tmp_path: Path
+    ) -> None:
+        (tmp_path / "live" / "pkg" / "another.py").write_text(
+            "def another_fresh_symbol():\n    return 3\n", encoding="utf-8"
+        )
+        status = await indexed_context.index(reconcile=True)
+        assert status.newest_snapshot.at is not None
+        assert status.newest_snapshot.age_seconds is not None
+        assert status.newest_snapshot.age_seconds >= 0
+
+    async def test_trace_aggregates_reflect_recorded_traces(
+        self, indexed_context: AppContext
+    ) -> None:
+        await indexed_context.write_store.record_trace(
+            tool="lore_search", params_hash="h1", hit_count=3, latency_ms=1.5, session="s1"
+        )
+        await indexed_context.write_store.record_trace(
+            tool="lore_search", params_hash="h2", hit_count=1, latency_ms=2.0, session="s1"
+        )
+        await indexed_context.write_store.record_trace(
+            tool="lore_impact", params_hash="h3", hit_count=0, latency_ms=0.9, session="s1"
+        )
+        status = await indexed_context.index()
+        assert status.traces.total == 3
+        by_tool = {row.tool: row.calls for row in status.traces.by_tool}
+        assert by_tool == {"lore_search": 2, "lore_impact": 1}
+        assert status.traces.latest_at is not None
+
+    async def test_trace_aggregates_empty_when_none_recorded(
+        self, indexed_context: AppContext
+    ) -> None:
+        status = await indexed_context.index()
+        assert status.traces.total == 0
+        assert status.traces.by_tool == []
+        assert status.traces.latest_at is None
 
 
 class _FakeRequestContext:
@@ -2338,14 +2499,47 @@ class TestRegisteredToolWrappers:
         assert structured["stale"] is False
         assert structured["integrity_verified"] is True
 
-    async def test_index_status_wrapper_yields_structured_model(
+    async def test_index_wrapper_yields_structured_model(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
-        structured = await self._structured(mcp, "lore_index_status", ctx)
+        structured = await self._structured(mcp, "lore_index", ctx)
         assert isinstance(structured, dict)
         assert structured["files_indexed"] >= 1
         assert structured["files_failed"] == 0
+
+    async def test_index_wrapper_no_arg_never_sweeps(
+        self, indexed: tuple[Any, AppContext], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The registered wrapper's default call must reach the SAME "never
+        # sweeps" contract as the handler — spy on the reconcile engine to
+        # prove it is never invoked through the live FastMCP dispatch path.
+        mcp, ctx = indexed
+        calls: list[None] = []
+        original_reconcile = ctx.reconcile_engine.reconcile
+
+        async def _spy_reconcile() -> Any:
+            calls.append(None)
+            return await original_reconcile()
+
+        monkeypatch.setattr(ctx.reconcile_engine, "reconcile", _spy_reconcile)
+        await self._structured(mcp, "lore_index", ctx)
+        assert calls == [], "a no-arg lore_index call must never sweep"
+
+    async def test_index_wrapper_reconcile_true_sweeps(
+        self, indexed: tuple[Any, AppContext], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mcp, ctx = indexed
+        calls: list[None] = []
+        original_reconcile = ctx.reconcile_engine.reconcile
+
+        async def _spy_reconcile() -> Any:
+            calls.append(None)
+            return await original_reconcile()
+
+        monkeypatch.setattr(ctx.reconcile_engine, "reconcile", _spy_reconcile)
+        await self._structured(mcp, "lore_index", ctx, reconcile=True)
+        assert calls == [None], "reconcile=True must sweep exactly once"
 
     # P8d Wave 2: test_references_wrapper_yields_structured_model REMOVED —
     # the lore_references TOOL wrapper is deleted (folded into lore_impact).
@@ -3372,16 +3566,34 @@ class TestBuildAppContextWiresSnapshotStamper:
 # server SEAMS in test_calibration_wiring.py; these classes pin the end-to-end
 # BUILD wiring over a real (SurrealDB-backed) AppContext.
 # --------------------------------------------------------------------------- #
-_CALIBRATION_STATES = ("cached", "measured", "drift_adopted", "cached_retrying")
+_CALIBRATION_STATES = (
+    "cached",
+    "measured",
+    "drift_adopted",
+    "cached_retrying",
+    # P8d Wave 3 (finding #4): the 5th state, verbatim end-to-end through index().
+    "integrity_failed",
+)
 
 
 class _FakeStatusEngine:
     """An injectable calibration-engine double with a fixed served constant + status."""
 
-    def __init__(self, *, state: str, served: float = 1.78, committed: float = 1.78) -> None:
+    def __init__(
+        self,
+        *,
+        state: str,
+        served: float = 1.78,
+        committed: float = 1.78,
+        extra_status_fields: dict[str, Any] | None = None,
+    ) -> None:
         self._state = state
         self._served = served
         self._committed = committed
+        # A hook for exercising F3 resilience (audit finding 4): a caller-supplied
+        # key ``status()`` returns that the ``CalibrationStatus`` model does not
+        # (yet) declare — simulating a future engine version outgrowing the model.
+        self._extra_status_fields = extra_status_fields or {}
         self.stopped = False
         self.started = False
 
@@ -3399,6 +3611,7 @@ class _FakeStatusEngine:
             "last_probe_at": None if self._state == "cached" else "2026-07-04T00:00:00+00:00",
             "baseline_generated_at": "2026-07-04T00:00:00+00:00",
             "note": None,
+            **self._extra_status_fields,
         }
 
     async def start(self) -> None:
@@ -3463,12 +3676,48 @@ class TestCalibrationEngineWiring:
             config=config, tmp_path=tmp_path, calibration_engine=engine
         )
         try:
-            status = await ctx.index_status()
-            assert status.calibration is not None, "index_status must carry a calibration section"
+            status = await ctx.index()
+            assert status.calibration is not None, "index() must carry a calibration section"
             assert status.calibration.state == state
             assert status.calibration.served_constant == 1.9
             assert status.calibration.committed_constant == 1.78
             assert status.calibration.model == "claude-sonnet-5"
+        finally:
+            await ctx.aclose()
+
+    async def test_index_status_survives_an_unknown_future_engine_status_key(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # F3 (audit finding 4): CalibrationStatus stays extra="forbid" on the
+        # wire, but a FUTURE engine.status() key must not brick index()'s
+        # render. Before the from_engine_status construction seam, the
+        # production call site was a raw `CalibrationStatus(**engine.status())`
+        # splat — this exercises the REAL end-to-end path (build_app_context ->
+        # index() -> _build_index_status) with an engine whose status() has
+        # grown a key the model doesn't declare, proving the seam is actually
+        # wired in, not just unit-correct in isolation.
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        engine = _FakeStatusEngine(
+            state="measured",
+            served=1.9,
+            committed=1.78,
+            extra_status_fields={"a_future_engine_field": "unexpected"},
+        )
+        ctx = await _make_context(
+            config=config, tmp_path=tmp_path, calibration_engine=engine
+        )
+        try:
+            with caplog.at_level(logging.WARNING):
+                status = await ctx.index()
+            assert status.calibration is not None, "the render must survive, not crash"
+            assert status.calibration.state == "measured"
+            assert status.calibration.served_constant == 1.9
+            assert status.calibration.committed_constant == 1.78
+            logged = [r for r in caplog.records if r.levelno >= logging.WARNING]
+            assert any(
+                "a_future_engine_field" in str(getattr(r, "extras", [])) for r in logged
+            ), "the unknown engine-status key must be logged, named, as a drift signal"
         finally:
             await ctx.aclose()
 
@@ -3482,7 +3731,7 @@ class TestCalibrationEngineWiring:
         ctx = await _make_context(config=config, tmp_path=tmp_path)
         ctx._calibration_engine = None  # noqa: SLF001 — exercise the None branch
         try:
-            status = await ctx.index_status()
+            status = await ctx.index()
             assert status.calibration is None
         finally:
             await ctx.aclose()

@@ -55,6 +55,7 @@ import os
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -208,6 +209,29 @@ _BATCH_LINE_ID_SEPARATOR = chr(0)
 # provider bill). Cleared once the job's results are fully applied (or a
 # terminal-failed job is abandoned to the realtime fallback).
 BULK_SWEEP_BATCH_JOB_META_KEY = "bulk_sweep_batch_job"
+
+# P8d Wave 3 (the index merge/redesign) — the manifest ``meta`` key under which
+# the LIVE WATCHER's per-file apply chokepoint (:meth:`Indexer.index_file`,
+# called ONLY from ``LiveWatcher._apply`` — the sweep walk in
+# :meth:`Indexer._walk_and_index` never calls it, it has its own inline
+# per-file pipeline) stamps an ISO-8601 "when did a live filesystem event last
+# get applied" fact. Stamped unconditionally regardless of the per-file outcome
+# (indexed/skipped/failed) — this is a LIVENESS signal ("did the watcher run"),
+# not a "did it change anything" signal. Read by ``AppContext.index()``
+# (server.py) and rendered as an age; ``None``/absent renders honestly "never"
+# (a pre-existing deployment has no stamp before its first live apply).
+META_LAST_SYNC_AT_KEY = "last_sync_at"
+
+# The manifest ``meta`` key under which :meth:`~loremaster.index.reconcile.
+# ReconcileEngine.reconcile` (the ONE chokepoint every sweep path funnels
+# through — a direct call, ``LiveWatcher.run_sweep``, or the startup sweep)
+# stamps an ISO-8601 "when did a reconcile sweep last COMPLETE" fact,
+# unconditionally, regardless of whether it changed anything or fully
+# succeeded — the sweep-liveness counterpart to :data:`META_LAST_SYNC_AT_KEY`
+# above. Defined here (not in ``reconcile.py``) so both per-file and per-sweep
+# stamp keys live in the ONE place other modules import meta-key constants
+# from (mirrors :data:`BULK_SWEEP_BATCH_JOB_META_KEY`'s precedent).
+META_LAST_SWEEP_AT_KEY = "last_sweep_at"
 
 
 @dataclass
@@ -460,6 +484,14 @@ class Indexer:
         returns that outcome instead of propagating, so the watcher's live-event
         drain never crashes on a single poisoned file.
 
+        P8d Wave 3: this method is called ONLY from ``LiveWatcher._apply`` (the
+        sweep walk in :meth:`_walk_and_index` has its own inline per-file
+        pipeline and never calls it), so it is the exact chokepoint for "a live
+        filesystem event was just applied" — it stamps
+        :data:`META_LAST_SYNC_AT_KEY` unconditionally on every call, regardless
+        of the outcome (indexed/skipped/failed): a liveness signal ("did the
+        watcher run"), not a "did it change anything" signal.
+
         Args:
             tier: The tier the file belongs to.
             path: The tier-relative file path.
@@ -475,25 +507,36 @@ class Indexer:
             and existing.state == STATE_INDEXED
             and existing.sha512 == content_hash
         ):
-            return IndexOutcome(
+            outcome = IndexOutcome(
                 tier=tier, file_path=path, state=STATE_SKIPPED, n_chunks=existing.n_chunks
             )
+        else:
+            size = len(source.encode("utf-8"))
+            try:
+                chunks = self._chunk(path, source)
+            except Exception:
+                # ANY chunker exception (ParseError, a recursion-DoS ValueError,
+                # etc.) isolates THIS file instead of propagating out of the
+                # watcher's live-event path — mirrors the embed/store isolation
+                # below, one step earlier.
+                outcome = await self._handle_chunk_failure(
+                    tier=tier, path=path, content_hash=content_hash, mtime_ns=0, size=size,
+                )
+            else:
+                outcome = await self._index_chunks(
+                    tier=tier, path=path, content_hash=content_hash, source=source,
+                    chunks=chunks, mtime_ns=0, size=size,
+                )
+        await self._stamp_last_sync()
+        return outcome
 
-        size = len(source.encode("utf-8"))
-        try:
-            chunks = self._chunk(path, source)
-        except Exception:
-            # ANY chunker exception (ParseError, a recursion-DoS ValueError,
-            # etc.) isolates THIS file instead of propagating out of the
-            # watcher's live-event path — mirrors the embed/store isolation
-            # below, one step earlier.
-            return await self._handle_chunk_failure(
-                tier=tier, path=path, content_hash=content_hash, mtime_ns=0, size=size,
-            )
-        return await self._index_chunks(
-            tier=tier, path=path, content_hash=content_hash, source=source,
-            chunks=chunks, mtime_ns=0, size=size,
-        )
+    async def _stamp_last_sync(self) -> None:
+        """Stamp :data:`META_LAST_SYNC_AT_KEY` with the current instant.
+
+        Called unconditionally from :meth:`index_file` (the watcher's live-apply
+        chokepoint) regardless of outcome — see that method's docstring.
+        """
+        await self._manifest.meta_set(META_LAST_SYNC_AT_KEY, datetime.now(UTC).isoformat())
 
     async def _index_chunks(
         self,
@@ -1919,7 +1962,7 @@ class Indexer:
         Called by the background rebuild task when ``rebuild_all`` (or the empty-
         index stamp) raises. Rewrites the ``schema_rebuild_status`` blob to the
         terminal :data:`_REBUILD_STATE_FAILED` state so ``index_status`` /
-        ``lore_index_status`` surface a dead rebuild instead of a perpetual
+        ``lore_index`` surface a dead rebuild instead of a perpetual
         ``in_progress``. The current ``done``/``total`` progress is preserved from
         the existing blob (best effort) so the failed surface keeps a meaningful
         denominator; absent/malformed progress falls back to zero.

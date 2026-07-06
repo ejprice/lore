@@ -42,11 +42,12 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from loremaster.config import WATCH_LIVE
-from loremaster.index.indexer import IndexSummary
+from loremaster.index.indexer import META_LAST_SWEEP_AT_KEY, IndexSummary
 from loremaster.index.paths import is_included, walked_dirs
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,12 @@ class ReconcileEngine:
             },
         )
         await self._maybe_stamp_snapshot(result)
+        # P8d Wave 3: stamp the sweep-liveness fact UNCONDITIONALLY — "did the
+        # sweep mechanism last run", not "did it change anything" or "did it
+        # fully succeed" (those are separate facts the render can already read
+        # off files_failed/files_indexed/files_purged). Mirrors index_file's
+        # META_LAST_SYNC_AT_KEY stamp on the per-file live-apply side.
+        await self._manifest.meta_set(META_LAST_SWEEP_AT_KEY, datetime.now(UTC).isoformat())
         return result
 
     async def _maybe_stamp_snapshot(self, summary: ReconcileSummary) -> None:

@@ -27,7 +27,8 @@ Drift is judged on the AGGREGATE token-weighted totals (``live_total`` vs the ba
 ``claude_total``), never per-file ratios — those legitimately vary ~1.6–2.2 by content
 shape. An *integrity* mismatch (the shipped corpus no longer hashes to the baseline) is a
 packaging/content bug, NOT token drift: the engine logs it, serves the committed constant,
-adopts NOTHING, and files no finding.
+adopts NOTHING, files no finding, and flips to its OWN state (:data:`STATE_INTEGRITY_FAILED`,
+P8d Wave 3) — distinguishable from fresh-boot ``cached`` by ``state`` alone.
 
 The drift finding is filed with ``kind="drift"`` — the finding ``kind`` field is FREE-FORM
 (a ``TYPE string`` + trim-aware non-empty ``ASSERT``, not a closed-domain enum; only
@@ -74,6 +75,12 @@ STATE_CACHED: str = "cached"
 STATE_MEASURED: str = "measured"
 STATE_DRIFT_ADOPTED: str = "drift_adopted"
 STATE_CACHED_RETRYING: str = "cached_retrying"
+#: P8d Wave 3 (finding #4): an integrity mismatch (the shipped corpus no longer
+#: hashes to the baseline) is its OWN terminal state — distinct from fresh-boot
+#: ``cached``. Before this, ``_handle_integrity_failure`` served ``cached`` with
+#: only a distinguishing ``note``, making an integrity mismatch indistinguishable
+#: from "never probed yet" by ``state`` alone.
+STATE_INTEGRITY_FAILED: str = "integrity_failed"
 
 #: Aggregate token-weighted shift, ``|live_total / baseline_total − 1|``, at or above which
 #: the live generation is treated as DRIFTED and the scaled constant is adopted. The
@@ -409,7 +416,10 @@ class CalibrationEngine:
 
         An integrity mismatch means the shipped corpus no longer matches the baseline's
         hashes — a packaging/content bug, not token drift. It is TERMINAL (retrying cannot
-        heal a content mismatch) and files no drift finding.
+        heal a content mismatch) and files no drift finding. State flips to
+        :data:`STATE_INTEGRITY_FAILED` (P8d Wave 3, finding #4) — NOT :data:`STATE_CACHED` —
+        so this branch is distinguishable from "never probed yet" by ``state`` alone; the
+        ``note`` remains the human-readable detail, the state carries the machine-readable fact.
         """
         offenders = sorted({*integrity.mismatched, *integrity.missing, *integrity.unexpected})
         names = ", ".join(offenders)
@@ -423,7 +433,7 @@ class CalibrationEngine:
         )
         self._set_state(
             served=self._committed,
-            state=STATE_CACHED,
+            state=STATE_INTEGRITY_FAILED,
             ratio_shift=None,
             last_probe_at=self._clock().isoformat(),
             note=f"corpus integrity mismatch ({names}); serving committed constant, NOT adopting",

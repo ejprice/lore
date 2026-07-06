@@ -35,6 +35,7 @@ from loremaster.calibration.engine import (
     STATE_CACHED,
     STATE_CACHED_RETRYING,
     STATE_DRIFT_ADOPTED,
+    STATE_INTEGRITY_FAILED,
     STATE_MEASURED,
 )
 from loremaster.findings import (
@@ -51,7 +52,15 @@ from loremaster.server import (
     _CalibrationFindingsAdapter,
 )
 
-_ALL_STATES = [STATE_CACHED, STATE_MEASURED, STATE_DRIFT_ADOPTED, STATE_CACHED_RETRYING]
+_ALL_STATES = [
+    STATE_CACHED,
+    STATE_MEASURED,
+    STATE_DRIFT_ADOPTED,
+    STATE_CACHED_RETRYING,
+    # P8d Wave 3 (finding #4): the 5th state — an integrity mismatch is its own
+    # state now, distinguishable from never-probed ``cached``.
+    STATE_INTEGRITY_FAILED,
+]
 _BOOT_LOG_EVENT = "startup.calibration.committed"
 
 
