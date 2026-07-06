@@ -360,12 +360,29 @@ class ImpactEngine:
         if not await self._target_is_known(
             summary, covering_tests, direct_consumers, module_rollups, target
         ):
-            raise ImpactTargetNotFoundError(
+            message = (
                 f"no symbol or module named {target!r} appears in the code "
                 f"graph (never indexed, or indexed under a different "
                 f"qualified name). Next step: try lore_search({target!r}) to "
                 f"locate it."
             )
+            if "." in target:
+                # Finding #63: the graph only matches an astroid-RESOLVED
+                # full FQN or an unresolved bare written name -- an
+                # intermediate, module-less "Class.method" form (exactly
+                # what lore_get_symbol resolves by identity) matches
+                # neither, so this miss may be a resolvable symbol whose
+                # module qualifier was simply omitted. Name the one
+                # actionable widen-then-retry path rather than leaving a
+                # resolvable-shaped target looking like a dead end.
+                message += (
+                    f" If {target!r} omits its containing module (a bare "
+                    f"Class.method form), lore_get_symbol({target!r}) "
+                    f"resolves by identity independent of module "
+                    f"qualification -- retry lore_impact with the "
+                    f"module-qualified name it names."
+                )
+            raise ImpactTargetNotFoundError(message)
 
         verdict = _VERDICT_LIVE if summary.production_references > 0 else _VERDICT_DEAD
         formatted = self._render(

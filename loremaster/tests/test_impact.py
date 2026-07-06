@@ -454,6 +454,28 @@ class TestUnknownTarget:
         assert "totally.bogus.symbol" in message
         assert "lore_search" in message
 
+    async def test_unknown_dotted_target_also_teaches_the_get_symbol_widen_path(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Finding #63: a target shaped like ``ClassName.method_name`` (the
+        # module-prefix omitted) is exactly what ``lore_get_symbol`` resolves
+        # by identity but ``lore_impact`` cannot -- the graph only matches an
+        # astroid-resolved full FQN or an unresolved bare written name, never
+        # this intermediate, module-less form (see REPORT-slate-fixer-63.md
+        # §2). Until the graph itself grows a matching capability, a dotted
+        # miss must at least teach the ONE actionable next step: resolve the
+        # full name via lore_get_symbol first, then retry lore_impact with
+        # THAT name.
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        with pytest.raises(_errors().ImpactTargetNotFoundError) as exc_info:
+            await engine.impact("TotallyBogusClass.totally_bogus_method", depth=1)
+        message = str(exc_info.value)
+        assert "TotallyBogusClass.totally_bogus_method" in message
+        assert "lore_search" in message
+        assert "lore_get_symbol" in message
+
 
 # --------------------------------------------------------------------------- #
 # 10/11 — determinism + the bounded, explicitly-elided consumer list
