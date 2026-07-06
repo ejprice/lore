@@ -3,10 +3,10 @@
 PROVENANCE (ledger task P8a-9, EVAL BASELINE, 2026-07-04):
   Source:  ~/.claude/skills/mcp-builder/scripts/evaluation.py (mcp-builder skill,
            Phase-4 evaluation harness), copied verbatim then patched twice below.
-  Sibling: connections.py in this same directory (docs/eval/connections_p8a.py) is
-           REQUIRED alongside this file -- it is copied byte-for-byte unmodified
-           from the same skill scripts dir and is a load-bearing import
-           (`from connections import create_connection`).
+  Sibling: connections_p8a.py in this same directory is REQUIRED alongside this
+           file -- it is copied byte-for-byte unmodified from the same skill
+           scripts dir and is a load-bearing import
+           (`from connections_p8a import create_connection`).
   Pinned model: claude-sonnet-4-5-20250929 (see docs/eval/2026-07-04-p8a-baseline.md
            for why -- the script's original hardcoded default,
            claude-3-7-sonnet-20250219, is retired/404 on this account).
@@ -59,7 +59,7 @@ from pathlib import Path
 from typing import Any
 
 from anthropic import Anthropic
-from connections import create_connection
+from connections_p8a import create_connection
 
 EVALUATION_PROMPT = """You are an AI assistant with access to tools.
 
