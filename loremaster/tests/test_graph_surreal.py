@@ -3373,3 +3373,233 @@ class TestReferencesBareNameFqnCollisionFanOut:
 
         assert referrers == {ROUTING_ALPHA_CONSUMER_MODULE, FQN_ALPHA_DISPATCH}
         assert summary.production_references == 2
+        # Finding #65 channel honesty: this fixture DOES carry a same-bare-name
+        # sibling (beta's champion_routing) but BOTH alpha's and beta's own
+        # callers are astroid-RESOLVED (a plain `from X import Y; Y(...)` --
+        # never an unresolved bare dst), so the exact-FQN query never rides the
+        # bare-fallback channel at all. A genuinely scoped, collision-free
+        # query must never carry the channel flag, even in a corpus that DOES
+        # have a bare-name-colliding sibling elsewhere.
+        assert summary.bare_fallback_used is False
+        assert summary.bare_fallback_candidates == []
+
+
+# ===========================================================================
+# 17. Finding #65 channel honesty -- ``references`` must DISCLOSE when a
+# match rode the bare-fallback OR-term (rather than the literal exact-name
+# dst) and NAME the actual colliding FQN candidates, regardless of whether
+# the query string itself is bare or already dotted/fully-qualified.
+#
+# THE BUG (live-reproduced, REPORT-slate-fixer-63.md SS2-3, finding #65):
+# ``references()``'s base query always OR's in a match on the target's bare
+# trailing segment, for ANY target -- bare, module-less-dotted, or already
+# fully-qualified. When a DIFFERENT symbol elsewhere shares that bare tail
+# AND has an astroid-UNRESOLVABLE caller (dst falls back to the bare written
+# name), an exact-FQN query for symbol A silently serves symbol B's colliding
+# reference mixed into (or standing in for) its own profile -- a confident
+# WRONG answer, not an honest miss. The live repro: ``lore_impact
+# ("SymbolResolver.resolve")`` returned ``SnapshotLayout.resolve``'s exact
+# 3 prod / 12 test profile under the wrong label.
+#
+# THE FIX must let the query's OWN result set disclose which of its counted
+# sources came ONLY from the risky bare/bridge channel (never present in a
+# SEPARATE exact-name-only sub-query over the SAME target) and name every
+# OTHER FQN the bare tail answers to -- so a caller (impact.py's ``_render``)
+# can key its caveat on the ACTUAL resolution channel, not on the syntactic
+# presence of a "." in the query string.
+# ===========================================================================
+
+RESOLVE_ALPHA_SOURCE: str = textwrap.dedent(
+    '''\
+    """resolve_pkg.alpha -- defines ClassAlpha.resolve, called via a
+    receiver astroid CAN infer (a local instantiation) -- a RESOLVED call, so
+    its dst is the exact FQN, never the bare fallback."""
+
+
+    class ClassAlpha:
+        """Alpha's own resolve -- collides on the bare name with beta's."""
+
+        def resolve(self, name):
+            """Alpha's resolve."""
+            return name
+    '''
+)
+RESOLVE_ALPHA_CONSUMER_SOURCE: str = textwrap.dedent(
+    '''\
+    """A production caller whose receiver type astroid CAN infer."""
+    from resolve_pkg.alpha import ClassAlpha
+
+
+    def use_alpha(name):
+        """Instantiates ClassAlpha directly -- a RESOLVED call."""
+        alpha = ClassAlpha()
+        return alpha.resolve(name)
+    '''
+)
+RESOLVE_BETA_SOURCE: str = textwrap.dedent(
+    '''\
+    """resolve_pkg.beta -- a SEPARATE, unrelated module ALSO defining a
+    ``resolve`` method (same bare name, different FQN, no relation to
+    resolve_pkg.alpha)."""
+
+
+    class ClassBeta:
+        """Beta's own resolve -- unrelated to alpha's."""
+
+        def resolve(self, name):
+            """Beta's resolve."""
+            return name
+    '''
+)
+RESOLVE_BETA_CONSUMER_SOURCE: str = textwrap.dedent(
+    '''\
+    """A production caller whose receiver type astroid CANNOT infer -- the
+    call's dst falls back to the bare written name "resolve", never
+    resolve_pkg.beta.ClassBeta.resolve."""
+
+
+    def use_beta(unknown_receiver, name):
+        """Calls .resolve on an untyped, un-inferable parameter."""
+        return unknown_receiver.resolve(name)
+    '''
+)
+
+RESOLVE_ALPHA_PATH: str = "resolve_pkg/alpha.py"
+RESOLVE_ALPHA_CONSUMER_PATH: str = "resolve_pkg/alpha_consumer.py"
+RESOLVE_BETA_PATH: str = "resolve_pkg/beta.py"
+RESOLVE_BETA_CONSUMER_PATH: str = "resolve_pkg/beta_consumer.py"
+
+RESOLVE_ALPHA_MODULE: str = "resolve_pkg.alpha"
+RESOLVE_ALPHA_CONSUMER_MODULE: str = "resolve_pkg.alpha_consumer"
+RESOLVE_BETA_MODULE: str = "resolve_pkg.beta"
+RESOLVE_BETA_CONSUMER_MODULE: str = "resolve_pkg.beta_consumer"
+
+FQN_ALPHA_RESOLVE: str = "resolve_pkg.alpha.ClassAlpha.resolve"
+FQN_BETA_RESOLVE: str = "resolve_pkg.beta.ClassBeta.resolve"
+FQN_USE_ALPHA: str = "resolve_pkg.alpha_consumer.use_alpha"
+FQN_USE_BETA: str = "resolve_pkg.beta_consumer.use_beta"
+
+
+def _write_resolve_collide_package(root: Path) -> None:
+    """Materialise the two-module bare-name method collision package on disk."""
+    (root / "resolve_pkg").mkdir(parents=True, exist_ok=True)
+    (root / "resolve_pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "resolve_pkg" / "alpha.py").write_text(RESOLVE_ALPHA_SOURCE, encoding="utf-8")
+    (root / "resolve_pkg" / "alpha_consumer.py").write_text(
+        RESOLVE_ALPHA_CONSUMER_SOURCE, encoding="utf-8"
+    )
+    (root / "resolve_pkg" / "beta.py").write_text(RESOLVE_BETA_SOURCE, encoding="utf-8")
+    (root / "resolve_pkg" / "beta_consumer.py").write_text(
+        RESOLVE_BETA_CONSUMER_SOURCE, encoding="utf-8"
+    )
+
+
+@pytest_asyncio.fixture()
+async def resolve_collide_graph(
+    surreal_env: SurrealEnv,  # noqa: F811
+    tmp_path: Path,
+) -> AsyncIterator[tuple[SurrealCodeGraph, SurrealEnv]]:
+    """A resolution-enabled graph over the method-level bare-collision package."""
+    project_root = tmp_path / "project"
+    _write_resolve_collide_package(project_root)
+    graph = await _make_and_build_graph(
+        surreal_env,
+        project_root,
+        [
+            (RESOLVE_ALPHA_PATH, RESOLVE_ALPHA_SOURCE, RESOLVE_ALPHA_MODULE),
+            (
+                RESOLVE_ALPHA_CONSUMER_PATH,
+                RESOLVE_ALPHA_CONSUMER_SOURCE,
+                RESOLVE_ALPHA_CONSUMER_MODULE,
+            ),
+            (RESOLVE_BETA_PATH, RESOLVE_BETA_SOURCE, RESOLVE_BETA_MODULE),
+            (
+                RESOLVE_BETA_CONSUMER_PATH,
+                RESOLVE_BETA_CONSUMER_SOURCE,
+                RESOLVE_BETA_CONSUMER_MODULE,
+            ),
+        ],
+    )
+    try:
+        yield graph, surreal_env
+    finally:
+        await graph.close()
+
+
+class TestReferencesBareFallbackChannelHonesty:
+    """Finding #65: an exact-FQN query must DISCLOSE when its result rode the
+    bare-fallback channel and NAME the colliding FQN(s) -- never a silent
+    confident-wrong merge, and never a false alarm when no real collision
+    contributed.
+    """
+
+    async def test_exact_query_names_the_colliding_candidate_when_the_bare_channel_serves(
+        self, resolve_collide_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """``references(FQN_ALPHA_RESOLVE)`` must ALSO surface beta's
+        unresolved caller (the live #65 mechanism) -- but HONESTLY: flagged,
+        with beta's FQN named, never silently presented as alpha's own clean
+        profile.
+
+        Independent oracle: alpha has exactly one exact-FQN caller
+        (``use_alpha``); beta's caller (``use_beta``) can ONLY reach this
+        query via the bare "resolve" OR-term (its dst is the bare literal,
+        never ``resolve_pkg.alpha.ClassAlpha.resolve`` nor
+        ``resolve_pkg.beta.ClassBeta.resolve``).
+        """
+        graph, _env = resolve_collide_graph
+        summary = await graph.references(FQN_ALPHA_RESOLVE)
+        referrers = {n.qualified_name for n in summary.referencing}
+
+        # The collision reproduces: beta's caller rides in alongside alpha's own.
+        assert FQN_USE_ALPHA in referrers
+        assert FQN_USE_BETA in referrers
+        assert summary.production_references == 2
+
+        # THE FIX: channel honesty. Never silent.
+        assert summary.bare_fallback_used is True
+        assert FQN_BETA_RESOLVE in summary.bare_fallback_candidates
+        # Self-exclusion: the query's own FQN is never named as its own collidee.
+        assert FQN_ALPHA_RESOLVE not in summary.bare_fallback_candidates
+
+    async def test_exact_query_with_no_real_collision_never_flags_the_channel(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """A clean, non-colliding exact-FQN query (``FQN_WIDGET``, no other
+        symbol anywhere in this corpus shares its bare name) must NEVER
+        flag the bare-fallback channel -- the honesty fix must not manufacture
+        risk where none exists.
+        """
+        graph, _env = reflib_graph
+        summary = await graph.references(FQN_WIDGET)
+
+        assert summary.bare_fallback_used is False
+        assert summary.bare_fallback_candidates == []
+
+    async def test_bare_query_with_a_unique_symbol_never_flags_the_channel(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """A BARE query is only "risky" when its bare name genuinely collides
+        across MORE THAN ONE distinct symbol -- reaching a resolved FQN's
+        edges through the ``answers_to`` bridge is how EVERY bare query works,
+        never itself the risk. ``"widget"`` has exactly one owner in this
+        corpus, so the union is trivially that one symbol's own profile.
+        """
+        graph, _env = reflib_graph
+        summary = await graph.references("widget")
+
+        assert summary.bare_fallback_used is False
+        assert summary.bare_fallback_candidates == []
+
+    async def test_bare_query_with_a_genuine_collision_flags_and_names_both_candidates(
+        self, routing_collide_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """A bare query genuinely colliding across two distinct FQNs (alpha's
+        and beta's ``champion_routing``) must flag the channel and name BOTH
+        real candidates (finding #43's ask), not a generic "may collide" hedge.
+        """
+        graph, _env = routing_collide_graph
+        summary = await graph.references("champion_routing")
+
+        assert summary.bare_fallback_used is True
+        assert set(summary.bare_fallback_candidates) == {FQN_ALPHA_ROUTING, FQN_BETA_ROUTING}

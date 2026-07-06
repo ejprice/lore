@@ -186,6 +186,10 @@ _P_TIERS = "tiers"
 _P_BARE = "bare"
 _P_PAIR_TIER = "pair_tier"
 _P_PAIR_FILE = "pair_file"
+# Finding #65's channel-honesty exact-only probe in ``references`` — a single
+# scalar dst id (never a list), kept distinct from ``_P_NAMES``'s list-bound
+# params so the two queries' bindings can never collide.
+_P_EXACT_NAME = "exact_name"
 
 # The build/purge fragment's fixed tier/file params — namespaced under
 # :data:`GRAPH_FRAGMENT_PARAM_PREFIX` because these DO compose into the shared
@@ -1385,6 +1389,23 @@ class SurrealCodeGraph:
         is resolved under ``demo.reflib.widget.``). Self-reference exclusion
         applies identically to rows this arm contributes.
 
+        Finding #65 (channel honesty): the base arm's bare-trailing-segment
+        OR-term above is RISKY — an astroid-unresolvable caller ANYWHERE in
+        the corpus sharing ``name``'s bare tail rides it too, regardless of
+        whether ``name`` itself is bare, module-less-dotted, or already fully
+        qualified. A SEPARATE exact-name-only sub-query (never the bare term,
+        never the bridge, but the module-prefix arm IS re-included — it is a
+        precise, anchored channel, not the risky one) establishes which
+        counted sources are reachable WITHOUT the risky term;
+        :attr:`~loremaster.graph.ReferenceSummary.bare_fallback_used` is
+        ``True`` iff at least one counted source is reachable ONLY via the
+        risky channel, in which case :meth:`_bare_name_answerers` names the
+        actual colliding FQN(s) in
+        :attr:`~loremaster.graph.ReferenceSummary.bare_fallback_candidates`
+        (finding #43's "name the actual candidates" ask) — computed lazily
+        (only when the channel actually contributed) so a clean, non-colliding
+        query pays no extra query cost.
+
         Args:
             name: The qualified name of the symbol to profile.
 
@@ -1422,34 +1443,32 @@ class SurrealCodeGraph:
         # own arm): a MODULE-name ``name`` also reaches every ``from <module>
         # import <symbol>`` importer, whose ``imports`` edge dst is the resolved
         # SYMBOL fqn (``name.symbol``), never the bare module. Fed through the
-        # SAME classification loop below (production/test split, self-reference
+        # SAME classification helper below (production/test split, self-reference
         # exclusion, dedupe) — never a second, drifting copy of that logic.
         prefix_name_ids = await self._names_with_value_prefix(
             [f"{name}{_QUALIFIER_SEPARATOR}"]
         )
+        prefix_rows: list[dict[str, Any]] = []
         if prefix_name_ids:
-            rows = rows + self._rows(
+            prefix_rows = self._rows(
                 await self._query(
                     f"SELECT {_EDGE_IN}, {_COL_SRC_FILE_PATH} FROM {REFERS_RELATION} "
                     f"WHERE {_COL_KIND} = ${_P_KIND} AND {_EDGE_OUT} IN ${_P_NAMES}",
                     {_P_KIND: EDGE_IMPORTS, _P_NAMES: prefix_name_ids},
                 )
             )
-        production: set[str] = set()
-        test: set[str] = set()
-        referencing_ids: dict[str, RecordID] = {}
-        for row in rows:
-            source_id = row[_EDGE_IN]
-            if not isinstance(source_id, RecordID):
-                continue
-            source_qname = self._composite_qname(source_id)
-            if source_qname in target_names:
-                continue  # self-reference excluded (incl. any bridged collidee)
-            if self._is_test_path(str(row[_COL_SRC_FILE_PATH])):
-                test.add(source_qname)
-            else:
-                production.add(source_qname)
-            referencing_ids[str(source_id)] = source_id
+        production, test, referencing_ids = self._classify_reference_rows(
+            rows + prefix_rows, target_names
+        )
+
+        bare_fallback_used, bare_fallback_candidates = await self._reference_channel_risk(
+            name,
+            bare,
+            production,
+            test,
+            prefix_rows,
+            target_names,
+        )
 
         referencing = self._dedupe_by_id(await self._nodes_by_ids(list(referencing_ids.values())))
         return ReferenceSummary(
@@ -1457,7 +1476,116 @@ class SurrealCodeGraph:
             production_references=len(production),
             test_references=len(test),
             referencing=referencing,
+            bare_fallback_used=bare_fallback_used,
+            bare_fallback_candidates=bare_fallback_candidates,
         )
+
+    async def _reference_channel_risk(
+        self,
+        name: str,
+        bare: str,
+        production: set[str],
+        test: set[str],
+        prefix_rows: list[dict[str, Any]],
+        target_names: set[str],
+    ) -> tuple[bool, list[str]]:
+        """Finding #65/#43: whether ``references``'s counted result rode the
+        RISKY bare/bridge channel, and — when it did — the actual colliding
+        FQN(s) to name. Two genuinely different questions per query shape:
+
+        * A genuinely BARE ``name`` (``name == bare``) legitimately reaches
+          EVERY resolved FQN's edges ONLY through the ``answers_to`` bridge —
+          that bridge firing at all is not itself risk, it is how a bare
+          query works. The real risk is a bare name genuinely COLLIDING
+          across more than one distinct FQN: :meth:`_bare_name_answerers`
+          returning more than one answerer means the counted union genuinely
+          mixes distinct symbols, so every answerer is named as a candidate
+          (there is no single "self" to exclude — a bare query never names
+          one canonical owner). Exactly one (or zero) answerers means the
+          "union" is trivially one symbol's own profile — never flagged.
+        * A DOTTED ``name`` (2-segment module-less, or fully qualified) never
+          rides the bridge at all (gated above); its risk is the base query's
+          unconditional bare-trailing-segment OR-term pulling in a source
+          reachable ONLY that way — never via the literal exact-name dst (or
+          the precise, anchored module-prefix arm). A separate exact-name-only
+          probe (paired with the ALREADY-fetched ``prefix_rows``) establishes
+          the safe baseline; anything counted beyond it rode the risky term,
+          and :meth:`_bare_name_answerers` names the actual collidee(s)
+          (excluding ``name`` itself, e.g. when ``name`` answers to its own
+          bare tail).
+
+        Args:
+            name: The original query (bare or dotted).
+            bare: ``self._bare(name)``.
+            production: The full query's counted production sources.
+            test: The full query's counted test sources.
+            prefix_rows: The already-fetched module-prefix arm rows (reused,
+                never re-queried).
+            target_names: The self-exclusion set :meth:`references` built.
+
+        Returns:
+            ``(bare_fallback_used, bare_fallback_candidates)``.
+        """
+        if name == bare:
+            answerers = sorted(set(await self._bare_name_answerers([bare])))
+            if len(answerers) > 1:
+                return True, answerers
+            return False, []
+
+        exact_rows = self._rows(
+            await self._query(
+                f"SELECT {_EDGE_IN}, {_COL_SRC_FILE_PATH} FROM {REFERS_RELATION} "
+                f"WHERE {_COL_KIND} IN ${_P_KINDS} AND {_EDGE_OUT} = ${_P_EXACT_NAME}",
+                {_P_KINDS: list(_REFERENCE_KINDS), _P_EXACT_NAME: self._name_id(name)},
+            )
+        )
+        exact_production, exact_test, _exact_ids = self._classify_reference_rows(
+            exact_rows + prefix_rows, target_names
+        )
+        risky_only_sources = (production | test) - (exact_production | exact_test)
+        if not risky_only_sources:
+            return False, []
+        answerers = await self._bare_name_answerers([bare])
+        return True, sorted({fqn for fqn in answerers if fqn != name})
+
+    @classmethod
+    def _classify_reference_rows(
+        cls, rows: Sequence[Mapping[str, Any]], target_names: set[str]
+    ) -> tuple[set[str], set[str], dict[str, RecordID]]:
+        """Split ``rows`` into (production, test, referencing-id) buckets.
+
+        Shared by :meth:`references`'s full query and its exact-only channel
+        probe so the self-reference exclusion / production-vs-test split can
+        never drift into two copies. A row whose source qname is in
+        ``target_names`` is excluded as a self-reference (recursion through
+        any bridged collidee is still not an external use).
+
+        Args:
+            rows: Query rows carrying ``_EDGE_IN`` (the source ``RecordID``)
+                and ``_COL_SRC_FILE_PATH``.
+            target_names: The qualified name(s) to self-exclude.
+
+        Returns:
+            ``(production, test, referencing_ids)`` — the distinct production
+            and test source qnames, plus the source ids keyed by their string
+            form (the unhashable-``RecordID`` de-dupe idiom).
+        """
+        production: set[str] = set()
+        test: set[str] = set()
+        referencing_ids: dict[str, RecordID] = {}
+        for row in rows:
+            source_id = row[_EDGE_IN]
+            if not isinstance(source_id, RecordID):
+                continue
+            source_qname = cls._composite_qname(source_id)
+            if source_qname in target_names:
+                continue  # self-reference excluded (incl. any bridged collidee)
+            if cls._is_test_path(str(row[_COL_SRC_FILE_PATH])):
+                test.add(source_qname)
+            else:
+                production.add(source_qname)
+            referencing_ids[str(source_id)] = source_id
+        return production, test, referencing_ids
 
     async def dead_code(
         self,

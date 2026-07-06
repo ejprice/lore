@@ -82,7 +82,7 @@ from lorescribe.python_ast import (
     CHUNK_TYPE_FUNCTION,
     CHUNK_TYPE_METHOD,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -192,6 +192,23 @@ class ReferenceSummary(BaseModel):
             files (the count that decides liveness).
         test_references: Distinct references TO the symbol from TEST files.
         referencing: The distinct nodes that reference the symbol, deduped.
+        bare_fallback_used: Finding #65 (channel honesty). ``True`` iff at
+            least one of the counted ``referencing`` sources is reachable
+            ONLY through the query's bare-trailing-segment OR-term (or, for a
+            genuinely bare query, only through the ``answers_to`` bridge to
+            another FQN) — never through the query's own literal exact-name
+            dst. This is the RISKY channel: an astroid-unresolvable caller
+            anywhere in the corpus with the SAME bare tail rides it too, so a
+            ``True`` value means the profile may be a UNION with an unrelated
+            same-named symbol's references, not this one's exact profile
+            alone. Keyed on the ACTUAL resolution channel a match rode, never
+            on the syntactic shape of the query string (a query with no "."
+            and a fully-qualified 4-segment query are judged identically).
+        bare_fallback_candidates: The OTHER qualified names (never including
+            ``qualified_name`` itself) whose ``answers_to`` fan-out shares the
+            query's bare trailing segment — named so a caller can point at the
+            real collidee(s) instead of a generic "may collide" caveat (finding
+            #43). Always empty when :attr:`bare_fallback_used` is ``False``.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -200,6 +217,8 @@ class ReferenceSummary(BaseModel):
     production_references: int
     test_references: int
     referencing: list[GraphNode]
+    bare_fallback_used: bool = False
+    bare_fallback_candidates: list[str] = Field(default_factory=list)
 
 
 class DeadCodeNode(BaseModel):
