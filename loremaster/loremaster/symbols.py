@@ -40,7 +40,7 @@ from __future__ import annotations
 import ast
 import textwrap
 from pathlib import PurePosixPath
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -84,6 +84,17 @@ _INDEX_LAG_HINT = (
     "lore_search(wait_for_fresh=True) or lore_index(reconcile=True)."
 )
 
+# S5 (client-needs consult, 2026-07-06 — Sonnet informant §5/§7): the two real
+# disambiguation mechanisms ``SymbolResolver.resolve`` can apply when a bare
+# identity resolves to more than one stored candidate. Named as public
+# constants (mirroring ``VERIFY_REBUILD_CAVEAT``) so a reported rule can never
+# drift from what the code actually did — the caller (and this module's own
+# tests) reads the SAME string the resolver stamped, never a re-typed copy.
+RESOLUTION_RULE_BARE_IDENTITY: Final = (
+    "chunk-type priority (class > method > function), first-stored match"
+)
+RESOLUTION_RULE_MODULE_QUALIFIED: Final = "module-path match against the qualified name supplied"
+
 
 class GetSymbolError(Exception):
     """Raised when a qualified name resolves to no stored Python symbol.
@@ -107,6 +118,16 @@ class ResolvedSymbol(BaseModel):
         line_start: First source line (1-based) of the definition.
         line_end: Last source line (1-based) of the definition.
         source: The EXACT stored definition text (the chunk's ``source_text``).
+        candidate_count: How many stored rows share the identity this name
+            resolved to, scanned across every symbol chunk type — 1 when the
+            match was unique, more when a real same-named sibling is stored
+            elsewhere (S5, client-needs consult 2026-07-06: trust in a
+            resolution should never require already knowing the corpus).
+        disambiguated_by: The REAL mechanism :meth:`SymbolResolver.resolve`
+            used to pick this one row from among ``candidate_count`` stored
+            siblings — ``None`` exactly when ``candidate_count`` is 1 (nothing
+            needed disambiguating). One of :data:`RESOLUTION_RULE_BARE_IDENTITY`
+            / :data:`RESOLUTION_RULE_MODULE_QUALIFIED` when it is not ``None``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -118,6 +139,26 @@ class ResolvedSymbol(BaseModel):
     line_start: int
     line_end: int
     source: str
+    candidate_count: int
+    disambiguated_by: str | None
+
+
+class ResolutionMatch(NamedTuple):
+    """A resolved row plus how many stored candidates shared the identity it matched.
+
+    ``candidate_count`` is the number of stored rows carrying the SAME bare
+    identity as ``row`` — scanned across every symbol chunk type via
+    :meth:`SymbolResolver._find_all_by_identity`, the identical machinery the
+    miss path already runs in :meth:`SymbolResolver.find_siblings` — 1 when the
+    match was unique, more when a real same-named sibling is stored elsewhere.
+    ``disambiguated_by`` names the REAL mechanism :meth:`SymbolResolver.resolve`
+    used to pick ``row`` from among them; it is ``None`` exactly when
+    ``candidate_count`` is 1 (nothing needed disambiguating).
+    """
+
+    row: dict[str, Any]
+    candidate_count: int
+    disambiguated_by: str | None
 
 
 class SymbolResolver:
@@ -177,10 +218,66 @@ class SymbolResolver:
             SurrealConnectionError: The store's connection is down — propagates
                 straight through, never masquerading as a clean ``None``.
         """
+        match = await self.resolve_with_candidates(qualified_name)
+        return match.row if match is not None else None
+
+    async def resolve_with_candidates(self, qualified_name: str) -> ResolutionMatch | None:
+        """Resolve like :meth:`resolve`, plus the candidate count/rule to disclose.
+
+        :meth:`resolve` delegates to this method (never the reverse), so the
+        two can never drift apart on which row wins — this is simply
+        :meth:`resolve`'s own two-stage walk (stage 1: bare exact-identity;
+        stage 2: module-qualified common-tail match), with each stage also
+        reporting how many stored rows shared the winning identity and, when
+        more than one did, the REAL rule used to pick this one (S5):
+
+        * Stage 1 (:meth:`_find_by_identity`): the candidate set is EVERY
+          stored row sharing the bare identity, across all symbol chunk types
+          (:meth:`_find_all_by_identity` — the same machinery the miss path
+          already runs in :meth:`find_siblings`); the rule is
+          :data:`RESOLUTION_RULE_BARE_IDENTITY` (the chunk-type-priority,
+          first-stored scan :meth:`_find_by_identity` actually performs).
+        * Stage 2 (module-qualified common-tail match): the candidate set is
+          the rows :meth:`_module_qualified_candidates` gathered at the
+          identity length that matched; the rule is
+          :data:`RESOLUTION_RULE_MODULE_QUALIFIED` (the caller's own module
+          qualification is what picked this row out of its siblings).
+
+        Args:
+            qualified_name: Same as :meth:`resolve`.
+
+        Returns:
+            The winning row plus its candidate count/rule, or ``None`` when
+            :meth:`resolve` would also return ``None``.
+
+        Raises:
+            SurrealConnectionError: The store's connection is down — propagates
+                straight through, never masquerading as a clean ``None``.
+        """
         exact = await self._find_by_identity(qualified_name)
         if exact is not None:
-            return exact
-        return await self._find_module_qualified(qualified_name)
+            candidate_count = len(await self._find_all_by_identity(qualified_name))
+            return ResolutionMatch(
+                row=exact,
+                candidate_count=candidate_count,
+                disambiguated_by=(
+                    RESOLUTION_RULE_BARE_IDENTITY if candidate_count > 1 else None
+                ),
+            )
+        for module_segments, candidates in await self._module_qualified_candidates(
+            qualified_name
+        ):
+            for row in candidates:
+                if self._module_path_matches(row, module_segments):
+                    candidate_count = len(candidates)
+                    return ResolutionMatch(
+                        row=row,
+                        candidate_count=candidate_count,
+                        disambiguated_by=(
+                            RESOLUTION_RULE_MODULE_QUALIFIED if candidate_count > 1 else None
+                        ),
+                    )
+        return None
 
     async def _find_by_identity(self, identity: str) -> dict[str, Any] | None:
         """Return the first symbol row whose stored ``identity`` equals ``identity``.
@@ -233,38 +330,13 @@ class SymbolResolver:
             )
         return matches
 
-    async def _find_module_qualified(self, qualified_name: str) -> dict[str, Any] | None:
-        """Resolve a MODULE-qualified dotted name to its stored row, or ``None``.
-
-        Splits ``qualified_name`` on dots and, for each candidate identity length
-        (the trailing 1 then 2 segments — class/function vs ``Class.method``),
-        looks up ALL rows carrying that bare identity and returns the FIRST one
-        whose ``file_path`` path-matches the remaining leading module segments.
-        Considering every collision sibling (not just the first-scrolled row) is
-        what makes a same-named symbol in another module reachable by its own
-        fully-qualified name — otherwise only one arbitrary sibling would resolve.
-        A name with no module prefix (a single segment, already tried as the exact
-        identity) or whose prefix matches no candidate's file is ``None``.
-
-        Args:
-            qualified_name: The full dotted name the caller passed.
-
-        Returns:
-            The matched row, or ``None`` when nothing resolves.
-        """
-        for module_segments, candidates in await self._module_qualified_candidates(qualified_name):
-            for row in candidates:
-                if self._module_path_matches(row, module_segments):
-                    return row
-        return None
-
     async def find_siblings(self, qualified_name: str) -> list[dict[str, Any]]:
         """The sibling rows sharing ``qualified_name``'s bare tail, ANY module.
 
         P8d Wave 4a (finding #17): when a module-qualified lookup misses
         (:meth:`resolve` returned ``None``), this answers "does the BARE name
         exist somewhere else?" — the first identity-length whose bare tail has
-        ANY stored row wins (mirroring :meth:`_find_module_qualified`'s own
+        ANY stored row wins (mirroring :meth:`resolve_with_candidates`'s own
         length-priority order), regardless of whether ITS module path matches
         the caller's prefix. :class:`SymbolTool` uses this to name the real
         module(s) holding the symbol instead of a bare not-found. ``[]`` for a
@@ -289,11 +361,11 @@ class SymbolResolver:
     ) -> list[tuple[list[str], list[dict[str, Any]]]]:
         """The ``(module_segments, candidate_rows)`` pairs a dotted name tries, in order.
 
-        Shared by :meth:`_find_module_qualified` (which additionally filters by
-        module-path match) and :meth:`find_siblings` (which does not) — a
-        SINGLE place walks the trailing-1-then-2-segment identity-length
-        priority so the two can never drift apart on which candidates a given
-        dotted name considers.
+        Shared by :meth:`resolve_with_candidates` (which additionally filters by
+        module-path match to pick the winning row) and :meth:`find_siblings`
+        (which does not) — a SINGLE place walks the trailing-1-then-2-segment
+        identity-length priority so the two can never drift apart on which
+        candidates a given dotted name considers.
         """
         segments = qualified_name.split(_DOTTED_SEP)
         pairs: list[tuple[list[str], list[dict[str, Any]]]] = []
@@ -404,9 +476,9 @@ class SymbolTool:
             SurrealConnectionError: The store's connection is down — propagates
                 straight through, never masquerading as a clean not-found.
         """
-        row = await self._resolver.resolve(qualified_name)
-        if row is not None:
-            return self._to_resolved(row)
+        match = await self._resolver.resolve_with_candidates(qualified_name)
+        if match is not None:
+            return self._to_resolved(match)
         siblings = await self._resolver.find_siblings(qualified_name)
         if siblings:
             modules = sorted(
@@ -432,14 +504,16 @@ class SymbolTool:
         )
 
     @staticmethod
-    def _to_resolved(row: dict[str, Any]) -> ResolvedSymbol:
-        """Map a matched store row into a :class:`ResolvedSymbol`.
+    def _to_resolved(match: ResolutionMatch) -> ResolvedSymbol:
+        """Map a matched store row + its candidate disclosure into a :class:`ResolvedSymbol`.
 
-        Reads only its six named keys — the row's FLATTENED shape may carry
+        Reads only the row's six named keys — its FLATTENED shape may carry
         extra, unmodeled keys (a real ``signature``, ``llm_summary``, or a
         future ``metadata`` addition) which are simply ignored, never breaking
-        resolution.
+        resolution. ``candidate_count``/``disambiguated_by`` are carried
+        straight through from ``match`` (S5) — never re-derived here.
         """
+        row = match.row
         return ResolvedSymbol(
             qualified_name=row[_IDENTITY_KEY],
             chunk_type=row[_CHUNK_TYPE_KEY],
@@ -448,6 +522,8 @@ class SymbolTool:
             line_start=row[_LINE_START_KEY],
             line_end=row[_LINE_END_KEY],
             source=row[_SOURCE_TEXT_KEY],
+            candidate_count=match.candidate_count,
+            disambiguated_by=match.disambiguated_by,
         )
 
 

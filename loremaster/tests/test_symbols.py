@@ -92,6 +92,8 @@ from loremaster.index.records import Record, chunk_to_record, sha512_hex
 from loremaster.store.surreal import SurrealConnectionError, SurrealStore
 from loremaster.symbols import (
     _SCROLL_LIMIT,
+    RESOLUTION_RULE_BARE_IDENTITY,
+    RESOLUTION_RULE_MODULE_QUALIFIED,
     VERIFY_REBUILD_CAVEAT,
     GetSymbolError,
     ResolvedSymbol,
@@ -480,6 +482,65 @@ class EmbeddingConfig:
 
         assert resolved.file_path == masked_file
         assert resolved.source == masked_by_scroll_order.payload["source_text"]
+
+    async def test_bare_identity_lookup_discloses_the_full_collision_count(
+        self, colliding_tool: SymbolTool
+    ) -> None:
+        # S5 (client-needs consult, 2026-07-06): the Sonnet informant's exact
+        # live-probe shape — a BARE (non-dotted) lookup on a name that collides
+        # across files, resolved via stage 1 (_find_by_identity). Before S5 this
+        # was silent (no signal whether "compose" was unique or one of several);
+        # it must now disclose the true candidate count and the real rule used.
+        resolved = await colliding_tool.get_symbol("EmbeddingConfig")
+        assert resolved.candidate_count == 2
+        assert resolved.disambiguated_by == RESOLUTION_RULE_BARE_IDENTITY
+        assert resolved.file_path in {self._FILE_A, self._FILE_B}
+
+    async def test_first_sibling_disclosure_reports_the_full_collision_count(
+        self, colliding_tool: SymbolTool
+    ) -> None:
+        resolved = await colliding_tool.get_symbol("loremaster.config.EmbeddingConfig")
+        assert resolved.candidate_count == 2
+        assert resolved.disambiguated_by == RESOLUTION_RULE_MODULE_QUALIFIED
+
+    async def test_other_sibling_disclosure_reports_the_full_collision_count(
+        self, colliding_tool: SymbolTool
+    ) -> None:
+        resolved = await colliding_tool.get_symbol("loresigil.factory.EmbeddingConfig")
+        assert resolved.candidate_count == 2
+        assert resolved.disambiguated_by == RESOLUTION_RULE_MODULE_QUALIFIED
+
+
+class TestCandidateDisclosureOnUniqueHits:
+    """A resolution that needed no disambiguation reports exactly 1 candidate
+    and no rule (S5) — the point is that this fires on ANY clean resolution,
+    not only on a collision: before S5 there was no signal distinguishing a
+    unique hit from a silently-picked one, which is exactly what left the
+    Sonnet informant unable to tell whether a bare ``compose`` lookup was
+    unique or the tool had chosen among several (client-needs consult §5/§7).
+    """
+
+    async def test_unique_bare_function_reports_one_candidate(self, tool: SymbolTool) -> None:
+        resolved = await tool.get_symbol(_EXPECTED_FUNCTION)
+        assert resolved.candidate_count == 1
+        assert resolved.disambiguated_by is None
+
+    async def test_unique_bare_class_reports_one_candidate(self, tool: SymbolTool) -> None:
+        resolved = await tool.get_symbol(_EXPECTED_CLASS)
+        assert resolved.candidate_count == 1
+        assert resolved.disambiguated_by is None
+
+    async def test_unique_bare_method_reports_one_candidate(self, tool: SymbolTool) -> None:
+        resolved = await tool.get_symbol(_EXPECTED_METHOD)
+        assert resolved.candidate_count == 1
+        assert resolved.disambiguated_by is None
+
+    async def test_unique_module_qualified_hit_reports_one_candidate(
+        self, tool: SymbolTool
+    ) -> None:
+        resolved = await tool.get_symbol(f"pkg.calc.{_EXPECTED_CLASS}")
+        assert resolved.candidate_count == 1
+        assert resolved.disambiguated_by is None
 
 
 class TestScrollLimitBoundary:
