@@ -1483,7 +1483,19 @@ class FakeSurrealCodeGraph:
         same arm) rather than reusing ``_matches``'s own prefix reach, which is
         ungated by kind and would leak a ``calls``/``inherits`` edge under the
         prefix in as a false module reference.
+
+        Finding #65/#43 channel honesty (fidelity fix,
+        ``REPORT-slate-builder-impactres.md`` decisions-needed #2 — this fake
+        used to always default ``bare_fallback_used``/``bare_fallback_
+        candidates`` to ``False``/``[]``, silently certifying a caller's
+        channel-honesty test even over a corpus with a genuine collision):
+        :meth:`_reference_channel_risk` mirrors :meth:`~loremaster.
+        graph_surreal.SurrealCodeGraph._reference_channel_risk` over these
+        same in-memory edges, so a corpus with a real bare-name collision —
+        built the SAME way any other ``references()`` corpus is, via
+        :meth:`build_file_graph_fragment` — makes this fake report it too.
         """
+        bare = CodeGraph._bare_name(name)
         production: set[str] = set()
         test: set[str] = set()
         referencing: list[GraphNode] = []
@@ -1504,12 +1516,113 @@ class FakeSurrealCodeGraph:
                 for node in slice_.nodes:
                     if node.qualified_name == edge.src:
                         referencing.append(self._graph_node(tier, file_path, node))
+        bare_fallback_used, bare_fallback_candidates = self._reference_channel_risk(
+            name, bare, production, test
+        )
         return ReferenceSummary(
             qualified_name=name,
             production_references=len(production),
             test_references=len(test),
             referencing=referencing,
+            bare_fallback_used=bare_fallback_used,
+            bare_fallback_candidates=bare_fallback_candidates,
         )
+
+    def _bare_name_answerers(self, bare: str) -> list[str]:
+        """Every node's qualified name whose bare last segment is ``bare``.
+
+        Mirrors :meth:`~loremaster.graph_surreal.SurrealCodeGraph.
+        _bare_name_answerers`'s ``answers_to`` bridge: the real graph relates
+        every ``code_node`` to its own bare last segment, so querying by a
+        bare name returns every node that OWNS it. Computed here over the
+        fake's already-derived nodes (SYNC — no query round-trip needed)
+        rather than the real graph's ``answers_to`` relation query; the
+        result set is identical because both derive from the SAME astroid
+        node set (:class:`~loremaster.graph_surreal._AstroidDerivation`).
+        """
+        return sorted(
+            {
+                node.qualified_name
+                for _tier, _file_path, node in self._all_nodes()
+                if CodeGraph._bare_name(node.qualified_name) == bare
+            }
+        )
+
+    def _exact_channel_sources(self, name: str) -> tuple[set[str], set[str]]:
+        """The production/test source set reachable ONLY via ``name``'s exact
+        dst or the (precise, anchored) module-prefix arm — never the risky
+        bare-trailing-segment OR-term.
+
+        The fake's mirror of :meth:`~loremaster.graph_surreal.
+        SurrealCodeGraph._reference_channel_risk`'s separate exact-name-only
+        sub-query: :meth:`references` calls this a SECOND time over the same
+        in-memory edges (rather than tracking a per-source channel flag
+        inline) so the "safe baseline" computation can never silently drift
+        into a hand-copied duplicate of the matching rule.
+        """
+        production: set[str] = set()
+        test: set[str] = set()
+        for (tier, file_path), slice_ in self.db.graph_slices.items():
+            for edge in slice_.edges:
+                if edge.kind not in _REFERENCE_KINDS:
+                    continue
+                matches_exact = edge.dst == name
+                matches_module_prefix = edge.kind == EDGE_IMPORTS and edge.dst.startswith(
+                    f"{name}."
+                )
+                if not (matches_exact or matches_module_prefix):
+                    continue
+                if edge.src == name:
+                    continue  # self-reference excluded
+                bucket = test if CodeGraph._is_test_path(file_path) else production
+                bucket.add(edge.src)
+        return production, test
+
+    def _reference_channel_risk(
+        self, name: str, bare: str, production: set[str], test: set[str]
+    ) -> tuple[bool, list[str]]:
+        """Finding #65/#43: whether :meth:`references`'s counted result rode
+        the RISKY bare/bridge channel, and — when it did — the actual
+        colliding FQN(s) to name.
+
+        Mirrors :meth:`~loremaster.graph_surreal.SurrealCodeGraph.
+        _reference_channel_risk`'s two-shape rule (see that method's
+        docstring for the full rationale) over the fake's in-memory slices
+        instead of a second store query:
+
+        * A genuinely BARE ``name`` (``name == bare``) legitimately reaches
+          every resolved FQN's edges ONLY through the bridge — that firing at
+          all is not risk. The real risk is a GENUINE collision: more than
+          one distinct FQN answering to ``bare`` (:meth:`_bare_name_
+          answerers`), in which case every answerer is named (there is no
+          single "self" to exclude for a bare query).
+        * A DOTTED ``name`` never rides the bridge; its risk is the base
+          match's bare-trailing-segment OR-term pulling in a source
+          unreachable via the exact-name-only channel
+          (:meth:`_exact_channel_sources`). Any such source means the
+          channel fired; :meth:`_bare_name_answerers` names the actual
+          collidee(s), excluding ``name`` itself.
+
+        Args:
+            name: The original query (bare or dotted).
+            bare: ``CodeGraph._bare_name(name)``.
+            production: The full match's counted production sources.
+            test: The full match's counted test sources.
+
+        Returns:
+            ``(bare_fallback_used, bare_fallback_candidates)``.
+        """
+        if name == bare:
+            answerers = self._bare_name_answerers(bare)
+            if len(answerers) > 1:
+                return True, answerers
+            return False, []
+        exact_production, exact_test = self._exact_channel_sources(name)
+        risky_only_sources = (production | test) - (exact_production | exact_test)
+        if not risky_only_sources:
+            return False, []
+        answerers = self._bare_name_answerers(bare)
+        return True, sorted(fqn for fqn in answerers if fqn != name)
 
     # -- inspection helpers (test-only) -----------------------------------
 

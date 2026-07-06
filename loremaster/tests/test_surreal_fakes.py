@@ -45,6 +45,7 @@ the informative, per-test RED this contract wants.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import math
 from collections.abc import Callable
@@ -1386,3 +1387,355 @@ class TestFakeBareAndFqnBridgeAlignment:
         summary = await graph.references(_FQN_BRIDGE_CHAMPION_ROUTING)
         assert summary.production_references == 2
         assert _FQN_BRIDGE_DISPATCH in {n.qualified_name for n in summary.referencing}
+
+
+# --------------------------------------------------------------------------- #
+# Finding #65/#43 channel honesty -- FakeSurrealCodeGraph.references() fidelity
+# gap (REPORT-slate-builder-impactres.md decisions-needed #2): the fake used
+# to construct EVERY ReferenceSummary with bare_fallback_used/
+# bare_fallback_candidates left at their pydantic defaults (False/[]), so any
+# test riding this shared fixture to assert channel honesty would silently get
+# the default rather than a real signal. Two independently re-materialised
+# corpora below (SAME naming convention as ``test_graph_surreal.py``'s
+# ``TestReferencesBareFallbackChannelHonesty`` / ``TestReferencesBareNameFqn
+# CollisionFanOut`` -- clause 5, never a cross-file import of their locals)
+# reproduce BOTH risk shapes against the FAKE: a DOTTED/FQN query riding the
+# risky bare-trailing-segment term (an astroid-unresolvable caller elsewhere
+# sharing the bare tail), and a genuinely BARE query colliding across two
+# independently-resolved FQNs.
+# --------------------------------------------------------------------------- #
+
+_CHANNEL_ALPHA_SOURCE = textwrap.dedent(
+    '''\
+    """channel_pkg.alpha -- defines ClassAlpha.resolve, called via a receiver
+    astroid CAN infer (a local instantiation) -- a RESOLVED call, so its dst
+    is the exact FQN, never the bare fallback."""
+
+
+    class ClassAlpha:
+        """Alpha's own resolve -- collides on the bare name with beta's."""
+
+        def resolve(self, name):
+            """Alpha's resolve."""
+            return name
+    '''
+)
+_CHANNEL_ALPHA_CONSUMER_SOURCE = textwrap.dedent(
+    '''\
+    """A production caller whose receiver type astroid CAN infer."""
+    from channel_pkg.alpha import ClassAlpha
+
+
+    def use_alpha(name):
+        """Instantiates ClassAlpha directly -- a RESOLVED call."""
+        alpha = ClassAlpha()
+        return alpha.resolve(name)
+    '''
+)
+_CHANNEL_BETA_SOURCE = textwrap.dedent(
+    '''\
+    """channel_pkg.beta -- a SEPARATE, unrelated module ALSO defining a
+    ``resolve`` method (same bare name, different FQN, no relation to
+    channel_pkg.alpha)."""
+
+
+    class ClassBeta:
+        """Beta's own resolve -- unrelated to alpha's."""
+
+        def resolve(self, name):
+            """Beta's resolve."""
+            return name
+    '''
+)
+_CHANNEL_BETA_CONSUMER_SOURCE = textwrap.dedent(
+    '''\
+    """A production caller whose receiver type astroid CANNOT infer -- the
+    call's dst falls back to the bare written name "resolve", never
+    channel_pkg.beta.ClassBeta.resolve."""
+
+
+    def use_beta(unknown_receiver, name):
+        """Calls .resolve on an untyped, un-inferable parameter."""
+        return unknown_receiver.resolve(name)
+    '''
+)
+
+_CHANNEL_ALPHA_PATH = "channel_pkg/alpha.py"
+_CHANNEL_ALPHA_CONSUMER_PATH = "channel_pkg/alpha_consumer.py"
+_CHANNEL_BETA_PATH = "channel_pkg/beta.py"
+_CHANNEL_BETA_CONSUMER_PATH = "channel_pkg/beta_consumer.py"
+
+_CHANNEL_ALPHA_MODULE = "channel_pkg.alpha"
+_CHANNEL_ALPHA_CONSUMER_MODULE = "channel_pkg.alpha_consumer"
+_CHANNEL_BETA_MODULE = "channel_pkg.beta"
+_CHANNEL_BETA_CONSUMER_MODULE = "channel_pkg.beta_consumer"
+
+_FQN_CHANNEL_ALPHA_RESOLVE = "channel_pkg.alpha.ClassAlpha.resolve"
+_FQN_CHANNEL_BETA_RESOLVE = "channel_pkg.beta.ClassBeta.resolve"
+_FQN_CHANNEL_USE_ALPHA = "channel_pkg.alpha_consumer.use_alpha"
+_FQN_CHANNEL_USE_BETA = "channel_pkg.beta_consumer.use_beta"
+
+
+async def _build_channel_risk_graph(tmp_path: Path) -> FakeSurrealCodeGraph:
+    """Materialise the alpha(resolved)/beta(unresolved) bare-collision
+    package; build a fresh, resolution-enabled :class:`FakeSurrealCodeGraph`
+    over all four files -- finding #65's live shape: an exact-FQN query for
+    alpha's ``resolve`` is joined by beta's astroid-unresolvable caller,
+    which can ONLY be reached via the bare-trailing-segment OR-term.
+    """
+    root = tmp_path / "project"
+    (root / "channel_pkg").mkdir(parents=True)
+    (root / "channel_pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "channel_pkg" / "alpha.py").write_text(_CHANNEL_ALPHA_SOURCE, encoding="utf-8")
+    (root / "channel_pkg" / "alpha_consumer.py").write_text(
+        _CHANNEL_ALPHA_CONSUMER_SOURCE, encoding="utf-8"
+    )
+    (root / "channel_pkg" / "beta.py").write_text(_CHANNEL_BETA_SOURCE, encoding="utf-8")
+    (root / "channel_pkg" / "beta_consumer.py").write_text(
+        _CHANNEL_BETA_CONSUMER_SOURCE, encoding="utf-8"
+    )
+    trio = fake_surreal_trio(
+        dim=PRODUCTION_DIM, tier_roots={_BRIDGE_TIER: root}, project_roots=[root]
+    )
+    for path, source, module in (
+        (_CHANNEL_ALPHA_PATH, _CHANNEL_ALPHA_SOURCE, _CHANNEL_ALPHA_MODULE),
+        (
+            _CHANNEL_ALPHA_CONSUMER_PATH,
+            _CHANNEL_ALPHA_CONSUMER_SOURCE,
+            _CHANNEL_ALPHA_CONSUMER_MODULE,
+        ),
+        (_CHANNEL_BETA_PATH, _CHANNEL_BETA_SOURCE, _CHANNEL_BETA_MODULE),
+        (
+            _CHANNEL_BETA_CONSUMER_PATH,
+            _CHANNEL_BETA_CONSUMER_SOURCE,
+            _CHANNEL_BETA_CONSUMER_MODULE,
+        ),
+    ):
+        await trio.graph.build_file_graph(
+            _BRIDGE_TIER, path, _bridge_chunk(path, source), module_name=module
+        )
+    return trio.graph
+
+
+_COLLIDE_ALPHA_LIB_SOURCE = textwrap.dedent(
+    '''\
+    """collide_routing.alpha_lib -- defines its OWN champion_routing."""
+
+
+    def champion_routing(week):
+        """Route the alpha warehouse."""
+        return week * 2
+    '''
+)
+_COLLIDE_ALPHA_CONSUMER_SOURCE = textwrap.dedent(
+    '''\
+    """A production caller of alpha's champion_routing."""
+    from collide_routing.alpha_lib import champion_routing
+
+
+    def alpha_dispatch(week):
+        """The alpha production caller."""
+        return champion_routing(week)
+    '''
+)
+_COLLIDE_BETA_LIB_SOURCE = textwrap.dedent(
+    '''\
+    """collide_routing.beta_lib -- a SEPARATE module, ALSO defining
+    champion_routing (same bare name, different FQN, no relation to
+    collide_routing.alpha_lib)."""
+
+
+    def champion_routing(week):
+        """Route the beta warehouse."""
+        return week * 3
+    '''
+)
+_COLLIDE_BETA_CONSUMER_SOURCE = textwrap.dedent(
+    '''\
+    """A production caller of beta's champion_routing."""
+    from collide_routing.beta_lib import champion_routing
+
+
+    def beta_dispatch(week):
+        """The beta production caller."""
+        return champion_routing(week)
+    '''
+)
+
+_COLLIDE_ALPHA_LIB_PATH = "collide_routing/alpha_lib.py"
+_COLLIDE_ALPHA_CONSUMER_PATH = "collide_routing/alpha_consumer.py"
+_COLLIDE_BETA_LIB_PATH = "collide_routing/beta_lib.py"
+_COLLIDE_BETA_CONSUMER_PATH = "collide_routing/beta_consumer.py"
+
+_COLLIDE_ALPHA_LIB_MODULE = "collide_routing.alpha_lib"
+_COLLIDE_ALPHA_CONSUMER_MODULE = "collide_routing.alpha_consumer"
+_COLLIDE_BETA_LIB_MODULE = "collide_routing.beta_lib"
+_COLLIDE_BETA_CONSUMER_MODULE = "collide_routing.beta_consumer"
+
+_FQN_COLLIDE_ALPHA_ROUTING = "collide_routing.alpha_lib.champion_routing"
+_FQN_COLLIDE_BETA_ROUTING = "collide_routing.beta_lib.champion_routing"
+
+
+async def _build_routing_collide_graph(tmp_path: Path) -> FakeSurrealCodeGraph:
+    """Materialise the two-module RESOLVED bare-name-collision package; build
+    a fresh, resolution-enabled :class:`FakeSurrealCodeGraph` over all four
+    files -- a genuine bare-name fan-out where BOTH collidees are
+    independently resolved from their own caller (no unresolved call needed
+    for this shape, unlike :func:`_build_channel_risk_graph`)."""
+    root = tmp_path / "project"
+    (root / "collide_routing").mkdir(parents=True)
+    (root / "collide_routing" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "collide_routing" / "alpha_lib.py").write_text(
+        _COLLIDE_ALPHA_LIB_SOURCE, encoding="utf-8"
+    )
+    (root / "collide_routing" / "alpha_consumer.py").write_text(
+        _COLLIDE_ALPHA_CONSUMER_SOURCE, encoding="utf-8"
+    )
+    (root / "collide_routing" / "beta_lib.py").write_text(
+        _COLLIDE_BETA_LIB_SOURCE, encoding="utf-8"
+    )
+    (root / "collide_routing" / "beta_consumer.py").write_text(
+        _COLLIDE_BETA_CONSUMER_SOURCE, encoding="utf-8"
+    )
+    trio = fake_surreal_trio(
+        dim=PRODUCTION_DIM, tier_roots={_BRIDGE_TIER: root}, project_roots=[root]
+    )
+    for path, source, module in (
+        (_COLLIDE_ALPHA_LIB_PATH, _COLLIDE_ALPHA_LIB_SOURCE, _COLLIDE_ALPHA_LIB_MODULE),
+        (
+            _COLLIDE_ALPHA_CONSUMER_PATH,
+            _COLLIDE_ALPHA_CONSUMER_SOURCE,
+            _COLLIDE_ALPHA_CONSUMER_MODULE,
+        ),
+        (_COLLIDE_BETA_LIB_PATH, _COLLIDE_BETA_LIB_SOURCE, _COLLIDE_BETA_LIB_MODULE),
+        (
+            _COLLIDE_BETA_CONSUMER_PATH,
+            _COLLIDE_BETA_CONSUMER_SOURCE,
+            _COLLIDE_BETA_CONSUMER_MODULE,
+        ),
+    ):
+        await trio.graph.build_file_graph(
+            _BRIDGE_TIER, path, _bridge_chunk(path, source), module_name=module
+        )
+    return trio.graph
+
+
+class TestFakeReferencesBareFallbackChannelHonesty:
+    """Finding #65/#43 fidelity: the FAKE must disclose the bare-fallback
+    channel too -- the gap REPORT-slate-builder-impactres.md's decisions-
+    needed #2 flagged (the fake always defaulted both fields to False/[], so
+    a future test riding the fixture would silently get a clean-looking
+    summary even over a genuinely colliding corpus).
+
+    Mirrors ``test_graph_surreal.py``'s ``TestReferencesBareFallbackChannel
+    Honesty`` (same corpus SHAPE, independently re-materialised per this
+    file's own convention) plus ``TestReferencesBareNameFqnCollisionFanOut``'s
+    bare-collision case, against the FAKE instead of the real
+    ``SurrealCodeGraph``.
+    """
+
+    async def test_exact_query_names_the_colliding_candidate_when_the_bare_channel_serves(
+        self, tmp_path: Path
+    ) -> None:
+        """``references(FQN_CHANNEL_ALPHA_RESOLVE)`` must ALSO surface beta's
+        unresolved caller, HONESTLY: flagged, with beta's FQN named, never
+        silently presented as alpha's own clean profile."""
+        graph = await _build_channel_risk_graph(tmp_path)
+        summary = await graph.references(_FQN_CHANNEL_ALPHA_RESOLVE)
+        referrers = {n.qualified_name for n in summary.referencing}
+
+        assert _FQN_CHANNEL_USE_ALPHA in referrers
+        assert _FQN_CHANNEL_USE_BETA in referrers
+        assert summary.production_references == 2
+
+        assert summary.bare_fallback_used is True
+        assert _FQN_CHANNEL_BETA_RESOLVE in summary.bare_fallback_candidates
+        assert _FQN_CHANNEL_ALPHA_RESOLVE not in summary.bare_fallback_candidates
+
+    async def test_exact_query_with_no_real_collision_never_flags_the_channel(
+        self, tmp_path: Path
+    ) -> None:
+        """A clean, non-colliding exact-FQN query must never flag the
+        channel -- the honesty fix must not manufacture risk where none
+        exists."""
+        graph = await _build_bridge_reflib_graph(tmp_path)
+        summary = await graph.references(_FQN_BRIDGE_CHAMPION_ROUTING)
+
+        assert summary.bare_fallback_used is False
+        assert summary.bare_fallback_candidates == []
+
+    async def test_bare_query_with_a_unique_symbol_never_flags_the_channel(
+        self, tmp_path: Path
+    ) -> None:
+        """A bare query is only "risky" when it genuinely collides across
+        more than one distinct symbol -- reaching a resolved FQN via the
+        bridge is how every bare query works, never itself the risk."""
+        graph = await _build_bridge_reflib_graph(tmp_path)
+        summary = await graph.references("champion_routing")
+
+        assert summary.bare_fallback_used is False
+        assert summary.bare_fallback_candidates == []
+
+    async def test_bare_query_with_a_genuine_collision_flags_and_names_both_candidates(
+        self, tmp_path: Path
+    ) -> None:
+        """A bare query genuinely colliding across two distinct FQNs must
+        flag the channel and name BOTH real candidates (finding #43's ask),
+        not a generic "may collide" hedge."""
+        graph = await _build_routing_collide_graph(tmp_path)
+        summary = await graph.references("champion_routing")
+
+        assert summary.bare_fallback_used is True
+        assert set(summary.bare_fallback_candidates) == {
+            _FQN_COLLIDE_ALPHA_ROUTING,
+            _FQN_COLLIDE_BETA_ROUTING,
+        }
+
+
+class TestFakeReferenceSummaryFieldParity:
+    """FIDELITY PIN (the point of this wave -- the steering fix above closes
+    TODAY's gap, this pin stops the NEXT one): the fake's
+    ``ReferenceSummary(...)`` construction call inside ``references()`` must
+    explicitly pass EVERY field the real pydantic model declares. An AST scan
+    of the method's own source (never a live call, so a branch a given test
+    corpus does not exercise cannot hide a missing keyword) -- the SAME
+    "AST scan over string literals" idiom ``test_text_hygiene.py`` already
+    established for a different defect class in this repo, applied here to a
+    constructor-call SHAPE instead of a string literal.
+
+    bare_fallback_used/bare_fallback_candidates were the SECOND time this
+    fake silently defaulted a new ``ReferenceSummary`` field (production_
+    references/test_references/referencing were never at risk -- they are
+    the model's original fields); this pin makes a THIRD time impossible to
+    ship unnoticed: it fails the moment ``ReferenceSummary`` grows a field
+    this fake's construction call does not name, regardless of whether any
+    OTHER test happens to exercise it yet.
+    """
+
+    @staticmethod
+    def _reference_summary_construction_kwargs() -> set[str]:
+        """The keyword-argument names ``FakeSurrealCodeGraph.references``
+        passes when constructing its ``ReferenceSummary`` return value."""
+        source = textwrap.dedent(inspect.getsource(FakeSurrealCodeGraph.references))
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "ReferenceSummary"
+            ):
+                return {kw.arg for kw in node.keywords if kw.arg is not None}
+        raise AssertionError(
+            "no ReferenceSummary(...) construction found in "
+            "FakeSurrealCodeGraph.references() -- has it been refactored away?"
+        )
+
+    def test_fake_construction_sets_every_field_the_real_model_declares(self) -> None:
+        real_fields = set(ReferenceSummary.model_fields)
+        fake_kwargs = self._reference_summary_construction_kwargs()
+        assert fake_kwargs == real_fields, (
+            f"FakeSurrealCodeGraph.references() must explicitly pass every "
+            f"ReferenceSummary field so a new field can never silently take "
+            f"its pydantic default in the fake; missing="
+            f"{real_fields - fake_kwargs!r} extra={fake_kwargs - real_fields!r}"
+        )
