@@ -42,9 +42,12 @@ detail_level)`` call:
    RRF-scale-aware constant, so a remembered correction reliably overtakes an
    unboosted hit) and the candidates re-sorted; and (b) *inject*: the ≤
    :data:`_MEMORY_INJECTION_CAP` top-scored recalled memories are rendered as
-   VISIBLE, provenance-stamped entries that LEAD the result list — distinct from
-   the silent boost, and NEVER masquerading as source citations. No memory store
-   ⇒ both are inert.
+   VISIBLE, provenance-stamped entries, distinct from the silent boost and NEVER
+   masquerading as source citations — segregated behind a TRAILING ``memories:``
+   section header (P8d' #54 tweak T3: memory noise was crowding out code hits
+   under a tight response budget), with a counted elision notice when recall
+   found more matching memories than the cap. No memory store ⇒ all of this is
+   inert.
 6. **Config-gated reranker seam (item 9)** — when ``search.reranker`` is
    configured AND a reranker seam object is injected, the candidates pass through
    it AFTER RRF fusion and BEFORE formatting. Config, not the mere presence of the
@@ -64,7 +67,8 @@ detail_level)`` call:
    escape a fence.
 8. **detail_level partition (seam 11 / C2)** — ``"summary"`` keeps only
    summary-classified hits, ``"source"`` only source-classified, ``"auto"`` keeps
-   both. Injected memory entries are NOT partitioned — they always lead.
+   both. Injected memory entries are NOT partitioned — they always trail, in
+   their own segregated ``memories:`` block.
 
 The return is a list of summarised :class:`SearchResult` value objects.
 """
@@ -139,8 +143,11 @@ _MEMORY_BOOST = 1.0
 
 # item 5: at most this many recalled memories are injected as visible entries,
 # highest-score first — a deterministic cap so a noisy recall can never flood the
-# response with guidance lines.
-_MEMORY_INJECTION_CAP = 2
+# response with guidance lines. Raised 2 -> 3 (P8d' #54 tweak T3) alongside the
+# trailing-block reorder; anything recalled beyond this cap is named in a
+# counted elision notice (:data:`_MEMORY_ELISION_TEMPLATE`), never silently
+# dropped.
+_MEMORY_INJECTION_CAP = 3
 
 # item 4/5: how many memories a single pipeline recall pulls from the backend.
 # One recall drives BOTH the silent boost (over every returned memory's refs) and
@@ -154,6 +161,19 @@ _MEMORY_RECALL_K = 5
 # entry carries — memory guidance is response-level, never a source body.
 _MEMORY_MARKER = "[MEMORY]"
 _MEMORY_DETAIL_LEVEL: DetailLevel = "summary"
+
+# T3 (P8d' #54 tweak): the section-label row leading the trailing memories:
+# block — a plain, static NOTICE_KIND entry (no stored free text, so no
+# sanitiser pass is needed) that segregates the injected memory entries from
+# the code hits above them, so a memory line can never be mistaken for part
+# of the code-hit list.
+_MEMORY_SECTION_HEADER = "memories:"
+
+# T3: the counted elision notice for recalled memories beyond the injection
+# cap — never a silent drop. "matching memory hit(s)" (not "entries", cf.
+# :data:`_SEARCH_ELISION_TEMPLATE` in server.py) since this counts ONLY the
+# memory side of the response.
+_MEMORY_ELISION_TEMPLATE = "+{elided} more matching memory hit(s) not shown (cap={cap})"
 
 # item 6: the v2 short-citation grammar. Full form
 # ``[S:<tier>:<file_path>:<line_start>-<line_end>@<hash6>]``; ``hash6`` is the
@@ -376,12 +396,13 @@ class SearchPipeline:
                 searching; on timeout, serve stale-with-warning (never hang).
             detail_level: ``"auto"`` (both), ``"summary"``, or ``"source"`` — the
                 detail-level partition applied to the code hits (injected memory
-                entries always lead and are never partitioned).
+                entries always trail and are never partitioned).
             wait_timeout_s: The hard ceiling on the ``wait_for_fresh`` poll.
 
         Returns:
-            The summarised :class:`SearchResult` list — injected memory entries
-            first, then the ranked, formatted code hits — never a raw
+            The summarised :class:`SearchResult` list — the ranked, formatted
+            code hits FIRST, then any injected memory entries segregated
+            behind a trailing ``memories:`` section header — never a raw
             :class:`~loremaster.store.candidate.Candidate` dump.
         """
         ctx = self._extension_context
@@ -421,11 +442,12 @@ class SearchPipeline:
             for candidate in candidates
         ]
 
-        # Step 8: partition the HITS by detail level, then prepend the visible
-        # memory entries (they lead the response and are never partitioned).
+        # Step 8: partition the HITS by detail level, then append the visible
+        # memory entries as a trailing, segregated block (T3, P8d' #54 tweak
+        # -- they never partition, and now never lead either).
         partitioned_hits = self._partition_by_detail(hits, detail_level)
         memory_entries = self._inject_memories(recalled)
-        return [*memory_entries, *partitioned_hits]
+        return [*partitioned_hits, *memory_entries]
 
     # -- filter normalisation ---------------------------------------------------
 
@@ -569,16 +591,56 @@ class SearchPipeline:
         return boosted
 
     def _inject_memories(self, recalled: list[RecalledMemory]) -> list[SearchResult]:
-        """Render the ≤ cap top-scored recalled memories as visible entries (item 5).
+        """Render the ≤ cap top-scored recalled memories as a trailing block (item 5).
 
-        The injected entries LEAD the result list, are provenance-stamped (so they
-        never masquerade as a source citation), and are capped at
-        :data:`_MEMORY_INJECTION_CAP` by descending score. Empty recall ⇒ nothing.
+        The injected entries are provenance-stamped (so they never masquerade
+        as a source citation) and capped at :data:`_MEMORY_INJECTION_CAP` by
+        descending score. The block is segregated behind a
+        :data:`_MEMORY_SECTION_HEADER` label (T3, P8d' #54 tweak) — emitted
+        ONLY when there is at least one memory entry to segregate — and a
+        recall that found more matching memories than the cap gets a counted
+        elision notice, never a silent drop. Empty recall ⇒ nothing (no
+        header, no notice).
         """
         if not recalled:
             return []
         top = sorted(recalled, key=lambda memory: memory.score, reverse=True)
-        return [self._memory_result(memory) for memory in top[:_MEMORY_INJECTION_CAP]]
+        kept = top[:_MEMORY_INJECTION_CAP]
+        entries = [self._memory_section_header(), *[self._memory_result(m) for m in kept]]
+        elided = len(top) - len(kept)
+        if elided:
+            entries.append(self._memory_elision_notice(elided))
+        return entries
+
+    @staticmethod
+    def _memory_section_header() -> SearchResult:
+        """The static section-label row leading the trailing memories: block.
+
+        No stored free text is rendered here (a fixed constant), so no
+        sanitiser pass applies — the sanitiser guards untrusted content, not
+        this server-composed label.
+        """
+        return SearchResult(
+            formatted=_MEMORY_SECTION_HEADER,
+            chunk_key="",
+            detail_level=_MEMORY_DETAIL_LEVEL,
+            stale=False,
+            score=0.0,
+            kind=NOTICE_KIND,
+        )
+
+    @staticmethod
+    def _memory_elision_notice(elided: int) -> SearchResult:
+        """The counted notice for recalled memories squeezed out by the cap."""
+        text = _MEMORY_ELISION_TEMPLATE.format(elided=elided, cap=_MEMORY_INJECTION_CAP)
+        return SearchResult(
+            formatted=text,
+            chunk_key="",
+            detail_level=_MEMORY_DETAIL_LEVEL,
+            stale=False,
+            score=0.0,
+            kind=NOTICE_KIND,
+        )
 
     @staticmethod
     def _memory_result(memory: RecalledMemory) -> SearchResult:

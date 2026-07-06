@@ -38,7 +38,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
-from loremaster.graph import CodeGraph, ReferenceSummary
+from loremaster.graph import CodeGraph, GraphNode, ReferenceSummary
 
 # --------------------------------------------------------------------------- #
 # Depth / consumer-cap bounds (plan §5).
@@ -131,6 +131,17 @@ _MAX_RENDERED_COVERING_TESTS = 15
 _COVERING_TESTS_ELISION_TEMPLATE = (
     "+{count} more (see the full covering_tests field for all {total})"
 )
+
+# T6 (P8d' #54 tweak): when covering tests would otherwise be capped (more
+# than _MAX_RENDERED_COVERING_TESTS) AND every one of them lives in the SAME
+# file, naming 15 near-identical-looking qualified names plus an elision
+# trailer is pure token noise -- one file backing a big suite (the common
+# "this helper's whole test module covers it" shape) rolls up to a count +
+# that file's module label instead. The STRUCTURED covering_tests field is
+# UNCHANGED (still the full, uncapped list) -- only this compact render
+# branch differs; a multi-file spread (the general case finding #39 already
+# covers) keeps the existing capped enumeration untouched.
+_COVERING_TESTS_FILE_ROLLUP_TEMPLATE = "tests: {count} across 1 file ({module})"
 
 # Finding #30: a bare (unqualified) target may collide with a same-named
 # symbol in another module; ``references()`` UNIONS every collidee's profile
@@ -291,7 +302,9 @@ class ImpactEngine:
         depth = self._clamp_depth(depth)
 
         summary = await self._graph.references(target)
-        covering_tests = await self._covering_tests(target)
+        covering_tests, covering_test_modules, covering_test_files = await self._covering_tests(
+            target
+        )
 
         direct_consumers: list[str] = []
         module_rollups: list[ModuleRollup] = []
@@ -331,6 +344,8 @@ class ImpactEngine:
             production_references=summary.production_references,
             test_references=summary.test_references,
             covering_tests=covering_tests,
+            covering_test_modules=covering_test_modules,
+            covering_test_files=covering_test_files,
             direct_consumers=direct_consumers,
             module_rollups=module_rollups,
             transitive_modules=transitive_modules,
@@ -371,10 +386,40 @@ class ImpactEngine:
 
     # -- composition -----------------------------------------------------
 
-    async def _covering_tests(self, target: str) -> list[str]:
-        """The sorted, deduplicated qualified names of tests covering ``target``."""
+    async def _covering_tests(
+        self, target: str
+    ) -> tuple[list[str], dict[str, str], dict[str, tuple[str, str]]]:
+        """The sorted, deduplicated qualified test names covering ``target``,
+        plus each name's owning-file module label AND its (tier, file_path)
+        identity (T6's render-only file rollup; the returned name LIST is
+        the unchanged public contract).
+
+        The module label uses the CHEAP static
+        :meth:`~loremaster.graph_surreal.SurrealCodeGraph.module_qualified_name`
+        derivation (no extra graph query) rather than ``module_names_by_file``
+        -- fine for DISPLAY, but that label is ``file_path``-only (it takes no
+        ``tier`` argument), so two genuinely different files sharing the same
+        tier-relative path in two different tiers derive the IDENTICAL label
+        (F3, REPORT-audit-tweaks.md -- the "covering test always lives under a
+        single-segment tests/ tree" argument this docstring used to make does
+        not save it: tier collision is orthogonal to path depth). The
+        returned ``(tier, file_path)`` mapping is the honest per-name file
+        IDENTITY the render's "one file dominates" dominance check keys on
+        instead of the label.
+        """
         nodes = await self._graph.tests_for(target)
-        return sorted({node.qualified_name for node in nodes})
+        by_name: dict[str, GraphNode] = {}
+        for node in nodes:
+            by_name.setdefault(node.qualified_name, node)
+        names = sorted(by_name)
+        modules_by_name = {
+            name: self._graph.module_qualified_name(node.file_path)
+            for name, node in by_name.items()
+        }
+        files_by_name = {
+            name: (node.tier, node.file_path) for name, node in by_name.items()
+        }
+        return names, modules_by_name, files_by_name
 
     @staticmethod
     def _production_consumer_names(summary: ReferenceSummary) -> list[str]:
@@ -518,6 +563,8 @@ class ImpactEngine:
         production_references: int,
         test_references: int,
         covering_tests: list[str],
+        covering_test_modules: Mapping[str, str],
+        covering_test_files: Mapping[str, tuple[str, str]],
         direct_consumers: list[str],
         module_rollups: list[ModuleRollup],
         transitive_modules: set[str],
@@ -543,16 +590,34 @@ class ImpactEngine:
             # teach it, never present the union as one unambiguous profile.
             lines.append(_BARE_NAME_UNION_CAVEAT)
         if covering_tests:
-            kept, more = ImpactEngine._cap(covering_tests, _MAX_RENDERED_COVERING_TESTS)
-            tests_line = f"tests: {len(covering_tests)} ({', '.join(kept)}"
-            if more:
-                # Finding #39: cap the RENDERED list only — the structured
-                # covering_tests field stays the full, uncapped list.
-                tests_line += ", " + _COVERING_TESTS_ELISION_TEMPLATE.format(
-                    count=more, total=len(covering_tests)
+            # F3 (REPORT-audit-tweaks.md): dominance is keyed on the actual
+            # (tier, file_path) IDENTITY, never the module LABEL -- a label
+            # is ``file_path``-derived only (tier-blind), so two distinct
+            # files sharing a tier-relative path in different tiers would
+            # otherwise collapse into a false "one file" claim.
+            distinct_files = {covering_test_files[name] for name in covering_tests}
+            if len(covering_tests) > _MAX_RENDERED_COVERING_TESTS and len(distinct_files) == 1:
+                # T6: one file backs every covering test -- roll up to a count
+                # + that file's module label instead of enumerating (and
+                # eliding) a long near-identical name list. The structured
+                # covering_tests field is untouched (still full, uncapped).
+                module = covering_test_modules[covering_tests[0]]
+                lines.append(
+                    _COVERING_TESTS_FILE_ROLLUP_TEMPLATE.format(
+                        count=len(covering_tests), module=module
+                    )
                 )
-            tests_line += ")"
-            lines.append(tests_line)
+            else:
+                kept, more = ImpactEngine._cap(covering_tests, _MAX_RENDERED_COVERING_TESTS)
+                tests_line = f"tests: {len(covering_tests)} ({', '.join(kept)}"
+                if more:
+                    # Finding #39: cap the RENDERED list only — the structured
+                    # covering_tests field stays the full, uncapped list.
+                    tests_line += ", " + _COVERING_TESTS_ELISION_TEMPLATE.format(
+                        count=more, total=len(covering_tests)
+                    )
+                tests_line += ")"
+                lines.append(tests_line)
         else:
             # Findings #1/#2: a genuine miss is a HEURISTIC gap, never a bare
             # confident-looking "tests: 0".

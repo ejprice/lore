@@ -985,6 +985,131 @@ class TestCoveringTestsElisionCap:
         )
 
 
+class TestCoveringTestsFileRollup:
+    """T6 (P8d' #54 tweak): when every covering test lives in ONE file, the
+    render rolls up to a count + that file's canonical module label instead of
+    enumerating (and eliding) a long name list -- the STRUCTURED
+    ``covering_tests`` field stays the full, uncapped list unchanged (finding
+    #39 precedent).
+    """
+
+    async def test_covering_tests_roll_up_by_file_when_one_file_dominates(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        many_tests_lines = ["from reflib import champion_routing", ""]
+        for i in range(20):
+            many_tests_lines.append(f"def test_champion_routing_variant_{i}():")
+            many_tests_lines.append(f"    assert champion_routing({i}) == {i} * 2")
+            many_tests_lines.append("")
+        files = {
+            "reflib.py": _REFLIB_SOURCE,
+            "tests/test_many_champion_routing.py": "\n".join(many_tests_lines),
+        }
+        trio, _server = await _build_graph(tmp_path, files)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_TARGET, depth=1)
+
+        assert len(result.covering_tests) > 15, (
+            "the STRUCTURED covering_tests field must stay the FULL, "
+            f"uncapped list; got only {len(result.covering_tests)}"
+        )
+        assert f"tests: {len(result.covering_tests)} across 1 file" in result.formatted, (
+            f"expected a file-rollup line; got {result.formatted!r}"
+        )
+        assert "tests.test_many_champion_routing" in result.formatted
+        # Must NOT enumerate individual test names when rolled up by file.
+        assert "test_champion_routing_variant_0" not in result.formatted
+
+    async def test_covering_tests_multi_file_still_enumerates(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Regression guard (finding #39 precedent): covering tests spread
+        # across MANY files must keep the existing capped enumeration +
+        # elision trailer -- the file-rollup is for the single-dominant-file
+        # shape only, never a blanket replacement.
+        files = _full_corpus()
+        for i in range(20):
+            files[f"tests/test_extra_{i}.py"] = _TEST_REFLIB_SOURCE.replace(
+                "test_champion_routing", f"test_champion_routing_extra_{i}"
+            )
+        trio, _server = await _build_graph(tmp_path, files)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_TARGET, depth=1)
+
+        assert "across 1 file" not in result.formatted
+        assert "more" in result.formatted.lower()
+        assert "covering_tests" in result.formatted
+
+
+class TestCoveringTestsFileRollupTierCollision:
+    """F3 (REPORT-audit-tweaks.md): the T6 file-rollup dominance check must
+    key on distinct ``(tier, file_path)`` pairs, not distinct MODULE LABELS.
+
+    ``module_qualified_name`` derives a label from ``file_path`` alone (it
+    takes no ``tier`` argument) -- two GENUINELY DIFFERENT test files that
+    happen to share the same tier-relative path in two different tiers
+    collapse to the identical label. Keying the "one file dominates" check
+    on that label (as opposed to the underlying (tier, file_path) identity)
+    would falsely roll up 2 real files as "across 1 file".
+    """
+
+    async def test_two_tier_same_path_collision_does_not_falsely_roll_up(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Two tiers, each contributing a test file at the SAME nominal
+        # tier-relative path ("tests/test_dup_champion.py") -- genuinely
+        # distinct files by (tier, file_path) identity, but
+        # ``module_qualified_name`` (tier-blind) derives the SAME label for
+        # both. Each file's exactly-named ``test_champion_routing`` function
+        # trips ``tests_for``'s name heuristic (no import/edge needed), and
+        # every OTHER node in that same file's slice rides along -- enough
+        # filler functions per tier push the total past the render cap
+        # (_MAX_RENDERED_COVERING_TESTS == 15).
+        def _source(tier_tag: str, filler_count: int) -> str:
+            lines = ["def test_champion_routing():", "    pass", ""]
+            for i in range(filler_count):
+                lines.append(f"def test_champion_routing_filler_{tier_tag}_{i}():")
+                lines.append("    pass")
+                lines.append("")
+            return "\n".join(lines)
+
+        slug = _slug()
+        server = LoreServer(_config(slug=slug, live_path=tmp_path))
+        trio = fake_surreal_trio(
+            dim=_DIM, tier_roots={_TIER: tmp_path}, project_roots=[tmp_path]
+        )
+        engine = engine_factory(trio.graph)
+
+        shared_path = "tests/test_dup_champion.py"
+        tier_a, tier_b = "custom", "other"
+        # Distinct CHUNK-TIME identities (avoids astroid re-parsing the same
+        # module name with different content within one test) -- the
+        # NOMINAL graph file_path passed to ``build_file_graph`` below is
+        # what actually drives ``module_qualified_name``, and that IS the
+        # same string for both tiers (the collision this test targets).
+        chunks_a = _chunks_for(server, f"{tier_a}_src/{shared_path}", _source(tier_a, 7))
+        chunks_b = _chunks_for(server, f"{tier_b}_src/{shared_path}", _source(tier_b, 7))
+        await trio.graph.build_file_graph(tier_a, shared_path, chunks_a)
+        await trio.graph.build_file_graph(tier_b, shared_path, chunks_b)
+
+        result = await engine.impact(_TARGET, depth=1)
+
+        assert len(result.covering_tests) > 15, (
+            "the two-tier fixture must produce more covering tests than the "
+            f"render cap; got only {len(result.covering_tests)}"
+        )
+        assert "across 1 file" not in result.formatted, (
+            "two DISTINCT test files (same nominal path, different tiers) "
+            f"must never roll up as one file; got {result.formatted!r}"
+        )
+        assert "more" in result.formatted.lower(), (
+            "two real files past the cap must fall back to the capped "
+            f"enumeration + elision trailer; got {result.formatted!r}"
+        )
+
+
 class TestBareNameUnionCaveat:
     """Finding #30: a bare (unqualified) target may collide with a same-named
     symbol in another module; ``references()`` UNIONS every collidee's profile

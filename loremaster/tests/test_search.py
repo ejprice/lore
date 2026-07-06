@@ -120,7 +120,11 @@ _ENRICHMENT_UNAVAILABLE = "⚠ enrichment unavailable"  # "⚠ enrichment unavai
 _MEMORY_MARKER = "[MEMORY]"
 _MEMORY_KIND = "memory"
 _HIT_KIND = "hit"
-_MEMORY_INJECTION_CAP = 2
+_NOTICE_KIND = "notice"
+# T3 (P8d' #54 tweak): raised 2 -> 3, alongside the trailing-block reorder.
+_MEMORY_INJECTION_CAP = 3
+# T3: the section-label row segregating the trailing memories: block.
+_MEMORY_SECTION_HEADER = "memories:"
 
 # item 10 (audit followup): bidi override/isolate/mark + zero-width + line-break
 # chars OUTSIDE the C0/C1 control range the shipped sanitiser collapses — a
@@ -1027,15 +1031,17 @@ class TestVisibleMemoryInjection:
             assert "[SOURCE:" not in entry.formatted
             assert _SHORT_CITATION_PREFIX not in entry.formatted
 
-    async def test_injection_capped_at_two_by_score(
+    async def test_injection_capped_at_three_by_score(
         self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        # Three matching memories recalled; only the TWO highest-scored are injected
-        # (a deterministic cap), in descending-score order.
+        # Four matching memories recalled; only the THREE highest-scored are
+        # injected (a deterministic cap, raised 2 -> 3 by T3), in
+        # descending-score order.
         recalled = [
             _backend_recalled(text="mem-high", chunk_keys=["a" * 32], score=0.95),
             _backend_recalled(text="mem-mid", chunk_keys=["b" * 32], score=0.80),
-            _backend_recalled(text="mem-low", chunk_keys=["c" * 32], score=0.50),
+            _backend_recalled(text="mem-low", chunk_keys=["c" * 32], score=0.60),
+            _backend_recalled(text="mem-lowest", chunk_keys=["e" * 32], score=0.50),
         ]
         pipeline = await self._pipeline_with_memories(tmp_path, embedder, recalled)
 
@@ -1043,26 +1049,62 @@ class TestVisibleMemoryInjection:
         memory_texts = [r.formatted for r in results if r.kind == _MEMORY_KIND]
 
         assert len(memory_texts) == _MEMORY_INJECTION_CAP
-        # The top-2 by score, in order; the low-score memory is dropped.
+        # The top-3 by score, in order; the lowest-score memory is dropped.
         assert "mem-high" in memory_texts[0]
         assert "mem-mid" in memory_texts[1]
-        assert all("mem-low" not in text for text in memory_texts)
+        assert "mem-low" in memory_texts[2] and "mem-lowest" not in memory_texts[2]
+        assert all("mem-lowest" not in text for text in memory_texts)
 
-    async def test_injected_memories_render_before_hits(
+    async def test_injected_memories_render_after_hits_behind_a_memories_header(
         self, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        # Contract decision: injected memories lead the result list (response-level
-        # guidance surfaces first), then the ranked code hits follow.
+        # T3 contract decision (P8d' #54, reversing the earlier lead-first
+        # design): memory noise crowded out code hits under a tight budget
+        # (feedback: "initial searches returned memory entries"). The ranked
+        # code hits now render FIRST; injected memories are segregated behind
+        # a trailing ``memories:`` header so they never masquerade as part of
+        # the code-hit list.
         pipeline = await self._pipeline_with_memories(
             tmp_path, embedder,
             [_backend_recalled(
-                text="a leading note",
+                text="a trailing note",
                 chunk_keys=["d" * 32], score=0.9,
             )],
         )
         results = await pipeline.search_code("champion routing warehouse", k=5)
-        assert results[0].kind == _MEMORY_KIND
-        assert any(r.kind == _HIT_KIND for r in results), "the code hits still follow"
+        kinds = [r.kind for r in results]
+
+        assert _HIT_KIND in kinds, "the code hits must still be present"
+        last_hit_index = max(i for i, kind in enumerate(kinds) if kind == _HIT_KIND)
+        header_index = next(
+            i for i, r in enumerate(results) if r.formatted == _MEMORY_SECTION_HEADER
+        )
+        memory_index = next(i for i, kind in enumerate(kinds) if kind == _MEMORY_KIND)
+
+        assert last_hit_index < header_index, "every hit must precede the memories: header"
+        assert header_index < memory_index, "the header must lead the memory entries"
+
+    async def test_memory_cap_elision_is_announced(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # T3: memory hits beyond the (raised) cap are not silently dropped --
+        # a counted notice announces how many matching memories were not shown.
+        recalled = [
+            _backend_recalled(text="mem-1", chunk_keys=["1" * 32], score=0.95),
+            _backend_recalled(text="mem-2", chunk_keys=["2" * 32], score=0.90),
+            _backend_recalled(text="mem-3", chunk_keys=["3" * 32], score=0.85),
+            _backend_recalled(text="mem-4", chunk_keys=["4" * 32], score=0.80),
+        ]
+        pipeline = await self._pipeline_with_memories(tmp_path, embedder, recalled)
+
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+
+        assert notices, "a memory recall exceeding the injection cap must announce it"
+        assert any("+1" in n.formatted for n in notices), (
+            f"expected the elided count (+1, one memory beyond the cap of "
+            f"{_MEMORY_INJECTION_CAP}) named in a notice; got {notices!r}"
+        )
 
     async def test_no_memory_store_injects_nothing(
         self, tmp_path: Path, embedder: FakeEmbedder
@@ -1072,6 +1114,9 @@ class TestVisibleMemoryInjection:
         results = await pipeline.search_code("champion routing warehouse", k=5)
         assert results
         assert not any(r.kind == _MEMORY_KIND for r in results)
+        assert not any(r.formatted == _MEMORY_SECTION_HEADER for r in results), (
+            "no memories: header without a memory store"
+        )
 
 
 # --------------------------------------------------------------------------- #

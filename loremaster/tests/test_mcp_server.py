@@ -1298,6 +1298,23 @@ class TestToolDescriptions:
         assert "direct" in description
         assert "transitive" in description
 
+    async def test_impact_description_names_its_folded_one_call_verbs(
+        self, tmp_path: Path
+    ) -> None:
+        # T2 (P8d' #54 tweak): "who imports X" / "what tests cover X" must route
+        # to lore_impact FIRST -- its description names, early, the former
+        # what_imports / tests_for capabilities it folds in one call. Both bare
+        # stems are pre-approved phrasing (test_text_hygiene.py's tier-2 scan
+        # mechanically excludes them: living SurrealCodeGraph methods of the
+        # same name survive, so they are not enforced retired verbs; neither
+        # carries the ``lore_`` prefix tier-1 enforces).
+        tools = await self._tools_by_name(tmp_path)
+        description = tools["lore_impact"].description
+        assert "what_imports" in description
+        assert "tests_for" in description
+        assert "who imports" in description.lower()
+        assert "what tests cover" in description.lower()
+
     async def test_verify_description_teaches_when_and_the_verdicts(
         self, tmp_path: Path
     ) -> None:
@@ -1382,6 +1399,22 @@ class TestToolInputFieldDescriptions:
         ].lower()
         assert "bare" in description
         assert "dotted" in description or "qualified" in description
+
+    async def test_search_path_describes_the_exact_miss_shape(
+        self, tmp_path: Path
+    ) -> None:
+        # T5 (P8d' #54 tweak): the path param must LEAD with the EXACT-file
+        # requirement and explicitly rule out the three miss-shapes the gate
+        # transcripts hit (a directory, a basename, a path prefix).
+        tools = await self._tools_by_name(tmp_path)
+        description = tools["lore_search"].inputSchema["properties"]["path"][
+            "description"
+        ]
+        lowered = description.lower()
+        assert lowered.startswith("exact")
+        assert "directory" in lowered
+        assert "basename" in lowered
+        assert "prefix" in lowered
 
 
 class TestInputParamConstraints:
@@ -4079,6 +4112,107 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
     async def test_generous_budget_elides_nothing(self, indexed_context: AppContext) -> None:
         results = await indexed_context.search("champion routing", k=10, budget=6000)
         assert not [r for r in results if r.kind == "notice" and "elided" in r.formatted]
+
+    async def test_budget_elision_notice_names_top_elided_hit_and_a_raise_hint(
+        self, indexed_context: AppContext
+    ) -> None:
+        # T4 (P8d' #54 tweak): the elision notice must go beyond a bare count
+        # -- name the top elided hit (identity + score) and a concrete "raise
+        # budget to ~N" hint, reusing the SAME calibrated counter the
+        # enforcement path already runs (no new estimation machinery).
+        from loremaster.search import SearchResult
+
+        class _HugeHitsPipeline:
+            async def search_code(self, *args: Any, **kwargs: Any) -> list[SearchResult]:
+                # Each hit's formatted text is deliberately huge so even ONE
+                # blows the floor budget -- the "top elided" hit is then
+                # deterministically the FIRST one, whatever the exact
+                # tokenizer counts turn out to be.
+                return [
+                    SearchResult(
+                        formatted=f"[SOURCE:pkg/hit_{i}.py:1]\nKey: hit-{i}\n" + "x" * 4000,
+                        chunk_key=f"hit-{i}",
+                        detail_level="source",
+                        stale=False,
+                        score=0.9 - i * 0.1,
+                        kind="hit",
+                    )
+                    for i in range(3)
+                ]
+
+        indexed_context.search_pipeline = _HugeHitsPipeline()  # type: ignore[assignment]
+        results = await indexed_context.search(
+            "anything", budget=_PRODUCTION_MAP_BUDGET_FLOOR
+        )
+        notice = next(r for r in results if r.kind == "notice" and "elided" in r.formatted)
+
+        assert f"budget={_PRODUCTION_MAP_BUDGET_FLOOR}" in notice.formatted
+        assert "hit-0" in notice.formatted, (
+            f"expected the top elided hit's identity named; got {notice.formatted!r}"
+        )
+        assert "score=" in notice.formatted
+        assert "raise budget to ~" in notice.formatted
+        assert "all 3 entries" in notice.formatted
+
+    async def test_tight_budget_never_leaves_a_dangling_memories_header(
+        self, tmp_path: Path
+    ) -> None:
+        """F1 (REPORT-audit-tweaks.md): ``_enforce_search_budget`` must never
+        keep the ``memories:`` section header while every memory entry
+        beneath it gets squeezed out -- a CLASS invariant (header survives
+        iff >=1 memory-kind entry survives with it), not a numbers-specific
+        fix. Mirrors the audit's live repro (scratchpad/probe_budget.py) --
+        the same list shape ``[*hits, header, mem1, mem2, mem3]`` fed
+        straight into the real ``_enforce_search_budget`` -- swept across a
+        budget range wide enough to cross the dangling window the audit
+        measured (7 of 119 budgets dangled for its fixture shape).
+        """
+        from loremaster.search import _MEMORY_SECTION_HEADER, SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            hit = SearchResult(
+                formatted="[SOURCE:pkg/router.py:1-10@abc123]\n" + "h" * 40,
+                chunk_key="hit-key-0",
+                detail_level="source",
+                stale=False,
+                score=0.9,
+                kind="hit",
+            )
+            header = SearchResult(
+                formatted=_MEMORY_SECTION_HEADER,
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.0,
+                kind="notice",
+            )
+            memories = [
+                SearchResult(
+                    formatted=f"[MEMORY] remembered correction number {i} " + "m" * 30,
+                    chunk_key="",
+                    detail_level="summary",
+                    stale=False,
+                    score=0.5,
+                    kind="memory",
+                )
+                for i in range(3)
+            ]
+            base = [hit, header, *memories]
+            dangling: list[int] = []
+            for budget in range(1, 200):
+                kept = ctx._enforce_search_budget(list(base), budget, None)  # noqa: SLF001
+                has_header = any(r.formatted == _MEMORY_SECTION_HEADER for r in kept)
+                has_memory_entry = any(r.kind == "memory" for r in kept)
+                if has_header and not has_memory_entry:
+                    dangling.append(budget)
+            assert not dangling, (
+                "a memories: header rendered with zero memory entries beneath "
+                f"it at budgets {dangling}"
+            )
+        finally:
+            await ctx.aclose()
 
     async def test_caller_model_with_no_cached_ratio_renders_a_notice(
         self, tmp_path: Path

@@ -116,6 +116,7 @@ from loremaster.memory.backend import (
 )
 from loremaster.search import (
     _FENCE_CHAR,
+    _MEMORY_SECTION_HEADER,
     _MIN_FENCE_WIDTH,
     NOTICE_KIND,
     DetailSelector,
@@ -870,8 +871,16 @@ _SEARCH_BUDGET_DEFAULT = 1100
 # audit-w4a finding #3: the elided list can carry non-"hit" kinds too (an
 # injected memory line, the filter-miss notice itself) -- "entries" is the
 # honest noun for whatever kind got squeezed out; the arithmetic is unchanged.
+# T4 (P8d' #54 tweak): a bare count taught nothing actionable -- the notice
+# now names the TOP elided entry (identity + score, the highest-priority one
+# squeezed out) and a concrete "raise budget to ~N" hint, where N is the
+# EXACT token count of the full, un-elided join (computed with the SAME
+# calibrated :meth:`AppContext._count_tokens_single` counter the enforcement
+# path already runs -- no new estimation machinery): a budget of N is the
+# minimum that would have elided nothing at all.
 _SEARCH_ELISION_TEMPLATE = (
-    "+{elided} entries elided by budget={budget} — raise budget or narrow the query/path"
+    "+{elided} entries elided by budget={budget} — top elided: {identity!r} "
+    "(score={score:.3f}) — raise budget to ~{suggested} to see all {total} entries"
 )
 
 # P8d Wave 4a (findings #25/#32): the filter-miss teach rendered when a path/
@@ -1793,12 +1802,38 @@ class AppContext:
         if not elided:
             return kept
 
-        notice_text = _SEARCH_ELISION_TEMPLATE.format(elided=elided, budget=budget)
+        # T4: the top elided entry (the highest-priority one squeezed out)
+        # and the exact token count of the full, un-elided join — the
+        # minimum budget that would have elided nothing — are fixed facts
+        # about `results`, computed ONCE; only `elided` itself grows as the
+        # pop-until-it-fits loop below shrinks `kept` further.
+        top_elided = results[len(kept)]
+        full_count = _count("\n".join(result.formatted for result in results))
+
+        def _notice(elided_count: int) -> str:
+            return self._search_elision_notice(elided_count, budget, top_elided, full_count, len(results))
+
+        notice_text = _notice(elided)
         while kept and _count("\n".join([*kept_texts, notice_text])) > budget:
             kept.pop()
             kept_texts.pop()
             elided += 1
-            notice_text = _SEARCH_ELISION_TEMPLATE.format(elided=elided, budget=budget)
+            notice_text = _notice(elided)
+
+        # F1 (REPORT-audit-tweaks.md): both the greedy walk above and the
+        # pop-until-it-fits loop only ever DROP entries, so the memories:
+        # header — always immediately followed by >=1 memory entry in
+        # `results` (``_inject_memories`` never emits the header alone) —
+        # can only dangle by ending up as the LAST surviving entry in
+        # `kept` (every memory entry that would follow it either never made
+        # the cut or was popped first, since popping removes from the tail).
+        # Restore the served-surface invariant "header kept ⟹ >=1 memory
+        # entry kept" by dropping it too when that happens.
+        if kept and kept[-1].formatted == _MEMORY_SECTION_HEADER:
+            kept.pop()
+            kept_texts.pop()
+            elided += 1
+            notice_text = _notice(elided)
 
         kept.append(
             SearchResult(
@@ -1811,6 +1846,33 @@ class AppContext:
             )
         )
         return kept
+
+    @staticmethod
+    def _search_elision_notice(
+        elided: int,
+        budget: int,
+        top_elided: SearchResult,
+        suggested_budget: int,
+        total: int,
+    ) -> str:
+        """Compose the T4 elision notice naming the top elided entry + a raise hint."""
+        return _SEARCH_ELISION_TEMPLATE.format(
+            elided=elided,
+            budget=budget,
+            identity=AppContext._result_identity(top_elided),
+            score=top_elided.score,
+            suggested=suggested_budget,
+            total=total,
+        )
+
+    @staticmethod
+    def _result_identity(result: SearchResult) -> str:
+        """A short, honest label for one result — its stable key, else a
+        compact snippet of its rendered text (never a raw dump)."""
+        if result.chunk_key:
+            return result.chunk_key
+        first_line = result.formatted.splitlines()[0] if result.formatted else ""
+        return first_line[:60]
 
     async def get_symbol(self, qualified_name: str) -> ResolvedSymbol:
         """Resolve a qualified Python name to its exact stored definition + location."""
@@ -4364,10 +4426,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str | None,
             Field(
                 description=(
-                    "Optional exact indexed file path to scope the search to, e.g. "
-                    "'pkg/router.py'. Exact-match only — subtree/directory prefixes are "
-                    "not supported (a miss teaches the nearest real indexed path). Also "
-                    "what wait_for_fresh waits on. Omit for an unscoped search."
+                    "EXACT indexed file path (e.g. "
+                    "'loremaster/loremaster/server.py') — never a directory, "
+                    "basename, or path prefix (a miss teaches the nearest real "
+                    "indexed path). Also what wait_for_fresh waits on. Omit for an "
+                    "unscoped search."
                 )
             ),
         ] = None,
@@ -5196,8 +5259,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "here break'), plus an explicit verdict ('live' or 'dead (heuristic)') "
             "that always carries an astroid-bounds caveat: a 'dead' verdict is a "
             "LEAD to investigate, never a deletion order, since dynamic / "
-            "framework-mediated call sites can undercount. The single graph-read "
-            "verb for this project — absorbs what were previously separate "
+            "framework-mediated call sites can undercount. For a MODULE target it "
+            "lists the modules that import it (the former what_imports), and for "
+            "any target its covering tests (the former tests_for) — 'who imports "
+            "X' and 'what tests cover X' both route HERE FIRST, in one call. The "
+            "single graph-read verb for this project — absorbs what were previously separate "
             "direct-importer / transitive-closure / reference-count / covering-test "
             "tools. Reach for this before removing or refactoring something "
             "lore_dead_code flagged. A same-session rename/edit can leave this "
