@@ -713,7 +713,7 @@ class TestBulkSweepChunkerFaultIsolationInPassOne:
         config = config.model_copy(deep=True)
         config.include.append("**/*.xml")
         config.roots[0].include.append("**/*.xml")
-        config.chunkers[".xml"] = {**config.chunkers[".py"], "chunker": "xml_generic"}
+        config.chunkers[".xml"] = {**config.chunkers[".py"], "chunker": "xml"}
         trio = _trio()
         embedder = RecordingBatchFlatEmbedder(dim=_DIM, supports_batch=True)
         indexer = _make_indexer(

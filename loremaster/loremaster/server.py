@@ -203,6 +203,14 @@ _BASE_CHUNKER_SUFFIXES: dict[str, tuple[str, ...]] = {
 _XML_SUFFIXES: tuple[str, ...] = (".xml",)
 _JS_SUFFIXES: tuple[str, ...] = (".js",)
 
+# The ``lore.yaml`` ``chunkers`` block projects onto the registry's override
+# seam: each ENTRY is ``extension -> inner mapping`` and the boot wiring reads
+# ONLY the inner ``chunker`` key naming a registered chunker (permissive-ignore
+# -- extra inner keys are tolerated). Both names are the operator-facing yaml
+# identifiers the loud-failure messages must cite so a fix is a one-step edit.
+_CHUNKERS_CONFIG_FIELD: str = "chunkers"
+_CHUNKER_INNER_KEY: str = "chunker"
+
 # The base default detail-level classification (seam 11 / C2): the base
 # classifies ITS OWN chunk types. Overview-ish types (signatures, imports,
 # headings, the XML element record) read as ``"summary"``; everything else —
@@ -252,6 +260,10 @@ class LoreServer:
         # The registry, built with the base chunkers + (initially no) profiles.
         self._registry = ChunkerRegistry()
         self._build_default_registry()
+        # Route the ``lore.yaml`` ``chunkers`` block onto the now-populated
+        # registry: ordering matters -- the override targets (e.g. ``python_ast``)
+        # only exist AFTER ``_build_default_registry()``, so the wiring runs last.
+        self._apply_config_chunker_overrides()
 
     # -- construction -------------------------------------------------------
 
@@ -308,6 +320,51 @@ class LoreServer:
         """Record ``key`` as the owner of each suffix (for the nit-1 guard)."""
         for suffix in suffixes:
             self._suffix_owner[suffix.lower()] = key
+
+    def _apply_config_chunker_overrides(self) -> None:
+        """Project ``config.chunkers`` onto the registry's ``apply_overrides`` seam.
+
+        The ``lore.yaml`` ``chunkers`` block maps a file extension to an inner
+        mapping carrying a ``chunker`` key that names an already-registered
+        chunker. This projects each entry to ``{extension: inner["chunker"]}`` and
+        hands the WHOLE batch to :meth:`ChunkerRegistry.apply_overrides` in a
+        single call, so its two-pass validation gives all-or-nothing atomicity (a
+        single bad target leaves the routing table untouched). Only ``chunker`` is
+        read; any extra inner keys are tolerated and ignored (permissive-ignore),
+        and the source mappings are never mutated (no popping) so the block folds
+        into the embedding-schema fingerprint verbatim.
+
+        An empty block is a no-op. Failures are LOUD at construction:
+
+        Raises:
+            ValueError: If an inner mapping is missing the required ``chunker``
+                key (message names the extension and the key), or if an override
+                targets a chunker key that was never registered -- the registry's
+                ``KeyError`` is wrapped as a ``ValueError`` naming the yaml field,
+                the offending extension, and the offending key.
+        """
+        # Project extension -> inner["chunker"], failing loud on a missing key so
+        # the operator sees ``chunker`` by name rather than a downstream
+        # ``None is unregistered`` confusion.
+        projected_overrides: dict[str, str] = {}
+        for extension, inner in self._config.chunkers.items():
+            if _CHUNKER_INNER_KEY not in inner:
+                raise ValueError(
+                    f"config field {_CHUNKERS_CONFIG_FIELD!r} entry for extension "
+                    f"{extension!r} is missing the required {_CHUNKER_INNER_KEY!r} key "
+                    f"naming a registered chunker."
+                )
+            projected_overrides[extension] = inner[_CHUNKER_INNER_KEY]
+        # One call for all-or-nothing atomicity. The registry raises a bare
+        # KeyError on an unregistered target; wrap-and-rename it (precedent:
+        # ``load_config``, config.py:620) into a ValueError that also cites the yaml
+        # field the operator edits (the KeyError already names the extension/key).
+        try:
+            self._registry.apply_overrides(projected_overrides)
+        except KeyError as error:
+            raise ValueError(
+                f"config field {_CHUNKERS_CONFIG_FIELD!r}: {error.args[0]}"
+            ) from error
 
     # -- accessors ----------------------------------------------------------
 
