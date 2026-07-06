@@ -121,16 +121,22 @@ _MODULE_ROLLUP_RIPPLE_CAVEAT = (
 # never a verified absence.
 _NO_COVERING_TESTS_TEXT = "none detected (heuristic -- indirect coverage is not traced)"
 
-# Finding #39: the rendered covering-tests list caps at a sane top-N (the
-# SAME sorted-name order ``_covering_tests`` already returns, so the kept
-# entries are deterministic) with an explicit, non-silent elision trailer
-# (no-silent-caps doctrine). The STRUCTURED ``covering_tests`` field stays the
-# FULL, uncapped list -- only the compact rendered TEXT block caps, so a
-# programmatic caller loses nothing; the trailer points back at that field.
+# Finding #39 (SUPERSEDED by S1, the 2026-07-06 client-needs consult --
+# docs/design/2026-07-06-client-needs-consult.md): the rendered covering-tests
+# list caps at a sane top-N (the SAME sorted-name order ``_covering_tests``
+# already returns, so the kept entries are deterministic) with an explicit,
+# non-silent elision trailer (no-silent-caps doctrine). S1 REVERSES #39's
+# "structured field stays full" ruling -- its rationale assumed a
+# programmatic consumer, but over MCP the model IS the consumer, and both
+# surfaces land in the same context: an uncapped structured field taxes the
+# SAME context an uncapped render would. The STRUCTURED ``covering_tests``
+# field is now capped with the SAME discipline (see ``ImpactEngine.impact``),
+# with the elided count carried honestly in ``ImpactResult.covering_tests_
+# elided`` -- never overloading the existing consumer/rollup-scoped
+# ``elided`` field, which stays scoped to ``direct_consumers``/
+# ``module_rollups`` per its own docstring.
 _MAX_RENDERED_COVERING_TESTS = 15
-_COVERING_TESTS_ELISION_TEMPLATE = (
-    "+{count} more (see the full covering_tests field for all {total})"
-)
+_COVERING_TESTS_ELISION_TEMPLATE = "+{count} more (elided by max_covering_tests={cap})"
 
 # T6 (P8d' #54 tweak): when covering tests would otherwise be capped (more
 # than _MAX_RENDERED_COVERING_TESTS) AND every one of them lives in the SAME
@@ -138,9 +144,10 @@ _COVERING_TESTS_ELISION_TEMPLATE = (
 # trailer is pure token noise -- one file backing a big suite (the common
 # "this helper's whole test module covers it" shape) rolls up to a count +
 # that file's module label instead. The STRUCTURED covering_tests field is
-# UNCHANGED (still the full, uncapped list) -- only this compact render
-# branch differs; a multi-file spread (the general case finding #39 already
-# covers) keeps the existing capped enumeration untouched.
+# capped the SAME way as every other case (S1) -- this render branch changes
+# only the TEXT shape, never whether the wire field is capped; a multi-file
+# spread (the general case finding #39/S1 already covers) keeps the existing
+# capped enumeration untouched.
 _COVERING_TESTS_FILE_ROLLUP_TEMPLATE = "tests: {count} across 1 file ({module})"
 
 # Finding #30: a bare (unqualified) target may collide with a same-named
@@ -212,7 +219,13 @@ class ImpactResult(BaseModel):
             else :data:`_VERDICT_DEAD` — always paired with :attr:`caveat`.
         production_references: Distinct non-test references to ``target``.
         test_references: Distinct test-only references to ``target``.
-        covering_tests: Qualified names of the tests exercising ``target``.
+        covering_tests: Qualified names of the tests exercising ``target``,
+            capped at :data:`_MAX_RENDERED_COVERING_TESTS` entries — S1 (the
+            2026-07-06 client-needs consult) reverses the #39-era "structured
+            field stays full" ruling: over MCP the model IS the consumer, so
+            an uncapped structured field taxes the same context an uncapped
+            render would. Squeezed-out entries are counted in
+            :attr:`covering_tests_elided`, never silent.
         direct_consumers: The depth-1 production consumer names (populated
             only when the EFFECTIVE query depth is 1).
         module_rollups: Per-module consumer-count rollups (populated only
@@ -221,6 +234,13 @@ class ImpactResult(BaseModel):
         elided: The count of entries squeezed out of the rendered
             consumer/rollup list by ``max_consumers`` (0 when nothing was
             squeezed) — never silent, always also named in :attr:`formatted`.
+            Scoped to :attr:`direct_consumers`/:attr:`module_rollups` only;
+            the covering-tests elision is counted separately in
+            :attr:`covering_tests_elided` rather than overloading this field.
+        covering_tests_elided: The count of covering-test names squeezed out
+            of :attr:`covering_tests` by the same top-N cap the render uses
+            (0 when nothing was squeezed) — never silent, always also named
+            in :attr:`formatted`.
         caveat: The astroid-bounds caveat (:data:`_CAVEAT_TEXT`) — never
             empty, on every verdict.
         formatted: The compact, token-efficient rendered block a caller can
@@ -237,6 +257,7 @@ class ImpactResult(BaseModel):
     direct_consumers: list[str]
     module_rollups: list[ModuleRollup]
     elided: int
+    covering_tests_elided: int
     caveat: str
     formatted: str
 
@@ -305,6 +326,15 @@ class ImpactEngine:
         covering_tests, covering_test_modules, covering_test_files = await self._covering_tests(
             target
         )
+        # S1 (2026-07-06 client-needs consult): cap the STRUCTURED wire field
+        # with the SAME discipline the render already applies -- the full,
+        # uncapped ``covering_tests`` list stays a local (used by ``_render``
+        # for its file-rollup dominance check and by ``_target_is_known`` as
+        # an existence signal); only the value that reaches ``ImpactResult``
+        # is capped, with the elided count carried honestly.
+        covering_tests_for_wire, covering_tests_elided = self._cap(
+            covering_tests, _MAX_RENDERED_COVERING_TESTS
+        )
 
         direct_consumers: list[str] = []
         module_rollups: list[ModuleRollup] = []
@@ -357,10 +387,11 @@ class ImpactEngine:
             verdict=verdict,
             production_references=summary.production_references,
             test_references=summary.test_references,
-            covering_tests=covering_tests,
+            covering_tests=covering_tests_for_wire,
             direct_consumers=direct_consumers,
             module_rollups=module_rollups,
             elided=elided,
+            covering_tests_elided=covering_tests_elided,
             caveat=_CAVEAT_TEXT,
             formatted=formatted,
         )
@@ -600,7 +631,8 @@ class ImpactEngine:
                 # T6: one file backs every covering test -- roll up to a count
                 # + that file's module label instead of enumerating (and
                 # eliding) a long near-identical name list. The structured
-                # covering_tests field is untouched (still full, uncapped).
+                # covering_tests field is capped the same way (S1) by the
+                # caller; this branch only changes the TEXT shape.
                 module = covering_test_modules[covering_tests[0]]
                 lines.append(
                     _COVERING_TESTS_FILE_ROLLUP_TEMPLATE.format(
@@ -611,10 +643,12 @@ class ImpactEngine:
                 kept, more = ImpactEngine._cap(covering_tests, _MAX_RENDERED_COVERING_TESTS)
                 tests_line = f"tests: {len(covering_tests)} ({', '.join(kept)}"
                 if more:
-                    # Finding #39: cap the RENDERED list only — the structured
-                    # covering_tests field stays the full, uncapped list.
+                    # S1 (reverses finding #39): the wire-level covering_tests
+                    # field is capped by this SAME call's twin in impact() --
+                    # this trailer names the identical elided count, never
+                    # claiming access to a full field that no longer exists.
                     tests_line += ", " + _COVERING_TESTS_ELISION_TEMPLATE.format(
-                        count=more, total=len(covering_tests)
+                        count=more, cap=_MAX_RENDERED_COVERING_TESTS
                     )
                 tests_line += ")"
                 lines.append(tests_line)

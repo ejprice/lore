@@ -951,13 +951,18 @@ class TestCoveringTestsHonestRender:
 
 
 class TestCoveringTestsElisionCap:
-    """Finding #39: the rendered covering-tests list must cap at a sane top-N
-    with an EXPLICIT, non-silent elision trailer (no-silent-caps doctrine) --
-    the structured ``covering_tests`` field stays the FULL, uncapped list (a
-    programmatic caller loses nothing); only the compact TEXT block caps.
+    """S1 (2026-07-06 client-needs consult, docs/design/2026-07-06-client-needs-
+    consult.md) REVERSES finding #39's "structured field stays full" ruling:
+    over MCP the model IS the consumer, so an uncapped structured field taxes
+    the SAME context an uncapped render would. The rendered covering-tests
+    list AND the structured ``covering_tests`` field now cap at the SAME
+    top-N (``_MAX_RENDERED_COVERING_TESTS``), with the elided count carried
+    honestly on the wire in ``covering_tests_elided`` (never overloading the
+    existing consumer/rollup-scoped ``elided`` field) -- no-silent-caps
+    doctrine, applied to the structured surface too.
     """
 
-    async def test_covering_tests_render_caps_with_an_announced_elision(
+    async def test_covering_tests_field_caps_with_a_counted_elision(
         self, tmp_path: Path, engine_factory: Callable[..., Any]
     ) -> None:
         files = _full_corpus()
@@ -971,26 +976,34 @@ class TestCoveringTestsElisionCap:
 
         result = await engine.impact(_TARGET, depth=1)
 
-        assert len(result.covering_tests) > 15, (
-            "the STRUCTURED covering_tests field must stay the FULL, "
-            f"uncapped list; got only {len(result.covering_tests)}"
+        assert len(result.covering_tests) <= 15, (
+            "S1: the STRUCTURED covering_tests field must now cap at the "
+            f"same top-N the render uses; got {len(result.covering_tests)}"
+        )
+        assert result.covering_tests_elided > 0, (
+            "the corpus produces more covering tests than the cap -- the "
+            "elision must be counted on the wire, never silent"
+        )
+        assert len(result.covering_tests) + result.covering_tests_elided > 15, (
+            "sanity: the corpus must genuinely exceed the cap"
         )
         assert "more" in result.formatted.lower(), (
             "the rendered block must announce the elision explicitly (never "
             f"a silent truncation); got {result.formatted!r}"
         )
         assert "covering_tests" in result.formatted, (
-            "the elision trailer must teach how to see the rest honestly -- "
-            "pointing at the (uncapped) structured covering_tests field"
+            "the elision trailer must still name the field it elided"
         )
 
 
 class TestCoveringTestsFileRollup:
     """T6 (P8d' #54 tweak): when every covering test lives in ONE file, the
     render rolls up to a count + that file's canonical module label instead of
-    enumerating (and eliding) a long name list -- the STRUCTURED
-    ``covering_tests`` field stays the full, uncapped list unchanged (finding
-    #39 precedent).
+    enumerating (and eliding) a long name list. S1 (2026-07-06 consult) caps
+    the STRUCTURED ``covering_tests`` field the same way as every other case
+    (finding #39 reversed) -- this test derives the true corpus total from
+    ``len(covering_tests) + covering_tests_elided`` rather than asserting the
+    field itself is the uncapped total.
     """
 
     async def test_covering_tests_roll_up_by_file_when_one_file_dominates(
@@ -1010,11 +1023,12 @@ class TestCoveringTestsFileRollup:
 
         result = await engine.impact(_TARGET, depth=1)
 
-        assert len(result.covering_tests) > 15, (
-            "the STRUCTURED covering_tests field must stay the FULL, "
-            f"uncapped list; got only {len(result.covering_tests)}"
+        true_total = len(result.covering_tests) + result.covering_tests_elided
+        assert true_total > 15, (
+            "S1: covering_tests is now capped on the wire -- the corpus-size "
+            f"check derives the true total from kept+elided; got only {true_total}"
         )
-        assert f"tests: {len(result.covering_tests)} across 1 file" in result.formatted, (
+        assert f"tests: {true_total} across 1 file" in result.formatted, (
             f"expected a file-rollup line; got {result.formatted!r}"
         )
         assert "tests.test_many_champion_routing" in result.formatted
@@ -1096,9 +1110,10 @@ class TestCoveringTestsFileRollupTierCollision:
 
         result = await engine.impact(_TARGET, depth=1)
 
-        assert len(result.covering_tests) > 15, (
+        true_total = len(result.covering_tests) + result.covering_tests_elided
+        assert true_total > 15, (
             "the two-tier fixture must produce more covering tests than the "
-            f"render cap; got only {len(result.covering_tests)}"
+            f"render cap; got only {true_total}"
         )
         assert "across 1 file" not in result.formatted, (
             "two DISTINCT test files (same nominal path, different tiers) "
