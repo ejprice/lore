@@ -69,16 +69,17 @@
      mid-flip server.py surface (19->14 tools) may still move under.
    -->
 
-   <!-- RECEIPT: lore_map (unfocused, whole corpus) - skills.lore-deploy.scripts.lore_deploy
-        rank 0.0195 vs next-highest loremaster.loremaster.server 0.0120; file confirmed at
-        skills/lore-deploy/scripts/lore_deploy.py (1161 lines, executable). -->
-   <!-- W5-REVALIDATE: REVALIDATED post-flip (eval-runner-1, 2026-07-06, live server @ HEAD
-        47fc68b, 14-tool surface): live lore_map(focus=null) still ranks lore_deploy.py
-        highest at 0.019477..., loremaster.loremaster.server next at 0.011952... - ranks
-        byte-identical to the original receipt. CONFIRMED unchanged; answer stands as-is. -->
+   <!-- RECEIPT (RE-DERIVED post-P8d' #57 fix, p8d-lead, 2026-07-06, live server @ HEAD
+        7a85579): the pre-fix ranking was an ARTIFACT of finding #57 (doubled pipeline keys
+        dropped production import edges, pinning real modules at the teleport floor and
+        letting an unimported script win). With edges restored, live lore_map(unfocused)
+        ranks the loresigil package top at 0.0566, loremaster 0.0559, lorescribe 0.0378 -
+        real, differentiated production centrality. Question reframed to ask for the
+        top-ranked MODULE's dotted name (a package-root file path like __init__.py would
+        be a degenerate answer); answer = loresigil. -->
    <qa_pair>
-      <question>Considering the entire indexed repository -- the application source AND its deployment/tooling scripts -- and ranking every module by a deterministic PageRank-style score over the codebase's import/reference graph, which single file has the highest rank (i.e. is the single most structurally central module in the whole tree)? Answer with its repo-relative file path.</question>
-      <answer>skills/lore-deploy/scripts/lore_deploy.py</answer>
+      <question>Considering the entire indexed repository and ranking every module by a deterministic PageRank-style score over the codebase's import/reference graph, which single module has the highest rank (i.e. is the most structurally central in the whole tree)? Answer with its dotted module name exactly as the map renders it.</question>
+      <answer>loresigil</answer>
    </qa_pair>
 
    <!-- RECEIPT (revalidated post-flip, eval-runner-1, 2026-07-06, live server @ HEAD 47fc68b,
@@ -95,11 +96,15 @@
         Canonical import path for reference only (NOT the graded answer): loremaster.server,
         confirmed via `from loremaster.server import LoreServer` (test_map.py,
         test_graph_wiring.py, test_calibration_wiring.py, etc.). -->
-   <!-- W5-REVALIDATE: CONFIRMED post-flip (ranks unchanged); AMENDED question+answer for the
-        pre-existing dual-label ambiguity only -->
+   <!-- RE-DERIVED post-P8d' #52/#57 fix (p8d-lead, 2026-07-06, live server @ HEAD 7a85579):
+        labels are now CANONICAL import paths (the dual-label artifact is fixed - finding
+        #52), and the restored import edges reshaped the focus neighbourhood: the focused
+        module itself leads (loremaster.calibration.engine 0.1735), then loremaster.server
+        at 0.1483, then loremaster 0.0942 / calibration.baseline 0.0796. Question's stale
+        numeric hints removed; answer restored to the canonical name the map now renders. -->
    <qa_pair>
-      <question>When the codebase's structural map is re-centered on the class that owns the token-calibration probe loop (CalibrationEngine), exactly one OTHER module's rank clears 0.25 -- dwarfing the next tier, which ties near 0.07. Which module is it? Give the module's dotted name exactly as the map tool renders it (its rendered label may repeat the top-level package directory name).</question>
-      <answer>loremaster.loremaster.server</answer>
+      <question>When the codebase's structural map is re-centered on the class that owns the token-calibration probe loop (CalibrationEngine), which OTHER module ranks highest in the focused neighbourhood (the focused symbol's own defining module aside)? Give the module's dotted name exactly as the map tool renders it.</question>
+      <answer>loremaster.server</answer>
    </qa_pair>
 
    <!-- RECEIPT: loremaster/loremaster/impact.py:202-206 - `async def impact(self, target: str,
