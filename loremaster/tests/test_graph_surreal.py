@@ -1969,6 +1969,69 @@ class TestDeadCode:
         assert FQN_WIDGET not in {n.qualified_name for n in await graph.dead_code([TIER_A])}
 
 
+class TestDeadCodeTotal:
+    """Finding #60: ``dead_code``'s ``max_results`` slice carries no elided/total
+    count at all -- unlike ``lore_map`` (``elided_modules``), ``lore_impact``
+    (``elided``) and ``lore_diff`` (formatted "+K more" markers), a capped
+    ``dead_code`` result cannot be told apart from a genuinely-complete one.
+
+    ``dead_code_total`` is the engine-level primitive that makes an honest
+    elided count POSSIBLE: it mirrors ``ImpactEngine._cap``'s ``(kept, elided)``
+    idiom by giving a caller ``total`` so it can compute ``elided = total -
+    len(kept)`` itself. It is intentionally an ADDITIVE new method (never a
+    change to ``dead_code``'s existing signature/behaviour) -- wiring the
+    counted-elision signal onto the ``lore_dead_code`` MCP tool itself is a
+    server.py change out of this method's writable set (see
+    REPORT-slate-builder-s1.md's #60 resolution note).
+    """
+
+    async def test_total_matches_the_length_of_a_fully_uncapped_scan(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """``dead_code_total`` and an uncapped ``dead_code`` scan must agree."""
+        graph, _env = reflib_graph
+        total = await graph.dead_code_total([TIER_A])
+        full_scan = await graph.dead_code([TIER_A], max_results=MAX_DEAD_CODE_MAX_RESULTS)
+        assert total == len(full_scan)
+        # Independent oracle: lonely/orphan/countdown are dead by construction
+        # (see REFLIB_SOURCE) -- the total must cover at least those three.
+        assert total >= 3
+
+    async def test_total_lets_a_caller_compute_an_honest_elided_count(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """``total - len(capped)`` is the SAME ``(kept, elided)`` idiom ``ImpactEngine._cap`` uses."""
+        graph, _env = reflib_graph
+        capped = await graph.dead_code([TIER_A], max_results=1)
+        total = await graph.dead_code_total([TIER_A])
+        assert len(capped) == 1
+        elided = total - len(capped)
+        assert elided >= 2, (
+            "at least lonely/orphan/countdown are dead by construction -- capping "
+            f"at 1 must leave >=2 elided; got {elided}"
+        )
+
+    async def test_total_respects_the_same_filters_as_dead_code(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """``include_tests`` widens the candidate set identically for both."""
+        graph, _env = reflib_graph
+        total_default = await graph.dead_code_total([TIER_A])
+        total_with_tests = await graph.dead_code_total([TIER_A], include_tests=True)
+        assert total_with_tests > total_default, (
+            "REFTEST_PATH's test-only nodes become dead-code candidates under "
+            "include_tests=True -- the total must widen the same way dead_code() does"
+        )
+
+    async def test_empty_or_unbuilt_tiers_total_zero(
+        self, reflib_graph: tuple[SurrealCodeGraph, SurrealEnv]
+    ) -> None:
+        """No tiers or a tier nothing was built under: the total is a clean zero."""
+        graph, _env = reflib_graph
+        assert await graph.dead_code_total([]) == 0
+        assert await graph.dead_code_total([TIER_B]) == 0
+
+
 # --- dead_code module-node roll-up (references are symbol-level) --------------
 
 MODLIB_HELPERS_SOURCE: str = textwrap.dedent(

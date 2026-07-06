@@ -68,7 +68,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -1494,6 +1494,85 @@ class SurrealCodeGraph:
             return []
         cap = min(max_results, MAX_DEAD_CODE_MAX_RESULTS)
 
+        dead: list[DeadCodeNode] = []
+        async for node in self._dead_code_candidates(
+            tiers,
+            include_tests=include_tests,
+            include_dunders=include_dunders,
+            include_entrypoints=include_entrypoints,
+        ):
+            dead.append(node)
+            if len(dead) >= cap:
+                break
+        return dead
+
+    async def dead_code_total(
+        self,
+        tiers: Sequence[str],
+        *,
+        include_tests: bool = False,
+        include_dunders: bool = False,
+        include_entrypoints: bool = False,
+    ) -> int:
+        """The TOTAL count of dead nodes matching ``dead_code``'s SAME filters,
+        with no ``max_results`` cap (finding #60).
+
+        Finding #60: ``dead_code``'s ``max_results`` slice carries no elided/
+        total count anywhere -- unlike ``lore_map``'s ``elided_modules``,
+        ``lore_impact``'s ``elided`` field, or ``lore_diff``'s formatted "+K
+        more" markers, a capped ``dead_code`` result is indistinguishable from
+        a genuinely-complete one. This method is the engine-level primitive a
+        caller needs to compute an honest elided count itself
+        (``elided = total - len(kept)``) -- the SAME ``(kept, elided)`` idiom
+        :meth:`~loremaster.impact.ImpactEngine._cap` already uses, applied here
+        as two calls instead of one tuple return so ``dead_code``'s existing
+        signature/behaviour stays UNCHANGED (an additive capability, never a
+        breaking change to the established contract).
+
+        Shares the identical liveness/exclusion decision with :meth:`dead_code`
+        via :meth:`_dead_code_candidates` (one code path, never two potentially
+        diverging copies) -- the trade-off is a SEPARATE graph scan from
+        :meth:`dead_code` (not free): a caller wanting both the capped list and
+        the total pays two scans until the ``lore_dead_code`` MCP tool decides
+        how to wire this signal onto the wire (see REPORT-slate-builder-s1.md).
+
+        Args:
+            tiers: The tiers whose nodes are swept (empty ⇒ 0).
+            include_tests: Count test-path nodes when ``True``.
+            include_dunders: Count dunder methods when ``True``.
+            include_entrypoints: Count package / entry modules when ``True``.
+
+        Returns:
+            The total number of dead nodes matching the filters (uncapped).
+        """
+        if not tiers:
+            return 0
+        count = 0
+        async for _node in self._dead_code_candidates(
+            tiers,
+            include_tests=include_tests,
+            include_dunders=include_dunders,
+            include_entrypoints=include_entrypoints,
+        ):
+            count += 1
+        return count
+
+    async def _dead_code_candidates(
+        self,
+        tiers: Sequence[str],
+        *,
+        include_tests: bool,
+        include_dunders: bool,
+        include_entrypoints: bool,
+    ) -> AsyncIterator[DeadCodeNode]:
+        """Yield every dead node in ``tiers`` matching the filters, UNBOUNDED.
+
+        The single shared scan :meth:`dead_code` (capped) and
+        :meth:`dead_code_total` (uncapped count) both derive from, so the
+        liveness/exclusion decision can never diverge between the two.
+        """
+        if not tiers:
+            return
         reference_index = await self._reference_source_index()
         candidates = self._decode_nodes(
             await self._query(
@@ -1503,7 +1582,6 @@ class SurrealCodeGraph:
         )
         symbol_qualified_names = [node.qualified_name for node in candidates]
 
-        dead: list[DeadCodeNode] = []
         for node in candidates:
             # REUSED pure logic: exclusion rules, module liveness roll-up, and the
             # DeadCodeNode construction all come from the Kùzu CodeGraph unchanged.
@@ -1522,10 +1600,7 @@ class SurrealCodeGraph:
             reason = (
                 REASON_ONLY_REFERENCED_BY_TESTS if test_sources else REASON_NO_REFERENCES
             )
-            dead.append(self._derivation._dead_code_node(node, len(test_sources), reason))
-            if len(dead) >= cap:
-                break
-        return dead
+            yield self._derivation._dead_code_node(node, len(test_sources), reason)
 
     async def _reference_source_index(self) -> dict[str, tuple[set[str], set[str]]]:
         """Index every true-reference dst → its (production, test) source sets.
