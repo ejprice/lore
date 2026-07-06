@@ -57,4 +57,220 @@
       <question>The token counter used to size inputs is exact and fully offline: it never downloads a tokenizer from the network, instead loading a pinned tokenizer file that is committed alongside the embedding-abstraction package on disk. What is the base filename of that committed tokenizer file (just the filename, including its extension)?</question>
       <answer>voyage4_tokenizer.json</answer>
    </qa_pair>
+
+   <!--
+     P8d extension (author-eval-1, 2026-07-06): pairs 12-35 appended below the
+     original 11 (byte-identical, untouched above this line). Categories per
+     plan §8.3: orientation/map x2, verify x2, impact x2, memory x2,
+     changed_since x1, honest-failure negatives x2, spread x13. Every answer
+     was derived live from the tree at HEAD (branch feat/surreal-unification)
+     and carries an inline receipt comment; comments are parser-ignored.
+     W5-REVALIDATE marks pairs whose ground truth rides on structure the
+     mid-flip server.py surface (19->14 tools) may still move under.
+   -->
+
+   <!-- RECEIPT: lore_map (unfocused, whole corpus) - skills.lore-deploy.scripts.lore_deploy
+        rank 0.0195 vs next-highest loremaster.loremaster.server 0.0120; file confirmed at
+        skills/lore-deploy/scripts/lore_deploy.py (1161 lines, executable). -->
+   <!-- W5-REVALIDATE: needs post-flip surface (import graph may shift as server.py sheds tools) -->
+   <qa_pair>
+      <question>Considering the entire indexed repository -- the application source AND its deployment/tooling scripts -- and ranking every module by a deterministic PageRank-style score over the codebase's import/reference graph, which single file has the highest rank (i.e. is the single most structurally central module in the whole tree)? Answer with its repo-relative file path.</question>
+      <answer>skills/lore-deploy/scripts/lore_deploy.py</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: lore_map(focus=CalibrationEngine) - loremaster.loremaster.server rank 0.2597,
+        next tier (calibration.baseline / calibration.counting) tied at 0.0736. Canonical
+        import path confirmed via `from loremaster.server import LoreServer` (test_map.py,
+        test_graph_wiring.py, test_calibration_wiring.py, etc.) - the map's own
+        "loremaster.loremaster.server" label duplicates the repo-dir/package-dir name;
+        the real dotted import path is loremaster.server. -->
+   <!-- W5-REVALIDATE: needs post-flip surface (import graph may shift as server.py sheds tools) -->
+   <qa_pair>
+      <question>When the codebase's structural map is re-centered on the class that owns the token-calibration probe loop (CalibrationEngine), exactly one OTHER module's rank clears 0.25 -- dwarfing the next tier, which ties near 0.07. Which module is it? Give its dotted import path.</question>
+      <answer>loremaster.server</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/impact.py:202-206 - `async def impact(self, target: str,
+        depth: int = 1, max_consumers: int = _DEFAULT_MAX_CONSUMERS) -> ImpactResult`. -->
+   <qa_pair>
+      <question>The engine that computes a symbol's full impact profile (production/test reference counts plus either direct consumers or a rolled-up ripple) is sometimes assumed to take only two parameters: a target name and a reverse-hop depth. It actually accepts one more. What is that third parameter's name?</question>
+      <answer>max_consumers</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/calibration/engine.py - `class CalibrationEngine` is
+        defined in this submodule; loremaster/loremaster/calibration/__init__.py carries no
+        symbols (lore_map: "loremaster.loremaster.calibration  rank 0  symbols: (no symbols)"). -->
+   <!-- W5-REVALIDATE: needs post-flip surface (verify's not-found/did-you-mean rendering may change) -->
+   <qa_pair>
+      <question>A developer assumes the class that owns the token-calibration probe loop, start/stop/status, and served_constant -- CalibrationEngine -- is defined directly in the top-level loremaster.calibration package module (its __init__.py). It is not defined there. In which exact submodule IS it defined? Give the fully-qualified dotted module path.</question>
+      <answer>loremaster.calibration.engine</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: lore_references("loremaster.diff.DiffEngine") -> production_references=1,
+        referencing=[loremaster.server.build_app_context]; test_references=4 (all in
+        loremaster/tests/test_diff.py). -->
+   <!-- W5-REVALIDATE: needs post-flip surface (AppContext wiring is part of the flip's read-merge/exact-set-pin work) -->
+   <qa_pair>
+      <question>Exactly one PRODUCTION (non-test) function in the entire codebase references the DiffEngine class directly (four more references come only from tests). What is that single production consumer's fully-qualified dotted name?</question>
+      <answer>loremaster.server.build_app_context</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: lore_tests_for("loremaster.symbols.SymbolResolver") returned 90 nodes; every
+        node's file_path is loremaster/tests/test_symbols.py (verified via jq count + scan of
+        the full result, no other file present). -->
+   <qa_pair>
+      <question>Use the code-to-test graph to find the tests covering the shared symbol-resolution helper class that both the exact-definition lookup tool and the claim-verification tool resolve a dotted name through (SymbolResolver). All of its related test nodes live in a single test file. What is that file's base filename?</question>
+      <answer>test_symbols.py</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/memory/local.py:126 (_COL_SUPERSEDED_BY =
+        "superseded_by"), :515 (`_close_superseded_fragment` stamps it on the old row);
+        loremaster/tests/test_memory_backend.py:708-727
+        (test_superseding_keeps_the_old_row_and_wires_both_directions -
+        old_row.superseded_by == new_id). -->
+   <qa_pair>
+      <question>When `remember()` is called with `supersedes` naming an existing memory, the OLD row is kept (never deleted) and stamped with `valid_until=now` plus one more field that points forward to its replacement. What is the name of that second field?</question>
+      <answer>superseded_by</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/memory/backend.py:75
+        (`TrustLevel = Literal["authoritative", "experiential"]`), :78
+        (`DEFAULT_TRUST: TrustLevel = "experiential"`), :213
+        (`trust: TrustLevel = DEFAULT_TRUST` on MemorySource). -->
+   <qa_pair>
+      <question>A memory's provenance value object (MemorySource) has a trust field that defaults to one of exactly two levels when a caller doesn't supply a source explicitly. What is that default trust level?</question>
+      <answer>experiential</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/diff.py:836-864 (`_live_state` docstring: "A row in ANY
+        other state [than indexed] ... is mid-reindex, NOT deleted - it is collected into
+        `in_flight` and EXCLUDED from the comparison"); DiffResult.in_flight field declared
+        diff.py:284-305. -->
+   <!-- W5-REVALIDATE: needs post-flip surface (changed_since on lore_diff/map) -->
+   <qa_pair>
+      <question>When diffing a snapshot against the live "now" state, a manifest row whose state is anything OTHER than "indexed" (e.g. dirty, embedding, or failed) is mid-reindex -- it is neither compared nor reported as removed. Which named result field collects these excluded files?</question>
+      <answer>in_flight</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: grep across loremaster/loremaster/memory/*.py shows only two backend classes:
+        `MemoryBackend` (a Protocol, backend.py:291) and `LocalMemoryBackend` (the concrete
+        implementation, local.py:180). No `SurrealMemoryBackend` exists anywhere in the
+        indexed tree - lore_get_symbol("loremaster.memory.local.SurrealMemoryBackend") raised
+        a clean not-found. -->
+   <qa_pair>
+      <question>Does the codebase define a concrete class named `SurrealMemoryBackend` implementing the durable project-memory store? If that exact name does not exist, what IS the correct name of the concrete (non-Protocol) memory-backend class actually defined in the memory subsystem?</question>
+      <answer>LocalMemoryBackend</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: `find loremaster/loremaster -iname "*watch*"` returns only
+        loremaster/loremaster/index/watcher.py (plus its bytecode cache); no bare
+        loremaster/loremaster/watcher.py exists anywhere in the tree. -->
+   <qa_pair>
+      <question>There is no file at `loremaster/loremaster/watcher.py` in this repository -- that exact path does not exist. What IS the correct repo-relative path of the module that implements the live (inotify) file watcher?</question>
+      <answer>loremaster/loremaster/index/watcher.py</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/findings.py:154 (`DEFAULT_QUERY_LIMIT = 100`), :797
+        (`limit: int = DEFAULT_QUERY_LIMIT` on FindingLedger.query). -->
+   <qa_pair>
+      <question>FindingLedger.query caps its default result size at a named constant unless the caller passes a larger explicit limit. What is that default cap? Answer with just the number.</question>
+      <answer>100</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/tasks.py - `TERMINAL_STATUSES: frozenset[str] =
+        frozenset({STATUS_DONE, STATUS_WONTFIX})`, the same set query_tasks(blocked=...) and
+        claim_task's blocker resolution both consult. -->
+   <qa_pair>
+      <question>The task ledger treats exactly two statuses as terminal -- the same set that resolves a `blocked_by` dependency. One of them is `done`. What is the other?</question>
+      <answer>wontfix</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: `from loremaster.store._txn import ... is_connection_error` at diff.py:98,
+        findings.py:102, graph_surreal.py:111, memory/local.py:69, tasks.py:81; the function
+        itself is defined at loremaster/loremaster/store/_txn.py:423. -->
+   <qa_pair>
+      <question>loremaster's diff engine, findings ledger, code graph, memory backend, and task ledger all classify a caught store error as transport-vs-domain through the SAME shared helper function, imported from one single module. What is that module's fully-qualified dotted path?</question>
+      <answer>loremaster.store._txn</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/config.py:303-305 (RootConfig._check_policy_fields -
+        `if self.watch == WATCH_LIVE: if not self.path: raise ValueError(f"live root {self.tier!r}
+        must declare a 'path'")`). -->
+   <qa_pair>
+      <question>A `lore.yaml` root entry declared with `watch: live` but no `path` fails pydantic validation at load time. What is the exact name of the missing field the validator's error message names?</question>
+      <answer>path</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: lorescribe/lorescribe/registry.py:118-159 (`dispatch_file` docstring: "1.
+        Config override for the suffix ... wins outright - operator config is the strongest,
+        most explicit signal"; tiers 2-4 are the handles() predicate, the default suffix map,
+        and the unclaimed [] fallback). -->
+   <qa_pair>
+      <question>The chunker registry's file-dispatch precedence has 4 tiers. An operator-configured extension override occupies which tier number: 1, 2, 3, or 4?</question>
+      <answer>1</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/calibration/engine.py:75
+        (`STATE_DRIFT_ADOPTED: str = "drift_adopted"`), :379-394 (`if abs(ratio_shift) >=
+        self._drift_threshold: ... self._set_state(..., state=STATE_DRIFT_ADOPTED, ...)`). -->
+   <qa_pair>
+      <question>When the calibration engine's live/baseline token ratio shift's absolute value meets or exceeds its configured drift threshold, it adopts a scaled served constant and records a specific state instead of the normal "measured" state. What is that state's exact string value?</question>
+      <answer>drift_adopted</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/tasks.py:625-633 - after the guarded CAS,
+        `updated = await self._get_or_raise(task_id); won = updated.owner == owner`; the
+        docstring explains this is deliberate (owner is written only by this CAS, so equality
+        is unforgeable, unlike a status re-check which would be a TOCTOU). -->
+   <qa_pair>
+      <question>TaskLedger.claim_task decides whether THIS caller won a contested claim by re-reading the row after the compare-and-set and comparing one specific field's value to the caller's own identity -- deliberately NEVER by re-checking status (to avoid a TOCTOU against a concurrent legal transition). Which field is compared?</question>
+      <answer>owner</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/index/reconcile.py:59-68 - `class ReconcileSummary
+        (IndexSummary): files_purged: int` with docstring "a live-tier-only count; static
+        tiers are not diffed for deletions". -->
+   <qa_pair>
+      <question>ReconcileEngine's deletion-purge pass only ever diffs LIVE tiers against disk for removals -- static tiers are never diffed for deletions. What is the name of the ReconcileSummary field that counts these purges?</question>
+      <answer>files_purged</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/index/watcher.py:704-728 - `_make_observer` wires
+        `is_dir_excluded=self._dir_excluded` into the recursive-watch Observer; `_dir_excluded`
+        docstring: "The WATCH-scope mirror of the indexer/reconcile walk's exclude_dirs prune". -->
+   <qa_pair>
+      <question>The live watcher prunes `exclude_dirs` subtrees at inotify WATCH-registration time (so an excluded subtree never consumes a watch descriptor per directory), via one dedicated predicate method -- not at file-event time. What is that method's bare name?</question>
+      <answer>_dir_excluded</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/findings.py:138-146 - LEGAL_TRANSITIONS' only edge
+        into STATUS_ACKNOWLEDGED is `(STATUS_OPEN, STATUS_ACKNOWLEDGED)`. -->
+   <qa_pair>
+      <question>In the findings ledger's legal transition matrix, a finding becomes `acknowledged` from exactly one prior status. Which one?</question>
+      <answer>open</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/tasks.py - LEGAL_TRANSITIONS contains
+        (STATUS_BLOCKED, STATUS_IN_PROGRESS) and (STATUS_IN_PROGRESS, STATUS_DONE) but no
+        (STATUS_BLOCKED, STATUS_DONE) edge. -->
+   <qa_pair>
+      <question>A blocked task cannot jump straight to `done` in the task ledger's transition matrix. Which single status must it pass through first?</question>
+      <answer>in_progress</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/server.py:191-196 - `_BASE_CHUNKER_SUFFIXES = {...,
+        "stylesheet": (".css", ".scss"), ...}`. -->
+   <qa_pair>
+      <question>By default, which single chunker key handles BOTH `.css` and `.scss` files?</question>
+      <answer>stylesheet</answer>
+   </qa_pair>
+
+   <!-- RECEIPT: loremaster/loremaster/config.py:454-461 - `class AnthropicConfig
+        (_StrictModel): """... REQUIRED (P8c token-calibration probes) ... Unlike the
+        optional-with-default sub-sections (LoggingConfig, SurrealConfig, SearchConfig), this
+        block is REQUIRED on LoreConfig"""`. -->
+   <qa_pair>
+      <question>Unlike LoggingConfig, SurrealConfig, and SearchConfig -- each optional with a default instance on LoreConfig -- one sub-block is REQUIRED with no default. Which config class is it?</question>
+      <answer>AnthropicConfig</answer>
+   </qa_pair>
 </evaluation>
