@@ -1028,6 +1028,50 @@ class SurrealCodeGraph:
         result = await self._query(f"SELECT * FROM {CODE_NODE_TABLE}")
         return self._dedupe_by_id(self._decode_nodes(result))
 
+    async def module_names_by_file(self) -> dict[tuple[str, str], str]:
+        """Return every module-kind node's CANONICAL name keyed by ``(tier, file_path)``.
+
+        finding #52's read seam: :class:`~loremaster.impact.ImpactEngine`'s
+        depth>1 rollups (``_module_rollups`` / ``_transitive_only_modules``)
+        and :meth:`~loremaster.server.LoreServer._resolve_changed_modules`
+        call this method directly (they hold no free whole-graph node list to
+        filter locally); :class:`~loremaster.map.MapEngine` faces the SAME
+        problem but derives the identical mapping FOR FREE by filtering its
+        own already-fetched :meth:`all_nodes` result to ``kind == module``
+        rows (zero extra queries — see ``map.py::_extract_module_graph``),
+        never calling this method. All three sites used to re-derive a
+        module's label from its file path via :meth:`module_qualified_name`
+        — a bare path-join that DOUBLES a workspace-member directory name
+        (``loremaster/loremaster/config.py`` → ``loremaster.loremaster.
+        config``) instead of reading the node's own, already-canonical
+        ``qualified_name`` (the importable name the indexer stamped via
+        :meth:`importable_module_name`). This method (and MapEngine's local
+        mirror of it) reads the TRUE identity off the stored module-kind rows
+        instead of re-deriving it.
+
+        A ``(tier, file_path)`` NOT in the returned mapping (a non-Python file
+        no module node was ever synthesised for, or a half-purged store) is
+        every caller's cue to fall back to :meth:`module_qualified_name` — the
+        defensive contract every consumer above applies, so a mapping miss can
+        never surface as a ``KeyError``.
+
+        Returns:
+            ``(tier, file_path) -> canonical module qualified_name`` for every
+            ``module``-kind node in the graph; ``{}`` for a wiped/empty graph.
+
+        Raises:
+            SurrealConnectionError: The server is unreachable or rejected auth.
+        """
+        result = await self._query(
+            f"SELECT {_COL_TIER}, {_COL_FILE_PATH}, {_COL_QUALIFIED_NAME} "
+            f"FROM {CODE_NODE_TABLE} WHERE {_COL_KIND} = ${_P_MODULE_KIND}",
+            {_P_MODULE_KIND: KIND_MODULE},
+        )
+        return {
+            (str(row[_COL_TIER]), str(row[_COL_FILE_PATH])): str(row[_COL_QUALIFIED_NAME])
+            for row in self._rows(result)
+        }
+
     async def what_imports(self, target: str) -> list[GraphNode]:
         """Return the module nodes that import ``target`` (by FQN or bare name).
 

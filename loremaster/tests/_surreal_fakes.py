@@ -1358,6 +1358,20 @@ class FakeSurrealCodeGraph:
             seen.setdefault(graph_node.id, graph_node)
         return list(seen.values())
 
+    async def module_names_by_file(self) -> dict[tuple[str, str], str]:
+        """Every module-kind node's canonical name keyed by ``(tier, file_path)``
+        — the in-memory mirror of :meth:`~loremaster.graph_surreal.
+        SurrealCodeGraph.module_names_by_file`. Each graph slice holds at most
+        one module-kind node (one per built file), so a dict comprehension over
+        every slice's nodes is exact, never a last-write-wins collision.
+        """
+        return {
+            (tier, file_path): node.qualified_name
+            for (tier, file_path), slice_ in self.db.graph_slices.items()
+            for node in slice_.nodes
+            if node.kind == KIND_MODULE
+        }
+
     async def what_imports(self, target: str) -> list[GraphNode]:
         """The MODULE nodes that import ``target`` (by fqn / bare / module reach)."""
         found: dict[str, GraphNode] = {}

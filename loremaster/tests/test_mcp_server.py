@@ -4156,6 +4156,54 @@ class TestMapChangedSinceAndCallerModel:
         assert "[changed]" in result.formatted
         assert "pkg.router" in result.formatted
 
+    async def test_changed_since_tags_a_doubled_member_dir_module_under_its_canonical_name(
+        self, tmp_path: Path
+    ) -> None:
+        """finding #52: ``_resolve_changed_modules`` must key/tag the SAME
+        CANONICAL module name ``lore_map`` itself renders — even for a
+        doubled-member-dir layout (``outer/outer/mod.py``, mirroring the real
+        repo's ``loremaster/loremaster/``) where the raw path-join would
+        double the package directory name (``outer.outer.mod``). Runs
+        through the REAL production indexer (``ctx.indexer.index_all()``),
+        never a graph-only fake — the fix must hold end-to-end.
+        """
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "outer" / "outer").mkdir(parents=True)
+        (live / "outer" / "outer" / "__init__.py").write_text("", encoding="utf-8")
+        (live / "outer" / "outer" / "mod.py").write_text(
+            "def target_fn(x):\n    return x\n", encoding="utf-8"
+        )
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            await ctx.indexer.index_all()
+            since_id = await ctx._snapshot_stamper.stamp()  # noqa: SLF001
+            (live / "outer" / "outer" / "mod.py").write_text(
+                "def target_fn(x):\n    return x + 1\n", encoding="utf-8"
+            )
+            await ctx.indexer.index_all()
+
+            result = await ctx.map(changed_since=since_id)
+
+            lines = result.formatted.splitlines()
+            assert not any(line.startswith("outer.outer.mod") for line in lines), (
+                f"the doubled path-join form must never render; got: {result.formatted!r}"
+            )
+            outer_mod_line = next(
+                (line for line in lines if line.startswith("outer.mod")), None
+            )
+            assert outer_mod_line is not None, (
+                f"the module must render under its CANONICAL name 'outer.mod'; got: "
+                f"{result.formatted!r}"
+            )
+            assert "[changed]" in outer_mod_line, (
+                "the [changed] tag must land on the CANONICAL module key, not a "
+                f"doubled one that can never match; got: {outer_mod_line!r}"
+            )
+        finally:
+            await ctx.aclose()
+
     async def test_unknown_changed_since_teaches_lore_diff(
         self, indexed_context: AppContext
     ) -> None:

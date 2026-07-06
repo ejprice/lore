@@ -800,6 +800,42 @@ class TestNodeStorage:
         assert all(node.chunk_id is None for node in reached)
 
 
+class TestModuleNamesByFile:
+    """finding #52 (SPEC 2 §2.4 item 2): ``module_names_by_file`` is the new
+    read seam ``MapEngine`` / ``ImpactEngine`` / ``_resolve_changed_modules``
+    attribute a node's owning file to its TRUE (importable) module identity
+    through, instead of re-deriving the raw path-join that doubles a
+    workspace-member directory name. One query, keyed ``(tier, file_path)``
+    exactly as every module-kind ``code_node`` row was built."""
+
+    async def test_returns_every_module_node_keyed_by_tier_and_file_path(
+        self, app_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """The whole-corpus mapping names exactly the three built module nodes.
+
+        Independent oracle: ``app_graph`` builds ERRORS_PATH/APP_PATH/TEST_PATH
+        under TIER_A with their own authored module names (ERRORS_MODULE/
+        APP_MODULE/TEST_MODULE) — read straight off the fixture constants, never
+        re-derived from the engine.
+        """
+        graph, _env, _root = app_graph
+        mapping = await graph.module_names_by_file()
+        assert mapping == {
+            (TIER_A, ERRORS_PATH): ERRORS_MODULE,
+            (TIER_A, APP_PATH): APP_MODULE,
+            (TIER_A, TEST_PATH): TEST_MODULE,
+        }
+
+    async def test_empty_store_returns_empty_dict(
+        self, demo_graph: tuple[SurrealCodeGraph, SurrealEnv, Path]
+    ) -> None:
+        """A freshly-readied graph with nothing built yet yields ``{}``, never
+        an error — the same "wiped graph yields []" convention ``all_nodes``
+        already documents."""
+        graph, _env, _root = demo_graph
+        assert await graph.module_names_by_file() == {}
+
+
 # ===========================================================================
 # 3. what_imports — reverse of the imports edge, matched by FQN or bare name.
 # ===========================================================================

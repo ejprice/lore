@@ -70,7 +70,7 @@ from typing import Any
 import pytest
 from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
 from loremaster.config import LoreConfig
-from loremaster.graph import CodeGraph
+from loremaster.graph import KIND_MODULE, CodeGraph
 from loremaster.server import LoreServer
 from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_memo
 from lorescribe.models import ChunkContext
@@ -1382,3 +1382,200 @@ class TestChangedSince:
         unfocused_order = [e.module for e in unfocused.entries]
         filtered_unfocused_order = [module for module in unfocused_order if module in changed_order]
         assert filtered_unfocused_order == changed_order
+
+
+# =========================================================================== #
+# P8d' SPEC 2 (finding #52) — canonical module labels/keys. A doubled
+# member-dir layout (``outer/outer/mod.py``, mirroring the real repo's
+# ``loremaster/loremaster/``) must render its IMPORTABLE name (``outer.mod``),
+# never the raw path-join (``outer.outer.mod``), AND the import edge INTO it
+# must register (finding #57's second symptom: pre-fix, the doubled key can
+# never match a canonical importer name, so the edge is silently dropped and
+# the module sits at the uniform teleport floor). Built through the SAME
+# derivation the real indexer uses (``graph.importable_module_name(base,
+# file_path)``, exactly ``Indexer._importable_module_name``'s own call),
+# never the bare path-join ``_build_graph`` elsewhere in this file defaults to.
+# =========================================================================== #
+
+_OUTER_MOD_SOURCE = """\
+def f1(x):
+    \"\"\"Symbol 1 of the doubled-member-dir module.\"\"\"
+    return x
+
+
+def f2(x):
+    \"\"\"Symbol 2.\"\"\"
+    return x
+
+
+def f3(x):
+    \"\"\"Symbol 3.\"\"\"
+    return x
+
+
+def f4(x):
+    \"\"\"Symbol 4 -- one more than the floor-budget symbol cap (3).\"\"\"
+    return x
+"""
+
+_OUTER_CONSUMER_SOURCE = """\
+from outer.mod import f1
+
+
+def use_f1(x):
+    \"\"\"The lone importer of the doubled-member-dir module.\"\"\"
+    return f1(x)
+"""
+
+_LONELY_SIBLING_SOURCE = """\
+def lonely_fn(x):
+    \"\"\"An edge-free sibling -- never imported by anything in this corpus.\"\"\"
+    return x
+"""
+
+_OUTER_MOD_MODULE = "outer.mod"
+_OUTER_MOD_DOUBLED = "outer.outer.mod"  # the OLD path-join derivation -- must NEVER appear
+_OUTER_CONSUMER_MODULE = "consumer"
+_LONELY_SIBLING_MODULE = "lonely"
+
+
+async def _build_doubled_layout_graph(tmp_path: Path) -> tuple[FakeSurrealTrio, LoreServer]:
+    """Build the ``outer/outer/mod.py`` corpus with TRUE importable module names.
+
+    ``outer/outer/__init__.py`` is written to disk ONLY (never graphed) --
+    exactly what ``importable_module_name``'s on-disk package-top probe needs
+    (it stats candidate directories for an ``__init__.py``, it does not care
+    whether that file was ever indexed) -- so the corpus's module vertex set
+    stays exactly the three modules under test. Every graphed file's
+    ``module_name`` is computed via ``graph.importable_module_name(tmp_path,
+    rel_path)``, the IDENTICAL call ``Indexer._importable_module_name``
+    delegates to in production (indexer.py), never the bare
+    ``module_qualified_name`` path-join ``_build_graph``'s default omission
+    would derive for a doubled member dir.
+    """
+    disk_only = {"outer/outer/__init__.py": ""}
+    graph_files = {
+        "outer/outer/mod.py": _OUTER_MOD_SOURCE,
+        "consumer.py": _OUTER_CONSUMER_SOURCE,
+        "lonely.py": _LONELY_SIBLING_SOURCE,
+    }
+    slug = _slug()
+    for rel_path, source in {**disk_only, **graph_files}.items():
+        _write(tmp_path / rel_path, source)
+    config = _config(slug=slug, live_path=tmp_path)
+    server = LoreServer(config)
+    trio = fake_surreal_trio(dim=_DIM, tier_roots={_TIER: tmp_path}, project_roots=[tmp_path])
+    for rel_path, source in graph_files.items():
+        module_name = trio.graph.importable_module_name(tmp_path, rel_path)
+        await trio.graph.build_file_graph(
+            _TIER, rel_path, _chunks_for(server, rel_path, source), module_name=module_name
+        )
+    return trio, server
+
+
+class TestDoubledLayoutCanonicalLabels:
+    """finding #52: a doubled-member-dir module's map label/key is its
+    CANONICAL (importable) name, and the import edge into it registers."""
+
+    async def test_label_is_canonical_and_the_consumer_edge_registers(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_doubled_layout_graph(tmp_path)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.map(budget=_BUDGET_CAP)
+
+        modules = [entry.module for entry in result.entries]
+        assert _OUTER_MOD_DOUBLED not in modules, (
+            f"the doubled path-join form must never render; got {modules}"
+        )
+        outer_mod_index = _index_of_module(result.entries, _OUTER_MOD_MODULE)
+
+        # finding #57's second symptom: pre-fix, ``consumer``'s import of
+        # ``outer.mod`` can never match the (then-doubled) key, so the edge
+        # never registers and ``outer.mod`` sits at the same rank as an
+        # edge-free sibling. Post-fix, the edge registers and ``outer.mod``
+        # must genuinely outrank ``lonely`` (mirrors TestGlobalRanking's
+        # hub-outranks-leaf position comparison -- never an eigenvector value).
+        lonely_index = _index_of_module(result.entries, _LONELY_SIBLING_MODULE)
+        outer_mod_rank = result.entries[outer_mod_index].rank
+        lonely_rank = result.entries[lonely_index].rank
+        assert outer_mod_rank > lonely_rank, (
+            "the consumer's import edge into the doubled-member-dir module must "
+            f"register as real rank mass ({outer_mod_rank}) above an edge-free "
+            f"sibling's uniform floor ({lonely_rank})"
+        )
+
+    async def test_focus_on_canonical_name_lifts_its_cap_and_the_trailer_round_trips(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_doubled_layout_graph(tmp_path)
+        engine = engine_factory(trio.graph)
+
+        # A floor budget clamps the per-module symbol cap to its floor (3),
+        # independent of count_tokens -- the DEFAULT (char/4) estimator is
+        # used here (not `count_tokens=len`) so the tiny 3-module corpus does
+        # not ALSO overflow at the module level; only the symbol cap bites.
+        unfocused = await engine.map(budget=_BUDGET_FLOOR)
+        outer_mod_line = next(
+            line for line in unfocused.formatted.splitlines() if line.startswith(_OUTER_MOD_MODULE)
+        )
+        assert f"{_SYMBOL_CAP_TEACH_VERB}{_OUTER_MOD_MODULE} {_SYMBOL_CAP_TEACH_TAIL}" in outer_mod_line, (
+            "the over-endowed doubled-member-dir module must render a §7a "
+            f"teaching trailer naming its OWN canonical name; got: {outer_mod_line!r}"
+        )
+
+        # Round-trip: feed the trailer's own printed focus target straight
+        # back in -- SB-1 must resolve it (a whole-string match against the
+        # canonical `modules` set) and lift ITS OWN cap, never a silent no-op.
+        focused = await engine.map(budget=_BUDGET_FLOOR, focus=_OUTER_MOD_MODULE)
+        focused_line = next(
+            line for line in focused.formatted.splitlines() if line.startswith(_OUTER_MOD_MODULE)
+        )
+        assert _SYMBOL_CAP_TEACH_VERB not in focused_line, (
+            "focus=<the trailer's own printed name> must LIFT the cap (full "
+            f"symbol list, no further trailer); got: {focused_line!r}"
+        )
+        for symbol in ("f1", "f2", "f3", "f4"):
+            assert symbol in focused_line, f"the lifted module must show its full list; missing {symbol}"
+
+    async def test_module_with_no_module_node_falls_back_to_path_derived_name(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # The defensive fallback (§2.3): a (tier, file_path) with no
+        # module-kind node among ``all_nodes()``'s own rows (a half-purged
+        # store, simulated here by stripping ONE module-kind node post-build
+        # while its function nodes survive) must label via the path-join
+        # ``module_qualified_name`` -- so a caller never KeyErrors, and so
+        # this test can tell the fallback apart from the canonical primary
+        # path (the doubled form is the OBSERVABLE difference between them).
+        # ``module_names_by_file`` is derived LOCALLY from ``all_nodes()``'s
+        # module-kind rows (zero extra queries, §2.4 item 1) -- the mapping
+        # miss is engineered at that same source, not via a second method.
+        trio, _server = await _build_doubled_layout_graph(tmp_path)
+        real_all_nodes = trio.graph.all_nodes
+
+        async def _dropping_outer_mods_module_node() -> list[Any]:
+            nodes = await real_all_nodes()
+            return [
+                node
+                for node in nodes
+                if not (node.file_path == "outer/outer/mod.py" and node.kind == KIND_MODULE)
+            ]
+
+        trio.graph.all_nodes = _dropping_outer_mods_module_node  # type: ignore[method-assign]
+        engine = engine_factory(trio.graph)
+
+        result = await engine.map(budget=_BUDGET_CAP)
+
+        modules = [entry.module for entry in result.entries]
+        assert _OUTER_MOD_DOUBLED in modules, (
+            "a (tier, file_path) missing from module_names_by_file must fall "
+            f"back to the path-derived (doubled) name, not vanish or KeyError; "
+            f"got {modules}"
+        )
+        assert _OUTER_MOD_MODULE not in modules, (
+            "the fallback and the canonical primary path must never BOTH "
+            "label the same file -- the mapping miss must produce the "
+            f"path-derived name INSTEAD of the canonical one; got {modules}"
+        )

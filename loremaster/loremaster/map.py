@@ -192,9 +192,14 @@ class MapEntry(BaseModel):
     """One module's rank + rendered symbol names.
 
     Attributes:
-        module: The dotted module name (as derived by
+        module: The dotted module name — its owning node's CANONICAL
+            (importable) ``qualified_name`` via
             :meth:`~loremaster.graph_surreal.SurrealCodeGraph.
-            module_qualified_name`).
+            module_names_by_file`, falling back to the path-derived
+            :meth:`~loremaster.graph_surreal.SurrealCodeGraph.
+            module_qualified_name` only when a file has no module node
+            mapped (finding #52 — never the doubled path-join for a
+            workspace-member directory).
         rank: The module's PageRank score (an implementation artifact — never
             compared for an exact value, only for relative ORDER).
         symbols: The module's rendered symbol names (bare last segment of
@@ -322,12 +327,14 @@ class MapEngine:
         budget = self._clamp_budget(budget)
         changed_modules = await self._resolve_changed_modules(changed_since)
 
-        modules, out_edges, symbols_by_module, module_is_test, symbol_owners = (
+        modules, out_edges, symbols_by_module, module_is_test, symbol_owners, module_names_by_file = (
             await self._extract_module_graph()
         )
 
         if focus is not None:
-            personalization = await self._resolve_focus_personalization(focus, modules)
+            personalization = await self._resolve_focus_personalization(
+                focus, modules, module_names_by_file
+            )
             # §7b: focusing on a symbol lifts ONLY its OWNING module(s)' symbol
             # cap (the "I care about this one" signal); referrer neighbors stay
             # capped. §5: a focus OWNED by a test module auto-inverts. SB-1: a
@@ -462,17 +469,22 @@ class MapEngine:
         dict[str, list[str]],
         dict[str, bool],
         dict[str, set[str]],
+        dict[tuple[str, str], str],
     ]:
         """Derive the module vertex set, import adjacency, symbols, and metadata.
 
         Returns:
             A tuple ``(modules, out_edges, symbols_by_module, module_is_test,
-            symbol_owners)``:
+            symbol_owners, module_names_by_file)``:
 
             * ``modules`` — every distinct owning module, SORTED ascending
               (the PageRank vertex set — production AND test modules; test edges
               MUST feed production rank mass even though test nodes are later
-              segregated out of the default rendering).
+              segregated out of the default rendering). Each node's owning
+              module is its CANONICAL (importable) name via
+              ``module_names_by_file``, falling back to the path-derived
+              ``module_qualified_name`` only for a file absent from that
+              mapping (finding #52 — never the doubled path-join).
             * ``out_edges`` — ``importer_module -> [imported_module, ...]``,
               each list SORTED ascending, one
               :meth:`~loremaster.graph_surreal.SurrealCodeGraph.what_imports`
@@ -487,15 +499,33 @@ class MapEngine:
               by BOTH the bare last segment AND the full qualified name, so a
               ``focus=`` in either form resolves to the DEFINING module(s) for
               the cap-lift + auto-invert decisions.
+            * ``module_names_by_file`` — the ``(tier, file_path) -> canonical
+              module name`` mapping derived from THIS SAME ``all_nodes()``
+              pass's own module-kind rows (zero extra queries — every module
+              node is already in hand), threaded onward so
+              :meth:`_resolve_focus_personalization` attributes a focus probe's
+              hits through the IDENTICAL mapping (never a second, potentially
+              inconsistent derivation).
         """
         nodes = await self._graph.all_nodes()
+        # Derived locally from the module-kind rows already fetched above —
+        # never a second query (mirrors, but does not call, the engine's
+        # ``module_names_by_file`` read seam impact.py/server.py use when they
+        # have no free node list to filter).
+        module_names_by_file: dict[tuple[str, str], str] = {
+            (node.tier, node.file_path): node.qualified_name
+            for node in nodes
+            if node.kind == KIND_MODULE
+        }
 
         modules: set[str] = set()
         symbols_by_module: dict[str, set[str]] = defaultdict(set)
         module_is_test: dict[str, bool] = {}
         symbol_owners: dict[str, set[str]] = defaultdict(set)
         for node in nodes:
-            module = self._graph.module_qualified_name(node.file_path)
+            module = module_names_by_file.get(
+                (node.tier, node.file_path), self._graph.module_qualified_name(node.file_path)
+            )
             modules.add(module)
             module_is_test[module] = module_is_test.get(module, False) or CodeGraph._is_test_path(
                 node.file_path
@@ -521,6 +551,7 @@ class MapEngine:
             {module: sorted(names) for module, names in symbols_by_module.items()},
             module_is_test,
             {name: set(owners) for name, owners in symbol_owners.items()},
+            module_names_by_file,
         )
 
     # -- personalization ----------------------------------------------------
@@ -534,7 +565,10 @@ class MapEngine:
         return {module: weight for module in modules}
 
     async def _resolve_focus_personalization(
-        self, focus: str, known_modules: Sequence[str]
+        self,
+        focus: str,
+        known_modules: Sequence[str],
+        module_names_by_file: Mapping[tuple[str, str], str],
     ) -> dict[str, float]:
         """Resolve ``focus`` to a teleport vector over its own neighborhood.
 
@@ -551,6 +585,11 @@ class MapEngine:
             known_modules: The current whole-graph module vertex set — the
                 probe's hits are intersected against this so a stale/foreign
                 module can never silently enter the personalization vector.
+            module_names_by_file: The SAME ``(tier, file_path) -> canonical
+                module name`` mapping :meth:`_extract_module_graph` already
+                fetched, so a probe hit attributes to the IDENTICAL module
+                identity the vertex set itself uses (finding #52 — never a
+                second, potentially doubled derivation).
 
         Returns:
             An even-weight distribution over the resolved focus module(s)
@@ -563,7 +602,13 @@ class MapEngine:
             focus, _FOCUS_PROBE_DEPTH, _FOCUS_PROBE_MAX_RESULTS
         )
         focus_modules = sorted(
-            {self._graph.module_qualified_name(node.file_path) for node in probe_nodes}
+            {
+                module_names_by_file.get(
+                    (node.tier, node.file_path),
+                    self._graph.module_qualified_name(node.file_path),
+                )
+                for node in probe_nodes
+            }
             & set(known_modules)
         )
         if not focus_modules:

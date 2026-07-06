@@ -33,7 +33,7 @@ real verdict.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict
@@ -174,8 +174,14 @@ class ModuleRollup(BaseModel):
     """One module's aggregated consumer count at ``depth > 1``.
 
     Attributes:
-        module: The dotted module name (as derived by
-            :meth:`~loremaster.graph_surreal.SurrealCodeGraph.module_qualified_name`).
+        module: The dotted module name — its owning node's CANONICAL
+            (importable) ``qualified_name`` via
+            :meth:`~loremaster.graph_surreal.SurrealCodeGraph.
+            module_names_by_file`, falling back to the path-derived
+            :meth:`~loremaster.graph_surreal.SurrealCodeGraph.
+            module_qualified_name` only when a file has no module node
+            mapped (finding #52 — never the doubled path-join for a
+            workspace-member directory).
         consumer_count: The number of distinct blast-radius nodes attributed to
             this module.
     """
@@ -296,8 +302,16 @@ class ImpactEngine:
                 self._production_consumer_names(summary), max_consumers
             )
         else:
-            rollups = await self._module_rollups(target, depth)
-            transitive_modules = await self._transitive_only_modules(target, rollups)
+            # Fetched ONCE per call, and only when depth>1 pays for it (the
+            # depth-1 path above never touches this mapping) — finding #52:
+            # both rollup helpers below attribute a blast-radius node's owning
+            # module through this IDENTICAL mapping, never a second,
+            # potentially doubled derivation.
+            module_names_by_file = await self._graph.module_names_by_file()
+            rollups = await self._module_rollups(target, depth, module_names_by_file)
+            transitive_modules = await self._transitive_only_modules(
+                target, rollups, module_names_by_file
+            )
             module_rollups, elided = self._cap(rollups, max_consumers)
 
         if not await self._target_is_known(
@@ -381,19 +395,28 @@ class ImpactEngine:
             }
         )
 
-    async def _module_rollups(self, target: str, depth: int) -> list[ModuleRollup]:
+    async def _module_rollups(
+        self,
+        target: str,
+        depth: int,
+        module_names_by_file: Mapping[tuple[str, str], str],
+    ) -> list[ModuleRollup]:
         """The per-module consumer-count rollup of ``target``'s blast radius.
 
         Groups every node in the (generously bounded) blast radius by its
-        owning module (:meth:`module_qualified_name` applied to
-        ``node.file_path`` — the SAME derivation the graph used to name the
-        module node in the first place), then sorts by ``consumer_count``
-        descending, ``module`` ascending — the pinned determinism order.
+        owning module — the node's CANONICAL name via ``module_names_by_file``
+        (the SAME identity the module node itself carries), falling back to
+        :meth:`module_qualified_name` only for a file absent from that mapping
+        (finding #52 — never the doubled path-join) — then sorts by
+        ``consumer_count`` descending, ``module`` ascending — the pinned
+        determinism order.
         """
         nodes = await self._graph.blast_radius(target, depth, _BLAST_RADIUS_NODE_CAP)
         counts: dict[str, int] = {}
         for node in nodes:
-            module = self._graph.module_qualified_name(node.file_path)
+            module = module_names_by_file.get(
+                (node.tier, node.file_path), self._graph.module_qualified_name(node.file_path)
+            )
             counts[module] = counts.get(module, 0) + 1
         rollups = [
             ModuleRollup(module=module, consumer_count=count)
@@ -403,23 +426,31 @@ class ImpactEngine:
         return rollups
 
     async def _transitive_only_modules(
-        self, target: str, rollups: list[ModuleRollup]
+        self,
+        target: str,
+        rollups: list[ModuleRollup],
+        module_names_by_file: Mapping[tuple[str, str], str],
     ) -> set[str]:
         """The rollup modules reached ONLY transitively (not direct consumers).
 
         A DIRECT consumer is one reachable at ``depth == 1`` (a single reverse
         hop). This runs the SAME cheap depth-1 :meth:`blast_radius` probe the
-        rollups are built from, derives the direct-consumer module set with the
-        identical :meth:`module_qualified_name` grouping, and returns every rollup
-        module NOT in it — the transitive-only ripple. Deterministic: the input
-        ``rollups`` are already the pinned sorted order and set membership does not
-        perturb it.
+        rollups are built from, derives the direct-consumer module set through
+        the IDENTICAL ``module_names_by_file`` (falling back to
+        :meth:`module_qualified_name`) attribution :meth:`_module_rollups`
+        uses — never a second, potentially inconsistent derivation — and
+        returns every rollup module NOT in it — the transitive-only ripple.
+        Deterministic: the input ``rollups`` are already the pinned sorted
+        order and set membership does not perturb it.
         """
         direct_nodes = await self._graph.blast_radius(
             target, _DEPTH_MIN, _BLAST_RADIUS_NODE_CAP
         )
         direct_modules = {
-            self._graph.module_qualified_name(node.file_path) for node in direct_nodes
+            module_names_by_file.get(
+                (node.tier, node.file_path), self._graph.module_qualified_name(node.file_path)
+            )
+            for node in direct_nodes
         }
         return {rollup.module for rollup in rollups if rollup.module not in direct_modules}
 

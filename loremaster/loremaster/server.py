@@ -2743,12 +2743,20 @@ class AppContext:
         Reuses the existing diff/snapshot machinery verbatim (never a new
         index): ``self._diff_engine.diff(changed_since)`` against the LIVE
         state names every added/removed/modified file since that snapshot;
-        each file's owning module is derived via the SAME
-        ``code_graph.module_qualified_name`` :class:`~loremaster.map.MapEngine`
-        itself already uses. An unknown/malformed snapshot id is re-cast into
-        the map-specific :class:`~loremaster.map.MapChangedSinceError` naming
-        ``lore_diff`` as the next step (its listing surfaces the real ids) —
-        never a bare propagated store error.
+        each file's owning module is attributed through
+        ``code_graph.module_names_by_file()`` — the SAME canonical-identity
+        mapping :class:`~loremaster.map.MapEngine` itself now keys its
+        ``[changed]``-taggable modules with (finding #52), so both sides
+        agree in the SAME commit — no split-brain window where the map's
+        keys and this resolver's output derive different names for the same
+        file. A ``(tier, file_path)`` the mapping has no module node for
+        (e.g. a REMOVED ``.py`` file, whose nodes are already purged) falls
+        back to ``module_qualified_name`` — it will not match any rendered
+        module either way, equivalent to today. An unknown/malformed
+        snapshot id is re-cast into the map-specific
+        :class:`~loremaster.map.MapChangedSinceError` naming ``lore_diff`` as
+        the next step (its listing surfaces the real ids) — never a bare
+        propagated store error.
         """
         try:
             diff = await self._diff_engine.diff(changed_since)
@@ -2759,8 +2767,12 @@ class AppContext:
                 "the real snapshot ids."
             ) from exc
         changed_files = (*diff.added, *diff.removed, *diff.modified)
+        module_names_by_file = await self.code_graph.module_names_by_file()
         return frozenset(
-            self.code_graph.module_qualified_name(file_ref.file_path)
+            module_names_by_file.get(
+                (file_ref.tier, file_ref.file_path),
+                self.code_graph.module_qualified_name(file_ref.file_path),
+            )
             for file_ref in changed_files
         )
 

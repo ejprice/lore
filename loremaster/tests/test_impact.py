@@ -1119,3 +1119,90 @@ class TestModuleTargetImpact:
         assert result.direct_consumers == ["consumer"]
         assert any("test_widget_use" in name for name in result.covering_tests)
         assert result.verdict in result.formatted
+
+
+# =========================================================================== #
+# P8d' SPEC 2 (finding #52) — canonical module labels. A depth>1 module
+# rollup over a doubled-member-dir layout (``outer/outer/mod.py``, mirroring
+# the real repo's ``loremaster/loremaster/``) must render the CANONICAL
+# (importable) module name (``outer.mod``), never the raw path-join
+# (``outer.outer.mod``) ``_module_rollups``/``_transitive_only_modules`` used
+# to derive. Built through the SAME derivation the real indexer uses
+# (``graph.importable_module_name(base, file_path)``, exactly
+# ``Indexer._importable_module_name``'s own call).
+# =========================================================================== #
+
+_OUTER_MOD_TARGET_SOURCE = """\
+def target_fn(x):
+    \"\"\"The symbol whose depth>1 rollup must render under its CANONICAL module.\"\"\"
+    return x
+"""
+
+_OUTER_MOD_CONSUMER_SOURCE = """\
+from outer.mod import target_fn
+
+
+def call_target(x):
+    \"\"\"The lone importer of the doubled-member-dir module's target symbol.\"\"\"
+    return target_fn(x)
+"""
+
+_OUTER_MOD_TARGET = "outer.mod.target_fn"
+_OUTER_MOD_MODULE = "outer.mod"
+_OUTER_MOD_DOUBLED = "outer.outer.mod"  # the OLD path-join derivation -- must NEVER appear
+_OUTER_MOD_CONSUMER_MODULE = "consumer"
+
+
+async def _build_doubled_layout_graph(tmp_path: Path) -> tuple[FakeSurrealTrio, LoreServer]:
+    """Build the ``outer/outer/mod.py`` corpus with TRUE importable module names.
+
+    ``outer/outer/__init__.py`` is written to disk ONLY (never graphed) --
+    exactly what ``importable_module_name``'s on-disk package-top probe needs.
+    Every graphed file's ``module_name`` is computed via
+    ``graph.importable_module_name(tmp_path, rel_path)``, the IDENTICAL call
+    ``Indexer._importable_module_name`` delegates to in production, never the
+    bare ``module_qualified_name`` path-join ``_build_graph``'s default
+    omission would derive for a doubled member dir.
+    """
+    disk_only = {"outer/outer/__init__.py": ""}
+    graph_files = {
+        "outer/outer/mod.py": _OUTER_MOD_TARGET_SOURCE,
+        "consumer.py": _OUTER_MOD_CONSUMER_SOURCE,
+    }
+    slug = _slug()
+    for rel_path, source in {**disk_only, **graph_files}.items():
+        _write(tmp_path / rel_path, source)
+    config = _config(slug=slug, live_path=tmp_path)
+    server = LoreServer(config)
+    trio = fake_surreal_trio(dim=_DIM, tier_roots={_TIER: tmp_path}, project_roots=[tmp_path])
+    for rel_path, source in graph_files.items():
+        module_name = trio.graph.importable_module_name(tmp_path, rel_path)
+        await trio.graph.build_file_graph(
+            _TIER, rel_path, _chunks_for(server, rel_path, source), module_name=module_name
+        )
+    return trio, server
+
+
+class TestDoubledLayoutRollupLabels:
+    """finding #52: a depth>1 module rollup over a doubled-member-dir corpus
+    renders the CANONICAL module name, never the raw path-join."""
+
+    async def test_rollup_over_doubled_layout_corpus_renders_canonical_module(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_doubled_layout_graph(tmp_path)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.impact(_OUTER_MOD_TARGET, depth=2)
+
+        rollup_modules = {rollup.module for rollup in result.module_rollups}
+        assert _OUTER_MOD_MODULE in rollup_modules, (
+            "the target's own defining module must roll up under its "
+            f"CANONICAL name {_OUTER_MOD_MODULE!r}; got {rollup_modules}"
+        )
+        assert not any(module.startswith("outer.outer") for module in rollup_modules), (
+            f"no rollup module may render the doubled path-join form; got {rollup_modules}"
+        )
+        assert _OUTER_MOD_DOUBLED not in result.formatted, (
+            "the doubled path-join form must never appear in the rendered block"
+        )
