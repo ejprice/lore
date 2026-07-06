@@ -1001,7 +1001,7 @@ class TestCommandDefaultsAndConstraints:
 # from that token_cost/model-ONLY table to the full six-core-field definition.
 # The fixtures below are realistic lore-domain values (a real tool name, a real
 # SHA-512 params digest, a real fleet session id), never convenience placeholders.
-_TRACE_TOOL = "lore_search_code"
+_TRACE_TOOL = "lore_search"
 _TRACE_PARAMS_HASH = sha512_hex("query=PurchaseOrder.action_confirm&k=8&tier=custom")
 _TRACE_HIT_COUNT = 8
 # Deliberately FRACTIONAL: the plan types ``latency_ms`` as ``number`` (not

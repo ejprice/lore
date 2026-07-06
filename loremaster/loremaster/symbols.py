@@ -348,7 +348,7 @@ class SymbolTool:
         raise GetSymbolError(
             f"no Python symbol named {qualified_name!r} is indexed "
             f"(searched chunk types {SYMBOL_CHUNK_TYPES!r}). Next step: try "
-            f"search_code({qualified_name!r}) for a semantic match, module-qualify "
+            f"lore_search({qualified_name!r}) for a semantic match, module-qualify "
             f"the name if it collides across files (e.g. 'pkg.mod.Name'), or run "
             f"reindex() if the file was just added."
         )

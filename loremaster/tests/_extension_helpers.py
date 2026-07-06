@@ -295,11 +295,11 @@ class FakeExtension(Extension):
         return None
 
 
-# The name an extension tool deliberately collides with — one of the ten
-# built-ins (the search tool, under its mandatory ``lore_`` service prefix).
-# Registering a tool under this name must RAISE so an extension can never silently
-# shadow a built-in on the live MCP surface (seam-3 wiring guard).
-BUILTIN_COLLISION_NAME = "lore_search_code"
+# The name an extension tool deliberately collides with — one of the built-ins
+# (the search tool, under its mandatory ``lore_`` service prefix). Registering a
+# tool under this name must RAISE so an extension can never silently shadow a
+# built-in on the live MCP surface (seam-3 wiring guard).
+BUILTIN_COLLISION_NAME = "lore_search"
 
 
 class CounterExtension(Extension):

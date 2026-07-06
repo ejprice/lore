@@ -104,7 +104,7 @@ _FOCUS_PROBE_MAX_RESULTS = 500
 # strictly more symbols for the top over-endowed module) — a budget-allocation
 # policy that spends breadth-first (more modules) before depth (more symbols per
 # module), NOT an information ceiling: ``focus=<module>`` lifts a module's cap to
-# its full list, and the complete file is honestly served by ``lore_read_file``.
+# its full list, and the complete file is honestly served by ``lore_read``.
 _SYMBOL_CAP_BUDGET_DIVISOR = 250
 _MIN_SYMBOL_CAP = 3
 
@@ -164,7 +164,7 @@ class MapFocusNotFoundError(Exception):
     indexed.
 
     The message names the focus and points at the next step
-    (``search_code``) — the teaching-miss standard mirroring
+    (``lore_search``) — the teaching-miss standard mirroring
     :class:`~loremaster.impact.ImpactTargetNotFoundError` /
     :class:`~loremaster.symbols.GetSymbolError`.
     """
@@ -502,7 +502,7 @@ class MapEngine:
             raise MapFocusNotFoundError(
                 f"no symbol or module named {focus!r} appears in the code "
                 f"graph (never indexed, or indexed under a different "
-                f"qualified name). Next step: try search_code({focus!r}) to "
+                f"qualified name). Next step: try lore_search({focus!r}) to "
                 f"locate it."
             )
         weight = 1.0 / len(focus_modules)

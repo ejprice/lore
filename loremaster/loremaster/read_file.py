@@ -213,7 +213,7 @@ class ReadFileTool:
         """A genuinely-missing-file error naming the tier + a next step (no path leak)."""
         return ReadFileError(
             f"file {path!r} not found in tier {tier!r}. Verify the path (it is "
-            f"tier-relative), or run reindex / search_code to locate the current "
+            f"tier-relative), or run reindex / lore_search to locate the current "
             f"file — the index may be ahead of or behind this path."
         )
 

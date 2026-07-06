@@ -3,7 +3,7 @@
 This is Deliverable 3's running MCP server: the FastMCP streamable-http server,
 the :class:`AppContext` lifespan with the embedder **startup probe gate**, the
 spawned live watcher + periodic reconcile tasks, the pluggable Bearer auth wiring
-(D9/D11/§A1.12), and the twelve MCP tools wrapping the merged services. These tests
+(D9/D11/§A1.12), and the built-in MCP tools wrapping the merged services. These tests
 drive the REAL wiring with a :class:`~loresigil.testing.FakeEmbedder` (dim 2048)
 and a REAL SurrealDB (throwaway per-test databases) + a real ``tmp_path`` corpus —
 the embedder is loresigil's tested concern, so faking it keeps the suite fast and
@@ -35,16 +35,16 @@ AppContext lifespan
   startup (the prior extensions' ``on_shutdown`` having run) — no half-started
   server.
 
-The twelve MCP tools (end-to-end through the AppContext handlers)
-----------------------------------------------------------------
-* All twelve — ``search_code``/``read_file``/``get_symbol``/``save_memory``/
-  ``recall_memory``/``reindex``/``index_status``/``what_imports``/
+The built-in MCP tools (end-to-end through the AppContext handlers)
+------------------------------------------------------------------
+* The built-ins — ``search``/``get_symbol``/``remember``/
+  ``recall``/``reindex``/``index_status``/``what_imports``/
   ``blast_radius``/``tests_for``/``references``/``dead_code`` — are REGISTERED on
   the FastMCP app.
-* Each returns the right SHAPE over a real-indexed corpus: ``search_code`` finds a
+* Each returns the right SHAPE over a real-indexed corpus: ``search`` finds a
   uniquely-named symbol with a ``[SOURCE...]`` citation; ``index_status`` reports
-  a healthy index; ``save_memory`` → ``recall_memory`` round-trips; ``get_symbol``
-  resolves an exact definition; ``read_file`` returns a real span;
+  a healthy index; ``remember`` → ``recall`` round-trips; ``get_symbol``
+  resolves an exact definition; ``read`` returns a real stored span;
   ``blast_radius``/``what_imports``/``tests_for`` traverse the live graph;
   ``references`` splits a symbol's production/test references and ``dead_code``
   surfaces test-only / unreferenced symbols; ``reindex`` brings a freshly-written
@@ -118,7 +118,7 @@ _SURREAL_PASS_ENV = "SURREAL_PASS"
 # The router imports a stdlib module (``os``, dropped by the RESOLVED keep/drop
 # rule as external) AND an IN-PROJECT symbol (``pkg.base.BaseRouter``, kept as its
 # resolved FQN) so the graph carries a surviving, queryable import edge. ``import
-# os`` stays first so the read_file span assertion (line 1) is unchanged.
+# os`` stays first so the line-1 span assertion is unchanged.
 _PY_BASE = """\
 \"\"\"The router base.\"\"\"
 
@@ -934,18 +934,22 @@ class TestAppContextLifespan:
 # --------------------------------------------------------------------------- #
 # Tool registration + end-to-end tool behaviour
 # --------------------------------------------------------------------------- #
-# The twelve built-in tools, each carrying the mandatory ``lore_`` service prefix
+# The built-in tools, each carrying the mandatory ``lore_`` service prefix
 # (mcp-builder: a service prefix so tools disambiguate across many connected MCP
 # servers). The bare (un-prefixed) names they were renamed FROM — no built-in may
 # publish a bare name on the wire.
 _TOOL_PREFIX = "lore_"
 _BARE_TOOL_NAMES = {
-    "search_code",
-    "read_file",
+    # P8d surface flip: the corpus-read verb renamed from ``search_code`` — one
+    # name per concept; ``read_file`` was merged into ``read`` (the single,
+    # store-backed, hash-verified read verb), so it no longer publishes.
+    "search",
     "get_symbol",
     "verify",
-    "save_memory",
-    "recall_memory",
+    # P8d surface flip: the project-memory verbs renamed from
+    # ``save_memory`` / ``recall_memory`` to the shorter ``remember`` / ``recall``.
+    "remember",
+    "recall",
     "reindex",
     "index_status",
     "what_imports",
@@ -958,25 +962,50 @@ _BARE_TOOL_NAMES = {
     # graph tools above already read.
     "impact",
     "map",
-    # P8b wire-up: the three wave-A cores surfaced as MCP verbs — the store-backed
-    # hash-verified span reader, the snapshot diff engine, and the finding ledger.
+    # P8b wire-up: the store-backed hash-verified span reader (the single read
+    # verb after the read_file merge), the snapshot diff engine, and the finding
+    # ledger.
     "read",
     "diff",
     "findings",
 }
 _EXPECTED_TOOLS = {f"{_TOOL_PREFIX}{name}" for name in _BARE_TOOL_NAMES}
+# The COMPLETE built-in surface = the prefixed cores above PLUS the two task-ledger
+# tools (pinned separately below because they predate the bare-name cutover). This
+# is the EXACT set the flip freezes — the surface-equality pin fails if a tool is
+# silently ADDED as well as if one is removed. Later waves update this set
+# deliberately as the surface consolidates.
+_ALL_BUILTIN_TOOL_NAMES = _EXPECTED_TOOLS | {"lore_claim_task", "lore_tasks"}
 
 
 class TestToolRegistration:
-    """All twelve MCP tools are registered on the FastMCP app, each ``lore_``-prefixed."""
+    """Every built-in MCP tool is registered on the FastMCP app, each ``lore_``-prefixed."""
 
-    async def test_all_twelve_tools_registered(self, tmp_path: Path) -> None:
+    async def test_all_tools_registered(self, tmp_path: Path) -> None:
         slug = _slug()
         config = _config(slug, tmp_path / "live")
         mcp = build_mcp_server(LoreServer(config))
         tools = await mcp.list_tools()
         names = {t.name for t in tools}
         assert _EXPECTED_TOOLS <= names
+
+    async def test_the_registered_surface_is_exactly_the_expected_set(
+        self, tmp_path: Path
+    ) -> None:
+        # R2 pin (P8d): the registration checks are otherwise SUBSET-only — they
+        # catch a removal/rename but NOT a silent ADDITION, and no numeric count is
+        # asserted anywhere. This equality assertion freezes the built-in surface to
+        # EXACTLY the expected set, so it cannot grow (or shrink) unnoticed. A new
+        # built-in must be added to ``_ALL_BUILTIN_TOOL_NAMES`` deliberately.
+        slug = _slug()
+        config = _config(slug, tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        names = {t.name for t in await mcp.list_tools()}
+        assert names == _ALL_BUILTIN_TOOL_NAMES, (
+            "the built-in surface must be EXACTLY the expected set; unexpected: "
+            f"{names - _ALL_BUILTIN_TOOL_NAMES}, missing: "
+            f"{_ALL_BUILTIN_TOOL_NAMES - names}"
+        )
 
     async def test_all_built_in_tools_carry_the_lore_prefix(self, tmp_path: Path) -> None:
         # mcp-builder insists (3x) on a service prefix so tools disambiguate across
@@ -1001,14 +1030,13 @@ class TestToolRegistration:
 # input-schema field descriptions + tool annotations)
 # --------------------------------------------------------------------------- #
 # The read-only tools (every tool that does NOT mutate index/memory state). These
-# must carry ``readOnlyHint=True``. ``save_memory`` and ``reindex`` are the two
-# mutating tools and must NOT be marked read-only.
+# must carry ``readOnlyHint=True``. ``lore_remember`` / ``lore_reindex`` /
+# ``lore_findings`` mutate state and must NOT be marked read-only.
 _READ_ONLY_TOOLS = {
-    "lore_search_code",
-    "lore_read_file",
+    "lore_search",
     "lore_get_symbol",
     "lore_verify",
-    "lore_recall_memory",
+    "lore_recall",
     "lore_index_status",
     "lore_what_imports",
     "lore_blast_radius",
@@ -1019,13 +1047,14 @@ _READ_ONLY_TOOLS = {
     # state — read-only exactly like their five graph-tool neighbours above.
     "lore_impact",
     "lore_map",
-    # P8b wire-up: lore_read serves a stored span (a read), lore_diff reads the
-    # snapshot ledger (a read). lore_findings MUTATES the finding ledger, so it is
-    # NOT here — it lives in ``_MUTATING_TOOLS`` below (like lore_tasks' family).
+    # P8b wire-up: lore_read serves a stored span (a read — the single read verb
+    # after the read_file merge), lore_diff reads the snapshot ledger (a read).
+    # lore_findings MUTATES the finding ledger, so it is NOT here — it lives in
+    # ``_MUTATING_TOOLS`` below (like lore_tasks' family).
     "lore_read",
     "lore_diff",
 }
-_MUTATING_TOOLS = {"lore_save_memory", "lore_reindex", "lore_findings"}
+_MUTATING_TOOLS = {"lore_remember", "lore_reindex", "lore_findings"}
 
 # Tools that take NO consumer-facing parameters (so there are no per-field
 # descriptions to assert). ``lore_index_status`` is parameterless.
@@ -1100,7 +1129,7 @@ class TestServerInstructions:
         # FRICTION (2026-07-03, team-lead, "graph tools", self-inflicted doc
         # gap): naming each graph tool in isolation is not enough — an agent
         # needs the WORKFLOW CHAIN taught explicitly (orient with lore_map,
-        # locate with lore_search_code, then verify safety with lore_impact
+        # locate with lore_search, then verify safety with lore_impact
         # before touching something), or the one-call ergonomic these two
         # tools exist to provide goes unused just like the four-tool
         # seam-sweep chain did. Pinned loosely (co-occurrence + relative
@@ -1110,14 +1139,14 @@ class TestServerInstructions:
         chain_lines = [
             line
             for line in instructions.splitlines()
-            if "lore_map" in line and "search_code" in line and "lore_impact" in line
+            if "lore_map" in line and "lore_search" in line and "lore_impact" in line
         ]
         assert chain_lines, (
             "the instructions must teach the map -> search -> impact workflow "
             "chain in at least one line naming all three tools together"
         )
         line = chain_lines[0]
-        assert line.index("lore_map") < line.index("search_code") < line.index(
+        assert line.index("lore_map") < line.index("lore_search") < line.index(
             "lore_impact"
         ), (
             "the chain-teaching line must name the tools in map -> search -> "
@@ -1161,12 +1190,12 @@ class TestToolDescriptions:
                 f"differs), not a terse one-line label"
             )
 
-    async def test_get_symbol_vs_search_code_disambiguated(self, tmp_path: Path) -> None:
-        # get_symbol = EXACT definition; search_code = semantic. The descriptions
+    async def test_get_symbol_vs_search_disambiguated(self, tmp_path: Path) -> None:
+        # get_symbol = EXACT definition; search = semantic. The descriptions
         # must draw that distinction so a consumer picks the right one.
         tools = await self._tools_by_name(tmp_path)
         assert "exact" in tools["lore_get_symbol"].description.lower()
-        assert "semantic" in tools["lore_search_code"].description.lower()
+        assert "semantic" in tools["lore_search"].description.lower()
 
     async def test_what_imports_vs_blast_radius_disambiguated(self, tmp_path: Path) -> None:
         # what_imports = DIRECT importers; blast_radius = TRANSITIVE closure.
@@ -1263,7 +1292,7 @@ class TestToolInputFieldDescriptions:
 class TestInputParamConstraints:
     """Input params publish their value constraints + reject bad values (Items 4, 5).
 
-    Item 4: ``lore_search_code(detail_level=...)`` must publish a Literal enum
+    Item 4: ``lore_search(detail_level=...)`` must publish a Literal enum
     (auto/summary/source) so a bad value is REJECTED at validation, not silently
     accepted then filtered to empty. Item 5: the numeric params (``k``, ``depth``,
     ``max_results``) must carry a ``minimum`` (>= 1) so a zero/negative is
@@ -1296,7 +1325,7 @@ class TestInputParamConstraints:
 
     async def test_detail_level_publishes_enum_constraint(self, tmp_path: Path) -> None:
         tools = await self._tools_by_name(tmp_path)
-        prop = tools["lore_search_code"].inputSchema["properties"]["detail_level"]
+        prop = tools["lore_search"].inputSchema["properties"]["detail_level"]
         assert prop.get("enum") == ["auto", "summary", "source"], (
             "detail_level must publish the Literal enum so a bad value is rejected, "
             "not silently filtered to empty"
@@ -1308,7 +1337,7 @@ class TestInputParamConstraints:
         from pydantic import ValidationError
 
         mcp = await self._server(tmp_path)
-        model = self._arg_model(mcp, "lore_search_code")
+        model = self._arg_model(mcp, "lore_search")
         # A value outside the Literal is rejected at arg-validation. A bare-str
         # param would instead ACCEPT it (then silently filter to an empty result).
         with pytest.raises(ValidationError):
@@ -1321,10 +1350,10 @@ class TestInputParamConstraints:
 
     async def test_numeric_params_publish_minimum(self, tmp_path: Path) -> None:
         tools = await self._tools_by_name(tmp_path)
-        # k on search_code + recall_memory, depth + max_results on blast_radius all
+        # k on search + recall, depth + max_results on blast_radius all
         # carry a minimum of 1 (a count/depth below 1 is meaningless).
-        search_k = tools["lore_search_code"].inputSchema["properties"]["k"]
-        recall_k = tools["lore_recall_memory"].inputSchema["properties"]["k"]
+        search_k = tools["lore_search"].inputSchema["properties"]["k"]
+        recall_k = tools["lore_recall"].inputSchema["properties"]["k"]
         depth = tools["lore_blast_radius"].inputSchema["properties"]["depth"]
         max_results = tools["lore_blast_radius"].inputSchema["properties"]["max_results"]
         assert search_k.get("minimum") == 1
@@ -1338,7 +1367,7 @@ class TestInputParamConstraints:
         from pydantic import ValidationError
 
         mcp = await self._server(tmp_path)
-        search_model = self._arg_model(mcp, "lore_search_code")
+        search_model = self._arg_model(mcp, "lore_search")
         blast_model = self._arg_model(mcp, "lore_blast_radius")
         # k=0 (search) and depth=-1 (blast_radius) are schema-rejected at validation.
         with pytest.raises(ValidationError):
@@ -1386,7 +1415,7 @@ class TestToolAnnotations:
         # save_memory dedups by deterministic id, but a NEW note text creates a new
         # point — it is a write, not a read; do not advertise it idempotent.
         tools = await self._tools_by_name(tmp_path)
-        assert tools["lore_save_memory"].annotations is not None
+        assert tools["lore_remember"].annotations is not None
 
 
 # Item 2: the named output fields each tool's published outputSchema must carry.
@@ -1395,11 +1424,10 @@ class TestToolAnnotations:
 # publishes an opaque ``additionalProperties: true`` (no field names) — the regression
 # this pins. Each value is field names that MUST be discoverable in the schema (either
 # top-level ``properties`` for a scalar-model tool, or under ``$defs`` for a
-# list-wrapped one). ``lore_save_memory`` returns a bare str (the id) — no model — so
+# list-wrapped one). ``lore_remember`` returns a bare str (the id) — no model — so
 # it is excluded (a str has no fields to name).
 _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
-    "lore_search_code": {"formatted", "chunk_key", "detail_level", "stale", "score"},
-    "lore_read_file": {"tier", "path", "line_start", "line_end", "text"},
+    "lore_search": {"formatted", "chunk_key", "detail_level", "stale", "score"},
     "lore_get_symbol": {"qualified_name", "chunk_type", "tier", "file_path", "source"},
     # lore_verify is a SCALAR VerifyResult return: its own fields are top-level
     # properties (status / summary / mismatches); the nested VerifiedSummary and
@@ -1421,9 +1449,9 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
         "claimed",
         "actual",
     },
-    # P8b wire-up: lore_read returns a StoreFileSpan MODEL (the store-backed twin of
-    # lore_read_file) — its fields include the two store-only marks (``stale`` /
-    # ``integrity_verified``) lore_read_file's FileSpan cannot supply.
+    # P8b wire-up: lore_read returns a StoreFileSpan MODEL (the single, store-backed
+    # read verb) — its fields include the two store-only marks (``stale`` /
+    # ``integrity_verified``) the filesystem FileSpan cannot supply.
     "lore_read": {
         "tier",
         "path",
@@ -1433,7 +1461,7 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
         "stale",
         "integrity_verified",
     },
-    # lore_recall_memory is intentionally omitted: the P7 cutover re-shapes its
+    # lore_recall is intentionally omitted: the P7 cutover re-shapes its
     # return (it no longer carries the retired store's flat ``metadata`` note), so
     # its surfaced fields are pinned behaviourally in TestRecallMemoryCutover
     # rather than as a fixed field-name table here.
@@ -1573,9 +1601,9 @@ class TestToolOutputSchemas:
             )
             assert isinstance(structured, dict)
             assert "files_indexed" in structured
-            # search_code: a list[SearchResult] — wrapped under ``result`` with the
+            # search: a list[SearchResult] — wrapped under ``result`` with the
             # SearchResult fields on each element.
-            search_tool = mcp._tool_manager.get_tool("lore_search_code")  # noqa: SLF001
+            search_tool = mcp._tool_manager.get_tool("lore_search")  # noqa: SLF001
             _content2, structured2 = await search_tool.run(
                 {"query": "champion routing", "k": 10},
                 context=_FakeToolContext(ctx),
@@ -1606,9 +1634,9 @@ class TestActionableErrors:
                 await ctx.get_symbol("definitely_absent_symbol")
             message = str(exc_info.value)
             assert "definitely_absent_symbol" in message
-            assert "search_code" in message or "reindex" in message, (
+            assert "lore_search" in message or "reindex" in message, (
                 "a not-found must point the consumer at a next step "
-                "(search_code / reindex)"
+                "(lore_search / reindex)"
             )
         finally:
             await ctx.aclose()
@@ -1635,8 +1663,8 @@ class TestToolBehaviourEndToEnd:
         finally:
             await ctx.aclose()
 
-    async def test_search_code_finds_indexed_symbol(self, indexed_context: AppContext) -> None:
-        results = await indexed_context.search_code("champion routing", k=10)
+    async def test_search_finds_indexed_symbol(self, indexed_context: AppContext) -> None:
+        results = await indexed_context.search("champion routing", k=10)
         assert results
         # The base citation format is present, and the unique symbol's file shows.
         joined = "\n".join(r.formatted for r in results)
@@ -1690,18 +1718,13 @@ class TestToolBehaviourEndToEnd:
         assert result.summary is None
         assert result.mismatches == []
 
-    async def test_read_file_returns_real_span(self, indexed_context: AppContext) -> None:
-        span = await indexed_context.read_file("custom", "pkg/router.py", 1, 1)
-        assert span.text.startswith("import os")
-        assert span.header.startswith("[SOURCE:custom:pkg/router.py:1-1]")
-
-    # -- lore_read (StoreReadTool) ----------------------------------------- #
+    # -- lore_read (StoreReadTool) — the single, store-backed read verb --- #
 
     async def test_read_serves_a_hash_verified_store_span(
         self, indexed_context: AppContext
     ) -> None:
         # lore_read serves the INDEXED bytes from the store (not disk), hash-verified,
-        # with the same [SOURCE:...] provenance header its lore_read_file twin gives.
+        # with a [SOURCE:...] provenance header matching the filesystem span reader's.
         span = await indexed_context.read("custom", "pkg/router.py", 1, 1)
         assert span.text.startswith("import os")
         assert span.header.startswith("[SOURCE:custom:pkg/router.py:1-1]")
@@ -1935,15 +1958,15 @@ class TestToolBehaviourEndToEnd:
         assert result.status == "confirmed"
         assert result.rebuilding_caveat is None
 
-    async def test_save_then_recall_memory_roundtrips(
+    async def test_remember_then_recall_roundtrips(
         self, indexed_context: AppContext
     ) -> None:
-        # P7 cutover: save_memory takes the memory ``kind``; recall_memory surfaces
-        # the note text (its exact return SHAPE is pinned in TestRecallMemoryCutover).
+        # P7 cutover: remember takes the memory ``kind``; recall surfaces the note
+        # text (its exact return SHAPE is pinned in TestRecallMemoryCutover).
         note = "champion routing lives in pkg/router.py"
-        await getattr(indexed_context, "save_memory")(note, kind="fact")
+        await getattr(indexed_context, "remember")(note, kind="fact")
         rendered = _render_text(
-            await getattr(indexed_context, "recall_memory")("where is champion routing", k=5)
+            await getattr(indexed_context, "recall")("where is champion routing", k=5)
         )
         assert note in rendered
 
@@ -2174,12 +2197,12 @@ class TestRegisteredToolWrappers:
         )
         return structured
 
-    async def test_search_code_wrapper_yields_structured_list(
+    async def test_search_wrapper_yields_structured_list(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = indexed
         structured = await self._structured(
-            mcp, "lore_search_code", ctx, query="champion routing", k=10
+            mcp, "lore_search", ctx, query="champion routing", k=10
         )
         # A list[SearchResult] is wrapped under ``result``; each element carries the
         # SearchResult fields (NOT an opaque blob).
@@ -2389,7 +2412,7 @@ class TestImpactMapToolBehaviourEndToEnd:
             await indexed_context.impact(_IMPACT_UNKNOWN_TARGET, depth=1)
         message = str(exc_info.value)
         assert _IMPACT_UNKNOWN_TARGET in message
-        assert "search_code" in message
+        assert "lore_search" in message
 
     async def test_map_returns_structured_result_with_entries_and_formatted(
         self, indexed_context: AppContext
@@ -2477,7 +2500,7 @@ class TestImpactMapRegisteredToolWrappers:
             )
         message = str(exc_info.value)
         assert _IMPACT_UNKNOWN_TARGET in message
-        assert "search_code" in message
+        assert "lore_search" in message
 
     async def test_lore_map_wrapper_serves_entries_and_formatted(
         self, indexed: tuple[Any, AppContext]
@@ -2588,7 +2611,7 @@ class TestMapBudgetAndFocusWiring:
             await hub_island_context.map(focus=_MAP_UNKNOWN_FOCUS)
         message = str(exc_info.value)
         assert _MAP_UNKNOWN_FOCUS in message
-        assert "search_code" in message
+        assert "lore_search" in message
 
 
 class TestImpactMapRebuildingGate:
@@ -3468,7 +3491,7 @@ class TestSaveMemoryCutover:
 
     async def test_save_memory_returns_a_uuid5_id(self, cutover_ctx: AppContext) -> None:
         # The id is the deterministic uuid5 the memory model has always minted.
-        memory_id = await getattr(cutover_ctx, "save_memory")(
+        memory_id = await getattr(cutover_ctx, "remember")(
             "the loader retry budget is 3 attempts, in pkg/loader.py", kind="fact"
         )
         parsed = uuid.UUID(str(memory_id))
@@ -3481,7 +3504,7 @@ class TestSaveMemoryCutover:
         # OLD (text, refs) pins to the SAME memory, so a re-save dedups across the
         # cutover. Independent oracle: the production id helpers over the same refs.
         note = "the discount rounding rule lives in pkg/pricing/rules.py"
-        memory_id = await getattr(cutover_ctx, "save_memory")(note, refs=[_CUTOVER_CHUNK_KEY])
+        memory_id = await getattr(cutover_ctx, "remember")(note, refs=[_CUTOVER_CHUNK_KEY])
         expected = derive_memory_id(
             note, derive_refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)])
         )
@@ -3495,7 +3518,7 @@ class TestSaveMemoryCutover:
         # Backward-compat pin (must SURVIVE the cutover): a bare save with no refs
         # mints the v0.3 empty-stamp id, so an old note and a new one collapse.
         note = "champion routing warehouse selection lives in pkg/routing.py"
-        memory_id = await getattr(cutover_ctx, "save_memory")(note)
+        memory_id = await getattr(cutover_ctx, "remember")(note)
         expected = derive_memory_id(note, derive_refs_stamp([]))
         assert memory_id == expected, (
             "a bare save must still mint the v0.3 deterministic id (backward compat)"
@@ -3505,7 +3528,7 @@ class TestSaveMemoryCutover:
         # A bad ``kind`` is a caller error surfaced as a tool-level error NAMING the
         # offending value — never a silent default to 'fact'.
         with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
-            await getattr(cutover_ctx, "save_memory")("a note", kind="bogus_kind")
+            await getattr(cutover_ctx, "remember")("a note", kind="bogus_kind")
         assert "bogus_kind" in str(exc_info.value), (
             "an invalid kind must raise a tool-level error naming the bad value"
         )
@@ -3516,7 +3539,7 @@ class TestSaveMemoryCutover:
         # importance is a fraction in [0, 1]; 1.5 is out of range → a tool-level
         # error naming the offending value, never a silent clamp.
         with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
-            await getattr(cutover_ctx, "save_memory")("a note", importance=1.5)
+            await getattr(cutover_ctx, "remember")("a note", importance=1.5)
         assert "1.5" in str(exc_info.value), (
             "an out-of-range importance must raise a tool-level error naming the value"
         )
@@ -3528,9 +3551,9 @@ class TestRecallMemoryCutover:
 
     async def test_recall_surfaces_text_refs_and_kind(self, cutover_ctx: AppContext) -> None:
         note = "champion routing lives in pkg/routing.py, not pricing.py"
-        await getattr(cutover_ctx, "save_memory")(note, kind="decision", refs=[_CUTOVER_CHUNK_KEY])
+        await getattr(cutover_ctx, "remember")(note, kind="decision", refs=[_CUTOVER_CHUNK_KEY])
         rendered = _render_text(
-            await getattr(cutover_ctx, "recall_memory")("where does champion routing live", k=5)
+            await getattr(cutover_ctx, "recall")("where does champion routing live", k=5)
         )
         # The recall surfaces the note text, its chunk ref, and the memory kind.
         assert note in rendered, "recall must surface the saved note text"
@@ -3543,9 +3566,9 @@ class TestRecallMemoryCutover:
         # silently drops the reference.
         note = "the fee schedule moved to pkg/pricing/fees.py"
         missing_chunk = "11111111-2222-5333-8444-555566667777"
-        await getattr(cutover_ctx, "save_memory")(note, kind="gotcha", refs=[missing_chunk])
+        await getattr(cutover_ctx, "remember")(note, kind="gotcha", refs=[missing_chunk])
         rendered = _render_text(
-            await getattr(cutover_ctx, "recall_memory")("where is the fee schedule", k=5)
+            await getattr(cutover_ctx, "recall")("where is the fee schedule", k=5)
         )
         assert "drifted" in rendered.lower(), (
             "a recalled ref whose chunk no longer exists must be flagged as drifted"
@@ -3557,10 +3580,10 @@ class TestRecallMemoryCutover:
         # A superseded note is history, never a live recall hit.
         stale = "pricing logic lives in sale.py"
         current = "pricing logic now lives in pkg/pricing.py"
-        stale_id = await getattr(cutover_ctx, "save_memory")(stale, kind="fact")
-        await getattr(cutover_ctx, "save_memory")(current, kind="fact", supersedes=stale_id)
+        stale_id = await getattr(cutover_ctx, "remember")(stale, kind="fact")
+        await getattr(cutover_ctx, "remember")(current, kind="fact", supersedes=stale_id)
         rendered = _render_text(
-            await getattr(cutover_ctx, "recall_memory")("where does pricing logic live", k=5)
+            await getattr(cutover_ctx, "recall")("where does pricing logic live", k=5)
         )
         assert current in rendered, "the live successor note must be recalled"
         assert stale not in rendered, "a superseded note must NEVER be recalled"
@@ -3769,7 +3792,7 @@ class TestSaveMemoryReservedMetadataGuard:
         # ``Exception`` would also pass a guard that persisted-then-raised
         # some unrelated error.
         with pytest.raises(ValueError) as exc_info:
-            await getattr(cutover_ctx, "save_memory")(
+            await getattr(cutover_ctx, "remember")(
                 rejected_note,
                 metadata={_RESERVED_METADATA_KEY: _CUTOVER_CHUNK_KEY},
             )
@@ -3780,7 +3803,7 @@ class TestSaveMemoryReservedMetadataGuard:
         # No-write receipts (SF-3): the guard must fire BEFORE any write, not
         # merely eventually raise -- a rejected note must never become
         # recallable, and the durable write-through ledger must be untouched.
-        rendered = _render_text(await getattr(cutover_ctx, "recall_memory")(rejected_note, k=5))
+        rendered = _render_text(await getattr(cutover_ctx, "recall")(rejected_note, k=5))
         assert rejected_note not in rendered, (
             "a rejected save must never surface on recall -- the guard fires "
             "before the write, so nothing was ever stored to find"
@@ -3803,7 +3826,7 @@ class TestSaveMemoryReservedMetadataGuard:
         ledger_rows_before = _ledger_row_count(cutover_ctx)
 
         with pytest.raises(ValueError) as exc_info:
-            await getattr(cutover_ctx, "save_memory")(
+            await getattr(cutover_ctx, "remember")(
                 rejected_note,
                 metadata={offending_key: "ignored"},
             )
@@ -3814,7 +3837,7 @@ class TestSaveMemoryReservedMetadataGuard:
         # No-write receipts (SF-3): same two independent postconditions as the
         # exact-key case above -- this discriminating (nested-key) case must
         # ALSO leave no trace, not just raise.
-        rendered = _render_text(await getattr(cutover_ctx, "recall_memory")(rejected_note, k=5))
+        rendered = _render_text(await getattr(cutover_ctx, "recall")(rejected_note, k=5))
         assert rejected_note not in rendered, (
             "a rejected save must never surface on recall -- the guard fires "
             "before the write, so nothing was ever stored to find"
@@ -3831,7 +3854,7 @@ class TestSaveMemoryReservedMetadataGuard:
         # is decorative, never a chunk ref, so it must NOT change the deterministic
         # id. Independent oracle: the v0.3 empty-stamp id over the same text.
         note = "the discount rounding rule lives in pkg/pricing/rules.py"
-        memory_id = await getattr(cutover_ctx, "save_memory")(
+        memory_id = await getattr(cutover_ctx, "remember")(
             note, metadata={"author": "ejprice", "reviewed": "yes"}
         )
         expected_empty_stamp_id = derive_memory_id(note, derive_refs_stamp([]))
@@ -3847,7 +3870,7 @@ class TestSaveMemoryReservedMetadataGuard:
         # ``refs=`` param must still fold into the v0.3 deterministic id unharmed.
         # Independent oracle: the production id helpers over the same ref.
         note = "champion routing warehouse selection lives in pkg/routing.py"
-        memory_id = await getattr(cutover_ctx, "save_memory")(note, refs=[_CUTOVER_CHUNK_KEY])
+        memory_id = await getattr(cutover_ctx, "remember")(note, refs=[_CUTOVER_CHUNK_KEY])
         expected_with_ref_id = derive_memory_id(
             note, derive_refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)])
         )
@@ -3882,9 +3905,9 @@ _RECALL_FILTER_K = 10
 
 async def _seed_map_impact_notes(ctx: AppContext) -> None:
     """Save the three smoke notes ``TestRecallMemoryFilters`` filters over."""
-    await getattr(ctx, "save_memory")(_MAP_GOTCHA_NOTE, kind="gotcha", labels=["area=map"])
-    await getattr(ctx, "save_memory")(_MAP_FACT_NOTE, kind="fact", labels=["area=map"])
-    await getattr(ctx, "save_memory")(_IMPACT_FACT_NOTE, kind="fact", labels=["area=impact"])
+    await getattr(ctx, "remember")(_MAP_GOTCHA_NOTE, kind="gotcha", labels=["area=map"])
+    await getattr(ctx, "remember")(_MAP_FACT_NOTE, kind="fact", labels=["area=map"])
+    await getattr(ctx, "remember")(_IMPACT_FACT_NOTE, kind="fact", labels=["area=impact"])
 
 
 class TestRecallMemoryFilters:
@@ -3897,7 +3920,7 @@ class TestRecallMemoryFilters:
         await _seed_map_impact_notes(cutover_ctx)
 
         rendered = _render_text(
-            await getattr(cutover_ctx, "recall_memory")(
+            await getattr(cutover_ctx, "recall")(
                 _RECALL_FILTER_QUERY, k=_RECALL_FILTER_K, kind="gotcha"
             )
         )
@@ -3912,7 +3935,7 @@ class TestRecallMemoryFilters:
         await _seed_map_impact_notes(cutover_ctx)
 
         rendered = _render_text(
-            await getattr(cutover_ctx, "recall_memory")(
+            await getattr(cutover_ctx, "recall")(
                 _RECALL_FILTER_QUERY, k=_RECALL_FILTER_K, labels=["area=impact"]
             )
         )
@@ -3930,7 +3953,7 @@ class TestRecallMemoryFilters:
         await _seed_map_impact_notes(cutover_ctx)
 
         rendered = _render_text(
-            await getattr(cutover_ctx, "recall_memory")(_RECALL_FILTER_QUERY, k=_RECALL_FILTER_K)
+            await getattr(cutover_ctx, "recall")(_RECALL_FILTER_QUERY, k=_RECALL_FILTER_K)
         )
 
         assert _MAP_GOTCHA_NOTE in rendered, "an unfiltered recall must still surface every note"
@@ -3944,7 +3967,7 @@ class TestRecallMemoryFilters:
         await _seed_map_impact_notes(cutover_ctx)
 
         rendered = _render_text(
-            await getattr(cutover_ctx, "recall_memory")(
+            await getattr(cutover_ctx, "recall")(
                 _RECALL_FILTER_QUERY,
                 k=_RECALL_FILTER_K,
                 kind="fact",

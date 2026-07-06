@@ -452,7 +452,7 @@ class TestUnknownTarget:
             await engine.impact("totally.bogus.symbol", depth=1)
         message = str(exc_info.value)
         assert "totally.bogus.symbol" in message
-        assert "search_code" in message
+        assert "lore_search" in message
 
 
 # --------------------------------------------------------------------------- #

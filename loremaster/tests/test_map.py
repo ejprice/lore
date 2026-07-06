@@ -121,7 +121,7 @@ _ELISION_FRAGMENT = "modules elided (budget"
 _RETRY_FRAGMENT = "retry"
 
 # The teaching-miss next-step fragment every unknown-focus error must carry.
-_TEACHING_MISS_FRAGMENT = "search_code"
+_TEACHING_MISS_FRAGMENT = "lore_search"
 
 # Token estimator reused verbatim from the established chunker convention
 # (identical lambda to ``ChunkContext.count_tokens`` in ``test_impact.py`` /

@@ -386,7 +386,7 @@ class TestStoreReadNotFound:
         message = str(exc_info.value)
         assert "models/nope.py" in message
         assert TIER_A in message
-        assert "search_code" in message
+        assert "lore_search" in message
 
     async def test_missing_manifest_row_is_treated_as_not_found(
         self, read_bench: ReadBench

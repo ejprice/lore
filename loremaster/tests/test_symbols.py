@@ -559,7 +559,7 @@ class TestUnknownSymbol:
         # searched for and offer concrete, actionable next steps — never a
         # bare "not found" that leaves the caller guessing.
         assert missing_name in message
-        assert "search_code" in message
+        assert "lore_search" in message
         assert "reindex" in message
 
 

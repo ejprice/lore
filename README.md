@@ -20,7 +20,7 @@ directly.
 - 🔎 **Semantic search over code *and* docs** — ranked `[SOURCE:file:line]` citations with stable keys; summarized, never raw dumps.
 - 🧬 **A typed code graph** — `lore_what_imports` / `lore_blast_radius` ("who breaks if I change this?"), `lore_tests_for` (covering tests), `lore_references` (per-symbol reference counter), `lore_dead_code` (candidate dead/orphaned definitions), `lore_get_symbol` (exact signature). Answers grounded in real edges, not vibes.
 - ⚡ **Always fresh** — an inotify watcher re-indexes on save (sub-second); a startup + periodic reconcile heals anything missed during downtime, tracked by a SHA-512 manifest.
-- 🧠 **Per-project memory** — `lore_save_memory` / `lore_recall_memory`, so corrections and notes survive across sessions.
+- 🧠 **Per-project memory** — `lore_remember` / `lore_recall`, so corrections and notes survive across sessions.
 - 🧩 **One image, N projects** — a single container image, one config-driven container per project, each keyed to its own vector collection. Never a per-project image.
 - 🛠️ **An extensible framework** — `loremaster` is a generic RAG out of the box, *or* the base for a domain-specific server built by subclassing one `Extension` ABC. It never forks the core.
 - 🔒 **Correctness-first** — a hard embedder probe-gate, transient-error resilience, and a strict test suite gate every change (pydantic v2, mypy-strict, ruff).
@@ -37,22 +37,22 @@ A [`uv`](https://docs.astral.sh/uv/)-workspace monorepo (Python 3.14+):
 
 ## MCP tools
 
-`lore_search_code` · `lore_read_file` · `lore_get_symbol` · `lore_what_imports` · `lore_blast_radius` ·
+`lore_search` · `lore_read` · `lore_get_symbol` · `lore_what_imports` · `lore_blast_radius` ·
 `lore_tests_for` · `lore_references` · `lore_dead_code` · `lore_impact` · `lore_map` ·
-`lore_save_memory` · `lore_recall_memory` · `lore_reindex` · `lore_index_status`
+`lore_remember` · `lore_recall` · `lore_reindex` · `lore_index_status`
 
 ### Freshness & read-your-writes
 
 The inotify watcher re-indexes an edited file within ~seconds; a periodic reconcile
 sweep (default ~10 min) is the backstop for any events the watcher missed (not the
 normal freshness path). If an agent edits a file and *immediately* re-queries, use
-`lore_search_code(..., wait_for_fresh=True)` — it bounded-waits for in-flight files before
+`lore_search(..., wait_for_fresh=True)` — it bounded-waits for in-flight files before
 returning (and serves stale-with-a-flag on timeout, never hangs). `lore_reindex(tier=...)`
 forces a full tier reconcile.
 
 ### lore memory vs. your assistant's memory
 
-`lore_save_memory` / `lore_recall_memory` is **project-scoped, embedded, semantically recalled,
+`lore_remember` / `lore_recall` is **project-scoped, embedded, semantically recalled,
 and shared across every agent working that project** (and it survives container
 restarts). Use it for facts and corrections any agent on *this project* should retrieve
 — "the champion curve is served from `get_forecast_v2`, not the backtest." That is
@@ -157,7 +157,7 @@ doc:
   composing the same write stack also exists now as a first step toward a
   write/read process split — the MCP server itself still composes its own
   in-process write stack too, so that split isn't cut over yet.
-- **P6 — read path, shipped and live**: `lore_search_code` (SearchPipeline v2 — one-
+- **P6 — read path, shipped and live**: `lore_search` (SearchPipeline v2 — one-
   query hybrid RRF, per-hit graph enrichment, memory-boost, config-gated reranker
   seam) and `lore_get_symbol` read the same unified store the indexer writes (commit
   `8ae67ab`). The graph tools — `lore_what_imports`, `lore_blast_radius`,

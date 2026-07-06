@@ -537,26 +537,25 @@ class TestExtensionSeamTypesAreCandidate:
 # The bug this suite pins: ``LoreServer.tool_specs(ctx)`` collects an extension's
 # seam-3 tools as value objects (the composition tests above prove that), but the
 # FastMCP server build never registered them — ``_register_tools`` hardcoded only
-# the twelve built-ins and ignored the server's extension tools. So an extension's
+# the built-ins and ignored the server's extension tools. So an extension's
 # tools reached the live MCP surface NOWHERE. These tests drive the REAL
 # ``build_mcp_server`` + a live ``build_app_context`` (the same path
 # ``test_mcp_server.py`` uses) and assert an extension tool (a) APPEARS in
-# ``tools/list`` alongside the twelve built-ins, (b) exposes its declared input
+# ``tools/list`` alongside the built-ins, (b) exposes its declared input
 # schema, and (c) is INVOCABLE end-to-end through the FastMCP tool dispatch with
 # the handler closing over the RUNTIME ExtensionContext — not merely callable as a
 # bare ``spec.handler()`` (the vacuous version the composition tests already pass).
 
 _DIM = 2048
 
-# The twelve built-in tools (the seam-3 wiring must be purely ADDITIVE to these).
-# Each carries the mandatory ``lore_`` service prefix; extension tools do NOT (an
-# extension owns its own tool names — only the built-ins are prefixed).
+# A subset of the built-in tools (the seam-3 wiring must be purely ADDITIVE to
+# these). Each carries the mandatory ``lore_`` service prefix; extension tools do
+# NOT (an extension owns its own tool names — only the built-ins are prefixed).
 _BUILTIN_TOOLS = {
-    "lore_search_code",
-    "lore_read_file",
+    "lore_search",
     "lore_get_symbol",
-    "lore_save_memory",
-    "lore_recall_memory",
+    "lore_remember",
+    "lore_recall",
     "lore_reindex",
     "lore_index_status",
     "lore_what_imports",
@@ -687,12 +686,12 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
 
         await drop_database(make_env(database=slug, dim=_DIM))
 
-    async def test_extension_tool_appears_in_tools_list_with_the_ten_builtins(
+    async def test_extension_tool_appears_in_tools_list_with_the_builtins(
         self, tmp_path: Path
     ) -> None:
         # RED today: the extension's ``bump_counter`` tool is collected by
         # ``server.tool_specs`` but NEVER registered, so it is absent from the live
-        # ``tools/list``. The twelve built-ins are present either way.
+        # ``tools/list``. The built-ins are present either way.
         from loremaster.server import LoreServer, build_mcp_server
 
         slug = self._slug()
@@ -702,7 +701,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
 
         tools = await mcp.list_tools()
         names = {t.name for t in tools}
-        # Purely additive: the twelve built-ins are untouched.
+        # Purely additive: the built-ins are untouched.
         assert _BUILTIN_TOOLS <= names
         # The extension tool now rides alongside them on the live surface.
         assert "bump_counter" in names

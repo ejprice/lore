@@ -109,7 +109,7 @@ class ImpactTargetNotFoundError(Exception):
     valid ``dead (heuristic)`` result, never an error).
 
     The message names the target and points at the next step
-    (``search_code``) — the teaching-miss standard mirroring
+    (``lore_search``) — the teaching-miss standard mirroring
     :class:`~loremaster.symbols.GetSymbolError`.
     """
 
@@ -250,7 +250,7 @@ class ImpactEngine:
             raise ImpactTargetNotFoundError(
                 f"no symbol or module named {target!r} appears in the code "
                 f"graph (never indexed, or indexed under a different "
-                f"qualified name). Next step: try search_code({target!r}) to "
+                f"qualified name). Next step: try lore_search({target!r}) to "
                 f"locate it."
             )
 

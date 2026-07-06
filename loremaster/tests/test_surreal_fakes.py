@@ -949,7 +949,7 @@ class TestRecordTraceFake:
         self, store: FakeSurrealStore
     ) -> None:
         await store.record_trace(
-            tool="lore_search_code", params_hash="digest-c", hit_count=5,
+            tool="lore_search", params_hash="digest-c", hit_count=5,
             latency_ms=9.0, session="s", token_cost=1536, model="voyage-4-large",
         )
         row = store.recorded_traces()[0]

@@ -46,7 +46,7 @@ Two store-only guarantees the filesystem tool cannot make:
 
 A miss — an unknown ``(tier, path)`` (no ``file_text`` body, or no manifest row)
 — raises :class:`StoreReadNotFoundError` naming the tier and path and pointing
-the caller at ``search_code``: a teaching miss, not a bare error. A downed store
+the caller at ``lore_search``: a teaching miss, not a bare error. A downed store
 connection propagates loudly as
 :class:`~loremaster.store.surreal.SurrealConnectionError` (it is never caught
 here), so a dead server can never masquerade as a not-found.
@@ -76,7 +76,7 @@ _SOURCE_HEADER_TEMPLATE = "[SOURCE:{tier}:{path}:{line_start}-{line_end}]"
 # is the load-bearing token a caller/renderer keys off.
 _STALE_HEADER_NOTICE = (
     "STALE: served from the index, which may be behind the file on disk — "
-    "reindex to refresh, or verify with search_code"
+    "reindex to refresh, or verify with lore_search"
 )
 
 # The keys of the ``{text, sha512}`` row :meth:`SurrealStore.file_text` returns —
@@ -100,7 +100,7 @@ class StoreReadNotFoundError(StoreReadError):
 
     Raised when there is no ``file_text`` body for the pair, OR when the manifest
     carries no row for it at all (an untracked file). The message names the tier
-    and path and points the caller at ``search_code`` — a teaching miss, never a
+    and path and points the caller at ``lore_search`` — a teaching miss, never a
     bare error.
     """
 
@@ -308,7 +308,7 @@ class StoreReadTool:
 
     @staticmethod
     def _not_found_error(tier: str, path: str) -> StoreReadNotFoundError:
-        """A not-found error naming the tier/path and pointing at ``search_code``.
+        """A not-found error naming the tier/path and pointing at ``lore_search``.
 
         Covers both a missing ``file_text`` body and a missing manifest row (an
         untracked file) — either way the store has no complete, tracked copy to
@@ -316,7 +316,7 @@ class StoreReadTool:
         """
         return StoreReadNotFoundError(
             f"file {path!r} not found in tier {tier!r} (no indexed body in the store). "
-            f"Run search_code to locate the current file, or reindex if the path "
+            f"Run lore_search to locate the current file, or reindex if the path "
             f"should exist — the index may be ahead of or behind this path."
         )
 

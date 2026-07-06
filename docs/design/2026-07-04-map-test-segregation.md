@@ -89,7 +89,7 @@ elision line CARRY the one-glance content — Sonnet's cost, Opus's information.
        the focused module's neighbors stay capped.
    7c. The cap N scales with `budget=` — it is a budget-allocation policy
        (breadth first), not an information ceiling; and the complete-file ask
-       is honestly served by `lore_read_file`, which the focused view cites.
+       is honestly served by `lore_read`, which the focused view cites.
 
 `lore_impact`:
 8. The covering-tests join rides the same `answers_to` bare-name bridge as the

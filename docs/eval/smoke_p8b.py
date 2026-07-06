@@ -71,11 +71,10 @@ NEW_P8B_TOOL_NAMES = frozenset(
 )
 PRE_EXISTING_TOOL_NAMES = frozenset(
     {
-        "lore_search_code",
-        "lore_read_file",
+        "lore_search",
         "lore_get_symbol",
-        "lore_save_memory",
-        "lore_recall_memory",
+        "lore_remember",
+        "lore_recall",
         "lore_claim_task",
         "lore_tasks",
         "lore_reindex",

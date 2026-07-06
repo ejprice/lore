@@ -1770,7 +1770,7 @@ class TestRebuildingNoticeSeam:
         # regardless of the embedder (a junk query term still returns top-k under a
         # FakeEmbedder — see _NO_MATCH_FILTER). Empty + in_progress must RAISE.
         with pytest.raises(Exception) as excinfo:  # noqa: PT011 - message asserted below
-            await app_ctx.search_code(
+            await app_ctx.search(
                 "champion routing widget", k=5, filters=dict(_NO_MATCH_FILTER)
             )
 
@@ -1834,7 +1834,7 @@ class TestRebuildingNoticeSeam:
         # must be present in the converted, agent-visible payload.
         agent_visible_text = ""
         try:
-            results = await app_ctx.search_code(
+            results = await app_ctx.search(
                 "champion routing widget", k=5, filters=dict(_NO_MATCH_FILTER)
             )
             # The tool RETURNED (did not raise). Convert it the way the SDK does and
@@ -1879,7 +1879,7 @@ class TestRebuildingNoticeSeam:
 
         # Same deterministic-empty trick as A8a: a server-side filter matching no
         # indexed point yields a TRUE empty result regardless of the embedder.
-        results = await app_ctx.search_code(
+        results = await app_ctx.search(
             "champion routing widget", k=5, filters=dict(_NO_MATCH_FILTER)
         )
 

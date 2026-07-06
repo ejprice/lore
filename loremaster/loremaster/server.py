@@ -114,7 +114,6 @@ from loremaster.memory.backend import (
     MemorySource,
     TrustLevel,
 )
-from loremaster.read_file import FileSpan
 from loremaster.search import DetailSelector, SearchResult
 from loremaster.store.candidate import Candidate
 from loremaster.store_read import StoreFileSpan
@@ -135,7 +134,6 @@ if TYPE_CHECKING:
         MemoryBackend,
         RecalledMemory,
     )
-    from loremaster.read_file import ReadFileTool
     from loremaster.search import SearchPipeline
     from loremaster.store.surreal import SurrealStore
     from loremaster.store_read import StoreReadTool
@@ -855,7 +853,7 @@ _MAX_BLAST_MAX_RESULTS = 500
 _MEMORY_SLUG_SUFFIX = "_memory"
 
 # P7 memory cutover — the valid memory-kind vocabulary + the default kind a bare
-# ``save_memory`` records. Derived from the backend's by-kind importance table so
+# ``remember`` records. Derived from the backend's by-kind importance table so
 # the two never drift; a kind outside this set is a caller error the handler
 # rejects BY NAME (never a silent default to ``fact``).
 _VALID_MEMORY_KINDS = frozenset(IMPORTANCE_DEFAULTS_BY_KIND)
@@ -1059,26 +1057,23 @@ _INSTRUCTIONS = (
     "lookalike. Results are summarised value objects, NEVER raw store dumps.\n"
     "\n"
     "WHEN TO USE WHICH TOOL:\n"
-    "- lore_search_code(query, ...): semantic, memory-boosted search across code + "
+    "- lore_search(query, ...): semantic, memory-boosted search across code + "
     "docs. Your default entry point when you don't already know the exact name/path. "
     "Returns ranked, cited hits.\n"
     "- lore_get_symbol(qualified_name): the EXACT stored definition + on-disk location "
     "of a named Python symbol (class / method / function). Use this — NOT "
-    "lore_search_code — when you know the name and want the authoritative definition "
+    "lore_search — when you know the name and want the authoritative definition "
     "(it is collision-correct, not a fuzzy ranked guess).\n"
     "- lore_verify(qualified_name, expected_file_path=None, expected_signature_fragment=None): "
     "the anti-hallucination check — confirm a symbol/signature/location CLAIM against the "
     "stored truth BEFORE you repeat it. Returns confirmed / mismatch / not_found with the "
     "stored facts (a mismatch names the ACTUAL path or header). Unlike lore_get_symbol, a "
     "miss is a plain not_found RESULT, not an error.\n"
-    "- lore_read_file(tier, path, ...): the EXACT on-disk text of a file span with a "
-    "[SOURCE:...] header. Use after a lore_search_code / lore_get_symbol hit to read "
-    "surrounding context.\n"
-    "- lore_read(tier, path, ...): the same [SOURCE:...]-cited span but served from the "
-    "INDEX (the exact bytes lore embedded), hash-verified and FRESHNESS-flagged — its "
-    "header carries a visible STALE notice when the index is behind the file on disk. "
-    "Prefer lore_read_file for the live text; reach for lore_read to see precisely what "
-    "was indexed (and whether it has drifted).\n"
+    "- lore_read(tier, path, ...): the EXACT bytes lore INDEXED for a file span, with "
+    "a [SOURCE:...] header, hash-verified and FRESHNESS-flagged — the single read "
+    "verb. Use after a lore_search / lore_get_symbol hit to read surrounding context. "
+    "Its header carries a visible STALE notice when the index is behind the file on "
+    "disk; pass wait_for_fresh=True to lore_search (or run lore_reindex) to refresh.\n"
     "- lore_what_imports(target): the DIRECT importers of a module (one reverse import "
     "edge).\n"
     "- lore_blast_radius(target, ...): the TRANSITIVE reverse-dependency closure "
@@ -1117,35 +1112,35 @@ _INSTRUCTIONS = (
     "(subject/body/area/category/created_by; kind defaults 'friction'), 'query' by "
     "status/kind/area, 'get'/'chain_head' one, or drive its review state machine with "
     "'acknowledge'/'resolve'/'wontfix' (by id_or_number + actor). Renders summarised rows.\n"
-    "- lore_save_memory(text, ...) / lore_recall_memory(query, ...): the project-memory "
+    "- lore_remember(text, ...) / lore_recall(query, ...): the project-memory "
     "store (see MEMORY below).\n"
     "\n"
     "WORKFLOW LADDER when you don't already know exactly where to look: orient with "
-    "lore_map, locate specifics with lore_search_code, pin the exact definition with "
+    "lore_map, locate specifics with lore_search, pin the exact definition with "
     "lore_get_symbol, then verify safety with lore_impact before you touch anything — "
-    "lore_map -> lore_search_code -> lore_get_symbol -> lore_impact is the default chain.\n"
+    "lore_map -> lore_search -> lore_get_symbol -> lore_impact is the default chain.\n"
     "\n"
     "TOOL LOADING: if your harness exposes MCP tools behind a deferred loader (a ToolSearch- "
     "style tool that must select these before they are callable), load lore's tools "
     "explicitly up front — a lore tool that never gets ToolSearch-loaded is invisible to "
     "you, so ask for it rather than assuming lore is unavailable.\n"
     "\n"
-    "CITATIONS: every lore_search_code / lore_read_file result carries a "
+    "CITATIONS: every lore_search / lore_read result carries a "
     "[SOURCE:file:line] citation plus a stable 'Key:' line (the chunk key) and a fenced "
     "source block. Echo the [SOURCE:...] citation when you quote code, and pass a "
-    "'Key:' value back to lore_save_memory to pin a correction to a specific chunk.\n"
+    "'Key:' value back to lore_remember to pin a correction to a specific chunk.\n"
     "\n"
     "FRESHNESS / READ-YOUR-WRITES: a live inotify watcher re-indexes an edited file "
     "within ~seconds of a save — the normal freshness path. A periodic reconcile sweep "
     "(default ~10 min) is ONLY the backstop for events the watcher missed (downtime, "
     "queue overflow), not the edit-to-fresh latency. If you edit a file and "
     "IMMEDIATELY query it, you can race the embed window: pass "
-    "lore_search_code(..., wait_for_fresh=True) — it bounded-waits for the in-flight "
+    "lore_search(..., wait_for_fresh=True) — it bounded-waits for the in-flight "
     "file(s) matching your path filter, then serves fresh (or stale-flagged on timeout; "
     "it never hangs). Use lore_reindex(tier=...) only to force a whole tier current; "
     "for the edit-then-query case wait_for_fresh is the right, cheaper tool.\n"
     "\n"
-    "MEMORY: lore_save_memory / lore_recall_memory is PROJECT-SCOPED memory about THIS "
+    "MEMORY: lore_remember / lore_recall is PROJECT-SCOPED memory about THIS "
     "repository — embedded and semantically recalled, SHARED across every agent working "
     "this "
     "project, and it SURVIVES restarts (it persists in a dedicated collection). Use it "
@@ -1384,7 +1379,6 @@ class AppContext:
         reconcile_engine: ReconcileEngine,
         watcher: Any,
         search_pipeline: SearchPipeline,
-        read_file_tool: ReadFileTool,
         symbol_tool: SymbolTool,
         verify_tool: VerifyTool,
         store_read_tool: StoreReadTool,
@@ -1407,7 +1401,6 @@ class AppContext:
         self.reconcile_engine = reconcile_engine
         self.watcher = watcher
         self.search_pipeline = search_pipeline
-        self._read_file_tool = read_file_tool
         self._symbol_tool = symbol_tool
         self._verify_tool = verify_tool
         # P8b wire-up: the store-backed span reader (lore_read) and the snapshot
@@ -1459,7 +1452,7 @@ class AppContext:
 
     # -- tool handlers (the single end-to-end surface) ---------------------
 
-    async def search_code(
+    async def search(
         self,
         query: str,
         k: int = _DEFAULT_SEARCH_K,
@@ -1474,24 +1467,6 @@ class AppContext:
         )
         await self._raise_if_empty_during_rebuild(results)
         return results
-
-    async def read_file(
-        self,
-        tier: str,
-        path: str,
-        line_start: int | None = None,
-        line_end: int | None = None,
-    ) -> FileSpan:
-        """Read a containment-guarded ``(tier, path)`` span with a provenance header."""
-        from loremaster.read_file import ReadFileError
-
-        try:
-            return self._read_file_tool.read_file(tier, path, line_start, line_end)
-        except ReadFileError as exc:
-            # A not-found span DURING a rebuild may just be a not-yet-re-embedded
-            # file — raise the rebuilding error (so the agent retries) rather than
-            # letting a bare not-found mislead it. When idle, re-raise as-is.
-            raise await self._rebuilding_error_or(exc) from exc
 
     async def get_symbol(self, qualified_name: str) -> ResolvedSymbol:
         """Resolve a qualified Python name to its exact stored definition + location."""
@@ -1550,18 +1525,18 @@ class AppContext:
         line_start: int | None = None,
         line_end: int | None = None,
     ) -> StoreFileSpan:
-        """Read a span straight from the unified store — the hash-verified read twin.
+        """Read a span straight from the unified store — the hash-verified read verb.
 
-        The store-backed sibling of :meth:`read_file`: it serves the EXACT bytes lore
+        The single, store-backed read verb (P8d): it serves the EXACT bytes lore
         INDEXED (the ``file_text`` row) rather than the live filesystem, hash-verified
         against their stored digest and flagged ``stale`` when the index is behind
         disk. ``tier`` is VALIDATED FIRST via :meth:`_validate_tier` — the audit found
         :class:`~loremaster.store_read.StoreReadTool` alone reports an unknown tier as
         a bare not-found, so the wiring gives it the sibling tools' unknown-tier error
         NAMING the configured tiers (a correctable typo, not a silent miss). A
-        not-found DURING a rebuild is routed through :meth:`_rebuilding_error_or`
-        (mirroring :meth:`read_file`), so a not-yet-re-embedded body reads as a
-        retryable rebuilding signal, not a genuine absence.
+        not-found DURING a rebuild is routed through :meth:`_rebuilding_error_or` (as
+        the corpus-read tools do), so a not-yet-re-embedded body reads as a retryable
+        rebuilding signal, not a genuine absence.
 
         Args:
             tier: The source tier to read from (validated against the configured tiers).
@@ -1771,7 +1746,7 @@ class AppContext:
             for finding in findings
         )
 
-    async def save_memory(
+    async def remember(
         self,
         text: str,
         *,
@@ -1842,7 +1817,7 @@ class AppContext:
             supersedes=supersedes,
         )
 
-    async def recall_memory(
+    async def recall(
         self,
         query: str,
         k: int = _DEFAULT_RECALL_K,
@@ -2183,7 +2158,7 @@ class AppContext:
         cleanly. ``ImpactRebuildingError`` / ``ImpactTargetNotFoundError``
         propagate UNCHANGED (each already carries a caller-actionable message —
         the rebuilding one names the retry hint, the not-found one names the
-        target plus the ``search_code`` next step), mirroring how ``get_symbol``
+        target plus the ``lore_search`` next step), mirroring how ``get_symbol``
         above lets ``GetSymbolError``'s detail reach the agent verbatim.
         """
         return await self._impact_engine.impact(target, depth, max_consumers)
@@ -2213,7 +2188,7 @@ class AppContext:
     # MCP ToolError the agent sees; a custom attribute on a returned list is
     # dropped by the SDK's convert_result, so the agent would see a bare []). The
     # four list tools call _raise_if_empty_during_rebuild on an empty result; the
-    # two not-found-raising tools (get_symbol / read_file) route their own error
+    # two not-found-raising tools (get_symbol / read) route their own error
     # through _rebuilding_error_or. Both gate on rebuilding_notice being non-None
     # (state in_progress), so an idle no-match stays a plain empty result / a plain
     # not-found — never a false-positive rebuild signal.
@@ -2222,7 +2197,7 @@ class AppContext:
         """Raise a :class:`SchemaRebuildingError` when ``results`` is empty mid-rebuild.
 
         The shared seam for the four list-returning corpus read tools
-        (search_code, what_imports, blast_radius, tests_for). An empty result while
+        (search, what_imports, blast_radius, tests_for). An empty result while
         a rebuild is in progress would mislead the agent into believing the project
         genuinely has no match; raising instead surfaces the rebuilding notice on a
         wire-survivable channel so the agent retries. A non-empty result, or an idle
@@ -2248,7 +2223,7 @@ class AppContext:
         """Return a rebuilding error during a rebuild, else the original error.
 
         The not-found-tool counterpart of :meth:`_raise_if_empty_during_rebuild`
-        for get_symbol / read_file: a not-found DURING a rebuild may be a
+        for get_symbol / read: a not-found DURING a rebuild may be a
         not-yet-re-embedded file, so the returned error is a
         :class:`SchemaRebuildingError` carrying the rebuilding + progress notice
         alongside the original message (agent-visible, so it retries). When idle,
@@ -2737,10 +2712,8 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
     from loremaster.index.watcher import LiveWatcher
     from loremaster.memory.ledger import MemoryLedger
     from loremaster.memory.local import LocalMemoryBackend
-    from loremaster.read_file import ReadFileTool
     from loremaster.search import SearchPipeline
     from loremaster.source.local_directory import LocalDirectorySourceProvider
-    from loremaster.source.snapshot import SnapshotLayout
     from loremaster.store.surreal import SurrealStore
     from loremaster.store_read import StoreReadTool
     from loremaster.symbols import SymbolTool, VerifyTool
@@ -2969,18 +2942,6 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         # reranker`` stays inert until a future build injects the client here.
         reranker=None,
     )
-    snapshot_layout = SnapshotLayout(snapshot_root)
-    live_roots = {
-        root.tier: Path(root.path)
-        for root in config.effective_roots
-        if root.path is not None
-    }
-    # Every configured tier (live + static) is "known", so read_file can tell an
-    # unknown-tier typo apart from a known tier whose file is merely missing.
-    known_tiers = {root.tier for root in config.effective_roots}
-    read_file_tool = ReadFileTool(
-        live_roots=live_roots, snapshot_layout=snapshot_layout, known_tiers=known_tiers
-    )
     # P6 store port: SymbolTool's get_symbol reads through the unified
     # SurrealDB store's scroll() primitive, so it depends on write_store
     # (the SurrealStore), NOT the legacy Qdrant handle.
@@ -3033,7 +2994,6 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         reconcile_engine=reconcile_engine,
         watcher=watcher,
         search_pipeline=search_pipeline,
-        read_file_tool=read_file_tool,
         symbol_tool=symbol_tool,
         verify_tool=verify_tool,
         store_read_tool=store_read_tool,
@@ -3550,7 +3510,7 @@ class _ProcessLifespanGuard:
 
 
 def build_mcp_server(server: LoreServer) -> Any:
-    """Construct the FastMCP server: lifespan + the sixteen built-ins + extension tools.
+    """Construct the FastMCP server: lifespan + the built-in tools + extension tools.
 
     The lifespan builds the live :class:`AppContext` from config (the real
     embedder via :func:`~loremaster.embedding.make_embedder_from_config`, the
@@ -3658,14 +3618,14 @@ def _app_context(context: Context[Any, AppContext, Any]) -> AppContext:
 
 # Tool annotations (mcp-builder: set readOnlyHint / idempotentHint / openWorldHint
 # appropriately so a host can reason about a tool before calling it). Every lore
-# tool is read-only EXCEPT save_memory (persists a note) and reindex (mutates the
+# tool is read-only EXCEPT lore_remember (persists a note) and reindex (mutates the
 # index state). openWorldHint is False throughout: lore queries THIS project's own
 # closed index, not an open external world. The read tools are idempotent (same
 # args → same observable result, modulo a live edit re-indexing underneath).
 _READ_ONLY_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True, idempotentHint=True, openWorldHint=False
 )
-# save_memory writes (a new note text creates a new point), so not read-only and
+# lore_remember writes (a new note text creates a new point), so not read-only and
 # not idempotent — re-saving the SAME text dedups by deterministic id, but a new
 # text is a new write, so we do not advertise idempotency.
 _SAVE_MEMORY_ANNOTATIONS = ToolAnnotations(
@@ -3694,7 +3654,7 @@ _FINDINGS_TOOL_ANNOTATIONS = ToolAnnotations(
 
 
 def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
-    """Register the sixteen built-in MCP tools, then the extension-contributed tools.
+    """Register the built-in MCP tools, then the extension-contributed tools.
 
     Kept separate so the registration list is one readable place. Every built-in
     tool pulls the live :class:`AppContext` off the request's lifespan context and
@@ -3709,7 +3669,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     vs mutating). The consumer-facing ``instructions`` block (:data:`_INSTRUCTIONS`)
     carries the cross-tool model (freshness, citations, memory stance).
 
-    After the sixteen built-ins, every registered :class:`Extension`'s seam-3
+    After the built-ins, every registered :class:`Extension`'s seam-3
     :class:`ToolSpec`\\ s are registered as real FastMCP tools
     (:func:`_register_extension_tools`) — purely additive, with a name-collision
     guard so an extension tool can never silently shadow a built-in or another
@@ -3722,7 +3682,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     """
 
     @mcp.tool(
-        name="lore_search_code",
+        name="lore_search",
         description=(
             "Semantic, memory-boosted search across THIS project's indexed code and "
             "docs. Your default entry point when you don't already know the exact "
@@ -3730,11 +3690,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "Returns summarised, [SOURCE:file:line]-cited hits (each with a stable "
             "Key:), never a raw dump. For the EXACT definition of a name you already "
             "know, prefer lore_get_symbol; to read surrounding lines, follow up with "
-            "lore_read_file."
+            "lore_read."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
-    async def search_code(
+    async def search(
         context: Context[Any, AppContext, Any],
         query: Annotated[
             str,
@@ -3792,73 +3752,18 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             ),
         ] = "auto",
     ) -> list[SearchResult]:
-        return await _app_context(context).search_code(
+        return await _app_context(context).search(
             query, k, filters, wait_for_fresh=wait_for_fresh, detail_level=detail_level
         )
-
-    @mcp.tool(
-        name="lore_read_file",
-        description=(
-            "Read the EXACT on-disk text of a file span with a [SOURCE:tier:path:"
-            "start-end] provenance header — the anti-hallucination way to quote real "
-            "lines. Reach for this after a lore_search_code / lore_get_symbol hit to "
-            "read the surrounding context. Path is workspace-relative and "
-            "containment-guarded (a '../' traversal, absolute path, or escaping "
-            "symlink is rejected)."
-        ),
-        annotations=_READ_ONLY_ANNOTATIONS,
-    )
-    async def read_file(
-        context: Context[Any, AppContext, Any],
-        tier: Annotated[
-            str,
-            Field(
-                description=(
-                    "The source tier (root) the file lives in, as named in the "
-                    "project config — e.g. a live tier like 'custom' for the watched "
-                    "workspace, or a static tier (community / enterprise / pip / "
-                    "stdlib). It is the 'tier' shown in a [SOURCE:tier:...] citation."
-                )
-            ),
-        ],
-        path: Annotated[
-            str,
-            Field(
-                description=(
-                    "Tier-relative path of the file (e.g. 'pkg/router.py'). "
-                    "Workspace-relative and containment-guarded — never an absolute "
-                    "path or a '../' escape."
-                )
-            ),
-        ],
-        line_start: Annotated[
-            int | None,
-            Field(
-                description=(
-                    "First line to read, 1-based inclusive. Omit to start at line 1."
-                )
-            ),
-        ] = None,
-        line_end: Annotated[
-            int | None,
-            Field(
-                description=(
-                    "Last line to read, 1-based inclusive. Omit to read to EOF; an "
-                    "end past EOF is clamped (a tolerant 'from line N onward' read)."
-                )
-            ),
-        ] = None,
-    ) -> FileSpan:
-        return await _app_context(context).read_file(tier, path, line_start, line_end)
 
     @mcp.tool(
         name="lore_get_symbol",
         description=(
             "Resolve a Python symbol name to its EXACT stored definition + on-disk "
-            "location (file_path / line span / tier). Use this — NOT lore_search_code "
+            "location (file_path / line span / tier). Use this — NOT lore_search "
             "— when you know the name and want the authoritative definition: it is "
             "collision-correct (a module-qualified name resolves the RIGHT file when "
-            "the bare name exists in several), where lore_search_code is a fuzzy "
+            "the bare name exists in several), where lore_search is a fuzzy "
             "ranked guess. Scoped to class / method / function chunks; raises a clean "
             "not-found (naming the symbol) if nothing matches."
         ),
@@ -3937,18 +3842,18 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         )
 
     @mcp.tool(
-        name="lore_save_memory",
+        name="lore_remember",
         description=(
             "Persist a durable note to THIS project's shared memory store; returns "
             "its deterministic id. Use it to record a lasting fact or correction "
             "about this codebase — it is embedded, semantically recalled by "
-            "lore_recall_memory, SHARED across every agent on this project, and "
+            "lore_recall, SHARED across every agent on this project, and "
             "survives restarts. Re-saving the same text dedups (same id). This is the "
             "project's shared notebook, distinct from your own cross-project memory."
         ),
         annotations=_SAVE_MEMORY_ANNOTATIONS,
     )
-    async def save_memory(
+    async def remember(
         context: Context[Any, AppContext, Any],
         text: Annotated[
             str,
@@ -4028,7 +3933,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             ),
         ] = None,
     ) -> str:
-        return await _app_context(context).save_memory(
+        return await _app_context(context).remember(
             text,
             refs=refs,
             metadata=metadata,
@@ -4040,17 +3945,17 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         )
 
     @mcp.tool(
-        name="lore_recall_memory",
+        name="lore_recall",
         description=(
             "Recall the nearest saved project-memory notes for a query — the read "
-            "side of lore_save_memory. Returns summarised notes (text + metadata + "
+            "side of lore_remember. Returns summarised notes (text + metadata + "
             "refs + score) from THIS project's shared, restart-surviving memory. Query "
             "it early when you want prior corrections or durable facts about this "
             "codebase before you start searching the code itself."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
-    async def recall_memory(
+    async def recall(
         context: Context[Any, AppContext, Any],
         query: Annotated[
             str,
@@ -4093,7 +3998,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             ),
         ] = None,
     ) -> str:
-        return await _app_context(context).recall_memory(query, k, kind=kind, labels=labels)
+        return await _app_context(context).recall(query, k, kind=kind, labels=labels)
 
     @mcp.tool(
         name="lore_claim_task",
@@ -4251,13 +4156,16 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     @mcp.tool(
         name="lore_read",
         description=(
-            "Read the EXACT bytes lore INDEXED for a file span — the store-backed twin "
-            "of lore_read_file — with a [SOURCE:tier:path:start-end] provenance header, "
-            "hash-verified against its stored digest. Unlike lore_read_file (which reads "
-            "the LIVE file on disk), this serves precisely what was embedded, so it can "
-            "show you the indexed text even when the working tree has moved on — and its "
-            "header carries a visible STALE notice when it has. Reach for it to see what "
-            "the index actually holds; prefer lore_read_file for the current on-disk text."
+            "Read a file span — the single read verb. Serves the EXACT bytes lore "
+            "INDEXED (a store-backed span) with a [SOURCE:tier:path:start-end] "
+            "provenance header, hash-verified against its stored digest, so you quote "
+            "real source rather than recalling it. Reach for it after a lore_search / "
+            "lore_get_symbol hit to read the surrounding context. Because it serves "
+            "the embedded bytes rather than re-reading disk, its header carries a "
+            "visible STALE notice whenever the index is behind the file on disk — when "
+            "it does, pass wait_for_fresh=True to lore_search (or run lore_reindex) to "
+            "bring the span current. Path is containment-guarded (a '../' traversal, "
+            "absolute path, or escaping symlink is rejected)."
         ),
         annotations=_READ_ONLY_ANNOTATIONS,
     )
@@ -4508,7 +4416,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "current' hammer over a whole tier (or all tiers) — NOT a per-file wait. "
             "You rarely need it: the live watcher keeps the index fresh on save. For "
             "the edit-then-immediately-query case, prefer "
-            "lore_search_code(..., wait_for_fresh=True), which is cheaper and targeted."
+            "lore_search(..., wait_for_fresh=True), which is cheaper and targeted."
         ),
         annotations=_REINDEX_ANNOTATIONS,
     )
@@ -4769,7 +4677,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                     "The symbol or module to profile — a dotted name "
                     "(e.g. 'pkg.router.ChampionRouter' or 'pkg.router') or a bare "
                     "identity. Raises a clean not-found (naming the target and "
-                    "pointing at lore_search_code) if it matches nothing indexed."
+                    "pointing at lore_search) if it matches nothing indexed."
                 )
             ),
         ],
@@ -4797,7 +4705,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "token-budgeted rollup of which modules matter most (each with its "
             "rendered symbol names), optionally re-centered on one symbol's own "
             "neighbourhood via 'focus'. Reach for this FIRST when you don't yet "
-            "know where to start — before lore_search_code (which needs a query) "
+            "know where to start — before lore_search (which needs a query) "
             "or lore_blast_radius (which needs a known target) — to get the lay "
             "of the land, or re-run it focused to see what surrounds a symbol "
             "you're about to change."
@@ -4846,7 +4754,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     ) -> MapResult:
         return await _app_context(context).map(budget, focus, tests)
 
-    # After the fourteen built-ins, register the extension-contributed seam-3 tools.
+    # After the built-ins, register the extension-contributed seam-3 tools.
     _register_extension_tools(mcp, server)
 
 
@@ -4883,7 +4791,7 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
     would merely warn and keep the first registration, a silent shadow).
 
     Args:
-        mcp: The FastMCP server (the sixteen built-ins are already registered).
+        mcp: The FastMCP server (the built-ins are already registered).
         server: The composed :class:`LoreServer` whose extensions contribute tools.
 
     Raises:
@@ -4901,7 +4809,7 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
             raise ValueError(
                 f"extension tool {spec.name!r} collides with an already-registered tool; "
                 f"refusing to shadow it on the MCP surface (rename the extension tool — a "
-                f"tool name must be unique across the sixteen built-ins and every extension)."
+                f"tool name must be unique across the built-ins and every extension)."
             )
         wrapper = _extension_tool_wrapper(spec)
         mcp.add_tool(wrapper, name=spec.name, description=spec.description)

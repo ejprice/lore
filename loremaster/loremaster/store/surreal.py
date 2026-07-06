@@ -35,7 +35,7 @@ this server):
   analyzer, dropping the punctuation tokens, and ORing the word tokens — the
   identifier-tokenization step that makes the BM25 rescue work.
 
-Trust-boundary hardening (this store sits behind the ``search_code`` tool in P6,
+Trust-boundary hardening (this store sits behind the ``lore_search`` tool in P6,
 so an agent supplies its filter keys, ``k`` and query text):
 
 * **Filter KEYS are allow-listed** against :data:`_ALLOWED_FILTER_KEYS` (the
@@ -696,7 +696,7 @@ class SurrealStore:
         over the rows, are a later serving-layer phase (P8d).
 
         Args:
-            tool: The tool name that was served (e.g. ``"lore_search_code"``).
+            tool: The tool name that was served (e.g. ``"lore_search"``).
             params_hash: A stable digest of the call's parameters.
             hit_count: How many results the call returned.
             latency_ms: The call's wall-clock latency in milliseconds; fractional

@@ -355,9 +355,10 @@ class TestErrorDisambiguation:
         assert "absent.py" in message
         assert "not found" in message.lower()
         assert _LIVE_TIER in message
-        # A next step (reindex / search_code / verify the path) is suggested.
-        assert any(hint in message.lower() for hint in ("reindex", "search_code", "verify", "check")), (
-            "a missing-file error must point the caller at a next step"
+        # A next step (reindex / lore_search / verify the path) is suggested, and
+        # it must name the LIVE tool (lore_search), never the retired search_code.
+        assert "lore_search" in message.lower(), (
+            "a missing-file error must point the caller at the live lore_search tool"
         )
         # The message must NOT pretend it might be a containment rejection (the
         # conflated old text). This is what makes the disambiguation real.
