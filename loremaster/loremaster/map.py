@@ -55,7 +55,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from loremaster.graph import KIND_MODULE, CodeGraph
+from loremaster.graph import KIND_METHOD, KIND_MODULE, CodeGraph
 
 # --------------------------------------------------------------------------- #
 # Budget bounds (contract: floor 200, default 2500, cap 6000).
@@ -156,6 +156,17 @@ _SYMBOL_CAP_MORE_PREFIX = "+"
 _SYMBOL_CAP_TEACH_VERB = "focus="
 _SYMBOL_CAP_TEACH_TAIL = "for the full list"
 
+# S2 fix (2026-07-06, REPORT-slate-scout-s2.md / docs/design/
+# 2026-07-06-client-needs-consult.md Synthesis S2): the always-on
+# resolution-grammar affordance. Before this fix, a method-kind symbol
+# rendered as its bare last segment only (``search``), and two sibling
+# classes in the same module with a same-named method were indistinguishable
+# in the render — ``lore_get_symbol`` then had nothing correct to resolve.
+# Now that every method-kind symbol renders class-qualified (see
+# ``_owner_qualified_name``), this line is TRUE BY CONSTRUCTION on every call
+# — never conditional on the corpus containing methods.
+_RESOLUTION_AFFORDANCE_LINE = "resolve any symbol: lore_get_symbol('module.Class.method')"
+
 
 class MapRebuildingError(Exception):
     """Raised when a map is requested while the code graph is rebuilding.
@@ -202,8 +213,15 @@ class MapEntry(BaseModel):
             workspace-member directory).
         rank: The module's PageRank score (an implementation artifact — never
             compared for an exact value, only for relative ORDER).
-        symbols: The module's rendered symbol names (bare last segment of
-            each non-module node owned by the module), sorted ascending.
+        symbols: The module's rendered symbol names, sorted ascending: the
+            bare last segment for a CLASS or module-level FUNCTION node
+            (already unambiguous), but the OWNER-QUALIFIED ``ClassName.
+            method`` tail for a METHOD node (S2 fix, 2026-07-06 —
+            REPORT-slate-scout-s2.md: a bare method name collides across
+            sibling classes in the same module, rendering an ambiguous flat
+            namespace ``lore_get_symbol`` cannot resolve; the graph already
+            computes the class-qualified name — :meth:`~loremaster.graph.
+            CodeGraph._method_node` — this only stops discarding it).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -459,6 +477,21 @@ class MapEngine:
         """
         return max(_MIN_SYMBOL_CAP, budget // _SYMBOL_CAP_BUDGET_DIVISOR)
 
+    @staticmethod
+    def _owner_qualified_name(qualified_name: str) -> str:
+        """The ``ClassName.method`` tail of a METHOD node's qualified name.
+
+        A method node's qualified name is ``module.ClassName.method``
+        (:meth:`~loremaster.graph.CodeGraph._method_node` — the module
+        prefix may itself contain dots, e.g. ``pkg.sub.ClassName.method``),
+        so this takes the trailing TWO dot-segments unconditionally rather
+        than splitting on a fixed module-prefix length. S2 fix, 2026-07-06
+        (REPORT-slate-scout-s2.md): this is the exact qualifier
+        ``CodeGraph._method_node`` already computes and ``MapEntry.symbols``
+        previously discarded down to the bare method name.
+        """
+        return ".".join(qualified_name.split(".")[-2:])
+
     # -- extraction -------------------------------------------------------
 
     async def _extract_module_graph(
@@ -532,7 +565,25 @@ class MapEngine:
             )
             if node.kind != KIND_MODULE:
                 bare = CodeGraph._bare_name(node.qualified_name)
-                symbols_by_module[module].add(bare)
+                symbol_name = (
+                    self._owner_qualified_name(node.qualified_name)
+                    if node.kind == KIND_METHOD
+                    else bare
+                )
+                symbols_by_module[module].add(symbol_name)
+                # Keyed by the bare segment AND the full qualified name only
+                # (unchanged from before the S2 fix) — NOT the rendered
+                # owner-qualified form: `focus=` resolution goes through
+                # `self._graph.blast_radius` (below), whose matching only
+                # understands an exact FQN or a genuinely bare (undotted)
+                # target, never a partial multi-segment guess. A
+                # `symbol_owners` key `focus` could never reach (the
+                # personalization probe would already have raised
+                # `MapFocusNotFoundError`) would be untested, unreachable
+                # code — out of THIS fix's scope (the graph-level matching
+                # that would make it reachable lives in graph_surreal.py,
+                # not here; concern 2's resolver hardening is the analogous
+                # fix for `get_symbol` specifically).
                 symbol_owners[bare].add(module)
                 symbol_owners[node.qualified_name].add(module)
 
@@ -769,13 +820,15 @@ class MapEngine:
         Appends one rollup line per module, measuring the growing block with
         the injected ``count_tokens`` after each addition; the walk stops the
         moment the NEXT line would exceed ``budget`` (never a partial line). The
-        always-on test-infra elision line (``test_elision_line``, §3) is treated
-        as a MANDATORY tail — its token cost is reserved throughout the greedy
-        walk so the final block still fits. When production modules are squeezed
-        out, the explicit module-elision trailer is appended too, popping
-        already-kept lines (lowest-ranked first) until the trailer plus the
-        mandatory tail all fit. The clamped floor (:data:`_BUDGET_FLOOR`)
-        guarantees the mandatory tail alone always fits.
+        always-on test-infra elision line (``test_elision_line``, §3) AND the
+        always-on resolution-grammar affordance (:data:`_RESOLUTION_AFFORDANCE_
+        LINE`, S2 fix) are both treated as a MANDATORY tail — their token cost
+        is reserved throughout the greedy walk so the final block still fits.
+        When production modules are squeezed out, the explicit module-elision
+        trailer is appended too, popping already-kept lines (lowest-ranked
+        first) until the trailer plus the mandatory tail all fit. The clamped
+        floor (:data:`_BUDGET_FLOOR`) guarantees the mandatory tail alone
+        always fits.
 
         Args:
             entries: The full rank-ordered entry list to render.
@@ -793,7 +846,9 @@ class MapEngine:
         Returns:
             ``(kept_entries, elided_count, formatted_text)``.
         """
-        mandatory_tail = [test_elision_line] if test_elision_line else []
+        mandatory_tail = [_RESOLUTION_AFFORDANCE_LINE]
+        if test_elision_line:
+            mandatory_tail.append(test_elision_line)
         kept_lines: list[str] = []
         kept_entries: list[MapEntry] = []
         for entry in entries:

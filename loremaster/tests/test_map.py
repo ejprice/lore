@@ -1069,6 +1069,184 @@ class TestSymbolCaps:
 
 
 # =========================================================================== #
+# S2 fix (docs/design/2026-07-06-client-needs-consult.md Synthesis S2 /
+# REPORT-slate-scout-s2.md): map/get_symbol identity coherence. Root cause was
+# NOT chunking granularity -- the graph already computes the fully
+# class-qualified name for every method node (CodeGraph._method_node,
+# graph.py:436-441); MapEntry.symbols threw the ``ClassName.`` qualifier away
+# down to the bare last segment, so two sibling classes in the SAME module
+# with a same-named method rendered as one indistinguishable string --
+# get_symbol then had nothing correct to resolve. Fix: render method-kind
+# symbols ``ClassName.method``; bare module functions and class names stay
+# bare (already unambiguous). PLUS an always-on resolution-grammar affordance
+# line, TRUE by construction now that every method above is class-qualified.
+# =========================================================================== #
+
+_MULTI_CLASS_MODULE = "multi"
+_ALPHA_CLASS = "AlphaHandler"
+_BETA_CLASS = "BetaHandler"
+_SHARED_METHOD_NAME = "process"  # both classes define a method sharing this bare name
+_ALPHA_ONLY_METHOD = "helper"
+_MODULE_LEVEL_FUNCTION = "module_fn"
+
+# Two sibling classes in one module, each defining a method with the SAME bare
+# name -- exactly the live collision REPORT-slate-scout-s2.md reproduced
+# against loremaster.server (AppContext/_enforce_search_budget etc.), shrunk
+# to a minimal corpus.
+_MULTI_CLASS_SOURCE = """\
+class AlphaHandler:
+    \"\"\"First class; its ``process`` bare-collides with BetaHandler's.\"\"\"
+
+    def process(self, x):
+        \"\"\"Alpha's own process -- collides on bare name with Beta's.\"\"\"
+        return x
+
+    def helper(self, x):
+        \"\"\"A second, non-colliding method on the same class.\"\"\"
+        return x
+
+
+class BetaHandler:
+    \"\"\"Second class; its ``process`` bare-collides with AlphaHandler's.\"\"\"
+
+    def process(self, x):
+        \"\"\"Beta's own process -- same bare name as Alpha's.\"\"\"
+        return x
+
+
+def module_fn(x):
+    \"\"\"A bare module-level function -- must stay unqualified in the render.\"\"\"
+    return x
+"""
+
+
+async def _build_multi_class_graph(tmp_path: Path) -> tuple[FakeSurrealTrio, LoreServer]:
+    return await _build_graph(tmp_path, {"multi.py": _MULTI_CLASS_SOURCE})
+
+
+class TestMethodSymbolsRenderClassQualified:
+    """Contract (S2 fix): a METHOD-kind symbol renders ``ClassName.method``;
+    a class or module-level function stays bare (already unambiguous)."""
+
+    async def test_colliding_method_names_render_class_qualified(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_multi_class_graph(tmp_path)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.map(budget=_BUDGET_CAP)
+
+        entry = result.entries[_index_of_module(result.entries, _MULTI_CLASS_MODULE)]
+        assert f"{_ALPHA_CLASS}.{_SHARED_METHOD_NAME}" in entry.symbols, (
+            "a method-kind symbol must render owner-qualified"
+        )
+        assert f"{_BETA_CLASS}.{_SHARED_METHOD_NAME}" in entry.symbols, (
+            "the sibling class's same-named method must ALSO render "
+            "owner-qualified, distinguishably from Alpha's"
+        )
+        # The bare, unqualified method name must never appear ON ITS OWN --
+        # exactly the render collision that left get_symbol nothing correct
+        # to resolve (REPORT-slate-scout-s2.md §1-§2).
+        assert _SHARED_METHOD_NAME not in entry.symbols, (
+            "the bare method name must not survive as its own rendered "
+            "symbol once a class qualifier is available"
+        )
+
+    async def test_bare_module_function_and_class_names_stay_bare(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_multi_class_graph(tmp_path)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.map(budget=_BUDGET_CAP)
+
+        entry = result.entries[_index_of_module(result.entries, _MULTI_CLASS_MODULE)]
+        assert _MODULE_LEVEL_FUNCTION in entry.symbols, (
+            "a module-level function is already unambiguous -- must stay bare"
+        )
+        assert _ALPHA_CLASS in entry.symbols, "a class name is already unambiguous -- must stay bare"
+        assert _BETA_CLASS in entry.symbols, "a class name is already unambiguous -- must stay bare"
+        # A non-colliding method still gets the SAME owner-qualified
+        # treatment as a colliding one -- the rule is per-KIND, not
+        # conditional on an actual collision being present.
+        assert f"{_ALPHA_CLASS}.{_ALPHA_ONLY_METHOD}" in entry.symbols
+
+    async def test_resolution_grammar_affordance_is_true_by_construction(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        trio, _server = await _build_multi_class_graph(tmp_path)
+        engine = engine_factory(trio.graph)
+
+        result = await engine.map(budget=_BUDGET_CAP)
+
+        assert "lore_get_symbol" in result.formatted, (
+            "the map must teach the resolution grammar by naming the tool"
+        )
+        # TRUE by construction: a colliding method above is already rendered
+        # class-qualified, so the affordance's promise actually holds.
+        assert f"{_ALPHA_CLASS}.{_SHARED_METHOD_NAME}" in result.formatted
+
+    async def test_resolution_grammar_affordance_is_always_on(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Even a corpus with zero classes/methods still teaches the
+        # resolution grammar -- never conditional on the corpus shape (the
+        # SAME always-on doctrine the test-infra elision line uses, spec §3).
+        trio, _server = await _build_graph(tmp_path, _full_corpus())
+        engine = engine_factory(trio.graph)
+
+        result = await engine.map(budget=_BUDGET_CAP)
+
+        assert "lore_get_symbol" in result.formatted
+
+    async def test_tight_budget_with_qualified_names_never_exceeds_the_ceiling(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Qualified names are LONGER than their bare form (the brief's named
+        # render-budget risk) -- the hard token ceiling must still hold
+        # exactly, whatever the greedy walk had to elide to get there.
+        trio, _server = await _build_multi_class_graph(tmp_path)
+        engine = engine_factory(trio.graph, count_tokens=len)
+
+        result = await engine.map(budget=_BUDGET_FLOOR)
+
+        assert len(result.formatted) <= _BUDGET_FLOOR
+
+    async def test_symbol_cap_trailer_math_stays_correct_with_qualified_names(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # An over-endowed class (methods, not bare functions): the cap/trailer
+        # "+K more" bookkeeping must count against the QUALIFIED render, not
+        # silently miscount because names got longer.
+        source = "class ManyHandler:\n" + "\n".join(
+            f'    def m_{i}(self, x):\n        """Method {i}."""\n        return x\n'
+            for i in range(_OVER_ENDOWED_SYMBOL_COUNT)
+        )
+        trio, _server = await _build_graph(tmp_path, {"manymethods.py": source})
+        engine = engine_factory(trio.graph)
+
+        result = await engine.map(budget=_BUDGET_DEFAULT)
+
+        entry = result.entries[_index_of_module(result.entries, "manymethods")]
+        # +1: the class itself is also a (bare) rendered symbol alongside its
+        # 12 methods.
+        assert len(entry.symbols) == _OVER_ENDOWED_SYMBOL_COUNT + 1, (
+            "the engine's own MapEntry.symbols is never capped -- only the render is"
+        )
+        rendered_qualified_count = result.formatted.count("ManyHandler.m_")
+        assert rendered_qualified_count < _OVER_ENDOWED_SYMBOL_COUNT, (
+            "an over-endowed class must still render a CAPPED subset by "
+            f"default even with qualified names; rendered {rendered_qualified_count}"
+        )
+        hidden = _OVER_ENDOWED_SYMBOL_COUNT - rendered_qualified_count
+        assert f"+{hidden} more" in result.formatted, (
+            "the '+K more' trailer count must match the qualified render's "
+            f"actual hidden count ({hidden}), never miscount because names "
+            "got longer"
+        )
+
+
+# =========================================================================== #
 # P7-TAIL POLISH WAVE (ledger task #6) — ADDENDUM spec point 10b: TOKEN-BUDGET
 # CALIBRATION. lore enforces budgets in VOYAGE tokens (the pinned voyage-4
 # tokenizer) but consumers pay in CLAUDE tokens; the voyage→claude ratio is
