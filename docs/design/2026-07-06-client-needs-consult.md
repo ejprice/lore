@@ -576,3 +576,47 @@ clamp + teaching classifier), #69 (recall-path twin: claim refuted by measuremen
 fixed forward via shared query_text mechanism), plus the fake-fidelity and
 ambiguous-widen audit catches. Four cold audits, ~21 concerns, five green-at-gate
 defects caught — every one in the natural-language surface class P8d predicted.
+
+---
+
+## Closure test (2026-07-07, three-client, image 5a3c0fb88c14, ~70 live calls)
+
+Method: Sonnet-5 and Opus adversarial testers re-ran the original informant probes
+verbatim then hunted new instances of each class; Fable probed independently
+(disclosure: Fable's earlier commit-log skim primed two items; its verdicts were
+render-only thereafter). Reports: tester legs summarized here; Fable's probes inline
+in the session record.
+
+**Scorecard — the original classes:**
+- S1 structured-field discipline: **CLOSED** (impact.covering_tests capped with
+  counted elision, both surfaces agree; union caveat names real collidees).
+  One un-swept instance found: lore_map's entries[].symbols dumps the full
+  per-module list while formatted elides (**#77** — operator ruling needed:
+  exempt-by-design or cap like impact).
+- S2 identity coherence: **CLOSED** — map advertises class-qualified resolvable
+  names + a resolution-grammar affordance line; every advertised form resolved;
+  **Opus rules the authority→witness event REVERSED: lore is an authority again.**
+  New edge: the secondary wrong-class teach is non-deterministic (bounded suffix
+  scan misses its own docstring example — **#78**; primary fix unaffected).
+- S3 memory crowding: **CLOSED** (labeled; exercised by both testers).
+- S4 weak-match honesty: **CLOSED for the original class** (per-hit weak flags +
+  aggregate absence verdict + measured 0.58 floor discriminating cleanly on both
+  sides) — but the NEW machinery carries two fresh defects: **#74** (false-absence
+  verdict on an answered query — the measured floor appears rotted against the
+  slate's own corpus changes; same calibration-rot class as the token constant) and
+  **#76** (the verdict's best-similarity number and its nearest-indexed name can
+  come from DIFFERENT candidates — deterministic, root-caused, three fix options
+  filed). Also **#75**: default-budget searches can serve ZERO hits when
+  method-granularity chunks oversize every entry (no floor-of-one serving).
+- S5 resolution disclosure: **CLOSED** (candidate_count/disambiguated_by on every
+  resolution; residual: no live multi-candidate collision existed to verify the
+  disambiguated_by population — verification gap, not a defect).
+- S6 limit honesty: **CLOSED** (raise-to clamps and states what the cap buys).
+- S7: **CLOSED** (worst-shown score; impact-authority + parallel-calls lines).
+- Three-way convergence law: **INTACT** (the impact caveat sentence survives;
+  counted elisions; miss decision-trees).
+
+**Net:** no original class reopened; all five new findings (#74–#78) are edges of
+the newly built machinery or residual sweep gaps, concentrated in the S4 verdict
+neighborhood — found precisely because the classes are now named and hunted. The
+authority-restoration goal of the cycle is met per the client whose trust broke.
