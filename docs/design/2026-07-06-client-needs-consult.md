@@ -620,3 +620,38 @@ in the session record.
 the newly built machinery or residual sweep gaps, concentrated in the S4 verdict
 neighborhood — found precisely because the classes are now named and hunted. The
 authority-restoration goal of the cycle is met per the client whose trust broke.
+
+---
+
+## Blind retest (2026-07-07, three-client, post-remediation — no diffs read, renders only)
+
+**All five findings FIXED, verified independently by all three clients; all original
+classes S1–S7 INTACT; Opus's authority ruling: restored** ("every trust-bearing render
+is internally consistent and honest except two newly-filed accounting edges — honesty
+gaps, not authority breaks").
+
+- #74: the answered query now SERVES its answer (sim 0.60, no absence verdict); the
+  floor was re-measured (0.58 → 0.51) and lore_index gained a floor-status surface.
+- #75: floor-of-one serving — the top hit renders as an honest `[STUB] … shown, not
+  elided` whose Key resolves the full source; holds at every probed budget. The served
+  source shows the mechanism also guards two further degenerates the fix cycle
+  self-found (#79 drain-to-zero, #81 stale top-elided).
+- #76: the absence verdict's best-similarity number and nearest-indexed name now
+  co-refer to one candidate.
+- #77 (ruled): the CAPPED world is live — structured `symbols` matches the formatted
+  elision with a counted `symbols_elided`; `full_symbols=true` lifts it.
+- #78: wrong-class teach deterministic; production-tier preference confirmed; the
+  taught journey resolves when followed literally.
+
+**Round-2 residues (severity strictly decreasing vs round 1; zero trust-class):**
+#84 + #85 (same class, independently found by two clients: the PLAIN-bare miss arm
+lacks the suffix knowledge the dotted-wrong arm now has — an under-specified query
+gets less help than an over-specified-wrong one, and the two miss texts can read as
+contradicting) · #86 (confirmed off-by-one in the at-cap visibility clause: "5 of 13"
+while 4 serve) · #87 (lore_index's cosine_floor reports measured while its own file
+counts disagree, 214 vs 207 — the #74 re-measure-trigger surface needs its accounting
+verified at source).
+
+**Convergence across rounds:** round 1 found 5 (2 trust-class) → round 2 found 4
+(0 trust-class, all accounting/affordance edges). The closure loop is converging;
+the class-informed hunt keeps finding smaller things.
