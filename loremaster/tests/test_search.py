@@ -1873,8 +1873,107 @@ class TestCosineAbsenceVerdictLit:
         notices = [r for r in results if r.kind == _NOTICE_KIND]
         notice = next((n for n in notices if _ABSENCE_VERDICT_MARKER in n.formatted), None)
         assert notice is not None, f"expected an absence verdict; got notices={notices!r}"
-        # "nearest indexed" names the fused-order TOP hit's identity.
+        # weak_a is BOTH the fused-order top hit AND the max-cosine pair here
+        # (0.49 > 0.30) -- the coincidental case where the two identities
+        # happen to agree. See the finding #76 tests below in this class for
+        # the case where they diverge.
         assert "pkg.a.weak_fn" in notice.formatted
+
+    async def test_nearest_indexed_names_the_max_cosine_pair_not_the_top_fused_pair(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Finding #76 (live repro, tester-sonnet): the fused-order TOP hit is
+        NOT always the max-cosine candidate. Pre-fix, ``nearest`` was
+        hardcoded to ``code_pairs[0]`` (the top-fused hit) while
+        ``best_cosine`` was independently ``max(cosines)`` over every
+        candidate -- so the rendered sentence bound a similarity number to
+        the WRONG identity whenever the two diverged. Here the true
+        max-cosine candidate sits at fused positions 2 and 3 (behind two
+        weaker-cosine hits ranked ahead of it by RRF) -- the exact shape of
+        the finding's live repro, where the max-cosine candidate was very
+        likely one of the 12 hits budget-elided server-side and never shown.
+        This test lives at the pipeline layer (pre-budget, per search.py's
+        own step-9 placement) -- server-side budget elision of the named
+        candidate is a separate, already-covered concern (finding #71
+        machinery, test_mcp_server.py's TestSearchParamsCutBudgetAndTeachingMiss,
+        decoupled from this function by the stable marker constant).
+        """
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        top_fused = _score_candidate(
+            "k1", 0.04, vector_cosine=self._FLOOR - 0.30, file_path="pkg/a.py",
+            identity="pkg.a.top_fused_fn", ident_text="top_fused_fn",
+        )
+        second = _score_candidate(
+            "k2", 0.03, vector_cosine=self._FLOOR - 0.20, file_path="pkg/b.py",
+            identity="pkg.b.second_fn", ident_text="second_fn",
+        )
+        max_cosine_but_low_fused_rank = _score_candidate(
+            "k3", 0.02, vector_cosine=self._FLOOR - 0.01, file_path="pkg/c.py",
+            identity="pkg.c.max_cosine_fn", ident_text="max_cosine_fn",
+        )
+        fourth = _score_candidate(
+            "k4", 0.01, vector_cosine=self._FLOOR - 0.10, file_path="pkg/d.py",
+            identity="pkg.d.fourth_fn", ident_text="fourth_fn",
+        )
+        pipeline = await self._pipeline(
+            tmp_path, embedder,
+            [top_fused, second, max_cosine_but_low_fused_rank, fourth],
+        )
+
+        results = await pipeline.search_code("something unrelated", k=5)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert len(hits) == 4
+        # Composition: every individual hit still carries its OWN per-hit
+        # weak-match flag (item 12b), independent of the aggregate verdict.
+        assert all(_WEAK_MATCH_MARKER in hit.formatted for hit in hits)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        notice = next((n for n in notices if _ABSENCE_VERDICT_MARKER in n.formatted), None)
+        assert notice is not None, f"expected an absence verdict; got notices={notices!r}"
+        # The rendered similarity number and the rendered identity must
+        # describe the SAME candidate -- the one that actually holds the
+        # maximum cosine (0.49, "pkg.c.max_cosine_fn") -- never the
+        # fused-order top hit's identity ("pkg.a.top_fused_fn", cosine 0.20).
+        assert "0.49" in notice.formatted
+        assert "pkg.c.max_cosine_fn" in notice.formatted
+        assert "pkg.a.top_fused_fn" not in notice.formatted, (
+            "the notice must not name the fused-order top hit's identity "
+            "when a different candidate actually produced best_cosine"
+        )
+
+    async def test_coincidental_match_notice_is_byte_identical_to_the_template(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the fused-order top hit IS the max-cosine pair (no divergence
+        to resolve), the rendered notice must be byte-for-byte what the
+        module's own template produces for that single candidate -- proving
+        the finding #76 fix changes WHICH candidate is selected, never the
+        render's shape, in the case that was already correct pre-fix.
+        """
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        top_fused_and_max_cosine = _score_candidate(
+            "k1", 0.04, vector_cosine=self._FLOOR - 0.01, file_path="pkg/a.py",
+            identity="pkg.a.weak_fn", ident_text="weak_fn",
+        )
+        weaker = _score_candidate(
+            "k2", 0.03, vector_cosine=self._FLOOR - 0.20, file_path="pkg/b.py",
+            identity="pkg.b.other_fn", ident_text="other_fn",
+        )
+        pipeline = await self._pipeline(
+            tmp_path, embedder, [top_fused_and_max_cosine, weaker]
+        )
+
+        results = await pipeline.search_code("something unrelated", k=5)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        notice = next((n for n in notices if _ABSENCE_VERDICT_MARKER in n.formatted), None)
+        assert notice is not None
+
+        expected = search_module._COSINE_ABSENCE_VERDICT_TEMPLATE.format(
+            best_cosine=self._FLOOR - 0.01, floor=self._FLOOR, nearest="pkg.a.weak_fn"
+        )
+        assert notice.formatted == expected
 
     async def test_mixed_weak_and_confident_hits_no_absence_verdict(
         self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch

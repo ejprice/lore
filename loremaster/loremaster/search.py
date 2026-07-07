@@ -244,8 +244,12 @@ _COSINE_WEAK_MATCH_WARNING_TEMPLATE = (
 # counted-elision notice: converts "should I keep looking?" into a zero-call
 # decision. Fires iff the max cosine among SHOWN code hits is below the floor
 # AND no shown hit carries a verbatim-identifier anchor (D3) — "nearest
-# indexed" names the fused-order top hit's identity, turning "no answer" into
-# a redirect (Opus's addition, §7.3).
+# indexed" names the identity of WHICHEVER candidate actually produced that
+# max cosine (finding #76 fix, 2026-07-07: previously hardcoded to the
+# fused-order top hit's identity, which silently diverges from the candidate
+# ``best_cosine`` describes whenever a cosine-strong hit sits below a
+# cosine-weak one), turning "no answer" into a redirect (Opus's addition,
+# §7.3).
 # Finding #71 budget-protection marker: the notice's own fixed, never-
 # varying lead-in — named as an explicit, EXPORTED constant so a budget-
 # reservation check elsewhere (server.py's ``_enforce_search_budget``) can
@@ -518,27 +522,36 @@ def _cosine_absence_verdict(
     top-fused-order hit's — a cosine-strong hit can sit below a cosine-weak
     one) is strictly below the floor, AND no shown hit carries a
     verbatim-identifier anchor (D3's exact-lookup protection). "Nearest
-    indexed" names the fused-order TOP hit's identity.
+    indexed" names the identity of whichever candidate actually produced
+    ``best_cosine`` — NOT necessarily the fused-order top hit (finding #76:
+    hardcoding the top hit's identity here let the rendered similarity number
+    and the rendered identity describe two different candidates, reading as
+    one false claim about whichever of the two was actually shown).
     """
     if _COSINE_WEAK_MATCH_FLOOR is None:
         return None
     code_pairs = [(hit, candidate) for hit, candidate in partitioned_pairs if hit.kind == HIT_KIND]
     if not code_pairs:
         return None
-    cosines = [
-        candidate.vector_cosine for _hit, candidate in code_pairs
+    # (cosine, candidate) pairs, restricted to candidates that carry a cosine
+    # at all -- the comprehension's own `if` clause narrows `vector_cosine`
+    # from `float | None` to `float` for the yielded tuple (same idiom the
+    # pre-fix code used for its `cosines` list).
+    cosine_candidates = [
+        (candidate.vector_cosine, candidate)
+        for _hit, candidate in code_pairs
         if candidate.vector_cosine is not None
     ]
-    if not cosines:
+    if not cosine_candidates:
         return None
-    best_cosine = max(cosines)
+    best_cosine, best_candidate = max(cosine_candidates, key=lambda pair: pair[0])
     has_anchor = any(
         _has_verbatim_identifier_anchor(query, str(candidate.payload.get(_PAYLOAD_IDENT_TEXT, "")))
         for _hit, candidate in code_pairs
     )
     if not _cosine_absence_predicate(best_cosine, _COSINE_WEAK_MATCH_FLOOR, has_anchor):
         return None
-    nearest = _sanitise_line(str(code_pairs[0][1].payload.get(_PAYLOAD_IDENTITY, "")))
+    nearest = _sanitise_line(str(best_candidate.payload.get(_PAYLOAD_IDENTITY, "")))
     text = _COSINE_ABSENCE_VERDICT_TEMPLATE.format(
         best_cosine=best_cosine, floor=_COSINE_WEAK_MATCH_FLOOR, nearest=nearest
     )
