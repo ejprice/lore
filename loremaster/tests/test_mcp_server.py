@@ -5405,6 +5405,256 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         finally:
             await ctx.aclose()
 
+    # ----------------------------------------------------------------- #
+    # Finding #79: the floor-of-one guarantee (finding #75) only checked
+    # "did the greedy walk keep nothing" ONCE, right after that walk. It
+    # never re-checked whether the LATER pop-until-it-fits loop drains an
+    # originally non-empty ``kept`` all the way back to zero -- plausible
+    # when the elision notice's own rendered overhead (a long top-elided
+    # identity + the raise-hint) forces even the single surviving hit to
+    # be popped. Ruling: extend the floor to that drain path too -- when
+    # the pop loop is about to pop the LAST remaining ``kept`` entry, it
+    # is downgraded to its #75 stub form and held out of the pop instead,
+    # exactly mirroring the original floor's own decisions (SHOWN not
+    # elided, served unconditionally even when the stub alone still
+    # busts budget, never fires for a non-hit survivor).
+    # ----------------------------------------------------------------- #
+
+    async def test_pop_loop_drain_stub_serves_the_last_survivor_instead_of_emptying_kept(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #79's core repro: a small hit survives the initial greedy
+        walk alone (it fits, the other hit is individually oversized and
+        elided) -- so the pre-existing #75 floor does NOT fire (``kept`` is
+        non-empty right after the walk). But the elision notice naming the
+        oversized hit's long identity is itself large enough that
+        ``[survivor, notice]`` busts budget -- pre-#79, the pop loop would
+        drop the survivor too, leaving ``[notice]`` only: the exact #75
+        degenerate (honest, zero real content) reached by a different path.
+        Post-#79, the survivor is downgraded to a stub and served instead.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            survivor = SearchResult(
+                formatted="[SOURCE:pkg/a.py:1-5@abc111]\nKey: keep-only\n" + "a" * 40,
+                chunk_key="keep-only",
+                detail_level="source",
+                stale=False,
+                score=0.9,
+                kind="hit",
+            )
+            # A deliberately long chunk_key -- {identity!r} in the elision
+            # notice renders it in full, which is what pushes
+            # ``[survivor, notice]`` over budget and forces the drain.
+            oversized_key = "oversized-hit-" + "z" * 280
+            oversized = SearchResult(
+                formatted=f"[SOURCE:pkg/big.py:1]\nKey: {oversized_key}\n" + "x" * 4000,
+                chunk_key=oversized_key,
+                detail_level="source",
+                stale=False,
+                score=0.2,
+                kind="hit",
+            )
+            results = [survivor, oversized]
+            kept = ctx._enforce_search_budget(list(results), 200, None)  # noqa: SLF001
+
+            assert len(kept) == 2, f"expected exactly [stub, elision notice]; got {kept!r}"
+            stub, notice = kept
+            assert stub.kind == "hit" and stub.chunk_key == "keep-only", (
+                f"finding #79: the drained survivor must still be SERVED, "
+                f"downgraded to a stub, rather than dropped entirely; got "
+                f"{kept!r}"
+            )
+            assert _SEARCH_STUB_NOTICE in stub.formatted
+            assert notice.kind == "notice" and "elided" in notice.formatted
+            assert "+1 entries elided" in notice.formatted, (
+                f"only the genuinely-oversized hit is elided -- the drained "
+                f"survivor is SHOWN, not elided, so the count must not "
+                f"double-count it; got {notice.formatted!r}"
+            )
+            assert oversized_key in notice.formatted, (
+                f"expected the oversized hit named as top elided; got "
+                f"{notice.formatted!r}"
+            )
+            assert "keep-only" not in notice.formatted, (
+                f"the drained-then-stubbed survivor must never be named as "
+                f"elided in the notice; got {notice.formatted!r}"
+            )
+            assert "worst shown: score=0.900" in notice.formatted, (
+                f"the stub is the worst (and only) SHOWN hit -- expected its "
+                f"score reported; got {notice.formatted!r}"
+            )
+        finally:
+            await ctx.aclose()
+
+    async def test_pop_loop_drain_stub_composes_with_the_absence_verdict_reserved_tail(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #79 + #71 interaction: the reserved absence-verdict tail
+        must survive completely untouched by the drain -- the verdict was
+        never a candidate for the pop loop before this fix, and it must not
+        become one now that a drained survivor is also protected.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            survivor = SearchResult(
+                formatted="[SOURCE:pkg/a.py:1-5@abc111]\nKey: keep-only\n" + "a" * 40,
+                chunk_key="keep-only",
+                detail_level="source",
+                stale=False,
+                score=0.9,
+                kind="hit",
+            )
+            oversized_key = "oversized-hit-" + "z" * 280
+            oversized = SearchResult(
+                formatted=f"[SOURCE:pkg/big.py:1]\nKey: {oversized_key}\n" + "x" * 4000,
+                chunk_key=oversized_key,
+                detail_level="source",
+                stale=False,
+                score=0.2,
+                kind="hit",
+            )
+            verdict = SearchResult(
+                formatted=(
+                    "no confident match: best hit similarity 0.31 is below the "
+                    "range real answers measure on this corpus (>=0.58) and no "
+                    "hit matches your identifiers verbatim -- likely no direct "
+                    "answer indexed; nearest indexed: 'pkg.a.weak_fn' -- broaden "
+                    "the query or treat these hits as adjacent-topic leads"
+                ),
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.0,
+                kind="notice",
+            )
+            results = [survivor, oversized, verdict]
+            kept = ctx._enforce_search_budget(list(results), 300, None)  # noqa: SLF001
+
+            assert len(kept) == 3, f"expected [stub, verdict, elision notice]; got {kept!r}"
+            hit_entries = [r for r in kept if r.kind == "hit"]
+            assert len(hit_entries) == 1 and hit_entries[0].chunk_key == "keep-only", (
+                f"finding #79: the drained survivor must still be served "
+                f"alongside the verdict; got {kept!r}"
+            )
+            assert _SEARCH_STUB_NOTICE in hit_entries[0].formatted
+            verdict_notices = [r for r in kept if "no confident match" in r.formatted]
+            assert len(verdict_notices) == 1, (
+                f"the #71 reserved absence verdict must survive intact, "
+                f"never duplicated or dropped by the drain; got {kept!r}"
+            )
+            elision_notices = [
+                r for r in kept if r.kind == "notice" and "elided" in r.formatted
+            ]
+            assert len(elision_notices) == 1
+            assert "+1 entries elided" in elision_notices[0].formatted
+        finally:
+            await ctx.aclose()
+
+    async def test_pop_loop_drain_stub_survives_even_when_the_stub_itself_busts_budget(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #79 hostile fixture: mirrors #75's own unconditional-serve
+        pin (``test_floor_of_one_stub_survives_even_when_the_stub_itself_
+        busts_budget``). Even at a budget too tiny to fit the drained
+        survivor's OWN stub form (it carries no fence, so the stub can't
+        shrink below the original text + the marker line), the stub is
+        still served rather than falling back to notice-only.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            survivor = SearchResult(
+                formatted="[SOURCE:pkg/a.py:1-5@abc111]\nKey: keep-only\n" + "a" * 40,
+                chunk_key="keep-only",
+                detail_level="source",
+                stale=False,
+                score=0.9,
+                kind="hit",
+            )
+            oversized_key = "oversized-hit-" + "z" * 280
+            oversized = SearchResult(
+                formatted=f"[SOURCE:pkg/big.py:1]\nKey: {oversized_key}\n" + "x" * 4000,
+                chunk_key=oversized_key,
+                detail_level="source",
+                stale=False,
+                score=0.2,
+                kind="hit",
+            )
+            results = [survivor, oversized]
+            # 50: over the survivor's OWN rendered cost (fits the initial
+            # per-entry walk alone) but under its stub form's cost (the
+            # marker line pushes it over) -- the stub must still be served.
+            kept = ctx._enforce_search_budget(list(results), 50, None)  # noqa: SLF001
+
+            assert len(kept) == 2, f"expected [stub, elision notice] even over budget; got {kept!r}"
+            assert kept[0].kind == "hit" and kept[0].chunk_key == "keep-only", (
+                "the drain floor must serve the stub even though the stub "
+                "itself busts budget=50 -- never fall back to notice-only"
+            )
+            assert _SEARCH_STUB_NOTICE in kept[0].formatted
+            assert kept[1].kind == "notice" and "+1 entries elided" in kept[1].formatted
+        finally:
+            await ctx.aclose()
+
+    async def test_pop_loop_drain_stub_never_fires_for_a_non_hit_last_survivor(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #79 scope guard, mirrors #75's own
+        ``test_floor_of_one_never_fires_for_a_non_hit_first_entry``: a bare
+        memory entry that survives the initial walk alone but is then
+        squeezed out by the pop loop's overhead must be dropped as before
+        -- never stubbed. Drain-stub is specifically the #75 floor extended
+        to a second trigger point, not a general "always show something"
+        rule for every result kind.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            memory_entry = SearchResult(
+                formatted="[MEMORY] a short recalled note " + "m" * 10,
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.4,
+                kind="memory",
+            )
+            oversized_key = "oversized-hit-" + "z" * 280
+            oversized = SearchResult(
+                formatted=f"[SOURCE:pkg/big.py:1]\nKey: {oversized_key}\n" + "x" * 4000,
+                chunk_key=oversized_key,
+                detail_level="source",
+                stale=False,
+                score=0.2,
+                kind="hit",
+            )
+            results = [memory_entry, oversized]
+            kept = ctx._enforce_search_budget(list(results), 60, None)  # noqa: SLF001
+
+            assert not any(r.kind in {"hit", "memory"} for r in kept), (
+                f"the drained memory entry must never be stubbed -- "
+                f"drain-stub only ever protects a kind=='hit' survivor; "
+                f"got {kept!r}"
+            )
+            notice = next(r for r in kept if r.kind == "notice" and "elided" in r.formatted)
+            assert "+2 entries elided" in notice.formatted, (
+                f"expected both the oversized hit (initial walk) and the "
+                f"drained memory entry (pop loop) counted as genuinely "
+                f"elided; got {notice.formatted!r}"
+            )
+        finally:
+            await ctx.aclose()
+
     async def test_caller_model_with_no_cached_ratio_renders_a_notice(
         self, tmp_path: Path
     ) -> None:

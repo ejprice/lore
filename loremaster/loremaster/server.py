@@ -1951,6 +1951,17 @@ class AppContext:
         if floor_early_return_kept is not None:
             return floor_early_return_kept
 
+        # Finding #79: the pop-until-it-fits loop below can drain a
+        # non-empty `kept` all the way back to zero -- the SAME #75
+        # degenerate (an honest elision notice with zero real content)
+        # reached via a different path (`floor_stub` above only guards the
+        # INITIAL walk keeping nothing; this guards the loop emptying it
+        # afterward). Set by `_drain_stub_if_last_survivor` the moment the
+        # loop is about to pop the last remaining `kept` entry; declared
+        # here (before `_worst_shown_score`/`_notice` below ever read it)
+        # so both close over a real, already-bound name.
+        drain_stub: SearchResult | None = None
+
         # T4: the top elided entry (the highest-priority one squeezed out)
         # and the exact token count of the full, un-elided join — the
         # minimum budget that would have elided nothing — are fixed facts
@@ -1983,10 +1994,21 @@ class AppContext:
             its score joins the same pool -- omitting it would report a
             fabricated "nothing shown" clause when the stub is, in fact,
             the worst (and only) shown hit.
+
+            Finding #79: ``drain_stub`` (when set) is the SAME situation
+            reached via the pop loop instead of the initial walk -- also
+            held out of ``kept``, also a genuinely SHOWN hit, so its score
+            joins the same pool. ``floor_stub`` and ``drain_stub`` can
+            never both be set (the floor only fires when the initial walk
+            kept nothing, in which case the pop loop below never runs at
+            all -- ``kept`` is already empty), so there is no double-count
+            risk between them.
             """
             hit_scores = [result.score for result in kept if result.kind == "hit"]
             if floor_stub is not None:
                 hit_scores.append(floor_stub.score)
+            if drain_stub is not None:
+                hit_scores.append(drain_stub.score)
             return min(hit_scores) if hit_scores else None
 
         def _notice(elided_count: int) -> str:
@@ -2002,33 +2024,81 @@ class AppContext:
 
         notice_text = _notice(elided)
         while kept and _count("\n".join([*kept_texts, *reserved_texts, notice_text])) > budget:
+            drain_stub = self._drain_stub_if_last_survivor(kept, kept_texts)
+            if drain_stub is not None:
+                # Finding #79: the last survivor is downgraded and held out
+                # of `kept`/`kept_texts` (see `_drain_stub_if_last_survivor`)
+                # instead of being popped -- SHOWN, not elided, so `elided`
+                # is deliberately NOT incremented here. Nothing is left in
+                # `kept` to pop further either way.
+                notice_text = _notice(elided)
+                break
             kept.pop()
             kept_texts.pop()
             elided += 1
             notice_text = _notice(elided)
 
-        # F1 (REPORT-audit-tweaks.md): both the greedy walk above and the
-        # pop-until-it-fits loop only ever DROP entries, so the memories:
-        # header — always immediately followed by >=1 memory entry in
-        # `results` (``_inject_memories`` never emits the header alone) —
-        # can only dangle by ending up as the LAST surviving entry in
-        # `kept` (every memory entry that would follow it either never made
-        # the cut or was popped first, since popping removes from the tail).
-        # Restore the served-surface invariant "header kept ⟹ >=1 memory
-        # entry kept" by dropping it too when that happens.
+        return self._finalize_budget_served_surface(
+            kept, kept_texts, elided, floor_stub, drain_stub, absence_verdict, notice_text, _notice
+        )
+
+    @staticmethod
+    def _finalize_budget_served_surface(
+        kept: list[SearchResult],
+        kept_texts: list[str],
+        elided: int,
+        floor_stub: SearchResult | None,
+        drain_stub: SearchResult | None,
+        absence_verdict: SearchResult | None,
+        notice_text: str,
+        notice_for: Callable[[int], str],
+    ) -> list[SearchResult]:
+        """Assemble the final served surface after the pop-until-it-fits loop.
+
+        Extracted from :meth:`_enforce_search_budget` (unrelated to findings
+        #75/#79 themselves, but pushed the method over ruff's
+        PLR0912/PLR0915 thresholds) — behaviour-preserving, ``notice_for``
+        is that method's own ``_notice`` closure, passed through so this
+        stays a single source of truth for notice re-rendering rather than
+        a second copy.
+
+        F1 (REPORT-audit-tweaks.md): both the greedy walk and the
+        pop-until-it-fits loop only ever DROP entries, so the memories:
+        header — always immediately followed by >=1 memory entry in the
+        original results (``_inject_memories`` never emits the header
+        alone) — can only dangle by ending up as the LAST surviving entry
+        in ``kept`` (every memory entry that would follow it either never
+        made the cut or was popped first, since popping removes from the
+        tail). Restore the served-surface invariant "header kept ⟹ >=1
+        memory entry kept" by dropping it too when that happens.
+
+        Finding #75: the floor-of-one stub (if any) leads the served
+        surface -- it IS the top fused-order entry, held out of
+        ``kept``/``kept_texts`` only to protect it from the pop loop, never
+        from the served order.
+
+        Finding #79: the drain-loop stub (if any) is likewise re-inserted
+        at the front -- it was ``kept[0]`` (the highest-priority survivor
+        still present) at the moment the loop drained it, and ``kept`` is
+        empty again by the time this runs (mutually exclusive with
+        ``floor_stub``: see :meth:`_enforce_search_budget`'s
+        ``_worst_shown_score`` docstring).
+
+        Finding #71: the reserved verdict (if any) joins the mandatory tail
+        here — never through ``kept``/``kept_texts`` above, so it can never
+        be a target of the pop loop's ``.pop()`` calls regardless of where
+        it would have sat in the original results order.
+        """
         if kept and kept[-1].formatted == _MEMORY_SECTION_HEADER:
             kept.pop()
             kept_texts.pop()
             elided += 1
-            notice_text = _notice(elided)
+            notice_text = notice_for(elided)
 
-        # Finding #71: the reserved verdict (if any) joins the mandatory
-        # tail here — never through `kept`/`kept_texts` above, so it can
-        # never be a target of the `.pop()` calls in the loop above
-        # regardless of where it would have sat in the original `results`
-        # order.
         if floor_stub is not None:
             kept.insert(0, floor_stub)
+        if drain_stub is not None:
+            kept.insert(0, drain_stub)
         if absence_verdict is not None:
             kept.append(absence_verdict)
         kept.append(
@@ -2113,6 +2183,41 @@ class AppContext:
         if absence_verdict is not None:
             early_return_kept.append(absence_verdict)
         return floor_stub, adjusted_elided, early_return_kept
+
+    def _drain_stub_if_last_survivor(
+        self, kept: list[SearchResult], kept_texts: list[str]
+    ) -> SearchResult | None:
+        """Finding #79: the pop-until-it-fits loop's own drain-to-zero guard.
+
+        Mirrors :meth:`_apply_search_budget_floor` one step later in the
+        SAME method: fires when the pop loop in :meth:`_enforce_search_budget`
+        is about to pop ``kept``'s LAST remaining entry -- draining it to
+        empty and reproducing the #75 degenerate (an honest elision notice
+        with zero real content) via the pop loop instead of the initial
+        walk. Downgrades that entry to its stub form
+        (:meth:`_stub_search_result`) and pops it OUT of ``kept``/
+        ``kept_texts`` itself (mutating both in place) so the caller's own
+        ``kept.pop()`` never runs against it -- the caller re-inserts the
+        returned stub afterward, SHOWN, never counted in ``elided``.
+
+        Scope-matches the floor exactly: only a ``kind == "hit"`` last
+        survivor is stubbed. A bare memory/notice entry that happens to be
+        the sole survivor is left for the caller's normal pop (mirrors
+        :meth:`_apply_search_budget_floor`'s own non-hit scope guard) --
+        drain-stub is the #75 floor extended to a second trigger point, not
+        a general "always show something" rule for every result kind.
+
+        Returns ``None`` when the drain-stub does not apply (``kept`` has
+        more than one entry left, or its sole survivor isn't a hit) --
+        ``kept``/``kept_texts`` are left untouched and the caller proceeds
+        with its normal pop.
+        """
+        if len(kept) != 1 or kept[0].kind != "hit":
+            return None
+        drain_stub = self._stub_search_result(kept[0])
+        kept.pop()
+        kept_texts.pop()
+        return drain_stub
 
     @staticmethod
     def _stub_search_result(result: SearchResult) -> SearchResult:
