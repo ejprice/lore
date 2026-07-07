@@ -88,10 +88,11 @@ import pytest
 import pytest_asyncio
 from _surreal_fakes import FakeSurrealStore, fake_surreal_trio
 from _surreal_harness import PRODUCTION_DIM, SLUG, TIER_A, chunk_record, unit_vector
-from loremaster.index.records import Record, chunk_to_record, sha512_hex
+from loremaster.index.records import Record, chunk_to_record, point_id, sha512_hex
 from loremaster.store.surreal import SurrealConnectionError, SurrealStore
 from loremaster.symbols import (
     _SCROLL_LIMIT,
+    _SUFFIX_SCROLL_LIMIT,
     RESOLUTION_RULE_BARE_IDENTITY,
     RESOLUTION_RULE_MODULE_QUALIFIED,
     VERIFY_REBUILD_CAVEAT,
@@ -720,6 +721,10 @@ class BetaHandler:
         with pytest.raises(GetSymbolError) as exc_info:
             await wrong_class_tool.get_symbol("pkg.handlers.AlphaHandler.process")
         message = str(exc_info.value)
+        # "defined in" pins that a TEACH actually fired -- without it, the
+        # bare generic-miss message would ALSO satisfy a lone "pkg.handlers"
+        # substring check, since it echoes the queried name verbatim.
+        assert "defined in" in message
         assert "pkg.handlers" in message
 
     async def test_right_class_still_resolves_directly(
@@ -731,6 +736,235 @@ class BetaHandler:
         assert resolved.chunk_type == "method"
         assert "def process" in resolved.source
         assert "def helper" not in resolved.source
+
+
+# =========================================================================== #
+# Finding #78 (2026-07-07, tester-opus adversarial closure): the S2 hardening
+# above degrades non-deterministically on a REAL corpus. Two defects, closed
+# together: (1) the suffix scan's old 500-row bound let a production sibling
+# be crowded out of the fetch window entirely on a corpus with more than 500
+# stored method rows (this repo measures ~4,484) -- the exact live miss named
+# in ``_find_method_rows_by_suffix``'s own docstring,
+# ``LoreServer._enforce_search_budget`` never teaching its real owner
+# ``AppContext``; (2) even within the window, a coincidentally-same-named TEST
+# fixture could win or ride alongside a real production definition -- a teach
+# must never name a test module when a production definition exists.
+# =========================================================================== #
+class TestSuffixScrollLimitIsBoundedButComfortablyExceedsThisRepo:
+    """``_SUFFIX_SCROLL_LIMIT`` was raised at finding #78; pin the new value
+    directly so a future accidental down-tune is caught immediately."""
+
+    def test_suffix_scroll_limit_comfortably_exceeds_the_measured_corpus(self) -> None:
+        # Read receipt (2026-07-07): `grep -rE '^    (async )?def '
+        # loremaster lorescribe loresigil skills` measured ~4,484 top-level
+        # method-shaped definitions in this repo -- the bound must clear that
+        # with real headroom, and must still be a FIRM bound (never removed).
+        assert _SUFFIX_SCROLL_LIMIT >= 5_000
+        assert _SUFFIX_SCROLL_LIMIT < 1_000_000
+
+
+class TestIsTestPathHeuristic:
+    """Direct unit pins on ``SymbolResolver._is_test_path`` -- finding #78's
+    disclosed local duplicate of ``CodeGraph._is_test_path``."""
+
+    def test_tests_directory_segment_is_a_test_path(self) -> None:
+        assert SymbolResolver._is_test_path("pkg/tests/test_thing.py") is True
+
+    def test_test_prefixed_filename_is_a_test_path(self) -> None:
+        assert SymbolResolver._is_test_path("pkg/test_thing.py") is True
+
+    def test_test_suffixed_filename_is_a_test_path(self) -> None:
+        assert SymbolResolver._is_test_path("pkg/thing_test.py") is True
+
+    def test_production_file_is_not_a_test_path(self) -> None:
+        assert SymbolResolver._is_test_path("pkg/thing.py") is False
+
+
+class TestSuffixScanCoversTheFullCorpus:
+    """The exact live #78 repro at corpus scale: a production method's row
+    sorts BEYOND the pre-fix 500-row window (ascending store point id), and
+    the wrong-class guess must still teach its real owner.
+    """
+
+    # More than the PRE-FIX 500-row ``_SUFFIX_SCROLL_LIMIT`` bound, comfortably
+    # under the POST-FIX 10,000-row one -- this pins that the scan now reaches
+    # past the old ceiling, not that it has become unbounded.
+    _FILLER_COUNT = 600
+    _TARGET_IDENTITY = "AppContext._enforce_search_budget"
+    _TARGET_FILE_PATH = "pkg/server.py"
+    _TARGET_CHUNK_TYPE = "method"
+
+    @pytest_asyncio.fixture()
+    async def crowded_tool(self, store: SurrealStore) -> SymbolTool:
+        """A store holding the real ``AppContext._enforce_search_budget`` row
+        plus ``_FILLER_COUNT`` filler method rows -- ALL with a SMALLER store
+        point id -- so the target sorts strictly LAST in ascending point-id
+        order. This excludes the target from any scroll window smaller than
+        ``_FILLER_COUNT + 1`` (in particular, the pre-fix 500-row bound) while
+        staying comfortably inside the post-fix 10,000-row one --
+        deterministic BY CONSTRUCTION, not by chance: point ids are the
+        production ``uuid5`` derivation (pure, reproducible), and the fake
+        store's own ``scroll`` sorts on that identical key, mirroring the real
+        engine's ``ORDER BY id``.
+        """
+        target_point_id = point_id(
+            SLUG,
+            TIER_A,
+            self._TARGET_FILE_PATH,
+            self._TARGET_CHUNK_TYPE,
+            self._TARGET_IDENTITY,
+            0,
+        )
+        filler_pairs: list[tuple[Record, list[float]]] = []
+        candidate_index = 0
+        while len(filler_pairs) < self._FILLER_COUNT:
+            file_path = f"pkg/filler_{candidate_index}.py"
+            identity = f"Filler{candidate_index}.helper"
+            candidate_point_id = point_id(
+                SLUG, TIER_A, file_path, self._TARGET_CHUNK_TYPE, identity, 0
+            )
+            if candidate_point_id < target_point_id:
+                record = chunk_record(
+                    tier=TIER_A,
+                    file_path=file_path,
+                    identity=identity,
+                    chunk_type=self._TARGET_CHUNK_TYPE,
+                    source_text=f"def helper(self):\n    return {candidate_index}\n",
+                )
+                filler_pairs.append((record, unit_vector(0, PRODUCTION_DIM)))
+            candidate_index += 1
+            assert candidate_index < 100_000, (
+                "could not find enough filler point ids below the target's -- "
+                "point id derivation may have changed"
+            )
+        target_record = chunk_record(
+            tier=TIER_A,
+            file_path=self._TARGET_FILE_PATH,
+            identity=self._TARGET_IDENTITY,
+            chunk_type=self._TARGET_CHUNK_TYPE,
+            source_text="def _enforce_search_budget(self):\n    return True\n",
+        )
+        await store.upsert([*filler_pairs, (target_record, unit_vector(0, PRODUCTION_DIM))])
+        return SymbolTool(store=store)
+
+    async def test_target_sorts_last_by_construction(
+        self, store: SurrealStore, crowded_tool: SymbolTool
+    ) -> None:
+        # Fixture-sanity pin: the corpus really is bigger than the pre-fix
+        # 500-row bound, and the target really is the LAST row by point id.
+        rows = await store.scroll(
+            filters={"chunk_type": self._TARGET_CHUNK_TYPE}, limit=100_000
+        )
+        assert len(rows) == self._FILLER_COUNT + 1
+        assert rows[-1]["identity"] == self._TARGET_IDENTITY
+
+    async def test_wrong_class_guess_teaches_the_real_owner_beyond_the_old_window(
+        self, crowded_tool: SymbolTool
+    ) -> None:
+        # The docstring's own headline example, at real corpus scale: a wrong
+        # guess at ``LoreServer`` when the real owner is ``AppContext``.
+        with pytest.raises(GetSymbolError) as exc_info:
+            await crowded_tool.get_symbol("LoreServer._enforce_search_budget")
+        message = str(exc_info.value)
+        assert "pkg.server" in message
+
+    async def test_module_qualified_wrong_class_guess_also_teaches(
+        self, crowded_tool: SymbolTool
+    ) -> None:
+        with pytest.raises(GetSymbolError) as exc_info:
+            await crowded_tool.get_symbol("pkg.server.LoreServer._enforce_search_budget")
+        message = str(exc_info.value)
+        # "defined in" pins that a TEACH actually fired -- without it, the
+        # bare generic-miss message would ALSO satisfy a lone "pkg.server"
+        # substring check, since it echoes the queried name verbatim.
+        assert "defined in" in message
+        assert "pkg.server" in message
+
+
+class TestSuffixScanPrefersProductionOverATestFixture:
+    """A bare-tail suffix match can span BOTH a production row and a test
+    fixture that merely shares its method name -- the teach must name ONLY
+    the production module (lead ruling, finding #78: a teach must never name
+    a test module when a production definition exists)."""
+
+    _METHOD_NAME = "shared_helper"
+    _PROD_FILE_PATH = "pkg/real_owner.py"
+    _TEST_FILE_PATH = "tests/test_fixture_double.py"
+
+    @pytest_asyncio.fixture()
+    async def mixed_tool(self, store: SurrealStore) -> SymbolTool:
+        prod_record = chunk_record(
+            tier=TIER_A,
+            file_path=self._PROD_FILE_PATH,
+            identity=f"RealOwner.{self._METHOD_NAME}",
+            chunk_type="method",
+            source_text="def shared_helper(self):\n    return 1\n",
+        )
+        test_record = chunk_record(
+            tier=TIER_A,
+            file_path=self._TEST_FILE_PATH,
+            identity=f"FixtureDouble.{self._METHOD_NAME}",
+            chunk_type="method",
+            source_text="def shared_helper(self):\n    return 2\n",
+        )
+        await store.upsert(
+            [
+                (prod_record, unit_vector(0, PRODUCTION_DIM)),
+                (test_record, unit_vector(1, PRODUCTION_DIM)),
+            ]
+        )
+        return SymbolTool(store=store)
+
+    async def test_teach_names_only_the_production_module(
+        self, mixed_tool: SymbolTool
+    ) -> None:
+        with pytest.raises(GetSymbolError) as exc_info:
+            await mixed_tool.get_symbol(f"WrongGuess.{self._METHOD_NAME}")
+        message = str(exc_info.value)
+        assert "pkg.real_owner" in message
+        assert "tests.test_fixture_double" not in message
+
+
+class TestSuffixScanTeachesATestOnlyDefinitionHonestly:
+    """When the ONLY sibling sharing a bare method name is a test fixture (no
+    production definition exists anywhere), the teach still fires, honestly
+    naming the test module -- suppressing it would regress to the silent miss
+    this whole hardening exists to close (lead ruling, finding #78)."""
+
+    _METHOD_NAME = "test_only_helper"
+    _TEST_FILE_PATH = "tests/test_only_module.py"
+
+    @pytest_asyncio.fixture()
+    async def test_only_tool(self, store: SurrealStore) -> SymbolTool:
+        record = chunk_record(
+            tier=TIER_A,
+            file_path=self._TEST_FILE_PATH,
+            identity=f"FixtureOnly.{self._METHOD_NAME}",
+            chunk_type="method",
+            source_text="def test_only_helper(self):\n    return 1\n",
+        )
+        await store.upsert([(record, unit_vector(0, PRODUCTION_DIM))])
+        return SymbolTool(store=store)
+
+    async def test_test_only_definition_still_teaches_honestly(
+        self, test_only_tool: SymbolTool
+    ) -> None:
+        with pytest.raises(GetSymbolError) as exc_info:
+            await test_only_tool.get_symbol(f"WrongGuess.{self._METHOD_NAME}")
+        message = str(exc_info.value)
+        assert "tests.test_only_module" in message
+
+
+class TestSuffixScanGenuinelyAbsentMethodIsACleanMiss:
+    """A method name that exists NOWHERE in the corpus (production or test)
+    must remain a bare not-found -- the hardening only ever ADDS a teach, it
+    never fabricates one."""
+
+    async def test_absent_method_name_is_a_generic_miss(self, tool: SymbolTool) -> None:
+        with pytest.raises(GetSymbolError) as exc_info:
+            await tool.get_symbol("WrongClass.totally_absent_method_xyz")
+        message = str(exc_info.value)
+        assert "defined in" not in message
 
 
 # =========================================================================== #

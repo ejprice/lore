@@ -40,6 +40,7 @@ from __future__ import annotations
 import ast
 import textwrap
 from collections.abc import Mapping, Sequence
+from fnmatch import fnmatch
 from pathlib import PurePosixPath
 from typing import Any, Final, Literal, NamedTuple
 
@@ -79,12 +80,43 @@ _METHOD_CHUNK_TYPE = "method"
 # disclosed limitation, never a claim of exhaustiveness, and never a
 # correctness regression (an incomplete hint is strictly better than today's
 # unconditional silence).
-_SUFFIX_SCROLL_LIMIT = 500
+#
+# Finding #78 (2026-07-07): the prior bound of 500 was measured against this
+# repo's OWN corpus and found badly undersized. Read receipt: `grep -rE '^
+# (async )?def ' loremaster lorescribe loresigil skills` on 2026-07-07 counted
+# ~4,484 top-level method-shaped definitions (~975 production, ~3,509 test —
+# test code outnumbers production ~3.6:1 here), nearly 9x the old bound. A
+# window that small let the store's deterministic-but-arbitrary ascending-id
+# order crowd real production methods out of the fetch entirely (the live
+# miss: ``LoreServer._enforce_search_budget``, real owner ``AppContext``,
+# never surfaced) while letting whichever test row happened to land in-window
+# outrank an out-of-window production one. Raised to comfortably exceed the
+# measured corpus (~2x headroom over ~4,484) while remaining a firm, disclosed
+# bound — never a claim this scan is literally unbounded (this teach-only path
+# tolerates the extra cost: it fires solely on an already-missed resolution,
+# per the constant's pre-existing rationale above).
+_SUFFIX_SCROLL_LIMIT = 10_000
 
 # Finding #62: the minimum segment count for
 # ``_module_segments_from_file_path``'s repeated-leading-segment check
 # (``segments[0] == segments[1]`` needs at least 2 elements to compare).
 _MIN_SEGMENTS_TO_CHECK_FOR_A_REPEAT = 2
+
+# Finding #78: production-vs-test preference for the suffix scan below. A bare
+# method-tail suffix match spans the WHOLE corpus (any file, any class), so a
+# test fixture that merely happens to share a production method's bare name
+# could otherwise pollute -- or even outrank -- the real production teach.
+# These mirror ``loremaster.graph.CodeGraph``'s own ``_TESTS_DIR_NAME`` /
+# ``TEST_PATH_GLOBS`` constants EXACTLY (same dir name, same globs), kept as a
+# LOCAL, disclosed duplicate rather than an import: this module deliberately
+# carries no compile-time dependency on ``loremaster.graph`` (the
+# ``code_graph`` constructor argument on :class:`SymbolResolver` is typed
+# ``Any`` for precisely this reason). Duplicating four lines is the disclosed
+# cost of keeping that boundary -- the same trade-off
+# ``_module_segments_from_file_path`` already accepts for its own local
+# heuristic (finding #62).
+_TESTS_DIR_NAME = "tests"
+_TEST_PATH_GLOBS: tuple[str, ...] = ("test_*.py", "*_test.py")
 
 # Row keys read off the matched row (stamped by ``chunk_to_record``).
 _IDENTITY_KEY = "identity"
@@ -371,8 +403,25 @@ class SymbolResolver:
             )
         return matches
 
+    @staticmethod
+    def _is_test_path(file_path: str) -> bool:
+        """Whether ``file_path`` is a test file (glob or ``tests/`` dir).
+
+        Finding #78: mirrors ``loremaster.graph.CodeGraph._is_test_path``
+        exactly (same constants, same rule) — see :data:`_TESTS_DIR_NAME` /
+        :data:`_TEST_PATH_GLOBS` for why this is a local disclosed duplicate
+        rather than an import. Used by :meth:`_find_method_rows_by_suffix` to
+        prefer a production-owned method over a same-named test fixture when
+        a suffix match spans both.
+        """
+        path = PurePosixPath(file_path)
+        if _TESTS_DIR_NAME in path.parts:
+            return True
+        return any(fnmatch(path.name, glob) for glob in _TEST_PATH_GLOBS)
+
     async def _find_method_rows_by_suffix(self, tail: str) -> list[dict[str, Any]]:
-        """Every stored METHOD row whose identity ends with ``.{tail}`` (any class).
+        """Every stored METHOD row whose identity ends with ``.{tail}`` (any
+        class), production rows preferred over test rows.
 
         S2 fix (2026-07-06, REPORT-slate-scout-s2.md §3-4c): a stored method
         identity is ALWAYS ``ClassName.method`` (never a bare tail), so an
@@ -390,15 +439,27 @@ class SymbolResolver:
         No store-level suffix/``LIKE`` primitive exists (:meth:`~loremaster.
         store.surreal.SurrealStore.scroll` is exact-match-only by design), so
         this fetches a BOUNDED, unfiltered-by-identity window of method rows
-        (:data:`_SUFFIX_SCROLL_LIMIT`) and filters client-side — a degraded
-        teaching hint, not an exhaustive guarantee (see the constant's own
-        docstring for the disclosed bound).
+        (:data:`_SUFFIX_SCROLL_LIMIT`, raised at finding #78 to comfortably
+        exceed this repo's measured corpus) and filters client-side — a
+        degraded teaching hint, not an exhaustive guarantee (see the
+        constant's own docstring for the disclosed bound).
+
+        Finding #78: a bare tail can ALSO match a test fixture that merely
+        happens to share the production method's name — the suffix match has
+        no class context to disambiguate the two. When the fetched-and-
+        filtered rows include at least one PRODUCTION row
+        (:meth:`_is_test_path` false), every test row is dropped from the
+        result — a teach must never name a test module when a production
+        definition exists. When EVERY matching row is a test row, they are
+        returned as-is: teaching a test-only symbol, honestly labelled by its
+        own (test-shaped) module name, is strictly better than a silent miss.
 
         Args:
             tail: The bare (undotted) candidate method name to suffix-match.
 
         Returns:
             Every fetched method row whose identity ends with ``.{tail}``,
+            filtered to production-only rows when at least one matched;
             possibly empty; order is not significant.
         """
         rows = await self._store.scroll(
@@ -406,7 +467,11 @@ class SymbolResolver:
             limit=_SUFFIX_SCROLL_LIMIT,
         )
         suffix = f"{_DOTTED_SEP}{tail}"
-        return [row for row in rows if str(row.get(_IDENTITY_KEY, "")).endswith(suffix)]
+        matches = [row for row in rows if str(row.get(_IDENTITY_KEY, "")).endswith(suffix)]
+        production_matches = [
+            row for row in matches if not self._is_test_path(str(row.get(_FILE_PATH_KEY, "")))
+        ]
+        return production_matches if production_matches else matches
 
     async def find_siblings(self, qualified_name: str) -> list[dict[str, Any]]:
         """The sibling rows sharing ``qualified_name``'s bare tail, ANY module.
