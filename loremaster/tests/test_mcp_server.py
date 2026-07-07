@@ -90,6 +90,7 @@ from loremaster.map import _ELISION_FRAGMENT as _PRODUCTION_MAP_ELISION_FRAGMENT
 from loremaster.memory.backend import MemoryRef, derive_memory_id, derive_refs_stamp
 from loremaster.server import (
     _SEARCH_BUDGET_CAP,
+    _SEARCH_STUB_NOTICE,
     AppContext,
     LoreServer,
     ProbeGateError,
@@ -4369,6 +4370,12 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         # -- name the top elided hit (identity + score) and a concrete "raise
         # budget to ~N" hint, reusing the SAME calibrated counter the
         # enforcement path already runs (no new estimation machinery).
+        #
+        # Updated for finding #75: these hits carry no fence, so the
+        # floor-of-one stub can't shrink hit-0's rendered form -- but it is
+        # still SERVED (unstripped + marked), not elided. hit-1 is now the
+        # deterministic "top elided" entry (the highest-priority one that
+        # is genuinely NOT shown), never hit-0.
         from loremaster.search import SearchResult
 
         class _HugeHitsPipeline:
@@ -4396,12 +4403,22 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         notice = next(r for r in results if r.kind == "notice" and "elided" in r.formatted)
 
         assert f"budget={_PRODUCTION_MAP_BUDGET_FLOOR}" in notice.formatted
-        assert "hit-0" in notice.formatted, (
-            f"expected the top elided hit's identity named; got {notice.formatted!r}"
+        assert "hit-1" in notice.formatted, (
+            f"finding #75: hit-0 is now floor-served (shown, not elided) -- "
+            f"expected hit-1 named as the top elided entry; got "
+            f"{notice.formatted!r}"
+        )
+        assert "hit-0" not in notice.formatted, (
+            f"the floor-served stub must not be double-counted as elided "
+            f"in the notice; got {notice.formatted!r}"
         )
         assert "score=" in notice.formatted
         assert "raise budget to ~" in notice.formatted
         assert "all 3 entries" in notice.formatted
+        assert any(r.kind == "hit" and r.chunk_key == "hit-0" for r in results), (
+            f"finding #75: hit-0 must still be served, downgraded to a "
+            f"stub, rather than dropped entirely; got {results!r}"
+        )
 
     async def test_raise_to_hint_never_exceeds_the_enforced_cap(
         self, indexed_context: AppContext
@@ -4648,13 +4665,20 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         finally:
             await ctx.aclose()
 
-    async def test_elision_notice_omits_worst_shown_when_no_hit_survives(
+    async def test_elision_notice_reports_the_floor_stubs_score_as_worst_shown(
         self, indexed_context: AppContext
     ) -> None:
-        """Guard (S7): when NOTHING of kind "hit" survives the budget (every
-        hit is elided, or only notice/memory entries remain), the worst-shown
-        clause must be OMITTED entirely -- never a fabricated 0.0 standing in
-        for "no data".
+        """Guard (S7), updated for finding #75. Was
+        ``test_elision_notice_omits_worst_shown_when_no_hit_survives``: with
+        every hit oversized, pre-#75 NOTHING of kind "hit" ever survived the
+        budget, so the worst-shown clause was correctly omitted. Post-#75,
+        the floor-of-one rule always serves the top hit as a stub, so a hit
+        genuinely IS shown -- the worst-shown clause must now report ITS
+        score (never a fabricated 0.0, and never omitted when a hit really
+        did survive, even downgraded). The complementary guard --
+        genuinely nothing of kind "hit" ever considered, clause still
+        omitted -- is pinned directly by
+        ``test_floor_of_one_never_fires_for_a_non_hit_first_entry``.
         """
         from loremaster.search import SearchResult
 
@@ -4677,9 +4701,10 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
             "anything", budget=_PRODUCTION_MAP_BUDGET_FLOOR
         )
         notice = next(r for r in results if r.kind == "notice" and "elided" in r.formatted)
-        assert "worst shown" not in notice.formatted, (
-            f"expected no worst-shown clause when nothing of kind 'hit' survived; "
-            f"got {notice.formatted!r}"
+        assert "worst shown: score=0.900" in notice.formatted, (
+            f"finding #75: the floor-served stub (hit-0, score=0.9) is the "
+            f"worst (and only) SHOWN hit -- expected its score reported, "
+            f"not omitted; got {notice.formatted!r}"
         )
 
     async def test_tight_budget_never_leaves_a_dangling_memories_header(
@@ -4751,16 +4776,33 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         DEFAULT budget (1100) the oversized hit alone blows the budget, and
         the greedy prefix walk used to break before it ever reached the
         verdict -- the client got ZERO verdict on exactly the query shape
-        the verdict exists for. The verdict must now survive; the oversized
-        hit must still be honestly elided.
+        the verdict exists for. The verdict must now survive.
+
+        Updated for finding #75: pre-#75, "the oversized hit must still be
+        honestly elided" was the best available outcome -- the hit was
+        simply dropped. Post-#75, the SAME shape is exactly the floor-of-one
+        trigger (the greedy walk keeps nothing, walkable has one entry): the
+        hit is now served too, downgraded to a stub, alongside the verdict
+        -- and since it is the ONLY walkable entry, nothing is left to
+        elide, so no elision notice is owed at all.
         """
         from loremaster.search import SearchResult
 
         class _OversizedWeakHitPipeline:
             async def search_code(self, *args: Any, **kwargs: Any) -> list[SearchResult]:
+                fence = "```"
                 return [
                     SearchResult(
-                        formatted="[SOURCE:pkg/huge.py:1]\nKey: huge-weak-hit\n" + "x" * 6000,
+                        formatted="\n".join(
+                            [
+                                "[SOURCE:pkg/huge.py:1]",
+                                "Key: huge-weak-hit",
+                                "[S:lore:pkg/huge.py:1-900@abcdef]",
+                                fence,
+                                "x" * 6000,
+                                fence,
+                            ]
+                        ),
                         chunk_key="huge-weak-hit",
                         detail_level="source",
                         stale=False,
@@ -4792,13 +4834,21 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         assert verdict is not None, (
             f"the absence verdict must survive the default budget; got notices={notices!r}"
         )
-        assert not any(r.chunk_key == "huge-weak-hit" for r in results), (
-            "the oversized weak hit must still be elided -- protecting the "
-            "verdict must not also rescue the oversized hit"
+        hits = [r for r in results if r.kind == "hit"]
+        assert len(hits) == 1 and hits[0].chunk_key == "huge-weak-hit", (
+            f"finding #75: the oversized weak hit must now be SERVED, "
+            f"downgraded to a stub, rather than dropped; got {results!r}"
         )
+        assert "x" * 6000 not in hits[0].formatted, (
+            f"the stub must not carry the full oversized body; got {hits[0].formatted!r}"
+        )
+        assert _SEARCH_STUB_NOTICE in hits[0].formatted
         elision = next((n for n in notices if "elided" in n.formatted), None)
-        assert elision is not None, f"expected an elision notice too; got notices={notices!r}"
-        assert "+1 entries elided" in elision.formatted
+        assert elision is None, (
+            f"the ONLY walkable entry is now shown (as a stub) -- nothing "
+            f"is left to elide, so no elision notice is owed; got "
+            f"notices={notices!r}"
+        )
 
     async def test_verdict_absent_budget_enforcement_is_unaffected(
         self, tmp_path: Path
@@ -4929,11 +4979,17 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
     ) -> None:
         """Finding #71 fixture (d): a budget so tiny that even the verdict +
         elision notice together exceed it. Documented, honest behaviour:
-        both are still rendered (never an infinite loop, never a silent
-        drop of the verdict) -- mirroring the PRE-EXISTING convention that
-        the elision notice alone could already exceed a tiny budget once
-        every hit was popped (``kept`` empty short-circuits the
-        pop-until-it-fits ``while kept and ...`` loop).
+        the verdict is still rendered (never an infinite loop, never a
+        silent drop).
+
+        Updated for finding #75: pre-#75 the served surface was
+        ``[verdict, elision notice]`` -- honest, but zero real content,
+        exactly the degenerate case #75 fixes. ``hit_elided`` carries no
+        fence (nothing to strip), so the floor-of-one stub can't shrink it
+        -- but it is still served, UNCONDITIONALLY, even though the stub
+        itself still busts this budget=10. Since it is the ONLY walkable
+        entry, nothing else is left to elide once it's shown: the served
+        surface becomes ``[stub, verdict]``, no elision notice at all.
         """
         from loremaster.search import SearchResult
 
@@ -4965,10 +5021,15 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
             results = [hit_elided, verdict]
             kept = ctx._enforce_search_budget(list(results), 10, None)  # noqa: SLF001
 
-            assert len(kept) == 2, f"expected exactly [verdict, elision notice]; got {kept!r}"
-            assert "no confident match" in kept[0].formatted
-            assert kept[1].kind == "notice" and "elided" in kept[1].formatted
-            assert "+1 entries elided" in kept[1].formatted
+            assert len(kept) == 2, f"expected exactly [stub, verdict]; got {kept!r}"
+            assert kept[0].kind == "hit" and kept[0].chunk_key == "big-hit", (
+                f"finding #75: the floor must still serve the hit -- "
+                f"unstripped, since it carries no fence -- rather than "
+                f"dropping it, even though the stub itself busts this tiny "
+                f"budget; got {kept!r}"
+            )
+            assert _SEARCH_STUB_NOTICE in kept[0].formatted
+            assert "no confident match" in kept[1].formatted
         finally:
             await ctx.aclose()
 
@@ -4981,6 +5042,16 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         (at the cap) to compute how many entries the cap would surface. The
         verdict must still identify correctly and survive on BOTH the outer
         and the recursive call -- and the recursion must not loop.
+
+        Updated for finding #75: at the floor budget every oversized hit
+        blows the budget alone, so the PRE-#75 expectation was "only the
+        verdict + the elision notice survive" -- exactly the degenerate,
+        zero-content response #75 fixes. The floor-of-one rule now also
+        serves ``hit-0`` as a stub, so exactly one hit-kind entry survives
+        alongside the verdict; the cap-recursion math (3 of 5 entries
+        visible at the cap) is UNCHANGED, since that recursive call at
+        ``_SEARCH_BUDGET_CAP`` never itself degenerates (3 hits fit there
+        without the floor firing).
         """
         from loremaster.search import SearchResult
 
@@ -5020,14 +5091,314 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
             assert any("no confident match" in r.formatted for r in kept), (
                 f"the verdict must survive the capped recursive recompute; got {kept!r}"
             )
-            assert not any(r.kind == "hit" for r in kept), (
-                "none of the oversized hits fit at the floor budget -- only "
-                "the verdict + the elision notice should survive"
+            hit_kind_entries = [r for r in kept if r.kind == "hit"]
+            assert len(hit_kind_entries) == 1 and hit_kind_entries[0].chunk_key == "hit-0", (
+                f"finding #75: the floor-of-one rule must still serve "
+                f"'hit-0' as a stub even inside the #71 capped-recursion "
+                f"path; got hit-kind entries {hit_kind_entries!r}"
             )
             notice = next(r for r in kept if r.kind == "notice" and "elided" in r.formatted)
             assert f"{_SEARCH_BUDGET_CAP}" in notice.formatted
             assert "cannot show all 5 entries" in notice.formatted
             assert "3 of 5 entries" in notice.formatted
+        finally:
+            await ctx.aclose()
+
+    async def test_floor_of_one_serves_a_stub_when_every_hit_is_oversized(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #75: the closure-test probe's core repro. When the
+        greedy walk keeps literally NOTHING (the top fused-order hit alone
+        blows ``budget``), the caller must not receive an elision notice
+        with zero real content -- the top hit is served as a stub instead.
+        The stub is SHOWN, not elided: the notice's ``elided`` count must
+        name only the genuinely-elided second hit, never double-counting
+        the stub.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            fence = "```"
+            hit_oversized = SearchResult(
+                formatted="\n".join(
+                    [
+                        "[SOURCE:pkg/huge.py:1-900]",
+                        "Key: hit0-key",
+                        "[S:lore:pkg/huge.py:1-900@abcdef]",
+                        "← 0 prod / 0 test · tests: 0",
+                        "def huge_function(*args, **kwargs) -> None:",
+                        fence,
+                        "x" * 20000,
+                        fence,
+                    ]
+                ),
+                chunk_key="hit0-key",
+                detail_level="source",
+                stale=False,
+                score=0.8,
+                kind="hit",
+            )
+            hit_second = SearchResult(
+                formatted="[SOURCE:pkg/small.py:1-3]\nKey: hit1-key\n" + "y" * 20,
+                chunk_key="hit1-key",
+                detail_level="source",
+                stale=False,
+                score=0.6,
+                kind="hit",
+            )
+            results = [hit_oversized, hit_second]
+            kept = ctx._enforce_search_budget(list(results), 500, None)  # noqa: SLF001
+
+            assert len(kept) == 2, f"expected exactly [stub, elision notice]; got {kept!r}"
+            stub, notice = kept
+            assert stub.kind == "hit" and stub.chunk_key == "hit0-key"
+            assert "x" * 20000 not in stub.formatted, (
+                f"the fenced body must be stripped from the stub; got {stub.formatted!r}"
+            )
+            assert "[SOURCE:pkg/huge.py:1-900]" in stub.formatted
+            assert "Key: hit0-key" in stub.formatted
+            assert _SEARCH_STUB_NOTICE in stub.formatted
+
+            assert notice.kind == "notice" and "elided" in notice.formatted
+            assert "+1 entries elided" in notice.formatted, (
+                f"only hit1 is genuinely elided -- the stub is SHOWN, not "
+                f"elided; got {notice.formatted!r}"
+            )
+            assert "hit1-key" in notice.formatted, (
+                f"expected hit1 (the next truly-elided entry) named as top "
+                f"elided, not the stubbed hit0; got {notice.formatted!r}"
+            )
+            assert "hit0-key" not in notice.formatted, (
+                f"the stub must never be double-counted as elided in the "
+                f"notice; got {notice.formatted!r}"
+            )
+        finally:
+            await ctx.aclose()
+
+    async def test_floor_of_one_omits_the_notice_when_the_only_hit_is_shown(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #75: when the ONE walkable entry gets floor-served as a
+        stub, nothing else is left to elide -- no elision notice is owed at
+        all (mirrors the pre-existing ``if not elided: return kept`` early
+        return for the normal, non-degenerate case).
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            fence = "```"
+            hit_oversized = SearchResult(
+                formatted="\n".join(
+                    [
+                        "[SOURCE:pkg/huge.py:1-900]",
+                        "Key: only-key",
+                        "[S:lore:pkg/huge.py:1-900@abcdef]",
+                        fence,
+                        "z" * 20000,
+                        fence,
+                    ]
+                ),
+                chunk_key="only-key",
+                detail_level="source",
+                stale=False,
+                score=0.4,
+                kind="hit",
+            )
+            kept = ctx._enforce_search_budget([hit_oversized], 500, None)  # noqa: SLF001
+
+            assert len(kept) == 1, f"expected exactly [stub], no notice; got {kept!r}"
+            assert kept[0].kind == "hit" and kept[0].chunk_key == "only-key"
+            assert "z" * 20000 not in kept[0].formatted
+        finally:
+            await ctx.aclose()
+
+    async def test_floor_of_one_stub_survives_even_when_the_stub_itself_busts_budget(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #75 hostile fixture: the honest floor is UNCONDITIONAL --
+        even at a budget so tiny (1) that the stub's own identity kernel
+        cannot fit, the stub is still served rather than falling back to
+        notice-only. Zero content is a strictly worse failure than a small,
+        honestly-marked budget overrun (see ``_enforce_search_budget``'s
+        finding #75 docstring for the reasoning this pins).
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            fence = "```"
+            hit_oversized = SearchResult(
+                formatted="\n".join(
+                    [
+                        "[SOURCE:pkg/huge.py:1-900]",
+                        "Key: hit0-key",
+                        "[S:lore:pkg/huge.py:1-900@abcdef]",
+                        fence,
+                        "x" * 20000,
+                        fence,
+                    ]
+                ),
+                chunk_key="hit0-key",
+                detail_level="source",
+                stale=False,
+                score=0.8,
+                kind="hit",
+            )
+            hit_second = SearchResult(
+                formatted="[SOURCE:pkg/small.py:1-3]\nKey: hit1-key\n" + "y" * 20,
+                chunk_key="hit1-key",
+                detail_level="source",
+                stale=False,
+                score=0.6,
+                kind="hit",
+            )
+            results = [hit_oversized, hit_second]
+            kept = ctx._enforce_search_budget(list(results), 1, None)  # noqa: SLF001
+
+            assert len(kept) == 2, f"expected [stub, elision notice] even over budget; got {kept!r}"
+            assert kept[0].kind == "hit" and kept[0].chunk_key == "hit0-key", (
+                "the floor must serve the stub even though it alone busts "
+                "budget=1 -- never fall back to notice-only"
+            )
+            assert kept[1].kind == "notice" and "+1 entries elided" in kept[1].formatted
+        finally:
+            await ctx.aclose()
+
+    async def test_floor_of_one_stub_strips_the_true_fence_not_an_embedded_backtick_run(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #75 hostile fixture: a body that itself contains a
+        shorter run of backticks (nested markdown/code) must not be
+        mistaken for the fence boundary. The TRUE fence is whatever the
+        first and last pure-backtick lines are; any pure-backtick line in
+        between (necessarily inside the body, since header/substrate lines
+        are never bare backtick runs) stays exactly where it is -- inside
+        the stripped span.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            true_fence = "`" * 5
+            hit_oversized = SearchResult(
+                formatted="\n".join(
+                    [
+                        "[SOURCE:pkg/hostile.py:1-900]",
+                        "Key: hostile-key",
+                        "[S:lore:pkg/hostile.py:1-900@abcdef]",
+                        true_fence,
+                        "some code",
+                        "`" * 4,  # an embedded, SHORTER backtick run inside the body
+                        "more code " + "w" * 20000,
+                        true_fence,
+                    ]
+                ),
+                chunk_key="hostile-key",
+                detail_level="source",
+                stale=False,
+                score=0.5,
+                kind="hit",
+            )
+            kept = ctx._enforce_search_budget([hit_oversized], 500, None)  # noqa: SLF001
+
+            assert len(kept) == 1
+            stub = kept[0]
+            assert "w" * 20000 not in stub.formatted, "the body must still be stripped"
+            assert "some code" not in stub.formatted and "more code" not in stub.formatted, (
+                f"the whole fenced span, including the embedded backtick "
+                f"run, must be stripped; got {stub.formatted!r}"
+            )
+            assert "Key: hostile-key" in stub.formatted
+        finally:
+            await ctx.aclose()
+
+    async def test_floor_of_one_stub_marks_but_does_not_strip_an_unfenced_hit(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #75: a hit whose ``formatted`` carries no recognisable
+        fence pair (fewer than two pure-backtick lines) is returned
+        unstripped -- the honesty marker is the invariant this floor
+        guarantees, not the stripping itself. Also covers every
+        PRE-EXISTING budget test fixture in this file, which renders hits
+        without a fence at all.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            unfenced = SearchResult(
+                formatted="[SOURCE:pkg/unfenced.py:1]\nKey: unfenced-key\n" + "u" * 20000,
+                chunk_key="unfenced-key",
+                detail_level="source",
+                stale=False,
+                score=0.5,
+                kind="hit",
+            )
+            kept = ctx._enforce_search_budget([unfenced], 500, None)  # noqa: SLF001
+
+            assert len(kept) == 1
+            stub = kept[0]
+            assert "u" * 20000 in stub.formatted, (
+                "no fence to strip -- the original text must survive unstripped"
+            )
+            assert _SEARCH_STUB_NOTICE in stub.formatted, (
+                "the marker must still be appended even when nothing was stripped"
+            )
+        finally:
+            await ctx.aclose()
+
+    async def test_floor_of_one_never_fires_for_a_non_hit_first_entry(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #75 scope decision: floor-of-one is specifically the
+        method-chunk-oversizing fix -- it never stubs a bare memory or
+        notice entry that happens to end up first in fused order. When
+        NOTHING of kind ``hit`` ever survives, the pre-#75 behaviour is
+        UNCHANGED: notice-only, and the worst-shown clause stays omitted
+        (never a fabricated score standing in for "no hit was ever
+        considered").
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            oversized_memory = SearchResult(
+                formatted="[MEMORY] an oversized recalled note " + "m" * 20000,
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.5,
+                kind="memory",
+            )
+            second_memory = SearchResult(
+                formatted="[MEMORY] a second recalled note " + "n" * 20,
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.3,
+                kind="memory",
+            )
+            kept = ctx._enforce_search_budget(  # noqa: SLF001
+                [oversized_memory, second_memory], 500, None
+            )
+
+            assert not any(r.kind == "hit" for r in kept), (
+                f"floor-of-one must never fire for a non-hit first entry; got {kept!r}"
+            )
+            notice = next(r for r in kept if r.kind == "notice" and "elided" in r.formatted)
+            assert "worst shown" not in notice.formatted, (
+                f"no hit-kind entry ever survived -- the worst-shown clause "
+                f"must stay omitted, never a fabricated score; got "
+                f"{notice.formatted!r}"
+            )
         finally:
             await ctx.aclose()
 

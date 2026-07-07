@@ -915,6 +915,24 @@ _SEARCH_ELISION_AT_CAP_TEMPLATE = (
     "show all {total} entries; the {cap} max surfaces {visible} of {total} entries"
 )
 
+# Finding #75: the floor-of-one stub's own in-render honesty marker. When
+# ``_enforce_search_budget``'s greedy walk keeps NOTHING (every walkable
+# entry -- typically a single oversized method-granularity chunk -- exceeds
+# budget on its own), the top fused-order hit is downgraded to a stub
+# (:meth:`AppContext._stub_search_result`) and served anyway rather than
+# dropping it -- the alternative is an elision notice with zero real
+# content. This marker line is appended to THAT hit's own ``formatted``
+# text so a reader can never mistake the stub for a full hit. Deliberately
+# avoids the word "elided" -- the stub is SHOWN, not elided, and the
+# elision notice's counted ``elided`` figure must never include it.
+_SEARCH_STUB_NOTICE = (
+    "[STUB] source body cut for budget (floor-of-one) — shown, not elided; "
+    "the Key: line above still resolves the full source"
+)
+# A recognisable fence is an OPEN line plus a CLOSE line -- fewer than this
+# many pure-backtick lines means there is nothing to strip.
+_FENCE_PAIR_COUNT = 2
+
 # P8d Wave 4a (findings #25/#32): the filter-miss teach rendered when a path/
 # tier filter matches no CODE hit (never a bare empty, never masked by a
 # memory-only result). Subtree/prefix scoping is NOT supported at the store
@@ -1870,6 +1888,28 @@ class AppContext:
         elision notice — never a candidate for the trailing pop, never
         silently dropped. Forcing MORE hit elision to make room for it is
         correct and stays honestly counted in ``elided``.
+
+        Finding #75: when the greedy walk below keeps NOTHING at all (every
+        walkable entry -- typically a single oversized method-granularity
+        chunk -- exceeds ``budget`` on its own), the caller would otherwise
+        receive an elision notice and zero real content: honest, but
+        useless. A floor-of-one rule fires exactly then -- and ONLY then,
+        never for an entry that simply lost out in a normal partial-fit
+        walk -- serving the top fused-order HIT-kind entry as a stub
+        (:meth:`_stub_search_result`: its identity + provenance kernel,
+        fenced body stripped) UNCONDITIONALLY, even when the stub itself
+        still doesn't fit inside ``budget``. This is a deliberate floor, not
+        a soft target: zero content is a strictly worse failure than a
+        small, honestly-marked budget overrun. The stub is held OUT of
+        ``kept``/``kept_texts`` -- exactly like ``absence_verdict`` above --
+        so the pop-until-it-fits loop can never undo the floor by popping
+        the one thing it just guaranteed. It is SHOWN, not elided, so it is
+        subtracted from ``elided`` immediately and excluded from every
+        "top elided" / cap-visibility computation below. Scope note: a
+        walkable entry that is NOT ``kind == "hit"`` (a bare memory or
+        notice entry ending up first) is not stubbed -- floor-of-one is
+        specifically the method-chunk-oversizing fix #75 describes, not a
+        general "always show something" rule for every result kind.
         """
 
         def _count(text: str) -> int:
@@ -1901,6 +1941,16 @@ class AppContext:
                 kept.append(absence_verdict)
             return kept
 
+        # Finding #75: floor-of-one (see docstring). `floor_stub` is the
+        # downgraded top hit when the walk above kept nothing; SHOWN, so it
+        # is subtracted from `elided` right away and never joins
+        # `kept`/`kept_texts` (protected from the pop loop below).
+        floor_stub, elided, floor_early_return_kept = self._apply_search_budget_floor(
+            walkable, kept, elided, absence_verdict
+        )
+        if floor_early_return_kept is not None:
+            return floor_early_return_kept
+
         # T4: the top elided entry (the highest-priority one squeezed out)
         # and the exact token count of the full, un-elided join — the
         # minimum budget that would have elided nothing — are fixed facts
@@ -1910,23 +1960,12 @@ class AppContext:
         full_count = _count("\n".join(result.formatted for result in results))
 
         # S6 (finding #59): `full_count` is only a usable "raise budget to"
-        # suggestion when it's inside the enforced cap. When it isn't, clamp
-        # the suggestion to the cap and compute exactly how many of
-        # `results` the cap DOES surface — by re-running THIS SAME
-        # enforcement at the cap, never a separate estimate. Guard against
-        # self-recursion when `budget` already IS the cap (that re-run would
-        # otherwise call itself with the same budget forever): `kept` from
-        # the walk above already IS that scenario in that case.
-        capped_visible: int | None = None
-        if full_count <= _SEARCH_BUDGET_CAP:
-            suggested_budget = full_count
-        else:
-            suggested_budget = _SEARCH_BUDGET_CAP
-            if budget >= _SEARCH_BUDGET_CAP:
-                capped_visible = len(kept)
-            else:
-                kept_at_cap = self._enforce_search_budget(results, _SEARCH_BUDGET_CAP, caller_model)
-                capped_visible = sum(1 for result in kept_at_cap if result.kind != NOTICE_KIND)
+        # suggestion when it's inside the enforced cap; see
+        # `_search_budget_cap_visibility` for the clamp + cap-recursion.
+        shown_so_far = len(kept) + (1 if floor_stub is not None else 0)
+        suggested_budget, capped_visible = self._search_budget_cap_visibility(
+            results, full_count, budget, shown_so_far, caller_model
+        )
 
         def _worst_shown_score() -> float | None:
             """S7: the cliff-edge datum — the lowest score among currently
@@ -1938,8 +1977,16 @@ class AppContext:
             ``kept``. ``None`` when no hit-kind entry survives (nothing kept
             at all, or only memory/notice entries did) — the caller omits
             the clause rather than rendering a fabricated 0.0.
+
+            Finding #75: ``floor_stub`` (when set) is held OUT of ``kept``
+            (protected from the pop loop) but is very much a SHOWN hit, so
+            its score joins the same pool -- omitting it would report a
+            fabricated "nothing shown" clause when the stub is, in fact,
+            the worst (and only) shown hit.
             """
             hit_scores = [result.score for result in kept if result.kind == "hit"]
+            if floor_stub is not None:
+                hit_scores.append(floor_stub.score)
             return min(hit_scores) if hit_scores else None
 
         def _notice(elided_count: int) -> str:
@@ -1980,6 +2027,8 @@ class AppContext:
         # never be a target of the `.pop()` calls in the loop above
         # regardless of where it would have sat in the original `results`
         # order.
+        if floor_stub is not None:
+            kept.insert(0, floor_stub)
         if absence_verdict is not None:
             kept.append(absence_verdict)
         kept.append(
@@ -1993,6 +2042,115 @@ class AppContext:
             )
         )
         return kept
+
+    def _search_budget_cap_visibility(
+        self,
+        results: list[SearchResult],
+        full_count: int,
+        budget: int,
+        shown_so_far: int,
+        caller_model: str | None,
+    ) -> tuple[int, int | None]:
+        """S6 (finding #59): the "raise budget to" suggestion + cap visibility.
+
+        ``full_count`` is only a usable "raise budget to" suggestion when
+        it's inside the enforced cap. When it isn't, clamp the suggestion
+        to the cap and compute exactly how many of ``results`` the cap DOES
+        surface — by re-running THIS SAME enforcement at the cap, never a
+        separate estimate. Guard against self-recursion when ``budget``
+        already IS the cap (that re-run would otherwise call itself with
+        the same budget forever): ``shown_so_far`` (the caller's own
+        kept-so-far count, floor-of-one stub included) already IS that
+        scenario in that case.
+
+        Returns ``(suggested_budget, capped_visible)`` — ``capped_visible``
+        is ``None`` exactly when ``full_count`` already fits inside the cap
+        (the original, unclamped "raise to N to see all" wording applies).
+        """
+        if full_count <= _SEARCH_BUDGET_CAP:
+            return full_count, None
+        if budget >= _SEARCH_BUDGET_CAP:
+            return _SEARCH_BUDGET_CAP, shown_so_far
+        kept_at_cap = self._enforce_search_budget(results, _SEARCH_BUDGET_CAP, caller_model)
+        capped_visible = sum(1 for result in kept_at_cap if result.kind != NOTICE_KIND)
+        return _SEARCH_BUDGET_CAP, capped_visible
+
+    def _apply_search_budget_floor(
+        self,
+        walkable: list[SearchResult],
+        kept: list[SearchResult],
+        elided: int,
+        absence_verdict: SearchResult | None,
+    ) -> tuple[SearchResult | None, int, list[SearchResult] | None]:
+        """Finding #75 floor-of-one: apply the rule, or report there's nothing to do.
+
+        Fires ONLY when the greedy walk in :meth:`_enforce_search_budget`
+        kept literally nothing (``kept`` empty) and the top fused-order
+        entry is a real hit -- never for a normal partial-fit walk, never
+        for a bare memory or notice entry that happens to be first. See
+        :meth:`_enforce_search_budget`'s own docstring for the full
+        "why serve it unconditionally" reasoning; this method only applies
+        the decision already made there.
+
+        Returns ``(floor_stub, adjusted_elided, early_return_kept)``:
+
+        * ``floor_stub`` is the downgraded top hit (:meth:`_stub_search_result`),
+          or ``None`` when the floor did not fire.
+        * ``adjusted_elided`` is ``elided`` minus one when the floor fired
+          (the stub is SHOWN, not elided) -- unchanged otherwise.
+        * ``early_return_kept`` is not ``None`` exactly when the floor
+          consumed the ONLY walkable entry (nothing else left to elide, no
+          notice owed) -- the caller must return this list immediately
+          rather than continue building a notice.
+        """
+        if kept or walkable[0].kind != "hit":
+            return None, elided, None
+        floor_stub = self._stub_search_result(walkable[0])
+        adjusted_elided = elided - 1
+        if adjusted_elided:
+            return floor_stub, adjusted_elided, None
+        early_return_kept = [floor_stub]
+        if absence_verdict is not None:
+            early_return_kept.append(absence_verdict)
+        return floor_stub, adjusted_elided, early_return_kept
+
+    @staticmethod
+    def _stub_search_result(result: SearchResult) -> SearchResult:
+        """Downgrade ``result`` to its identity-and-provenance kernel (finding #75).
+
+        Floor-of-one serving: what :meth:`_enforce_search_budget` serves for
+        the top fused-order hit instead of nothing, when that hit's full
+        rendered form doesn't fit ``budget`` even alone. Strips the fenced
+        source body out of ``result.formatted`` -- the fence is a matched
+        PAIR of lines composed entirely of
+        :data:`~loremaster.search._FENCE_CHAR`, guaranteed by
+        :meth:`~loremaster.search.SearchPipeline._fence_width`'s "longer
+        than any backtick run inside" invariant to be the two WIDEST such
+        lines in the string (never mistaken for a shorter backtick run
+        inside the body itself) -- while keeping every header line around
+        it: the ``[SOURCE:...]``/``Key:``/``[S:...]`` citation, any graph
+        ref-join / signature enrichment line (:meth:`SearchPipeline.
+        _enrichment_lines`), and any trailing stale/cosine/weak-match
+        substrate line that already renders below the closing fence. This
+        reads the already-rendered text; it never re-derives or re-fetches
+        anything the search pipeline didn't already put on ``result``.
+
+        A ``formatted`` with fewer than two recognisable fence lines (an
+        unfenced custom extension format, or a body too short to need one)
+        is returned unstripped but still marked -- the honesty marker is
+        the invariant this floor guarantees, not the stripping itself.
+        """
+        lines = result.formatted.split("\n")
+        fence_indices = [
+            index
+            for index, line in enumerate(lines)
+            if len(line.strip()) >= _MIN_FENCE_WIDTH and set(line.strip()) == {_FENCE_CHAR}
+        ]
+        if len(fence_indices) >= _FENCE_PAIR_COUNT:
+            first, last = fence_indices[0], fence_indices[-1]
+            lines = [*lines[:first], *lines[last + 1 :]]
+        stub_text = "\n".join([*lines, _SEARCH_STUB_NOTICE])
+        return result.model_copy(update={"formatted": stub_text, "detail_level": "summary"})
 
     @staticmethod
     def _search_elision_notice(
