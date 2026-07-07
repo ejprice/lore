@@ -78,6 +78,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -208,21 +209,283 @@ _ENRICHMENT_UNAVAILABLE = "⚠ enrichment unavailable"  # "⚠ enrichment unavai
 # built on the store's PRE-FUSION cosine projection (:class:`Candidate.
 # vector_cosine <loremaster.store.candidate.Candidate>`), a genuine magnitude.
 #
-# MEASURED and ADOPTED (2026-07-06) — live search_score_survey.py re-run
-# (post-D3-fix; scratchpad/survey_out_rerun/search_score_survey_summary.md +
-# .jsonl alongside, this session): D1 substrate gate PASSES (median
-# within-query cosine spread over the real groups clears the 0.05 bar,
-# unconditional per the design record). D2 verdict floor selection returned
-# floor=0.5828, false-fire 4.0% (2/50 on the union of prose-real +
-# identifier-real queries, under the 5% ceiling), nonsense catch 100.0%
-# (15/15, up from the D3-fix-plumbing run's 40.0%/6-15 pre-fix baseline) —
-# clears the >= 60% (9/15) adoption bar by a wide margin, per D2's own
-# max-catch-among-admissible-floors rule (docs/design/2026-07-06-weak-match-
-# discrimination.md §7.2 D2/§6 Phase C). ADOPTED, never re-guessed: flipping
-# either constant again requires a fresh survey run's receipts, exactly as
-# this one did.
+# MEASURED and ADOPTED (2026-07-06, SUPERSEDED 2026-07-07 — finding #74) —
+# original: live search_score_survey.py re-run (post-D3-fix; scratchpad/
+# survey_out_rerun/search_score_survey_summary.md + .jsonl, that session):
+# D1 PASSES; D2 returned floor=0.5828, false-fire 4.0% (2/50 on the union of
+# prose-real + identifier-real queries), nonsense catch 100.0% (15/15).
+# ADOPTED on that data.
+#
+# SUPERSEDED (2026-07-07, P8d closure-fixer-74, finding #74 remediation):
+# finding #74 showed the eval-question-shaped "real" group under-measured
+# the false-fire rate — it never sampled informant-probe-style implementation-
+# vocabulary queries (docs/design/2026-07-06-client-needs-consult.md +
+# 2026-07-06-weak-match-discrimination.md), the exact class the #74 probe
+# belongs to. Fix: widened the survey's real-query union to a THIRD group,
+# :data:`~scripts.search_score_survey.IMPLEMENTATION_VOCABULARY_QUERIES`
+# (scripts/search_score_survey.py), and re-ran live (scratchpad/
+# survey_out_74w/search_score_survey_summary.md + .jsonl, team-lead's run,
+# 2026-07-07). D1 substrate gate PASSES (median within-query cosine spread
+# over real+identifier+implementation-vocabulary clears the 0.05 bar). D2
+# verdict floor selection, computed from that run's own jsonl (never
+# hand-estimated from the summary prose — a live check turned up ONE
+# additional unavoidable false-firer, an identifier-sampled query whose own
+# definition never surfaced in its top-10 pool, that a hand-read of the
+# summary table would have missed): floor=0.50649 (5 decimal places, not
+# this file's usual 4 — see the dominance-ordering note below for why),
+# false-fire 1.8% (1/56 on the union of prose-real + identifier-real +
+# implementation-vocabulary-real queries, under the 5% ceiling), nonsense
+# catch 100.0% (15/15) — clears the >= 60% (9/15) adoption bar.
+#
+# DOMINANCE-ORDERING RULING (operator/lead, 2026-07-07): the widened run's
+# own data exposed a genuine selection-rule gap in
+# :func:`~scripts.search_score_survey.choose_cosine_floor` — catch can tie
+# across many admissible floors (a naive "largest admissible floor, scanning
+# top-down" — this function's OLD behavior — silently returned a DOMINATED
+# floor, 0.5370 at 3.6% false-fire, when a LOWER floor achieved the
+# IDENTICAL 100% catch at strictly less false-fire). Fixed there: among
+# admissible floors, maximize catch, THEN minimize false-fire, THEN maximize
+# the floor (the final tie-break — see that function's own docstring).
+# 0.50649 is the corrected algorithm's answer, not 0.5370. The precision
+# (5 not 4 decimal places) is deliberate: 0.50649 is a REAL sample's own
+# measured cosine (the "transitive ripple rollup for impact depth>1" probe),
+# and rounding it to 4 places (0.5065) would push the floor to just ABOVE
+# that sample's own exact value, flipping it from "does not fire" to
+# "fires" and silently doubling the measured false-fire rate — verified
+# live before committing this value.
+#
+# ADOPTED, never re-guessed: flipping either constant again requires a
+# fresh survey run's receipts, exactly as this one did.
 _COSINE_SUBSTRATE_ENABLED = True
-_COSINE_WEAK_MATCH_FLOOR: float | None = 0.5828
+_COSINE_WEAK_MATCH_FLOOR: float | None = 0.50649
+
+# --- finding #74 part 3: the floor's drift-detection stamp -----------------
+# The floor above is a MEASURED constant -- its validity is conditioned on
+# the corpus it was measured against, not eternal. Finding #74 showed the
+# rot mechanism concretely: the SAME implementation-vocabulary query
+# ("enforce the search token budget and build the elision notice naming
+# elided hits") false-fired the absence verdict when filed, then stopped
+# false-firing after a routine, unrelated edit to the very method it asks
+# about changed that method's own embedding -- the floor never moved, but
+# the corpus underneath it did. A floor with no re-measure trigger rots
+# exactly like the token-budget calibration constant did before
+# CalibrationEngine (loremaster/calibration/engine.py) existed -- the SAME
+# mechanical-trigger idea, deliberately NOT the same weight: no network
+# probe, no background task, no persisted cache file, just a stamped
+# snapshot compared against ``lore_index()``'s own already-cheap status
+# fields (files_indexed, embedding_schema.fingerprint) at status-read time
+# (wired in server.py's ``AppContext._build_index_status``).
+@dataclass(frozen=True)
+class CosineFloorMeasurement:
+    """The corpus snapshot :data:`_COSINE_WEAK_MATCH_FLOOR` was measured against.
+
+    Attributes:
+        floor: The measured floor value this stamp documents (kept as its
+            own field, not re-read from the module global, so a stamp stays
+            a self-contained snapshot even if a future refactor separates
+            the two).
+        measured_file_count: ``lore_index()``'s ``files_indexed`` count at
+            measurement time.
+        measured_embedding_schema_fingerprint: ``lore_index()``'s
+            ``embedding_schema.fingerprint`` at measurement time -- folds in
+            BOTH the embedding config AND ``config.chunkers`` (see
+            :func:`~loremaster.index.schema.embedding_schema_fingerprint`),
+            so this one field stands in for "chunker-config identity" —
+            reused, never re-derived.
+    """
+
+    floor: float
+    measured_file_count: int
+    measured_embedding_schema_fingerprint: str
+
+
+# Re-stamped 2026-07-07 (P8d closure-fixer-74, finding #74 remediation, part
+# 2) against a live ``lore_index()`` read taken immediately after the
+# team-lead's widened survey re-run (files_indexed=214, the closest
+# available snapshot to that run's own corpus state — the survey script
+# itself does not capture a lore_index() reading, so this is the nearest
+# proxy, same discipline as the mechanism's first (2026-07-07 part 3)
+# baseline). embedding_schema.fingerprint is UNCHANGED from that first
+# baseline (b4dd657beb...) — confirms no chunker/embedding-config drift
+# happened between the two stamps, only routine file-count churn (210 ->
+# 214, well inside the 10% tolerance either way). Every SUBSEQUENT floor
+# change (a fresh survey re-run) re-stamps BOTH fields here from that run's
+# own ``lore_index()`` read -- never guessed, never left stale.
+_COSINE_WEAK_MATCH_FLOOR_STAMP: CosineFloorMeasurement | None = CosineFloorMeasurement(
+    floor=0.50649,
+    measured_file_count=214,
+    measured_embedding_schema_fingerprint=(
+        "b4dd657bebd69a951358a163fd24243aedd0ab2d6169547950ce38055b863af8"
+    ),
+)
+
+# The drift bar (finding #74 part 3): a chunker/embedding-schema fingerprint
+# change is an EXACT-MATCH gate below (any change disqualifies on its own —
+# lore's OWN rebuild machinery already treats any such change as "re-embed
+# everything," which necessarily moves every cosine in the corpus). File
+# count is a SOFTER, percentage bar: routine edits between remediation waves
+# add/remove a file or two without shifting the corpus's overall vocabulary
+# distribution, and a +/-10% band mirrors the survey's own tolerance for
+# "still basically the same corpus" while still catching a genuinely
+# reshaped corpus (a new tier onboarded, a large doc dump indexed) that
+# SHOULD force a re-measure.
+_COSINE_FLOOR_DRIFT_FILE_COUNT_TOLERANCE: float = 0.10
+
+@dataclass
+class _CosineFloorRuntimeState:
+    """The runtime-mutable half of the disarm seam — an attribute holder, not
+
+    a bare module global, so (re)arming is an ATTRIBUTE mutation rather than
+    a ``global`` rebind (keeps ruff's PLW0603 clean and matches this
+    codebase's OOP-over-functional house style even for module-scoped
+    state). Reflects the LAST status-read's drift observation: consulted
+    (never mutated) by ``_cosine_absence_verdict`` on the query hot path;
+    mutated ONLY by :func:`apply_cosine_floor_drift_check`. Deliberately
+    recomputed fresh on every call (never a one-way latch) — unlike
+    CalibrationEngine's retry/cache state, a stamp comparison is a cheap,
+    deterministic, no-network computation, so "last observed" is exactly the
+    current truth as of the last status read, never a permanently-stuck
+    disable that would itself need a redeploy to lift.
+
+    Attributes:
+        disarmed_by_drift: ``True`` iff the last drift check found the
+            floor's stamp had drifted beyond its bar.
+    """
+
+    disarmed_by_drift: bool = False
+
+
+_cosine_floor_runtime_state = _CosineFloorRuntimeState()
+
+
+@dataclass(frozen=True)
+class CosineFloorDriftStatus:
+    """One :func:`apply_cosine_floor_drift_check` outcome — pure data, no I/O.
+
+    Attributes:
+        state: ``"measured"`` (stamp still holds, verdict armed), ``"stale"``
+            (drift exceeded the bar, verdict disarmed), or ``"disabled"``
+            (the floor itself is ``None`` — nothing to drift-check).
+        floor: The floor value the stamp documents, or ``None`` when disabled.
+        measured_file_count: The stamp's recorded file count, or ``None`` when
+            disabled.
+        current_file_count: The file count this check was run against.
+        measured_embedding_schema_fingerprint: The stamp's recorded
+            fingerprint, or ``None`` when disabled.
+        current_embedding_schema_fingerprint: The fingerprint this check was
+            run against.
+        note: A human-readable explanation, present iff ``state == "stale"``.
+    """
+
+    state: Literal["measured", "stale", "disabled"]
+    floor: float | None
+    measured_file_count: int | None
+    current_file_count: int
+    measured_embedding_schema_fingerprint: str | None
+    current_embedding_schema_fingerprint: str
+    note: str | None
+
+
+def _cosine_floor_drift_note(
+    stamp: CosineFloorMeasurement,
+    current_file_count: int,
+    current_embedding_schema_fingerprint: str,
+) -> str | None:
+    """The drift reason, or ``None`` when ``stamp`` still holds (pure, no I/O).
+
+    Two independent gates, either one alone disqualifies the stamp:
+
+    1. ANY embedding-schema-fingerprint change (exact-match — it already
+       folds in ``config.chunkers``, see :func:`~loremaster.index.schema.
+       embedding_schema_fingerprint`) — checked FIRST, so a query that
+       drifted on both signals at once gets one clear reason, not two.
+    2. A file-count swing beyond :data:`_COSINE_FLOOR_DRIFT_FILE_COUNT_TOLERANCE`
+       (a percentage band, not an exact match — routine edits are expected).
+    """
+    if current_embedding_schema_fingerprint != stamp.measured_embedding_schema_fingerprint:
+        return (
+            f"embedding schema fingerprint changed since measurement "
+            f"({stamp.measured_embedding_schema_fingerprint[:12]}… -> "
+            f"{current_embedding_schema_fingerprint[:12]}…) — the chunker/"
+            f"embedding config moved; the corpus was very likely fully re-embedded"
+        )
+    measured_count = stamp.measured_file_count
+    if measured_count <= 0:
+        # Defensive: a non-positive stamped count cannot form a ratio — treat
+        # as unconditional drift rather than divide by zero (mirrors
+        # CalibrationEngine._apply_measurement's own non-positive-baseline
+        # guard).
+        return f"stamped file count ({measured_count}) is non-positive — cannot verify"
+    shift = abs(current_file_count - measured_count) / measured_count
+    if shift > _COSINE_FLOOR_DRIFT_FILE_COUNT_TOLERANCE:
+        return (
+            f"indexed file count shifted {shift * 100:.1f}% since measurement "
+            f"({measured_count} -> {current_file_count}), beyond the "
+            f"{_COSINE_FLOOR_DRIFT_FILE_COUNT_TOLERANCE * 100:.0f}% tolerance"
+        )
+    return None
+
+
+def apply_cosine_floor_drift_check(
+    *, current_file_count: int, current_embedding_schema_fingerprint: str
+) -> CosineFloorDriftStatus:
+    """Re-check the floor's stamp against the CURRENT corpus, (re)setting the disarm flag.
+
+    Called by ``AppContext._build_index_status`` on every ``lore_index()``
+    read (a cheap, no-embeds status read) — never on the query hot path.
+    Recomputes :attr:`_CosineFloorRuntimeState.disarmed_by_drift` fresh every
+    call (see that attribute's own docstring for why this is a deliberate
+    non-latch).
+
+    Args:
+        current_file_count: The CURRENT ``files_indexed`` count (from the
+            same status read this is called from).
+        current_embedding_schema_fingerprint: The CURRENT
+            ``embedding_schema.fingerprint`` (same status read; an unstamped
+            fresh deploy passes ``""``, which never matches a real stamp and
+            is therefore fail-safe — treated as drift, mirroring
+            :func:`~loremaster.index.schema.rebuild_needed`'s own
+            provenance-unknown-is-unsafe rule).
+
+    Returns:
+        The :class:`CosineFloorDriftStatus` snapshot this call just applied.
+    """
+    stamp = _COSINE_WEAK_MATCH_FLOOR_STAMP
+    if _COSINE_WEAK_MATCH_FLOOR is None or stamp is None:
+        _cosine_floor_runtime_state.disarmed_by_drift = False
+        return CosineFloorDriftStatus(
+            state="disabled",
+            floor=None,
+            measured_file_count=None,
+            current_file_count=current_file_count,
+            measured_embedding_schema_fingerprint=None,
+            current_embedding_schema_fingerprint=current_embedding_schema_fingerprint,
+            note=None,
+        )
+    note = _cosine_floor_drift_note(
+        stamp, current_file_count, current_embedding_schema_fingerprint
+    )
+    _cosine_floor_runtime_state.disarmed_by_drift = note is not None
+    return CosineFloorDriftStatus(
+        state="stale" if note is not None else "measured",
+        floor=stamp.floor,
+        measured_file_count=stamp.measured_file_count,
+        current_file_count=current_file_count,
+        measured_embedding_schema_fingerprint=stamp.measured_embedding_schema_fingerprint,
+        current_embedding_schema_fingerprint=current_embedding_schema_fingerprint,
+        note=(f"floor stale — re-measure needed: {note}" if note is not None else None),
+    )
+
+
+def _reset_cosine_floor_drift_state_for_tests() -> None:
+    """Test-only reset of the runtime disarm state (lifecycle-test seam).
+
+    Module-level mutable state must not leak across tests (global CLAUDE.md's
+    lifecycle-test rule) — tests reset this via an autouse fixture rather
+    than relying on call order.
+    """
+    _cosine_floor_runtime_state.disarmed_by_drift = False
+
 
 # item 12a: the always-on per-hit magnitude (design doc §7.4 item 2) — a
 # claim-free number, read RELATIVELY within one response (no cross-call
@@ -517,7 +780,14 @@ def _cosine_absence_verdict(
 
     Dark while :data:`_COSINE_WEAK_MATCH_FLOOR` is ``None`` (the disabled/
     rollback state, not a pre-measurement default — the floor is measured
-    and set by default). Once set, fires per :func:`_cosine_absence_predicate`:
+    and set by default) OR while
+    :attr:`_cosine_floor_runtime_state`\\ ``.disarmed_by_drift`` is ``True``
+    (finding #74 part 3: the last ``lore_index()`` status read
+    detected the floor's stamp had drifted beyond its bar — under-claim is
+    cheap, a confidently-wrong absence claim is not, so the AGGREGATE
+    verdict goes silent rather than keep serving a possibly-rotted claim;
+    the per-hit weak-match flag/substrate line are unaffected — see their
+    own gates below). Once armed, fires per :func:`_cosine_absence_predicate`:
     there is at least one shown code hit, the MAXIMUM cosine among them (never just the
     top-fused-order hit's — a cosine-strong hit can sit below a cosine-weak
     one) is strictly below the floor, AND no shown hit carries a
@@ -528,7 +798,7 @@ def _cosine_absence_verdict(
     and the rendered identity describe two different candidates, reading as
     one false claim about whichever of the two was actually shown).
     """
-    if _COSINE_WEAK_MATCH_FLOOR is None:
+    if _COSINE_WEAK_MATCH_FLOOR is None or _cosine_floor_runtime_state.disarmed_by_drift:
         return None
     code_pairs = [(hit, candidate) for hit, candidate in partitioned_pairs if hit.kind == HIT_KIND]
     if not code_pairs:

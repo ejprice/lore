@@ -68,7 +68,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -2632,6 +2632,139 @@ class TestMergedIndexTool:
         assert status.traces.total == 0
         assert status.traces.by_tool == []
         assert status.traces.latest_at is None
+
+
+class TestCosineFloorStatusWiring:
+    """Finding #74 part 3: ``lore_index()`` surfaces the cosine weak-match
+
+    floor's drift status (measured/stale/disabled) and RE-CHECKS it (via
+    ``search.apply_cosine_floor_drift_check``) on every status read — mirrors
+    the ``calibration`` section's own attached-nested-status idiom.
+    """
+
+    @pytest_asyncio.fixture()
+    async def indexed_context(
+        self, tmp_path: Path    ) -> AsyncIterator[AppContext]:
+        slug = _slug()
+        live = tmp_path / "live"
+        (live / "pkg").mkdir(parents=True)
+        (live / "pkg" / "base.py").write_text(_PY_BASE, encoding="utf-8")
+        (live / "pkg" / "router.py").write_text(_PY_MODULE, encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        try:
+            yield ctx
+        finally:
+            await ctx.aclose()
+
+    @pytest.fixture(autouse=True)
+    def _reset_drift_state(self) -> Iterator[None]:
+        # State-leakage guard (global CLAUDE.md lifecycle rule): each test
+        # below triggers a REAL call to apply_cosine_floor_drift_check (via
+        # indexed_context.index()), which mutates loremaster.search's
+        # module-level disarm flag directly (not through monkeypatch) — an
+        # explicit reset before/after is required so tests never leak this
+        # into each other regardless of order.
+        from loremaster import search as search_module
+
+        search_module._reset_cosine_floor_drift_state_for_tests()
+        yield
+        search_module._reset_cosine_floor_drift_state_for_tests()
+
+    async def _stamp_fingerprint(self, ctx: AppContext, fingerprint: str) -> None:
+        from loremaster.index.schema import SCHEMA_FINGERPRINT_META_KEY
+
+        await ctx.manifest.meta_set(SCHEMA_FINGERPRINT_META_KEY, fingerprint)
+
+    async def test_measured_state_when_the_stamp_matches_the_live_corpus(
+        self, indexed_context: AppContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from loremaster import search as search_module
+
+        fingerprint = "f" * 64
+        await self._stamp_fingerprint(indexed_context, fingerprint)
+        baseline = await indexed_context.index()
+        assert baseline.files_indexed == 2
+        stamp = search_module.CosineFloorMeasurement(
+            floor=0.5828, measured_file_count=2,
+            measured_embedding_schema_fingerprint=fingerprint,
+        )
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR_STAMP", stamp)
+
+        status = await indexed_context.index()
+
+        assert status.cosine_floor.state == "measured"
+        assert status.cosine_floor.floor == 0.5828
+        assert status.cosine_floor.note is None
+        assert search_module._cosine_floor_runtime_state.disarmed_by_drift is False
+
+    async def test_stale_state_and_teaching_note_when_file_count_drifts(
+        self, indexed_context: AppContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from loremaster import search as search_module
+
+        fingerprint = "f" * 64
+        await self._stamp_fingerprint(indexed_context, fingerprint)
+        stamp = search_module.CosineFloorMeasurement(
+            floor=0.5828, measured_file_count=2000,  # wildly beyond the 10% tolerance
+            measured_embedding_schema_fingerprint=fingerprint,
+        )
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR_STAMP", stamp)
+
+        status = await indexed_context.index()
+
+        assert status.cosine_floor.state == "stale"
+        assert status.cosine_floor.note is not None
+        assert "re-measure needed" in status.cosine_floor.note
+        # The disarm takes effect on the QUERY hot path too, not just the
+        # status render -- end-to-end proof the two seams agree (the disarm
+        # state renders the teaching here AND silences the verdict there).
+        assert search_module._cosine_floor_runtime_state.disarmed_by_drift is True
+
+    async def test_stale_state_when_the_embedding_schema_fingerprint_changed(
+        self, indexed_context: AppContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from loremaster import search as search_module
+
+        await self._stamp_fingerprint(indexed_context, "f" * 64)
+        stamp = search_module.CosineFloorMeasurement(
+            floor=0.5828, measured_file_count=2,
+            measured_embedding_schema_fingerprint="e" * 64,  # differs from the stamped "f"*64
+        )
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR_STAMP", stamp)
+
+        status = await indexed_context.index()
+
+        assert status.cosine_floor.state == "stale"
+        assert status.cosine_floor.note is not None
+        assert "fingerprint" in status.cosine_floor.note
+
+    async def test_disabled_state_when_the_floor_itself_is_unset(
+        self, indexed_context: AppContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from loremaster import search as search_module
+
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", None)
+
+        status = await indexed_context.index()
+
+        assert status.cosine_floor.state == "disabled"
+        assert status.cosine_floor.floor is None
+        assert status.cosine_floor.note is None
+
+    def test_cosine_floor_defaults_disabled_on_a_bare_index_status_summary(self) -> None:
+        # F3 safety pattern (IndexStatusSummary's own docstring): constructing
+        # the model with ONLY the base IndexSummary fields must still
+        # validate -- the new section needs a sane "nothing recorded" default,
+        # never a bare required field forcing every existing caller to change.
+        from loremaster.server import IndexStatusSummary
+
+        summary = IndexStatusSummary(
+            files_indexed=0, files_failed=0, files_skipped=0,
+            tiers_rebuilt=[], tiers_skipped=[], outcomes=[],
+        )
+        assert summary.cosine_floor.state == "disabled"
 
 
 class _FakeRequestContext:

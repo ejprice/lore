@@ -112,7 +112,7 @@ DEFAULT_EVAL_XML: Path = (
 #: just the top one) per the design doc's Phase B instruction.
 SURVEY_K: int = 10
 
-QueryKind = Literal["real", "nonsense", "identifier"]
+QueryKind = Literal["real", "nonsense", "identifier", "implementation_vocabulary"]
 
 #: The adversarial contrast set — deliberately absurd feature/technology
 #: combinations that do not exist anywhere in this repository, so any
@@ -135,6 +135,73 @@ NONSENSE_QUERIES: tuple[str, ...] = (
     "airline seat upgrade bidding auction settlement engine",
     "smart thermostat HVAC scheduling machine learning model",
     "podcast transcript closed-caption timing alignment tool",
+)
+
+#: Informant-probe-style implementation-vocabulary queries (finding #74 fix,
+#: docs/design/2026-07-06-client-needs-consult.md + docs/design/2026-07-06-
+#: weak-match-discrimination.md): a query CLASS the eval.xml-mined REAL group
+#: never samples — a natural-language DESCRIPTION of what a mechanism DOES
+#: (informant/task-search phrasing: "enforce the search token budget and
+#: build the elision notice..."), not a quiz-shaped "what is the exact name
+#: of X" question. Finding #74's own live probe proved this class can
+#: false-fire the absence verdict on a query the corpus genuinely answers —
+#: the eval-question-shaped REAL group's 4.0% false-fire measurement was
+#: therefore blind to this class, not a true measurement of it. Every member
+#: below is sourced VERBATIM from a documented informant/tester probe (cited
+#: per-entry), with its ground-truth target INDEPENDENTLY verified indexed
+#: via lore_get_symbol/lore_search at remediation time (2026-07-07) — never
+#: assumed. Deliberately a MIX of members that currently false-fire and ones
+#: that currently don't (not cherry-picked to all fail), so the measured
+#: false-fire rate over this group reflects the class honestly rather than a
+#: manufactured 100%.
+IMPLEMENTATION_VOCABULARY_QUERIES: tuple[str, ...] = (
+    # Source: docs/design/2026-07-06-client-needs-consult.md:437 (Opus
+    # informant) — THE #74 finding's own origin probe. Ground truth:
+    # loremaster.server.AppContext._enforce_search_budget (server.py:1849) /
+    # _search_elision_notice (server.py:1997) — both indexed, confirmed via
+    # lore_get_symbol 2026-07-07 (top-hit sim 0.63 at that check — the score
+    # had DRIFTED above the 0.5828 floor since the finding was filed, itself
+    # evidence for the drift mechanism finding #74 names).
+    "enforce the search token budget and build the elision notice naming elided hits",
+    # Source: docs/design/2026-07-06-weak-match-discrimination.md §5 (Sonnet
+    # informant, Probe 5). Ground truth: loremaster.search.SearchPipeline.
+    # _apply_memory_boost (search.py:901); loremaster.memory.local.
+    # LocalMemoryBackend.recall (memory/local.py:604) — confirmed indexed via
+    # lore_get_symbol/lore_search 2026-07-07 (top-hit sim 0.64; no false-fire
+    # observed at check time).
+    "how does the memory store handle recall_memory ranking and boosting search results",
+    # Source: docs/design/2026-07-06-weak-match-discrimination.md §4 (Opus
+    # informant, Probe 2). Ground truth: loremaster.store.surreal.
+    # SurrealStore.hybrid_search (store/surreal.py:1239) — confirmed indexed
+    # via lore_get_symbol 2026-07-07. Live check 2026-07-07: false-FIRES
+    # ("no confident match ... best hit similarity 0.55 ... nearest indexed:
+    # 'FakeSurrealStore.hybrid_search'") — the real production method exists
+    # but was elided from the shown response, exactly finding #74's shape.
+    "reciprocal rank fusion search::rrf combine vector and lexical arms",
+    # Source: REPORT-tester-sonnet.md §S3 (documented closure-test probe).
+    # Ground truth: TestTokenBudgetCalibration (loremaster/tests/
+    # test_map.py:1335), documenting the calibration constant CalibrationEngine
+    # (loremaster/calibration/engine.py) serves — confirmed indexed via
+    # lore_search 2026-07-07 (sim 0.55). Live check 2026-07-07: false-FIRES
+    # against the 0.5828 floor, reproducibly.
+    "what token budget calibration constant should I use for claude sonnet 5",
+    # Source: docs/design/2026-07-06-client-needs-consult.md §7 (Opus
+    # informant grounding calls). Ground truth: the embedding-resilience
+    # retry/backoff wrapper (loresigil/loresigil/voyage_context.py's
+    # ``_request_with_retry``/``_backoff``; loresigil/tests/
+    # test_resilient.py, test_voyage_cloud.py) — confirmed indexed via
+    # lore_search 2026-07-07 (top-hit sim 0.57; no false-fire observed at
+    # check time — a near-boundary real answer).
+    "retry/backoff for embedding requests",
+    # Source: docs/design/2026-07-06-client-needs-consult.md §7 (Opus
+    # informant grounding calls). Ground truth: loremaster.impact.
+    # ImpactEngine._transitive_only_modules (impact.py:687) / the depth-2
+    # transitive-rollup labeling contract (loremaster/tests/
+    # test_impact.py:865) — confirmed indexed via lore_search 2026-07-07.
+    # Live check 2026-07-07: false-FIRES ("no confident match ... nearest
+    # indexed: 'TestDepthTwoTransitiveLabeling'") even though the real
+    # production method is present in the SAME response at sim 0.47.
+    "transitive ripple rollup for impact depth>1",
 )
 
 #: The number of identifier-shaped queries to deterministically sample from
@@ -472,14 +539,18 @@ class CosineFloorRecommendation:
 
 
 def choose_cosine_floor(
-    real_and_identifier_samples: Sequence[VerdictSample],
+    real_query_samples: Sequence[VerdictSample],
     nonsense_samples: Sequence[VerdictSample],
     *,
     max_false_fire_rate: float = D2_MAX_FALSE_FIRE_RATE,
 ) -> CosineFloorRecommendation:
     """D2 (design doc §7.2, precision-first): the MAX-CATCH floor admissible
     at ``max_false_fire_rate`` false-fire on the UNION of prose-real +
-    identifier-real samples.
+    identifier-real + implementation-vocabulary-real samples (finding #74
+    widened this from a 2-way to a 3-way union — see
+    :data:`IMPLEMENTATION_VOCABULARY_QUERIES`'s module-level docstring for
+    why the eval-question-shaped prose-real group alone under-measures the
+    false-fire rate).
 
     Both "false-fire" and "catch" are scored by
     :func:`cosine_absence_verdict_fires` — the IDENTICAL predicate
@@ -492,11 +563,35 @@ def choose_cosine_floor(
     Candidate floors are exactly the union's own OBSERVED ``max_cosine``
     values (a floor strictly between two observed values changes neither
     rate — the same nearest-rank discipline :func:`token_survey.percentile`
-    uses). Both rates stay monotonically non-decreasing in the floor (an
-    anchored sample contributes a constant zero regardless of floor; every
-    other sample's contribution is a non-decreasing step function of the
-    floor), so the admissible floor with MAXIMUM catch is simply the LARGEST
-    candidate whose false-fire rate still clears the ceiling.
+    uses).
+
+    Dominance ordering (operator/lead ruling, finding #74 widened re-run,
+    2026-07-07 — supersedes the prior "largest admissible floor" shortcut):
+    among ADMISSIBLE floors (false-fire <= ``max_false_fire_rate``), prefer,
+    in order:
+
+    1. **Maximum catch** — D2's own adoption criterion.
+    2. **Minimum false-fire** — D2's precision-first name. Catch can genuinely
+       TIE across many admissible floors (catch only changes where a floor
+       crosses a NONSENSE sample's value, and candidate floors are drawn from
+       the REAL/union samples — usually distinct values), while a naive
+       "first admissible floor scanning from the top" can stop at a HIGHER
+       floor with strictly MORE false-fire than a lower floor that achieves
+       the identical catch (the live receipt: floor 0.5370 at 3.6% false-fire
+       vs. floor 0.5065 at a strictly lower rate, both 100% catch — see
+       ``docs/design`` / the finding #74 closure record for the exact
+       numbers). The prior version of this function returned the dominated
+       (higher-false-fire) floor because it stopped at the first admissible
+       candidate scanning top-down, never comparing it against a lower one
+       that ties on catch — fixed here by scoring EVERY admissible candidate
+       before choosing.
+    3. **Maximum floor** — the final tie-break, for the (rarer) case where
+       BOTH catch and false-fire tie across two floors. This happens when a
+       verbatim-identifier anchor (D3) exempts the only sample that would
+       otherwise separate two candidates' false-fire counts (an anchored
+       sample contributes a constant zero regardless of floor). Grounds the
+       choice in the largest defensible OBSERVED value, never an arbitrary
+       lower one within a genuine tie.
 
     A recommendation ALWAYS exists (never ``None``): at the lowest observed
     ``max_cosine``, no sample's cosine is STRICTLY below it, so false-fire is
@@ -508,30 +603,36 @@ def choose_cosine_floor(
     not floor admissibility itself).
 
     Args:
-        real_and_identifier_samples: Samples from BOTH the prose-real and
-            identifier-real query groups, pooled (D2 measures the union, not
-            either group alone).
+        real_query_samples: Samples pooled from EVERY "should be answered"
+            query group — prose-real, identifier-real, and (finding #74)
+            implementation-vocabulary-real — never any one group alone.
         nonsense_samples: Samples from the adversarial group.
         max_false_fire_rate: The pre-registered ceiling (default
             :data:`D2_MAX_FALSE_FIRE_RATE` — amending it after seeing the
             table un-pre-registers the rule; a caller doing that must say so).
 
     Returns:
-        The max-catch admissible recommendation.
+        The dominance-ordered admissible recommendation (see above).
 
     Raises:
         ValueError: Either sequence is empty.
     """
-    if not real_and_identifier_samples:
-        raise ValueError("real_and_identifier_samples must be non-empty")
+    if not real_query_samples:
+        raise ValueError("real_query_samples must be non-empty")
     if not nonsense_samples:
         raise ValueError("nonsense_samples must be non-empty")
-    n_union = len(real_and_identifier_samples)
-    candidate_floors = sorted({s.max_cosine for s in real_and_identifier_samples}, reverse=True)
+    n_union = len(real_query_samples)
+    n_nonsense = len(nonsense_samples)
+    candidate_floors = sorted({s.max_cosine for s in real_query_samples}, reverse=True)
+
+    # Score EVERY admissible candidate (never stop at the first pass) — see
+    # the docstring's dominance-ordering rationale for why an early return on
+    # the first admissible (highest) floor can silently pick a DOMINATED one.
+    admissible: list[tuple[float, float, float]] = []  # (floor, false_fire_rate, catch_rate)
     for floor in candidate_floors:
         false_fire_rate = (
             sum(
-                1 for s in real_and_identifier_samples
+                1 for s in real_query_samples
                 if cosine_absence_verdict_fires(s.max_cosine, floor, s.has_verbatim_anchor)
             )
             / n_union
@@ -541,16 +642,28 @@ def choose_cosine_floor(
                 1 for s in nonsense_samples
                 if cosine_absence_verdict_fires(s.max_cosine, floor, s.has_verbatim_anchor)
             )
-            return CosineFloorRecommendation(
-                floor=floor,
-                false_fire_rate=false_fire_rate,
-                nonsense_catch_rate=catch / len(nonsense_samples),
-                n_union=n_union,
-                n_nonsense=len(nonsense_samples),
-            )
-    # Unreachable in practice (the minimum candidate is always admissible —
-    # see the docstring), but keeps the function total rather than assuming.
-    raise AssertionError("no admissible floor found — the minimum candidate should always qualify")
+            admissible.append((floor, false_fire_rate, catch / n_nonsense))
+
+    if not admissible:
+        # Unreachable in practice (the minimum candidate is always admissible
+        # — see the docstring), but keeps the function total rather than
+        # assuming.
+        raise AssertionError(
+            "no admissible floor found — the minimum candidate should always qualify"
+        )
+
+    # Dominance order: maximize catch, THEN minimize false-fire (maximize its
+    # negation), THEN maximize the floor itself.
+    best_floor, best_false_fire_rate, best_catch_rate = max(
+        admissible, key=lambda entry: (entry[2], -entry[1], entry[0])
+    )
+    return CosineFloorRecommendation(
+        floor=best_floor,
+        false_fire_rate=best_false_fire_rate,
+        nonsense_catch_rate=best_catch_rate,
+        n_union=n_union,
+        n_nonsense=n_nonsense,
+    )
 
 
 def substrate_gate_passes(
@@ -632,7 +745,8 @@ async def capture_query(store: SurrealStore, embedder, query: str, query_kind: Q
 async def survey(
     real_questions: Sequence[str], nonsense_questions: Sequence[str]
 ) -> list[QueryCapture]:
-    """Capture every real + identifier + nonsense query against the live server.
+    """Capture every real + identifier + implementation-vocabulary + nonsense
+    query against the live server.
 
     READ-ONLY end to end (S4b audit finding #2, REPORT-slate-audit-
     searchstore.md §Concern 6): this never calls ``store.ensure_ready()`` (a
@@ -649,6 +763,7 @@ async def survey(
         for kind, questions in (
             ("real", real_questions),
             ("identifier", identifier_queries),
+            ("implementation_vocabulary", IMPLEMENTATION_VOCABULARY_QUERIES),
             ("nonsense", nonsense_questions),
         ):
             for question in questions:
@@ -665,6 +780,7 @@ def build_markdown_report(
     captures: Sequence[QueryCapture],
     real_summary: GroupCosineSummary,
     identifier_summary: GroupCosineSummary,
+    implementation_vocabulary_summary: GroupCosineSummary,
     nonsense_summary: GroupCosineSummary,
     substrate_gate: bool,
     floor_recommendation: CosineFloorRecommendation,
@@ -686,7 +802,8 @@ def build_markdown_report(
     lines.append(
         f"**floor = {floor_recommendation.floor:.4f}** — false-fire "
         f"{floor_recommendation.false_fire_rate * 100:.1f}% on "
-        f"{floor_recommendation.n_union} real+identifier queries; nonsense catch "
+        f"{floor_recommendation.n_union} real+identifier+implementation-vocabulary "
+        f"queries; nonsense catch "
         f"{floor_recommendation.nonsense_catch_rate * 100:.1f}% "
         f"({round(floor_recommendation.nonsense_catch_rate * floor_recommendation.n_nonsense)}/"
         f"{floor_recommendation.n_nonsense})."
@@ -716,6 +833,7 @@ def build_markdown_report(
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
     lines.append(summary_row(real_summary))
     lines.append(summary_row(identifier_summary))
+    lines.append(summary_row(implementation_vocabulary_summary))
     lines.append(summary_row(nonsense_summary))
     lines.append("")
 
@@ -804,14 +922,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     real_captures = [c for c in captures if c.query_kind == "real"]
     identifier_captures = [c for c in captures if c.query_kind == "identifier"]
+    implementation_vocabulary_captures = [
+        c for c in captures if c.query_kind == "implementation_vocabulary"
+    ]
     nonsense_captures = [c for c in captures if c.query_kind == "nonsense"]
 
     real_summary = summarize_cosine_group(real_captures, label="real")
     identifier_summary = summarize_cosine_group(identifier_captures, label="identifier")
+    implementation_vocabulary_summary = summarize_cosine_group(
+        implementation_vocabulary_captures, label="implementation_vocabulary"
+    )
     nonsense_summary = summarize_cosine_group(nonsense_captures, label="nonsense")
 
+    # D1 (finding #74): the "real groups" whose spread gates the always-on
+    # substrate now include implementation-vocabulary alongside prose-real +
+    # identifier-real — it IS a third real (should-be-answered) group, never
+    # nonsense.
     real_group_spreads = [
-        s for c in (*real_captures, *identifier_captures)
+        s for c in (*real_captures, *identifier_captures, *implementation_vocabulary_captures)
         if (s := within_query_cosine_spread(c.hits)) is not None
     ]
     substrate_gate = substrate_gate_passes(real_group_spreads)
@@ -821,9 +949,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # predicate consumes — never bare top-hit cosines. (Named distinctly from
     # ``s`` above: the walrus target escapes its comprehension into this
     # function's scope, and reusing ``s`` for a differently-typed value here
-    # would confuse mypy across the two bindings.)
+    # would confuse mypy across the two bindings.) Finding #74: the union now
+    # pools THREE "should be answered" groups, not two — prose-real +
+    # identifier-real + implementation-vocabulary-real — so the admissibility
+    # rule's false-fire ceiling is measured against the class that actually
+    # broke (docs/design comment on IMPLEMENTATION_VOCABULARY_QUERIES).
     union_samples = [
-        sample for c in (*real_captures, *identifier_captures)
+        sample
+        for c in (*real_captures, *identifier_captures, *implementation_vocabulary_captures)
         if (sample := query_capture_to_verdict_sample(c)) is not None
     ]
     nonsense_samples = [
@@ -833,8 +966,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     floor_recommendation = choose_cosine_floor(union_samples, nonsense_samples)
 
     report = build_markdown_report(
-        captures, real_summary, identifier_summary, nonsense_summary,
-        substrate_gate, floor_recommendation,
+        captures, real_summary, identifier_summary, implementation_vocabulary_summary,
+        nonsense_summary, substrate_gate, floor_recommendation,
     )
     summary_path = args.out_dir / args.summary_filename
     summary_path.write_text(report, encoding="utf-8")

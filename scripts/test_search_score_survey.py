@@ -97,6 +97,35 @@ class TestNonsenseQueries:
 
 
 # --------------------------------------------------------------------------- #
+# IMPLEMENTATION_VOCABULARY_QUERIES — finding #74's own query class (the
+# fourth false-fire-union group): informant-probe-style natural-language
+# DESCRIPTIONS of a mechanism, sourced verbatim from documented probes, each
+# with its ground-truth target verified indexed (docstring comments in the
+# survey module, never vibes).
+# --------------------------------------------------------------------------- #
+class TestImplementationVocabularyQueries:
+    def test_is_a_nonempty_deterministic_tuple_of_distinct_strings(self) -> None:
+        assert isinstance(sss.IMPLEMENTATION_VOCABULARY_QUERIES, tuple)
+        assert len(sss.IMPLEMENTATION_VOCABULARY_QUERIES) >= 4
+        assert len(set(sss.IMPLEMENTATION_VOCABULARY_QUERIES)) == len(
+            sss.IMPLEMENTATION_VOCABULARY_QUERIES
+        )
+        assert all(
+            isinstance(q, str) and q.strip() for q in sss.IMPLEMENTATION_VOCABULARY_QUERIES
+        )
+
+    def test_includes_the_finding_74_probe_verbatim(self) -> None:
+        # The exact query text finding #74 was filed against (docs/design/
+        # 2026-07-06-client-needs-consult.md:437) — the probe that motivated
+        # this whole query group must itself be a member, not just "a
+        # similar one".
+        assert (
+            "enforce the search token budget and build the elision notice "
+            "naming elided hits"
+        ) in sss.IMPLEMENTATION_VOCABULARY_QUERIES
+
+
+# --------------------------------------------------------------------------- #
 # every_nth — the identifier group's deterministic corpus-sampling rule
 # --------------------------------------------------------------------------- #
 class TestEveryNth:
@@ -387,6 +416,54 @@ class TestChooseCosineFloor:
         assert rec.floor == pytest.approx(0.1)
         assert rec.false_fire_rate == pytest.approx(0.0)
 
+    def test_prefers_minimum_false_fire_among_max_catch_floors(self) -> None:
+        # Dominance geometry (operator/lead ruling on the finding #74 widened
+        # re-run, 2026-07-07): the widened survey's OWN data showed a clean
+        # gap — nonsense max-of-response tops out at 0.4322, the lowest
+        # answered (real+identifier+impl-vocab) max sits at 0.5065 — so every
+        # candidate floor in (0.4322, 0.5065] gives the IDENTICAL 100% catch,
+        # yet a naive top-down "first admissible from the top" scan (the OLD
+        # behaviour) stopped at a HIGHER floor (0.5370) carrying nonzero
+        # false-fire, never comparing it against a LOWER floor (0.50 here)
+        # that achieves the SAME catch at STRICTLY LESS false-fire. D2's own
+        # precision-first name demands the latter. This fixture reproduces
+        # that geometry directly (18 comfortably-high real samples + one at
+        # 0.55 + one at 0.50; 0.55 alone clears the 5% ceiling at EXACTLY 5%,
+        # but 0.50 clears it at 0% for the SAME 100% nonsense catch).
+        union = (
+            [sss.VerdictSample(0.90, False) for _ in range(18)]
+            + [sss.VerdictSample(0.55, False)]
+            + [sss.VerdictSample(0.50, False)]
+        )
+        nonsense = [sss.VerdictSample(v, False) for v in (0.05, 0.10, 0.15, 0.40)]
+
+        rec = sss.choose_cosine_floor(union, nonsense, max_false_fire_rate=0.05)
+
+        assert rec.floor == pytest.approx(0.50)
+        assert rec.false_fire_rate == pytest.approx(0.0)
+        assert rec.nonsense_catch_rate == pytest.approx(1.0)
+
+    def test_prefers_maximum_floor_when_catch_and_false_fire_both_tie(self) -> None:
+        # The THIRD dominance level: two admissible floors can tie on BOTH
+        # catch AND false-fire when the anchor carve-out (D3) exempts the
+        # ONLY sample that would otherwise separate them — a verbatim-
+        # anchored sample contributes ZERO false-fire at every floor
+        # (D3), so the candidate at its own value (0.55) and any HIGHER
+        # candidate with nothing else in between (0.90 here) score
+        # identically. Chosen: the LARGER floor — grounds the choice in the
+        # largest defensible observed value, never an arbitrary lower one
+        # within a genuine tie.
+        union = [sss.VerdictSample(0.90, False) for _ in range(2)] + [
+            sss.VerdictSample(0.55, True)  # verbatim-anchored: never a false-fire
+        ]
+        nonsense = [sss.VerdictSample(v, False) for v in (0.05, 0.10, 0.20)]
+
+        rec = sss.choose_cosine_floor(union, nonsense, max_false_fire_rate=0.05)
+
+        assert rec.floor == pytest.approx(0.90)
+        assert rec.false_fire_rate == pytest.approx(0.0)
+        assert rec.nonsense_catch_rate == pytest.approx(1.0)
+
     def test_meets_adoption_bar_checks_the_pre_registered_catch_threshold(self) -> None:
         rec = sss.CosineFloorRecommendation(
             floor=0.5, false_fire_rate=0.05, nonsense_catch_rate=0.6, n_union=20, n_nonsense=15
@@ -395,7 +472,7 @@ class TestChooseCosineFloor:
         assert rec.meets_adoption_bar(min_catch=0.7) is False
 
     def test_rejects_empty_union(self) -> None:
-        with pytest.raises(ValueError, match="real_and_identifier"):
+        with pytest.raises(ValueError, match="real_query_samples"):
             sss.choose_cosine_floor(
                 [], [sss.VerdictSample(0.1, False)], max_false_fire_rate=0.05
             )

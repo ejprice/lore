@@ -2247,6 +2247,247 @@ class TestCosineAbsencePredicate:
         assert search_module._cosine_absence_predicate(0.1, 0.5, True) is False
 
 
+class TestCosineFloorDriftCheck:
+    """Pure :func:`~loremaster.search._cosine_floor_drift_note` tests -- no
+
+    pipeline, no store, no I/O. Finding #74 part 3: the floor is stamped with
+    the corpus snapshot it was measured against (indexed-file count +
+    embedding-schema fingerprint, which folds in ``config.chunkers`` -- see
+    :func:`~loremaster.index.schema.embedding_schema_fingerprint`) and a
+    later drift beyond a defined bar must be DETECTED here before anything
+    downstream can disarm on it.
+    """
+
+    _STAMP = search_module.CosineFloorMeasurement(
+        floor=0.5828,
+        measured_file_count=200,
+        measured_embedding_schema_fingerprint="a" * 64,
+    )
+
+    def test_no_drift_when_file_count_and_fingerprint_match_exactly(self) -> None:
+        assert search_module._cosine_floor_drift_note(self._STAMP, 200, "a" * 64) is None
+
+    def test_no_drift_within_the_file_count_tolerance_band(self) -> None:
+        # +9%/-9% (under the 10% bar) on both sides.
+        assert search_module._cosine_floor_drift_note(self._STAMP, 218, "a" * 64) is None
+        assert search_module._cosine_floor_drift_note(self._STAMP, 182, "a" * 64) is None
+
+    def test_drift_when_file_count_exceeds_the_tolerance_band(self) -> None:
+        # +11.5%/-11.5% (over the 10% bar), both directions.
+        for current in (223, 177):
+            note = search_module._cosine_floor_drift_note(self._STAMP, current, "a" * 64)
+            assert note is not None
+            assert "file count" in note
+
+    def test_drift_on_any_embedding_schema_fingerprint_change(self) -> None:
+        # An exact-match gate -- even a single differing character
+        # disqualifies, unlike the percentage-tolerant file count (a
+        # chunker/embedding-config change already forces a full re-embed
+        # elsewhere; ANY difference here means the corpus almost certainly
+        # moved under the floor).
+        note = search_module._cosine_floor_drift_note(self._STAMP, 200, "b" * 64)
+        assert note is not None
+        assert "fingerprint" in note
+
+    def test_fingerprint_drift_is_checked_before_file_count(self) -> None:
+        # Both signals drifted at once -- the reason names the fingerprint
+        # (checked first), a single clear cause rather than a confusing
+        # double reason.
+        note = search_module._cosine_floor_drift_note(self._STAMP, 999999, "b" * 64)
+        assert note is not None
+        assert "fingerprint" in note
+
+    def test_non_positive_stamped_file_count_is_treated_as_unconditional_drift(
+        self,
+    ) -> None:
+        # Defensive, mirrors CalibrationEngine._apply_measurement's own
+        # non-positive-baseline guard: never divide by zero, never silently
+        # treat a degenerate stamp as still valid.
+        degenerate_stamp = search_module.CosineFloorMeasurement(
+            floor=0.5828, measured_file_count=0, measured_embedding_schema_fingerprint="a" * 64
+        )
+        note = search_module._cosine_floor_drift_note(degenerate_stamp, 10, "a" * 64)
+        assert note is not None
+
+
+class TestApplyCosineFloorDriftCheck:
+    """:func:`~loremaster.search.apply_cosine_floor_drift_check` -- the
+
+    stateful half: (re)sets the runtime disarm flag and returns a status
+    snapshot. Called by ``AppContext._build_index_status`` on every
+    ``lore_index()`` read (test_mcp_server.py covers that wiring); these
+    tests exercise the function directly.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_drift_state(self) -> Any:
+        # State-leakage guard (global CLAUDE.md lifecycle rule): the disarm
+        # flag is module-level mutable state consulted on the query hot path
+        # -- a test that disarms it must never leak that into the next test,
+        # regardless of test order or a failure mid-test.
+        search_module._reset_cosine_floor_drift_state_for_tests()
+        yield
+        search_module._reset_cosine_floor_drift_state_for_tests()
+
+    def test_measured_state_when_the_stamp_still_holds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stamp = search_module.CosineFloorMeasurement(
+            floor=0.5828, measured_file_count=200,
+            measured_embedding_schema_fingerprint="a" * 64,
+        )
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", 0.5828)
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR_STAMP", stamp)
+
+        status = search_module.apply_cosine_floor_drift_check(
+            current_file_count=200, current_embedding_schema_fingerprint="a" * 64
+        )
+
+        assert status.state == "measured"
+        assert status.note is None
+        assert search_module._cosine_floor_runtime_state.disarmed_by_drift is False
+
+    def test_stale_state_and_disarm_when_file_count_drifts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stamp = search_module.CosineFloorMeasurement(
+            floor=0.5828, measured_file_count=200,
+            measured_embedding_schema_fingerprint="a" * 64,
+        )
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", 0.5828)
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR_STAMP", stamp)
+
+        status = search_module.apply_cosine_floor_drift_check(
+            current_file_count=999, current_embedding_schema_fingerprint="a" * 64
+        )
+
+        assert status.state == "stale"
+        assert status.note is not None
+        assert "re-measure needed" in status.note
+        assert search_module._cosine_floor_runtime_state.disarmed_by_drift is True
+
+    def test_disabled_state_when_the_floor_itself_is_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", None)
+
+        status = search_module.apply_cosine_floor_drift_check(
+            current_file_count=1, current_embedding_schema_fingerprint=""
+        )
+
+        assert status.state == "disabled"
+        assert status.floor is None
+        assert status.note is None
+        assert search_module._cosine_floor_runtime_state.disarmed_by_drift is False
+
+    def test_recomputes_fresh_every_call_not_a_one_way_latch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lifecycle degrade-then-recover test (global CLAUDE.md): a stamp
+
+        comparison is cheap and deterministic (no network, unlike
+        CalibrationEngine's retry/cache machinery), so "last observed" must
+        be exactly the current truth -- degrading then recovering the
+        underlying signal re-arms the verdict; it must never stay stuck
+        disabled the way a network-probe cache legitimately might.
+        """
+        stamp = search_module.CosineFloorMeasurement(
+            floor=0.5828, measured_file_count=200,
+            measured_embedding_schema_fingerprint="a" * 64,
+        )
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", 0.5828)
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR_STAMP", stamp)
+
+        # Degrade: file count drifts far beyond tolerance -> disarmed.
+        degraded = search_module.apply_cosine_floor_drift_check(
+            current_file_count=999, current_embedding_schema_fingerprint="a" * 64
+        )
+        assert degraded.state == "stale"
+        assert search_module._cosine_floor_runtime_state.disarmed_by_drift is True
+
+        # Recover: a later status read observes the count back in tolerance
+        # (e.g. the extra files were transient) -> re-armed, never stuck.
+        recovered = search_module.apply_cosine_floor_drift_check(
+            current_file_count=200, current_embedding_schema_fingerprint="a" * 64
+        )
+        assert recovered.state == "measured"
+        assert search_module._cosine_floor_runtime_state.disarmed_by_drift is False
+
+
+class TestCosineAbsenceVerdictDisarmedByDrift:
+    """The disarm flag suppresses the AGGREGATE absence verdict end-to-end --
+
+    the split finding #74 part 3 demands: the disarm state renders the
+    TEACHING (``lore_index``'s status -- test_mcp_server.py covers that),
+    never the verdict itself (this class, at the pipeline layer).
+    """
+
+    _FLOOR = 0.5
+
+    async def _pipeline(
+        self, tmp_path: Path, embedder: FakeEmbedder, candidates: list[Candidate]
+    ) -> SearchPipeline:
+        indexed, server = await _index_single(tmp_path, embedder, files={})
+        store = _FixedCandidatesStore(dim=embedder.dim, db=indexed.db, candidates=candidates)
+        return _make_pipeline(indexed=indexed, embedder=embedder, server=server, store=store)
+
+    @pytest.fixture(autouse=True)
+    def _reset_drift_state(self) -> Any:
+        search_module._reset_cosine_floor_drift_state_for_tests()
+        yield
+        search_module._reset_cosine_floor_drift_state_for_tests()
+
+    async def test_hostile_fixture_no_verdict_while_disarmed_even_though_every_condition_for_it_holds(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Every condition the (undisarmed) verdict needs is present: a hit
+        # below the floor, no verbatim anchor -- this is the EXACT fixture
+        # TestCosineAbsenceVerdictLit.test_all_weak_hits_carry_the_absence_verdict
+        # uses to PROVE the verdict fires. Disarming must suppress it anyway
+        # -- the disarm state renders the TEACHING, not the verdict.
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        monkeypatch.setattr(search_module._cosine_floor_runtime_state, "disarmed_by_drift", True)
+        weak = _score_candidate(
+            "k1", 0.03, vector_cosine=self._FLOOR - 0.01, file_path="pkg/a.py",
+            identity="pkg.a.weak_fn", ident_text="weak_fn",
+        )
+        pipeline = await self._pipeline(tmp_path, embedder, [weak])
+
+        results = await pipeline.search_code("something unrelated", k=5)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert not any(_ABSENCE_VERDICT_MARKER in n.formatted for n in notices), (
+            "a disarmed (stale) floor must render NO absence claim at all -- "
+            "under-claim is cheap, a confidently-wrong absence claim is not"
+        )
+        # The per-hit weak-match flag is a SEPARATE, lower-stakes claim
+        # (finding #74 part 3 explicitly scopes the disarm to the AGGREGATE
+        # verdict only -- see the informant false-flag-asymmetry receipts in
+        # docs/design/2026-07-06-weak-match-discrimination.md §4/§5) -- it
+        # still fires normally while the aggregate verdict is disarmed.
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert any(_WEAK_MATCH_MARKER in hit.formatted for hit in hits)
+
+    async def test_armed_by_default_the_same_fixture_still_fires(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Control: WITHOUT disarming, the identical fixture fires -- proves
+        # the suppression above is caused by the disarm flag, not some other
+        # accidental difference in the fixture.
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        monkeypatch.setattr(search_module._cosine_floor_runtime_state, "disarmed_by_drift", False)
+        weak = _score_candidate(
+            "k1", 0.03, vector_cosine=self._FLOOR - 0.01, file_path="pkg/a.py",
+            identity="pkg.a.weak_fn", ident_text="weak_fn",
+        )
+        pipeline = await self._pipeline(tmp_path, embedder, [weak])
+
+        results = await pipeline.search_code("something unrelated", k=5)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert any(_ABSENCE_VERDICT_MARKER in n.formatted for n in notices)
+
+
 class TestRetiredFusedFloorIsGone:
     """S4's fused-score-floor mechanism is fully retired — a corpse pin
 

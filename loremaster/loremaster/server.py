@@ -124,6 +124,7 @@ from loremaster.search import (
     SearchResult,
     _max_backtick_run,
     _sanitise_line,
+    apply_cosine_floor_drift_check,
 )
 from loremaster.store.candidate import Candidate
 from loremaster.store_read import StoreFileSpan
@@ -1415,6 +1416,48 @@ class CalibrationStatus(BaseModel):
         return cls(**selected)
 
 
+class CosineFloorStatus(BaseModel):
+    """Finding #74 part 3: the cosine weak-match absence-verdict floor's
+
+    drift status, surfaced by ``index_status``. A structured mirror of
+    :func:`~loremaster.search.apply_cosine_floor_drift_check`'s
+    :class:`~loremaster.search.CosineFloorDriftStatus` return — attached as
+    an optional nested section on :class:`IndexStatusSummary`, mirroring the
+    ``calibration``/``embedding_schema`` idiom. ``state == "stale"`` means the
+    AGGREGATE absence verdict (``lore_search``'s "no confident match" notice)
+    is currently DISARMED (served as if the floor were unset) — under-claim
+    is cheap, a confidently-wrong absence claim is not (finding #74). Unlike
+    :class:`CalibrationStatus`, this is constructed directly from the search
+    module's own dataclass (no ``from_engine_status``-style resilience
+    seam): there is no external engine boundary here, just an internal,
+    first-party call within this same codebase, so a future field addition
+    is a normal in-repo lockstep change, not a cross-boundary drift risk.
+
+    Attributes:
+        state: ``"measured"`` (armed), ``"stale"`` (disarmed by drift), or
+            ``"disabled"`` (the floor itself is unset — nothing to drift-check).
+        floor: The measured floor value, or ``None`` when disabled.
+        measured_file_count: The stamp's recorded ``files_indexed`` count, or
+            ``None`` when disabled.
+        current_file_count: The CURRENT ``files_indexed`` count this status
+            was checked against.
+        measured_embedding_schema_fingerprint: The stamp's recorded
+            fingerprint, or ``None`` when disabled.
+        current_embedding_schema_fingerprint: The CURRENT fingerprint.
+        note: A human-readable explanation, present iff ``state == "stale"``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: str = "disabled"
+    floor: float | None = None
+    measured_file_count: int | None = None
+    current_file_count: int = 0
+    measured_embedding_schema_fingerprint: str | None = None
+    current_embedding_schema_fingerprint: str = ""
+    note: str | None = None
+
+
 class AgeStatus(BaseModel):
     """A single "since when" fact: an ISO-8601 timestamp plus its age in seconds.
 
@@ -1495,6 +1538,7 @@ class IndexStatusSummary(IndexSummary):
     last_sweep: AgeStatus = Field(default_factory=AgeStatus)
     newest_snapshot: AgeStatus = Field(default_factory=AgeStatus)
     traces: TraceSummary = Field(default_factory=TraceSummary)
+    cosine_floor: CosineFloorStatus = Field(default_factory=CosineFloorStatus)
 
 
 class DeadCodeSweepResult(BaseModel):
@@ -3076,6 +3120,31 @@ class AppContext:
         calibration = (
             CalibrationStatus.from_engine_status(engine.status()) if engine is not None else None
         )
+        # Finding #74 part 3: re-check the cosine weak-match floor's stamp
+        # against THIS read's own already-computed files_indexed/fingerprint
+        # (no extra query) on EVERY status read — never only at boot, since
+        # boot-time wiring would require touching the schema-rebuild spawn
+        # sequencing (a larger blast radius than this status-read seam) and
+        # a genuine chunker/embedding-schema change is ALREADY caught by the
+        # existing rebuild-on-mismatch machinery; the file-count-drift case
+        # this adds is the gap that machinery does not cover.
+        drift_status = apply_cosine_floor_drift_check(
+            current_file_count=summary.files_indexed,
+            current_embedding_schema_fingerprint=embedding_schema.fingerprint or "",
+        )
+        cosine_floor = CosineFloorStatus(
+            state=drift_status.state,
+            floor=drift_status.floor,
+            measured_file_count=drift_status.measured_file_count,
+            current_file_count=drift_status.current_file_count,
+            measured_embedding_schema_fingerprint=(
+                drift_status.measured_embedding_schema_fingerprint
+            ),
+            current_embedding_schema_fingerprint=(
+                drift_status.current_embedding_schema_fingerprint
+            ),
+            note=drift_status.note,
+        )
         last_sync = await self._age_status(META_LAST_SYNC_AT_KEY)
         last_sweep = await self._age_status(META_LAST_SWEEP_AT_KEY)
         newest_snapshot = await self._newest_snapshot_age()
@@ -3094,6 +3163,7 @@ class AppContext:
             last_sweep=last_sweep,
             newest_snapshot=newest_snapshot,
             traces=traces,
+            cosine_floor=cosine_floor,
         )
 
     async def _age_status(self, meta_key: str) -> AgeStatus:

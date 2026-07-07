@@ -9,6 +9,7 @@ at P8a (the store tests now run against the real local SurrealDB dev server via
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,37 @@ def _dummy_anthropic_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch restores the environment after each test.
     """
     monkeypatch.setenv(_ANTHROPIC_API_KEY_ENV, "test-dummy-anthropic-key")
+
+
+@pytest.fixture(autouse=True)
+def _reset_cosine_floor_drift_state() -> Iterator[None]:
+    """Reset finding #74's cosine-floor drift-disarm state around every test.
+
+    ``AppContext._build_index_status`` (loremaster/server.py) calls
+    ``loremaster.search.apply_cosine_floor_drift_check`` on EVERY
+    ``lore_index()``/``AppContext.index()`` read — a REAL mutation of
+    ``loremaster.search``'s module-level runtime state (an attribute on
+    ``_cosine_floor_runtime_state``), not something a caller opts into.
+    Because most fixtures across this suite index only a handful of files
+    (nowhere near the production stamp's measured file count), an unrelated
+    test calling ``ctx.index()`` trips drift detection for real and disarms
+    the absence verdict for every test that runs AFTER it in the same
+    session — exactly the state-leakage class the global CLAUDE.md's
+    lifecycle-test rule warns about (proven live: the full ``test_mcp_
+    server.py`` suite failed 4 tests in ``TestSearchParamsCutBudgetAndTeachingMiss``
+    until this fixture was added; each of those 4 passed in isolation).
+    Autouse (not opt-in) because the hazard is triggered by ANY
+    ``ctx.index()`` call, not just the tests that know this mechanism
+    exists. ``monkeypatch`` cannot express this reset (it would restore
+    whatever value was ALREADY leaked in at test start, not force a clean
+    baseline), so this calls the module's own test-only reset function
+    directly, before AND after every test.
+    """
+    import loremaster.search as search_module
+
+    search_module._reset_cosine_floor_drift_state_for_tests()
+    yield
+    search_module._reset_cosine_floor_drift_state_for_tests()
 
 
 class _InertCalibrationTokenCounter:
