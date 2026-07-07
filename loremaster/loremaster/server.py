@@ -1954,6 +1954,17 @@ class AppContext:
         notice entry ending up first) is not stubbed -- floor-of-one is
         specifically the method-chunk-oversizing fix #75 describes, not a
         general "always show something" rule for every result kind.
+
+        Finding #81: the elision notice's "top elided" datum must track
+        the pop-until-it-fits loop, not just its own ``worst_shown_score``
+        neighbour. Every entry the loop pops out of ``kept`` outranks every
+        entry already counted as elided (fused-order construction: it was
+        KEPT by the walk above; nothing already-elided was) -- so each pop
+        makes THAT entry the new true top elided, an O(1) running update
+        applied directly in the loop below, never a rescan of ``walkable``.
+        An entry the drain-stub (#79) protects is the one exception: it is
+        SHOWN, not elided, so it must never become ``top_elided`` even
+        though it, too, leaves ``kept``.
         """
 
         def _count(text: str) -> int:
@@ -2006,12 +2017,25 @@ class AppContext:
         # so both close over a real, already-bound name.
         drain_stub: SearchResult | None = None
 
-        # T4: the top elided entry (the highest-priority one squeezed out)
-        # and the exact token count of the full, un-elided join — the
-        # minimum budget that would have elided nothing — are fixed facts
-        # about `results`, computed ONCE; only `elided` itself grows as the
-        # pop-until-it-fits loop below shrinks `kept` further.
-        top_elided = walkable[len(kept)]
+        # T4: the top elided entry (the highest-priority one squeezed out).
+        # `full_count` -- the exact token count of the full, un-elided join,
+        # the minimum budget that would have elided nothing -- IS a fixed
+        # fact about `results`, computed ONCE. `top_elided` is NOT: this is
+        # only its INITIAL value, the top of the walk's own elided tail.
+        # When `floor_stub` is set, index past it too -- it occupies
+        # fused-order position 0 but is SHOWN, not elided.
+        #
+        # Finding #81: the pop-until-it-fits loop below can pop entries out
+        # of `kept` to make room for the notice itself -- and every popped
+        # entry outranks this initial `top_elided` by fused-order
+        # construction (it was KEPT by the walk above; `top_elided` was
+        # not). `top_elided` is therefore reassigned to each freshly-popped
+        # entry as the loop runs (an O(1) running update, never a rescan —
+        # see the loop below), so every `_notice` call after a real pop
+        # reflects the CURRENT true top elided entry, not this stale
+        # initial one.
+        top_elided_index = len(kept) + (1 if floor_stub is not None else 0)
+        top_elided = walkable[top_elided_index]
         full_count = _count("\n".join(result.formatted for result in results))
 
         # S6 (finding #59): `full_count` is only a usable "raise budget to"
@@ -2073,11 +2097,23 @@ class AppContext:
                 # Finding #79: the last survivor is downgraded and held out
                 # of `kept`/`kept_texts` (see `_drain_stub_if_last_survivor`)
                 # instead of being popped -- SHOWN, not elided, so `elided`
-                # is deliberately NOT incremented here. Nothing is left in
-                # `kept` to pop further either way.
+                # is deliberately NOT incremented here. Finding #81:
+                # `top_elided` is likewise left UNTOUCHED -- this entry is
+                # SHOWN (as a stub), never elided, so it must never become
+                # the notice's "top elided" identity; whatever `top_elided`
+                # already was (the original walk value, or the last REAL
+                # pop below) stays correct. Nothing is left in `kept` to
+                # pop further either way.
                 notice_text = _notice(elided)
                 break
-            kept.pop()
+            # Finding #81: `kept` is walk-ordered highest-priority-first, so
+            # `.pop()` always removes the LOWEST-priority entry still kept
+            # -- which, by fused-order construction, outranks every entry
+            # already counted as elided (the original `top_elided` and
+            # every prior pop this loop made). The just-popped entry is
+            # therefore always the new true top elided: an O(1) running
+            # update, no rescan of `walkable` needed.
+            top_elided = kept.pop()
             kept_texts.pop()
             elided += 1
             notice_text = _notice(elided)

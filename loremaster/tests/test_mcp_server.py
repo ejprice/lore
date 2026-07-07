@@ -4798,6 +4798,26 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
                 f"score (0.700, 'keep-weak', which the pop loop dropped); "
                 f"got {notice.formatted!r}"
             )
+            # Finding #81: `top_elided` must be RECOMPUTED after the pop
+            # too, exactly like `worst_shown_score` above -- the popped
+            # 'keep-weak' (0.700) outranks the original top-elided
+            # 'big-hit' (0.500) by fused-order construction (it was KEPT by
+            # the initial walk; 'big-hit' was not), so it is now the true
+            # top elided entry. The shipped pre-#81 code left `top_elided`
+            # as a fixed post-walk index and kept naming 'big-hit' here --
+            # wrong identity AND wrong score in the notice's most
+            # decision-relevant datum.
+            assert "top elided: 'keep-weak' (score=0.700)" in notice.formatted, (
+                f"expected the RECOMPUTED post-pop top-elided entry "
+                f"('keep-weak', 0.700 -- the pop loop just dropped it, and "
+                f"it outranks the original top-elided 'big-hit'), not the "
+                f"stale pre-pop identity; got {notice.formatted!r}"
+            )
+            assert "top elided: 'big-hit'" not in notice.formatted, (
+                f"the notice still names the STALE pre-pop top-elided "
+                f"entry ('big-hit', 0.500), which the pop-loop-dropped "
+                f"'keep-weak' (0.700) outranks; got {notice.formatted!r}"
+            )
         finally:
             await ctx.aclose()
 
@@ -5784,6 +5804,237 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
                 f"expected both the oversized hit (initial walk) and the "
                 f"drained memory entry (pop loop) counted as genuinely "
                 f"elided; got {notice.formatted!r}"
+            )
+        finally:
+            await ctx.aclose()
+
+    async def test_elision_notice_top_elided_tracks_the_last_popped_entry_across_multiple_pops(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #81 hostile fixture: multi-pop, "last-popped wins".
+
+        The shipped fixture (``test_elision_notice_worst_shown_is_
+        recomputed_after_the_pop_loop``) only forces ONE real pop -- not
+        enough to distinguish "recompute on every pop" from "recompute
+        once, using the FIRST pop". Four small hits survive the initial
+        walk (keep-1..keep-4, budget=260) alongside one oversized elided
+        hit; the notice's own overhead then forces the pop loop to fire
+        TWICE (dropping keep-4, then keep-3) before ``[keep-1, keep-2,
+        verdict, notice]`` finally fits. The correct top elided entry
+        after both pops is 'keep-3' (the SECOND, most recent pop) --
+        never 'keep-4' (the first pop, itself now stale) and never the
+        original 'big-hit'. Composes with finding #71's reserved absence
+        verdict throughout: it survives the pop loop's reserved-cost
+        arithmetic completely untouched.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            hits = [
+                SearchResult(
+                    formatted=f"[SOURCE:pkg/h{i}.py:1-5@abc111]\n" + "a" * 40,
+                    chunk_key=f"keep-{i}",
+                    detail_level="source",
+                    stale=False,
+                    score=0.95 - (i - 1) * 0.1,
+                    kind="hit",
+                )
+                for i in range(1, 5)
+            ]
+            hit_elided = SearchResult(
+                formatted="[SOURCE:pkg/big.py:1]\nKey: big-hit\n" + "c" * 4000,
+                chunk_key="big-hit",
+                detail_level="source",
+                stale=False,
+                score=0.1,
+                kind="hit",
+            )
+            verdict = SearchResult(
+                formatted=(
+                    "no confident match: best hit similarity 0.31 is below the "
+                    "range real answers measure on this corpus (>=0.58) and no "
+                    "hit matches your identifiers verbatim -- likely no direct "
+                    "answer indexed; nearest indexed: 'pkg.a.weak_fn' -- broaden "
+                    "the query or treat these hits as adjacent-topic leads"
+                ),
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.0,
+                kind="notice",
+            )
+            results = [*hits, hit_elided, verdict]
+            kept = ctx._enforce_search_budget(list(results), 260, None)  # noqa: SLF001
+            notice = next(r for r in kept if r.kind == "notice" and "elided" in r.formatted)
+
+            surviving_keys = {r.chunk_key for r in kept if r.kind == "hit"}
+            assert surviving_keys == {"keep-1", "keep-2"}, (
+                f"expected the pop loop to drop 'keep-4' then 'keep-3', "
+                f"leaving only 'keep-1'/'keep-2'; got {surviving_keys!r}"
+            )
+            assert "+3 entries elided" in notice.formatted, (
+                f"expected big-hit (initial) + keep-4 + keep-3 (both real "
+                f"pops) counted as genuinely elided; got {notice.formatted!r}"
+            )
+            assert "top elided: 'keep-3' (score=0.750)" in notice.formatted, (
+                f"expected the SECOND (most recent) pop named as top "
+                f"elided -- it outranks both the first pop ('keep-4') and "
+                f"the original ('big-hit'); got {notice.formatted!r}"
+            )
+            assert "top elided: 'keep-4'" not in notice.formatted, (
+                f"the notice names the FIRST pop, not the most recent one "
+                f"-- a partial fix (recompute once, not every pop); got "
+                f"{notice.formatted!r}"
+            )
+            assert "top elided: 'big-hit'" not in notice.formatted, (
+                f"the notice still carries the pre-pop stale identity; "
+                f"got {notice.formatted!r}"
+            )
+            assert "worst shown: score=0.850" in notice.formatted
+            verdict_notices = [r for r in kept if "no confident match" in r.formatted]
+            assert len(verdict_notices) == 1, (
+                f"the #71 reserved absence verdict must survive the "
+                f"multi-pop loop completely untouched; got {kept!r}"
+            )
+        finally:
+            await ctx.aclose()
+
+    async def test_elision_notice_top_elided_is_the_last_real_pop_not_the_drain_stubbed_survivor(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #81 x #79 interaction: a REAL pop happens first (updating
+        ``top_elided``), and only THEN does the pop loop's last survivor
+        hit the drain-stub guard. The drain-stubbed entry is SHOWN, not
+        elided, so it must never become ``top_elided`` -- but the real pop
+        that happened just before it must still be reflected. Two kept
+        hits (keep-1, keep-2) survive the initial walk; the pop loop drops
+        keep-2 for real (elided, ``top_elided`` becomes 'keep-2'), then
+        finds only keep-1 left and drain-stubs it (shown, not elided) --
+        counts and identity must agree: elided stays at 2 (big-hit +
+        keep-2 only), and the notice names 'keep-2', never 'keep-1' (the
+        stub) and never the stale original 'big-hit'.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            hit_keep_1 = SearchResult(
+                formatted="[SOURCE:pkg/a.py:1-5@abc111]\nKey: keep-1\n" + "a" * 40,
+                chunk_key="keep-1",
+                detail_level="source",
+                stale=False,
+                score=0.9,
+                kind="hit",
+            )
+            hit_keep_2 = SearchResult(
+                formatted="[SOURCE:pkg/b.py:1-5@abc222]\nKey: keep-2\n" + "a" * 40,
+                chunk_key="keep-2",
+                detail_level="source",
+                stale=False,
+                score=0.8,
+                kind="hit",
+            )
+            hit_elided = SearchResult(
+                formatted="[SOURCE:pkg/big.py:1]\nKey: big-hit\n" + "c" * 4000,
+                chunk_key="big-hit",
+                detail_level="source",
+                stale=False,
+                score=0.1,
+                kind="hit",
+            )
+            results = [hit_keep_1, hit_keep_2, hit_elided]
+            kept = ctx._enforce_search_budget(list(results), 90, None)  # noqa: SLF001
+
+            assert len(kept) == 2, f"expected exactly [stub, elision notice]; got {kept!r}"
+            stub, notice = kept
+            assert stub.kind == "hit" and stub.chunk_key == "keep-1", (
+                f"finding #79: the drained survivor must still be SERVED, "
+                f"downgraded to a stub, rather than dropped; got {kept!r}"
+            )
+            assert _SEARCH_STUB_NOTICE in stub.formatted
+            assert "+2 entries elided" in notice.formatted, (
+                f"only big-hit (initial) and keep-2 (the REAL pop) are "
+                f"genuinely elided -- keep-1 is drain-stubbed (shown, not "
+                f"elided), so it must not inflate this count; got "
+                f"{notice.formatted!r}"
+            )
+            assert "top elided: 'keep-2' (score=0.800)" in notice.formatted, (
+                f"expected the last REAL pop ('keep-2') named as top "
+                f"elided; got {notice.formatted!r}"
+            )
+            assert "top elided: 'keep-1'" not in notice.formatted, (
+                f"the drain-stubbed survivor is SHOWN, not elided -- it "
+                f"must never be named as top elided; got "
+                f"{notice.formatted!r}"
+            )
+            assert "top elided: 'big-hit'" not in notice.formatted, (
+                f"the notice still carries the pre-pop stale identity; "
+                f"got {notice.formatted!r}"
+            )
+            assert "worst shown: score=0.900" in notice.formatted, (
+                f"the stub is the worst (and only) SHOWN hit; got "
+                f"{notice.formatted!r}"
+            )
+        finally:
+            await ctx.aclose()
+
+    async def test_elision_notice_top_elided_is_byte_stable_when_the_pop_loop_never_fires(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #81 regression guard: when the notice fits on the FIRST
+        try (the pop loop's ``while`` condition is false immediately),
+        ``top_elided`` must stay exactly the walk's own initial value --
+        the fix only changes behaviour once a real pop happens.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            hit_keep_1 = SearchResult(
+                formatted="[SOURCE:pkg/a.py:1-5@abc111]\nKey: keep-1\n" + "a" * 40,
+                chunk_key="keep-1",
+                detail_level="source",
+                stale=False,
+                score=0.9,
+                kind="hit",
+            )
+            hit_keep_2 = SearchResult(
+                formatted="[SOURCE:pkg/b.py:1-5@abc222]\nKey: keep-2\n" + "a" * 40,
+                chunk_key="keep-2",
+                detail_level="source",
+                stale=False,
+                score=0.8,
+                kind="hit",
+            )
+            hit_elided = SearchResult(
+                formatted="[SOURCE:pkg/big.py:1]\nKey: big-hit\n" + "c" * 4000,
+                chunk_key="big-hit",
+                detail_level="source",
+                stale=False,
+                score=0.1,
+                kind="hit",
+            )
+            results = [hit_keep_1, hit_keep_2, hit_elided]
+            kept = ctx._enforce_search_budget(list(results), 500, None)  # noqa: SLF001
+
+            surviving_keys = {r.chunk_key for r in kept if r.kind == "hit"}
+            assert surviving_keys == {"keep-1", "keep-2"}, (
+                f"expected a generous budget to keep both small hits with "
+                f"no pop needed; got {surviving_keys!r}"
+            )
+            notice = next(r for r in kept if r.kind == "notice" and "elided" in r.formatted)
+            assert "+1 entries elided" in notice.formatted, (
+                f"expected exactly the initial elision (big-hit only), no "
+                f"pop; got {notice.formatted!r}"
+            )
+            assert "top elided: 'big-hit' (score=0.100)" in notice.formatted, (
+                f"expected the walk's own initial top-elided value, "
+                f"untouched by the fix, since no pop ever ran; got "
+                f"{notice.formatted!r}"
             )
         finally:
             await ctx.aclose()
