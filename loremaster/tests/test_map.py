@@ -1069,6 +1069,210 @@ class TestSymbolCaps:
 
 
 # =========================================================================== #
+# Finding #77 (the un-swept S1 instance, this wave): lore_map's STRUCTURED
+# entries[].symbols dumped the module's FULL roster unconditionally while the
+# formatted render elided at the SAME per-module cap TestSymbolCaps pins above
+# -- over MCP the model IS the consumer of both surfaces in one payload, so
+# the uncapped structured field taxed the same context an uncapped render
+# would (the operator ruling on #77, mirroring the S1/#39-reversal already
+# applied to lore_impact's covering_tests). Fix: cap entries[].symbols with
+# the IDENTICAL discipline, carry the honest hidden count in the new
+# MapEntry.symbols_elided (mirrors ImpactResult.covering_tests_elided); the
+# FOCUSED module keeps its full roster in both surfaces (unchanged); a new
+# full_symbols=True parameter is the explicit escape hatch for every module's
+# full roster at once, still honestly budget-bound.
+# =========================================================================== #
+
+# The EXACT #77 live evidence shape: a 20-symbol module at the default
+# budget's cap (10, since _SYMBOL_CAP_BUDGET_DIVISOR=250 and
+# _BUDGET_DEFAULT=2500) must show 10, elide 10 -- mirrors the live report's
+# "loremaster.config: 20 names -> 10 shown + symbols_elided=10".
+_TWENTY_SYMBOL_COUNT = 20
+_TWENTY_SYMBOL_MODULE = "twenty"
+_TWENTY_SYMBOL_SHOWN_AT_DEFAULT_BUDGET = 10
+
+
+def _twenty_symbol_source() -> str:
+    """A module defining exactly 20 zero-padded functions (f00..f19) -- the
+    zero-padding keeps ascending string-sort order identical to numeric order
+    (f00 < f01 < ... < f19), so "the first 10 shown" is unambiguous."""
+    return (
+        "\n\n".join(
+            f"def f{i:02d}(x):\n"
+            f'    """One of twenty symbols -- mirrors finding #77\'s live '
+            f'evidence shape."""\n'
+            f"    return x"
+            for i in range(_TWENTY_SYMBOL_COUNT)
+        )
+        + "\n"
+    )
+
+
+# A corpus + budget pair (empirically pinned, deterministic -- no import
+# edges between any module, so PageRank ties uniformly and the tie-break
+# module-name-ASC order is fully deterministic) sized so full_symbols=True's
+# bigger render for the over-endowed module genuinely squeezes ONE additional
+# module out at a budget the capped call fits entirely -- proving the
+# full_symbols=True/token-budget coherence requirement without relying on
+# _test_infra_corpus's test-elision-line overhead (a separate, pre-existing
+# mandatory-tail-sizing gap this session's report flags, not this test's
+# concern).
+_FULL_SYMBOLS_OVER_ENDOWED_SYMBOL_COUNT = 40
+_FULL_SYMBOLS_LEAF_MODULE_COUNT = 10
+_FULL_SYMBOLS_BUDGET_PROBE = 600
+
+
+def _full_symbols_budget_probe_corpus() -> dict[str, str]:
+    files = {
+        "many.py": (
+            "\n\n".join(
+                f'def s{i:02d}(x):\n    """One of many symbols."""\n    return x'
+                for i in range(_FULL_SYMBOLS_OVER_ENDOWED_SYMBOL_COUNT)
+            )
+            + "\n"
+        )
+    }
+    for i in range(_FULL_SYMBOLS_LEAF_MODULE_COUNT):
+        files[f"leaf{i}.py"] = f'def leaf_{i}(x):\n    """A small leaf module."""\n    return x\n'
+    return files
+
+
+class TestSymbolsWireFieldCappedLikeTheRender:
+    """Contract (finding #77): MapEntry.symbols is capped with the SAME
+    per-module discipline the formatted render applies, carrying an honest
+    symbols_elided count -- mirrors ImpactResult.covering_tests /
+    covering_tests_elided (the #39-reversal grammar, generalized from
+    lore_impact to lore_map)."""
+
+    async def test_default_map_caps_entries_symbols_with_elided_count(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Arrange: the EXACT #77 live evidence shape.
+        trio, _server = await _build_graph(
+            tmp_path, {f"{_TWENTY_SYMBOL_MODULE}.py": _twenty_symbol_source()}
+        )
+        engine = engine_factory(trio.graph)
+
+        # Act
+        result = await engine.map(budget=_BUDGET_DEFAULT)
+
+        # Assert
+        entry = result.entries[_index_of_module(result.entries, _TWENTY_SYMBOL_MODULE)]
+        assert len(entry.symbols) == _TWENTY_SYMBOL_SHOWN_AT_DEFAULT_BUDGET, (
+            "a 20-symbol module at the default budget's cap (10) must show "
+            f"exactly 10 in the STRUCTURED field, not the full 20; got "
+            f"{len(entry.symbols)}"
+        )
+        assert entry.symbols_elided == (
+            _TWENTY_SYMBOL_COUNT - _TWENTY_SYMBOL_SHOWN_AT_DEFAULT_BUDGET
+        ), "the elided count must name the exact hidden count (10), never silent"
+        # The structured field and the render must agree on WHAT is shown --
+        # never a structured dump riding alongside an honestly-capped render.
+        for symbol in entry.symbols:
+            assert symbol in result.formatted
+        rendered_count = sum(
+            1 for i in range(_TWENTY_SYMBOL_COUNT) if f"f{i:02d}" in result.formatted
+        )
+        assert rendered_count == _TWENTY_SYMBOL_SHOWN_AT_DEFAULT_BUDGET, (
+            "the render must show the SAME count as the structured field -- "
+            "the un-swept #77 shape dumped all 20 on the wire while the "
+            f"render capped; got {rendered_count}"
+        )
+
+    async def test_focused_module_symbols_are_full_and_elided_is_zero(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # The finding's stated exemption: the FOCUSED module keeps its full
+        # roster in BOTH surfaces.
+        trio, _server = await _build_graph(
+            tmp_path, {f"{_TWENTY_SYMBOL_MODULE}.py": _twenty_symbol_source()}
+        )
+        engine = engine_factory(trio.graph)
+
+        result = await engine.map(budget=_BUDGET_DEFAULT, focus="f00")
+
+        entry = result.entries[_index_of_module(result.entries, _TWENTY_SYMBOL_MODULE)]
+        assert len(entry.symbols) == _TWENTY_SYMBOL_COUNT, (
+            "the FOCUSED module must carry its FULL roster in the structured "
+            "field too, not just the render"
+        )
+        assert entry.symbols_elided == 0
+
+    async def test_full_symbols_true_lifts_every_modules_cap(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # The new explicit escape hatch (requirement 2 of the ruling): every
+        # module's cap lifts, not just a focused one.
+        trio, _server = await _build_graph(
+            tmp_path, {f"{_TWENTY_SYMBOL_MODULE}.py": _twenty_symbol_source()}
+        )
+        engine = engine_factory(trio.graph)
+
+        result = await engine.map(budget=_BUDGET_DEFAULT, full_symbols=True)
+
+        entry = result.entries[_index_of_module(result.entries, _TWENTY_SYMBOL_MODULE)]
+        assert len(entry.symbols) == _TWENTY_SYMBOL_COUNT, (
+            "full_symbols=True must lift EVERY module's cap, not just a "
+            "focused one"
+        )
+        assert entry.symbols_elided == 0
+
+    async def test_full_symbols_true_still_respects_the_token_budget(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Requirement 2's "coherence" clause: full_symbols=True must never
+        # blow past the token contract -- bigger per-module lines simply
+        # squeeze more MODULES out, counted by elided_modules, never an
+        # uncapped byte blowout. Corpus sized (one 40-symbol over-endowed
+        # module + 10 one-symbol leaves, NO test modules -- deliberately
+        # avoiding _test_infra_corpus's test-elision-line overhead, a
+        # SEPARATE pre-existing mandatory-tail-sizing gap flagged in this
+        # session's report, not this test's concern) so the SAME shared
+        # budget fits everything capped but genuinely cannot fit the
+        # over-endowed module's full roster alongside every leaf.
+        trio, _server = await _build_graph(tmp_path, _full_symbols_budget_probe_corpus())
+        engine = engine_factory(trio.graph, count_tokens=len)
+
+        capped = await engine.map(budget=_FULL_SYMBOLS_BUDGET_PROBE, full_symbols=False)
+        full = await engine.map(budget=_FULL_SYMBOLS_BUDGET_PROBE, full_symbols=True)
+
+        assert len(capped.formatted) <= _FULL_SYMBOLS_BUDGET_PROBE
+        assert len(full.formatted) <= _FULL_SYMBOLS_BUDGET_PROBE
+        assert capped.elided_modules == 0, (
+            "the capped render must fit everything at this budget (the control)"
+        )
+        assert full.elided_modules > capped.elided_modules, (
+            "full_symbols=True inflates the over-endowed module's line -- at "
+            "the SAME shared budget this must show up as MORE module "
+            "elision, never an ignored budget"
+        )
+        assert _ELISION_FRAGMENT in full.formatted
+
+    async def test_capped_trailer_names_both_expansion_levers(
+        self, tmp_path: Path, engine_factory: Callable[..., Any]
+    ) -> None:
+        # Requirement 3 of the ruling: since _INSTRUCTIONS is unchanged, the
+        # capped per-module trailer itself must teach BOTH levers -- focus=
+        # for one module, full_symbols= for every module.
+        trio, _server = await _build_graph(tmp_path, _test_infra_corpus())
+        engine = engine_factory(trio.graph)
+
+        result = await engine.map(budget=_BUDGET_DEFAULT)
+
+        many_line = next(
+            line
+            for line in result.formatted.splitlines()
+            if line.startswith(_MANY_SYMBOL_MODULE)
+        )
+        assert f"{_SYMBOL_CAP_TEACH_VERB}{_MANY_SYMBOL_MODULE}" in many_line
+        assert _SYMBOL_CAP_TEACH_TAIL in many_line
+        assert "full_symbols" in many_line, (
+            "the capped trailer must ALSO teach the full_symbols= lever -- "
+            "the parameter that lifts every module's cap, not just this one"
+        )
+
+
+# =========================================================================== #
 # S2 fix (docs/design/2026-07-06-client-needs-consult.md Synthesis S2 /
 # REPORT-slate-scout-s2.md): map/get_symbol identity coherence. Root cause was
 # NOT chunking granularity -- the graph already computes the fully
@@ -1217,7 +1421,11 @@ class TestMethodSymbolsRenderClassQualified:
     ) -> None:
         # An over-endowed class (methods, not bare functions): the cap/trailer
         # "+K more" bookkeeping must count against the QUALIFIED render, not
-        # silently miscount because names got longer.
+        # silently miscount because names got longer. Finding #77 (this wave,
+        # the un-swept S1 instance): the STRUCTURED entry.symbols field is now
+        # capped IDENTICALLY to the render (it previously carried the full,
+        # uncapped roster) -- this pin flips to assert the new wire/render
+        # agreement instead of the old (now-reversed) uncapped contract.
         source = "class ManyHandler:\n" + "\n".join(
             f'    def m_{i}(self, x):\n        """Method {i}."""\n        return x\n'
             for i in range(_OVER_ENDOWED_SYMBOL_COUNT)
@@ -1230,19 +1438,23 @@ class TestMethodSymbolsRenderClassQualified:
         entry = result.entries[_index_of_module(result.entries, "manymethods")]
         # +1: the class itself is also a (bare) rendered symbol alongside its
         # 12 methods.
-        assert len(entry.symbols) == _OVER_ENDOWED_SYMBOL_COUNT + 1, (
-            "the engine's own MapEntry.symbols is never capped -- only the render is"
+        total_symbols = _OVER_ENDOWED_SYMBOL_COUNT + 1
+        assert len(entry.symbols) < total_symbols, (
+            "finding #77: the STRUCTURED entry.symbols field must be CAPPED "
+            "by default, the same as the render -- an over-endowed module "
+            "must never dump its full roster onto the wire"
+        )
+        assert entry.symbols_elided == total_symbols - len(entry.symbols), (
+            "symbols_elided must be the EXACT hidden count, never silent"
         )
         rendered_qualified_count = result.formatted.count("ManyHandler.m_")
         assert rendered_qualified_count < _OVER_ENDOWED_SYMBOL_COUNT, (
             "an over-endowed class must still render a CAPPED subset by "
             f"default even with qualified names; rendered {rendered_qualified_count}"
         )
-        hidden = _OVER_ENDOWED_SYMBOL_COUNT - rendered_qualified_count
-        assert f"+{hidden} more" in result.formatted, (
-            "the '+K more' trailer count must match the qualified render's "
-            f"actual hidden count ({hidden}), never miscount because names "
-            "got longer"
+        assert f"+{entry.symbols_elided} more" in result.formatted, (
+            "the '+K more' trailer count must match entry.symbols_elided "
+            "exactly -- the structured field and the render must never disagree"
         )
 
 

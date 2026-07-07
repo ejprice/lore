@@ -3111,6 +3111,7 @@ class AppContext:
         tests: bool = False,
         *,
         changed_since: str | None = None,
+        full_symbols: bool = False,
         caller_model: str | None = None,
     ) -> MapResult:
         """Return the rank-ordered, budget-fitted "orient me here" map of the graph.
@@ -3125,7 +3126,10 @@ class AppContext:
         ``tests=true`` affordance line instead). ``changed_since`` (P8d Wave
         4a, net-new §5) tags modules touched since that snapshot ``[changed]``
         — purely additive, never altering the pinned test/elision/focus/cap
-        semantics.
+        semantics. ``full_symbols`` (finding #77) lifts EVERY module's symbol
+        cap at once (not just a ``focus``-ed module's) — still honestly
+        budget-bound, passed straight through to :meth:`~loremaster.map.
+        MapEngine.map`.
 
         ``caller_model`` (P8d Wave 4a) is a PER-CALL re-denomination: rather
         than mutate the shared ``self._map_engine`` (unsafe under concurrent
@@ -3145,7 +3149,9 @@ class AppContext:
                 rebuild_notice=self._rebuild_notice,
                 changed_since_resolver=self._resolve_changed_modules,
             )
-        result = await engine.map(budget, focus, tests, changed_since=changed_since)
+        result = await engine.map(
+            budget, focus, tests, changed_since=changed_since, full_symbols=full_symbols
+        )
         note = self._caller_model_note(caller_model)
         if note is not None:
             result = result.model_copy(update={"formatted": f"{result.formatted}\n{note}"})
@@ -5728,6 +5734,25 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
+        full_symbols: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Serve every module's FULL symbol roster instead of the "
+                    "default per-module cap. Default false: each module's "
+                    "symbols (both the structured field and the rendered line) "
+                    "cap at a budget-scaled per-module count, with the exact "
+                    "hidden count named — never silent — and a trailer naming "
+                    "'focus=<module>' to lift just ONE module's cap. Set true to "
+                    "lift EVERY module's cap at once instead. Cost: full rosters "
+                    "for every module are LARGE — prefer focus=<module> for a "
+                    "single module's roster over setting this true for the whole "
+                    "corpus. The token budget still applies honestly either way: "
+                    "a bigger render simply elides more MODULES (counted in "
+                    "elided_modules), never an uncapped blowout past the budget."
+                )
+            ),
+        ] = False,
         caller_model: Annotated[
             str | None,
             Field(
@@ -5743,7 +5768,12 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         ] = None,
     ) -> MapResult:
         return await _app_context(context).map(
-            budget, focus, tests, changed_since=changed_since, caller_model=caller_model
+            budget,
+            focus,
+            tests,
+            changed_since=changed_since,
+            full_symbols=full_symbols,
+            caller_model=caller_model,
         )
 
     # After the built-ins, register the extension-contributed seam-3 tools.

@@ -1714,7 +1714,9 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
         "consumer_count",
     },
     # P6-tail: MapResult is also a SCALAR return; its nested MapEntry fields
-    # surface under $defs.
+    # surface under $defs. Finding #77: MapEntry gains symbols_elided (the
+    # honest per-module hidden-symbol count, mirrors lore_impact's
+    # covering_tests_elided) alongside the now-capped symbols field.
     "lore_map": {
         "entries",
         "elided_modules",
@@ -1722,6 +1724,7 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
         "module",
         "rank",
         "symbols",
+        "symbols_elided",
     },
 }
 
@@ -5595,6 +5598,92 @@ class TestMapChangedSinceAndCallerModel:
             assert "claude-haiku-4-5" not in unfocused_after.formatted
         finally:
             await ctx.aclose()
+
+
+# Finding #77: an over-endowed production module (16 symbols: 1 class + 15
+# methods) -- enough to exceed the default budget's per-module symbol cap
+# (10), so full_symbols=True's cap-lift is observable end-to-end.
+_MAP_OVER_ENDOWED_METHOD_COUNT = 15
+_MAP_OVER_ENDOWED_MODULE = "big"
+
+
+def _map_over_endowed_source() -> str:
+    methods = "\n\n".join(
+        f'    def method_{i:02d}(self, x):\n        """Method {i}."""\n        return x'
+        for i in range(_MAP_OVER_ENDOWED_METHOD_COUNT)
+    )
+    return f"class BigHandler:\n{methods}\n"
+
+
+class TestMapFullSymbols:
+    """Finding #77 requirement 2: ``full_symbols=True`` is wired end-to-end
+    from the registered ``lore_map`` tool through ``AppContext.map`` to
+    ``MapEngine.map``, lifting every module's symbol cap at once (not just a
+    ``focus``-ed module's)."""
+
+    @pytest_asyncio.fixture()
+    async def over_endowed(self, tmp_path: Path) -> AsyncIterator[tuple[Any, AppContext]]:
+        slug = _slug()
+        live = tmp_path / "live"
+        live.mkdir(parents=True, exist_ok=True)
+        (live / "big.py").write_text(_map_over_endowed_source(), encoding="utf-8")
+        config = _config(slug, live)
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        await ctx.indexer.index_all()
+        mcp = build_mcp_server(LoreServer(config))
+        try:
+            yield mcp, ctx
+        finally:
+            await ctx.aclose()
+
+    async def test_full_symbols_true_lifts_the_cap_through_app_context(
+        self, over_endowed: tuple[Any, AppContext]
+    ) -> None:
+        _mcp, ctx = over_endowed
+        capped = await ctx.map()
+        full = await ctx.map(full_symbols=True)
+
+        capped_entry = next(e for e in capped.entries if e.module == _MAP_OVER_ENDOWED_MODULE)
+        full_entry = next(e for e in full.entries if e.module == _MAP_OVER_ENDOWED_MODULE)
+
+        assert capped_entry.symbols_elided > 0, (
+            "the over-endowed module must be capped by default"
+        )
+        assert full_entry.symbols_elided == 0, (
+            "full_symbols=True must lift the cap through AppContext.map"
+        )
+        assert len(full_entry.symbols) > len(capped_entry.symbols)
+
+    async def test_lore_map_wrapper_full_symbols_reaches_the_engine(
+        self, over_endowed: tuple[Any, AppContext]
+    ) -> None:
+        mcp, ctx = over_endowed
+        tool = mcp._tool_manager.get_tool("lore_map")  # noqa: SLF001
+        _unstructured, structured = await tool.run(
+            {"full_symbols": True},
+            context=_FakeToolContext(ctx),
+            convert_result=True,
+        )
+        entry = next(e for e in structured["entries"] if e["module"] == _MAP_OVER_ENDOWED_MODULE)
+        assert entry["symbols_elided"] == 0, (
+            "full_symbols=True passed through the REGISTERED tool wrapper must "
+            "reach MapEngine.map and lift the over-endowed module's cap"
+        )
+
+    async def test_lore_map_tool_schema_documents_full_symbols(
+        self, tmp_path: Path
+    ) -> None:
+        config = _config(_slug(), tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        tools = {tool.name: tool for tool in await mcp.list_tools()}
+        properties = tools["lore_map"].inputSchema["properties"]
+        assert "full_symbols" in properties
+        description = properties["full_symbols"]["description"].lower()
+        assert "cap" in description, "the description must explain the default caps"
+        assert "focus" in description, (
+            "the description must name the sibling lever (focus=<module>) for "
+            "a single module's roster"
+        )
 
 
 class TestDeadCodeParamsCut:

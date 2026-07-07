@@ -37,6 +37,27 @@ fixed here:
    test demotion becomes a trap), with production neighbors still present and
    test nodes ``[test]``-tagged (§6).
 
+Finding #77 (the un-swept S1 instance, this wave): §7's symbol-cap discipline
+above previously bound the RENDER only — :attr:`MapEntry.symbols` (the
+structured wire field) carried a module's FULL roster unconditionally, even
+when the formatted block showed a "+N more" capped subset of it. Over MCP the
+model IS the consumer of both surfaces in one payload, so an uncapped
+structured field taxes the SAME context an uncapped render would — exactly
+the S1/#39-reversal rationale :class:`~loremaster.impact.ImpactEngine`
+already applies to ``covering_tests``, generalized here from lore_impact to
+lore_map. The structured field now caps IDENTICALLY to the render (one cap,
+computed once, at :class:`MapEntry` construction), with the exact hidden
+count carried honestly in the new :attr:`MapEntry.symbols_elided` (mirrors
+:attr:`~loremaster.impact.ImpactResult.covering_tests_elided`). The FOCUSED
+module keeps its full roster in both surfaces, unchanged. A caller wanting
+every module's full roster in one call opts in explicitly via the new
+``full_symbols=True`` parameter — still honestly budget-bound: a bigger
+render simply elides more MODULES (counted), never an uncapped blowout past
+the token contract. ``_INSTRUCTIONS`` is UNCHANGED by this fix (lead ruling —
+tactics teach at moment of need): the capped trailer itself now names BOTH
+expansion levers (``focus=<module>`` for one module, ``full_symbols=true``
+for every module).
+
 The ranking pipeline is unchanged from P6: whole-graph extraction
 (:meth:`_extract_module_graph`), import adjacency, a deterministic power-
 iteration PageRank (:meth:`_page_rank`), and a personalization vector that is
@@ -156,6 +177,14 @@ _SYMBOL_CAP_MORE_PREFIX = "+"
 _SYMBOL_CAP_TEACH_VERB = "focus="
 _SYMBOL_CAP_TEACH_TAIL = "for the full list"
 
+# Finding #77 (requirement 3): the capped trailer must ALSO teach the SECOND
+# lever — the ``full_symbols`` parameter that lifts EVERY module's cap at
+# once, not just the one module ``focus=`` names. ``_INSTRUCTIONS`` itself is
+# UNCHANGED by this fix (lead ruling: tactics teach at moment of need) — this
+# per-module trailer is the one place that carries it.
+_FULL_SYMBOLS_PARAM = "full_symbols"
+_SYMBOL_CAP_FULL_SYMBOLS_TEACH = f"or {_FULL_SYMBOLS_PARAM}=true for every module's full roster"
+
 # S2 fix (2026-07-06, REPORT-slate-scout-s2.md / docs/design/
 # 2026-07-06-client-needs-consult.md Synthesis S2): the always-on
 # resolution-grammar affordance. Before this fix, a method-kind symbol
@@ -221,7 +250,21 @@ class MapEntry(BaseModel):
             sibling classes in the same module, rendering an ambiguous flat
             namespace ``lore_get_symbol`` cannot resolve; the graph already
             computes the class-qualified name — :meth:`~loremaster.graph.
-            CodeGraph._method_node` — this only stops discarding it).
+            CodeGraph._method_node` — this only stops discarding it). CAPPED
+            at the SAME per-module discipline the formatted render applies
+            (finding #77 — the un-swept S1 instance: a structured field must
+            never carry more than the render shows, mirroring
+            :attr:`~loremaster.impact.ImpactResult.covering_tests`). The
+            FOCUSED module (or every module when the caller passes
+            ``full_symbols=True``) keeps its FULL roster here too; any
+            residual names are counted in :attr:`symbols_elided`, never
+            silently dropped.
+        symbols_elided: The count of this module's symbol names squeezed out
+            of :attr:`symbols` by the per-module cap (0 when the module's
+            full roster fit, or its cap was LIFTED — the focused module, or
+            every module under ``full_symbols=True``) — never silent, mirrors
+            :attr:`~loremaster.impact.ImpactResult.covering_tests_elided`
+            (finding #77).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -229,6 +272,7 @@ class MapEntry(BaseModel):
     module: str
     rank: float
     symbols: list[str]
+    symbols_elided: int
 
 
 class MapResult(BaseModel):
@@ -307,6 +351,7 @@ class MapEngine:
         focus: str | None = None,
         tests: bool = False,
         changed_since: str | None = None,
+        full_symbols: bool = False,
     ) -> MapResult:
         """Return the rank-ordered, budget-fitted map of the code graph.
 
@@ -329,6 +374,14 @@ class MapEngine:
                 is tagged ``[changed]`` and one summary line is appended —
                 purely ADDITIVE to every pinned semantic above (never alters
                 ranking, exclusion, caps, or the elision lines).
+            full_symbols: Finding #77's explicit escape hatch. When ``True``,
+                EVERY module's symbol cap lifts (not just a ``focus``-ed
+                module's) — both in :attr:`MapEntry.symbols` and the render.
+                Reuses the SAME lifted-module mechanism ``focus=`` already
+                drives, so the token ``budget`` still binds honestly: bigger
+                per-module lines simply squeeze more MODULES out (counted in
+                :attr:`MapResult.elided_modules`), never an uncapped blowout
+                past the budget contract. Default ``False`` (capped).
 
         Returns:
             The composed :class:`MapResult`.
@@ -343,6 +396,7 @@ class MapEngine:
         """
         await self._raise_if_rebuilding()
         budget = self._clamp_budget(budget)
+        symbol_cap = self._symbol_cap(budget)
         changed_modules = await self._resolve_changed_modules(changed_since)
 
         modules, out_edges, symbols_by_module, module_is_test, symbol_owners, module_names_by_file = (
@@ -372,16 +426,28 @@ class MapEngine:
             lifted_modules = set()
             is_test_focus = False
 
+        if full_symbols:
+            # Finding #77's explicit escape hatch: EVERY module's cap lifts,
+            # reusing the IDENTICAL lifted-module mechanism `focus=` already
+            # drives, so the budget-fit walk in `_render` below still binds
+            # honestly (bigger lines squeeze more MODULES out, counted).
+            lifted_modules = set(modules)
+
         ranks = self._page_rank(modules, out_edges, personalization)
 
-        all_entries = [
-            MapEntry(
-                module=module,
-                rank=ranks.get(module, 0.0),
-                symbols=symbols_by_module.get(module, []),
+        all_entries = []
+        for module in modules:
+            shown_symbols, symbols_elided = self._cap_symbols(
+                symbols_by_module.get(module, []), symbol_cap, module in lifted_modules
             )
-            for module in modules
-        ]
+            all_entries.append(
+                MapEntry(
+                    module=module,
+                    rank=ranks.get(module, 0.0),
+                    symbols=shown_symbols,
+                    symbols_elided=symbols_elided,
+                )
+            )
         all_entries.sort(key=lambda entry: (-entry.rank, entry.module))
 
         # Test modules keep feeding rank mass above (they were part of the
@@ -403,13 +469,10 @@ class MapEngine:
                 else None
             )
 
-        symbol_cap = self._symbol_cap(budget)
         kept_entries, elided, formatted = self._render(
             entries_to_render,
             budget,
             module_is_test=module_is_test,
-            symbol_cap=symbol_cap,
-            lifted_modules=lifted_modules,
             test_elision_line=test_elision_line,
             changed_modules=changed_modules,
         )
@@ -476,6 +539,26 @@ class MapEngine:
         renders a meaningful glimpse of a module's surface.
         """
         return max(_MIN_SYMBOL_CAP, budget // _SYMBOL_CAP_BUDGET_DIVISOR)
+
+    @staticmethod
+    def _cap_symbols(
+        symbols: Sequence[str], symbol_cap: int, lifted: bool
+    ) -> tuple[list[str], int]:
+        """Cap ``symbols`` at ``symbol_cap`` unless ``lifted``, returning
+        ``(shown, elided)`` (finding #77).
+
+        Mirrors :meth:`~loremaster.impact.ImpactEngine._cap`'s shape: the
+        SAME discipline now applies at :class:`MapEntry` construction time
+        (rather than only inside the render), so the structured wire field
+        and the formatted render always agree on what is shown. ``lifted``
+        (the focused module, or every module under ``full_symbols=True``)
+        always returns the full (already-sorted) list with ``elided=0``;
+        otherwise the top ``symbol_cap`` names are kept and the exact hidden
+        count is returned — never silent.
+        """
+        if lifted or len(symbols) <= symbol_cap:
+            return list(symbols), 0
+        return list(symbols[:symbol_cap]), len(symbols) - symbol_cap
 
     @staticmethod
     def _owner_qualified_name(qualified_name: str) -> str:
@@ -730,29 +813,29 @@ class MapEngine:
 
     # -- rendering --------------------------------------------------------
 
-    def _render_symbols(
-        self, entry: MapEntry, symbol_cap: int, lifted: bool
-    ) -> tuple[str, str]:
-        """Render one module's symbols, capped unless its cap is LIFTED (§7).
+    @staticmethod
+    def _render_symbols(entry: MapEntry) -> tuple[str, str]:
+        """Render one module's ALREADY-CAPPED symbols plus its trailer.
 
-        Returns ``(symbol_text, trailer)``. When the module's symbol count
-        exceeds ``symbol_cap`` and its cap is not lifted, only the top
-        ``symbol_cap`` names render and the TEACHING trailer names the exact
-        expansion verb (``focus=<module> for the full list``, §7a) — the cap is
-        never a dead end. A lifted (focused) module renders its FULL list.
+        Finding #77: capping now happens ONCE, at :class:`MapEntry`
+        construction (via :meth:`_cap_symbols`) — this only FORMATS what the
+        entry already carries. Returns ``(symbol_text, trailer)``. When
+        ``entry.symbols_elided`` is positive, the TEACHING trailer names
+        BOTH expansion levers: ``focus=<module>`` for just this module (§7a),
+        and ``full_symbols=true`` for every module at once (requirement 3 of
+        the finding #77 ruling — ``_INSTRUCTIONS`` itself is unchanged, so
+        this per-module trailer is what teaches the second lever).
         """
         symbols = entry.symbols
-        if lifted or len(symbols) <= symbol_cap:
-            shown = symbols
-            trailer = ""
-        else:
-            shown = symbols[:symbol_cap]
-            hidden = len(symbols) - symbol_cap
+        symbol_text = ", ".join(symbols) if symbols else _NO_SYMBOLS_PLACEHOLDER
+        if entry.symbols_elided:
             trailer = (
-                f" ({_SYMBOL_CAP_MORE_PREFIX}{hidden} more — "
-                f"{_SYMBOL_CAP_TEACH_VERB}{entry.module} {_SYMBOL_CAP_TEACH_TAIL})"
+                f" ({_SYMBOL_CAP_MORE_PREFIX}{entry.symbols_elided} more — "
+                f"{_SYMBOL_CAP_TEACH_VERB}{entry.module} {_SYMBOL_CAP_TEACH_TAIL}, "
+                f"{_SYMBOL_CAP_FULL_SYMBOLS_TEACH})"
             )
-        symbol_text = ", ".join(shown) if shown else _NO_SYMBOLS_PLACEHOLDER
+        else:
+            trailer = ""
         return symbol_text, trailer
 
     def _render_module_line(
@@ -760,8 +843,6 @@ class MapEngine:
         entry: MapEntry,
         *,
         is_test: bool,
-        symbol_cap: int,
-        lifted: bool,
         is_changed: bool = False,
     ) -> str:
         """One compact, SELF-DESCRIBING rollup line: module, rank, symbols.
@@ -775,7 +856,7 @@ class MapEngine:
         """
         active_tags = [tag for tag, present in ((_TEST_TAG, is_test), (_CHANGED_TAG, is_changed)) if present]
         tags = "".join(f" {tag}" for tag in active_tags)
-        symbol_text, trailer = self._render_symbols(entry, symbol_cap, lifted)
+        symbol_text, trailer = self._render_symbols(entry)
         return f"{entry.module}{tags}  (rank {entry.rank:.4f})  symbols: {symbol_text}{trailer}"
 
     @staticmethod
@@ -810,8 +891,6 @@ class MapEngine:
         budget: int,
         *,
         module_is_test: Mapping[str, bool],
-        symbol_cap: int,
-        lifted_modules: set[str],
         test_elision_line: str | None,
         changed_modules: frozenset[str] = frozenset(),
     ) -> tuple[list[MapEntry], int, str]:
@@ -828,16 +907,15 @@ class MapEngine:
         trailer is appended too, popping already-kept lines (lowest-ranked
         first) until the trailer plus the mandatory tail all fit. The clamped
         floor (:data:`_BUDGET_FLOOR`) guarantees the mandatory tail alone
-        always fits.
+        always fits. Each entry's symbols already arrive CAPPED (finding #77 —
+        :meth:`_cap_symbols` ran at :class:`MapEntry` construction), so this
+        walk needs no symbol-cap state of its own.
 
         Args:
             entries: The full rank-ordered entry list to render.
             budget: The already-clamped token ceiling.
             module_is_test: The prod/test classification per module (drives the
                 ``[test]`` tag).
-            symbol_cap: The per-module symbol cap for this budget.
-            lifted_modules: Modules whose symbol cap is lifted (the focused
-                module's full list).
             test_elision_line: The always-on test-infra elision line, or
                 ``None`` when the corpus has no omitted test modules.
             changed_modules: Modules to tag ``[changed]`` (P8d Wave 4a, purely
@@ -855,8 +933,6 @@ class MapEngine:
             line = self._render_module_line(
                 entry,
                 is_test=module_is_test.get(entry.module, False),
-                symbol_cap=symbol_cap,
-                lifted=entry.module in lifted_modules,
                 is_changed=entry.module in changed_modules,
             )
             trial_lines = [*kept_lines, line, *mandatory_tail]
