@@ -208,18 +208,21 @@ _ENRICHMENT_UNAVAILABLE = "⚠ enrichment unavailable"  # "⚠ enrichment unavai
 # built on the store's PRE-FUSION cosine projection (:class:`Candidate.
 # vector_cosine <loremaster.store.candidate.Candidate>`), a genuine magnitude.
 #
-# Every constant below is a PENDING-MEASUREMENT gate, dark by construction
-# until the Phase C survey (``scripts/search_score_survey.py``, design doc §6)
-# selects real values — never guessed, per this repo's law. Two gate shapes,
-# per the design doc's own "feature-gated off or floor=None semantics":
-# ``_COSINE_SUBSTRATE_ENABLED`` (a bool — D1's own gate, "ships iff within-
-# query cosine spread is measured informative") and
-# ``_COSINE_WEAK_MATCH_FLOOR`` (``None`` = not yet measured — gates BOTH the
-# per-hit weak line and the aggregate absence verdict, D2). Flipping either
-# requires the survey's measured receipts (REPORT-slate-builder-s4b.md),
-# never a guess landed alongside this commit.
-_COSINE_SUBSTRATE_ENABLED = False
-_COSINE_WEAK_MATCH_FLOOR: float | None = None
+# MEASURED and ADOPTED (2026-07-06) — live search_score_survey.py re-run
+# (post-D3-fix; scratchpad/survey_out_rerun/search_score_survey_summary.md +
+# .jsonl alongside, this session): D1 substrate gate PASSES (median
+# within-query cosine spread over the real groups clears the 0.05 bar,
+# unconditional per the design record). D2 verdict floor selection returned
+# floor=0.5828, false-fire 4.0% (2/50 on the union of prose-real +
+# identifier-real queries, under the 5% ceiling), nonsense catch 100.0%
+# (15/15, up from the D3-fix-plumbing run's 40.0%/6-15 pre-fix baseline) —
+# clears the >= 60% (9/15) adoption bar by a wide margin, per D2's own
+# max-catch-among-admissible-floors rule (docs/design/2026-07-06-weak-match-
+# discrimination.md §7.2 D2/§6 Phase C). ADOPTED, never re-guessed: flipping
+# either constant again requires a fresh survey run's receipts, exactly as
+# this one did.
+_COSINE_SUBSTRATE_ENABLED = True
+_COSINE_WEAK_MATCH_FLOOR: float | None = 0.5828
 
 # item 12a: the always-on per-hit magnitude (design doc §7.4 item 2) — a
 # claim-free number, read RELATIVELY within one response (no cross-call
@@ -259,6 +262,37 @@ _COSINE_ABSENCE_VERDICT_TEMPLATE = (
 # falling back to the ordinary absence verdict — never a confident-wrong flag
 # on an exact-identifier lookup.
 _QUERY_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+")
+
+# item 12d fix (D3 carve-out miscalibration — docs/design/2026-07-06-weak-
+# match-discrimination.md §7.2 D3, operator-ruled fix 2026-07-06): an
+# UNGATED token-set intersection fires on a bare common-English word that
+# happens to intersect an unrelated identifier fragment inside a hit's
+# derived ``ident_text`` (``SurrealStore._derive_ident_text`` space-joins
+# identity + bare_name + file_stem, so an English-shaped heading/file-stem
+# token sits in the SAME set as real code identifiers) — that is not
+# evidence the caller pasted a real symbol. Measured
+# (scripts/search_score_survey.py run, 2026-07-06, REPORT-slate-fixer-
+# survey.md / search_score_survey_summary.md): 9/15 nonsense queries
+# anchored this way (e.g. "rate limiting middleware per client IP address"
+# anchored via bare "rate"/"client"), capping nonsense catch at 40% against
+# D2's 60% adoption bar. The QUERY side of the anchor is therefore
+# restricted to identifier-SHAPED tokens (:func:`_identifier_shaped_query_tokens`)
+# — underscore-bearing, a segment of a dot-qualified chain, or internally
+# case-changing (camelCase) — plus a substantial-length whole-query fallback
+# (:func:`_has_whole_query_identity_match`) for an exact non-code identity
+# paste (a doc heading sampled straight off the corpus) that carries none of
+# those three shapes.
+_MIN_WHOLE_QUERY_ANCHOR_LENGTH = 12
+
+# Matches a dot-qualified identifier chain (``Class.method``, ``os.path``) as
+# ONE run so each 2+-character segment can be marked identifier-shaped even
+# when, alone, it carries neither an underscore nor an internal case change
+# (a bare lowercase leaf after the dot, e.g. ``"get"`` in ``"requests.get"``).
+# Each segment requires >= 2 characters so a prose abbreviation like "e.g."
+# or "i.e." (single-letter segments) never qualifies.
+_DOTTED_IDENTIFIER_CHAIN_PATTERN = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]+(?:\.[A-Za-z_][A-Za-z0-9_]+)+"
+)
 
 # item 13 (S3, finding #61 — confirmed live, not just a static-reading lead):
 # a non-``"auto"`` ``detail_level`` can legitimately zero EVERY code hit after
@@ -371,16 +405,76 @@ def _query_tokens(query: str) -> frozenset[str]:
     return frozenset(token.lower() for token in _QUERY_TOKEN_PATTERN.findall(query))
 
 
-def _has_verbatim_identifier_anchor(tokens: frozenset[str], ident_text: str) -> bool:
-    """True iff any of ``tokens`` appears as a WHOLE token in ``ident_text`` (D3).
+def _has_internal_case_change(token: str) -> bool:
+    """True iff ``token`` has a lowercase-then-uppercase transition (camelCase/PascalCase merge).
 
-    A token-SET intersection, never a raw substring scan, so a short token
-    (e.g. ``"is"``) cannot spuriously match inside an unrelated longer
-    identifier fragment (e.g. ``"this_is_a_test"``).
+    A single leading capital (``"Kubernetes"``) or an all-caps acronym
+    (``"HVAC"``, ``"GPU"``) has no SUCH transition and is not identifier-
+    shaped by this test alone — only a genuine multi-word merge
+    (``"TestScoutMainGuard"``, ``"OriginValidationMiddleware"``) counts,
+    which is exactly the shape a pasted class/symbol name carries and a
+    plain English word or acronym never does.
     """
-    if not tokens:
+    return any(a.islower() and b.isupper() for a, b in zip(token, token[1:]))
+
+
+def _identifier_shaped_query_tokens(query: str) -> frozenset[str]:
+    """The lower-cased SUBSET of ``query``'s tokens that look like a pasted identifier (D3 fix).
+
+    A token qualifies iff it is underscore-bearing, a segment of a
+    dot-qualified chain (``Class.method``), or internally case-changing
+    (camelCase/PascalCase) — never a bare common-English word, no matter how
+    it happens to line up with an unrelated identifier fragment in some
+    hit's ``ident_text``. See the comment above
+    :data:`_MIN_WHOLE_QUERY_ANCHOR_LENGTH` for the measured defect this
+    closes.
+    """
+    shaped: set[str] = set()
+    for chain in _DOTTED_IDENTIFIER_CHAIN_PATTERN.findall(query):
+        shaped.update(segment.lower() for segment in chain.split("."))
+    for raw_token in _QUERY_TOKEN_PATTERN.findall(query):
+        if "_" in raw_token or _has_internal_case_change(raw_token):
+            shaped.add(raw_token.lower())
+    return frozenset(shaped)
+
+
+def _has_whole_query_identity_match(query: str, ident_text: str) -> bool:
+    """The D3 fallback: a substantial, verbatim whole-query match inside ``ident_text``.
+
+    Protects an exact NON-code identity paste (a doc heading, a title
+    sampled straight off the corpus — e.g. ``"Summary > Fix — DISCLOSE-AND-
+    SERVE"``) that carries none of :func:`_identifier_shaped_query_tokens`'s
+    three shapes but is, taken as a whole, the caller reproducing a real
+    stored identity character-for-character. Gated on
+    :data:`_MIN_WHOLE_QUERY_ANCHOR_LENGTH` so a short common phrase can never
+    coincidentally qualify.
+    """
+    normalised_query = " ".join(query.lower().split())
+    if len(normalised_query) < _MIN_WHOLE_QUERY_ANCHOR_LENGTH:
         return False
-    return bool(tokens & _query_tokens(ident_text))
+    normalised_ident_text = " ".join(ident_text.lower().split())
+    return normalised_query in normalised_ident_text
+
+
+def _has_verbatim_identifier_anchor(query: str, ident_text: str) -> bool:
+    """True iff ``ident_text`` carries a verbatim-identifier anchor for ``query`` (D3).
+
+    Two admission paths, both requiring the QUERY side to look like a
+    pasted identifier/identity — never a bare topical-word overlap:
+
+    1. An identifier-shaped query token (:func:`_identifier_shaped_query_tokens`)
+       appears as a WHOLE token in ``ident_text``'s own tokenization — a
+       token-SET intersection, never a raw substring scan, so a short shaped
+       token (e.g. ``"is_a"``) cannot spuriously match inside an unrelated
+       longer glued token (e.g. ``"this_is_a_test"``).
+    2. The entire (whitespace-normalised) query is a substantial, verbatim
+       substring of ``ident_text`` (:func:`_has_whole_query_identity_match`)
+       — the non-code identity-paste fallback.
+    """
+    shaped_tokens = _identifier_shaped_query_tokens(query)
+    if shaped_tokens and shaped_tokens & _query_tokens(ident_text):
+        return True
+    return _has_whole_query_identity_match(query, ident_text)
 
 
 def _cosine_absence_predicate(best_cosine: float, floor: float, has_verbatim_anchor: bool) -> bool:
@@ -406,9 +500,10 @@ def _cosine_absence_verdict(
 ) -> SearchResult | None:
     """The item-12c aggregate absence verdict, or ``None`` when it does not apply.
 
-    Dark while :data:`_COSINE_WEAK_MATCH_FLOOR` is ``None`` (not yet measured).
-    Once measured, fires per :func:`_cosine_absence_predicate`: there is at
-    least one shown code hit, the MAXIMUM cosine among them (never just the
+    Dark while :data:`_COSINE_WEAK_MATCH_FLOOR` is ``None`` (the disabled/
+    rollback state, not a pre-measurement default — the floor is measured
+    and set by default). Once set, fires per :func:`_cosine_absence_predicate`:
+    there is at least one shown code hit, the MAXIMUM cosine among them (never just the
     top-fused-order hit's — a cosine-strong hit can sit below a cosine-weak
     one) is strictly below the floor, AND no shown hit carries a
     verbatim-identifier anchor (D3's exact-lookup protection). "Nearest
@@ -426,9 +521,8 @@ def _cosine_absence_verdict(
     if not cosines:
         return None
     best_cosine = max(cosines)
-    tokens = _query_tokens(query)
     has_anchor = any(
-        _has_verbatim_identifier_anchor(tokens, str(candidate.payload.get(_PAYLOAD_IDENT_TEXT, "")))
+        _has_verbatim_identifier_anchor(query, str(candidate.payload.get(_PAYLOAD_IDENT_TEXT, "")))
         for _hit, candidate in code_pairs
     )
     if not _cosine_absence_predicate(best_cosine, _COSINE_WEAK_MATCH_FLOOR, has_anchor):

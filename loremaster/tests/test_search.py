@@ -166,11 +166,12 @@ _BIDI_ZERO_WIDTH_AND_SEPARATOR_CHARS = (
 # item 12 (S4b, docs/design/2026-07-06-weak-match-discrimination.md) — RETIRES
 # S4's fused-RRF-score floor (a rank-fusion CODE, structurally incapable of
 # discriminating nonsense from real queries — §1.2) in favour of a PRE-FUSION
-# cosine substrate + gated absence verdict. Every gate constant ships DARK
-# (feature-gated off / floor=None) until a Phase C survey measures real
-# values — this module's own tests exercise both the dark-by-default world
-# AND the lit-up behaviour via ``monkeypatch`` on the module's gate constants
-# (never re-declared here; the whole POINT is that the module owns them).
+# cosine substrate + gated absence verdict. ADOPTED 2026-07-06 (search.py's
+# own comment above ``_COSINE_SUBSTRATE_ENABLED`` carries the measured
+# receipts): production now ships LIT by default. This module's own tests
+# exercise BOTH the lit production default AND the explicitly-forced-dark
+# path via ``monkeypatch`` on the module's gate constants (never re-declared
+# here; the whole POINT is that the module owns them).
 _WEAK_MATCH_MARKER = "weak match"
 _ABSENCE_VERDICT_MARKER = "no confident match"
 
@@ -1634,11 +1635,18 @@ def _score_candidate(
 
 
 class TestCosineWeakMatchDark:
-    """Ships DARK by default (design doc §7's ruling): no substrate line, no
+    """The dark code path still works when EXPLICITLY forced dark.
 
-    per-hit weak flag, no aggregate absence verdict ever renders while the
-    gate constants sit at their PENDING-MEASUREMENT defaults — regardless of
-    how low (or absent) a candidate's ``vector_cosine`` is.
+    Pre-adoption, dark was the PRODUCTION DEFAULT (this class used to test
+    that with no monkeypatching at all). Post-adoption (2026-07-06 survey
+    re-run: D1 passes, D2 floor=0.5828, false-fire 4.0%, nonsense catch
+    100% — see the constants' own comment in search.py), the production
+    default is LIT, so these tests now explicitly monkeypatch back to the
+    dark gate values to keep the disable path under regression coverage (an
+    operator forcing ``_COSINE_SUBSTRATE_ENABLED=False`` /
+    ``_COSINE_WEAK_MATCH_FLOOR=None`` — e.g. a rollback — must still get
+    zero substrate line, zero per-hit flag, zero aggregate verdict,
+    regardless of how low a candidate's ``vector_cosine`` is).
     """
 
     async def _pipeline(
@@ -1649,8 +1657,9 @@ class TestCosineWeakMatchDark:
         return _make_pipeline(indexed=indexed, embedder=embedder, server=server, store=store)
 
     async def test_no_substrate_line_regardless_of_cosine(
-        self, tmp_path: Path, embedder: FakeEmbedder
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(search_module, "_COSINE_SUBSTRATE_ENABLED", False)
         candidate = _score_candidate("k1", 0.03, vector_cosine=0.9)
         pipeline = await self._pipeline(tmp_path, embedder, [candidate])
 
@@ -1660,8 +1669,9 @@ class TestCosineWeakMatchDark:
         assert "sim " not in hits[0].formatted
 
     async def test_no_weak_flag_regardless_of_how_low_the_cosine_is(
-        self, tmp_path: Path, embedder: FakeEmbedder
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", None)
         near_zero_cosine = _score_candidate("k1", 0.03, vector_cosine=-1.0)
         pipeline = await self._pipeline(tmp_path, embedder, [near_zero_cosine])
 
@@ -1671,8 +1681,9 @@ class TestCosineWeakMatchDark:
         assert _WEAK_MATCH_MARKER not in hits[0].formatted
 
     async def test_no_absence_verdict_even_when_every_hit_is_weak_cosine(
-        self, tmp_path: Path, embedder: FakeEmbedder
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", None)
         weak_a = _score_candidate("k1", 0.03, vector_cosine=-1.0, file_path="pkg/a.py")
         weak_b = _score_candidate("k2", 0.02, vector_cosine=-1.0, file_path="pkg/b.py")
         pipeline = await self._pipeline(tmp_path, embedder, [weak_a, weak_b])
@@ -1965,6 +1976,156 @@ class TestCosineAbsenceVerdictLit:
         assert "\\x1b" not in notice.formatted
         assert "\\n" not in notice.formatted
 
+    async def test_bare_word_overlap_no_longer_suppresses_the_verdict(
+        self, tmp_path: Path, embedder: FakeEmbedder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D3 fix (docs/design/2026-07-06-weak-match-discrimination.md §7.2 D3,
+        # search_score_survey_summary.md 2026-07-06): "client" is a bare
+        # English word, not a pasted identifier -- it must not suppress the
+        # verdict just because it happens to overlap a real identifier's
+        # derived ident_text (identity "Client" + file stem "client" from
+        # ``pkg/client.py``, exactly how ``SurrealStore._derive_ident_text``
+        # would build it). Measured defect: 9/15 nonsense queries anchored
+        # via exactly this bare-word-overlap pattern before this fix.
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", self._FLOOR)
+        weak = _score_candidate(
+            "k1", 0.03, vector_cosine=self._FLOOR - 0.01,
+            file_path="pkg/client.py", identity="Client", ident_text="Client client",
+        )
+        pipeline = await self._pipeline(tmp_path, embedder, [weak])
+
+        results = await pipeline.search_code(
+            "rate limiting middleware per client IP address", k=5
+        )
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert any(_ABSENCE_VERDICT_MARKER in n.formatted for n in notices)
+
+
+class TestIdentifierShapedQueryTokens:
+    """D3 fix: query-side token admissibility for the verbatim-identifier
+    anchor. Measured defect (search_score_survey run, 2026-07-06,
+    search_score_survey_summary.md): 9/15 nonsense queries anchored via a
+    bare common-English word before this fix, capping nonsense catch at 40%
+    against D2's 60% adoption bar.
+    """
+
+    def test_underscore_bearing_token_is_shaped(self) -> None:
+        assert "action_confirm" in search_module._identifier_shaped_query_tokens(
+            "find action_confirm please"
+        )
+
+    def test_dotted_chain_segments_are_shaped_even_without_underscore_or_case_change(
+        self,
+    ) -> None:
+        tokens = search_module._identifier_shaped_query_tokens("requests.get")
+        assert {"requests", "get"} <= tokens
+
+    def test_camel_case_token_is_shaped(self) -> None:
+        tokens = search_module._identifier_shaped_query_tokens(
+            "find OriginValidationMiddleware please"
+        )
+        assert "originvalidationmiddleware" in tokens
+
+    def test_bare_common_english_words_are_never_shaped(self) -> None:
+        tokens = search_module._identifier_shaped_query_tokens(
+            "rate limiting middleware per client IP address"
+        )
+        assert tokens == frozenset()
+
+    def test_all_caps_acronym_alone_is_not_shaped(self) -> None:
+        # "HVAC" carries no lowercase-to-uppercase transition -- a plain
+        # acronym, not a code-identifier signature.
+        assert search_module._identifier_shaped_query_tokens("HVAC scheduling") == frozenset()
+
+    def test_a_single_leading_capital_is_not_shaped(self) -> None:
+        # "Kubernetes" is Title-Case, not camelCase -- one capital at
+        # position 0 is not an "internal" case change.
+        assert search_module._identifier_shaped_query_tokens("Kubernetes ingress") == frozenset()
+
+    def test_single_letter_dotted_segments_do_not_qualify(self) -> None:
+        # "e.g." must not be treated as a dotted identifier chain.
+        assert search_module._identifier_shaped_query_tokens("see e.g. the docs") == frozenset()
+
+    def test_measured_nonsense_queries_never_yield_a_shaped_token(self) -> None:
+        # The exact 9 nonsense queries that anchored under the un-gated rule
+        # (search_score_survey_summary.md, 2026-07-06) -- none may contribute
+        # a shaped token under the fix.
+        nonsense_queries_that_used_to_anchor = (
+            "quantum blockchain kubernetes ingress rate limiter for photo uploads",
+            "rate limiting middleware per client IP address",
+            "GPU-accelerated video transcoding pipeline for livestream ingestion",
+            "OAuth2 device-code flow for a smart refrigerator's firmware updater",
+            "distributed consensus protocol for a fleet of autonomous drones",
+            "cryptocurrency mining pool payout reconciliation ledger",
+            "airline seat upgrade bidding auction settlement engine",
+            "smart thermostat HVAC scheduling machine learning model",
+            "podcast transcript closed-caption timing alignment tool",
+        )
+        for query in nonsense_queries_that_used_to_anchor:
+            assert search_module._identifier_shaped_query_tokens(query) == frozenset(), query
+
+
+class TestHasWholeQueryIdentityMatch:
+    def test_fires_on_a_substantial_verbatim_whole_query_match(self) -> None:
+        assert search_module._has_whole_query_identity_match(
+            "Summary > Fix — DISCLOSE-AND-SERVE",
+            "summary > fix — disclose-and-serve some_doc",
+        ) is True
+
+    def test_does_not_fire_below_the_minimum_length(self) -> None:
+        assert search_module._has_whole_query_identity_match("fix it", "fix it now") is False
+
+    def test_does_not_fire_on_a_partial_match(self) -> None:
+        assert search_module._has_whole_query_identity_match(
+            "a long enough english sentence with no identifier in it at all",
+            "some_function",
+        ) is False
+
+
+class TestHasVerbatimIdentifierAnchor:
+    def test_true_when_a_shaped_query_token_is_a_whole_token_in_ident_text(self) -> None:
+        assert search_module._has_verbatim_identifier_anchor(
+            "find action_confirm please", "PurchaseOrder action_confirm"
+        ) is True
+
+    def test_false_on_whole_token_boundary_not_a_substring_scan(self) -> None:
+        # "is_a" (shaped, underscore-bearing) must not spuriously match
+        # inside the LONGER glued token "this_is_a_test" -- a token-SET
+        # intersection, never a raw substring scan.
+        assert search_module._has_verbatim_identifier_anchor(
+            "check is_a value", "this_is_a_test"
+        ) is False
+
+    def test_bare_common_english_overlap_no_longer_anchors(self) -> None:
+        assert search_module._has_verbatim_identifier_anchor(
+            "rate limiting middleware per client IP address", "Client client"
+        ) is False
+
+    def test_dotted_class_method_paste_anchors(self) -> None:
+        # The exact TestScoutMainGuard paste this fix must anchor -- an
+        # honest ``_derive_ident_text``-shaped fixture (identity + bare_name
+        # + file_stem, space-joined).
+        assert search_module._has_verbatim_identifier_anchor(
+            "TestScoutMainGuard.test_main_guard_is_last_top_level_statement",
+            "TestScoutMainGuard.test_main_guard_is_last_top_level_statement "
+            "test_main_guard_is_last_top_level_statement test_scout",
+        ) is True
+
+    def test_camel_case_paste_anchors(self) -> None:
+        assert search_module._has_verbatim_identifier_anchor(
+            "find OriginValidationMiddleware please", "OriginValidationMiddleware"
+        ) is True
+
+    def test_whole_query_fallback_anchors_a_non_code_identity_paste(self) -> None:
+        assert search_module._has_verbatim_identifier_anchor(
+            "Summary > Fix — DISCLOSE-AND-SERVE",
+            "summary > fix — disclose-and-serve some_doc",
+        ) is True
+
+    def test_empty_query_never_anchors(self) -> None:
+        assert search_module._has_verbatim_identifier_anchor("   ", "anything") is False
+
 
 class TestCosineAbsencePredicate:
     """The D2/D3 aggregate-verdict firing rule, extracted as its own pure
@@ -2020,8 +2181,12 @@ class TestDetailLevelMissNotice:
 
     teaching NOTICE_KIND entry — never a silent memories-only response. The
     S4b cosine weak-match/absence-verdict machinery (unrelated to this
-    notice) ships DARK by default, so any fused score here is fine — nothing
-    is ever flagged unless a test explicitly monkeypatches the gate open.
+    notice) never fires here regardless of the production gate constants:
+    every candidate in this class is built via ``_score_candidate(...)``
+    with no ``vector_cosine=`` override, so it defaults to ``None`` — the
+    substrate/flag/verdict checks all gate on ``candidate.vector_cosine is
+    not None`` and short-circuit before ever consulting the enabled flag or
+    the floor.
     """
 
     _CONFIDENT_SCORE = 0.5

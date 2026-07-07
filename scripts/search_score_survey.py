@@ -27,9 +27,8 @@ connection constants, ``resolve_secret`` for credentials — rather than
 ``loremaster.config.load_config``, which eagerly requires ``ANTHROPIC_API_KEY``
 for an unrelated reason) instead of the deployed MCP tool. Phase B needs
 signals — ``vector_cosine``, per-hit provenance, the TRUE pre-render candidate
-count — that do not belong on the client-facing wire while the render stays
-dark (docs/design/2026-07-06-weak-match-discrimination.md §7's "ships DARK"
-ruling): a direct store connection measures every signal the design's Phase C
+count — that are computed pre-render and never belonged on the client-facing
+wire: a direct store connection measures every signal the design's Phase C
 selection rule needs without any wire-shape change, keeping D4 (what the
 served ``score`` field looks like) entirely out of this script's business.
 
@@ -251,6 +250,16 @@ def every_nth(items: Sequence[str], count: int) -> list[str]:
 # production's ``_cosine_absence_verdict`` runs, pinned by an identity
 # (``is``) test in ``test_search_score_survey.py``'s
 # ``TestPredicateParityWithProduction`` — never a copy that can drift.
+#
+# D3 fix (2026-07-06): ``has_verbatim_identifier_anchor`` now absorbs its own
+# query-side tokenization internally (:func:`loremaster.search.
+# _identifier_shaped_query_tokens`), so ``capture_query`` forwards the raw
+# query text directly and no longer calls ``query_tokens`` itself.
+# ``query_tokens`` stays imported + re-exported + parity-pinned (still a
+# real, unchanged production function, used internally on the ident_text
+# side) for any future direct caller; ``__all__`` below keeps that
+# now-internal-only re-export from reading as an unused import.
+__all__ = ["query_tokens"]
 
 
 @dataclass(frozen=True)
@@ -610,8 +619,7 @@ async def capture_query(store: SurrealStore, embedder, query: str, query_kind: Q
     vector = await embedder.embed_query(query)
     candidates = await store.hybrid_search(query_vector=vector, query_text=query, k=SURVEY_K)
     hits = tuple(_to_hit_capture(c) for c in candidates)
-    tokens = query_tokens(query)
-    has_anchor = any(has_verbatim_identifier_anchor(tokens, hit.ident_text) for hit in hits)
+    has_anchor = any(has_verbatim_identifier_anchor(query, hit.ident_text) for hit in hits)
     return QueryCapture(
         query=query,
         query_kind=query_kind,

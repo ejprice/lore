@@ -139,22 +139,36 @@ class TestQueryTokens:
 
 
 class TestHasVerbatimIdentifierAnchor:
-    def test_true_when_a_query_token_is_a_whole_token_in_ident_text(self) -> None:
-        tokens = sss.query_tokens("find action_confirm please")
-        assert sss.has_verbatim_identifier_anchor(tokens, "PurchaseOrder action_confirm") is True
+    """D3 fix (2026-07-06): the anchor now takes the RAW query text (not a
+    pre-tokenized set) — it computes its own identifier-shaped query tokens
+    internally (:func:`loremaster.search._identifier_shaped_query_tokens`),
+    plus a whole-query fallback. Full coverage of the rule (the shape
+    criteria, the measured nonsense-query non-anchoring) lives in
+    ``loremaster/tests/test_search.py``; these are the survey's own smoke
+    tests via the re-exported/parity-pinned production function.
+    """
 
-    def test_false_on_substring_only_match_not_a_whole_token(self) -> None:
-        # "is" must not spuriously match inside "this_is_a_test" — the whole
-        # point of a TOKEN-set intersection over a raw substring scan.
-        tokens = sss.query_tokens("is this the right test")
-        assert sss.has_verbatim_identifier_anchor(tokens, "this_is_a_test") is False
+    def test_true_when_a_shaped_query_token_is_a_whole_token_in_ident_text(self) -> None:
+        assert sss.has_verbatim_identifier_anchor(
+            "find action_confirm please", "PurchaseOrder action_confirm"
+        ) is True
 
-    def test_false_when_no_overlap(self) -> None:
-        tokens = sss.query_tokens("rate limiting middleware")
-        assert sss.has_verbatim_identifier_anchor(tokens, "PurchaseOrder action_confirm") is False
+    def test_false_on_whole_token_boundary_not_a_substring_scan(self) -> None:
+        # "is_a" (shaped, underscore-bearing) must not spuriously match
+        # inside the LONGER glued token "this_is_a_test" — a token-SET
+        # intersection, never a raw substring scan.
+        assert sss.has_verbatim_identifier_anchor("check is_a value", "this_is_a_test") is False
 
-    def test_empty_tokens_never_anchors(self) -> None:
-        assert sss.has_verbatim_identifier_anchor(frozenset(), "anything") is False
+    def test_bare_common_english_overlap_no_longer_anchors(self) -> None:
+        # D3 fix (measured defect: 9/15 nonsense queries anchored via a bare
+        # word before this fix) — "client" is common English, not a pasted
+        # identifier, even though it lines up with a real ident_text token.
+        assert sss.has_verbatim_identifier_anchor(
+            "rate limiting middleware per client IP address", "Client client"
+        ) is False
+
+    def test_empty_query_never_anchors(self) -> None:
+        assert sss.has_verbatim_identifier_anchor("   ", "anything") is False
 
 
 # --------------------------------------------------------------------------- #
