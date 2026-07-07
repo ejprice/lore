@@ -533,3 +533,46 @@ accuracy, tokens-per-correct-answer, and taxed-calls≈0.
    the ledger verbs, and P8e (which is a separate concern: roles/topology/drills).
 3. This document is the slate cycle's spec of record; its convergence findings are
    binding design constraints on that cycle and advisory law thereafter.
+
+## Slate outcomes (slate-lead close-out, 2026-07-06/07)
+
+All seven items landed, cold-audited, one-concern-committed on feat/surreal-unification
+(range `2499b0c..94a9568`, 21 commits). Receipts live in the per-item commit messages;
+audit lineage in the four REPORT-slate-audit-*.md records of the cycle.
+
+- **S1** — impact's covering_tests capped on the wire (`covering_tests_elided`), the #39
+  corpse test + two same-invariant siblings flipped; sweep extended the discipline to
+  lore_dead_code (finding #60: engine `dead_code_total` + wire `DeadCodeSweepResult`).
+- **S2** — root cause was NOT chunking granularity (scout receipts): map's render
+  discarded the class qualifier the graph already computed, plus a resolver class-swap
+  teaching asymmetry. Map now renders `ClassName.method` + the resolution-grammar
+  affordance line; suffix-match hardening teaches wrong-class guesses; canonical
+  module naming reached symbols.py (findings #62, #62-canonical).
+- **S3** — confirmed mechanism: `_partition_by_detail` zeroing code hits on non-auto
+  detail_level while memories append unconditionally (finding #61, resolved). The
+  detail-miss notice now names the state; budget-enforcer hypothesis refuted with a
+  prefix-walk proof.
+- **S4 → S4b** — the fused-floor flag measured non-discriminative (RRF is
+  rank-reciprocal arithmetic; nonsense outscores real — proven live to machine
+  precision at 1/61) and was REPLACED per the weak-match consult
+  (2026-07-06-weak-match-discrimination.md): per-hit cosine substrate + hedged
+  aggregate "no confident match" verdict, adopted on pre-registered bars after a
+  D3 carve-out fix (floor 0.5828, false-fire 4.0%, catch 15/15). External
+  validation: 104-agent deep-research run confirmed all three design elements
+  against vendor practice and literature (digest committed alongside).
+- **S5** — bare-name get_symbol discloses candidate count + the real winning rule
+  (`ResolutionMatch`, `resolve_with_candidates`).
+- **S6** — the elision raise-to clamps to the enforceable cap with honest capped/at-cap
+  wording (finding #59; the at-cap branch proven publicly reachable by cold audit).
+- **S7** — worst-shown score in elision notices (HIT_KIND-filtered, pop-loop-fresh,
+  pinned); instructions gained the ladder-authority + parallel-calls teachings at +43
+  measured tokens (accepted; finding #49 baseline re-measured 575).
+
+Beyond the slate, the cycle closed findings #43/#63/#65 (impact target resolution:
+widen-before-fallback through the shared resolver + channel-honesty disclosure naming
+real colliding candidates — the confident-wrong class the consult opens with),
+#66/#67 (BM25 OR-chain recursion-depth hard-fail on realistic long queries — token
+clamp + teaching classifier), #69 (recall-path twin: claim refuted by measurement,
+fixed forward via shared query_text mechanism), plus the fake-fidelity and
+ambiguous-widen audit catches. Four cold audits, ~21 concerns, five green-at-gate
+defects caught — every one in the natural-language surface class P8d predicted.
