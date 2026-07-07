@@ -115,6 +115,7 @@ from loremaster.memory.backend import (
     TrustLevel,
 )
 from loremaster.search import (
+    _ABSENCE_VERDICT_MARKER,
     _FENCE_CHAR,
     _MEMORY_SECTION_HEADER,
     _MIN_FENCE_WIDTH,
@@ -1857,22 +1858,47 @@ class AppContext:
         (trailing) first — until the announced elision trailer itself fits
         too. What's SERVED is what's counted: the structured list actually
         drops the elided entries, never a display-only truncation.
+
+        Finding #71: a present absence-verdict notice (item 12c, identified
+        by the pipeline's own stable :data:`~loremaster.search.
+        _ABSENCE_VERDICT_MARKER` — never a freshly-guessed prose match) is
+        budget-PROTECTED exactly like the elision trailer itself. It is
+        pulled OUT of the greedy walk below (so an earlier oversized entry
+        can never cause the walk to break before ever reaching it), its
+        cost is reserved throughout both the walk and the pop-until-it-fits
+        loop, and it is appended into the mandatory tail alongside the
+        elision notice — never a candidate for the trailing pop, never
+        silently dropped. Forcing MORE hit elision to make room for it is
+        correct and stays honestly counted in ``elided``.
         """
 
         def _count(text: str) -> int:
             return self._count_tokens_single(text, caller_model=caller_model)
 
+        absence_verdict = next(
+            (
+                result
+                for result in results
+                if result.kind == NOTICE_KIND and _ABSENCE_VERDICT_MARKER in result.formatted
+            ),
+            None,
+        )
+        walkable = [result for result in results if result is not absence_verdict]
+        reserved_texts = [absence_verdict.formatted] if absence_verdict is not None else []
+
         kept: list[SearchResult] = []
         kept_texts: list[str] = []
-        for result in results:
-            trial = [*kept_texts, result.formatted]
+        for result in walkable:
+            trial = [*kept_texts, result.formatted, *reserved_texts]
             if _count("\n".join(trial)) > budget:
                 break
             kept.append(result)
             kept_texts.append(result.formatted)
 
-        elided = len(results) - len(kept)
+        elided = len(walkable) - len(kept)
         if not elided:
+            if absence_verdict is not None:
+                kept.append(absence_verdict)
             return kept
 
         # T4: the top elided entry (the highest-priority one squeezed out)
@@ -1880,7 +1906,7 @@ class AppContext:
         # minimum budget that would have elided nothing — are fixed facts
         # about `results`, computed ONCE; only `elided` itself grows as the
         # pop-until-it-fits loop below shrinks `kept` further.
-        top_elided = results[len(kept)]
+        top_elided = walkable[len(kept)]
         full_count = _count("\n".join(result.formatted for result in results))
 
         # S6 (finding #59): `full_count` is only a usable "raise budget to"
@@ -1928,7 +1954,7 @@ class AppContext:
             )
 
         notice_text = _notice(elided)
-        while kept and _count("\n".join([*kept_texts, notice_text])) > budget:
+        while kept and _count("\n".join([*kept_texts, *reserved_texts, notice_text])) > budget:
             kept.pop()
             kept_texts.pop()
             elided += 1
@@ -1949,6 +1975,13 @@ class AppContext:
             elided += 1
             notice_text = _notice(elided)
 
+        # Finding #71: the reserved verdict (if any) joins the mandatory
+        # tail here — never through `kept`/`kept_texts` above, so it can
+        # never be a target of the `.pop()` calls in the loop above
+        # regardless of where it would have sat in the original `results`
+        # order.
+        if absence_verdict is not None:
+            kept.append(absence_verdict)
         kept.append(
             SearchResult(
                 formatted=notice_text,

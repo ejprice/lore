@@ -4742,6 +4742,295 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         finally:
             await ctx.aclose()
 
+    async def test_absence_verdict_survives_budget_when_an_oversized_weak_hit_precedes_it(
+        self, indexed_context: AppContext
+    ) -> None:
+        """Finding #71 (live post-deploy smoke, image ee7c3a8e73cd): the
+        canonical nonsense-query shape returns one oversized weak hit ranked
+        first plus the absence-verdict notice trailing it (§7.4.3). At the
+        DEFAULT budget (1100) the oversized hit alone blows the budget, and
+        the greedy prefix walk used to break before it ever reached the
+        verdict -- the client got ZERO verdict on exactly the query shape
+        the verdict exists for. The verdict must now survive; the oversized
+        hit must still be honestly elided.
+        """
+        from loremaster.search import SearchResult
+
+        class _OversizedWeakHitPipeline:
+            async def search_code(self, *args: Any, **kwargs: Any) -> list[SearchResult]:
+                return [
+                    SearchResult(
+                        formatted="[SOURCE:pkg/huge.py:1]\nKey: huge-weak-hit\n" + "x" * 6000,
+                        chunk_key="huge-weak-hit",
+                        detail_level="source",
+                        stale=False,
+                        score=0.03,
+                        kind="hit",
+                    ),
+                    SearchResult(
+                        formatted=(
+                            "no confident match: best hit similarity 0.27 is below "
+                            "the range real answers measure on this corpus "
+                            "(>=0.58) and no hit matches your identifiers verbatim "
+                            "-- likely no direct answer indexed; nearest indexed: "
+                            "'pkg.huge.weak_fn' -- broaden the query or treat these "
+                            "hits as adjacent-topic leads"
+                        ),
+                        chunk_key="",
+                        detail_level="summary",
+                        stale=False,
+                        score=0.0,
+                        kind="notice",
+                    ),
+                ]
+
+        indexed_context.search_pipeline = _OversizedWeakHitPipeline()  # type: ignore[assignment]
+        results = await indexed_context.search("nonsense query shape", k=5)
+
+        notices = [r for r in results if r.kind == "notice"]
+        verdict = next((n for n in notices if "no confident match" in n.formatted), None)
+        assert verdict is not None, (
+            f"the absence verdict must survive the default budget; got notices={notices!r}"
+        )
+        assert not any(r.chunk_key == "huge-weak-hit" for r in results), (
+            "the oversized weak hit must still be elided -- protecting the "
+            "verdict must not also rescue the oversized hit"
+        )
+        elision = next((n for n in notices if "elided" in n.formatted), None)
+        assert elision is not None, f"expected an elision notice too; got notices={notices!r}"
+        assert "+1 entries elided" in elision.formatted
+
+    async def test_verdict_absent_budget_enforcement_is_unaffected(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #71 regression guard: with no absence-verdict entry in the
+        result list, the new reservation logic must never fire -- the greedy
+        walk + pop-until-it-fits behaviour must stay byte-identical to
+        before this fix (same fixture/expectations as the pre-existing
+        ``test_elision_notice_worst_shown_is_recomputed_after_the_pop_loop``).
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            hit_keep_strong = SearchResult(
+                formatted="[SOURCE:pkg/a.py:1-5@abc111]\n" + "a" * 40,
+                chunk_key="keep-strong",
+                detail_level="source",
+                stale=False,
+                score=0.9,
+                kind="hit",
+            )
+            hit_keep_weak = SearchResult(
+                formatted="[SOURCE:pkg/b.py:1-5@abc222]\n" + "b" * 40,
+                chunk_key="keep-weak",
+                detail_level="source",
+                stale=False,
+                score=0.7,
+                kind="hit",
+            )
+            hit_elided = SearchResult(
+                formatted="[SOURCE:pkg/big.py:1]\nKey: big-hit\n" + "c" * 4000,
+                chunk_key="big-hit",
+                detail_level="source",
+                stale=False,
+                score=0.5,
+                kind="hit",
+            )
+            results = [hit_keep_strong, hit_keep_weak, hit_elided]
+            kept = ctx._enforce_search_budget(list(results), 100, None)  # noqa: SLF001
+            notice = next(r for r in kept if r.kind == "notice" and "elided" in r.formatted)
+
+            surviving_keys = {r.chunk_key for r in kept if r.kind == "hit"}
+            assert surviving_keys == {"keep-strong"}
+            assert "+2 entries elided" in notice.formatted
+            assert "worst shown: score=0.900" in notice.formatted
+        finally:
+            await ctx.aclose()
+
+    async def test_absence_verdict_composes_readably_with_elision_and_worst_shown(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #71: the absence verdict, the budget-elision notice, and
+        the worst-shown-score clause must all compose correctly in ONE
+        response -- the verdict's reservation must not corrupt the elision
+        count or the worst-shown computation over the surviving hits.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            hit_keep_strong = SearchResult(
+                formatted="[SOURCE:pkg/a.py:1-5@abc111]\n" + "a" * 40,
+                chunk_key="keep-strong",
+                detail_level="source",
+                stale=False,
+                score=0.9,
+                kind="hit",
+            )
+            hit_keep_weak = SearchResult(
+                formatted="[SOURCE:pkg/b.py:1-5@abc222]\n" + "b" * 40,
+                chunk_key="keep-weak",
+                detail_level="source",
+                stale=False,
+                score=0.6,
+                kind="hit",
+            )
+            hit_elided = SearchResult(
+                formatted="[SOURCE:pkg/big.py:1]\nKey: big-hit\n" + "c" * 4000,
+                chunk_key="big-hit",
+                detail_level="source",
+                stale=False,
+                score=0.1,
+                kind="hit",
+            )
+            verdict = SearchResult(
+                formatted=(
+                    "no confident match: best hit similarity 0.31 is below the "
+                    "range real answers measure on this corpus (>=0.58) and no "
+                    "hit matches your identifiers verbatim -- likely no direct "
+                    "answer indexed; nearest indexed: 'pkg.a.weak_fn' -- broaden "
+                    "the query or treat these hits as adjacent-topic leads"
+                ),
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.0,
+                kind="notice",
+            )
+            results = [hit_keep_strong, hit_keep_weak, hit_elided, verdict]
+            kept = ctx._enforce_search_budget(list(results), 400, None)  # noqa: SLF001
+
+            surviving_keys = {r.chunk_key for r in kept if r.kind == "hit"}
+            assert surviving_keys == {"keep-strong", "keep-weak"}, (
+                f"expected both small hits to survive and the oversized one "
+                f"elided; got {surviving_keys!r}"
+            )
+            notices = [r for r in kept if r.kind == "notice"]
+            verdict_notices = [n for n in notices if "no confident match" in n.formatted]
+            assert len(verdict_notices) == 1, (
+                f"expected exactly one absence verdict, never duplicated or "
+                f"dropped; got {notices!r}"
+            )
+            elision_notices = [n for n in notices if "elided" in n.formatted]
+            assert len(elision_notices) == 1
+            assert "+1 entries elided" in elision_notices[0].formatted
+            assert "worst shown: score=0.600" in elision_notices[0].formatted, (
+                f"expected the weakest SURVIVING hit's score; got "
+                f"{elision_notices[0].formatted!r}"
+            )
+        finally:
+            await ctx.aclose()
+
+    async def test_absence_verdict_and_elision_notice_are_the_honest_mandatory_tail_at_a_tiny_budget(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #71 fixture (d): a budget so tiny that even the verdict +
+        elision notice together exceed it. Documented, honest behaviour:
+        both are still rendered (never an infinite loop, never a silent
+        drop of the verdict) -- mirroring the PRE-EXISTING convention that
+        the elision notice alone could already exceed a tiny budget once
+        every hit was popped (``kept`` empty short-circuits the
+        pop-until-it-fits ``while kept and ...`` loop).
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            hit_elided = SearchResult(
+                formatted="[SOURCE:pkg/big.py:1]\nKey: big-hit\n" + "c" * 4000,
+                chunk_key="big-hit",
+                detail_level="source",
+                stale=False,
+                score=0.1,
+                kind="hit",
+            )
+            verdict = SearchResult(
+                formatted=(
+                    "no confident match: best hit similarity 0.31 is below the "
+                    "range real answers measure on this corpus (>=0.58) and no "
+                    "hit matches your identifiers verbatim -- likely no direct "
+                    "answer indexed; nearest indexed: 'pkg.a.weak_fn' -- broaden "
+                    "the query or treat these hits as adjacent-topic leads"
+                ),
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.0,
+                kind="notice",
+            )
+            results = [hit_elided, verdict]
+            kept = ctx._enforce_search_budget(list(results), 10, None)  # noqa: SLF001
+
+            assert len(kept) == 2, f"expected exactly [verdict, elision notice]; got {kept!r}"
+            assert "no confident match" in kept[0].formatted
+            assert kept[1].kind == "notice" and "elided" in kept[1].formatted
+            assert "+1 entries elided" in kept[1].formatted
+        finally:
+            await ctx.aclose()
+
+    async def test_absence_verdict_survives_the_at_cap_recursive_recompute(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding #71 + S6 interaction: when the full un-elided join
+        (hits + verdict) exceeds ``_SEARCH_BUDGET_CAP`` and the requested
+        budget is below the cap, ``_enforce_search_budget`` recurses ONCE
+        (at the cap) to compute how many entries the cap would surface. The
+        verdict must still identify correctly and survive on BOTH the outer
+        and the recursive call -- and the recursion must not loop.
+        """
+        from loremaster.search import SearchResult
+
+        config = _config(_slug(), tmp_path / "live")
+        ctx = await _make_context(config=config, tmp_path=tmp_path)
+        try:
+            hits = [
+                SearchResult(
+                    formatted=f"[SOURCE:pkg/hit_{i}.py:1]\nKey: hit-{i}\n" + "x" * 4000,
+                    chunk_key=f"hit-{i}",
+                    detail_level="source",
+                    stale=False,
+                    score=0.9 - i * 0.1,
+                    kind="hit",
+                )
+                for i in range(4)
+            ]
+            verdict = SearchResult(
+                formatted=(
+                    "no confident match: best hit similarity 0.31 is below the "
+                    "range real answers measure on this corpus (>=0.58) and no "
+                    "hit matches your identifiers verbatim -- likely no direct "
+                    "answer indexed; nearest indexed: 'pkg.a.weak_fn' -- broaden "
+                    "the query or treat these hits as adjacent-topic leads"
+                ),
+                chunk_key="",
+                detail_level="summary",
+                stale=False,
+                score=0.0,
+                kind="notice",
+            )
+            results = [*hits, verdict]
+            kept = ctx._enforce_search_budget(  # noqa: SLF001
+                list(results), _PRODUCTION_MAP_BUDGET_FLOOR, None
+            )
+
+            assert any("no confident match" in r.formatted for r in kept), (
+                f"the verdict must survive the capped recursive recompute; got {kept!r}"
+            )
+            assert not any(r.kind == "hit" for r in kept), (
+                "none of the oversized hits fit at the floor budget -- only "
+                "the verdict + the elision notice should survive"
+            )
+            notice = next(r for r in kept if r.kind == "notice" and "elided" in r.formatted)
+            assert f"{_SEARCH_BUDGET_CAP}" in notice.formatted
+            assert "cannot show all 5 entries" in notice.formatted
+            assert "3 of 5 entries" in notice.formatted
+        finally:
+            await ctx.aclose()
+
     async def test_caller_model_with_no_cached_ratio_renders_a_notice(
         self, tmp_path: Path
     ) -> None:

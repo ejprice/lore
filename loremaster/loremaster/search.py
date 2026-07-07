@@ -246,8 +246,19 @@ _COSINE_WEAK_MATCH_WARNING_TEMPLATE = (
 # AND no shown hit carries a verbatim-identifier anchor (D3) — "nearest
 # indexed" names the fused-order top hit's identity, turning "no answer" into
 # a redirect (Opus's addition, §7.3).
+# Finding #71 budget-protection marker: the notice's own fixed, never-
+# varying lead-in — named as an explicit, EXPORTED constant so a budget-
+# reservation check elsewhere (server.py's ``_enforce_search_budget``) can
+# identify THIS specific notice among sibling NOTICE_KIND entries by the
+# pipeline's own stable mark, never a freshly-guessed substring and never
+# matching against the templated PROSE that follows it (the per-query
+# cosine/identity text, which legitimately varies call to call). Mirrors
+# the existing ``_FILTER_MISS_MARKER``/``_DETAIL_MISS_MARKER`` convention
+# (server.py / this module) — the rendered text is UNCHANGED, byte-for-byte
+# (a pure extraction, not a wording change).
+_ABSENCE_VERDICT_MARKER = "no confident match"
 _COSINE_ABSENCE_VERDICT_TEMPLATE = (
-    "no confident match: best hit similarity {best_cosine:.2f} is below the range "
+    _ABSENCE_VERDICT_MARKER + ": best hit similarity {best_cosine:.2f} is below the range "
     "real answers measure on this corpus (≥{floor:.2f}) and no hit matches "
     "your identifiers verbatim — likely no direct answer indexed; nearest "
     "indexed: {nearest!r} — broaden the query or treat these hits as "
