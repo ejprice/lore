@@ -85,7 +85,29 @@ from pydantic import BaseModel, ConfigDict
 
 from loremaster.extension import DetailLevel, ExtensionContext
 from loremaster.index.manifest import STATE_INDEXED
+
+# ``_sanitise_line``/``_max_backtick_run``/etc. are explicitly re-exported
+# under their ORIGINAL private names (see the module-level ``__all__`` below
+# and the item-10/finding-#34 note further down) -- mirrors
+# ``loremaster.memory.local``'s own ``truncate_at_word_boundary`` precedent:
+# an ``__all__`` entry, not a redundant ``as X`` same-name alias (a lint smell
+# under this repo's ruff config, PLC0414).
+from loremaster.sanitise import BACKTICK_RUN_PATTERN as _BACKTICK_RUN_PATTERN
+from loremaster.sanitise import CONTROL_CHAR_PATTERN as _CONTROL_CHAR_PATTERN
+from loremaster.sanitise import FENCE_CHAR as _FENCE_CHAR
+from loremaster.sanitise import MIN_FENCE_WIDTH as _MIN_FENCE_WIDTH
+from loremaster.sanitise import max_backtick_run as _max_backtick_run
+from loremaster.sanitise import sanitise_line as _sanitise_line
 from loremaster.store.candidate import Candidate
+
+__all__ = [
+    "_BACKTICK_RUN_PATTERN",
+    "_CONTROL_CHAR_PATTERN",
+    "_FENCE_CHAR",
+    "_MIN_FENCE_WIDTH",
+    "_max_backtick_run",
+    "_sanitise_line",
+]
 
 if TYPE_CHECKING:
     from loresigil.base import Embedder
@@ -593,38 +615,13 @@ _DETAIL_LEVEL_MISS_TEMPLATE = (
     'detail_level="auto" to see them'
 )
 
-# item 10: the CommonMark backtick fence character, and the standard minimum fence
-# width. The wrapper fence must be a backtick run LONGER than any run inside the
-# source (so a ``` embedded in the source cannot close the fence early), bounded
-# below by the three-backtick CommonMark minimum.
-_FENCE_CHAR = "`"
-_MIN_FENCE_WIDTH = 3
-
-# item 10 (audit followup): the render-sanitiser's hostile-char class — C0
-# controls (incl. TAB, LF, CR, the ANSI/OSC introducer ESC ``\x1b`` and its BEL
-# terminator ``\x07``), DEL, and the C1 controls, PLUS several Unicode
-# sub-ranges that are not control characters but are equally capable of
-# corrupting a rendered citation/memory line: the bidi override (U+202A-202E)
-# and isolate (U+2066-2069) formatting characters plus the bidi mark pair
-# U+200E LEFT-TO-RIGHT MARK / U+200F RIGHT-TO-LEFT MARK (can visually rewrite
-# the line in a bidi-aware terminal/UI); zero-width characters (U+200B ZERO
-# WIDTH SPACE, U+200C ZERO WIDTH NON-JOINER, U+200D ZERO WIDTH JOINER,
-# U+2060 WORD JOINER, U+FEFF ZERO WIDTH NO-BREAK SPACE/BOM, which can hide
-# characters inside it); and U+2028 LINE SEPARATOR / U+2029 PARAGRAPH
-# SEPARATOR (real line breaks to a bidi-aware terminal or browser-rendered UI
-# even though neither is ``\n``, so left uncollapsed they could fracture a
-# single rendered line into a fake second one). A run of any of these
-# collapses to a single space so a hostile identity/path/memory text stays
-# one logical, visually-honest line and cannot smuggle terminal-framing, a
-# fake second citation, or a hidden/reordered payload into a rendered field.
-# U+200B-200F is one contiguous run (ZWS/ZWNJ/ZWJ/LRM/RLM); U+2060 sits
-# outside the isolate block (U+2066-2069) so it stays a standalone codepoint
-# rather than widening that range to cover unrelated invisible operators.
-_CONTROL_CHAR_PATTERN = re.compile(
-    r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]+"
-)
-# item 10: matches a run of consecutive backticks, for sizing the wrapper fence.
-_BACKTICK_RUN_PATTERN = re.compile(r"`+")
+# item 10 / finding #34: the hostile-char sanitiser + fence-sizing helpers now
+# live in the shared public seam ``loremaster.sanitise`` (imported tree-wide so
+# no renderer re-hand-rolls or skips the launder; see the top-of-file import +
+# module-level ``__all__``). Re-exported here under the original private
+# names for zero downstream breakage -- this module's own internal callers,
+# ``server.py``, and ``diff.py`` all still import these private names from
+# ``loremaster.search`` unchanged.
 
 # Default bound on the in-flight wait, in seconds. Always finite — the wait can
 # never hang (the embedder may be slow or down).
@@ -632,27 +629,6 @@ _DEFAULT_WAIT_TIMEOUT_S = 10.0
 
 # Poll interval for the bounded in-flight wait.
 _WAIT_POLL_INTERVAL_S = 0.05
-
-
-def _sanitise_line(text: str) -> str:
-    """Collapse control chars / newlines in a NON-fenced rendered field (item 10).
-
-    Any run of hostile characters (:data:`_CONTROL_CHAR_PATTERN` — C0/C1
-    controls, DEL, incl. an ANSI/OSC ``ESC`` introducer and a newline, PLUS bidi
-    override/isolate/mark, zero-width (incl. ZWNJ/ZWJ/WORD JOINER), and
-    line/paragraph separator characters)
-    becomes a single space, and leading/trailing whitespace is stripped, so the
-    field renders as a single logical, visually-honest line that cannot break
-    the citation line it sits on, escape a fence, or smuggle a hidden/reordered
-    payload. Source *bodies* are NOT run through this — they stay verbatim
-    inside a backtick fence.
-    """
-    return _CONTROL_CHAR_PATTERN.sub(" ", text).strip()
-
-
-def _max_backtick_run(text: str) -> int:
-    """The length of the longest run of consecutive backticks anywhere in ``text``."""
-    return max((len(run) for run in _BACKTICK_RUN_PATTERN.findall(text)), default=0)
 
 
 def _refjoin_line(production_references: int, test_references: int, covering_tests: int) -> str:
