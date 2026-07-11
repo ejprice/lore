@@ -46,10 +46,12 @@ import json
 import logging
 import math
 import os
+import re
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, cast
+from uuid import uuid4
 
 from lorescribe.javascript import JavascriptChunker
 from lorescribe.markdown import MarkdownChunker
@@ -61,7 +63,7 @@ from lorescribe.text import TextChunker
 from lorescribe.xml_generic import XmlChunker
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, load_config
 from loremaster.diff import SnapshotNotFoundError
@@ -74,6 +76,8 @@ from loremaster.extension import (
     ToolSpec,
 )
 from loremaster.findings import DEFAULT_KIND as _DEFAULT_FINDING_KIND
+from loremaster.findings import FindingNotFoundError as _FindingNotFoundError
+from loremaster.findings import IllegalTransitionError as _FindingIllegalTransitionError
 
 # The consumer-visible tool RETURN models, imported at RUNTIME (not just under
 # TYPE_CHECKING): each built-in tool wrapper is annotated with its real model
@@ -114,6 +118,7 @@ from loremaster.memory.backend import (
     MemorySource,
     TrustLevel,
 )
+from loremaster.sanitise import sanitise_line
 from loremaster.search import (
     _ABSENCE_VERDICT_MARKER,
     _FENCE_CHAR,
@@ -126,6 +131,7 @@ from loremaster.search import (
     _sanitise_line,
     apply_cosine_floor_drift_check,
 )
+from loremaster.store._txn import SurrealConnectionError
 from loremaster.store.candidate import Candidate
 from loremaster.store_read import StoreFileSpan
 from loremaster.symbols import (
@@ -134,13 +140,15 @@ from loremaster.symbols import (
     SymbolResolver,
     VerifyResult,
 )
+from loremaster.tasks import STATUS_DONE
+from loremaster.tasks import TaskSpec as _TaskSpec
 
 if TYPE_CHECKING:
     from loresigil.base import Embedder
 
     from loremaster.calibration.engine import CalibrationEngine
     from loremaster.diff import DiffEngine, SnapshotSummary
-    from loremaster.findings import ChainHead, Finding, FindingLedger
+    from loremaster.findings import ChainHead, Finding, FindingActivityWindow, FindingLedger
     from loremaster.graph_surreal import SurrealCodeGraph
     from loremaster.index.indexer import Indexer
     from loremaster.index.reconcile import ReconcileEngine
@@ -154,7 +162,7 @@ if TYPE_CHECKING:
     from loremaster.store.surreal import SurrealStore
     from loremaster.store_read import StoreReadTool
     from loremaster.symbols import SymbolTool, VerifyTool
-    from loremaster.tasks import ClaimResult, Task, TaskLedger
+    from loremaster.tasks import ClaimResult, Task, TaskActivityWindow, TaskLedger
 
 # The parent-context ``state`` key under which the per-extension lifespan-state
 # namespaces live (fix B / §A1.10). ``ctx.state[_EXTENSION_STATE_KEY][name]`` is
@@ -1035,17 +1043,56 @@ _DEFAULT_FINDINGS_QUERY_LIMIT = 100
 # stale pointer. Contains "drifted" so a case-insensitive scan finds it.
 _DRIFT_MARKER = "(drifted — re-verify)"
 
-# The four fleet task-tool actions ``lore_tasks`` dispatches on.
+# The fleet task-tool actions ``lore_tasks`` dispatches on. PKT-06 §1/§2 ADD
+# ``rollup`` (the one-call fleet catch-up since a cursor) and ``create_many``
+# (batch create with caller-temp-key dependency wiring) — zero new TOOLS, per
+# the packet's approved scope.
 _TASK_ACTION_CREATE = "create"
 _TASK_ACTION_QUERY = "query"
 _TASK_ACTION_TRANSITION = "transition"
 _TASK_ACTION_SUPERSEDE = "supersede"
+_TASK_ACTION_ROLLUP = "rollup"
+_TASK_ACTION_CREATE_MANY = "create_many"
 _TASK_ACTIONS = (
     _TASK_ACTION_CREATE,
     _TASK_ACTION_QUERY,
     _TASK_ACTION_TRANSITION,
     _TASK_ACTION_SUPERSEDE,
+    _TASK_ACTION_ROLLUP,
+    _TASK_ACTION_CREATE_MANY,
 )
+
+# PKT-06 §1: the rollup's bootstrap epoch (an omitted ``since`` starts a full-
+# history bootstrap) and its default per-leg row cap (U3, strikeable).
+_ROLLUP_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_DEFAULT_ROLLUP_LEG_LIMIT = 20
+
+# PKT-06 §2/§3: the shared batch-items cap (U4, strikeable) both
+# ``create_many`` and ``resolve_many``/``acknowledge_many`` enforce.
+_BATCH_ITEMS_MAX = 50
+
+# PKT-06 §2: the minted-id SHAPE (32 lowercase hex chars) a ``create_many``
+# item ``key`` may never collide with — so a ``blocked_by`` reference can
+# always be told apart from a real task id.
+_TASK_ID_SHAPE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+
+
+class TaskSpecItem(BaseModel):
+    """One wire-level ``create_many`` batch item (PKT-06 §2, mcp-builder boundary).
+
+    ``key`` is a caller-chosen, BATCH-LOCAL temporary name a sibling item's
+    ``blocked_by`` may reference (resolved to the sibling's minted id by the
+    dispatcher — never written to the store); ``blocked_by`` entries that
+    match no sibling key are presumed pre-existing task ids and pass through
+    verbatim.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str
+    description: str
+    key: str | None = None
+    blocked_by: list[str] = Field(default_factory=list)
 
 # A generic "required argument" narrower for the task-tool dispatch (a create
 # needs a subject, a transition needs a target status, …). Kept generic so one
@@ -1062,8 +1109,10 @@ def _require_arg[REQUIRED_ARG](value: REQUIRED_ARG | None, name: str) -> REQUIRE
     return value
 
 
-# The seven finding-ledger actions ``lore_findings`` dispatches on (report + the
-# two read verbs + the four state-machine edges), mirroring ``_TASK_ACTIONS``.
+# The finding-ledger actions ``lore_findings`` dispatches on (report + the two
+# read verbs + the four state-machine edges), mirroring ``_TASK_ACTIONS``.
+# PKT-06 §3 ADDS ``resolve_many``/``acknowledge_many`` (BEST-EFFORT batch
+# transitions with a per-item outcome render) — zero new tools.
 _FINDING_ACTION_REPORT = "report"
 _FINDING_ACTION_QUERY = "query"
 _FINDING_ACTION_GET = "get"
@@ -1071,6 +1120,8 @@ _FINDING_ACTION_CHAIN_HEAD = "chain_head"
 _FINDING_ACTION_ACKNOWLEDGE = "acknowledge"
 _FINDING_ACTION_RESOLVE = "resolve"
 _FINDING_ACTION_WONTFIX = "wontfix"
+_FINDING_ACTION_RESOLVE_MANY = "resolve_many"
+_FINDING_ACTION_ACKNOWLEDGE_MANY = "acknowledge_many"
 _FINDING_ACTIONS = (
     _FINDING_ACTION_REPORT,
     _FINDING_ACTION_QUERY,
@@ -1079,7 +1130,25 @@ _FINDING_ACTIONS = (
     _FINDING_ACTION_ACKNOWLEDGE,
     _FINDING_ACTION_RESOLVE,
     _FINDING_ACTION_WONTFIX,
+    _FINDING_ACTION_RESOLVE_MANY,
+    _FINDING_ACTION_ACKNOWLEDGE_MANY,
 )
+
+# The batch-action verb (past tense, matching the header/success-row grammar)
+# each finding batch action renders under.
+_FINDING_BATCH_VERB = {
+    _FINDING_ACTION_RESOLVE_MANY: "resolved",
+    _FINDING_ACTION_ACKNOWLEDGE_MANY: "acknowledged",
+}
+
+
+class FindingRefItem(BaseModel):
+    """One wire-level ``resolve_many``/``acknowledge_many`` batch item (PKT-06 §3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id_or_number: int | str
+    note: str | None = None
 
 
 def _require_finding_arg[REQUIRED_ARG](value: REQUIRED_ARG | None, name: str) -> REQUIRED_ARG:
@@ -1231,7 +1300,8 @@ _INSTRUCTIONS = (
     "\n"
     "MEMORY: lore_remember / lore_recall is this project's shared, durable "
     "notebook — atomic facts, not digests. lore_findings (kind=friction) "
-    "files gaps; lore_claim_task / lore_tasks coordinate fleet work.\n"
+    "files gaps; lore_claim_task / lore_tasks coordinate fleet work — "
+    "lore_tasks action=rollup is the one-call fleet catch-up since a cursor.\n"
     "\n"
     "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's "
     "tools first; batch independent calls in one turn, not serial turns."
@@ -2576,11 +2646,12 @@ class AppContext:
         status: str | None = None,
         limit: int = _DEFAULT_FINDINGS_QUERY_LIMIT,
         supersedes: int | str | None = None,
+        items: list[dict[str, Any]] | None = None,
     ) -> str:
         """Dispatch a finding-ledger action, rendering SUMMARISED results as a string.
 
         A thin dispatcher over the durable :class:`~loremaster.findings.FindingLedger`
-        (dispatch style mirrors :meth:`tasks`), over the seven actions:
+        (dispatch style mirrors :meth:`tasks`), over the nine actions:
 
         * ``report`` — file a finding (``subject`` / ``area`` / ``category`` /
           ``created_by`` required and NON-EMPTY; ``body`` OPTIONAL — an omitted or
@@ -2592,12 +2663,33 @@ class AppContext:
         * ``get`` / ``chain_head`` — one finding by ``id_or_number`` (chain_head follows
           the supersedes chain forward to the newest record).
         * ``acknowledge`` / ``resolve`` / ``wontfix`` — drive a legal status edge by
-          ``id_or_number`` + ``actor`` (+ optional ``note`` on the terminal edges).
+          ``id_or_number`` + ``actor`` (+ optional ``note``).
+        * ``resolve_many`` / ``acknowledge_many`` (PKT-06 §3) — BEST-EFFORT
+          sequential batch transitions by ``items`` (a list of
+          ``{id_or_number, note?}`` objects, capped at
+          :data:`_BATCH_ITEMS_MAX`) + ``actor``, rendering a per-item outcome
+          (never all-or-nothing — one bad item never vetoes the rest).
 
         The ledger's typed errors (:class:`~loremaster.findings.FindingNotFoundError`
         / :class:`~loremaster.findings.IllegalTransitionError` /
-        :class:`~loremaster.findings.FindingChainCycleError`) surface unchanged.
+        :class:`~loremaster.findings.FindingChainCycleError`) surface unchanged for
+        every SINGLE-item action; the two batch actions instead CATCH a per-item
+        domain failure and render it (see :meth:`_resolve_or_acknowledge_many`).
         """
+        if action not in (
+            _FINDING_ACTION_RESOLVE_MANY,
+            _FINDING_ACTION_ACKNOWLEDGE_MANY,
+        ) and items is not None:
+            raise ValueError(
+                f"'items' applies only to action='resolve_many'/'acknowledge_many' "
+                f"— omit it for {action!r}"
+            )
+        if action in (_FINDING_ACTION_RESOLVE_MANY, _FINDING_ACTION_ACKNOWLEDGE_MANY):
+            return await self._resolve_or_acknowledge_many(
+                action=action,
+                items=items or [],
+                actor=_require_finding_arg(actor, "actor"),
+            )
         if action == _FINDING_ACTION_REPORT:
             report = await self.finding_ledger.report(
                 _require_finding_arg(subject, "subject"),
@@ -2626,9 +2718,14 @@ class AppContext:
             head = await self.finding_ledger.chain_head(_require_finding_ref(id_or_number))
             return self._render_chain_head(head)
         if action == _FINDING_ACTION_ACKNOWLEDGE:
+            # PKT-06 §3: the single ``acknowledge`` verb now forwards its
+            # existing ``note`` param too (previously dropped — the ledger's
+            # ``acknowledge(note=)`` already threads it, matching
+            # resolve/wontfix; a tiny, disclosed surface widening).
             acked = await self.finding_ledger.acknowledge(
                 _require_finding_ref(id_or_number),
                 _require_finding_arg(actor, "actor"),
+                note,
             )
             return self._render_finding_transition(acked, actor)
         if action == _FINDING_ACTION_RESOLVE:
@@ -2653,6 +2750,96 @@ class AppContext:
     def _render_finding_transition(finding: Finding, actor: str | None) -> str:
         """Render a finding status transition (names the number, new status, actor)."""
         return f"finding #{finding.number} transitioned to {finding.status} by {actor}"
+
+    @staticmethod
+    def _format_finding_ref(ref: int | str) -> str:
+        """Render a caller-supplied finding ref for a batch outcome row.
+
+        An ``int`` (a stable finding number) renders ``#<n>`` — matching the
+        SUCCESS row's own ``#<number>`` convention (and the design's own
+        worked FAILED-row example, ``- #15 FAILED — …``); anything else (an
+        opaque id, or a hostile/malformed ref) renders sanitised, single-line,
+        with no ``#`` prefix.
+        """
+        if isinstance(ref, int) and not isinstance(ref, bool):
+            return f"#{ref}"
+        return _sanitise_line(str(ref))
+
+    async def _resolve_or_acknowledge_many(
+        self, *, action: str, items: list[dict[str, Any]], actor: str
+    ) -> str:
+        """PKT-06 §3 (L2b): ``resolve_many`` / ``acknowledge_many`` — BEST-EFFORT
+        sequential batch transitions with a per-item outcome render.
+
+        ALL client-side validation (empty list, over-cap, per-item shape) is
+        checked BEFORE any ledger call. Once processing starts, items run
+        sequentially IN GIVEN ORDER (never gathered/parallelised — the
+        contract's outcome ORDER is part of its determinism): a domain failure
+        (:class:`~loremaster.findings.FindingNotFoundError`,
+        :class:`~loremaster.findings.IllegalTransitionError`, ``ValueError``)
+        is CAUGHT per item and rendered as a FAILED row — the batch verb NEVER
+        raises for one; a transport fault
+        (:class:`~loremaster.store._txn.SurrealConnectionError`) ABORTS every
+        remaining item (rendered, never raised) since a dropped connection
+        means the rest cannot be attempted.
+        """
+        if not items:
+            raise ValueError(
+                f"{action} requires a non-empty 'items' list of "
+                f"{{id_or_number, note?}} objects"
+            )
+        if len(items) > _BATCH_ITEMS_MAX:
+            raise ValueError(
+                f"{action} accepts at most {_BATCH_ITEMS_MAX} items per call, "
+                f"got {len(items)} — split the batch"
+            )
+        parsed_items: list[FindingRefItem] = []
+        for index, raw in enumerate(items):
+            try:
+                parsed_items.append(FindingRefItem(**raw))
+            except ValidationError as error:
+                first_error = error.errors()[0]
+                raise ValueError(
+                    f"{action} items[{index}] is invalid: {first_error['msg']}"
+                ) from error
+
+        verb = _FINDING_BATCH_VERB[action]
+        outcome_lines: list[str] = []
+        success_count = 0
+        aborted = False
+        for ref_item in parsed_items:
+            ref_label = self._format_finding_ref(ref_item.id_or_number)
+            if aborted:
+                outcome_lines.append(
+                    f"- {ref_label} ABORTED — store connection lost; retry these"
+                )
+                continue
+            try:
+                if action == _FINDING_ACTION_RESOLVE_MANY:
+                    finding = await self.finding_ledger.resolve(
+                        ref_item.id_or_number, actor, ref_item.note
+                    )
+                else:
+                    finding = await self.finding_ledger.acknowledge(
+                        ref_item.id_or_number, actor, ref_item.note
+                    )
+            except SurrealConnectionError:
+                aborted = True
+                outcome_lines.append(
+                    f"- {ref_label} ABORTED — store connection lost; retry these"
+                )
+                continue
+            except (_FindingNotFoundError, _FindingIllegalTransitionError, ValueError) as error:
+                outcome_lines.append(f"- {ref_label} FAILED — {_sanitise_line(str(error))}")
+                continue
+            success_count += 1
+            note_suffix = " (note recorded)" if ref_item.note is not None else ""
+            outcome_lines.append(
+                f"- #{finding.number} {verb} by {sanitise_line(actor)}{note_suffix}"
+            )
+
+        header = f"{verb} {success_count} of {len(parsed_items)}:"
+        return "\n".join([header, *outcome_lines])
 
     @classmethod
     def _render_chain_head(cls, head: ChainHead) -> str:
@@ -2899,7 +3086,7 @@ class AppContext:
             reason = f"status {task.status}"
         return f"not claimed: task {task.id} is unowned but not claimable ({reason})"
 
-    async def tasks(
+    async def tasks(  # noqa: PLR0911 - a dispatch-on-action verb; splitting churns every action's own test
         self,
         *,
         action: str,
@@ -2912,14 +3099,42 @@ class AppContext:
         owner: str | None = None,
         blocked: bool | None = None,
         blocked_by: list[str] | None = None,
+        since: str | None = None,
+        limit: int | None = None,
+        items: list[dict[str, Any]] | None = None,
+        summary: str | None = None,
+        report_path: str | None = None,
     ) -> str:
-        """Dispatch a fleet task action (create|query|transition|supersede).
+        """Dispatch a fleet task action (create|query|transition|supersede|rollup|create_many).
 
         A thin dispatcher over :class:`~loremaster.tasks.TaskLedger` that renders
         SUMMARISED results (never a raw SurrealDB row) and lets the ledger's typed
         errors (:class:`~loremaster.tasks.IllegalTransitionError` /
         :class:`~loremaster.tasks.TaskNotFoundError`) surface unchanged.
+
+        PKT-06 ADDS two actions: ``rollup`` — the fleet's one-call, cursor-based
+        catch-up composing BOTH ledgers' activity (see :meth:`_rollup`) — and
+        ``create_many`` — batch create with caller-temp-key dependency wiring
+        (see :meth:`_create_many`). ``since``/``limit`` are strict to
+        ``action='rollup'``; ``items`` is strict to ``action='create_many'``;
+        ``summary``/``report_path`` ride the EXISTING ``transition`` action (the
+        done-transition's mandatory completion record, enforced ledger-side by
+        :meth:`~loremaster.tasks.TaskLedger._validate_done_summary`).
         """
+        if action != _TASK_ACTION_ROLLUP and (since is not None or limit is not None):
+            raise ValueError(
+                f"'since'/'limit' apply only to action='rollup' — omit them for {action!r}"
+            )
+        if action != _TASK_ACTION_CREATE_MANY and items is not None:
+            raise ValueError(
+                f"'items' applies only to action='create_many' — omit it for {action!r}"
+            )
+        if action == _TASK_ACTION_ROLLUP:
+            return await self._rollup(since=since, limit=limit)
+        if action == _TASK_ACTION_CREATE_MANY:
+            return await self._create_many(
+                items=items or [], created_by=_require_arg(created_by, "created_by")
+            )
         if action == _TASK_ACTION_CREATE:
             new_id = await self.task_ledger.create_task(
                 _require_arg(subject, "subject"),
@@ -2938,8 +3153,10 @@ class AppContext:
                 _require_arg(task_id, "task_id"),
                 _require_arg(status, "status"),
                 actor=_require_arg(actor, "actor"),
+                summary=summary,
+                report_path=report_path,
             )
-            return f"task {task.id} transitioned to {task.status} by {actor}"
+            return self._render_task_transition(task, actor)
         if action == _TASK_ACTION_SUPERSEDE:
             successor_id = await self.task_ledger.supersede_task(
                 _require_arg(task_id, "task_id"),
@@ -2951,6 +3168,291 @@ class AppContext:
         raise ValueError(
             f"unknown task action {action!r}; valid actions are {list(_TASK_ACTIONS)}"
         )
+
+    @staticmethod
+    def _render_task_transition(task: Task, actor: str | None) -> str:
+        """Render a task transition; the ``done`` edge names its completion record.
+
+        Every other transition's render is byte-unchanged from before PKT-06.
+        """
+        if task.status == STATUS_DONE:
+            suffix = (
+                " (summary + report recorded)"
+                if task.report_path is not None
+                else " (summary recorded)"
+            )
+            return f"task {task.id} transitioned to done by {actor}{suffix}"
+        return f"task {task.id} transitioned to {task.status} by {actor}"
+
+    async def _rollup(self, *, since: str | None, limit: int | None) -> str:
+        """PKT-06 §1: ``lore_tasks action=rollup`` — the fleet's one-call catch-up.
+
+        Composes BOTH ledgers' activity in PYTHON (no cross-ledger transaction —
+        a poll needs no atomicity; each leg is individually consistent and the
+        cursor rules make the seam safe): leg 1 (tasks transitioned, via
+        :meth:`~loremaster.tasks.TaskLedger.updated_since`), leg 2 (findings
+        filed, via :meth:`~loremaster.findings.FindingLedger.filed_since`), and
+        leg 3 (reports registered — DERIVED from leg 1's served rows: rows with
+        ``status == 'done'`` and ``summary is not None``, so it is automatically
+        consistent with leg 1's own truncation).
+        """
+        effective_since = self._parse_rollup_since(since)
+        effective_limit = limit if limit is not None else _DEFAULT_ROLLUP_LEG_LIMIT
+        task_window = await self.task_ledger.updated_since(
+            effective_since, limit=effective_limit
+        )
+        finding_window = await self.finding_ledger.filed_since(
+            effective_since, limit=effective_limit
+        )
+        return self._render_rollup(effective_since, task_window, finding_window)
+
+    @staticmethod
+    def _parse_rollup_since(since: str | None) -> datetime:
+        """Parse rollup's ``since`` cursor; omitted ⇒ the epoch full-history bootstrap.
+
+        A trailing ``Z`` is normalised to ``+00:00`` before parsing (accepting
+        exactly the text a previous rollup's ``next cursor`` line emitted); a
+        naive (tz-less) or unparseable value is a teaching :class:`ValueError`
+        naming the rejected text verbatim.
+        """
+        if since is None:
+            return _ROLLUP_EPOCH
+        normalised = f"{since[:-1]}+00:00" if since.endswith("Z") else since
+        teaching_error = ValueError(
+            f"rollup 'since' must be a timezone-aware ISO-8601 timestamp — pass "
+            f"the 'next cursor' value a previous rollup returned; got {since!r}"
+        )
+        try:
+            parsed = datetime.fromisoformat(normalised)
+        except ValueError as error:
+            raise teaching_error from error
+        if parsed.tzinfo is None:
+            raise teaching_error
+        return parsed
+
+    @classmethod
+    def _render_rollup(
+        cls,
+        effective_since: datetime,
+        task_window: TaskActivityWindow,
+        finding_window: FindingActivityWindow,
+    ) -> str:
+        """Render the rollup's counted-elision grammar (design §1, pinned verbatim)."""
+        since_iso = effective_since.isoformat()
+        task_rows = task_window.rows
+        finding_rows = finding_window.rows
+        if not task_rows and not finding_rows:
+            echoed_cursor = cls._rollup_next_cursor(effective_since, task_window, finding_window)
+            return f"no ledger activity since {since_iso}\nnext cursor: {echoed_cursor.isoformat()}"
+
+        report_rows = [
+            task for task in task_rows if task.status == STATUS_DONE and task.summary is not None
+        ]
+
+        lines = [f"rollup since {since_iso}"]
+        lines.append(
+            cls._rollup_leg_header("tasks transitioned", len(task_rows), task_window.total)
+        )
+        for task in task_rows:
+            lines.append(
+                f"- {cls._task_status_marker(task)} {_sanitise_line(task.subject)} "
+                f"(id {task.id}, owner {sanitise_line(str(task.owner))})"
+            )
+        lines.append(
+            cls._rollup_leg_header("findings filed", len(finding_rows), finding_window.total)
+        )
+        for finding in finding_rows:
+            lines.append(
+                f"- [#{finding.number} {finding.status}] {_sanitise_line(finding.subject)} "
+                f"(kind {sanitise_line(finding.kind)}, by {sanitise_line(finding.created_by)})"
+            )
+        lines.append(f"reports registered ({len(report_rows)}):")
+        for task in report_rows:
+            report_tail = (
+                f"report {sanitise_line(task.report_path)}"
+                if task.report_path is not None
+                else "no report file"
+            )
+            lines.append(
+                f"- task {task.id} by {sanitise_line(str(task.owner))}: "
+                f"{_sanitise_line(task.summary or '')} ({report_tail})"
+            )
+        next_cursor = cls._rollup_next_cursor(effective_since, task_window, finding_window)
+        lines.append(f"next cursor: {next_cursor.isoformat()}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _rollup_leg_header(label: str, shown: int, total: int) -> str:
+        """One rollup leg's header — counted elision, never silent truncation."""
+        if total > shown:
+            return (
+                f"{label} (showing {shown} of {total} — the next cursor resumes at "
+                f"the elision point; re-call rollup with it, or raise limit):"
+            )
+        return f"{label} ({shown}):"
+
+    @staticmethod
+    def _rollup_next_cursor(
+        effective_since: datetime,
+        task_window: TaskActivityWindow,
+        finding_window: FindingActivityWindow,
+    ) -> datetime:
+        """Compute the rollup's ``next cursor`` (design §1, computed in PYTHON
+        over served rows — never a store aggregate).
+
+        Zero rows served (both legs empty) echoes ``effective_since`` unchanged
+        (an idle poll never advances the cursor); ANY leg truncated takes the
+        MIN over truncated legs' last-served stamp (rows in other legs beyond
+        that stamp are RE-SERVED next call — at-least-once, never lost); no leg
+        truncated takes the MAX stamp across every served row (both legs).
+        """
+        if not task_window.rows and not finding_window.rows:
+            return effective_since
+        task_truncated = task_window.total > len(task_window.rows)
+        finding_truncated = finding_window.total > len(finding_window.rows)
+        if task_truncated or finding_truncated:
+            truncated_stamps: list[datetime] = []
+            if task_truncated:
+                last_task_stamp = task_window.rows[-1].updated_at
+                if last_task_stamp is not None:
+                    truncated_stamps.append(last_task_stamp)
+            if finding_truncated:
+                truncated_stamps.append(finding_window.rows[-1].created_at)
+            if truncated_stamps:
+                return min(truncated_stamps)
+        all_stamps: list[datetime] = [
+            task.updated_at for task in task_window.rows if task.updated_at is not None
+        ]
+        all_stamps += [finding.created_at for finding in finding_window.rows]
+        return max(all_stamps)
+
+    @staticmethod
+    def _find_key_cycle(edges: dict[str, set[str]]) -> list[str] | None:
+        """DFS cycle detection over a ``create_many`` batch-local key-reference graph.
+
+        Returns the first cycle found as an ordered path ending back at its own
+        start (e.g. ``["a", "b", "a"]``; a self-reference yields ``["x", "x"]``),
+        or ``None`` when the graph is acyclic. Nodes are visited in SORTED order
+        so a genuine cycle is reported deterministically.
+        """
+        color: dict[str, int] = {}
+        path: list[str] = []
+
+        def visit(node: str) -> list[str] | None:
+            color[node] = 1
+            path.append(node)
+            for neighbor in sorted(edges.get(node, ())):
+                state = color.get(neighbor, 0)
+                if state == 1:
+                    start = path.index(neighbor)
+                    return [*path[start:], neighbor]
+                if state == 0:
+                    found = visit(neighbor)
+                    if found is not None:
+                        return found
+            color[node] = 2
+            path.pop()
+            return None
+
+        for node in sorted(edges):
+            if color.get(node, 0) == 0:
+                found = visit(node)
+                if found is not None:
+                    return found
+        return None
+
+    async def _create_many(  # noqa: PLR0912 - sequential client-side validation steps in the design's own pinned order; splitting would scatter one coherent pipeline with no clearer seam
+        self, *, items: list[dict[str, Any]], created_by: str
+    ) -> str:
+        """PKT-06 §2 (L2a): ``lore_tasks action=create_many`` — batch create with
+        caller-temp-key dependency wiring, resolved entirely in the DISPATCHER
+        (the ledger stays key-agnostic).
+
+        Validation order (every error client-side, BEFORE any write): empty
+        list; over the shared :data:`_BATCH_ITEMS_MAX` cap; per-item pydantic
+        shape (:class:`TaskSpecItem`, ``extra='forbid'``); duplicate keys;
+        id-shaped keys (a 32-hex-char key would be unresolvable from a real
+        pass-through id); an intra-batch ``blocked_by`` cycle over keys.
+
+        Execution: ids are pre-minted in THIS dispatcher (``uuid4().hex`` per
+        item, one mint pass over the whole batch), so sibling keys resolve
+        against them BEFORE any write — both forward and backward
+        ``blocked_by`` references work identically. The WHOLE batch then
+        lands in ONE :meth:`~loremaster.tasks.TaskLedger.create_many` call —
+        one atomic ``execute_transaction`` — all-or-nothing for every batch
+        shape, dependency-chained or not.
+        """
+        if not items:
+            raise ValueError("create_many requires a non-empty 'items' list of task specs")
+        if len(items) > _BATCH_ITEMS_MAX:
+            raise ValueError(
+                f"create_many accepts at most {_BATCH_ITEMS_MAX} items per call, "
+                f"got {len(items)} — split the batch"
+            )
+        parsed: list[TaskSpecItem] = []
+        for index, raw in enumerate(items):
+            try:
+                parsed.append(TaskSpecItem(**raw))
+            except ValidationError as error:
+                first_error = error.errors()[0]
+                raise ValueError(
+                    f"create_many items[{index}] is invalid: {first_error['msg']}"
+                ) from error
+
+        key_index: dict[str, int] = {}
+        for index, item in enumerate(parsed):
+            if item.key is None:
+                continue
+            if item.key in key_index:
+                raise ValueError(
+                    f"create_many items carry duplicate key {item.key!r} "
+                    f"(items[{key_index[item.key]}] and items[{index}]) — keys must "
+                    f"be unique within a batch"
+                )
+            key_index[item.key] = index
+
+        for index, item in enumerate(parsed):
+            if item.key is not None and _TASK_ID_SHAPE_PATTERN.match(item.key):
+                raise ValueError(
+                    f"create_many items[{index}] key {item.key!r} is shaped like a "
+                    f"task id (32 hex chars) — pick a non-id-shaped key so "
+                    f"blocked_by references stay unambiguous"
+                )
+
+        edges: dict[str, set[str]] = {
+            item.key: {ref for ref in item.blocked_by if ref in key_index}
+            for item in parsed
+            if item.key is not None
+        }
+        cycle = self._find_key_cycle(edges)
+        if cycle is not None:
+            raise ValueError(
+                "create_many items contain a blocked_by cycle among batch keys: "
+                f"{' -> '.join(cycle)} — a cyclic batch can never be claimed; "
+                f"break the cycle"
+            )
+
+        minted_ids = [uuid4().hex for _ in parsed]
+        key_to_id = {key: minted_ids[index] for key, index in key_index.items()}
+        specs = [
+            _TaskSpec(
+                subject=item.subject,
+                description=item.description,
+                blocked_by=[key_to_id.get(ref, ref) for ref in item.blocked_by],
+            )
+            for item in parsed
+        ]
+        await self.task_ledger.create_many(specs, created_by=created_by, ids=minted_ids)
+
+        lines = [f"created {len(parsed)} tasks:"]
+        for index, item in enumerate(parsed):
+            resolved_blocked_by = [key_to_id.get(ref, ref) for ref in item.blocked_by]
+            parts = [f"id {minted_ids[index]}"]
+            if item.key is not None:
+                parts.append(f"key {_sanitise_line(item.key)}")
+            parts.append(f"blocked_by {resolved_blocked_by}")
+            lines.append(f"- [open] {_sanitise_line(item.subject)} ({', '.join(parts)})")
+        return "\n".join(lines)
 
     @classmethod
     def _render_task_rows(cls, rows: list[Task]) -> str:
@@ -5362,11 +5864,16 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         name="lore_tasks",
         description=(
             "Manage the project's shared, durable fleet task ledger: dispatch on "
-            "'action' to CREATE a task, QUERY the ledger (by status / owner / blocked), "
-            "TRANSITION a task through its legal state machine, or SUPERSEDE (reframe) a "
-            "task. Returns summarised rows, never a raw store dump. This is the "
-            "create/read/change side of fleet coordination; to atomically take ownership "
-            "of a task, use lore_claim_task."
+            "'action' to CREATE a task, CREATE_MANY (batch-create with caller-temp-key "
+            "blocked_by wiring), QUERY the ledger (by status / owner / blocked), "
+            "TRANSITION a task through its legal state machine (the done edge requires "
+            "'summary', a one-line completion digest; 'report_path' is optional), "
+            "SUPERSEDE (reframe) a task, or ROLLUP — a one-call, cursor-based fleet "
+            "catch-up composing tasks transitioned + findings filed + reports registered "
+            "since a 'next cursor' (chain calls to page through history). Returns "
+            "summarised rows, never a raw store dump. This is the create/read/change "
+            "side of fleet coordination; to atomically take ownership of a task, use "
+            "lore_claim_task."
         ),
         annotations=_TASK_TOOL_ANNOTATIONS,
     )
@@ -5376,9 +5883,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str,
             Field(
                 description=(
-                    "The operation: 'create' (mint an open task), 'query' (list tasks), "
-                    "'transition' (drive a legal status edge), or 'supersede' (reframe a "
-                    "task, minting a successor)."
+                    "The operation: 'create' (mint an open task), 'create_many' (batch "
+                    "create via 'items'), 'query' (list tasks), 'transition' (drive a "
+                    "legal status edge), 'supersede' (reframe a task, minting a "
+                    "successor), or 'rollup' (one-call fleet catch-up since 'since')."
                 )
             ),
         ],
@@ -5387,7 +5895,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             Field(
                 description=(
                     "The target task id — required for 'transition' and 'supersede'. "
-                    "Omit for 'create' / 'query'."
+                    "Omit for 'create' / 'query' / 'rollup' / 'create_many'."
                 )
             ),
         ] = None,
@@ -5412,8 +5920,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str | None,
             Field(
                 description=(
-                    "The identity creating the task, recorded in provenance — required "
-                    "for 'create' and 'supersede'."
+                    "The identity creating the task(s), recorded in provenance — "
+                    "required for 'create', 'create_many', and 'supersede'."
                 )
             ),
         ] = None,
@@ -5430,8 +5938,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str | None,
             Field(
                 description=(
-                    "For 'transition', the target status to move the task to. For "
-                    "'query', an optional exact-status filter. Omit otherwise."
+                    "For 'transition', the target status to move the task to (a target "
+                    "of 'done' additionally requires 'summary'). For 'query', an "
+                    "optional exact-status filter. Omit otherwise."
                 )
             ),
         ] = None,
@@ -5462,6 +5971,61 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
+        since: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'rollup' ONLY (rejected for every other action): the "
+                    "EXCLUSIVE, timezone-aware ISO-8601 cursor to page from — pass the "
+                    "'next cursor' a previous rollup returned. Omit to bootstrap from "
+                    "the epoch (full history, capped by 'limit')."
+                )
+            ),
+        ] = None,
+        limit: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "For 'rollup' ONLY (rejected for every other action): the per-leg "
+                    f"row cap (default {_DEFAULT_ROLLUP_LEG_LIMIT} when omitted; must be "
+                    "a positive int)."
+                )
+            ),
+        ] = None,
+        items: Annotated[
+            list[dict[str, Any]] | None,
+            Field(
+                description=(
+                    "For 'create_many' ONLY (rejected for every other action): a "
+                    "non-empty list (max 50) of {subject, description, key?, "
+                    "blocked_by?} task specs. 'key' is a caller-chosen, batch-local "
+                    "temp name a SIBLING item's 'blocked_by' may reference (resolved "
+                    "to that sibling's minted id); a 'blocked_by' entry matching no "
+                    "sibling key is presumed a pre-existing task id."
+                )
+            ),
+        ] = None,
+        summary: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'transition' to status='done' ONLY: MANDATORY one-line "
+                    "completion digest (max 300 chars) the rollup serves as the "
+                    "fleet's durable completion record. Rejected for every other "
+                    "transition target."
+                )
+            ),
+        ] = None,
+        report_path: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'transition' to status='done' ONLY: an OPTIONAL single-line "
+                    "path to a report file, recorded alongside 'summary'. Rejected for "
+                    "every other transition target."
+                )
+            ),
+        ] = None,
     ) -> str:
         return await _app_context(context).tasks(
             action=action,
@@ -5474,6 +6038,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             owner=owner,
             blocked=blocked,
             blocked_by=blocked_by,
+            since=since,
+            limit=limit,
+            items=items,
+            summary=summary,
+            report_path=report_path,
         )
 
     @mcp.tool(
@@ -5589,9 +6158,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "and defaults to an empty string — a subject-only quick capture is valid; "
             "kind defaults 'friction'), 'query' by status / kind / area, 'get' or "
             "'chain_head' one by id_or_number, or drive its review state machine — "
-            "'acknowledge' / 'resolve' "
-            "/ 'wontfix' (by id_or_number + actor, with an optional note). Returns "
-            "summarised rows, never a raw store dump."
+            "'acknowledge' / 'resolve' / 'wontfix' (by id_or_number + actor, with an "
+            "optional note) — or the BATCH edges 'resolve_many' / 'acknowledge_many' "
+            "(by 'items', a list of {id_or_number, note?} objects, + actor; "
+            "BEST-EFFORT — one bad item never vetoes the rest, rendered per-item). "
+            "Returns summarised rows, never a raw store dump."
         ),
         annotations=_FINDINGS_TOOL_ANNOTATIONS,
     )
@@ -5602,8 +6173,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             Field(
                 description=(
                     "The operation: 'report' (file a finding), 'query' (list by filters), "
-                    "'get' / 'chain_head' (one finding), or a status edge — 'acknowledge' "
-                    "/ 'resolve' / 'wontfix'."
+                    "'get' / 'chain_head' (one finding), a status edge — 'acknowledge' / "
+                    "'resolve' / 'wontfix' — or a BATCH status edge — 'resolve_many' / "
+                    "'acknowledge_many' (via 'items')."
                 )
             ),
         ],
@@ -5715,6 +6287,16 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
+        items: Annotated[
+            list[dict[str, Any]] | None,
+            Field(
+                description=(
+                    "For 'resolve_many' / 'acknowledge_many' ONLY (rejected for every "
+                    "other action): a non-empty list (max 50) of "
+                    "{id_or_number, note?} objects to transition."
+                )
+            ),
+        ] = None,
     ) -> str:
         return await _app_context(context).findings(
             action=action,
@@ -5730,6 +6312,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             status=status,
             limit=limit,
             supersedes=supersedes,
+            items=items,
         )
 
     @mcp.tool(

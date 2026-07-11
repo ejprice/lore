@@ -1088,3 +1088,140 @@ class TestQueryClassifiedErrorPosture:
         with pytest.raises(SurrealConnectionError):
             await ledger._query("SELECT * FROM finding", {})
         assert ledger._connection is None  # the dead handle was dropped (self-heal)
+
+
+# ===========================================================================
+# PKT-06 — orchestration ledger verbs: rollup leg 2 (``filed_since``, §1) and
+# the ``acknowledge`` note (§3). Design source (comms-c0-designer, resolved
+# contract): scratchpad/PKT-06-build-design.md — every error text below is
+# asserted VERBATIM against it. Every test routes through the SAME
+# ``finding_ledger``/``finding_ledger_factory`` fixtures the rest of this
+# file uses (fake-vs-real parity), except where noted.
+#
+# ``FindingLedger.filed_since`` does not exist on the REAL ledger yet — RED
+# by construction; the FAKE tier (``_finding_fakes.py``, extended in step)
+# already implements it, so those assertions may already be GREEN — the real
+# tier is the RED that matters until the builder phase lands it.
+# ===========================================================================
+
+_ROLLUP_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+class TestFiledSince:
+    """§1 leg 2: ``FindingLedger.filed_since`` — the rollup's finding-activity
+    read. Pins: ASC order by ``created_at`` (every finding always has one —
+    unlike tasks, there is no "never appears" case), the exclusive ``since``
+    boundary, an honest ``total`` when ``limit`` truncates, and the shared
+    positive-int ``limit`` guard (mirrors ``query``'s).
+    """
+
+    async def test_findings_filed_before_since_are_excluded(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        await _report(finding_ledger, SUBJECT_TESTS_FOR)
+        cursor = datetime.now(UTC)
+        window = await finding_ledger.filed_since(cursor, limit=20)
+        assert window.rows == []
+        assert window.total == 0
+
+    async def test_rows_are_ordered_ascending_by_created_at(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        first = await _report(finding_ledger, f"{SUBJECT_TESTS_FOR} #1")
+        second = await _report(finding_ledger, f"{SUBJECT_TESTS_FOR} #2", area=AREA_REFERENCES)
+        third = await _report(finding_ledger, f"{SUBJECT_TESTS_FOR} #3", area=AREA_SEARCH)
+
+        window = await finding_ledger.filed_since(_ROLLUP_EPOCH, limit=20)
+        assert [finding.id for finding in window.rows] == [first.id, second.id, third.id]
+        stamps = [finding.created_at for finding in window.rows]
+        assert stamps == sorted(stamps)
+
+    async def test_boundary_is_exclusive(self, finding_ledger: FindingLedger) -> None:
+        result = await _report(finding_ledger, SUBJECT_TESTS_FOR)
+        finding = await finding_ledger.get(result.id)
+        window = await finding_ledger.filed_since(finding.created_at, limit=20)
+        assert result.id not in {row.id for row in window.rows}
+
+    async def test_total_is_honest_when_limit_truncates(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        for i in range(3):
+            await _report(finding_ledger, f"{SUBJECT_TESTS_FOR} #{i}")
+        window = await finding_ledger.filed_since(_ROLLUP_EPOCH, limit=2)
+        assert len(window.rows) == 2
+        assert window.total == 3
+
+    async def test_empty_group_reports_zero_total_not_a_crash(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        window = await finding_ledger.filed_since(datetime.now(UTC), limit=20)
+        assert window.rows == []
+        assert window.total == 0
+
+    @pytest.mark.parametrize("bad_limit", [0, -1])
+    async def test_limit_rejects_non_positive(
+        self, finding_ledger: FindingLedger, bad_limit: int
+    ) -> None:
+        with pytest.raises(ValueError):
+            await finding_ledger.filed_since(_ROLLUP_EPOCH, limit=bad_limit)
+
+
+class TestFiledSinceSameStampTies:
+    """A deliberately FORCED same-``created_at``-stamp tie must drop neither
+    row and must not crash the ASC sort.
+
+    Mirrors ``test_task_ledger.TestUpdatedSinceSameStampTies``: deterministic
+    ties are only constructible against a backend whose clock this test
+    controls directly — the FAKE, built inline (bypassing
+    ``finding_ledger_factory``).
+    """
+
+    async def test_tied_stamps_both_survive_and_the_window_is_not_corrupted(
+        self,
+    ) -> None:
+        db = FakeFindingDatabase()
+        ledger = FakeFindingLedger(db=db)
+        first = await _report(cast(FindingLedger, ledger), f"{SUBJECT_TESTS_FOR} #1")
+        second = await _report(cast(FindingLedger, ledger), f"{SUBJECT_TESTS_FOR} #2")
+
+        tied_stamp = db.findings[first.id].created_at
+        object.__setattr__(db.findings[second.id], "created_at", tied_stamp)
+
+        window = await ledger.filed_since(_ROLLUP_EPOCH, limit=20)
+        assert {finding.id for finding in window.rows} == {first.id, second.id}
+        assert window.total == 2
+
+
+class TestAcknowledgeNote:
+    """§3: ``FindingLedger.acknowledge`` gains an optional ``note``, recorded
+    in provenance exactly like ``resolve``/``wontfix`` already do.
+    """
+
+    async def test_acknowledge_with_note_records_it_in_provenance(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        result = await _report(finding_ledger)
+        note = "picked up by the drift-detection sweep"
+        await finding_ledger.acknowledge(result.number, ACK_ACTOR, note=note)
+        persisted = await finding_ledger.get(result.number)
+        assert _provenance_mentions(persisted.provenance, note)
+
+    async def test_acknowledge_without_note_is_unchanged(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        result = await _report(finding_ledger)
+        updated = await finding_ledger.acknowledge(result.number, ACK_ACTOR)
+        assert updated.status == STATUS_ACKNOWLEDGED
+
+    async def test_acknowledge_note_survives_a_subsequent_resolve(
+        self, finding_ledger: FindingLedger
+    ) -> None:
+        result = await _report(finding_ledger)
+        ack_note = "confirmed reproducible on the live harness"
+        await finding_ledger.acknowledge(result.number, ACK_ACTOR, note=ack_note)
+        await finding_ledger.resolve(result.number, RESOLVER_A, note="fixed in 9171021")
+        persisted = await finding_ledger.get(result.number)
+        # The append-only events log keeps BOTH notes — the resolve must not
+        # clobber the earlier acknowledge event.
+        assert _provenance_mentions(persisted.provenance, ack_note)
+        assert _provenance_mentions(persisted.provenance, "fixed in 9171021")

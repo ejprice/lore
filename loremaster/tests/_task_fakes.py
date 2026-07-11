@@ -48,14 +48,31 @@ mirroring the single SurrealDB database every real ``TaskLedger`` handle
 shares — which is what makes ``TestClaimRace`` (two racing handles) and
 ``TestFleetVisibility`` (a second handle reading the first's writes)
 meaningful against this fake at all.
+
+PKT-06 addendum (rollup / create_many / done-summary): the real ``Task``
+pydantic model is imported, never redefined (see the Fidelity note above) —
+but PKT-06's contract adds THREE fields (``updated_at``, ``summary``,
+``report_path``) production has not landed on ``Task`` yet, and this file may
+never touch production. Rather than fork a second ``Task`` shape, this fake
+injects those fields onto the REAL, imported ``Task`` instances via
+``object.__setattr__`` (bypasses pydantic's ``extra="forbid"`` ``__setattr__``
+guard the same way ``Task.model_copy(update={...})`` does — both write
+directly into the instance ``__dict__``, verified live against this repo's
+pinned pydantic: a forbidden-extra ``Task(..., summary=...)`` construction
+still raises, but ``object.__setattr__(task, "summary", ...)`` on an existing
+instance succeeds and round-trips through ``model_copy(deep=True)``). This
+keeps the fake's ``Task`` instances the SAME class as production's — never a
+parallel value object — while still being constructible today, before the
+builder phase adds these columns for real.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 from loremaster.tasks import (
@@ -105,6 +122,80 @@ LEGAL_TRANSITIONS: frozenset[tuple[TaskStatus, TaskStatus]] = frozenset(
         (STATUS_BLOCKED, STATUS_WONTFIX),
     }
 )
+
+
+# PKT-06 §4 (done-summary/report_path): the cap on a done-transition's
+# ``summary``, a DELIBERATE local copy of the design's decided
+# ``_DONE_SUMMARY_MAX_CHARS`` constant (same independence rationale as the
+# status vocabulary above — this fake enforces the CONTRACT, not a value
+# imported from the not-yet-built production module).
+_DONE_SUMMARY_MAX_CHARS = 300
+
+
+@dataclass
+class _FakeTaskActivityWindow:
+    """Duck-typed stand-in for the not-yet-built ``loremaster.tasks.
+    TaskActivityWindow`` — ``rows``/``total``, nothing more. Never imports the
+    production class (it does not exist yet); a contract test asserts on
+    these two attributes, which is exactly what the real pydantic model will
+    also expose, so the fake and the real return value are
+    attribute-compatible without a shared base.
+    """
+
+    rows: list[Task]
+    total: int
+
+
+def _validate_done_extras(
+    task_id: str, target: str, summary: str | None, report_path: str | None
+) -> None:
+    """PKT-06 §4: enforce the done-transition's ``summary``/``report_path`` rules.
+
+    Checked AFTER the state-machine edge is confirmed legal and BEFORE any
+    mutation — mirrors the design note's ordering exactly, including the
+    verbatim error texts (this fake IS the contract those texts are pinned
+    against). Rule 4 (report_path's own non-empty/single-line guard) mirrors
+    rule 2's template verbatim with 'summary' swapped for 'report_path' — the
+    design's "mirrored text with 'report_path'" phrase, read as literally the
+    SAME templated message production is expected to share between the two
+    fields (flagged in the report as the one genuinely underspecified corner
+    of an otherwise fully-decided contract).
+
+    Raises:
+        IllegalTransitionError: A done-transition's summary/report_path is
+            missing, multi-line, or over the length cap.
+        ValueError: summary/report_path was given on a NON-done target.
+    """
+    if target == STATUS_DONE:
+        if summary is None or not summary.strip():
+            raise IllegalTransitionError(
+                f"transition to 'done' for task {task_id!r} requires 'summary' — a "
+                f"one-line completion digest (max 300 chars) the rollup serves as "
+                f"the fleet's durable completion record; pass report_path= too "
+                f"when a report file exists"
+            )
+        if "\n" in summary or "\r" in summary:
+            raise IllegalTransitionError(
+                f"task {task_id!r} done-summary must be a single line — put "
+                f"detail in the report file and pass its path as report_path="
+            )
+        if len(summary) > _DONE_SUMMARY_MAX_CHARS:
+            raise IllegalTransitionError(
+                f"task {task_id!r} done-summary is {len(summary)} chars — the cap "
+                f"is 300; tighten it (detail belongs in the report file)"
+            )
+        if report_path is not None and (
+            not report_path.strip() or "\n" in report_path or "\r" in report_path
+        ):
+            raise IllegalTransitionError(
+                f"task {task_id!r} done-report_path must be a single line — put "
+                f"detail in the report file and pass its path as report_path="
+            )
+    elif summary is not None or report_path is not None:
+        raise ValueError(
+            f"summary/report_path are recorded only on the transition to 'done' "
+            f"(got target {target!r}) — omit them here"
+        )
 
 
 @dataclass
@@ -255,6 +346,12 @@ class FakeTaskLedger:
         task.status = STATUS_CLAIMED
         task.owner = owner
         task.claimed_at = now
+        # PKT-06 §1 (rollup leg 1): a claim is fleet-visible activity — stamp
+        # ``updated_at`` inside the same (fake) compare-and-set the design
+        # requires of the real guarded CAS. See the module docstring's
+        # addendum for why this is an ``object.__setattr__`` injection rather
+        # than a declared ``Task`` field.
+        object.__setattr__(task, "updated_at", now)
         task.provenance.setdefault("events", []).append(
             {"actor": owner, "action": "claim", "at": now.isoformat()}
         )
@@ -263,7 +360,15 @@ class FakeTaskLedger:
 
     # -- state machine ---------------------------------------------------------
 
-    async def transition(self, task_id: str, status: str, *, actor: str) -> Task:
+    async def transition(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        actor: str,
+        summary: str | None = None,
+        report_path: str | None = None,
+    ) -> Task:
         await asyncio.sleep(0)
         task = self._require(task_id)
         current_status = task.status
@@ -276,6 +381,9 @@ class FakeTaskLedger:
             raise IllegalTransitionError(
                 f"illegal transition for task {task_id!r} from {current_status!r} to {status!r}"
             )
+        # PKT-06 §4: the done-summary/report_path rules are checked AFTER the
+        # state-machine edge is confirmed legal and BEFORE any mutation.
+        _validate_done_extras(task_id, status, summary, report_path)
         target_status = cast(TaskStatus, status)
         task.status = target_status
         if target_status == STATUS_OPEN:
@@ -289,7 +397,98 @@ class FakeTaskLedger:
         task.provenance.setdefault("events", []).append(
             {"actor": actor, "action": "transition", "to": target_status, "at": now.isoformat()}
         )
+        # PKT-06 §1: every legal transition is fleet-visible activity.
+        object.__setattr__(task, "updated_at", now)
+        if target_status == STATUS_DONE:
+            # PKT-06 §4(d): bound to the done edge ONLY — validated above.
+            object.__setattr__(task, "summary", summary)
+            object.__setattr__(task, "report_path", report_path)
         return task.model_copy(deep=True)
+
+    # -- rollup / batch (PKT-06) ------------------------------------------------
+
+    async def updated_since(self, since: datetime, *, limit: int) -> _FakeTaskActivityWindow:
+        """The rollup's leg-1 read: tasks stamped ``updated_at`` after ``since``.
+
+        Adversarial (mirrors ``query_tasks``'s non-insertion-order property):
+        the candidate set is built in REVERSE insertion order BEFORE the real
+        ``updated_at`` ASC sort is applied, so a consumer whose "it happened
+        to come back in the right order" assumption secretly rode dict
+        insertion order breaks here exactly as it would against a real
+        ``SELECT`` with no ``ORDER BY`` guarantee.
+        """
+        await asyncio.sleep(0)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError(f"limit must be a positive integer, got {limit!r}")
+        scrambled = list(reversed(list(self.db.tasks.values())))
+        matching = [
+            task
+            for task in scrambled
+            if task.updated_at is not None and task.updated_at > since
+        ]
+        total = len(matching)
+        matching.sort(key=lambda task: task.updated_at or datetime.min.replace(tzinfo=UTC))
+        rows = [task.model_copy(deep=True) for task in matching[:limit]]
+        return _FakeTaskActivityWindow(rows=rows, total=total)
+
+    async def create_many(
+        self,
+        specs: Any,
+        *,
+        created_by: str,
+        ids: Sequence[str] | None = None,
+    ) -> list[str]:
+        """Batch-create, ALL-OR-NOTHING, ids positionally aligned with ``specs``.
+
+        ``specs`` is typed ``Any`` here rather than the not-yet-built
+        ``loremaster.tasks.TaskSpec`` (this file never imports a symbol that
+        doesn't exist in production yet — that would break collection for
+        every OTHER test importing this fake); it duck-types on
+        ``.subject``/``.description``/``.blocked_by``, the same attributes
+        the design's ``TaskSpec`` declares. Key resolution (temp keys ->
+        minted ids) is a DISPATCHER concern per the design — this fake, like
+        the real ledger, is key-agnostic and expects ``blocked_by`` already
+        resolved to real (or intentionally pass-through) ids.
+
+        ``ids`` is an optional caller-supplied parallel sequence: when given,
+        it must align positionally with ``specs`` (a mismatch is a
+        ``ValueError``, nothing written); the DISPATCHER pre-mints ids and
+        wires sibling ``blocked_by`` references to them before the single
+        atomic write. Omitted (``None``) — the fake mints internally
+        (``uuid4().hex``) exactly as before.
+        """
+        await asyncio.sleep(0)
+        if not specs:
+            raise ValueError("create_many requires a non-empty list of specs")
+        if ids is not None and len(ids) != len(specs):
+            raise ValueError(
+                f"create_many 'ids' must align positionally with 'specs' — "
+                f"got {len(ids)} ids for {len(specs)} specs"
+            )
+        now = _utc_now()
+        minted_ids: list[str] = []
+        new_tasks: dict[str, Task] = {}
+        for index, spec in enumerate(specs):
+            task_id = ids[index] if ids is not None else uuid4().hex
+            new_tasks[task_id] = Task(
+                id=task_id,
+                subject=spec.subject,
+                description=spec.description,
+                status=STATUS_OPEN,
+                owner=None,
+                claimed_at=None,
+                blocked_by=list(dict.fromkeys(spec.blocked_by)),
+                provenance={"created_by": created_by, "created_at": now.isoformat(), "events": []},
+                superseded_by=None,
+                created_at=now,
+            )
+            minted_ids.append(task_id)
+        # ALL-OR-NOTHING: nothing is written to the shared store until every
+        # spec above has built cleanly (a pydantic rejection on any one spec
+        # raises BEFORE this line runs) — the fake's behavioural analogue of
+        # the real ledger's single ``execute_transaction`` composing N CREATEs.
+        self.db.tasks.update(new_tasks)
+        return minted_ids
 
     # -- supersession ------------------------------------------------------
 
@@ -330,6 +529,10 @@ class FakeTaskLedger:
         )
         self.db.tasks[new_id] = successor
         old_task.superseded_by = new_id
+        # PKT-06 §1: a supersession is fleet-visible activity too — stamp the
+        # OLD row's updated_at (the successor is a fresh create, deliberately
+        # NOT stamped — see the design's "NOT stamped at create" rule).
+        object.__setattr__(old_task, "updated_at", now)
         old_task.provenance.setdefault("events", []).append(
             {"actor": created_by, "action": "supersede", "successor": new_id, "at": now.isoformat()}
         )

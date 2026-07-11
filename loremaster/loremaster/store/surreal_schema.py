@@ -263,7 +263,16 @@ _TASK_STATUS_ALLOWED = ", ".join(f"'{status}'" for status in _TASK_STATUSES)
 # are ``option`` (a fresh task is unowned/unclaimed/not-superseded, decoding back
 # to ``None``); ``blocked_by`` defaults to ``[]`` so a dependency-free task may
 # omit it; ``provenance`` is ``FLEXIBLE`` so the free-form who/when audit blob
-# round-trips intact; ``status`` carries the closed-domain ASSERT.
+# round-trips intact; ``status`` carries the closed-domain ASSERT. PKT-06 §1/§4
+# ADDS three ``option`` columns (ADDED fields, never REMOVE+DEFINE — the §5
+# two-step table-recreate law is NOT triggered, no HNSW/fingerprint on this
+# table): ``updated_at`` (the rollup's leg-1 fleet-activity stamp, stamped
+# ``time::now()`` by claim/transition/supersede-of-old, NEVER at create — a
+# legacy row decodes it back to ``None``) and ``summary``/``report_path`` (the
+# done-transition's completion record — ``summary`` mandatory, ``report_path``
+# optional, both enforced ledger-side in :meth:`~loremaster.tasks.TaskLedger.
+# _validate_done_summary`, never by a schema ASSERT here, since the cap/single-
+# line rules need EXACT teaching error text the ledger owns).
 _TASK_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("subject", _CHUNK_STRING_TYPE, ""),
     ("description", _CHUNK_STRING_TYPE, ""),
@@ -274,6 +283,9 @@ _TASK_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("provenance", "object FLEXIBLE", ""),
     ("superseded_by", "option<string>", ""),
     ("created_at", "datetime", ""),
+    ("updated_at", "option<datetime>", ""),
+    ("summary", "option<string>", ""),
+    ("report_path", "option<string>", ""),
 )
 
 # The ``task`` column the plain status index is built on (the fleet-visible

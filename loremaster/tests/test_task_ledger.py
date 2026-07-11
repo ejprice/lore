@@ -55,9 +55,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -213,7 +214,14 @@ async def _drive_to_state(task_ledger: TaskLedger, target_status: str) -> str:
     if target_status == STATUS_IN_PROGRESS:
         return task_id
     if target_status == STATUS_DONE:
-        await task_ledger.transition(task_id, STATUS_DONE, actor=ACTOR)  # in_progress -> done
+        # PKT-06 §4 breaking-change sweep: a done-transition now REQUIRES a
+        # summary (mandatory, per the resolved design) — every pre-existing
+        # setup path through this shared helper must supply one, or the
+        # dozens of OTHER tests that merely need "a task in status done"
+        # break on the new rule instead of exercising their own concern.
+        await task_ledger.transition(
+            task_id, STATUS_DONE, actor=ACTOR, summary="setup: driven to done via the legal chain"
+        )  # in_progress -> done
         return task_id
     raise ValueError(f"unsupported target status {target_status!r}")
 
@@ -747,7 +755,14 @@ class TestTransitions:
         self, task_ledger: TaskLedger, from_status: str, to_status: str
     ) -> None:
         task_id = await _drive_to_state(task_ledger, from_status)
-        updated = await task_ledger.transition(task_id, to_status, actor=ACTOR)
+        # PKT-06 §4 breaking-change sweep: the done target now requires a
+        # summary (mandatory) — every OTHER legal edge is unaffected.
+        summary_kwargs = (
+            {"summary": "setup: generic legal-transition pin reached done"}
+            if to_status == STATUS_DONE
+            else {}
+        )
+        updated = await task_ledger.transition(task_id, to_status, actor=ACTOR, **summary_kwargs)
         assert updated.status == to_status
         # The store agrees on read-back (persisted, not just returned).
         assert (await task_ledger.get_task(task_id)).status == to_status
@@ -937,7 +952,10 @@ async def _drive_existing_task_to_done(task_ledger: TaskLedger, task_id: str) ->
     claim = await task_ledger.claim_task(task_id, CLAIMER)
     assert claim.claimed, "setup precondition: a fresh open blocker must be claimable"
     await task_ledger.transition(task_id, STATUS_IN_PROGRESS, actor=ACTOR)
-    await task_ledger.transition(task_id, STATUS_DONE, actor=ACTOR)
+    # PKT-06 §4 breaking-change sweep: see ``_drive_to_state``'s matching note.
+    await task_ledger.transition(
+        task_id, STATUS_DONE, actor=ACTOR, summary="setup: driven to done via the legal chain"
+    )
 
 
 def _partition_gather(results: Sequence[Any], success_type: type) -> tuple[list[Any], list[Any], list[Any]]:
@@ -988,8 +1006,17 @@ class TestConcurrentTransitions:
         for iteration in range(_RACE_ITERATIONS):
             task_id = await _drive_to_state(ledger_a, STATUS_IN_PROGRESS)
 
+            # PKT-06 §4 breaking-change sweep: the done-side racer needs a
+            # summary now — WITHOUT one it would deterministically lose on
+            # the missing-summary check regardless of the actual CAS race
+            # outcome, silently degrading this pin from "exactly one winner
+            # of a genuine race" to a trivial always-B-wins case that could
+            # no longer catch a broken CAS (finding caught during this
+            # packet's own regression sweep, not by the design).
             results = await asyncio.gather(
-                ledger_a.transition(task_id, STATUS_DONE, actor=RESOLVER_MARKS_DONE),
+                ledger_a.transition(
+                    task_id, STATUS_DONE, actor=RESOLVER_MARKS_DONE, summary="race: marked done"
+                ),
                 ledger_b.transition(task_id, STATUS_WONTFIX, actor=RESOLVER_MARKS_WONTFIX),
                 return_exceptions=True,
             )
@@ -1220,9 +1247,19 @@ class TestSameTargetTransitionRace:
         for iteration in range(_RACE_ITERATIONS):
             task_id = await _drive_to_state(ledger_a, STATUS_IN_PROGRESS)
 
+            # PKT-06 §4 breaking-change sweep: both racers now need a summary
+            # (mandatory on done) — WITHOUT one, every iteration's loser would
+            # raise IllegalTransitionError for the wrong reason (missing
+            # summary, not the lost race this pin targets), and the
+            # ``done -> done`` self-edge is itself in-scope for §4's OWN
+            # non-done-target rule 5 -- N/A here since both targets ARE done.
             result_a, result_b = await asyncio.gather(
-                ledger_a.transition(task_id, STATUS_DONE, actor=RACE_ACTOR_ALPHA),
-                ledger_b.transition(task_id, STATUS_DONE, actor=RACE_ACTOR_BETA),
+                ledger_a.transition(
+                    task_id, STATUS_DONE, actor=RACE_ACTOR_ALPHA, summary="alpha finished first"
+                ),
+                ledger_b.transition(
+                    task_id, STATUS_DONE, actor=RACE_ACTOR_BETA, summary="beta finished first"
+                ),
                 return_exceptions=True,
             )
 
@@ -1475,3 +1512,555 @@ class TestQueryClassifiedErrorPosture:
         with pytest.raises(SurrealConnectionError):
             await ledger._query("SELECT * FROM task", {})
         assert ledger._connection is None  # the dead handle was dropped (self-heal)
+
+
+# ===========================================================================
+# PKT-06 — orchestration ledger verbs: rollup leg 1 (``updated_since``, §1),
+# ``updated_at`` stamping, the ledger half of batch create (``create_many``,
+# §2), and the done-transition's ``summary``/``report_path`` rules (§4).
+#
+# The design source (comms-c0-designer, resolved contract):
+#   scratchpad/PKT-06-build-design.md
+# Every error text below is asserted VERBATIM against that document — it is
+# the contract, not a paraphrase. Every test in this section routes through
+# the SAME ``task_ledger``/``task_ledger_factory`` fixtures the rest of this
+# file uses, so it runs against BOTH backends (fake-vs-real parity, per the
+# repo's adversarial-doubles law) unless a docstring says otherwise.
+#
+# ``TaskLedger.create_many`` / ``.updated_since`` / the extended
+# ``.transition(summary=, report_path=)`` do not exist on the REAL ledger
+# yet — this is RED by construction. The FAKE tier (``_task_fakes.py``,
+# extended in step with these tests) already enforces the §4 rules and
+# stamps ``updated_at``, so several fake-tier assertions here may already be
+# GREEN; the real tier is the RED that matters until the builder phase lands.
+# ===========================================================================
+
+_ROLLUP_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+@dataclass
+class _TaskSpecStub:
+    """A local stand-in for the not-yet-built ``loremaster.tasks.TaskSpec``.
+
+    A MODULE-LEVEL ``from loremaster.tasks import TaskSpec`` would break
+    COLLECTION of this entire file the instant it's referenced — the symbol
+    does not exist until the builder phase lands it, and this file's
+    hundreds of already-green tests above must keep collecting throughout
+    RED (repo law: a RED test file must fail for a behavioural reason, never
+    an import error blast-radius). This stub is attribute-compatible with
+    the design's ``TaskSpec`` (``subject``/``description``/``blocked_by``) —
+    the ledger stays key-agnostic and duck-types on those three attributes
+    per the design's own "key resolution lives in the DISPATCHER" ruling, so
+    a real ``TaskSpec`` and this stub are interchangeable call arguments.
+    """
+
+    subject: str
+    description: str
+    blocked_by: list[str] = field(default_factory=list)
+
+
+class TestUpdatedSince:
+    """§1 leg 1: ``TaskLedger.updated_since`` — the rollup's task-activity read.
+
+    Pins: NOT stamped at create (only claim/transition/supersede-of-the-OLD-
+    row count as activity); ASC order by ``updated_at``; the exclusive
+    ``since`` boundary; an honest ``total`` that is ``>= len(rows)`` when
+    ``limit`` truncates; and the shared positive-int ``limit`` guard (same
+    ValueError family as ``FindingLedger.query``'s).
+    """
+
+    async def test_never_transitioned_task_never_appears(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
+        window = await task_ledger.updated_since(_ROLLUP_EPOCH, limit=20)
+        assert window.rows == []
+        assert window.total == 0
+
+    async def test_claim_transition_and_supersede_of_old_row_all_count(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        claimed_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
+        await task_ledger.claim_task(claimed_id, AGENT_A)
+
+        transitioned_id = await _drive_to_state(task_ledger, STATUS_CLAIMED)
+        await task_ledger.transition(transitioned_id, STATUS_IN_PROGRESS, actor=ACTOR)
+
+        superseded_id = await _create(task_ledger, SUBJECT_MEMORY, DESCRIPTION_MEMORY)
+        await task_ledger.supersede_task(
+            superseded_id,
+            subject=SUBJECT_WATCHER,
+            description=DESCRIPTION_WATCHER,
+            created_by=CREATOR,
+        )
+
+        window = await task_ledger.updated_since(_ROLLUP_EPOCH, limit=20)
+        seen_ids = {task.id for task in window.rows}
+        assert claimed_id in seen_ids
+        assert transitioned_id in seen_ids
+        # The OLD (superseded) row is what's stamped — a supersession is
+        # fleet-visible activity on the row being reframed, per the design.
+        assert superseded_id in seen_ids
+
+    async def test_rows_are_ordered_ascending_by_updated_at(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        first = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
+        await task_ledger.claim_task(first, AGENT_A)
+        second = await _create(task_ledger, SUBJECT_LEDGER, DESCRIPTION_LEDGER)
+        await task_ledger.claim_task(second, AGENT_B)
+        third = await _create(task_ledger, SUBJECT_MEMORY, DESCRIPTION_MEMORY)
+        await task_ledger.claim_task(third, AGENT_A)
+
+        window = await task_ledger.updated_since(_ROLLUP_EPOCH, limit=20)
+        assert [task.id for task in window.rows] == [first, second, third]
+        stamps = [task.updated_at for task in window.rows]
+        assert None not in stamps
+        typed_stamps = cast(list[datetime], stamps)
+        assert typed_stamps == sorted(typed_stamps)
+
+    async def test_boundary_is_exclusive(self, task_ledger: TaskLedger) -> None:
+        task_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
+        claimed = await task_ledger.claim_task(task_id, AGENT_A)
+        cursor = claimed.task.updated_at
+        assert cursor is not None
+        window = await task_ledger.updated_since(cursor, limit=20)
+        assert task_id not in {task.id for task in window.rows}
+
+    async def test_total_is_honest_when_limit_truncates(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        for subject in (SUBJECT_XML, SUBJECT_LEDGER, SUBJECT_MEMORY):
+            task_id = await _create(task_ledger, subject, DESCRIPTION_XML)
+            await task_ledger.claim_task(task_id, AGENT_A)
+        window = await task_ledger.updated_since(_ROLLUP_EPOCH, limit=2)
+        assert len(window.rows) == 2
+        assert window.total == 3
+
+    async def test_empty_group_reports_zero_total_not_a_crash(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        # A window with genuinely nothing in it (SurrealDB's ``GROUP ALL`` over
+        # an empty match returns ZERO rows on 3.1 — the missing-projection
+        # idiom must default to 0, never index blindly into an empty result).
+        window = await task_ledger.updated_since(datetime.now(UTC), limit=20)
+        assert window.rows == []
+        assert window.total == 0
+
+    @pytest.mark.parametrize("bad_limit", [0, -1])
+    async def test_limit_rejects_non_positive(
+        self, task_ledger: TaskLedger, bad_limit: int
+    ) -> None:
+        with pytest.raises(ValueError):
+            await task_ledger.updated_since(_ROLLUP_EPOCH, limit=bad_limit)
+
+
+class TestUpdatedSinceSameStampTies:
+    """A deliberately FORCED same-``updated_at``-stamp tie must drop neither
+    row and must not crash the ASC sort.
+
+    Deterministic ties are only constructible against a backend whose clock
+    this test controls directly — the FAKE, built inline (bypassing
+    ``task_ledger_factory``, mirroring how ``TestQueryClassifiedErrorPosture``
+    above builds a ``TaskLedger`` inline for a scenario the parametrized
+    fixture can't express). The real server clock's resolution makes a true
+    tie non-deterministic to force from the client side; the exclusive-
+    boundary and ASC-order pins above already cover the real backend's
+    ordering contract.
+    """
+
+    async def test_tied_stamps_both_survive_and_the_window_is_not_corrupted(
+        self,
+    ) -> None:
+        from _task_fakes import FakeTaskDatabase, FakeTaskLedger
+
+        ledger = FakeTaskLedger(db=FakeTaskDatabase())
+        typed_ledger = cast(TaskLedger, ledger)
+        first_id = await _create(typed_ledger, SUBJECT_XML, DESCRIPTION_XML)
+        second_id = await _create(typed_ledger, SUBJECT_LEDGER, DESCRIPTION_LEDGER)
+        await ledger.claim_task(first_id, AGENT_A)
+        await ledger.claim_task(second_id, AGENT_B)
+
+        tied_stamp = (await ledger.get_task(first_id)).claimed_at
+        assert tied_stamp is not None
+        # Force an exact tie directly on the fake's stored rows (never
+        # reachable through the public API at this precision) — the point of
+        # this test is the SORT/FILTER behaviour under a tie, not how a tie
+        # might arise.
+        object.__setattr__(ledger.db.tasks[first_id], "updated_at", tied_stamp)
+        object.__setattr__(ledger.db.tasks[second_id], "updated_at", tied_stamp)
+
+        window = await ledger.updated_since(_ROLLUP_EPOCH, limit=20)
+        assert {task.id for task in window.rows} == {first_id, second_id}
+        assert window.total == 2
+
+
+class TestCreateMany:
+    """§2 ledger half: ``TaskLedger.create_many`` — all-or-nothing, positional
+    ids, key-agnostic (already-resolved ``blocked_by``); the temp-key
+    resolution + the wire-facing validation errors are a DISPATCHER concern
+    (test_mcp_server.py), not pinned here.
+    """
+
+    async def test_returns_ids_positionally_aligned_with_specs(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        specs = [
+            _TaskSpecStub(subject=SUBJECT_XML, description=DESCRIPTION_XML),
+            _TaskSpecStub(subject=SUBJECT_LEDGER, description=DESCRIPTION_LEDGER),
+            _TaskSpecStub(subject=SUBJECT_MEMORY, description=DESCRIPTION_MEMORY),
+        ]
+        ids = await task_ledger.create_many(specs, created_by=CREATOR)
+        assert len(ids) == 3
+        assert len(set(ids)) == 3  # every id distinct
+        for task_id, spec in zip(ids, specs, strict=True):
+            task = await task_ledger.get_task(task_id)
+            assert task.subject == spec.subject
+            assert task.description == spec.description
+            assert task.status == STATUS_OPEN
+
+    async def test_blocked_by_is_stored_as_given_and_deduped(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        blocker_id = await _create(task_ledger, SUBJECT_WATCHER, DESCRIPTION_WATCHER)
+        specs = [
+            _TaskSpecStub(
+                subject=SUBJECT_LEDGER,
+                description=DESCRIPTION_LEDGER,
+                blocked_by=[blocker_id, blocker_id],
+            )
+        ]
+        [dependent_id] = await task_ledger.create_many(specs, created_by=CREATOR)
+        dependent = await task_ledger.get_task(dependent_id)
+        assert dependent.blocked_by == [blocker_id]
+
+    async def test_provenance_records_the_batch_creator(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        [task_id] = await task_ledger.create_many(
+            [_TaskSpecStub(subject=SUBJECT_XML, description=DESCRIPTION_XML)],
+            created_by=CREATOR,
+        )
+        task = await task_ledger.get_task(task_id)
+        assert _provenance_mentions(task.provenance, CREATOR)
+
+    async def test_empty_specs_list_raises_value_error(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        # The wire's exact "create_many requires a non-empty 'items' list…"
+        # text is the DISPATCHER's — the ledger only needs to refuse an empty
+        # batch, not spell the wire message (design: "[] -> ValueError").
+        with pytest.raises(ValueError):
+            await task_ledger.create_many([], created_by=CREATOR)
+
+    async def test_all_or_nothing_a_rejected_spec_creates_nothing(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        # PKT-06 builder CORRECTION (not a weakening): before create_many was
+        # implemented, ``pytest.raises(AttributeError)`` passed COINCIDENTALLY
+        # — any call at all raised AttributeError because the ledger had no
+        # ``create_many`` method whatsoever, independent of the broken spec
+        # below. Now that create_many is implemented (it duck-types on each
+        # spec's ``.subject``/``.description``/``.blocked_by`` BEFORE building
+        # any transaction fragment — see ``TaskLedger.create_many``), the SAME
+        # exception type is raised for the REAL reason: attribute access on
+        # ``_BrokenSpec()`` fails on its missing ``.description``. The
+        # ``match=`` tightens the assertion so it can no longer pass by
+        # coincidence — a future implementation that raised AttributeError for
+        # an unrelated reason would now correctly fail this test.
+        #
+        # A spec that fails to build (missing a required attribute a real
+        # TaskSpec would always carry) must abort BEFORE any row lands —
+        # simulated here via a spec object missing ``description`` entirely,
+        # which raises before this ledger writes anything.
+        class _BrokenSpec:
+            subject = SUBJECT_XML
+            blocked_by: list[str] = []
+            # no .description attribute at all
+
+        before = len(await task_ledger.query_tasks())
+        with pytest.raises(AttributeError, match="description"):
+            await task_ledger.create_many(
+                [
+                    _TaskSpecStub(subject=SUBJECT_LEDGER, description=DESCRIPTION_LEDGER),
+                    _BrokenSpec(),  # type: ignore[list-item]
+                ],
+                created_by=CREATOR,
+            )
+        after = len(await task_ledger.query_tasks())
+        assert after == before, (
+            "a batch that fails partway through must create NOTHING — "
+            "all-or-nothing, never a partial write"
+        )
+
+    async def test_caller_supplied_ids_are_used_verbatim(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        # D1 ruling: an optional parallel ``ids`` argument lets the DISPATCHER
+        # pre-mint every id (uuid4) and wire sibling ``blocked_by`` references
+        # to the REAL ids before the single atomic write — the whole batch
+        # lands in ONE ``create_many`` call, never per-wave.
+        specs = [
+            _TaskSpecStub(subject=SUBJECT_XML, description=DESCRIPTION_XML),
+            _TaskSpecStub(subject=SUBJECT_LEDGER, description=DESCRIPTION_LEDGER),
+        ]
+        supplied = [uuid4().hex, uuid4().hex]
+        returned = await task_ledger.create_many(specs, created_by=CREATOR, ids=supplied)
+        assert returned == supplied
+        first = await task_ledger.get_task(supplied[0])
+        assert first.subject == specs[0].subject
+        second = await task_ledger.get_task(supplied[1])
+        assert second.subject == specs[1].subject
+
+    async def test_mismatched_ids_length_is_a_value_error(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        specs = [
+            _TaskSpecStub(subject=SUBJECT_XML, description=DESCRIPTION_XML),
+            _TaskSpecStub(subject=SUBJECT_LEDGER, description=DESCRIPTION_LEDGER),
+        ]
+        before = len(await task_ledger.query_tasks())
+        with pytest.raises(ValueError) as exc_info:
+            await task_ledger.create_many(specs, created_by=CREATOR, ids=[uuid4().hex])
+        assert str(exc_info.value) == (
+            "create_many 'ids' must align positionally with 'specs' — "
+            "got 1 ids for 2 specs"
+        )
+        after = len(await task_ledger.query_tasks())
+        assert after == before, "a rejected 'ids' mismatch must write nothing"
+
+
+class TestUpdatedAtStamping:
+    """``updated_at`` is ``None`` until the first mutation, then stamped by
+    claim/transition/supersede (of the OLD row) — never by a mere read.
+    """
+
+    async def test_freshly_created_task_has_no_updated_at(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
+        task = await task_ledger.get_task(task_id)
+        assert getattr(task, "updated_at", None) is None
+
+    async def test_claim_stamps_updated_at(self, task_ledger: TaskLedger) -> None:
+        task_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
+        before = datetime.now(UTC)
+        result = await task_ledger.claim_task(task_id, AGENT_A)
+        after = datetime.now(UTC)
+        assert result.task.updated_at is not None
+        _assert_recent_utc(result.task.updated_at, not_before=before, not_after=after)
+
+    async def test_transition_stamps_updated_at(self, task_ledger: TaskLedger) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_CLAIMED)
+        before = datetime.now(UTC)
+        updated = await task_ledger.transition(task_id, STATUS_IN_PROGRESS, actor=ACTOR)
+        after = datetime.now(UTC)
+        assert updated.updated_at is not None
+        _assert_recent_utc(updated.updated_at, not_before=before, not_after=after)
+
+    async def test_supersede_stamps_the_old_rows_updated_at_not_the_successor(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        old_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
+        before = datetime.now(UTC)
+        new_id = await task_ledger.supersede_task(
+            old_id, subject=SUBJECT_LEDGER, description=DESCRIPTION_LEDGER, created_by=CREATOR
+        )
+        after = datetime.now(UTC)
+        old_task = await task_ledger.get_task(old_id)
+        assert old_task.updated_at is not None
+        _assert_recent_utc(old_task.updated_at, not_before=before, not_after=after)
+        # The successor is a fresh CREATE — deliberately NOT stamped.
+        successor = await task_ledger.get_task(new_id)
+        assert getattr(successor, "updated_at", None) is None
+
+
+class TestDoneSummaryReportPath:
+    """§4: the done-transition's ``summary``/``report_path`` rules, checked
+    AFTER the existing state-machine edge validation and BEFORE the CAS —
+    every error text pinned VERBATIM against the design.
+    """
+
+    async def test_done_without_summary_is_refused_with_the_exact_text(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        with pytest.raises(IllegalTransitionError) as exc_info:
+            await task_ledger.transition(task_id, STATUS_DONE, actor=ACTOR)
+        assert str(exc_info.value) == (
+            f"transition to 'done' for task {task_id!r} requires 'summary' — a "
+            f"one-line completion digest (max 300 chars) the rollup serves as "
+            f"the fleet's durable completion record; pass report_path= too "
+            f"when a report file exists"
+        )
+
+    async def test_done_with_blank_summary_is_refused_identically(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        with pytest.raises(IllegalTransitionError) as exc_info:
+            await task_ledger.transition(task_id, STATUS_DONE, actor=ACTOR, summary="   ")
+        assert "requires 'summary'" in str(exc_info.value)
+
+    async def test_done_row_is_untouched_by_a_refused_missing_summary(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        with pytest.raises(IllegalTransitionError):
+            await task_ledger.transition(task_id, STATUS_DONE, actor=ACTOR)
+        after = await task_ledger.get_task(task_id)
+        assert after.status == STATUS_IN_PROGRESS
+
+    async def test_multiline_summary_is_refused_with_the_exact_text(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        with pytest.raises(IllegalTransitionError) as exc_info:
+            await task_ledger.transition(
+                task_id, STATUS_DONE, actor=ACTOR, summary="line one\nline two"
+            )
+        assert str(exc_info.value) == (
+            f"task {task_id!r} done-summary must be a single line — put "
+            f"detail in the report file and pass its path as report_path="
+        )
+
+    async def test_carriage_return_in_summary_is_also_refused(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        with pytest.raises(IllegalTransitionError) as exc_info:
+            await task_ledger.transition(
+                task_id, STATUS_DONE, actor=ACTOR, summary="line one\rline two"
+            )
+        assert "must be a single line" in str(exc_info.value)
+
+    async def test_over_cap_summary_is_refused_naming_the_actual_length(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        long_summary = "x" * 301
+        with pytest.raises(IllegalTransitionError) as exc_info:
+            await task_ledger.transition(
+                task_id, STATUS_DONE, actor=ACTOR, summary=long_summary
+            )
+        assert str(exc_info.value) == (
+            f"task {task_id!r} done-summary is 301 chars — the cap is 300; "
+            f"tighten it (detail belongs in the report file)"
+        )
+
+    async def test_exactly_300_char_summary_is_accepted(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        summary = "x" * 300
+        updated = await task_ledger.transition(
+            task_id, STATUS_DONE, actor=ACTOR, summary=summary
+        )
+        assert updated.summary == summary
+
+    async def test_report_path_is_optional_on_done(self, task_ledger: TaskLedger) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        updated = await task_ledger.transition(
+            task_id, STATUS_DONE, actor=ACTOR, summary="shipped the fix"
+        )
+        assert updated.summary == "shipped the fix"
+        assert updated.report_path is None
+
+    async def test_report_path_round_trips_when_given(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        updated = await task_ledger.transition(
+            task_id,
+            STATUS_DONE,
+            actor=ACTOR,
+            summary="shipped the fix",
+            report_path="REPORT-comms-c0-contract.md",
+        )
+        assert updated.report_path == "REPORT-comms-c0-contract.md"
+        persisted = await task_ledger.get_task(task_id)
+        assert persisted.summary == "shipped the fix"
+        assert persisted.report_path == "REPORT-comms-c0-contract.md"
+
+    async def test_multiline_report_path_is_refused(self, task_ledger: TaskLedger) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        with pytest.raises(IllegalTransitionError) as exc_info:
+            await task_ledger.transition(
+                task_id,
+                STATUS_DONE,
+                actor=ACTOR,
+                summary="shipped the fix",
+                report_path="reports/one.md\nreports/two.md",
+            )
+        assert str(exc_info.value) == (
+            f"task {task_id!r} done-report_path must be a single line — put "
+            f"detail in the report file and pass its path as report_path="
+        )
+
+    async def test_blank_report_path_is_refused(self, task_ledger: TaskLedger) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        with pytest.raises(IllegalTransitionError):
+            await task_ledger.transition(
+                task_id, STATUS_DONE, actor=ACTOR, summary="shipped the fix", report_path="   "
+            )
+
+    async def test_summary_on_a_non_done_target_is_a_value_error(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        with pytest.raises(ValueError) as exc_info:
+            await task_ledger.transition(
+                task_id, STATUS_BLOCKED, actor=ACTOR, summary="not done yet"
+            )
+        assert not isinstance(exc_info.value, IllegalTransitionError)
+        assert str(exc_info.value) == (
+            f"summary/report_path are recorded only on the transition to "
+            f"'done' (got target {STATUS_BLOCKED!r}) — omit them here"
+        )
+
+    async def test_report_path_alone_on_a_non_done_target_is_also_a_value_error(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        with pytest.raises(ValueError):
+            await task_ledger.transition(
+                task_id, STATUS_BLOCKED, actor=ACTOR, report_path="reports/x.md"
+            )
+
+    async def test_legal_non_done_transition_leaves_summary_and_report_path_none(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        task_id = await _drive_to_state(task_ledger, STATUS_CLAIMED)
+        updated = await task_ledger.transition(task_id, STATUS_IN_PROGRESS, actor=ACTOR)
+        assert getattr(updated, "summary", None) is None
+        assert getattr(updated, "report_path", None) is None
+
+    async def test_summary_and_report_path_are_selectable_after_persistence(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        # Runs against BOTH backends via the parametrized ``task_ledger``
+        # fixture, but the [real] tier is the one that actually matters here:
+        # it proves the values round-trip through a genuine store re-SELECT
+        # (get_task), not merely an echo of the in-memory transition return.
+        task_id = await _drive_to_state(task_ledger, STATUS_IN_PROGRESS)
+        await task_ledger.transition(
+            task_id,
+            STATUS_DONE,
+            actor=ACTOR,
+            summary="landed the ledger verbs",
+            report_path="REPORT-comms-c0-contract.md",
+        )
+        reread = await task_ledger.get_task(task_id)
+        assert reread.status == STATUS_DONE
+        assert reread.summary == "landed the ledger verbs"
+        assert reread.report_path == "REPORT-comms-c0-contract.md"
+
+    async def test_a_task_never_transitioned_to_done_has_no_summary_legacy_none(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        # Legacy-row posture: a task that never reaches done reads back
+        # summary/report_path as None — never a missing-attribute crash.
+        task_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
+        task = await task_ledger.get_task(task_id)
+        assert getattr(task, "summary", None) is None
+        assert getattr(task, "report_path", None) is None

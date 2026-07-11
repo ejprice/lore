@@ -61,8 +61,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
-from typing import Any, Literal, cast
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -143,6 +144,14 @@ _COL_BLOCKED_BY = "blocked_by"
 _COL_PROVENANCE = "provenance"
 _COL_SUPERSEDED_BY = "superseded_by"
 _COL_CREATED_AT = "created_at"
+# PKT-06 §1/§4: the rollup's leg-1 activity stamp (``updated_at``, stamped
+# ``time::now()`` inside claim/transition/supersede-of-old — never at create)
+# and the done-transition's two completion-record columns (``summary``
+# mandatory, ``report_path`` optional). All three are ``option`` so a legacy
+# (pre-deploy) row decodes them back to ``None``.
+_COL_UPDATED_AT = "updated_at"
+_COL_SUMMARY = "summary"
+_COL_REPORT_PATH = "report_path"
 
 # The provenance blob's keys + the audit-event action names. ``provenance`` is a
 # FLEXIBLE object whose exact layout the contract leaves open (it asserts only
@@ -203,6 +212,11 @@ _TRANSITION_STATUS_PARAM = "tr_status"
 # The single new provenance EVENT this transition appends SERVER-SIDE (never
 # the whole provenance object — see :meth:`TaskLedger._transition_fragment`).
 _TRANSITION_EVENT_PARAM = "tr_event"
+# PKT-06 §4: the done-transition's completion-record params, written inside
+# the SAME guarded CAS only when the target is ``done`` (see
+# :meth:`TaskLedger._transition_fragment`).
+_TRANSITION_SUMMARY_PARAM = "tr_summary"
+_TRANSITION_REPORT_PATH_PARAM = "tr_report_path"
 # The transition CAS's ``expected_from`` guard param — the exact status the
 # pre-read saw; the guarded UPDATE mutates ONLY while the row is STILL there.
 _TRANSITION_EXPECTED_FROM_PARAM = "tr_expected_from"
@@ -220,6 +234,23 @@ _TRANSITION_ALREADY_MESSAGE = "task transition lost a concurrent compare-and-set
 # The single-read existence-check / create param names.
 _ROW_ID_PARAM = "id"
 _ROW_CONTENT_PARAM = "content"
+
+# PKT-06 §1: ``updated_since``'s bound-parameter name and the field a
+# ``SELECT count() … GROUP ALL`` result carries the total under (mirrors
+# ``diff.py``'s / ``store/surreal.py``'s own ``_COUNT_KEY`` idiom for the same
+# shape).
+_UPDATED_SINCE_PARAM = "upd_since"
+_COUNT_KEY = "count"
+
+# PKT-06 §2 (L2a): the ``create_many`` batch's ALL-OR-NOTHING per-item
+# transaction-fragment param-name prefixes (``cm<i>_id`` / ``cm<i>_content``)
+# — one CREATE fragment per spec, composed into ONE ``execute_transaction``.
+_CREATE_MANY_ID_PARAM_FMT = "cm{index}_id"
+_CREATE_MANY_CONTENT_PARAM_FMT = "cm{index}_content"
+
+# PKT-06 §4: the done-transition's mandatory-summary cap (the approved row's
+# "capped summary" — a decided value, individually strikeable per the design).
+_DONE_SUMMARY_MAX_CHARS = 300
 
 
 class Task(BaseModel):
@@ -240,6 +271,16 @@ class Task(BaseModel):
         superseded_by: The id of the successor task this one was superseded
             by, or ``None`` when not superseded.
         created_at: The tz-aware UTC timestamp the task was created at.
+        updated_at: The tz-aware UTC timestamp of the task's most recent
+            fleet-visible activity (claim / transition / supersede-of-this-
+            row), or ``None`` when never mutated since creation (PKT-06 §1 —
+            NOT stamped at create; a mere read never stamps it either).
+        summary: The one-line completion digest recorded on the transition to
+            ``done`` (mandatory on that edge), or ``None`` for a task that has
+            never reached ``done``.
+        report_path: The optional report-file path recorded alongside
+            ``summary`` on the done edge, or ``None`` when no report file
+            exists (or the task has never reached ``done``).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -254,6 +295,61 @@ class Task(BaseModel):
     provenance: dict[str, Any] = Field(default_factory=dict)
     superseded_by: str | None = None
     created_at: datetime
+    updated_at: datetime | None = None
+    summary: str | None = None
+    report_path: str | None = None
+
+
+class TaskActivityWindow(BaseModel):
+    """The rollup's leg-1 read: tasks with fleet-visible activity since a cursor.
+
+    Attributes:
+        rows: The matching tasks, ordered by ``updated_at`` ascending, capped
+            at the caller's ``limit``.
+        total: The HONEST total count of tasks matching the window (may exceed
+            ``len(rows)`` when ``limit`` truncated the result).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[Task]
+    total: int
+
+
+class TaskSpec(BaseModel):
+    """One task specification inside a :meth:`TaskLedger.create_many` batch.
+
+    Key-agnostic (PKT-06 §2 — "the ledger stays key-agnostic"): ``blocked_by``
+    here is ALREADY resolved to real (or intentionally pass-through) task ids
+    — the caller's temp-key resolution is a DISPATCHER concern, never this
+    ledger's.
+
+    Attributes:
+        subject: The short human-readable title of the work item.
+        description: The longer free-text description of the work item.
+        blocked_by: Already-resolved ids of tasks this one depends on.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str
+    description: str
+    blocked_by: list[str] = Field(default_factory=list)
+
+
+class TaskSpecLike(Protocol):
+    """The structural shape :meth:`TaskLedger.create_many` accepts per item.
+
+    Matches :class:`TaskSpec` STRUCTURALLY, never nominally — mirrors the
+    design's "the ledger stays key-agnostic" ruling: ``create_many`` never
+    isinstance-checks its ``specs``, only reads these three attributes, so any
+    duck-typed caller-supplied object satisfying them (e.g. a dispatcher- or
+    test-local stand-in) is interchangeable with a real :class:`TaskSpec`.
+    """
+
+    subject: str
+    description: str
+    blocked_by: list[str]
 
 
 class ClaimResult(BaseModel):
@@ -657,7 +753,8 @@ class TaskLedger:
             f"UPDATE type::record('{TASK_TABLE}', ${_CLAIM_ID_PARAM}) SET "
             f"{_COL_OWNER} = ${_CLAIM_OWNER_PARAM}, "
             f"{_COL_STATUS} = ${_CLAIM_CLAIMED_PARAM}, "
-            f"{_COL_CLAIMED_AT} = time::now() "
+            f"{_COL_CLAIMED_AT} = time::now(), "
+            f"{_COL_UPDATED_AT} = time::now() "
             f"WHERE {_COL_STATUS} = ${_CLAIM_OPEN_PARAM} "
             f"AND {_COL_OWNER} IS NONE "
             f"AND {_COL_SUPERSEDED_BY} IS NONE "
@@ -679,7 +776,15 @@ class TaskLedger:
 
     # -- state machine ------------------------------------------------------
 
-    async def transition(self, task_id: str, status: str, *, actor: str) -> Task:
+    async def transition(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        actor: str,
+        summary: str | None = None,
+        report_path: str | None = None,
+    ) -> Task:
         """Drive a task through a legal state-machine edge.
 
         Validates the target and the edge BEFORE any write: a superseded task
@@ -689,6 +794,15 @@ class TaskLedger:
         untouched. A legal transition stamps ``actor`` into ``provenance``;
         re-entering ``open`` (the ``blocked -> open`` release edge) clears
         ``owner`` / ``claimed_at`` so the row is genuinely re-claimable.
+
+        PKT-06 §4: immediately after the edge check, :meth:`_validate_done_summary`
+        enforces the done-transition's completion-record rules — a target of
+        ``done`` REQUIRES a single-line, ≤300-char ``summary`` (the fleet's
+        durable completion record the rollup serves) and accepts an optional
+        single-line ``report_path``; any OTHER target rejects a supplied
+        ``summary``/``report_path`` as caller misuse. Both are written inside the
+        SAME guarded CAS as the status flip (see :meth:`_transition_fragment`),
+        so the completion record and the status transition land atomically.
 
         The write is a guarded, THROW-on-zero-rows compare-and-set (see
         :meth:`_transition_fragment`): a concurrent writer that already moved
@@ -704,6 +818,11 @@ class TaskLedger:
                 :meth:`claim_task`, never here).
             actor: The identity performing the transition, recorded in
                 ``provenance``.
+            summary: A one-line completion digest, MANDATORY when ``status`` is
+                ``done``; must be omitted for every other target.
+            report_path: An optional report-file path recorded alongside
+                ``summary`` on the done edge; must be omitted for every other
+                target.
 
         Returns:
             The task's updated state.
@@ -711,8 +830,11 @@ class TaskLedger:
         Raises:
             TaskNotFoundError: No task with ``task_id`` exists.
             IllegalTransitionError: ``status`` is not a legal edge from the
-                task's current status (or the task is superseded), OR this
+                task's current status (or the task is superseded), the done
+                edge's ``summary``/``report_path`` rules were violated, OR this
                 call lost a concurrent race to transition the same row.
+            ValueError: ``summary``/``report_path`` was supplied for a
+                non-``done`` target.
         """
         row = await self._select_row(task_id)
         if row is None:
@@ -720,6 +842,7 @@ class TaskLedger:
         current = str(row.get(_COL_STATUS))
         superseded_by = row.get(_COL_SUPERSEDED_BY)
         self._validate_transition(task_id, current, status, superseded_by)
+        self._validate_done_summary(task_id, status, summary, report_path)
 
         now = datetime.now(UTC)
         event = {
@@ -739,7 +862,11 @@ class TaskLedger:
             # status (including, crucially, THIS call's own target) is ALWAYS
             # detected, never masked as success.
             await self._apply(
-                [self._transition_fragment(task_id, status, current, event, release)]
+                [
+                    self._transition_fragment(
+                        task_id, status, current, event, release, summary, report_path
+                    )
+                ]
             )
         except SurrealConnectionError:
             # A genuine transport fault — never a lost race; propagate untouched
@@ -785,6 +912,8 @@ class TaskLedger:
         expected_from: str,
         event: dict[str, Any],
         release: bool,
+        summary: str | None = None,
+        report_path: str | None = None,
     ) -> TxnFragment:
         """The guarded-CAS transition fragment: LET-bind, THROW on zero rows.
 
@@ -803,17 +932,33 @@ class TaskLedger:
         ``status``) can never clobber this call's event, or vice versa.
         ``release`` (the ``blocked -> open`` edge) additionally clears
         ``owner``/``claimed_at`` so the released row is genuinely re-claimable.
+        Every transition stamps ``updated_at = time::now()`` (PKT-06 §1 — the
+        rollup's leg-1 activity signal); a ``done`` target ADDITIONALLY writes
+        ``summary``/``report_path`` (PKT-06 §4(d) — atomic with the status
+        flip, already validated by :meth:`_validate_done_summary`).
         """
         set_parts = [
             f"{_COL_STATUS} = ${_TRANSITION_STATUS_PARAM}",
+            f"{_COL_UPDATED_AT} = time::now()",
             f"{_COL_PROVENANCE}.{_PROV_EVENTS} += [${_TRANSITION_EVENT_PARAM}]",
         ]
+        params: dict[str, Any] = {
+            _TRANSITION_ID_PARAM: task_id,
+            _TRANSITION_STATUS_PARAM: target,
+            _TRANSITION_EVENT_PARAM: event,
+            _TRANSITION_EXPECTED_FROM_PARAM: expected_from,
+        }
         if release:
             # The ONLY ways into ``open`` are creation and this release edge; a
             # released task must be unowned/unclaimed for the claim CAS (which
             # checks ``owner IS NONE`` alongside ``status = open``) to see it.
             set_parts.append(f"{_COL_OWNER} = NONE")
             set_parts.append(f"{_COL_CLAIMED_AT} = NONE")
+        if target == STATUS_DONE:
+            set_parts.append(f"{_COL_SUMMARY} = ${_TRANSITION_SUMMARY_PARAM}")
+            set_parts.append(f"{_COL_REPORT_PATH} = ${_TRANSITION_REPORT_PATH_PARAM}")
+            params[_TRANSITION_SUMMARY_PARAM] = summary
+            params[_TRANSITION_REPORT_PATH_PARAM] = report_path
         guarded_transition = (
             f"LET ${_TRANSITION_UPDATED_VAR} = (UPDATE "
             f"type::record('{TASK_TABLE}', ${_TRANSITION_ID_PARAM}) SET "
@@ -825,15 +970,70 @@ class TaskLedger:
             f"IF array::len(${_TRANSITION_UPDATED_VAR}) == 0 "
             f"{{ THROW '{_TRANSITION_ALREADY_MESSAGE}' }}"
         )
-        return TxnFragment(
-            statements=[guarded_transition, guard_updated],
-            params={
-                _TRANSITION_ID_PARAM: task_id,
-                _TRANSITION_STATUS_PARAM: target,
-                _TRANSITION_EVENT_PARAM: event,
-                _TRANSITION_EXPECTED_FROM_PARAM: expected_from,
-            },
-        )
+        return TxnFragment(statements=[guarded_transition, guard_updated], params=params)
+
+    @staticmethod
+    def _validate_done_summary(
+        task_id: str, target: str, summary: str | None, report_path: str | None
+    ) -> None:
+        """PKT-06 §4: enforce the done-transition's ``summary``/``report_path`` rules.
+
+        Checked AFTER the state-machine edge is confirmed legal (by
+        :meth:`_validate_transition`) and BEFORE the CAS. Every error text is
+        pinned VERBATIM against the resolved build design
+        (``scratchpad/PKT-06-build-design.md`` §4):
+
+        1. ``target == done`` and ``summary`` missing/blank →
+           :class:`IllegalTransitionError` (rejected like ``claimed -> done``).
+        2. ``target == done`` and ``summary`` carries a newline/carriage return →
+           :class:`IllegalTransitionError` (single-line law).
+        3. ``target == done`` and ``len(summary) > 300`` →
+           :class:`IllegalTransitionError` naming the actual length.
+        4. ``target == done`` and ``report_path`` given but blank or multi-line →
+           :class:`IllegalTransitionError` (report_path is OPTIONAL, but when
+           given must be non-empty and single-line).
+        5. ``target != done`` and either was supplied → :class:`ValueError`
+           (input misuse, not a state-machine edge rejection).
+
+        Raises:
+            IllegalTransitionError: Rules 1-4 above.
+            ValueError: Rule 5 above.
+        """
+        if target == STATUS_DONE:
+            if summary is None or not summary.strip():
+                raise IllegalTransitionError(
+                    f"transition to 'done' for task {task_id!r} requires 'summary' — a "
+                    f"one-line completion digest (max 300 chars) the rollup serves as "
+                    f"the fleet's durable completion record; pass report_path= too "
+                    f"when a report file exists"
+                )
+            if "\n" in summary or "\r" in summary:
+                raise IllegalTransitionError(
+                    f"task {task_id!r} done-summary must be a single line — put "
+                    f"detail in the report file and pass its path as report_path="
+                )
+            if len(summary) > _DONE_SUMMARY_MAX_CHARS:
+                raise IllegalTransitionError(
+                    f"task {task_id!r} done-summary is {len(summary)} chars — the cap "
+                    f"is {_DONE_SUMMARY_MAX_CHARS}; tighten it (detail belongs in the "
+                    f"report file)"
+                )
+            if report_path is not None:
+                if not report_path.strip():
+                    raise IllegalTransitionError(
+                        f"task {task_id!r} done-report_path must be non-empty when "
+                        f"given — omit report_path= entirely when there is no report file"
+                    )
+                if "\n" in report_path or "\r" in report_path:
+                    raise IllegalTransitionError(
+                        f"task {task_id!r} done-report_path must be a single line — put "
+                        f"detail in the report file and pass its path as report_path="
+                    )
+        elif summary is not None or report_path is not None:
+            raise ValueError(
+                f"summary/report_path are recorded only on the transition to "
+                f"'done' (got target {target!r}) — omit them here"
+            )
 
     @staticmethod
     def _validate_transition(
@@ -981,6 +1181,7 @@ class TaskLedger:
             f"LET ${_SUPERSEDE_STAMPED_VAR} = (UPDATE "
             f"type::record('{TASK_TABLE}', ${_SUPERSEDE_OLD_ID_PARAM}) SET "
             f"{_COL_SUPERSEDED_BY} = ${_SUPERSEDE_NEW_ID_PARAM}, "
+            f"{_COL_UPDATED_AT} = time::now(), "
             f"{_COL_PROVENANCE}.{_PROV_EVENTS} += [${_SUPERSEDE_EVENT_PARAM}] "
             f"WHERE {_COL_SUPERSEDED_BY} IS NONE)"
         )
@@ -1001,6 +1202,130 @@ class TaskLedger:
                 _SUPERSEDE_EVENT_PARAM: event,
             },
         )
+
+    # -- rollup / batch (PKT-06) --------------------------------------------
+
+    async def updated_since(self, since: datetime, *, limit: int) -> TaskActivityWindow:
+        """The rollup's leg-1 read: tasks with fleet-visible activity since ``since``.
+
+        Reads the ``updated_at`` column — stamped ``time::now()`` inside the
+        SAME guarded CAS by :meth:`claim_task`, :meth:`transition`, and
+        :meth:`supersede_task` (of the OLD row) — NEVER at :meth:`create_task`,
+        so a never-mutated task never appears. ``NONE > $since`` is falsy in
+        SurrealDB, so a legacy (never-mutated) row is excluded by the WHERE
+        clause itself. Ordered ``updated_at`` ASC, capped at ``limit``, with an
+        HONEST ``total`` (a second bounded ``SELECT count() … GROUP ALL`` —
+        never a second unbounded scan) so a caller can tell a truncated window
+        from an exhaustive one.
+
+        Args:
+            since: The EXCLUSIVE lower bound — only tasks updated STRICTLY
+                after this tz-aware UTC instant are returned.
+            limit: The maximum number of rows to return (must be a positive int).
+
+        Returns:
+            The matching window: ``rows`` (ASC by ``updated_at``, capped at
+            ``limit``) and the honest ``total`` (``>= len(rows)``).
+
+        Raises:
+            ValueError: ``limit`` is not a positive integer.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError(f"limit must be a positive integer, got {limit!r}")
+        params: dict[str, Any] = {_UPDATED_SINCE_PARAM: since}
+        rows_result = await self._query(
+            f"SELECT * FROM {TASK_TABLE} WHERE {_COL_UPDATED_AT} > ${_UPDATED_SINCE_PARAM} "
+            f"ORDER BY {_COL_UPDATED_AT} ASC LIMIT {limit}",
+            params,
+        )
+        rows = [self._row_to_task(row) for row in self._as_rows(rows_result)]
+        count_result = await self._query(
+            f"SELECT count() FROM {TASK_TABLE} WHERE {_COL_UPDATED_AT} > "
+            f"${_UPDATED_SINCE_PARAM} GROUP ALL",
+            params,
+        )
+        return TaskActivityWindow(rows=rows, total=self._extract_group_count(count_result))
+
+    async def create_many(
+        self,
+        specs: Sequence[TaskSpecLike],
+        *,
+        created_by: str,
+        ids: Sequence[str] | None = None,
+    ) -> list[str]:
+        """Batch-create tasks, ALL-OR-NOTHING, ids positionally aligned with ``specs``.
+
+        Mints a fresh, OPAQUE ``uuid4`` id per spec (never content-derived,
+        exactly like :meth:`create_task`) — unless the caller supplies ``ids``
+        — and composes ONE ``execute_transaction`` from N CREATE fragments
+        (each namespaced ``cm<i>_id`` / ``cm<i>_content`` so
+        :func:`~loremaster.store._txn.compose` never collides) — so either
+        every task in the batch lands, or none does. Every spec's
+        ``.subject`` / ``.description`` / ``.blocked_by`` is read BEFORE any
+        fragment is built (duck-typed attribute access via
+        :class:`TaskSpecLike` — a spec object missing a required attribute
+        raises BEFORE this method has touched the store, preserving
+        all-or-nothing even for a malformed caller-supplied spec); the ledger
+        stays KEY-AGNOSTIC (temp-key resolution is a dispatcher concern per the
+        design — ``blocked_by`` here is already-resolved, real or pass-through,
+        ids). Typed structurally (:class:`TaskSpecLike`, not nominally
+        :class:`TaskSpec`) so a duck-typed caller-supplied object satisfying
+        just those three attributes is interchangeable with a real
+        :class:`TaskSpec` instance.
+
+        ``ids`` is an optional caller-supplied parallel sequence, positionally
+        aligned with ``specs``: caller-supplied ids let the DISPATCHER
+        pre-mint every id and wire sibling ``blocked_by`` references to them
+        before the single atomic write, so the WHOLE batch — dependency-
+        chained or not — lands in this one call. When omitted (``None``), the
+        ledger mints internally exactly as before; every existing ledger
+        contract test (which never passes ``ids``) is unaffected.
+
+        Args:
+            specs: The task specifications to create (non-empty).
+            created_by: The identity creating the batch, recorded in every
+                spec's ``provenance`` (mirrors :meth:`create_task`).
+            ids: Optional caller-minted ids, positionally aligned with
+                ``specs``. Omitted ⇒ the ledger mints (``uuid4().hex`` per
+                spec).
+
+        Returns:
+            The newly created tasks' opaque ids, positionally aligned with
+            ``specs``.
+
+        Raises:
+            ValueError: ``specs`` is empty, or ``ids`` is given and its
+                length does not match ``specs``.
+        """
+        if not specs:
+            raise ValueError("create_many requires a non-empty list of specs")
+        if ids is not None and len(ids) != len(specs):
+            raise ValueError(
+                f"create_many 'ids' must align positionally with 'specs' — "
+                f"got {len(ids)} ids for {len(specs)} specs"
+            )
+        now = datetime.now(UTC)
+        fragments: list[TxnFragment] = []
+        minted_ids: list[str] = []
+        for index, spec in enumerate(specs):
+            task_id = ids[index] if ids is not None else uuid4().hex
+            content = self._new_task_content(
+                spec.subject, spec.description, spec.blocked_by, created_by, now
+            )
+            id_param = _CREATE_MANY_ID_PARAM_FMT.format(index=index)
+            content_param = _CREATE_MANY_CONTENT_PARAM_FMT.format(index=index)
+            fragments.append(
+                TxnFragment(
+                    statements=[
+                        f"CREATE type::record('{TASK_TABLE}', ${id_param}) "
+                        f"CONTENT ${content_param}"
+                    ],
+                    params={id_param: task_id, content_param: content},
+                )
+            )
+            minted_ids.append(task_id)
+        await self._apply(fragments)
+        return minted_ids
 
     # -- write helpers ------------------------------------------------------
 
@@ -1078,6 +1403,9 @@ class TaskLedger:
             provenance=dict(row.get(_COL_PROVENANCE) or {}),
             superseded_by=row.get(_COL_SUPERSEDED_BY),
             created_at=self._require_aware_utc(row.get(_COL_CREATED_AT)),
+            updated_at=self._to_aware_utc_ceiling(row.get(_COL_UPDATED_AT)),
+            summary=row.get(_COL_SUMMARY),
+            report_path=row.get(_COL_REPORT_PATH),
         )
 
     def _is_blocked(self, task: Task, status_by_id: dict[str, str]) -> bool:
@@ -1103,6 +1431,19 @@ class TaskLedger:
         if not isinstance(result, list):
             return []
         return [row for row in result if isinstance(row, dict)]
+
+    @classmethod
+    def _extract_group_count(cls, result: Any) -> int:
+        """Extract the total from a ``SELECT count() … GROUP ALL`` result.
+
+        On SurrealDB ≥3.1 an EMPTY group returns ZERO rows (never a row with
+        ``count: 0``), so the missing-projection idiom applies: default to 0
+        rather than indexing blindly into an empty result.
+        """
+        rows = cls._as_rows(result)
+        if not rows:
+            return 0
+        return int(rows[0].get(_COUNT_KEY, 0))
 
     def _require_aware_utc(self, value: Any) -> datetime:
         """Normalise a REQUIRED datetime column to tz-aware UTC, refusing a bad value.
@@ -1147,6 +1488,36 @@ class TaskLedger:
             return None
         aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
         return aware.astimezone(UTC)
+
+    @classmethod
+    def _to_aware_utc_ceiling(cls, value: Any) -> datetime | None:
+        """Decode a SERVER-``time::now()``-stamped column, rounded UP one microsecond.
+
+        PKT-06 §1 fix (live-verified against spike-surreal): SurrealDB's
+        ``time::now()`` carries nanosecond precision server-side, but Python's
+        ``datetime`` — and this SDK's CBOR decode — can only represent
+        microseconds, so the decoded value is a TRUNCATED (rounded DOWN)
+        approximation of the true stored instant. Re-binding that exact
+        decoded value as a later query's ``$since`` parameter therefore
+        compares LESS than the still-stored original (``stored > $since``
+        stays true even for the row the cursor was read FROM), silently
+        breaking :meth:`updated_since`'s advertised EXCLUSIVE boundary for any
+        cursor round-tripped through it. Rounding the decoded value UP by one
+        whole microsecond (the finest increment Python can represent)
+        guarantees it is never smaller than the true stored instant,
+        restoring the exclusive-boundary property. Applied ONLY where a
+        decoded value may later be REBOUND as a store parameter
+        (:attr:`Task.updated_at`) — never to ``created_at``, a Python-
+        authored value with no server-side precision to lose. Mirrors the
+        design's already-ACCEPTED microsecond-tie residual (R1): the
+        vanishingly rare case of a second, genuinely-independent event
+        landing inside this same sub-microsecond window is a missed *notice*
+        on the NEXT poll, never lost data (``action=query`` still serves it).
+        """
+        aware = cls._to_aware_utc(value)
+        if aware is None:
+            return None
+        return aware + timedelta(microseconds=1)
 
     @staticmethod
     def _bare_id(raw: Any) -> str:

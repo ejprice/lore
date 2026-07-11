@@ -51,6 +51,11 @@ mirroring the single SurrealDB database every real ``FindingLedger`` handle
 shares — which is what makes ``TestConcurrentNumbering`` (racing reporters),
 ``TestConcurrentTransitions`` (racing resolvers) and ``TestFleetVisibility`` (a
 second handle reading the first's writes) meaningful against this fake at all.
+
+PKT-06 addendum (rollup): :meth:`filed_since` reuses the ALREADY-DECLARED
+``created_at`` field — unlike the task ledger's ``updated_at`` addendum, no
+new field needs to be injected onto ``Finding`` for this leg, since findings
+have always carried a creation timestamp.
 """
 
 from __future__ import annotations
@@ -101,6 +106,18 @@ LEGAL_TRANSITIONS: frozenset[tuple[FindingStatus, FindingStatus]] = frozenset(
 
 DEFAULT_KIND = "friction"
 DEFAULT_QUERY_LIMIT = 100
+
+
+@dataclass
+class _FakeFindingActivityWindow:
+    """Duck-typed stand-in for the not-yet-built ``loremaster.findings.
+    FindingActivityWindow`` — ``rows``/``total``, nothing more (mirrors
+    ``_task_fakes._FakeTaskActivityWindow``; never imports the production
+    class, which does not exist yet).
+    """
+
+    rows: list[Finding]
+    total: int
 
 
 @dataclass
@@ -297,8 +314,14 @@ class FakeFindingLedger:
 
     # -- state machine ------------------------------------------------------
 
-    async def acknowledge(self, id_or_number: int | str, actor: str) -> Finding:
-        return await self._transition(id_or_number, STATUS_ACKNOWLEDGED, actor, None)
+    async def acknowledge(
+        self, id_or_number: int | str, actor: str, note: str | None = None
+    ) -> Finding:
+        # PKT-06 §3: acknowledge gains an optional note, matching resolve/wontfix
+        # (the single ``acknowledge`` verb's existing ``_transition`` plumbing
+        # already threads ``note`` through — only this call site hardcoded
+        # ``None``, dropping a note the dispatcher's batch actions must forward).
+        return await self._transition(id_or_number, STATUS_ACKNOWLEDGED, actor, note)
 
     async def resolve(
         self, id_or_number: int | str, actor: str, note: str | None = None
@@ -339,3 +362,25 @@ class FakeFindingLedger:
         finding.provenance.setdefault("events", []).append(event)
         # --- end compare-and-set ---
         return finding.model_copy(deep=True)
+
+    # -- rollup (PKT-06) ------------------------------------------------------
+
+    async def filed_since(self, since: datetime, *, limit: int) -> _FakeFindingActivityWindow:
+        """The rollup's leg-2 read: findings filed (``created_at``) after ``since``.
+
+        Adversarial (mirrors :meth:`query`'s number-ASC sort discipline and
+        ``FakeTaskLedger.updated_since``'s scrambled-storage property): the
+        candidate set is built in REVERSE insertion order BEFORE the real
+        ``created_at`` ASC sort is applied, so a consumer secretly riding dict
+        insertion order breaks here exactly as it would against a real
+        ``SELECT`` with no ``ORDER BY`` guarantee.
+        """
+        await asyncio.sleep(0)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError(f"limit must be a positive integer, got {limit!r}")
+        scrambled = list(reversed(list(self.db.findings.values())))
+        matching = [finding for finding in scrambled if finding.created_at > since]
+        total = len(matching)
+        matching.sort(key=lambda finding: finding.created_at)
+        rows = [finding.model_copy(deep=True) for finding in matching[:limit]]
+        return _FakeFindingActivityWindow(rows=rows, total=total)

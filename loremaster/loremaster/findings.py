@@ -231,6 +231,12 @@ _QUERY_AREA_PARAM = "qry_area"
 _ROW_ID_PARAM = "id"
 _ROW_NUMBER_PARAM = "number"
 
+# PKT-06 §1: ``filed_since``'s bound-parameter name and the field a
+# ``SELECT count() … GROUP ALL`` result carries the total under (mirrors
+# ``loremaster.tasks``'s / ``diff.py``'s own ``_COUNT_KEY`` idiom).
+_FILED_SINCE_PARAM = "fs_since"
+_COUNT_KEY = "count"
+
 # The number mint's APPLICATION-level retry budget + backoff — ON TOP of the shared
 # ``execute_transaction`` conflict retry. THE deviation from the task ledger (whose
 # claim/transition races are only ever 2-way, so the shared seam alone suffices):
@@ -291,6 +297,22 @@ class Finding(BaseModel):
     created_at: datetime
     supersedes: str | None = None
     provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class FindingActivityWindow(BaseModel):
+    """The rollup's leg-2 read: findings filed since a cursor.
+
+    Attributes:
+        rows: The matching findings, ordered by ``created_at`` ascending,
+            capped at the caller's ``limit``.
+        total: The HONEST total count of findings matching the window (may
+            exceed ``len(rows)`` when ``limit`` truncated the result).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[Finding]
+    total: int
 
 
 class ReportResult(BaseModel):
@@ -838,6 +860,44 @@ class FindingLedger:
         rows = self._as_rows(await self._query(statement, params))
         return [self._row_to_finding(row) for row in rows]
 
+    async def filed_since(self, since: datetime, *, limit: int) -> FindingActivityWindow:
+        """The rollup's leg-2 read: findings filed strictly after ``since``.
+
+        Unlike the task ledger's ``updated_at`` (which starts ``None``), every
+        finding always carries a ``created_at`` — filed-since has no
+        "never appears" case. Ordered ``created_at`` ASC, capped at ``limit``,
+        with an HONEST ``total`` (a second bounded ``SELECT count() … GROUP
+        ALL`` — never a second unbounded scan) so a caller can tell a
+        truncated window from an exhaustive one.
+
+        Args:
+            since: The EXCLUSIVE lower bound — only findings filed STRICTLY
+                after this tz-aware UTC instant are returned.
+            limit: The maximum number of rows to return (must be a positive int).
+
+        Returns:
+            The matching window: ``rows`` (ASC by ``created_at``, capped at
+            ``limit``) and the honest ``total`` (``>= len(rows)``).
+
+        Raises:
+            ValueError: ``limit`` is not a positive integer.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError(f"limit must be a positive integer, got {limit!r}")
+        params: dict[str, Any] = {_FILED_SINCE_PARAM: since}
+        rows_result = await self._query(
+            f"SELECT * FROM {FINDING_TABLE} WHERE {_COL_CREATED_AT} > ${_FILED_SINCE_PARAM} "
+            f"ORDER BY {_COL_CREATED_AT} ASC LIMIT {limit}",
+            params,
+        )
+        rows = [self._row_to_finding(row) for row in self._as_rows(rows_result)]
+        count_result = await self._query(
+            f"SELECT count() FROM {FINDING_TABLE} WHERE {_COL_CREATED_AT} > "
+            f"${_FILED_SINCE_PARAM} GROUP ALL",
+            params,
+        )
+        return FindingActivityWindow(rows=rows, total=self._extract_group_count(count_result))
+
     async def chain_head(self, id_or_number: int | str) -> ChainHead:
         """Follow the supersedes chain FORWARD to its head, surfacing any fork.
 
@@ -900,13 +960,17 @@ class FindingLedger:
 
     # -- state machine ------------------------------------------------------
 
-    async def acknowledge(self, id_or_number: int | str, actor: str) -> Finding:
+    async def acknowledge(
+        self, id_or_number: int | str, actor: str, note: str | None = None
+    ) -> Finding:
         """Drive an ``open`` finding to ``acknowledged`` (a legal edge).
 
         Args:
             id_or_number: The finding to acknowledge (number or opaque id).
             actor: The identity performing the acknowledgement, recorded in
                 ``provenance``.
+            note: An optional free-text note recorded alongside the transition
+                (PKT-06 §3 — mirrors ``resolve``/``wontfix``'s existing ``note``).
 
         Returns:
             The finding's updated state.
@@ -916,7 +980,7 @@ class FindingLedger:
             IllegalTransitionError: The finding is not ``open`` (or lost a
                 concurrent race).
         """
-        return await self._transition(id_or_number, STATUS_ACKNOWLEDGED, actor, None)
+        return await self._transition(id_or_number, STATUS_ACKNOWLEDGED, actor, note)
 
     async def resolve(
         self, id_or_number: int | str, actor: str, note: str | None = None
@@ -1180,6 +1244,19 @@ class FindingLedger:
         if not isinstance(result, list):
             return []
         return [row for row in result if isinstance(row, dict)]
+
+    @classmethod
+    def _extract_group_count(cls, result: Any) -> int:
+        """Extract the total from a ``SELECT count() … GROUP ALL`` result.
+
+        On SurrealDB ≥3.1 an EMPTY group returns ZERO rows (never a row with
+        ``count: 0``), so the missing-projection idiom applies: default to 0
+        rather than indexing blindly into an empty result.
+        """
+        rows = cls._as_rows(result)
+        if not rows:
+            return 0
+        return int(rows[0].get(_COUNT_KEY, 0))
 
     def _require_aware_utc(self, value: Any) -> datetime:
         """Normalise a REQUIRED datetime column to tz-aware UTC, refusing a bad value.
