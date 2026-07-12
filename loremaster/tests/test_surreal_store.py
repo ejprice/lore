@@ -2177,20 +2177,45 @@ _CONFLICT_ENGINE_TEXT = (
     f"{_RETRYABLE_CONFLICT_MARKER}"
 )
 
+# The exact live text the COMMIT entry carries once ANY earlier statement in a
+# ``BEGIN … COMMIT`` body failed (live-verified: REPORT-c1-builder-mint.md:205,
+# finding #93). It matches NO classifier marker — which is how a raise site
+# reading the LAST failed entry mislabelled every multi-statement rollback as
+# "unspecified rejection" and discarded the root cause's engine text.
+_COMMIT_ABORTED_ENGINE_TEXT = "Cannot COMMIT: the transaction was aborted due to a prior error"
+
+# A marker-free failure for a statement AFTER the root cause but BEFORE the
+# COMMIT. SYNTHETIC — only the COMMIT text above is live-verified in this
+# repo's receipts; any marker-free text exercises the same cascade shape.
+_CASCADE_ENGINE_TEXT = "The query was not executed due to a failed transaction"
+
 _OK_STATEMENT: dict[str, Any] = {"status": "OK", "result": None}
+
+
+def _rolled_back_response(*results: str | None) -> dict[str, Any]:
+    """Build a ``query_raw``-shaped response with one entry per argument:
+    ``None`` → an OK statement, a string → an ERR statement carrying that
+    text — the exact shape :func:`~loremaster.store._txn._failed_statements`
+    inspects. Unlike :func:`_err_response` it expresses ANY failure shape —
+    in particular the real rollback cascade (root ERR, then later cascade
+    ERRs, then the COMMIT-aborted ERR) that a single-ERR-only builder could
+    never model, which is exactly how finding #93 stayed green.
+    """
+    entries: list[dict[str, Any]] = [
+        dict(_OK_STATEMENT) if result_text is None else {"status": "ERR", "result": result_text}
+        for result_text in results
+    ]
+    return {"result": entries}
 
 
 def _err_response(*, result_text: str, leading_ok: int = 0, trailing_ok: int = 0) -> dict[str, Any]:
     """Build a ``query_raw``-shaped response: ``leading_ok`` OK statements,
     then one ERR statement carrying ``result_text``, then ``trailing_ok`` more
-    OK statements — the exact shape :func:`~loremaster.store._txn.
-    _failed_statements` inspects. Leading/trailing OK counts let a test pin
+    OK statements — a single-ERR convenience wrapper over
+    :func:`_rolled_back_response`. Leading/trailing OK counts let a test pin
     the failed statement's INDEX distinctly from the total statement COUNT.
     """
-    entries = [dict(_OK_STATEMENT) for _ in range(leading_ok)]
-    entries.append({"status": "ERR", "result": result_text})
-    entries.extend(dict(_OK_STATEMENT) for _ in range(trailing_ok))
-    return {"result": entries}
+    return _rolled_back_response(*([None] * leading_ok), result_text, *([None] * trailing_ok))
 
 
 @dataclass
@@ -2311,6 +2336,102 @@ class TestTxnRollbackMessageHygiene:
         assert getattr(record, "status", None) == "ERR"
 
 
+class TestTxnRootCauseSelection:
+    """Finding #93: once any statement in a ``BEGIN … COMMIT`` body fails,
+    every LATER entry is the same rollback's cascade — ending in the
+    marker-less COMMIT-aborted text — so the FIRST failed statement is the
+    root cause, and it is the one the raised message and the server-side
+    receipt must describe. A raise site reading the LAST failed entry
+    reported every multi-statement rollback as "unspecified rejection" at
+    the COMMIT's ordinal, discarding the real engine text entirely.
+    """
+
+    @staticmethod
+    def _cascade_rollback_response() -> dict[str, Any]:
+        """The live rollback shape from finding #93: two OK entries, the REAL
+        failure at 0-based index 2, a cascade failure, then the COMMIT-aborted
+        entry — five statements total.
+        """
+        return _rolled_back_response(
+            None, None, _SENSITIVE_ENGINE_TEXT, _CASCADE_ENGINE_TEXT, _COMMIT_ABORTED_ENGINE_TEXT
+        )
+
+    async def test_raised_message_names_the_root_cause_not_the_commit_cascade(self) -> None:
+        fake = _TxnRollbackFakeConnection(responses=[self._cascade_rollback_response()])
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(fake)
+
+        message = str(exc_info.value)
+        assert "statement 3 of 5" in message  # the root cause's ordinal, not the COMMIT's
+        assert "assert violation" in message.lower()
+        assert "unspecified rejection" not in message.lower()
+        assert _SENSITIVE_MARKER not in message  # the hygiene contract is preserved
+        assert fake.calls == 1  # non-retryable: never retried
+
+    async def test_server_log_reports_the_root_cause_and_carries_every_failed_statement(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake = _TxnRollbackFakeConnection(responses=[self._cascade_rollback_response()])
+        with caplog.at_level(logging.ERROR, logger="loremaster.store._txn"):
+            with pytest.raises(SurrealStoreError):
+                await _run_execute_transaction(fake)
+
+        error_records = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert error_records, "the full engine detail must be logged server-side"
+        record = error_records[0]
+        assert getattr(record, "statement_index", None) == 2  # 0-based: the ROOT cause, not the COMMIT
+        assert getattr(record, "statement_count", None) == 5
+        assert getattr(record, "status", None) == "ERR"
+        assert _SENSITIVE_ENGINE_TEXT in str(getattr(record, "engine_result", ""))
+        # "Keep logging all of them": every failed statement rides the one receipt.
+        failed = getattr(record, "failed_statements", None)
+        assert failed is not None, "the receipt must carry every failed statement"
+        assert [entry["index"] for entry in failed] == [2, 3, 4]
+        assert any(_COMMIT_ABORTED_ENGINE_TEXT in str(entry["engine_result"]) for entry in failed)
+
+    @pytest.mark.parametrize(
+        ("root_text", "expected_label"),
+        [
+            pytest.param(_SENSITIVE_ENGINE_TEXT, "assert violation", id="assert-violation"),
+            pytest.param(_COERCION_ENGINE_TEXT, "field coercion", id="field-coercion"),
+        ],
+    )
+    async def test_commit_aborted_text_never_drives_the_classification(
+        self, root_text: str, expected_label: str
+    ) -> None:
+        """The structural pin of the defect CLASS: whenever an earlier ERR
+        exists, the marker-less COMMIT-aborted entry must never be the one
+        classified.
+        """
+        fake = _TxnRollbackFakeConnection(
+            responses=[_rolled_back_response(root_text, _COMMIT_ABORTED_ENGINE_TEXT)]
+        )
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(fake)
+
+        message = str(exc_info.value)
+        assert expected_label in message.lower()
+        assert "unspecified rejection" not in message.lower()
+        assert fake.calls == 1
+
+    async def test_commit_only_failure_still_reports_the_commit_statement(self) -> None:
+        """Corner-case pin (green under both the old ``[-1]`` and the fixed
+        ``[0]`` pick): when the COMMIT is the ONLY failed statement there is
+        no earlier root cause, so the honest degrade is the COMMIT's own
+        ordinal and the generic label.
+        """
+        fake = _TxnRollbackFakeConnection(
+            responses=[_rolled_back_response(None, None, _COMMIT_ABORTED_ENGINE_TEXT)]
+        )
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(fake)
+
+        message = str(exc_info.value)
+        assert "statement 3 of 3" in message
+        assert "unspecified rejection" in message.lower()
+        assert fake.calls == 1
+
+
 class TestTxnMalformedResponseHygiene:
     """``_failed_statements``' malformed-response guard (a shape the engine
     should never return) must ALSO never echo the raw response into the
@@ -2378,6 +2499,25 @@ class TestTxnRetryBehaviourUnchanged:
             await _run_execute_transaction(fake)
 
         assert fake.calls == 1
+
+    async def test_retry_marker_on_a_later_failed_statement_still_triggers_a_retry(self) -> None:
+        """``_is_retryable_conflict`` scans ALL failed statements (``any()``),
+        so a conflict marker on a LATER entry must still trigger a retry even
+        though the raise site reads the FIRST entry — pins the scan against a
+        future "align the retry decision to the root cause" regression. The
+        two-ERR shape is adversarial-synthetic: a marker-free cascade entry
+        ahead of the conflict-marked COMMIT.
+        """
+        fake = _TxnRollbackFakeConnection(
+            responses=[
+                _rolled_back_response(_CASCADE_ENGINE_TEXT, _CONFLICT_ENGINE_TEXT),
+                {"result": [dict(_OK_STATEMENT)]},
+            ]
+        )
+
+        await _run_execute_transaction(fake)  # must NOT raise
+
+        assert fake.calls == 2  # one conflict, one successful retry — invisible to the caller
 
 
 # ===========================================================================

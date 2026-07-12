@@ -492,14 +492,24 @@ async def execute_transaction(
     it; every OTHER rejection (e.g. an out-of-domain ``state``) raises
     :class:`SurrealStoreError` immediately — retrying it would never succeed.
 
+    The raise names the FIRST failed statement — the root cause. Statements
+    execute in order, so everything before the first ``ERR`` succeeded, and
+    every LATER ``ERR`` is the same rollback's cascade, ending in the engine's
+    marker-less "Cannot COMMIT: the transaction was aborted due to a prior
+    error" entry (finding #93: classifying the LAST entry reported every
+    rollback as an unspecified rejection at the COMMIT's ordinal). The retry
+    decision is independent — :func:`_is_retryable_conflict` scans ALL failed
+    statements.
+
     Error-message hygiene (ledger #31): the engine's raw per-statement result
     can echo a bound VALUE back verbatim (e.g. an ``ASSERT`` rejection quoting
     the offending value) — text that will flow to MCP clients in P8. The FULL
-    detail is logged server-side (``logger.error``, structured: statement
-    index, status, the raw engine result) immediately before raising; the
-    RAISED :class:`SurrealStoreError` carries only a CLASSIFIED, generic
-    summary (:func:`_classify_engine_error`) plus a "see the server log"
-    correlation hint — never the raw text itself.
+    detail is logged server-side (``logger.error``, structured: the root
+    cause's statement index, status and raw engine result, plus every failed
+    statement's index and raw result) immediately before raising; the RAISED
+    :class:`SurrealStoreError` carries only a CLASSIFIED, generic summary
+    (:func:`_classify_engine_error`) plus a "see the server log" correlation
+    hint — never the raw text itself.
 
     Args:
         statement: The full multi-statement ``BEGIN … COMMIT`` SurrealQL text.
@@ -520,7 +530,12 @@ async def execute_transaction(
     # (an empty result returns immediately, below), so the final raise can always
     # safely report the LAST attempt's failure. ``statement_count`` mirrors the
     # same "last attempt" rule, so the reported position/count are always drawn
-    # from the SAME response.
+    # from the SAME response. WITHIN that response the FIRST ``ERR`` entry is
+    # the root cause: statements run in order, so everything before it
+    # succeeded, and every later ``ERR`` is the same rollback's cascade —
+    # ending in the marker-less "Cannot COMMIT: the transaction was aborted
+    # due to a prior error" entry, whose classification is always the
+    # unspecified fallback (finding #93 — the previous ``[-1]`` pick).
     failed_statements: list[_FailedStatement] = []
     statement_count = 0
     for attempt in range(_MAX_TXN_CONFLICT_ATTEMPTS):
@@ -532,23 +547,27 @@ async def execute_transaction(
         if not _should_retry(attempt, failed_statements):
             break
         await asyncio.sleep(_TXN_CONFLICT_BACKOFF_SECONDS * (attempt + 1))
-    last_failure = failed_statements[-1]
-    error_class = _classify_engine_error(last_failure.raw_result)
+    root_cause = failed_statements[0]
+    error_class = _classify_engine_error(root_cause.raw_result)
     # Server-side, FULL detail — logged BEFORE raising, so the raw engine text
     # (which may carry an interpolated bound value) is always recoverable by an
     # operator even though the raised exception never carries it.
     logger.error(
         "store.transaction.rolled_back",
         extra={
-            "statement_index": last_failure.index,
+            "statement_index": root_cause.index,
             "statement_count": statement_count,
             "status": _ERR_STATUS,
-            "engine_result": last_failure.raw_result,
+            "engine_result": root_cause.raw_result,
+            "failed_statements": [
+                {"index": failed.index, "engine_result": failed.raw_result}
+                for failed in failed_statements
+            ],
         },
     )
     raise SurrealStoreError(
         f"SurrealDB transaction failed and was rolled back: statement "
-        f"{last_failure.index + 1} of {statement_count} was rejected "
+        f"{root_cause.index + 1} of {statement_count} was rejected "
         f"({error_class}); {_SERVER_LOG_HINT}"
     )
 
