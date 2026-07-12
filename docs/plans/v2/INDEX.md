@@ -185,3 +185,31 @@ authorization models stabilize** — hence wave G's internal order.
   pins + subprocess-mypy meta-test + 3 live-forgeable wraps pulled forward (#90→#92). Cold
   audit NO-GO (mypy does NOT enforce LiteralString/PEP 675) → fix waves → GO; suite 3846/0;
   #7061 edge probe SAFE. Spec: docs/design/2026-07-11-render-safety-foundation-ruling.md (v3).
+- 2026-07-12 · **PKT-28 C1 (registry + briefs) LANDED + DEPLOYED.** `lore_comms` is the 15th
+  tool (exact-set pin 14→15): register / heartbeat / brief_get / brief_publish / brief_ack /
+  fleet, over new `agent` / `brief` / `briefed` / `brief_counter` slices + `agents.py`
+  (AgentRegistry) + `briefs.py` (BriefLedger). Commits **cfb36d2** (store) + **7917eaf**
+  (surface) + **9176bcd** (spec v4); image **98259483ed80** on lore-lore (DI on-demand, picks
+  up on next start); suite **4757 passed / 1 skipped / 3 xfailed** (+911 = the comms suite,
+  every delta accounted); mypy 0 · ruff clean. Smoke GO on the live surface: bootstrap
+  register → brief served at register (fenced, ack via=register) → briefed edge → coverage/skew
+  session-tagged → fleet header sums → hostile agent name REFUSED by the charset guard →
+  hostile brief body stayed inside a 5-backtick fence.
+  **FIVE defects, none caught by a builder gate — all found by cold audit:** (1) the version
+  mint hard-errored under real contention (TOCTOU + a jitter seed derived from the CONTENDED
+  ROW's id → every racer slept the same duration and re-collided in lockstep; budget < racer
+  count) → per-name counter-row UPSERT, holds 8/16/32-way; (2) coverage/skew silently ignored
+  session scoping — the scoped branch was DEAD CODE; (3) fleet never grouped by session, so
+  two different agents named `fixer-b` rendered identically; (4) `brief_counter` was never
+  DECLARED; (5) fleet/coverage/skew/unknown-agent counts were computed over the 200-row
+  DISPLAY-capped window while claiming to describe the fleet (a header contradicting itself in
+  one line). Spec **v4** now states the law generally: *a served count is computed over the
+  WHOLE set its label claims to describe; display caps bound rows rendered, never the numbers
+  beside them* — and records the hot-row invariant *a retry's jitter source must be unique per
+  RACER, never derived from the contended row's identity*.
+  Also: `coverage()` 2N+1 → **flat 2 queries** (417→8 end-to-end at N=205), oracle-equal.
+  Findings: **#93 `_txn.py` root-cause misclassification RESOLVED by a concurrent session**
+  (93a9aab). **OPEN → next wave: #94** (fleet's per-row ack loop: 407 queries @limit=200; the
+  new grouped helper collapses it to 2) and **#95** (the unknown-agent line says "active
+  agents:" but lists/counts the NON-RETIRED set). NEXT = PKT-28 **C2** (message graph +
+  blocks: send/drain/ack + `_comms_footer`).
