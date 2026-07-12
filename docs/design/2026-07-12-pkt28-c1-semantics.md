@@ -1,6 +1,14 @@
 # PKT-28 C1 — SEMANTICS + RENDER SPEC (registry + briefs)
 
-Author: design-consultant-c1 · 2026-07-12 · status: FINAL, v4 (consultant standing by for forks)
+Author: design-consultant-c1 · 2026-07-12 · status: FINAL, v5 (consultant standing by for forks)
+
+CHANGELOG: **v5 amended 2026-07-12 (lead)** — finding #95: §7's `UnknownAgentError`
+grammar PRESCRIBED `active agents:` for a list that is actually the NON-RETIRED set.
+The spec was teaching the defect, so a code-only fix would have been re-introduced by
+the next builder reading §7. Label ruled to `non-retired agents:` (the vocabulary §9.3
+/ §9.4 already use for this same set), and §5.3's counting law is restated to cover the
+WORDS beside a number, not only the number: a served label must name the set it actually
+describes. Finding #94 (fleet's per-row ack query) changes no served text — perf only.
 
 CHANGELOG: **v4 amended 2026-07-12** — cold audit D1 (REPORT-c1-audit-final.md §1,
 reproduced): three served counts (fleet per-status header, brief_get coverage,
@@ -516,7 +524,7 @@ Dispatcher `ValueError`s (server.py):
   derivation: `'orphaned' is derived from heartbeat age at render time, never set; legal statuses: active, idle, input_required, retired`.
 
 `agents.py` — `AgentRegistryError(RuntimeError)` base:
-- `UnknownAgentError` — `agent 'x' is not registered — every comms call requires a prior 'register'; active agents: a, b, c (+2 more)` (names capped `_COVERAGE_NAMES_CAP`, counted). Fired by the dispatcher's uniform touch (§8) — one site.
+- `UnknownAgentError` — `agent 'x' is not registered — every comms call requires a prior 'register'; non-retired agents: a, b, c (+2 more)` (names capped `_COVERAGE_NAMES_CAP`, counted; the `(+K more)` remainder is the TRUE non-retired total, never a display-capped `len()` — §5.3). **v5 (finding #95): the label was `active agents:` and it LIED about its set** — the list and the count are the NON-RETIRED partition (active + idle + input_required; retired excluded). The count agreed with the list, so no number lied, but the LABEL meant something other than it said, and this is a teaching error an agent reads to decide who exists — told "active agents", it may route work to a parked teammate. `non-retired agents:` is the vocabulary the rest of this surface already uses for exactly this set (§9.3 coverage, §9.4 skew), so the label now agrees with the code AND its sibling renders. (`registered agents:` was rejected: a RETIRED agent is still registered, so it would be the same label-vs-set mismatch in a new coat.) **The general law this is an instance of: a served label must name the set it actually describes — §5.3's counting law applies to the WORDS beside a number, not just the number.** Fired by the dispatcher's uniform touch (§8) — one site.
 - `AmbiguousAgentError` — §0.3: names the candidate sessions, teaches `session=`.
 - `AgentIdentityConflictError` — §2: `agent 'fixer-b' is already registered with role 'builder' (you sent 'auditor') — names are never reused; register a fresh name (e.g. 'fixer-b2')`.
 - `RetiredAgentError` — §2/§3: `agent 'fixer-b' is retired (terminal) — respawns register a fresh name`.

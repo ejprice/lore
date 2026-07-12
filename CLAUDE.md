@@ -58,6 +58,41 @@ rendered free text). Therefore:
   test_mcp_server.py). Every audit-caught defect CLASS gets converted into a pin like
   these — a fix without an invariant is half a fix.
 
+## Every artifact gets an adversary — not just the code (PKT-28 C1, 2026-07-12)
+C1 shipped FIVE defects that no builder gate caught. Their provenance, measured: THREE
+were tests that were never written (fleet grouping, the `brief_counter` declaration,
+every count above the display cap — no contract fixture exceeded small-N); ONE was a
+SPEC that prescribed the bug (§5.1 specified a retry jitter derived from the CONTENDED
+ROW's id — identical across racers — and justified a 4-retry budget with "contention is
+≤2-way" while the contract pinned 8-way); ONE was a real gate that FIRED and a builder
+talked itself past. Only the code had an adversary. The spec, the contract, and the
+brief each had exactly one author and zero graders — and every defect was born in one of
+them. Therefore:
+
+- **Cold-audit the CONTRACT, before the builder starts.** A fresh Opus adversary reads
+  the contract + the spec and reports what the contract does NOT test: boundary and
+  SCALE cases (0, 1, cap−1, cap, cap+1 — the N>cap fixture nobody wrote), every-branch
+  reachability (a branch no test reaches is dead code waiting to be discovered by an
+  auditor), concurrency DEGREE (≥8-way, never 2-way), hostile input, and whether each
+  fake can actually FAIL. It grades the tests, not the code. This is cheap: the missing
+  fixtures cost one function each to write — they were expensive only to THINK OF.
+- **A failing test is a STOP. "Flaky" is not a builder's verdict to render.** A builder
+  may never downgrade a red test to flakiness and proceed; it escalates. The C1 mint
+  defect failed ~4 of 5 runs, was called flaky, and shipped. Corollary: a single green
+  run NEVER clears a concurrency test — require 20 consecutive (a lone green run gave
+  the LEAD a false all-clear on that same defect).
+- **Spec ambiguity is a defect, not a judgment call.** If a contract author finds itself
+  CHOOSING between two readings of a spec sentence, that is an escalation — not a
+  contract decision. Two C1 contract authors read one sentence opposite ways, both chose
+  silently, and their suites contradicted each other.
+- **Every load-bearing pin is mutation-proven**: break the production code, watch the
+  test go RED, restore. A pin that cannot be demonstrated failing is not a pin. Every
+  time this was demanded ad hoc in C1 it immediately exposed something.
+- **The lead's brief sets the adversarial frontier — so the lead must not be the only
+  imagination.** C1's contract writers found precisely what the briefs told them to look
+  for, and nothing else. Delegate frontier-generation to the contract adversary rather
+  than relying on the lead to enumerate it.
+
 ## Orchestration (multi-agent phases)
 - The lead writes no code — tests included. Ladder: ground-truth verify → TaskStop →
   respawn fresh (never reuse a teammate name).
@@ -99,4 +134,9 @@ rendered free text). Therefore:
 - smoke_p8b full mode files a dogfood finding row each run — resolve it as a smoke
   artifact (duplicate of #1), not a live defect.
 - spike-surreal ws://127.0.0.1:18000 is the test store; :18500 is production
-  lore-surreal — never point tests at it. Post-reboot: `podman start spike-surreal`.
+  lore-surreal — never point tests at it. Both stores are systemd/quadlet-managed
+  (`~/.config/containers/systemd/{lore-surreal,spike-surreal}.container`,
+  `WantedBy=default.target` + linger) and auto-start on boot — no manual
+  `podman start` post-reboot. Manage via `systemctl --user {start,stop,restart}
+  {lore-surreal,spike-surreal}.service`. Full teardown recovery (image + both
+  stores gone): see memory `surreal-stores-systemd-managed`.
