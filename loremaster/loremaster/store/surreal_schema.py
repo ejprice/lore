@@ -67,6 +67,29 @@ TRACE_TABLE = "trace"
 COMMAND_TABLE = "command"
 TASK_TABLE = "task"
 
+# The PKT-28 C1 agent-comms tables (the durable, fleet-visible AGENT REGISTRY
+# and BRIEF LEDGER — :mod:`loremaster.agents` / :mod:`loremaster.briefs`).
+# ``agent`` is a node table (one row per registered agent identity, keyed by a
+# deterministic ``uuid5(session, name)`` record id); ``brief`` is a node table
+# (one row per published brief VERSION, keyed by a deterministic
+# ``uuid5(name, version)`` record id); ``briefed`` is the native ``TYPE
+# RELATION`` edge (``agent->briefed->brief``) recording which agent has acked
+# which brief version. Single source of truth shared by
+# :mod:`loremaster.agents` / :mod:`loremaster.briefs` and their contract tests.
+AGENT_TABLE = "agent"
+BRIEF_TABLE = "brief"
+BRIEFED_RELATION = "briefed"
+# The brief ledger's race-safe consecutive VERSION mint's counter table.
+# UNLIKE ``finding_counter`` (a single ``singleton`` row — one global
+# sequence), this table holds ONE row PER BRIEF NAME (``brief_counter:⟨name⟩``,
+# e.g. ``brief_counter:project``): :class:`~loremaster.briefs.BriefLedger`
+# UPSERTs the row for the ``name`` being published (``next = (next ?? 0) + 1``),
+# so publishers of DIFFERENT names contend on DIFFERENT rows and never
+# serialise against each other — strictly better than a singleton, and the
+# same ``_apply_mint``-style counter-row PRIMITIVE :mod:`loremaster.findings`
+# uses, cloned in mechanism, not merely in shape.
+BRIEF_COUNTER_TABLE = "brief_counter"
+
 # The S13 "Model A" code-graph tables (the astroid-derived code graph, ported
 # from KùzuDB). ``code_node`` holds graph nodes (deterministic composite record
 # id ``[tier, file_path, qualified_name]``); ``name`` is the name-node indirection
@@ -363,6 +386,135 @@ _FINDING_STATUS_FIELD = "status"
 # The ``finding_counter`` table's single ``next`` int column, defaulted to 0 so the
 # FIRST ``UPSERT ... SET next += 1`` on the newly-created singleton row yields 1.
 _FINDING_COUNTER_NEXT_FIELD = "next"
+
+# --- PKT-28 C1 ``agent`` / ``brief`` / ``briefed`` tables (lore's durable,
+# fleet-visible AGENT REGISTRY + BRIEF LEDGER) --------------------------------
+#
+# Binding spec: ``docs/design/2026-07-12-pkt28-c1-semantics.md`` §0. Both the
+# ``agent.name``/``agent.session`` charset and the ``brief.name`` charset share
+# ONE identifier pattern (a load-bearing injection guard: derived ids get
+# inlined as literals into C3's live WHERE clauses) — verified LIVE against
+# spike-surreal 3.1.5 (see ``REPORT-c1-contract-schema.md``): the SurrealQL
+# ``ASSERT`` must use the FUNCTION form ``string::matches($value, '<pattern>')``;
+# the operator form (``$value =~ /pattern/``) is a 3.1.5 PARSE ERROR.
+_IDENTIFIER_CHARSET_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+_IDENTIFIER_CHARSET_ASSERT = f"ASSERT string::matches($value, '{_IDENTIFIER_CHARSET_PATTERN}')"
+
+# The closed FOUR-status agent lifecycle vocabulary (design doc §0/§3) —
+# ``orphaned``/STALE is DERIVED at render time from ``heartbeat_at`` age and is
+# deliberately EXCLUDED from this domain: it must never be a legal stored value.
+_AGENT_STATUS_ACTIVE = "active"
+_AGENT_STATUS_IDLE = "idle"
+_AGENT_STATUS_INPUT_REQUIRED = "input_required"
+_AGENT_STATUS_RETIRED = "retired"
+_AGENT_STATUSES = (
+    _AGENT_STATUS_ACTIVE,
+    _AGENT_STATUS_IDLE,
+    _AGENT_STATUS_INPUT_REQUIRED,
+    _AGENT_STATUS_RETIRED,
+)
+_AGENT_STATUS_ALLOWED = ", ".join(f"'{status}'" for status in _AGENT_STATUSES)
+
+# The ``agent`` table's fields as ``(name, type_expr, constraint)`` triples —
+# mirrors :data:`_TASK_FIELD_SPECS`. ``name``/``session`` share the identifier
+# charset ASSERT; ``role`` carries the shared non-empty ASSERT
+# (:data:`_NON_EMPTY_STRING_ASSERT`); ``status`` carries the closed four-value
+# domain; ``model``/``spawned_by``/``task_id``/``last_note`` are ``option``
+# (a fresh/partial registration may omit them); ``checkpoint`` is
+# ``option<object> FLEXIBLE`` — the C1 build-time probe verified live that
+# FLEXIBLE must trail OUTSIDE the angle brackets on 3.1.5 (``option<object
+# FLEXIBLE>`` is a parse error); the column ships in C1 with NO action reading
+# or writing it yet (checkpoint workflow is C5). ``registered_at``/
+# ``heartbeat_at`` are PLAIN (non-option, no DEFAULT) datetimes — the design
+# doc's own table gives neither a DEFAULT (unlike ``brief.created_at``), and
+# every writer (register / the dispatcher's uniform touch) always stamps both
+# explicitly, mirroring ``task.created_at``/``task.claimed_at``'s
+# ledger-stamped idiom rather than ``finding.created_at``'s engine-stamped one.
+_AGENT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("name", _CHUNK_STRING_TYPE, _IDENTIFIER_CHARSET_ASSERT),
+    ("session", _CHUNK_STRING_TYPE, _IDENTIFIER_CHARSET_ASSERT),
+    ("role", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("model", "option<string>", ""),
+    ("status", _CHUNK_STRING_TYPE, f"ASSERT $value IN [{_AGENT_STATUS_ALLOWED}]"),
+    ("spawned_by", "option<string>", ""),
+    ("task_id", "option<string>", ""),
+    ("checkpoint", "option<object>", "FLEXIBLE"),
+    ("last_note", "option<string>", ""),
+    ("registered_at", "datetime", ""),
+    ("heartbeat_at", "datetime", ""),
+)
+
+# The ``agent`` columns the two indexes are built on: ``(session, status)``
+# (the plan's own index — a fleet scoped-by-session status scan) plus a
+# STANDALONE index on ``name`` (design doc §0 D7 — the bare-name resolution
+# SELECT in §0.3 filters by ``name`` alone; without it every comms call not
+# carrying ``session=`` would table-scan). Both non-unique: ``name`` alone is
+# NOT unique (the same name may legitimately exist in two different sessions;
+# ``(session, name)`` uniqueness is enforced by the deterministic uuid5 id,
+# not an index).
+_AGENT_SESSION_STATUS_INDEX_FIELDS = ("session", "status")
+_AGENT_NAME_INDEX_FIELDS = ("name",)
+
+# The closed TWO-value ``briefed.via`` vocabulary (design doc §0/§5): a
+# ``register``-time auto-ack vs. an ``explicit`` ``brief_ack`` call. First-write
+# -wins on an idempotent re-ack (the ledger never overwrites an existing edge's
+# ``via``).
+_BRIEFED_VIA_REGISTER = "register"
+_BRIEFED_VIA_EXPLICIT = "explicit"
+_BRIEFED_VIA_VALUES = (_BRIEFED_VIA_REGISTER, _BRIEFED_VIA_EXPLICIT)
+_BRIEFED_VIA_ALLOWED = ", ".join(f"'{via}'" for via in _BRIEFED_VIA_VALUES)
+
+# The ``brief`` table's fields as ``(name, type_expr, constraint)`` triples.
+# ``name`` shares the SAME identifier charset ASSERT as ``agent.name`` (design
+# doc §0: "same class as agent.name" — brief names are protocol vocabulary
+# ('project', 'base', wave names) rendered and queried by literal, same
+# injection posture); ``version`` is a plain ``int``; ``body``/``created_by``
+# carry the shared non-empty ASSERT (a blank standing instruction or a blank
+# publisher identity names nothing); ``note`` is ``option<string>``;
+# ``created_at`` self-stamps via ``DEFAULT time::now()`` (the findings idiom —
+# design doc §0, explicit).
+_BRIEF_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("name", _CHUNK_STRING_TYPE, _IDENTIFIER_CHARSET_ASSERT),
+    ("version", "int", ""),
+    ("body", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("created_by", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("note", "option<string>", ""),
+    ("created_at", "datetime", "DEFAULT time::now()"),
+)
+
+# The ``brief`` UNIQUE(name, version) index — the publish backstop (design doc
+# §5.1): two racing publishers computing the SAME (name, version) candidate
+# (and therefore the SAME deterministic id) can never both land a row.
+_BRIEF_NAME_VERSION_INDEX_FIELDS = ("name", "version")
+
+# The ``brief_counter`` table's single ``next`` int column per row, defaulted
+# to 0 so the FIRST ``UPSERT ... SET next = (next ?? 0) + 1`` on a brand-new
+# per-name row yields 1 — mirrors ``_FINDING_COUNTER_NEXT_FIELD`` exactly; only
+# the table's per-NAME keying (see :data:`BRIEF_COUNTER_TABLE`) differs.
+_BRIEF_COUNTER_NEXT_FIELD = "next"
+
+# The ``briefed`` edge table's fields as ``(name, type_expr, constraint)``
+# triples — ``in``/``out`` are auto-defined by ``TYPE RELATION`` and are NEVER
+# hand-declared here (mirrors ``refers``/``answers_to``). ``at`` carries
+# ``DEFAULT time::now()`` — a genuinely-instantaneous "this ack/register
+# happened now" stamp with no ledger-side reason to compute it itself (the
+# design doc is silent on this DEFAULT; resolved by analogy to
+# ``brief.created_at`` since a register/ack call always writes this edge in
+# the same instant it decides to write it — see ``REPORT-c1-contract-schema.md``
+# contract decision 2).
+_BRIEFED_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("via", _CHUNK_STRING_TYPE, f"ASSERT $value IN [{_BRIEFED_VIA_ALLOWED}]"),
+    ("at", "datetime", "DEFAULT time::now()"),
+)
+
+# The ``briefed`` UNIQUE(in, out) index — the idempotent-re-ack backstop
+# (design doc §0/§5.4): versions are DISTINCT ``brief`` records, so a single
+# UNIQUE pair per (agent, brief-version) is sufficient to make a duplicate
+# RELATE of the same pair a no-op rather than a second edge. This is the
+# FIRST relation table in the codebase to declare a UNIQUE(in, out) index (no
+# ``refers``/``answers_to`` precedent) — legal on SurrealDB ≥3.1.0 (bug #7061
+# fixed; independently probed safe, see ``REPORT-probe-7061-c1.md``).
+_BRIEFED_IN_OUT_INDEX_FIELDS = ("in", "out")
 
 # --- P8a ``trace`` table (lore's per-tool-invocation OBSERVABILITY row) --------
 #
@@ -812,6 +964,107 @@ def _finding_counter_statements() -> list[str]:
     ]
 
 
+def _agent_statements() -> list[str]:
+    """The ``agent`` table: the field set + the ``(session, status)`` and ``name`` indexes.
+
+    Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
+    :data:`_AGENT_FIELD_SPECS` entry (the shared identifier charset ASSERT on
+    ``name``/``session``, the shared non-empty ASSERT on ``role``, the closed
+    four-value ``status`` domain, the ``option`` optional columns, and the
+    ``option<object> FLEXIBLE`` ``checkpoint`` blob); the non-unique index on
+    ``(session, status)``; and the non-unique index on ``name`` alone (design
+    doc §0 D7 — backs the bare-name resolution SELECT). UNLIKE ``chunk`` /
+    ``memory`` the table carries no HNSW/FULLTEXT index — an agent is resolved
+    by exact identity, never retrieved semantically.
+    """
+    statements: list[str] = [_define_table(AGENT_TABLE)]
+    statements += [
+        _define_field(AGENT_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _AGENT_FIELD_SPECS
+    ]
+    statements.append(
+        _plain_index(
+            AGENT_TABLE, f"{AGENT_TABLE}_session_status", _AGENT_SESSION_STATUS_INDEX_FIELDS
+        )
+    )
+    statements.append(
+        _plain_index(AGENT_TABLE, f"{AGENT_TABLE}_name", _AGENT_NAME_INDEX_FIELDS)
+    )
+    return statements
+
+
+def _brief_statements() -> list[str]:
+    """The ``brief`` table: the field set + the UNIQUE ``(name, version)`` index.
+
+    Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
+    :data:`_BRIEF_FIELD_SPECS` entry (the shared identifier charset ASSERT on
+    ``name``, the shared non-empty ASSERT on ``body``/``created_by``, the
+    ``option<string>`` ``note``, and the ``DEFAULT time::now()``
+    ``created_at``); and the UNIQUE index on ``(name, version)`` — the publish
+    mint's backstop (design doc §5.1). UNLIKE ``chunk`` / ``memory`` the table
+    carries no HNSW/FULLTEXT index — a brief is addressed by (name, version),
+    never retrieved semantically.
+    """
+    statements: list[str] = [_define_table(BRIEF_TABLE)]
+    statements += [
+        _define_field(BRIEF_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _BRIEF_FIELD_SPECS
+    ]
+    statements.append(
+        _unique_index(BRIEF_TABLE, f"{BRIEF_TABLE}_name_version", _BRIEF_NAME_VERSION_INDEX_FIELDS)
+    )
+    return statements
+
+
+def _briefed_statements() -> list[str]:
+    """The ``briefed`` relation edge table: fields + the UNIQUE ``(in, out)`` index.
+
+    Mirrors ``_refers_statements``/``_answers_to_statements``'s shape: define
+    the relation table (:func:`_define_relation_table` — ``in``/``out`` are
+    auto-defined, never hand-declared), emit the edge-local metadata fields
+    from :data:`_BRIEFED_FIELD_SPECS` (``via`` closed-two-value ASSERT, ``at``
+    ``DEFAULT time::now()``), then the UNIQUE index on ``(in, out)`` — the
+    idempotent-re-ack backstop (design doc §0/§5.4). UNLIKE ``refers``/
+    ``answers_to`` this is the first relation table to declare a UNIQUE
+    endpoint-pair index (no precedent to clone verbatim; see the module's own
+    field-spec comment for the live-probed safety confirmation).
+    """
+    statements: list[str] = [_define_relation_table(BRIEFED_RELATION)]
+    statements += [
+        _define_field(BRIEFED_RELATION, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _BRIEFED_FIELD_SPECS
+    ]
+    statements.append(
+        _unique_index(BRIEFED_RELATION, f"{BRIEFED_RELATION}_in_out", _BRIEFED_IN_OUT_INDEX_FIELDS)
+    )
+    return statements
+
+
+def _brief_counter_statements() -> list[str]:
+    """The ``brief_counter`` table: one ``next`` int column PER BRIEF NAME, defaulting to 0.
+
+    Backs the brief ledger's race-safe consecutive VERSION mint (design doc
+    §5.1, ``BriefLedger._mint_version``). UNLIKE ``finding_counter``'s single
+    ``singleton`` row (one global sequence), this table holds ONE row PER
+    brief NAME (``brief_counter:⟨name⟩``), so publishers of DIFFERENT names
+    UPSERT DIFFERENT rows and never contend with each other — publishers of
+    the SAME name contend on the same row and the engine serialises them into
+    gapless consecutive numbers (the ``brief`` table's UNIQUE(name, version)
+    index is the backstop, never the mechanism). ``DEFAULT 0`` means the
+    FIRST bump on a brand-new per-name row yields 1, matching the mint's own
+    ``next ?? 0`` coalesce — declaring the table changes nothing observable
+    (previously auto-created SCHEMALESS by the engine on first write; see
+    ``REPORT-c1-builder-mint.md`` §2.2), it only makes the table's existence
+    explicit alongside its ``brief``/``briefed`` siblings.
+    """
+    return [
+        _define_table(BRIEF_COUNTER_TABLE),
+        _define_field(
+            BRIEF_COUNTER_TABLE, _BRIEF_COUNTER_NEXT_FIELD, "int", constraint="DEFAULT 0"
+        ),
+    ]
+
+
 def _code_node_statements() -> list[str]:
     """The ``code_node`` table: fields + the bare/qualified/(tier,file) indexes.
 
@@ -1003,6 +1256,49 @@ def generate_finding_ddl() -> str:
         single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
     """
     statements: list[str] = _finding_statements() + _finding_counter_statements()
+    return ";\n".join(statements) + ";\n"
+
+
+def generate_agent_ddl() -> str:
+    """Generate just the ``agent`` table DDL — the PKT-28 C1 agent registry's
+    schema slice.
+
+    Mirrors :func:`generate_task_ddl`: a schema SLICE
+    :class:`~loremaster.agents.AgentRegistry` applies on its OWN connection at
+    :meth:`ensure_ready`, independent of the full :func:`generate_ddl`. Needs
+    NEITHER the embedding ``dim`` NOR the analyzer — an agent is resolved by
+    exact identity, never retrieved semantically. Every statement is
+    ``IF NOT EXISTS``, so applying it twice — or alongside :func:`generate_ddl`,
+    in either order — is a safe no-op.
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string ready to hand to a
+        single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
+    """
+    statements: list[str] = _agent_statements()
+    return ";\n".join(statements) + ";\n"
+
+
+def generate_brief_ddl() -> str:
+    """Generate the ``brief`` + ``briefed`` + ``brief_counter`` DDL — the PKT-28
+    C1 brief ledger's schema slice.
+
+    Mirrors :func:`generate_finding_ddl` bundling ``finding`` +
+    ``finding_counter``: :class:`~loremaster.briefs.BriefLedger` owns the
+    ``brief`` node table, the ``briefed`` relation edge, AND the
+    ``brief_counter`` version-mint table (:func:`_brief_counter_statements` —
+    per-NAME rows, unlike ``finding_counter``'s singleton), applying this
+    combined slice on its OWN connection at :meth:`ensure_ready`, independent
+    of the full :func:`generate_ddl`. Needs NEITHER the embedding ``dim`` NOR
+    the analyzer — a brief is addressed by (name, version), never retrieved
+    semantically. Every statement is ``IF NOT EXISTS``, so applying it twice —
+    or alongside :func:`generate_ddl`, in either order — is a safe no-op.
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string ready to hand to a
+        single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
+    """
+    statements: list[str] = _brief_statements() + _briefed_statements() + _brief_counter_statements()
     return ";\n".join(statements) + ";\n"
 
 
