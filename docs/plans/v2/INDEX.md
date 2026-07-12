@@ -63,7 +63,7 @@ then PKT-28 (C1–C5) — now precedes PKT-01 floor-calibration.**
 | 04 | detection-contract | B | 0.15 | — | open |
 | 05 | detection-build | B | 0.35 | 04 ruled | open |
 | 06 | ledger-verbs (row f38f3b96) — C0 of agent-comms | C | 0.30 | — | **done** |
-| 28 | agent-comms C1–C5 (C0 done+deployed; C1 registry+briefs NEXT) | C | ~1.4 phased | 06 | **NEXT** |
+| 28 | agent-comms C1–C5 (C0 done+deployed; Phase-0 render-safety foundation done @ c30edd6 commit-only; C1 registry+briefs NEXT) | C | ~1.4 phased | 06 | **NEXT** |
 | 07 | role-wiring (all\|mcp\|scout + creds) | D | 0.30 | — | open |
 | 08 | containerfile-astroid (#24) | D ∥ | 0.25 | — | open |
 | 09 | config-dynamism (ruled #13 table, #72, #12) | D ∥ | 0.35 | — | open |
@@ -180,3 +180,8 @@ authorization models stabilize** — hence wave G's internal order.
   (verbs); image **cd7c07a11534** on lore-lore (DI on-demand, picks up on next start);
   smoke green (arc + mandatory-summary + live forgery-guard); row f38f3b96 done. NEXT =
   PKT-28 **C1** (registry + briefs). #90 routes tree-wide render-hygiene → PKT-03.
+- 2026-07-12 · **PKT-28 Phase 0 (render-safety foundation) LANDED @ c30edd6, COMMIT-ONLY**
+  (operator: C1 session deploys both containers). SafeLine/Rendered seam + AST template/mint
+  pins + subprocess-mypy meta-test + 3 live-forgeable wraps pulled forward (#90→#92). Cold
+  audit NO-GO (mypy does NOT enforce LiteralString/PEP 675) → fix waves → GO; suite 3846/0;
+  #7061 edge probe SAFE. Spec: docs/design/2026-07-11-render-safety-foundation-ruling.md (v3).
