@@ -213,3 +213,31 @@ authorization models stabilize** — hence wave G's internal order.
   new grouped helper collapses it to 2) and **#95** (the unknown-agent line says "active
   agents:" but lists/counts the NON-RETIRED set). NEXT = PKT-28 **C2** (message graph +
   blocks: send/drain/ack + `_comms_footer`).
+- 2026-07-12 · **PKT-28 C1 follow-up wave: #94 / #95 / #96 FIXED + DEPLOYED** (image
+  **6e8f2c3091fd**; commits **8e3c27f** perf · **2cd78d5** label+process-law · **354da70**
+  skew). Suite **4815 passed / 1 skipped / 3 xfailed** (+58, zero regressions) · mypy 0 ·
+  ruff clean. Live smoke on the deployed surface: `non-retired agents: none` (bootstrap)
+  and `…: aa, bb, cc`; first-ever publish renders `3 non-retired agents behind head v1 —
+  3 unbriefed` (no fabricated v0); fleet ack queries FLAT at 3/3/3 (limit 5 / 50 / 200
+  with 205 agents), oracle-equal to the old per-row path.
+  **NEW PROCESS LAW — "Every artifact gets an adversary" (repo CLAUDE.md).** C1 shipped 5
+  defects no builder gate caught; measured provenance: 3 were tests NEVER WRITTEN, 1 was a
+  SPEC that prescribed the bug, 1 was a real gate a builder talked past as "flaky". Only the
+  CODE had an adversary — the spec, the contract and the brief each had one author and zero
+  graders. Now: a cold Opus **CONTRACT adversary** grades the TESTS before any builder starts;
+  a failing test is a STOP ("flaky" is not a builder's verdict); spec ambiguity is an
+  ESCALATION; every load-bearing pin is MUTATION-PROVEN.
+  **It paid for itself on both runs.** Run 1: the #94 contract went green (561 passed, exit 0)
+  with the defect fully intact — every pin tested a new method *nothing required the code to
+  call* — plus 2 surviving mutants (a cross-session agent-name LEAK, and the bootstrap
+  empty-roster branch). Run 2: it built a WRONG #96 fix that passed **489/489 + ruff + mypy +
+  the AST pins** (remainder group counted VERSIONS not AGENTS → groups summing to 5 under a
+  label saying 8 — the counting law broken inside the very line #96 exists to fix); root cause
+  of the miss was the same small-N blind spot that produced 3 of C1's 5 defects.
+  Spec now **v6**: §9.4 rewritten, §5.3 gains the version-naming corollary (*a render may only
+  name a version that EXISTS — read, never arithmetic; litmus: a version a reader could not
+  `brief_get` is a fabricated fact*), §9 gains a law-over-grammar PRECEDENCE rule.
+  OPEN: **#97** (`limit` lacks ge=1) · **#98** (publish() never self-acks, so the AUTHOR is
+  always counted behind on its own brief — and the zero-behind branch is unreachable through
+  the tool; operator fork: self-ack `via="publish"`?) · **#99** (fleet header says "N agents"
+  where N is non-retired — the last label inconsistency). NEXT = PKT-28 **C2**.
