@@ -1109,6 +1109,11 @@ _COMMS_ACTION_FLEET = "fleet"
 # a module constant (not config): it bounds a TEACHING line's length, not an
 # operator-tunable render preference.
 _COVERAGE_NAMES_CAP = 5
+# design doc §4/§9.4 (v6 — finding #96): the cap on named stored-acked-
+# version groups inside a brief_publish skew breakdown, before the
+# remainder collapses to one counted "at older versions" group. The spec
+# DECLARES this value — it is not a builder's choice.
+_SKEW_BREAKDOWN_CAP = 3
 # design doc §4: the enforceable clamp behind ``fleet``'s ``limit=`` re-ask —
 # a counted elision's re-ask value is always honest AND clamped to this
 # ceiling (DESIGN-LAW §1.2), never an unbounded "ask for everything".
@@ -4544,14 +4549,17 @@ class AppContext:
         result = await self.brief_ledger.publish(name, body, created_by=publisher, note=note)
         # Skew's denominator rides the SAME §5.3 plumbing as coverage (v4
         # audit D1 fix) — the complete in-scope membership, never the
-        # display-capped ``fleet()`` window.
+        # display-capped ``fleet()`` window. The ledger's own uncapped
+        # ``behind`` list is handed straight to the render helper (v6 —
+        # finding #96): the breakdown's per-stored-version grouping is a
+        # render concern, never a pre-computed int the render layer can't
+        # re-derive a version from.
         roster = await self.agent_registry.roster(session=session)
         coverage = await self.brief_ledger.coverage(name, active_agents=roster.members)
-        skew_count = coverage.total_agents - coverage.current_count
         return AppContext._render_comms_brief_publish(
             result,
             session=session,
-            skew_count=skew_count,
+            behind=coverage.behind,
             body_chars=len(body),
             warn_threshold_chars=self.config.comms.brief_body_warn_chars,
         )
@@ -4797,11 +4805,45 @@ class AppContext:
         )
 
     @staticmethod
+    def _render_comms_skew_breakdown(behind: Sequence[BriefBehindEntry]) -> SafeLine:
+        """Group ``behind`` entries into the skew breakdown (design doc §9.4
+        v6 — finding #96): stored-acked version groups DESCENDING (each
+        ``"{k} at v{n}"`` where ``v{n}`` is a stored briefed-edge target,
+        never computed), capped at ``_SKEW_BREAKDOWN_CAP`` named groups, any
+        remainder collapsed to ONE ``"{k} at older versions"`` group where
+        ``k`` is the AGENT count (``sum`` over the collapsed versions' agent
+        counts — never ``len`` of the version list itself, which undercounts
+        the instant more than one agent shares a collapsed version), and a
+        trailing ``"{k} unbriefed"`` group (rendered only when non-empty) for
+        agents with no stored ack at all — never-acked is its own word, never
+        approximated by a version number. Every entry in ``behind`` lands in
+        exactly one group, so the returned groups always sum to
+        ``len(behind)`` by construction.
+        """
+        version_counts: dict[int, int] = {}
+        unbriefed_count = 0
+        for entry in behind:
+            if entry.acked_version is None:
+                unbriefed_count += 1
+            else:
+                version_counts[entry.acked_version] = version_counts.get(entry.acked_version, 0) + 1
+        versions_descending = sorted(version_counts, reverse=True)
+        named_versions = versions_descending[:_SKEW_BREAKDOWN_CAP]
+        remainder_versions = versions_descending[_SKEW_BREAKDOWN_CAP:]
+        parts = [safe_str(f"{version_counts[version]} at v{version}") for version in named_versions]
+        if remainder_versions:
+            remainder_agent_count = sum(version_counts[version] for version in remainder_versions)
+            parts.append(safe_str(f"{remainder_agent_count} at older versions"))
+        if unbriefed_count > 0:
+            parts.append(safe_str(f"{unbriefed_count} unbriefed"))
+        return render_join(", ", parts)
+
+    @staticmethod
     def _render_comms_brief_publish(
         result: BriefPublishResult,
         *,
         session: str | None,
-        skew_count: int,
+        behind: Sequence[BriefBehindEntry],
         body_chars: int,
         warn_threshold_chars: int,
     ) -> Rendered:
@@ -4825,24 +4867,27 @@ class AppContext:
                     publisher=sanitise_line(result.brief.created_by),
                 )
             ]
-        if skew_count > 0:
+        if len(behind) > 0:
+            breakdown = AppContext._render_comms_skew_breakdown(behind)
             if session is not None:
                 lines.append(
                     render_line(
-                        "skew (session {session}): {count} non-retired agents had acked "
-                        "v{prior} or older — skew surfaces at their next heartbeat",
+                        "skew (session {session}): {behind} non-retired agents behind "
+                        "head v{head} — {breakdown}; surfaces at their next heartbeat",
                         session=sanitise_line(session),
-                        count=skew_count,
-                        prior=result.brief.version - 1,
+                        behind=len(behind),
+                        head=result.brief.version,
+                        breakdown=breakdown,
                     )
                 )
             else:
                 lines.append(
                     render_line(
-                        "skew: {count} non-retired agents had acked v{prior} or older — "
-                        "skew surfaces at their next heartbeat",
-                        count=skew_count,
-                        prior=result.brief.version - 1,
+                        "skew: {behind} non-retired agents behind head v{head} — "
+                        "{breakdown}; surfaces at their next heartbeat",
+                        behind=len(behind),
+                        head=result.brief.version,
+                        breakdown=breakdown,
                     )
                 )
         if body_chars > warn_threshold_chars:

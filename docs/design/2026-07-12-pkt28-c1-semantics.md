@@ -1,6 +1,27 @@
 # PKT-28 C1 — SEMANTICS + RENDER SPEC (registry + briefs)
 
-Author: design-consultant-c1 · 2026-07-12 · status: FINAL, v5 (consultant standing by for forks)
+Author: design-consultant-c1 · 2026-07-12 · status: FINAL, v6 (consultant standing by for forks)
+
+CHANGELOG: **v6 amended 2026-07-12** — finding #96 / REPORT-c1b-audit-9495.md R1:
+§9.4's skew grammar (`"… had acked v{prior} or older"`, prior = version−1)
+CONTRADICTED §5.3's own words ("unbriefed renders as its own word, never as a
+fake number") — on a first publish the shipped line named **v0, a version that
+has never existed**, and conflated *behind-at-vN* with *never-acked*. OWNED:
+both sentences were mine, written in the same pass and never cross-checked
+against each other, and zero tests pinned the prose — the third spec-prescribed
+defect this phase. Fixed four ways: §9.4 rewritten (stored-version breakdown;
+`unbriefed` is its own group and its own word); §5.3 gains the version-naming
+corollary; §9 gains the law-over-grammar PRECEDENCE rule so a builder can
+resolve this class without a fork; §TEST SKETCH gains byte-pinned prose tests.
+**Sweep of every version-naming grammar in §9, verdict each (no wholesale
+"rest are fine"):** §9.1 line 2 + receipt line (stored head row) — SOUND ·
+§9.2 `v{head}`/`v{acked}` (stored head / stored briefed-edge target; the
+unbriefed variant names head only) — SOUND · §9.3 `at v{version}` + behind
+entries `(vN)`/`(unbriefed)` (stored head / stored acked; own word) — SOUND ·
+§9.4 `v{prior}` — COMPUTED, THE DEFECT, rewritten · §9.5 `v{N}`/`head is v{H}`
+(param validated-to-exist per §5.4 / stored head) — SOUND · §9.6 brief cell
+`v{acked}`/`(head v{h})`/`unbriefed` (stored / stored / own word) — SOUND ·
+first-version `v1` lines in §9.1/§9.4 (the just-minted stored row) — SOUND.
 
 CHANGELOG: **v5 amended 2026-07-12 (lead)** — finding #95: §7's `UnknownAgentError`
 grammar PRESCRIBED `active agents:` for a list that is actually the NON-RETIRED set.
@@ -310,10 +331,12 @@ copies into comments:
   rendered fleet rows and the `limit=` re-ask clamp (DESIGN-LAW §1.2); it is
   NEVER an input to any served count (§5.3 counting law — header/coverage/skew
   counts come from `AgentRegistry.roster()`'s true aggregates).
-  `_COVERAGE_NAMES_CAP = 5` and `_KNOWN_BRIEFS_CAP = 10` (server.py) — render
-  list caps inside teaching/coverage lines (§5.3, §7), always counted-elided;
-  **v4 (audit D2): these are REAL, implemented caps with pinned tests — a cap
-  named in this spec and absent from the code is itself a defect.**
+  `_COVERAGE_NAMES_CAP = 5`, `_KNOWN_BRIEFS_CAP = 10`, and
+  `_SKEW_BREAKDOWN_CAP = 3` (v6 — §9.4's named version-groups) (server.py) —
+  render list caps inside teaching/coverage/skew lines (§5.3, §7, §9.4), always
+  counted-elided; **v4 (audit D2): these are REAL, implemented caps with pinned
+  tests — a cap named in this spec and absent from the code is itself a
+  defect.**
 
 ## §5 Brief semantics
 
@@ -424,6 +447,13 @@ legitimate law; the warn line teaches the doc+pointer idiom instead.
   numbers served beside them. A count and its label must agree at every N
   (§1.2/§1.3); "205 agents — 200 active" self-contradicting in one line is the
   canonical violation.
+- **Version-naming corollary (v6 — finding #96):** **a render may only name a
+  version that EXISTS** — read from a stored brief row or a stored briefed
+  edge's target, never arrived at by arithmetic (`version − 1` is exactly how
+  `v0`, a version that never existed, reached a served line). "Never acked" is
+  its OWN state and renders as its own word (`unbriefed`) — it is never
+  approximated by a number, never by version−1, never by `v0`. Litmus: any
+  version a reader could not `brief_get` is a fabricated fact.
 
 Where each surfaces in C1 (all four, exactly):
 
@@ -621,6 +651,15 @@ ONLY, verbatim; counts/versions/sizes are `int`s straight into `render_line`.
 Derived text that is not agent-controlled (heartbeat ages, the `⚠ STALE` marker)
 still crosses as `safe_str(...)`/literal template branches — no third category.
 
+**Precedence (v6):** §0–§8 are the LAW; §9's grammar blocks and worked code are
+INSTANCES of it. Where a grammar block and a law section disagree, **the law
+governs**: the builder implements the law-conforming render and FLAGS the
+grammar block as a spec defect in its report — this precedence rule is itself
+spec text, so applying it is not an improvised design decision (and per the repo
+adversary law, two available readings is an escalation signal, not a choice to
+make silently). v6 exists because §9.4 contradicted §5.3 and the grammar half
+got built.
+
 Ages render via one helper: `_render_age(delta_seconds: int) -> SafeLine` returning
 `safe_str(...)` of `57s` / `14m` / `3h` / `2d` (largest unit, one unit, no
 padding). Builders pin its unit boundaries (`<120s → s`, `<120m → m`, `<48h → h`,
@@ -726,14 +765,37 @@ coverage: 3/5 non-retired agents at v5; behind: fixer-b (v4), scout-c (unbriefed
 
 ```
 brief 'project' v6 published by lead
-skew: 4 non-retired agents had acked v5 or older — skew surfaces at their next heartbeat
+skew: 4 non-retired agents behind head v6 — 3 at v5, 1 unbriefed; surfaces at their next heartbeat
 ⚠ body 5210 chars exceeds the 4000-char warn threshold — briefs are standing instructions; prefer a doc + pointer
 ```
 
 - Line 1: `"brief '{name}' v{version} published by {publisher}"`.
 - First-version variant appends `" — first version; agents ack at register"`.
-- Skew line only when ≥1 non-retired agent is now behind (count is an int);
-  omitted otherwise (no `skew: 0` noise).
+- **Skew line (v6 REWRITE — finding #96; replaces `"had acked v{prior} or
+  older"`, which computed `prior = version − 1` and fabricated `v0` on a first
+  publish, conflating behind-at-vN with never-acked):**
+  template `"skew: {behind} non-retired agents behind head v{head} —
+  {breakdown}; surfaces at their next heartbeat"` (scoped variant per the v2
+  law: `"skew (session {session}): …"`). `{behind}` and `{head}` are ints —
+  `{head}` is the JUST-PUBLISHED stored version, the only version this line is
+  ever entitled to name outright. `{breakdown}` is `render_join(", ", groups)`
+  where the groups are, in order:
+  1. stored-acked version groups, DESCENDING — each `"{k} at v{n}"` where
+     `v{n}` is a stored briefed-edge target (§5.3 corollary: read, never
+     computed) — capped at `_SKEW_BREAKDOWN_CAP` named groups;
+  2. any remainder collapsed to `"{k} at older versions"` (counted; names NO
+     version);
+  3. `"{k} unbriefed"` LAST, rendered only when k>0 — never-acked is its own
+     group and its own word, never a number.
+  Group counts SUM to `{behind}` (the §5.3 counting law applied inside one
+  line). Skew line renders only when `{behind}` ≥ 1; omitted otherwise (no
+  `skew: 0` noise).
+- **First publish (v1):** no prior version exists ⇒ every behind agent is
+  unbriefed by definition ⇒ the breakdown is exactly `"{k} unbriefed"` and the
+  line names NO version other than head `v1`
+  (`skew: 2 non-retired agents behind head v1 — 2 unbriefed; surfaces at their
+  next heartbeat`). Emitting `v0` — or any version without a stored row — is a
+  spec violation (§5.3 corollary).
 - Skew-line scoping (v2): the §5.3 scoping law applies verbatim — explicit
   `session=` on the publish call ⇒ count over that session's non-retired roster,
   template `"skew (session {session}): …"`; otherwise fleet-wide, no tag.
@@ -948,6 +1010,15 @@ plausibly strike — flagged as such in my report.
 - Teaching-error caps (v4, audit D2): with `_KNOWN_BRIEFS_CAP + 2` briefs
   published, the UnknownBrief error lists exactly the cap's worth of sorted
   names + `(+2 more)`; at ≤ cap, no counter suffix.
+- **Skew-line prose pins (v6, finding #96 — the prose class zero tests
+  caught):** FIRST publish with ≥1 registered-unbriefed agent — the served line
+  CONTAINS `unbriefed`, does NOT contain `v0`, and names no version other than
+  the head; MIXED fixture (agents at two distinct stored acked versions + one
+  unbriefed) — groups descending, `unbriefed` last, group counts sum to the
+  behind total; BREAKDOWN-CAP fixture (`_SKEW_BREAKDOWN_CAP + 1` distinct
+  stored versions) — exactly the cap's worth of named groups + a counted
+  `at older versions` collapse naming no version. These are byte-grammar
+  assertions on the served string, not structure checks.
 - Renders: the §10 battery (hostile fixtures per brief-base §3 — newlines +
   row-forge payload + backtick runs), `assert_actions_covered` with empty
   exemptions, exact-set pin on the six actions, param-honesty pin, every comms

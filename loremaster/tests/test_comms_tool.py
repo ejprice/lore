@@ -29,6 +29,7 @@ import-path typo. See ``REPORT-c1-contract-surface.md`` for the RED tail.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -247,6 +248,42 @@ async def _register(
 ) -> str:
     return str(
         await AppContext.comms(harness, action="register", agent=name, session=session, role=role, **kw)
+    )
+
+
+def _extract_skew_group_counts(rendered: str) -> list[int]:
+    """Every count named inside a skew line's breakdown (``N at vM``, ``N at
+    older versions``, ``N unbriefed``) — used to prove the groups SUM to the
+    line's own ``{behind}`` total (design doc §5.3's counting law, applied
+    inside one line — finding #96's fix), independent of the exact prose
+    around them. Fails loudly (not silently returns ``[]``) when no skew
+    line is present, so a caller that expected one gets a clear signal
+    rather than a vacuous empty-list pass."""
+    match = re.search(r"behind head v\d+ — (.+?); surfaces at their next heartbeat", rendered)
+    assert match, f"no skew breakdown line found in: {rendered!r}"
+    return [int(part.split(" ", 1)[0]) for part in match.group(1).split(", ")]
+
+
+def _assert_skew_group_counts_sum_to_behind(rendered: str, expected_behind: int) -> None:
+    """FIRST-CLASS invariant (design doc §5.3's counting law; §9.4: "Group
+    counts SUM to {behind}") — every rendered skew group count must add up
+    to the line's own claimed ``{behind}`` total. This is the exact
+    invariant finding #96 exists to fix, and the exact invariant a
+    per-VERSION (rather than per-AGENT) remainder count silently violates:
+    a build computing ``len(remainder_versions)`` instead of
+    ``sum(agents_per_version)`` passes every byte-exact string assertion a
+    single-agent-per-version tail can express, because ``len`` and ``sum``
+    coincide whenever the tail holds exactly one agent per version — the
+    small-N blind spot the C1 adversary's finding #96 audit proved
+    (REPORT-c1c-contract-adversary-96.md §P1). Asserted as its own named
+    function — a first-class check, not an incidental aside next to a
+    byte-exact string comparison — because the law must hold at every N,
+    not just the values a hand-written literal happens to cover."""
+    counts = _extract_skew_group_counts(rendered)
+    assert sum(counts) == expected_behind, (
+        f"SUM INVARIANT (design doc §9.4) VIOLATED: rendered group counts "
+        f"{counts} sum to {sum(counts)}, but the line claims {expected_behind} "
+        f"agents behind: {rendered!r}"
     )
 
 
@@ -930,7 +967,11 @@ class TestBriefPublishAction:
         """v2 scoping ruling: this call carries an explicit session='wave7'
         -- the skew line MUST carry the '(session wave7)' tag (the same
         defect class as test_full_coverage_variant above, on brief_publish's
-        twin surface, spec §9.4)."""
+        twin surface, spec §9.4). v6 (finding #96): both agents registered
+        before ANY brief existed, so at the v2 check they have NEVER acked
+        anything -- the byte-exact assertion below pins the full REWRITTEN
+        grammar (never-acked renders as its own 'unbriefed' word, not a
+        fabricated 'had acked v1 or older')."""
         harness = _harness()
         await _register(harness, name="fixer-b")
         await _register(harness, name="fixer-c")
@@ -942,12 +983,17 @@ class TestBriefPublishAction:
                 harness, action="brief_publish", agent="fixer-b", session="wave7", name="project", body="v2"
             )
         )
-        assert "skew (session wave7): 2" in rendered
+        assert (
+            "skew (session wave7): 2 non-retired agents behind head v2 — 2 unbriefed; "
+            "surfaces at their next heartbeat"
+        ) in rendered
+        assert _extract_skew_group_counts(rendered) == [2]
 
     async def test_skew_line_is_fleet_wide_when_session_is_omitted(self) -> None:
         """v2 scoping law, brief_publish's twin of the brief_get roster
         test: omitting session= renders the unscoped, fleet-wide skew count
-        with no '(session ...)' tag."""
+        with no '(session ...)' tag. v6: both agents are unbriefed (never
+        acked anything) -- byte-exact on the rewritten grammar."""
         harness = _harness()
         await _register(harness, name="fixer-b", session="wave7")
         await _register(harness, name="scout-c", session="wave8")
@@ -957,11 +1003,16 @@ class TestBriefPublishAction:
             )
         )
         assert "(session" not in rendered
-        assert "skew: 2" in rendered
+        assert "v0" not in rendered
+        assert (
+            "skew: 2 non-retired agents behind head v1 — 2 unbriefed; "
+            "surfaces at their next heartbeat"
+        ) in rendered
 
     async def test_skew_line_is_session_scoped_when_session_is_explicit(self) -> None:
         """Same fixed state as above, published with an explicit session=
-        -- the skew roster must be session-filtered, not fleet-wide."""
+        -- the skew roster must be session-filtered, not fleet-wide. v6:
+        byte-exact on the rewritten grammar."""
         harness = _harness()
         await _register(harness, name="fixer-b", session="wave7")
         await _register(harness, name="scout-c", session="wave8")
@@ -975,7 +1026,193 @@ class TestBriefPublishAction:
                 body="v1",
             )
         )
-        assert "skew (session wave7): 1" in rendered
+        assert (
+            "skew (session wave7): 1 non-retired agents behind head v1 — 1 unbriefed; "
+            "surfaces at their next heartbeat"
+        ) in rendered
+
+    async def test_first_publish_never_fabricates_v0(self) -> None:
+        """THE KILLER PIN for finding #96: a FIRST publish (v1) with agents
+        who registered before any brief existed must render them as their
+        OWN 'unbriefed' group -- never as having 'acked v0', a version that
+        has never existed (old code computed prior = result.brief.version -
+        1 = 1 - 1 = 0). MUST fail against today's shipped production code."""
+        harness = _harness()
+        await _register(harness, name="fixer-b", session="wave7")
+        await _register(harness, name="fixer-c", session="wave7")
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent="fixer-b",
+                session="wave7",
+                name="project",
+                body="v1 body",
+            )
+        )
+        assert "v0" not in rendered, f"fabricated a version that never existed: {rendered!r}"
+        assert "unbriefed" in rendered
+        assert (
+            "skew (session wave7): 2 non-retired agents behind head v1 — 2 unbriefed; "
+            "surfaces at their next heartbeat"
+        ) in rendered
+        assert _extract_skew_group_counts(rendered) == [2]
+
+    async def test_skew_breakdown_groups_repeated_version_then_unbriefed_last(self) -> None:
+        """Design doc §9.4's own worked example, reproduced against the real
+        stack: a repeated acked-version group ('3 at v1') plus an unbriefed
+        group, in that order, summing to the line's own behind count --
+        never a computed version-1."""
+        harness = _harness()
+        brief_ledger = harness.brief_ledger
+        for name in ("acker-1", "acker-2", "acker-3", "never-acked"):
+            await _register(harness, name=name, session="wave7")
+        await AppContext.comms(
+            harness, action="brief_publish", agent="acker-1", session="wave7", name="project", body="v1"
+        )
+        for acker in ("acker-1", "acker-2", "acker-3"):
+            await brief_ledger.ack(
+                agent_id=FakeAgentRegistry._agent_id("wave7", acker),
+                agent_name=acker,
+                name="project",
+                version=1,
+                via="explicit",
+            )
+        # v2 -- nobody acks it yet, so all four agents are behind at the check.
+        rendered = str(
+            await AppContext.comms(
+                harness, action="brief_publish", agent="acker-1", session="wave7", name="project", body="v2"
+            )
+        )
+        assert "v0" not in rendered
+        assert (
+            "skew (session wave7): 4 non-retired agents behind head v2 — 3 at v1, 1 unbriefed; "
+            "surfaces at their next heartbeat"
+        ) in rendered
+        assert _extract_skew_group_counts(rendered) == [3, 1]
+
+    async def test_skew_breakdown_multiple_distinct_stored_versions_descending(self) -> None:
+        """Three agents each acked a DIFFERENT stored version (v1, v2, v3);
+        head is v4. Groups render DESCENDING by version, and every named
+        version is a real, brief_get-able stored version -- never an
+        arithmetic version-1 the caller invented."""
+        harness = _harness()
+        brief_ledger = harness.brief_ledger
+        for name in ("acker-v1", "acker-v2", "acker-v3", "never-acked"):
+            await _register(harness, name=name, session="wave7")
+        for version, acker in ((1, "acker-v1"), (2, "acker-v2"), (3, "acker-v3")):
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent="acker-v1",
+                session="wave7",
+                name="project",
+                body=f"v{version} body",
+            )
+            await brief_ledger.ack(
+                agent_id=FakeAgentRegistry._agent_id("wave7", acker),
+                agent_name=acker,
+                name="project",
+                version=version,
+                via="explicit",
+            )
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent="acker-v1",
+                session="wave7",
+                name="project",
+                body="v4 body",
+            )
+        )
+        assert "v0" not in rendered
+        assert (
+            "skew (session wave7): 4 non-retired agents behind head v4 — "
+            "1 at v3, 1 at v2, 1 at v1, 1 unbriefed; surfaces at their next heartbeat"
+        ) in rendered
+        assert _extract_skew_group_counts(rendered) == [1, 1, 1, 1]
+
+    async def test_unbriefed_count_never_merges_into_a_version_group(self) -> None:
+        """Distinguishes 'never acked' from any acked-version count even
+        when they happen to share the same size -- guards a grouping bug
+        that folds a None acked_version into a numeric bucket (e.g. a naive
+        Counter needing a fabricated key for None)."""
+        harness = _harness()
+        brief_ledger = harness.brief_ledger
+        for name in ("acker-a", "acker-b", "never-a", "never-b"):
+            await _register(harness, name=name, session="wave7")
+        await AppContext.comms(
+            harness, action="brief_publish", agent="acker-a", session="wave7", name="project", body="v1"
+        )
+        for acker in ("acker-a", "acker-b"):
+            await brief_ledger.ack(
+                agent_id=FakeAgentRegistry._agent_id("wave7", acker),
+                agent_name=acker,
+                name="project",
+                version=1,
+                via="explicit",
+            )
+        rendered = str(
+            await AppContext.comms(
+                harness, action="brief_publish", agent="acker-a", session="wave7", name="project", body="v2"
+            )
+        )
+        assert (
+            "skew (session wave7): 4 non-retired agents behind head v2 — 2 at v1, 2 unbriefed; "
+            "surfaces at their next heartbeat"
+        ) in rendered
+        assert _extract_skew_group_counts(rendered) == [2, 2]
+
+    async def test_cap_plus_one_wiring_reaches_the_render_uncapped(self) -> None:
+        """Wiring pin: the HANDLER must hand the render helper the FULL
+        ``coverage.behind`` list (``BriefCoverage.behind`` is documented NOT
+        capped -- capping is a render-layer concern, §S3). If the handler
+        pre-truncated it (e.g. ``coverage.behind[:_SKEW_BREAKDOWN_CAP]``)
+        the render's own cap+remainder logic would never see the tail, and
+        the remainder group would silently vanish -- a defect the render-
+        unit-level cap tests alone cannot see, since they hand the render
+        helper an already-complete ``behind`` list directly."""
+        from loremaster.server import _SKEW_BREAKDOWN_CAP
+
+        cap = _SKEW_BREAKDOWN_CAP
+        harness = _harness()
+        brief_ledger = harness.brief_ledger
+        names = [f"acker-{i}" for i in range(cap + 1)]
+        for name in names:
+            await _register(harness, name=name, session="wave7")
+        for version, acker in enumerate(names, start=1):
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent=names[0],
+                session="wave7",
+                name="project",
+                body=f"v{version} body",
+            )
+            await brief_ledger.ack(
+                agent_id=FakeAgentRegistry._agent_id("wave7", acker),
+                agent_name=acker,
+                name="project",
+                version=version,
+                via="explicit",
+            )
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent=names[0],
+                session="wave7",
+                name="project",
+                body="head body",
+            )
+        )
+        assert "at older versions" in rendered, (
+            f"remainder group missing -- handler likely pre-truncated coverage.behind: {rendered!r}"
+        )
+        counts = _extract_skew_group_counts(rendered)
+        assert sum(counts) == cap + 1
+        assert len(counts) == cap + 1  # cap named groups + 1 remainder group, all counts 1 here
 
     async def test_warn_line_only_past_the_threshold(self) -> None:
         harness = _harness(brief_body_warn_chars=10)
@@ -1558,20 +1795,40 @@ class TestRenderCommsBriefGet:
 
 
 class TestRenderCommsBriefPublish:
+    """v6 (finding #96): ``skew_count: int`` is replaced by ``behind:
+    Sequence[BriefBehindEntry]`` — the render helper itself now owns the
+    grouping/descending-sort/cap logic (§9.4), so it needs the raw entries,
+    not a pre-collapsed count. Every test below calls the NEW signature —
+    they are EXPECTED RED against today's shipped code (``TypeError:
+    _render_comms_brief_publish() got an unexpected keyword argument
+    'behind'``) until the builder lands the signature change; that is the
+    intended, disclosed RED, not an accidental break of a passing test."""
+
     def test_first_version(self) -> None:
         result = BriefPublishResult(brief=_brief(version=1), first_version=True)
         rendered = AppContext._render_comms_brief_publish(
-            result, skew_count=0, body_chars=10, warn_threshold_chars=4000, session=None
+            result, behind=[], body_chars=10, warn_threshold_chars=4000, session=None
         )
         assert "first version" in rendered
         assert "skew" not in rendered
 
-    def test_skew_count_renders_only_when_positive(self) -> None:
+    def test_skew_line_renders_only_when_behind_is_nonempty(self) -> None:
         result = BriefPublishResult(brief=_brief(version=2), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
-            result, skew_count=3, body_chars=10, warn_threshold_chars=4000, session=None
+            result,
+            behind=[
+                BriefBehindEntry(agent_name="a", acked_version=1),
+                BriefBehindEntry(agent_name="b", acked_version=1),
+                BriefBehindEntry(agent_name="c", acked_version=None),
+            ],
+            body_chars=10,
+            warn_threshold_chars=4000,
+            session=None,
         )
-        assert "skew: 3" in rendered
+        assert (
+            "skew: 3 non-retired agents behind head v2 — 2 at v1, 1 unbriefed; "
+            "surfaces at their next heartbeat"
+        ) in rendered
         assert "(session" not in rendered
 
     def test_session_scoped_names_the_session(self) -> None:
@@ -1580,17 +1837,202 @@ class TestRenderCommsBriefPublish:
         session, brief_publish's twin surface."""
         result = BriefPublishResult(brief=_brief(version=2), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
-            result, skew_count=3, body_chars=10, warn_threshold_chars=4000, session="wave7"
+            result,
+            behind=[BriefBehindEntry(agent_name="a", acked_version=1)],
+            body_chars=10,
+            warn_threshold_chars=4000,
+            session="wave7",
         )
-        assert "skew (session wave7): 3" in rendered
+        assert (
+            "skew (session wave7): 1 non-retired agents behind head v2 — 1 at v1; "
+            "surfaces at their next heartbeat"
+        ) in rendered
+
+    def test_first_publish_never_names_a_fabricated_v0(self) -> None:
+        """Render-unit twin of TestBriefPublishAction.test_first_publish_
+        never_fabricates_v0 (finding #96's killer pin), isolating the render
+        function from the ledger/registry stack: a first-version publish
+        result with never-acked agents must never name v0 -- old code
+        computed prior = result.brief.version - 1 = 1 - 1 = 0."""
+        result = BriefPublishResult(brief=_brief(version=1), first_version=True)
+        rendered = AppContext._render_comms_brief_publish(
+            result,
+            behind=[
+                BriefBehindEntry(agent_name="a", acked_version=None),
+                BriefBehindEntry(agent_name="b", acked_version=None),
+            ],
+            body_chars=10,
+            warn_threshold_chars=4000,
+            session=None,
+        )
+        assert "v0" not in rendered
+        assert (
+            "skew: 2 non-retired agents behind head v1 — 2 unbriefed; "
+            "surfaces at their next heartbeat"
+        ) in rendered
+
+    def test_groups_render_descending_regardless_of_input_order(self) -> None:
+        """Hostile input: ``behind`` arrives in SCRAMBLED (non-descending)
+        order -- the render helper must sort by stored version itself,
+        never trust caller ordering (§9.4: 'stored-acked version groups,
+        DESCENDING')."""
+        result = BriefPublishResult(brief=_brief(version=5), first_version=False)
+        rendered = AppContext._render_comms_brief_publish(
+            result,
+            behind=[
+                BriefBehindEntry(agent_name="a", acked_version=1),
+                BriefBehindEntry(agent_name="b", acked_version=3),
+                BriefBehindEntry(agent_name="c", acked_version=2),
+            ],
+            body_chars=10,
+            warn_threshold_chars=4000,
+            session=None,
+        )
+        assert (
+            "skew: 3 non-retired agents behind head v5 — 1 at v3, 1 at v2, 1 at v1; "
+            "surfaces at their next heartbeat"
+        ) in rendered
+
+    def test_breakdown_cap_boundary_exact_cap_names_every_group(self) -> None:
+        """Exactly ``_SKEW_BREAKDOWN_CAP`` distinct acked versions -- every
+        group is named, no ``at older versions`` remainder appears."""
+        from loremaster.server import _SKEW_BREAKDOWN_CAP
+
+        cap = _SKEW_BREAKDOWN_CAP
+        behind = [BriefBehindEntry(agent_name=f"agent-{v}", acked_version=v) for v in range(cap, 0, -1)]
+        result = BriefPublishResult(brief=_brief(version=cap + 1), first_version=False)
+        rendered = AppContext._render_comms_brief_publish(
+            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None
+        )
+        expected_breakdown = ", ".join(f"1 at v{v}" for v in range(cap, 0, -1))
+        assert (
+            f"skew: {cap} non-retired agents behind head v{cap + 1} — {expected_breakdown}; "
+            "surfaces at their next heartbeat"
+        ) in rendered
+        assert "at older versions" not in rendered
+        assert _extract_skew_group_counts(rendered) == [1] * cap
+
+    def test_breakdown_cap_boundary_cap_plus_one_collapses_the_remainder(self) -> None:
+        """``_SKEW_BREAKDOWN_CAP + 1`` distinct acked versions -- exactly the
+        cap's worth of named groups plus ONE counted remainder group naming
+        NO version, and the groups still sum to the full behind total."""
+        from loremaster.server import _SKEW_BREAKDOWN_CAP
+
+        cap = _SKEW_BREAKDOWN_CAP
+        behind = [
+            BriefBehindEntry(agent_name=f"agent-{v}", acked_version=v) for v in range(cap + 1, 0, -1)
+        ]
+        result = BriefPublishResult(brief=_brief(version=cap + 2), first_version=False)
+        rendered = AppContext._render_comms_brief_publish(
+            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None
+        )
+        shown = ", ".join(f"1 at v{v}" for v in range(cap + 1, 1, -1))
+        assert (
+            f"skew: {cap + 1} non-retired agents behind head v{cap + 2} — {shown}, "
+            "1 at older versions; surfaces at their next heartbeat"
+        ) in rendered
+        counts = _extract_skew_group_counts(rendered)
+        assert sum(counts) == cap + 1
+        assert counts[-1] == 1  # the remainder group, collapsed, names no version
+        assert len(counts) == cap + 1  # cap named groups + 1 remainder group
+
+    def test_remainder_group_counts_agents_not_versions(self) -> None:
+        """BLOCKER (C1 adversary, finding #96 audit —
+        REPORT-c1c-contract-adversary-96.md §P1/§MISSING PINS #1): the
+        collapsed remainder group's count must be the number of AGENTS
+        behind at older versions, not the number of DISTINCT VERSIONS in
+        the tail. Both cap-boundary fixtures above (`..._exact_cap_...`,
+        `..._cap_plus_one_...`) put exactly ONE agent at ONE version in
+        the tail, so ``len(remainder_versions)`` and
+        ``sum(agents_per_version)`` are indistinguishable there — a build
+        that computes ``len()`` instead of ``sum()`` passes both of them
+        (and the whole 489-test contract) while serving a line whose
+        groups do not sum to their own claimed total. This fixture spreads
+        the tail across MULTIPLE agents at MULTIPLE versions (2 agents at
+        one older version, 3 at another — tail = 5 agents / 2 versions),
+        forcing ``len() (== 2) != sum() (== 5)`` into the open."""
+        from loremaster.server import _SKEW_BREAKDOWN_CAP
+
+        cap = _SKEW_BREAKDOWN_CAP
+        head_version = cap + 3
+        # cap named groups, one agent each, at the cap highest versions
+        # below head (head-1 .. head-cap).
+        named_versions = list(range(head_version - 1, head_version - 1 - cap, -1))
+        # two MORE, lower, versions collapse into the remainder -- 2 agents
+        # at the higher of the two, 3 at the lower (tail = 5 agents).
+        tail_versions = [head_version - 1 - cap, head_version - 2 - cap]
+        tail_counts = [2, 3]
+
+        behind: list[BriefBehindEntry] = [
+            BriefBehindEntry(agent_name=f"agent-v{v}", acked_version=v) for v in named_versions
+        ]
+        for version, count in zip(tail_versions, tail_counts, strict=True):
+            for i in range(count):
+                behind.append(BriefBehindEntry(agent_name=f"agent-v{version}-{i}", acked_version=version))
+
+        result = BriefPublishResult(brief=_brief(version=head_version), first_version=False)
+        rendered = AppContext._render_comms_brief_publish(
+            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None
+        )
+
+        tail_total = sum(tail_counts)
+        expected_behind = cap + tail_total
+        named_str = ", ".join(f"1 at v{v}" for v in named_versions)
+        assert (
+            f"skew: {expected_behind} non-retired agents behind head v{head_version} — "
+            f"{named_str}, {tail_total} at older versions; surfaces at their next heartbeat"
+        ) in rendered
+
+        counts = _extract_skew_group_counts(rendered)
+        assert counts[-1] == tail_total, (
+            f"remainder group must count AGENTS ({tail_total}), not the number of "
+            f"distinct VERSIONS in the tail ({len(tail_versions)}): got {counts!r}"
+        )
+        assert len(counts) == cap + 1  # cap named groups + 1 remainder group
+        _assert_skew_group_counts_sum_to_behind(rendered, expected_behind=expected_behind)
+
+    def test_skew_line_omitted_on_a_non_first_publish_with_zero_behind(self) -> None:
+        """MEDIUM (C1 adversary, finding #96 audit — REPORT-c1c-contract-
+        adversary-96.md §MISSING PINS #2): the omission branch
+        (``behind == 0`` -> no skew line at all, never `skew: 0 ...`) was
+        previously pinned by exactly ONE test in this class
+        (``test_first_version``), which happens to combine
+        ``first_version=True`` WITH ``behind=[]``. A mutant that gates the
+        omission on ``result.first_version`` rather than on ``behind``
+        being empty (e.g. "always render a skew line once this is not the
+        first version") is invisible to that test — it never fires for a
+        first-version call — while serving the ugly ``skew: 0 non-retired
+        agents behind head v2 — ; surfaces at their next heartbeat`` (empty
+        breakdown, dangling em-dash) on every non-first publish where
+        nobody happens to be behind. This pin isolates the two conditions:
+        ``first_version=False`` AND ``behind=[]``.
+
+        DEVIATION from the adversary's proposed framing: its report names
+        this pin "action-level" (publish scoped to a session with no
+        registered agents). That fixture is NOT reachable through the live
+        dispatch stack: design doc §0.3 makes ``session`` a single
+        universal param that BOTH resolves the ACTING agent's own row
+        (``uuid5(session, name)``, via ``AgentRegistry.touch``) AND scopes
+        the coverage/skew roster (§5.3) — a publisher can only address a
+        scope it is itself a live, non-retired member of, so the publisher
+        always appears in "non-retired agents in scope" and (§5.3/§9.4) is
+        always behind its own freshly-minted head. ``behind == 0`` is
+        therefore reachable ONLY at the render layer — which is exactly
+        where this pin lives. Flagged, not silently decided, per this
+        module's report."""
+        result = BriefPublishResult(brief=_brief(version=2), first_version=False)
+        rendered = AppContext._render_comms_brief_publish(
+            result, behind=[], body_chars=10, warn_threshold_chars=4000, session=None
+        )
+        assert "skew" not in rendered
 
     def test_warn_line_only_past_threshold(self) -> None:
         result = BriefPublishResult(brief=_brief(version=1), first_version=True)
         under = AppContext._render_comms_brief_publish(
-            result, skew_count=0, body_chars=100, warn_threshold_chars=4000, session=None
+            result, behind=[], body_chars=100, warn_threshold_chars=4000, session=None
         )
         over = AppContext._render_comms_brief_publish(
-            result, skew_count=0, body_chars=5000, warn_threshold_chars=4000, session=None
+            result, behind=[], body_chars=5000, warn_threshold_chars=4000, session=None
         )
         assert "exceeds" not in under
         assert "exceeds" in over
@@ -2009,14 +2451,33 @@ async def _render_brief_get_behind_names(value: str, _ctx: Any) -> str:
 async def _render_brief_publish_name(value: str, _ctx: Any) -> str:
     result = BriefPublishResult(brief=_brief(name=value), first_version=True)
     return AppContext._render_comms_brief_publish(
-        result, skew_count=0, body_chars=1, warn_threshold_chars=4000, session=None
+        result, behind=[], body_chars=1, warn_threshold_chars=4000, session=None
     )
 
 
 async def _render_brief_publish_publisher(value: str, _ctx: Any) -> str:
     result = BriefPublishResult(brief=_brief(created_by=value), first_version=True)
     return AppContext._render_comms_brief_publish(
-        result, skew_count=0, body_chars=1, warn_threshold_chars=4000, session=None
+        result, behind=[], body_chars=1, warn_threshold_chars=4000, session=None
+    )
+
+
+async def _render_brief_publish_session(value: str, _ctx: Any) -> str:
+    """LOW (C1 adversary, finding #96 audit — REPORT-c1c-contract-
+    adversary-96.md §MISSING PINS #3): the skew line's ``{session}`` is
+    the ONLY agent-controlled free text the v6 grammar renders, and the
+    §10 inventory previously carried no ``brief_publish.session`` case --
+    both existing brief_publish cases pass ``behind=[]``, so the skew line
+    (and its ``{session}`` slot) never rendered under the hostile battery
+    at all. ``behind`` is non-empty here so the scoped skew line actually
+    renders and the battery reaches the field."""
+    result = BriefPublishResult(brief=_brief(version=2), first_version=False)
+    return AppContext._render_comms_brief_publish(
+        result,
+        behind=[BriefBehindEntry(agent_name="a", acked_version=1)],
+        body_chars=1,
+        warn_threshold_chars=4000,
+        session=value,
     )
 
 
@@ -2107,6 +2568,7 @@ C1_RENDER_CASES: list[RenderCase] = [
     RenderCase("brief_get.behind_names", _render_brief_get_behind_names),
     RenderCase("brief_publish.name", _render_brief_publish_name),
     RenderCase("brief_publish.publisher", _render_brief_publish_publisher),
+    RenderCase("brief_publish.session", _render_brief_publish_session),
     RenderCase("brief_ack.name", _render_brief_ack_name),
     RenderCase("fleet.name", _render_fleet_name),
     RenderCase("fleet.role", _render_fleet_role),
