@@ -12,7 +12,17 @@ audited failure patterns (P7–P8d); the phase resume docs in `~/.claude/plans/`
   upstream-blocked (astroid<4.1 pin) — do not install it.
 - pydantic at every validated boundary; models stay `extra="forbid"` on the wire with
   resilient *construction seams* (`from_engine_status` pattern) — never loosen the model.
-- Full suite (~11 min) is lead-run at checkpoints only; agents run scoped tests.
+- **Run pytest with `-n auto` (pytest-xdist).** Measured 2026-07-12 on this box (64 cores):
+  mcp_server+render_seam_pins went **846s → 88s (9.6×)** with an IDENTICAL pass count (666);
+  live-store suites are stable across repeated parallel runs (178/178 × 3). Parallel is safe
+  BY CONSTRUCTION, not by luck — the harness was already built for it:
+  `_surreal_harness.unique_database()` mints `test_<pid>_<uuid4>` per test precisely so
+  "a concurrent pytest process on the SAME server never collides on, or reaps, this
+  database". Only the runner was missing.
+- Full suite is lead-run **at phase checkpoints only** — before the deploy that ships the
+  work, NOT after every fix wave. Between waves: the changed suites + the structural/AST
+  pins. The cold audit already re-runs the gates as its own independent instrument; the lead
+  re-running the same suite behind it is duplicated wall-clock, not verification.
   ⚠ A piped pytest with a bad filename exits "no tests ran" silently — a green claim
   requires a passed-COUNT in the tail.
 - Skill tests have their own idiom: `cd skills/lore-deploy/scripts && uv run python -m
@@ -88,10 +98,36 @@ them. Therefore:
 - **Every load-bearing pin is mutation-proven**: break the production code, watch the
   test go RED, restore. A pin that cannot be demonstrated failing is not a pin. Every
   time this was demanded ad hoc in C1 it immediately exposed something.
+- **FIXTURES MUST DISCRIMINATE — interrogate every one with "what WRONG build would this
+  still pass?"** This single class has now produced a blocker THREE times, on two axes:
+  1. **Small-N**: a collapsed tail holding ONE agent at ONE version makes `len()` ≡
+     `sum()`, so a build counting VERSIONS instead of AGENTS passed 489/489 + ruff + mypy
+     + the AST pins. No contract fixture had ever exceeded small-N — the same reason three
+     of C1's five defects (all of which only appear past the display cap) were never tested.
+  2. **Parameter-value MONOCULTURE**: all 37 `brief_publish` calls at the tool seam used
+     `name="project"`, so a build that self-acks ONLY when `name == 'project'` passed the
+     ENTIRE contract (832 passed, 0 failed, zero mypy delta) with the finding fully intact
+     for every other name. **If the code can branch on a value, at least one pin must use a
+     DIFFERENT value.**
+  The generalisation: a fixture that cannot distinguish the correct build from a plausible
+  wrong one is decoration. Ask what wrong build survives it — the answer is the pin you are
+  missing.
 - **The lead's brief sets the adversarial frontier — so the lead must not be the only
   imagination.** C1's contract writers found precisely what the briefs told them to look
   for, and nothing else. Delegate frontier-generation to the contract adversary rather
   than relying on the lead to enumerate it.
+- **CONTRACT AUTHORS ARE OPUS (operator, 2026-07-12).** Roster: **Opus contract authors**
+  · Sonnet builders · Opus contract-adversary · Opus cold code-audits · Fable lead + design
+  consultant. Rationale, measured: the contract is where the thinking is and where the
+  defects are born, and Sonnet contracts kept shipping the same *class* of gap — small-N
+  fixtures that cannot discriminate. Twice: (1) the #94 contract went green (561 passed,
+  exit 0) with the defect fully intact — every pin tested a new method *nothing required
+  the code to CALL*; (2) both cap-boundary fixtures in the #96 contract held ONE agent at
+  ONE version, so `len()` and `sum()` were indistinguishable and a wrong build passed
+  489/489 + ruff + mypy + the AST pins. Building to a good contract is comparatively
+  mechanical — that is where Sonnet stays. **The adversary is NOT retired by this change:**
+  an Opus author is still its own only grader, and that is the structural fault this
+  section exists to fix.
 
 ## Orchestration (multi-agent phases)
 - The lead writes no code — tests included. Ladder: ground-truth verify → TaskStop →

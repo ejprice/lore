@@ -17,6 +17,11 @@ dev = [
     "ruff",
     "pytest",
     "pytest-asyncio",
+    # Parallel test execution (`-n auto`). The live-store harness was ALREADY built for
+    # this: `_surreal_harness.unique_database()` mints `test_<pid>_<uuid4>` per test, and
+    # its own docstring says the pid prefix means "a concurrent pytest process on the SAME
+    # server never collides on, or reaps, this database". The runner was simply missing.
+    "pytest-xdist",
     "types-defusedxml",
     "types-PyYAML",
 ]
