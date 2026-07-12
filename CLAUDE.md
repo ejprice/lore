@@ -79,7 +79,10 @@ talked itself past. Only the code had an adversary. The spec, the contract, and 
 brief each had exactly one author and zero graders — and every defect was born in one of
 them. Therefore:
 
-- **Cold-audit the CONTRACT, before the builder starts.** A fresh Opus adversary reads
+- **Cold-audit the CONTRACT, before the builder starts** — invoke the reusable
+  `contract-adversary` agent (`~/.claude/agents/contract-adversary.md`, Opus; the role's
+  full spec lives there — do NOT re-transcribe it into briefs, just point at it and add the
+  project-specific landmines). A fresh Opus adversary reads
   the contract + the spec and reports what the contract does NOT test: boundary and
   SCALE cases (0, 1, cap−1, cap, cap+1 — the N>cap fixture nobody wrote), every-branch
   reachability (a branch no test reaches is dead code waiting to be discovered by an
