@@ -68,6 +68,7 @@ implements it, never redefines it:
         async known_names() -> list[str]
         async ack(*, agent_id, agent_name, name, version, via) -> BriefAckResult
         async acked_version(*, agent_id, name) -> int | None
+        async acked_versions_for_ids(agent_ids, *, name) -> dict[str, int]
         async coverage(name, *, active_agents) -> BriefCoverage
 
     Exceptions: BriefLedgerError(RuntimeError);
@@ -89,6 +90,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -236,6 +238,24 @@ class AgentRefLike(Protocol):
 
     @property
     def name(self) -> str: ...
+
+
+@dataclass(frozen=True)
+class _BareAgentRef:
+    """Minimal :class:`AgentRefLike` wrapping a bare agent id.
+
+    :meth:`BriefLedger.acked_versions_for_ids` callers (the ``fleet`` action)
+    hold only ids, no separate display name, at that call site — ``name``
+    aliases ``id`` since :meth:`BriefLedger._acked_versions_for_roster` never
+    reads it (only ``coverage``'s ``behind`` sort does, and this type never
+    reaches that path).
+    """
+
+    id: str
+
+    @property
+    def name(self) -> str:
+        return self.id
 
 
 class Brief(BaseModel):
@@ -983,6 +1003,47 @@ class BriefLedger:
             total_agents=len(roster),
             current_count=current,
             behind=behind,
+        )
+
+    async def acked_versions_for_ids(
+        self, agent_ids: Sequence[str], *, name: str
+    ) -> dict[str, int]:
+        """The max acked version of ``name`` per agent id (finding #94).
+
+        Self-contained public sibling of :meth:`_acked_versions_for_roster`:
+        that helper requires a pre-computed ``version_by_brief_id`` a caller
+        holding only bare ids (the ``fleet`` action's roster) does not
+        already have in hand, so this resolves it itself and then reuses the
+        SAME grouped-edge query — never a second, parallel grouped query.
+
+        Mirrors :meth:`_acked_versions_for_roster`'s absent-key-means-
+        unbriefed convention exactly: an id absent from the returned mapping
+        is unbriefed for ``name``. An unpublished ``name`` returns ``{}``
+        rather than raising :class:`UnknownBriefError` — this is a bulk
+        status read (the ``fleet`` action's per-row lookup), not a skew
+        computation the way :meth:`coverage` is.
+
+        Bounded query count: an empty ``agent_ids`` short-circuits before
+        any query. Otherwise exactly two — the ``name`` version lookup, then
+        one grouped ``briefed`` edge query over ``agent_ids`` — independent
+        of ``len(agent_ids)``, never one :meth:`acked_version` call per id.
+        """
+        if not agent_ids:
+            return {}
+        versions = self._as_rows(
+            await self._query(
+                f"SELECT * FROM {BRIEF_TABLE} WHERE {_COL_NAME} = ${_NAME_LOOKUP_PARAM}",
+                {_NAME_LOOKUP_PARAM: name},
+            )
+        )
+        if not versions:
+            return {}
+        version_by_brief_id = {
+            self._bare_id(row[_ID_KEY]): int(row[_COL_VERSION]) for row in versions
+        }
+        roster = [_BareAgentRef(agent_id) for agent_id in agent_ids]
+        return await self._acked_versions_for_roster(
+            roster, version_by_brief_id=version_by_brief_id
         )
 
     async def _acked_versions_for_roster(

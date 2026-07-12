@@ -705,6 +705,256 @@ class TestCoverageQueryCountIsBounded:
         )
 
 
+class TestAckedVersionsForIds:
+    """finding #94 (REPORT-c1b-contract-9495.md): pins the PUBLIC bulk method
+    the ``fleet`` action's fix needs -- ``BriefLedger.acked_versions_for_ids``
+    -- a self-contained sibling of the existing PRIVATE
+    ``_acked_versions_for_roster`` (which requires a pre-computed
+    ``version_by_brief_id`` the ``fleet`` action does not already have in
+    hand; this one takes only a brief ``name`` and a list of agent ids,
+    exactly what ``fleet`` already holds).
+
+    Pinned public API (the contract a later implementation must match)::
+
+        async def acked_versions_for_ids(
+            self, agent_ids: Sequence[str], *, name: str
+        ) -> dict[str, int]
+
+    Convention mirrors ``_acked_versions_for_roster`` exactly (see its own
+    docstring): an id ABSENT from the returned mapping is unbriefed for
+    ``name`` -- never a ``None`` value in the dict, never silently dropped in
+    a way indistinguishable from "never asked about" (the caller always
+    supplies the full ``agent_ids`` it asked about, so absence is legible).
+    An unknown ``name`` (no published version at all) returns ``{}`` --
+    nobody can be briefed on a brief that does not exist; this is a bulk
+    STATUS READ, not an error condition the way ``coverage()``'s
+    ``UnknownBriefError`` is for a caller computing a skew standing.
+
+    Runs against BOTH the real store and ``FakeBriefLedger`` (the
+    ``brief_ledger`` fixture) -- mirrors ``TestCoverageQuery``'s posture:
+    this is a correctness contract, not a store-dialect concern.
+    """
+
+    async def test_empty_agent_ids_returns_an_empty_mapping(self, brief_ledger: BriefLedger) -> None:
+        """Boundary N=0 -- issues no lookup at all, no crash on an empty roster."""
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V1, created_by=PUBLISHER_LEAD)
+        result = await brief_ledger.acked_versions_for_ids([], name=BRIEF_NAME_PROJECT)
+        assert result == {}
+
+    async def test_unknown_brief_name_returns_an_empty_mapping(self, brief_ledger: BriefLedger) -> None:
+        result = await brief_ledger.acked_versions_for_ids([AGENT_FIXER_B_ID], name="never-published")
+        assert result == {}
+
+    async def test_unbriefed_agent_is_absent_from_the_mapping(self, brief_ledger: BriefLedger) -> None:
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V1, created_by=PUBLISHER_LEAD)
+        result = await brief_ledger.acked_versions_for_ids([AGENT_FIXER_B_ID], name=BRIEF_NAME_PROJECT)
+        assert AGENT_FIXER_B_ID not in result
+
+    async def test_agent_at_head_maps_to_the_head_version(self, brief_ledger: BriefLedger) -> None:
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V1, created_by=PUBLISHER_LEAD)
+        await brief_ledger.ack(
+            agent_id=AGENT_FIXER_B_ID,
+            agent_name="fixer-b",
+            name=BRIEF_NAME_PROJECT,
+            version=1,
+            via="explicit",
+        )
+        result = await brief_ledger.acked_versions_for_ids([AGENT_FIXER_B_ID], name=BRIEF_NAME_PROJECT)
+        assert result[AGENT_FIXER_B_ID] == 1
+
+    async def test_agent_behind_head_maps_to_its_own_older_version(self, brief_ledger: BriefLedger) -> None:
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V1, created_by=PUBLISHER_LEAD)
+        await brief_ledger.ack(
+            agent_id=AGENT_SCOUT_C_ID,
+            agent_name="scout-c",
+            name=BRIEF_NAME_PROJECT,
+            version=1,
+            via="explicit",
+        )
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V2, created_by=PUBLISHER_LEAD)  # head now v2
+        result = await brief_ledger.acked_versions_for_ids([AGENT_SCOUT_C_ID], name=BRIEF_NAME_PROJECT)
+        assert result[AGENT_SCOUT_C_ID] == 1
+
+    async def test_agent_acked_at_multiple_versions_resolves_to_the_max(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V1, created_by=PUBLISHER_LEAD)
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V2, created_by=PUBLISHER_LEAD)
+        # Out-of-order: v2 acked BEFORE v1 -- a naive first/last-write-wins
+        # join would resolve to whichever edge it saw last, not the max.
+        await brief_ledger.ack(
+            agent_id=AGENT_AUDIT_D_ID,
+            agent_name="audit-d",
+            name=BRIEF_NAME_PROJECT,
+            version=2,
+            via="explicit",
+        )
+        await brief_ledger.ack(
+            agent_id=AGENT_AUDIT_D_ID,
+            agent_name="audit-d",
+            name=BRIEF_NAME_PROJECT,
+            version=1,
+            via="explicit",
+        )
+        result = await brief_ledger.acked_versions_for_ids([AGENT_AUDIT_D_ID], name=BRIEF_NAME_PROJECT)
+        assert result[AGENT_AUDIT_D_ID] == 2
+
+    async def test_mixed_roster_isolates_unbriefed_behind_and_current_together(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        """Scale N=3 with all three outcomes side by side in ONE call, so a
+        join that silently drops or conflates one id is caught."""
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V1, created_by=PUBLISHER_LEAD)
+        await brief_ledger.ack(
+            agent_id=AGENT_FIXER_B_ID,
+            agent_name="fixer-b",
+            name=BRIEF_NAME_PROJECT,
+            version=1,
+            via="explicit",
+        )
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V2, created_by=PUBLISHER_LEAD)  # head now v2
+        await brief_ledger.ack(
+            agent_id=AGENT_SCOUT_C_ID,
+            agent_name="scout-c",
+            name=BRIEF_NAME_PROJECT,
+            version=2,
+            via="explicit",
+        )
+        result = await brief_ledger.acked_versions_for_ids(
+            [AGENT_FIXER_B_ID, AGENT_SCOUT_C_ID, AGENT_AUDIT_D_ID], name=BRIEF_NAME_PROJECT
+        )
+        assert result == {AGENT_FIXER_B_ID: 1, AGENT_SCOUT_C_ID: 2}
+        assert AGENT_AUDIT_D_ID not in result
+
+    async def test_edge_to_a_different_brief_name_is_filtered_out(self, brief_ledger: BriefLedger) -> None:
+        """An agent briefed on ``BRIEF_NAME_BASE``, never on
+        ``BRIEF_NAME_PROJECT``, must not leak into a ``BRIEF_NAME_PROJECT``
+        lookup -- the join must filter edges by the brief's OWN name, not
+        merely by agent id (exercises the ``continue`` guard a naive
+        rewrite could drop)."""
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V1, created_by=PUBLISHER_LEAD)
+        await brief_ledger.publish(BRIEF_NAME_BASE, BODY_V1, created_by=PUBLISHER_LEAD)
+        await brief_ledger.ack(
+            agent_id=AGENT_FIXER_B_ID,
+            agent_name="fixer-b",
+            name=BRIEF_NAME_BASE,
+            version=1,
+            via="explicit",
+        )
+        result = await brief_ledger.acked_versions_for_ids([AGENT_FIXER_B_ID], name=BRIEF_NAME_PROJECT)
+        assert AGENT_FIXER_B_ID not in result
+
+
+class TestAckedVersionsForIdsQueryCountIsBounded:
+    """finding #94 (REPORT-c1b-contract-9495.md): ``_comms_fleet``'s per-row
+    ``acked_version()`` loop -- measured 407 store round-trips / 234 ms at
+    limit=200 -- is BOUNDED by the display cap (never grows past the
+    display limit no matter the roster size), unlike ``coverage()``'s
+    pre-fix N+1 which was genuinely unbounded. Not a correctness defect --
+    every served number stays true -- but a scaling defect with a fix that
+    is nearly free once ``_acked_versions_for_roster`` exists:
+    ``acked_versions_for_ids`` is its public, self-contained sibling.
+
+    Real-only: ``FakeBriefLedger`` has no ``_query`` seam to instrument (see
+    ``TestCoverageQueryCountIsBounded``'s docstring for the same limit).
+
+    Expected production fix: ``acked_versions_for_ids`` issues exactly ONE
+    query for ``name``'s version rows + ONE grouped ``briefed`` edge query
+    over the ids passed in -- total query count independent of
+    ``len(agent_ids)`` (a small constant, e.g. 2), never one
+    ``acked_version()`` call per id.
+
+    Correctness invariant for the implementer: ``TestAckedVersionsForIds``
+    above already pins the exact result shape (unbriefed/behind/at-head/
+    multi-version-max, cross-brief filtering) against a real store -- the
+    fix must keep those tests green unchanged; this class adds NO new
+    correctness assertion, only a query-COUNT bound.
+    """
+
+    @staticmethod
+    async def _query_count(agent_count: int) -> int:
+        """Publish v1, ack ``agent_count`` distinct agents at head, then call
+        ``acked_versions_for_ids`` with the ``_query`` seam instrumented --
+        returns the number of ``_query`` calls that ONE call issued. Mirrors
+        ``TestCoverageQueryCountIsBounded._coverage_query_count``'s
+        capture-then-wrap idiom exactly.
+        """
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        setup_connection = await connect_admin(env)
+        await setup_connection.close()
+        ledger = BriefLedger(
+            url=env.url,
+            namespace=env.namespace,
+            database=env.database,
+            user=env.user,
+            password=env.password,
+        )
+        try:
+            await ledger.ensure_ready()
+            await ledger.publish(BRIEF_NAME_PROJECT, BODY_V1, created_by=PUBLISHER_LEAD)
+            agent_ids = [f"agent-{index:03d}-id" for index in range(agent_count)]
+            for agent_id in agent_ids:
+                await ledger.ack(
+                    agent_id=agent_id,
+                    agent_name=agent_id,
+                    name=BRIEF_NAME_PROJECT,
+                    version=1,
+                    via="explicit",
+                )
+
+            call_count = 0
+            original_query = ledger._query
+
+            async def _counting_query(statement: str, params: dict[str, Any] | None = None) -> Any:
+                nonlocal call_count
+                call_count += 1
+                return await original_query(statement, params)
+
+            ledger._query = _counting_query  # type: ignore[method-assign]
+            await ledger.acked_versions_for_ids(agent_ids, name=BRIEF_NAME_PROJECT)
+            return call_count
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_empty_agent_ids_issues_no_queries(self) -> None:
+        """Boundary N=0 -- an empty roster short-circuits before any query."""
+        assert await self._query_count(0) == 0
+
+    async def test_query_count_does_not_grow_with_displayed_row_count(self) -> None:
+        small_n_count = await self._query_count(5)
+        large_n_count = await self._query_count(50)
+        assert large_n_count == small_n_count, (
+            f"acked_versions_for_ids issued {small_n_count} store queries at "
+            f"N=5 but {large_n_count} at N=50 -- expected a query count "
+            f"independent of the number of displayed rows (one grouped "
+            f"edge query, not one per row)"
+        )
+        assert large_n_count > 0, (
+            "N=50 with every agent acked must still issue the versions + "
+            "grouped-edge queries -- a count of 0 would mean the method is "
+            "short-circuiting incorrectly, not scaling correctly"
+        )
+
+    async def test_query_count_does_not_grow_above_the_display_cap(self) -> None:
+        """adversary P2 finding #4 (REPORT-c1-audit-adversary.md): the
+        sibling test above never crosses ``_MAX_FLEET_LIMIT`` (200,
+        ``server.py``) -- the exact scale finding #94 was MEASURED at (407
+        round-trips at limit=200). 205 is hardcoded rather than imported
+        from ``loremaster.server`` to keep this file independently
+        collectible (mirrors this file's own decoupling stance -- see the
+        module docstring).
+        """
+        above_cap_count = await self._query_count(205)
+        small_n_count = await self._query_count(5)
+        assert above_cap_count == small_n_count, (
+            f"acked_versions_for_ids issued {small_n_count} store queries at "
+            f"N=5 but {above_cap_count} at N=205 (one past _MAX_FLEET_LIMIT) "
+            f"-- expected a query count independent of scale, even above the "
+            f"display cap"
+        )
+
+
 class TestHostileBodyRoundTripsVerbatim:
     """Storage models are RAW ``str`` — sanitisation is render-time line
     policy, never storage mutation (spec §5.2). A hostile body (newlines + a

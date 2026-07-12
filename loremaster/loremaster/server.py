@@ -4443,7 +4443,7 @@ class AppContext:
         roster = ", ".join(shown) if shown else "none"
         if remainder > 0:
             roster = f"{roster} (+{remainder} more)"
-        return _UnknownAgentError(f"{error}; active agents: {roster}")
+        return _UnknownAgentError(f"{error}; non-retired agents: {roster}")
 
     # -- lore_comms per-action handlers --------------------------------------
 
@@ -4588,14 +4588,20 @@ class AppContext:
         except _UnknownBriefError:
             project_head_version = None
         now = datetime.now(UTC)
+        heartbeat_age_seconds = {
+            row.id: int((now - row.heartbeat_at).total_seconds()) for row in window.rows
+        }
+        # ONE grouped edge lookup for the whole displayed window (finding
+        # #94) — never a per-row ``acked_version`` round-trip. ``.get(row.id)``
+        # defaulting to ``None`` is load-bearing: an agent absent from the
+        # mapping is unbriefed, and must still render (never silently drop
+        # out of the fleet the way a naive inner-join would).
         acked_versions: dict[str, int | None] = {}
-        heartbeat_age_seconds: dict[str, int] = {}
-        for row in window.rows:
-            heartbeat_age_seconds[row.id] = int((now - row.heartbeat_at).total_seconds())
-            if project_head_version is not None:
-                acked_versions[row.id] = await self.brief_ledger.acked_version(
-                    agent_id=row.id, name=BRIEF_NAME_PROJECT
-                )
+        if project_head_version is not None:
+            acked_by_id = await self.brief_ledger.acked_versions_for_ids(
+                [row.id for row in window.rows], name=BRIEF_NAME_PROJECT
+            )
+            acked_versions = {row.id: acked_by_id.get(row.id) for row in window.rows}
         return AppContext._render_comms_fleet(
             window,
             session=session,

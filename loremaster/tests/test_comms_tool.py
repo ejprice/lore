@@ -584,10 +584,17 @@ class TestCommsDispatchUniformHeartbeatTouch:
                 harness, action="heartbeat", agent="fixer-b", session="wave7", status="idle"
             )
 
-    async def test_unknown_agent_error_is_enriched_with_a_capped_active_roster(self) -> None:
-        """S2's ledger-level UnknownAgentError deliberately carries no active
+    async def test_unknown_agent_error_is_enriched_with_a_capped_non_retired_roster(self) -> None:
+        """S2's ledger-level UnknownAgentError deliberately carries no
         roster (contract decision #4, REPORT-c1-contract-ledgers.md) -- the
-        SERVER enriches it. Pin the enrichment, capped/counted."""
+        SERVER enriches it. Pin the enrichment, capped/counted.
+
+        finding #95 (REPORT-c1b-contract-9495.md): the label is
+        ``non-retired agents:`` -- not ``active agents:`` -- because the set
+        it lists/counts is the whole non-retired partition (active + idle +
+        input_required), matching the vocabulary the rest of the comms
+        surface already uses for this same set (``coverage: all N
+        non-retired agents at v5``; ``skew: N non-retired agents…``)."""
         db = FakeAgentDatabase()
         harness = _harness(agent_registry=FakeAgentRegistry(db=db))
         names = [f"agent-{i}" for i in range(_COVERAGE_NAMES_CAP + 2)]
@@ -596,8 +603,122 @@ class TestCommsDispatchUniformHeartbeatTouch:
         with pytest.raises(UnknownAgentError) as exc_info:
             await AppContext.comms(harness, action="fleet", agent="ghost", session="wave7")
         message = str(exc_info.value)
-        assert "active agents:" in message
+        assert "non-retired agents:" in message
         assert f"(+{len(names) - _COVERAGE_NAMES_CAP} more)" in message
+
+    async def test_enrichment_label_agrees_with_the_set_it_lists_and_counts(self) -> None:
+        """finding #95: register one of EACH non-retired status (active,
+        idle, input_required) plus one retired -- all three non-retired
+        names must appear in the roster and be counted; the retired agent
+        must be excluded from both the list and the count (the label-vs-set
+        agreement this class of defect breaks)."""
+        db = FakeAgentDatabase()
+        harness = _harness(agent_registry=FakeAgentRegistry(db=db))
+        await AppContext.comms(harness, action="register", agent="actor", session="wave7", role="builder")
+        await AppContext.comms(harness, action="register", agent="idler", session="wave7", role="builder")
+        await AppContext.comms(
+            harness, action="heartbeat", agent="idler", session="wave7", status="idle"
+        )
+        await AppContext.comms(harness, action="register", agent="parked", session="wave7", role="builder")
+        await AppContext.comms(
+            harness, action="heartbeat", agent="parked", session="wave7", status="input_required"
+        )
+        await AppContext.comms(harness, action="register", agent="retiree", session="wave7", role="builder")
+        await AppContext.comms(
+            harness, action="heartbeat", agent="retiree", session="wave7", status="retired"
+        )
+
+        with pytest.raises(UnknownAgentError) as exc_info:
+            await AppContext.comms(harness, action="fleet", agent="ghost", session="wave7")
+        message = str(exc_info.value)
+        assert "non-retired agents:" in message
+        for name in ("actor", "idler", "parked"):
+            assert name in message, f"{name!r} is non-retired and must appear in the roster: {message!r}"
+        assert "retiree" not in message, f"a RETIRED agent must not appear in the roster: {message!r}"
+        # Only 3 non-retired agents, well under the cap -- the count agrees
+        # with the list (no elision suffix at all).
+        assert "(+" not in message, message
+
+    async def test_enrichment_roster_is_session_scoped_no_cross_session_leak(self) -> None:
+        """adversary P2 finding #2 (REPORT-c1-audit-adversary.md): mutating
+        away ``_comms_enrich_unknown_agent``'s session filter left 643 tests
+        green while leaking OTHER sessions' agent names into a
+        session-scoped caller's teaching roster -- nothing pinned this
+        before. A ``wave7``-scoped caller must see ONLY ``wave7`` names."""
+        db = FakeAgentDatabase()
+        harness = _harness(agent_registry=FakeAgentRegistry(db=db))
+        await AppContext.comms(harness, action="register", agent="mine", session="wave7", role="builder")
+        await AppContext.comms(
+            harness, action="register", agent="secret-a", session="secret", role="builder"
+        )
+        await AppContext.comms(
+            harness, action="register", agent="secret-b", session="secret", role="builder"
+        )
+
+        with pytest.raises(UnknownAgentError) as exc_info:
+            await AppContext.comms(harness, action="fleet", agent="ghost", session="wave7")
+        message = str(exc_info.value)
+        assert "mine" in message
+        assert "secret-a" not in message and "secret-b" not in message, (
+            f"cross-session leak: a wave7-scoped caller must never see another "
+            f"session's agent names in its teaching roster: {message!r}"
+        )
+
+    async def test_enrichment_with_no_agents_registered_renders_none(self) -> None:
+        """adversary P2 finding #3: the empty-roster branch renders
+        ``non-retired agents: none`` -- untested before, and the LIKELIEST
+        real-world trigger of this whole enrichment path (an agent's very
+        first comms call in a brand-new session, before anyone has
+        registered)."""
+        harness = _harness()
+        with pytest.raises(UnknownAgentError) as exc_info:
+            await AppContext.comms(harness, action="fleet", agent="ghost", session="wave7")
+        message = str(exc_info.value)
+        assert "non-retired agents: none" in message
+
+    async def test_label_and_count_agree_at_scale_with_mixed_statuses_above_the_cap(self) -> None:
+        """adversary P2 finding #5: the label/set agreement pin above is
+        only N=4 -- this proves it holds ABOVE ``_MAX_FLEET_LIMIT`` (200)
+        with a genuine mix of every status, including retired, mirroring
+        the scale where 3 of C1's 5 confirmed defects actually lived.
+        Uses the registry directly (mirrors the sibling D1 scale test
+        below) -- 220 individual ``AppContext.comms`` round trips would be
+        needlessly slow for a fixture this size."""
+        db = FakeAgentDatabase()
+        harness = _harness(agent_registry=FakeAgentRegistry(db=db))
+        active_count, idle_count, parked_count, retired_count = 150, 45, 15, 10
+        for i in range(active_count):
+            await harness.agent_registry.register(f"active-{i:03d}", session="wave7", role="builder")
+        for i in range(idle_count):
+            name = f"idle-{i:03d}"
+            await harness.agent_registry.register(name, session="wave7", role="builder")
+            await harness.agent_registry.touch(name, session="wave7", status="idle")
+        for i in range(parked_count):
+            name = f"parked-{i:03d}"
+            await harness.agent_registry.register(name, session="wave7", role="builder")
+            await harness.agent_registry.touch(name, session="wave7", status="input_required")
+        for i in range(retired_count):
+            name = f"retired-{i:03d}"
+            await harness.agent_registry.register(name, session="wave7", role="builder")
+            await harness.agent_registry.touch(name, session="wave7", status="retired")
+
+        total_non_retired = active_count + idle_count + parked_count
+        assert total_non_retired > _MAX_FLEET_LIMIT, "sanity: fixture must genuinely cross the cap"
+
+        with pytest.raises(UnknownAgentError) as exc_info:
+            await AppContext.comms(harness, action="fleet", agent="ghost", session="wave7")
+        message = str(exc_info.value)
+        assert "non-retired agents:" in message
+        true_remainder = total_non_retired - _COVERAGE_NAMES_CAP
+        assert f"(+{true_remainder} more)" in message, (
+            f"expected the TRUE non-retired total ({total_non_retired}) minus "
+            f"the {_COVERAGE_NAMES_CAP}-name cap, computed over EVERY "
+            f"non-retired status (active+idle+input_required) -- not just "
+            f"'active' rows, and never re-derived from a display-capped "
+            f"window: {message!r}"
+        )
+        for i in range(retired_count):
+            assert f"retired-{i:03d}" not in message, "a retired agent leaked into the roster"
 
     async def test_unknown_agent_error_remainder_is_the_true_total_not_the_capped_fleet_window(
         self,
@@ -942,6 +1063,163 @@ class TestFleetAction:
         assert "fixer-b" in rendered
         assert "scout-c" in rendered
         assert "2 agents" in rendered
+
+
+class TestFleetActionBriefCellRendering:
+    """finding #94 (REPORT-c1b-contract-9495.md): a CORRECTNESS regression
+    guard for the upcoming grouped-join rewrite of the fleet action's
+    per-row acked-version lookup (today's per-row ``acked_version()`` loop
+    is already correct, just slow -- these assertions are GREEN today and
+    must STAY green after the fix). Pinned through the RENDERED fleet
+    output -- what an agent actually reads -- not the ledger method in
+    isolation (test_brief_ledger.py's ``TestAckedVersionsForIds`` pins that
+    separately): an unbriefed agent must still render ``brief unbriefed``
+    and MUST NOT vanish from the listing; an agent behind head renders
+    ``brief vX (head vY)``; an agent at head renders ``brief vY``; an agent
+    acked at MULTIPLE versions (out of order) resolves to the MAX.
+    """
+
+    async def test_unbriefed_behind_at_head_and_out_of_order_multi_ack_all_render_correctly(
+        self,
+    ) -> None:
+        brief_ledger = FakeBriefLedger(db=FakeBriefDatabase())
+        harness = _harness(brief_ledger=brief_ledger)
+
+        # All four bootstrap BEFORE any 'project' brief exists -- register's
+        # own auto-ack-on-existing-brief side effect (TestRegisterAction)
+        # deliberately never fires here, so every ack below is explicit and
+        # under this test's control.
+        await _register(harness, name="ghost", session="wave7")
+        await _register(harness, name="behind", session="wave7")
+        await _register(harness, name="athead", session="wave7")
+        await _register(harness, name="multiack", session="wave7")
+
+        await brief_ledger.publish("project", "v1 body", created_by="lead")
+        await AppContext.comms(
+            harness, action="brief_ack", agent="behind", session="wave7", name="project", version=1
+        )
+        await AppContext.comms(
+            harness, action="brief_ack", agent="multiack", session="wave7", name="project", version=1
+        )
+        await brief_ledger.publish("project", "v2 body", created_by="lead")  # head now v2
+        await AppContext.comms(
+            harness, action="brief_ack", agent="athead", session="wave7", name="project", version=2
+        )
+        # multiack acks v2 AFTER already having acked v1 -- out-of-order --
+        # must resolve to the MAX (v2), not the first- or last-written edge.
+        await AppContext.comms(
+            harness, action="brief_ack", agent="multiack", session="wave7", name="project", version=2
+        )
+
+        rendered = str(
+            await AppContext.comms(harness, action="fleet", agent="ghost", session="wave7", limit=10)
+        )
+        row_by_name = {
+            line.split(" [")[0].removeprefix("- "): line
+            for line in rendered.splitlines()
+            if line.startswith("- ")
+        }
+        assert set(row_by_name) == {"ghost", "behind", "athead", "multiack"}, (
+            "every registered agent must still be listed -- an unbriefed agent "
+            f"must not vanish from the fleet: {rendered!r}"
+        )
+        assert "brief unbriefed" in row_by_name["ghost"], row_by_name["ghost"]
+        assert "brief v1 (head v2)" in row_by_name["behind"], row_by_name["behind"]
+        assert "brief v2" in row_by_name["athead"] and "(head" not in row_by_name["athead"], (
+            row_by_name["athead"]
+        )
+        assert "brief v2" in row_by_name["multiack"] and "(head" not in row_by_name["multiack"], (
+            f"multiack acked v1 then v2 out of order -- must resolve to the MAX "
+            f"(v2), not the first/last-written edge: {row_by_name['multiack']!r}"
+        )
+
+
+class TestFleetActionQueryCountIsBounded:
+    """finding #94, adversary BLOCKER (REPORT-c1-audit-adversary.md §P2): the
+    prior contract pinned ``BriefLedger.acked_versions_for_ids`` in
+    isolation, but NOTHING required the ``fleet`` ACTION to actually call
+    it. The adversary shipped a perfect bulk method, left ``_comms_fleet``'s
+    per-row loop untouched, and got the whole suite green -- finding #94
+    would survive its own fix. This pins the ACTION itself.
+
+    The counter wraps EVERY acked-status lookup the ledger exposes (today's
+    per-row ``acked_version``, and ``acked_versions_for_ids`` a fix
+    introduces) so the instrumentation stays valid across the exact rewrite
+    finding #94 asks for -- it is not tied to one method name, and would
+    equally catch a fix that calls the bulk method once per row (a
+    different way to fail the same invariant).
+    """
+
+    @staticmethod
+    def _install_call_counter(brief_ledger: FakeBriefLedger) -> list[int]:
+        count = [0]
+        original_acked_version = brief_ledger.acked_version
+
+        async def _counting_acked_version(*, agent_id: str, name: str) -> int | None:
+            count[0] += 1
+            return await original_acked_version(agent_id=agent_id, name=name)
+
+        brief_ledger.acked_version = _counting_acked_version  # type: ignore[method-assign]
+
+        bulk_method = getattr(brief_ledger, "acked_versions_for_ids", None)
+        if bulk_method is not None:
+
+            async def _counting_bulk(agent_ids: Any, *, name: str) -> dict[str, int]:
+                count[0] += 1
+                return cast(dict[str, int], await bulk_method(agent_ids, name=name))
+
+            brief_ledger.acked_versions_for_ids = _counting_bulk  # type: ignore[method-assign]
+
+        return count
+
+    async def _fleet_acked_lookup_count(self, *, agent_count: int, limit: int) -> int:
+        """Register+ack ``agent_count`` agents at head, then call the
+        ``fleet`` action at ``limit`` with the counter installed AFTER
+        setup so only the ``fleet`` call itself is measured."""
+        brief_ledger = FakeBriefLedger(db=FakeBriefDatabase())
+        harness = _harness(brief_ledger=brief_ledger, fleet_limit=limit)
+        for index in range(agent_count):
+            await _register(harness, name=f"agent-{index:03d}", session="wave7")
+        await brief_ledger.publish("project", "v1 body", created_by="lead")
+        for index in range(agent_count):
+            await AppContext.comms(
+                harness,
+                action="brief_ack",
+                agent=f"agent-{index:03d}",
+                session="wave7",
+                name="project",
+                version=1,
+            )
+        count = self._install_call_counter(brief_ledger)
+        await AppContext.comms(
+            harness, action="fleet", agent="agent-000", session="wave7", limit=limit
+        )
+        return count[0]
+
+    async def test_lookup_count_does_not_grow_with_displayed_row_count(self) -> None:
+        small_n_count = await self._fleet_acked_lookup_count(agent_count=5, limit=5)
+        large_n_count = await self._fleet_acked_lookup_count(agent_count=50, limit=50)
+        assert large_n_count == small_n_count, (
+            f"the fleet action issued {small_n_count} acked-status lookups at "
+            f"N=5 but {large_n_count} at N=50 -- expected a lookup count "
+            f"independent of the number of DISPLAYED rows (one bulk call, "
+            f"not one per row)"
+        )
+
+    async def test_lookup_count_does_not_grow_above_the_display_cap(self) -> None:
+        """adversary P2 finding #4: the defect was MEASURED at limit=200
+        (``_MAX_FLEET_LIMIT``) -- 407 round-trips at that exact scale. The
+        sibling test above never crosses the cap; this fixture does."""
+        above_cap_count = await self._fleet_acked_lookup_count(
+            agent_count=_MAX_FLEET_LIMIT + 5, limit=_MAX_FLEET_LIMIT
+        )
+        small_n_count = await self._fleet_acked_lookup_count(agent_count=5, limit=5)
+        assert above_cap_count == small_n_count, (
+            f"the fleet action issued {small_n_count} acked-status lookups at "
+            f"N=5 but {above_cap_count} at N={_MAX_FLEET_LIMIT + 5}/"
+            f"limit={_MAX_FLEET_LIMIT} -- expected a lookup count independent "
+            f"of scale, even above the display cap"
+        )
 
 
 # =========================================================================== #

@@ -589,3 +589,38 @@ class FakeBriefLedger:
             current_count=current,
             behind=behind,
         )
+
+    async def acked_versions_for_ids(self, agent_ids: Sequence[str], *, name: str) -> dict[str, int]:
+        """The bulk, self-contained sibling of :meth:`acked_version` (finding
+        #94, REPORT-c1b-contract-9495.md): the ``fleet`` action's fix for a
+        per-row ``acked_version()`` loop -- measured 407 store round-trips at
+        limit=200. An INDEPENDENT implementation (iterates ``self.db.edges``
+        directly, exactly like :meth:`acked_version`/:meth:`coverage` above),
+        never a shortcut delegating to production's private
+        ``_acked_versions_for_roster`` -- the fake stays able to fail.
+
+        Returns a mapping keyed by acked agent ids ONLY: an id ABSENT is
+        unbriefed for ``name`` (mirrors production's
+        ``_acked_versions_for_roster`` convention exactly); an id acked at
+        multiple versions maps to the MAX. An unknown ``name`` or an empty
+        ``agent_ids`` returns ``{}`` -- not an error for a bulk status read.
+        """
+        await asyncio.sleep(0)
+        if not agent_ids:
+            return {}
+        versions = self._versions_of(name)
+        if not versions:
+            return {}
+        version_by_brief_id = {brief.id: brief.version for brief in versions}
+        wanted_ids = set(agent_ids)
+        result: dict[str, int] = {}
+        for edge_agent_id, brief_id in self.db.edges:
+            if edge_agent_id not in wanted_ids:
+                continue
+            brief_version = version_by_brief_id.get(brief_id)
+            if brief_version is None:
+                continue  # a briefed edge to a DIFFERENT brief name -- irrelevant here
+            current_max = result.get(edge_agent_id)
+            if current_max is None or brief_version > current_max:
+                result[edge_agent_id] = brief_version
+        return result
