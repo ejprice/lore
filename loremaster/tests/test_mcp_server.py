@@ -1025,11 +1025,13 @@ _BARE_TOOL_NAMES = {
 }
 _EXPECTED_TOOLS = {f"{_TOOL_PREFIX}{name}" for name in _BARE_TOOL_NAMES}
 # The COMPLETE built-in surface = the prefixed cores above PLUS the two task-ledger
-# tools (pinned separately below because they predate the bare-name cutover). This
-# is the EXACT set the flip freezes — the surface-equality pin fails if a tool is
-# silently ADDED as well as if one is removed. Later waves update this set
-# deliberately as the surface consolidates.
-_ALL_BUILTIN_TOOL_NAMES = _EXPECTED_TOOLS | {"lore_claim_task", "lore_tasks"}
+# tools (pinned separately below because they predate the bare-name cutover) PLUS
+# PKT-28 C1's new agent-comms dispatch tool. This is the EXACT set the flip
+# freezes — the surface-equality pin fails if a tool is silently ADDED as well as
+# if one is removed. Later waves update this set deliberately as the surface
+# consolidates. (PKT-28 C1: 14 -> 15, adds "lore_comms" — see test_comms_tool.py
+# for its own dispatch-table/render/registration contract.)
+_ALL_BUILTIN_TOOL_NAMES = _EXPECTED_TOOLS | {"lore_claim_task", "lore_tasks", "lore_comms"}
 
 
 class TestToolRegistration:
@@ -1176,7 +1178,11 @@ _READ_ONLY_TOOLS = {
 # capability exactly like ``lore_findings``/``lore_tasks``, even though a
 # no-arg call never mutates anything (mcp-builder: a tool that CAN write is
 # not read-only merely because one call shape happens not to).
-_MUTATING_TOOLS = {"lore_remember", "lore_index", "lore_findings"}
+# PKT-28 C1: ``lore_comms`` joins this set (register/brief_publish/brief_ack
+# mutate the durable agent/brief ledgers) — this is also what actually WIRES
+# UP annotation-level test coverage for the tool (see test_comms_tool.py's
+# own ``_COMMS_TOOL_ANNOTATIONS`` pin for the production-side annotation).
+_MUTATING_TOOLS = {"lore_remember", "lore_index", "lore_findings", "lore_comms"}
 
 # Tools that take NO consumer-facing parameters (so there are no per-field
 # descriptions to assert). Empty today: ``lore_index_status`` was the last

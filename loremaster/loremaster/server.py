@@ -47,7 +47,8 @@ import logging
 import math
 import os
 import re
-from collections.abc import Awaitable, Callable, Iterable, MutableMapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, cast
@@ -65,6 +66,10 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from loremaster.agents import AGENT_NAME_PATTERN
+from loremaster.agents import UnknownAgentError as _UnknownAgentError
+from loremaster.briefs import BRIEF_NAME_PROJECT
+from loremaster.briefs import UnknownBriefError as _UnknownBriefError
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, load_config
 from loremaster.diff import SnapshotNotFoundError
 from loremaster.extension import (
@@ -118,6 +123,7 @@ from loremaster.memory.backend import (
     MemorySource,
     TrustLevel,
 )
+from loremaster.render import render_compose, render_fenced, render_join, render_line
 from loremaster.sanitise import safe_str, sanitise_line
 from loremaster.search import (
     _ABSENCE_VERDICT_MARKER,
@@ -146,6 +152,15 @@ from loremaster.tasks import TaskSpec as _TaskSpec
 if TYPE_CHECKING:
     from loresigil.base import Embedder
 
+    from loremaster.agents import Agent, AgentFleetWindow, AgentRegistry
+    from loremaster.briefs import (
+        Brief,
+        BriefAckResult,
+        BriefBehindEntry,
+        BriefCoverage,
+        BriefLedger,
+        BriefPublishResult,
+    )
     from loremaster.calibration.engine import CalibrationEngine
     from loremaster.diff import DiffEngine, SnapshotSummary
     from loremaster.findings import ChainHead, Finding, FindingActivityWindow, FindingLedger
@@ -158,6 +173,8 @@ if TYPE_CHECKING:
         MemoryBackend,
         RecalledMemory,
     )
+    from loremaster.render import Rendered
+    from loremaster.sanitise import SafeLine
     from loremaster.search import SearchPipeline
     from loremaster.store.surreal import SurrealStore
     from loremaster.store_read import StoreReadTool
@@ -1076,6 +1093,49 @@ _BATCH_ITEMS_MAX = 50
 # always be told apart from a real task id.
 _TASK_ID_SHAPE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
+# The ``lore_comms`` actions (PKT-28 C1, design doc §SCOPE/§8) — exactly six
+# in C1; send/drain/ack/await/story are C2/C3 growth points (design doc
+# §FORWARD-COMPAT) that widen ``_COMMS_ACTIONS`` deliberately in a later phase.
+_COMMS_ACTION_REGISTER = "register"
+_COMMS_ACTION_HEARTBEAT = "heartbeat"
+_COMMS_ACTION_BRIEF_GET = "brief_get"
+_COMMS_ACTION_BRIEF_PUBLISH = "brief_publish"
+_COMMS_ACTION_BRIEF_ACK = "brief_ack"
+_COMMS_ACTION_FLEET = "fleet"
+
+# design doc §4: render list caps inside teaching/coverage lines (§5.3, §7) —
+# the capped+counted active-agent roster an enriched ``UnknownAgentError``
+# names, and the behind-agent list ``brief_get``'s coverage line names. Stays
+# a module constant (not config): it bounds a TEACHING line's length, not an
+# operator-tunable render preference.
+_COVERAGE_NAMES_CAP = 5
+# design doc §4: the enforceable clamp behind ``fleet``'s ``limit=`` re-ask —
+# a counted elision's re-ask value is always honest AND clamped to this
+# ceiling (DESIGN-LAW §1.2), never an unbounded "ask for everything".
+_MAX_FLEET_LIMIT = 200
+
+# design doc §6: fleet row ordering — parked (``input_required``) agents
+# first (the actionable signal), then active, then idle; ties break by
+# most-recent heartbeat. Mirrors ``loremaster.agents``'s private
+# ``_STATUS_SORT_ORDER`` (not imported — the render layer re-derives its OWN
+# copy, exactly as the ledger's own render-adjacent constants are never
+# shared across the store/render boundary elsewhere in this file).
+_COMMS_FLEET_STATUS_ORDER: dict[str, int] = {
+    "input_required": 0,
+    "active": 1,
+    "idle": 2,
+}
+
+# design doc §9's ``_render_age`` unit-boundary pins: <120s -> s, <120m -> m,
+# <48h -> h, else d (largest fit, one unit, no padding) — named so the
+# boundaries aren't bare literals in a comparison (ruff PLR2004).
+_COMMS_AGE_SECONDS_CEILING = 120
+_COMMS_AGE_MINUTES_CEILING = 120
+_COMMS_AGE_HOURS_CEILING = 48
+_SECONDS_PER_MINUTE = 60
+_SECONDS_PER_HOUR = 3600
+_SECONDS_PER_DAY = 86400
+
 
 class TaskSpecItem(BaseModel):
     """One wire-level ``create_many`` batch item (PKT-06 §2, mcp-builder boundary).
@@ -1301,7 +1361,11 @@ _INSTRUCTIONS = (
     "MEMORY: lore_remember / lore_recall is this project's shared, durable "
     "notebook — atomic facts, not digests. lore_findings (kind=friction) "
     "files gaps; lore_claim_task / lore_tasks coordinate fleet work — "
-    "lore_tasks action=rollup is the one-call fleet catch-up since a cursor.\n"
+    "lore_tasks action=rollup is the one-call fleet catch-up since a cursor. "
+    "lore_comms coordinates a LIVE multi-agent fleet: action=register before "
+    "anything else, action=heartbeat to stay current and learn brief skew, "
+    "action=brief_get/brief_publish/brief_ack for standing instructions, "
+    "action=fleet to see who else is active.\n"
     "\n"
     "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's "
     "tools first; batch independent calls in one turn, not serial turns."
@@ -1714,6 +1778,8 @@ class AppContext:
         finding_ledger: FindingLedger,
         memory_backend: MemoryBackend,
         task_ledger: TaskLedger,
+        agent_registry: AgentRegistry,
+        brief_ledger: BriefLedger,
         calibration_engine: CalibrationEngine | None = None,
     ) -> None:
         self._server = server
@@ -1746,6 +1812,13 @@ class AppContext:
         # tool rides — the second ledger alongside ``task_ledger`` (same posture:
         # a settable public attribute owning its OWN SurrealDB connection).
         self.finding_ledger = finding_ledger
+        # PKT-28 C1 wire-up: the durable agent registry + brief ledger the
+        # lore_comms tool rides — two MORE ledgers alongside task_ledger/
+        # finding_ledger (same posture: settable public attributes, each
+        # owning its OWN SurrealDB connection, constructed + ensure_ready()'d
+        # eagerly at build_app_context time — see that function).
+        self.agent_registry = agent_registry
+        self.brief_ledger = brief_ledger
         # P8c wire-up: the boot token-calibration engine (voyage->claude budget
         # scaling). The budget path reads its ``served_constant`` (falling back to
         # the committed ``TOKEN_BUDGET_CALIBRATION`` when absent), ``index_status``
@@ -1799,6 +1872,19 @@ class AppContext:
             rebuild_notice=self._rebuild_notice,
             changed_since_resolver=self._resolve_changed_modules,
         )
+
+    @property
+    def config(self) -> LoreConfig:
+        """The validated project config (mirrors :attr:`LoreServer.config`).
+
+        PKT-28 C1: ``comms()`` and its handlers read ``self.config.comms.*``
+        for the render-layer knobs (stale-heartbeat threshold, fleet page
+        size, brief-body warn size) rather than the private ``self._config``
+        — a PUBLIC accessor so a minimal test double (a bare object carrying
+        only ``config.comms``) can stand in for the full ``AppContext`` when
+        exercising the dispatcher's own contract in isolation.
+        """
+        return self._config
 
     # -- tool handlers (the single end-to-end surface) ---------------------
 
@@ -4168,6 +4254,817 @@ class AppContext:
             },
         )
 
+    # -- lore_comms (PKT-28 C1 agent-comms, seam S3) ------------------------
+    #
+    # Dispatch algorithm (design doc §8, executed in this exact order):
+    #   1. unknown action -> ValueError listing the keys (_COMMS_ACTIONS is
+    #      the one source of truth).
+    #   2. charset-validate agent (+ session/name when present) BEFORE any
+    #      store touch.
+    #   3. strict-param law (a foreign non-None param is a loud ValueError),
+    #      THEN required-param enforcement.
+    #   4. the UNIFORM heartbeat touch for every action but 'register' — ONE
+    #      site (not a decorator, not per-handler; a per-handler touch is the
+    #      forgotten-wrap defect class P8d catalogued).
+    #   5. dispatch to the action's handler.
+
+    async def comms(
+        self,
+        *,
+        action: str,
+        agent: str,
+        session: str | None = None,
+        role: str | None = None,
+        model: str | None = None,
+        spawned_by: str | None = None,
+        task_id: str | None = None,
+        note: str | None = None,
+        status: str | None = None,
+        name: str | None = None,
+        body: str | None = None,
+        version: int | None = None,
+        limit: int | None = None,
+        created_by: str | None = None,
+    ) -> Rendered:
+        """Dispatch a ``lore_comms`` action (register/heartbeat/brief_get/
+
+        brief_publish/brief_ack/fleet) through :data:`_COMMS_ACTIONS`.
+
+        ``created_by`` is NOT part of the ``_COMMS_ACTIONS`` table (it is
+        never a ``spec.params``/``spec.required`` member for any action, and
+        is never exposed on the ``lore_comms`` MCP tool's own signature —
+        confirmed against ``test_param_honesty__every_spec_param_is_in_the_
+        tool_signature``) and is therefore EXEMPT from the strict-param law
+        below, exactly like the universal ``agent``/``session`` names: it is
+        a Python-level convenience the RED contract suite's own
+        ``test_first_version_variant`` calls with (a deviation from
+        ``REPORT-c1-contract-surface.md``'s pinned signature — the test file
+        is the specification per brief-base §1, so this follows the test).
+        When given, it overrides the publishing identity's name as the
+        recorded ``Brief.created_by``; ``brief_publish`` falls back to the
+        acting ``agent``'s own name when omitted (the common case — the MCP
+        tool never sends it at all).
+
+        Raises:
+            ValueError: An unknown action, a charset violation, a foreign
+                param, or a missing required param (all caller/shape errors,
+                per design doc §7's house split).
+            loremaster.agents.AgentRegistryError: A domain error from the
+                agent registry (unknown/ambiguous/retired agent, an illegal
+                status transition, an identity conflict) — surfaces unchanged
+                except ``UnknownAgentError``, enriched with a capped active
+                roster (contract decision, ``REPORT-c1-contract-ledgers.md``
+                #4 — the ledger carries no roster; the server enriches it).
+            loremaster.briefs.BriefLedgerError: A domain error from the brief
+                ledger (unknown brief/version) — surfaces unchanged.
+        """
+        spec = _COMMS_ACTIONS.get(action)
+        if spec is None:
+            raise ValueError(
+                f"unknown comms action {action!r}; valid actions are {list(_COMMS_ACTIONS)}"
+            )
+
+        AppContext._validate_comms_charset(agent, "agent name")
+        if session is not None:
+            AppContext._validate_comms_charset(session, "session")
+        if name is not None:
+            AppContext._validate_comms_charset(name, "brief name")
+
+        values: dict[str, Any] = {
+            "session": session,
+            "role": role,
+            "model": model,
+            "spawned_by": spawned_by,
+            "task_id": task_id,
+            "note": note,
+            "status": status,
+            "name": name,
+            "body": body,
+            "version": version,
+            "limit": limit,
+        }
+        allowed = spec.params | spec.required
+        for param_name, value in values.items():
+            if param_name == "session":
+                continue  # universal — never foreign (design doc §8).
+            if value is not None and param_name not in allowed:
+                raise AppContext._comms_foreign_param_error(param_name, action)
+        for required_name in sorted(spec.required):
+            if values.get(required_name) is None:
+                raise ValueError(
+                    f"the {required_name!r} argument is required for action={action!r}"
+                )
+
+        agent_row: Agent | None = None
+        if spec.requires_registration:
+            touch_status = status if action == _COMMS_ACTION_HEARTBEAT else None
+            touch_note = note if action == _COMMS_ACTION_HEARTBEAT else None
+            try:
+                agent_row = await self.agent_registry.touch(
+                    agent, session=session, status=touch_status, note=touch_note
+                )
+            except _UnknownAgentError as error:
+                raise await AppContext._comms_enrich_unknown_agent(self, error, session=session) from error
+
+        return await spec.handler(
+            self,
+            agent=agent,
+            session=session,
+            agent_row=agent_row,
+            role=role,
+            model=model,
+            spawned_by=spawned_by,
+            task_id=task_id,
+            note=note,
+            status=status,
+            name=name,
+            body=body,
+            version=version,
+            limit=limit,
+            created_by=created_by,
+        )
+
+    @staticmethod
+    def _validate_comms_charset(value: str, label: str) -> None:
+        """Charset-validate a comms identity value BEFORE any store touch (§0/§7).
+
+        The SAME ``AGENT_NAME_PATTERN`` guards agent names, sessions, AND
+        brief names (design doc §0: "Brief names ... same class as
+        agent.name ... same injection posture") — all three are inlined into
+        C3's live WHERE clauses, so all three share one charset.
+
+        Raises:
+            ValueError: ``value`` does not match ``AGENT_NAME_PATTERN``.
+        """
+        if not AGENT_NAME_PATTERN.match(value):
+            raise ValueError(
+                f"{label} {value!r} does not match {AGENT_NAME_PATTERN.pattern} — "
+                f"names are inlined into store queries and must stay in the safe charset"
+            )
+
+    @staticmethod
+    def _comms_foreign_param_error(param_name: str, action: str) -> ValueError:
+        """Build the strict-param-law teaching error naming every owning action.
+
+        A param declared by exactly one action names that action (design doc
+        §7's worked example: ``'version' applies only to action='brief_ack'``);
+        a param declared by more than one action (e.g. ``note``, shared by
+        ``heartbeat``/``brief_publish``) names all of them.
+        """
+        owners = sorted(
+            owner
+            for owner, owner_spec in _COMMS_ACTIONS.items()
+            if param_name in (owner_spec.params | owner_spec.required)
+        )
+        if len(owners) == 1:
+            return ValueError(
+                f"{param_name!r} applies only to action={owners[0]!r} — omit it for {action!r}"
+            )
+        owners_text = ", ".join(repr(owner) for owner in owners)
+        return ValueError(
+            f"{param_name!r} applies only to actions {owners_text} — omit it for {action!r}"
+        )
+
+    async def _comms_enrich_unknown_agent(
+        self, error: _UnknownAgentError, *, session: str | None
+    ) -> _UnknownAgentError:
+        """Enrich a bare ``UnknownAgentError`` with a capped active roster.
+
+        The ledger-level error (S2's contract decision #4,
+        ``REPORT-c1-contract-ledgers.md``) deliberately carries no roster —
+        the server enriches it here, capped/counted (design doc §7), scoped
+        to the SAME session the failed call carried (an unscoped call sees
+        the whole fleet).
+        """
+        window = await self.agent_registry.fleet(session=session, limit=_MAX_FLEET_LIMIT)
+        names = [row.name for row in window.rows]
+        shown = names[:_COVERAGE_NAMES_CAP]
+        remainder = window.total_non_retired - len(shown)
+        roster = ", ".join(shown) if shown else "none"
+        if remainder > 0:
+            roster = f"{roster} (+{remainder} more)"
+        return _UnknownAgentError(f"{error}; active agents: {roster}")
+
+    # -- lore_comms per-action handlers --------------------------------------
+
+    async def _comms_register(
+        self,
+        *,
+        agent: str,
+        session: str,
+        role: str,
+        model: str | None,
+        spawned_by: str | None,
+        task_id: str | None,
+        **_ignored: Any,
+    ) -> Rendered:
+        """register — idempotent identity registration + head-brief bootstrap ack."""
+        result = await self.agent_registry.register(
+            agent, session=session, role=role, model=model, spawned_by=spawned_by, task_id=task_id
+        )
+        now = datetime.now(UTC)
+        registered_age_s = int((now - result.agent.registered_at).total_seconds())
+        brief: Brief | None
+        brief_age_s = 0
+        try:
+            brief = await self.brief_ledger.get_head(BRIEF_NAME_PROJECT)
+        except _UnknownBriefError:
+            brief = None
+        if brief is not None:
+            brief_age_s = int((now - brief.created_at).total_seconds())
+            await self.brief_ledger.ack(
+                agent_id=result.agent.id,
+                agent_name=result.agent.name,
+                name=BRIEF_NAME_PROJECT,
+                version=brief.version,
+                via="register",
+            )
+        return AppContext._render_comms_register(
+            result.agent,
+            re_registered=result.re_registered,
+            registered_age_s=registered_age_s,
+            brief=brief,
+            brief_age_s=brief_age_s,
+        )
+
+    async def _comms_heartbeat(self, *, agent_row: Agent, **_ignored: Any) -> Rendered:
+        """heartbeat — the touch already ran; render the post-touch state + skew."""
+        head_version: int | None
+        acked_version: int | None
+        try:
+            head = await self.brief_ledger.get_head(BRIEF_NAME_PROJECT)
+            head_version = head.version
+            acked_version = await self.brief_ledger.acked_version(
+                agent_id=agent_row.id, name=BRIEF_NAME_PROJECT
+            )
+        except _UnknownBriefError:
+            head_version = None
+            acked_version = None
+        return AppContext._render_comms_heartbeat(
+            agent_row, project_head_version=head_version, project_acked_version=acked_version
+        )
+
+    async def _comms_brief_get(
+        self, *, agent_row: Agent, session: str | None, name: str | None, **_ignored: Any
+    ) -> Rendered:
+        """brief_get — head + fenced body + coverage for ``name`` (default 'project').
+
+        Coverage scopes to ``session`` IFF the call carried it EXPLICITLY
+        (design doc §5.3): the roster is then session-filtered and the line
+        carries the ``(session X)`` tag, so the label always agrees with the
+        count. An omitted ``session`` means a fleet-wide count and no tag.
+        """
+        del agent_row  # the caller isn't specially marked in a brief_get render.
+        brief_name = name if name is not None else BRIEF_NAME_PROJECT
+        brief = await self.brief_ledger.get_head(brief_name)
+        brief_age_s = int((datetime.now(UTC) - brief.created_at).total_seconds())
+        # Coverage's denominator is the COMPLETE in-scope membership (v4 audit
+        # D1 fix) — never the display-capped ``fleet()`` window.
+        roster = await self.agent_registry.roster(session=session)
+        coverage = await self.brief_ledger.coverage(brief_name, active_agents=roster.members)
+        return AppContext._render_comms_brief_get(brief, brief_age_s, coverage, session=session)
+
+    async def _comms_brief_publish(
+        self,
+        *,
+        agent_row: Agent,
+        session: str | None,
+        name: str,
+        body: str,
+        note: str | None,
+        created_by: str | None = None,
+        **_ignored: Any,
+    ) -> Rendered:
+        """brief_publish — race-safe counter-row mint + skew/warn consequence lines.
+
+        The skew count obeys the §5.3 scoping law: session-filtered roster and
+        a ``(session X)``-tagged line IFF ``session`` was passed explicitly.
+        """
+        publisher = created_by if created_by is not None else agent_row.name
+        result = await self.brief_ledger.publish(name, body, created_by=publisher, note=note)
+        # Skew's denominator rides the SAME §5.3 plumbing as coverage (v4
+        # audit D1 fix) — the complete in-scope membership, never the
+        # display-capped ``fleet()`` window.
+        roster = await self.agent_registry.roster(session=session)
+        coverage = await self.brief_ledger.coverage(name, active_agents=roster.members)
+        skew_count = coverage.total_agents - coverage.current_count
+        return AppContext._render_comms_brief_publish(
+            result,
+            session=session,
+            skew_count=skew_count,
+            body_chars=len(body),
+            warn_threshold_chars=self.config.comms.brief_body_warn_chars,
+        )
+
+    async def _comms_brief_ack(
+        self, *, agent_row: Agent, name: str, version: int, **_ignored: Any
+    ) -> Rendered:
+        """brief_ack — record (agent, name@version); legal for any existing version."""
+        result = await self.brief_ledger.ack(
+            agent_id=agent_row.id, agent_name=agent_row.name, name=name, version=version, via="explicit"
+        )
+        return AppContext._render_comms_brief_ack(result)
+
+    async def _comms_fleet(
+        self, *, agent_row: Agent, session: str | None, limit: int | None, **_ignored: Any
+    ) -> Rendered:
+        """fleet — the fleet-visible listing, optionally session-scoped."""
+        del agent_row  # the caller isn't specially marked in the fleet listing.
+        display_limit = min(
+            limit if limit is not None else self.config.comms.fleet_limit, _MAX_FLEET_LIMIT
+        )
+        # TRUE counts come from the row-unlimited roster (v4 audit D1 fix) —
+        # never from a display-capped ``fleet()`` window. ``fleet()`` itself
+        # is fetched bounded to the DISPLAY limit only: the per-row ack/
+        # heartbeat-age lookups below walk exactly the rows about to be
+        # rendered, never the (potentially much larger) full roster — the
+        # N+1 an unbounded per-row loop over ``roster().members`` would be.
+        roster = await self.agent_registry.roster(session=session)
+        window = await self.agent_registry.fleet(session=session, limit=display_limit)
+        project_head_version: int | None
+        try:
+            head = await self.brief_ledger.get_head(BRIEF_NAME_PROJECT)
+            project_head_version = head.version
+        except _UnknownBriefError:
+            project_head_version = None
+        now = datetime.now(UTC)
+        acked_versions: dict[str, int | None] = {}
+        heartbeat_age_seconds: dict[str, int] = {}
+        for row in window.rows:
+            heartbeat_age_seconds[row.id] = int((now - row.heartbeat_at).total_seconds())
+            if project_head_version is not None:
+                acked_versions[row.id] = await self.brief_ledger.acked_version(
+                    agent_id=row.id, name=BRIEF_NAME_PROJECT
+                )
+        return AppContext._render_comms_fleet(
+            window,
+            session=session,
+            limit=display_limit,
+            stale_after_s=self.config.comms.stale_heartbeat_s,
+            project_head_version=project_head_version,
+            acked_versions=acked_versions,
+            heartbeat_age_seconds=heartbeat_age_seconds,
+            status_counts=roster.status_counts,
+        )
+
+    # -- lore_comms render helpers — every path -> Rendered, assembled ONLY
+    # via loremaster.render's verbs (render-safety ruling §C1-C5-AUTHORING).
+
+    @staticmethod
+    def _render_age(delta_seconds: int) -> SafeLine:
+        """One unit, no padding, largest-fit (design doc §9): <120s/<120m/<48h/else d."""
+        if delta_seconds < _COMMS_AGE_SECONDS_CEILING:
+            return safe_str(f"{delta_seconds}s")
+        minutes = delta_seconds // _SECONDS_PER_MINUTE
+        if minutes < _COMMS_AGE_MINUTES_CEILING:
+            return safe_str(f"{minutes}m")
+        hours = delta_seconds // _SECONDS_PER_HOUR
+        if hours < _COMMS_AGE_HOURS_CEILING:
+            return safe_str(f"{hours}h")
+        days = delta_seconds // _SECONDS_PER_DAY
+        return safe_str(f"{days}d")
+
+    @staticmethod
+    def _render_comms_register(
+        agent: Agent,
+        *,
+        re_registered: bool,
+        registered_age_s: int,
+        brief: Brief | None,
+        brief_age_s: int,
+    ) -> Rendered:
+        """register's render (design doc §9.1): bootstrap / full-with-fence variants."""
+        if re_registered:
+            head = render_line(
+                "re-registered {name} (session {session}, role {role}) — status active "
+                "(first registered {age} ago)",
+                name=sanitise_line(agent.name),
+                session=sanitise_line(agent.session),
+                role=sanitise_line(agent.role),
+                age=AppContext._render_age(registered_age_s),
+            )
+        else:
+            head = render_line(
+                "registered {name} (session {session}, role {role}) — status active",
+                name=sanitise_line(agent.name),
+                session=sanitise_line(agent.session),
+                role=sanitise_line(agent.role),
+            )
+        if brief is None:
+            return render_compose(
+                head,
+                render_line(
+                    "no 'project' brief published yet — work from your spawn brief; "
+                    "re-check with lore_comms action=brief_get"
+                ),
+            )
+        return render_compose(
+            head,
+            render_line(
+                "brief '{name}' v{version} (published {age} ago by {author}) — "
+                "ack recorded (via register)",
+                name=sanitise_line(brief.name),
+                version=brief.version,
+                age=AppContext._render_age(brief_age_s),
+                author=sanitise_line(brief.created_by),
+            ),
+            render_fenced(brief.body),
+            render_line("echo in your report: brief project v{version} read", version=brief.version),
+        )
+
+    @staticmethod
+    def _render_comms_heartbeat(
+        agent: Agent, *, project_head_version: int | None, project_acked_version: int | None
+    ) -> Rendered:
+        """heartbeat's render (design doc §9.2): silent one-line, or +1 skew line."""
+        line1 = render_line(
+            "heartbeat {name} — status {status}",
+            name=sanitise_line(agent.name),
+            status=sanitise_line(agent.status),
+        )
+        if project_head_version is None or project_acked_version == project_head_version:
+            return line1
+        if project_acked_version is None:
+            return render_compose(
+                line1,
+                render_line(
+                    "you have not acked brief 'project' (head v{head}) — "
+                    "lore_comms action=brief_get",
+                    head=project_head_version,
+                ),
+            )
+        return render_compose(
+            line1,
+            render_line(
+                "brief 'project' v{head} is head — you acked v{acked}; "
+                "catch up: lore_comms action=brief_get",
+                head=project_head_version,
+                acked=project_acked_version,
+            ),
+        )
+
+    @staticmethod
+    def _render_comms_behind_entry(entry: BriefBehindEntry) -> SafeLine:
+        """One coverage-line behind entry: ``name (vN)`` or ``name (unbriefed)``."""
+        name = sanitise_line(entry.agent_name)
+        suffix = "(unbriefed)" if entry.acked_version is None else f"(v{entry.acked_version})"
+        return safe_str(f"{name} {suffix}")
+
+    @staticmethod
+    def _render_comms_brief_coverage_line(coverage: BriefCoverage, *, session: str | None) -> Rendered:
+        """The ``coverage: ...`` line shared by brief_get (design doc §9.3/§5.3)."""
+        full = coverage.current_count == coverage.total_agents
+        if full:
+            if session is not None:
+                return render_line(
+                    "coverage (session {session}): all {n} non-retired agents at v{version}",
+                    session=sanitise_line(session),
+                    n=coverage.total_agents,
+                    version=coverage.head_version,
+                )
+            return render_line(
+                "coverage: all {n} non-retired agents at v{version}",
+                n=coverage.total_agents,
+                version=coverage.head_version,
+            )
+        behind_parts = [
+            AppContext._render_comms_behind_entry(entry) for entry in coverage.behind
+        ]
+        shown = behind_parts[:_COVERAGE_NAMES_CAP]
+        remainder = len(behind_parts) - len(shown)
+        behind_list = render_join(", ", shown)
+        if remainder > 0:
+            if session is not None:
+                return render_line(
+                    "coverage (session {session}): {current}/{total} non-retired agents "
+                    "at v{version}; behind: {behind} (+{more} more)",
+                    session=sanitise_line(session),
+                    current=coverage.current_count,
+                    total=coverage.total_agents,
+                    version=coverage.head_version,
+                    behind=behind_list,
+                    more=remainder,
+                )
+            return render_line(
+                "coverage: {current}/{total} non-retired agents at v{version}; "
+                "behind: {behind} (+{more} more)",
+                current=coverage.current_count,
+                total=coverage.total_agents,
+                version=coverage.head_version,
+                behind=behind_list,
+                more=remainder,
+            )
+        if session is not None:
+            return render_line(
+                "coverage (session {session}): {current}/{total} non-retired agents "
+                "at v{version}; behind: {behind}",
+                session=sanitise_line(session),
+                current=coverage.current_count,
+                total=coverage.total_agents,
+                version=coverage.head_version,
+                behind=behind_list,
+            )
+        return render_line(
+            "coverage: {current}/{total} non-retired agents at v{version}; behind: {behind}",
+            current=coverage.current_count,
+            total=coverage.total_agents,
+            version=coverage.head_version,
+            behind=behind_list,
+        )
+
+    @staticmethod
+    def _render_comms_brief_get(
+        brief: Brief, brief_age_s: int, coverage: BriefCoverage, *, session: str | None
+    ) -> Rendered:
+        """brief_get's render (design doc §9.3): header + fenced body + coverage."""
+        header = render_line(
+            "brief '{name}' v{version} (published {age} ago by {author})",
+            name=sanitise_line(brief.name),
+            version=brief.version,
+            age=AppContext._render_age(brief_age_s),
+            author=sanitise_line(brief.created_by),
+        )
+        return render_compose(
+            header,
+            render_fenced(brief.body),
+            AppContext._render_comms_brief_coverage_line(coverage, session=session),
+        )
+
+    @staticmethod
+    def _render_comms_brief_publish(
+        result: BriefPublishResult,
+        *,
+        session: str | None,
+        skew_count: int,
+        body_chars: int,
+        warn_threshold_chars: int,
+    ) -> Rendered:
+        """brief_publish's render (design doc §9.4): publish line + skew/warn lines."""
+        if result.first_version:
+            lines = [
+                render_line(
+                    "brief '{name}' v{version} published by {publisher} — first version; "
+                    "agents ack at register",
+                    name=sanitise_line(result.brief.name),
+                    version=result.brief.version,
+                    publisher=sanitise_line(result.brief.created_by),
+                )
+            ]
+        else:
+            lines = [
+                render_line(
+                    "brief '{name}' v{version} published by {publisher}",
+                    name=sanitise_line(result.brief.name),
+                    version=result.brief.version,
+                    publisher=sanitise_line(result.brief.created_by),
+                )
+            ]
+        if skew_count > 0:
+            if session is not None:
+                lines.append(
+                    render_line(
+                        "skew (session {session}): {count} non-retired agents had acked "
+                        "v{prior} or older — skew surfaces at their next heartbeat",
+                        session=sanitise_line(session),
+                        count=skew_count,
+                        prior=result.brief.version - 1,
+                    )
+                )
+            else:
+                lines.append(
+                    render_line(
+                        "skew: {count} non-retired agents had acked v{prior} or older — "
+                        "skew surfaces at their next heartbeat",
+                        count=skew_count,
+                        prior=result.brief.version - 1,
+                    )
+                )
+        if body_chars > warn_threshold_chars:
+            lines.append(
+                render_line(
+                    "⚠ body {chars} chars exceeds the {threshold}-char warn threshold — "
+                    "briefs are standing instructions; prefer a doc + pointer",
+                    chars=body_chars,
+                    threshold=warn_threshold_chars,
+                )
+            )
+        return render_compose(*lines)
+
+    @staticmethod
+    def _render_comms_brief_ack(result: BriefAckResult) -> Rendered:
+        """brief_ack's render (design doc §9.5): head / behind / idempotent-reack."""
+        if result.already_acked:
+            return render_line(
+                "already acked brief '{name}' v{version} — no new edge",
+                name=sanitise_line(result.name),
+                version=result.version,
+            )
+        if result.version == result.head_version:
+            return render_line(
+                "acked brief '{name}' v{version} (head)",
+                name=sanitise_line(result.name),
+                version=result.version,
+            )
+        return render_line(
+            "acked brief '{name}' v{version} — head is v{head}; catch up: "
+            "lore_comms action=brief_get",
+            name=sanitise_line(result.name),
+            version=result.version,
+            head=result.head_version,
+        )
+
+    @staticmethod
+    def _render_comms_fleet_brief_cell(
+        project_head_version: int | None, acked_version: int | None
+    ) -> SafeLine | None:
+        """The fleet row's 'project'-brief cell — ``None`` when omitted entirely."""
+        if project_head_version is None:
+            return None
+        if acked_version is None:
+            return safe_str("brief unbriefed")
+        if acked_version == project_head_version:
+            return safe_str(f"brief v{project_head_version}")
+        return safe_str(f"brief v{acked_version} (head v{project_head_version})")
+
+    @staticmethod
+    def _render_comms_fleet_row(
+        row: Agent,
+        *,
+        project_head_version: int | None,
+        acked_version: int | None,
+        stale_after_s: int,
+        heartbeat_age_s: int,
+    ) -> Rendered:
+        """One fleet row (design doc §9.6 worked shape) — cells joined with ' · '."""
+        cells: list[SafeLine] = [render_join(" ", [safe_str("role"), sanitise_line(row.role)])]
+        if row.model is not None:
+            cells.append(render_join(" ", [safe_str("model"), sanitise_line(row.model)]))
+        if row.task_id is not None:
+            cells.append(render_join(" ", [safe_str("task"), safe_str(row.task_id[:8] + "…")]))
+        brief_cell = AppContext._render_comms_fleet_brief_cell(project_head_version, acked_version)
+        if brief_cell is not None:
+            cells.append(brief_cell)
+        if row.last_note is not None:
+            cells.append(render_join(" ", [safe_str("note:"), sanitise_line(row.last_note)]))
+        # Duplicated-call form (not a ternary template) — the AST
+        # template-literal pin requires args[0] to be an ast.Constant; a
+        # ternary selecting between two literal templates is an ast.IfExp
+        # and fails the pin (design doc §9.6 note).
+        if heartbeat_age_s > stale_after_s:
+            return render_line(
+                "- {name} [{status} ⚠ STALE] hb {age} · {cells}",
+                name=sanitise_line(row.name),
+                status=sanitise_line(row.status),
+                age=AppContext._render_age(heartbeat_age_s),
+                cells=render_join(" · ", cells),
+            )
+        return render_line(
+            "- {name} [{status}] hb {age} · {cells}",
+            name=sanitise_line(row.name),
+            status=sanitise_line(row.status),
+            age=AppContext._render_age(heartbeat_age_s),
+            cells=render_join(" · ", cells),
+        )
+
+    @staticmethod
+    def _render_comms_fleet(
+        window: AgentFleetWindow,
+        *,
+        session: str | None,
+        limit: int,
+        stale_after_s: int,
+        project_head_version: int | None,
+        acked_versions: Mapping[str, int | None],
+        heartbeat_age_seconds: Mapping[str, int],
+        status_counts: Mapping[str, int],
+    ) -> Rendered:
+        """fleet's render (design doc §9.6): header + rows + elision + retired trailer.
+
+        ``status_counts`` is a REQUIRED, TRUSTED true aggregate (e.g.
+        ``AgentRegistry.roster().status_counts`` — all four statuses present,
+        zero-filled when a status has no rows): the header total, the
+        per-status segments, the elision arithmetic, and the retired trailer
+        are ALL derived from it, never re-derived from ``window`` (v4 audit
+        D1 fix — ``window`` may be a display-capped listing that silently
+        disagrees with the truth past ``_MAX_FLEET_LIMIT`` agents; there is
+        no ``len()``-derived fallback path here on purpose, so an omitted
+        argument can never silently resurrect that defect). ``window.rows``
+        is still the source for WHICH rows to render and their ordering.
+
+        Per-session grouping (design doc §6): when the call is unscoped
+        (``session is None``) and the surviving rows span more than one
+        session, rows are grouped under a ``"session {session}:"`` header,
+        groups ordered alphabetically by session name, each group's rows
+        keeping their existing relative order. Survivor selection (the
+        ``shown = ordered[:limit]`` slice below) MUST stay decided on the
+        GLOBAL status/heartbeat priority before any session partitioning —
+        grouping only reshapes how the survivors are displayed, it never
+        changes who survives.
+
+        The elision line carries TWO variants (design doc §9.6): while the
+        display cap still has headroom (``len(shown) < _MAX_FLEET_LIMIT``),
+        a re-ask naming a higher ``limit=`` is actionable. Once the display
+        cap itself is what elides (``len(shown) == _MAX_FLEET_LIMIT``), that
+        re-ask would be a dead end (re-running at the SAME already-maxed
+        limit) — the cap-disclosure variant names the display cap instead.
+        """
+        parked = status_counts.get("input_required", 0)
+        active = status_counts.get("active", 0)
+        idle = status_counts.get("idle", 0)
+        retired_count = status_counts.get("retired", 0)
+        total = parked + active + idle
+        if total == 0:
+            if session is not None:
+                return render_line(
+                    "no agents registered (session {session})", session=sanitise_line(session)
+                )
+            return render_line("no agents registered")
+        ordered = sorted(
+            window.rows,
+            key=lambda row: (
+                _COMMS_FLEET_STATUS_ORDER.get(row.status, len(_COMMS_FLEET_STATUS_ORDER)),
+                -row.heartbeat_at.timestamp(),
+            ),
+        )
+        if session is not None:
+            header = render_line(
+                "fleet (session {session}): {total} agents — {parked} input_required, "
+                "{active} active, {idle} idle",
+                session=sanitise_line(session),
+                total=total,
+                parked=parked,
+                active=active,
+                idle=idle,
+            )
+        else:
+            header = render_line(
+                "fleet: {total} agents — {parked} input_required, {active} active, "
+                "{idle} idle",
+                total=total,
+                parked=parked,
+                active=active,
+                idle=idle,
+            )
+        shown = ordered[:limit]
+        distinct_sessions = {row.session for row in shown}
+        if session is None and len(distinct_sessions) > 1:
+            groups: dict[str, list[Agent]] = {}
+            for row in shown:
+                groups.setdefault(row.session, []).append(row)
+            row_lines: list[Rendered] = []
+            for group_session in sorted(groups):
+                row_lines.append(
+                    render_line("session {session}:", session=sanitise_line(group_session))
+                )
+                row_lines.extend(
+                    AppContext._render_comms_fleet_row(
+                        row,
+                        project_head_version=project_head_version,
+                        acked_version=acked_versions.get(row.id),
+                        stale_after_s=stale_after_s,
+                        heartbeat_age_s=heartbeat_age_seconds.get(row.id, 0),
+                    )
+                    for row in groups[group_session]
+                )
+        else:
+            row_lines = [
+                AppContext._render_comms_fleet_row(
+                    row,
+                    project_head_version=project_head_version,
+                    acked_version=acked_versions.get(row.id),
+                    stale_after_s=stale_after_s,
+                    heartbeat_age_s=heartbeat_age_seconds.get(row.id, 0),
+                )
+                for row in shown
+            ]
+        lines = [header, *row_lines]
+        remainder = total - len(shown)
+        if remainder > 0:
+            # Duplicated-call form (not a ternary template) — the AST
+            # template-literal pin requires args[0] to be an ast.Constant; a
+            # ternary selecting between two literal templates is an
+            # ast.IfExp and fails the pin (design doc §9.6 note).
+            if len(shown) == _MAX_FLEET_LIMIT:
+                lines.append(
+                    render_line(
+                        "+{more} more beyond the display cap ({cap})",
+                        more=remainder,
+                        cap=_MAX_FLEET_LIMIT,
+                    )
+                )
+            else:
+                next_limit = min(total, _MAX_FLEET_LIMIT)
+                lines.append(
+                    render_line(
+                        "+{more} more — re-run with limit={next_limit}",
+                        more=remainder,
+                        next_limit=next_limit,
+                    )
+                )
+        if retired_count > 0:
+            lines.append(render_line("+{count} retired", count=retired_count))
+        return render_compose(*lines)
+
     async def aclose(self) -> None:
         """Stop background tasks, run extension shutdown hooks, close clients.
 
@@ -4224,6 +5121,65 @@ class AppContext:
         await self.memory_backend.close()
         await self.task_ledger.close()
         await self.finding_ledger.close()
+        # PKT-28 C1: the two comms ledgers each own their OWN connection too.
+        await self.agent_registry.close()
+        await self.brief_ledger.close()
+
+
+@dataclass(frozen=True)
+class CommsActionSpec:
+    """One ``lore_comms`` action: its handler + its accepted-parameter contract.
+
+    Prescribed by the render ruling's §REGISTRY-MIGRATION — a SANCTIONED
+    deviation from the ``tasks()``/``findings()`` if/elif house idiom, since
+    the completeness pin (``assert_actions_covered``) needs a real table to
+    iterate. ``params``/``required`` describe the ACTION's accepted param
+    surface for the strict-param law and the ``lore_comms`` tool schema;
+    ``agent``/``session`` are universal (every action, design doc §0.3) and
+    are therefore NEVER re-declared here.
+    """
+
+    handler: Callable[..., Awaitable[Rendered]]
+    params: frozenset[str]
+    required: frozenset[str] = frozenset()
+    requires_registration: bool = True
+
+
+# The introspectable dispatch table AppContext.comms() dispatches through and
+# the completeness pin (test_render_seam_pins.py::assert_actions_covered)
+# iterates. Module-level, defined AFTER AppContext (unbound-method
+# references — same file, no import cycle). Exactly six actions in C1
+# (design doc §SCOPE) — send/drain/ack/await/story are C2/C3 growth points.
+_COMMS_ACTIONS: dict[str, CommsActionSpec] = {
+    _COMMS_ACTION_REGISTER: CommsActionSpec(
+        AppContext._comms_register,
+        params=frozenset({"role", "model", "spawned_by", "task_id"}),
+        required=frozenset({"session", "role"}),
+        requires_registration=False,
+    ),
+    _COMMS_ACTION_HEARTBEAT: CommsActionSpec(
+        AppContext._comms_heartbeat,
+        params=frozenset({"note", "status"}),
+    ),
+    _COMMS_ACTION_BRIEF_GET: CommsActionSpec(
+        AppContext._comms_brief_get,
+        params=frozenset({"name"}),
+    ),
+    _COMMS_ACTION_BRIEF_PUBLISH: CommsActionSpec(
+        AppContext._comms_brief_publish,
+        params=frozenset({"name", "body", "note"}),
+        required=frozenset({"name", "body"}),
+    ),
+    _COMMS_ACTION_BRIEF_ACK: CommsActionSpec(
+        AppContext._comms_brief_ack,
+        params=frozenset({"name", "version"}),
+        required=frozenset({"name", "version"}),
+    ),
+    _COMMS_ACTION_FLEET: CommsActionSpec(
+        AppContext._comms_fleet,
+        params=frozenset({"limit"}),
+    ),
+}
 
 
 # The ``in_progress`` rebuild-status state value the read-tools' rebuilding-notice
@@ -4504,6 +5460,8 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         ProbeGateError: If the probe gate refuses.
         Exception: Re-raises a failing extension ``on_startup`` (after unwinding).
     """
+    from loremaster.agents import AgentRegistry
+    from loremaster.briefs import BriefLedger
     from loremaster.config import resolve_secret
     from loremaster.diff import DiffEngine
     from loremaster.findings import FindingLedger
@@ -4678,6 +5636,30 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         )
         await finding_ledger.ensure_ready()
         write_stack_readied.append(finding_ledger)
+        # PKT-28 C1 wire-up: the durable agent registry + brief ledger
+        # (lore_comms) — two MORE ledgers over the same unified database,
+        # constructed EAGERLY exactly like task_ledger/finding_ledger above
+        # (there is no lazy-ledger pattern in this codebase — construct +
+        # ensure_ready(), appended to the SAME ordered write_stack_readied
+        # teardown list).
+        agent_registry = AgentRegistry(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+        )
+        await agent_registry.ensure_ready()
+        write_stack_readied.append(agent_registry)
+        brief_ledger = BriefLedger(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+        )
+        await brief_ledger.ensure_ready()
+        write_stack_readied.append(brief_ledger)
         # Replay the durable ledger into the backend ONCE at boot (FP-06): the
         # first boot re-embeds the seeded rows, a second over an in-sync store is a
         # pure no-op (zero document embeds — the divergence guard). Inside the ready
@@ -4811,6 +5793,8 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         finding_ledger=finding_ledger,
         memory_backend=memory_backend,
         task_ledger=task_ledger,
+        agent_registry=agent_registry,
+        brief_ledger=brief_ledger,
         calibration_engine=calibration_engine,
     )
 
@@ -4941,6 +5925,10 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         # P8b wire-up: the finding ledger + diff engine each own a connection —
         # close them on the failure path too (both readied before this point).
         await finding_ledger.close()
+        # PKT-28 C1 wire-up: the two comms ledgers each own a connection too —
+        # close them on the failure path too (both readied before this point).
+        await agent_registry.close()
+        await brief_ledger.close()
         await snapshot_stamper.close()
         await diff_engine.close()
         await manifest.close()
@@ -5464,6 +6452,15 @@ _TASK_TOOL_ANNOTATIONS = ToolAnnotations(
 # is idempotent. (Its query/get/chain_head actions read, but a dispatch tool that
 # CAN write is annotated by its strongest capability, exactly as lore_tasks is.)
 _FINDINGS_TOOL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
+)
+# lore_comms (PKT-28 C1) mutates the durable agent/brief ledgers (register /
+# heartbeat / brief_publish / brief_ack), so — like the task/finding tools —
+# it is NOT read-only; none of its six actions is idempotent (a re-register
+# and a re-ack are idempotent NO-OPS at the ledger level, but the tool as a
+# whole is annotated by its strongest capability, exactly as lore_tasks/
+# lore_findings are — mirrors _TASK_TOOL_ANNOTATIONS exactly).
+_COMMS_TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
 )
 
@@ -6076,6 +7073,166 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             items=items,
             summary=summary,
             report_path=report_path,
+        )
+
+    @mcp.tool(
+        name="lore_comms",
+        description=(
+            "Coordinate a live multi-agent fleet through the durable agent-registry "
+            "+ brief ledger: dispatch on 'action' to 'register' an agent identity "
+            "(idempotent — a re-register re-acks the head 'project' brief), "
+            "'heartbeat' (status/note + a one-line brief-skew notice), 'brief_get' "
+            "the head version of a standing instruction (default 'project') with "
+            "fenced body + coverage, 'brief_publish' a new version (race-safe max+1 "
+            "mint), 'brief_ack' a specific version (legal even if not head — the "
+            "ledger records what you actually read), or 'fleet' to list the "
+            "registered fleet (optionally session-scoped). Every agent MUST "
+            "'register' before any other action; every action re-touches the "
+            "caller's heartbeat. Returns a rendered summary, never a raw store dump."
+        ),
+        annotations=_COMMS_TOOL_ANNOTATIONS,
+    )
+    async def comms(
+        context: Context[Any, AppContext, Any],
+        action: Annotated[
+            str,
+            Field(
+                description=(
+                    "The operation: 'register' (identity, idempotent — no prior "
+                    "register required), 'heartbeat' (status/note touch), "
+                    "'brief_get' (read a standing instruction), 'brief_publish' "
+                    "(mint a new version), 'brief_ack' (record you read a version), "
+                    "or 'fleet' (list registered agents)."
+                )
+            ),
+        ],
+        agent: Annotated[
+            str,
+            Field(
+                description=(
+                    "The calling agent's short identifier — REQUIRED for every "
+                    "action, including 'register'. Safe charset only: "
+                    f"{AGENT_NAME_PATTERN.pattern!r}."
+                )
+            ),
+        ],
+        session: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The orchestration session this agent belongs to — REQUIRED "
+                    "for 'register' (it mints the agent's id). Optional for every "
+                    "other action to disambiguate a name shared across sessions "
+                    "(omit when your name is unique); for 'fleet' it additionally "
+                    "scopes the listing to one session."
+                )
+            ),
+        ] = None,
+        role: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "The agent's role (e.g. 'builder', 'auditor') — REQUIRED for "
+                    "'register'. Write-once: a differing value on re-register is a "
+                    "teaching error naming the mismatch."
+                )
+            ),
+        ] = None,
+        model: Annotated[
+            str | None,
+            Field(description="For 'register': the model identifier the agent runs on. Optional."),
+        ] = None,
+        spawned_by: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'register': the identity that spawned this agent. Optional, "
+                    "write-once once set."
+                )
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'register': the fleet task id (lore_tasks) this agent is "
+                    "currently working. Optional, mutable on re-register."
+                )
+            ),
+        ] = None,
+        note: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'heartbeat': a free-text note recorded as the agent's "
+                    "last_note (visible on 'fleet'). For 'brief_publish': an "
+                    "optional free-text publish note recorded on the brief version."
+                )
+            ),
+        ] = None,
+        status: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'heartbeat' ONLY: an explicit target status "
+                    "('active'/'idle'/'input_required'/'retired') — wins over the "
+                    "default idle-to-active auto-flip. 'orphaned'/'STALE' are "
+                    "DERIVED at render time and are never legal here."
+                )
+            ),
+        ] = None,
+        name: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'brief_get'/'brief_publish'/'brief_ack': the brief name "
+                    "(protocol vocabulary, e.g. 'project'). Optional for 'brief_get' "
+                    "(defaults to 'project'); REQUIRED for 'brief_publish'/'brief_ack'."
+                )
+            ),
+        ] = None,
+        body: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'brief_publish' ONLY: the new version's full text, stored "
+                    "and served verbatim (fenced) — REQUIRED, non-blank."
+                )
+            ),
+        ] = None,
+        version: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "For 'brief_ack' ONLY: the version being acked — REQUIRED. "
+                    "Legal for any existing version, not just head."
+                )
+            ),
+        ] = None,
+        limit: Annotated[
+            int | None,
+            Field(
+                description=(
+                    f"For 'fleet' ONLY: the max rows to render (default "
+                    f"comms.fleet_limit, clamped to {_MAX_FLEET_LIMIT})."
+                )
+            ),
+        ] = None,
+    ) -> str:
+        return await _app_context(context).comms(
+            action=action,
+            agent=agent,
+            session=session,
+            role=role,
+            model=model,
+            spawned_by=spawned_by,
+            task_id=task_id,
+            note=note,
+            status=status,
+            name=name,
+            body=body,
+            version=version,
+            limit=limit,
         )
 
     @mcp.tool(

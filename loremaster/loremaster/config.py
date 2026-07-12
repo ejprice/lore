@@ -442,6 +442,41 @@ class SearchConfig(_StrictModel):
     reranker: RerankerConfig | None = None
 
 
+# PKT-28 C1 (agent-comms) render-layer knobs (design doc
+# docs/design/2026-07-12-pkt28-c1-semantics.md §4). Repo law: no hardcoded
+# values — these three tune what the ``lore_comms`` dispatcher renders
+# (staleness marker, fleet page size, brief-body warn line), so they live in
+# config, not module constants, even though the store layer (agents.py/
+# briefs.py) needed neither at build time.
+DEFAULT_COMMS_STALE_HEARTBEAT_S: int = 600
+DEFAULT_COMMS_FLEET_LIMIT: int = 20
+DEFAULT_COMMS_BRIEF_WARN_CHARS: int = 4000
+
+
+class CommsConfig(_StrictModel):
+    """Agent-comms (``lore_comms``) render-layer configuration (PKT-28 C1).
+
+    OPTIONAL on :class:`LoreConfig` with a default instance (mirroring
+    :class:`LoggingConfig` / :class:`SurrealConfig` / :class:`SearchConfig`),
+    so every existing ``lore.yaml`` (which carries no ``comms:`` section)
+    keeps validating and transparently gets the documented defaults.
+
+    Attributes:
+        stale_heartbeat_s: The heartbeat age, in seconds, past which
+            ``lore_comms`` renders a fleet row's status as ``⚠ STALE``
+            (design doc §3/§6) — derived at render time, never stored.
+        fleet_limit: The default number of fleet rows ``action=fleet``
+            renders before a counted, clamped elision notice (design doc §6).
+        brief_body_warn_chars: The body length, in characters, past which
+            ``action=brief_publish`` appends a size-warning line (design doc
+            §5.2) — a warning only, never a rejection.
+    """
+
+    stale_heartbeat_s: PositiveInt = DEFAULT_COMMS_STALE_HEARTBEAT_S
+    fleet_limit: PositiveInt = DEFAULT_COMMS_FLEET_LIMIT
+    brief_body_warn_chars: PositiveInt = DEFAULT_COMMS_BRIEF_WARN_CHARS
+
+
 # The default model the token-calibration yardstick probes run against.
 # Provenance: SURVEY-FINAL (2026-07-04) derived the calibration baseline against
 # ``claude-sonnet-5``; YARDSTICK-FINAL (2026-07-04) then proved token counts are
@@ -505,6 +540,11 @@ class LoreConfig(_StrictModel):
         search: Query-time search configuration (P6 §6 item 9). OPTIONAL with a
             default, so an existing ``lore.yaml`` with no ``search:`` section
             still validates; carries the config-gated reranker seam.
+        comms: Agent-comms (``lore_comms``) render-layer configuration
+            (PKT-28 C1). OPTIONAL with a default, so an existing ``lore.yaml``
+            with no ``comms:`` section still validates and gets the
+            documented defaults (stale-heartbeat threshold, fleet page size,
+            brief-body warn size).
         auth: The optional rotatable-key auth layer (D9). ``None`` ⇒ no-auth
             localhost mode.
         extensions: The OPAQUE extension namespace — a mapping of extension name
@@ -534,6 +574,10 @@ class LoreConfig(_StrictModel):
     # ``lore.yaml`` with no ``search:`` section still validates and gets the
     # documented default (``reranker: null`` — the reranker seam stays off).
     search: SearchConfig = SearchConfig()
+    # OPTIONAL with a default instance (like ``search``): an existing
+    # ``lore.yaml`` with no ``comms:`` section still validates and gets the
+    # documented defaults (PKT-28 C1).
+    comms: CommsConfig = CommsConfig()
     auth: AuthConfig | None = None
     # The opaque extension namespace: a typo'd extension *key* is not catchable
     # by the base (it cannot know every extension's schema), so this is a
