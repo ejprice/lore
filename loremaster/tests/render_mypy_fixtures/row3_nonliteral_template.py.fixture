@@ -1,0 +1,14 @@
+"""ROW 3: a hostile, value-derived (non-LiteralString) template."""
+from __future__ import annotations
+from loremaster.render import Rendered, render_line
+from loremaster.sanitise import safe_str
+
+
+def render_from_variable_template(raw: str, owner: str) -> Rendered:
+    template = f"row {raw}: {{owner}}"  # f-string over a runtime str -> not LiteralString
+    return render_line(template, owner=safe_str(owner))
+
+
+def render_from_str_variable(owner: str) -> Rendered:
+    tpl: str = "owner: {owner}"  # plain str variable -> not LiteralString
+    return render_line(tpl, owner=safe_str(owner))

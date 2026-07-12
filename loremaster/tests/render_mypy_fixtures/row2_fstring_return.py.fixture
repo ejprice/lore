@@ -1,0 +1,7 @@
+"""ROW 2: a comms render path typed -> Rendered returning a raw f-string."""
+from __future__ import annotations
+from loremaster.render import Rendered
+
+
+def render_comms_row(owner: str) -> Rendered:
+    return f"- {owner}"  # raw f-string, not Rendered

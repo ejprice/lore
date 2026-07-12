@@ -1,0 +1,14 @@
+"""CONTROL: the SANCTIONED idiom must type-check CLEAN (no false positives)."""
+from __future__ import annotations
+from loremaster.render import Rendered, render_compose, render_join, render_line
+from loremaster.sanitise import safe_str, sanitise_line
+
+
+def render_comms_row(owner: str, seq: int, tags: list[str]) -> Rendered:
+    line = render_line(
+        "#{seq} {owner}: {tags}",
+        seq=seq,
+        owner=safe_str(owner),
+        tags=render_join(", ", [sanitise_line(tag) for tag in tags]),
+    )
+    return render_compose(line)

@@ -1,0 +1,10 @@
+"""ROW 4: ", ".join(safe_parts) demotes to plain str, passed as a SafeLine value."""
+from __future__ import annotations
+from loremaster.render import Rendered, render_line
+from loremaster.sanitise import sanitise_line
+
+
+def render_tags(tags: list[str]) -> Rendered:
+    safe_parts = [sanitise_line(tag) for tag in tags]
+    demoted = ", ".join(safe_parts)  # str.join -> plain str
+    return render_line("tags: {tags}", tags=demoted)

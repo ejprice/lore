@@ -1,0 +1,7 @@
+"""ROW 1: a raw str value passed into render_line must be a mypy error."""
+from __future__ import annotations
+from loremaster.render import Rendered, render_line
+
+
+def render_comms_row(owner: str) -> Rendered:
+    return render_line("owner: {owner}", owner=owner)  # raw str, no wrap

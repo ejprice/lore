@@ -118,7 +118,7 @@ from loremaster.memory.backend import (
     MemorySource,
     TrustLevel,
 )
-from loremaster.sanitise import sanitise_line
+from loremaster.sanitise import safe_str, sanitise_line
 from loremaster.search import (
     _ABSENCE_VERDICT_MARKER,
     _FENCE_CHAR,
@@ -2868,13 +2868,24 @@ class AppContext:
         Mirrors :meth:`_render_task_rows`: the opaque id carries no ``finding:``
         record prefix and no ``RecordID`` leaks — just the fleet-visible fields
         (number / status / subject / kind / area / category / author).
+
+        PKT-28 Phase 0 pull-forward (render-safety ruling §BUILD-NOW item 6,
+        finding #90): ``subject``/``kind``/``area``/``category``/``created_by``
+        are agent-supplied free text and were rendered via bare f-string
+        interpolation with no wrap at all — live-forgeable today. Each now
+        crosses through :func:`~loremaster.sanitise.sanitise_line`, the same
+        manual C0-idiom wrap ``_render_task_rows``/``_render_claim_result``
+        already use, so a hostile value cannot add a line or smuggle an
+        invisible/bidi character into this row.
         """
         if not findings:
             return _NO_FINDINGS_MATCHED
         return "\n".join(
-            f"- [#{finding.number} {finding.status}] {finding.subject} "
-            f"(id {finding.id}, kind {finding.kind}, area {finding.area}, "
-            f"category {finding.category}, by {finding.created_by})"
+            f"- [#{finding.number} {finding.status}] {sanitise_line(finding.subject)} "
+            f"(id {finding.id}, kind {sanitise_line(finding.kind)}, "
+            f"area {sanitise_line(finding.area)}, "
+            f"category {sanitise_line(finding.category)}, "
+            f"by {sanitise_line(finding.created_by)})"
             for finding in findings
         )
 
@@ -3066,16 +3077,25 @@ class AppContext:
         "already held by None" for the second shape, fabricating a holder
         that never existed; this branches on ``task.owner`` so a loss NEVER
         names a holder that isn't real.
+
+        PKT-28 Phase 0 pull-forward (render-safety ruling §BUILD-NOW item 6,
+        finding #90): ``owner`` is agent-supplied free text rendered via bare
+        f-string interpolation in both the WIN and the OWNED-loss branches —
+        live-forgeable today. Both now cross through
+        :func:`~loremaster.sanitise.safe_str`. The BLOCKED/UNOWNED branch
+        below interpolates ``blocked_by``/``status``, not ``owner`` — out of
+        this pull-forward's named scope (ruling names only ``owner`` for this
+        render; flagged as a residual gap for the PKT-03 tree-wide sweep).
         """
         task = result.task
         if result.claimed:
             return (
-                f"claimed: task {task.id} is now owned by {task.owner} "
+                f"claimed: task {task.id} is now owned by {safe_str(task.owner)} "
                 f"(claimed_at {task.claimed_at})"
             )
         if task.owner is not None:
             return (
-                f"not claimed: task {task.id} is already held by {task.owner} "
+                f"not claimed: task {task.id} is already held by {safe_str(task.owner)} "
                 f"(status {task.status})"
             )
         if task.superseded_by is not None:
@@ -3466,12 +3486,25 @@ class AppContext:
         ``superseded_by``, never ``status`` — so a bare ``[open]`` marker was
         indistinguishable from a genuinely open task, hiding the chain. A
         superseded row instead renders ``[superseded → <successor id>]``.
+
+        PKT-28 Phase 0 pull-forward (render-safety ruling §BUILD-NOW item 6,
+        finding #90): ``subject``/``owner`` are agent-supplied free text
+        rendered via bare f-string interpolation with no wrap — live-forgeable
+        today. ``subject`` now crosses through
+        :func:`~loremaster.sanitise.sanitise_line`; ``owner`` (``str | None``)
+        through :func:`~loremaster.sanitise.safe_str` (the ``sanitise_line(
+        str(x))`` idiom already used elsewhere for this exact field type).
+        ``blocked_by``'s elements are wrapped too, defense-in-depth, though
+        this field is NOT live-forgeable as rendered: Python's ``repr()`` of a
+        ``list[str]`` escapes every control/invisible character in each
+        element, so no real newline or forged row can survive even unwrapped.
         """
         if not rows:
             return _NO_TASKS_MATCHED
         return "\n".join(
-            f"- {cls._task_status_marker(task)} {task.subject} "
-            f"(id {task.id}, owner {task.owner}, blocked_by {task.blocked_by})"
+            f"- {cls._task_status_marker(task)} {sanitise_line(task.subject)} "
+            f"(id {task.id}, owner {safe_str(task.owner)}, "
+            f"blocked_by {[safe_str(blocker) for blocker in task.blocked_by]})"
             for task in rows
         )
 

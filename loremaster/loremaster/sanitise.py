@@ -40,7 +40,41 @@ CONTROL_CHAR_PATTERN = re.compile(
 BACKTICK_RUN_PATTERN = re.compile(r"`+")
 
 
-def sanitise_line(text: str) -> str:
+class SafeLine(str):
+    """A ``str`` PROVEN to have passed through :func:`sanitise_line`/
+    :func:`safe_str` (PKT-28 Phase 0 render-safety ruling, §ENFORCEMENT — v2,
+    amended post cold-audit NO-GO, REPORT-phase0-audit-1.md).
+
+    ``SafeLine`` alone enforces nothing against an f-string coercing an
+    arbitrary value — the guarantee comes from FOUR paired instruments in
+    ``loremaster.render``, not the type alone (see that module's docstring
+    for the full story): a served comms render is typed ``-> Rendered``, and
+    values passed through the assembly vocabulary
+    (:func:`~loremaster.render.render_line` et al.) are typed
+    ``SafeLine | int`` — a raw, unwrapped ``str`` is rejected by mypy at that
+    call site. The template/separator slot those same functions accept is
+    NOT mypy-guarded (mypy 2.1.0 parses but never enforces
+    ``typing.LiteralString`` — audit §PROBE-A); it is guarded instead by an
+    AST template-literal pin plus a runtime no-newline assert inside
+    ``render_line``/``render_join`` themselves. The ONLY sanctioned mints of
+    ``SafeLine`` are :func:`sanitise_line`, :func:`safe_str`, and
+    ``loremaster.render.render_join`` — a ``pytest``-time AST scan
+    (``test_render_seam_pins.py``) fails if ``SafeLine(...)``/
+    ``cast(SafeLine, ...)``, an import-alias of ``SafeLine``, or a subclass
+    of ``SafeLine`` appears anywhere else in the production package.
+    """
+
+
+def safe_str(value: object) -> SafeLine:
+    """Stringify then sanitise ``value`` — the ``sanitise_line(str(x))`` idiom
+    already used at several render call sites (e.g. ``str(task.owner)`` for an
+    ``owner: str | None`` field), made a single named call so every caller
+    goes through the same seam rather than re-deriving ``str(...)`` by hand.
+    """
+    return sanitise_line(str(value))
+
+
+def sanitise_line(text: str) -> SafeLine:
     """Collapse control chars / newlines in a NON-fenced rendered field (item 10).
 
     Any run of hostile characters (:data:`CONTROL_CHAR_PATTERN` — C0/C1
@@ -52,8 +86,12 @@ def sanitise_line(text: str) -> str:
     the citation line it sits on, escape a fence, or smuggle a hidden/reordered
     payload. Source *bodies* are NOT run through this — they stay verbatim
     inside a backtick fence.
+
+    Returns a :class:`SafeLine` (PKT-28 Phase 0) rather than a plain ``str`` —
+    covariant with the prior ``-> str`` signature, so every existing caller
+    that only ever used the result as a string keeps type-checking unchanged.
     """
-    return CONTROL_CHAR_PATTERN.sub(" ", text).strip()
+    return SafeLine(CONTROL_CHAR_PATTERN.sub(" ", text).strip())
 
 
 def max_backtick_run(text: str) -> int:
