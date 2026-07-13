@@ -11,8 +11,12 @@ configured embedding width it emits the SurrealDB DDL for lore's unified store
   re-reading the implementation.
 * **Behavioural (real server, 3.0.5 and 3.1.5 both verified — 3.1.x is the
   documented floor going forward):** the DDL APPLIES cleanly, applies again
-  IDEMPOTENTLY (``IF NOT EXISTS`` semantics), yields the specified tables /
-  indexes / analyzer as observed via ``INFO FOR DB`` / ``INFO FOR TABLE``, a
+  IDEMPOTENTLY (fields are ``OVERWRITE`` — re-applying an UNCHANGED definition
+  is a no-op in effect, while a CHANGED one actually lands on a deployed store;
+  tables / indexes / analyzers are ``IF NOT EXISTS``. See
+  ``TestFieldDdlConvergesOnAnExistingStore`` and finding #107), yields the
+  specified tables / indexes / analyzer as observed via
+  ``INFO FOR DB`` / ``INFO FOR TABLE``, a
   probe row round-trips per field-specified table, the ``code_ident`` analyzer
   splits identifiers the way the P0 spike verified, and an HNSW index built at
   width *D* accepts a *D*-vector but LOUDLY rejects a wrong-width one.
@@ -57,8 +61,14 @@ from loremaster.store.surreal_schema import (
     SNAPSHOT_ENTRY_TABLE,
     SNAPSHOT_TABLE,
     TRACE_TABLE,
+    generate_agent_ddl,
+    generate_brief_ddl,
     generate_ddl,
     generate_finding_ddl,
+    generate_graph_ddl,
+    generate_manifest_ddl,
+    generate_memory_ddl,
+    generate_task_ddl,
 )
 
 # The tables the approved P2 plan requires (the INDEPENDENT source — the plan,
@@ -179,6 +189,36 @@ def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+# Field declarations are matched KEYWORD-AGNOSTICALLY: the field name is simply the
+# last token before ``ON``. A closed alternation over today's two guard keywords
+# (``IF NOT EXISTS`` / ``OVERWRITE``) would go blind again the next time the guard
+# changes — which is precisely how ``test_in_and_out_are_never_hand_declared`` in
+# test_comms_schema.py rotted into a vacuous pass (finding #107). Callers that care
+# about WHICH guard is served assert it explicitly; see
+# ``TestFieldDdlConvergesOnAnExistingStore``.
+_DEFINE_FIELD_RE = re.compile(r"^DEFINE FIELD\b.*?(?P<field>\S+)\s+ON\s+(?P<table>\S+)\b")
+
+# The guard keyword each kind of DEFINE statement must carry (finding #107). FIELD
+# must CONVERGE an existing store onto the code, so it is OVERWRITE; the others must
+# stay IF NOT EXISTS — measured, ``DEFINE INDEX OVERWRITE`` re-validates every row of
+# a populated HNSW index and RAISES on a dim change, turning a silent no-op into a
+# boot-time crash.
+_REQUIRED_GUARDS: dict[str, str] = {
+    "FIELD": "OVERWRITE",
+    "TABLE": "IF NOT EXISTS",
+    "INDEX": "IF NOT EXISTS",
+    "ANALYZER": "IF NOT EXISTS",
+}
+_DEFINE_GUARD_RE = re.compile(
+    r"^DEFINE\s+(?P<kind>FIELD|TABLE|INDEX|ANALYZER)\s+(?P<guard>OVERWRITE|IF NOT EXISTS)\b"
+)
+
+
+def _statements(ddl: str) -> list[str]:
+    """The generated DDL split into individual, stripped statements."""
+    return [statement.strip() for statement in ddl.split(";\n") if statement.strip()]
+
+
 def _field_statement(ddl: str, table: str, field: str) -> str:
     """Return the single ``DEFINE FIELD ... ON <table> ...`` statement for
     ``field`` on ``table``, isolated from the rest of the DDL string so a
@@ -186,13 +226,31 @@ def _field_statement(ddl: str, table: str, field: str) -> str:
     OTHER field or table (e.g. ``status`` also appearing in an unrelated
     clause).
 
+    The served guard keyword is asserted here — ``DEFINE FIELD OVERWRITE``
+    (finding #107) — so a regression to the no-op ``IF NOT EXISTS`` form cannot
+    pass. The failure message is DERIVED from what was actually found rather than
+    re-stated beside it, so that regression reads as what it IS instead of as a
+    missing field.
+
     Raises:
         AssertionError: No matching ``DEFINE FIELD`` statement was found.
     """
-    marker = f"DEFINE FIELD IF NOT EXISTS {field} ON {table} "
-    for statement in ddl.split(";\n"):
-        if statement.strip().startswith(marker):
+    marker = f"DEFINE FIELD OVERWRITE {field} ON {table} "
+    served: str | None = None
+    for statement in _statements(ddl):
+        if statement.startswith(marker):
             return statement
+        match = _DEFINE_FIELD_RE.match(statement)
+        if match and match.group("field") == field and match.group("table") == table:
+            served = statement
+    if served is not None:
+        raise AssertionError(
+            f"{table}.{field} is declared, but NOT with the required "
+            f"`DEFINE FIELD OVERWRITE` guard (finding #107 — `IF NOT EXISTS` is a "
+            f"NO-OP on a field that already exists, so a changed definition never "
+            f"reaches a deployed store and the schema silently stops converging on "
+            f"the code). Served: {served!r}"
+        )
     raise AssertionError(f"no DEFINE FIELD statement found for {table}.{field} in generated DDL")
 
 
@@ -327,6 +385,91 @@ async def _create_command(
     )
 
 
+class TestFieldDdlConvergesOnAnExistingStore:
+    """Finding #107 — the DEFINE-guard invariant, over EVERY served generator.
+
+    The outage this pins: ``DEFINE FIELD IF NOT EXISTS`` is a **NO-OP on a field
+    that already exists**. A widened ASSERT therefore never reached the deployed
+    store, ``brief_publish`` broke 100% in production, and no gate saw it — every
+    test builds a THROWAWAY database, where every field is new and the no-op never
+    fires. The schema must CONVERGE on the code: fields are ``OVERWRITE``.
+
+    The converse is equally load-bearing and is pinned here in the same breath,
+    because it is the mistake this fix invites: **tables, indexes and analyzers must
+    STAY** ``IF NOT EXISTS``. Measured on the live server — ``DEFINE INDEX OVERWRITE``
+    re-validates every row of a populated HNSW index and RAISES on a dim change,
+    converting today's silent no-op into a hard ``ensure_ready()`` failure at boot.
+
+    This is the INSTRUMENT for the defect class, not merely a fix for its one
+    instance (repo CLAUDE.md: "a fix without an invariant is half a fix" — and "when
+    a defect CLASS is identified, ship the INSTRUMENT in the same breath as the
+    law"). It reads the guard keyword off every DEFINE statement of every generator,
+    so a NEW table, field or ledger added later cannot quietly reintroduce #107 —
+    the 34 per-field pins only cover fields somebody thought to pin.
+    """
+
+    def _generated_ddl(self) -> dict[str, str]:
+        """Every DDL generator lore serves, by name."""
+        return {
+            "generate_ddl": generate_ddl(dim=NONDEFAULT_DIM),
+            "generate_manifest_ddl": generate_manifest_ddl(),
+            "generate_memory_ddl": generate_memory_ddl(dim=NONDEFAULT_DIM),
+            "generate_task_ddl": generate_task_ddl(),
+            "generate_finding_ddl": generate_finding_ddl(),
+            "generate_agent_ddl": generate_agent_ddl(),
+            "generate_brief_ddl": generate_brief_ddl(),
+            "generate_graph_ddl": generate_graph_ddl(),
+        }
+
+    def test_every_define_statement_carries_the_guard_its_kind_requires(self) -> None:
+        offenders: list[str] = []
+        seen: dict[str, int] = {kind: 0 for kind in _REQUIRED_GUARDS}
+        for generator, ddl in self._generated_ddl().items():
+            for statement in _statements(ddl):
+                if not statement.startswith("DEFINE "):
+                    continue
+                match = _DEFINE_GUARD_RE.match(statement)
+                # Fails CLOSED on anything this pin has no ruling for: an un-guarded
+                # DEFINE (not re-appliable at boot) or a NEW kind (DEFINE EVENT /
+                # FUNCTION / …) whose correct guard nobody has decided yet. Silence
+                # here would be the hole — a new kind of DEFINE is exactly how #107
+                # walks back in.
+                assert match is not None, (
+                    f"{generator}: this DEFINE statement carries no guard keyword this "
+                    f"pin knows how to rule on — it is either un-guarded (and so not "
+                    f"safely re-appliable at boot), or a DEFINE kind not yet in "
+                    f"_REQUIRED_GUARDS. Decide which guard it must carry and add it "
+                    f"there (finding #107). Statement: {statement!r}"
+                )
+                kind, guard = match.group("kind"), match.group("guard")
+                seen[kind] += 1
+                if guard != _REQUIRED_GUARDS[kind]:
+                    offenders.append(f"{generator}: {statement!r}")
+
+        # CONTROL — the probe must be shown capable of SEEING each kind before its
+        # silence about that kind means anything. A parser that matched nothing (a
+        # changed emitter, a reworked split) would otherwise report a clean sweep
+        # over zero statements: the exact vacuous-pass failure mode this class
+        # exists to kill.
+        for kind, count in seen.items():
+            assert count > 0, (
+                f"instrument is blind: parsed ZERO `DEFINE {kind}` statements across all "
+                f"generators, so this pin proves nothing about {kind}s. Fix the parser "
+                f"before trusting the verdict."
+            )
+
+        assert not offenders, (
+            "finding #107 — a DEFINE statement carries the WRONG guard keyword.\n"
+            "  FIELD must be OVERWRITE: `IF NOT EXISTS` is a NO-OP on a field that "
+            "already exists, so a changed definition never lands on a deployed store "
+            "(this broke brief_publish 100% in production, green in every test).\n"
+            "  TABLE / INDEX / ANALYZER must stay IF NOT EXISTS: `DEFINE INDEX "
+            "OVERWRITE` re-validates every row of a populated HNSW index and RAISES on "
+            "a dim change — a boot-time crash.\n"
+            "Offenders:\n  " + "\n  ".join(offenders)
+        )
+
+
 class TestConfiguredDimension:
     """The HNSW width is the CONFIGURED ``dim``, never a hardcoded default (offline)."""
 
@@ -372,8 +515,10 @@ class TestSchemaAppliesToServer:
     async def test_ddl_is_idempotent(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
     ) -> None:
-        # IF NOT EXISTS semantics: applying twice must not raise, and the schema
-        # must still be intact afterwards (a probe row round-trips).
+        # Applying an UNCHANGED DDL twice must not raise, and the schema must still
+        # be intact afterwards (a probe row round-trips). Note this is idempotence of
+        # the unchanged definition — NOT the claim that a re-DEFINE is inert: fields
+        # are ``OVERWRITE`` precisely so a CHANGED definition does land (finding #107).
         connection, env = admin_db
         ddl = generate_ddl(dim=env.dim)
         await run(connection, ddl)
@@ -1553,8 +1698,15 @@ class TestFindingRoundTrip:
 class TestFindingAppliedOverBarePlaceholder:
     """The intended upgrade path: the deployed DB already carries the bare P2
     ``DEFINE TABLE finding SCHEMAFULL`` placeholder (no fields). Applying
-    ``generate_ddl`` over that EXISTING empty table must add the full field set via
-    ``DEFINE FIELD IF NOT EXISTS`` — never a rebuild, never a rejection.
+    ``generate_ddl`` over that EXISTING empty table must add the full field set
+    — never a rebuild, never a rejection.
+
+    Scope note (finding #107): every field here is NEW to the bare table, so this
+    exercises schema ADDITION to an existing store — never schema CHANGE. That
+    distinction is why the upgrade path FELT covered while ``DEFINE FIELD IF NOT
+    EXISTS`` was silently no-op'ing every CHANGED definition in production. The
+    change case lives in test_surreal_store.py's migration suite; the guard-keyword
+    invariant lives in ``TestFieldDdlConvergesOnAnExistingStore``.
     """
 
     async def test_full_field_set_lands_over_the_bare_table(
@@ -1566,8 +1718,8 @@ class TestFindingAppliedOverBarePlaceholder:
         info_before = await run(connection, f"INFO FOR TABLE {FINDING_TABLE}")
         assert not info_before.get("fields", {}), "precondition: the bare table has no fields yet"
 
-        # 2. Apply the full DDL over the existing table — the DEFINE FIELD IF NOT
-        # EXISTS statements upgrade it in place.
+        # 2. Apply the full DDL over the existing table — the DEFINE FIELD statements
+        # upgrade it in place (every field is NEW here; see the class docstring).
         await run(connection, generate_ddl(dim=env.dim))
         info_after = await run(connection, f"INFO FOR TABLE {FINDING_TABLE}")
         defined_fields = set(info_after.get("fields", {}))

@@ -182,18 +182,63 @@ def _brief_record_id(name: str, version: int) -> str:
 # precedent exists in this suite) ---------------------------------------------
 
 
+# Field declarations are matched KEYWORD-AGNOSTICALLY: the field name is simply the
+# last token before ``ON``. A closed alternation over today's two guard keywords
+# (``IF NOT EXISTS`` / ``OVERWRITE``) would go blind again the next time the guard
+# changes — which is exactly how ``test_in_and_out_are_never_hand_declared`` below
+# rotted into a vacuous pass (finding #107).
+_DEFINE_FIELD_RE = re.compile(r"^DEFINE FIELD\b.*?(?P<field>\S+)\s+ON\s+(?P<table>\S+)\b")
+
+
+def _statements(ddl: str) -> list[str]:
+    """The generated DDL split into individual, stripped statements."""
+    return [statement.strip() for statement in ddl.split(";\n") if statement.strip()]
+
+
+def _declared_fields(ddl: str, table: str) -> set[str]:
+    """Every field name HAND-DECLARED on ``table`` by a ``DEFINE FIELD`` statement.
+
+    Parsed structurally and keyword-agnostically (see :data:`_DEFINE_FIELD_RE`), so
+    a pin asserting the ABSENCE of a declaration cannot be silently defeated by a
+    change to the guard keyword.
+    """
+    declared = set()
+    for statement in _statements(ddl):
+        match = _DEFINE_FIELD_RE.match(statement)
+        if match and match.group("table") == table:
+            declared.add(match.group("field"))
+    return declared
+
+
 def _field_statement(ddl: str, table: str, field: str) -> str:
     """Return the single ``DEFINE FIELD ... ON <table> ...`` statement for
     ``field`` on ``table``, isolated so a per-field assertion can't be fooled
     by a substring match against some OTHER field or table.
 
+    The served guard keyword is asserted here — ``DEFINE FIELD OVERWRITE``
+    (finding #107) — so a regression to the no-op ``IF NOT EXISTS`` form cannot pass.
+    The failure message is DERIVED from what was actually found, so that regression
+    reads as what it IS instead of as a missing field.
+
     Raises:
         AssertionError: No matching ``DEFINE FIELD`` statement was found.
     """
-    marker = f"DEFINE FIELD IF NOT EXISTS {field} ON {table} "
-    for statement in ddl.split(";\n"):
-        if statement.strip().startswith(marker):
+    marker = f"DEFINE FIELD OVERWRITE {field} ON {table} "
+    served: str | None = None
+    for statement in _statements(ddl):
+        if statement.startswith(marker):
             return statement
+        match = _DEFINE_FIELD_RE.match(statement)
+        if match and match.group("field") == field and match.group("table") == table:
+            served = statement
+    if served is not None:
+        raise AssertionError(
+            f"{table}.{field} is declared, but NOT with the required "
+            f"`DEFINE FIELD OVERWRITE` guard (finding #107 — `IF NOT EXISTS` is a "
+            f"NO-OP on a field that already exists, so a changed definition never "
+            f"reaches a deployed store; this is what broke `brief_publish` 100% in "
+            f"production while every test stayed green). Served: {served!r}"
+        )
     raise AssertionError(f"no DEFINE FIELD statement found for {table}.{field} in generated DDL")
 
 
@@ -519,11 +564,47 @@ class TestBriefedDdlOffline:
         assert "TYPE datetime" in at
 
     def test_in_and_out_are_never_hand_declared(self) -> None:
-        # TYPE RELATION auto-defines in/out; refers/answers_to never hand-
-        # declare them either (surreal_schema.py:454's own docstring).
+        """``TYPE RELATION`` auto-defines ``in``/``out``; the generator must never
+        hand-declare them (``refers``/``answers_to`` don't either —
+        surreal_schema.py:454's own docstring).
+
+        REPAIRED (finding #107). The retired form was a pair of NEGATIVE substring
+        assertions against the literal ``DEFINE FIELD IF NOT EXISTS in ON …``. When
+        ``_define_field`` flipped to ``OVERWRITE``, the searched-for string could no
+        longer appear in ANY DDL — so both assertions became unconditionally true and
+        the pin passed VACUOUSLY, forever, structurally unable to detect the one
+        thing it exists to detect. It did not go red; it went blind, which is worse:
+        a pin that fails is a signal, a pin that quietly stops testing is decoration
+        everybody still trusts.
+
+        So the absence is now established STRUCTURALLY — parse the declared field
+        names off the DDL and check membership — never by searching for a string that
+        embeds today's guard keyword. And the parse is CONTROLLED (below), because an
+        assertion of ABSENCE is only worth as much as the instrument's demonstrated
+        ability to see PRESENCE.
+        """
         ddl = generate_brief_ddl()
-        assert f"DEFINE FIELD IF NOT EXISTS in ON {BRIEFED_RELATION} " not in ddl
-        assert f"DEFINE FIELD IF NOT EXISTS out ON {BRIEFED_RELATION} " not in ddl
+        declared = _declared_fields(ddl, BRIEFED_RELATION)
+
+        # CONTROL — prove the instrument can SEE a hand-declared field on this exact
+        # table before trusting its silence about `in`/`out`. Without this, a parser
+        # that matched nothing would yield an empty set, and `"in" not in set()` is
+        # trivially True: the pin would pass for the WRONG REASON, which is precisely
+        # the failure mode being repaired. `via` and `at` ARE hand-declared here (the
+        # two tests directly above assert their types), so they must be visible.
+        assert {"via", "at"} <= declared, (
+            f"instrument is blind: the DDL parser found {declared!r} on "
+            f"{BRIEFED_RELATION}, which does not include the `via`/`at` fields the "
+            f"generator demonstrably declares. Until it can see those, its silence "
+            f"about `in`/`out` proves NOTHING. Fix the parser, not this assertion."
+        )
+
+        assert not ({"in", "out"} & declared), (
+            f"{BRIEFED_RELATION} is a TYPE RELATION table — SurrealDB defines its "
+            f"`in`/`out` endpoint columns itself. Hand-declaring them fights the "
+            f"engine's own definition. Hand-declared: "
+            f"{sorted({'in', 'out'} & declared)}"
+        )
 
     def test_unique_in_out_index_is_defined(self) -> None:
         ddl = generate_brief_ddl()

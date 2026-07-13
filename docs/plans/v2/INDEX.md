@@ -241,3 +241,41 @@ authorization models stabilize** — hence wave G's internal order.
   always counted behind on its own brief — and the zero-behind branch is unreachable through
   the tool; operator fork: self-ack `via="publish"`?) · **#99** (fleet header says "N agents"
   where N is non-retired — the last label inconsistency). NEXT = PKT-28 **C2**.
+- 2026-07-13 · **PKT-28 C1 CLOSE-OUT: #97/#98/#99 + a SEVEN-instance render-honesty sweep +
+  a 100% PRODUCTION OUTAGE (#107) and its fix.** Deployed image **b0fce6904fc5** (both
+  containers); commits **f36120b** (comms) + **060dbda** (store). Live-verified on the real
+  wire: publish self-acks its author (#98) · `limit` teaches/clamps and mutates nothing on
+  rejection (#97) · `fleet: N non-retired agents`, and an all-retired scope no longer claims
+  "no agents registered" (#99) · a non-`project` first-publish teaches `brief_ack` instead of
+  a register-ack that never runs (8th) · the catch-up teach names its brief, so following it
+  reads the RIGHT one (10th).
+  **THE OUTAGE (#107) — the lesson of the phase.** #98 widened `briefed.via`'s ASSERT. It
+  shipped with **1040 comms tests green, a cold code audit GO, and the contract-adversary
+  passing — and broke `brief_publish` 100% in production**: `DEFINE FIELD IF NOT EXISTS` is a
+  NO-OP on an existing field, so the change never migrated. **No gate could see it: every test
+  mints a virgin throwaway DB, so no test in this repo had EVER applied a schema change to an
+  EXISTING store.** A fixture that guarantees a clean slate cannot test what only happens on a
+  dirty one — and every long-lived deployment is a dirty one. **The deploy smoke was the only
+  instrument that caught it.** Fixed: `_define_field` → `DEFINE FIELD OVERWRITE` (the store
+  now CONVERGES to the code on every `ensure_ready()`; it self-migrated production on boot).
+  Indexes/analyzers/tables stay `IF NOT EXISTS` — MEASURED: `DEFINE INDEX OVERWRITE` re-validates
+  a populated HNSW index and RAISES (boot crash); an analyzer OVERWRITE never re-tokenises a
+  built FULLTEXT index (silent recall bug). The naive "OVERWRITE everything" fix would have
+  taken the server down a different way.
+  **The gotcha was ALREADY IN `docs/reference/surrealdb-31-capabilities.md` and nobody read it**
+  — and SurrealDB's own docs contain a FALSE claim (`IF NOT EXISTS` on an existing object "will
+  return an error"; it silently no-ops) that would lead a careful reader to think this bug is
+  impossible. Law added (CLAUDE.md): read the dependency's docs FIRST, then VERIFY them — the
+  docs named the mechanism, only the probe caught them lying. `ALTER` was rejected with
+  receipts (it cannot CREATE a field; `ALTER … IF EXISTS` silently no-ops → it would have
+  reintroduced #107 on the fresh-DB path).
+  **PROCESS SHIPPED THIS PHASE:** the reusable **`contract-adversary`** agent (grades the TESTS
+  before any builder starts — 4 runs, 4 blockers, incl. against an Opus contract) · contract
+  authors → **Opus** (operator) · **pytest-xdist** (846s→88s; it also EXPOSED #101 and #102) ·
+  "a diagnosis is not an instrument" · "a probe needs a control" · "read the residual table,
+  not just the summary block".
+  **OPEN → C2, in order: #104** (render architecture — name the ROLE, type the applicability,
+  kill the fixture monoculture; C2's STEP 0, before any new renders) · **#102** (hot-row mint
+  drains under N-way contention — a worktree kickoff prompt exists; blocks `message.seq`) ·
+  then #103 (heartbeat generalization, spec v8 ruled) · #105 (dangling-edge landmine) · #100
+  (`created_by` identity split) · #101 (log-capture isolation). NEXT = PKT-28 **C2**.

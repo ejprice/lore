@@ -58,12 +58,14 @@ from _surreal_harness import (
     SLUG,
     TIER_A,
     TIER_B,
+    SurrealConnection,
     SurrealEnv,
     call_until_recovered,
     chunk_record,
     connect_admin,
     drop_database,
     make_env,
+    run,
     surreal_env,  # noqa: F401 - re-exported pytest fixture
     unique_database,
     unit_vector,
@@ -93,12 +95,29 @@ from loremaster.store.surreal import (
     VectorDimensionError,
     _SurrealConnection,
 )
-from loremaster.store.surreal_schema import CHUNK_TABLE, TRACE_TABLE, generate_ddl
+from loremaster.store.surreal_schema import (
+    _BRIEFED_VIA_PUBLISH,
+    AGENT_TABLE,
+    BRIEF_TABLE,
+    BRIEFED_RELATION,
+    CHUNK_TABLE,
+    FILE_TABLE,
+    FINDING_TABLE,
+    MEMORY_TABLE,
+    TASK_TABLE,
+    TRACE_TABLE,
+    _define_field,
+    _define_table,
+    generate_agent_ddl,
+    generate_brief_ddl,
+    generate_ddl,
+    generate_graph_ddl,
+)
 from loremaster.symbols import _SCROLL_LIMIT  # the real scroll caller's read cap
 from lorescribe.models import Chunk
 from pydantic import ValidationError
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
-from surrealdb.errors import ErrorKind, ServerError
+from surrealdb.errors import ErrorKind, ServerError, SurrealError
 
 # A factory (yielded by the ``two_stores`` fixture) that builds one more ready
 # store on the SAME database — a second live connection for the isolation test.
@@ -4680,4 +4699,691 @@ class TestLiveEngineClassification:
         assert statuses.count("ERR") >= 3, (
             f"expected the engine to stamp the pre-offender statement ERR too; got "
             f"{statuses}. If this changed, TestTxnRootCauseSelection's shapes are stale."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Schema MIGRATION against an EXISTING store (ledger #107)
+#
+# Every other suite in this repo runs against a VIRGIN database
+# (``_surreal_harness.unique_database()`` mints ``test_<pid>_<uuid4>`` per test)
+# — and ``DEFINE FIELD IF NOT EXISTS`` cheerfully creates the NEW definition on a
+# virgin store. So no test here has EVER applied a schema CHANGE to a store that
+# already carried the OLD one, which is the only condition under which the defect
+# appears. That blind spot let finding #98's widened ``briefed.via`` ASSERT ship
+# past 1040 green comms tests, a cold code audit and a contract adversary, and
+# take ``brief_publish`` down 100% in production. These pins mint a fresh database
+# and then DIRTY IT DELIBERATELY: old definition -> a row that is legal under it
+# -> the new definition -> did the change LAND, and did the data SURVIVE?
+# ---------------------------------------------------------------------------
+
+# A tiny embedding width for the migration databases: these pins exercise the DDL
+# layer, never recall quality, and the blast-radius pin applies the WHOLE schema
+# (both HNSW indexes) — at ``PRODUCTION_DIM`` that is needless work per test.
+_MIGRATION_DIM = 8
+
+# The probe table the field-level pins evolve. A dedicated table (not a real one)
+# keeps the pins about ``_define_field`` — the SHARED emitter every table's DDL
+# goes through — rather than about any single ledger's field list, which is free
+# to change without weakening this invariant.
+_MIGRATION_TABLE = "migration_probe"
+
+# The probe's evolving column, and the unrelated column an UPDATE touches when a
+# pin needs to prove that a row is (or is not) still WRITABLE after a migration.
+_MIGRATION_FIELD = "via"
+_MIGRATION_SIDE_FIELD = "tag"
+
+# The narrow (OLD) and widened (NEW) closed sets — deliberately the exact shape of
+# the change that broke production: two values, then three.
+_OLD_CLOSED_SET = ("register", "explicit")
+_NEW_CLOSED_SET = ("register", "explicit", "publish")
+
+# A value in NEITHER set: the POSITIVE CONTROL. A migration that "works" by
+# quietly DROPPING the ASSERT would accept the new value too — this value is how a
+# pin tells a widened constraint apart from an absent one.
+_OUT_OF_DOMAIN_VALUE = "bogus"
+
+
+def _closed_set_assert(values: tuple[str, ...]) -> str:
+    """The ``ASSERT`` clause pinning ``$value`` to ``values`` — the schema's own idiom.
+
+    Mirrors how :mod:`loremaster.store.surreal_schema` builds every closed-domain
+    constraint it emits (``file.state`` / ``task.status`` / ``briefed.via`` …).
+    """
+    allowed = ", ".join(f"'{value}'" for value in values)
+    return f"ASSERT $value IN [{allowed}]"
+
+
+def _probe_ddl(field_specs: tuple[tuple[str, str, str], ...]) -> str:
+    """DDL for the probe table, emitted through the PRODUCTION helpers.
+
+    Deliberately built from :func:`~loremaster.store.surreal_schema._define_table`
+    and :func:`~loremaster.store.surreal_schema._define_field` rather than
+    hand-written SurrealQL: the defect lives in the EMITTER, so a pin that wrote
+    its own ``DEFINE FIELD`` string would test a copy of the code and pass while
+    production stayed broken.
+    """
+    statements = [_define_table(_MIGRATION_TABLE)]
+    statements += [
+        _define_field(_MIGRATION_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in field_specs
+    ]
+    return ";\n".join(statements) + ";\n"
+
+
+def _closed_set_specs(values: tuple[str, ...]) -> tuple[tuple[str, str, str], ...]:
+    """The probe table's fields with its closed set pinned to ``values``."""
+    return (
+        (_MIGRATION_FIELD, "string", _closed_set_assert(values)),
+        (_MIGRATION_SIDE_FIELD, "option<string>", ""),
+    )
+
+
+# The probe table typed for the TYPE-change pin: the same column as a ``string``,
+# then as an ``int``. A TYPE change is the one migration shape that could plausibly
+# fail LOUDLY or corrupt data, so it is measured, not assumed.
+_STRING_TYPED_SPECS: tuple[tuple[str, str, str], ...] = (
+    (_MIGRATION_FIELD, "string", ""),
+    (_MIGRATION_SIDE_FIELD, "option<string>", ""),
+)
+_INT_TYPED_SPECS: tuple[tuple[str, str, str], ...] = (
+    (_MIGRATION_FIELD, "int", ""),
+    (_MIGRATION_SIDE_FIELD, "option<string>", ""),
+)
+
+
+async def _apply_ddl(connection: SurrealConnection, ddl: str, *, url: str) -> None:
+    """Apply ``ddl`` EXACTLY as production does — one ``BEGIN … COMMIT`` through
+    :func:`~loremaster.store._txn.execute_transaction`.
+
+    Not a bare ``connection.query(ddl)``: the SDK inspects only the FIRST
+    statement's status, so a later DDL statement's rejection would roll the whole
+    schema back server-side while ``query()`` raised nothing at all (see
+    :meth:`SurrealStore.ensure_ready`). A migration pin that applied its DDL the
+    lax way could report a green migration over a schema the engine had just
+    silently discarded.
+    """
+
+    async def _acquire() -> _SurrealConnection:
+        # No cast: the harness's ``SurrealConnection`` IS the store's
+        # ``_SurrealConnection`` union — a raw admin connection is exactly what the
+        # transaction seam expects.
+        return connection
+
+    async def _never_drop(_connection: _SurrealConnection) -> None:
+        raise AssertionError("a DDL rejection must never drop the connection")
+
+    await execute_transaction(
+        f"BEGIN;\n{ddl}COMMIT;\n", {}, acquire=_acquire, drop=_never_drop, url=url
+    )
+
+
+def _brief_ddl_before_the_via_widening() -> str:
+    """The brief slice's DDL as it stood BEFORE finding #98 widened ``briefed.via``.
+
+    DERIVED from the current generator (never hand-copied): the widened value is
+    removed from whatever ASSERT the code emits today. The derivation CHECKS
+    ITSELF — if removing the value stops changing the DDL (because the vocabulary
+    moved on), this raises rather than handing back an "old" DDL identical to the
+    new one, which would leave the pin passing while testing nothing at all.
+    """
+    current = generate_brief_ddl()
+    old = current.replace(f", '{_BRIEFED_VIA_PUBLISH}'", "", 1)
+    if old == current:
+        raise AssertionError(
+            f"the old-world derivation no longer changes anything: '{_BRIEFED_VIA_PUBLISH}' "
+            "is not in the briefed.via ASSERT this code emits, so this fixture would "
+            "'migrate' a schema to itself and pin nothing"
+        )
+    return old
+
+
+@pytest_asyncio.fixture()
+async def migration_db() -> AsyncIterator[tuple[SurrealConnection, SurrealEnv]]:
+    """A raw admin connection on a fresh unique database, reaped on exit.
+
+    The migration pins own their schema themselves — they apply an OLD definition,
+    dirty the store, then apply the CURRENT one — so they need a bare connection,
+    NOT a :class:`SurrealStore` that has already applied today's schema at
+    ``ensure_ready``.
+    """
+    env = make_env(database=unique_database(), dim=_MIGRATION_DIM)
+    connection = await connect_admin(env)
+    try:
+        yield connection, env
+    finally:
+        await connection.close()
+        await drop_database(env)
+
+
+class TestSchemaMigrationAgainstAnExistingStore:
+    """The DDL layer must be able to EVOLVE (ledger #107).
+
+    ``DEFINE FIELD IF NOT EXISTS`` is a NO-OP on a field that already exists, so
+    ANY change to an existing field's definition — a widened ASSERT, a changed
+    TYPE, a new DEFAULT — is silently discarded against a store that already
+    carries the old one. Every long-lived deployment is such a store; no test in
+    this repo was. These pins apply a schema CHANGE to a DIRTY database and demand
+    that the change actually lands and the data survives.
+    """
+
+    async def test_a_widened_assert_lands_on_an_existing_field(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        connection, env = migration_db
+        # The OLD world: the narrow closed set.
+        await _apply_ddl(connection, _probe_ddl(_closed_set_specs(_OLD_CLOSED_SET)), url=env.url)
+        # DIRTY THE STORE — a row that is legal under the OLD definition. This is
+        # the whole condition the defect needs: the field must ALREADY EXIST.
+        await run(
+            connection,
+            f"CREATE {_MIGRATION_TABLE}:legacy CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+            {"value": _OLD_CLOSED_SET[0]},
+        )
+
+        # The NEW world: the widened closed set, through the same emitter.
+        await _apply_ddl(connection, _probe_ddl(_closed_set_specs(_NEW_CLOSED_SET)), url=env.url)
+
+        # The change must have LANDED: a value legal ONLY under the new definition
+        # is now accepted. Today the engine rejects it — the store still carries
+        # the OLD ASSERT, exactly as it did when `brief_publish` went down.
+        widened_value = _NEW_CLOSED_SET[-1]
+        await run(
+            connection,
+            f"CREATE {_MIGRATION_TABLE}:widened CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+            {"value": widened_value},
+        )
+        rows = await run(
+            connection, f"SELECT {_MIGRATION_FIELD} FROM {_MIGRATION_TABLE}:widened"
+        )
+        assert rows[0][_MIGRATION_FIELD] == widened_value
+
+    async def test_the_migrated_field_still_rejects_an_out_of_domain_value(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        # THE POSITIVE CONTROL for the pin above. "The new value was accepted" is
+        # worthless on its own: a migration that landed by DROPPING the ASSERT
+        # entirely would accept it too — and would accept every typo'd garbage
+        # value forever after. The constraint must be WIDER, not GONE.
+        connection, env = migration_db
+        await _apply_ddl(connection, _probe_ddl(_closed_set_specs(_OLD_CLOSED_SET)), url=env.url)
+        await run(
+            connection,
+            f"CREATE {_MIGRATION_TABLE}:legacy CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+            {"value": _OLD_CLOSED_SET[0]},
+        )
+
+        await _apply_ddl(connection, _probe_ddl(_closed_set_specs(_NEW_CLOSED_SET)), url=env.url)
+
+        with pytest.raises(SurrealError) as rejection:
+            await run(
+                connection,
+                f"CREATE {_MIGRATION_TABLE}:garbage CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+                {"value": _OUT_OF_DOMAIN_VALUE},
+            )
+        # ...and rejected BY THE ASSERT (naming the offending value), never by a
+        # parse error or a missing table — a probe that passes for the wrong
+        # reason is the failure mode this whole class exists to end.
+        assert _OUT_OF_DOMAIN_VALUE in str(rejection.value)
+        assert _MIGRATION_FIELD in str(rejection.value)
+
+    async def test_the_pre_existing_row_survives_the_migration(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        # A migration that "converges" the schema by destroying the rows that live
+        # under it has not migrated anything. The dirty row must come through the
+        # DDL change untouched.
+        connection, env = migration_db
+        await _apply_ddl(connection, _probe_ddl(_closed_set_specs(_OLD_CLOSED_SET)), url=env.url)
+        await run(
+            connection,
+            f"CREATE {_MIGRATION_TABLE}:legacy CONTENT "
+            f"{{ {_MIGRATION_FIELD}: $value, {_MIGRATION_SIDE_FIELD}: $tag }}",
+            {"value": _OLD_CLOSED_SET[0], "tag": "keep-me"},
+        )
+
+        await _apply_ddl(connection, _probe_ddl(_closed_set_specs(_NEW_CLOSED_SET)), url=env.url)
+
+        rows = await run(connection, f"SELECT * FROM {_MIGRATION_TABLE}:legacy")
+        assert len(rows) == 1
+        assert rows[0][_MIGRATION_FIELD] == _OLD_CLOSED_SET[0]
+        assert rows[0][_MIGRATION_SIDE_FIELD] == "keep-me"
+        # ...and it is still WRITABLE: a widening leaves every existing row legal,
+        # so an update of an unrelated column must not trip the new ASSERT.
+        await run(
+            connection,
+            f"UPDATE {_MIGRATION_TABLE}:legacy SET {_MIGRATION_SIDE_FIELD} = $tag",
+            {"tag": "touched"},
+        )
+        rows = await run(connection, f"SELECT * FROM {_MIGRATION_TABLE}:legacy")
+        assert rows[0][_MIGRATION_SIDE_FIELD] == "touched"
+
+    async def test_reapplying_an_unchanged_definition_is_still_an_idempotent_no_op(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        # The guarantee ``IF NOT EXISTS`` buys today, and the one a fix must NOT
+        # spend: ``ensure_ready`` runs the DDL unconditionally on every boot, so
+        # re-applying an UNCHANGED definition must neither raise nor wipe data nor
+        # loosen a constraint.
+        connection, env = migration_db
+        specs = _closed_set_specs(_NEW_CLOSED_SET)
+        await _apply_ddl(connection, _probe_ddl(specs), url=env.url)
+        await run(
+            connection,
+            f"CREATE {_MIGRATION_TABLE}:legacy CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+            {"value": _OLD_CLOSED_SET[0]},
+        )
+
+        await _apply_ddl(connection, _probe_ddl(specs), url=env.url)
+        await _apply_ddl(connection, _probe_ddl(specs), url=env.url)
+
+        rows = await run(connection, f"SELECT * FROM {_MIGRATION_TABLE}")
+        assert len(rows) == 1
+        assert rows[0][_MIGRATION_FIELD] == _OLD_CLOSED_SET[0]
+        # The constraint is still THERE after the re-applications (the control: a
+        # no-op that quietly stripped the ASSERT would still pass the count check).
+        with pytest.raises(SurrealError):
+            await run(
+                connection,
+                f"CREATE {_MIGRATION_TABLE}:garbage CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+                {"value": _OUT_OF_DOMAIN_VALUE},
+            )
+
+    async def test_a_narrowing_change_is_loud_never_a_silent_data_rewrite(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        """A migration that makes a constraint STRICTER while a row already
+        violates the new rule: measured live against 3.1.5 (spike-surreal), not
+        assumed.
+
+        The measured behaviour, pinned here so an engine upgrade that starts
+        silently mangling data goes RED: the DDL itself APPLIES cleanly; the
+        now-illegal row is NEITHER deleted NOR rewritten (it reads back with its
+        original value — the engine does not retro-validate rows at DDL time); new
+        writes of the now-illegal value are REJECTED; and any UPDATE of the
+        offending row — even of a completely unrelated column — FAILS LOUDLY,
+        because the whole record is re-validated on write. The row is effectively
+        read-only until it is fixed. Loud is the acceptable outcome; a silent
+        coercion would not be.
+        """
+        connection, env = migration_db
+        await _apply_ddl(connection, _probe_ddl(_closed_set_specs(_NEW_CLOSED_SET)), url=env.url)
+        now_illegal_value = _NEW_CLOSED_SET[-1]
+        await run(
+            connection,
+            f"CREATE {_MIGRATION_TABLE}:legacy CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+            {"value": now_illegal_value},
+        )
+
+        # NARROW the domain out from under that row.
+        await _apply_ddl(connection, _probe_ddl(_closed_set_specs(_OLD_CLOSED_SET)), url=env.url)
+
+        # 1. The narrowing LANDED: the value is no longer writable.
+        with pytest.raises(SurrealError):
+            await run(
+                connection,
+                f"CREATE {_MIGRATION_TABLE}:fresh CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+                {"value": now_illegal_value},
+            )
+        # 2. The existing row was NOT destroyed and NOT silently rewritten.
+        rows = await run(connection, f"SELECT * FROM {_MIGRATION_TABLE}:legacy")
+        assert len(rows) == 1
+        assert rows[0][_MIGRATION_FIELD] == now_illegal_value
+        # 3. Touching it fails LOUDLY, naming the field and the offending value —
+        #    the row is write-poisoned until a migration fixes its data. Silence
+        #    here (a swallowed write, a coerced value) would be the real defect.
+        with pytest.raises(SurrealError) as rejection:
+            await run(
+                connection,
+                f"UPDATE {_MIGRATION_TABLE}:legacy SET {_MIGRATION_SIDE_FIELD} = $tag",
+                {"tag": "touched"},
+            )
+        assert _MIGRATION_FIELD in str(rejection.value)
+        assert now_illegal_value in str(rejection.value)
+        # 4. And the failed UPDATE left the row exactly as it was (no partial write).
+        rows = await run(connection, f"SELECT * FROM {_MIGRATION_TABLE}:legacy")
+        assert rows[0][_MIGRATION_FIELD] == now_illegal_value
+        assert rows[0].get(_MIGRATION_SIDE_FIELD) is None
+        # 5. CONTROL — the narrowed domain still ACCEPTS its own legal values, so
+        #    the rejections above are the ASSERT working, not the table broken.
+        await run(
+            connection,
+            f"CREATE {_MIGRATION_TABLE}:ok CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+            {"value": _OLD_CLOSED_SET[1]},
+        )
+
+    async def test_a_type_change_on_a_populated_table_is_loud_never_silent(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        """A field's TYPE (not merely its ASSERT) changing on a table that ALREADY
+        HAS ROWS — the one migration shape that could plausibly fail badly.
+        Measured live against 3.1.5, then pinned.
+
+        The measured behaviour: the DDL APPLIES (it does not raise, and it does not
+        touch existing rows); the old-typed rows still READ BACK with their old
+        values — including one that LOOKS coercible (``'7'``), which is NOT
+        silently turned into ``7``; new writes are held to the NEW type; and any
+        UPDATE of an old-typed row FAILS LOUDLY with a coercion error. So a TYPE
+        change converges the SCHEMA but never the DATA: the rows must be migrated
+        separately or they are write-poisoned. That is the fact a builder flipping
+        this DDL layer needs, and this pin is where it is written down.
+        """
+        connection, env = migration_db
+        await _apply_ddl(connection, _probe_ddl(_STRING_TYPED_SPECS), url=env.url)
+        await run(
+            connection,
+            f"CREATE {_MIGRATION_TABLE}:coercible CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+            {"value": "7"},
+        )
+        await run(
+            connection,
+            f"CREATE {_MIGRATION_TABLE}:garbage CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+            {"value": "abc"},
+        )
+
+        # string -> int, on a table with rows of both kinds.
+        await _apply_ddl(connection, _probe_ddl(_INT_TYPED_SPECS), url=env.url)
+
+        # 1. The TYPE change LANDED: new writes are held to the new type...
+        await run(
+            connection,
+            f"CREATE {_MIGRATION_TABLE}:fresh CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+            {"value": 5},
+        )
+        # ...and a string is no longer accepted (the control: this is what proves
+        # the DDL converged rather than the ``int`` write merely being tolerated by
+        # a still-``string`` column).
+        with pytest.raises(SurrealError):
+            await run(
+                connection,
+                f"CREATE {_MIGRATION_TABLE}:rejected CONTENT {{ {_MIGRATION_FIELD}: $value }}",
+                {"value": "abc"},
+            )
+        # 2. The old rows survived, UNCOERCED — no silent data mangling.
+        rows = await run(connection, f"SELECT * FROM {_MIGRATION_TABLE}:coercible")
+        assert rows[0][_MIGRATION_FIELD] == "7"
+        rows = await run(connection, f"SELECT * FROM {_MIGRATION_TABLE}:garbage")
+        assert rows[0][_MIGRATION_FIELD] == "abc"
+        # 3. But they are WRITE-POISONED, loudly: the engine refuses to coerce the
+        #    old value to the new type, and says so. (Even the "coercible" one.)
+        for record_id in ("coercible", "garbage"):
+            with pytest.raises(SurrealError) as rejection:
+                await run(
+                    connection,
+                    f"UPDATE {_MIGRATION_TABLE}:{record_id} SET {_MIGRATION_SIDE_FIELD} = $tag",
+                    {"tag": "touched"},
+                )
+            assert _MIGRATION_FIELD in str(rejection.value)
+
+    async def test_the_briefed_via_widening_that_broke_production(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        """The exact regression: finding #98's widened ``briefed.via`` applied to a
+        store that already carries the OLD two-value ASSERT — i.e. production.
+
+        Distinct from the ``_define_field`` pins above, and NOT redundant with
+        them: this one drives the REAL generators
+        (:func:`~loremaster.store.surreal_schema.generate_agent_ddl` /
+        :func:`~loremaster.store.surreal_schema.generate_brief_ddl`) that
+        :meth:`~loremaster.briefs.BriefLedger.ensure_ready` actually applies, so a
+        fix that teaches ``_define_field`` a new opt-in ``overwrite=True`` flag —
+        and then forgets to pass it from the generators — dies HERE while passing
+        every pin above.
+        """
+        connection, env = migration_db
+        # The store as it was BEFORE #98: agent + brief slices, two-value via.
+        await _apply_ddl(connection, generate_agent_ddl(), url=env.url)
+        await _apply_ddl(connection, _brief_ddl_before_the_via_widening(), url=env.url)
+        stamp = datetime.now(UTC)
+        await run(
+            connection,
+            f"CREATE {AGENT_TABLE}:publisher CONTENT $content",
+            {
+                "content": {
+                    "name": "c1f-publisher",
+                    "session": "migration-probe",
+                    "role": "the brief's own author",
+                    "status": "active",
+                    "registered_at": stamp,
+                    "heartbeat_at": stamp,
+                }
+            },
+        )
+        for version in (1, 2):
+            await run(
+                connection,
+                f"CREATE {BRIEF_TABLE}:v{version} CONTENT $content",
+                {
+                    "content": {
+                        "name": "project",
+                        "version": version,
+                        "body": f"the standing brief, version {version}",
+                        "created_by": "c1f-publisher",
+                    }
+                },
+            )
+        # A row under the OLD definition: the store is now genuinely dirty.
+        await run(
+            connection,
+            f"RELATE {AGENT_TABLE}:publisher->{BRIEFED_RELATION}->{BRIEF_TABLE}:v1 "
+            "CONTENT { via: 'register' }",
+        )
+
+        # Deploy today's code against that store — exactly what BriefLedger does.
+        await _apply_ddl(connection, generate_agent_ddl(), url=env.url)
+        await _apply_ddl(connection, generate_brief_ddl(), url=env.url)
+
+        # The publish-time self-ack. In production this RELATE was rejected by the
+        # stale two-value ASSERT and rolled back the whole publish transaction —
+        # every `brief_publish` failed, 100%.
+        await run(
+            connection,
+            f"RELATE {AGENT_TABLE}:publisher->{BRIEFED_RELATION}->{BRIEF_TABLE}:v2 "
+            "CONTENT { via: $via }",
+            {"via": _BRIEFED_VIA_PUBLISH},
+        )
+        edges = await run(connection, f"SELECT via FROM {BRIEFED_RELATION}")
+        assert sorted(edge["via"] for edge in edges) == sorted(["register", _BRIEFED_VIA_PUBLISH])
+
+        # CONTROL: the widened domain is WIDER, not ABSENT — a junk ``via`` is
+        # still rejected, so the pin above cannot pass by the ASSERT vanishing.
+        with pytest.raises(SurrealError) as rejection:
+            await run(
+                connection,
+                f"RELATE {AGENT_TABLE}:publisher->{BRIEFED_RELATION}->{BRIEF_TABLE}:v1 "
+                "CONTENT { via: $via }",
+                {"via": _OUT_OF_DOMAIN_VALUE},
+            )
+        assert _OUT_OF_DOMAIN_VALUE in str(rejection.value)
+
+    async def test_the_whole_schema_migrates_an_existing_populated_store(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        """The blast radius is EVERY ledger: ``_define_field`` emits the DDL for
+        chunk / file / memory / trace / task / finding / agent / brief / the graph.
+
+        So: populate one row in each of those tables, re-apply the ENTIRE schema
+        (every slice ``ensure_ready`` applies, in the same one-transaction way),
+        and demand that every row survives byte-identically AND that the
+        constraints still bite. A fix that converges the schema by dropping and
+        re-creating a table would pass every widening pin above and destroy the
+        production store; this is the pin that catches it.
+        """
+        connection, env = migration_db
+        ddl_slices = (
+            generate_ddl(dim=_MIGRATION_DIM),
+            generate_graph_ddl(),
+            generate_agent_ddl(),
+            generate_brief_ddl(),
+        )
+        for ddl in ddl_slices:
+            await _apply_ddl(connection, ddl, url=env.url)
+
+        stamp = datetime.now(UTC)
+        record = chunk_record(
+            tier=TIER_A, file_path="models/purchase_order.py", identity="PurchaseOrder.action_confirm"
+        )
+        seeds: tuple[tuple[str, str, dict[str, Any]], ...] = (
+            (
+                CHUNK_TABLE,
+                # ``type::record`` (NOT ``type::thing`` — that is a parse error on
+                # 3.1.5): the chunk's record id is the PRODUCTION uuid5 point id.
+                "type::record($table, $key)",
+                {**record.payload, "embedding": unit_vector(0, _MIGRATION_DIM)},
+            ),
+            (
+                FILE_TABLE,
+                f"{FILE_TABLE}:probe",
+                {
+                    "sha512": sha512_hex("body"),
+                    "mtime_ns": time.time_ns(),
+                    "size": 4,
+                    "n_chunks": 1,
+                    "chunk_ids": [record.point_id],
+                    "state": "indexed",
+                    "updated_at": stamp,
+                },
+            ),
+            (
+                MEMORY_TABLE,
+                f"{MEMORY_TABLE}:probe",
+                {
+                    "note_text": "the store survives its own migration",
+                    "kind": "fact",
+                    "source": {"kind": "agent", "ref": "c1f", "trust": "high"},
+                    "created_at": stamp,
+                    "embedding": unit_vector(1, _MIGRATION_DIM),
+                },
+            ),
+            (
+                TRACE_TABLE,
+                f"{TRACE_TABLE}:probe",
+                {
+                    "tool": "lore_search",
+                    "params_hash": sha512_hex("params"),
+                    "hit_count": 3,
+                    "latency_ms": 12.5,
+                    "session": "migration-probe",
+                },
+            ),
+            (
+                TASK_TABLE,
+                f"{TASK_TABLE}:probe",
+                {
+                    "subject": "survive the migration",
+                    "description": "a task row written under the OLD schema",
+                    "status": "open",
+                    "provenance": {"created_by": "c1f"},
+                    "created_at": stamp,
+                },
+            ),
+            (
+                FINDING_TABLE,
+                f"{FINDING_TABLE}:probe",
+                {
+                    "number": 107,
+                    "kind": "bug",
+                    "subject": "the schema cannot evolve",
+                    "body": "a finding row written under the OLD schema",
+                    "area": "loremaster.store.surreal_schema",
+                    "category": "bug",
+                    "created_by": "c1f",
+                    "provenance": {"created_by": "c1f"},
+                },
+            ),
+            (
+                AGENT_TABLE,
+                f"{AGENT_TABLE}:probe",
+                {
+                    "name": "c1f-probe",
+                    "session": "migration-probe",
+                    "role": "a registered agent from before the deploy",
+                    "status": "active",
+                    "registered_at": stamp,
+                    "heartbeat_at": stamp,
+                },
+            ),
+            (
+                BRIEF_TABLE,
+                f"{BRIEF_TABLE}:probe",
+                {
+                    "name": "project",
+                    "version": 1,
+                    "body": "a brief published under the OLD schema",
+                    "created_by": "c1f",
+                },
+            ),
+        )
+        for table, target, content in seeds:
+            await run(
+                connection,
+                f"CREATE {target} CONTENT $content",
+                {"table": table, "key": record.point_id, "content": content},
+            )
+        await run(
+            connection,
+            f"RELATE {AGENT_TABLE}:probe->{BRIEFED_RELATION}->{BRIEF_TABLE}:probe "
+            "CONTENT { via: 'register' }",
+        )
+
+        # THE DEPLOY: re-apply every slice to the now-populated store.
+        for ddl in ddl_slices:
+            await _apply_ddl(connection, ddl, url=env.url)
+
+        # 1. Every seeded row survived — same count, same content.
+        for table, _target, content in seeds:
+            rows = await run(connection, f"SELECT * FROM {table}")
+            assert len(rows) == 1, f"{table} lost (or duplicated) its row across the migration"
+            for key, value in content.items():
+                if key in {"embedding", "created_at", "updated_at", "registered_at", "heartbeat_at"}:
+                    continue  # floats / engine datetimes: presence is pinned by the row surviving
+                assert rows[0][key] == value, f"{table}.{key} changed across the migration"
+        edges = await run(connection, f"SELECT via FROM {BRIEFED_RELATION}")
+        assert [edge["via"] for edge in edges] == ["register"]
+
+        # 2. The constraints still BITE after the re-application (the control: a
+        #    migration that converged by loosening every table would pass step 1).
+        with pytest.raises(SurrealError):
+            await run(
+                connection,
+                f"CREATE {FILE_TABLE}:bogus CONTENT $content",
+                {
+                    "content": {
+                        "sha512": sha512_hex("x"),
+                        "mtime_ns": 1,
+                        "size": 1,
+                        "n_chunks": 0,
+                        "chunk_ids": [],
+                        "state": _OUT_OF_DOMAIN_VALUE,
+                        "updated_at": stamp,
+                    }
+                },
+            )
+        with pytest.raises(SurrealError):
+            await run(
+                connection,
+                f"CREATE {TASK_TABLE}:bogus CONTENT $content",
+                {
+                    "content": {
+                        "subject": "s",
+                        "description": "d",
+                        "status": _OUT_OF_DOMAIN_VALUE,
+                        "provenance": {},
+                        "created_at": stamp,
+                    }
+                },
+            )
+        # 3. ...and the store is still WRITABLE for legal rows.
+        await run(
+            connection,
+            f"CREATE {TASK_TABLE}:after CONTENT $content",
+            {
+                "content": {
+                    "subject": "written after the migration",
+                    "description": "d",
+                    "status": "open",
+                    "provenance": {},
+                    "created_at": stamp,
+                }
+            },
         )
