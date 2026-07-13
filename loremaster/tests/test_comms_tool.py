@@ -407,6 +407,32 @@ class TestCommsToolRegistration:
             f"declared in _COMMS_ACTIONS"
         )
 
+    async def test_limit_declares_ge_one_in_the_tool_schema(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """v7 / finding #97: ``limit`` is ``ge=1`` AT THE TOOL BOUNDARY (design
+        doc §6) — the MCP schema an agent reads must advertise the bound, and
+        FastMCP's own pydantic validation must reject 0/-1 before the call is
+        ever dispatched. ``Annotated[int | None, Field(ge=_MIN_COUNT)]`` renders
+        as ``anyOf: [{type: integer, minimum: 1}, {type: null}]`` — probed live
+        against this FastMCP version, not assumed.
+
+        Deliberately paired with the dispatcher-level teaching ValueError
+        (``TestFleetLimitBounds``): the schema bound is what an MCP client sees,
+        the teaching error is what a caller reading the range gets. Neither
+        alone satisfies §6 — see the report's escalation note on which message
+        an MCP-boundary caller actually receives.
+        """
+        tools = await _tools_by_name(monkeypatch)
+        limit_schema = (tools["lore_comms"].inputSchema or {})["properties"]["limit"]
+        branches = limit_schema.get("anyOf", [limit_schema])
+        integer_branches = [branch for branch in branches if branch.get("type") == "integer"]
+        assert integer_branches, f"no integer branch in the limit schema: {limit_schema!r}"
+        assert all(branch.get("minimum") == 1 for branch in integer_branches), (
+            f"lore_comms' 'limit' must declare a ge=1 lower bound in its tool schema "
+            f"(design doc §6, finding #97): {limit_schema!r}"
+        )
+
     async def test_all_builtin_tools_still_include_lore_comms(self, monkeypatch: pytest.MonkeyPatch) -> None:
         tools = await _tools_by_name(monkeypatch)
         # A cheap, self-contained echo of the exact-set pin's shape (the
@@ -864,6 +890,21 @@ class TestHeartbeatAction:
         assert "v2" in rendered and "v1" in rendered
         assert "brief_get" in rendered
 
+    async def test_the_publishers_own_next_heartbeat_is_honestly_silent(self) -> None:
+        """§9.2's v7 consequence (finding #98): "the author's post-publish
+        heartbeat is now honestly silent". Today the author is nagged, at every
+        heartbeat, to catch up on the brief IT wrote — the most visible face of
+        the phantom-straggler defect.
+        """
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await AppContext.comms(
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
+        )
+        rendered = str(await AppContext.comms(harness, action="heartbeat", agent="lead", session="wave7"))
+        assert rendered.count("\n") == 0, f"a current agent's heartbeat is ONE line: {rendered!r}"
+        assert rendered == "heartbeat lead — status active"
+
 
 class TestBriefGetAction:
     async def test_unknown_brief_name_teaches_known_names(self) -> None:
@@ -944,8 +985,43 @@ class TestBriefGetAction:
             in scoped_wave8
         )
 
+    async def test_coverage_never_names_the_publisher_among_the_behind(self) -> None:
+        """§9.3's v7 consequence (finding #98): the author counts at head in the
+        coverage NUMERATOR and is absent from the behind LIST — by an ordinary
+        stored ack, not a render carve-out. Pins the numerator AND the names: a
+        build that merely filtered the author out of the list while leaving the
+        numerator alone would render '1/3 ... behind: fixer-b, fixer-c' and the
+        three numbers would stop agreeing with each other.
+        """
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await _register(harness, name="fixer-b", session="wave7")
+        await _register(harness, name="fixer-c", session="wave7")
+        await AppContext.comms(
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="the plan"
+        )
+        rendered = str(
+            await AppContext.comms(
+                harness, action="brief_get", agent="lead", session="wave7", name="project"
+            )
+        )
+        assert (
+            "coverage (session wave7): 1/3 non-retired agents at v1; "
+            "behind: fixer-b (unbriefed), fixer-c (unbriefed)"
+        ) in rendered
+        assert "lead (unbriefed)" not in rendered
+
 
 class TestBriefPublishAction:
+    """v7 / finding #98 note that governs EVERY fixture below: ``publish``
+    SELF-ACKS its author (design doc §5.1 step 2), so the PUBLISHING agent is
+    never in its own skew count. Each fixture therefore uses a DEDICATED
+    publisher ('lead') alongside the cohort under test — which both keeps the
+    behind-sets as rich as they were pre-#98 AND makes the publisher's
+    exclusion visible as a difference (a build that still counts the author
+    renders a behind total one HIGHER than every byte-exact line below).
+    """
+
     async def test_first_version_variant(self) -> None:
         harness = _harness()
         await _register(harness)
@@ -963,24 +1039,159 @@ class TestBriefPublishAction:
         assert "brief 'project' v1 published by fixer-b" in rendered
         assert "first version" in rendered
 
+    async def test_the_publisher_self_acks_at_the_version_it_just_published(self) -> None:
+        """THE #98 wiring pin: the dispatcher must hand ``publish`` the acting
+        agent's ROW ID so the ledger can write the ``via='publish'`` self-ack
+        edge. Reads the stored edge back through the ledger, not the render —
+        a render-only pin could be faked by a carve-out that hides the author
+        from the behind list without ever recording that it read its own brief.
+        """
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await AppContext.comms(
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
+        )
+        lead_id = FakeAgentRegistry._agent_id("wave7", "lead")
+        assert await harness.brief_ledger.acked_version(agent_id=lead_id, name="project") == 1
+        probe = await harness.brief_ledger.ack(
+            agent_id=lead_id, agent_name="lead", name="project", version=1, via="explicit"
+        )
+        assert probe.already_acked is True, "the author's own explicit ack is the idempotent path (§9.5)"
+        assert probe.via == "publish", "the stored self-ack must record the THIRD vocabulary word"
+
+    @pytest.mark.parametrize("brief_name", ["project", "wave7", "base"])
+    async def test_the_publisher_self_acks_under_ANY_brief_name_not_just_project(
+        self, brief_name: str
+    ) -> None:
+        """BLOCKER pin (contract-adversary §1): the self-ack wiring must be
+        NAME-AGNOSTIC. A build that passes ``agent_id`` only for the 'project'
+        brief —
+
+            agent_id=agent_row.id if name == BRIEF_NAME_PROJECT else None
+
+        — is a one-line inference from §5.3's "only 'project' rides heartbeat and
+        fleet", and it passed the ENTIRE pre-adversary contract (832 passed, 0
+        failed, zero mypy delta) with finding #98 fully intact for every OTHER
+        brief name. The cause was a fixture MONOCULTURE: all 37 ``brief_publish``
+        calls at the tool/handler seam used ``name="project"``, and the ledger
+        pins — which do use a wave name — pass ``agent_id`` themselves, so they
+        structurally cannot see a SERVER that declines to pass it.
+
+        §5.1 step 2 is unconditional: publish self-acks its author, full stop.
+        The parametrisation is the pin: at least one value the code could branch
+        on must differ.
+        """
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await _register(harness, name="fixer-b", session="wave7")
+        await AppContext.comms(
+            harness,
+            action="brief_publish",
+            agent="lead",
+            session="wave7",
+            name=brief_name,
+            body="the standing instruction",
+        )
+        lead_id = FakeAgentRegistry._agent_id("wave7", "lead")
+        probe = await harness.brief_ledger.ack(
+            agent_id=lead_id, agent_name="lead", name=brief_name, version=1, via="explicit"
+        )
+        assert probe.already_acked is True, (
+            f"the author of brief {brief_name!r} must already be acked to it — the self-ack "
+            f"is not conditional on the brief NAME (§5.1 step 2)"
+        )
+        assert probe.via == "publish"
+        # ... and it shows in the served consequence line: only 'fixer-b' is behind.
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent="lead",
+                session="wave7",
+                name=brief_name,
+                body="the standing instruction, v2",
+            )
+        )
+        assert (
+            "skew (session wave7): 1 non-retired agents behind head v2 — 1 unbriefed; "
+            "surfaces at their next heartbeat"
+        ) in rendered, f"the author of {brief_name!r} must not be counted behind itself: {rendered!r}"
+
+    async def test_the_self_ack_is_keyed_by_the_agent_row_id_never_the_created_by_name(self) -> None:
+        """The edge is ``agent->briefed->brief``: only the acting agent's opaque
+        ROW ID can carry it. ``created_by`` is a display string (and here it
+        deliberately names someone else entirely) — a build that passed it as
+        the edge's ``in`` endpoint writes an ack for an agent that does not
+        exist, and the real author stays a phantom straggler.
+        """
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await AppContext.comms(
+            harness,
+            action="brief_publish",
+            agent="lead",
+            session="wave7",
+            name="project",
+            body="v1",
+            created_by="somebody-else",
+        )
+        lead_id = FakeAgentRegistry._agent_id("wave7", "lead")
+        assert await harness.brief_ledger.acked_version(agent_id=lead_id, name="project") == 1
+        assert await harness.brief_ledger.acked_version(agent_id="somebody-else", name="project") is None
+
+    async def test_zero_behind_renders_no_skew_line_through_the_tool(self) -> None:
+        """THE REACHABILITY PIN (design doc §9.4, v7): "a single-agent fleet
+        publishing renders NO skew line ... end-to-end pinned, not just
+        render-unit-tested".
+
+        Before #98 this branch was UNREACHABLE through the tool: the publisher
+        was always counted behind its own brief, so ``behind >= 1`` for every
+        possible call and the omission clause could never fire (live receipt:
+        ``skew: 1 non-retired agents behind head v2 — 1 at v1`` in a store whose
+        only agent IS the publisher). A pin that only drove ``_render_comms_
+        brief_publish`` with an empty ``behind`` list proved nothing about that.
+        """
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        first = str(
+            await AppContext.comms(
+                harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
+            )
+        )
+        second = str(
+            await AppContext.comms(
+                harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v2"
+            )
+        )
+        for rendered in (first, second):
+            assert "skew" not in rendered, (
+                f"the sole agent in scope IS the publisher — it has read what it wrote, so "
+                f"nobody is behind and the skew line must be omitted entirely: {rendered!r}"
+            )
+            assert "behind" not in rendered
+        assert "brief 'project' v2 published by lead" in second
+
     async def test_skew_line_counts_non_retired_agents_behind(self) -> None:
         """v2 scoping ruling: this call carries an explicit session='wave7'
         -- the skew line MUST carry the '(session wave7)' tag (the same
         defect class as test_full_coverage_variant above, on brief_publish's
-        twin surface, spec §9.4). v6 (finding #96): both agents registered
-        before ANY brief existed, so at the v2 check they have NEVER acked
-        anything -- the byte-exact assertion below pins the full REWRITTEN
-        grammar (never-acked renders as its own 'unbriefed' word, not a
-        fabricated 'had acked v1 or older')."""
+        twin surface, spec §9.4). v6 (finding #96): the two non-publisher
+        agents registered before ANY brief existed, so at the v2 check they
+        have NEVER acked anything -- the byte-exact assertion below pins the
+        full REWRITTEN grammar (never-acked renders as its own 'unbriefed'
+        word, not a fabricated 'had acked v1 or older'). v7 (#98): 'lead'
+        publishes and is NOT among the 2 behind -- a build that still counts
+        the author renders '3 non-retired agents behind'."""
         harness = _harness()
+        await _register(harness, name="lead", role="lead")
         await _register(harness, name="fixer-b")
         await _register(harness, name="fixer-c")
         await AppContext.comms(
-            harness, action="brief_publish", agent="fixer-b", session="wave7", name="project", body="v1"
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
         )
         rendered = str(
             await AppContext.comms(
-                harness, action="brief_publish", agent="fixer-b", session="wave7", name="project", body="v2"
+                harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v2"
             )
         )
         assert (
@@ -992,14 +1203,17 @@ class TestBriefPublishAction:
     async def test_skew_line_is_fleet_wide_when_session_is_omitted(self) -> None:
         """v2 scoping law, brief_publish's twin of the brief_get roster
         test: omitting session= renders the unscoped, fleet-wide skew count
-        with no '(session ...)' tag. v6: both agents are unbriefed (never
-        acked anything) -- byte-exact on the rewritten grammar."""
+        with no '(session ...)' tag. v6: both non-publisher agents are
+        unbriefed (never acked anything) -- byte-exact on the rewritten
+        grammar. The two behind agents sit in DIFFERENT sessions (wave8) from
+        the publisher (wave7), so a fleet-wide count is the only way to reach 2."""
         harness = _harness()
-        await _register(harness, name="fixer-b", session="wave7")
+        await _register(harness, name="lead", session="wave7", role="lead")
         await _register(harness, name="scout-c", session="wave8")
+        await _register(harness, name="scout-d", session="wave8")
         rendered = str(
             await AppContext.comms(
-                harness, action="brief_publish", agent="fixer-b", name="project", body="v1"
+                harness, action="brief_publish", agent="lead", name="project", body="v1"
             )
         )
         assert "(session" not in rendered
@@ -1012,15 +1226,19 @@ class TestBriefPublishAction:
     async def test_skew_line_is_session_scoped_when_session_is_explicit(self) -> None:
         """Same fixed state as above, published with an explicit session=
         -- the skew roster must be session-filtered, not fleet-wide. v6:
-        byte-exact on the rewritten grammar."""
+        byte-exact on the rewritten grammar. The scoped count (1: helper-d)
+        and the fleet-wide count (2: helper-d + scout-c) are DIFFERENT
+        numbers here, so a build that ignored the scope cannot pass by
+        coincidence."""
         harness = _harness()
-        await _register(harness, name="fixer-b", session="wave7")
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await _register(harness, name="helper-d", session="wave7")
         await _register(harness, name="scout-c", session="wave8")
         rendered = str(
             await AppContext.comms(
                 harness,
                 action="brief_publish",
-                agent="fixer-b",
+                agent="lead",
                 session="wave7",
                 name="project",
                 body="v1",
@@ -1036,15 +1254,16 @@ class TestBriefPublishAction:
         who registered before any brief existed must render them as their
         OWN 'unbriefed' group -- never as having 'acked v0', a version that
         has never existed (old code computed prior = result.brief.version -
-        1 = 1 - 1 = 0). MUST fail against today's shipped production code."""
+        1 = 1 - 1 = 0)."""
         harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
         await _register(harness, name="fixer-b", session="wave7")
         await _register(harness, name="fixer-c", session="wave7")
         rendered = str(
             await AppContext.comms(
                 harness,
                 action="brief_publish",
-                agent="fixer-b",
+                agent="lead",
                 session="wave7",
                 name="project",
                 body="v1 body",
@@ -1065,10 +1284,11 @@ class TestBriefPublishAction:
         never a computed version-1."""
         harness = _harness()
         brief_ledger = harness.brief_ledger
+        await _register(harness, name="lead", session="wave7", role="lead")
         for name in ("acker-1", "acker-2", "acker-3", "never-acked"):
             await _register(harness, name=name, session="wave7")
         await AppContext.comms(
-            harness, action="brief_publish", agent="acker-1", session="wave7", name="project", body="v1"
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
         )
         for acker in ("acker-1", "acker-2", "acker-3"):
             await brief_ledger.ack(
@@ -1078,10 +1298,11 @@ class TestBriefPublishAction:
                 version=1,
                 via="explicit",
             )
-        # v2 -- nobody acks it yet, so all four agents are behind at the check.
+        # v2 -- nobody but the author acks it, so the four non-publishers are
+        # behind at the check (three at v1, one never-acked).
         rendered = str(
             await AppContext.comms(
-                harness, action="brief_publish", agent="acker-1", session="wave7", name="project", body="v2"
+                harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v2"
             )
         )
         assert "v0" not in rendered
@@ -1098,13 +1319,14 @@ class TestBriefPublishAction:
         arithmetic version-1 the caller invented."""
         harness = _harness()
         brief_ledger = harness.brief_ledger
+        await _register(harness, name="lead", session="wave7", role="lead")
         for name in ("acker-v1", "acker-v2", "acker-v3", "never-acked"):
             await _register(harness, name=name, session="wave7")
         for version, acker in ((1, "acker-v1"), (2, "acker-v2"), (3, "acker-v3")):
             await AppContext.comms(
                 harness,
                 action="brief_publish",
-                agent="acker-v1",
+                agent="lead",
                 session="wave7",
                 name="project",
                 body=f"v{version} body",
@@ -1120,7 +1342,7 @@ class TestBriefPublishAction:
             await AppContext.comms(
                 harness,
                 action="brief_publish",
-                agent="acker-v1",
+                agent="lead",
                 session="wave7",
                 name="project",
                 body="v4 body",
@@ -1140,10 +1362,11 @@ class TestBriefPublishAction:
         Counter needing a fabricated key for None)."""
         harness = _harness()
         brief_ledger = harness.brief_ledger
+        await _register(harness, name="lead", session="wave7", role="lead")
         for name in ("acker-a", "acker-b", "never-a", "never-b"):
             await _register(harness, name=name, session="wave7")
         await AppContext.comms(
-            harness, action="brief_publish", agent="acker-a", session="wave7", name="project", body="v1"
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
         )
         for acker in ("acker-a", "acker-b"):
             await brief_ledger.ack(
@@ -1155,7 +1378,7 @@ class TestBriefPublishAction:
             )
         rendered = str(
             await AppContext.comms(
-                harness, action="brief_publish", agent="acker-a", session="wave7", name="project", body="v2"
+                harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v2"
             )
         )
         assert (
@@ -1178,6 +1401,7 @@ class TestBriefPublishAction:
         cap = _SKEW_BREAKDOWN_CAP
         harness = _harness()
         brief_ledger = harness.brief_ledger
+        await _register(harness, name="lead", session="wave7", role="lead")
         names = [f"acker-{i}" for i in range(cap + 1)]
         for name in names:
             await _register(harness, name=name, session="wave7")
@@ -1185,7 +1409,7 @@ class TestBriefPublishAction:
             await AppContext.comms(
                 harness,
                 action="brief_publish",
-                agent=names[0],
+                agent="lead",
                 session="wave7",
                 name="project",
                 body=f"v{version} body",
@@ -1201,7 +1425,7 @@ class TestBriefPublishAction:
             await AppContext.comms(
                 harness,
                 action="brief_publish",
-                agent=names[0],
+                agent="lead",
                 session="wave7",
                 name="project",
                 body="head body",
@@ -1231,42 +1455,224 @@ class TestBriefPublishAction:
         assert "10" in rendered
 
 
+class TestTheFirstVersionLineTeachesAnAckMechanismThatACTUALLYEXISTS:
+    """THE EIGHTH §5.3 INSTANCE (cold audit REPORT-c1d-audit-979899.md §DEFECT):
+    ``_render_comms_brief_publish``'s first-version variant appends
+    ``" — first version; agents ack at register"`` for **every** brief name, but
+    ``_comms_register`` auto-acks ONLY ``BRIEF_NAME_PROJECT``. For every other
+    name that clause teaches a mechanism THAT DOES NOT EXIST — an agent reading
+    it waits forever for an ack that never comes instead of calling ``brief_ack``
+    — and it contradicts the skew line printed directly beneath it, which
+    correctly reports those same agents as ``unbriefed``.
+
+    Why the whole suite was green: the only assertion of that line
+    (test_comms_wiring.py:609) used ``name='project'`` — the ONE name for which
+    the claim is true. That is PARAMETER-VALUE MONOCULTURE, the same class that
+    let a ``if name == BRIEF_NAME_PROJECT`` self-ack build pass the entire
+    pre-adversary contract. Finding #98 closed the monoculture for the SELF-ACK;
+    nobody closed it for the RENDER — and #98 is exactly what promotes
+    non-'project' briefs to a first-class, routinely-exercised flow.
+
+    The law (design doc §5.3 + corollaries): a served line may only describe what
+    is actually TRUE of the thing it describes. Same family as a count computed
+    over a set its label does not name, and a version that does not exist.
+
+    Every test below drives the REAL ``_comms_register``/``_comms_brief_publish``
+    handlers, so the register-time auto-ack under test is production's own.
+    """
+
+    _PROJECT = "project"
+    _REGISTER_PROMISE = "agents ack at register"
+    _EXPLICIT_ACK_TEACHING = "agents ack with lore_comms action=brief_ack"
+
+    @pytest.mark.parametrize("brief_name", ["project", "wave9", "base"])
+    async def test_only_the_project_brief_promises_the_register_time_ack(
+        self, brief_name: str
+    ) -> None:
+        """THE KILLER PIN. Publish a FIRST version through the tool seam under
+        three names; the register-teaching clause may appear for exactly the one
+        name whose register-time ack actually exists. A build that appends it
+        unconditionally (today's) goes RED on 'wave9' and 'base'; a build that
+        drops it everywhere goes RED on 'project' (where the promise is TRUE and
+        load-bearing — §1's bootstrap arc depends on it)."""
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent="lead",
+                session="wave7",
+                name=brief_name,
+                body="the standing instruction",
+            )
+        )
+        assert f"brief '{brief_name}' v1 published by lead" in rendered
+        assert "first version" in rendered, "the first-version variant must still fire for any name"
+        assert (self._REGISTER_PROMISE in rendered) == (brief_name == self._PROJECT), (
+            f"the register-time auto-ack exists ONLY for {self._PROJECT!r} "
+            f"(_comms_register hardcodes BRIEF_NAME_PROJECT) — a first-version line "
+            f"under name={brief_name!r} may promise it IFF it is true: {rendered!r}"
+        )
+        if brief_name != self._PROJECT:
+            assert self._EXPLICIT_ACK_TEACHING in rendered, (
+                f"a non-{self._PROJECT!r} first version must teach the ack call that DOES "
+                f"exist (action=brief_ack) — dropping the false clause without naming the "
+                f"real mechanism leaves the agent with no way to become briefed: {rendered!r}"
+            )
+
+    async def test_register_acks_the_project_brief_and_ONLY_the_project_brief(self) -> None:
+        """The mechanism the render must not misdescribe, measured directly and
+        DIFFERENTIALLY: with BOTH a 'project' head and a 'wave9' head standing,
+        a fresh register writes an ack for 'project' and none for 'wave9'.
+
+        The differential is the discriminator: a probe that only checked the
+        'wave9' side would also pass against a build where register acks NOTHING
+        at all — and would then wrongly condemn the 'project' clause too."""
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        for brief_name in (self._PROJECT, "wave9"):
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent="lead",
+                session="wave7",
+                name=brief_name,
+                body="the standing instruction",
+            )
+        await _register(harness, name="newbie", session="wave7")
+        newbie_id = FakeAgentRegistry._agent_id("wave7", "newbie")
+        assert (
+            await harness.brief_ledger.acked_version(agent_id=newbie_id, name=self._PROJECT) == 1
+        ), "register DOES auto-ack the project head — the 'ack at register' clause is TRUE there"
+        assert await harness.brief_ledger.acked_version(agent_id=newbie_id, name="wave9") is None, (
+            "register does NOT ack any other brief — every line that says otherwise is a lie"
+        )
+
+    async def test_the_first_version_line_does_not_contradict_the_skew_line_beneath_it(self) -> None:
+        """ONE render, TWO clauses, in direct contradiction on today's build:
+        line 1 says the agents will ack at register; line 2 says they are
+        ``unbriefed`` — and they stay unbriefed forever, because registering
+        never acks a non-'project' brief. Asserted as a COHERENCE property of the
+        rendered block, not as a byte-exact string, so it survives any rewording
+        the builder chooses (see REPORT-c1e-contract-eighth.md)."""
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await _register(harness, name="fixer-b", session="wave7")
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent="lead",
+                session="wave7",
+                name="wave9",
+                body="the standing instruction",
+            )
+        )
+        assert "1 unbriefed" in rendered, (
+            f"fixture check: 'fixer-b' must really be behind and unbriefed here: {rendered!r}"
+        )
+        assert self._REGISTER_PROMISE not in rendered, (
+            f"the publish line promises an ack the skew line beneath it already reports as "
+            f"NOT HAVING HAPPENED, and which registering will never perform for a "
+            f"non-'project' brief: {rendered!r}"
+        )
+
+    async def test_an_agent_that_registers_AFTER_a_non_project_publish_is_still_unbriefed(
+        self,
+    ) -> None:
+        """The promise, taken at its word and measured: register the agent AFTER
+        the wave9 publish (the exact reading the served line invites) and it is
+        STILL unbriefed — the register-time ack never fires, and the very next
+        publish's skew line says so."""
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await AppContext.comms(
+            harness,
+            action="brief_publish",
+            agent="lead",
+            session="wave7",
+            name="wave9",
+            body="v1 — the standing instruction",
+        )
+        await _register(harness, name="newbie", session="wave7")
+        newbie_id = FakeAgentRegistry._agent_id("wave7", "newbie")
+        assert await harness.brief_ledger.acked_version(agent_id=newbie_id, name="wave9") is None
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent="lead",
+                session="wave7",
+                name="wave9",
+                body="v2 — the standing instruction",
+            )
+        )
+        assert (
+            "skew (session wave7): 1 non-retired agents behind head v2 — 1 unbriefed; "
+            "surfaces at their next heartbeat"
+        ) in rendered, (
+            f"an agent that registered AFTER the wave9 publish is STILL unbriefed — which is "
+            f"exactly what the v1 line's 'ack at register' clause denies: {rendered!r}"
+        )
+
+
 class TestBriefAckAction:
+    """v7 (finding #98): every fixture here uses a DEDICATED publisher, and
+    'fixer-b' registers BEFORE the brief exists (§1 bootstrap: no edge). An
+    agent that acks a version IT published now hits the idempotent path
+    instead — pinned as its own case at the end, per §9.5's new v7 clause,
+    rather than being allowed to quietly hollow out the head/behind cases.
+    """
+
+    @staticmethod
+    async def _bootstrap_publisher_and_acker(harness: Any) -> None:
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await _register(harness, name="fixer-b", session="wave7")  # bootstrap: no brief yet, no edge
+
     async def test_head_ack(self) -> None:
         harness = _harness()
-        await _register(harness)
+        await self._bootstrap_publisher_and_acker(harness)
         await AppContext.comms(
-            harness, action="brief_publish", agent="fixer-b", session="wave7", name="project", body="v1"
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
         )
         rendered = str(
             await AppContext.comms(
                 harness, action="brief_ack", agent="fixer-b", session="wave7", name="project", version=1
             )
         )
-        assert "acked brief 'project' v1" in rendered
-        assert "(head)" in rendered
+        assert rendered == "acked brief 'project' v1 (head)"
 
     async def test_behind_ack_is_legal_and_honest(self) -> None:
         harness = _harness()
-        await _register(harness)
+        await self._bootstrap_publisher_and_acker(harness)
         await AppContext.comms(
-            harness, action="brief_publish", agent="fixer-b", session="wave7", name="project", body="v1"
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
         )
         await AppContext.comms(
-            harness, action="brief_publish", agent="fixer-b", session="wave7", name="project", body="v2"
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v2"
         )
         rendered = str(
             await AppContext.comms(
                 harness, action="brief_ack", agent="fixer-b", session="wave7", name="project", version=1
             )
         )
-        assert "head is v2" in rendered
+        assert rendered == (
+            "acked brief 'project' v1 — head is v2; catch up: "
+            "lore_comms action=brief_get name='project'"
+        ), (
+            "v8 §9.5 (audit instance TEN): the teach carries an EXPLICIT name= for EVERY "
+            "name, 'project' included — the uniform template is what kills the default-"
+            "resolution class instead of special-casing it. This assertion previously "
+            "pinned the BARE `brief_get` (the old world) and is updated here, per the "
+            "repo law that tests written before a semantic change certify the corpse."
+        )
 
     async def test_nonexistent_version_teaches_the_real_head(self) -> None:
         harness = _harness()
-        await _register(harness)
+        await self._bootstrap_publisher_and_acker(harness)
         await AppContext.comms(
-            harness, action="brief_publish", agent="fixer-b", session="wave7", name="project", body="v1"
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
         )
         with pytest.raises(UnknownBriefVersionError) as exc_info:
             await AppContext.comms(
@@ -1276,19 +1682,208 @@ class TestBriefAckAction:
 
     async def test_reack_is_idempotent(self) -> None:
         harness = _harness()
-        await _register(harness)
+        await self._bootstrap_publisher_and_acker(harness)
         await AppContext.comms(
-            harness, action="brief_publish", agent="fixer-b", session="wave7", name="project", body="v1"
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
         )
-        await AppContext.comms(
-            harness, action="brief_ack", agent="fixer-b", session="wave7", name="project", version=1
-        )
-        rendered = str(
+        first = str(
             await AppContext.comms(
                 harness, action="brief_ack", agent="fixer-b", session="wave7", name="project", version=1
             )
         )
-        assert "already acked" in rendered
+        second = str(
+            await AppContext.comms(
+                harness, action="brief_ack", agent="fixer-b", session="wave7", name="project", version=1
+            )
+        )
+        assert "already acked" not in first, "the FIRST explicit ack writes a genuinely new edge"
+        assert second == "already acked brief 'project' v1 — no new edge"
+
+    async def test_an_author_acking_its_own_just_published_version_is_already_acked(self) -> None:
+        """§9.5's NEW v7 case (finding #98's consequence sweep): the author's
+        ``via=publish`` edge already exists, so its own explicit ack of that
+        version renders the idempotent variant — never a second edge, never a
+        UNIQUE(in,out) explosion surfacing as a store error.
+        """
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await AppContext.comms(
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
+        )
+        rendered = str(
+            await AppContext.comms(
+                harness, action="brief_ack", agent="lead", session="wave7", name="project", version=1
+            )
+        )
+        assert rendered == "already acked brief 'project' v1 — no new edge"
+
+
+class TestTheBehindAckTeachNamesTheBriefItIsABOUT:
+    """THE TENTH §5.3 INSTANCE (design doc v8 §9.5 + the §9.7 mechanism sweep,
+    row 11): ``_render_comms_brief_ack``'s behind-ack variant teaches
+    ``catch up: lore_comms action=brief_get`` — **bare**. ``brief_get``'s
+    ``name`` is OPTIONAL and DEFAULTS to ``BRIEF_NAME_PROJECT``
+    (``_comms_brief_get``: ``name if name is not None else BRIEF_NAME_PROJECT``),
+    so an agent that acks behind on 'wave9' and follows our own served
+    instruction VERBATIM reads the **project** brief. The taught command does
+    not do the taught thing — and it fails SILENTLY: a brief is served, just
+    the wrong one, so the reader has no signal that it caught up on nothing.
+
+    The law (design doc §5.3's v8 mechanism-promise corollary): *a served line
+    may only promise a mechanism that will actually RUN for the input it is
+    describing.* Litmus: if the reader ran the taught command **with its
+    DEFAULTS**, would the promised thing happen for THIS input? A bare
+    ``brief_get`` under a 'wave9' line fails that litmus outright.
+
+    The fix (v8 §9.5, ruled): explicit ``name='{name}'`` for EVERY name,
+    'project' included — a UNIFORM template kills the whole default-resolution
+    class rather than special-casing it, at a one-byte-stability cost on the
+    project fixture that the spec takes deliberately.
+
+    Why the whole suite was green: every brief_ack fixture in this module used
+    ``name='project'`` — the ONE name whose default resolution is correct.
+    Parameter-value monoculture, the same class that hid instances 8 and 9.
+
+    Every test below drives the REAL dispatcher (``AppContext.comms``), so the
+    ``brief_get`` default under test is production's own resolution, not a
+    fixture's restatement of it.
+    """
+
+    _DECOY_PROJECT_BODY = "PROJECT LAW — the brief a bare brief_get resolves to"
+    _TEACH_PATTERN = re.compile(
+        r"catch up: lore_comms action=brief_get(?: name='(?P<name>[^']*)')?"
+    )
+
+    @classmethod
+    def _catch_up_kwargs(cls, rendered: str) -> dict[str, Any]:
+        """The kwargs an agent that follows the served catch-up line VERBATIM
+        would pass to ``brief_get`` — ``{}`` when the line teaches a BARE call
+        (today's build), ``{"name": X}`` when it names a brief. Parsed out of
+        the render rather than hand-written, so the pin below exercises the
+        line AS SERVED and cannot drift from it. The bare case really OMITS the
+        kwarg (never ``name=None``), so the default resolution under test is
+        production's own, reached exactly as an obedient reader would reach it."""
+        match = cls._TEACH_PATTERN.search(rendered)
+        assert match, f"no catch-up teach found in the behind-ack render: {rendered!r}"
+        taught_name = match.group("name")
+        return {} if taught_name is None else {"name": taught_name}
+
+    async def _publish(self, harness: Any, *, name: str, body: str) -> None:
+        await AppContext.comms(
+            harness, action="brief_publish", agent="lead", session="wave7", name=name, body=body
+        )
+
+    async def _behind_ack(self, harness: Any, *, name: str) -> str:
+        """Fixture arc: 'fixer-b' registers FIRST (§1 bootstrap — no briefs yet, so
+        no register-time auto-ack edge; registering after a 'project' head would
+        hand it a v1 ack and turn the ack below into the idempotent variant), a
+        'project' brief EXISTS (so a bare ``brief_get`` resolves to something and
+        the defect fails SILENTLY rather than raising), ``name`` is published to
+        v2, and 'fixer-b' acks v1 of it — legitimately behind."""
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await _register(harness, name="fixer-b", session="wave7")
+        await self._publish(harness, name="project", body=self._DECOY_PROJECT_BODY)
+        if name != "project":
+            await self._publish(harness, name=name, body="v1 — the wave law")
+        await self._publish(harness, name=name, body="v2 — the wave law, amended")
+        return str(
+            await AppContext.comms(
+                harness, action="brief_ack", agent="fixer-b", session="wave7", name=name, version=1
+            )
+        )
+
+    @pytest.mark.parametrize("brief_name", ["wave9", "base", "project"])
+    async def test_the_catch_up_teach_names_the_brief_the_line_is_about(
+        self, brief_name: str
+    ) -> None:
+        """THE KILLER PIN. A behind-ack under three names — two of them NOT
+        'project' (the monoculture that hid this) — must teach a ``brief_get``
+        that names the brief the reader is behind ON. Today's bare teach goes
+        RED on 'wave9' and 'base'; the 'project' leg is the v8 uniformity ruling
+        (the teach is explicit there too — do NOT special-case it away)."""
+        harness = _harness()
+        rendered = await self._behind_ack(harness, name=brief_name)
+        assert "head is v2" in rendered, (
+            f"fixture check: 'fixer-b' must really be behind on {brief_name!r} here: {rendered!r}"
+        )
+        assert f"catch up: lore_comms action=brief_get name='{brief_name}'" in rendered, (
+            f"the behind-ack teach must name the brief it is ABOUT: brief_get's `name` "
+            f"DEFAULTS to 'project', so a bare `brief_get` under a {brief_name!r} line sends "
+            f"the reader to the WRONG brief (design doc v8 §9.5): {rendered!r}"
+        )
+
+    @pytest.mark.parametrize("brief_name", ["wave9", "base"])
+    async def test_following_the_taught_command_verbatim_serves_the_acked_brief(
+        self, brief_name: str
+    ) -> None:
+        """THE LITMUS, EXECUTED. Parse the taught call out of the served line and
+        actually RUN it through the same dispatcher, exactly as an agent obeying
+        the instruction would — with the defaults it teaches. The brief that comes
+        back must be the one the ack line was about.
+
+        On today's build the taught call is bare, resolves to 'project', and
+        serves the DECOY project brief: no error, no signal, wrong law read. This
+        is the mechanism-promise litmus in its strongest form — it grades what the
+        instruction DOES, not how it is worded, and survives any rewording the
+        builder chooses."""
+        harness = _harness()
+        rendered = await self._behind_ack(harness, name=brief_name)
+        followed = str(
+            await AppContext.comms(
+                harness,
+                action="brief_get",
+                agent="fixer-b",
+                session="wave7",
+                **self._catch_up_kwargs(rendered),
+            )
+        )
+        assert f"brief '{brief_name}' v2" in followed, (
+            f"an agent that FOLLOWED the served catch-up line got a different brief than the "
+            f"one it was told to catch up on. taught: {rendered!r} -> served: {followed!r}"
+        )
+        assert self._DECOY_PROJECT_BODY not in followed, (
+            f"the taught command silently served the PROJECT brief — brief_get's default "
+            f"name — instead of {brief_name!r}: {followed!r}"
+        )
+
+    async def test_the_behind_ack_line_is_byte_exact_under_a_non_project_name(self) -> None:
+        """The de-monoculture sibling of ``TestBriefAckAction``'s byte-exact
+        project pin (design doc v8's standing rule: every brief-grammar battery
+        carries ≥1 non-'project' fixture — the ``_brief()`` factory's
+        ``name='project'`` default is precisely why instances 8, 9 and 10 were
+        invisible). Pins §9.5's grammar whole, not just the teach fragment."""
+        harness = _harness()
+        rendered = await self._behind_ack(harness, name="wave9")
+        assert rendered == (
+            "acked brief 'wave9' v1 — head is v2; catch up: "
+            "lore_comms action=brief_get name='wave9'"
+        )
+
+    async def test_the_head_ack_and_reack_variants_are_unchanged_under_a_non_project_name(
+        self,
+    ) -> None:
+        """The scope fence: v8 changes the BEHIND-ack teach and nothing else.
+        The head-ack and idempotent-reack variants promise no mechanism (§9.7
+        carries no row for them) and must stay byte-identical — a builder that
+        bolts ``name=`` onto every variant, or reworks the grammar wholesale,
+        goes RED here. Also the first non-'project' fixture these two variants
+        have ever had."""
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await _register(harness, name="fixer-b", session="wave7")
+        await self._publish(harness, name="wave9", body="v1 — the wave law")
+        first = str(
+            await AppContext.comms(
+                harness, action="brief_ack", agent="fixer-b", session="wave7", name="wave9", version=1
+            )
+        )
+        second = str(
+            await AppContext.comms(
+                harness, action="brief_ack", agent="fixer-b", session="wave7", name="wave9", version=1
+            )
+        )
+        assert first == "acked brief 'wave9' v1 (head)"
+        assert second == "already acked brief 'wave9' v1 — no new edge"
 
 
 class TestFleetAction:
@@ -1299,7 +1894,26 @@ class TestFleetAction:
         rendered = str(await AppContext.comms(harness, action="fleet", agent="fixer-b", session="wave7"))
         assert "fixer-b" in rendered
         assert "scout-c" in rendered
-        assert "2 agents" in rendered
+        assert "2 non-retired agents" in rendered
+
+    async def test_the_publishers_own_fleet_row_renders_current(self) -> None:
+        """§9.6's v7 consequence (finding #98): "author's row renders current".
+        Today the publisher's own row reads ``brief unbriefed`` — the fleet, the
+        surface a lead scans to see who is behind, accuses the author of not
+        having read its own brief.
+        """
+        harness = _harness()
+        await _register(harness, name="lead", session="wave7", role="lead")
+        await _register(harness, name="fixer-b", session="wave7")  # bootstrap: no brief yet
+        await AppContext.comms(
+            harness, action="brief_publish", agent="lead", session="wave7", name="project", body="v1"
+        )
+        rendered = str(await AppContext.comms(harness, action="fleet", agent="lead", session="wave7"))
+        lead_row = next(line for line in rendered.splitlines() if line.startswith("- lead ["))
+        fixer_row = next(line for line in rendered.splitlines() if line.startswith("- fixer-b ["))
+        assert "brief v1" in lead_row
+        assert "unbriefed" not in lead_row
+        assert "brief unbriefed" in fixer_row, "the genuinely-unbriefed agent still says so"
 
 
 class TestFleetActionBriefCellRendering:
@@ -1550,6 +2164,7 @@ class _CoverageSkewSpyBriefLedger:
     def __init__(self, *, head_brief: Brief) -> None:
         self._head_brief = head_brief
         self.coverage_calls: list[int] = []
+        self.publish_agent_ids: list[str | None] = []
 
     async def get_head(self, name: str) -> Brief:
         return self._head_brief
@@ -1566,9 +2181,20 @@ class _CoverageSkewSpyBriefLedger:
         )
 
     async def publish(
-        self, name: str, body: str, *, created_by: str, note: str | None = None
+        self,
+        name: str,
+        body: str,
+        *,
+        created_by: str,
+        note: str | None = None,
+        agent_id: str | None = None,
     ) -> BriefPublishResult:
+        """v7 (#98): records the ``agent_id`` the handler passes — the self-ack
+        endpoint. ``None`` here would mean the dispatcher never handed the
+        ledger an author to ack, so the pin below is a REAL check, not a
+        signature-compat shim."""
         del name, body, created_by, note
+        self.publish_agent_ids.append(agent_id)
         return BriefPublishResult(brief=self._head_brief, first_version=False)
 
 
@@ -1593,7 +2219,7 @@ class TestFleetHandlerSourcesTrueCountsFromRoster:
                 cast(AppContext, ctx), agent_row=_agent(name="caller"), session=None, limit=_MAX_FLEET_LIMIT
             )
         )
-        assert f"{_TRUE_NON_RETIRED_TOTAL} agents" in rendered
+        assert f"{_TRUE_NON_RETIRED_TOTAL} non-retired agents" in rendered  # v7 label (#99)
         assert f"{_TRUE_PARKED} input_required" in rendered
         assert f"{_TRUE_ACTIVE} active" in rendered
         assert f"{_TRUE_IDLE} idle" in rendered  # the true 45 -- NOT the window's capped 40
@@ -1601,6 +2227,175 @@ class TestFleetHandlerSourcesTrueCountsFromRoster:
         assert f"+{remainder} more beyond the display cap ({_MAX_FLEET_LIMIT})" in rendered
         assert "re-run with limit=200" not in rendered  # the dead-end re-ask this variant replaces
         assert f"+{_TRUE_RETIRED} retired" in rendered
+
+
+class TestFleetHandlerOnAnAllRetiredScope:
+    """v7 (finding #99): the HANDLER must carry an all-retired scope through to
+    the render as a zeroed header + a true trailer — it must not short-circuit
+    on an empty row window, and it must not let the render's empty branch fire.
+
+    Driven at the HANDLER (``_comms_fleet``), not through ``comms()``: the
+    dispatcher resolves the CALLER inside the scope it is given, so an
+    all-retired scope is unreachable through the tool in C1 (the caller would
+    have to be a non-retired member of it, which is a contradiction, or a
+    retired one, which raises ``RetiredAgentError``). FLAGGED in the report:
+    that makes the all-retired render latent-but-unreachable today, exactly the
+    way §9.4's zero-behind omission was before #98 — and it becomes reachable
+    the moment C2 adds an ``include_retired``/foreign-scope re-ask. The fix is
+    still load-bearing (the lie is in the served render path), and this pin is
+    the strongest instrument that can reach it.
+    """
+
+    async def test_a_scope_whose_agents_are_all_retired_renders_the_zeroed_header(self) -> None:
+        registry = FakeAgentRegistry(db=FakeAgentDatabase())
+        harness = _harness(agent_registry=registry)
+        await _register(harness, name="lead", session="wave7", role="lead")  # the live caller
+        await _register(harness, name="ghost-a", session="wave8")
+        await _register(harness, name="ghost-b", session="wave8")
+        for ghost in ("ghost-a", "ghost-b"):
+            await registry.touch(ghost, session="wave8", status="retired")
+
+        rendered = str(
+            await AppContext._comms_fleet(
+                cast(AppContext, harness),
+                agent_row=_agent(name="lead", session="wave7", role="lead"),
+                session="wave8",
+                limit=None,
+            )
+        )
+        assert "no agents registered" not in rendered, (
+            "two agents ARE registered in wave8 — they are retired. The empty variant "
+            "lies about a scope it can see the rows of (finding #99, self-caught instance)"
+        )
+        assert rendered.splitlines() == [
+            "fleet (session wave8): 0 non-retired agents — 0 input_required, 0 active, 0 idle",
+            "+2 retired",
+        ]
+
+    async def test_a_genuinely_rowless_scope_still_renders_the_empty_variant(self) -> None:
+        """The other half of the same ruling, through the same handler: with NO
+        rows of any status in scope, the empty variant is the honest render.
+        """
+        registry = FakeAgentRegistry(db=FakeAgentDatabase())
+        harness = _harness(agent_registry=registry)
+        await _register(harness, name="lead", session="wave7", role="lead")
+
+        rendered = str(
+            await AppContext._comms_fleet(
+                cast(AppContext, harness),
+                agent_row=_agent(name="lead", session="wave7", role="lead"),
+                session="wave9",  # nobody ever registered here
+                limit=None,
+            )
+        )
+        assert rendered == "no agents registered (session wave9)"
+
+
+class TestFleetLimitBounds:
+    """v7 / finding #97 (design doc §6, §1.2): ``limit`` is ``ge=1`` at the tool
+    boundary — BELOW 1 TEACHES (a ValueError naming the offending value and the
+    valid range ``1..{_MAX_FLEET_LIMIT}``), ABOVE the cap CLAMPS (honest
+    clamping; the §9.6 cap-disclosure elision line then discloses what the clamp
+    withheld). Today ``limit=-1`` silently renders a partial fleet — the render
+    slices ``ordered[:-1]`` and drops the last row with no notice at all, and
+    ``limit=0`` renders a fleet with no rows in it.
+    """
+
+    @pytest.mark.parametrize("bad_limit", [0, -1, -200])
+    async def test_a_limit_below_one_teaches_the_valid_range(self, bad_limit: int) -> None:
+        harness = _harness()
+        await _register(harness, name="fixer-b", session="wave7")
+        with pytest.raises(ValueError) as exc_info:
+            await AppContext.comms(
+                harness, action="fleet", agent="fixer-b", session="wave7", limit=bad_limit
+            )
+        message = str(exc_info.value)
+        assert "limit" in message
+        assert str(bad_limit) in message, "a teaching error names the offending value (§7)"
+        assert f"1..{_MAX_FLEET_LIMIT}" in message, (
+            "the error must name the VALID RANGE — §7: no comms error is ever a bare "
+            "'invalid input'; each names the offending value, the legal domain, and the next move"
+        )
+
+    @pytest.mark.parametrize("bad_limit", [0, -1])
+    async def test_a_rejected_limit_never_touches_the_callers_row(self, bad_limit: int) -> None:
+        """Contract-adversary §2: the bound is a caller/SHAPE error, so it must
+        fire in the DISPATCHER — BEFORE the uniform heartbeat touch (§8 step 4),
+        not inside the fleet handler.
+
+        A build that validates in the handler passes every other limit pin
+        (554/554) while a REJECTED call has already mutated the store: the
+        caller's ``heartbeat_at`` is stamped and an idle agent is auto-flipped to
+        active. A rejected call must be a NO-OP on the fleet's own state — an
+        agent whose status silently changed because it typo'd a limit is the
+        quietest kind of wrong.
+
+        The caller is parked ``idle`` precisely so the touch would be VISIBLE:
+        the auto-flip (§3) is the loudest side effect available at this seam.
+        """
+        registry = FakeAgentRegistry(db=FakeAgentDatabase())
+        harness = _harness(agent_registry=registry)
+        await _register(harness, name="fixer-b", session="wave7")
+        await registry.touch("fixer-b", session="wave7", status="idle")
+        before = await registry.get_agent("fixer-b", session="wave7")
+
+        with pytest.raises(ValueError):
+            await AppContext.comms(
+                harness, action="fleet", agent="fixer-b", session="wave7", limit=bad_limit
+            )
+
+        after = await registry.get_agent("fixer-b", session="wave7")
+        assert after.status == "idle", (
+            "a REJECTED fleet call must not auto-flip the caller idle->active — the bound "
+            "is a shape error and belongs ahead of the uniform heartbeat touch (§8 step 4)"
+        )
+        assert after.heartbeat_at == before.heartbeat_at, (
+            "a REJECTED fleet call must not stamp the caller's heartbeat_at"
+        )
+
+    async def test_limit_one_is_legal_and_shows_exactly_one_row(self) -> None:
+        """The ge=1 BOUNDARY from the legal side: 1 is valid (an off-by-one
+        guard rejecting it would be caught here, not in production)."""
+        harness = _harness()
+        await _register(harness, name="fixer-b", session="wave7")
+        await _register(harness, name="fixer-c", session="wave7")
+        rendered = str(
+            await AppContext.comms(
+                harness, action="fleet", agent="fixer-b", session="wave7", limit=1
+            )
+        )
+        rows = [line for line in rendered.splitlines() if line.startswith("- ")]
+        assert len(rows) == 1
+        assert "+1 more — re-run with limit=2" in rendered
+
+    async def test_a_limit_above_the_cap_clamps_and_discloses_instead_of_raising(self) -> None:
+        """Above the cap is NOT an error (§1.2 honest clamping): the rows are
+        capped at ``_MAX_FLEET_LIMIT`` and the cap-disclosure line tells the
+        caller what the clamp withheld. A build that raised here — or that
+        honoured the oversized limit and rendered 205 rows — fails.
+        """
+        registry = FakeAgentRegistry(db=FakeAgentDatabase())
+        harness = _harness(agent_registry=registry)
+        total = _MAX_FLEET_LIMIT + 5
+        for index in range(total):
+            await _register(harness, name=f"agent-{index:03d}", session="wave7")
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="fleet",
+                agent="agent-000",
+                session="wave7",
+                limit=_MAX_FLEET_LIMIT + 50,
+            )
+        )
+        rows = [line for line in rendered.splitlines() if line.startswith("- ")]
+        assert len(rows) == _MAX_FLEET_LIMIT, "the display cap bounds the ROWS, whatever was asked for"
+        assert rendered.splitlines()[0] == (
+            f"fleet (session wave7): {total} non-retired agents — 0 input_required, "
+            f"{total} active, 0 idle"
+        ), "the header still counts the WHOLE scope (§5.3 counting law), not the clamped window"
+        assert f"+5 more beyond the display cap ({_MAX_FLEET_LIMIT})" in rendered
+        assert "re-run with limit" not in rendered, "a re-ask past the cap is a dead end (§9.6)"
 
 
 class TestBriefGetCoverageOverTheWholeRoster:
@@ -1645,6 +2440,43 @@ class TestBriefPublishSkewOverTheWholeRoster:
         )
 
         assert ledger_spy.coverage_calls == [_TRUE_NON_RETIRED_TOTAL]
+
+    @pytest.mark.parametrize("brief_name", ["project", "wave7"])
+    async def test_the_handler_hands_the_ledger_the_callers_row_id_to_self_ack(
+        self, brief_name: str
+    ) -> None:
+        """v7 / finding #98, at the seam: the ledger writes the self-ack edge,
+        but only the DISPATCHER knows who the author is. This pins the exact
+        value crossing that seam — the acting agent's ``id``, not its name, not
+        ``created_by``, and never ``None`` (which would silently mean "no
+        self-ack" and restore the phantom-straggler defect with every other test
+        still green).
+
+        Parametrised over the brief NAME (contract-adversary §1): the value that
+        crosses the seam must not depend on it. A ``name == BRIEF_NAME_PROJECT``
+        guard here passes the 'project' case and hands ``None`` for every other
+        brief in the fleet.
+        """
+        caller = _agent(name="caller", session="wave7")
+        registry_spy = _OverCapRosterSpyRegistry()
+        ledger_spy = _CoverageSkewSpyBriefLedger(head_brief=_brief(name=brief_name, version=4))
+        ctx = SimpleNamespace(
+            agent_registry=registry_spy,
+            brief_ledger=ledger_spy,
+            config=SimpleNamespace(comms=SimpleNamespace(brief_body_warn_chars=4000)),
+        )
+
+        await AppContext._comms_brief_publish(
+            cast(AppContext, ctx),
+            agent_row=caller,
+            session=None,
+            name=brief_name,
+            body="standing instructions",
+            note=None,
+            created_by="a-different-display-name",
+        )
+
+        assert ledger_spy.publish_agent_ids == [caller.id]
 
 
 # =========================================================================== #
@@ -1811,6 +2643,28 @@ class TestRenderCommsBriefPublish:
         )
         assert "first version" in rendered
         assert "skew" not in rendered
+
+    @pytest.mark.parametrize("brief_name", ["project", "wave9", "base"])
+    def test_the_first_version_ack_clause_is_brief_name_AWARE(self, brief_name: str) -> None:
+        """Render-unit twin of TestTheFirstVersionLineTeachesAnAckMechanismThat
+        ACTUALLYEXISTS's killer pin (the eighth §5.3 instance), isolating the
+        helper where the fix lands: the register-time auto-ack is hardcoded to
+        BRIEF_NAME_PROJECT in ``_comms_register``, so only a 'project'
+        first-version line may promise it. ``test_first_version`` above cannot
+        see this — ``_brief()`` defaults to name='project', the one name for
+        which today's unconditional clause happens to be true (the monoculture,
+        in miniature)."""
+        result = BriefPublishResult(brief=_brief(name=brief_name, version=1), first_version=True)
+        rendered = AppContext._render_comms_brief_publish(
+            result, behind=[], body_chars=10, warn_threshold_chars=4000, session=None
+        )
+        assert "first version" in rendered
+        assert ("agents ack at register" in rendered) == (brief_name == "project"), (
+            f"only the 'project' brief is acked at register — a first-version line under "
+            f"name={brief_name!r} may promise it IFF it is true: {rendered!r}"
+        )
+        if brief_name != "project":
+            assert "agents ack with lore_comms action=brief_ack" in rendered
 
     def test_skew_line_renders_only_when_behind_is_nonempty(self) -> None:
         result = BriefPublishResult(brief=_brief(version=2), first_version=False)
@@ -2056,6 +2910,25 @@ class TestRenderCommsBriefAck:
         rendered = AppContext._render_comms_brief_ack(result)
         assert "head is v5" in rendered
 
+    @pytest.mark.parametrize("brief_name", ["project", "wave9"])
+    def test_the_behind_ack_teach_is_name_EXPLICIT(self, brief_name: str) -> None:
+        """The TENTH instance at the render helper (design doc v8 §9.5; the
+        end-to-end mechanism litmus lives in
+        ``TestTheBehindAckTeachNamesTheBriefItIsABOUT``). Both legs are
+        load-bearing: 'wave9' proves the teach is name-AWARE (a bare
+        ``brief_get`` resolves to 'project' and reads the wrong brief),
+        'project' proves the v8 UNIFORMITY ruling (the explicit ``name=`` is
+        rendered there too — a build that emits it only for non-'project'
+        names, i.e. special-cases the class instead of killing it, goes RED
+        here). This class's every other fixture is ``name='project'``: that
+        monoculture is exactly what hid the defect."""
+        result = BriefAckResult(
+            name=brief_name, version=4, head_version=5, already_acked=False, via="explicit"
+        )
+        rendered = AppContext._render_comms_brief_ack(result)
+        assert f"catch up: lore_comms action=brief_get name='{brief_name}'" in rendered
+        assert rendered.count("\n") == 0
+
     def test_idempotent_reack(self) -> None:
         result = BriefAckResult(name="project", version=5, head_version=5, already_acked=True, via="explicit")
         rendered = AppContext._render_comms_brief_ack(result)
@@ -2126,21 +2999,59 @@ class TestRenderCommsFleetRow:
 
 class TestRenderCommsFleet:
     def test_header_names_total_and_per_status_counts(self) -> None:
+        """v7 (finding #99): the header's ``{total}`` IS the NON-RETIRED
+        partition and must now SAY so — ``{total} non-retired agents``, the
+        sibling vocabulary §9.3/§9.4/§7 already use for exactly this set. The
+        retired agents it excludes are disclosed separately by the ``+K
+        retired`` trailer, so the retired row below is what makes the old label
+        ('3 agents' would be true of the registry, '2 agents' is what it
+        printed) a LIE about its own set rather than a harmless shorthand.
+
+        Byte-exact on the whole line: a substring pin ('2 non-retired') would
+        pass a build that mangled the rest of the grammar.
+        """
         rows = [_agent(name="a", status="input_required"), _agent(name="b", status="active")]
-        rendered = AppContext._render_comms_fleet(
-            _fleet_window(rows),
-            session=None,
-            limit=20,
-            stale_after_s=600,
-            project_head_version=None,
-            acked_versions={},
-            heartbeat_age_seconds={},
-            status_counts=_status_counts(rows),
+        rendered = str(
+            AppContext._render_comms_fleet(
+                _fleet_window(rows, retired_count=1),
+                session=None,
+                limit=20,
+                stale_after_s=600,
+                project_head_version=None,
+                acked_versions={},
+                heartbeat_age_seconds={},
+                status_counts=_status_counts(rows, retired_count=1),
+            )
         )
-        assert "2 agents" in rendered
-        assert "1 input_required" in rendered
-        assert "1 active" in rendered
-        assert "0 idle" in rendered
+        assert rendered.splitlines()[0] == (
+            "fleet: 2 non-retired agents — 1 input_required, 1 active, 0 idle"
+        )
+        assert "+1 retired" in rendered
+
+    def test_scoped_header_names_the_session_and_the_non_retired_set(self) -> None:
+        """The scoped variant of the same grammar (v7/#99) — byte-exact. Both
+        variants ship the label; a builder who fixed only the one its eye landed
+        on is caught here.
+        """
+        rows = [
+            _agent(name="a", session="wave7", status="active"),
+            _agent(name="b", session="wave7", status="idle"),
+        ]
+        rendered = str(
+            AppContext._render_comms_fleet(
+                _fleet_window(rows),
+                session="wave7",
+                limit=20,
+                stale_after_s=600,
+                project_head_version=None,
+                acked_versions={},
+                heartbeat_age_seconds={},
+                status_counts=_status_counts(rows),
+            )
+        )
+        assert rendered.splitlines()[0] == (
+            "fleet (session wave7): 2 non-retired agents — 0 input_required, 1 active, 1 idle"
+        )
 
     def test_ordering_input_required_then_active_then_idle(self) -> None:
         rows = [
@@ -2174,31 +3085,112 @@ class TestRenderCommsFleet:
         assert "wave7" in rendered
 
     def test_empty_unscoped(self) -> None:
-        rendered = AppContext._render_comms_fleet(
-            _fleet_window([]),
-            session=None,
-            limit=20,
-            stale_after_s=600,
-            project_head_version=None,
-            acked_versions={},
-            heartbeat_age_seconds={},
-            status_counts=_status_counts([]),
+        """The empty variant fires ONLY on a registry with no rows of ANY status
+        (v7-precise, §9.6). Byte-exact, and explicitly NOT the zeroed header —
+        which is the all-retired render (below), a different fact.
+        """
+        rendered = str(
+            AppContext._render_comms_fleet(
+                _fleet_window([]),
+                session=None,
+                limit=20,
+                stale_after_s=600,
+                project_head_version=None,
+                acked_versions={},
+                heartbeat_age_seconds={},
+                status_counts=_status_counts([]),
+            )
         )
-        assert "no agents registered" in rendered
+        assert rendered == "no agents registered"
 
     def test_empty_scoped_names_the_session(self) -> None:
-        rendered = AppContext._render_comms_fleet(
-            _fleet_window([]),
-            session="wave7",
-            limit=20,
-            stale_after_s=600,
-            project_head_version=None,
-            acked_versions={},
-            heartbeat_age_seconds={},
-            status_counts=_status_counts([]),
+        rendered = str(
+            AppContext._render_comms_fleet(
+                _fleet_window([]),
+                session="wave7",
+                limit=20,
+                stale_after_s=600,
+                project_head_version=None,
+                acked_versions={},
+                heartbeat_age_seconds={},
+                status_counts=_status_counts([]),
+            )
         )
-        assert "no agents registered" in rendered
-        assert "wave7" in rendered
+        assert rendered == "no agents registered (session wave7)"
+
+    def test_all_retired_is_not_empty_and_never_says_no_agents_registered(self) -> None:
+        """v7 (finding #99's self-caught seventh instance): agents EXIST — they
+        are all retired — so ``no agents registered`` is a confident-wrong
+        render ("registered" they demonstrably are; the trailer they'd never see
+        proves the code knows it). The honest render is the TRUE zeroed
+        non-retired header + the true ``+K retired`` trailer.
+
+        This is the pin that kills BOTH wrong builds: a build that keeps the
+        old branch renders the lie; a build that deletes the empty branch
+        outright renders '0 non-retired agents' for a genuinely EMPTY registry
+        (caught by the two byte-exact empty pins above). Only the ruled
+        semantics — empty iff NO rows of ANY status — passes all three.
+        """
+        rendered = str(
+            AppContext._render_comms_fleet(
+                _fleet_window([], retired_count=3),
+                session=None,
+                limit=20,
+                stale_after_s=600,
+                project_head_version=None,
+                acked_versions={},
+                heartbeat_age_seconds={},
+                status_counts=_status_counts([], retired_count=3),
+            )
+        )
+        assert "no agents registered" not in rendered
+        assert rendered.splitlines() == [
+            "fleet: 0 non-retired agents — 0 input_required, 0 active, 0 idle",
+            "+3 retired",
+        ]
+
+    def test_all_retired_scoped_renders_the_zeroed_header_and_the_true_trailer(self) -> None:
+        rendered = str(
+            AppContext._render_comms_fleet(
+                _fleet_window([], retired_count=2),
+                session="wave7",
+                limit=20,
+                stale_after_s=600,
+                project_head_version=None,
+                acked_versions={},
+                heartbeat_age_seconds={},
+                status_counts=_status_counts([], retired_count=2),
+            )
+        )
+        assert "no agents registered" not in rendered
+        assert rendered.splitlines() == [
+            "fleet (session wave7): 0 non-retired agents — 0 input_required, 0 active, 0 idle",
+            "+2 retired",
+        ]
+
+    def test_all_retired_renders_no_rows_and_no_elision_line(self) -> None:
+        """The zeroed header must not drag an elision line in behind it: there
+        are no non-retired rows to elide, so ``+K more`` (whose k = total −
+        shown = 0) must stay silent, and no ``- name [...]`` row may appear.
+        """
+        rendered = str(
+            AppContext._render_comms_fleet(
+                _fleet_window([], retired_count=5),
+                session=None,
+                limit=1,
+                stale_after_s=600,
+                project_head_version=None,
+                acked_versions={},
+                heartbeat_age_seconds={},
+                status_counts=_status_counts([], retired_count=5),
+            )
+        )
+        assert "more" not in rendered
+        assert not [line for line in rendered.splitlines() if line.startswith("- ")]
+        assert rendered.splitlines() == [
+            "fleet: 0 non-retired agents — 0 input_required, 0 active, 0 idle",
+            "+5 retired",
+        ]
 
     def test_retired_trailer(self) -> None:
         rows = [_agent()]
@@ -2347,7 +3339,7 @@ class TestRenderCommsFleetTrueStatusCounts:
             acked_versions={},
             heartbeat_age_seconds={},
         )
-        assert f"{_TRUE_NON_RETIRED_TOTAL} agents" in rendered
+        assert f"{_TRUE_NON_RETIRED_TOTAL} non-retired agents" in rendered  # v7 label (#99)
         assert f"{_TRUE_PARKED} input_required" in rendered
         assert f"{_TRUE_ACTIVE} active" in rendered
         assert f"{_TRUE_IDLE} idle" in rendered

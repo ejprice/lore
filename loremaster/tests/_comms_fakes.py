@@ -37,6 +37,13 @@ pattern from scratch:
    proof. Because the counter bump itself is genuinely atomic, THIS
    implementation's race window is safe: two racers can never observe or mint
    the same ``next_version``.
+3b. :meth:`FakeBriefLedger.publish` writes the AUTHOR's self-ack edge
+   (``via='publish'``, design doc §5.1 step 2 — v7/finding #98) in the SAME
+   no-``await`` span as the brief row, because production writes both
+   statements inside ONE ``execute_transaction`` fragment. A fake that
+   yielded between the two writes — or wrote the edge in a second, separately
+   failable step — would model the build the spec explicitly forbids, and
+   would hide exactly the defect the atomicity pins exist to catch.
 4. Every returned value object is a FRESH ``model_copy(deep=True))`` —
    production deserializes a fresh row on every call; a consumer that mutates
    a returned object must never corrupt this fake's store.
@@ -70,6 +77,7 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import cast
 from uuid import NAMESPACE_URL, uuid5
 
 from loremaster.agents import (
@@ -131,6 +139,16 @@ _STATUS_SORT_ORDER: dict[AgentStatus, int] = {
     STATUS_ACTIVE: 1,
     STATUS_IDLE: 2,
 }
+
+# --- the ``briefed.via`` vocabulary (spec §0, v7 — finding #98) -------------
+# A DELIBERATE local copy of the closed THREE-value set the schema ASSERTs
+# (``surreal_schema._BRIEFED_VIA_VALUES``) — an independent implementation of
+# the contract, never an import of production's own tuple (an imported tuple
+# makes every "the vocabulary is X" assertion a tautology that can never fail).
+VIA_REGISTER = "register"
+VIA_EXPLICIT = "explicit"
+VIA_PUBLISH = "publish"  # v7: the author's self-ack, written BY ``publish``
+BRIEFED_VIA_VALUES: frozenset[str] = frozenset({VIA_REGISTER, VIA_EXPLICIT, VIA_PUBLISH})
 
 
 def _utc_now() -> datetime:
@@ -458,8 +476,24 @@ class FakeBriefLedger:
     # -- publish ----------------------------------------------------------------
 
     async def publish(
-        self, name: str, body: str, *, created_by: str, note: str | None = None
+        self,
+        name: str,
+        body: str,
+        *,
+        created_by: str,
+        note: str | None = None,
+        agent_id: str | None = None,
     ) -> BriefPublishResult:
+        """Mint + write one version — and, when ``agent_id`` is given, the
+        author's SELF-ACK ``briefed`` edge (``via='publish'``) in the SAME
+        atomic span (design doc §5.1 step 2, v7 — finding #98).
+
+        ``agent_id`` is the PUBLISHING AGENT's opaque row id (never its
+        ``created_by`` display name): the edge is ``agent->briefed->brief``,
+        so only a real agent row id can carry it. Omitted (a ledger-level
+        caller with no agent row in play) ⇒ no edge, exactly as production's
+        RELATE fragment is only composed when an id is supplied.
+        """
         # Blank-body rejection is a SCHEMA-level (``_NON_EMPTY_STRING_ASSERT``)
         # concern owned by the S1 DDL slice, not app-validated here — see the
         # report's contract-decisions section. This fake therefore does NOT
@@ -493,7 +527,17 @@ class FakeBriefLedger:
             note=note,
             created_at=_utc_now(),
         )
+        # --- the row + the author's self-ack edge: ONE no-``await`` span -----
+        # Production writes both statements inside ONE ``execute_transaction``
+        # fragment (§5.1 step 2: "never a second, separately-failable call"),
+        # so no reader can ever observe a brief whose author is not acked to
+        # it. Modelled faithfully here: nothing may interleave between the two
+        # dict writes below. A fake that yielded between them would be
+        # simulating the two-write build the spec FORBIDS.
         self.db.briefs[brief_id] = brief
+        if agent_id is not None:
+            self.db.edges[(agent_id, brief_id)] = cast(BriefAckVia, VIA_PUBLISH)
+        # --- end atomic span ---
         return BriefPublishResult(brief=brief.model_copy(deep=True), first_version=next_version == 1)
 
     # -- read ---------------------------------------------------------------
@@ -544,8 +588,20 @@ class FakeBriefLedger:
         already = edge_key in self.db.edges
         if not already:
             # Idempotent RELATE: only ever set on first ack (UNIQUE(in, out)).
-            recorded_via: BriefAckVia = "register" if via == "register" else "explicit"
-            self.db.edges[edge_key] = recorded_via
+            # The value is stored VERBATIM — never normalised into a
+            # two-value guess. The retired ``"register" if via == "register"
+            # else "explicit"`` coercion silently rewrote any THIRD vocabulary
+            # word (v7's ``publish``) into ``explicit``, which would have made
+            # this fake structurally incapable of failing a build that recorded
+            # the wrong ``via``. Out-of-domain values RAISE here — the fake's
+            # stand-in for the schema's own ``ASSERT $value IN [...]``, which
+            # is what rejects them against the real store.
+            if via not in BRIEFED_VIA_VALUES:
+                raise ValueError(
+                    f"via {via!r} is not in the briefed vocabulary "
+                    f"{sorted(BRIEFED_VIA_VALUES)} (the schema ASSERT rejects it)"
+                )
+            self.db.edges[edge_key] = cast(BriefAckVia, via)
         stored_via = self.db.edges[edge_key]
         return BriefAckResult(
             name=name,

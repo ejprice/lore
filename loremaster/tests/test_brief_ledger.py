@@ -31,7 +31,7 @@ match):
         version: int                        # the version the caller targeted
         head_version: int                   # head AT THE TIME of this ack
         already_acked: bool                 # True on an idempotent re-ack no-op
-        via: Literal["register", "explicit"]
+        via: Literal["register", "explicit", "publish"]   # v7 — finding #98
 
     BriefBehindEntry:
         agent_name: str
@@ -51,7 +51,11 @@ match):
     BriefLedger(*, url, namespace, database, user, password):
         async ensure_ready() -> None
         async close() -> None
-        async publish(name, body, *, created_by, note=None) -> BriefPublishResult
+        async publish(name, body, *, created_by, note=None,
+                      agent_id=None) -> BriefPublishResult   # v7 — finding #98:
+            # a given agent_id makes publish SELF-ACK its author — the briefed
+            # edge (via='publish') is RELATE'd in the SAME transaction as the
+            # brief CREATE (design doc §5.1 step 2), never a second write.
         async get_head(name) -> Brief
         async get_version(name, version) -> Brief
         async known_names() -> list[str]
@@ -85,7 +89,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, cast, get_args
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
@@ -108,11 +112,20 @@ from loremaster.briefs import (
     BRIEF_NAME_BASE,
     BRIEF_NAME_PROJECT,
     Brief,
+    BriefAckResult,
+    BriefAckVia,
     BriefLedger,
+    BriefPublishResult,
     UnknownBriefError,
     UnknownBriefVersionError,
 )
-from loremaster.store._txn import SurrealConnectionError, SurrealStoreError, _SurrealConnection
+from loremaster.store._txn import (
+    SurrealConnectionError,
+    SurrealStoreError,
+    _SurrealConnection,
+    execute_transaction,
+)
+from loremaster.store.surreal_schema import BRIEF_TABLE, BRIEFED_RELATION
 from render_injection_scaffold import _ROW_FORGE_PAYLOAD
 from surrealdb.errors import ErrorKind, ServerError
 
@@ -142,6 +155,18 @@ def _brief_id(name: str, version: int) -> str:
 def _assert_recent_utc(stamp: datetime, *, not_before: datetime, not_after: datetime) -> None:
     assert stamp.tzinfo is not None, "timestamp must be timezone-aware (fleet-comparable), not naive"
     assert not_before - _TIMESTAMP_TOLERANCE <= stamp <= not_after + _TIMESTAMP_TOLERANCE
+
+
+async def _edge_count(ledger: BriefLedger) -> int:
+    """The REAL store's total ``briefed`` edge count — a raw read that sees
+    ORPHAN edges (an edge whose brief row was rolled back), which
+    ``acked_version``'s edge->brief join cannot: it drops a dangling target
+    silently. Real-store only (the atomicity pins).
+    """
+    rows = await ledger._query(f"SELECT count() FROM {BRIEFED_RELATION} GROUP ALL")  # noqa: SLF001
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return 0
+    return int(rows[0].get("count", 0))
 
 
 @dataclass(frozen=True)
@@ -291,6 +316,350 @@ class TestConcurrentPublishesLandDistinctVersions:
 
         head = await ledgers[0].get_head(WAVE_BRIEF_NAME)
         assert head.version == _CONCURRENT_PUBLISHERS
+
+
+# ===========================================================================
+# v7 / finding #98 — publish() SELF-ACKS its author, in the SAME transaction
+# as the brief row (design doc §5.1 step 2, §5.3, §9.4).
+#
+# The contract this section pins on production (the builder codes to THIS):
+#
+#     async def publish(name, body, *, created_by, note=None,
+#                       agent_id: str | None = None) -> BriefPublishResult
+#
+# ``agent_id`` is the PUBLISHING AGENT's opaque row id — never its
+# ``created_by`` display name (a ``briefed`` edge is ``agent->briefed->brief``:
+# only a real agent row id can carry it). When given, the CREATE fragment gains
+# the author's self-ack RELATE (``via='publish'``, ``at=now``) and BOTH
+# statements ride ONE ``execute_transaction``. When omitted (a ledger-level
+# caller with no agent row in play), no edge is written.
+#
+#     BriefAckVia = Literal["register", "explicit", "publish"]   # widened
+# ===========================================================================
+
+
+async def _publish_as(
+    ledger: BriefLedger,
+    name: str,
+    body: str,
+    *,
+    created_by: str,
+    agent_id: str,
+    note: str | None = None,
+) -> BriefPublishResult:
+    """Publish under the v7 signature — the ONE call site of the new
+    ``agent_id`` kwarg, so the contract's demanded signature change is stated
+    in exactly one place (and is the only place mypy reports until the builder
+    lands it).
+    """
+    return await ledger.publish(name, body, created_by=created_by, note=note, agent_id=agent_id)
+
+
+async def _stored_via(ledger: BriefLedger, *, agent_id: str, name: str, version: int) -> BriefAckResult:
+    """Read back the STORED edge for (agent, name@version) through the public
+    surface: a re-ack is an idempotent no-op that reports the FIRST-recorded
+    ``via`` (design doc §5.4). Backend-agnostic — works against the real store
+    and the fake alike, and doubles as the §9.5 ``already acked`` probe.
+    """
+    return await ledger.ack(
+        agent_id=agent_id, agent_name="probe", name=name, version=version, via="explicit"
+    )
+
+
+class TestPublishSelfAcksItsAuthor:
+    """§5.1 step 2 / §5.3: the author has BY CONSTRUCTION read what it wrote, so
+    ``publish`` records an ordinary stored head-ack for it (``via='publish'``).
+    Not a render carve-out — a real edge, which is what makes the author drop
+    out of every downstream count (coverage numerator, skew, fleet cell,
+    heartbeat) with no special-casing anywhere.
+    """
+
+    async def test_publish_writes_the_authors_briefed_edge_at_the_published_version(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        result = await _publish_as(
+            brief_ledger,
+            BRIEF_NAME_PROJECT,
+            BODY_V1,
+            created_by=PUBLISHER_LEAD,
+            agent_id=AGENT_FIXER_B_ID,
+        )
+        acked = await brief_ledger.acked_version(agent_id=AGENT_FIXER_B_ID, name=BRIEF_NAME_PROJECT)
+        assert acked == result.brief.version == 1, (
+            "the publishing agent must be acked at the version it just published "
+            "(design doc §5.1 step 2) — today it is served as a straggler behind its own brief"
+        )
+
+    async def test_the_self_ack_edge_records_via_publish(self, brief_ledger: BriefLedger) -> None:
+        """The stored ``via`` is the THIRD vocabulary word, not ``explicit`` and
+        not ``register``: the fleet/audit surfaces distinguish how an ack was
+        obtained, and an author's ack was never an explicit read-and-ack call.
+        """
+        await _publish_as(
+            brief_ledger,
+            BRIEF_NAME_PROJECT,
+            BODY_V1,
+            created_by=PUBLISHER_LEAD,
+            agent_id=AGENT_FIXER_B_ID,
+        )
+        probe = await _stored_via(
+            brief_ledger, agent_id=AGENT_FIXER_B_ID, name=BRIEF_NAME_PROJECT, version=1
+        )
+        assert probe.via == "publish"
+
+    async def test_an_author_explicitly_acking_its_own_version_is_an_idempotent_no_op(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        """§9.5's NEW v7 case: the author's own ``brief_ack`` of the version it
+        just published hits the ``already acked`` path (the ``via=publish`` edge
+        already exists) — never a second edge, never a UNIQUE(in,out) explosion.
+        """
+        await _publish_as(
+            brief_ledger,
+            BRIEF_NAME_PROJECT,
+            BODY_V1,
+            created_by=PUBLISHER_LEAD,
+            agent_id=AGENT_FIXER_B_ID,
+        )
+        probe = await _stored_via(
+            brief_ledger, agent_id=AGENT_FIXER_B_ID, name=BRIEF_NAME_PROJECT, version=1
+        )
+        assert probe.already_acked is True
+        assert probe.head_version == 1
+        # ... and the ack is still SINGULAR: the agent's ack set is exactly {v1}.
+        mapping = await brief_ledger.acked_versions_for_ids(
+            [AGENT_FIXER_B_ID], name=BRIEF_NAME_PROJECT
+        )
+        assert mapping == {AGENT_FIXER_B_ID: 1}
+
+    async def test_publish_without_an_agent_id_writes_no_edge(self, brief_ledger: BriefLedger) -> None:
+        """A ledger-level publish with no agent row in play (no ``agent_id``)
+        writes NO edge — the edge is ``agent->briefed->brief`` and there is no
+        agent to hang it on. Pins the OPTIONALITY of the kwarg honestly: a build
+        that invented an edge from the ``created_by`` STRING (which is a display
+        name, not a row id) would be caught here and by the test above.
+        """
+        await brief_ledger.publish(BRIEF_NAME_PROJECT, BODY_V1, created_by=PUBLISHER_LEAD)
+        acked = await brief_ledger.acked_version(agent_id=AGENT_FIXER_B_ID, name=BRIEF_NAME_PROJECT)
+        assert acked is None
+        mapping = await brief_ledger.acked_versions_for_ids(
+            [AGENT_FIXER_B_ID, AGENT_SCOUT_C_ID], name=BRIEF_NAME_PROJECT
+        )
+        assert mapping == {}
+
+    async def test_the_author_is_current_and_only_the_others_are_behind(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        """The consequence §5.3 sweeps: the author is excluded from ``behind``
+        by an ORDINARY stored head-ack — coverage's numerator counts it at head.
+        """
+        await _publish_as(
+            brief_ledger,
+            BRIEF_NAME_PROJECT,
+            BODY_V1,
+            created_by=PUBLISHER_LEAD,
+            agent_id=AGENT_FIXER_B_ID,
+        )
+        roster = [
+            _AgentRef(id=AGENT_FIXER_B_ID, name="fixer-b"),
+            _AgentRef(id=AGENT_SCOUT_C_ID, name="scout-c"),
+            _AgentRef(id=AGENT_AUDIT_D_ID, name="audit-d"),
+        ]
+        coverage = await brief_ledger.coverage(BRIEF_NAME_PROJECT, active_agents=roster)
+        assert coverage.current_count == 1
+        assert coverage.total_agents == 3
+        assert [(entry.agent_name, entry.acked_version) for entry in coverage.behind] == [
+            ("audit-d", None),
+            ("scout-c", None),
+        ]
+
+    async def test_a_republish_by_a_different_author_leaves_the_prior_author_at_its_old_version(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        """v7 CHANGELOG, stated verbatim: a re-publish by a DIFFERENT author is
+        ordinary behind-at-vN for the previous author — no special casing, no
+        edge rewrite, no retro-ack. The prior author's stored ack stays at the
+        version IT published; the new author is current.
+        """
+        await _publish_as(
+            brief_ledger, BRIEF_NAME_PROJECT, BODY_V1, created_by="lead", agent_id=AGENT_FIXER_B_ID
+        )
+        second = await _publish_as(
+            brief_ledger, BRIEF_NAME_PROJECT, BODY_V2, created_by="scout-c", agent_id=AGENT_SCOUT_C_ID
+        )
+        assert second.brief.version == 2
+        assert await brief_ledger.acked_version(agent_id=AGENT_FIXER_B_ID, name=BRIEF_NAME_PROJECT) == 1
+        assert await brief_ledger.acked_version(agent_id=AGENT_SCOUT_C_ID, name=BRIEF_NAME_PROJECT) == 2
+        coverage = await brief_ledger.coverage(
+            BRIEF_NAME_PROJECT,
+            active_agents=[
+                _AgentRef(id=AGENT_FIXER_B_ID, name="fixer-b"),
+                _AgentRef(id=AGENT_SCOUT_C_ID, name="scout-c"),
+            ],
+        )
+        assert coverage.current_count == 1
+        assert [(entry.agent_name, entry.acked_version) for entry in coverage.behind] == [
+            ("fixer-b", 1)
+        ]
+
+    async def test_every_one_of_eight_concurrent_publishers_self_acks_exactly_its_own_version(
+        self, brief_ledger_factory: BriefLedgerFactory
+    ) -> None:
+        """The self-ack under the PINNED 8-way race (§5.1's contention degree —
+        never a 2-way stand-in): eight racers, eight distinct agent ids, eight
+        distinct versions, and each agent acked at ITS OWN version — never a
+        shared edge, never a lost one, never one agent acked at another's
+        version. A build that RELATEd outside the minted transaction (or reused
+        a stale ``version`` local) shows up here as a duplicate or a hole.
+        """
+        ledgers = [await brief_ledger_factory() for _ in range(_CONCURRENT_PUBLISHERS)]
+        agent_ids = [f"agent-{index}-opaque-id" for index in range(_CONCURRENT_PUBLISHERS)]
+
+        results = await asyncio.gather(
+            *[
+                _publish_as(
+                    ledger,
+                    WAVE_BRIEF_NAME,
+                    f"standing instruction from publisher {index}",
+                    created_by=f"pub-{index}",
+                    agent_id=agent_ids[index],
+                )
+                for index, ledger in enumerate(ledgers)
+            ]
+        )
+
+        versions = sorted(result.brief.version for result in results)
+        assert versions == list(range(1, _CONCURRENT_PUBLISHERS + 1))
+        mapping = await ledgers[0].acked_versions_for_ids(agent_ids, name=WAVE_BRIEF_NAME)
+        assert mapping == {
+            agent_ids[index]: result.brief.version for index, result in enumerate(results)
+        }, "each of the eight publishers must be acked at exactly the version IT minted"
+        # And nobody else got dragged in: exactly eight edges, one per racer.
+        assert len(mapping) == _CONCURRENT_PUBLISHERS
+
+
+class TestPublishSelfAckIsWrittenInTheSameTransaction:
+    """§5.1 step 2: "one atomic write, never a second separately-failable call".
+    Real-store only — these are statements-on-the-wire and rollback pins, which
+    an in-memory fake cannot honestly stand in for.
+    """
+
+    @staticmethod
+    async def _real_ledger() -> tuple[BriefLedger, SurrealEnv]:
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        setup_connection = await connect_admin(env)
+        await setup_connection.close()
+        ledger = BriefLedger(
+            url=env.url,
+            namespace=env.namespace,
+            database=env.database,
+            user=env.user,
+            password=env.password,
+        )
+        await ledger.ensure_ready()
+        return ledger, env
+
+    async def test_the_row_and_the_edge_ride_ONE_execute_transaction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE structural discriminator between the two builds that both satisfy
+        "the edge exists after a publish": a same-transaction RELATE, and a
+        second write issued after the CREATE commits. Only the first survives a
+        crash (or a rejection) between them — the second can leave a published
+        brief whose author is a phantom straggler forever, which is finding #98
+        itself, one layer down.
+
+        Pinned by counting the WRITE transactions a publish issues (the mint and
+        the read-back ride the single-statement ``_query`` seam, not
+        ``execute_transaction``): exactly ONE, and its composed SQL carries BOTH
+        the brief CREATE and the briefed RELATE.
+        """
+        ledger, env = await self._real_ledger()
+        calls: list[str] = []
+
+        async def spy(statement_text: str, params: dict[str, Any], **kwargs: Any) -> None:
+            calls.append(statement_text)
+            await execute_transaction(statement_text, params, **kwargs)
+
+        try:
+            # Patch the NAME in briefs' own namespace (the module imports the
+            # function directly), delegating to the real seam so the write still
+            # lands — a counting spy, never a stub.
+            monkeypatch.setattr("loremaster.briefs.execute_transaction", spy)
+            await _publish_as(
+                ledger,
+                BRIEF_NAME_PROJECT,
+                BODY_V1,
+                created_by=PUBLISHER_LEAD,
+                agent_id=AGENT_FIXER_B_ID,
+            )
+        finally:
+            monkeypatch.undo()
+            await ledger.close()
+            await drop_database(env)
+
+        assert len(calls) == 1, (
+            f"a publish must issue exactly ONE write transaction (the CREATE + the "
+            f"self-ack RELATE together, §5.1 step 2) — saw {len(calls)}: {calls!r}"
+        )
+        composed = calls[0]
+        assert f"CREATE type::record('{BRIEF_TABLE}'" in composed
+        assert f"->{BRIEFED_RELATION}->" in composed, (
+            "the author's self-ack RELATE must be composed INTO the same transaction as "
+            "the brief CREATE, never issued as a second, separately-failable write"
+        )
+
+    async def test_a_rejected_create_rolls_back_the_edge_too_and_burns_no_version(self) -> None:
+        """ATOMICITY, observed: a blank body is rejected by the schema's
+        non-empty ASSERT. With both statements in ONE transaction, the whole
+        write disappears — no brief row, no orphan ``briefed`` edge — and the
+        guarded compensating release hands the version back, so the NEXT publish
+        is gapless. (An orphan edge is invisible to ``acked_version`` — its join
+        drops a dangling brief id — so this counts the EDGE TABLE directly.)
+        """
+        ledger, env = await self._real_ledger()
+        try:
+            await _publish_as(
+                ledger, BRIEF_NAME_PROJECT, BODY_V1, created_by="lead", agent_id=AGENT_FIXER_B_ID
+            )
+            edges_before = await _edge_count(ledger)
+            assert edges_before == 1  # the v1 author's own self-ack
+
+            with pytest.raises(SurrealStoreError):
+                await _publish_as(
+                    ledger, BRIEF_NAME_PROJECT, "", created_by="scout-c", agent_id=AGENT_SCOUT_C_ID
+                )
+
+            assert await _edge_count(ledger) == edges_before, (
+                "the rejected publish's self-ack edge must roll back WITH the row — a "
+                "surviving edge is an ack to a brief that does not exist"
+            )
+            head = await ledger.get_head(BRIEF_NAME_PROJECT)
+            assert head.version == 1, "the rejected CREATE must leave no brief row behind"
+            assert (
+                await ledger.acked_version(agent_id=AGENT_SCOUT_C_ID, name=BRIEF_NAME_PROJECT)
+            ) is None
+            # The guarded release (§5.1) hands the burnt number back: no gap.
+            recovered = await _publish_as(
+                ledger, BRIEF_NAME_PROJECT, BODY_V2, created_by="scout-c", agent_id=AGENT_SCOUT_C_ID
+            )
+            assert recovered.brief.version == 2
+            assert (
+                await ledger.acked_version(agent_id=AGENT_SCOUT_C_ID, name=BRIEF_NAME_PROJECT)
+            ) == 2
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+
+class TestBriefAckViaVocabulary:
+    """The wire vocabulary is a CLOSED THREE-value set after v7 (finding #98).
+    Written out as literals — a pin derived from production's own alias would be
+    a tautology (see test_comms_schema.py's note on the retired DDL pin).
+    """
+
+    def test_via_literal_is_exactly_register_explicit_publish(self) -> None:
+        assert get_args(BriefAckVia) == ("register", "explicit", "publish")
 
 
 class TestGetHeadAndVersionMisses:

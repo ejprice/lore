@@ -122,9 +122,15 @@ _AGENT_STATUSES = (
 # out-of-domain value.
 _AGENT_STATUS_ORPHANED = "orphaned"
 
+# The ``briefed.via`` vocabulary, kept as this file's OWN literals (never
+# imported from production — an imported tuple would make every "the vocabulary
+# is X" assertion track whatever production happens to say). v7 (finding #98)
+# widened it to THREE: ``publish`` is the author's self-ack, written by
+# ``BriefLedger.publish`` in the same transaction as the brief row.
 _BRIEFED_VIA_REGISTER = "register"
 _BRIEFED_VIA_EXPLICIT = "explicit"
-_BRIEFED_VIA_VALUES = (_BRIEFED_VIA_REGISTER, _BRIEFED_VIA_EXPLICIT)
+_BRIEFED_VIA_PUBLISH = "publish"
+_BRIEFED_VIA_VALUES = (_BRIEFED_VIA_REGISTER, _BRIEFED_VIA_EXPLICIT, _BRIEFED_VIA_PUBLISH)
 
 # Realistic well-formed identifiers (positive control — an overly-strict ASSERT
 # would silently pass every negative test below while rejecting real callers;
@@ -479,12 +485,33 @@ class TestBriefedDdlOffline:
         ddl = generate_brief_ddl()
         assert f"DEFINE TABLE IF NOT EXISTS {BRIEFED_RELATION} TYPE RELATION SCHEMAFULL" in ddl
 
-    def test_via_domain_is_register_and_explicit(self) -> None:
+    def test_via_domain_is_exactly_register_explicit_and_publish(self) -> None:
+        """v7 (finding #98): the ASSERT's domain is the closed THREE-value set
+        ``[register, explicit, publish]`` — ``publish`` is the author's
+        self-ack, written by ``BriefLedger.publish`` in the same transaction as
+        the brief row (design doc §0/§5.1 step 2).
+
+        EXACT-SET, on the quoted literals parsed out of the served DDL. The
+        retired version of this test asserted only that each of ITS OWN
+        (two-word) constants APPEARED in the ASSERT — a SUBSET check, which is
+        structurally incapable of failing when the domain must GAIN a word, and
+        equally incapable of catching one it must never have. It did not go red
+        for #98. A vocabulary pin that cannot fail a wrong vocabulary is not a
+        pin.
+        """
         ddl = generate_brief_ddl()
         via = _field_statement(ddl, BRIEFED_RELATION, "via")
         assert "TYPE string" in via
-        for value in _BRIEFED_VIA_VALUES:
-            assert f"'{value}'" in via
+        quoted = re.findall(r"'([^']*)'", via)
+        assert set(quoted) == {"register", "explicit", "publish"}, (
+            f"the briefed.via ASSERT domain must be EXACTLY [register, explicit, publish] "
+            f"(v7/finding #98 — publish() self-acks its author, §5.1 step 2; without "
+            f"'publish' that RELATE is rejected and rolls the whole publish back). "
+            f"Served domain: {quoted!r}"
+        )
+        assert set(quoted) == set(_BRIEFED_VIA_VALUES), (
+            "this file's own vocabulary copy must agree with the served ASSERT"
+        )
 
     def test_at_is_a_datetime_field(self) -> None:
         ddl = generate_brief_ddl()
@@ -812,12 +839,45 @@ class TestBriefedUniqueInOutIndex:
         assert str(edge["in"]) == f"{AGENT_TABLE}:{agent_id}"
         assert str(edge["out"]) == f"{BRIEF_TABLE}:{brief_id}"
 
-    @pytest.mark.parametrize("bogus_via", ["bogus", "REGISTER", ""])
+    @pytest.mark.parametrize("legal_via", ["register", "explicit", "publish"])
+    async def test_every_legal_via_is_accepted_by_the_live_assert(
+        self,
+        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+        legal_via: str,
+    ) -> None:
+        """v7 (finding #98) — the LIVE half of the vocabulary pin: the applied
+        ASSERT must actually admit all three words. ``publish`` is the one that
+        matters: production's publish transaction RELATEs the author's self-ack
+        with it, and a schema that still ASSERTs the retired two-value set
+        rejects that statement — which, because the RELATE rides the SAME
+        transaction as the brief CREATE (§5.1 step 2), silently rolls back the
+        whole publish. A DDL-string pin alone would not catch a stale APPLIED
+        schema; this drives the engine.
+        """
+        connection, _env = admin_db
+        await run(connection, generate_agent_ddl())
+        await run(connection, generate_brief_ddl())
+        agent_id = uuid.uuid4().hex
+        brief_id = uuid.uuid4().hex
+        await _create_agent(connection, agent_id=agent_id, name="fixer-b", session="wave7")
+        await _create_brief(connection, brief_id=brief_id, name="project", version=1)
+        edge = _one(
+            await _relate_briefed(connection, agent_id=agent_id, brief_id=brief_id, via=legal_via)
+        )
+        assert edge["via"] == legal_via
+
+    @pytest.mark.parametrize("bogus_via", ["bogus", "REGISTER", "", "PUBLISH", "publishing", "pub"])
     async def test_out_of_domain_via_is_rejected(
         self,
         admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
         bogus_via: str,
     ) -> None:
+        """The ASSERT stays a CLOSED set after v7 widened it to three words.
+        ``PUBLISH``/``publishing``/``pub`` are the adversarial neighbours of the
+        newly-legal ``publish``: they catch a builder who relaxes the ASSERT into
+        a substring/prefix/case-insensitive check instead of adding one literal
+        to the ``IN [...]`` list.
+        """
         connection, _env = admin_db
         await run(connection, generate_agent_ddl())
         await run(connection, generate_brief_ddl())

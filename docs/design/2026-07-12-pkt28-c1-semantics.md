@@ -1,6 +1,63 @@
 # PKT-28 C1 — SEMANTICS + RENDER SPEC (registry + briefs)
 
-Author: design-consultant-c1 · 2026-07-12 · status: FINAL, v6 (consultant standing by for forks)
+Author: design-consultant-c1 · 2026-07-12 · status: FINAL, v8 (consultant standing by for forks)
+
+CHANGELOG: **v8 amended 2026-07-12** — instances EIGHT and NINE share a root cause,
+a NEW honesty axis: **renders that promise a MECHANISM that will not run for the
+input they describe** (project-only mechanisms spoken about generically — made
+live by v7's #98 elevating non-'project' briefs to first-class). EIGHTH (ratified,
+contract's mutation-proven fix): the first-version tail `agents ack at register`
+is TRUE only for 'project' (register auto-acks only BRIEF_NAME_PROJECT,
+server.py:4695) — other names now say `agents ack with lore_comms
+action=brief_ack`. NINTH (mine — §9.4's tail): `surfaces at their next heartbeat`
+was TRUE only for 'project' (heartbeat read only the project head,
+server.py:4513). **RULED (b): GENERALIZE THE MECHANISM, bounded by a subscription
+rule** — heartbeat reports skew for 'project' (universal) PLUS every brief name
+the agent has previously acked (ack = subscription; #98's self-ack subscribes
+authors to their own briefs); unbriefed non-project names are never nagged
+(no subscription signal — nagging every agent about every named brief forever is
+the noise failure). Tail now has three variants conditioned exactly on where the
+mechanism runs (§9.4). New §5.3 mechanism-promise corollary + litmus. Full
+surface sweep on the new axis in §9.7 — which found the **TENTH**: §9.5's
+behind-ack teach (`catch up: lore_comms action=brief_get`) resolves to
+name='project' by DEFAULT, sending every non-project reader to the WRONG brief —
+fixed by always-explicit `name='{name}'`. Item-4 verdicts: register auto-ack
+STAYS project-only (ack means "I read it"; register serves only project's body —
+auto-acking unserved briefs would fabricate read receipts; the law: register's
+auto-ack stays coextensive with what register SERVES) · heartbeat skew
+GENERALIZED (the ruling) · fleet's brief column STAYS project-only as a column
+(per-name matrices are PKT-23) but its LABEL now says so: cell renamed
+`project v{n}` (an unqualified `brief` is under-specified the moment a second
+name is first-class — the #95/#99 label law applied prospectively).
+
+CHANGELOG: **v7 amended 2026-07-12** — findings #98/#99 (+#97 in passing), one wave.
+**#98 RULED: `publish()` SELF-ACKS the publisher** (`via='publish'`, vocabulary now
+[register, explicit, publish]) — the spec was silent on whether publishing implies
+acking, so the author was served as a phantom straggler behind its own brief AND
+§9.4's behind==0 omission clause was unreachable through the tool. Self-ack is the
+honest reading (the author has by construction read what it wrote), same implied-read
+precedent as register's auto-ack. Edge written in the SAME transaction as the brief
+CREATE (§5.1 step 2) — never a second failable write. Re-publish by a different
+author: the previous author keeps its stored ack at the old version (normal
+behind-at-vN, nothing special). **Consequence sweep, verdict per section:** §9.4 —
+grammar unchanged; behind excludes the author via its honest head-ack (no carve-out);
+the omission clause is now REACHABLE and gets an end-to-end pin · §9.3 — grammar
+unchanged; author counts at head in coverage numerators (fixtures shift by one) ·
+§9.2 — grammar unchanged; the author's post-publish heartbeat is now honestly silent
+(the "silent when current" path gains the author case) · §9.6 — grammar unchanged;
+author's row renders current · §9.1 — unaffected (register auto-ack as before) ·
+§9.5 — grammar unchanged; NEW case: an author explicitly acking its just-published
+version hits the idempotent `already acked` path (edge exists via publish) · §5.3 —
+definitions unchanged (a publish edge is an ordinary stored ack).
+**#99 RULED: align** — fleet header (and §9.6's pinned grammar) now says
+`{total} non-retired agents`, the sibling vocabulary (§9.3/§9.4/§7); `+K retired`
+trailer unchanged. Self-caught adjacent instance, same class: the EMPTY render
+`no agents registered` LIES when agents exist but all are retired — empty-variant
+now fires only when the in-scope registry has NO rows of any status; all-retired
+renders the true zeroed header + `+K retired`.
+**#97 RULED in passing:** `limit` is `ge=1` at the tool boundary — below 1 TEACHES
+(names the valid range), above `_MAX_FLEET_LIMIT` CLAMPS (§1.2 honest clamping; the
+cap-disclosure elision line already discloses).
 
 CHANGELOG: **v6 amended 2026-07-12** — finding #96 / REPORT-c1b-audit-9495.md R1:
 §9.4's skew grammar (`"… had acked v{prior} or older"`, prior = version−1)
@@ -171,7 +228,8 @@ names never contend — same primitive, strictly better partitioning.
 ### briefed (edge, `agent->briefed->brief`)
 
 TYPE RELATION SCHEMAFULL (`_define_relation_table` idiom, surreal_schema.py:454).
-Fields: `via` string ASSERT IN ['register','explicit'] · `at` datetime.
+Fields: `via` string ASSERT IN ['register','explicit','publish'] (v7 — 'publish'
+is the author's self-ack, finding #98) · `at` datetime.
 Index: UNIQUE `(in, out)` — idempotent re-ack (versions are distinct brief records,
 so (in,out) suffices — plan :137). Legal on ≥3.1.0 (#7061 fixed); the packet's
 cascade probe is C2's, but if the UNIQUE-on-edge index misbehaves at C1 build time,
@@ -331,8 +389,9 @@ copies into comments:
   rendered fleet rows and the `limit=` re-ask clamp (DESIGN-LAW §1.2); it is
   NEVER an input to any served count (§5.3 counting law — header/coverage/skew
   counts come from `AgentRegistry.roster()`'s true aggregates).
-  `_COVERAGE_NAMES_CAP = 5`, `_KNOWN_BRIEFS_CAP = 10`, and
-  `_SKEW_BREAKDOWN_CAP = 3` (v6 — §9.4's named version-groups) (server.py) —
+  `_COVERAGE_NAMES_CAP = 5`, `_KNOWN_BRIEFS_CAP = 10`,
+  `_SKEW_BREAKDOWN_CAP = 3` (v6 — §9.4's named version-groups), and
+  `_HEARTBEAT_SKEW_NAMES_CAP = 3` (v8 — §9.2's per-name notice lines) (server.py) —
   render list caps inside teaching/coverage/skew lines (§5.3, §7, §9.4), always
   counted-elided; **v4 (audit D2): these are REAL, implemented caps with pinned
   tests — a cap named in this spec and absent from the code is itself a
@@ -375,11 +434,17 @@ out.)
    caller id), and its contract test must pin ≥8-way contention, not 2-way.
 
 2. **CREATE** — `brief:⟨uuid5(name:version)⟩` CONTENT {…} with the minted
-   version. The split is FORCED by the §0-pinned id recipe (Python must know the
+   version, **plus (v7, finding #98) the publisher's SELF-ACK briefed edge
+   (`via='publish'`, at=now) RELATE'd in the SAME `execute_transaction`
+   fragment** — one atomic write, never a second separately-failable call: a
+   rejected CREATE rolls back brief AND edge together (no author acked to a
+   brief that doesn't exist; no brief whose author reads as a straggler). The
+   split is FORCED by the §0-pinned id recipe (Python must know the
    version to address the row) and by `execute_transaction` returning no values.
    A collision here is impossible by construction, so the CREATE carries **no
    retry at all**: any rejection is real (ASSERT violation, coercion, …) and
-   raises loudly on first occurrence.
+   raises loudly on first occurrence — and the §5.1 compensating release then
+   runs exactly as before.
 
 **Compensating release (closes the gap the split opens):** a rejected CREATE
 burns no version — `_release_version` issues a GUARDED decrement
@@ -454,20 +519,50 @@ legitimate law; the warn line teaches the doc+pointer idiom instead.
   its OWN state and renders as its own word (`unbriefed`) — it is never
   approximated by a number, never by version−1, never by `v0`. Litmus: any
   version a reader could not `brief_get` is a fabricated fact.
+- **Mechanism-promise corollary (v8 — instances 8/9/10):** **a served line may
+  only promise a mechanism that will actually RUN for the input it is
+  describing.** A promise that is true for one input class ('project') and
+  rendered for all of them is a fabricated mechanism for every other input.
+  Litmus: *if the reader — or the agent the line describes — acted on this
+  line's promise (waited for the heartbeat, ran the taught command with its
+  DEFAULTS, re-ran with the suggested limit), would the promised thing actually
+  happen for THIS input?* Corollary of the litmus: a taught command whose
+  DEFAULT arguments resolve to a different object than the line is about (the
+  TENTH: bare `brief_get` defaulting to 'project' under a 'wave9' line) fails
+  it. Every mechanism-referencing line is swept in §9.7; new lines join that
+  table or state why they promise nothing.
+- **Subscription (v8 vocabulary):** `subscribed(agent, name)` = the agent has
+  ≥1 briefed edge to ANY version of `name` (acking = subscribing; #98's
+  publish self-ack subscribes an author to its own brief). `'project'` is
+  UNIVERSALLY subscribed — every agent owes the project law and register
+  serves it, so even project-unbriefed agents get notices. Non-project names
+  nag ONLY subscribers: an agent that never acked `wave9` is not behind on it,
+  it is simply not a party to it (C1 has no other subscription signal; if a
+  richer model ever lands, it replaces this definition in ONE place — here).
 
 Where each surfaces in C1 (all four, exactly):
 
 | surface | what renders |
 |---|---|
-| `heartbeat` | ONE notice line when skew>0 or unbriefed for 'project' (§9.2); silent when current — a no-news heartbeat stays one line |
+| `heartbeat` | notice lines when skew>0 or unbriefed for 'project', PLUS one per behind SUBSCRIBED non-project name (v8, capped — §9.2); silent when current — a no-news heartbeat stays one line |
 | `brief_get name=X` | coverage line for X: who is behind/unbriefed, counted-capped (§9.3) |
 | `brief_publish name=X` | consequence line: how many non-retired agents are now behind (§9.4) |
 | `fleet` | per-row 'project' ack: `brief v4` / `brief v4 (head v5)` / `brief unbriefed` (§9.6) |
 
-Only 'project' rides heartbeat and fleet (the standing per-project law every agent
-must track); other names surface via their own `brief_get`/`brief_publish` calls.
+'project' rides heartbeat and fleet universally (the standing per-project law
+every agent must track). **v8:** heartbeat ADDITIONALLY reports skew for every
+brief name the agent is SUBSCRIBED to (§5.3 subscription — has acked before)
+whose head has moved past its ack; unsubscribed non-project names never nag.
+Fleet's brief column remains 'project'-only (labelled `project`, §9.6);
+per-name coverage stays on `brief_get`/`brief_publish`.
 Register auto-acks head 'project' (`via=register`) so a fresh agent is born
-current — its render carries the receipt line to echo (§9.1).
+current — its render carries the receipt line to echo (§9.1). **Publish
+self-acks its author (`via=publish`, v7 — finding #98), in the same transaction
+as the brief row (§5.1 step 2)**: the author has by construction read what it
+wrote, so it is never a straggler on its own brief; skew/coverage need no
+carve-out — the author is excluded by an ORDINARY stored head-ack, and a
+re-publish by a different author leaves the previous author normally
+behind-at-its-old-version.
 
 ### §5.4 `brief_get` misses and `brief_ack` legality
 
@@ -497,13 +592,18 @@ Params: `agent` (caller — heartbeat-touched like every action) · `session?`
 to `_MAX_FLEET_LIMIT`).
 
 **Columns (fixed order — C2/C3 APPEND, never reorder):**
-`name · [status(+⚠ STALE)] · hb <age> · role · model? · task? · brief <ack> · note?`
+`name · [status(+⚠ STALE)] · hb <age> · role · model? · task? · project <ack> · note?`
+(v8: the ack column is labelled `project` — it is and stays the 'project' ack
+only; an unqualified `brief` under-specifies its set now that non-project
+briefs are first-class. Per-name matrices are PKT-23.)
 
 - STALE = heartbeat age > `stale_heartbeat_s`, derived at render, appended inside
   the status bracket (`[active ⚠ STALE]`). Never stored (§3).
-- brief ack renders per §5.3: `brief v5` (current) / `brief v4 (head v5)` (behind)
-  / `brief unbriefed` / omitted entirely when no 'project' brief exists yet
-  (bootstrap-honest: nothing to be skewed against).
+- project-ack cell renders per §5.3 (v8: labelled `project`, not `brief` —
+  finding-#99 label law applied prospectively): `project v5` (current) /
+  `project v4 (head v5)` (behind) / `project unbriefed` / omitted entirely when
+  no 'project' brief exists yet (bootstrap-honest: nothing to be skewed
+  against).
 - `model`/`task`/`note` cells render only when set (no `-` placeholders — context
   density, §1.1). `note` is `last_note`, sanitised, LAST cell so a long note never
   displaces structure.
@@ -524,7 +624,15 @@ to `_MAX_FLEET_LIMIT`).
   is a dead end — render the cap-disclosure variant instead (§9.6). Caps are
   never dead ends AND never false promises.
 - Empty result: `no agents registered (session <s>)` / `no agents registered` —
-  an honest empty, never a bare blank.
+  an honest empty, never a bare blank. **v7:** this variant fires ONLY when the
+  in-scope registry has no rows of ANY status; all-retired is NOT empty — it
+  renders the zeroed non-retired header + the true `+K retired` trailer (§9.6).
+- `limit` validation (v7, finding #97): `ge=1` at the tool boundary — `limit=0`
+  or negative is a TEACHING ValueError naming the valid range
+  (`1..{_MAX_FLEET_LIMIT}`); a value above `_MAX_FLEET_LIMIT` CLAMPS to the cap
+  (§1.2 honest clamping — the §9.6 cap-disclosure elision line then discloses
+  what the clamp withheld). Never a silent partial render from a nonsense
+  bound.
 - **Header counts are TRUE counts (v4 — the audit-D1 fix, stated per number):**
   the header's total AND its per-status segments all come from
   `AgentRegistry.roster().status_counts` (one aggregate query over the whole
@@ -721,6 +829,7 @@ def _render_comms_register(self, agent: AgentRow, brief: Brief | None, *, re_reg
 ```
 heartbeat fixer-b — status active
 brief 'project' v5 is head — you acked v4; catch up: lore_comms action=brief_get
+brief 'wave9' v3 is head — you acked v1; catch up: lore_comms action=brief_get name='wave9'
 ```
 
 - Line 1: `"heartbeat {name} — status {status}"` — status AFTER any explicit
@@ -729,7 +838,23 @@ brief 'project' v5 is head — you acked v4; catch up: lore_comms action=brief_g
   heartbeat's size for no decision value — §1.1).
 - Line 2 only when skew>0 (`"brief 'project' v{head} is head — you acked v{acked}; catch up: lore_comms action=brief_get"`)
   or unbriefed-with-head-existing (`"you have not acked brief 'project' (head v{head}) — lore_comms action=brief_get"`).
-  Current or no-project-brief ⇒ one-line render. NO unread count in C1 (D1).
+  These two project lines are BYTE-STABLE from v1 (bare `brief_get` is correct
+  here — its default IS 'project').
+- **Subscribed-name skew lines (v8 — the generalized mechanism, finding-#96
+  audit instance NINE):** after the project line, ONE line per non-project
+  brief name the agent is subscribed to (§5.3) with `acked < head`, ordered
+  skew-descending then name, capped at `_HEARTBEAT_SKEW_NAMES_CAP`:
+  `"brief '{name}' v{head} is head — you acked v{acked}; catch up: lore_comms action=brief_get name='{name}'"`
+  (the teach carries EXPLICIT `name=` — the mechanism-promise litmus: a bare
+  `brief_get` here would read 'project', not this brief). Remainder collapsed
+  counted: `"behind on {k} more briefs: {names} — brief_get each by name"`,
+  names capped `_COVERAGE_NAMES_CAP` + `(+{j} more)`. UNSUBSCRIBED non-project
+  names are NEVER mentioned — deliberate (§5.3 subscription), not an omission.
+  Mechanism read: the agent's briefed edges grouped by name (max acked) +
+  heads for exactly those names — one bounded query pair; `BriefLedger` owns
+  it (the registry hands only the agent identity).
+  Fully current (or nothing subscribed/published) ⇒ one-line render. NO unread
+  count in C1 (D1).
 
 ### §9.3 brief_get
 
@@ -770,13 +895,36 @@ skew: 4 non-retired agents behind head v6 — 3 at v5, 1 unbriefed; surfaces at 
 ```
 
 - Line 1: `"brief '{name}' v{version} published by {publisher}"`.
-- First-version variant appends `" — first version; agents ack at register"`.
+- First-version variant (v8 — audit instance EIGHT, ratifying the contract's
+  mutation-proven fix): TWO name-conditioned tails, because register auto-acks
+  ONLY 'project' (§5.3 — the tail must not promise a mechanism that won't run):
+  `name == 'project'` ⇒ `" — first version; agents ack at register"` (TRUE
+  there, byte-stable); any other name ⇒ `" — first version; agents ack with
+  lore_comms action=brief_ack"`. (Adding explicit name/version params to that
+  teach was considered and declined — the fix is already mutation-proven as
+  shipped, and `brief_ack`'s own required-arg errors teach the params.)
 - **Skew line (v6 REWRITE — finding #96; replaces `"had acked v{prior} or
   older"`, which computed `prior = version − 1` and fabricated `v0` on a first
   publish, conflating behind-at-vN with never-acked):**
   template `"skew: {behind} non-retired agents behind head v{head} —
-  {breakdown}; surfaces at their next heartbeat"` (scoped variant per the v2
-  law: `"skew (session {session}): …"`). `{behind}` and `{head}` are ints —
+  {breakdown}{tail}"` (scoped variant per the v2 law:
+  `"skew (session {session}): …"`), where **`{tail}` is one of THREE
+  name-conditioned literals (v8 — audit instance NINE: the old unconditional
+  `; surfaces at their next heartbeat` was true only for 'project'; under the
+  v8 generalized heartbeat it is now conditioned on exactly where the
+  mechanism runs, §5.3 mechanism-promise corollary):**
+  1. `name == 'project'` ⇒ `"; surfaces at their next heartbeat"` — true for
+     every group, unbriefed included ('project' notices are universal, §5.3);
+  2. `name != 'project'` AND the unbriefed group is empty ⇒
+     `"; surfaces at their next heartbeat"` — true: every behind agent is a
+     prior acker, i.e. subscribed (§5.3), and subscribed skew rides heartbeat;
+  3. `name != 'project'` AND the unbriefed group is non-empty ⇒
+     `"; ackers see it at next heartbeat — unbriefed agents only via brief_get
+     name='{name}'"` — each half true for its group (unbriefed non-project
+     agents are never nagged, so the line must not promise they will be).
+  Three separate `render_line` calls, one inline literal each (the AST
+  template pin rejects computed templates — duplicated-call form, §9.6 NB).
+  `{behind}` and `{head}` are ints —
   `{head}` is the JUST-PUBLISHED stored version, the only version this line is
   ever entitled to name outright. `{breakdown}` is `render_join(", ", groups)`
   where the groups are, in order:
@@ -789,12 +937,19 @@ skew: 4 non-retired agents behind head v6 — 3 at v5, 1 unbriefed; surfaces at 
      group and its own word, never a number.
   Group counts SUM to `{behind}` (the §5.3 counting law applied inside one
   line). Skew line renders only when `{behind}` ≥ 1; omitted otherwise (no
-  `skew: 0` noise).
+  `skew: 0` noise). **v7 (finding #98): `{behind}` excludes the publisher via
+  its own §5.1 self-ack — an ordinary stored head-ack, not a render carve-out —
+  which makes this omission clause REACHABLE through the tool (a single-agent
+  fleet publishing renders NO skew line); it is end-to-end pinned in
+  §TEST SKETCH, not just render-unit-tested.**
 - **First publish (v1):** no prior version exists ⇒ every behind agent is
   unbriefed by definition ⇒ the breakdown is exactly `"{k} unbriefed"` and the
-  line names NO version other than head `v1`
-  (`skew: 2 non-retired agents behind head v1 — 2 unbriefed; surfaces at their
-  next heartbeat`). Emitting `v0` — or any version without a stored row — is a
+  line names NO version other than head `v1`. The tail follows the v8 rule:
+  'project' first publish → tail 1 (`skew: 2 non-retired agents behind head v1
+  — 2 unbriefed; surfaces at their next heartbeat`); any other name's first
+  publish → tail 3 (`skew: 2 non-retired agents behind head v1 — 2 unbriefed;
+  ackers see it at next heartbeat — unbriefed agents only via brief_get
+  name='wave9'`). Emitting `v0` — or any version without a stored row — is a
   spec violation (§5.3 corollary).
 - Skew-line scoping (v2): the §5.3 scoping law applies verbatim — explicit
   `session=` on the publish call ⇒ count over that session's non-retired roster,
@@ -809,36 +964,47 @@ skew: 4 non-retired agents behind head v6 — 3 at v5, 1 unbriefed; surfaces at 
 
 ```
 acked brief 'project' v5 (head)
-acked brief 'project' v4 — head is v5; catch up: lore_comms action=brief_get
+acked brief 'wave9' v4 — head is v5; catch up: lore_comms action=brief_get name='wave9'
 already acked brief 'project' v5 — no new edge
 ```
 
 Three single-line variants (§5.4): head-ack, behind-ack (legal + honest notice),
-idempotent re-ack.
+idempotent re-ack. **v8 — audit instance TEN (found by the §9.7 sweep): the
+behind-ack teach was a bare `brief_get`, whose DEFAULT name is 'project' — a
+reader acking behind on 'wave9' and following the teach would read the WRONG
+brief.** The teach now carries explicit `name='{name}'` for EVERY name,
+'project' included (uniform template kills the default-resolution ambiguity
+class; the one-byte-stability cost on the project fixture is taken
+deliberately): `"acked brief '{name}' v{version} — head is v{head}; catch up:
+lore_comms action=brief_get name='{name}'"`.
 
 ### §9.6 fleet
 
 ```
-fleet (session wave7): 5 agents — 1 input_required, 3 active, 1 idle
-- fixer-b [input_required] hb 2m · role builder · task 4f2a1c… · brief v4 (head v5) · note: blocked on operator answer
-- audit-c [active] hb 40s · role auditor · model opus · brief v5
-- scout-d [active ⚠ STALE] hb 14m · role scout · brief unbriefed
-- helper-e [idle] hb 6m · role builder · brief v5
+fleet (session wave7): 5 non-retired agents — 1 input_required, 3 active, 1 idle
+- fixer-b [input_required] hb 2m · role builder · task 4f2a1c… · project v4 (head v5) · note: blocked on operator answer
+- audit-c [active] hb 40s · role auditor · model opus · project v5
+- scout-d [active ⚠ STALE] hb 14m · role scout · project unbriefed
+- helper-e [idle] hb 6m · role builder · project v5
 +1 more — re-run with limit=25
 +2 retired
 ```
 
-- Header: `"fleet (session {session}): {total} agents — {parked} input_required, {active} active, {idle} idle"`
+- Header (v7, finding #99 — aligned to the sibling vocabulary §9.3/§9.4/§7):
+  `"fleet (session {session}): {total} non-retired agents — {parked} input_required, {active} active, {idle} idle"`
   (unscoped variant drops the parenthetical; zero-count segments are still
   rendered — the header is the fleet's one aggregate and fixed shape beats
-  variable shape for scanning).
+  variable shape for scanning). `{total}` IS the non-retired partition and now
+  says so; the `+K retired` trailer discloses the rest, unchanged.
 - Row assembly: cells joined with a literal `" · "` via `render_join`; optional
   cells (model/task/note) appear only when set. task_id renders truncated to 8
   chars + `…` (`safe_str(task_id[:8])` — full ids live in lore_tasks; fleet is a
   scan surface). Status bracket: two template branches (with/without
   `" ⚠ STALE"`).
-- brief cell: `brief v{n}` / `brief v{n} (head v{h})` / `brief unbriefed`; omitted
-  entirely when no 'project' brief exists (§6).
+- project-ack cell (v8 rename — was `brief …`): `project v{n}` /
+  `project v{n} (head v{h})` / `project unbriefed`; omitted entirely when no
+  'project' brief exists (§6). The old `brief v…` byte pin flips to the new
+  wording.
 - Elision line (v4 — two variants, both with `k` from the true totals):
   - `shown < _MAX_FLEET_LIMIT`: `"+{k} more — re-run with limit={next}"` where
     `next = min(shown + k, _MAX_FLEET_LIMIT)` (honest + clamped, §1.2).
@@ -846,7 +1012,13 @@ fleet (session wave7): 5 agents — 1 input_required, 3 active, 1 idle
     a re-ask that cannot show more is a dead end, so the line discloses the cap
     instead of teaching a no-op.
   Retired trailer: `"+{k} retired"` — `k` is the true aggregate (§6).
-- Empty: `"no agents registered (session {session})"` / `"no agents registered"`.
+- Empty (v7-precise, the #99 class one step further): the
+  `"no agents registered (session {session})"` / `"no agents registered"`
+  variant fires ONLY when the in-scope registry has NO rows of ANY status —
+  with agents present but all retired, that line would lie ("registered" they
+  are). All-retired renders the true zeroed header
+  (`"fleet: 0 non-retired agents — 0 input_required, 0 active, 0 idle"`) +
+  `"+{k} retired"`, no rows.
 
 Worked row shape:
 
@@ -880,6 +1052,48 @@ AST template-literal pin requires `args[0]` to be an `ast.Constant`; a ternary
 selecting between two literals is an `ast.IfExp` and FAILS the pin. One
 `render_line` call per branch, each with a plain inline literal. Do not weaken
 the pin to accept ternaries.)
+
+### §9.7 Mechanism-promise sweep (v8) — verdict per served line, individually
+
+Every served line that references a mechanism, swept under the §5.3
+mechanism-promise litmus. Anchors are spec grammar sections (normative);
+server.py lines cited where the audit supplied them (code lines drift, the
+spec anchor governs). No wholesale verdicts.
+
+| # | line (spec anchor) | mechanism referenced | runs for every input rendered under? | verdict |
+|---|---|---|---|---|
+| 1 | §9.1 `— ack recorded (via register)` | register auto-ack | line renders only for 'project' at register, which register did just ack | SOUND |
+| 2 | §9.1/§1 bootstrap `re-check with lore_comms action=brief_get` | brief_get default='project' | line is ABOUT 'project'; default resolves to it | SOUND |
+| 3 | §9.1 receipt `echo in your report: brief project v{N} read` | report echo | always available to the addressed agent | SOUND |
+| 4 | §9.2 project skew notice `catch up: lore_comms action=brief_get` | brief_get default='project' | project-only line; default correct | SOUND (byte-stable) |
+| 5 | §9.2 project unbriefed `— lore_comms action=brief_get` | same | same | SOUND |
+| 6 | §9.2 subscribed-name notice `brief_get name='{name}'` (v8, new) | brief_get by name | name exists (its head was just read) | SOUND by construction |
+| 7 | §9.2 collapse `behind on {k} more briefs: {names} — brief_get each by name` | brief_get by name | names listed are subscribed+published | SOUND |
+| 8 | §9.4 first-version tail, 'project' `agents ack at register` (server.py:4695) | register auto-ack | TRUE for 'project' only — and the tail now renders ONLY there | **WAS INSTANCE 8** — fixed v8 (ratified contract fix) |
+| 9 | §9.4 first-version tail, other names `agents ack with lore_comms action=brief_ack` | brief_ack | runs for any existing (name, version); v1 just minted | SOUND (the fix) |
+| 10 | §9.4 skew tail (server.py:4513 read) | heartbeat skew surfacing | 'project': universal; other names: subscribed groups only | **WAS INSTANCE 9** — fixed v8 (three conditioned tails + generalized mechanism) |
+| 11 | §9.5 behind-ack teach `catch up: lore_comms action=brief_get name='{name}'` | brief_get by name | pre-v8 the teach was BARE brief_get → default 'project' → wrong brief for every other name | **INSTANCE 10, found by this sweep** — fixed v8 (explicit name=, all names) |
+| 12 | §9.6 elision re-ask `re-run with limit={next}` | fleet limit= | pre-v4 this was a dead-end at the cap — retroactively an instance of THIS axis; the v4 cap-disclosure variant fixed it | SOUND since v4 |
+| 13 | §9.6 cap-disclosure `+{k} more beyond the display cap ({cap})` | none (discloses) | n/a | SOUND |
+| 14 | §7 UnknownAgentError `requires a prior 'register'` | register | runs for any caller | SOUND |
+| 15 | §7 AmbiguousAgentError `pass session= to disambiguate` | session param | exists on every action (§0.3) | SOUND |
+| 16 | §7 AgentIdentityConflictError / RetiredAgentError `register a fresh name` | register | runs | SOUND |
+| 17 | §7 IllegalAgentStatusError `legal from {status}: …` | heartbeat status= | every named exit is a legal edge for the named current status (§3) | SOUND |
+| 18 | §7 UnknownBriefError `brief_publish creates 'project' v1` | brief_publish | runs for any registered caller | SOUND |
+| 19 | §9.4 warn line `prefer a doc + pointer` | none (advice, no runtime promise) | n/a | SOUND |
+
+**Item-4 design verdicts (mechanism-generality, each ruled):**
+- **register auto-ack: STAYS 'project'-only.** An ack asserts "I read this";
+  register SERVES only the project body (§9.1), so auto-acking any other brief
+  would fabricate a read receipt. Law: register's auto-ack stays exactly
+  coextensive with what register serves — if a future phase serves more briefs
+  at register, their acks may follow the served set, never precede it.
+- **heartbeat skew: GENERALIZED** (the v8 ruling) — mechanism widened rather
+  than render narrowed, because passive skew delivery is this subsystem's
+  point and ack-as-subscription bounds the noise with zero new schema.
+- **fleet's ack column: stays 'project'-only as a COLUMN** (fleet is the
+  fleet-ops scan surface; per-name matrices are PKT-23) — generality declined,
+  label honesty applied instead (cell renamed `project`, §9.6).
 
 ## §10 RenderCase inventory — the completeness pin's exact input
 
@@ -962,6 +1176,10 @@ plausibly strike — flagged as such in my report.
 - **register/heartbeat counts (C2):** one appended segment on §9.1 line 1 /
   §9.2 line 1 — `"… — status active · 3 unread (1 directive)"` — plus drain's
   auto-unpark taking over §3's explicit-unpark as the common path.
+- **drain's brief-skew line + `_comms_footer` (C2) INHERIT the v8
+  subscribed-skew read** — same §5.3 subscription rule, same per-name grammar
+  family as §9.2; they must not regress to a project-only read behind a
+  generic label (the instance-9 class).
 - **fleet columns (C2/C3):** appended cells after `brief`: `unread {n}` /
   `directive unacked {n} ({age})`; C3 appends the orphan-impact clause on STALE
   rows (`releasing t-4f2a strands: t-9910, t-3c22` — blocks traversal).
@@ -997,7 +1215,40 @@ plausibly strike — flagged as such in my report.
   loudly with CREATE attempted exactly once AND the next publish shows no version
   gap (the guarded release); different names neither collide nor serialise;
   UNIQUE(name,version) backstop present as the invariant guard.
-- Ack: head / behind / nonexistent / idempotent re-ack; via=register vs explicit.
+- Ack: head / behind / nonexistent / idempotent re-ack; via=register vs explicit
+  vs publish (v7); NEW: an author explicitly acking its just-published version
+  hits the idempotent `already acked` path (the via=publish edge exists).
+- Publish self-ack (v7, finding #98): the briefed edge (via=publish, at head)
+  exists after every publish; ATOMICITY pin — a rejected CREATE (blank body)
+  leaves NO edge and NO brief row (same-transaction rollback) and still
+  releases the version; REACHABILITY pin — single-agent fleet publishes ⇒ the
+  served render contains NO skew line (behind==0 through the tool, end-to-end);
+  re-publish by a different author leaves the prior author counted behind at
+  its stored old version (no special-casing).
+- Fleet labels (v7, finding #99): header says `non-retired agents` (byte-pinned
+  with the new wording — the old `{total} agents` string must NOT appear);
+  all-retired fixture renders the zeroed header + true `+K retired`, never the
+  `no agents registered` variant; that variant only on a rowless registry.
+- `limit` bounds (v7, finding #97): `limit=0`/`-1` → teaching error naming
+  `1..cap`; `limit=cap+50` → clamped, cap-disclosure elision line renders.
+- **Mechanism-promise pins (v8, instances 8/9/10 — and the anti-monoculture
+  rule):** EVERY brief-grammar battery includes at least one NON-'project'
+  name fixture — a `_brief()`-style factory defaulting to 'project' is the
+  documented reason instances 8/9 were invisible; the contract must not
+  rebuild that monoculture. Pins: (8) project first-publish tail says
+  `ack at register`, `wave9` first-publish tail says `ack with lore_comms
+  action=brief_ack` — both byte-pinned; (9) publish tails: project → tail 1;
+  non-project ackers-only → tail 2; non-project with unbriefed → tail 3
+  (byte-pinned, incl. the `name='{name}'` teach); (10) behind-ack render
+  carries `name='{name}'` for EVERY name incl. 'project'; heartbeat
+  generalization: subscribed-behind non-project name → notice line with
+  explicit `name=` teach; UNSUBSCRIBED non-project head bump → NO mention of
+  that name anywhere in the render; project-unbriefed still noticed; cap
+  fixture (`_HEARTBEAT_SKEW_NAMES_CAP + 1` behind names → cap lines + counted
+  collapse); END-TO-END: publish `wave9` v2 → a prior-acker's next heartbeat
+  (through the real tool) surfaces `wave9` — the ninth's promise proven where
+  it is made. Fleet cell: `project v…` byte pin; the old `brief v…` string
+  must NOT appear.
 - Fleet: ordering, STALE derivation at the exact threshold boundary, counted
   elision + clamped re-ask value, retired trailer, empty render, session scoping,
   multi-session grouping. **v4 (over-cap honesty, audit D1):** a fixture with

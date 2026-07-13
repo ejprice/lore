@@ -36,6 +36,7 @@ import error, since every name this file imports already exists on disk
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -464,27 +465,331 @@ class TestCommsReachesTheRealLedgersNotAFake:
         )
 
 
+class TestPublishSelfAckIsDurableThroughTheRealStack:
+    """v7 / finding #98, through the REAL wiring: the dispatcher must hand the
+    real ``BriefLedger`` the acting agent's ROW ID, and the ledger must persist
+    the ``via='publish'`` edge in the real store. The fake-backed dispatcher
+    tests (test_comms_tool.py) cannot see a wiring that drops the id on the
+    floor between the two real objects — this can.
+    """
+
+    @pytest.mark.parametrize("brief_name", ["project", "wave7"])
+    async def test_the_edge_exists_in_the_real_store_after_a_tool_publish(
+        self, ctx: AppContext, brief_name: str
+    ) -> None:
+        """Parametrised over the brief NAME (contract-adversary §1): the E2E
+        durable pin was itself monocultured on 'project', so a server that
+        self-acks ONLY the 'project' brief survived it. The self-ack is
+        unconditional (§5.1 step 2) — every published name, end to end.
+        """
+        await ctx.comms(action="register", agent="lead", session="wave7", role="lead")
+        await ctx.comms(
+            action="brief_publish", agent="lead", session="wave7", name=brief_name, body="the plan"
+        )
+        lead_id = AgentRegistry._agent_id("wave7", "lead")  # noqa: SLF001 - test-only id recipe reuse
+        acked = await ctx.brief_ledger.acked_version(agent_id=lead_id, name=brief_name)
+        assert acked == 1, "the publisher's self-ack edge must be DURABLE, not a render-time fiction"
+        probe = await ctx.brief_ledger.ack(
+            agent_id=lead_id, agent_name="lead", name=brief_name, version=1, via="explicit"
+        )
+        assert probe.already_acked is True
+        assert probe.via == "publish"
+
+
+class TestTheFirstVersionLineTeachesTheAckMechanismThatActuallyEXISTS:
+    """THE EIGHTH §5.3 INSTANCE, end-to-end against the REAL store (cold audit
+    REPORT-c1d-audit-979899.md §DEFECT). ``_render_comms_brief_publish``'s
+    first-version variant appends ``" — first version; agents ack at register"``
+    for EVERY brief name, but ``_comms_register`` auto-acks ONLY
+    ``BRIEF_NAME_PROJECT``. Under any other name that clause teaches a mechanism
+    that does not exist, and contradicts the skew line beneath it — which reports
+    those same agents as ``unbriefed``, which they will remain forever.
+
+    This file is where the monoculture lived: the ONLY assertion of that line in
+    the whole suite is ``TestEndToEndCommsArcThroughTheRealToolSurface.
+    _publish_the_first_project_brief`` (name='project' — the one name for which
+    the promise is true). That assertion STAYS — it is the 'project' leg, and the
+    promise IS load-bearing there. This class is its missing sibling: the same
+    line, driven under a name the auto-ack never touches, with the LIVE store
+    called as the witness that the promise is false.
+    """
+
+    async def test_a_non_project_first_publish_does_not_promise_the_register_time_ack(
+        self, ctx: AppContext
+    ) -> None:
+        """The killer pin, live: publish 'wave9' v1, then take the served promise
+        at its word — register a BRAND-NEW agent afterwards and ask the real
+        ledger whether it got acked. It did not, and it shows up ``unbriefed`` in
+        wave9's own coverage line. The render must not have said otherwise."""
+        await ctx.comms(action="register", agent="lead", session="wave9", role="lead")
+        rendered = str(
+            await ctx.comms(
+                action="brief_publish",
+                agent="lead",
+                session="wave9",
+                name="wave9",
+                body="the standing instruction",
+            )
+        )
+        assert "brief 'wave9' v1 published by lead" in rendered
+        assert "first version" in rendered
+        assert "agents ack at register" not in rendered, (
+            f"registering NEVER acks a non-'project' brief (_comms_register hardcodes "
+            f"BRIEF_NAME_PROJECT) — this line teaches a mechanism that does not exist: {rendered!r}"
+        )
+        assert "agents ack with lore_comms action=brief_ack" in rendered, (
+            f"the line must name the ack call that DOES exist, or the agent is left with no "
+            f"way to become briefed at all: {rendered!r}"
+        )
+
+        # ... and the LIVE store is the witness: the promise, if made, is false.
+        await ctx.comms(action="register", agent="newbie", session="wave9", role="builder")
+        newbie_id = AgentRegistry._agent_id("wave9", "newbie")  # noqa: SLF001 - test-only id recipe reuse
+        assert await ctx.brief_ledger.acked_version(agent_id=newbie_id, name="wave9") is None, (
+            "an agent that registered AFTER the wave9 publish is STILL not acked to it"
+        )
+        coverage = str(
+            await ctx.comms(action="brief_get", agent="lead", session="wave9", name="wave9")
+        )
+        assert "newbie (unbriefed)" in coverage, (
+            f"the register-time ack the v1 line advertised never happened — the very next "
+            f"coverage read says so: {coverage!r}"
+        )
+
+    async def test_the_project_first_publish_DOES_promise_the_register_time_ack(
+        self, ctx: AppContext
+    ) -> None:
+        """The de-monocultured other half: for 'project' the clause is TRUE, and a
+        build that simply deletes it everywhere is just as wrong. Same live
+        witness, opposite verdict — registering after the publish DOES record the
+        ack (§1's bootstrap arc rides exactly this)."""
+        await ctx.comms(action="register", agent="lead", session="wave9", role="lead")
+        rendered = str(
+            await ctx.comms(
+                action="brief_publish",
+                agent="lead",
+                session="wave9",
+                name="project",
+                body="the standing instruction",
+            )
+        )
+        assert (
+            "brief 'project' v1 published by lead — first version; agents ack at register"
+        ) in rendered
+
+        await ctx.comms(action="register", agent="newbie", session="wave9", role="builder")
+        newbie_id = AgentRegistry._agent_id("wave9", "newbie")  # noqa: SLF001 - test-only id recipe reuse
+        assert await ctx.brief_ledger.acked_version(agent_id=newbie_id, name="project") == 1, (
+            "the 'project' clause is a TRUE promise — register really does ack the project head"
+        )
+
+    async def test_the_first_version_line_never_contradicts_the_skew_line_beneath_it(
+        self, ctx: AppContext
+    ) -> None:
+        """The self-contradiction, in ONE render, live: line 1 promises the ack,
+        line 2 reports the same agents as ``unbriefed``. A coherence pin (not a
+        byte-exact one) so it survives whatever wording the builder lands."""
+        await ctx.comms(action="register", agent="lead", session="wave9", role="lead")
+        await ctx.comms(action="register", agent="fixer-b", session="wave9", role="builder")
+        rendered = str(
+            await ctx.comms(
+                action="brief_publish",
+                agent="lead",
+                session="wave9",
+                name="wave9",
+                body="the standing instruction",
+            )
+        )
+        assert "1 unbriefed" in rendered, f"fixture check: 'fixer-b' must be behind here: {rendered!r}"
+        assert "agents ack at register" not in rendered, (
+            f"ONE render cannot both promise a register-time ack and report the agents it would "
+            f"have acked as unbriefed — they will stay unbriefed forever: {rendered!r}"
+        )
+
+
+class TestTheBehindAckTeachIsFOLLOWABLEThroughTheRealToolSurface:
+    """THE TENTH §5.3 INSTANCE, end-to-end against the REAL store (design doc v8
+    §9.5 + the §9.7 mechanism sweep, row 11). The behind-ack render teaches
+    ``catch up: lore_comms action=brief_get`` — bare — and ``brief_get``'s
+    ``name`` DEFAULTS to ``BRIEF_NAME_PROJECT``. An agent that acks behind on
+    'wave9' and obeys that instruction literally reads the PROJECT brief:
+    the served instruction resolves to a different object than the line it sits
+    on is about (§5.3's v8 mechanism-promise litmus, taken literally: *run the
+    taught command WITH ITS DEFAULTS — does the promised thing happen for THIS
+    input?*).
+
+    Live, this is a SILENT wrong-read: a brief comes back, so nothing errors and
+    the agent believes it has caught up. This class runs the taught command
+    through the same real dispatcher, against the real store, and grades what
+    came back.
+    """
+
+    _TEACH_PATTERN = re.compile(r"catch up: lore_comms action=brief_get(?: name='(?P<name>[^']*)')?")
+    _PROJECT_BODY = "PROJECT LAW — the brief a bare brief_get resolves to"
+
+    @classmethod
+    def _catch_up_kwargs(cls, rendered: str) -> dict[str, Any]:
+        """The kwargs an agent following the served catch-up line VERBATIM passes —
+        ``{}`` for today's bare teach (the kwarg is genuinely OMITTED, never
+        ``name=None``), ``{"name": X}`` once it names a brief."""
+        match = cls._TEACH_PATTERN.search(rendered)
+        assert match, f"no catch-up teach found in the behind-ack render: {rendered!r}"
+        taught_name = match.group("name")
+        return {} if taught_name is None else {"name": taught_name}
+
+    async def test_following_the_served_catch_up_line_reads_the_brief_it_is_about(
+        self, ctx: AppContext
+    ) -> None:
+        """THE KILLER PIN, live. A 'project' brief exists (so the bare default
+        resolves and the defect stays silent); 'wave9' is at v2; 'fixer-b' acks
+        wave9 v1. Parse the taught call out of the served line, run it, and grade
+        what the store served back: it must be wave9's head, never the project
+        law."""
+        await ctx.comms(action="register", agent="lead", session="wave9", role="lead")
+        # 'fixer-b' registers BEFORE any brief exists (§1 bootstrap): registering
+        # after a 'project' head would auto-ack it, which is irrelevant here but
+        # keeps the arc identical to the project sibling below.
+        await ctx.comms(action="register", agent="fixer-b", session="wave9", role="builder")
+        await ctx.comms(
+            action="brief_publish", agent="lead", session="wave9", name="project", body=self._PROJECT_BODY
+        )
+        for body in ("v1 — the wave law", "v2 — the wave law, amended"):
+            await ctx.comms(
+                action="brief_publish", agent="lead", session="wave9", name="wave9", body=body
+            )
+        rendered = str(
+            await ctx.comms(
+                action="brief_ack", agent="fixer-b", session="wave9", name="wave9", version=1
+            )
+        )
+        assert "acked brief 'wave9' v1 — head is v2" in rendered, (
+            f"fixture check: 'fixer-b' must really be behind on wave9 here: {rendered!r}"
+        )
+        assert "catch up: lore_comms action=brief_get name='wave9'" in rendered, (
+            f"the teach must name the brief the reader is behind ON — brief_get defaults to "
+            f"'project', so a bare call sends it to the wrong brief: {rendered!r}"
+        )
+
+        followed = str(
+            await ctx.comms(
+                action="brief_get", agent="fixer-b", session="wave9", **self._catch_up_kwargs(rendered)
+            )
+        )
+        assert "brief 'wave9' v2" in followed, (
+            f"an agent that obeyed the served catch-up line got the WRONG brief. "
+            f"taught: {rendered!r} -> served: {followed!r}"
+        )
+        assert self._PROJECT_BODY not in followed, (
+            f"the taught command silently served the project brief (brief_get's default name) "
+            f"instead of the brief the ack line was about: {followed!r}"
+        )
+
+    async def test_the_project_behind_ack_teach_is_explicit_too(self, ctx: AppContext) -> None:
+        """The v8 UNIFORMITY ruling, live: the explicit ``name=`` rides EVERY name,
+        'project' included. A build that emits it only for non-'project' names has
+        special-cased the class instead of killing it — and goes RED here. (Also
+        the byte-stability cost the spec takes deliberately: this line's old bare
+        form is the corpse being replaced.)"""
+        await ctx.comms(action="register", agent="lead", session="wave9", role="lead")
+        # §1 bootstrap: 'fixer-b' exists BEFORE the project brief does, so it holds
+        # NO register-time auto-ack edge — its explicit v1 ack below is a genuinely
+        # new, genuinely behind edge (registering later would auto-ack v1 and route
+        # the ack into the idempotent variant, which teaches nothing).
+        await ctx.comms(action="register", agent="fixer-b", session="wave9", role="builder")
+        for body in ("v1 — the law", "v2 — the law, amended"):
+            await ctx.comms(
+                action="brief_publish", agent="lead", session="wave9", name="project", body=body
+            )
+        rendered = str(
+            await ctx.comms(
+                action="brief_ack", agent="fixer-b", session="wave9", name="project", version=1
+            )
+        )
+        assert rendered == (
+            "acked brief 'project' v1 — head is v2; catch up: "
+            "lore_comms action=brief_get name='project'"
+        )
+
+
+class TestFleetLimitBoundsThroughTheRealToolSurface:
+    """v7 / finding #97 (design doc §6): below 1 TEACHES, above the cap CLAMPS —
+    pinned against the real store, where the defect actually bites (today
+    ``limit=-1`` silently drops the last row of a real fleet).
+    """
+
+    async def test_limit_zero_teaches_instead_of_rendering_an_empty_fleet(
+        self, ctx: AppContext
+    ) -> None:
+        await ctx.comms(action="register", agent="lead", session="wave7", role="lead")
+        with pytest.raises(ValueError) as exc_info:
+            await ctx.comms(action="fleet", agent="lead", session="wave7", limit=0)
+        message = str(exc_info.value)
+        assert "limit" in message and "0" in message
+        assert f"1..{_SPEC_MAX_FLEET_LIMIT}" in message
+
+    async def test_negative_limit_teaches_instead_of_silently_dropping_a_row(
+        self, ctx: AppContext
+    ) -> None:
+        await ctx.comms(action="register", agent="lead", session="wave7", role="lead")
+        await ctx.comms(action="register", agent="fixer-b", session="wave7", role="builder")
+        with pytest.raises(ValueError) as exc_info:
+            await ctx.comms(action="fleet", agent="lead", session="wave7", limit=-1)
+        assert f"1..{_SPEC_MAX_FLEET_LIMIT}" in str(exc_info.value)
+
+    async def test_a_limit_above_the_cap_clamps_and_discloses(self, tmp_path: Path) -> None:
+        context = await _open_context(tmp_path=tmp_path)
+        try:
+            await context.comms(action="register", agent="lead", session="wave7", role="lead")
+            # 200 seeded + lead = 201 non-retired; the caller asks for 250.
+            await _seed_extra_agents(context, session="wave7", count=200)
+            rendered = str(
+                await context.comms(
+                    action="fleet",
+                    agent="lead",
+                    session="wave7",
+                    limit=_SPEC_MAX_FLEET_LIMIT + 50,
+                )
+            )
+            rows = [line for line in rendered.splitlines() if line.startswith("- ")]
+            assert len(rows) == _SPEC_MAX_FLEET_LIMIT, "an over-cap limit clamps — never raises (§1.2)"
+            assert f"+1 more beyond the display cap ({_SPEC_MAX_FLEET_LIMIT})" in rendered
+            assert "re-run with limit" not in rendered
+        finally:
+            await context.aclose()
+
+
 # =========================================================================== #
 # B — end-to-end through the real tool surface (the arc a deploy smoke runs)
 # =========================================================================== #
 
 
 class TestEndToEndCommsArcThroughTheRealToolSurface:
-    """bootstrap register -> publish 'project' -> second register (auto-ack)
-    -> brief_get -> heartbeat -> brief_ack -> fleet — spec §1/§9's worked
-    arc, pinned end-to-end so it can never silently rot. Every assertion
-    reads the RENDERED text (what an agent actually sees), never the return
-    object's internals. Split into one helper per step (not one long test
-    body) so each step's assertions stay legible and locally scoped; the top
-    test just drives the sequence."""
+    """bootstrap register -> publish 'project' v1 (sole agent: NO skew line)
+    -> second register (auto-ack) -> publish v2 (skew names a REAL stored
+    version) -> brief_get -> heartbeat -> brief_ack -> author's own re-ack
+    -> fleet — spec §1/§9's worked arc, pinned end-to-end so it can never
+    silently rot. Every assertion reads the RENDERED text (what an agent
+    actually sees), never the return object's internals. Split into one helper
+    per step (not one long test body) so each step's assertions stay legible
+    and locally scoped; the top test just drives the sequence.
+
+    v7 (finding #98) reshaped this arc, and the reshape IS the pin: the author
+    self-acks, so step 2 is now the END-TO-END proof that §9.4's "omitted when
+    behind == 0" clause is reachable at all (it was not, through the tool,
+    before #98 — the publisher was always counted behind its own brief). The
+    behind-set that the pre-#98 arc got from the AUTHOR's phantom skew is now
+    supplied honestly by a SECOND agent that really is behind, at v2.
+    """
 
     async def test_the_full_arc(self, ctx: AppContext) -> None:
         await self._bootstrap_register_with_no_project_brief(ctx)
         await self._publish_the_first_project_brief(ctx)
         await self._second_register_auto_acks_the_head_brief(ctx)
+        await self._publish_v2_names_the_one_agent_now_behind(ctx)
         await self._brief_get_shows_partial_coverage(ctx)
         await self._heartbeat_names_the_catch_up_call(ctx)
         await self._brief_ack_records_the_catch_up(ctx)
+        await self._the_authors_own_ack_of_its_own_version_is_idempotent(ctx)
         await self._fleet_renders_both_agents_current(ctx)
 
     @staticmethod
@@ -500,6 +805,13 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
 
     @staticmethod
     async def _publish_the_first_project_brief(ctx: AppContext) -> None:
+        """THE #98 REACHABILITY PIN, end-to-end (design doc §9.4, v7): 'lead' is
+        the only agent in the fleet and it just wrote this brief, so NOBODY is
+        behind and the skew line must be omitted entirely.
+
+        Live receipt of the defect this replaces (a store whose only agent IS
+        the publisher): ``skew: 1 non-retired agents behind head v2 — 1 at v1``.
+        """
         rendered = str(
             await ctx.comms(
                 action="brief_publish",
@@ -512,6 +824,10 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
         assert (
             "brief 'project' v1 published by lead — first version; agents ack at register"
         ) in rendered
+        assert "skew" not in rendered, (
+            f"the sole agent in scope IS the author — the omission clause must fire: {rendered!r}"
+        )
+        assert "behind" not in rendered
 
     @staticmethod
     async def _second_register_auto_acks_the_head_brief(ctx: AppContext) -> None:
@@ -531,36 +847,78 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
         assert "echo in your report: brief project v1 read" in rendered
 
     @staticmethod
+    async def _publish_v2_names_the_one_agent_now_behind(ctx: AppContext) -> None:
+        """The skew line's live counterpart: 'fixer-b' acked v1 at register, so
+        the v2 publish leaves exactly ONE agent behind, at a REAL stored version
+        (never ``v0``, §5.3's version-naming corollary) — and the author, having
+        just written v2, is NOT among them.
+        """
+        rendered = str(
+            await ctx.comms(
+                action="brief_publish",
+                agent="lead",
+                session="wave7",
+                name="project",
+                body="v2 — cite lore_impact in every report",
+            )
+        )
+        assert "brief 'project' v2 published by lead" in rendered
+        assert "first version" not in rendered
+        assert (
+            "skew (session wave7): 1 non-retired agents behind head v2 — 1 at v1; "
+            "surfaces at their next heartbeat"
+        ) in rendered
+        assert "v0" not in rendered
+
+    @staticmethod
     async def _brief_get_shows_partial_coverage(ctx: AppContext) -> None:
         rendered = str(
             await ctx.comms(
                 action="brief_get", agent="lead", session="wave7", name="project"
             )
         )
-        assert _HOSTILE_BRIEF_BODY in rendered
         assert "ack recorded" not in rendered, "brief_get's header mirrors register's minus the ack clause"
         assert (
-            "coverage (session wave7): 1/2 non-retired agents at v1; behind: lead (unbriefed)"
+            "coverage (session wave7): 1/2 non-retired agents at v2; behind: fixer-b (v1)"
         ) in rendered
+        assert "lead (" not in rendered, "the author of v2 is current — never in its own behind list"
 
     @staticmethod
     async def _heartbeat_names_the_catch_up_call(ctx: AppContext) -> None:
-        rendered = str(
-            await ctx.comms(action="heartbeat", agent="lead", session="wave7")
+        """The author's heartbeat is honestly SILENT (§9.2, v7); the agent that
+        really is behind gets the catch-up line naming both stored versions.
+        """
+        author_beat = str(await ctx.comms(action="heartbeat", agent="lead", session="wave7"))
+        assert author_beat == "heartbeat lead — status active", (
+            f"the author of head v2 has read what it wrote — no catch-up nag: {author_beat!r}"
         )
-        assert "heartbeat lead — status active" in rendered
+        behind_beat = str(await ctx.comms(action="heartbeat", agent="fixer-b", session="wave7"))
+        assert "heartbeat fixer-b — status active" in behind_beat
         assert (
-            "you have not acked brief 'project' (head v1) — lore_comms action=brief_get"
-        ) in rendered
+            "brief 'project' v2 is head — you acked v1; catch up: lore_comms action=brief_get"
+        ) in behind_beat
 
     @staticmethod
     async def _brief_ack_records_the_catch_up(ctx: AppContext) -> None:
         rendered = str(
             await ctx.comms(
-                action="brief_ack", agent="lead", session="wave7", name="project", version=1
+                action="brief_ack", agent="fixer-b", session="wave7", name="project", version=2
             )
         )
-        assert "acked brief 'project' v1 (head)" in rendered
+        assert "acked brief 'project' v2 (head)" in rendered
+
+    @staticmethod
+    async def _the_authors_own_ack_of_its_own_version_is_idempotent(ctx: AppContext) -> None:
+        """§9.5's NEW v7 case, end-to-end: the author's ``via=publish`` edge
+        already exists, so its explicit ack of that version is the idempotent
+        no-op — not a store error from the UNIQUE(in,out) index, not a second edge.
+        """
+        rendered = str(
+            await ctx.comms(
+                action="brief_ack", agent="lead", session="wave7", name="project", version=2
+            )
+        )
+        assert rendered == "already acked brief 'project' v2 — no new edge"
 
     @staticmethod
     async def _fleet_renders_both_agents_current(ctx: AppContext) -> None:
@@ -568,15 +926,16 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
             await ctx.comms(action="fleet", agent="lead", session="wave7")
         )
         assert (
-            "fleet (session wave7): 2 agents — 0 input_required, 2 active, 0 idle"
+            "fleet (session wave7): 2 non-retired agents — 0 input_required, 2 active, 0 idle"
         ) in rendered
         assert "STALE" not in rendered
         lead_row = _fleet_row(rendered, "lead")
         assert "role lead" in lead_row
-        assert "brief v1" in lead_row
+        assert "brief v2" in lead_row
+        assert "unbriefed" not in lead_row, "the author's own row renders CURRENT (§9.6, v7)"
         fixer_row = _fleet_row(rendered, "fixer-b")
         assert "role builder" in fixer_row
-        assert "brief v1" in fixer_row
+        assert "brief v2" in fixer_row
 
 
 # =========================================================================== #

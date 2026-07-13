@@ -42,7 +42,7 @@ implements it, never redefines it:
         version: int                        # the version the caller targeted
         head_version: int                   # head AT THE TIME of this ack
         already_acked: bool                 # True on an idempotent re-ack no-op
-        via: Literal["register", "explicit"]
+        via: Literal["register", "explicit", "publish"]
 
     BriefBehindEntry:
         agent_name: str
@@ -62,7 +62,11 @@ implements it, never redefines it:
     BriefLedger(*, url, namespace, database, user, password):
         async ensure_ready() -> None
         async close() -> None
-        async publish(name, body, *, created_by, note=None) -> BriefPublishResult
+        async publish(name, body, *, created_by, note=None,
+                      agent_id=None) -> BriefPublishResult   # v7 — finding #98:
+            # a given agent_id makes publish SELF-ACK its author — the briefed
+            # edge (via='publish') is RELATE'd in the SAME transaction as the
+            # brief CREATE (design doc §5.1 step 2), never a second write.
         async get_head(name) -> Brief
         async get_version(name, version) -> Brief
         async known_names() -> list[str]
@@ -123,9 +127,12 @@ from loremaster.store.surreal_schema import (
 logger = logging.getLogger(__name__)
 
 # The ``briefed.via`` wire vocabulary this contract decides — a ``Literal``
-# alias so :class:`BriefAckResult.via` is typed against the closed two-value
-# set (mirrors ``loremaster.agents.AgentStatus``).
-BriefAckVia = Literal["register", "explicit"]
+# alias so :class:`BriefAckResult.via` is typed against the closed THREE-value
+# set (mirrors ``loremaster.agents.AgentStatus``). ``publish`` (v7, finding
+# #98) is the publisher's own self-ack, written by :meth:`BriefLedger.publish`
+# in the SAME transaction as the brief CREATE — never a second, separately
+# -failable write and never a render carve-out.
+BriefAckVia = Literal["register", "explicit", "publish"]
 
 # Protocol vocabulary (design doc §4) — NOT tunables: C4's brief-base v3
 # hardcodes the same words, so these stay module constants, never config.
@@ -532,7 +539,13 @@ class BriefLedger:
     # -- publish ------------------------------------------------------------
 
     async def publish(
-        self, name: str, body: str, *, created_by: str, note: str | None = None
+        self,
+        name: str,
+        body: str,
+        *,
+        created_by: str,
+        note: str | None = None,
+        agent_id: str | None = None,
     ) -> BriefPublishResult:
         """Publish a new version of ``name`` under the max+1 hot-row law (§5.1).
 
@@ -562,6 +575,15 @@ class BriefLedger:
                 rejected by the schema's non-empty ASSERT, not here).
             created_by: The identity publishing this version.
             note: An optional free-text publish note.
+            agent_id: The publishing AGENT's opaque row id (v7, finding #98) —
+                never ``created_by`` (a display string): the ``briefed`` edge is
+                ``agent->briefed->brief`` and only a real agent row id can carry
+                it. When given, the author's self-ack RELATE (``via='publish'``)
+                is composed INTO the SAME fragment as the brief CREATE, so both
+                statements ride ONE :func:`~loremaster.store._txn.execute_transaction`
+                call and roll back together on rejection — never a second,
+                separately-failable write. ``None`` (a ledger-level caller with
+                no agent row in play) writes no edge.
 
         Returns:
             The :class:`BriefPublishResult` of this call.
@@ -574,14 +596,17 @@ class BriefLedger:
         """
         version = await self._mint_version(name)
         brief_id = self._brief_id(name, version)
-        fragment = self._publish_fragment(brief_id, name, version, body, created_by, note)
+        fragment = self._publish_fragment(
+            brief_id, name, version, body, created_by, note, agent_id=agent_id
+        )
         try:
             await self._apply([fragment])
         except SurrealStoreError:
             # The version is minted but its row was REJECTED (a blank body, a bad
             # ``created_by`` — a caller error, deterministic, and never a race).
             # Hand the number back so a rejected publish does not burn a version,
-            # then let the rejection propagate UNTOUCHED and LOUD.
+            # then let the rejection propagate UNTOUCHED and LOUD. The self-ack
+            # RELATE rides the SAME fragment, so it rolls back with the row.
             await self._release_version(name, version)
             raise
         row = await self._select_row(brief_id)
@@ -701,12 +726,20 @@ class BriefLedger:
         body: str,
         created_by: str,
         note: str | None,
+        *,
+        agent_id: str | None = None,
     ) -> TxnFragment:
-        """The single-statement CREATE fragment for one publish attempt.
+        """The CREATE (+ optional self-ack RELATE) fragment for one publish attempt.
 
         ``created_at`` is deliberately OMITTED from the CONTENT object so the
         schema's own ``DEFAULT time::now()`` stamps it (mirrors
         ``test_surreal_schema.py``'s snapshot-metadata-omission idiom).
+
+        When ``agent_id`` is given (v7, finding #98), the author's self-ack
+        RELATE is appended as a SECOND statement in this SAME fragment — never
+        a separate fragment or a second ``_apply`` call — so :func:`compose`
+        folds both into ONE transaction envelope and a rejected CREATE rolls
+        the edge back with it (§5.1 step 2).
         """
         content_fields = [
             f"{_COL_NAME}: ${_PUB_NAME_PARAM}",
@@ -726,11 +759,20 @@ class BriefLedger:
             params[_PUB_NOTE_PARAM] = note
         else:
             content_fields.append(f"{_COL_NOTE}: NONE")
-        create = (
+        statements = [
             f"CREATE type::record('{BRIEF_TABLE}', ${_PUB_ID_PARAM}) "
             f"CONTENT {{ {', '.join(content_fields)} }}"
-        )
-        return TxnFragment(statements=[create], params=params)
+        ]
+        if agent_id is not None:
+            statements.append(
+                f"RELATE ${_ACK_FROM_PARAM}->{BRIEFED_RELATION}->${_ACK_TO_PARAM} SET "
+                f"{_COL_VIA} = ${_ACK_VIA_PARAM}, {_COL_AT} = ${_ACK_AT_PARAM}"
+            )
+            params[_ACK_FROM_PARAM] = RecordID(AGENT_TABLE, agent_id)
+            params[_ACK_TO_PARAM] = RecordID(BRIEF_TABLE, brief_id)
+            params[_ACK_VIA_PARAM] = "publish"
+            params[_ACK_AT_PARAM] = datetime.now(UTC)
+        return TxnFragment(statements=statements, params=params)
 
     # -- read -------------------------------------------------------------
 

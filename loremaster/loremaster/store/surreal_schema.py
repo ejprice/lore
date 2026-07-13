@@ -455,13 +455,16 @@ _AGENT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
 _AGENT_SESSION_STATUS_INDEX_FIELDS = ("session", "status")
 _AGENT_NAME_INDEX_FIELDS = ("name",)
 
-# The closed TWO-value ``briefed.via`` vocabulary (design doc §0/§5): a
-# ``register``-time auto-ack vs. an ``explicit`` ``brief_ack`` call. First-write
-# -wins on an idempotent re-ack (the ledger never overwrites an existing edge's
-# ``via``).
+# The closed THREE-value ``briefed.via`` vocabulary (design doc §0/§5, v7 —
+# finding #98): a ``register``-time auto-ack, an ``explicit`` ``brief_ack``
+# call, or the publisher's own ``publish``-time self-ack (written by
+# ``BriefLedger.publish`` in the SAME transaction as the brief CREATE — §5.1
+# step 2, never a render carve-out). First-write-wins on an idempotent re-ack
+# (the ledger never overwrites an existing edge's ``via``).
 _BRIEFED_VIA_REGISTER = "register"
 _BRIEFED_VIA_EXPLICIT = "explicit"
-_BRIEFED_VIA_VALUES = (_BRIEFED_VIA_REGISTER, _BRIEFED_VIA_EXPLICIT)
+_BRIEFED_VIA_PUBLISH = "publish"
+_BRIEFED_VIA_VALUES = (_BRIEFED_VIA_REGISTER, _BRIEFED_VIA_EXPLICIT, _BRIEFED_VIA_PUBLISH)
 _BRIEFED_VIA_ALLOWED = ", ".join(f"'{via}'" for via in _BRIEFED_VIA_VALUES)
 
 # The ``brief`` table's fields as ``(name, type_expr, constraint)`` triples.

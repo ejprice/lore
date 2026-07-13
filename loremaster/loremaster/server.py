@@ -4359,6 +4359,19 @@ class AppContext:
                 raise ValueError(
                     f"the {required_name!r} argument is required for action={action!r}"
                 )
+        # v7 / finding #97: a caller/SHAPE error, so it fires HERE — before the
+        # uniform heartbeat touch (§8 step 4) — never inside the fleet handler.
+        # Validating in the handler lets a REJECTED call mutate the caller's
+        # row first (stamped heartbeat_at, an idle->active auto-flip) before
+        # the raise; that is a side effect a rejected call must never have
+        # (contract-adversary §2). Below 1 teaches the valid range; above the
+        # display cap is legal here — it clamps inside the fleet handler, it
+        # never raises.
+        if limit is not None and limit < _MIN_COUNT:
+            raise ValueError(
+                f"limit={limit} is out of range for action={action!r} — the valid range is "
+                f"{_MIN_COUNT}..{_MAX_FLEET_LIMIT}; a limit above {_MAX_FLEET_LIMIT} clamps to it"
+            )
 
         agent_row: Agent | None = None
         if spec.requires_registration:
@@ -4546,7 +4559,9 @@ class AppContext:
         a ``(session X)``-tagged line IFF ``session`` was passed explicitly.
         """
         publisher = created_by if created_by is not None else agent_row.name
-        result = await self.brief_ledger.publish(name, body, created_by=publisher, note=note)
+        result = await self.brief_ledger.publish(
+            name, body, created_by=publisher, note=note, agent_id=agent_row.id
+        )
         # Skew's denominator rides the SAME §5.3 plumbing as coverage (v4
         # audit D1 fix) — the complete in-scope membership, never the
         # display-capped ``fleet()`` window. The ledger's own uncapped
@@ -4849,15 +4864,26 @@ class AppContext:
     ) -> Rendered:
         """brief_publish's render (design doc §9.4): publish line + skew/warn lines."""
         if result.first_version:
-            lines = [
-                render_line(
-                    "brief '{name}' v{version} published by {publisher} — first version; "
-                    "agents ack at register",
-                    name=sanitise_line(result.brief.name),
-                    version=result.brief.version,
-                    publisher=sanitise_line(result.brief.created_by),
-                )
-            ]
+            if result.brief.name == BRIEF_NAME_PROJECT:
+                lines = [
+                    render_line(
+                        "brief '{name}' v{version} published by {publisher} — first version; "
+                        "agents ack at register",
+                        name=sanitise_line(result.brief.name),
+                        version=result.brief.version,
+                        publisher=sanitise_line(result.brief.created_by),
+                    )
+                ]
+            else:
+                lines = [
+                    render_line(
+                        "brief '{name}' v{version} published by {publisher} — first version; "
+                        "agents ack with lore_comms action=brief_ack",
+                        name=sanitise_line(result.brief.name),
+                        version=result.brief.version,
+                        publisher=sanitise_line(result.brief.created_by),
+                    )
+                ]
         else:
             lines = [
                 render_line(
@@ -4918,7 +4944,7 @@ class AppContext:
             )
         return render_line(
             "acked brief '{name}' v{version} — head is v{head}; catch up: "
-            "lore_comms action=brief_get",
+            "lore_comms action=brief_get name='{name}'",
             name=sanitise_line(result.name),
             version=result.version,
             head=result.head_version,
@@ -5024,7 +5050,11 @@ class AppContext:
         idle = status_counts.get("idle", 0)
         retired_count = status_counts.get("retired", 0)
         total = parked + active + idle
-        if total == 0:
+        # v7 / finding #99: the "no agents registered" variant fires ONLY on a
+        # genuinely ROWLESS in-scope registry — an all-retired scope has rows
+        # (they are registered, just retired) and must render the true zeroed
+        # header + the "+K retired" trailer below, never this empty branch.
+        if total == 0 and retired_count == 0:
             if session is not None:
                 return render_line(
                     "no agents registered (session {session})", session=sanitise_line(session)
@@ -5039,7 +5069,7 @@ class AppContext:
         )
         if session is not None:
             header = render_line(
-                "fleet (session {session}): {total} agents — {parked} input_required, "
+                "fleet (session {session}): {total} non-retired agents — {parked} input_required, "
                 "{active} active, {idle} idle",
                 session=sanitise_line(session),
                 total=total,
@@ -5049,7 +5079,7 @@ class AppContext:
             )
         else:
             header = render_line(
-                "fleet: {total} agents — {parked} input_required, {active} active, "
+                "fleet: {total} non-retired agents — {parked} input_required, {active} active, "
                 "{idle} idle",
                 total=total,
                 parked=parked,
@@ -7263,9 +7293,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         limit: Annotated[
             int | None,
             Field(
+                ge=_MIN_COUNT,
                 description=(
                     f"For 'fleet' ONLY: the max rows to render (default "
-                    f"comms.fleet_limit, clamped to {_MAX_FLEET_LIMIT})."
+                    f"comms.fleet_limit, min {_MIN_COUNT}, clamped to {_MAX_FLEET_LIMIT})."
                 )
             ),
         ] = None,
