@@ -57,6 +57,14 @@ rendered free text). Therefore:
 - Tests written before a semantic change certify the OLD world: on any rename, grep the
   test tree for assertions pinning retired names/strings — a green suite may be green
   because it still asserts the corpse.
+- The DUAL holds too (external provenance: odoo-custom-v15 PR93, 2026-07-13): tests
+  written for a NEW design certify only the new world — nothing checks the old world's
+  virtues survived the rewrite. Any delete/replace ships with a removed-behavior
+  inventory (branches, guards, side effects, per-field output provenance — the absence
+  of an override is a behavior) adjudicated item-by-item: preserved-with-pin (spec
+  citation, "the old code did it" is banned) / dropped-deliberately (reason) /
+  old-bug-not-re-pinned / spec-silent→operator ruling. Instrument: the tdd skill's
+  Phase 0 inventory + Phase 1 adjudication gate + contract-adversary P6b.
 - Any NEW render of stored free text (finding bodies, memory notes, task subjects)
   routes through the shared sanitiser seam (`loremaster.search._sanitise_line` until
   finding #34 promotes it) — multi-line stored text renders inside a backtick fence.
@@ -170,7 +178,7 @@ them. Therefore:
   landmine) until the operator caught the omission. A summary block is a convenience, not
   the report.
 - **FIXTURES MUST DISCRIMINATE — interrogate every one with "what WRONG build would this
-  still pass?"** This single class has now produced a blocker THREE times, on two axes:
+  still pass?"** This single class has now produced a blocker FOUR times, on three axes:
   1. **Small-N**: a collapsed tail holding ONE agent at ONE version makes `len()` ≡
      `sum()`, so a build counting VERSIONS instead of AGENTS passed 489/489 + ruff + mypy
      + the AST pins. No contract fixture had ever exceeded small-N — the same reason three
@@ -180,9 +188,36 @@ them. Therefore:
      ENTIRE contract (832 passed, 0 failed, zero mypy delta) with the finding fully intact
      for every other name. **If the code can branch on a value, at least one pin must use a
      DIFFERENT value.**
+  3. **Arithmetic ALIGNMENT** (external provenance: odoo-custom-v15 PR93, 2026-07-13):
+     fixture values whose arithmetic accidentally makes the dangerous branch unreachable —
+     contracts of 17/96/84 remaining vs a 10+15 request span exactly two contracts, so the
+     collapse branch never fired and a test NAMED for the hazard passed for a fixture
+     reason. Its author had walked right up to the hazard and the fixture finished the job.
   The generalisation: a fixture that cannot distinguish the correct build from a plausible
   wrong one is decoration. Ask what wrong build survives it — the answer is the pin you are
-  missing.
+  missing. And don't just interrogate — PERTURB: the contract-adversary's P2 mutates
+  load-bearing fixture values in scratch copies (with a correct-build control leg) to prove
+  each pin still discriminates away from its original values.
+- **THE QUANTIFIER LAW (PR93, 2026-07-13 — a FULL tdd pipeline: 55-test contract, two
+  adversary passes, 34 wrong-build mutations, cold audit, security audit — still shipped 5
+  defects a diff-first reviewer then found):** never condition an invariant on the failure
+  mode that prompted the work. Six PR93 tests pinned "no silent drop on supply failure";
+  the rewrite dropped an input through the emission plumbing — supply fine, totals
+  conserved, keys unique — and every pin stayed green. Pin the outcome property ∀ inputs
+  (every input emitted / merged-and-reported / rejected-and-reported, REGARDLESS of cause)
+  and FORCE each fate with a fixture — a ∀ helper evaluated only where the branch can't
+  fire is the fixture-reason pass wearing a universal quantifier. Instruments: the
+  contract-adversary's quantifier attack (P1b per-invariant ∀-vs-guarded table with
+  door-build receipts; SUFFICIENT without the table = INSUFFICIENT) + tdd-contract's
+  input-accounting checklist clause (fate coverage + mutation proof).
+- **A fresh CONTEXT is not a fresh FRAME.** Handing an auditor the contract re-installs the
+  contract's blind spot: PR93's defects were found by a reviewer whose frame was the DIFF
+  ("what happens to each input? what did the deleted code do that this doesn't?") — a
+  question no contract-holding auditor asks. Wave audits on reshape/delete work include a
+  contract-blind diff pass (report-only; withheld: the contract, the adversary report,
+  test-suite runs — brief mechanics in the tdd skill's Phase 7). Same reason the
+  adversary's P6b enumerates deleted code BEFORE reading the Phase 0 inventory:
+  independent enumerations are DIFFED, never shared.
 - **The lead's brief sets the adversarial frontier — so the lead must not be the only
   imagination.** C1's contract writers found precisely what the briefs told them to look
   for, and nothing else. Delegate frontier-generation to the contract adversary rather
