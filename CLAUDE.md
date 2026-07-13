@@ -68,6 +68,32 @@ rendered free text). Therefore:
   test_mcp_server.py). Every audit-caught defect CLASS gets converted into a pin like
   these — a fix without an invariant is half a fix.
 
+## A DIAGNOSIS IS NOT AN INSTRUMENT (PKT-28 C1, ten instances, 2026-07-13)
+This file ALREADY said defects cluster in "natural-language surfaces whose consistency with
+code no gate checks". We knew. **We then shipped TEN more instances of exactly that class in
+one phase** — wrong counts, wrong labels, a fabricated version, and three lines promising
+mechanisms that never run. Knowing the failure mode changed nothing.
+
+**Every other invariant here has a mechanical guard** — mypy for values/returns, AST pins for
+template slots and mints, schema ASSERTs for the store, query-count pins for N+1s. **Served
+English had none.** It was guarded only by whatever assertion a test author happened to write,
+with whatever fixture value they happened to pick — and they picked the one value for which the
+prose was true.
+
+Therefore, standing law:
+- **When a defect CLASS is identified, ship the INSTRUMENT in the same breath as the law.**
+  A rule people must remember is not a guard; it is a hope. "Every audit-caught defect class
+  becomes a repo-local invariant test" is already written above — this section exists because
+  we wrote the law and skipped the instrument.
+- **Prose that describes behaviour must be DERIVED from the behaviour, not re-stated beside
+  it.** Renders take typed applicability (`auto_ack_at_register: bool`), never a name they
+  compare. A role ("the standing brief") gets ONE accessor, not seven hardcoded lookups. Then
+  changing the mechanism is a TYPE ERROR at every site that describes it, instead of a prose
+  bug nobody can see. (The full root-cause analysis + the C2 step-0 plan: finding #104.)
+- **Fixture factories must not default a parameter the code branches on.** `_brief()`
+  defaulting to `name="project"` MANUFACTURED this blind spot: every render fixture silently
+  tested the one value where the lies were true. No default ⇒ every call site must choose.
+
 ## Every artifact gets an adversary — not just the code (PKT-28 C1, 2026-07-12)
 C1 shipped FIVE defects that no builder gate caught. Their provenance, measured: THREE
 were tests that were never written (fleet grouping, the `brief_counter` declaration,
