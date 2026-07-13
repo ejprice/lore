@@ -2932,8 +2932,7 @@ class TestQuerySeamSdkKeyErrorClassification:
 _GRAPH_SENSITIVE_MARKER = "TOP-SECRET-GRAPH-BOUND-VALUE-3f7b5e"
 _GRAPH_SENSITIVE_ENGINE_TEXT = (
     f"Found '{_GRAPH_SENSITIVE_MARKER}' for field `kind`, with record "
-    f"`code_node:abc123`, but expected the value to fulfil the following "
-    f"assertion: $value != NONE"
+    f"`code_node:abc123`, but field must conform to: $value != NONE"
 )
 # The transport-``kind`` rejection the SDK raises when a mid-life socket drop
 # left the reconnected session unauthenticated (``NotAllowed``) — a transport

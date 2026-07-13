@@ -90,10 +90,10 @@ from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
-    _ERROR_CLASS_RETRYABLE_CONFLICT,
     _SERVER_LOG_HINT,
     SurrealConnectionError,
     SurrealStoreError,
+    TxnContentionExhaustedError,
     TxnFragment,
     _classify_engine_error,
     _SurrealConnection,
@@ -236,24 +236,6 @@ _ROW_NUMBER_PARAM = "number"
 # ``loremaster.tasks``'s / ``diff.py``'s own ``_COUNT_KEY`` idiom).
 _FILED_SINCE_PARAM = "fs_since"
 _COUNT_KEY = "count"
-
-# The number mint's APPLICATION-level retry budget + backoff — ON TOP of the shared
-# ``execute_transaction`` conflict retry. THE deviation from the task ledger (whose
-# claim/transition races are only ever 2-way, so the shared seam alone suffices):
-# the finding ``number`` mint funnels EVERY concurrent reporter through the ONE
-# ``finding_counter`` row, so N-way contention (measured 43% txn-exhaustion at N=8
-# on the live harness) can drain the shared seam's small budget tuned for 2-way
-# races. The shared seam does not do this job, and it is out of this ledger's scope
-# to widen — so the missing piece is hand-rolled here (minimal surface: only the
-# mint; gated by ``TestConcurrentNumbering``), re-running the WHOLE mint transaction
-# (the prior attempt rolled back, so the fixed ``finding_id`` re-CREATEs cleanly and
-# the counter is re-read at its latest committed value). A per-reporter jitter
-# derived from the unique ``finding_id`` de-synchronises retries so N racers do not
-# collide again in lockstep on the very next event-loop tick.
-_REPORT_MINT_MAX_ATTEMPTS = 12
-_REPORT_MINT_BACKOFF_SECONDS = 0.01
-_REPORT_MINT_JITTER_SLOTS = 16
-_REPORT_MINT_JITTER_SECONDS = 0.001
 
 # The bounded number of supersedes-chain hops :meth:`FindingLedger.chain_head` will
 # take before declaring a cycle — defense-in-depth ABOVE the primary visited-set
@@ -674,7 +656,7 @@ class FindingLedger:
             provenance=provenance,
             supersedes_id=supersedes_id,
         )
-        await self._apply_mint(fragment, finding_id)
+        await self._apply([fragment])
         row = await self._select_row_by_id(finding_id)
         if row is None:
             raise FindingLedgerError(
@@ -750,48 +732,6 @@ class FindingLedger:
             f"CONTENT {{ {', '.join(content_fields)} }}"
         )
         return TxnFragment(statements=[seq_bump, create], params=params)
-
-    async def _apply_mint(self, fragment: TxnFragment, finding_id: str) -> None:
-        """Apply the number-mint transaction, retrying a RETRYABLE conflict.
-
-        The application-level backstop the finding mint needs ON TOP of the shared
-        :func:`~loremaster.store._txn.execute_transaction` conflict retry (see
-        :data:`_REPORT_MINT_MAX_ATTEMPTS`): under N-way contention on the single
-        ``finding_counter`` row, the shared seam's small budget (tuned for the task
-        ledger's 2-way races) can drain, surfacing as a ``SurrealStoreError`` whose
-        classified label is :data:`~loremaster.store._txn._ERROR_CLASS_RETRYABLE_CONFLICT`.
-        Re-running the WHOLE transaction is safe (the rolled-back attempt committed
-        NOTHING, so the fixed ``finding_id`` re-CREATEs cleanly against the latest
-        committed counter). A per-reporter jitter derived from the unique
-        ``finding_id`` de-synchronises retries so N racers do not re-collide in
-        lockstep. A transport fault (:class:`SurrealConnectionError`) or any
-        NON-retryable rejection propagates immediately — retrying it would never help.
-
-        Worst-case attempt count is the PRODUCT, not the sum, of the two retry
-        budgets: each of this loop's :data:`_REPORT_MINT_MAX_ATTEMPTS` (12)
-        iterations runs a whole transaction that itself retries a write-write
-        conflict up to :data:`~loremaster.store._txn._MAX_TXN_CONFLICT_ATTEMPTS` (5)
-        times inside :func:`~loremaster.store._txn.execute_transaction` — so up to
-        12 × 5 = 60 transaction attempts. Bounded and measured-safe (the live N=16
-        concurrent-mint probe stayed clean), never unbounded.
-        """
-        # A stable 0..(slots-1) jitter slot unique to THIS reporter (its finding_id
-        # is unique), so concurrent retriers spread across the next few ticks.
-        jitter_slot = int(finding_id[:4], 16) % _REPORT_MINT_JITTER_SLOTS
-        for attempt in range(_REPORT_MINT_MAX_ATTEMPTS):
-            try:
-                await self._apply([fragment])
-                return
-            except SurrealConnectionError:
-                # A genuine transport fault — never a lost race; propagate untouched.
-                raise
-            except SurrealStoreError as error:
-                last_attempt = attempt >= _REPORT_MINT_MAX_ATTEMPTS - 1
-                if last_attempt or _ERROR_CLASS_RETRYABLE_CONFLICT not in str(error):
-                    raise
-                backoff = _REPORT_MINT_BACKOFF_SECONDS * (attempt + 1)
-                jitter = jitter_slot * _REPORT_MINT_JITTER_SECONDS
-                await asyncio.sleep(backoff + jitter)
 
     async def get(self, id_or_number: int | str) -> Finding:
         """Fetch a single finding, addressed by its stable number OR its opaque id.
@@ -1054,6 +994,12 @@ class FindingLedger:
             await self._apply([self._transition_fragment(finding_id, target, current, event)])
         except SurrealConnectionError:
             # A genuine transport fault — never a lost race; propagate untouched.
+            raise
+        except TxnContentionExhaustedError:
+            # A genuine conflict outlived the retry budget — this is NOT a lost
+            # CAS (finding #102): the row may be untouched and this transition
+            # perfectly legal, so it must never be re-read and misreported as
+            # an IllegalTransitionError below. Propagate untouched.
             raise
         except SurrealStoreError as error:
             # The transaction rolled back: this call's CAS matched zero rows, meaning

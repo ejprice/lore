@@ -74,6 +74,7 @@ from loremaster.store._txn import (
     _SERVER_LOG_HINT,
     SurrealConnectionError,
     SurrealStoreError,
+    TxnContentionExhaustedError,
     TxnFragment,
     _classify_engine_error,
     _SurrealConnection,
@@ -872,6 +873,12 @@ class TaskLedger:
             # A genuine transport fault — never a lost race; propagate untouched
             # (must not be masked as an illegal-transition rejection).
             raise
+        except TxnContentionExhaustedError:
+            # A genuine conflict outlived the retry budget — this is NOT a lost
+            # CAS (finding #102): the row may be untouched and this transition
+            # perfectly legal, so it must never be re-read and misreported as
+            # an IllegalTransitionError below. Propagate untouched.
+            raise
         except SurrealStoreError as error:
             # The transaction rolled back: this call's CAS matched zero rows,
             # meaning a concurrent writer committed first. Re-validate from the
@@ -1135,6 +1142,12 @@ class TaskLedger:
         except SurrealConnectionError:
             # A genuine transport fault — never a lost race; propagate untouched
             # (must not be masked as an already-superseded rejection).
+            raise
+        except TxnContentionExhaustedError:
+            # A genuine conflict outlived the retry budget — this is NOT a lost
+            # race (finding #102): the old row may be un-stamped and this
+            # supersede perfectly legal, so it must never be reported as
+            # "already superseded by someone else". Propagate untouched.
             raise
         except SurrealStoreError as error:
             # The transaction rolled back. The in-contract cause is the guarded
