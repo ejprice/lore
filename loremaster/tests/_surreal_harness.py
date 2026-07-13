@@ -105,8 +105,10 @@ _RETRYABLE_CONFLICT_MARKER = "can be retried"
 # hanging teardown forever.
 _MAX_DROP_DATABASE_ATTEMPTS = 5
 
-# The linear backoff between conflict retries, in seconds — mirrors
-# ``_txn._TXN_CONFLICT_BACKOFF_SECONDS``.
+# The linear backoff between teardown retries, in seconds. Deliberately NOT the
+# store seam's backoff: that one is per-attempt full jitter (finding #102 —
+# a fixed delay puts every racer to sleep for the same duration and they
+# re-collide in lockstep). Teardown has ONE waiter, so it needs no jitter.
 _DROP_DATABASE_BACKOFF_SECONDS = 0.01
 
 

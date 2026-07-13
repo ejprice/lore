@@ -86,7 +86,7 @@ BRIEFED_RELATION = "briefed"
 # UPSERTs the row for the ``name`` being published (``next = (next ?? 0) + 1``),
 # so publishers of DIFFERENT names contend on DIFFERENT rows and never
 # serialise against each other — strictly better than a singleton, and the
-# same ``_apply_mint``-style counter-row PRIMITIVE :mod:`loremaster.findings`
+# same counter-row PRIMITIVE :meth:`~loremaster.findings.FindingLedger.report`
 # uses, cloned in mechanism, not merely in shape.
 BRIEF_COUNTER_TABLE = "brief_counter"
 

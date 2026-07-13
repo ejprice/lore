@@ -151,11 +151,11 @@ BRIEF_NAME_BASE = "base"
 _KNOWN_BRIEFS_CAP = 10
 
 # The publish-retry mechanism's module constants (design doc §4/§5.1) — a
-# concurrency-MECHANISM tuning knob, the exact class ``findings.py`` keeps as
-# module constants (``_REPORT_MINT_*``); operators tune behaviour via config,
-# never retry mechanics. Budget 4 (not findings' 12): publish contention is
-# lead-shaped (rare, at most a handful of concurrent publishers), unlike the
-# N-way finding mint.
+# concurrency-MECHANISM tuning knob; operators tune behaviour via config, never
+# retry mechanics. Budget 4: publish contention is lead-shaped (rare, at most a
+# handful of concurrent publishers), unlike the N-way finding mint, which keeps
+# no outer-attempt budget of its own — it rides the shared txn-retry seam's
+# floor (``_MAX_TXN_CONFLICT_ATTEMPTS``) directly.
 _BRIEF_PUBLISH_MAX_ATTEMPTS = 4
 _BRIEF_PUBLISH_BACKOFF_SECONDS = 0.01
 _BRIEF_PUBLISH_JITTER_SLOTS = 4
@@ -558,7 +558,7 @@ class BriefLedger:
         UNIQUE(name, version) index stands behind it as the backstop (§5.1's
         second guard), never as the mechanism.
 
-        This is :meth:`~loremaster.findings.FindingLedger._apply_mint`'s
+        This is :meth:`~loremaster.findings.FindingLedger.report`'s
         counter-row UPSERT, cloned in MECHANISM and not merely in shape: the
         engine — not a re-read — is what hands out distinct consecutive numbers,
         so contention costs a retry on the counter, never a lost publish. The
@@ -621,7 +621,7 @@ class BriefLedger:
         RETURN AFTER``. Every concurrent publisher of ``name`` contends on this
         ONE row, and the engine serialises them into distinct, gapless,
         consecutive numbers — the same race-safe primitive
-        :meth:`~loremaster.findings.FindingLedger._apply_mint` rides. The
+        :meth:`~loremaster.findings.FindingLedger.report` rides. The
         ``?? 0`` coalesce and the DDL's declared ``DEFAULT 0`` (see
         :data:`~loremaster.store.surreal_schema.BRIEF_COUNTER_TABLE`) BOTH make
         the FIRST bump on a brand-new per-name row yield 1 — belt and braces,
@@ -634,9 +634,12 @@ class BriefLedger:
         :data:`~loremaster.store._txn._ERROR_CLASS_RETRYABLE_CONFLICT` label),
         and re-running the bump is always safe: a conflicted UPSERT committed
         NOTHING, so the retry re-reads the winner's settled counter and takes the
-        NEXT number. That label — and ONLY that label — is retried, the
-        ``_apply_mint`` posture verbatim: a transport fault and EVERY other
-        rejection (an ASSERT violation, a coercion failure, a malformed body)
+        NEXT number. That label — and ONLY that label — is retried here (the
+        single-statement ``_query`` path has no typed contention error to
+        catch by TYPE the way the transactional seam does post-#102; migrating
+        this mint to the typed error is a follow-up finding, filed as #108):
+        a transport fault and EVERY other rejection (an ASSERT
+        violation, a coercion failure, a malformed body)
         propagate on the FIRST occurrence, because retrying them would never
         succeed and swallowing them would turn a loud failure into a silent wrong
         answer.

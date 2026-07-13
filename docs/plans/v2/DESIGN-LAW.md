@@ -71,9 +71,16 @@ Sources: P8c:139-143, P8d:217-221 (extraction receipt).
   HNSW build) and the window must be lock-excluded from concurrent writers — a raced
   write auto-creates SCHEMALESS and the DDL rolls back (memory eea2c3a1;
   memory/local.py::_rebuild_lock is the reference).
-- Hot-row minting: N-way contention on one row exhausts the shared 5-attempt retry
-  (43% @ N=8); `findings.py::_apply_mint` (bounded app-retry, deterministic jitter) is
-  the reference pattern for ANY new hot-row mint.
+- Hot-row minting: under the OLD deterministic linear backoff, N-way contention on one
+  row exhausted the shared 5-attempt retry 43% @ N=8 (every racer slept the identical
+  duration and re-collided in lockstep — finding #102). The reference pattern for ANY
+  new hot-row mint is `_txn.execute_transaction`'s conflict-retry seam: per-attempt FULL
+  jitter freshly drawn from the process PRNG on EVERY attempt (never cached, never
+  derived from the contended row's id or any call parameter), a guaranteed attempt FLOOR
+  (`_MAX_TXN_CONFLICT_ATTEMPTS`), a wall-clock deadline that may only cut retries once
+  that floor is met, and the typed `TxnContentionExhaustedError` on exhaustion. A
+  per-call or id-derived jitter source **is** the defect #102 removed, not a pattern to
+  clone — measured post-fix: zero exhaustions across 2900 mints at N up to 32.
 - FLEXIBLE-array migrations: a non-option field added to FLEXIBLE array items rejects
   new writes lacking it while legacy rows survive (IF-NOT-EXISTS never retro-validates).
 - Counting-client errors: `TerminalCountError` (4xx≠429 — stop) vs `RuntimeError`

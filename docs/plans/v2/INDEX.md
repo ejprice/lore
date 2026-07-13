@@ -143,7 +143,7 @@ authorization models stabilize** — hence wave G's internal order.
 - Open research note (no evidence either way in literature/vendor practice): whether
   displaying scores to tool-using LLM consumers helps — our three-model consult remains
   the only direct data (weak-match external validation, element d).
-- Graph composition invariant + hot-row `_apply_mint` pattern + two-step recreate —
+- Graph composition invariant + hot-row minting retry pattern + two-step recreate —
   now in DESIGN-LAW.md; cite it, don't rediscover.
 - `scratchpad/` at repo root is finding #72 corpus pollution — fixed by PKT-09;
   until then keep session artifacts OUT of the repo root.
