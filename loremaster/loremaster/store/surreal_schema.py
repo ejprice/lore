@@ -9,10 +9,16 @@ its arguments — the embedding width is threaded from the configured ``dim`` in
 every HNSW index rather than baked in, so one generator serves every project and
 every embedder width.
 
-Everything is emitted ``IF NOT EXISTS`` so applying the DDL is idempotent: a
-second application against an already-migrated database is a safe no-op, which is
-exactly what lets :meth:`SurrealStore.ensure_ready` run it unconditionally at
-startup.
+Every statement is idempotent, so a second application against an already-migrated
+database is a safe no-op — which is exactly what lets :meth:`SurrealStore.ensure_ready`
+run it unconditionally at startup. Tables, indexes, and the analyzer are ``IF NOT
+EXISTS`` (a definition, once created, is never re-applied to an existing one — see
+:func:`_hnsw_index` / :func:`_analyzer_statement` for why re-applying THOSE would be
+unsafe). Fields are ``DEFINE FIELD OVERWRITE`` (finding #107 — ``IF NOT EXISTS`` on a
+field is a no-op against an EXISTING field, so a definition change never migrates a
+live store): applying the *same* field definition twice stays a safe no-op, and
+applying a *changed* one now actually migrates the store instead of silently
+skipping it. See :func:`_define_field`.
 
 Dialect note (verified against the 3.0.5 engine the store targets, and re-verified
 on 3.1.5 with no deltas — 3.1.x is the documented floor going forward): the
@@ -203,12 +209,12 @@ _OBSOLETE_MEMORY_FIELDS: tuple[str, ...] = ("refs", "trust", "provenance")
 # The ``memory`` table's fields as ``(name, type_expr, constraint)`` triples — the
 # single source of truth ``_memory_statements`` emits one ``DEFINE FIELD`` per.
 # Every RETAINED P2 column (``note_text``/``kind``/``embedding``/``created_at``/
-# ``valid_until``/``importance``/``expires_at``) keeps its EXACT P2 definition, so
-# ``IF NOT EXISTS`` can never silently drift it; the rest are genuinely NEW,
-# additive columns. Because every column whose MEANING changed vs P2 is REMOVED
-# above (never redefined in place), no field needs ``DEFINE FIELD OVERWRITE`` to
-# escape a stale definition — the removal expresses the change, and ``IF NOT
-# EXISTS`` is correct for both the retained and the new columns.
+# ``valid_until``/``importance``/``expires_at``) keeps its EXACT P2 definition
+# text, so re-applying it via ``_define_field``'s ``OVERWRITE`` (finding #107) is
+# a no-op re-write, never a drift; the rest are genuinely NEW, additive columns.
+# Every column whose MEANING changed vs P2 is REMOVED above (never redefined in
+# place) — the removal expresses the change explicitly, rather than leaning on
+# ``_define_field`` to migrate a stale definition in place.
 _MEMORY_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("note_text", _CHUNK_STRING_TYPE, ""),
     ("kind", _CHUNK_STRING_TYPE, ""),
@@ -628,7 +634,30 @@ def _define_schemaless_table(name: str) -> str:
 
 
 def _define_field(table: str, name: str, type_expr: str, *, constraint: str = "") -> str:
-    """A ``DEFINE FIELD`` statement for ``table.name`` (idempotent).
+    """A ``DEFINE FIELD`` statement for ``table.name`` — ``OVERWRITE``, not idempotent-skip.
+
+    Finding #107 (the 100% ``brief_publish`` production outage): ``DEFINE FIELD IF
+    NOT EXISTS`` is a NO-OP against an ALREADY-EXISTING field, so a definition
+    change (a widened ``ASSERT``, a narrowed one, a type change) never migrates a
+    live store — it only ever lands on a fresh one. Every test used a throwaway
+    virgin database, so no gate could see this. ``OVERWRITE`` (the vendor's own
+    documented mechanism for this — see the module docstring) always re-applies the
+    CURRENT definition, so an existing store converges on every ``ensure_ready()``
+    call, exactly like a fresh one. Applying the *same* definition twice is still a
+    safe no-op (SurrealDB just re-writes an identical definition); what changes is
+    that applying a *different* definition twice now actually migrates. A TYPE or
+    narrowing change still converges the SCHEMA without rewriting existing DATA —
+    an old row that violates the new definition is left intact but write-poisoned
+    (any future UPDATE of it is rejected) rather than silently corrupted or
+    dropped; see ``REPORT-c1f-contract-migration.md`` §4 for the measured matrix.
+
+    ``_define_index`` / ``_define_table`` / ``_analyzer_statement`` deliberately
+    stay ``IF NOT EXISTS`` — do NOT apply this same flip to them.
+    ``DEFINE INDEX OVERWRITE`` re-validates/rebuilds a populated HNSW index and
+    RAISES on a dimension change (a silent no-op today would become a boot-time
+    crash); an analyzer ``OVERWRITE`` lands a new tokenizer/filter definition
+    without re-tokenising an already-built FULLTEXT index (a silent recall-quality
+    bug, not a migration).
 
     Args:
         table: The owning table.
@@ -639,7 +668,7 @@ def _define_field(table: str, name: str, type_expr: str, *, constraint: str = ""
             ``DEFAULT``), appended verbatim after the type.
     """
     suffix = f" {constraint}" if constraint else ""
-    return f"DEFINE FIELD IF NOT EXISTS {name} ON {table} TYPE {type_expr}{suffix}"
+    return f"DEFINE FIELD OVERWRITE {name} ON {table} TYPE {type_expr}{suffix}"
 
 
 def _hnsw_index(table: str, field: str, dim: int) -> str:
@@ -758,8 +787,8 @@ def _memory_statements(dim: int, analyzer_name: str) -> list[str]:
 
     Emits, in order: the SCHEMAFULL table; the ``REMOVE FIELD IF EXISTS`` for each
     obsolete P2 column (:data:`_OBSOLETE_MEMORY_FIELDS`); one ``DEFINE FIELD`` per
-    :data:`_MEMORY_FIELD_SPECS` entry (retained P2 columns unchanged, new columns
-    additive — see that constant for the OVERWRITE-vs-IF-NOT-EXISTS rationale);
+    :data:`_MEMORY_FIELD_SPECS` entry (retained P2 columns keep their exact P2
+    definition text, new columns are additive — see that constant);
     the HNSW vector index at the configured ``dim``; the BM25 FULLTEXT index on
     :data:`MEMORY_FULLTEXT_FIELDS`; and the temporal-validity index the recall
     path's live/superseded filter uses.
@@ -1025,7 +1054,8 @@ def _briefed_statements() -> list[str]:
     Mirrors ``_refers_statements``/``_answers_to_statements``'s shape: define
     the relation table (:func:`_define_relation_table` — ``in``/``out`` are
     auto-defined, never hand-declared), emit the edge-local metadata fields
-    from :data:`_BRIEFED_FIELD_SPECS` (``via`` closed-two-value ASSERT, ``at``
+    from :data:`_BRIEFED_FIELD_SPECS` (``via`` closed-THREE-value ASSERT —
+    ``register``/``explicit``/``publish``, finding #98 — ``at``
     ``DEFAULT time::now()``), then the UNIQUE index on ``(in, out)`` — the
     idempotent-re-ack backstop (design doc §0/§5.4). UNLIKE ``refers``/
     ``answers_to`` this is the first relation table to declare a UNIQUE
@@ -1140,8 +1170,9 @@ def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str
 
     The DDL threads the configured ``dim`` into every HNSW index (``chunk`` and
     ``memory``) so the schema always matches the embedder width — never a
-    hardcoded default. Every statement is ``IF NOT EXISTS``, so applying the
-    result twice is a safe no-op.
+    hardcoded default. Every statement is idempotent (``IF NOT EXISTS`` for tables/
+    indexes/the analyzer, ``OVERWRITE`` for fields — see :func:`_define_field`), so
+    applying the result twice is a safe no-op.
 
     Args:
         dim: The embedding width, wired into every HNSW ``DIMENSION`` clause.
@@ -1179,7 +1210,8 @@ def generate_manifest_ddl() -> str:
     ``meta`` carries a vector or free-text column. This lets
     ``SurrealManifest`` — which owns no embedder configuration of its own,
     unlike :class:`~loremaster.store.surreal.SurrealStore` — apply its own
-    schema slice independently. Every statement is ``IF NOT EXISTS``, so
+    schema slice independently. Every statement is idempotent (``IF NOT EXISTS``
+    for the table, ``OVERWRITE`` for its fields — see :func:`_define_field`), so
     applying the result twice (or applying :func:`generate_ddl` first, in
     either order) is a safe no-op.
 
@@ -1201,9 +1233,10 @@ def generate_memory_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME)
     embedding ``dim`` and the analyzer, because the ``memory`` table carries an
     HNSW vector index and a BM25 FULLTEXT index. The ``code_ident`` analyzer the
     FULLTEXT index references is emitted here too, so the slice is self-contained
-    on a fresh per-project database. Every statement is ``IF NOT EXISTS`` /
-    ``REMOVE FIELD IF EXISTS``, so applying it twice — or alongside
-    :func:`generate_ddl`, in either order — is a safe no-op.
+    on a fresh per-project database. Every statement is idempotent (``IF NOT
+    EXISTS`` for the table, ``OVERWRITE`` for retained/new fields, ``REMOVE FIELD
+    IF EXISTS`` for the obsolete ones — see :func:`_define_field`), so applying it
+    twice — or alongside :func:`generate_ddl`, in either order — is a safe no-op.
 
     Args:
         dim: The embedding width, wired into the ``memory`` HNSW ``DIMENSION`` clause.
@@ -1228,9 +1261,10 @@ def generate_task_ddl() -> str:
     :func:`generate_ddl`. UNLIKE the ``memory`` slice it needs NEITHER the
     embedding ``dim`` NOR the analyzer, because the ``task`` table carries no
     HNSW vector or BM25 FULLTEXT index (tasks are coordinated by exact state,
-    never retrieved semantically). Every statement is ``IF NOT EXISTS``, so
-    applying it twice — or alongside :func:`generate_ddl`, in either order — is
-    a safe no-op.
+    never retrieved semantically). Every statement is idempotent (``IF NOT
+    EXISTS`` for the table, ``OVERWRITE`` for its fields — see
+    :func:`_define_field`), so applying it twice — or alongside
+    :func:`generate_ddl`, in either order — is a safe no-op.
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -1251,8 +1285,9 @@ def generate_finding_ddl() -> str:
     ``finding`` table carries no HNSW vector or BM25 FULLTEXT index (findings are
     addressed by number and filtered by exact state, never retrieved semantically).
     Includes the ``finding_counter`` sibling table that backs the race-safe number
-    mint. Every statement is ``IF NOT EXISTS``, so applying it twice — or alongside
-    :func:`generate_ddl`, in either order — is a safe no-op.
+    mint. Every statement is idempotent (``IF NOT EXISTS`` for the tables,
+    ``OVERWRITE`` for fields — see :func:`_define_field`), so applying it twice —
+    or alongside :func:`generate_ddl`, in either order — is a safe no-op.
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -1270,9 +1305,10 @@ def generate_agent_ddl() -> str:
     :class:`~loremaster.agents.AgentRegistry` applies on its OWN connection at
     :meth:`ensure_ready`, independent of the full :func:`generate_ddl`. Needs
     NEITHER the embedding ``dim`` NOR the analyzer — an agent is resolved by
-    exact identity, never retrieved semantically. Every statement is
-    ``IF NOT EXISTS``, so applying it twice — or alongside :func:`generate_ddl`,
-    in either order — is a safe no-op.
+    exact identity, never retrieved semantically. Every statement is idempotent
+    (``IF NOT EXISTS`` for the table, ``OVERWRITE`` for its fields — see
+    :func:`_define_field`), so applying it twice — or alongside
+    :func:`generate_ddl`, in either order — is a safe no-op.
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -1294,8 +1330,10 @@ def generate_brief_ddl() -> str:
     combined slice on its OWN connection at :meth:`ensure_ready`, independent
     of the full :func:`generate_ddl`. Needs NEITHER the embedding ``dim`` NOR
     the analyzer — a brief is addressed by (name, version), never retrieved
-    semantically. Every statement is ``IF NOT EXISTS``, so applying it twice —
-    or alongside :func:`generate_ddl`, in either order — is a safe no-op.
+    semantically. Every statement is idempotent (``IF NOT EXISTS`` for the
+    tables, ``OVERWRITE`` for fields — see :func:`_define_field`), so applying
+    it twice — or alongside :func:`generate_ddl`, in either order — is a safe
+    no-op.
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -1316,9 +1354,9 @@ def generate_graph_ddl() -> str:
     are native ``TYPE RELATION`` edge tables (so reverse traversal walks them
     directly); ``name`` is SCHEMALESS but carries a queryable ``value`` column
     (plus a prefix-capable index) backing the module-prefix reach. Every
-    statement is
-    ``IF NOT EXISTS``, so applying it twice (or alongside :func:`generate_ddl`)
-    is a safe no-op.
+    statement is idempotent (``IF NOT EXISTS`` for the tables/indexes,
+    ``OVERWRITE`` for fields — see :func:`_define_field`), so applying it twice
+    (or alongside :func:`generate_ddl`) is a safe no-op.
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a

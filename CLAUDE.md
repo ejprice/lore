@@ -68,6 +68,33 @@ rendered free text). Therefore:
   test_mcp_server.py). Every audit-caught defect CLASS gets converted into a pin like
   these — a fix without an invariant is half a fix.
 
+## READ THE DEPENDENCY'S DOCS — THEN VERIFY THEM (the #107 production outage, 2026-07-13)
+A widened field ASSERT shipped with 1040 tests green, a cold code audit GO, and a
+contract-adversary passing — and **broke `brief_publish` 100% in production**, because
+`DEFINE FIELD IF NOT EXISTS` is a NO-OP on an existing field, so the change never migrated.
+**The gotcha was already written down in our own repo** (`docs/reference/surrealdb-31-capabilities.md`:
+*"`DEFINE … IF NOT EXISTS` never updates an existing definition — migrations need OVERWRITE/ALTER"*).
+Nobody read it. Everyone probed the engine empirically instead, and the schema was written
+`IF NOT EXISTS` anyway. Therefore:
+
+- **When the question is "how does this dependency behave", READ ITS DOCS FIRST.** Probing is
+  for CONFIRMING what the docs say and for finding what they OMIT — never for deriving from
+  scratch what the vendor already documents. This is the packages-over-hand-rolling rule
+  applied to KNOWLEDGE: do not reverse-engineer what is written down.
+- **Check `docs/reference/` before probing.** Prior sessions commit capability references there
+  precisely so the next session need not rediscover the engine. Not reading it wasted a
+  session and cost an outage.
+- **AND VERIFY THE DOCS — a doc is a source, not an oracle.** SurrealDB's own `DEFINE FIELD`
+  and `DEFINE INDEX` pages claim `IF NOT EXISTS` on an existing object *"will return an
+  error."* **That is FALSE on 3.1.5** (probed): it returns OK and silently no-ops. A careful
+  engineer trusting that sentence would conclude a stale definition is IMPOSSIBLE — which is
+  plausibly how `IF NOT EXISTS` was chosen. **Both instruments were necessary and neither was
+  sufficient: the docs named the migration mechanism; only the probe caught the docs lying.**
+- **A tempting alternative can reintroduce the same bug from the other side.** `ALTER` looked
+  like the "proper" migration verb — but it CANNOT CREATE a field, and `ALTER FIELD IF EXISTS`
+  on a missing field is a SILENT NO-OP: adopting it would have reintroduced #107 on the
+  fresh-DB path. Settle mechanism choices against the docs AND a probe, never against instinct.
+
 ## A DIAGNOSIS IS NOT AN INSTRUMENT (PKT-28 C1, ten instances, 2026-07-13)
 This file ALREADY said defects cluster in "natural-language surfaces whose consistency with
 code no gate checks". We knew. **We then shipped TEN more instances of exactly that class in
@@ -127,6 +154,21 @@ them. Therefore:
 - **Every load-bearing pin is mutation-proven**: break the production code, watch the
   test go RED, restore. A pin that cannot be demonstrated failing is not a pin. Every
   time this was demanded ad hoc in C1 it immediately exposed something.
+- **A PROBE NEEDS A CONTROL — the auditor's instrument can lie the same way the author's
+  did.** Two real self-caught failures from C1's own audits: a "closed set is enforced"
+  probe that actually rejected on a PARSE ERROR rather than the ASSERT (it would have
+  green-lit a broken closed set — it passed for the WRONG REASON), and a probe fixture
+  whose collapsed group held one item, so `len()` ≡ `sum()` — the exact non-discrimination
+  it was hunting in others. So: pair every negative result with a POSITIVE CONTROL showing
+  the probe firing on a case you know is broken. "The bad input was rejected" is worthless
+  until you have also shown the good input accepted and a differently-broken input rejected
+  for a *different* reason. (The best C1 audit did this by default: proving a rejected
+  `limit=0` left state unchanged, it ALSO showed a legal `limit=5` DID mutate state — so the
+  probe demonstrably could see mutations.)
+- **Read the residual table, not just the summary block.** The lead acted on an audit's
+  NO-GO and skipped its RESIDUALS — losing a real latent defect (#105, a dangling-edge
+  landmine) until the operator caught the omission. A summary block is a convenience, not
+  the report.
 - **FIXTURES MUST DISCRIMINATE — interrogate every one with "what WRONG build would this
   still pass?"** This single class has now produced a blocker THREE times, on two axes:
   1. **Small-N**: a collapsed tail holding ONE agent at ONE version makes `len()` ≡

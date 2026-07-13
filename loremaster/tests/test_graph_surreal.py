@@ -673,7 +673,13 @@ class TestGraphSchemaDDL:
     async def test_ddl_is_idempotent(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811
     ) -> None:
-        """Applying the DDL twice is a safe no-op (IF NOT EXISTS)."""
+        """Applying an UNCHANGED DDL twice is safe — it must not raise.
+
+        Idempotence of the unchanged definition, NOT inertness of a re-DEFINE:
+        fields are emitted ``OVERWRITE`` so that a CHANGED definition actually
+        lands on a deployed store (finding #107); tables and indexes stay
+        ``IF NOT EXISTS``.
+        """
         connection, _env = admin_db
         await run(connection, generate_graph_ddl())
         await run(connection, generate_graph_ddl())  # must not raise

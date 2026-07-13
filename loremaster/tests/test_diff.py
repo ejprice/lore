@@ -978,9 +978,14 @@ class TestDiffSameIdentityWindowSiblings:
 # ===========================================================================
 
 # The snapshot / snapshot_entry schema slice AS IT WAS before F1 — no
-# ``chunk_hashes[*].sub_ordinal`` field. A row written here lacks the
-# disambiguator; the later full DDL adds the field IF NOT EXISTS WITHOUT
-# retro-validating this row (live-verified), reproducing a real upgraded DB.
+# ``chunk_hashes[*].sub_ordinal`` field. Deliberately hand-written in the OLD
+# world's own idiom (``IF NOT EXISTS``): it reconstructs a legacy deployed store,
+# so it must NOT track what the generator emits today. A row written here lacks
+# the disambiguator; the later full DDL then ADDS the field WITHOUT
+# retro-validating this row (live-verified — true of both the ``IF NOT EXISTS``
+# form this literal uses and the ``OVERWRITE`` form the generator now emits per
+# finding #107; a DEFINE never retro-validates existing rows either way),
+# reproducing a real upgraded DB.
 _PRE_SUB_ORDINAL_SNAPSHOT_DDL = """
 DEFINE TABLE IF NOT EXISTS snapshot SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS created_at ON snapshot TYPE datetime DEFAULT time::now();
@@ -1040,8 +1045,9 @@ class TestDiffLegacyEntryTolerance:
             await admin.close()
 
         # 2. Bring up the real ports; store.ensure_ready applies the FULL DDL,
-        #    which ADDS chunk_hashes[*].sub_ordinal IF NOT EXISTS — the legacy row
-        #    above survives (no retro-validation) but every NEW write must carry it.
+        #    which ADDS chunk_hashes[*].sub_ordinal — the legacy row above survives
+        #    (a DEFINE never retro-validates existing rows) but every NEW write must
+        #    carry it.
         store = SurrealStore(
             url=surreal_env.url, namespace=surreal_env.namespace,
             database=surreal_env.database, dim=_DIM,

@@ -16,11 +16,66 @@ AsyncSurreal) · house idiom / gotcha · when to reach for it. "SDK: .query()"
 - **DEFINE FIELD … ASSERT / DEFAULT / FLEXIBLE** — typed fields, domain
   constraints, DEFAULT time::now(), FLEXIBLE nested bags. · Stable · SDK:
   .query(). · Gotcha: `DEFINE … IF NOT EXISTS` never updates an existing
-  definition — migrations need OVERWRITE/ALTER; `object FLEXIBLE` still
-  enforces declared `[*].key` paths. · Reach for: all field DDL.
-- **ALTER (every DEFINE)** — full ALTER coverage new in 3.1
-  (EVENT/PARAM/BUCKET/ANALYZER/FUNCTION/USER/ACCESS/CONFIG/API). · SDK:
-  .query(). · Use: in-place schema migration instead of drop+recreate.
+  definition — see **Schema migration** below (this cost us a production
+  outage, finding #107); `object FLEXIBLE` still enforces declared `[*].key`
+  paths. · Reach for: all field DDL.
+- **ALTER (every DEFINE)** — 3.1 added ALTER for EVENT/PARAM/BUCKET/ANALYZER/
+  FUNCTION/USER/ACCESS/CONFIG/API. · SDK: .query(). · **DO NOT reach for it as
+  the migration tool** — ALTER is a property-by-property PATCH that **cannot
+  create** a missing definition, and **ALTER INDEX cannot change an index
+  definition at all** (only COMMENT / PREPARE REMOVE / DROP COMMENT). See
+  **Schema migration** below for the actual decision rule.
+
+**Schema migration — the authoritative rule (docs-verified + live-probed 3.1.5, 2026-07-12)**
+
+*Written after finding #107: a widened field ASSERT shipped green (1040 tests, cold
+audit GO) and broke `brief_publish` 100% in production, because `DEFINE FIELD IF NOT
+EXISTS` is a NO-OP on an existing field. The answer was in the vendor docs the whole
+time. Full workings + citations: `REPORT-c1f-docs-surreal.md`.*
+
+- **Changing an existing FIELD definition → `DEFINE FIELD OVERWRITE`.** The vendor's own
+  rule ([define/field](https://surrealdb.com/docs/surrealql/statements/define/field)):
+  *"you should not use the `IF NOT EXISTS` clause when you want to ensure that the field
+  definition is updated regardless of whether it already exists … use the `OVERWRITE`
+  clause … ensuring that the latest version of the definition is always in use."* That is
+  exactly `SurrealStore.ensure_ready`'s contract — it re-applies the full DDL every boot.
+- **`OVERWRITE` = FULL REPLACE; `ALTER` = PATCH.** ([releases/3.1](https://surrealdb.com/releases/3.1):
+  *"Individual properties … can be modified without re-specifying the whole definition via
+  `DEFINE … OVERWRITE`."*) Our generators are DECLARATIVE — the `_*_FIELD_SPECS` emit
+  complete definitions — so full-replace is what makes the store converge on the specs.
+  Probed: `OVERWRITE` omitting an ASSERT **drops** it; `ALTER` omitting one **keeps** it
+  (a retired constraint would live in the store forever, invisible in the code).
+- **⚠ `ALTER` CANNOT CREATE.** `ALTER FIELD x` on a missing field RAISES; `ALTER FIELD IF
+  EXISTS x` **silently no-ops**. `ensure_ready` must also serve a FRESH database, so ALTER
+  can never be the boot-time apply — and the `IF EXISTS` form would re-commit #107's exact
+  silent-no-op sin on the fresh-DB path.
+- **INDEXES and ANALYZERS stay `IF NOT EXISTS` at boot.** A `DEFINE INDEX` **builds** the
+  index over every existing row (*"SurrealDB indexes all existing records"*, blocking
+  without `CONCURRENTLY` —
+  [define/indexes](https://surrealdb.com/docs/reference/query-language/statements/define/indexes)),
+  so `OVERWRITE` at boot would re-index `chunk` on every start and hard-fail on an
+  embedding-dim change. Probed: `DEFINE INDEX OVERWRITE` on a populated HNSW index at a new
+  dim RAISES `Incorrect vector dimension`.
+- **An ANALYZER change needs OVERWRITE *plus* `REBUILD INDEX`.** Probed: `DEFINE ANALYZER
+  OVERWRITE` updates the definition but leaves every already-built FULLTEXT index tokenised
+  the OLD way (the search keeps missing until
+  [`REBUILD INDEX`](https://surrealdb.com/docs/reference/query-language/statements/rebuild)).
+  An analyzer OVERWRITE alone is a silent recall-quality bug. Corollary: `DEFINE ANALYZER IF
+  NOT EXISTS` silently ignores a changed tokenizer/filter set — #107's live, unfixed twin.
+- **`DEFINE TABLE OVERWRITE` is SAFE but unnecessary** — probed: it preserves fields,
+  indexes AND rows. Our table clauses never change, so leave them `IF NOT EXISTS`.
+- **Index migration toolkit (documented, currently unused by lore):** `REBUILD INDEX …
+  [CONCURRENTLY]` (non-blocking; progress via `INFO FOR INDEX`) and `ALTER INDEX … PREPARE
+  REMOVE` (decommission → verify with `EXPLAIN` → `REMOVE INDEX`).
+- **⚠ THE DOCS THEMSELVES ARE WRONG ON ONE POINT.** Both define/field and define/indexes
+  claim `IF NOT EXISTS` on an existing object *"will return an error."* **FALSE on 3.1.5** —
+  it returns OK and silently keeps the old definition (probed). Do not trust that sentence:
+  believing it means believing a stale definition is impossible.
+- **Existing rows are NEVER retro-validated** (docs are entirely silent; measured): a TYPE
+  or narrowing change converges the SCHEMA, never the DATA. Old rows survive readable but
+  become **write-poisoned** — any later UPDATE fails loudly (`Couldn't coerce value for
+  field …`). Migrate rows separately. **A new field on a populated table must be `option<>`**
+  — a required one poisons every existing row, and a `DEFAULT` does NOT rescue it.
 - **DEFINE INDEX (plain / UNIQUE / composite)** — exact-match + uniqueness
   backstops. · Stable · SDK: .query(). · Gotcha (UPDATED RULE): UNIQUE on a
   RELATION edge was unsafe under cascade-delete (ghost entries, #7061) —
