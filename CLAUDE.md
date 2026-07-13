@@ -247,11 +247,26 @@ them. Therefore:
   `brief-base v<N> read` receipt (missing receipt ⇒ treat as unbriefed). The brief
   itself carries only: identity/mission, writable-set + do-not-touch, task-specific
   steps/receipts, the lore ToolSearch load line, and any override of the base. This
-  repo's specifics (gates, dogfood protocol, store idioms below) ride THIS file —
-  never re-transcribed into briefs. Store idioms: CONTENT for protected-key writes
-  (`session` is protected); str(RecordID); statement[0]-only validation; CONTENT
-  datetimes are Python datetimes; missing SELECT-projection reads None; time:: family
-  for datetime aggregates under GROUP BY.
+  repo's specifics (gates, dogfood protocol) ride THIS file — never re-transcribed
+  into briefs.
+- **THE STORE REFERENCE IS A REQUIRED FIRST READ — `docs/reference/surrealdb-31-capabilities.md`.**
+  Before ANY change to the store, the schema, or the DDL — by the lead or by an agent —
+  that file is read FIRST, exactly like `brief-base.md`. Every store/schema/DDL spawn
+  brief carries it as a NUMBERED FIRST STEP (the brief is the only guaranteed-read
+  channel). Its facts are **CITED, never re-transcribed** — a copy in a brief is a copy
+  that goes stale, and the duplicated store-idioms crib that used to live on this line is
+  exactly the thing it replaces. It is the ONE canonical home for: the DDL/migration
+  decision rule (`OVERWRITE` for fields, `IF NOT EXISTS` for indexes/analyzers/tables,
+  and why `ALTER` is a trap), the DML idioms (CONTENT for protected-key writes —
+  `session` is protected; `str(RecordID)`; missing SELECT projection reads None; CONTENT
+  datetimes are Python datetimes; the `time::` family for datetime aggregates under GROUP
+  BY), `statement[0]`-only validation, RELATE's bound-RecordID form and its dangling-edge
+  hazard, hot-row mint law, the syntax gotchas, and the section that can exist nowhere
+  else: **where the vendor's docs are FALSE**.
+  **WHY, plainly: #107 was a 100% production outage whose answer was ALREADY IN THAT
+  FILE.** Five agents, a cold audit, a contract-adversary and the lead all probed the
+  engine from scratch instead of reading it. The knowledge existed; the POINTER did not.
+  A fact that is written down and unread is a fact we do not have.
 - Reports: REPORT-<agent-name>.md at repo root, EXACT name; delete all before any
   image build. One concern per commit; cold REFUTE audit before every wave commit
   (builder ≠ grader; P8d receipts: 3 of 4 waves shipped a defect green at every
