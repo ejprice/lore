@@ -56,13 +56,17 @@ How to run:
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
 from loremaster.shellout import (
+    _SPAWN_CAPABLE_MODULES,
     ShelloutScanError,
+    _shipped_modules,
     required_binaries,
 )
 
@@ -455,3 +459,338 @@ class TestTheProseFixDoesNotRegressTheExistingProsePins:
                 f"binding-following resolver that lost. The prose beside the code must not "
                 f"teach the next author a design this scan refuses"
             )
+
+
+# =========================================================================== #
+# §4 — THE DENY SET MAY HOLD ONLY MODULES THAT EXIST (audit LAST-1).
+#
+# Door 13's fix denies the spawn-capable module NAMES as identifiers. That is right, and it
+# must not be weakened. But the set it reads, ``_SPAWN_CAPABLE_MODULES``, carries three names
+# that ARE NOT IMPORTABLE MODULES on Python 3.14: ``commands`` and ``popen2`` are Python-2
+# relics, and ``imp`` was removed in 3.12. Denying them:
+#
+#   * buys NOTHING — no module can reach a spawner through a module that does not exist; and
+#   * costs a live FALSE POSITIVE — ``commands`` is an ordinary English word. The derivation
+#     runs inside the deploy's layer-2 gate, so ONE innocent ``self.commands`` in a shipped
+#     module fails ``verb_start`` for EVERY project, telling its author their CLI attribute
+#     "names a process-spawn module".
+#
+# That is the insult that gets an instrument switched off — and per this file's own threat
+# model, a gate that refuses honest code is a gate that gets switched off, whereupon #131
+# happens again with nothing watching at all. Cost TODAY is zero (no shipped module uses the
+# words), which is exactly why it must be fixed now rather than discovered by the first author
+# who writes one.
+#
+# THE BOUNDARY IS THE WHOLE POINT. ``posix`` is an ordinary-looking word too — and a REAL,
+# importable module on 3.14. It stays denied. The property is not "sweep out the odd-looking
+# names"; it is "the deny set holds exactly the modules that EXIST and can spawn".
+# =========================================================================== #
+
+# The three names that are NOT importable modules on the interpreter the image runs.
+_DEAD_MODULE_NAMES = ("commands", "imp", "popen2")
+
+# The spawn-capable modules that ARE importable — hand-written ON PURPOSE. Deriving this from
+# ``_SPAWN_CAPABLE_MODULES`` would make the boundary pins tautological: a build that "fixed"
+# the false positive by EMPTYING the deny set would sail through. This list is the answer to
+# "what wrong build would this fixture still pass?".
+_LIVE_SPAWN_MODULE_NAMES = (
+    "subprocess",
+    "pty",
+    "multiprocessing",
+    "posix",
+    "_posixsubprocess",
+    "ctypes",
+    "webbrowser",
+)
+
+
+def _ordinary_use(name: str, shape: str) -> str:
+    """A module body that uses ``name`` as an ORDINARY identifier — and execs nothing.
+
+    Every shape here puts ``name`` in a ``Name`` or ``Attribute`` node, because those are the
+    only nodes ``_deny_identifier`` is called on. A parameter that is never READ
+    (``def run_all(commands: list[str]) -> None: ...``) is an ``ast.arg``, which the scan never
+    visits — it passes on HEAD already, so it is not a fixture that can discriminate anything
+    and it is deliberately not used here.
+    """
+    return {
+        # The audit's second reproduction, verbatim.
+        "attribute": (
+            f"class Runner:\n    def __init__(self) -> None:\n        self.{name}: list[str] = []\n"
+        ),
+        # The audit's FIRST reproduction, honestly spelled: a parameter that is actually READ
+        # (nobody declares a parameter they never use).
+        "parameter": (
+            f"def run_all({name}: list[str]) -> None:\n"
+            f"    for item in {name}:\n        print(item)\n"
+        ),
+        "local_variable": f"def go() -> int:\n    {name} = [1, 2]\n    return len({name})\n",
+        "loop_variable": (
+            f"def go(items: list[int]) -> None:\n    for {name} in items:\n        print({name})\n"
+        ),
+        "class_attribute": f"class C:\n    {name} = 0\n\n\ndef go(c: C) -> int:\n    return c.{name}\n",
+    }[shape]
+
+
+class TestDeadModuleNamesAreNotDenied:
+    """A name that is not a module cannot be a route to a spawner — so denying it is all cost.
+
+    RED ON HEAD (the false positive fires TODAY), GREEN ON THE FIX.
+    """
+
+    def test_POSITIVE_CONTROL_the_same_shape_with_a_LIVE_module_name_IS_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """A PROBE NEEDS A CONTROL — this is the one that makes every PASS below mean something.
+
+        The pins in this class assert that a body is NOT refused. A ``PASS`` is only evidence
+        if the same fixture machinery can produce a ``REFUSE`` — otherwise a build that
+        disabled the identifier rule entirely (or a fixture harness that silently scanned
+        nothing) would look identical to the correct fix. So: the byte-for-byte same shape,
+        with a LIVE module name in place of the dead one, must still fail loud.
+        """
+        _write_workspace(tmp_path, ["alpha"])
+        _write_member(
+            tmp_path, "alpha", module="consumer.py", body=_ordinary_use("subprocess", "attribute")
+        )
+
+        derived, message = _derive(tmp_path, sanctioned=_NO_SEAM)
+
+        assert derived is None, (
+            f"``self.subprocess: list[str] = []`` was VOUCHED for ({sorted(derived or [])!r}). "
+            f"``subprocess`` is a real, importable, spawn-capable module: naming it without "
+            f"importing it means holding it through another namespace, and that is door 13. "
+            f"If this passes, the identifier rule is off and every PASS in this class is "
+            f"meaningless"
+        )
+        assert "subprocess" in message
+
+    @pytest.mark.parametrize("dead_name", _DEAD_MODULE_NAMES)
+    @pytest.mark.parametrize(
+        "shape", ["attribute", "parameter", "local_variable", "loop_variable", "class_attribute"]
+    )
+    def test_an_ordinary_identifier_that_is_not_a_module_is_not_refused(
+        self, tmp_path: Path, dead_name: str, shape: str
+    ) -> None:
+        """``self.commands`` / ``for imp in items`` — code that execs NOTHING — must scan clean.
+
+        On HEAD every one of these is REFUSED, over a word that is not a module. The scan
+        cannot be reached through ``commands``/``imp``/``popen2`` because there is nothing at
+        the other end: ``import commands`` raises ``ModuleNotFoundError`` on the image's own
+        interpreter (``python:3.14-slim``). The deny side is an over-approximation of REACHES
+        TO A SPAWNER, not a reserved-word list.
+        """
+        _write_workspace(tmp_path, ["alpha"])
+        _write_member(tmp_path, "alpha", module="consumer.py", body=_ordinary_use(dead_name, shape))
+
+        derived, message = _derive(tmp_path, sanctioned=_NO_SEAM)
+
+        assert derived == frozenset(), (
+            f"a shipped module using {dead_name!r} as an ordinary {shape} — it execs NOTHING — "
+            f"was REFUSED: {message!r}.\n"
+            f"{dead_name!r} is not an importable module on Python 3.14 (the image's own "
+            f"interpreter), so no module can reach a process spawner through it and denying "
+            f"the name buys NOTHING. What it costs is real: the derivation runs inside the "
+            f"deploy's layer-2 gate, so one innocent ``self.commands`` fails ``verb_start`` for "
+            f"EVERY project. A gate that refuses honest code is a gate that gets switched off, "
+            f"and then #131 happens again with nothing watching at all (audit LAST-1)"
+        )
+
+    @pytest.mark.parametrize("dead_name", _DEAD_MODULE_NAMES)
+    @pytest.mark.parametrize(
+        ("shape", "consumer_body_template"),
+        [
+            pytest.param("import", "import alpha.{name}\n", id="import_dotted"),
+            pytest.param("from-import", "from alpha import {name}\n", id="from_import"),
+        ],
+    )
+    def test_a_shipped_SUBMODULE_named_like_a_dead_module_can_be_imported(
+        self, tmp_path: Path, dead_name: str, shape: str, consumer_body_template: str
+    ) -> None:
+        """The shape the audit did NOT try — and the likeliest false positive of the lot.
+
+        ``commands.py`` is one of the most ordinary module names in Python. On HEAD a shipped
+        package cannot even contain one: ``_deny_import``/``_deny_import_from`` split the
+        dotted path and intersect it with ``_SPAWN_CAPABLE_MODULES``, so ``import
+        alpha.commands`` and ``from alpha import commands`` are both refused — over a
+        first-party module of our own. This is the same defect as the identifier ban, one rule
+        along, and the same one-line deletion fixes both (which is why the fix is DELETION from
+        the set, not a special case inside one rule).
+        """
+        _write_workspace(tmp_path, ["alpha"])
+        _write_member(tmp_path, "alpha", module=f"{dead_name}.py", body="VERBS = ['ship']\n")
+        _write_member(
+            tmp_path,
+            "alpha",
+            module="consumer.py",
+            body=consumer_body_template.format(name=dead_name),
+        )
+
+        derived, message = _derive(tmp_path, sanctioned=_NO_SEAM)
+
+        assert derived == frozenset(), (
+            f"a shipped package containing a FIRST-PARTY module named {dead_name}.py could not "
+            f"be {shape}ed: {message!r}. The path is split and intersected with the "
+            f"spawn-capable set, so our own module collides with a Python-2 relic that does not "
+            f"exist. Nothing is reachable through it — it is OUR file"
+        )
+
+
+class TestLiveSpawnModuleNamesAreStillRefused:
+    """THE BOUNDARY. Door 13's fix must survive the LAST-1 fix intact.
+
+    Deleting the dead names must not become "delete the odd-looking names". ``posix`` looks
+    every bit as archaic as ``popen2`` and is a REAL, importable, spawn-capable module on 3.14
+    — it stays denied. These pins are the ones that go RED if a fix over-reaches.
+    """
+
+    @pytest.mark.parametrize("live_name", _LIVE_SPAWN_MODULE_NAMES)
+    def test_naming_a_live_spawn_module_through_the_SEAM_namespace_is_refused(
+        self, tmp_path: Path, live_name: str
+    ) -> None:
+        """Door 13, re-pinned per spawn-capable module: ``seam.<module>.run(...)``.
+
+        For ``subprocess`` this is the audit's exact door-13 reproduction. The call is spelled
+        ``.run(...)`` for every module on purpose: ``run`` is not a spawn PRIMITIVE, so the only
+        thing that can refuse these bodies is the module-NAME rule — a refusal here therefore
+        proves the rule fired for the RIGHT reason, not that some other check happened to trip.
+        """
+        root = tmp_path / "ws"
+        _workspace_with_seam(
+            root,
+            "from alpha import seam\n\n\ndef go() -> None:\n"
+            f'    seam.{live_name}.run(["fd", "-v"])\n',
+        )
+
+        derived, message = _derive(root, sanctioned=_SEAM_ONLY)
+
+        assert derived is None, (
+            f"a NON-sanctioned module reached {live_name!r} through the sanctioned seam's "
+            f"re-exported namespace and the scan VOUCHED for {sorted(derived or [])!r}. "
+            f"{live_name!r} IS an importable, spawn-capable module on Python 3.14 — this is "
+            f"door 13, and closing it is what commit 0101f9b was for. Removing the DEAD names "
+            f"({', '.join(_DEAD_MODULE_NAMES)}) from the deny set must not remove a LIVE one"
+        )
+        assert live_name in message, (
+            f"the refusal must name the module a human has to rule on. Got: {message!r}"
+        )
+
+    @pytest.mark.parametrize("live_name", _LIVE_SPAWN_MODULE_NAMES)
+    def test_naming_a_live_spawn_module_as_a_BARE_NAME_is_refused(
+        self, tmp_path: Path, live_name: str
+    ) -> None:
+        """The receiver-blind half: a bare ``Name`` load, no seam and no import in sight.
+
+        A module that names a spawn-capable module without importing it (an import would
+        already have been refused) can only be holding it through some OTHER namespace, which
+        the scan cannot follow. That is a refusal, whatever the shape.
+        """
+        _write_workspace(tmp_path, ["alpha"])
+        _write_member(
+            tmp_path, "alpha", module="consumer.py", body=f"def go() -> object:\n    return {live_name}\n"
+        )
+
+        derived, message = _derive(tmp_path, sanctioned=_NO_SEAM)
+
+        assert derived is None, (
+            f"a bare reference to the live spawn-capable module {live_name!r} was vouched for "
+            f"({sorted(derived or [])!r}) — the identifier deny has been narrowed past the "
+            f"three dead names it was meant to lose"
+        )
+        assert live_name in message
+
+
+class TestTheDenySetHoldsOnlyModulesThatExist:
+    """THE INSTRUMENT — so this defect CLASS cannot come back (a fix without an invariant is
+    half a fix).
+
+    The pins above are behavioural and would go red for THESE three names. This one states the
+    PROPERTY they are instances of, derived from the interpreter rather than from a hand-list:
+    *every name the scan denies as a spawn-capable module must actually BE one*. A future
+    author who adds another relic — or a stdlib module that is removed in a later Python — goes
+    RED here automatically, with no one having to remember this lesson.
+    """
+
+    def test_every_denied_spawn_module_is_importable_on_this_interpreter(self) -> None:
+        """RED ON HEAD (``commands``, ``imp``, ``popen2``), GREEN ON THE FIX.
+
+        Denying a name that resolves to no module is pure false-positive surface: it can refuse
+        honest code and it can never prevent a spawn, because there is nothing at the other end
+        of the name to spawn WITH.
+        """
+        dead = sorted(
+            name
+            for name in _SPAWN_CAPABLE_MODULES
+            if importlib.util.find_spec(name) is None  # never raises: all names are top-level
+        )
+
+        assert dead == [], (
+            f"_SPAWN_CAPABLE_MODULES denies {dead!r} — name(s) that do not resolve to an "
+            f"importable module on Python {sys.version_info.major}.{sys.version_info.minor}, "
+            f"the interpreter the image itself runs. A module cannot reach a process spawner "
+            f"through a module that does not exist, so each of these is ALL COST (a live "
+            f"false positive on an ordinary English word, failing ``verb_start`` for every "
+            f"project) and NO BENEFIT. Delete them from the set (audit LAST-1)"
+        )
+
+    def test_the_deny_set_still_holds_every_LIVE_spawn_capable_module(self) -> None:
+        """The over-correction pin: 'fixing' the false positive by emptying the set fails here.
+
+        This list is written by hand, not derived from the code under test — a pin that asks
+        the implementation what it denies and then asserts that it denies it is decoration.
+        """
+        missing = sorted(set(_LIVE_SPAWN_MODULE_NAMES) - _SPAWN_CAPABLE_MODULES)
+
+        assert missing == [], (
+            f"_SPAWN_CAPABLE_MODULES no longer denies {missing!r}. Each is a REAL, importable "
+            f"module on 3.14 that can spawn a process — dropping one re-opens door 13 for it. "
+            f"The LAST-1 fix removes exactly the three names that are not modules "
+            f"({', '.join(_DEAD_MODULE_NAMES)}); it removes nothing else"
+        )
+
+    def test_the_CONTROL_the_image_runs_the_interpreter_this_pin_measured(self) -> None:
+        """The premise both pins above rest on — pinned, not assumed.
+
+        "``commands`` is dead" is a statement about a PYTHON VERSION, and the version that
+        matters is the one the SHIPPED CODE runs, i.e. the image's. This test measured the dev
+        interpreter. The two are the same by construction (``Containerfile``: ``FROM
+        python:3.14-slim``; ``pyproject.toml``: ``requires-python = ">=3.14"``) — and if they
+        ever diverge, the dead/live split must be RE-DERIVED against the image's interpreter
+        before it can be trusted, so that divergence has to be loud.
+        """
+        containerfile = (_REPO_ROOT / "Containerfile").read_text(encoding="utf-8")
+        match = re.search(r"^FROM python:(\d+)\.(\d+)", containerfile, re.MULTILINE)
+        assert match is not None, "the Containerfile no longer declares a `FROM python:X.Y` base"
+        image_version = (int(match.group(1)), int(match.group(2)))
+
+        assert image_version == sys.version_info[:2], (
+            f"the image runs Python {image_version[0]}.{image_version[1]} but this suite runs "
+            f"{sys.version_info.major}.{sys.version_info.minor}. Which stdlib modules EXIST is "
+            f"a property of the interpreter, and the spawn-capable deny set is now derived from "
+            f"the one that ran the tests — so it is being measured against the wrong Python. "
+            f"Re-derive the dead/live split on the IMAGE's interpreter before trusting the deny "
+            f"set (audit LAST-1)"
+        )
+
+
+class TestTheFixCostsTheRealTreeNothing:
+    """No collateral damage, at repo scale — with the anti-vacuity leg the other pins lack.
+
+    ``required_binaries`` RAISES on the first refusal, so a clean derivation over the whole
+    shipped tree IS the zero-false-positive proof — but only if the scan actually looked at
+    something. A scan over zero modules also returns without refusing.
+    """
+
+    def test_the_real_tree_still_derives_git_with_zero_false_positives(self) -> None:
+        shipped = _shipped_modules(_REPO_ROOT)
+
+        assert len(shipped) > 50, (
+            f"the scan saw only {len(shipped)} shipped modules — a derivation over (almost) "
+            f"nothing cannot vouch for anything, and would make the assertion below vacuous"
+        )
+        assert required_binaries(_REPO_ROOT) == frozenset({"git"}), (
+            f"the LAST-1 fix must not perturb the derived set for this repo: across all "
+            f"{len(shipped)} shipped modules the only exec site is the seam's ``git``. A "
+            f"refusal here would RAISE (a false positive on real code); a different set means "
+            f"the deny/resolve boundary moved"
+        )

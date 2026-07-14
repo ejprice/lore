@@ -127,11 +127,19 @@ SANCTIONED_EXEC_MODULES: frozenset[str] = frozenset(
 # stdlib surfaces through which a process spawn can happen at all: the spawn-capable modules,
 # the os/asyncio spawn APIs, and the import machinery. A future author cannot extend them by
 # inventing a new alias — only CPython can, by growing its own API.
+#
+# EVERY NAME BELOW MUST BE IMPORTABLE ON THE INTERPRETER THE IMAGE RUNS. A dead relic here
+# denies nothing (nobody can import a module that does not exist) and costs REAL false
+# positives, because these names are also denied as bare identifiers: ``popen2``, ``commands``
+# and ``imp`` (Python-2 relics; ``imp`` was removed in 3.12) made ordinary words unwritable —
+# a shipped ``self.commands`` refused, a first-party ``commands.py`` unimportable. Deleted, and
+# the rule is now an instrument, not a memory: ``test_shellout_seam_perimeter.py``'s
+# ``test_every_denied_spawn_module_is_importable_on_this_interpreter`` derives liveness from
+# ``find_spec`` and goes RED on the next relic anyone adds.
 # --------------------------------------------------------------------------- #
 _SPAWN_CAPABLE_MODULES = frozenset(
     {
-        "subprocess", "pty", "multiprocessing", "posix", "_posixsubprocess", "popen2",
-        "commands", "imp",
+        "subprocess", "pty", "multiprocessing", "posix", "_posixsubprocess",
         # FFI reaches libc's own system(3)/exec(3) without touching a Python spawn API.
         "ctypes",
         # webbrowser.open() launches a browser BINARY.
