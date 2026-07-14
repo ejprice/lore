@@ -765,12 +765,16 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
     the ``--bind-timeout``/``--no-wait`` CLI knobs.
 
     Every one of those same three paths then runs the ARTIFACT gates
-    (``_probe_artifact`` — findings #125/#131/#132) before declaring success: the
-    required binaries must be present in the container AND the served honesty
-    line must actually be alive for every git-backed watched root. A runtime
-    gate is an invariant only over code it actually RUNS, so this is wired into
-    every path that ends with a running container, not documented as a
-    should-run-this smoke step.
+    (``_gate_artifact`` / ``_probe_artifact`` — findings #125/#131/#132) before declaring
+    success: the required binaries must be present in the container AND the served honesty
+    line must actually be alive for every git-backed watched root. A runtime gate is an
+    invariant only over code it actually RUNS, so this is wired into every path that ends
+    with a running container, not documented as a should-run-this smoke step. The gates run
+    against the MCP endpoint, so ``_gate_artifact`` SKIPS them (loudly, on stdout) whenever
+    ``--no-wait`` meant the endpoint was never confirmed up — gating a socket we ourselves
+    declined to wait for can only fail, and fails blaming the image. When the endpoint WAS
+    independently confirmed (the already-running fast path), ``--no-wait`` had no effect and
+    the gates still run: "do not wait" is not "do not check".
     """
     config_path = project / "lore.yaml"
     slug = project.name
@@ -789,6 +793,8 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
             url = f"http://{host}:{port}{mount}"
             if _probe_mcp_port(host, port, mount, timeout_s=_PROBE_TIMEOUT_S):
                 print(f"start: {container_name} already running — no-op.")
+                # The endpoint ANSWERED: --no-wait declined nothing, so the gates run.
+                endpoint_confirmed = True
             else:
                 print(
                     f"start: {container_name} already running but {url} is not yet "
@@ -799,10 +805,14 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
                     timeout_s=bind_timeout_s, no_wait=no_wait,
                 )) != _EXIT_OK:
                     return rc
+                endpoint_confirmed = not no_wait
             # The artifact gates (findings #125/#131/#132): the container is up and
             # accepting connections, so prove the honesty line is actually alive in
             # THIS image before declaring success.
-            if (rc := _probe_artifact(container_name, host, port, mount)) != _EXIT_OK:
+            if (rc := _gate_artifact(
+                container_name, host, port, mount,
+                endpoint_confirmed=endpoint_confirmed,
+            )) != _EXIT_OK:
                 return rc
             # Re-merge .mcp.json (cheap, idempotent) so wiring stays current even
             # after a reboot or out-of-band container restart — mirrors verb_setup's
@@ -869,7 +879,9 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
                 timeout_s=bind_timeout_s, no_wait=no_wait,
             )) != _EXIT_OK:
                 return rc
-            if (rc := _probe_artifact(container_name, host, port, mount)) != _EXIT_OK:
+            if (rc := _gate_artifact(
+                container_name, host, port, mount, endpoint_confirmed=not no_wait,
+            )) != _EXIT_OK:
                 return rc
             _merge_mcp_from_config(project, slug, config_path)
             print(_MCP_RECONNECT_REMINDER)
@@ -900,7 +912,9 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
         timeout_s=bind_timeout_s, no_wait=no_wait,
     )) != _EXIT_OK:
         return rc
-    if (rc := _probe_artifact(container_name, host, port, mount)) != _EXIT_OK:
+    if (rc := _gate_artifact(
+        container_name, host, port, mount, endpoint_confirmed=not no_wait,
+    )) != _EXIT_OK:
         return rc
     merged_port = _merge_mcp_from_config(project, slug, config_path)
     print(f"start: {container_name} launched (delta-reconcile on startup) on port {merged_port}.")
@@ -1145,8 +1159,26 @@ def _probe_container_binaries(container_name: str) -> int:
             file=sys.stderr,
         )
         return _EXIT_ERROR
+    if not required:
+        print(
+            "probe: container binaries OK — the shipped code execs no external binary, so "
+            "there is nothing to require of the image. (An empty set the derivation VOUCHED "
+            "for; the causes that would make it a lie — no modules scanned, or a spawn site "
+            "it cannot read — both raise, and are handled above.)"
+        )
+        return _EXIT_OK
     print(f"probe: container binaries OK ({', '.join(required)}).")
     return _EXIT_OK
+
+
+class _EndpointUnreachable(RuntimeError):
+    """The MCP endpoint did not answer at all.
+
+    A DIFFERENT world from "the image predates the honesty line", and it must never wear
+    that diagnosis: the cure for a mid-boot server is to wait, and the cure for an old image
+    is a 10-minute rebuild. One message for both sends half the readers to fix a thing that
+    was never broken (audit R1 — the mechanism that made DEFECT-1 misdiagnose).
+    """
 
 
 def _sse_payload(raw: str) -> dict[str, Any]:
@@ -1161,10 +1193,11 @@ def _sse_payload(raw: str) -> dict[str, Any]:
 def _served_workspace_roots(host: str, port: int, path: str) -> list[dict[str, Any]] | None:
     """The watched roots the RUNNING server SERVES from ``lore_index()``.
 
-    Returns the served rows, or ``None`` when the response carries no ``workspace``
-    section at all (a container running an image that predates the honesty line, or an
-    endpoint that could not be reached). ``None`` is NOT an empty list: "the field is
-    missing" must never read as "there is nothing to check".
+    Returns the served rows, or ``None`` when a LIVE server's response carries no
+    ``workspace`` section at all (a container running an image that predates the honesty
+    line). ``None`` is NOT an empty list: "the field is missing" must never read as "there
+    is nothing to check" — and it is NOT "the endpoint did not answer" either, which raises
+    :class:`_EndpointUnreachable` instead. Three causes, three outcomes.
     """
     url = f"http://{host}:{port}{path}"
     session_id: str | None = None
@@ -1204,8 +1237,8 @@ def _served_workspace_roots(host: str, port: int, path: str) -> list[dict[str, A
                 "params": {"name": "lore_index", "arguments": {}},
             }
         )
-    except (urllib.error.URLError, OSError, ValueError):
-        return None
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        raise _EndpointUnreachable(str(error)) from error
 
     structured = answer.get("result", {}).get("structuredContent")
     if not isinstance(structured, dict):
@@ -1230,18 +1263,29 @@ def _probe_workspace_honesty(container_name: str, host: str, port: int, path: st
     worktrees are the entire point of #125 — so the predicate is "exists", never "is a
     directory".
     """
-    roots = _served_workspace_roots(host, port, path)
+    try:
+        roots = _served_workspace_roots(host, port, path)
+    except _EndpointUnreachable as error:
+        print(
+            f"probe: the MCP endpoint http://{host}:{port}{path} could not be reached "
+            f"({error}) — lore_index() never answered, so nothing is known about what "
+            f"{container_name} serves. This is NOT a verdict on the image: a just-launched "
+            f"server holds the port unbound through its startup reconcile (~150s). Wait for "
+            f"the bind (raise --bind-timeout), or read `podman logs {container_name}`.",
+            file=sys.stderr,
+        )
+        return _EXIT_ERROR
     if roots is None:
         print(
-            f"probe: lore_index() on {container_name} served NO workspace section — the "
-            f"container is running an image that predates the honesty line (or the MCP "
-            f"endpoint could not be read). Rebuild the image and recreate the container "
-            f"(finding #125).",
+            f"probe: lore_index() on {container_name} ANSWERED, and served NO workspace "
+            f"section — the container is running an image that predates the honesty line. "
+            f"Rebuild the image and recreate the container (finding #125).",
             file=sys.stderr,
         )
         return _EXIT_ERROR
 
     dishonest: list[str] = []
+    stranded: dict[str, str] = {}
     for root in roots:
         root_path = str(root.get("path", ""))
         if not root_path:
@@ -1249,9 +1293,28 @@ def _probe_workspace_honesty(container_name: str, host: str, port: int, path: st
         carries_git = _exec_in_container(
             container_name, ["sh", "-c", 'test -e "$1/.git"', "_", root_path]
         ).returncode == _EXIT_OK
-        if carries_git and root.get("git_branch") is None:
+        if not carries_git or root.get("git_branch") is not None:
+            continue
+        gitdir = _unreachable_worktree_gitdir(container_name, root_path)
+        if gitdir is None:
             dishonest.append(root_path)
+        else:
+            stranded[root_path] = gitdir
 
+    if stranded:
+        print(
+            f"probe: {container_name} serves a NULL git_branch for linked git WORKTREE "
+            f"root(s) whose gitdir is OUTSIDE the mount: "
+            f"{', '.join(f'{root} -> {gitdir}' for root, gitdir in stranded.items())}. A "
+            f"worktree's .git is a FILE naming an absolute host path inside the PARENT "
+            f"repo's .git/worktrees/ — and only the worktree itself is bind-mounted, so that "
+            f"path does not exist in the container, git exits 128, and the branch is null. "
+            f"Git is present and the tree is readable; the image and the uid mapping are "
+            f"not at fault. Cures: bind-mount the parent repo's gitdir alongside the "
+            f"worktree, point GIT_DIR at it, or `git worktree repair` a checkout that "
+            f"resolves. Deploying lore against a worktree is finding #134 (packets 17/23).",
+            file=sys.stderr,
+        )
     if dishonest:
         print(
             f"probe: {container_name} serves a NULL git_branch for watched root(s) that "
@@ -1261,8 +1324,66 @@ def _probe_workspace_honesty(container_name: str, host: str, port: int, path: st
             f"finding #132). Findings #125/#131.",
             file=sys.stderr,
         )
+    if stranded or dishonest:
         return _EXIT_ERROR
     print(f"probe: workspace honesty OK ({len(roots)} watched root(s) served).")
+    return _EXIT_OK
+
+
+def _unreachable_worktree_gitdir(container_name: str, root_path: str) -> str | None:
+    """The gitdir a linked worktree's ``.git`` FILE names, when it is NOT in the container.
+
+    ``None`` when the root is a normal checkout (``.git`` is a directory), or when it is a
+    worktree whose gitdir DOES resolve inside the mount — a healthy git tree, whose null
+    branch means what it has always meant (a missing or refusing git). The predicate keys on
+    the gitdir being UNREACHABLE, never on ``.git`` being a FILE: keying on the shape would
+    prescribe the worktree cures to a worktree that is already fine, which is the wrong
+    diagnosis wearing the right word.
+    """
+    read = _exec_in_container(
+        container_name, ["sh", "-c", 'cat "$1/.git" 2>/dev/null || true', "_", root_path]
+    )
+    for line in read.stdout.splitlines():
+        if not line.startswith("gitdir:"):
+            continue
+        gitdir = line.split(":", 1)[1].strip()
+        if not gitdir:
+            continue
+        reachable = _exec_in_container(
+            container_name, ["sh", "-c", 'test -e "$1"', "_", gitdir]
+        ).returncode == _EXIT_OK
+        return None if reachable else gitdir
+    return None
+
+
+def _gate_artifact(
+    container_name: str, host: str, port: int, path: str, *, endpoint_confirmed: bool
+) -> int:
+    """The artifact gates, run ONLY against an endpoint we actually confirmed is up.
+
+    ``--no-wait`` is the operator declining to confirm the bind (fire-and-forget). Layer 3
+    reads what the SERVER SERVED — it HTTP-POSTs that very endpoint — so running it after
+    declining to wait is a gate pointed at a socket we ourselves guaranteed would refuse:
+    it can only fail, and it fails blaming the image ("predates the honesty line"). That is
+    the regression this closes; ``--no-wait`` was documented, wired, and DEAD.
+
+    A skipped gate is ANNOUNCED, never silently dropped: an operator who sees the deploy's
+    success line must not believe the artifact was checked when it was not.
+
+    Note what is NOT skipped: when the endpoint IS confirmed up (the already-running path,
+    where the port probe answers before ``_await_bind`` is ever reached), ``--no-wait`` had
+    no effect and both gates run. "Do not wait" is not "do not check" — turning the flag
+    into a global off-switch for the #125/#131 instrument would re-open the hole this packet
+    exists to close, for everyone who habitually passes it.
+    """
+    if endpoint_confirmed:
+        return _probe_artifact(container_name, host, port, path)
+    print(
+        f"start: --no-wait set — the MCP endpoint was never confirmed, so the artifact "
+        f"gates (required container binaries, served honesty line) were SKIPPED for "
+        f"{container_name}. The image is UNVERIFIED: re-run `start` without --no-wait "
+        f"once the server is up to gate it (findings #125/#131)."
+    )
     return _EXIT_OK
 
 
