@@ -97,9 +97,18 @@ two consecutive failed fix-waves at the same gate · any surprise touching produ
 (:18500 or a deployed surface — the #107 class) · a spec-ambiguity escalation the packet
 cannot resolve · a cold-audit NO-GO whose residuals imply cross-packet redesign.
 Sidecar mechanics (general-purpose agent, never a fork; spawned ONCE and kept alive so
-follow-ups answer from loaded context) live in repo CLAUDE.md → Orchestration. The rest
-of the roster is unchanged law: Sonnet 5 builders · Opus contract authors · Opus
-contract-adversary · Opus cold audits.
+follow-ups answer from loaded context) live in repo CLAUDE.md → Orchestration.
+**ROSTER AMENDED (operator, 2026-07-14, packet 01): the roster is OPUS END TO END —
+Opus contract authors · OPUS BUILDERS · Opus contract-adversary · Opus cold audits ·
+Opus lead. Sonnet is retired from the builder slot.** And the half that binds the LEAD:
+**a DESIGN problem never reaches a builder.** If a contract's central requirement is a
+property to INVENT rather than a spec to IMPLEMENT, it escalates to the operator as a
+fork, or goes to an Opus author who must adversarially ATTACK ITS OWN DESIGN before
+shipping — never to a builder with "work out the general form". Packet 01's receipts (an
+Opus author's v1 scanner AND a Sonnet builder's v2 both defeated the same way; v3 held
+only after the operator reframed the problem) are in repo CLAUDE.md → the roster clause.
+Corollary: when one class of defect survives TWO waves, STOP briefing a third fix and
+escalate the DESIGN.
 
 ## Sequence + status
 **Operator-ruled order (2026-07-14, local-first), numbered as it runs:** 01 ledger

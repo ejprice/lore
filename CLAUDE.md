@@ -290,11 +290,32 @@ them. Therefore:
   imagination.** C1's contract writers found precisely what the briefs told them to look
   for, and nothing else. Delegate frontier-generation to the contract adversary rather
   than relying on the lead to enumerate it.
-- **CONTRACT AUTHORS ARE OPUS (operator, 2026-07-12).** Roster: **Opus contract authors**
-  · Sonnet builders · Opus contract-adversary · Opus cold code-audits · lead: **Opus by
-  default (operator-AMENDED 2026-07-14** — Fable is the long-running design sidecar +
-  escalation valve only; mechanics in Orchestration below, per-packet assignments + the
-  escalation triggers in the INDEX roster). Rationale, measured: the contract is where the thinking is and where the
+- **BUILDERS ARE OPUS TOO, AND A DESIGN PROBLEM NEVER REACHES A BUILDER (operator, 2026-07-14
+  — packet 01, the three-scanner chain).** Roster is now Opus end to end: **Opus contract
+  authors · OPUS BUILDERS · Opus contract-adversary · Opus cold code-audits · Opus lead**
+  (Fable = design sidecar + escalation valve only). Sonnet is retired from the builder slot.
+  **The routing rule is the half that matters, and it binds the LEAD:** if a contract's
+  central requirement is a **property to INVENT** rather than a **spec to IMPLEMENT**, it is a
+  DESIGN question — it escalates to the operator as a fork, or goes to an Opus author who must
+  **adversarially attack its own design before shipping it**. It does NOT go to a builder with
+  "figure out the general form", no matter the model.
+  **Receipts (packet 01, measured — and they do NOT convict the builder's model):** an image
+  gate had to derive which binaries the shipped code execs. v1 keyed on receiver NAMES and was
+  defeated by four shapes — **written by an OPUS contract author**. v2 was a binding tracker
+  that closed those four and opened four more, three of them REGRESSIONS (one LOST a binary v1
+  had found) — **designed by a SONNET builder, because the lead's fix-wave brief said "build
+  the ∀-property, don't just add the shapes"**: a design problem, handed to a builder, after
+  two Opus authors had already failed at it. v3 held — **receiver-blind deny + allowlist the
+  safe** — not because of a model, but because the OPERATOR reframed it ("stop enumerating the
+  forbidden; the safe set is one file") and its author was required to BUILD and ATTACK its own
+  design (2 of its own 23 invented shapes broke its first attempt; it fixed them before
+  shipping). **The variable was never the model. It was the frame, and the frame is the lead's
+  job.** The operator ruled BOTH fixes: Opus builders *and* the routing rule — belt and braces,
+  because build work in this repo is routinely not mechanical.
+  **Corollary — the lead's own tell:** when the same class of defect survives TWO waves, STOP
+  briefing a third fix and escalate the DESIGN. Packet 01 ran three waves on one file before
+  the operator's reframe settled it in one.
+- **CONTRACT AUTHORS ARE OPUS (operator, 2026-07-12).** Rationale, measured: the contract is where the thinking is and where the
   defects are born, and Sonnet contracts kept shipping the same *class* of gap — small-N
   fixtures that cannot discriminate. Twice: (1) the #94 contract went green (561 passed,
   exit 0) with the defect fully intact — every pin tested a new method *nothing required
