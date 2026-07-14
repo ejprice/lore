@@ -63,10 +63,13 @@ NEVER :18500, which is production.)
 from __future__ import annotations
 
 import ast
+import asyncio
 import os
 import subprocess
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -1073,4 +1076,145 @@ class TestServedEndToEnd:
             "branch the watched tree was on at the first status read. The server process "
             "is long-lived and the tree is a live bind mount — a cached section serves a "
             "confidently WRONG branch forever after the first checkout (finding #125)"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# FIX WAVE / F5 — R2: a BLOCKING subprocess inside the async event loop
+# --------------------------------------------------------------------------- #
+class TestTheGitReadDoesNotBlockTheEventLoop:
+    """``build_workspace_status`` runs ``subprocess.run`` — TWO git calls, each with a 10s
+    timeout, PER LIVE ROOT — and ``_build_index_status`` calls it straight from the
+    coroutine. Today that costs ~5-10ms and nobody notices.
+
+    The exposure is not the average, it is the TAIL. A wedged git (an ``index.lock`` left by
+    a crashed process, an NFS stall, a filesystem hang) blocks the ONE event loop for up to
+    20 SECONDS PER ROOT — and an event loop is not per-caller. Every MCP session on that
+    server — every search, every read, every heartbeat, from every agent — stops dead, for a
+    status read that one agent asked for. The section that exists to keep the server honest
+    would take the server down with it.
+
+    The fix is one line (``await asyncio.to_thread(build_workspace_status, self._config)``).
+    The pin is the part worth thinking about: it must DISCRIMINATE. A pin that measures how
+    long ``index()`` took, or that simply asserts it returned, passes cheerfully on the
+    blocking build — decoration. So this measures the ONE thing that differs: whether the
+    LOOP kept running while the git read was in flight.
+
+    Instrument: a heartbeat coroutine ticking every ``_TICK_S`` records the gap between its
+    own wakeups. A gap is how long the loop was unavailable. If the git read blocks the loop,
+    exactly one gap swells to the read's whole duration.
+    """
+
+    # The (patched) git seam blocks this long per live root — standing in for a wedged git.
+    _BLOCK_S = 0.75
+    # The heartbeat's period: the resolution at which loop unavailability is visible.
+    _TICK_S = 0.01
+    # The largest stall a HEALTHY loop may show. Sits 2.5× below one root's block, so the
+    # verdict is never a photo-finish (this suite runs under `-n auto` on a busy box).
+    _MAX_STALL_S = 0.30
+
+    async def _watch_the_loop(self, gaps: list[float]) -> None:
+        """Tick forever; record how late each wakeup was. A big gap == a blocked loop."""
+        previous = time.monotonic()
+        while True:
+            await asyncio.sleep(self._TICK_S)
+            now = time.monotonic()
+            gaps.append(now - previous)
+            previous = now
+
+    @asynccontextmanager
+    async def _loop_stall_watch(self) -> AsyncIterator[list[float]]:
+        """Measure loop unavailability across the block. ONE instrument, both legs.
+
+        The DRAIN in the ``finally`` is load-bearing and was found by this pin's own
+        control: a stall is only RECORDED when the heartbeat next resumes, and the last
+        statement of ``_build_index_status`` is the git read — so cancelling the watcher the
+        instant ``index()`` returns throws away the very gap being measured. The first draft
+        did exactly that and passed on the BLOCKING build: a probe that could not see the
+        thing it existed to see. Both legs now share this context manager precisely so they
+        cannot diverge again (the control must exercise the identical instrument, or it is
+        not a control).
+        """
+        gaps: list[float] = []
+        watcher = asyncio.create_task(self._watch_the_loop(gaps))
+        await asyncio.sleep(self._TICK_S * 2)  # let the heartbeat settle before measuring
+        try:
+            yield gaps
+        finally:
+            await asyncio.sleep(self._TICK_S * 3)  # DRAIN: let it resume and RECORD the gap
+            watcher.cancel()
+
+    async def test_the_instrument_can_SEE_a_blocked_loop(self) -> None:
+        # A PROBE NEEDS A CONTROL — and the auditor's instrument can lie the same way the
+        # author's did. Before trusting "the loop was never stalled", prove this harness can
+        # actually SEE a stall: block the loop deliberately, for the same duration, through
+        # the same context manager, and watch the gap appear. Without this leg, a heartbeat
+        # that never got to record anything would report "no stalls" and pass the pin below
+        # on ANY build — which is exactly what the first draft of this pin did.
+        async with self._loop_stall_watch() as gaps:
+            time.sleep(self._BLOCK_S)  # a blocking call, made from inside the loop
+
+        assert gaps, "the heartbeat never ran — the instrument measures nothing"
+        assert max(gaps) >= self._BLOCK_S * 0.8, (
+            f"the harness could not see a {self._BLOCK_S}s block of its own making "
+            f"(largest gap: {max(gaps):.3f}s). The pin below would then pass on a build "
+            f"that stalls the whole server, which is the probe passing for the wrong reason"
+        )
+        assert max(gaps) > self._MAX_STALL_S, (
+            "the control's stall must exceed the threshold the real pin uses, or the two "
+            "legs are not measuring the same thing"
+        )
+
+    async def test_a_slow_git_does_not_stall_the_whole_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # THE PIN. Two live roots, and a git seam that BLOCKS — a wedged git, exactly the
+        # tail this defends. The status read must still complete, must still serve what the
+        # seam returned (a build that "fixes" the stall by not reading git is not a fix), and
+        # the loop must have stayed alive throughout.
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        _make_git_repo(first, branch=_BRANCH_A)
+        _make_git_repo(second, branch=_BRANCH_B)
+        calls: list[Path] = []
+
+        def _wedged_git(repo_root: Path) -> tuple[str | None, str | None]:
+            calls.append(Path(repo_root))
+            time.sleep(self._BLOCK_S)
+            return ("c" * 40, "sentinel/from-a-wedged-git")
+
+        monkeypatch.setattr(server_module, "capture_git_identity", _wedged_git)
+        config = _config(
+            slug=_slug(), roots=[_root("custom", first), _root("sidecar", second)]
+        )
+        ctx = await build_app_context(
+            server=LoreServer(config),
+            embedder=FakeEmbedder(dim=_DIM),
+            manifest_path=tmp_path / "m.db",
+            snapshot_root=tmp_path / "snap",
+            start_tasks=False,
+        )
+
+        try:
+            async with self._loop_stall_watch() as gaps:
+                summary = await ctx.index()
+        finally:
+            await ctx.aclose()
+
+        # The git read really happened — this is not a stall dodged by dropping the feature.
+        assert len(calls) == 2, f"the seam must be read once per live root (got {calls})"
+        assert [root.git_branch for root in summary.workspace.roots] == [
+            "sentinel/from-a-wedged-git",
+            "sentinel/from-a-wedged-git",
+        ]
+
+        assert gaps, "the heartbeat never ran — the measurement is empty"
+        assert max(gaps) < self._MAX_STALL_S, (
+            f"the event loop was UNAVAILABLE for {max(gaps):.2f}s while the status read did "
+            f"its git work. That is not the caller's latency — it is the whole server's: "
+            f"every other MCP session on this process (searches, reads, heartbeats, every "
+            f"other agent) was frozen for the duration, and a genuinely wedged git holds it "
+            f"for up to 20s PER ROOT. The git read is blocking I/O and must not run in the "
+            f"coroutine — hand it to a thread (asyncio.to_thread) so the loop stays alive "
+            f"(audit residual R2)"
         )

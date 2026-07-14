@@ -3890,7 +3890,11 @@ class AppContext:
             newest_snapshot=newest_snapshot,
             traces=traces,
             cosine_floor=cosine_floor,
-            workspace=build_workspace_status(self._config),
+            # The git read is BLOCKING I/O (two subprocess calls, each with a 10s
+            # timeout, per live root). Run in the coroutine, it stalls the ONE event
+            # loop — i.e. every other MCP session on this process — for as long as a
+            # wedged git takes. It goes to a thread instead (audit residual R2).
+            workspace=await asyncio.to_thread(build_workspace_status, self._config),
         )
 
     async def _age_status(self, meta_key: str) -> AgeStatus:
