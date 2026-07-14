@@ -1545,8 +1545,7 @@ class TestMovedMemoryIdHelpersParity:
 _MEM_SENSITIVE_MARKER = "TOP-SECRET-MEMORY-BOUND-VALUE-4b8e2d"
 _MEM_SENSITIVE_ENGINE_TEXT = (
     f"Found '{_MEM_SENSITIVE_MARKER}' for field `note_text`, with record "
-    f"`memory:abc123`, but expected the value to fulfil the following "
-    f"assertion: $value != NONE"
+    f"`memory:abc123`, but field must conform to: $value != NONE"
 )
 # The transport-``kind`` rejection the SDK raises when a mid-life socket drop left
 # the reconnected session unauthenticated (``NotAllowed``) — a transport fault,

@@ -1,3 +1,7 @@
+> **SUPERSEDED (finding #102, 2026-07-13):** `_apply_mint` was deleted; its
+> deterministic, id-derived jitter **IS** the defect #102 fixed. Do not use as
+> a pattern. See `_txn.execute_transaction`.
+
 brief-base: not applicable (read-only inventory task, no spawn brief). Report follows.
 
 # Plan-doc inventory — lore v2 "DeadReckoning+" (5 RESUME docs)

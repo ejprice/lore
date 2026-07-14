@@ -1421,10 +1421,16 @@ class TestProvenanceAppendOnly:
 # A synthetic ASSERT rejection carrying a value that must NEVER reach the raised
 # message (mirrors ``test_surreal_store.py``'s ``_SENSITIVE_ENGINE_TEXT``).
 _TASK_SENSITIVE_MARKER = "TOP-SECRET-TASK-BOUND-VALUE-7c1f9a"
+# LIVE-CAPTURED ASSERT text (SurrealDB 3.1.5, spike-surreal, 2026-07-13,
+# scratchpad/contract-v5/capture_engine.py). The engine says "must conform to";
+# it has NEVER said "assertion". The previous, hand-typed value here contained the
+# word "assert" and so matched the classifier's marker — which is exactly why the
+# ASSERT class looked alive for this repo's entire life while never once firing in
+# production (audit B2). Fixture and code shared one imagination.
 _TASK_SENSITIVE_ENGINE_TEXT = (
     f"Found '{_TASK_SENSITIVE_MARKER}' for field `status`, with record "
-    f"`task:abc123`, but expected the value to fulfil the following "
-    f"assertion: $value INSIDE ['open', 'claimed']"
+    f"`task:abc123`, but field must conform to: "
+    f"$value INSIDE ['open', 'claimed']"
 )
 # The transport-``kind`` rejection the SDK raises when a mid-life socket drop left
 # the reconnected session unauthenticated (``NotAllowed``) — a transport fault,
@@ -2064,3 +2070,40 @@ class TestDoneSummaryReportPath:
         task = await task_ledger.get_task(task_id)
         assert getattr(task, "summary", None) is None
         assert getattr(task, "report_path", None) is None
+
+
+class TestTasksDoesNotHoldTheClassificationLabel:
+    """Finding #102 — ``tasks.py`` must never hold the classification label.
+
+    THE pin the cold adversary proved was missing. It built ``wb-string-gate``:
+    an otherwise-correct #102 repair whose three rollback pass-throughs here in
+    ``tasks.py`` were implemented by substring-matching the classification LABEL
+    instead of catching the typed error — the *exact* coupling #102 exists to
+    abolish, rebuilt one file over. It scored **545 passed, ruff clean, mypy exit
+    0 — byte-identical to a correct build.** Nothing in the contract could see it.
+
+    That build is live-fragile in precisely the #102 way: contention is let
+    through only while the string "retryable conflict" happens to appear in the
+    typed error's message. Reword the label — or re-classify a root cause the way
+    finding #93 legitimately did — and both pass-throughs silently die. Exhausted
+    contention is then reported to an agent as a lost CAS ("someone else committed
+    first") when in truth nobody knows who holds the row. Zero test signal.
+
+    The repo-wide, evasion-proof instrument is
+    ``test_surreal_store.py::TestNoProductionModuleHoldsAClassificationLabel``
+    (it bans the label from every production module, so no local rebinding,
+    helper, ``startswith`` or f-string can hide the coupling). This pin is the
+    named, local mirror of it — it fails FIRST and says exactly which file broke,
+    right beside the handlers it protects.
+    """
+
+    def test_tasks_does_not_import_the_classification_label(self) -> None:
+        from loremaster import tasks
+
+        assert not hasattr(tasks, "_ERROR_CLASS_RETRYABLE_CONFLICT"), (
+            "tasks.py imported the classification label. The three rollback "
+            "pass-throughs (transition, supersede_task, and any future one) must "
+            "catch TxnContentionExhaustedError by TYPE — never by matching label "
+            "text. This is the #93 -> #102 kill chain being rebuilt: a label is a "
+            "human-facing summary, and rewording one is invisible to every gate."
+        )

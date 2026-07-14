@@ -90,16 +90,15 @@ from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
-    _ERROR_CLASS_RETRYABLE_CONFLICT,
-    _SERVER_LOG_HINT,
     SurrealConnectionError,
     SurrealStoreError,
+    TxnContentionExhaustedError,
     TxnFragment,
-    _classify_engine_error,
     _SurrealConnection,
+    bootstrap_session,
     compose,
     execute_transaction,
-    is_connection_error,
+    run_query,
 )
 from loremaster.store.surreal_schema import (
     FINDING_COUNTER_SINGLETON_ID,
@@ -236,24 +235,6 @@ _ROW_NUMBER_PARAM = "number"
 # ``loremaster.tasks``'s / ``diff.py``'s own ``_COUNT_KEY`` idiom).
 _FILED_SINCE_PARAM = "fs_since"
 _COUNT_KEY = "count"
-
-# The number mint's APPLICATION-level retry budget + backoff — ON TOP of the shared
-# ``execute_transaction`` conflict retry. THE deviation from the task ledger (whose
-# claim/transition races are only ever 2-way, so the shared seam alone suffices):
-# the finding ``number`` mint funnels EVERY concurrent reporter through the ONE
-# ``finding_counter`` row, so N-way contention (measured 43% txn-exhaustion at N=8
-# on the live harness) can drain the shared seam's small budget tuned for 2-way
-# races. The shared seam does not do this job, and it is out of this ledger's scope
-# to widen — so the missing piece is hand-rolled here (minimal surface: only the
-# mint; gated by ``TestConcurrentNumbering``), re-running the WHOLE mint transaction
-# (the prior attempt rolled back, so the fixed ``finding_id`` re-CREATEs cleanly and
-# the counter is re-read at its latest committed value). A per-reporter jitter
-# derived from the unique ``finding_id`` de-synchronises retries so N racers do not
-# collide again in lockstep on the very next event-loop tick.
-_REPORT_MINT_MAX_ATTEMPTS = 12
-_REPORT_MINT_BACKOFF_SECONDS = 0.01
-_REPORT_MINT_JITTER_SLOTS = 16
-_REPORT_MINT_JITTER_SECONDS = 0.001
 
 # The bounded number of supersedes-chain hops :meth:`FindingLedger.chain_head` will
 # take before declaring a cycle — defense-in-depth ABOVE the primary visited-set
@@ -439,13 +420,21 @@ class FindingLedger:
         """Return the live connection, opening + signing in on first use.
 
         Double-checked locking (mirrors :class:`~loremaster.tasks.TaskLedger`): the
-        fast path never touches the lock; a first caller signs in, materialises the
-        namespace/database idempotently and selects them. Any transport/auth failure
-        is a LOUD, typed :class:`SurrealConnectionError` — never a hang or a silent
-        empty result.
+        fast path never touches the lock. The session bootstrap is
+        :func:`~loremaster.store._txn.bootstrap_session` — the ONE shared
+        implementation every connection owner in the package calls
+        (blindreader F3; see its docstring for the mechanism). This method's
+        own job is DISPOSITION: any bootstrap failure — a transport/auth fault
+        OR exhausted contention alike — is wrapped as
+        :class:`SurrealConnectionError` after closing the half-open socket
+        (the F4 ruling: the connection never became usable, whatever the
+        reason). ``bootstrap_session`` itself never performs this wrap
+        (adversary P-1): scout's reconnect ladder needs the RAW exhaustion
+        type, so the wrap lives here, at the seam, not in the shared helper.
 
         Raises:
-            SurrealConnectionError: The server is unreachable or rejected auth.
+            SurrealConnectionError: The server is unreachable, rejected auth,
+                or the session bootstrap exhausted its retry budget.
         """
         if self._connection is not None:
             return self._connection
@@ -461,9 +450,14 @@ class FindingLedger:
             }
             try:
                 await connection.signin(credentials)
-                await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
-                await connection.use(self._namespace, self._database)
-                await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
+                await bootstrap_session(connection, self._namespace, self._database)
+            except TxnContentionExhaustedError as error:
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): "
+                    f"the session bootstrap exhausted its retry budget"
+                ) from error
             except _CONNECTION_ERRORS as error:
                 # Close the half-open socket so a failed connect never leaks a
                 # dangling connection, then surface a typed connection error.
@@ -487,8 +481,12 @@ class FindingLedger:
         ``finding_counter`` sibling) inside ONE ``BEGIN … COMMIT`` via
         :func:`~loremaster.store._txn.execute_transaction`, which verifies EVERY
         statement's status (the SDK's plain ``query()`` inspects only the first).
-        The DDL is ``IF NOT EXISTS``, so a second call neither raises nor wipes data
-        — every per-test fresh database depends on this.
+        The DDL is a MIX (finding #107): the table and its indexes are ``IF NOT
+        EXISTS``, so a second call neither raises nor wipes existing rows —
+        every per-test fresh database depends on this — but every FIELD is
+        ``DEFINE FIELD OVERWRITE`` (see :mod:`loremaster.store.surreal_schema`),
+        so a field definition CHANGE still migrates a live store instead of
+        silently no-op'ing against it.
 
         Raises:
             SurrealConnectionError: The server is unreachable or the socket died.
@@ -535,35 +533,21 @@ class FindingLedger:
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         """Run a single statement on the (lazily opened) connection, self-healing.
 
-        Classifies a failure exactly as :meth:`~loremaster.tasks.TaskLedger._query`
-        does (via :func:`~loremaster.store._txn.is_connection_error`): a transport /
-        socket / auth fault (or the SDK's ``KeyError`` response-routing race) drops
-        the cached handle so the next call reconnects and surfaces a LOUD
-        :class:`SurrealConnectionError`; a domain/schema rejection keeps the healthy
-        connection and surfaces as :class:`SurrealStoreError`. Never a silent empty
-        result, never a raw engine string leaked to the caller (ledger #31: the raw
-        text can echo a bound VALUE back verbatim and flows to MCP clients, so the
-        FULL detail is logged server-side and the RAISED error carries only a
-        CLASSIFIED, generic label plus a "see the server log" hint).
+        Delegates to :func:`~loremaster.store._txn.run_query` — the ONE shared
+        attempt body every single-statement seam in the package now calls
+        (blindreader F3; see its docstring for the classify/self-heal/log
+        mechanism, including its RETRYABLE-conflict path, finding #120/#108).
         """
-        connection = await self._ensure_connection()
-        try:
-            return await connection.query(statement, params or {})
-        except (*_CONNECTION_ERRORS, KeyError) as error:
-            if isinstance(error, KeyError) or is_connection_error(error):
-                await self._drop_connection(connection)
-                raise SurrealConnectionError(
-                    f"SurrealDB finding query failed against {self._url!r}: {error}"
-                ) from error
-            error_class = _classify_engine_error(error)
-            logger.error(
-                "finding.query.rejected",
-                extra={"url": self._url, "error_class": error_class, "engine_error": str(error)},
-            )
-            raise SurrealStoreError(
-                f"SurrealDB finding query rejected against {self._url!r} ({error_class}); "
-                f"{_SERVER_LOG_HINT}"
-            ) from error
+        return await run_query(
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+            noun="finding query",
+            label="finding.query.rejected",
+            statement=statement,
+            params=params or {},
+            logger=logger,
+        )
 
     async def _apply(self, fragments: list[TxnFragment]) -> None:
         """Compose ``fragments`` into ONE transaction and run it atomically.
@@ -674,7 +658,7 @@ class FindingLedger:
             provenance=provenance,
             supersedes_id=supersedes_id,
         )
-        await self._apply_mint(fragment, finding_id)
+        await self._apply([fragment])
         row = await self._select_row_by_id(finding_id)
         if row is None:
             raise FindingLedgerError(
@@ -750,48 +734,6 @@ class FindingLedger:
             f"CONTENT {{ {', '.join(content_fields)} }}"
         )
         return TxnFragment(statements=[seq_bump, create], params=params)
-
-    async def _apply_mint(self, fragment: TxnFragment, finding_id: str) -> None:
-        """Apply the number-mint transaction, retrying a RETRYABLE conflict.
-
-        The application-level backstop the finding mint needs ON TOP of the shared
-        :func:`~loremaster.store._txn.execute_transaction` conflict retry (see
-        :data:`_REPORT_MINT_MAX_ATTEMPTS`): under N-way contention on the single
-        ``finding_counter`` row, the shared seam's small budget (tuned for the task
-        ledger's 2-way races) can drain, surfacing as a ``SurrealStoreError`` whose
-        classified label is :data:`~loremaster.store._txn._ERROR_CLASS_RETRYABLE_CONFLICT`.
-        Re-running the WHOLE transaction is safe (the rolled-back attempt committed
-        NOTHING, so the fixed ``finding_id`` re-CREATEs cleanly against the latest
-        committed counter). A per-reporter jitter derived from the unique
-        ``finding_id`` de-synchronises retries so N racers do not re-collide in
-        lockstep. A transport fault (:class:`SurrealConnectionError`) or any
-        NON-retryable rejection propagates immediately — retrying it would never help.
-
-        Worst-case attempt count is the PRODUCT, not the sum, of the two retry
-        budgets: each of this loop's :data:`_REPORT_MINT_MAX_ATTEMPTS` (12)
-        iterations runs a whole transaction that itself retries a write-write
-        conflict up to :data:`~loremaster.store._txn._MAX_TXN_CONFLICT_ATTEMPTS` (5)
-        times inside :func:`~loremaster.store._txn.execute_transaction` — so up to
-        12 × 5 = 60 transaction attempts. Bounded and measured-safe (the live N=16
-        concurrent-mint probe stayed clean), never unbounded.
-        """
-        # A stable 0..(slots-1) jitter slot unique to THIS reporter (its finding_id
-        # is unique), so concurrent retriers spread across the next few ticks.
-        jitter_slot = int(finding_id[:4], 16) % _REPORT_MINT_JITTER_SLOTS
-        for attempt in range(_REPORT_MINT_MAX_ATTEMPTS):
-            try:
-                await self._apply([fragment])
-                return
-            except SurrealConnectionError:
-                # A genuine transport fault — never a lost race; propagate untouched.
-                raise
-            except SurrealStoreError as error:
-                last_attempt = attempt >= _REPORT_MINT_MAX_ATTEMPTS - 1
-                if last_attempt or _ERROR_CLASS_RETRYABLE_CONFLICT not in str(error):
-                    raise
-                backoff = _REPORT_MINT_BACKOFF_SECONDS * (attempt + 1)
-                jitter = jitter_slot * _REPORT_MINT_JITTER_SECONDS
-                await asyncio.sleep(backoff + jitter)
 
     async def get(self, id_or_number: int | str) -> Finding:
         """Fetch a single finding, addressed by its stable number OR its opaque id.
@@ -1054,6 +996,12 @@ class FindingLedger:
             await self._apply([self._transition_fragment(finding_id, target, current, event)])
         except SurrealConnectionError:
             # A genuine transport fault — never a lost race; propagate untouched.
+            raise
+        except TxnContentionExhaustedError:
+            # A genuine conflict outlived the retry budget — this is NOT a lost
+            # CAS (finding #102): the row may be untouched and this transition
+            # perfectly legal, so it must never be re-read and misreported as
+            # an IllegalTransitionError below. Propagate untouched.
             raise
         except SurrealStoreError as error:
             # The transaction rolled back: this call's CAS matched zero rows, meaning

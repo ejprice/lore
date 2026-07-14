@@ -1008,8 +1008,7 @@ _DEAD_URL = "ws://127.0.0.1:19555/rpc"
 _SNAPSHOT_SENSITIVE_MARKER = "TOP-SECRET-SNAPSHOT-BOUND-VALUE-6a1d8c"
 _SNAPSHOT_SENSITIVE_ENGINE_TEXT = (
     f"Found '{_SNAPSHOT_SENSITIVE_MARKER}' for field `git_ref`, with record "
-    f"`snapshot:abc123`, but expected the value to fulfil the following "
-    f"assertion: $value != NONE"
+    f"`snapshot:abc123`, but field must conform to: $value != NONE"
 )
 # The transport-``kind`` rejection the SDK raises when a mid-life socket drop
 # left the reconnected session unauthenticated (``NotAllowed``) — a transport

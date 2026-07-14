@@ -97,24 +97,22 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict
 from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
-    _ERROR_CLASS_RETRYABLE_CONFLICT,
-    _MAX_TXN_CONFLICT_ATTEMPTS,
-    _SERVER_LOG_HINT,
     SurrealConnectionError,
     SurrealStoreError,
+    TxnContentionExhaustedError,
     TxnFragment,
-    _classify_engine_error,
     _SurrealConnection,
+    bootstrap_session,
     compose,
     execute_transaction,
-    is_connection_error,
+    run_query,
 )
 from loremaster.store.surreal_schema import (
     AGENT_TABLE,
@@ -150,32 +148,18 @@ BRIEF_NAME_BASE = "base"
 # "extra query" a server-side enrichment split would avoid.
 _KNOWN_BRIEFS_CAP = 10
 
-# The publish-retry mechanism's module constants (design doc §4/§5.1) — a
-# concurrency-MECHANISM tuning knob, the exact class ``findings.py`` keeps as
-# module constants (``_REPORT_MINT_*``); operators tune behaviour via config,
-# never retry mechanics. Budget 4 (not findings' 12): publish contention is
-# lead-shaped (rare, at most a handful of concurrent publishers), unlike the
-# N-way finding mint.
-_BRIEF_PUBLISH_MAX_ATTEMPTS = 4
-_BRIEF_PUBLISH_BACKOFF_SECONDS = 0.01
-_BRIEF_PUBLISH_JITTER_SLOTS = 4
-_BRIEF_PUBLISH_JITTER_SECONDS = 0.001
-
-# The mint's TOTAL engine-attempt ceiling — the design doc's OWN stated worst
-# case, verbatim (§5.1: "the worst case is attempts × shared-txn-retries = 4×5
-# transaction attempts, bounded"). Every OTHER ledger write reaches that product
-# implicitly: it rides :func:`~loremaster.store._txn.execute_transaction`, whose
-# internal loop already absorbs :data:`_MAX_TXN_CONFLICT_ATTEMPTS` retryable
-# conflicts per app-level attempt. The version mint CANNOT ride it —
-# ``execute_transaction`` returns ``None`` by design, and the mint's whole
-# purpose is to RETURN the version it minted — so it runs on the single-statement
-# ``_query`` seam and must therefore absorb the engine-level conflict budget
-# ITSELF. Composed from the two shared constants rather than a fresh magic
-# number, so it can never drift from the seam it is standing in for. Measured
-# (see ``REPORT-c1-builder-mint.md``): at the contract's 8-way contention a bare
-# 4-attempt budget exhausts its last attempt roughly 1 mint in 240 — this
-# product carries a ~5× margin instead.
-_BRIEF_MINT_MAX_ATTEMPTS = _BRIEF_PUBLISH_MAX_ATTEMPTS * _MAX_TXN_CONFLICT_ATTEMPTS
+# The publish mint's retry mechanics are GONE (finding #108): ``_mint_version``
+# used to hand-roll its own outer attempt loop, a linear backoff, and a
+# small per-call jitter table of module constants, because the
+# single-statement ``_query`` seam offered nothing to call. At the
+# contract's own 8-way contention that table's pigeonhole GUARANTEED two
+# racers would share a slot and then stay lockstepped for the entire ladder
+# — finding #108's actual defect. The mint calls ``self._query`` directly
+# now: the shared :func:`~loremaster.store._txn.retry_on_conflict` driver
+# every seam rides owns the attempt counting, the per-attempt FRESH jitter,
+# and the typed exhaustion error. There is nothing left here to hand-roll,
+# and nothing left to clone the wrong way a third time. (The deleted
+# constants and why: ``tests/test_retired_symbols.py``'s registry.)
 
 # The per-name version counter's table and column. The ``brief`` table's
 # UNIQUE(name, version) index remains the BACKSTOP under this mint (belt and
@@ -417,8 +401,20 @@ class BriefLedger:
     async def _ensure_connection(self) -> _SurrealConnection:
         """Return the live connection, opening + signing in on first use.
 
+        The session bootstrap is :func:`~loremaster.store._txn.bootstrap_session`
+        — the ONE shared implementation every connection owner in the package
+        calls (blindreader F3; see its docstring for the mechanism). This
+        method's own job is DISPOSITION: any bootstrap failure — a
+        transport/auth fault OR exhausted contention alike — is wrapped as
+        :class:`SurrealConnectionError` after closing the half-open socket
+        (the F4 ruling: the connection never became usable, whatever the
+        reason). ``bootstrap_session`` itself never performs this wrap
+        (adversary P-1): scout's reconnect ladder needs the RAW exhaustion
+        type, so the wrap lives here, at the seam, not in the shared helper.
+
         Raises:
-            SurrealConnectionError: The server is unreachable or rejected auth.
+            SurrealConnectionError: The server is unreachable, rejected auth,
+                or the session bootstrap exhausted its retry budget.
         """
         if self._connection is not None:
             return self._connection
@@ -432,9 +428,14 @@ class BriefLedger:
             }
             try:
                 await connection.signin(credentials)
-                await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
-                await connection.use(self._namespace, self._database)
-                await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
+                await bootstrap_session(connection, self._namespace, self._database)
+            except TxnContentionExhaustedError as error:
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): "
+                    f"the session bootstrap exhausted its retry budget"
+                ) from error
             except _CONNECTION_ERRORS as error:
                 await self._safe_close(connection)
                 raise SurrealConnectionError(
@@ -493,27 +494,23 @@ class BriefLedger:
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         """Run a single statement on the (lazily opened) connection, self-healing.
 
-        Mirrors :meth:`~loremaster.agents.AgentRegistry._query` /
-        :meth:`~loremaster.tasks.TaskLedger._query` exactly.
+        Delegates to :func:`~loremaster.store._txn.run_query` — the ONE shared
+        attempt body every single-statement seam in the package now calls
+        (blindreader F3; see its docstring for the classify/self-heal/log
+        mechanism, including its RETRYABLE-conflict path, finding #120/#108).
+        This is what :meth:`_mint_version` rides — it is no longer its own
+        retry loop.
         """
-        connection = await self._ensure_connection()
-        try:
-            return await connection.query(statement, params or {})
-        except (*_CONNECTION_ERRORS, KeyError) as error:
-            if isinstance(error, KeyError) or is_connection_error(error):
-                await self._drop_connection(connection)
-                raise SurrealConnectionError(
-                    f"SurrealDB brief query failed against {self._url!r}: {error}"
-                ) from error
-            error_class = _classify_engine_error(error)
-            logger.error(
-                "brief.query.rejected",
-                extra={"url": self._url, "error_class": error_class, "engine_error": str(error)},
-            )
-            raise SurrealStoreError(
-                f"SurrealDB brief query rejected against {self._url!r} ({error_class}); "
-                f"{_SERVER_LOG_HINT}"
-            ) from error
+        return await run_query(
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+            noun="brief query",
+            label="brief.query.rejected",
+            statement=statement,
+            params=params or {},
+            logger=logger,
+        )
 
     async def _apply(self, fragments: list[TxnFragment]) -> None:
         """Compose ``fragments`` into ONE transaction and run it atomically.
@@ -558,7 +555,7 @@ class BriefLedger:
         UNIQUE(name, version) index stands behind it as the backstop (§5.1's
         second guard), never as the mechanism.
 
-        This is :meth:`~loremaster.findings.FindingLedger._apply_mint`'s
+        This is :meth:`~loremaster.findings.FindingLedger.report`'s
         counter-row UPSERT, cloned in MECHANISM and not merely in shape: the
         engine — not a re-read — is what hands out distinct consecutive numbers,
         so contention costs a retry on the counter, never a lost publish. The
@@ -602,11 +599,19 @@ class BriefLedger:
         try:
             await self._apply([fragment])
         except SurrealStoreError:
-            # The version is minted but its row was REJECTED (a blank body, a bad
-            # ``created_by`` — a caller error, deterministic, and never a race).
-            # Hand the number back so a rejected publish does not burn a version,
-            # then let the rejection propagate UNTOUCHED and LOUD. The self-ack
-            # RELATE rides the SAME fragment, so it rolls back with the row.
+            # The version was minted but the CREATE never landed — for either of
+            # TWO fates this ONE handler catches, since :class:`TxnContentionExhaustedError`
+            # SUBCLASSES :class:`SurrealStoreError` and lands here too: a domain
+            # rejection (a blank body, a bad ``created_by`` — deterministic, a
+            # caller error) or exhausted contention on the row (a genuine race
+            # that outlived the shared seam's retry budget). Either fate means
+            # nothing committed, so releasing the version is correct for BOTH:
+            # hand the number back so a rejected publish does not burn one, then
+            # let the ORIGINAL error propagate UNTOUCHED and LOUD — this handler
+            # never re-reads state to report a DIFFERENT outcome (unlike the
+            # guarded-CAS doors below, e.g. :meth:`_relate_briefed`), so there is
+            # nothing here for exhausted contention to be misreported AS. The
+            # self-ack RELATE rides the SAME fragment, so it rolls back with the row.
             await self._release_version(name, version)
             raise
         row = await self._select_row(brief_id)
@@ -621,7 +626,7 @@ class BriefLedger:
         RETURN AFTER``. Every concurrent publisher of ``name`` contends on this
         ONE row, and the engine serialises them into distinct, gapless,
         consecutive numbers — the same race-safe primitive
-        :meth:`~loremaster.findings.FindingLedger._apply_mint` rides. The
+        :meth:`~loremaster.findings.FindingLedger.report` rides. The
         ``?? 0`` coalesce and the DDL's declared ``DEFAULT 0`` (see
         :data:`~loremaster.store.surreal_schema.BRIEF_COUNTER_TABLE`) BOTH make
         the FIRST bump on a brand-new per-name row yield 1 — belt and braces,
@@ -629,63 +634,36 @@ class BriefLedger:
         DIFFERENT names touch DIFFERENT counter rows and so never contend with
         each other.
 
-        The engine's answer to a genuine collision here is a RETRYABLE conflict
-        ("this transaction can be retried" — the shared seam's classified
-        :data:`~loremaster.store._txn._ERROR_CLASS_RETRYABLE_CONFLICT` label),
-        and re-running the bump is always safe: a conflicted UPSERT committed
-        NOTHING, so the retry re-reads the winner's settled counter and takes the
-        NEXT number. That label — and ONLY that label — is retried, the
-        ``_apply_mint`` posture verbatim: a transport fault and EVERY other
-        rejection (an ASSERT violation, a coercion failure, a malformed body)
-        propagate on the FIRST occurrence, because retrying them would never
-        succeed and swallowing them would turn a loud failure into a silent wrong
-        answer.
+        finding #108: this used to be its OWN outer retry loop (a private
+        4-attempt budget composed with the seam's floor, a linear backoff, a
+        4-slot jitter table) because the single-statement path had nothing
+        else to call. It calls :meth:`_query` directly now — the same
+        :func:`~loremaster.store._txn.retry_on_conflict` driver every seam
+        rides already retries a RETRYABLE conflict transparently (fresh
+        per-attempt jitter, the shared attempt floor/ceiling, the typed
+        exhaustion error) and raises nothing on a transport fault or a
+        non-conflict rejection that this mint would need to retry itself.
+        There is nothing left here to hand-roll.
 
         Returns:
             The version this publisher — and no other — now owns.
 
         Raises:
-            SurrealConnectionError: A transport fault — never retried here.
-            SurrealStoreError: A non-conflict rejection (raised immediately), or
-                sustained contention that exhausted :data:`_BRIEF_MINT_MAX_ATTEMPTS`.
+            SurrealConnectionError: A transport fault — never retried.
+            SurrealStoreError: A non-conflict rejection, raised immediately.
+            TxnContentionExhaustedError: Sustained contention outlived the
+                shared seam's retry budget. Subclasses :class:`SurrealStoreError`.
         """
-        # The jitter slot must be unique per RACER, so colliding publishers wake
-        # on DIFFERENT ticks and do not re-collide in lockstep. It therefore
-        # CANNOT be derived from the brief id the way findings derives its slot
-        # from ``finding_id``: a finding id is unique per reporter, but
-        # ``uuid5(name, version)`` is by construction IDENTICAL for every racer
-        # contending for the same version — deriving the slot from it would hand
-        # every racer the same sleep and de-synchronise nothing (the exact defect
-        # this mint replaces). A per-publish nonce restores the property findings
-        # gets for free.
-        jitter_slot = int(uuid4().hex[:4], 16) % _BRIEF_PUBLISH_JITTER_SLOTS
         bump = (
             f"UPSERT type::record('{BRIEF_COUNTER_TABLE}', ${_MINT_NAME_PARAM}) "
             f"SET {_COL_NEXT} = ({_COL_NEXT} ?? 0) + 1 RETURN AFTER"
         )
-        for attempt in range(_BRIEF_MINT_MAX_ATTEMPTS):
-            try:
-                rows = self._as_rows(await self._query(bump, {_MINT_NAME_PARAM: name}))
-            except SurrealConnectionError:
-                # A genuine transport fault — never a lost race; propagate untouched.
-                raise
-            except SurrealStoreError as error:
-                last_attempt = attempt >= _BRIEF_MINT_MAX_ATTEMPTS - 1
-                if last_attempt or _ERROR_CLASS_RETRYABLE_CONFLICT not in str(error):
-                    raise
-                backoff = _BRIEF_PUBLISH_BACKOFF_SECONDS * (attempt + 1)
-                jitter = jitter_slot * _BRIEF_PUBLISH_JITTER_SECONDS
-                await asyncio.sleep(backoff + jitter)
-                continue
-            if not rows or _COL_NEXT not in rows[0]:
-                raise BriefLedgerError(
-                    f"the version counter for brief {name!r} returned no minted version"
-                )
-            return int(rows[0][_COL_NEXT])
-        # Unreachable: the final iteration always returns or raises above.
-        raise BriefLedgerError(
-            f"failed to mint a version for brief {name!r} after {_BRIEF_MINT_MAX_ATTEMPTS} attempts"
-        )
+        rows = self._as_rows(await self._query(bump, {_MINT_NAME_PARAM: name}))
+        if not rows or _COL_NEXT not in rows[0]:
+            raise BriefLedgerError(
+                f"the version counter for brief {name!r} returned no minted version"
+            )
+        return int(rows[0][_COL_NEXT])
 
     async def _release_version(self, name: str, version: int) -> None:
         """Hand a minted-but-unused ``version`` back, so a REJECTED publish
@@ -941,6 +919,19 @@ class BriefLedger:
                 },
             )
             return False, via
+        except TxnContentionExhaustedError:
+            # A genuine conflict outlived the retry budget — this is NOT a lost
+            # re-ack (blindreader F1): the RELATE never committed, so whatever
+            # :meth:`_select_briefed_edge` would find below belongs to a RACER (or
+            # nobody) — reporting it as ``already_acked=True`` would tell the
+            # caller its ack was an idempotent no-op against an existing edge,
+            # when in fact the write was DROPPED. Propagate untouched, never
+            # re-read. This is one of FOUR guarded-CAS doors in the package (audit-
+            # fix-1 A6: a hand-list here once named only two and quietly dropped a
+            # third) — its three siblings carry the identical guard, with the
+            # identical reasoning; the contract quantifies over all four
+            # structurally, so a fifth is pinned the day it is written.
+            raise
         except SurrealStoreError:
             existing_via = await self._select_briefed_edge(agent_id=agent_id, brief_id=brief_id)
             if existing_via is None:

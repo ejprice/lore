@@ -8,11 +8,13 @@ at P8a (the store tests now run against the real local SurrealDB dev server via
 
 from __future__ import annotations
 
+import logging
 import sys
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from loremaster.logging_setup import LORE_NAMESPACES
 
 # Make sibling test helper modules (e.g. ``_extension_helpers``) importable as
 # plain top-level modules under ``--import-mode=importlib``: that mode does NOT
@@ -77,6 +79,44 @@ def _reset_cosine_floor_drift_state() -> Iterator[None]:
     search_module._reset_cosine_floor_drift_state_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _restore_lore_logger_propagation() -> Iterator[None]:
+    """Restore the lore-namespace loggers' handlers/level/propagate around every test.
+
+    Finding #101: ``configure_logging()`` (loremaster/logging_setup.py) sets
+    ``propagate = False`` on every :data:`LORE_NAMESPACES` logger — correct for
+    production, where lore's structured stream must not double-emit through
+    uvicorn's root handler. But pytest's ``caplog`` fixture captures via a
+    handler it installs on the ROOT logger, reached ONLY by propagation. Any
+    test that triggers ``configure_logging()`` (a server startup does) therefore
+    silently blinds ``caplog`` for every LATER test in the same worker process —
+    a state leak ACROSS test boundaries, not a single module's concern, so it is
+    guarded here rather than in any one test file.
+    ``test_logging_setup.py`` already carries the identical snapshot/restore for
+    its own tests; this extends the same protection to every OTHER module so a
+    caplog assertion is never at the mercy of test ORDER (see
+    ``test_caplog_isolation.py``, finding #102's own root-cause pins depend on
+    this).
+
+    Production behaviour is unchanged: :func:`~loremaster.logging_setup.
+    configure_logging` still disables propagation exactly as designed. This
+    fixture only undoes that mutation between tests, the same way any other
+    piece of leaked global state is reset here.
+    """
+    saved: dict[str, tuple[list[logging.Handler], int, bool]] = {}
+    for name in LORE_NAMESPACES:
+        logger = logging.getLogger(name)
+        saved[name] = (list(logger.handlers), logger.level, logger.propagate)
+    try:
+        yield
+    finally:
+        for name, (handlers, level, propagate) in saved.items():
+            logger = logging.getLogger(name)
+            logger.handlers = list(handlers)
+            logger.setLevel(level)
+            logger.propagate = propagate
+
+
 class _InertCalibrationTokenCounter:
     """A network-free stand-in for :class:`~loremaster.calibration.counting.
     AsyncClaudeTokenCounter` — the calibration engine's ONLY outbound seam.
@@ -134,4 +174,38 @@ def _inert_calibration_counter(monkeypatch: pytest.MonkeyPatch) -> None:
         calibration_engine_module,
         "AsyncClaudeTokenCounter",
         _InertCalibrationTokenCounter,
+    )
+
+
+# ===========================================================================
+# THE RUNTIME SDK GUARD — AUTOUSE, SUITE-WIDE. (findings #108/#120)
+#
+# `_sdk_guard.install` wraps every public coroutine on the real SurrealDB connection
+# classes and records any call a production frame makes without the retry driver above it.
+#
+# IT IS AUTOUSE BECAUSE COVERAGE BECAME THE NEW NAME-LIST. The v4 gate was a runtime gate
+# — armed inside four tests. It therefore watched only what those four tests drove, and
+# `scout.py::_drain_pending` was never among them: an unretried SELECT there scored
+# 932 passed / 0 failed and shipped finding #120 ALIVE in the tree certified as having
+# fixed it. A runtime gate is an invariant only over code it actually RUNS, and arming it
+# by hand is a list of remembered flows wearing a different hat.
+#
+# Armed for EVERY test, it watches every production path any test drives — by nobody's
+# memory. Inert (and loudly so) until the shared driver exists, so the un-repaired tree
+# fails on the contract's own pins rather than on 800 confusing ones.
+# ===========================================================================
+@pytest.fixture(autouse=True)
+def _no_sdk_call_escapes_the_retry_driver(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    from _sdk_guard import install
+
+    report = install(monkeypatch)
+    yield
+    assert not report.escapes, (
+        f"{len(report.escapes)} SurrealDB call(s) escaped the retry driver during this "
+        f"test:\n  " + "\n  ".join(str(escape) for escape in report.escapes) + "\n\n"
+        "Every call on a live connection must be an attempt the driver runs (hand it to "
+        "retry_on_conflict, and CLASSIFY the conflict into the shared signal — routing "
+        "alone retries zero times). Checked at RUNTIME on the real SDK class, so it cannot "
+        "be evaded by aliasing, a helper module, `getattr`, a detached `gather`, or an SDK "
+        "method nobody has listed."
     )

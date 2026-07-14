@@ -1,3 +1,15 @@
+> **SUPERSEDED (finding #102, 2026-07-13):** `_apply_mint` and the
+> `_REPORT_MINT_*` constants were deleted; `_apply_mint`'s deterministic,
+> id-derived jitter **IS** the defect #102 fixed. Do not use either as a
+> pattern. See `_txn.execute_transaction`.
+> **SUPERSEDED (finding #108, 2026-07-13):** the mint's own private retry
+> constants below — `_BRIEF_PUBLISH_MAX_ATTEMPTS`, `_BRIEF_PUBLISH_BACKOFF_SECONDS`,
+> `_BRIEF_PUBLISH_JITTER_SLOTS`, `_BRIEF_PUBLISH_JITTER_SECONDS`, and their
+> product `_BRIEF_MINT_MAX_ATTEMPTS` — were deleted; the 4-slot jitter table
+> is the defect #108 fixed (at 8-way contention its pigeonhole guarantees two
+> racers share a slot and lockstep for the whole ladder). The mint calls
+> `_txn.retry_on_conflict` now and owns no retry mechanics of its own.
+
 # PKT-28 C1 — SEMANTICS + RENDER SPEC (registry + briefs)
 
 Author: design-consultant-c1 · 2026-07-12 · status: FINAL, v8 (consultant standing by for forks)

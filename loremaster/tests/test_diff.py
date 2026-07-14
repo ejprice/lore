@@ -123,8 +123,7 @@ _DEAD_URL = "ws://127.0.0.1:19555/rpc"
 _DIFF_SENSITIVE_MARKER = "TOP-SECRET-DIFF-BOUND-VALUE-9f3e2a"
 _DIFF_SENSITIVE_ENGINE_TEXT = (
     f"Found '{_DIFF_SENSITIVE_MARKER}' for field `sha512`, with record "
-    f"`snapshot_entry:abc123`, but expected the value to fulfil the following "
-    f"assertion: $value != NONE"
+    f"`snapshot_entry:abc123`, but field must conform to: $value != NONE"
 )
 # The transport-``kind`` rejection the SDK raises when a mid-life socket drop left
 # the reconnected session unauthenticated (``NotAllowed``) — a transport fault.

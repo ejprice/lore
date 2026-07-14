@@ -93,6 +93,8 @@ from loremaster.store._txn import (
 )
 from surrealdb.errors import ErrorKind, ServerError
 
+from loremaster import findings
+
 # --- the domain's status vocabulary (the convention this contract decides) ----
 STATUS_OPEN = "open"
 STATUS_ACKNOWLEDGED = "acknowledged"
@@ -144,6 +146,13 @@ BODY_RECALL = (
 # mint (a duplicate or a gap) lands reliably, comfortably below the single-row
 # contention ceiling the shared bounded conflict-retry can absorb.
 _CONCURRENT_REPORTS = 8
+
+# ABOVE the 8-way floor. The mint funnels every concurrent reporter through ONE
+# ``finding_counter`` row, so contention on it rises with the fleet — and a fleet
+# is not capped at eight. Both degrees are live-proven on this harness (the
+# sequence probe drove 32 concurrent connections × 100 mints with zero errors),
+# so the contract's ceiling is a CHOICE, and choosing 8 is choosing not to look.
+_CONCURRENT_REPORTS_AT_SCALE = (16, 32)
 
 # The transition-race pin's iteration count — enough that a broken compare-and-set
 # (two winners, or zero) lands reliably rather than hiding behind lucky scheduling.
@@ -489,6 +498,104 @@ class TestConcurrentNumbering:
         )
         # Every id is distinct too — no two reporters collided on a finding.
         assert len({result.id for result in results}) == _CONCURRENT_REPORTS
+
+    @pytest.mark.parametrize("reporters_count", _CONCURRENT_REPORTS_AT_SCALE)
+    async def test_concurrent_reports_get_distinct_consecutive_numbers_at_scale(
+        self, finding_ledger_factory: FindingLedgerFactory, reporters_count: int
+    ) -> None:
+        """The SAME invariant, well past the contract's 8-way floor.
+
+        Finding #102's root cause is a retry ladder tuned for 2-way races: a
+        deterministic, un-jittered backoff that puts every racer to sleep for
+        the IDENTICAL duration, so N colliding transactions wake together and
+        re-collide, attempt after attempt, until the budget drains. That failure
+        mode gets monotonically worse with N — which is exactly why a suite whose
+        largest fixture is 8 could never see how close to the edge it was sitting.
+
+        Small-N fixtures are how this class of defect keeps shipping (repo law:
+        "FIXTURES MUST DISCRIMINATE"). 16- and 32-way are both live-proven
+        against this harness (scratchpad/probe_sequence_concurrency_scale.py:
+        32 workers × 100 mints, zero errors), so there is no excuse for the
+        contract's ceiling to be the number the old backoff happened to survive.
+        """
+        reporters = [await finding_ledger_factory() for _ in range(reporters_count)]
+        results = await asyncio.gather(
+            *(
+                reporter.report(
+                    f"{SUBJECT_TESTS_FOR} (racer {i} of {reporters_count})",
+                    BODY_TESTS_FOR,
+                    area=AREA_TESTS_FOR,
+                    category=CATEGORY_CAPABILITY,
+                    created_by=f"{REPORTER}-{i}",
+                )
+                for i, reporter in enumerate(reporters)
+            )
+        )
+        numbers = sorted(result.number for result in results)
+        assert numbers == list(range(1, reporters_count + 1)), (
+            f"{reporters_count}-way mint did not produce distinct consecutive numbers: "
+            f"got {numbers}"
+        )
+        assert len({result.id for result in results}) == reporters_count
+
+
+class TestMintBackstopIsDeleted:
+    """Finding #102 — the hand-rolled mint backstop must be GONE, not merely
+    unused.
+
+    ``FindingLedger._apply_mint`` wrapped the mint in a 12-attempt retry loop
+    gated on the string ``"retryable conflict"`` appearing in a caught
+    exception's message. Finding #93 legitimately changed which failed statement
+    gets classified; the label for an exhausted conflict silently became
+    "unspecified rejection"; the substring stopped matching; **the loop re-raised
+    on its first iteration and has never executed a single retry since.**
+
+    Receipt (the lead's, measured): a FAILING mint emits exactly ONE
+    ``store.transaction.rolled_back`` log record. Twelve outer attempts would
+    emit twelve. It emits one. The docstring's "12 × 5 = 60 transaction attempts,
+    bounded and measured-safe" described a mechanism that does not run — prose
+    left behind by a retired measurement, which is the exact class this repo's
+    own law now names ("A DIAGNOSIS IS NOT AN INSTRUMENT").
+
+    The repair puts the retry where it belongs — in the shared seam, jittered,
+    with a typed exhaustion error — and deletes this. These pins make the
+    deletion a CONTRACT rather than a cleanup that a later agent could
+    "helpfully" restore: a resurrected string-gated backstop, layered on top of
+    a working seam, is a retry budget multiplied by a number nobody measured.
+    """
+
+    def test_the_dead_mint_retry_loop_is_gone(self) -> None:
+        assert not hasattr(FindingLedger, "_apply_mint"), (
+            "_apply_mint's outer retry loop has never executed a single retry (its "
+            "string gate stopped matching when finding #93 changed the classified "
+            "label). It is dead code; report() must call _apply directly and let the "
+            "repaired seam own the retry."
+        )
+
+    @pytest.mark.parametrize(
+        "constant",
+        [
+            "_REPORT_MINT_MAX_ATTEMPTS",
+            "_REPORT_MINT_BACKOFF_SECONDS",
+            "_REPORT_MINT_JITTER_SLOTS",
+            "_REPORT_MINT_JITTER_SECONDS",
+        ],
+    )
+    def test_the_dead_mint_constants_are_gone(self, constant: str) -> None:
+        assert not hasattr(findings, constant), (
+            f"{constant} tuned a retry loop that no longer exists. Leaving it behind "
+            f"invites the next author to wire it back up."
+        )
+
+    def test_findings_no_longer_imports_the_classification_label(self) -> None:
+        """The label import was the coupling itself. With the loop gone there is
+        nothing left in this module that may legitimately hold it — and holding
+        it is how the next control-flow-on-prose defect gets written.
+        """
+        assert not hasattr(findings, "_ERROR_CLASS_RETRYABLE_CONFLICT"), (
+            "findings.py still imports the classification label it used to branch on; "
+            "the decision belongs to the seam's typed contention error now"
+        )
 
 
 class TestQuery:
@@ -1006,10 +1113,16 @@ class TestChainCycleTermination:
 # ===========================================================================
 
 _FINDING_SENSITIVE_MARKER = "TOP-SECRET-FINDING-BOUND-VALUE-3b8e2d"
+# LIVE-CAPTURED ASSERT text (SurrealDB 3.1.5, spike-surreal, 2026-07-13,
+# scratchpad/contract-v5/capture_engine.py). The engine says "must conform to";
+# it has NEVER said "assertion". The previous, hand-typed value here contained the
+# word "assert" and so matched the classifier's marker — which is exactly why the
+# ASSERT class looked alive for this repo's entire life while never once firing in
+# production (audit B2). Fixture and code shared one imagination.
 _FINDING_SENSITIVE_ENGINE_TEXT = (
     f"Found '{_FINDING_SENSITIVE_MARKER}' for field `status`, with record "
-    f"`finding:abc123`, but expected the value to fulfil the following "
-    f"assertion: $value INSIDE ['open', 'acknowledged', 'resolved', 'wontfix']"
+    f"`finding:abc123`, but field must conform to: "
+    f"$value INSIDE ['open', 'acknowledged', 'resolved', 'wontfix']"
 )
 _FINDING_TRANSPORT_ENGINE_TEXT = "Anonymous access to the finding query is not allowed"
 

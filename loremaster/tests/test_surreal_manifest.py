@@ -1273,9 +1273,8 @@ class TestQuerySeamSdkKeyErrorClassification:
 _MANIFEST_SENSITIVE_MARKER = "TOP-SECRET-MANIFEST-BOUND-VALUE-2e6a4f"
 _MANIFEST_SENSITIVE_ENGINE_TEXT = (
     f"Found '{_MANIFEST_SENSITIVE_MARKER}' for field `state`, with record "
-    f"`file:[community, models/purchase_order.py]`, but expected the value to "
-    f"fulfil the following assertion: $value INSIDE ['indexed', 'dirty', "
-    f"'embedding', 'failed']"
+    f"`file:[community, models/purchase_order.py]`, but field must conform to: "
+    f"$value INSIDE ['indexed', 'dirty', 'embedding', 'failed']"
 )
 # The transport-``kind`` rejection the SDK raises when a mid-life socket drop
 # left the reconnected session unauthenticated (``NotAllowed``) — a transport

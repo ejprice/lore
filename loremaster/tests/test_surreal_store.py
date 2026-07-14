@@ -40,12 +40,14 @@ loremaster.store.surreal`` / ``loremaster.store.candidate``.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -72,7 +74,11 @@ from loremaster.graph_surreal import SurrealCodeGraph
 from loremaster.index.records import Record, chunk_to_record, sha512_hex
 from loremaster.index.surreal_manifest import SurrealManifest
 from loremaster.store._txn import (
+    _ERROR_CLASS_ASSERT_VIOLATION,
+    _ERROR_CLASS_FIELD_COERCION,
     _ERROR_CLASS_QUERY_TOO_COMPLEX,
+    _ERROR_CLASS_RETRYABLE_CONFLICT,
+    _ERROR_CLASS_UNSPECIFIED,
     _MAX_TXN_CONFLICT_ATTEMPTS,
     _RETRYABLE_CONFLICT_MARKER,
     _classify_engine_error,
@@ -2176,37 +2182,71 @@ class TestTxnSdkKeyErrorClassification:
 # genuine write-write race, fully deterministic.
 # ===========================================================================
 
-# A synthetic engine rejection carrying a value that must NEVER reach the
-# raised message — stands in for a real ASSERT/coercion rejection that echoes
-# the offending bound value back verbatim (the finding's exact shape).
+# ---------------------------------------------------------------------------
+# LIVE-CAPTURED ENGINE TEXTS — every one of these is copied out of a real
+# SurrealDB 3.1.5 response, not typed from memory.
+#
+# PROVENANCE: captured off spike-surreal (ws://127.0.0.1:18000), SurrealDB
+# 3.1.5, 2026-07-13, by ``scratchpad/contract-v5/capture_engine.py`` — which
+# DEFINEs a real ASSERT/typed field and then violates it. Re-run that probe to
+# re-derive these; the [real]-tier ``TestLiveEngineClassification`` suite below
+# is the standing guard that they still match the engine.
+#
+# WHY THIS BLOCK EXISTS AT ALL. Three separate defects in this file family —
+# #102, and the audit's B2 and B3 — have ONE root cause: **a fixture typed from
+# a BELIEVED engine instead of a MEASURED one.** The previous version of this
+# block said a rejected ASSERT reads "…expected the value to fulfil the
+# following assertion:…". The engine has never once said that. It says "…but
+# field must conform to:…" — so the classifier's ``"assert"`` marker has NEVER
+# matched real output, and every ASSERT violation in this repo's entire
+# production life was served as "unspecified rejection". The pins were green
+# because the fixture and the code shared one imagination.
+#
+# STANDING RULE (design addendum, Ruling 2): a classifier marker ships only with
+# a live-engine pin that PROVOKES its class. **A marker without a provocation
+# pin is presumed fiction.**
+# ---------------------------------------------------------------------------
+
+# The value the engine echoes back verbatim in an ASSERT rejection — the whole
+# reason the raised message must never carry engine text (ledger #31). Note the
+# live text ACTUALLY interpolates the offending value, so this is not a
+# hypothetical leak: it is the engine's real behaviour.
 _SENSITIVE_MARKER = "TOP-SECRET-BOUND-VALUE-9f3a1c"
+
+# LIVE ASSERT-violation text. Captured shape, with the offending value replaced
+# by the sensitive marker above (the engine interpolates whatever was written).
+# Contains NO "assert" substring — that is finding B2, in one line.
 _SENSITIVE_ENGINE_TEXT = (
-    f"Found '{_SENSITIVE_MARKER}' for field `name`, with record "
-    f"`chunk:abc123`, but expected the value to fulfil the following "
-    f"assertion: $value != NONE"
+    f"Found '{_SENSITIVE_MARKER}' for field `state`, with record `thing:bad`, "
+    f"but field must conform to: $value INSIDE ['open', 'done']"
 )
 
-# A field-coercion rejection — a distinct engine failure SHAPE from an ASSERT
-# violation, so the classifier's two branches are each independently pinned.
-_COERCION_ENGINE_TEXT = "Couldn't coerce value for field `sub_ordinal`: Expected int"
+# LIVE field-coercion text. A distinct engine SHAPE from an ASSERT violation, so
+# the classifier's branches are independently pinned. (Its "coerce" marker does
+# match reality — the coercion branch was never broken.)
+_COERCION_ENGINE_TEXT = (
+    "Couldn't coerce value for field `ordinal` of `thing:c`: "
+    "Expected `int` but found `'not-an-int'`"
+)
 
-# The exact live retryable-conflict text (see ``_txn._RETRYABLE_CONFLICT_MARKER``).
+# LIVE retryable-conflict text (the COMMIT entry of a write-write race).
 _CONFLICT_ENGINE_TEXT = (
     f"Cannot COMMIT: Transaction conflict: Resource busy. This transaction "
     f"{_RETRYABLE_CONFLICT_MARKER}"
 )
 
-# The exact live text the COMMIT entry carries once ANY earlier statement in a
-# ``BEGIN … COMMIT`` body failed (live-verified: REPORT-c1-builder-mint.md:205,
-# finding #93). It matches NO classifier marker — which is how a raise site
-# reading the LAST failed entry mislabelled every multi-statement rollback as
-# "unspecified rejection" and discarded the root cause's engine text.
+# LIVE COMMIT-abort notice: what the COMMIT entry says once any earlier
+# statement failed.
 _COMMIT_ABORTED_ENGINE_TEXT = "Cannot COMMIT: the transaction was aborted due to a prior error"
 
-# A marker-free failure for a statement AFTER the root cause but BEFORE the
-# COMMIT. SYNTHETIC — only the COMMIT text above is live-verified in this
-# repo's receipts; any marker-free text exercises the same cascade shape.
+# LIVE cascade notices. THE FIXTURE VALUE THAT CHANGES EVERYTHING (audit B3):
+# the engine stamps statements BEFORE the offender as ``ERR`` — "not executed due
+# to a failed transaction" — NOT as ``OK``. So the FIRST failed entry is a
+# CASCADE, not the root cause. Every fixture in this file used to model those
+# statements as OK, which is precisely why a ``[0]``-picking selector looked
+# correct for the repo's entire life.
 _CASCADE_ENGINE_TEXT = "The query was not executed due to a failed transaction"
+_CASCADE_CANCELLED_ENGINE_TEXT = "The query was not executed due to a cancelled transaction"
 
 _OK_STATEMENT: dict[str, Any] = {"status": "OK", "result": None}
 
@@ -2272,11 +2312,17 @@ def _never_drop() -> Callable[[Any], Awaitable[None]]:
 
 
 async def _run_execute_transaction(
-    fake: _TxnRollbackFakeConnection, *, drop: Callable[[Any], Awaitable[None]] | None = None
+    fake: _TxnRollbackFakeConnection,
+    *,
+    drop: Callable[[Any], Awaitable[None]] | None = None,
+    deadline_seconds: float | None = None,
 ) -> None:
     """Drive ``execute_transaction`` against ``fake`` with a fixed poison
     statement/params — the shape is irrelevant to these tests since the fake
     ignores it entirely and only replays scripted responses.
+
+    ``deadline_seconds=None`` uses the seam's own default (what every one of the 16
+    production call sites does today).
     """
 
     async def _acquire() -> _SurrealConnection:
@@ -2288,6 +2334,283 @@ async def _run_execute_transaction(
         acquire=_acquire,
         drop=drop or _never_drop(),
         url="ws://127.0.0.1:19555/rpc",  # unreachable — never actually dialed
+        deadline_seconds=deadline_seconds,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Finding #102 — the LIVE rolled-back-conflict shape, and the fixtures that
+# can actually SEE it.
+#
+# THE fixture defect this finding is made of: every conflict fixture above
+# puts the engine's ``can be retried`` marker on entry ``[0]`` — a shape the
+# LIVE engine never produces. When two transactions race a row, the engine
+# rolls back and the failed-statement list looks like this (captured live):
+#
+#     idx1: "The query was not executed due to a failed transaction"
+#     idx2: "The query was not executed due to a failed transaction"
+#     idx3: "Cannot COMMIT: Transaction conflict: Resource busy. This
+#            transaction can be retried"
+#
+# The marker rides the LAST (COMMIT) entry ONLY; every earlier entry is
+# marker-less cascade noise. A raise site that classifies ``[0]`` therefore
+# labels a sustained conflict "unspecified rejection" — while
+# ``_is_retryable_conflict``'s ``any()`` scan (which sees every entry) happily
+# retries it. Retry and label read DIFFERENT witnesses, so they disagree.
+#
+# The two shapes below are kept as a PAIR, forever: the conflict evidence can
+# sit at either end of the list, and a classifier that is right about one
+# position and wrong about the other must go RED. If the code can branch on
+# position, the pins must cover both positions.
+# ---------------------------------------------------------------------------
+
+
+def _live_conflict_rollback_response() -> dict[str, Any]:
+    """The LIVE conflict-rollback shape: marker-less cascade entries, then the
+    conflict-marked COMMIT — the marker on the LAST entry ONLY.
+
+    This is what the engine actually emits under a write-write race (lead's
+    captured log, finding #102). The conflict-bearing entry is at 0-based
+    index 2 of 3.
+    """
+    return _rolled_back_response(
+        _CASCADE_ENGINE_TEXT, _CASCADE_ENGINE_TEXT, _CONFLICT_ENGINE_TEXT
+    )
+
+
+def _marker_first_conflict_rollback_response() -> dict[str, Any]:
+    """The conflict marker on entry ``[0]`` — the shape every pre-#102 conflict
+    fixture used. NOT a live shape, but retained deliberately: it is the OTHER
+    position the classifier could branch on, and a semantic (marker-seeking)
+    selector must handle both.
+    """
+    return _err_response(result_text=_CONFLICT_ENGINE_TEXT)
+
+
+# The 0-based index of the conflict-bearing entry in each shape above — the
+# entry the seam must name as the root cause of an exhausted conflict, because
+# it is the entry that MADE the retry decision.
+_LIVE_CONFLICT_MARKER_INDEX = 2
+_MARKER_FIRST_CONFLICT_MARKER_INDEX = 0
+
+# The conflict shapes, as (id, response-builder, marker-index, statement-count)
+# — every conflict pin is parametrized over BOTH so neither position can be
+# silently regressed.
+_CONFLICT_SHAPES = [
+    pytest.param(
+        _live_conflict_rollback_response, _LIVE_CONFLICT_MARKER_INDEX, 3, id="marker-last-LIVE"
+    ),
+    pytest.param(
+        _marker_first_conflict_rollback_response,
+        _MARKER_FIRST_CONFLICT_MARKER_INDEX,
+        1,
+        id="marker-first",
+    ),
+]
+
+# A hard stop on the fake's call count: NOT a tuned constant and NOT the seam's
+# budget — an absurdity ceiling that turns "the retry loop is unbounded" from a
+# HANG (which a test runner reports as a timeout, minutes later, with no useful
+# receipt) into an immediate, legible failure. Any real budget sits far below it.
+_ABSURD_ATTEMPT_CEILING = 5_000
+
+
+# ---------------------------------------------------------------------------
+# THE FIXTURE THAT DID NOT EXIST — a transaction that TAKES TIME (audit B1).
+#
+# Every fake in this file returns from ``query_raw`` INSTANTLY. So the entire
+# deadline pin family — `test_the_deadline_is_honoured`,
+# `test_a_longer_deadline_buys_more_attempts`, the default-budget pin — was blind
+# to a build in which **the deadline vetoes the first retry**, because that build
+# only misbehaves when ONE ATTEMPT outlasts THE DEADLINE. No fixture had ever
+# produced such an attempt.
+#
+# It shipped through four contract revisions, three cold adversaries and a builder,
+# and it took a full-suite run against `test_surreal_apply.py` to find it: a bulk
+# apply measured at 9.56s for a SINGLE attempt against a 2.0s deadline gets a retry
+# budget of ZERO — the first conflict raises with `attempts=1`. Pre-#102, every
+# caller got five attempts regardless of wall time. That is a regression, and all
+# 16 call sites run on the default.
+#
+# "What WRONG build would this fixture still pass?" — the answer, for every
+# instant-returning fake, is: *that* one.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _SlowConflictFakeConnection:
+    """A fake whose ``query_raw`` genuinely BLOCKS for ``attempt_seconds`` before
+    answering — the slow-transaction regime (a bulk apply, an indexing write on a
+    loaded box), which is exactly the regime most likely to hit a write-write
+    conflict and the one no previous fixture could express.
+
+    Sleeps via the real ``asyncio.sleep`` captured at import, so it is immune to the
+    monkeypatching the backoff pins do — a fake that only *pretends* to be slow
+    cannot see this defect either.
+    """
+
+    response: dict[str, Any]
+    attempt_seconds: float
+    # Answer with a conflict until this many calls have been made, then succeed.
+    # ``None`` = conflict forever.
+    succeed_after_calls: int | None = None
+    calls: int = field(default=0, init=False)
+
+    async def query_raw(self, statement: str, params: dict[str, Any]) -> dict[str, Any]:
+        self.calls += 1
+        if self.calls > _ABSURD_ATTEMPT_CEILING:
+            raise AssertionError("unbounded retry")
+        await _REAL_ASYNCIO_SLEEP(self.attempt_seconds)  # the attempt's OWN duration
+        if self.succeed_after_calls is not None and self.calls >= self.succeed_after_calls:
+            return {"result": [dict(_OK_STATEMENT)]}
+        return self.response
+
+    def check_response_for_error(self, response: Any, method: str) -> None:
+        return None
+
+
+@dataclass
+class _SustainedConflictFakeConnection:
+    """A fake SDK connection that returns the SAME rolled-back response to
+    EVERY ``query_raw`` — sustained, unresolvable contention.
+
+    Deliberately constant-free (unlike a scripted response LIST, which must be
+    sized to the seam's attempt budget and therefore silently pins it): the
+    seam may retry as many times as its own budget allows and this fake keeps
+    feeding it conflicts. That is what lets the conflict pins assert
+    BOUNDEDNESS — "it stopped, and it stopped without being told how many
+    attempts to make" — instead of asserting a magic number that the repair is
+    explicitly allowed to re-measure and change.
+    """
+
+    response: dict[str, Any]
+    calls: int = field(default=0, init=False)
+
+    async def query_raw(self, statement: str, params: dict[str, Any]) -> dict[str, Any]:
+        self.calls += 1
+        if self.calls > _ABSURD_ATTEMPT_CEILING:
+            raise AssertionError(
+                f"execute_transaction made more than {_ABSURD_ATTEMPT_CEILING} attempts "
+                f"against sustained contention — the retry budget is effectively unbounded"
+            )
+        return self.response
+
+    def check_response_for_error(self, response: Any, method: str) -> None:
+        return None
+
+
+@dataclass
+class _SleepRecorder:
+    """Records every duration handed to ``asyncio.sleep`` and yields control
+    without actually waiting.
+
+    The instrument for the backoff pins. The seam's backoff is only observable
+    through the durations it asks to sleep for, so the tests patch
+    ``asyncio.sleep`` and read them back. Sleeping for REAL zero (rather than
+    not awaiting at all) keeps the event loop's scheduling semantics intact
+    while making a full exhaustion run instant.
+
+    Contract note: this pins ``asyncio.sleep`` as the seam's backoff mechanism.
+    A repair that waits by some other means (``loop.call_later``, a third-party
+    sleep) is not covered by these pins and must not be shipped without
+    replacing them.
+    """
+
+    durations: list[float] = field(default_factory=list)
+
+    async def sleep(self, duration: float) -> None:
+        self.durations.append(duration)
+        await _REAL_ASYNCIO_SLEEP(0)
+
+
+# Captured BEFORE any monkeypatching, so a recorder can still yield to the loop.
+_REAL_ASYNCIO_SLEEP = asyncio.sleep
+
+
+@dataclass
+class _PerRacerSleepRecorder:
+    """Records backoffs **keyed by the racer that asked for them**.
+
+    The instrument MISSING PIN 3 needs, and the reason the sequential sampler
+    could not be extended to do this job: with one global list of durations, a
+    build in which every concurrent racer sleeps the IDENTICAL amount is
+    indistinguishable from one in which they all sleep differently — the bag of
+    numbers looks the same. Attribution is the whole measurement, so the recorder
+    keys on ``asyncio.current_task()``: under ``asyncio.gather`` each racer IS a
+    distinct task, so its draws are its own.
+    """
+
+    per_racer: dict[object, list[float]] = field(default_factory=dict)
+
+    async def sleep(self, duration: float) -> None:
+        racer = asyncio.current_task()
+        self.per_racer.setdefault(racer, []).append(duration)
+        await _REAL_ASYNCIO_SLEEP(0)
+
+    def first_draws(self) -> list[float]:
+        """Each racer's FIRST backoff — the draw that decides whether two racers
+        that just collided will wake together and collide again.
+        """
+        return [durations[0] for durations in self.per_racer.values() if durations]
+
+    def within_racer_ratios(self) -> list[float]:
+        """Each racer's 2nd backoff over its 1st. A racer that draws entropy ONCE
+        and scales it by the attempt index reports the same ratio as every other
+        racer — however random that one draw was.
+        """
+        return [
+            round(durations[1] / durations[0], 9)
+            for durations in self.per_racer.values()
+            if len(durations) >= 2 and durations[0] > 0
+        ]
+
+
+async def _exhaust_conflict_concurrently(
+    racer_count: int, *, monkeypatch: pytest.MonkeyPatch
+) -> _PerRacerSleepRecorder:
+    """Drive ``racer_count`` GENUINELY CONCURRENT transactions into the same
+    sustained conflict, recording each racer's own backoff sequence.
+
+    This is the shape the finding is actually about — N writers colliding on ONE
+    row — and it is the shape no sequential sampler can reproduce, no matter how
+    many times it is run.
+    """
+    recorder = _PerRacerSleepRecorder()
+    monkeypatch.setattr(asyncio, "sleep", recorder.sleep)
+
+    async def _one_racer() -> None:
+        fake = _SustainedConflictFakeConnection(response=_live_conflict_rollback_response())
+        with pytest.raises(SurrealStoreError):
+            await _run_execute_transaction(cast("_TxnRollbackFakeConnection", fake))
+
+    await asyncio.gather(*(_one_racer() for _ in range(racer_count)))
+    assert len(recorder.per_racer) == racer_count, (
+        f"expected {racer_count} distinct racers to back off, saw "
+        f"{len(recorder.per_racer)} — the concurrency of this pin is not real"
+    )
+    return recorder
+
+
+async def _exhaust_conflict(
+    response: dict[str, Any], *, monkeypatch: pytest.MonkeyPatch
+) -> tuple[_SustainedConflictFakeConnection, _SleepRecorder, BaseException]:
+    """Drive ``execute_transaction`` into sustained contention with a patched
+    (recording, non-waiting) ``asyncio.sleep``, and return the fake, the sleep
+    recorder, and the exception that finally surfaced.
+
+    Fails the test outright if the seam does NOT raise — "it silently gave up
+    and returned" is a wrong build this helper must never hide.
+    """
+    fake = _SustainedConflictFakeConnection(response=response)
+    recorder = _SleepRecorder()
+    monkeypatch.setattr(asyncio, "sleep", recorder.sleep)
+    try:
+        await _run_execute_transaction(cast("_TxnRollbackFakeConnection", fake))
+    except SurrealStoreError as error:
+        return fake, recorder, error
+    raise AssertionError(
+        "execute_transaction returned normally under sustained contention — an "
+        "exhausted conflict must always surface to the caller, never be swallowed"
     )
 
 
@@ -2356,41 +2679,110 @@ class TestTxnRollbackMessageHygiene:
 
 
 class TestTxnRootCauseSelection:
-    """Finding #93: once any statement in a ``BEGIN … COMMIT`` body fails,
-    every LATER entry is the same rollback's cascade — ending in the
-    marker-less COMMIT-aborted text — so the FIRST failed statement is the
-    root cause, and it is the one the raised message and the server-side
-    receipt must describe. A raise site reading the LAST failed entry
-    reported every multi-statement rollback as "unspecified rejection" at
-    the COMMIT's ordinal, discarding the real engine text entirely.
+    """Finding #93's INTENT, on the engine that actually exists (audit B3).
+
+    #93 was right about the goal — *a domain rollback must name the statement that
+    really failed, not the COMMIT* — and wrong about the engine. Its premise, written
+    into the code as the justification for picking ``failed_statements[0]``, was:
+
+        "statements execute in order, so everything before the first ERR succeeded"
+
+    **That is false.** SurrealDB 3.1.5 retroactively stamps the statements BEFORE the
+    offender as ``ERR`` too, with the notice *"The query was not executed due to a
+    failed transaction"*. Live capture (``scratchpad/contract-v5/capture_engine.py``,
+    a real ``DEFINE FIELD … ASSERT`` then violated mid-transaction):
+
+        idx 0  OK
+        idx 1  ERR  "The query was not executed due to a failed transaction"   <- CASCADE
+        idx 2  ERR  "Found 'BOGUS' … but field must conform to: …"             <- THE REAL CAUSE
+        idx 3  ERR  "The query was not executed due to a cancelled transaction"
+        idx 4  ERR  "Cannot COMMIT: the transaction was aborted due to a prior error"
+
+    So ``failed_statements[0]`` is a **cascade notice**, and `[-1]` is the COMMIT
+    abort. **Neither end is the root cause.** Both #93's pick and its predecessor were
+    wrong, and every domain rollback in this repo's production life has misnamed which
+    statement failed *and* classified a cascade message (which lands in "unspecified
+    rejection").
+
+    The old pins passed because their fixture modelled the pre-offender statements as
+    ``OK`` — a shape the engine never emits. The fixture and the code shared one
+    imagination. **These fixtures are derived from the capture above; not one is typed
+    from memory.**
+
+    The rule (design addendum, Ruling 3): the root cause is the FIRST failed entry
+    whose text is non-empty and carries NO cascade marker; degrade to the LAST entry
+    when every entry is a cascade. Semantic, never positional — at both ends.
     """
 
     @staticmethod
-    def _cascade_rollback_response() -> dict[str, Any]:
-        """The live rollback shape from finding #93: two OK entries, the REAL
-        failure at 0-based index 2, a cascade failure, then the COMMIT-aborted
-        entry — five statements total.
+    def _live_domain_rollback_response() -> dict[str, Any]:
+        """THE DISCRIMINATING SHAPE — the offender MID-transaction, exactly as
+        captured. A ``[0]``-picker names index 1 (a cascade); a ``[-1]``-picker names
+        index 4 (the COMMIT abort). Only a semantic selector names index 2.
         """
         return _rolled_back_response(
-            None, None, _SENSITIVE_ENGINE_TEXT, _CASCADE_ENGINE_TEXT, _COMMIT_ABORTED_ENGINE_TEXT
+            None,                            # idx 0: OK
+            _CASCADE_ENGINE_TEXT,            # idx 1: ERR — cascade (before the offender)
+            _SENSITIVE_ENGINE_TEXT,          # idx 2: ERR — THE ROOT CAUSE
+            _CASCADE_CANCELLED_ENGINE_TEXT,  # idx 3: ERR — cascade (after)
+            _COMMIT_ABORTED_ENGINE_TEXT,     # idx 4: ERR — the COMMIT abort
         )
 
-    async def test_raised_message_names_the_root_cause_not_the_commit_cascade(self) -> None:
-        fake = _TxnRollbackFakeConnection(responses=[self._cascade_rollback_response()])
+    @staticmethod
+    def _live_offender_first_response() -> dict[str, Any]:
+        """The BOUNDARY shape: the offender is the first body statement, so there is
+        no preceding cascade and the root cause genuinely IS the first failed entry.
+        Captured live (``assert_alone``). Keeps the selector honest at the edge — a
+        build that blindly skips the first failed entry would pass the shape above and
+        fail this one.
+        """
+        return _rolled_back_response(
+            None,                          # idx 0: OK
+            _SENSITIVE_ENGINE_TEXT,        # idx 1: ERR — THE ROOT CAUSE (no cascade before it)
+            _COMMIT_ABORTED_ENGINE_TEXT,   # idx 2: ERR — the COMMIT abort
+        )
+
+    async def test_the_root_cause_is_the_first_SUBSTANTIVE_entry_not_the_first_failed_one(
+        self,
+    ) -> None:
+        """RED against today's code: it names statement 2 of 5 (a cascade notice that
+        says only "the query was not executed") and labels it "unspecified rejection".
+
+        The ordinal is part of the served surface, so it is part of the pin.
+        """
+        fake = _TxnRollbackFakeConnection(responses=[self._live_domain_rollback_response()])
         with pytest.raises(SurrealStoreError) as exc_info:
             await _run_execute_transaction(fake)
 
         message = str(exc_info.value)
-        assert "statement 3 of 5" in message  # the root cause's ordinal, not the COMMIT's
-        assert "assert violation" in message.lower()
-        assert "unspecified rejection" not in message.lower()
-        assert _SENSITIVE_MARKER not in message  # the hygiene contract is preserved
-        assert fake.calls == 1  # non-retryable: never retried
+        assert "statement 3 of 5" in message  # idx 2 -> 1-based 3. NOT the cascade at idx 1.
+        assert _ERROR_CLASS_ASSERT_VIOLATION in message.lower()
+        assert _ERROR_CLASS_UNSPECIFIED not in message.lower()
+        assert _SENSITIVE_MARKER not in message  # ledger #31 hygiene, preserved
+        assert fake.calls == 1  # a domain rejection is never retried
+
+    async def test_the_boundary_shape_still_names_the_first_entry_when_it_IS_the_cause(
+        self,
+    ) -> None:
+        """The offender is the first body statement — no preceding cascade. The
+        semantic selector must land on it, not skip past it.
+        """
+        fake = _TxnRollbackFakeConnection(responses=[self._live_offender_first_response()])
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(fake)
+
+        message = str(exc_info.value)
+        assert "statement 2 of 3" in message
+        assert _ERROR_CLASS_ASSERT_VIOLATION in message.lower()
+        assert _ERROR_CLASS_UNSPECIFIED not in message.lower()
 
     async def test_server_log_reports_the_root_cause_and_carries_every_failed_statement(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        fake = _TxnRollbackFakeConnection(responses=[self._cascade_rollback_response()])
+        """The receipt names the SUBSTANTIVE entry, and still carries every failed
+        statement (the cascades are diagnostically useful, just not the cause).
+        """
+        fake = _TxnRollbackFakeConnection(responses=[self._live_domain_rollback_response()])
         with caplog.at_level(logging.ERROR, logger="loremaster.store._txn"):
             with pytest.raises(SurrealStoreError):
                 await _run_execute_transaction(fake)
@@ -2398,46 +2790,49 @@ class TestTxnRootCauseSelection:
         error_records = [record for record in caplog.records if record.levelno == logging.ERROR]
         assert error_records, "the full engine detail must be logged server-side"
         record = error_records[0]
-        assert getattr(record, "statement_index", None) == 2  # 0-based: the ROOT cause, not the COMMIT
+        assert getattr(record, "statement_index", None) == 2  # the ROOT cause, not the cascade
         assert getattr(record, "statement_count", None) == 5
         assert getattr(record, "status", None) == "ERR"
         assert _SENSITIVE_ENGINE_TEXT in str(getattr(record, "engine_result", ""))
-        # "Keep logging all of them": every failed statement rides the one receipt.
         failed = getattr(record, "failed_statements", None)
         assert failed is not None, "the receipt must carry every failed statement"
-        assert [entry["index"] for entry in failed] == [2, 3, 4]
+        assert [entry["index"] for entry in failed] == [1, 2, 3, 4]
         assert any(_COMMIT_ABORTED_ENGINE_TEXT in str(entry["engine_result"]) for entry in failed)
 
     @pytest.mark.parametrize(
         ("root_text", "expected_label"),
         [
-            pytest.param(_SENSITIVE_ENGINE_TEXT, "assert violation", id="assert-violation"),
-            pytest.param(_COERCION_ENGINE_TEXT, "field coercion", id="field-coercion"),
+            pytest.param(_SENSITIVE_ENGINE_TEXT, _ERROR_CLASS_ASSERT_VIOLATION, id="assert-violation"),
+            pytest.param(_COERCION_ENGINE_TEXT, _ERROR_CLASS_FIELD_COERCION, id="field-coercion"),
         ],
     )
-    async def test_commit_aborted_text_never_drives_the_classification(
+    async def test_neither_cascade_nor_commit_abort_ever_drives_the_classification(
         self, root_text: str, expected_label: str
     ) -> None:
-        """The structural pin of the defect CLASS: whenever an earlier ERR
-        exists, the marker-less COMMIT-aborted entry must never be the one
-        classified.
+        """The structural pin of the defect CLASS, at BOTH ends: with a substantive
+        entry present, neither the leading cascade nor the trailing COMMIT abort may
+        be the entry that gets classified.
         """
         fake = _TxnRollbackFakeConnection(
-            responses=[_rolled_back_response(root_text, _COMMIT_ABORTED_ENGINE_TEXT)]
+            responses=[
+                _rolled_back_response(
+                    _CASCADE_ENGINE_TEXT, root_text, _COMMIT_ABORTED_ENGINE_TEXT
+                )
+            ]
         )
         with pytest.raises(SurrealStoreError) as exc_info:
             await _run_execute_transaction(fake)
 
         message = str(exc_info.value)
         assert expected_label in message.lower()
-        assert "unspecified rejection" not in message.lower()
+        assert _ERROR_CLASS_UNSPECIFIED not in message.lower()
+        assert "statement 2 of 3" in message  # the middle entry — neither end
         assert fake.calls == 1
 
-    async def test_commit_only_failure_still_reports_the_commit_statement(self) -> None:
-        """Corner-case pin (green under both the old ``[-1]`` and the fixed
-        ``[0]`` pick): when the COMMIT is the ONLY failed statement there is
-        no earlier root cause, so the honest degrade is the COMMIT's own
-        ordinal and the generic label.
+    async def test_an_all_cascade_rollback_degrades_to_the_last_entry(self) -> None:
+        """The DEGENERATE case: no substantive text anywhere. There is no root cause to
+        name, so the honest report is the engine's own final word — the last entry —
+        and the generic label. (Observables preserved from the pin this replaces.)
         """
         fake = _TxnRollbackFakeConnection(
             responses=[_rolled_back_response(None, None, _COMMIT_ABORTED_ENGINE_TEXT)]
@@ -2447,8 +2842,32 @@ class TestTxnRootCauseSelection:
 
         message = str(exc_info.value)
         assert "statement 3 of 3" in message
-        assert "unspecified rejection" in message.lower()
+        assert _ERROR_CLASS_UNSPECIFIED in message.lower()
         assert fake.calls == 1
+
+    async def test_a_cascade_only_prefix_with_no_substantive_entry_still_degrades(
+        self,
+    ) -> None:
+        """Every failed entry is a cascade notice (the engine's non-execution notices
+        plus the abort). Nothing substantive exists — degrade to the LAST entry rather
+        than blaming the first "query was not executed" notice, which explains nothing.
+        """
+        fake = _TxnRollbackFakeConnection(
+            responses=[
+                _rolled_back_response(
+                    None,
+                    _CASCADE_ENGINE_TEXT,
+                    _CASCADE_CANCELLED_ENGINE_TEXT,
+                    _COMMIT_ABORTED_ENGINE_TEXT,
+                )
+            ]
+        )
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(fake)
+
+        message = str(exc_info.value)
+        assert "statement 4 of 4" in message  # the LAST entry, not the first cascade
+        assert _ERROR_CLASS_UNSPECIFIED in message.lower()
 
 
 class TestTxnMalformedResponseHygiene:
@@ -2495,19 +2914,32 @@ class TestTxnRetryBehaviourUnchanged:
 
         assert fake.calls == 2  # one conflict, one successful retry — invisible to the caller
 
-    async def test_sustained_conflict_still_raises_after_bounded_attempts(self) -> None:
-        fake = _TxnRollbackFakeConnection(
-            responses=[
-                _err_response(result_text=_CONFLICT_ENGINE_TEXT) for _ in range(_MAX_TXN_CONFLICT_ATTEMPTS)
-            ]
-        )
+    @pytest.mark.parametrize(("build_response", "marker_index", "statement_count"), _CONFLICT_SHAPES)
+    async def test_sustained_conflict_still_raises_after_bounded_attempts(
+        self,
+        build_response: Callable[[], dict[str, Any]],
+        marker_index: int,
+        statement_count: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sustained contention surfaces, BOUNDED, and is labelled a CONFLICT.
 
-        with pytest.raises(SurrealStoreError) as exc_info:
-            await _run_execute_transaction(fake)
+        Constant-free by construction (see ``_SustainedConflictFakeConnection``):
+        it asserts the seam retried at least once and then STOPPED, never that
+        it stopped after some particular number of attempts — the budget is the
+        repair's to re-measure.
 
-        assert fake.calls == _MAX_TXN_CONFLICT_ATTEMPTS  # bounded, not unbounded
-        assert _CONFLICT_ENGINE_TEXT not in str(exc_info.value)
-        assert "retryable conflict" in str(exc_info.value).lower()
+        The ``marker-last-LIVE`` parametrization is the finding: today's raise
+        site classifies ``failed_statements[0]`` — a marker-less cascade entry —
+        so it labels a genuine exhausted conflict "unspecified rejection".
+        """
+        fake, _, error = await _exhaust_conflict(build_response(), monkeypatch=monkeypatch)
+
+        assert fake.calls >= 2, "a retryable conflict must be RETRIED, not raised on first sight"
+        assert fake.calls < _ABSURD_ATTEMPT_CEILING  # bounded, not unbounded
+        assert _CONFLICT_ENGINE_TEXT not in str(error)  # hygiene: no raw engine text
+        assert _ERROR_CLASS_RETRYABLE_CONFLICT in str(error).lower()
+        assert _ERROR_CLASS_UNSPECIFIED not in str(error).lower()
 
     async def test_non_retryable_rejection_is_never_retried(self) -> None:
         fake = _TxnRollbackFakeConnection(
@@ -2537,6 +2969,978 @@ class TestTxnRetryBehaviourUnchanged:
         await _run_execute_transaction(fake)  # must NOT raise
 
         assert fake.calls == 2  # one conflict, one successful retry — invisible to the caller
+
+
+class TestSlowTransactionsKeepTheirRetryBudget:
+    """Audit B1 (BLOCKER) — **the deadline may bound retries; it may never veto the
+    first one.**
+
+    A wall-clock budget smaller than a single attempt is incoherent AS A RETRY BUDGET.
+    A clean 9.56s bulk apply takes 9.56s with no retry policy involved at all — the
+    caller's own execution time is not the retry policy's to ration. When the built
+    loop counted the attempt's own duration against the deadline and then checked the
+    deadline before deciding to retry, every transaction slower than 2.0s got a retry
+    budget of **zero**: first conflict, `attempts=1`, raise. Pre-#102 those callers got
+    five attempts regardless of wall time. That is a straight regression, and it is
+    what broke `test_surreal_apply.py`.
+
+    The ruling (design addendum, R1 — candidate (a), **zero new constants**)::
+
+        give_up = (
+            attempt >= _TXN_CONFLICT_ATTEMPT_CEILING
+            or (elapsed >= deadline and attempt >= _MAX_TXN_CONFLICT_ATTEMPTS)
+        )
+
+    The FLOOR is the EXISTING ``_MAX_TXN_CONFLICT_ATTEMPTS`` (5) — not a tuned number
+    but **the pre-#102 behavioural contract itself**, so the non-regression guarantee
+    is restored BY CONSTRUCTION rather than by picking a value. Two regimes, two honest
+    guarantees: fast attempts are governed by the wall clock (the #102 case); slow
+    attempts are governed by an attempt count (the pre-#102 case).
+    """
+
+    # An attempt that outlasts the deadline — the whole point. Scaled down from the
+    # audit's live numbers (a 9.56s apply against a 2.0s deadline) so the pins are
+    # fast; only the RATIO matters: attempt_seconds > deadline_seconds.
+    _SLOW_ATTEMPT_SECONDS = 0.10
+    _DEADLINE_BELOW_ONE_ATTEMPT = 0.02
+
+    async def test_a_slow_conflicting_transaction_still_gets_the_attempt_floor(
+        self,
+    ) -> None:
+        """RED against today's build: it gives up after **1** attempt.
+
+        The attempt itself outlasts the deadline, so a loop that charges the attempt's
+        own duration to the retry budget has already overspent before it has retried
+        even once.
+        """
+        fake = _SlowConflictFakeConnection(
+            response=_live_conflict_rollback_response(),
+            attempt_seconds=self._SLOW_ATTEMPT_SECONDS,
+        )
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(
+                cast("_TxnRollbackFakeConnection", fake),
+                deadline_seconds=self._DEADLINE_BELOW_ONE_ATTEMPT,
+            )
+
+        assert fake.calls >= _MAX_TXN_CONFLICT_ATTEMPTS, (
+            f"a slow transaction got only {fake.calls} attempt(s) before the seam gave "
+            f"up. The deadline ({self._DEADLINE_BELOW_ONE_ATTEMPT}s) is shorter than ONE "
+            f"attempt ({self._SLOW_ATTEMPT_SECONDS}s), so it vetoed the retry budget "
+            f"entirely — pre-#102 this caller was guaranteed "
+            f"{_MAX_TXN_CONFLICT_ATTEMPTS} attempts regardless of wall time."
+        )
+        assert getattr(exc_info.value, "attempts", 0) >= _MAX_TXN_CONFLICT_ATTEMPTS
+
+    async def test_the_regression_shape_a_slow_transaction_that_would_have_succeeded(
+        self,
+    ) -> None:
+        """THE EXACT SHAPE THAT BROKE THE SUITE: a slow transaction conflicts once and
+        would succeed on its second attempt. It must SUCCEED.
+
+        Today it raises, because the deadline vetoed the retry that would have worked.
+        This is `test_surreal_apply.py`'s failure, reduced to a unit pin.
+        """
+        fake = _SlowConflictFakeConnection(
+            response=_live_conflict_rollback_response(),
+            attempt_seconds=self._SLOW_ATTEMPT_SECONDS,
+            succeed_after_calls=2,  # the SECOND attempt lands
+        )
+
+        # Must NOT raise.
+        await _run_execute_transaction(
+            cast("_TxnRollbackFakeConnection", fake),
+            deadline_seconds=self._DEADLINE_BELOW_ONE_ATTEMPT,
+        )
+
+        assert fake.calls == 2, (
+            f"expected the retry to run and succeed; the seam made {fake.calls} attempt(s)"
+        )
+
+    async def test_a_FAST_conflicting_transaction_is_still_governed_by_the_deadline(
+        self,
+    ) -> None:
+        """**POSITIVE CONTROL — mandatory.** The fix must restore the floor WITHOUT
+        disabling the deadline.
+
+        In the fast regime (the #102 case: millisecond attempts, many cheap retries)
+        the wall clock is still the budget, and it must still cut the loop well ABOVE
+        the floor. A build that "fixed" B1 by deleting the deadline would sail through
+        the two pins above and fail this one.
+        """
+        fake = _SustainedConflictFakeConnection(response=_live_conflict_rollback_response())
+        started = time.monotonic()
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(
+                cast("_TxnRollbackFakeConnection", fake), deadline_seconds=0.25
+            )
+        elapsed = time.monotonic() - started
+
+        attempts = getattr(exc_info.value, "attempts", 0)
+        assert attempts > _MAX_TXN_CONFLICT_ATTEMPTS, (
+            f"a FAST transaction stopped at {attempts} attempts — the deadline is no "
+            f"longer buying retries in the regime it exists for. Did the fix delete it?"
+        )
+        assert elapsed < 2.0, (
+            f"the deadline no longer bounds the fast regime ({elapsed:.2f}s for a 0.25s "
+            f"budget) — the floor must not become an unbounded licence to retry"
+        )
+
+    @pytest.mark.parametrize(
+        ("attempt_seconds", "deadline_seconds"),
+        [
+            pytest.param(0.10, 0.02, id="attempt-outlasts-deadline"),
+            pytest.param(0.0, 0.25, id="instant-attempts"),
+            pytest.param(0.0, 0.0, id="zero-deadline"),
+        ],
+    )
+    async def test_the_typed_error_can_never_carry_fewer_attempts_than_the_floor(
+        self, attempt_seconds: float, deadline_seconds: float
+    ) -> None:
+        """THE INVARIANT, across every regime including a pathological zero deadline:
+        exhaustion is never reported below the floor. If this can be violated, some
+        caller somewhere has silently lost its retry budget.
+        """
+        fake = _SlowConflictFakeConnection(
+            response=_live_conflict_rollback_response(), attempt_seconds=attempt_seconds
+        )
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(
+                cast("_TxnRollbackFakeConnection", fake),
+                deadline_seconds=deadline_seconds,
+            )
+
+        attempts = getattr(exc_info.value, "attempts", 0)
+        assert attempts >= _MAX_TXN_CONFLICT_ATTEMPTS, (
+            f"exhaustion reported {attempts} attempts, below the guaranteed floor of "
+            f"{_MAX_TXN_CONFLICT_ATTEMPTS}"
+        )
+        assert fake.calls == attempts, "the reported attempt count must be the real one"
+
+
+class TestTxnConflictRootCauseIsTheMarkerBearingEntry:
+    """Finding #102 — ONE witness for the retry decision AND the report.
+
+    The rule the seam must obey: **the entry you classify is the entry that
+    made you decide.** ``_is_retryable_conflict`` decides to retry by scanning
+    every failed statement for the engine's marker; when that retry budget
+    finally drains, the entry reported as the root cause must be the SAME entry
+    that drove the decision — the marker-bearing one — not whatever happens to
+    sit at position ``[0]``.
+
+    Selecting by POSITION cannot work for both cases and must not be attempted:
+    the engine writes DOMAIN root causes FIRST (cascade after), but writes
+    CONFLICT evidence LAST (non-execution noise before). ``[0]`` is right for
+    one and wrong for the other; ``[-1]`` is right for the other and wrong for
+    the first (that was finding #93). Only a SEMANTIC selector — seek the
+    marker — is right for both, which is why these pins and
+    ``TestTxnRootCauseSelection``'s (#93) must both stay green forever.
+    """
+
+    @pytest.mark.parametrize(("build_response", "marker_index", "statement_count"), _CONFLICT_SHAPES)
+    async def test_server_log_names_the_marker_bearing_entry_as_the_root_cause(
+        self,
+        build_response: Callable[[], dict[str, Any]],
+        marker_index: int,
+        statement_count: int,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The exhausted-conflict receipt names the entry that carried the
+        marker — the honest root cause — and its ordinal is therefore honest too.
+
+        RED against a ``[0]``-classifying build on the LIVE shape: it reports
+        statement_index 0 (a cascade entry whose text says only "the query was
+        not executed due to a failed transaction" — a statement that never even
+        RAN) as the cause of the rollback.
+        """
+        with caplog.at_level(logging.ERROR, logger="loremaster.store._txn"):
+            _, _, error = await _exhaust_conflict(build_response(), monkeypatch=monkeypatch)
+
+        error_records = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert error_records, "an exhausted conflict must leave a server-side receipt"
+        record = error_records[-1]
+        assert getattr(record, "statement_index", None) == marker_index
+        assert getattr(record, "statement_count", None) == statement_count
+        # The receipt still carries EVERY failed statement — the cascade entries
+        # are diagnostically useful even though they are not the root cause.
+        failed = getattr(record, "failed_statements", None)
+        assert failed is not None
+        assert [entry["index"] for entry in failed] == list(range(statement_count))
+        # The marker-bearing entry's raw text reached the log (never the raise).
+        assert _CONFLICT_ENGINE_TEXT in str(failed[marker_index]["engine_result"])
+        assert _CONFLICT_ENGINE_TEXT not in str(error)
+
+    async def test_a_domain_rejection_is_never_labelled_a_conflict(self) -> None:
+        """The counterweight — and the pin that stops an OVERCORRECTION.
+
+        A build that "fixes" #102 by labelling every rollback a conflict (or by
+        seeking the marker and falling back to the marker's label when there is
+        none) would pass every conflict pin above. This is the case that kills
+        it: a rollback with NO marker anywhere is a domain rejection, is never
+        retried, and keeps finding #93's ``[0]`` root cause and its own specific
+        label.
+        """
+        fake = _TxnRollbackFakeConnection(
+            responses=[
+                _rolled_back_response(
+                    _SENSITIVE_ENGINE_TEXT, _CASCADE_ENGINE_TEXT, _COMMIT_ABORTED_ENGINE_TEXT
+                )
+            ]
+        )
+        with pytest.raises(SurrealStoreError) as exc_info:
+            await _run_execute_transaction(fake)
+
+        message = str(exc_info.value).lower()
+        assert _ERROR_CLASS_ASSERT_VIOLATION in message  # #93's root cause, preserved
+        assert _ERROR_CLASS_RETRYABLE_CONFLICT not in message
+        assert "statement 1 of 3" in message  # the FIRST entry — the real cause
+        assert fake.calls == 1  # never retried
+
+
+class TestTxnConflictBackoffIsJittered:
+    """Finding #102 — the backoff must DESYNCHRONISE racers, and today it
+    cannot.
+
+    Today's seam sleeps ``BACKOFF * (attempt + 1)``: a pure function of the
+    attempt index, identical for every racer. N transactions that collide on
+    one row therefore sleep the IDENTICAL duration and re-collide in lockstep,
+    attempt after attempt, until the budget drains. The only thing that has ever
+    broken the lockstep is natural scheduling variance — which loses roughly
+    half the time at 8-way (measured: 6 failures in 10 runs of the live mint).
+
+    The repair draws a FRESH random duration on EVERY attempt. These pins read
+    the durations back through a patched ``asyncio.sleep``, and are written to
+    fail a build that:
+      * sleeps a deterministic duration (today's build);
+      * draws its jitter ONCE per call and reuses it (findings' dead backstop
+        did exactly this — a slot derived from the finding id, redrawn never);
+      * draws from a small DISCRETE set of slots (findings' dead backstop used 16,
+        briefs' deleted mint loop used 4 — at N racers over S slots the pigeonhole
+        guarantees collisions, and two racers that share a slot stay collided for
+        every attempt);
+      * grows the window without a CAP (an unbounded exponential);
+      * jitters around a floor instead of down to zero (equal jitter rather than
+        the full jitter the design ruled).
+    """
+
+    # Enough independent exhaustion runs that a CONTINUOUS random draw is
+    # overwhelmingly likely to produce a distinct value every time, while a
+    # DISCRETE slot scheme (16 slots, 4 slots, or a deterministic 1) cannot.
+    # Not a tuned constant — a sample size, chosen so the discrimination below
+    # is decisive rather than marginal.
+    _SAMPLE_RUNS = 30
+    # A continuous draw yields 30 distinct floats with probability ~1; the
+    # richest discrete scheme in this repo's history (16 slots) can never exceed
+    # 16 no matter how many runs are taken. Anything at or above this threshold
+    # is continuous; anything below is not.
+    _MIN_DISTINCT = 25
+    # An absolute sanity ceiling on a single backoff, NOT a tuned cap: it sits
+    # far above any plausible CAP (the design's starting value is 0.1s) and far
+    # below where an UNCAPPED exponential lands within a normal budget
+    # (5ms · 2^20 ≈ 87 minutes). A build that forgot to cap the growth blows
+    # through it long before its attempts run out.
+    _SANITY_SLEEP_CEILING_SECONDS = 5.0
+
+    async def _sample_first_two_sleeps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[list[float], list[float], list[float]]:
+        """Exhaust the conflict ``_SAMPLE_RUNS`` times; return the first-attempt
+        backoffs, the second-attempt backoffs, and every backoff observed.
+        """
+        first: list[float] = []
+        second: list[float] = []
+        every: list[float] = []
+        for _ in range(self._SAMPLE_RUNS):
+            _, recorder, _ = await _exhaust_conflict(
+                _live_conflict_rollback_response(), monkeypatch=monkeypatch
+            )
+            assert len(recorder.durations) >= 2, (
+                "a sustained conflict must back off between attempts; fewer than two "
+                "sleeps means the seam is spinning without pause"
+            )
+            first.append(recorder.durations[0])
+            second.append(recorder.durations[1])
+            every.extend(recorder.durations)
+        return first, second, every
+
+    async def test_backoff_is_redrawn_at_random_on_every_attempt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE lockstep pin. The first backoff of a run must differ from run to
+        run — a fresh draw from a continuous distribution, not a constant and
+        not a slot.
+
+        RED against today's build: every run sleeps exactly
+        the SAME fixed base delay first, so all 30 runs report ONE distinct value.
+        """
+        first, second, _ = await self._sample_first_two_sleeps(monkeypatch)
+
+        assert len(set(first)) >= self._MIN_DISTINCT, (
+            f"the first backoff took only {len(set(first))} distinct values across "
+            f"{self._SAMPLE_RUNS} runs — a deterministic or slot-quantised backoff "
+            f"leaves colliding racers in lockstep"
+        )
+        assert len(set(second)) >= self._MIN_DISTINCT, (
+            "the SECOND backoff is quantised or deterministic — jitter must be "
+            "redrawn on EVERY attempt, not once per call"
+        )
+        # Drawn independently per attempt: the two attempts' draws must not be a
+        # fixed function of one another (a once-per-call slot reused across
+        # attempts makes second == first * k for a per-run constant k).
+        ratios = {round(b / a, 6) for a, b in zip(first, second, strict=True) if a > 0}
+        assert len(ratios) >= self._MIN_DISTINCT, (
+            "every run's second backoff is the same multiple of its first — the "
+            "jitter was drawn ONCE and scaled, not redrawn per attempt"
+        )
+
+    async def test_backoff_window_grows_and_reaches_down_to_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The window is exponential (it GROWS between attempts) and it is FULL
+        jitter (it reaches down toward zero, rather than jittering above a
+        floor).
+
+        Constant-free: it compares attempt 1's observed spread against attempt
+        0's rather than asserting either bound's value, so the repair's survey
+        is free to set BASE and CAP to whatever it measures.
+        """
+        first, second, _ = await self._sample_first_two_sleeps(monkeypatch)
+
+        assert max(second) > max(first), (
+            "the backoff window did not grow between the first and second attempt — "
+            "sustained contention needs an EXPONENTIAL window, not a flat one"
+        )
+        # Full jitter: uniform(0, window) reaches into the bottom half of its own
+        # window. Equal jitter (window/2 + uniform(0, window/2)) never does.
+        assert min(first) < max(first) / 2, (
+            "no first-attempt backoff landed in the lower half of its window — this "
+            "is jitter around a FLOOR, not the full jitter that lets one racer go "
+            "almost immediately while another waits"
+        )
+
+    async def test_no_backoff_exceeds_the_sanity_ceiling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exponential window is CAPPED — the pin against a growth term with
+        no ceiling, which would park a caller for minutes on a busy row.
+        """
+        _, _, every = await self._sample_first_two_sleeps(monkeypatch)
+
+        assert every, "no backoff was observed at all"
+        assert max(every) < self._SANITY_SLEEP_CEILING_SECONDS, (
+            f"a single backoff reached {max(every)}s — the exponential window is "
+            f"uncapped"
+        )
+
+
+class TestConcurrentRacersDrawDistinctBackoffs:
+    """**THE lockstep pin** — and the only one in this file that measures the
+    property finding #102 is actually about.
+
+    Why the sequential jitter pins above are not enough, proven rather than
+    argued. The cold adversary built ``wb6-budget-only``: a **totally
+    deterministic, zero-jitter, lockstepped** backoff with the attempt ceiling
+    merely raised to 64. **It passes the live mint at 8-, 16- AND 32-way.** So the
+    live-mint pins DISCRIMINATE (they prove the mint works) but cannot ATTRIBUTE
+    (they cannot tell you *why*), and the entire defence against lockstep rests
+    here.
+
+    And the sequential sampler cannot carry that weight, because it measures the
+    wrong axis. It draws 30 runs of ONE racer, so it sees per-attempt and per-call
+    entropy — never **per-racer decorrelation**. A build with fresh entropy every
+    attempt that is nonetheless IDENTICAL across concurrent racers produces plenty
+    of distinct values globally and sails straight through. That build is the C1
+    defect verbatim: ``BriefLedger.publish`` seeded its jitter from the CONTENDED
+    ROW's id — a value every racer shares by definition — so all N racers slept
+    the same duration, woke together, and re-collided forever.
+
+    Sequential sampling holds against that today only by luck: an entropy source
+    shared *between* racers (a row id, a coarse clock, a slot table) also happens
+    to be constant *within* a call or *across* runs, so the sequential sampler
+    trips over it. That is contingent, not structural. This pin makes it
+    structural: N racers, colliding on one row, at the same time — exactly the
+    scenario — each recording its own draws.
+    """
+
+    # Genuinely concurrent racers, at the house floor for a concurrency pin
+    # (never 2-way). Enough that a shared entropy source collides visibly.
+    _RACERS = 16
+    # Repeat rounds so the full-jitter check has a large sample: 16 x 3 = 48
+    # first-draws. A floor-jittered build cannot put ANY of them in the bottom
+    # half of the window, so a single round would be a coin-flip and 48 is a
+    # certainty.
+    _ROUNDS = 3
+    _MIN_DISTINCT_RATIOS = 12
+
+    # How many of the 16 racers must draw a first backoff nobody else drew.
+    #
+    # NOT a guess, and NOT exact-distinctness. Exact distinctness (all 16) is a
+    # COIN-FLIP against a legitimate build: a continuous draw rounded to a fine
+    # grid decorrelates racers perfectly well, yet collides by birthday paradox
+    # often enough to fail an ==16 assertion ~36% of the time. A pin that a good
+    # build fails one run in three is the exact condition under which a builder
+    # says "flaky" and ships — which this repo's law forbids, and which is how the
+    # C1 mint defect reached production.
+    #
+    # So the threshold is MEASURED, from the distinct-count distribution of every
+    # jitter build available (25 trials each, scratchpad/contract-v2/measure_distinct.py):
+    #
+    #     lockstep (production today, ceiling-only)   1 .. 1
+    #     2-slot / 4-slot jitter                      2 .. 4
+    #     16-slot jitter (THIS repo's own idiom)      8 .. 13     <- must die
+    #     ------------------------------------------------------ the gap
+    #     quantised continuous (fine grid)           15 .. 16     <- must live
+    #     full continuous jitter (the design)        16 .. 16     <- must live
+    #
+    # WHAT THIS THRESHOLD DOES AND DOES NOT GUARANTEE — corrected, because my earlier
+    # claim was wrong and a cold adversary measured it:
+    #
+    #   IT DOES: never false-fail the repair. A continuous draw yields distinct=16
+    #     every time — 300/300 idle and 200/200 under loadavg 32 (adversary-measured;
+    #     load-invariant BY CONSTRUCTION, since random.uniform reads no clock). And it
+    #     deterministically condemns the defect this pin exists for: total lockstep
+    #     (1 distinct), correlated entropy (row-seeded, clock-shared), and the coarse
+    #     slot tables that are this repo's own history — 8-slot 0/300, 16-slot 1/300.
+    #
+    #   IT DOES NOT: adjudicate slot GRANULARITY. I previously claimed a "one-wide gap
+    #     at 13->15" from 7 builds x 25 trials. That was FALSE — distinct-count is a
+    #     SMOOTH function of slot size, so no threshold on it can separate the
+    #     continuum. Re-measured over 300 trials: a 30-slot table passes 26% of the
+    #     time, 45-slot 52%, 55-slot 70%. A coin-flip is not a guard.
+    #
+    # The granularity axis is adjudicated instead by
+    # ``test_the_backoff_draw_is_continuous_not_a_slot_table`` below, which pools draws
+    # across rounds and wins on a HARD COMBINATORIAL BOUND rather than a probability.
+    # This pin keeps the job it can actually do: per-racer decorrelation.
+    _MIN_DISTINCT_FIRST_DRAWS = 14
+
+    async def test_concurrent_racers_draw_distinct_backoffs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two racers that just collided must not sleep the SAME duration.
+
+        RED today: every racer sleeps a fixed base delay x (attempt + 1) — a pure
+        function of the attempt index, identical for all of them. All 16 wake together
+        and re-collide. That is the lockstep, and it is what makes the live 8-way mint
+        fail 6 runs in 10.
+
+        **Catches (each proven by the adversary as a build the old pins could not
+        stop, or could stop only by luck):** any jitter derived from the contended
+        row's identity (`wb5-row-seeded` — the literal C1 bug); any clock-derived
+        jitter coarse enough that concurrent racers land in the same quantum
+        (`wb16`, `wb17`); any deterministic backoff (`wb3`, `wb6-budget-only`).
+        """
+        recorder = await _exhaust_conflict_concurrently(self._RACERS, monkeypatch=monkeypatch)
+        first_draws = recorder.first_draws()
+        distinct = len(set(first_draws))
+
+        assert distinct >= self._MIN_DISTINCT_FIRST_DRAWS, (
+            f"only {distinct} of {len(first_draws)} concurrent racers drew a first "
+            f"backoff nobody else drew — the rest wake together and re-collide on the "
+            f"same row. This is the lockstep finding #102 IS. An entropy source shared "
+            f"between racers (the contended row's id, a coarse clock, a slot table) is "
+            f"not jitter. A discrete slot table is this repo's OWN historical idiom — "
+            f"findings' dead backstop used 16 slots and briefs' deleted mint loop used "
+            f"4 — and it is exactly what must not be copied here."
+        )
+
+    async def test_each_racer_redraws_its_own_entropy_every_attempt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Per-racer decorrelation is not enough on its own: a build that draws ONE
+        random value per call and scales it by the attempt index gives every racer a
+        different first backoff (so the pin above passes) while every racer's
+        *sequence* stays a fixed multiple of its own first draw.
+
+        Catches `wb4-per-call-jitter`: every racer reports the identical
+        second/first ratio, however random its single draw was.
+        """
+        recorder = await _exhaust_conflict_concurrently(self._RACERS, monkeypatch=monkeypatch)
+        ratios = recorder.within_racer_ratios()
+
+        assert len(ratios) >= 2, "not enough attempts per racer to compare draws"
+        assert len(set(ratios)) >= self._MIN_DISTINCT_RATIOS, (
+            f"the {len(ratios)} racers produced only {len(set(ratios))} distinct "
+            f"second/first backoff ratios — each racer drew its entropy ONCE and "
+            f"scaled it, rather than redrawing every attempt. Two racers that share a "
+            f"window stay collided for the whole ladder."
+        )
+
+    async def test_concurrent_racers_draw_full_jitter_down_to_zero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Under real contention the window must reach down toward ZERO, so one
+        racer can go almost immediately while another waits — that asymmetry is what
+        breaks a tie.
+
+        Catches `wb13-equal-jitter` (a floor plus half a window): its draws can
+        never enter the bottom half of their own window, so N racers stay bunched
+        even though each draw is random. Sampled across all rounds, so the verdict
+        is a certainty rather than a coin-flip.
+        """
+        draws: list[float] = []
+        for _ in range(self._ROUNDS):
+            recorder = await _exhaust_conflict_concurrently(self._RACERS, monkeypatch=monkeypatch)
+            draws.extend(recorder.first_draws())
+
+        assert draws, "no backoff was observed at all"
+        assert min(draws) < max(draws) / 2, (
+            f"across {len(draws)} concurrent first-backoffs, none landed in the lower "
+            f"half of the window (min={min(draws)}, max={max(draws)}) — this is jitter "
+            f"around a FLOOR, not the full jitter the design ruled. Racers stay bunched."
+        )
+
+    # Pool first-draws across rounds: 4 x 16 = 64 samples, of which at least 50 must
+    # be distinct.
+    #
+    # THIS is the statistic that adjudicates SLOT GRANULARITY, and it does so by a
+    # HARD COMBINATORIAL BOUND rather than a probability: **a table of S slots can
+    # never emit more than S distinct values, across any number of draws.** So every
+    # S < 50 is not merely unlikely to pass — it is IMPOSSIBLE. Continuous jitter, by
+    # contrast, emits a fresh float essentially every draw (64 of 64).
+    #
+    # It exists because the per-round distinct-count above CANNOT adjudicate
+    # granularity: distinct-count is a smooth function of slot size, so any threshold
+    # on it is straddled by some table. A cold adversary measured exactly that — my
+    # earlier ">=14, one-wide gap" claim was derived from too few builds and is
+    # EMPIRICALLY FALSE: a 30-slot table passed it 26% of the time, 45-slot 52%,
+    # 55-slot 70%. A pin a wrong build survives one run in four is a coin-flip, and
+    # this repo's law forbids shipping one.
+    #
+    # Measured (40 trials each, scratchpad/contract-v2/measure_pooled.py):
+    #
+    #     full continuous jitter (the design)     64 .. 64   ->  40/40 PASS
+    #     fine quantisation (~500 slots)          56 .. 63   ->  40/40 PASS
+    #     -------------------------------------------------------------- 50
+    #     70-slot table                           37 .. 47   ->   0/40 RED
+    #     55-slot table                           32 .. 43   ->   0/40 RED   (straddled before)
+    #     45-slot table                           30 .. 39   ->   0/40 RED   (straddled before)
+    #     30-slot table                           24 .. 29   ->   0/40 RED   (straddled before)
+    #     16-slot table (findings' own idiom)     14 .. 16   ->   0/40 RED
+    #     8-slot / coarse clock                    4 ..  8   ->   0/40 RED
+    #
+    # HONEST BOUND ON THE CLAIM: a table of ~100+ slots is NOT adjudicated by this pin
+    # (measured 10/40). That is deliberate and it is where the boundary belongs: at 16
+    # slots, 16 racers collide in ~8 pairs per round — the defect. At 100+ slots it is
+    # ~1 pair, and at 500 (which passes) it is ~0.26. Beyond ~70 slots a quantised draw
+    # is no longer the lockstep #102 is made of, and this contract does not condemn it.
+    _ROUNDS_POOLED = 4
+    _MIN_DISTINCT_POOLED = 50
+
+    async def test_the_backoff_draw_is_continuous_not_a_slot_table(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The draw must come from a CONTINUOUS distribution, not a slot table.
+
+        Catches the whole slot-table class — including the 30/45/55-slot tables that
+        straddled the per-round threshold — by a bound no wrong build can argue with:
+        it cannot produce more distinct values than it has slots.
+        """
+        draws: list[float] = []
+        for _ in range(self._ROUNDS_POOLED):
+            recorder = await _exhaust_conflict_concurrently(self._RACERS, monkeypatch=monkeypatch)
+            draws.extend(recorder.first_draws())
+
+        distinct = len(set(draws))
+        assert distinct >= self._MIN_DISTINCT_POOLED, (
+            f"only {distinct} distinct values across {len(draws)} pooled first-backoffs — "
+            f"the backoff is drawn from a SLOT TABLE of at most {distinct} slots, not from "
+            f"a continuous distribution. A slot table pigeonholes concurrent racers into "
+            f"shared windows: they wake together and re-collide. This repo's own history "
+            f"is the warning — findings' dead backstop used 16 slots and briefs' deleted "
+            f"mint loop used 4. The design ruled uniform(0, window); draw from it."
+        )
+
+
+# ===========================================================================
+# Finding #102 — the REPO INVARIANT the #93 → #102 kill chain lacked.
+#
+# The mechanism of the finding, stated once: findings' hand-rolled mint backstop
+# (now deleted) gated its retry on the LABEL TEXT of a classified exception —
+# ``if _ERROR_CLASS_RETRYABLE_CONFLICT not in str(error): raise``. When #93
+# legitimately changed which statement gets classified, that label silently
+# changed too, the substring stopped matching, and a 12-attempt backstop became
+# dead code — with ZERO test signal, because no gate anywhere checks that a
+# classification label still means what a distant ``except`` body assumes.
+#
+# A classification label is a HUMAN-FACING summary. It is not an API. Control
+# flow that depends on one is a coupling no type checker, linter or test can
+# see. The repair replaces the coupling with a TYPE (an exception class), and
+# this scan is the instrument that keeps it replaced: a fix without an
+# invariant is half a fix, and this defect CLASS has now cost two findings.
+#
+# THERE ARE NO EXEMPTIONS. ``briefs.py`` was the single, named, expiring one: it
+# gated its LIVE single-statement mint retry on the label, because the
+# single-statement path had no typed contention error to catch (finding #108).
+# The DRY retry seam gives it one — the mint now calls ``_txn.retry_on_conflict``
+# and hears about exhaustion as a TYPE — so the hand-rolled loop, the label import
+# and the exemption are all DELETED together. The coupling class is now
+# structurally impossible rather than merely discouraged, which was always the
+# point: a self-cleaning exemption is a promise, and this repo's own law says a
+# rule people must remember is not a guard, it is a hope.
+#
+# (The widened, prose-inclusive version of this ban — no production module may so
+# much as MENTION a label or the engine's raw marker, docstrings included — lives in
+# test_retry_seam.py::TestNoCallerEverReadsAnEngineMessage. An AST scan cannot see a
+# docstring, and a future agent reads the docstring, not the AST.)
+# ===========================================================================
+
+# Every classification label a production ``except`` body might be tempted to
+# match on — by CONSTANT name or by the bare literal text.
+_CLASSIFICATION_LABEL_NAMES = frozenset(
+    {
+        "_ERROR_CLASS_RETRYABLE_CONFLICT",
+        "_ERROR_CLASS_ASSERT_VIOLATION",
+        "_ERROR_CLASS_FIELD_COERCION",
+        "_ERROR_CLASS_QUERY_TOO_COMPLEX",
+        "_ERROR_CLASS_UNSPECIFIED",
+    }
+)
+_CLASSIFICATION_LABEL_VALUES = frozenset(
+    {
+        _ERROR_CLASS_RETRYABLE_CONFLICT,
+        _ERROR_CLASS_ASSERT_VIOLATION,
+        _ERROR_CLASS_FIELD_COERCION,
+        _ERROR_CLASS_QUERY_TOO_COMPLEX,
+        _ERROR_CLASS_UNSPECIFIED,
+    }
+)
+
+# EMPTY, and it stays empty. Finding #108 migrated briefs' mint to the typed error,
+# so the last exemption expired exactly as it was designed to. The set is kept (rather
+# than deleted along with its member) because it is the thing a future violation will
+# reach for first: an empty frozenset here is a standing refusal, and adding a name to
+# it is a diff a reviewer can see.
+#
+# Any entry that ever returns must be matched on the module's PATH, never its BASENAME:
+# a basename match would hand the exemption to ANY future file of that name anywhere in
+# the package — a brand-new ``store/briefs.py`` would inherit an exemption nobody
+# granted. Contrived as an attack; entirely plausible as an accident.
+_LABEL_MATCH_EXEMPT_PATHS: frozenset[str] = frozenset()
+
+# ``_txn.py`` DEFINES the labels and is the one module allowed to compare against
+# marker text — that is the classifier's entire job. It is not an exemption from
+# the invariant; it is the invariant's subject. (Path-matched, same reasoning.)
+_LABEL_HOME_PATH = "store/_txn.py"
+
+_PRODUCTION_ROOT = Path(__file__).resolve().parents[1] / "loremaster"
+
+
+def _module_key(path: Path) -> str:
+    """The module's path relative to the production root, POSIX-style — the key
+    every exemption below is matched on. Never ``path.name``.
+    """
+    return path.relative_to(_PRODUCTION_ROOT).as_posix()
+
+
+def _folded_string(node: ast.expr) -> str | None:
+    """Constant-fold a string expression built from literals, so a label spelled
+    as ``"retryable" + " conflict"`` is seen for what it is.
+
+    (Adjacent literals — ``"retryable" " conflict"`` — are already folded by the
+    PARSER into one ``Constant``, so they need no help here.)
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _folded_string(node.left)
+        right = _folded_string(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _classification_label_holders(source: str) -> list[int]:
+    """Return the line numbers where a module HOLDS a classification label at all —
+    by importing its name, reaching it through a module attribute, referencing the
+    name, or spelling its literal value.
+
+    **This is the load-bearing invariant, and it replaces an arms race.** The v1
+    contract scanned for ``in``/``not in`` comparisons inside ``except`` bodies.
+    The cold adversary defeated that scan with **six of seven** evasions — the
+    first being a one-line, entirely natural refactor::
+
+        except SurrealStoreError as error:
+            conflict_label = _ERROR_CLASS_RETRYABLE_CONFLICT   # now it is a local
+            if conflict_label in str(error):                   # ...and invisible
+                raise
+
+    It then built a wrong implementation on exactly that shape (`wb-string-gate`)
+    which reintroduced the #102 coupling into ``tasks.py`` and scored **545 passed,
+    ruff clean, mypy exit 0 — byte-identical to a correct build.**
+
+    Hardening the comparison matcher would invite the next evasion (``str.find``,
+    a helper function, an f-string, a tuple loop…). So do not match the
+    COMPARISON — deny the INGREDIENT. Every one of those seven shapes needs the
+    label NAME in scope or its LITERAL in the source. A module that holds neither
+    cannot branch on one, however it is written.
+
+    A classification label is a human-facing summary, not an API. Control flow that
+    depends on one is a coupling no type checker, linter or test can see — which is
+    precisely how finding #93's legitimate change silently killed a retry loop and
+    became finding #102.
+    """
+    offenders: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        # 1. `from loremaster.store._txn import _ERROR_CLASS_RETRYABLE_CONFLICT`
+        if isinstance(node, ast.ImportFrom):
+            if any(alias.name in _CLASSIFICATION_LABEL_NAMES for alias in node.names):
+                offenders.append(node.lineno)
+        # 2. `_txn._ERROR_CLASS_RETRYABLE_CONFLICT` — the module-attribute back door.
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _CLASSIFICATION_LABEL_NAMES:
+                offenders.append(node.lineno)
+        # 3. ANY reference to the bare name (a local rebinding, a tuple, a helper's
+        #    argument — the whole evasion family collapses into this one check).
+        elif isinstance(node, ast.Name):
+            if node.id in _CLASSIFICATION_LABEL_NAMES:
+                offenders.append(node.lineno)
+        # 4. The literal value, spelled out — including inside an f-string, and
+        #    including a `+`-concatenation of literals.
+        elif isinstance(node, ast.expr):
+            folded = _folded_string(node)
+            if folded is not None and folded in _CLASSIFICATION_LABEL_VALUES:
+                offenders.append(node.lineno)
+    return sorted(set(offenders))
+
+
+# The seven ways a builder can branch on a classification label while the v1
+# except-body scan sees nothing. SIX of these were built by the cold adversary
+# and passed the v1 invariant; EVASION 1 is the one it used to construct
+# `wb-string-gate`, the wrong build that scored 545 passed / ruff clean / mypy 0
+# — byte-identical to a correct build. Every one of them is a positive control
+# for the import ban below: they all need the NAME in scope or the LITERAL in
+# the source, and the ban denies both.
+_LABEL_EVASIONS: list[tuple[str, str]] = [
+    (
+        "bind-the-label-to-a-local",  # <-- built wb-string-gate; a ONE-LINE refactor
+        """
+def transition(self):
+    try:
+        write()
+    except SurrealStoreError as error:
+        conflict_label = _ERROR_CLASS_RETRYABLE_CONFLICT
+        if conflict_label in str(error):
+            raise
+""",
+    ),
+    (
+        "a-module-level-helper-does-the-match",
+        """
+def _is_conflict(error):
+    return _ERROR_CLASS_RETRYABLE_CONFLICT in str(error)
+
+def transition(self):
+    try:
+        write()
+    except SurrealStoreError as error:
+        if _is_conflict(error):
+            raise
+""",
+    ),
+    (
+        "str-find-instead-of-in",
+        """
+def transition(self):
+    try:
+        write()
+    except SurrealStoreError as error:
+        if str(error).find(_ERROR_CLASS_RETRYABLE_CONFLICT) >= 0:
+            raise
+""",
+    ),
+    (
+        "endswith-startswith",
+        """
+def transition(self):
+    try:
+        write()
+    except SurrealStoreError as error:
+        if str(error).endswith(_ERROR_CLASS_RETRYABLE_CONFLICT):
+            raise
+""",
+    ),
+    (
+        "the-label-respelled-as-an-f-string",
+        """
+def transition(self):
+    try:
+        write()
+    except SurrealStoreError as error:
+        if f"retryable conflict" in str(error):
+            raise
+""",
+    ),
+    (
+        "the-literal-split-across-a-concatenation",
+        """
+def transition(self):
+    try:
+        write()
+    except SurrealStoreError as error:
+        if "retryable" + " conflict" in str(error):
+            raise
+""",
+    ),
+    (
+        "a-for-loop-over-a-tuple-of-labels",
+        """
+def transition(self):
+    try:
+        write()
+    except SurrealStoreError as error:
+        for label in (_ERROR_CLASS_RETRYABLE_CONFLICT,):
+            if label in str(error):
+                raise
+""",
+    ),
+    (
+        "the-module-attribute-back-door",
+        """
+from loremaster.store import _txn
+
+def transition(self):
+    try:
+        write()
+    except SurrealStoreError as error:
+        if _txn._ERROR_CLASS_RETRYABLE_CONFLICT in str(error):
+            raise
+""",
+    ),
+]
+
+# Code that legitimately holds NO label and must never be flagged — the negative
+# half of the control. A scanner that cannot spare these is a scanner nobody can
+# ship behind.
+_LABEL_INNOCENTS: list[tuple[str, str]] = [
+    (
+        "the-repair-itself-branches-on-a-TYPE",
+        """
+def transition(self):
+    try:
+        write()
+    except TxnContentionExhaustedError:
+        raise
+    except SurrealStoreError as error:
+        fresh = self._select_row()
+        raise IllegalTransitionError(str(fresh)) from error
+""",
+    ),
+    (
+        "prose-mentioning-the-label-in-a-docstring",
+        """
+def transition(self):
+    '''Rolls back on a retryable conflict; see _ERROR_CLASS_RETRYABLE_CONFLICT.'''
+    write()
+""",
+    ),
+    (
+        "matching-the-engines-RAW-marker-is-not-a-label",
+        """
+def _is_retryable_conflict(failed):
+    return any(_RETRYABLE_CONFLICT_MARKER in str(f.raw_result) for f in failed)
+""",
+    ),
+]
+
+
+class TestNoProductionModuleHoldsAClassificationLabel:
+    """A cheap, narrow TRIPWIRE — explicitly **not** the guard.
+
+    THE guard against #102 is behavioural and lives in ``test_txn_contention.py``:
+    ``TestContentionIsNeverReportedAsALostRace`` runs every pass-through pin against
+    a REWORDED label, so a build that depends on the message's prose fails on a
+    spelling it was not handed — however that dependence is written, and wherever it
+    is routed. It needs no AST and no refactor evades it.
+
+    Three revisions of this contract tried to forbid the coupling SYNTACTICALLY —
+    ban the comparison, ban the label, ban the message reaching a condition — and a
+    cold adversary defeated each with a one-line refactor; the last, most elaborate
+    scanner waved through 13 of 15 evasions AND carried three false positives. **A
+    syntactic scan over one ``except`` body cannot see prose that leaves the body**
+    (a helper in another module, a ``match``, a bare ``except``, a classifier
+    object). The evasion space is unbounded; it cannot be enumerated. That scanner
+    is deleted.
+
+    What survives is only this: **no production module may HOLD a classification
+    label.** It is kept because it is honest about what it is — a lint. It is narrow
+    (an import / a name / a literal), it had **zero** false positives against the
+    live tree, and it fails FAST with a file and a line when someone reaches for the
+    label. It catches the lazy path, not the determined one. The behavioural pin
+    catches the determined one.
+
+    Exempt: NOTHING. ``store/_txn.py`` is skipped because it DEFINES the labels and
+    classifies engine text — the invariant's subject, not an exception to it. The one
+    real exemption (``briefs.py``, whose single-statement mint had no typed contention
+    error to catch) died with finding #108: the mint calls the shared driver now, and
+    the label import went with the loop.
+    """
+
+    @pytest.mark.parametrize(("evasion", "source"), _LABEL_EVASIONS)
+    def test_every_known_evasion_is_flagged(self, evasion: str, source: str) -> None:
+        """POSITIVE CONTROLS — a lint that has not been shown FIRING is not even a
+        lint. These are the shapes that reach for the label by name or literal.
+        """
+        assert _classification_label_holders(source), (
+            f"evasion {evasion!r} is NOT flagged by the label tripwire"
+        )
+
+    @pytest.mark.parametrize(("innocent", "source"), _LABEL_INNOCENTS)
+    def test_innocent_code_is_spared(self, innocent: str, source: str) -> None:
+        """NEGATIVE CONTROLS. A lint that cries wolf gets disabled — which is how
+        the deleted scanner would have died (it flagged the ubiquitous "stash the
+        error text for telemetry, then branch on a retry counter" pattern).
+        """
+        assert not _classification_label_holders(source), (
+            f"innocent shape {innocent!r} was flagged — the tripwire would refuse "
+            f"correct code"
+        )
+
+    def test_no_production_module_holds_a_classification_label(self) -> None:
+        """Zero false positives against the live tree — the reason this one is kept
+        when its more ambitious siblings were deleted.
+        """
+        offenders: dict[str, list[int]] = {}
+        for path in sorted(_PRODUCTION_ROOT.rglob("*.py")):
+            key = _module_key(path)
+            if key in _LABEL_MATCH_EXEMPT_PATHS or key == _LABEL_HOME_PATH:
+                continue
+            lines = _classification_label_holders(path.read_text(encoding="utf-8"))
+            if lines:
+                offenders[key] = lines
+
+        assert not offenders, (
+            f"production code HOLDS a classification label: {offenders}. A label is a "
+            f"human-facing summary, not an API — finding #93 reworded one and silently "
+            f"killed the retry loop that depended on it (that is finding #102). Branch "
+            f"on the exception TYPE: catch TxnContentionExhaustedError."
+        )
+
+
+# ===========================================================================
+# DELETED HERE (finding #108, the DRY retry seam):
+#
+#   * ``test_the_briefs_exemption_is_still_needed`` — the self-cleaning assertion that
+#     forced this deletion. It fired exactly as designed: briefs no longer holds a
+#     label, so the exemption had to go, and the assertion with it.
+#
+#   * ``TestBriefsInheritedConflictBudgetIsNotSilentlyRepointed`` — it pinned briefs'
+#     PRIVATE 20-attempt mint budget (the seam's floor, multiplied by briefs' own
+#     4-attempt app-level ladder) and the loop it drove, hand-rolled because the
+#     substrate offered nothing to call. Every one of those things is now gone — the
+#     retired names live in test_retired_symbols.py's registry, and naming them here
+#     would be the very dangling reference that gate exists to forbid. **A test written
+#     before a semantic change certifies the OLD world** (CLAUDE.md), and this one
+#     certified the exact structure the change deletes — a suite can be green BECAUSE it
+#     still asserts the corpse.
+#
+# Its LIVE half — the seam's floor must not be silently re-tuned or repointed — is not
+# lost: it is re-pinned for the new world in
+# test_retry_seam.py::TestTheAttemptFloorOutlivesItsBriefsConsumer, which asserts the
+# floor is still 5 AND that it now has exactly ONE consumer (the driver that owns the
+# policy) — the opposite invariant, for the opposite reason.
+# ===========================================================================
 
 
 # ===========================================================================
@@ -3099,6 +4503,186 @@ class TestExistingPointIdsResilience:
         )
         with pytest.raises(SurrealConnectionError):
             await down_store.existing_point_ids(["loremaster:loremaster/x.py:symbol:X:0"])
+
+
+# ===========================================================================
+# THE INSTRUMENT — a live-engine classification suite (audit B2, design R2).
+#
+# ``_ERROR_CLASS_ASSERT_VIOLATION`` has NEVER ONCE FIRED IN PRODUCTION. Its marker
+# is ``"assert"``; the engine's real ASSERT rejection says "…but field must conform
+# to:…" and contains no such substring. So for this repo's entire life every ASSERT
+# violation was served to callers as "unspecified rejection" — and every unit pin was
+# green, because the fixtures were TYPED BY HAND with the word "assert" in them. The
+# fixture and the code shared one imagination, and reality was never consulted.
+#
+# The marker fix is one line. **The marker fix is not the deliverable.** The
+# deliverable is this: a [real]-tier suite that PROVOKES each class against the live
+# engine and asserts the label the classifier ACTUALLY returns.
+#
+#     ** STANDING RULE: a classifier marker ships only with a live-engine pin that
+#        provokes its class. A MARKER WITHOUT A PROVOCATION PIN IS PRESUMED FICTION. **
+#
+# Version-coupling is the POINT, not a cost: an engine upgrade that rewords its
+# rejection text must fail HERE, loudly, at the gate — not silently degrade every
+# label to "unspecified rejection" for another six months.
+# ===========================================================================
+
+
+@pytest_asyncio.fixture()
+async def classification_probe() -> AsyncIterator[tuple[SurrealEnv, Any]]:
+    """A live spike-surreal database carrying a REAL ``ASSERT`` and a REAL typed
+    field, so each error class can be provoked for real rather than imagined.
+    """
+    env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    connection = await connect_admin(env)
+    await connection.query("DEFINE TABLE classify_probe SCHEMAFULL;")
+    await connection.query(
+        "DEFINE FIELD state ON classify_probe TYPE string "
+        "ASSERT $value INSIDE ['open', 'done'];"
+    )
+    await connection.query("DEFINE FIELD ordinal ON classify_probe TYPE int;")
+    try:
+        yield env, connection
+    finally:
+        await connection.close()
+        await drop_database(env)
+
+
+async def _provoke_rejection(env: SurrealEnv, connection: Any, statement: str) -> str:
+    """Run ``statement`` through the REAL ``execute_transaction`` against the REAL
+    engine and return the classified message the caller would actually see.
+    """
+
+    async def _acquire() -> _SurrealConnection:
+        return cast("_SurrealConnection", connection)
+
+    async def _drop(_: Any) -> None:
+        raise AssertionError("a domain rejection must never drop a healthy connection")
+
+    with pytest.raises(SurrealStoreError) as exc_info:
+        await execute_transaction(
+            statement, {}, acquire=_acquire, drop=_drop, url=env.url
+        )
+    return str(exc_info.value).lower()
+
+
+# Every class the classifier can return, so each provocation can be cross-controlled
+# against ALL the others — a marker that matched everything would otherwise pass.
+_ALL_ERROR_CLASSES = (
+    _ERROR_CLASS_ASSERT_VIOLATION,
+    _ERROR_CLASS_FIELD_COERCION,
+    _ERROR_CLASS_RETRYABLE_CONFLICT,
+    _ERROR_CLASS_QUERY_TOO_COMPLEX,
+)
+
+
+class TestLiveEngineClassification:
+    """[real] tier — provoke each error class against SurrealDB and assert the label."""
+
+    async def test_a_real_assert_violation_is_classified_as_an_assert_violation(
+        self, classification_probe: tuple[SurrealEnv, Any]
+    ) -> None:
+        """RED today: the engine says "must conform to", the marker says "assert", and
+        the caller is told "unspecified rejection". THE defect, provoked for real.
+        """
+        env, connection = classification_probe
+        message = await _provoke_rejection(
+            env,
+            connection,
+            "BEGIN;\nCREATE classify_probe:a SET state = 'BOGUS', ordinal = 1;\nCOMMIT;",
+        )
+
+        assert _ERROR_CLASS_ASSERT_VIOLATION in message, (
+            f"a REAL ASSERT violation was classified as {message!r}. The marker does not "
+            f"match what the engine actually emits — so this class has never fired."
+        )
+        # CROSS-CONTROL: its own class, and no sibling's.
+        for other in _ALL_ERROR_CLASSES:
+            if other != _ERROR_CLASS_ASSERT_VIOLATION:
+                assert other not in message, f"also matched the sibling class {other!r}"
+
+    async def test_a_real_coercion_failure_is_classified_as_field_coercion(
+        self, classification_probe: tuple[SurrealEnv, Any]
+    ) -> None:
+        """The control that proves the suite can see a marker that DOES work: the
+        coercion marker ("coerce") genuinely occurs in the engine's text. If this pin
+        did not exist, the assert pin's RED could be blamed on the harness.
+        """
+        env, connection = classification_probe
+        message = await _provoke_rejection(
+            env,
+            connection,
+            "BEGIN;\nCREATE classify_probe:c SET state = 'open', ordinal = 'not-an-int';\nCOMMIT;",
+        )
+
+        assert _ERROR_CLASS_FIELD_COERCION in message
+        for other in _ALL_ERROR_CLASSES:
+            if other != _ERROR_CLASS_FIELD_COERCION:
+                assert other not in message, f"also matched the sibling class {other!r}"
+
+    async def test_the_two_domain_classes_do_not_collide(
+        self, classification_probe: tuple[SurrealEnv, Any]
+    ) -> None:
+        """THE COLLISION CONTROL. A marker broad enough to match a sibling's text would
+        silently merge two classes, and every single-class pin above would still pass.
+        Provoke both, assert each yields exactly one class and they are DIFFERENT.
+        """
+        env, connection = classification_probe
+        assert_message = await _provoke_rejection(
+            env,
+            connection,
+            "BEGIN;\nCREATE classify_probe:x SET state = 'BOGUS', ordinal = 1;\nCOMMIT;",
+        )
+        coercion_message = await _provoke_rejection(
+            env,
+            connection,
+            "BEGIN;\nCREATE classify_probe:y SET state = 'open', ordinal = 'nope';\nCOMMIT;",
+        )
+
+        assert _ERROR_CLASS_ASSERT_VIOLATION in assert_message
+        assert _ERROR_CLASS_FIELD_COERCION in coercion_message
+        assert _ERROR_CLASS_ASSERT_VIOLATION not in coercion_message
+        assert _ERROR_CLASS_FIELD_COERCION not in assert_message
+
+    async def test_the_unit_fixtures_still_match_the_live_engine(
+        self, classification_probe: tuple[SurrealEnv, Any]
+    ) -> None:
+        """THE ANTI-DRIFT PIN — the one that would have caught B2 years ago.
+
+        Every scripted-fake engine text in this file claims to be what the engine
+        emits. This asserts it, against the engine. When SurrealDB rewords a rejection,
+        this fails LOUDLY here instead of silently rotting every unit fixture into
+        fiction.
+        """
+        env, connection = classification_probe
+        raw = await connection.query_raw(
+            "BEGIN;\n"
+            "CREATE classify_probe:ok SET state = 'open', ordinal = 1;\n"
+            "CREATE classify_probe:bad SET state = 'BOGUS', ordinal = 2;\n"
+            "CREATE classify_probe:after SET state = 'done', ordinal = 3;\n"
+            "COMMIT;"
+        )
+        entries = [str(entry.get("result")) for entry in (raw.get("result") or [])]
+        blob = "\n".join(entries)
+
+        # The SUBSTANTIVE rejection text our _SENSITIVE_ENGINE_TEXT fixture models.
+        assert "must conform to" in blob, (
+            "the engine no longer says 'must conform to' in an ASSERT rejection — every "
+            "unit fixture and the classifier's marker are now fiction. Re-capture with "
+            "scratchpad/contract-v5/capture_engine.py."
+        )
+        # The CASCADE notices our fixtures model — B3's whole point: statements BEFORE
+        # the offender are stamped ERR, not OK.
+        assert _CASCADE_ENGINE_TEXT in blob, (
+            "the engine no longer emits the pre-offender cascade notice — the rollback "
+            "SHAPE every fixture models has changed"
+        )
+        assert _COMMIT_ABORTED_ENGINE_TEXT in blob
+        statuses = [entry.get("status") for entry in (raw.get("result") or [])]
+        assert statuses.count("ERR") >= 3, (
+            f"expected the engine to stamp the pre-offender statement ERR too; got "
+            f"{statuses}. If this changed, TestTxnRootCauseSelection's shapes are stale."
+        )
 
 
 # ---------------------------------------------------------------------------
