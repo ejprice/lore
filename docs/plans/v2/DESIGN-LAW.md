@@ -45,11 +45,11 @@ Source: docs/design/2026-07-06-weak-match-discrimination.md:490-549,
   a verbatim-identifier anchor (BM25 magnitude is never the gate).
 - **The cosine floor is valid ONLY for the exact embedder + prompt config it was
   measured on** — any embedding/prompt change invalidates it → survey re-run. (This is
-  the invariant PKT-01/02 operationalize per-corpus.)
+  the invariant packets 10/11 (formerly PKT-01/02) operationalize per-corpus.)
 - Constants are MEASURED via committed deterministic surveys, never guessed; sufficiency
   notices are justified by failure-without-signal, not proven benefit (keep wording honest).
-- Ledgered follow-ups (PKT-17): relative-score fusion; source-concentration and
-  pool-size signals adoptable only under pre-registered rules.
+- Ledgered follow-ups (packet 28, formerly PKT-17): relative-score fusion;
+  source-concentration and pool-size signals adoptable only under pre-registered rules.
 - **Ranking-influence disclosure (operator-ruled 2026-07-11):** any non-similarity
   influence on served result ORDER (graph centrality, boosts, reranker) must be
   disclosed to the consuming LLM — per-hit annotation or a labeled separate lane —
@@ -122,10 +122,11 @@ Source: docs/orchestration/2026-07-06-orchestration-context-retro.md:24-28,81-86
 - **Store-and-forward PULL sanctioned (operator-worded, 2026-07-11):** *"A durable
   message store drained by recipients at their own turn boundaries, with LIVE SELECT as
   contentless wake-only, is store-and-forward PULL and is sanctioned; L5 (advisory
-  in-memory push) remains rejected."* This admits the PKT-28 agent-comms subsystem
+  in-memory push) remains rejected."* This admits the agent-comms subsystem (packets
+02–06, `comms-subsystem.md`, formerly PKT-28)
   (durable rows/edges recipient-drained at own turn boundaries; LIVE SELECT wake-only) —
   it is comms-research mitigation #1, NOT the rejected L5 push bus.
-- **Append-only is NOT a requirement (operator, 2026-07-11, explicit).** Where the PKT-28
+- **Append-only is NOT a requirement (operator, 2026-07-11, explicit).** Where the
   comms design retains immutability (e.g. message bodies immutable after send) it is a
   stated, individually strikeable DESIGN CHOICE with a reason — never law. Delivery/ack
   state lives on RELATE edges as write-once CAS stamps (a lost-update guard, not
@@ -138,7 +139,7 @@ Source: lore-v2-RESUME.md:73-78 (extraction receipt).
   `valid_until=null` rows boost/inject; drifted refs render `(drifted — re-verify)`;
   uuid5 content-derived memory ids are the idempotency invariant.
 
-## 10. Enrichment honesty (binds PKT-14/15)
+## 10. Enrichment honesty (binds packets 29/30, formerly PKT-14/15)
 Source: MASTER-PLAN §2.
 - Generated text is ALWAYS rendered marked `(ai summary)` and never inside source
   fences. BM25-only first; vector-side re-embedding with summaries is v1.2+ (schema-
@@ -169,7 +170,7 @@ Source: docs/design/2026-07-04-p8-decomposition-rationale.md:80-93.
 
 ## 14. Singular durable store (operator-ruled 2026-07-11)
 - **SurrealDB is the SINGULAR durable store for lore data — all modes, all roles.**
-  The SQLite write-through memory ledger is retired (PKT-24); no side-channel
+  The SQLite write-through memory ledger is retired (packet 18, formerly PKT-24); no side-channel
   durability stores may be introduced. This OVERRIDES MASTER-PLAN §1's "write-through
   ledger stays" clause.
 - Durability posture is store-level backup (single-node: state-dir snapshots /
@@ -177,4 +178,4 @@ Source: docs/design/2026-07-04-p8-decomposition-rationale.md:80-93.
   never assumed.
 - Write paths fail LOUD on store failure; a silent durability fallback is a defect.
 - The only sanctioned ledger touch-point is READING v0.3 `<slug>.memory.db` files as
-  a migration import source (PKT-12 N3), frozen and deleted post-soak.
+  a migration import source (packet 20 N3, formerly PKT-12), frozen and deleted post-soak.
