@@ -16,13 +16,17 @@
 # ---------------------------------------------------------------------------
 FROM python:3.14-slim
 
-# curl is used by the container healthcheck to poll the MCP server's HTTP
-# endpoint. git is the ONE external binary the shipped code execs — the
-# capture_git_identity seam (loremaster/loremaster/index/snapshots.py), which
-# powers the honesty line (finding #125) and every snapshot's git_ref (finding
-# #131); loremaster/loremaster/shellout.py DERIVES this requirement from the
-# shipped source and the deploy skill's Layer 2 probe fails loud if either
-# binary goes missing from the image (see loremaster.shellout.required_binaries).
+# git is the ONE external binary the shipped code execs — the capture_git_identity
+# seam (loremaster/loremaster/index/snapshots.py), which powers the honesty line
+# (finding #125) and every snapshot's git_ref (finding #131).
+# loremaster/loremaster/shellout.py DERIVES that requirement from the shipped source,
+# and the deploy skill's Layer 2 probe fails loud if a DERIVED binary goes missing
+# from the image (see loremaster.shellout.required_binaries).
+
+# curl is NOT derived and therefore NOT gated: the derived set only ever contains
+# binaries the shipped PYTHON execs, and no shipped code execs curl. Keeping it is a
+# deliberate, declared exemption — never a silent one.
+# lore-ungated-binary: curl — kept for in-container debugging and a future healthcheck; no shipped code execs it, so no derived gate can cover it
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends curl git \
     && rm -rf /var/lib/apt/lists/*
