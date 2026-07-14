@@ -128,7 +128,8 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | # | Packet (file) | was | Wave | Size | Depends on | Status |
 |---|---------------|-----|------|------|-----------|--------|
 | 01 | ledger-triage + lore_index watched-path/branch line | PKT-29 | pre | 0.15 | — | **DONE 2026-07-14** (image 6d599942cc69, both containers) |
-| 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.20 | — | **NEXT** |
+| 01a | **artifact-conformance — run the suite IN the deployed image** (#139) | — | pre | 0.25 (measure-first) | 01 | open — **NEXT** |
+| 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.20 | — | open (after 01a) |
 | 03 | comms-message-graph (send/drain/ack, seq) | PKT-28 C2b | C | 0.25 | 02 | open |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
 | 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121) | PKT-28 C3 | C | 0.30 →split | 04 | open |
@@ -439,3 +440,19 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   exactly the shape that breaks it. Route to the #102/#120 owner BEFORE 17). Pool 5 RULED (#49 ACCEPT;
   the block is **717 tok MEASURED**, not the 575/538 rumors — and the eval bar justifying it predates
   the 15-tool surface: re-run ledgered, row 73516abe). NEXT = **packet 02** (#104 render architecture).
+- 2026-07-14 · **PACKET 01a MINTED (operator): run the test suite IN the deployed image (#139).**
+  THE TEST ENVIRONMENT IS A FICTION — the suite runs on a dev host, production is a container, and
+  EVERY difference is an unguarded gap. **Both of our worst outages lived in exactly that gap:** #131
+  (the image had no git; tests run where git EXISTS) and #107 (a schema ASSERT never migrated; every
+  test mints a VIRGIN db). Same root twice — *the fixture guarantees the one condition under which the
+  bug is invisible.* Packet 01's probes catch the #131 INSTANCE; this catches the CLASS.
+  DESIGN (operator's, settled): an EPHEMERAL container from the DEPLOYED image (`podman run --rm`),
+  worktree bind-mounted, test deps at run time — the odoo-dev pattern. Image untouched (packet 37 safe).
+  ⚠ THE TRAP: bind-mount the repo and `import loremaster` resolves to the MOUNTED SOURCE, not the baked
+  copy — you would test the working tree again, inside a container, and learn nothing (#24 in reverse).
+  The run MUST ASSERT `loremaster.__file__` is in site-packages and FAIL LOUD otherwise: mount the
+  TESTS, import the ARTIFACT. ⚠ AND: do NOT curate "environment-sensitive tests" — that is the name-list
+  that lost three times in packet 01. Run the WHOLE suite; host-vs-container DIVERGENCE is the signal.
+  MEASURE-FIRST: the divergence count is unknowable until run; it scopes its own triage (split to 01b
+  if it exceeds budget). Prediction recorded: **it will find real defects — if it finds none, suspect
+  the harness.** Runs BEFORE packet 02.
