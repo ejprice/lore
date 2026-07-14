@@ -1,40 +1,60 @@
 """Derive the external binaries lore's SHIPPED code can execute (findings #125/#131).
 
-The image must carry every binary the shipped packages can exec — today just ``git``,
-which the ``capture_git_identity`` seam shells out to. It did NOT, and so the git-derived
-fields (``lore_index()``'s watched-root branch, every snapshot's ``git_ref``) were a
-silent ``None`` in production while every test on a git-having host stayed green.
+The image must carry every binary the shipped packages can exec — today just ``git``, which
+the ``capture_git_identity`` seam shells out to. It did NOT, and so the git-derived fields
+(``lore_index()``'s watched-root branch, every snapshot's ``git_ref``) were a silent ``None``
+in production for three months while every test on a git-having host stayed green.
 
-The gate cannot be a list of forbidden losses (that set is unbounded and a name-list
-always loses). It is the inverse: DERIVE the small, enumerable SAFE set from the source,
-and let the deploy require exactly that. A new shell-out grows the required set BY ITSELF.
+ONE SANCTIONED EXEC SEAM
+------------------------
+No shipped module may reach a process spawner AT ALL, except an explicit allowlist —
+:data:`SANCTIONED_EXEC_MODULES`, which today holds exactly one file:
+``loremaster/loremaster/index/snapshots.py``.
 
-Coverage is a CHECKED variable, never a hope — and it is checked PER SITE, never per
-module. Every call that reaches a process spawner is resolved into the set or raises
-:class:`UnresolvedExecSiteError` naming ``file:line``. There is no third outcome. (There
-was: the first cut keyed on RECEIVER NAMES — ``subprocess`` / ``os`` / ``asyncio`` — and
-guarded coverage per MODULE, so ``import subprocess as sp`` and ``from os import system``
-walked straight through it, and ONE readable call disarmed the check for a whole file. The
-name-list losing again, inside the fix that cites the lesson.)
+This is the third design for this gate. The first keyed on RECEIVER NAMES
+(``subprocess``/``os``/``asyncio``) and was defeated by ``import subprocess as sp`` and
+``from os import system``. The second followed each module's BINDINGS and was defeated by
+``self._runner = subprocess.run``, by ``import os.path`` + ``os.system(...)``, and by
+``from subprocess import *``. Both lost the same way, and the way they lost is the point:
+**a scan whose job is to RESOLVE arbitrary modules must model every route to a spawner, and
+that set is unbounded.** A route it does not model shrinks the required set SILENTLY — which
+is #131, exactly.
 
-The spawner is therefore resolved through the module's own BINDINGS: whatever local name an
-import or an assignment bound a spawner to, aliased or not, is what the scan follows. A
-reference to a spawner the scan cannot follow to a literal ``argv[0]`` is a human verdict,
-never a silent shrink of the set the deploy trusts.
+So the posture is inverted, per this repo's standing law (*"the forbidden set is unbounded;
+the SAFE set is small and enumerable — allowlist the safe"*):
+
+* **The DENY side over-approximates and fails LOUD.** Outside the seam this scan does not try
+  to recognise HOW a module reaches a spawner — only that it MIGHT. Any doubt is a refusal
+  naming ``file:line``. A false positive is CHEAP and CORRECT: a human either sanctions the
+  module (a visible, reviewed edit to the allowlist) or routes it through the seam. **Erring
+  loud is the design.** It is what ends the shape game — an evading shape in a non-sanctioned
+  module still trips a detector that is not trying to be clever.
+* **The RESOLVE side is precise, and lives ONLY inside the seam.** We cannot demand a
+  canonical, readable form of the whole codebase. We can demand it of ONE file. Inside it,
+  ``argv[0]`` resolves to a literal or the scan fails loud.
+* **The allowlist is a CHECKED artifact.** It cannot be grown from inside a module (no
+  pragma, no marker), a stale entry raises, and a sanctioned module that execs nothing raises
+  — an exemption must be NEEDED. Sanction a file and its binary enters the derived set,
+  whereupon the contract demands the image install it. Nobody has to remember anything.
 
 An empty set is not, in itself, the danger — the CAUSE is:
 
 * the scan found NO MODULES → :class:`ShelloutScanError` (a gate over nothing passes over
   everything);
-* a module reaches a spawner in a form the scan cannot resolve →
+* a non-sanctioned module reaches a spawner, or a sanctioned one is unreadable →
   :class:`UnresolvedExecSiteError`;
 * the shipped packages genuinely exec nothing → a legitimate ``frozenset()``, which the
   deploy reports in words.
 
+KNOWN BOUND (ledgered, not fixed): a THIRD-PARTY dependency that spawns on our behalf
+(``plumbum``, ``pexpect``, ``GitPython``) is invisible to an AST scan of our own source.
+Closing it means scanning site-packages, which would make the deploy demand every binary
+every dependency can reach. We ship no such dependency today.
+
 This is the SOLE authority for the derivation (repo standing law, "ONE IMPLEMENTATION"):
 both the repo's own contract (``loremaster/tests/test_shellout_allowlist.py``) and the
-lore-deploy skill's artifact-gate probes call :func:`required_binaries` — neither keeps
-a private copy of the scan.
+lore-deploy skill's artifact-gate probes call :func:`required_binaries` — neither keeps a
+private copy of the scan.
 """
 
 from __future__ import annotations
@@ -44,38 +64,92 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-# The spawn forms this scan understands, per spawner module. A call is an exec site when it
-# reaches one of these — through ANY local name the module bound it to.
+# --------------------------------------------------------------------------- #
+# THE SAFE SET. Every other shipped module is denied a process spawner outright.
+#
+# Growing this is the most security-relevant edit anyone can make to this instrument, so it is
+# a deliberate RED in the contract: a human must come here, read the architecture above,
+# confirm the new seam's argv[0] resolves, and confirm the binary is INSTALLED IN THE IMAGE.
+# --------------------------------------------------------------------------- #
+SANCTIONED_EXEC_MODULES: frozenset[str] = frozenset(
+    {"loremaster/loremaster/index/snapshots.py"}
+)
+
+# --------------------------------------------------------------------------- #
+# THE DENY SIDE — receiver-blind, binding-blind, deliberately coarse.
+#
+# Note what these sets are and are NOT. They are NOT an enumeration of the ways to REACH a
+# spawner (that set is unbounded — it is what beat v1 and v2). They are the CLOSED, DOCUMENTED
+# stdlib surfaces through which a process spawn can happen at all: the spawn-capable modules,
+# the os/asyncio spawn APIs, and the import machinery. A future author cannot extend them by
+# inventing a new alias — only CPython can, by growing its own API.
+# --------------------------------------------------------------------------- #
+_SPAWN_CAPABLE_MODULES = frozenset(
+    {
+        "subprocess", "pty", "multiprocessing", "posix", "_posixsubprocess", "popen2",
+        "commands", "imp",
+        # FFI reaches libc's own system(3)/exec(3) without touching a Python spawn API.
+        "ctypes",
+        # webbrowser.open() launches a browser BINARY.
+        "webbrowser",
+    }
+)
+
+# ``os``' process-spawn API — the closed, documented set. ``os`` itself is imported all over
+# shipped code for ``os.path`` / ``os.environ``, so it cannot be denied wholesale; its SPAWN
+# surface can be, and that surface is bounded in a way "every way to bind a name" never is.
+_OS_SPAWN_API = frozenset(
+    {
+        "system", "popen", "execl", "execle", "execlp", "execlpe", "execv", "execve",
+        "execvp", "execvpe", "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve",
+        "spawnvp", "spawnvpe", "posix_spawn", "posix_spawnp", "fork", "forkpty", "startfile",
+    }
+)
+_ASYNCIO_SPAWN_API = frozenset({"create_subprocess_exec", "create_subprocess_shell"})
+_SPAWN_PRIMITIVES = _OS_SPAWN_API | _ASYNCIO_SPAWN_API
+
+# The import machinery: the one way to obtain a spawn-capable module without an import
+# statement. (``importlib.resources`` / ``importlib.metadata`` are NOT machinery and ARE used
+# by shipped code — only the machinery names below are denied.)
+_DYNAMIC_REACH = frozenset(
+    {"__import__", "import_module", "load_module", "exec_module", "eval", "exec"}
+)
+
+# The doors that hand out a module's namespace WHOLESALE, naming no primitive at all:
+# ``getattr(os, "sys" + "tem")``, ``vars(os)["system"]``, ``os.__dict__[...]``,
+# ``sys.modules["subprocess"]``. Receiver-blindness cannot see these — there is no spawn name
+# to see — so they are denied on any name the module IMPORTED.
+_MODULE_NAMESPACE_DOORS = frozenset({"__dict__", "modules"})
+_NAMESPACE_BUILTINS = frozenset({"getattr", "setattr", "delattr", "vars"})
+
+# --------------------------------------------------------------------------- #
+# THE RESOLVE SIDE — the spawn CALLS whose argv[0] the seam must make readable.
+# --------------------------------------------------------------------------- #
 _SUBPROCESS_EXEC_CALLS = frozenset(
     {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"}
 )
-_OS_EXEC_CALLS = frozenset(
-    {
-        "system", "popen", "execv", "execve", "execvp", "execvpe", "execl", "execle",
-        "execlp", "spawnv", "spawnve", "spawnvp", "spawnl", "spawnle", "spawnlp",
-        "posix_spawn", "posix_spawnp",
-    }
-)
-_ASYNCIO_EXEC_CALLS = frozenset({"create_subprocess_exec", "create_subprocess_shell"})
+_SPAWN_CALLS = _SUBPROCESS_EXEC_CALLS | _SPAWN_PRIMITIVES
 
-_SPAWNERS: dict[str, frozenset[str]] = {
-    "subprocess": _SUBPROCESS_EXEC_CALLS,
-    "os": _OS_EXEC_CALLS,
-    "asyncio": _ASYNCIO_EXEC_CALLS,
-}
+# The modules a sanctioned seam may spawn THROUGH, and the only form it may import them in.
+_SEAM_SPAWNER_MODULES = _SPAWN_CAPABLE_MODULES | {"os", "asyncio"}
 
 
 class ShelloutScanError(RuntimeError):
     """The scan cannot vouch for the derived set — a human must rule, never a guess.
 
-    The danger is the CAUSE, not the empty outcome. A scan over no modules, and a module
-    whose spawn sites cannot be read, must never quietly become "this image needs nothing";
-    both raise. Shipped packages that genuinely exec nothing are a legitimate empty answer.
+    The danger is the CAUSE, not the empty outcome. A scan over no modules, a stale allowlist
+    entry, and a sanctioned module that execs nothing must never quietly become "this image
+    needs nothing"; all raise. Shipped packages that genuinely exec nothing are a legitimate
+    empty answer.
     """
 
 
 class UnresolvedExecSiteError(ShelloutScanError):
-    """A shipped exec site whose ``argv[0]`` the scan cannot resolve. Names ``file:line``."""
+    """A shipped module reached a process spawner the scan will not vouch for.
+
+    Outside the sanctioned seam that means it reached one AT ALL. Inside it, that means its
+    ``argv[0]`` could not be read. Either way: names ``file:line``, and a human rules.
+    """
 
 
 def _workspace_members(repo_root: Path) -> list[str]:
@@ -93,9 +167,10 @@ def _workspace_members(repo_root: Path) -> list[str]:
 def _shipped_modules(repo_root: Path) -> list[Path]:
     """Every module that RUNS in the image: each member's installed package.
 
-    Deliberately not the whole member directory — a member's ``tests/`` tree is copied
-    into the image but never runs there, and its shell-outs must not make the deploy
-    demand binaries the image has no reason to carry.
+    Deliberately not the whole member directory — a member's ``tests/`` tree is copied into
+    the image but never runs there. Its shell-outs must not make the deploy demand binaries
+    the image has no reason to carry, and (just as important) the deny side must not force
+    every test file that shells out to be sanctioned: an instrument that noisy gets deleted.
     """
     modules: list[Path] = []
     for member in _workspace_members(repo_root):
@@ -120,158 +195,298 @@ def _argv0(node: ast.Call) -> str | None:
     return None
 
 
-class _SpawnScan:
-    """One module's spawner BINDINGS, its exec sites, and every reference it cannot read.
+def _verdict(relative: str, lineno: int, why: str) -> UnresolvedExecSiteError:
+    return UnresolvedExecSiteError(f"{relative}:{lineno}: {why} (findings #125/#131)")
 
-    Two passes, and that is what makes coverage a per-SITE property. Pass 1 learns every
-    local name that reaches a spawner (``import subprocess as sp``, ``from os import system
-    as sh``, ``SPAWNER = subprocess.Popen``). Pass 2 resolves EVERY call made through one of
-    them, and reports every OTHER reference to one as unreadable — so a single readable call
-    can no longer vouch for its neighbours.
+
+def _deny_identifier(identifier: str, relative: str, lineno: int) -> None:
+    """Refuse a bare name or attribute that IS a spawn / import-machinery primitive.
+
+    Receiver-blind on purpose: ``anything.system(...)`` is refused on the strength of
+    ``system`` alone. v1 keyed on the receiver names, and the repo's instrument table records
+    the result — *"a gate keyed on 2 receiver names, defeated by six other doors."*
     """
+    if identifier in _SPAWN_PRIMITIVES:
+        raise _verdict(
+            relative, lineno,
+            f"names the process-spawn primitive {identifier!r}. The scan deliberately does "
+            f"not look at WHAT you call it on — the spawn API is a closed set; the ways to "
+            f"bind a name to it are not",
+        )
+    if identifier in _DYNAMIC_REACH:
+        raise _verdict(
+            relative, lineno,
+            f"names the import-machinery primitive {identifier!r}, which can obtain a "
+            f"process-spawn module without an import statement",
+        )
 
-    def __init__(self, tree: ast.Module, relative: Path) -> None:
-        self._tree = tree
-        self._relative = relative
-        self._modules: dict[str, str] = {}  # local alias -> "subprocess" / "os" / "asyncio"
-        self._callables: dict[str, str] = {}  # local alias -> the spawner module it came from
-        self._consumed: set[int] = set()  # nodes a resolved call or a binding accounted for
-        self._attribute_bases: set[int] = set()  # every ``x`` of an ``x.y`` in this module
 
-    def binaries(self) -> set[str]:
-        """The binaries this module execs — raising on any site or reference it cannot read."""
-        self._learn_bindings()
-        binaries: set[str] = set()
-        for node in ast.walk(self._tree):
-            if not isinstance(node, ast.Call) or self._spawner_of(node.func) is None:
-                continue
-            binary = _argv0(node)
-            if binary is None:
-                raise self._verdict(
-                    node.lineno,
-                    "cannot resolve argv[0] of this exec call. The image's required-binary "
-                    "set is DERIVED from these sites, so an unreadable one is a human "
-                    "verdict, never a silent skip: make argv[0] a literal, or install the "
-                    "binary and teach this scan about it.",
-                )
-            self._consumed.add(id(node.func))
-            binaries.add(binary)
-        self._assert_every_spawner_reference_was_read()
-        return binaries
+def _deny_import(node: ast.Import, relative: str, imported: set[str]) -> None:
+    """``import subprocess`` / ``import subprocess as sp`` / ``import asyncio.subprocess``."""
+    for alias in node.names:
+        if set(alias.name.split(".")) & _SPAWN_CAPABLE_MODULES:
+            raise _verdict(
+                relative, node.lineno,
+                f"imports the process-spawn module {alias.name!r}. Only a SANCTIONED exec "
+                f"seam may reach a spawner: route this through one, or add this file to "
+                f"SANCTIONED_EXEC_MODULES and install its binary in the image",
+            )
+        imported.add((alias.asname or alias.name).split(".")[0])
 
-    def _learn_bindings(self) -> None:
-        for node in ast.walk(self._tree):
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                self._attribute_bases.add(id(node.value))
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name in _SPAWNERS:
-                        self._modules[alias.asname or alias.name] = alias.name
-            elif isinstance(node, ast.ImportFrom):
-                module = (node.module or "").split(".")[0]
-                if module in _SPAWNERS:
-                    for alias in node.names:
-                        if alias.name in _SPAWNERS[module]:
-                            self._callables[alias.asname or alias.name] = module
-        # Assignments are learned last: `SPAWNER = subprocess.Popen` needs the imports first.
-        for node in ast.walk(self._tree):
-            if isinstance(node, ast.Assign):
-                self._learn_assignment(node)
 
-    def _learn_assignment(self, node: ast.Assign) -> None:
-        """``SPAWNER = subprocess.Popen`` / ``launch = run``: a spawner under a new name."""
-        module = self._spawner_of(node.value)
-        if module is None:
-            return
-        for target in node.targets:
-            if isinstance(target, ast.Name):
-                self._callables[target.id] = module
-        self._consumed.add(id(node.value))
+def _deny_import_from(node: ast.ImportFrom, relative: str, imported: set[str]) -> None:
+    """``from subprocess import run`` / ``from os import system`` / ``from os import *``."""
+    module = node.module or ""
+    if set(module.split(".")) & _SPAWN_CAPABLE_MODULES:
+        raise _verdict(
+            relative, node.lineno, f"imports from the process-spawn module {module!r}"
+        )
+    for alias in node.names:
+        if alias.name == "*":
+            raise _verdict(
+                relative, node.lineno,
+                f"star-imports from {module!r} — a star-import can smuggle any name, a "
+                f"spawner included, so the scan cannot vouch for what this module can reach",
+            )
+        if alias.name in _SPAWN_CAPABLE_MODULES or alias.name in _SPAWN_PRIMITIVES:
+            raise _verdict(
+                relative, node.lineno,
+                f"imports the process-spawn name {alias.name!r} from {module!r}",
+            )
+        if alias.name in _DYNAMIC_REACH:
+            raise _verdict(
+                relative, node.lineno,
+                f"imports the import-machinery primitive {alias.name!r}, which can obtain a "
+                f"spawner without an import statement",
+            )
+        imported.add(alias.asname or alias.name)
 
-    def _spawner_of(self, node: ast.expr) -> str | None:
-        """The spawner module this expression NAMES (whether or not it calls it)."""
+
+def _deny_namespace_doors(tree: ast.Module, relative: str, imported: set[str]) -> None:
+    """The doors that hand out a module's namespace without naming a primitive at all."""
+    for node in ast.walk(tree):
         if (
             isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
-            and (module := self._modules.get(node.value.id)) is not None
-            and node.attr in _SPAWNERS[module]
+            and node.value.id in imported
+            and node.attr in _MODULE_NAMESPACE_DOORS
         ):
-            return module
-        if isinstance(node, ast.Name):
-            return self._callables.get(node.id)
-        return None
+            raise _verdict(
+                relative, node.lineno,
+                f"reaches into the NAMESPACE of the imported module {node.value.id!r} via "
+                f"{node.attr!r} — which can hand out a spawner without ever naming one",
+            )
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _NAMESPACE_BUILTINS
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in imported
+        ):
+            raise _verdict(
+                relative, node.lineno,
+                f"reaches into the NAMESPACE of the imported module {node.args[0].id!r} via "
+                f"{node.func.id}() — which can hand out a spawner without ever naming one",
+            )
 
-    def _assert_every_spawner_reference_was_read(self) -> None:
-        """Any OTHER way this module touches a spawner is a site the scan cannot read.
 
-        ``functools.partial(subprocess.run, …)``, a ``SPAWNER`` handed to a caller,
-        ``getattr(subprocess, name)`` — the scan cannot know what argv these launch, and an
-        answer it cannot vouch for is a verdict, not a quietly smaller set.
-        """
-        for node in ast.walk(self._tree):
-            if id(node) in self._consumed:
-                continue
-            if isinstance(node, ast.Attribute) and self._spawner_of(node) is not None:
-                raise self._verdict(
-                    node.lineno,
-                    "this module NAMES a process spawner here without calling it with a "
-                    "literal argv[0] — the scan cannot know what it launches, and an empty "
-                    "answer here is how a required binary goes missing from the image "
-                    "(findings #125/#131). A human must rule.",
+def _deny_spawn_capability(tree: ast.Module, relative: str) -> None:
+    """A module outside the seam may not reach a process spawner. Any doubt is a refusal.
+
+    Deliberately blind to the RECEIVER and to the CALL SHAPE: the verdict is a function of the
+    CAPABILITY reaching this module, never of what it then does with it. That is what makes
+    the shape game unwinnable — there is nothing here for a clever shape to evade.
+
+    Args:
+        tree: The module's parsed AST.
+        relative: Its repo-relative POSIX path, for the verdict message.
+
+    Raises:
+        UnresolvedExecSiteError: The module can reach a process spawner. Names ``file:line``.
+    """
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            _deny_import(node, relative, imported)
+        elif isinstance(node, ast.ImportFrom):
+            _deny_import_from(node, relative, imported)
+        elif isinstance(node, ast.Attribute):
+            _deny_identifier(node.attr, relative, node.lineno)
+        elif isinstance(node, ast.Name):
+            _deny_identifier(node.id, relative, node.lineno)
+    _deny_namespace_doors(tree, relative, imported)
+
+
+def _resolve_sanctioned(tree: ast.Module, relative: str) -> set[str]:
+    """The binaries the SANCTIONED seam execs — demanding a canonical, readable form.
+
+    We cannot demand this of the whole codebase. We can demand it of one reviewed file: import
+    the spawner plainly, call it directly, and make ``argv[0]`` a literal. Anything else is a
+    refusal — a spawner stashed on ``self``, a module constant holding ``Popen``, a
+    ``functools.partial``, an alias, a from-import. (This is where audit residual RA1 dies by
+    construction: there is no assignment-learning here, so there is nothing to suppress the
+    fail-loud reference check.)
+
+    Args:
+        tree: The seam's parsed AST.
+        relative: Its repo-relative POSIX path.
+
+    Returns:
+        The literal ``argv[0]`` of every exec site in the seam.
+
+    Raises:
+        UnresolvedExecSiteError: The seam reaches a spawner in a form the scan cannot read.
+    """
+    spawner_modules = _seam_spawner_modules(tree, relative)
+    binaries = _seam_binaries(tree, relative, spawner_modules)
+    _deny_loose_spawner_reference(tree, relative, spawner_modules)
+    return binaries
+
+
+def _seam_spawner_modules(tree: ast.Module, relative: str) -> set[str]:
+    """The spawner modules the seam imported — demanding the plain, unaliased form."""
+    spawner_modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in _SEAM_SPAWNER_MODULES:
+                    continue
+                if alias.asname is not None or "." in alias.name:
+                    raise _verdict(
+                        relative, node.lineno,
+                        f"the sanctioned exec seam must import {alias.name!r} PLAINLY (no "
+                        f"alias, no dotted form) — the seam is the one file whose exec sites "
+                        f"the deploy trusts to be complete, so its form is not negotiable",
+                    )
+                spawner_modules.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            names = {alias.name for alias in node.names}
+            if (set(module.split(".")) & _SEAM_SPAWNER_MODULES) and (
+                names & (_SPAWN_CALLS | _SPAWN_CAPABLE_MODULES | {"*"})
+            ):
+                raise _verdict(
+                    relative, node.lineno,
+                    f"the sanctioned exec seam must not from-import a spawner from {module!r} "
+                    f"— import the module plainly and call it directly, so every exec site "
+                    f"reads as one",
                 )
-            if not isinstance(node, ast.Name):
-                continue
-            if node.id in self._callables:
-                raise self._verdict(
-                    node.lineno,
-                    "this module REFERENCES a process spawner here without calling it with "
-                    "a literal argv[0] — the scan cannot know what it launches. A human "
-                    "must rule (findings #125/#131).",
-                )
-            if node.id in self._modules and id(node) not in self._attribute_bases:
-                raise self._verdict(
-                    node.lineno,
-                    "this module hands the spawner module itself somewhere the scan cannot "
-                    "follow — what it execs is unknowable from the source. A human must "
-                    "rule (findings #125/#131).",
-                )
-
-    def _verdict(self, lineno: int, why: str) -> UnresolvedExecSiteError:
-        return UnresolvedExecSiteError(f"{self._relative}:{lineno}: {why}")
+    return spawner_modules
 
 
-def required_binaries(repo_root: Path) -> frozenset[str]:
+def _seam_binaries(tree: ast.Module, relative: str, spawner_modules: set[str]) -> set[str]:
+    """Every ``<spawner>.<exec_call>(...)`` in the seam, resolved to its literal ``argv[0]``."""
+    calls_by_func = {
+        id(node.func): node for node in ast.walk(tree) if isinstance(node, ast.Call)
+    }
+    binaries: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        if not (isinstance(node.value, ast.Name) and node.value.id in spawner_modules):
+            continue
+        if node.attr not in _SPAWN_CALLS:
+            continue  # subprocess.PIPE, subprocess.SubprocessError — not a spawn.
+        call = calls_by_func.get(id(node))
+        if call is None:
+            raise _verdict(
+                relative, node.lineno,
+                f"NAMES the spawner {node.value.id}.{node.attr} without calling it here — the "
+                f"scan cannot know what argv it will eventually launch. Call it directly, "
+                f"with a literal argv[0]",
+            )
+        binary = _argv0(call)
+        if binary is None:
+            raise _verdict(
+                relative, node.lineno,
+                "cannot resolve argv[0] of this exec call. The image's required-binary set is "
+                "DERIVED from these sites, so an unreadable one is a human verdict, never a "
+                "silent skip: make argv[0] a literal",
+            )
+        binaries.add(binary)
+    return binaries
+
+
+def _deny_loose_spawner_reference(
+    tree: ast.Module, relative: str, spawner_modules: set[str]
+) -> None:
+    """The seam may not hand the spawner MODULE itself anywhere the scan cannot follow."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Name) or node.id not in spawner_modules:
+            continue
+        if node.id not in _SPAWN_CAPABLE_MODULES:
+            continue  # a bare ``os`` / ``asyncio`` is ordinary; a bare ``subprocess`` is not.
+        if any(
+            isinstance(parent, ast.Attribute) and parent.value is node
+            for parent in ast.walk(tree)
+        ):
+            continue
+        raise _verdict(
+            relative, node.lineno,
+            f"hands the spawner module {node.id!r} somewhere the scan cannot follow — what it "
+            f"execs is unknowable from the source",
+        )
+
+
+def required_binaries(
+    repo_root: Path, *, sanctioned: frozenset[str] = SANCTIONED_EXEC_MODULES
+) -> frozenset[str]:
     """Every external binary the shipped packages can exec — the image must carry each.
 
     Args:
         repo_root: The workspace root (the tree the image is built from).
+        sanctioned: The repo-relative POSIX paths allowed to reach a process spawner. Defaults
+            to :data:`SANCTIONED_EXEC_MODULES`, which is what the deploy uses — the keyword
+            exists so the contract's synthetic workspaces can declare their own seam.
 
     Returns:
         The derived safe set (e.g. ``frozenset({"git"})``). An empty set means the shipped
-        packages exec nothing — a legitimate answer the scan has VOUCHED for, never a
-        silently-lost one: both causes that would make it a lie raise instead.
+        packages exec nothing — a legitimate answer the scan has VOUCHED for, never a silently
+        lost one: every cause that would make it a lie raises instead.
 
     Raises:
-        ShelloutScanError: ``repo_root`` declares no shipped packages at all (a scan
-            over nothing yields an empty set, which is a gate that passes over anything).
-        UnresolvedExecSiteError: A shipped exec site's ``argv[0]`` is not a literal, or a
-            shipped module reaches a process spawner in a form the scan cannot follow to a
-            literal. Either way the scan cannot vouch for the set and a human must rule —
-            the deploy never proceeds on a required set it cannot trust. Names ``file:line``.
+        ShelloutScanError: ``repo_root`` declares no shipped packages (a scan over nothing
+            yields an empty set, which is a gate that passes over anything); or ``sanctioned``
+            names a module that does not exist (a stale exemption is a hole waiting for a file
+            to be created at that path); or a sanctioned module execs nothing (an exemption
+            must be NEEDED — deny-by-default, evidence-backed).
+        UnresolvedExecSiteError: A module outside the seam can reach a process spawner, or a
+            sanctioned module's ``argv[0]`` is not readable. Either way the scan cannot vouch
+            for the set and a human must rule. Names ``file:line``.
     """
     modules = _shipped_modules(repo_root)
     if not modules:
         raise ShelloutScanError(
             f"no shipped modules found under {repo_root} — its pyproject.toml declares no "
-            f"[tool.uv.workspace] members (or their packages are missing). A scan over "
-            f"nothing returns an EMPTY required set, which makes the deploy's binary gate "
-            f"pass vacuously over a container that has nothing. Point the scan at the "
-            f"workspace root the image is built from."
+            f"[tool.uv.workspace] members (or their packages are missing). A scan over nothing "
+            f"returns an EMPTY required set, which makes the deploy's binary gate pass "
+            f"vacuously over a container that has nothing. Point the scan at the workspace "
+            f"root the image is built from."
         )
 
     binaries: set[str] = set()
+    seen: set[str] = set()
     for module in modules:
-        relative = module.relative_to(repo_root)
+        relative = module.relative_to(repo_root).as_posix()
         tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
-        binaries |= _SpawnScan(tree, relative).binaries()
+        if relative not in sanctioned:
+            _deny_spawn_capability(tree, relative)
+            continue
+        seen.add(relative)
+        found = _resolve_sanctioned(tree, relative)
+        if not found:
+            raise ShelloutScanError(
+                f"{relative}: SANCTIONED as an exec seam, but it execs NOTHING. An exemption "
+                f"nobody needs is an open door for the next shell-out to be written behind, "
+                f"unreviewed — remove it from SANCTIONED_EXEC_MODULES."
+            )
+        binaries |= found
+
+    if stale := sorted(sanctioned - seen):
+        raise ShelloutScanError(
+            f"SANCTIONED_EXEC_MODULES names module(s) that do not exist under {repo_root}: "
+            f"{stale}. A stale exemption is a hole waiting for a file to be created at that "
+            f"path — delete the entry, or fix the path."
+        )
     return frozenset(binaries)
