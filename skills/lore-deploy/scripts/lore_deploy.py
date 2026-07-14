@@ -769,12 +769,15 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
     success: the required binaries must be present in the container AND the served honesty
     line must actually be alive for every git-backed watched root. A runtime gate is an
     invariant only over code it actually RUNS, so this is wired into every path that ends
-    with a running container, not documented as a should-run-this smoke step. The gates run
-    against the MCP endpoint, so ``_gate_artifact`` SKIPS them (loudly, on stdout) whenever
-    ``--no-wait`` meant the endpoint was never confirmed up — gating a socket we ourselves
-    declined to wait for can only fail, and fails blaming the image. When the endpoint WAS
-    independently confirmed (the already-running fast path), ``--no-wait`` had no effect and
-    the gates still run: "do not wait" is not "do not check".
+    with a running container, not documented as a should-run-this smoke step. Only LAYER 3
+    (the served honesty line) depends on the MCP endpoint — it HTTP-POSTs it — so
+    ``_gate_artifact`` SKIPS *that one gate* (loudly, on stdout) whenever ``--no-wait`` meant
+    the endpoint was never confirmed up; gating a socket we ourselves declined to wait for
+    can only fail, and fails blaming the image. LAYER 2 (required container binaries) is a
+    ``podman exec`` against the CONTAINER, needs no bound port, and ALWAYS runs, even under
+    ``--no-wait``. When the endpoint WAS independently confirmed (the already-running fast
+    path), ``--no-wait`` had no effect and both gates still run: "do not wait" is not "do
+    not check".
     """
     config_path = project / "lore.yaml"
     slug = project.name
@@ -1370,19 +1373,31 @@ def _gate_artifact(
     A skipped gate is ANNOUNCED, never silently dropped: an operator who sees the deploy's
     success line must not believe the artifact was checked when it was not.
 
-    Note what is NOT skipped: when the endpoint IS confirmed up (the already-running path,
-    where the port probe answers before ``_await_bind`` is ever reached), ``--no-wait`` had
-    no effect and both gates run. "Do not wait" is not "do not check" — turning the flag
-    into a global off-switch for the #125/#131 instrument would re-open the hole this packet
-    exists to close, for everyone who habitually passes it.
+    Note what is NOT skipped — and it is the point of this function:
+
+    * **Layer 2 (required container binaries) ALWAYS runs.** It is a ``podman exec``: it
+      needs a running CONTAINER, not a bound PORT. Skipping it under ``--no-wait`` would
+      disarm the very check that would have caught the git-less image for three months
+      (#131), for a reason that does not apply to it. "Do not wait" is not "do not check",
+      and it is certainly not "do not check the thing that never needed the wait."
+    * **Layer 3 (the served honesty line) is the ONLY endpoint-dependent gate**, so it is
+      the only one an unconfirmed endpoint can excuse. It HTTP-POSTs that very endpoint;
+      running it after declining to wait is a gate pointed at a socket we ourselves
+      guaranteed would refuse — it can only fail, and it fails blaming the image.
+    * When the endpoint IS confirmed (the already-running path, where the port probe answers
+      before ``_await_bind`` is ever reached), ``--no-wait`` had no effect and BOTH gates
+      run.
     """
+    if (result := _probe_container_binaries(container_name)) != _EXIT_OK:
+        return result
     if endpoint_confirmed:
-        return _probe_artifact(container_name, host, port, path)
+        return _probe_workspace_honesty(container_name, host, port, path)
     print(
-        f"start: --no-wait set — the MCP endpoint was never confirmed, so the artifact "
-        f"gates (required container binaries, served honesty line) were SKIPPED for "
-        f"{container_name}. The image is UNVERIFIED: re-run `start` without --no-wait "
-        f"once the server is up to gate it (findings #125/#131)."
+        f"start: --no-wait set — the MCP endpoint was never confirmed, so the served "
+        f"HONESTY LINE (layer 3) was SKIPPED for {container_name}. The required container "
+        f"binaries WERE checked (layer 2 needs no endpoint). The served honesty line is "
+        f"UNVERIFIED: re-run `start` without --no-wait once the server is up to gate it "
+        f"(findings #125/#131)."
     )
     return _EXIT_OK
 

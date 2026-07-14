@@ -58,6 +58,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -348,18 +349,26 @@ class TestRequiredBinariesAreDerived:
     def test_the_required_set_is_derived_from_the_source_not_hardcoded(
         self, tmp_path: Path
     ) -> None:
-        # Pointed at a SYNTHETIC workspace whose shipped code execs ``rg`` (never
-        # ``git``), the deploy's required set must be ["rg"]. A hardcoded ["git"] — which
-        # would agree with the real repo today, and so pass any real-repo comparison —
-        # dies right here.
+        # Pointed at a SYNTHETIC workspace whose shipped code execs ``rg`` (never ``git``),
+        # the deploy's required set must be ["rg"]. A hardcoded ["git"] — which would agree
+        # with the real repo today, and so pass any real-repo comparison — dies right here.
+        #
+        # The exec site is placed at the SANCTIONED seam's path (the sanctioned-seam
+        # architecture: no shipped module may reach a spawner except the allowlist, and the
+        # allowlist is keyed on the repo-relative PATH). That is load-bearing here in a second
+        # way: ``required_container_binaries`` takes no ``sanctioned`` keyword and must not —
+        # it walks through the DEFAULT allowlist, exactly as production does. A build that let
+        # the deploy widen its own safe set would have a door the contract never sees.
         (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "s"\nversion = "0"\n\n[tool.uv.workspace]\nmembers = ["alpha"]\n',
+            '[project]\nname = "s"\nversion = "0"\n\n'
+            '[tool.uv.workspace]\nmembers = ["loremaster"]\n',
             encoding="utf-8",
         )
-        package = tmp_path / "alpha" / "alpha"
-        package.mkdir(parents=True)
-        (package / "__init__.py").write_text("", encoding="utf-8")
-        (package / "runner.py").write_text(
+        seam = tmp_path / "loremaster" / "loremaster" / "index" / "snapshots.py"
+        seam.parent.mkdir(parents=True)
+        (seam.parent.parent / "__init__.py").write_text("", encoding="utf-8")
+        (seam.parent / "__init__.py").write_text("", encoding="utf-8")
+        seam.write_text(
             'import subprocess\n\n\ndef go() -> None:\n    subprocess.run(["rg"], check=False)\n',
             encoding="utf-8",
         )
@@ -369,6 +378,31 @@ class TestRequiredBinariesAreDerived:
             "(loremaster.shellout.required_binaries) — a hand-kept list is a list someone "
             "must remember to update, which is exactly how the image lost git"
         )
+
+    def test_a_shipped_module_OUTSIDE_the_seam_stops_the_deploy(self, tmp_path: Path) -> None:
+        # The other half of the sanctioned-seam architecture, at the DEPLOY layer: a shipped
+        # module that reaches a process spawner without being sanctioned must make the deploy
+        # REFUSE, not quietly derive a smaller set. The derivation raises; the deploy's
+        # wrapper turns that into a RuntimeError, and ``_probe_container_binaries`` turns THAT
+        # into _EXIT_ERROR (pinned by test_a_derivation_that_cannot_vouch_stops_the_deploy).
+        #
+        # Byte-identical code to the fixture above. Only the PATH differs — and that is the
+        # whole architecture.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "s"\nversion = "0"\n\n'
+            '[tool.uv.workspace]\nmembers = ["loremaster"]\n',
+            encoding="utf-8",
+        )
+        package = tmp_path / "loremaster" / "loremaster"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "not_the_seam.py").write_text(
+            'import subprocess\n\n\ndef go() -> None:\n    subprocess.run(["rg"], check=False)\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="not_the_seam"):
+            lore_deploy.required_container_binaries(tmp_path)
 
     def test_the_required_set_for_this_repo_is_what_the_shipped_code_execs(self) -> None:
         # And on the REAL repo it agrees with the ONE derivation — no second scanner.
@@ -944,6 +978,14 @@ class TestTheProbesAreWiredIntoTheDeployVerb:
             f"declined to confirm (ran: {ran}) — the gate can only fail there, and it "
             f"blames the image for it (DEFECT-1)"
         )
+        assert "binaries" in ran, (
+            f"the {path_name} path skipped the required-BINARY gate under --no-wait too "
+            f"(ran: {ran}). Layer 2 is a `podman exec`: it needs a running CONTAINER, not a "
+            f"bound PORT — the endpoint has nothing to do with it. Skipping it disarms the "
+            f"ONE check that would have caught the git-less image for three months (#131), "
+            f"for a reason that does not apply to it. Only layer 3 reads the endpoint; only "
+            f"layer 3 may be excused by an unconfirmed one (NEW-2)"
+        )
         announcement = [
             line for line in out.splitlines()
             if _hits(line, _GATE_WORDS) and _hits(line, _SKIP_WORDS)
@@ -986,6 +1028,123 @@ class TestTheProbesAreWiredIntoTheDeployVerb:
             f"never took effect — yet the artifact gates were skipped anyway (ran: {ran}). "
             f"'Do not wait' is not 'do not check': skipping a gate we CAN run turns "
             f"--no-wait into a global off-switch for the #125/#131 instrument"
+        )
+
+    @pytest.mark.parametrize(
+        ("state", "current_image", "bound", "path_name"),
+        [
+            pytest.param(None, True, None, "fresh launch", id="fresh_launch"),
+            pytest.param("running", False, None, "stale image → recreate", id="stale_recreate"),
+            pytest.param(
+                "running", True, False, "already running, port not yet bound",
+                id="already_running_unbound",
+            ),
+        ],
+    )
+    def test_the_BINARY_gate_still_STOPS_the_deploy_under_no_wait(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        state: str | None,
+        current_image: bool,
+        bound: bool | None,
+        path_name: str,
+    ) -> None:
+        """NEW-2's payload. The pin above proves layer 2 RUNS under ``--no-wait``; this one
+        proves its verdict still BITES.
+
+        A build that runs the binary probe and then ignores its exit code satisfies "binaries"
+        in ``ran`` perfectly — and ships the git-less image anyway. **Running a gate and
+        heeding a gate are two different claims**, and this repo has shipped the first while
+        believing the second (finding #102: "ROUTING IS NOT SHARING — a caller that calls the
+        shared driver but hand-rolls the decision underneath it is a private copy wearing the
+        shared name"). So: force layer 2 to FAIL, and require the deploy to STOP.
+        """
+        project, env_file, _ = self._arrange(
+            monkeypatch, tmp_path, state=state, current_image=current_image
+        )
+        if bound is not None:
+            monkeypatch.setattr(lore_deploy, "_probe_mcp_port", lambda *a, **k: bound)
+        monkeypatch.setattr(
+            lore_deploy, "_probe_container_binaries", lambda *a, **k: lore_deploy._EXIT_ERROR
+        )
+
+        assert lore_deploy.verb_start(project, env_file, no_wait=True) == lore_deploy._EXIT_ERROR, (
+            f"the {path_name} path found a container MISSING a binary the shipped code execs "
+            f"and reported SUCCESS, because --no-wait was set. The binary gate does not need "
+            f"the endpoint and must not be excused by it — this is the exact failure (#131) "
+            f"the whole packet exists to close, surviving inside the flag (NEW-2)"
+        )
+
+    @pytest.mark.parametrize(
+        ("state", "current_image", "bound", "path_name"),
+        [
+            pytest.param(None, True, None, "fresh launch", id="fresh_launch"),
+            pytest.param("running", False, None, "stale image → recreate", id="stale_recreate"),
+            pytest.param(
+                "running", True, False, "already running, port not yet bound",
+                id="already_running_unbound",
+            ),
+        ],
+    )
+    def test_the_skip_announcement_does_not_claim_the_BINARY_gate_was_skipped(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        state: str | None,
+        current_image: bool,
+        bound: bool | None,
+        path_name: str,
+    ) -> None:
+        """SERVED ENGLISH — this repo's most expensive defect class, guarded mechanically.
+
+        Today the announcement reads *"the artifact gates (required container binaries, served
+        honesty line) were SKIPPED"*. Once layer 2 always runs, that sentence is a LIE in the
+        one direction that matters: it tells an operator the binary check did not happen when
+        it did, so they will re-run the deploy to get a check they already have — or, worse,
+        distrust a gate that is in fact protecting them.
+
+        The repo's law (CLAUDE.md, "A DIAGNOSIS IS NOT AN INSTRUMENT"): prose that describes
+        behaviour must be DERIVED from the behaviour, not restated beside it. There is no
+        derivation available for a print() string, so this pin is the instrument: the skip
+        announcement must name the HONESTY LINE, and must not put the word "binaries" inside a
+        sentence that says something was skipped.
+        """
+        project, env_file, ran = self._arrange(
+            monkeypatch, tmp_path, state=state, current_image=current_image
+        )
+        if bound is not None:
+            monkeypatch.setattr(lore_deploy, "_probe_mcp_port", lambda *a, **k: bound)
+
+        assert lore_deploy.verb_start(project, env_file, no_wait=True) == lore_deploy._EXIT_OK
+        out = capsys.readouterr().out
+
+        # Scoped to the SENTENCE, not the line — and that granularity is load-bearing. The
+        # announcement is one long print(), so a line-scoped pin cannot tell "the binary gate
+        # was skipped" (a lie) from "the honesty line was skipped; the binaries WERE checked"
+        # (the truth, and MORE informative than saying nothing). The first draft of this pin
+        # was line-scoped and went RED against a correct build — the probe firing for the
+        # wrong reason, which is the failure mode the repo's own law warns about.
+        sentences = [
+            sentence for sentence in re.split(r"(?<=[.!?])\s+", out) if sentence.strip()
+        ]
+        skipped = [sentence for sentence in sentences if _hits(sentence, _SKIP_WORDS)]
+        assert skipped, f"the {path_name} path announced no skip at all. Got:\n{out}"
+
+        lying = [sentence for sentence in skipped if "binar" in sentence.lower()]
+        assert not lying, (
+            f"a sentence tells the operator the required-BINARY gate was skipped, and it was "
+            f"not — layer 2 ran (ran: {ran}). A gate that runs while the deploy says it did "
+            f"not is a false NEGATIVE: the operator re-runs to obtain a check they already "
+            f"have, or stops trusting the one thing that IS protecting them. Name the honesty "
+            f"line, which really was skipped. (Saying the binaries WERE checked, in a sentence "
+            f"of its own, is fine — better than fine.)\nSentence(s): {lying}"
+        )
+        assert any("honest" in sentence.lower() for sentence in skipped), (
+            f"the skip announcement must name WHICH gate did not run — the served honesty "
+            f"line (layer 3), the only gate that reads the endpoint. 'The artifact gates' is "
+            f"the sentence that is now wrong. Got:\n{out}"
         )
 
     def test_an_unreachable_endpoint_STILL_fails_when_no_wait_is_NOT_set(
