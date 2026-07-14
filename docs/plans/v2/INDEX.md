@@ -37,10 +37,13 @@ HERE now** — a packet session must not need to read them.
 ## State of record (verified 2026-07-14)
 - Branch `feat/surreal-unification` @ **8836baf** (not pushed). Full suite at last
   lead-run: **5385 passed / 0 failed** (`-n auto`, the standing runner).
-- **Deployed image b0fce6904fc5** on BOTH containers (lore-lore :9202, DI :9201).
-  15-tool surface (lore_comms landed C1); cosine substrate live; floor **0.50649**
-  (4-group survey + drift trigger); P7→P8d′, SLATE S1–S7, the closure wave, PKT-06/C0,
-  PKT-28 C1, and the #102 retry-substrate chain all CLOSED.
+- Deployed: lore-lore (:9202) runs an image baking clean HEAD (byte-verified at
+  82a4ef1; 77b2486f733a at verification — a snapshot, not a pin); DI (:9201) is
+  on-demand and picks up the latest image on next start. 15-tool surface (lore_comms
+  landed C1); cosine substrate live; floor **0.50649** (4-group survey + drift
+  trigger); P7→P8d′, SLATE S1–S7, the closure wave, PKT-06/C0, PKT-28 C1, and the
+  #102 retry-substrate chain all CLOSED. Hashes here are as-of-verification snapshots;
+  the authoritative deployment check is always RELATIVE (protocol, Boot 4).
 - Standing eval bar: **35-pair set, pinned claude-sonnet-4-5-20250929, client metrics**
   (accuracy ≥33/35 · tokens-per-correct ≈1375-era · taxed-calls ≈0). 11-pair calls-leg
   retired. Last receipts: 33/35 · 6.46 calls · 1440.8 tok (2026-07-07).
@@ -57,6 +60,10 @@ it; when in doubt, read it)**. (3) Start lore if down (`lore-deploy`
 skill), then `lore_index()` freshness, `lore_findings status=open`, `lore_tasks` —
 mint/claim your ledger rows. (4) Run your packet's ENTRY CHECK; if ground truth
 contradicts the packet, STOP and surface — never build on a stale premise.
+**Entry checks assert RELATIVE facts** (deployed code CONTAINS commits X; suite green
+at HEAD) — **never pinned snapshots** ("image hash Y still deployed"); snapshot hashes
+live in receipts and the Log only (operator, 2026-07-14 — a pinned-hash entry check
+false-STOPped packet 01 the first time it ran; any rebuild rots an absolute pin).
 Operator kickoff: **load `docs/plans/v2/KICKOFF.md` at session start** — it is the
 standing spawn prompt and encodes this ritual.
 
@@ -364,3 +371,8 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   (protocol §Roster). Sidecar pattern codified in repo CLAUDE.md → Orchestration: general-
   purpose (never fork), spawned once, standing by for SendMessage follow-ups from loaded
   context. comms-subsystem ruling 7 + the 2026-07-12 CLAUDE.md roster line amended in place.
+- 2026-07-14 · **ENTRY CHECKS ARE RELATIVE (operator):** packet 01's first live run
+  false-STOPped on a pinned image hash (b0fce6904fc5 superseded by a HEAD-baking rebuild,
+  byte-verified). Law added to protocol Boot 4: entry checks assert relative facts (deployed
+  ⊇ cited commits), never pinned snapshots; packet 01 + state-of-record amended. Packet 01
+  proceeding (Opus session, first KICKOFF.md boot — STOP-and-surface worked as designed).

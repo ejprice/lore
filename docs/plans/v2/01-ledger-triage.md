@@ -55,7 +55,10 @@ plan treats as open bugs are already fixed; several routed destinations changed 
 ## Entry check
 `lore_findings status=open` + `status=acknowledged` + `lore_tasks action=query` — diff the
 live sets against the table; any row NOT in the table is a new finding to route (surface,
-don't drop). Confirm image b0fce6904fc5 still deployed before citing it in receipts.
+don't drop). Confirm the DEPLOYED image is CURRENT — a RELATIVE check, never a pinned hash
+(operator, 2026-07-14): the running lore-lore container bakes the fix commits you are about
+to cite (spot-check one touched file's md5 in the container against HEAD). Hashes named in
+Scope IN are receipts of WHEN a fix shipped, not assertions about what runs now.
 
 ## Exit
 Every open/acknowledged row transitioned or annotated with its destination; batch edges
