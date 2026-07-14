@@ -50,8 +50,11 @@ How to run:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
+from typing import Any
 
+import loremaster.shellout as shellout_module
 import pytest
 from loremaster.shellout import (
     ShelloutScanError,
@@ -109,6 +112,113 @@ def _shellout(binary: str) -> str:
         "def go() -> None:\n"
         f'    subprocess.run(["{binary}", "--version"], check=False)\n'
     )
+
+
+# --------------------------------------------------------------------------- #
+# FIX WAVE (packet 01, cold audit REPORT-pkt01-audit-1.md §D DEFECT-3/DEFECT-4, §R R3)
+# --------------------------------------------------------------------------- #
+
+# A plainly-resolvable exec site, for the CO-RESIDENT flavour of every shape below. Its
+# presence is the whole trick: today's coverage guard is keyed per-MODULE
+# (``resolved_sites == 0 and _can_spawn(tree)``), so ONE resolvable call disarms the check
+# for the ENTIRE file — and every other exec site in it becomes invisible, silently.
+_RESOLVABLE_SITE = (
+    "import subprocess\n"
+    "\n"
+    "\n"
+    "def resolvable() -> None:\n"
+    f'    subprocess.run(["{_ALPHA_BINARY}", "-n"], check=False)\n'
+    "\n"
+    "\n"
+)
+
+# The Containerfile the image is actually built from — the artifact this whole instrument
+# exists to gate. Read, never guessed.
+_CONTAINERFILE = _REPO_ROOT / "Containerfile"
+
+# A binary the image installs but NO gate protects must be DECLARED, with a reason, in the
+# Containerfile itself. The declaration turns an ungated binary from a silent fact into a
+# CHECKED variable — the same move the derived set makes for the gated ones.
+#
+#     # lore-ungated-binary: curl — reserved for a container healthcheck; no shipped code execs it
+#
+_UNGATED_MARKER = re.compile(
+    r"^#\s*lore-ungated-binary:\s*(?P<name>[A-Za-z0-9._+-]+)\s*[—:-]\s*(?P<reason>\S.*)$"
+)
+# The identifiers by which a Containerfile comment CITES the layer-2 gate. A comment block
+# that cites the gate is making a claim ABOUT the gate, and that claim is checkable.
+_GATE_CITATIONS = ("shellout", "required_binaries", "layer 2", "layer-2")
+_MIN_REASON_CHARS = 20
+
+
+def _containerfile_text() -> str:
+    return _CONTAINERFILE.read_text(encoding="utf-8")
+
+
+def _apt_installed_binaries(text: str) -> set[str]:
+    """The binaries the image apt-installs (the packages named on the ``apt-get install`` line).
+
+    Deliberately parsed from the REAL Containerfile rather than restated here: a hand-kept
+    copy of the install list is the very thing this file exists to abolish. (Package name ==
+    binary name for the trivial packages the image installs; a package whose binary differs
+    would need an explicit mapping, and the pins below would go RED and demand one — which
+    is the instrument working.)
+    """
+    assert "apt-get install" in text, "the Containerfile no longer has an apt-get install line"
+    tail = text.split("apt-get install", 1)[1]
+    tail = tail.replace("\\\n", " ")  # join the shell line-continuations
+    tail = tail.split("&&")[0]  # …but stop at the NEXT shell command (`&& rm -rf …`)
+    tail = tail.split("\n")[0]  # …and never cross into a new RUN
+    installed = {token for token in tail.split() if not token.startswith("-")}
+    assert installed, (
+        f"parsed NO packages from the Containerfile's apt-get install line — the parser is "
+        f"broken, and every pin in this class would then pass VACUOUSLY over an image that "
+        f"installs anything at all. (tail parsed: {tail!r})"
+    )
+    return installed
+
+
+def _declared_ungated(text: str) -> dict[str, str]:
+    """The ungated binaries the Containerfile explicitly DECLARES, name → reason."""
+    declared: dict[str, str] = {}
+    for line in text.splitlines():
+        match = _UNGATED_MARKER.match(line.strip())
+        if match is not None:
+            declared[match.group("name")] = match.group("reason").strip()
+    return declared
+
+
+def _comment_blocks(text: str) -> list[str]:
+    """Maximal runs of consecutive comment lines — one block per prose claim."""
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            current.append(line)
+        elif current:
+            blocks.append("\n".join(current))
+            current = []
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def _resolved_or_loud(
+    root: Path, body: str, *, module: str = "runner.py"
+) -> tuple[frozenset[str] | None, str]:
+    """Run the derivation over a one-member workspace whose shipped module is ``body``.
+
+    Returns ``(derived_set, "")`` when the scan VOUCHED for an answer, or
+    ``(None, message)`` when it refused. Those are the only two outcomes the docstring of
+    ``shellout.py`` permits; a third — a set that silently omits a real exec site — is the
+    defect these pins exist to make impossible.
+    """
+    _write_workspace(root, ["alpha"])
+    _write_member(root, "alpha", module=module, body=body)
+    try:
+        return required_binaries(root), ""
+    except ShelloutScanError as raised:
+        return None, str(raised)
 
 
 class TestTheDerivedSetForThisRepo:
@@ -381,3 +491,414 @@ class TestTheScanFailsLoud:
             "exec site must FAIL LOUD (naming the module): a silently-empty answer there "
             "is exactly how a required binary goes missing from the image"
         )
+
+
+# --------------------------------------------------------------------------- #
+# FIX WAVE / F3 — DEFECT-3: the DERIVED set is a name-list wearing a derivation's clothes
+# --------------------------------------------------------------------------- #
+# Each row is (id, module body, the binary that exec site launches — or None when argv[0]
+# is genuinely unresolvable and LOUD is the only correct fate). Every row appears TWICE:
+# ALONE, and CO-RESIDENT with a plainly-resolvable ``subprocess.run(["rg"])`` site. The
+# co-resident flavour is the killer: today's coverage guard is keyed per-MODULE, so that
+# one resolvable call disarms the check for the whole file.
+_EXEC_SHAPES: list[tuple[str, str, str | None]] = [
+    (
+        "aliased_import",
+        'import subprocess as sp\n\n\ndef go() -> None:\n    sp.run(["fd", "."], check=False)\n',
+        "fd",
+    ),
+    (
+        # The alias is NOT one of the names anyone would think to enumerate. That is the
+        # point: the forbidden set is unbounded, so a scan keyed on RECEIVER NAMES loses.
+        "obscure_alias",
+        "import subprocess as _zz_engine\n\n\ndef go() -> None:\n"
+        '    _zz_engine.Popen(["fd", "."])\n',
+        "fd",
+    ),
+    (
+        "from_import",
+        'from subprocess import run\n\n\ndef go() -> None:\n    run(["hg", "id"], check=False)\n',
+        "hg",
+    ),
+    (
+        "from_import_aliased",
+        "from subprocess import run as launch\n\n\ndef go() -> None:\n"
+        '    launch(["hg", "id"], check=False)\n',
+        "hg",
+    ),
+    (
+        # The audit's headline: `system("curl … | sh")` — a SHELL string — invisible.
+        "from_os_import_system",
+        'from os import system\n\n\ndef go() -> None:\n    system("hg id")\n',
+        "hg",
+    ),
+    (
+        "from_os_import_execvp",
+        'from os import execvp\n\n\ndef go() -> None:\n    execvp("fd", ["fd", "."])\n',
+        "fd",
+    ),
+    (
+        "from_asyncio_import_create_subprocess_exec",
+        "from asyncio import create_subprocess_exec\n\n\nasync def go() -> None:\n"
+        '    await create_subprocess_exec("fd", ".")\n',
+        "fd",
+    ),
+    (
+        # argv[0] built at RUNTIME: no set can contain it, so LOUD is the ONLY honest fate.
+        "runtime_argv_via_from_import",
+        "from subprocess import run\n\n\ndef go(cmd: list[str]) -> None:\n"
+        "    run(cmd, check=False)\n",
+        None,
+    ),
+    (
+        "runtime_argv_via_alias",
+        "import subprocess as sp\n\n\ndef go(cmd: list[str]) -> None:\n"
+        "    sp.run(cmd, check=False)\n",
+        None,
+    ),
+]
+
+def _shape_params() -> list[Any]:
+    """Every shape TWICE: alone, and with a resolvable co-resident site beside it."""
+    cases: list[Any] = []
+    for shape_id, body, binary in _EXEC_SHAPES:
+        cases.append(pytest.param(body, binary, False, id=shape_id))
+        cases.append(
+            pytest.param(
+                _RESOLVABLE_SITE + body, binary, True, id=f"{shape_id}__with_a_resolvable_site"
+            )
+        )
+    return cases
+
+
+_SHAPE_PARAMS = _shape_params()
+
+
+class TestEveryExecSiteIsResolvedOrLoud:
+    """THE ∀-PROPERTY (DEFECT-3). Not "the scan knows these seven shapes" — that invariant
+    is conditioned on the shapes we happened to think of, which is the same bug one level up
+    (the quantifier law). The property is:
+
+        for EVERY exec site in shipped code, either its binary is RESOLVED into the derived
+        set, or the scan FAILS LOUD naming ``file:line``. There is no third outcome.
+
+    The third outcome is what ships today. ``shellout.py``'s own docstring promises
+    *"Coverage is a CHECKED variable, never a hope"* and *"A new shell-out grows the required
+    set BY ITSELF"*. Both are FALSE: ``_exec_receiver`` keys on RECEIVER NAMES
+    (``subprocess``/``os``/``asyncio``) and ``_can_spawn`` is a second, WEAKER name-list. The
+    audit walked straight through it (positive control first — a plain
+    ``subprocess.run(["git"…])`` derives ``['git']``):
+
+        from os import system                    + a resolvable site → ['git']  SILENT MISS
+        from os import system                    alone              → []        VACUOUS
+        from asyncio import create_subprocess_exec alone            → []        VACUOUS
+        import subprocess as sp                  + a resolvable site → ['git']  SILENT MISS
+        from subprocess import run               + a resolvable site → ['git']  SILENT MISS
+
+    Root cause: the coverage guard is keyed per-MODULE (``resolved_sites == 0 and
+    _can_spawn(tree)``), so ONE resolvable call disarms the check for the whole file.
+
+    This is THIS REPO'S OWN instrument lesson recurring INSIDE the fix that cites it —
+    *"a gate keyed on 2 receiver names, defeated by six other doors"*. Today's answer is
+    still right (``{git}`` really is the only exec site), so the artifact ships correct; the
+    GUARANTEE is a hope. The next shell-out written from-import style reproduces #131 exactly,
+    silently, with every gate green.
+
+    Fixture discipline: never ``git``, and one alias (``_zz_engine``) that no name-list
+    would ever contain.
+    """
+
+    @pytest.mark.parametrize(("body", "hidden_binary", "co_resident"), _SHAPE_PARAMS)
+    def test_an_exec_site_is_resolved_into_the_set_or_the_scan_fails_loud(
+        self, tmp_path: Path, body: str, hidden_binary: str | None, co_resident: bool
+    ) -> None:
+        derived, message = _resolved_or_loud(tmp_path, body)
+
+        if derived is None:
+            # FATE 2 — the scan refused. It must say WHERE, or a human cannot rule on it.
+            assert "runner.py" in message, (
+                f"the scan refused to vouch for the set but did not name the FILE — an "
+                f"unactionable refusal. Got: {message!r}"
+            )
+            assert re.search(r":\d+|line \d+", message), (
+                f"the scan refused but did not name the LINE of the site it could not "
+                f"read. 'Somewhere in this module' is not a verdict a human can act on. "
+                f"Got: {message!r}"
+            )
+            return
+
+        # FATE 1 — the scan VOUCHED for a set. Then the site's binary is IN it, or the
+        # scan just told the deploy an image is complete when it is not.
+        assert hidden_binary is not None, (
+            f"argv[0] here is built at RUNTIME — the scan CANNOT know what this launches, "
+            f"so the only honest answer is a loud refusal. It returned {sorted(derived)!r} "
+            f"instead, and the deploy will now trust that set to be complete"
+        )
+        assert hidden_binary in derived, (
+            f"SILENT MISS: the shipped module execs {hidden_binary!r} and the derived set "
+            f"is {sorted(derived)!r}. The scan neither saw the site nor admitted it could "
+            f"not — the third outcome, which shellout.py's docstring says cannot happen "
+            f"('Coverage is a CHECKED variable, never a hope'). The image will not carry "
+            f"{hidden_binary!r}, every gate will stay green, and the shell-out is a silent "
+            f"None in production — finding #131, reproduced exactly (DEFECT-3)"
+        )
+
+    @pytest.mark.parametrize(("body", "hidden_binary", "co_resident"), _SHAPE_PARAMS)
+    def test_a_co_resident_resolvable_site_never_disarms_the_scan(
+        self, tmp_path: Path, body: str, hidden_binary: str | None, co_resident: bool
+    ) -> None:
+        # THE PER-SITE PIN, stated separately because it is the ROOT CAUSE. Whatever the
+        # scan's verdict on the hidden site, the resolvable co-resident site must ALSO be
+        # accounted for — coverage is a property of every SITE, never of the module that
+        # happens to contain one readable call.
+        if not co_resident:
+            pytest.skip("this row is the ALONE flavour; the co-resident pin is its twin")
+
+        derived, message = _resolved_or_loud(tmp_path, body)
+
+        if derived is None:
+            assert "runner.py" in message
+            return
+        assert _ALPHA_BINARY in derived, (
+            f"the co-resident resolvable site vanished too: {sorted(derived)!r}"
+        )
+        assert hidden_binary is not None, (
+            f"the second site's argv[0] is built at RUNTIME and the scan vouched for "
+            f"{sorted(derived)!r} anyway — the readable call beside it was enough to make "
+            f"the scan stop asking. The guard is keyed per-MODULE; it must be per-SITE"
+        )
+        assert hidden_binary in derived, (
+            f"one resolvable call ({_ALPHA_BINARY}) disarmed the coverage check for the "
+            f"WHOLE FILE, and the second exec site ({hidden_binary!r}) was dropped in "
+            f"silence — derived: {sorted(derived)!r}. The guard is keyed per-MODULE "
+            f"(`resolved_sites == 0 and _can_spawn(tree)`); it must be keyed per-SITE"
+        )
+
+    def test_the_positive_control_a_plain_exec_site_still_resolves(
+        self, tmp_path: Path
+    ) -> None:
+        # A PROBE NEEDS A CONTROL. Every pin above could be satisfied by a scan that
+        # refuses EVERYTHING — an instrument that always fires discriminates nothing. The
+        # plainest possible site must still resolve, silently and correctly.
+        derived, message = _resolved_or_loud(tmp_path, _shellout(_ALPHA_BINARY))
+
+        assert derived == frozenset({_ALPHA_BINARY}), (
+            f"a plain `subprocess.run([...])` no longer resolves — the fix turned the scan "
+            f"into a machine that refuses to vouch for anything, which gates nothing while "
+            f"looking strict. (message: {message!r})"
+        )
+
+    def test_the_negative_control_a_module_with_no_spawner_stays_silent(
+        self, tmp_path: Path
+    ) -> None:
+        # The OTHER control: a stricter scan must not start seeing spawners where there are
+        # none. ``os`` and ``asyncio`` are imported all over shipped code for reasons that
+        # have nothing to do with processes; flagging them would make the instrument
+        # unusable and it would be turned off.
+        body = (
+            "import asyncio\n"
+            "import os\n"
+            "\n"
+            "\n"
+            "async def go() -> str:\n"
+            "    await asyncio.sleep(0)\n"
+            "    return os.getcwd()\n"
+        )
+        derived, message = _resolved_or_loud(tmp_path, body)
+
+        assert derived == frozenset(), (
+            f"a module that imports os/asyncio and spawns NOTHING was flagged as a spawn "
+            f"site — the scan now cries wolf on every import in the tree (message: "
+            f"{message!r})"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# FIX WAVE / F6 — R3: the empty set has THREE causes, and they are NOT the same fact
+# --------------------------------------------------------------------------- #
+class TestTheEmptySetHasDistinctCauses:
+    """``shellout.py``'s docstring says *"An EMPTY answer is the dangerous one"*. The
+    contract says ``test_shipped_packages_that_exec_NOTHING_are_a_legitimate_empty_answer``.
+    ``_probe_container_binaries`` cheerfully prints ``container binaries OK ()``. Three
+    artifacts, three different beliefs about the same value.
+
+    THE RULING (contract author's, stated for the record — see the report's F6): **the
+    OUTCOME is not the danger; the CAUSE is.** An empty set has three causes and they must
+    not share a fate:
+
+    * the scan found NO MODULES → dangerous → ``ShelloutScanError`` (a gate over nothing).
+    * a module CAN spawn but the scan cannot read its sites → dangerous →
+      ``UnresolvedExecSiteError`` (the F3 class: today this is the SILENT one).
+    * the shipped packages genuinely exec nothing → LEGITIMATE → ``frozenset()``, and the
+      deploy says so in words (``TestTheEmptySetIsReportedHonestly`` in the skill contract).
+
+    The docstring is the artifact that is wrong. Prose that describes behaviour must be
+    DERIVED from the behaviour, not restated beside it — and where it cannot be derived, it
+    must at least not contradict the pins.
+    """
+
+    def test_no_modules_is_dangerous_and_raises(self, tmp_path: Path) -> None:
+        _write_workspace(tmp_path, [])
+        with pytest.raises(ShelloutScanError):
+            required_binaries(tmp_path)
+
+    def test_an_unreadable_spawn_site_is_dangerous_and_raises(self, tmp_path: Path) -> None:
+        derived, message = _resolved_or_loud(
+            tmp_path,
+            "import subprocess as sp\n\n\ndef go(cmd: list[str]) -> None:\n"
+            "    sp.run(cmd, check=False)\n",
+        )
+        assert derived is None, (
+            f"a module whose exec site the scan cannot read returned a set "
+            f"({sorted(derived or [])!r}) instead of refusing — the deploy now trusts a "
+            f"required set that was never derived"
+        )
+        assert "runner.py" in message
+
+    def test_packages_that_exec_nothing_are_a_LEGITIMATE_empty_answer(
+        self, tmp_path: Path
+    ) -> None:
+        # The discrimination that makes the two pins above mean something: the scan must not
+        # simply refuse every empty result. "Raise when empty" is satisfiable by a scan that
+        # always raises — and that is not a derivation, it is a wall.
+        derived, message = _resolved_or_loud(tmp_path, "def go() -> int:\n    return 1\n")
+
+        assert derived == frozenset(), (
+            f"a shipped package that execs nothing requires no binary — an empty set here "
+            f"is the CORRECT answer, and the scan refused it ({message!r})"
+        )
+
+    def test_the_docstring_no_longer_calls_an_EMPTY_answer_the_dangerous_one(self) -> None:
+        # An ANTI-REGRESSION pin, and it is honest about being one: a prose surface with no
+        # derivation available gets a pin keyed on the false sentence it must lose. (The
+        # general instrument for this class is the fate table above — this pin only stops
+        # the specific contradiction from being re-typed.)
+        prose = " ".join(
+            (shellout_module.__doc__ or "").split()
+            + (ShelloutScanError.__doc__ or "").split()
+        ).lower()
+
+        assert "empty answer is the dangerous one" not in prose, (
+            "the docstring still says an EMPTY answer is THE dangerous one, while "
+            "test_packages_that_exec_nothing_are_a_LEGITIMATE_empty_answer passes and the "
+            "deploy prints OK over it. Name the CAUSE, not the outcome: a set derived from "
+            "no modules, or from a module whose spawn sites could not be read, is the "
+            "dangerous one — and both of those RAISE"
+        )
+        assert "legitimate" in prose or "legal" in prose, (
+            "the docstring must say plainly that an empty set from packages which exec "
+            "nothing is a legitimate answer — the fate table pins it, and the prose beside "
+            "the code must not contradict the pins"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# FIX WAVE / F4 — DEFECT-4: the image's binary set is a CHECKED variable, not a comment
+# --------------------------------------------------------------------------- #
+class TestTheImageInstallsExactlyWhatTheScanGates:
+    """``Containerfile:19-24`` claims the *"Layer 2 probe fails loud if **either binary**
+    goes missing from the image"* — naming curl AND git. **False for curl.** The derived set
+    contains only binaries the shipped PYTHON execs; curl is exec'd by no shipped code, so it
+    can NEVER enter the set and NO gate can ever protect it. The audit verified it: delete
+    curl from the apt line and every gate stays green.
+
+    (Compounding it: curl's stated rationale — the container healthcheck — is stale. The
+    image declares NO healthcheck at all, and ``--health-cmd`` appears nowhere in the skill.
+    Reported, not fixed: not the contract author's call. See the report's F4.)
+
+    The class of defect is this repo's most expensive one: **served English promising a
+    mechanism that does not run.** The answer is not better prose — it is to make the claim a
+    DERIVED, CHECKED variable:
+
+    * every binary the shipped code execs must be INSTALLED (the gate that would have caught
+      #131 in the repo suite, before any container existed);
+    * every binary the image installs must be GATED — or explicitly DECLARED ungated, with a
+      reason, in the Containerfile itself;
+    * the comment block that CITES the gate may name only binaries the gate actually covers.
+
+    Either honest fix passes: drop curl (the audit's verified path), or keep it and declare
+    it. What is no longer possible is a file that installs an ungated binary and tells the
+    reader it is gated.
+    """
+
+    def test_every_binary_the_shipped_code_execs_is_installed_by_the_image(self) -> None:
+        # The #131 gate, at the REPO layer. The deploy probe catches a missing binary only
+        # against a RUNNING container — i.e. after the image is built, pushed and launched.
+        # This catches it the moment the shell-out lands.
+        derived = required_binaries(_REPO_ROOT)
+        installed = _apt_installed_binaries(_containerfile_text())
+
+        assert derived <= installed, (
+            f"the shipped code execs {sorted(derived - installed)!r}, which the image does "
+            f"NOT install. That is finding #131 exactly: the seam shells out, the binary is "
+            f"absent, the helper swallows the OSError, and the field is a silent null in "
+            f"production while every test on a git-having host stays green. Add it to the "
+            f"Containerfile's apt line"
+        )
+
+    def test_the_image_installs_no_binary_that_no_gate_protects(self) -> None:
+        derived = required_binaries(_REPO_ROOT)
+        text = _containerfile_text()
+        installed = _apt_installed_binaries(text)
+        declared = _declared_ungated(text)
+
+        undeclared = installed - derived - set(declared)
+
+        assert not undeclared, (
+            f"the image installs {sorted(undeclared)!r}, which the derived set does not "
+            f"contain — so NO gate protects them, and nothing in the tree says so. The "
+            f"Containerfile meanwhile tells its reader the Layer 2 probe 'fails loud if "
+            f"either binary goes missing'. It does not, and it cannot: only binaries the "
+            f"shipped PYTHON execs can enter the derived set.\n"
+            f"Two honest fixes, either is fine:\n"
+            f"  (a) drop them from the apt line (the audit verified every gate stays green "
+            f"without curl), or\n"
+            f"  (b) DECLARE them, with a reason, in the Containerfile:\n"
+            f"      # lore-ungated-binary: curl — reserved for a container healthcheck; no "
+            f"shipped code execs it\n"
+            f"An ungated binary is allowed. An ungated binary that the file CLAIMS is gated "
+            f"is a false gate (DEFECT-4)"
+        )
+
+    def test_a_declared_ungated_binary_is_really_ungated_and_carries_a_reason(self) -> None:
+        # The exemption seam is deny-by-default and evidence-backed, per repo law — never a
+        # hole a builder can widen by typing a name into it. A declaration that names a
+        # binary the scan DOES derive is a contradiction; a declaration with no reason is a
+        # name-list with extra steps.
+        derived = required_binaries(_REPO_ROOT)
+        declared = _declared_ungated(_containerfile_text())
+
+        for binary, reason in declared.items():
+            assert binary not in derived, (
+                f"{binary!r} is declared UNGATED but the shipped code execs it — it IS "
+                f"gated (layer 2 requires it). Delete the declaration"
+            )
+            assert len(reason) >= _MIN_REASON_CHARS, (
+                f"the ungated declaration for {binary!r} carries no real reason "
+                f"({reason!r}). An exemption without evidence is the thing that blessed the "
+                f"bootstrap DDL right before it lost 6-34% of concurrent first-connects"
+            )
+
+    def test_the_comment_that_explains_the_gate_names_only_gated_binaries(self) -> None:
+        derived = required_binaries(_REPO_ROOT)
+        text = _containerfile_text()
+        installed = _apt_installed_binaries(text)
+        ungated = installed - derived
+
+        for block in _comment_blocks(text):
+            lowered = block.lower()
+            if not any(citation in lowered for citation in _GATE_CITATIONS):
+                continue
+            named = {
+                binary
+                for binary in ungated
+                if re.search(rf"\b{re.escape(binary)}\b", lowered)
+            }
+            assert not named, (
+                f"this comment block cites the layer-2 gate ({_GATE_CITATIONS}) and names "
+                f"{sorted(named)!r} — binaries the gate CANNOT cover, because the derived "
+                f"set only ever contains what the shipped PYTHON execs. A reader is being "
+                f"told a check exists that does not. Explain an ungated binary somewhere "
+                f"the gate is not the subject (a separate comment block), or stop "
+                f"installing it.\nBlock:\n{block}"
+            )
