@@ -28,6 +28,9 @@ the invariants that survive any ruling.
   experience demands it, with its own ruling.
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 packet 17's ruling recorded; a real throwaway worktree of THIS repo as the smoke target
 (create → edit uncommitted → query → reap).
 

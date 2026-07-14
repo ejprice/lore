@@ -38,6 +38,9 @@ already live in: the store plus store-level backups.
 - Object-store journal — dead option, ruled out with the fork.
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 - Parity tooling: a public memory count/health read (overlaps packet 20's N2 — if N2
   isn't built yet, build the minimal count here and packet 20 reuses it).
 - `lore_recall` spot-check list drawn from the live instance before the sweep.

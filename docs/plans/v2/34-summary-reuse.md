@@ -33,6 +33,9 @@ tokens where the raw hit set costs 1–2k, and saves the follow-up turns.
   lane just absent, live hits unchanged).
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 loresage live (packet 29); if packet 35 landed, pull its repeat-query aggregates to pick
 the synthesis targets; else start with map/impact-shaped orientation queries.
 

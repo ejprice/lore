@@ -14,3 +14,6 @@ cutover from odoo-code per the operator-struck parity matrix.
 ## Insertion rule (INDEX protocol)
 Mid-sequence insertions anywhere in the plan use letter suffixes (13a/13b for a split
 at kickoff; 26a/26b here) — the top-level 01–41 sequence is never renumbered again.
+Every minted 26x packet whose scope touches the store/schema/DDL carries the
+`docs/reference/surrealdb-31-capabilities.md` FIRST READ line in its entry check
+(repo store law).

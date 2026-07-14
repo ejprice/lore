@@ -31,6 +31,9 @@ non-derivable data is the memory store; its durable source of truth is the
   seconds-long Phase-B freeze).
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 §8 Q1–Q4 answers recorded in the spec doc's ruling section; packet 19's skill rework
 landed (the migrate verb hangs off it).
 

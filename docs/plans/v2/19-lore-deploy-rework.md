@@ -27,6 +27,9 @@ Bring the lore-deploy skill (in-repo at skills/lore-deploy/, symlinked from
 - The `migrate` verb machinery (packet 20 builds it; this packet leaves the seam).
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 `lore_findings` → #13 open; run the skill's test suite green before touching it;
 confirm b8e41a8's actual coverage against the scaffold defect (don't trust the note).
 

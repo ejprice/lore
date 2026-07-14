@@ -51,6 +51,9 @@ LLM outputs — present with receipts from the deterministic tier's first live s
   otherwise. Any read-path LLM involvement — permanently out (anti-hallucination prime).
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 `lore_recall` drift/demote render behavior at HEAD (the §9 pins are the contract this
 engine must not break); packet 32's expiry sweep state (this engine and packet 32 share the
 sweep scaffold — build once).

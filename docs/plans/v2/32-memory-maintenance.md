@@ -19,6 +19,9 @@ The P7 punt: importance defaults-by-kind and reinforcement-on-recall shipped;
   contract). Spectron backend work (invite-gated, INDEX pool item 12).
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 `lore_recall include_superseded` audit path green at HEAD; ledger write-through
 untouched by design (memories remain the only non-derivable data).
 

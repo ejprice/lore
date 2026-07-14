@@ -32,6 +32,9 @@ risks on this box, plus the minimal observability the #124 watch needs.
 - Engine upgrades; any schema/DDL change; any lore-code change. Production data migration.
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 `lore_findings` → all six open. `systemctl --user status lore-surreal spike-surreal` both
 active. Snapshot both quadlet files BEFORE editing (they are the recovery recipe — memory:
 surreal-stores-systemd-managed).

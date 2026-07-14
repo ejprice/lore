@@ -27,6 +27,16 @@ audited failure patterns (P7–P8d); the phase resume docs in `~/.claude/plans/`
   requires a passed-COUNT in the tail.
 - Skill tests have their own idiom: `cd skills/lore-deploy/scripts && uv run python -m
   pytest -q . ../tests`.
+- **COMMIT AT NATURAL BOUNDARIES — the working tree is never the ONLY copy of finished
+  work (operator, 2026-07-14).** A green gate, a ruled design doc, a completed
+  sub-phase, the state BEFORE an audit or mutation probe: each gets its one-concern
+  commit BEFORE the next step can damage it. Rollback must be a git operation, never
+  filesystem archaeology — receipts: a session had to restore a finished wave from ZFS
+  autosnapshots because it lived only in the working tree (the 2026-07-14 MD5-list
+  near-miss is the same class; 15-minute snapshot timing was luck, not a mechanism).
+  This tightens, not replaces, the 2026-07-03 checkpoint-commit rule; agents mutating
+  an UNCOMMITTED tree still `cp -a` the content first (standing law) — but the better
+  state is that finished work is never sitting uncommitted at all.
 
 ## Using lore's own tools (the dogfood protocol)
 lore-first is the default for code-structure questions — but trust requires currency,

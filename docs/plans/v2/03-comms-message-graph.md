@@ -27,6 +27,9 @@ state, the actual replacement for Claude Code's lossy SendMessage.
 - `blocks` mirroring, fleet columns, `_comms_footer` (packet 04); await/story (05).
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 Packet 02 deployed; task f86af162 claimed; `comms-subsystem.md` build-time probe list
 (the C2 probe is this packet's); spike-surreal up.
 

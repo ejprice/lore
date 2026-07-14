@@ -23,6 +23,9 @@ verification packet — code changes only where a drill fails.
 - Do not point any drill at production :18500 or the shared Qdrant pod (DESIGN-LAW §7).
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 A throwaway drill store provisioned (per-drill namespace or a dedicated container —
 never spike-surreal's test data mid-suite); packet 18's landed state checked (the
 corrupt-dir drill's expected behavior changed with the ledger retirement).

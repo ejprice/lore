@@ -52,6 +52,9 @@ workflow resumability") is answered with receipts, not positioning.
   (build)** — pool item 19 closed into them.
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 Detection layer state (what routes Odoo's .xml/.po/.csv/manifest zoo today); Voyage
 key + Batch quota; a host with disk/RAM headroom for the drill store (NEVER the
 production instances — dedicated throwaway container per the drill-store rule).

@@ -21,6 +21,9 @@ pending-traffic nudge footer, and the dangling-edge hardening.
 - await/story/rollup/hooks (packet 05); protocol + drill (06).
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 Packet 03 deployed; `lore_findings` → #105 open; the edge≡blocked_by invariant's
 fixture set includes a CYCLE attempt (3.1.5 fixed cyclic node-drops — pin it).
 

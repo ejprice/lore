@@ -50,13 +50,20 @@ HERE now** — a packet session must not need to read them.
 ## Packet protocol (read once — this is the whole ritual)
 **Boot:** (1) repo CLAUDE.md auto-loads (process law: gates, TDD, orchestration,
 deploy, store idioms — packets never restate it). (2) Read this INDEX + your packet +
-the DESIGN-LAW.md sections your packet lists. (3) Start lore if down (`lore-deploy`
+the DESIGN-LAW.md sections your packet lists **+ every FIRST READ your packet names —
+`docs/reference/surrealdb-31-capabilities.md` is MANDATORY before touching the store,
+schema, DDL, or store-reading code (#107 was a 100% outage whose answer was already in
+it; when in doubt, read it)**. (3) Start lore if down (`lore-deploy`
 skill), then `lore_index()` freshness, `lore_findings status=open`, `lore_tasks` —
 mint/claim your ledger rows. (4) Run your packet's ENTRY CHECK; if ground truth
 contradicts the packet, STOP and surface — never build on a stale premise.
+Operator kickoff: **load `docs/plans/v2/KICKOFF.md` at session start** — it is the
+standing spawn prompt and encodes this ritual.
 
 **Exit:** gates green (scoped pytest + `scripts/typecheck.sh` + ruff) → cold REFUTE
-audit for wave commits → one-concern commits → deploy if the packet says DEPLOY
+audit for wave commits → one-concern commits **at NATURAL BOUNDARIES throughout the
+session, not only at exit (repo CLAUDE.md commit-boundary law: the working tree is
+never the only copy of finished work)** → deploy if the packet says DEPLOY
 (rebuild + recreate BOTH, never restart) → resolve/file findings with notes → flip
 your row in the Status table below + append ≤5 lines to the Log at the bottom →
 ledger rows done. **No new resume docs, ever.** State of record = git + this INDEX +

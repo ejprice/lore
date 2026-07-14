@@ -25,6 +25,9 @@ rollup extension, CLI, and the idle-gate hook rework.
 - Protocol/brief-base/drill (packet 06). C5 (checkpoint/respawn) stays deferred, no ruling.
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 Packet 04 deployed; `lore_findings` → #89, #121 open; LIVE-on-edge spike receipts from
 the probe BEFORE building on it (documented poll fallback if it fails).
 

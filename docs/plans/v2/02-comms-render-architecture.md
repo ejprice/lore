@@ -25,6 +25,9 @@ renders), plus the three deferred C1 residues.
   #104's refactor.
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 `lore_findings` → #100 #101 #103 #104 open; read #104's body (it carries the C2 step-0
 plan); spec at v8; suite green at HEAD.
 

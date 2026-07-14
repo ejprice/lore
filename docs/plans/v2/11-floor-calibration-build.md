@@ -23,6 +23,9 @@ re-measurement + adoption. Resolve findings #83 and #87.
 - Reranker/utility-predictor confidence layers (packet 28 territory).
 
 ## Entry check
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
+packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
+outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
 - packet 10 ruling recorded; suite snapshot green at current HEAD; spike-surreal up.
 - `lore_findings` → **#4** (calibration integrity-state string collision, pre-P8d):
   if still open, it lives in the engine this packet touches — fold its fix in.
