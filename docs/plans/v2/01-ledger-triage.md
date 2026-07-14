@@ -1,4 +1,11 @@
 # 01 — Ledger triage + the lore_index identity line (FIRST work packet) (formerly PKT-29)
+
+> **DONE 2026-07-14** — deployed (image `6d599942cc69`, BOTH containers; 13 commits `3415041`→`5053bb0`).
+> Open findings **60+ → 0**. The #125 honesty line is LIVE and the deploy now GATES THE ARTIFACT.
+> Scope GREW under operator ruling: #131 (git was never in the image — the seam was dead in production
+> for months) turned a render addition into a real fix + a derived binary gate. Ten new findings
+> (#129–#138); **#136 (the #102 runtime guard is BLIND out-of-tree) must route BEFORE packets 17/23**.
+> Receipts: INDEX Log 2026-07-14. This file is HISTORY — the INDEX table is authoritative.
 size ~0.15 wu · pre-wave (runs before packet 02) · depends: none
 law: repo CLAUDE.md sweep discipline ("all remaining hits are X" is banned — every row gets
 an individual verdict) · DEPLOY: yes (one small code commit)

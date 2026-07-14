@@ -102,6 +102,63 @@ Nobody read it. Everyone probed the engine empirically instead, and the schema w
 - **Check `docs/reference/` before probing.** Prior sessions commit capability references there
   precisely so the next session need not rediscover the engine. Not reading it wasted a
   session and cost an outage.
+
+## THE TEST ENVIRONMENT IS A FICTION (#131 + #107 — the same root, twice)
+**The suite runs on a dev host. Production is a container. EVERY difference between them is an
+unguarded gap — and both of this project's worst outages lived in exactly that gap:**
+- **#107**: a widened schema ASSERT never migrated. 1040 tests green, a cold audit GO, a passing
+  contract-adversary — and `brief_publish` broke **100% in production**. No test could see it,
+  because **every test mints a VIRGIN throwaway DB**, and a fixture that guarantees a clean slate
+  cannot test what only happens on a dirty one. Every long-lived deployment is a dirty one.
+- **#131**: the code shells out to `git`; **the image had no git**. The `OSError` was swallowed into
+  a silent `(None, None)`, so every production snapshot's git provenance was empty **for months**,
+  invisible because nothing rendered the field. No test could see it, because **tests run on a host
+  that HAS git**.
+
+**The pattern, stated once: THE FIXTURE GUARANTEES THE ONE CONDITION UNDER WHICH THE BUG IS
+INVISIBLE.** A green suite says "the source is correct in the test environment" — never "the
+ARTIFACT is correct in the PRODUCTION environment". Those differ, and the difference is where the
+outages are.
+
+- **Pinning the source proves the RECIPE. Only the running artifact proves the CAKE.** In both
+  outages, the deploy SMOKE was the only instrument that caught it — after the fact.
+- **The instrument (do not just remember the law): packet 01a** — run the suite IN the deployed
+  image (ephemeral container from the SAME image, tests mounted, `loremaster.__file__` ASSERTED into
+  site-packages so you prove you are testing the artifact and not the mount). Finding **#139**.
+- **When you write a fixture, ask what CONDITION it guarantees — and whether production guarantees
+  the opposite.** Virgin DB vs long-lived store. Dev host vs slim image. Writable tree vs `:ro`
+  mount. Aligned uid vs mismatched. Each one has already bitten or is ledgered (#132, #134, #135).
+
+## WHEN YOU CANNOT CLOSE A HOLE, PIN IT (packet 01, #137 + #138)
+Some holes are not worth closing (the cure costs more than the disease) and some cannot be closed at
+all. **An unpinned known limitation is indistinguishable from an unknown one** — the next engineer
+rediscovers it from an outage, or "helpfully" closes it and re-opens a settled trade.
+- **PIN THE MISS.** A test that ASSERTS the hole exists, and **goes RED the day someone closes it**,
+  carrying the message *"this is a KNOWN BOUND (#NNN) — if you closed it deliberately, delete this
+  pin and say so."* Receipts: #137 (a third-party dep that spawns is invisible to any AST scan of our
+  source — not closable without demanding every binary every dependency can reach) · #138 (four
+  obfuscation doors in the exec seam — closing them taxes four shipped modules doing nothing wrong).
+- **A bound that is pinned is a bound the next engineer meets DELIBERATELY**, with its rationale
+  attached. It cannot be silently inherited, and it cannot be silently "fixed".
+- **Every bound carries a NAMED RE-OPEN TRIGGER** (per the deferral law): the condition under which
+  the trade changes. #137's is "the day we add ANY spawning dependency"; #138's is "if the threat
+  model changes — untrusted contributors, or a hosted deployment" (→ packet 39 MUST consult it).
+
+## A GATE NEEDS A THREAT MODEL — WRITE DOWN WHO IT IS FOR (packet 01)
+The exec-seam gate was audited three times, and each auditor was entitled to call "a clever attacker
+gets through" a defect — because **nobody had written down who the gate is for.** That absence cost
+two fix waves and a false absolute in a docstring.
+- **State the model IN the instrument**, not in a report: *this gate catches the **HONEST DEVELOPER**
+  who adds a shell-out while the image silently lacks the binary (#131 verbatim). It is **NOT** a
+  security boundary against a hostile author — anyone who can commit here can already ship anything.*
+- **Then the verdicts follow mechanically:** *"a clever attacker gets through"* is **not** a defect;
+  *"an honest engineer's shell-out goes unnoticed"* **is**. A door an honest author could plausibly
+  walk through gets closed even at a cost; a door that only opens for deliberately unusual code gets
+  LEDGERED, not paid for in false positives.
+- **And the reason that trade is correct, which is the line worth keeping:** *a gate that refuses
+  honest code is a gate that gets SWITCHED OFF — and then the outage happens again with nothing
+  watching at all.* A false positive on `self.commands` is exactly the insult that disables an
+  instrument.
 - **AND VERIFY THE DOCS — a doc is a source, not an oracle.** SurrealDB's own `DEFINE FIELD`
   and `DEFINE INDEX` pages claim `IF NOT EXISTS` on an existing object *"will return an
   error."* **That is FALSE on 3.1.5** (probed): it returns OK and silently no-ops. A careful
