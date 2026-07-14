@@ -1,12 +1,25 @@
-"""Shared low-level SurrealDB store internals — the single audited home for the
-two failure-handling concerns that :class:`~loremaster.store.surreal.SurrealStore`
-and :class:`~loremaster.index.surreal_manifest.SurrealManifest` both depend on.
+"""Shared low-level SurrealDB store internals — the single audited home for
+every failure-handling concern the package's connection owners depend on.
 
-Both classes own ONE signed-in, stateful SurrealDB connection reached over the
-async SDK, and both had (until this module) independently-evolving copies of the
-same two seams. They are extracted here — now that a SECOND real caller exists
-(``replace_file`` joining ``replace``) — so the behaviour can never drift between
-them again:
+What started as two concerns shared by two classes (finding #102/#108's
+original extraction) is now FIVE, serving eleven owners (blindreader F3, the
+DRY collapse): **transport-vs-domain classification** (:func:`is_connection_error`
+et al.), **the per-statement transaction executor** (:func:`execute_transaction`),
+**the shared retry driver** (:func:`retry_on_conflict`), **the ONE session
+bootstrap** (:func:`bootstrap_session`), and **the ONE single-statement attempt
+body** (:func:`run_query`). Every class that owns a signed-in, stateful SurrealDB
+connection reached over the async SDK depends on this module now: the TEN
+classes owning an ``async def _query`` (``store/surreal.py``, ``briefs.py``,
+``agents.py``, ``tasks.py``, ``findings.py``, ``diff.py``, ``graph_surreal.py``,
+``index/snapshots.py``, ``index/surreal_manifest.py``, ``memory/local.py``) call
+:func:`run_query`; those same ten PLUS ``scout.py``'s module-level
+``_open_command_connection`` (a bootstrap owner with no ``_query`` of its own —
+the eleventh copy no ``_query``-keyed scan can see) call
+:func:`bootstrap_session`. Ten `_query` bodies and eleven bootstrap owners are
+two different populations that happen to overlap in ten of eleven members —
+conflating them into one count is the exact class of prose-vs-code defect this
+module's own callers now guard against (CLAUDE.md's "ONE IMPLEMENTATION"
+section; do not repeat the conflation here).
 
 1. **Transport-vs-domain error classification** (:func:`is_connection_error`).
    A single-statement ``query()`` raises a :class:`surrealdb.errors.SurrealError`
@@ -43,6 +56,25 @@ them again:
    :class:`TxnContentionExhaustedError` on exhaustion; every OTHER rejection (a
    domain/``ASSERT`` violation) surfaces immediately as :class:`SurrealStoreError`,
    never retried, since retrying it would never succeed.
+
+3. **The shared retry driver** (:func:`retry_on_conflict`). The ONE place that
+   owns attempt counting, the give-up predicate, the per-attempt jitter and the
+   typed exhaustion error — called by :func:`execute_transaction`,
+   :func:`run_query`, and (three times, composing ONE wall-clock budget)
+   :func:`bootstrap_session`.
+
+4. **The ONE session bootstrap** (:func:`bootstrap_session`). Materialises +
+   selects a namespace/database on a freshly signed-in socket — the thirty
+   hand-rolled, UNRETRIED bare inline ``await`` statements across ten modules
+   (three per owner, no closures, no shared retry — see this function's own
+   docstring), plus scout's own eleventh copy, collapsed into one function
+   every owner calls AND retries through (blindreader F3).
+
+5. **The ONE single-statement attempt body** (:func:`run_query`). Classifies,
+   signals, self-heals and logs a single ``query()`` call — the ten attempt
+   bodies, byte-identical but for TWO strings (the raised message's ``noun``
+   and the ``label`` the rejection is logged under — see :func:`run_query`'s
+   own docstring), collapsed.
 
 The connection-lifecycle vocabulary (:class:`SurrealStoreError`,
 :class:`SurrealConnectionError`, :data:`_CONNECTION_ERRORS`,
@@ -148,6 +180,21 @@ class TxnContentionExhaustedError(SurrealStoreError):
         super().__init__(message)
         self.attempts = attempts
         self.elapsed_seconds = elapsed_seconds
+
+
+class RetryableConflictSignal(Exception):
+    """An attempt callable's way of telling :func:`retry_on_conflict` "the engine
+    reported a RETRYABLE write-write conflict; try again".
+
+    Raised INSIDE an attempt body, after it has classified a caught engine
+    error via :func:`is_retryable_conflict_error` (the single-statement path)
+    or read a rolled-back response's failed statements via
+    :func:`_rollback_verdict` (the transactional path) — never raised
+    anywhere else. Consumed entirely by :func:`retry_on_conflict`; it must
+    never escape to a caller of the driver, and deliberately does NOT
+    subclass :class:`SurrealStoreError` so a caller's broad ``except
+    SurrealStoreError`` can never accidentally intercept it first.
+    """
 
 
 # The body-statement count above which :meth:`SurrealStore.apply` emits a
@@ -376,26 +423,22 @@ _DOMAIN_CASCADE_MARKERS = (_CASCADE_NOT_EXECUTED_MARKER, _CASCADE_COMMIT_ABORTED
 
 # NOT a ladder tuned for 2-way contention any more (finding #102: it was never
 # re-measured as callers grew to N-way — the finding mint funnels EVERY
-# concurrent reporter through ONE row). Left importable deliberately:
-# ``briefs.py`` IMPORTS this and derives its OWN, unrelated single-statement
-# mint budget from it
-# (``_BRIEF_MINT_MAX_ATTEMPTS = _BRIEF_PUBLISH_MAX_ATTEMPTS * _MAX_TXN_CONFLICT_
-# ATTEMPTS``) — deleting it would ``ImportError`` the whole package; repointing
-# it at the repaired policy's own ceiling would silently re-tune briefs'
-# measured budget. The repaired policy below gets its OWN, freshly-measured
-# backoff/deadline/ceiling constants instead of touching this one (see
-# ``TestBriefsInheritedConflictBudgetIsNotSilentlyRepointed`` in
-# ``test_surreal_store.py``).
-#
-# LOAD-BEARING A SECOND WAY since audit-102 B1: this is also
-# :func:`execute_transaction`'s own guaranteed attempt FLOOR — not a tuned
-# number but the pre-#102 behavioural contract itself. The deadline may only
-# cut retries once this many attempts have run; a transaction slower than the
-# deadline is still guaranteed this many tries, exactly as every caller was
-# guaranteed before finding #102 introduced the deadline at all.
+# concurrent reporter through ONE row). This is :func:`retry_on_conflict`'s
+# OWN guaranteed attempt FLOOR (audit-102 B1) — not a tuned number but the
+# pre-#102 behavioural contract itself: the deadline may only cut retries
+# once this many attempts have run, so a transaction (or single-statement
+# write) slower than the deadline is still guaranteed this many tries, exactly
+# as every caller was guaranteed before finding #102 introduced the deadline
+# at all. It has exactly ONE consumer now — the driver that owns the policy
+# (finding #108: ``briefs.py`` used to derive its own private mint budget from
+# this constant; that consumer is gone, and nothing outside this module may
+# reach for it again — see ``TestTheAttemptFloorOutlivesItsBriefsConsumer`` in
+# ``test_retry_seam.py``).
 _MAX_TXN_CONFLICT_ATTEMPTS = 5
 
-# --- the repaired conflict-retry policy (finding #102) -----------------------
+# --- the repaired conflict-retry policy (finding #102), owned by ------------
+# --- retry_on_conflict() below (finding #108: the ONE driver every caller ---
+# --- shares, rather than eleven private copies of the same mechanics) -------
 #
 # Per-attempt FULL JITTER, redrawn from the process PRNG on EVERY attempt
 # (never cached, never derived from the contended row's identity or a coarse
@@ -498,21 +541,20 @@ def _classify_engine_error(raw_result: object) -> str:
             contract this module controls).
 
     Returns:
-        One of the ``_ERROR_CLASS_*`` labels — the retryable-conflict marker is
-        checked FIRST because the single-statement ``_query`` callers (which
-        classify a caught exception's full text directly through this same
-        function — e.g. ``briefs.py``'s version mint, not yet migrated to the
-        typed error) can hand it text that DOES carry the marker. On the transactional
-        :func:`execute_transaction` path this function is only ever called
-        with a DOMAIN root cause — :func:`_rollback_verdict` never routes
-        conflict-marked text here, since a genuine conflict is either retried
-        internally or raised as the typed :class:`TxnContentionExhaustedError`
-        without ever reaching this classifier (finding #102) — so the marker
-        branch is unreachable from that caller; it stays first because it
-        remains load-bearing for the other one.
+        One of the ``_ERROR_CLASS_*`` labels. The retryable-conflict marker is
+        checked FIRST for defensive symmetry with :func:`_is_retryable_conflict_text`
+        (the same authority every caller's conflict detection reads), even
+        though every seam's attempt body now raises :class:`RetryableConflictSignal`
+        the moment it sees that marker (finding #108) and
+        :func:`retry_on_conflict` consumes the signal without ever reaching a
+        classifier — so on BOTH the transactional and single-statement paths
+        this function is only ever called with a genuinely non-conflict
+        (domain) rejection today. The branch stays first anyway: it is a
+        one-line defensive check, not a load-bearing one, and removing it buys
+        nothing.
     """
     text = str(raw_result)
-    if _RETRYABLE_CONFLICT_MARKER in text:
+    if _is_retryable_conflict_text(text):
         return _ERROR_CLASS_RETRYABLE_CONFLICT
     lowered = text.lower()
     if _ASSERT_VIOLATION_MARKER in lowered:
@@ -574,6 +616,43 @@ def is_connection_error(error: BaseException) -> bool:
     return True
 
 
+def _is_retryable_conflict_text(text: str) -> bool:
+    """The ONE place :data:`_RETRYABLE_CONFLICT_MARKER` is ever consulted.
+
+    Both conflict detectors read the SAME marker through this function: the
+    transactional path's per-statement scan (:func:`_is_retryable_conflict`,
+    :func:`_rollback_verdict`) and the single-statement path's caught-exception
+    check (:func:`is_retryable_conflict_error`). Moving
+    :data:`_RETRYABLE_CONFLICT_MARKER` (as the contract's detection pins do)
+    therefore moves every caller's notion of "conflict" at once — there is no
+    second copy of this comparison anywhere in the package.
+    """
+    return _RETRYABLE_CONFLICT_MARKER in text
+
+
+def is_retryable_conflict_error(error: BaseException) -> bool:
+    """Whether a caught exception from a single-statement SDK call is the
+    engine's own retryable write-write conflict (finding #108).
+
+    The single-statement seam's ONE detection authority: an attempt body that
+    has already ruled out a transport/connection fault
+    (:func:`is_connection_error`) calls THIS — never inspects the raw engine
+    text itself — to decide whether to raise :class:`RetryableConflictSignal`.
+    Reads :data:`_RETRYABLE_CONFLICT_MARKER` via :func:`_is_retryable_conflict_text`
+    on every call, so it always sees the CURRENT marker, never one captured at
+    import time — the same property :func:`_rollback_verdict` has always had
+    on the transactional path.
+
+    Args:
+        error: A caught, non-connection SDK/domain error.
+
+    Returns:
+        ``True`` if ``error`` is the engine's retryable write-write conflict;
+        ``False`` for any other domain/schema rejection.
+    """
+    return _is_retryable_conflict_text(str(error))
+
+
 def _rollback_verdict(
     failed_statements: list[_FailedStatement],
 ) -> tuple[bool, _FailedStatement]:
@@ -625,7 +704,7 @@ def _rollback_verdict(
         root_cause = next(
             failed
             for failed in failed_statements
-            if _RETRYABLE_CONFLICT_MARKER in str(failed.raw_result)
+            if _is_retryable_conflict_text(str(failed.raw_result))
         )
     else:
         root_cause = _domain_root_cause(failed_statements)
@@ -722,6 +801,325 @@ def _log_rollback(
     )
 
 
+async def retry_on_conflict[T](
+    attempt: Callable[[], Awaitable[T]],
+    *,
+    deadline_seconds: float | None = None,
+    label: str | None = None,
+    url: str | None = None,
+) -> T:
+    """Run ``attempt`` until it succeeds, retrying ONLY a classified
+    :class:`RetryableConflictSignal` (finding #108 — the DRY retry seam).
+
+    The ONE place in this package that owns: attempt counting; the give-up
+    predicate (``attempts >= _TXN_CONFLICT_ATTEMPT_CEILING`` OR
+    (``elapsed >= deadline`` AND ``attempts >= _MAX_TXN_CONFLICT_ATTEMPTS``));
+    the per-attempt FRESH full jitter (:func:`_txn_conflict_backoff_seconds`);
+    and raising :class:`TxnContentionExhaustedError` on exhaustion. Every
+    single-statement seam in this package, and :func:`execute_transaction`,
+    call this — there is nothing left to hand-roll.
+
+    A HELPER, NOT A DECORATOR (design ruling): the deadline is per-call and
+    conflict DETECTION differs per path — the transactional caller reads a
+    returned response's failed statements; every single-statement seam reads
+    a RAISED exception — so a decorator would have to hide both behind a
+    configuration it cannot type. The retry POLICY below is identical across
+    every caller; only detection differs, and detection stays with the
+    caller that owns the wire shape: ``attempt`` is responsible for
+    classifying whatever it catches into :class:`RetryableConflictSignal` (or
+    not); this function is responsible for everything that happens once that
+    decision has been made.
+
+    Anything ``attempt`` raises that is NOT :class:`RetryableConflictSignal`
+    propagates UNTOUCHED, with ZERO retries: a transport fault may already
+    have committed (retrying would double-apply — the at-most-once rule) and
+    a domain rejection can never succeed, so only the signal is ever caught.
+
+    Args:
+        attempt: A zero-argument async callable, safe to re-run from scratch
+            on every retry (true for every caller in this package — a
+            conflicted single-statement write commits nothing; see the
+            module docstring's idempotency measurement in
+            ``test_retry_seam.py``).
+        deadline_seconds: The wall-clock retry budget, honoured only once
+            :data:`_MAX_TXN_CONFLICT_ATTEMPTS` attempts have run (audit-102
+            B1 — a budget shorter than one attempt can never veto that
+            attempt's own retry floor). ``None`` (the default) resolves
+            :data:`_TXN_CONFLICT_DEFAULT_DEADLINE_SECONDS` — read HERE, at
+            CALL time (a module-global lookup, never frozen into a default
+            argument at import), so the two single-statement callers — which
+            pass no deadline — have a deadline branch any test can actually
+            reach; freezing it at import is exactly what left finding #102's
+            retry branch unreachable by every test that was ever written.
+        label: The caller's OWN canonical rejection event (e.g.
+            ``"brief.query.rejected"``), carried into the exhaustion record so
+            it is attributable (blindreader-dry-2 F1 / audit-fix-1 B3).
+            ``None`` (the default — :func:`bootstrap_session` and
+            :func:`execute_transaction`, which have their own attribution) omits
+            the seam-identity extras entirely rather than logging a hole.
+        url: The caller's RPC URL, logged alongside ``label`` — ``None`` unless
+            ``label`` is also given.
+
+    Returns:
+        Whatever ``attempt`` returned once it stopped raising the signal.
+
+    Raises:
+        TxnContentionExhaustedError: The attempt ceiling, or the deadline
+            once the attempt floor has been met, was reached with the
+            conflict still unresolved. Subclasses :class:`SurrealStoreError`.
+    """
+    deadline = (
+        _TXN_CONFLICT_DEFAULT_DEADLINE_SECONDS if deadline_seconds is None else deadline_seconds
+    )
+    started = time.monotonic()
+    attempts = 0
+    # blindreader-dry-2 F1 / audit-fix-1 B3: the LATEST classified conflict's own cause —
+    # every caller that raises the signal does so ``from error`` (the original engine
+    # exception) — so the exhaustion record can quote the SAME engine text the seam's own
+    # non-exhausted rejections already log, instead of leaving the operator with only an
+    # attempt count and a hint pointing at a server log that holds nothing.
+    last_conflict_cause: BaseException | None = None
+    while True:
+        try:
+            return await attempt()
+        except RetryableConflictSignal as signal:
+            last_conflict_cause = signal.__cause__
+        attempts += 1
+        elapsed = time.monotonic() - started
+        # B1 (audit-102): the deadline may bound retries; it may never veto the
+        # FIRST one. Give up on the CEILING alone (the structural runaway
+        # backstop), or on the deadline ONLY once the attempt floor (the
+        # pre-#102 five-attempt guarantee) has been met — restoring, BY
+        # CONSTRUCTION, the same non-regression guarantee every caller had
+        # before finding #102 introduced the deadline at all.
+        if attempts >= _TXN_CONFLICT_ATTEMPT_CEILING or (
+            elapsed >= deadline and attempts >= _MAX_TXN_CONFLICT_ATTEMPTS
+        ):
+            # blindreader F2: this is the ONLY place that can see the attempt count, so
+            # it is the ONLY place that can log it. Exactly one record, on EVERY caller
+            # (the ten single-statement seams and ``execute_transaction`` alike, since
+            # there is only one driver) — the terminal DISPOSITION, never the journey: a
+            # conflict that resolves logs nothing here (see
+            # ``test_nothing_is_logged_when_the_conflict_RESOLVES``), because contention
+            # is the NORMAL case — blindreader-dry-1's live probe (16 racers x 40 rounds on
+            # ONE hot row, raw SDK): 193/640 attempts = 30.2% conflicted (a single
+            # measurement at 16-way, not a general constant) — and a line per retried
+            # attempt would be a log storm in production.
+            extra: dict[str, Any] = {"attempts": attempts, "elapsed_seconds": elapsed}
+            if label is not None:
+                # Attributable: WHICH seam (the canonical event an operator already
+                # greps), WHICH server, and WHAT THE ENGINE SAID — the same three facts
+                # every non-exhausted rejection already logs, now on the one path that
+                # previously lost all three.
+                extra["label"] = label
+                extra["url"] = url
+                extra["engine_error"] = (
+                    str(last_conflict_cause) if last_conflict_cause is not None else ""
+                )
+            logger.warning("store.retry.exhausted", extra=extra)
+            raise TxnContentionExhaustedError(
+                f"SurrealDB operation gave up after {attempts} attempts over "
+                f"{elapsed:.3f}s ({_ERROR_CLASS_RETRYABLE_CONFLICT}); {_SERVER_LOG_HINT}",
+                attempts=attempts,
+                elapsed_seconds=elapsed,
+            )
+        await asyncio.sleep(_txn_conflict_backoff_seconds(attempts))
+
+
+async def bootstrap_session(connection: _SurrealConnection, namespace: str, database: str) -> None:
+    """Materialise and select ``namespace``/``database`` on a freshly signed-in socket —
+    THE ONE SESSION BOOTSTRAP (blindreader F3, finding #108's own sixth hole).
+
+    Every ``_ensure_connection`` in the package used to hand-roll the same three
+    statements (``DEFINE NAMESPACE IF NOT EXISTS`` / ``connection.use()`` /
+    ``DEFINE DATABASE IF NOT EXISTS``) as three BARE, UNRETRIED inline ``await``
+    statements — no closures, no shared anything — thirty copies across ten
+    store/manifest/ledger modules, plus an eleventh in ``scout.py``'s module-level
+    ``_open_command_connection`` (invisible to any scan keyed on ``_query``, exactly as
+    scout was invisible to it the first time). **At HEAD this driver did not exist**: a
+    retryable conflict during the DDL hit each owner's own ``except _CONNECTION_ERRORS``
+    and was misclassified as a plain connection failure — unretried, and surfaced as
+    :class:`SurrealConnectionError` for a server that was merely busy, not down (probed
+    live, 16-way concurrent: **6.2%–34.4%** of virgin first-connects lost, across three
+    160-connect runs — a RANGE, stated with its protocol, never a point estimate). **Two
+    different defects, cloned in the same shape ten times, hand-written: nothing was
+    SHARED, and the retry this function now performs is not a pre-existing convenience —
+    it is what this wave BUILT.** Routing every owner through the ONE shared bootstrap is
+    what turns that loss into the 0% this module's own test suite now measures.
+
+    Disposition is deliberately NOT this function's concern — every failure (a
+    conflict, retried to exhaustion, or a genuine transport/domain fault) propagates
+    UNWRAPPED to the caller, EXACTLY as raised by the SDK or by
+    :func:`retry_on_conflict` — no ``except`` clause of this function's own translates
+    anything. That is load-bearing (contract adversary P-1, ``W1-SCOUTKILL``): scout's
+    reconnect ladder catches raw SDK types and :class:`TxnContentionExhaustedError`
+    directly, never :class:`SurrealConnectionError`. A ``bootstrap_session`` that
+    wrapped its own exhaustion would satisfy every store-seam pin and still fly straight
+    past that ladder, killing the command channel with no backoff and no reconnect.
+    **The wrap belongs at the SEAM, not in the shared helper** — the ten
+    store/manifest/ledger owners wrap what this raises into
+    :class:`SurrealConnectionError` in their own ``_ensure_connection`` (the F4 ruling:
+    the connection never became usable, regardless of why); ``scout.py`` does not wrap
+    at all, by design.
+
+    The three statements share ONE wall-clock budget (blindreader-dry-2 F2 / audit-fix-1
+    B2): each ``retry_on_conflict`` call below is handed what is LEFT of
+    :data:`_TXN_CONFLICT_DEFAULT_DEADLINE_SECONDS`, not a fresh copy of it — three equal
+    deadlines would be three independent budgets wearing a parameter, and this bootstrap
+    runs under the caller's HELD connect lock, so an uncomposed budget triples how long a
+    contended virgin first-connect blocks every other coroutine. Composing the budget
+    cannot starve a statement of its retries: the attempt FLOOR
+    (:data:`_MAX_TXN_CONFLICT_ATTEMPTS`, audit-102 B1) guarantees every statement its
+    attempts regardless of wall time, deadline or no.
+
+    Args:
+        connection: The freshly constructed, already SIGNED-IN socket to bootstrap.
+        namespace: The namespace to materialise and select.
+        database: The database to materialise and select.
+
+    Raises:
+        TxnContentionExhaustedError: The DDL or ``use()`` contended past the shared
+            budget (or the attempt ceiling). Never wrapped here — see above.
+
+    This function's OWN body raises nothing else: a transport fault (a raw ``OSError``/
+    ``SurrealError``/``WebSocketException``) or a domain rejection of the bootstrap DDL
+    propagates UNTRANSLATED, exactly as the SDK (or :func:`retry_on_conflict`) raised it
+    — by design, so scout's reconnect ladder (which catches those raw types directly)
+    and each of the ten seams' own translation (into :class:`SurrealConnectionError`)
+    both see what actually happened.
+    """
+    started = time.monotonic()
+
+    def _remaining_budget() -> float:
+        """What is LEFT of the bootstrap's ONE wall-clock budget, never negative."""
+        return max(0.0, _TXN_CONFLICT_DEFAULT_DEADLINE_SECONDS - (time.monotonic() - started))
+
+    async def _define_namespace() -> None:
+        try:
+            await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {namespace}")
+        except _CONNECTION_ERRORS as error:
+            if is_retryable_conflict_error(error):
+                raise RetryableConflictSignal() from error
+            raise
+
+    async def _select_namespace_database() -> None:
+        try:
+            await connection.use(namespace, database)
+        except _CONNECTION_ERRORS as error:
+            if is_retryable_conflict_error(error):
+                raise RetryableConflictSignal() from error
+            raise
+
+    async def _define_database() -> None:
+        try:
+            await connection.query(f"DEFINE DATABASE IF NOT EXISTS {database}")
+        except _CONNECTION_ERRORS as error:
+            if is_retryable_conflict_error(error):
+                raise RetryableConflictSignal() from error
+            raise
+
+    await retry_on_conflict(_define_namespace, deadline_seconds=_remaining_budget())
+    await retry_on_conflict(_select_namespace_database, deadline_seconds=_remaining_budget())
+    await retry_on_conflict(_define_database, deadline_seconds=_remaining_budget())
+
+
+async def run_query(
+    *,
+    acquire: AcquireConnection,
+    drop: DropConnection,
+    url: str,
+    noun: str,
+    label: str,
+    statement: str,
+    params: dict[str, Any] | None = None,
+    logger: logging.Logger,
+) -> Any:
+    """The ONE single-statement attempt body (blindreader F3) — classify, signal,
+    self-heal, log; every seam's ``_query`` calls this instead of hand-rolling its own
+    copy of the same ladder.
+
+    Ten modules used to carry this exact body, byte-identical but for the ``noun`` in
+    the raised message and the ``label`` the rejection is logged under — the
+    classification-and-signal POLICY, cloned ten times. ``acquire`` is called INSIDE
+    the retried attempt (adversary R-3, latent): a build that hoisted it out would
+    re-run the statement on a connection a previous attempt already dropped.
+
+    Args:
+        acquire: The seam's own ``_ensure_connection`` — returns the live, cached
+            connection, reconnecting on first use or after a self-heal.
+        drop: The seam's own connection self-heal — nulls the cached handle (if it is
+            still the one that just failed) and closes the dead socket.
+        url: The seam's RPC URL, for the raised messages.
+        noun: What this seam calls the statement it runs (e.g. ``"brief query"``) —
+            purely for the raised message's wording; the seam-identifying signal an
+            operator actually greps on is ``label``, below.
+        label: This seam's OWN canonical rejection log event (e.g.
+            ``"brief.query.rejected"`` — see ``_SEAM_REJECTION_EVENTS`` in
+            ``test_retry_seam.py``). Collapsing ten hand-rolled bodies into one function
+            must not homogenise this: an operator grepping one seam's event name still
+            finds only that seam's rejections.
+        statement: The SurrealQL statement to run.
+        params: The statement's bound parameters.
+        logger: The CALLING seam's OWN module logger (``logging.getLogger(__name__)``
+            in that seam's file) — blindreader-dry-2 F6: ``JsonFormatter`` writes
+            ``"logger": record.name``, a served field, and every Mezmo query/alert
+            keyed on ``logger:loremaster.tasks`` for ``task.query.rejected`` must keep
+            matching. A shared attempt body logging under its OWN ``_txn`` logger would
+            silently move every seam's rejection record to one logger name.
+
+    Returns:
+        Whatever the SDK's ``query()`` returned, laundered through ``Any`` (the SDK's
+        wide ``Value`` return union) exactly as every existing ``_query`` seam does.
+
+    Raises:
+        SurrealConnectionError: A transport/socket/auth failure — self-heals via
+            ``drop`` before raising.
+        SurrealStoreError: A domain/schema rejection of the statement; the connection
+            is left healthy. The full engine detail is logged under ``label`` first
+            (ledger #31: the raised message never echoes it).
+        TxnContentionExhaustedError: A genuine write-write conflict outlived the shared
+            driver's retry budget. The ONE ``store.retry.exhausted`` record (logged by
+            :func:`retry_on_conflict`, on ``_txn``'s OWN logger — a new event with no
+            existing consumers, unlike this seam's rejection event above) carries this
+            seam's ``label``/``url``/the engine's conflict text too (blindreader-dry-2
+            F1 / audit-fix-1 B3), so exhaustion is attributable the same way a
+            non-exhausted rejection already is.
+    """
+
+    async def _attempt() -> Any:
+        connection = await acquire()
+        try:
+            return await connection.query(statement, params or {})
+        except (*_CONNECTION_ERRORS, KeyError) as error:
+            if isinstance(error, KeyError) or is_connection_error(error):
+                # A genuine transport/auth fault (or the SDK's own response-routing
+                # KeyError — see ``_txn_query_raw``'s docstring): self-heal and surface
+                # loudly.
+                await drop(connection)
+                raise SurrealConnectionError(
+                    f"SurrealDB {noun} failed against {url!r}: {error}"
+                ) from error
+            if is_retryable_conflict_error(error):
+                raise RetryableConflictSignal() from error
+            # A domain/schema rejection of the write — the connection is healthy and
+            # must not be thrown away for a fault that is not the transport's. Message
+            # hygiene (ledger #31): the raw engine text can echo a bound VALUE back
+            # verbatim, and that text flows to MCP clients in P8 — so the FULL detail is
+            # logged server-side under this seam's OWN event (and OWN logger — F6),
+            # and the RAISED error carries only a CLASSIFIED, generic label plus a "see
+            # the server log" hint, never the raw engine text itself.
+            error_class = _classify_engine_error(error)
+            logger.error(
+                label,
+                extra={"url": url, "error_class": error_class, "engine_error": str(error)},
+            )
+            raise SurrealStoreError(
+                f"SurrealDB {noun} rejected against {url!r} ({error_class}); {_SERVER_LOG_HINT}"
+            ) from error
+
+    return await retry_on_conflict(_attempt, label=label, url=url)
+
+
 async def execute_transaction(
     statement: str,
     params: dict[str, Any],
@@ -736,11 +1134,15 @@ async def execute_transaction(
     The counter to the SDK's own ``query()`` gap: ``query()`` only checks the
     FIRST statement's ``status`` before deciding whether to raise, so a later
     rejection inside a transaction rolls back server-side while ``query()``
-    returns ``None`` with no exception at all. Each attempt runs three linear
+    returns ``None`` with no exception at all. Each attempt (run by the shared
+    :func:`retry_on_conflict` driver, finding #108) executes three linear
     steps: :func:`_txn_query_raw` (self-healing ``query_raw`` + the SDK's own
     RPC-error check), :func:`_failed_statements` (extract the per-statement
-    ``ERR`` entries), then :func:`_rollback_verdict` (the ONE decision both the
-    retry and the eventual raise read from).
+    ``ERR`` entries), then :func:`_rollback_verdict` (the ONE decision both
+    the retry and the eventual raise read from) — raising
+    :class:`RetryableConflictSignal` for a conflict (which the driver
+    consumes) or :class:`SurrealStoreError` immediately for a domain
+    rejection.
 
     A genuine transport/auth failure (the socket died, or the server is
     unreachable) self-heals via ``drop`` and surfaces as
@@ -812,20 +1214,22 @@ async def execute_transaction(
         TxnContentionExhaustedError: A genuine write-write conflict outlived
             the deadline/attempt budget. Subclasses :class:`SurrealStoreError`.
     """
-    deadline = (
-        _TXN_CONFLICT_DEFAULT_DEADLINE_SECONDS if deadline_seconds is None else deadline_seconds
-    )
-    started = time.monotonic()
-    attempt = 0
-    while True:
+    # Stashed by the attempt body on every CONFLICTED try, so the exhaustion
+    # log line (below) can report the LAST attempt's root cause — logging on
+    # every retry would spam the log for a conflict that resolves cleanly;
+    # logging only the terminal disposition (a domain rejection, immediately,
+    # or an exhausted conflict, once) matches this seam's behaviour before
+    # finding #108 extracted the driver.
+    last_conflict: tuple[_FailedStatement, int, list[_FailedStatement]] | None = None
+
+    async def _attempt() -> None:
+        nonlocal last_conflict
         response = await _txn_query_raw(statement, params, acquire=acquire, drop=drop, url=url)
-        attempt += 1
         failed_statements = _failed_statements(response)
         statement_count = len(response.get("result") or [])
         if not failed_statements:
             return
         is_conflict, root_cause = _rollback_verdict(failed_statements)
-        elapsed = time.monotonic() - started
         if not is_conflict:
             error_class = _classify_engine_error(root_cause.raw_result)
             _log_rollback(root_cause, statement_count, failed_statements)
@@ -834,27 +1238,15 @@ async def execute_transaction(
                 f"{root_cause.index + 1} of {statement_count} was rejected "
                 f"({error_class}); {_SERVER_LOG_HINT}"
             )
-        # B1 (audit-102): the deadline may bound retries; it may never veto the
-        # FIRST one. A wall-clock budget smaller than a single attempt's own
-        # execution time is incoherent as a retry budget — the caller's own
-        # attempt duration is not the retry policy's to ration. Give up on the
-        # CEILING alone (the structural runaway backstop), or on the deadline
-        # ONLY once the attempt floor (the pre-#102 five-attempt guarantee,
-        # ``_MAX_TXN_CONFLICT_ATTEMPTS``) has been met — restoring, BY
-        # CONSTRUCTION, the same non-regression guarantee every caller had
-        # before finding #102 introduced the deadline at all. Zero new
-        # constants (design addendum, Ruling 1).
-        if attempt >= _TXN_CONFLICT_ATTEMPT_CEILING or (
-            elapsed >= deadline and attempt >= _MAX_TXN_CONFLICT_ATTEMPTS
-        ):
-            _log_rollback(root_cause, statement_count, failed_statements)
-            raise TxnContentionExhaustedError(
-                f"SurrealDB transaction gave up after {attempt} attempts over "
-                f"{elapsed:.3f}s ({_ERROR_CLASS_RETRYABLE_CONFLICT}); {_SERVER_LOG_HINT}",
-                attempts=attempt,
-                elapsed_seconds=elapsed,
-            )
-        await asyncio.sleep(_txn_conflict_backoff_seconds(attempt))
+        last_conflict = (root_cause, statement_count, failed_statements)
+        raise RetryableConflictSignal()
+
+    try:
+        await retry_on_conflict(_attempt, deadline_seconds=deadline_seconds)
+    except TxnContentionExhaustedError:
+        if last_conflict is not None:
+            _log_rollback(*last_conflict)
+        raise
 
 
 async def _txn_query_raw(
@@ -936,9 +1328,10 @@ def _is_retryable_conflict(failed_statements: list[_FailedStatement]) -> bool:
     two genuinely concurrent transactions on the same row, which resolves cleanly
     on retry. Every other rejection (e.g. a domain/``ASSERT`` violation) never
     carries that marker and is never retried. Reads the RAW engine text (never
-    exposed outside this module — see :class:`_FailedStatement`); ledger #31
-    only changed what :func:`execute_transaction` RAISES, not this decision.
+    exposed outside this module — see :class:`_FailedStatement`) via
+    :func:`_is_retryable_conflict_text` — the SAME authority
+    :func:`is_retryable_conflict_error` reads for the single-statement path;
+    ledger #31 only changed what :func:`execute_transaction` RAISES, not this
+    decision.
     """
-    return any(
-        _RETRYABLE_CONFLICT_MARKER in str(failed.raw_result) for failed in failed_statements
-    )
+    return any(_is_retryable_conflict_text(str(failed.raw_result)) for failed in failed_statements)

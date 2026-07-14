@@ -58,15 +58,15 @@ from loremaster.memory.backend import (
 from loremaster.memory.ledger import MemoryLedger, MemoryRecord
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
-    _SERVER_LOG_HINT,
     SurrealConnectionError,
     SurrealStoreError,
+    TxnContentionExhaustedError,
     TxnFragment,
-    _classify_engine_error,
     _SurrealConnection,
+    bootstrap_session,
     compose,
     execute_transaction,
-    is_connection_error,
+    run_query,
 )
 
 # The shared hybrid-search lexical-arm bounding mechanism (finding #69): this
@@ -331,13 +331,21 @@ class LocalMemoryBackend:
         """Return the live connection, opening + signing in on first use.
 
         Double-checked locking (mirrors :class:`SurrealStore`): the fast path
-        never touches the lock; a first caller signs in, materialises the
-        namespace/database idempotently and selects them. Any transport/auth
-        failure is a LOUD, typed :class:`SurrealConnectionError` — never a hang
-        or a silent empty result.
+        never touches the lock. The session bootstrap is
+        :func:`~loremaster.store._txn.bootstrap_session` — the ONE shared
+        implementation every connection owner in the package calls
+        (blindreader F3; see its docstring for the mechanism). This method's
+        own job is DISPOSITION: any bootstrap failure — a transport/auth fault
+        OR exhausted contention alike — is wrapped as
+        :class:`SurrealConnectionError` after closing the half-open socket
+        (the F4 ruling: the connection never became usable, whatever the
+        reason). ``bootstrap_session`` itself never performs this wrap
+        (adversary P-1): scout's reconnect ladder needs the RAW exhaustion
+        type, so the wrap lives here, at the seam, not in the shared helper.
 
         Raises:
-            SurrealConnectionError: The server is unreachable or rejected auth.
+            SurrealConnectionError: The server is unreachable, rejected auth,
+                or the session bootstrap exhausted its retry budget.
         """
         if self._connection is not None:
             return self._connection
@@ -353,9 +361,14 @@ class LocalMemoryBackend:
             }
             try:
                 await connection.signin(credentials)
-                await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
-                await connection.use(self._namespace, self._database)
-                await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
+                await bootstrap_session(connection, self._namespace, self._database)
+            except TxnContentionExhaustedError as error:
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): "
+                    f"the session bootstrap exhausted its retry budget"
+                ) from error
             except _CONNECTION_ERRORS as error:
                 # Close the half-open socket so a failed connect never leaks a
                 # dangling connection, then surface a typed connection error.
@@ -427,39 +440,21 @@ class LocalMemoryBackend:
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         """Run a single statement on the (lazily opened) connection, self-healing.
 
-        Classifies a failure exactly as :class:`SurrealStore._query` does (via
-        :func:`~loremaster.store._txn.is_connection_error`): a transport/socket/
-        auth fault (or the SDK's ``KeyError`` response-routing race) drops the
-        cached handle so the next call reconnects and surfaces a LOUD
-        :class:`SurrealConnectionError`; a domain/schema rejection keeps the
-        healthy connection and surfaces as
-        :class:`~loremaster.store._txn.SurrealStoreError`. Never a silent empty
-        result, never a raw engine string leaked to the caller.
+        Delegates to :func:`~loremaster.store._txn.run_query` — the ONE shared
+        attempt body every single-statement seam in the package now calls
+        (blindreader F3; see its docstring for the classify/self-heal/log
+        mechanism, including its RETRYABLE-conflict path, finding #120/#108).
         """
-        connection = await self._ensure_connection()
-        try:
-            return await connection.query(statement, params or {})
-        except (*_CONNECTION_ERRORS, KeyError) as error:
-            if isinstance(error, KeyError) or is_connection_error(error):
-                await self._drop_connection(connection)
-                raise SurrealConnectionError(
-                    f"SurrealDB memory query failed against {self._url!r}: {error}"
-                ) from error
-            # A domain/schema rejection — keep the healthy connection. Message
-            # hygiene (ledger #31, mirroring ``execute_transaction``): the raw
-            # engine text can echo a bound VALUE back verbatim (an ASSERT/coercion
-            # rejection) and flows to MCP clients in P8, so the FULL detail is
-            # logged server-side and the RAISED error carries only a CLASSIFIED,
-            # generic label plus a "see the server log" hint, never the raw text.
-            error_class = _classify_engine_error(error)
-            logger.error(
-                "memory.query.rejected",
-                extra={"url": self._url, "error_class": error_class, "engine_error": str(error)},
-            )
-            raise SurrealStoreError(
-                f"SurrealDB memory query rejected against {self._url!r} ({error_class}); "
-                f"{_SERVER_LOG_HINT}"
-            ) from error
+        return await run_query(
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+            noun="memory query",
+            label="memory.query.rejected",
+            statement=statement,
+            params=params or {},
+            logger=logger,
+        )
 
     async def _apply(self, fragments: list[TxnFragment]) -> None:
         """Compose ``fragments`` into ONE transaction and run it atomically.

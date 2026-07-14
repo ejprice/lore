@@ -67,9 +67,10 @@ match):
                 UnknownBriefError(BriefLedgerError);
                 UnknownBriefVersionError(BriefLedgerError).
 
-    Module constants: BRIEF_NAME_PROJECT, BRIEF_NAME_BASE,
-        _BRIEF_PUBLISH_MAX_ATTEMPTS, _BRIEF_PUBLISH_BACKOFF_SECONDS,
-        _BRIEF_PUBLISH_JITTER_SLOTS, _BRIEF_PUBLISH_JITTER_SECONDS.
+    Module constants: BRIEF_NAME_PROJECT, BRIEF_NAME_BASE.
+        (The four private mint-retry constants are GONE — finding #108: the mint
+        rides the shared ``_txn.retry_on_conflict`` driver and owns no retry
+        mechanics of its own. See test_retry_seam.py.)
 
 Deliberate design decoupling (see the report): ``coverage``/``ack`` accept an
 externally-resolved agent identity (``agent_id``/``agent_name`` or an
@@ -104,10 +105,6 @@ from _surreal_harness import (
     unique_database,
 )
 from loremaster.briefs import (
-    _BRIEF_PUBLISH_BACKOFF_SECONDS,
-    _BRIEF_PUBLISH_JITTER_SECONDS,
-    _BRIEF_PUBLISH_JITTER_SLOTS,
-    _BRIEF_PUBLISH_MAX_ATTEMPTS,
     _KNOWN_BRIEFS_CAP,
     BRIEF_NAME_BASE,
     BRIEF_NAME_PROJECT,
@@ -1366,16 +1363,23 @@ class TestBriefNameConstants:
         assert BRIEF_NAME_BASE == "base"
 
 
-class TestPublishMintConstants:
-    """§4: the publish-retry mechanism's module constants — budget 4 (not 12,
-    findings' N-way figure): publish contention is lead-shaped, ≤2-way.
-    """
-
-    def test_mint_retry_constants_match_the_spec(self) -> None:
-        assert _BRIEF_PUBLISH_MAX_ATTEMPTS == 4
-        assert _BRIEF_PUBLISH_BACKOFF_SECONDS == 0.01
-        assert _BRIEF_PUBLISH_JITTER_SLOTS == 4
-        assert _BRIEF_PUBLISH_JITTER_SECONDS == 0.001
+# ---------------------------------------------------------------------------
+# DELETED (finding #108): ``TestPublishMintConstants`` pinned the four private mint
+# constants — a 4-attempt budget, a linear backoff, and a FOUR-SLOT jitter table (the
+# names are in test_retired_symbols.py's registry; naming them here would be the very
+# dangling reference that gate exists to forbid) — against spec §5.1's claim that
+# "publish contention is lead-shaped, ≤2-way".
+#
+# The spec was wrong (the contract itself pins an EIGHT-way race), the jitter was the
+# defect (4 slots, 8 racers: the pigeonhole guarantees two racers share a slot and then
+# stay lockstepped for the whole ladder), and the constants existed only because the
+# substrate offered nothing to call. The mint rides ``_txn.retry_on_conflict`` now: one
+# policy, one jitter, one typed exhaustion error, zero constants of its own.
+#
+# This test could only ever have gone GREEN — it asserted that a specified defect was
+# still faithfully implemented. Its replacements are in test_retry_seam.py: the mint
+# draws from the SHARED jitter, and every caller exhausts on the SAME budget.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

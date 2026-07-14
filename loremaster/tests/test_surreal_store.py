@@ -3215,9 +3215,10 @@ class TestTxnConflictBackoffIsJittered:
       * sleeps a deterministic duration (today's build);
       * draws its jitter ONCE per call and reuses it (findings' dead backstop
         did exactly this — a slot derived from the finding id, redrawn never);
-      * draws from a small DISCRETE set of slots (findings used 16, briefs uses
-        4 — at N racers over S slots the pigeonhole guarantees collisions, and
-        two racers that share a slot stay collided for every attempt);
+      * draws from a small DISCRETE set of slots (findings' dead backstop used 16,
+        briefs' deleted mint loop used 4 — at N racers over S slots the pigeonhole
+        guarantees collisions, and two racers that share a slot stay collided for
+        every attempt);
       * grows the window without a CAP (an unbounded exponential);
       * jitters around a floor instead of down to zero (equal jitter rather than
         the full jitter the design ruled).
@@ -3439,9 +3440,9 @@ class TestConcurrentRacersDrawDistinctBackoffs:
             f"backoff nobody else drew — the rest wake together and re-collide on the "
             f"same row. This is the lockstep finding #102 IS. An entropy source shared "
             f"between racers (the contended row's id, a coarse clock, a slot table) is "
-            f"not jitter. A discrete slot table is this repo's OWN historical idiom "
-            f"(findings used 16 slots, briefs uses 4) and it is exactly what must not "
-            f"be copied here."
+            f"not jitter. A discrete slot table is this repo's OWN historical idiom — "
+            f"findings' dead backstop used 16 slots and briefs' deleted mint loop used "
+            f"4 — and it is exactly what must not be copied here."
         )
 
     async def test_each_racer_redraws_its_own_entropy_every_attempt(
@@ -3547,8 +3548,8 @@ class TestConcurrentRacersDrawDistinctBackoffs:
             f"the backoff is drawn from a SLOT TABLE of at most {distinct} slots, not from "
             f"a continuous distribution. A slot table pigeonholes concurrent racers into "
             f"shared windows: they wake together and re-collide. This repo's own history "
-            f"is the warning — findings' dead backstop used 16 slots, briefs uses 4. The "
-            f"design ruled uniform(0, window); draw from it."
+            f"is the warning — findings' dead backstop used 16 slots and briefs' deleted "
+            f"mint loop used 4. The design ruled uniform(0, window); draw from it."
         )
 
 
@@ -3569,12 +3570,20 @@ class TestConcurrentRacersDrawDistinctBackoffs:
 # this scan is the instrument that keeps it replaced: a fix without an
 # invariant is half a fix, and this defect CLASS has now cost two findings.
 #
-# The exemption is NAMED, SINGLE, and SELF-CLEANING: ``briefs.py`` still gates
-# its LIVE single-statement mint retry on the label (it rides the ``_query``
-# path, where the raw marker survives into the exception text, so its gate does
-# match and its loop does run). It is READ-ONLY for #102. The scan asserts the
-# exemption is STILL NEEDED, so that when briefs migrates to the typed error the
-# exemption cannot quietly linger and grandfather the next violation.
+# THERE ARE NO EXEMPTIONS. ``briefs.py`` was the single, named, expiring one: it
+# gated its LIVE single-statement mint retry on the label, because the
+# single-statement path had no typed contention error to catch (finding #108).
+# The DRY retry seam gives it one — the mint now calls ``_txn.retry_on_conflict``
+# and hears about exhaustion as a TYPE — so the hand-rolled loop, the label import
+# and the exemption are all DELETED together. The coupling class is now
+# structurally impossible rather than merely discouraged, which was always the
+# point: a self-cleaning exemption is a promise, and this repo's own law says a
+# rule people must remember is not a guard, it is a hope.
+#
+# (The widened, prose-inclusive version of this ban — no production module may so
+# much as MENTION a label or the engine's raw marker, docstrings included — lives in
+# test_retry_seam.py::TestNoCallerEverReadsAnEngineMessage. An AST scan cannot see a
+# docstring, and a future agent reads the docstring, not the AST.)
 # ===========================================================================
 
 # Every classification label a production ``except`` body might be tempted to
@@ -3598,18 +3607,17 @@ _CLASSIFICATION_LABEL_VALUES = frozenset(
     }
 )
 
-# The single, named, EXPIRING exemption: briefs' live mint retry (briefs.py's
-# ``_mint_version``). It rides the single-statement ``_query`` seam, whose raw
-# exception text DOES carry the engine marker, so its label gate genuinely
-# fires today. It is read-only for #102 and migrates to the typed error when
-# its own finding closes (#108) — at which point this exemption must be DELETED
-# (the still-needed assertion below forces that).
+# EMPTY, and it stays empty. Finding #108 migrated briefs' mint to the typed error,
+# so the last exemption expired exactly as it was designed to. The set is kept (rather
+# than deleted along with its member) because it is the thing a future violation will
+# reach for first: an empty frozenset here is a standing refusal, and adding a name to
+# it is a diff a reviewer can see.
 #
-# Matched on the module's PATH, never its BASENAME: a basename match would hand
-# the grandfathered exemption to ANY future file called ``briefs.py`` anywhere in
+# Any entry that ever returns must be matched on the module's PATH, never its BASENAME:
+# a basename match would hand the exemption to ANY future file of that name anywhere in
 # the package — a brand-new ``store/briefs.py`` would inherit an exemption nobody
 # granted. Contrived as an attack; entirely plausible as an accident.
-_LABEL_MATCH_EXEMPT_PATHS = frozenset({"briefs.py"})
+_LABEL_MATCH_EXEMPT_PATHS: frozenset[str] = frozenset()
 
 # ``_txn.py`` DEFINES the labels and is the one module allowed to compare against
 # marker text — that is the classifier's entire job. It is not an exemption from
@@ -3862,11 +3870,11 @@ class TestNoProductionModuleHoldsAClassificationLabel:
     label. It catches the lazy path, not the determined one. The behavioural pin
     catches the determined one.
 
-    Exempt, matched on PATH (never basename — a future ``store/briefs.py`` must not
-    inherit a grandfathered exemption): ``store/_txn.py``, which DEFINES the labels
-    and classifies engine text (the invariant's subject, not its exception), and
-    ``briefs.py``, the single NAMED, EXPIRING exemption whose live single-statement
-    mint retry legitimately gates on the label until finding #108 migrates it.
+    Exempt: NOTHING. ``store/_txn.py`` is skipped because it DEFINES the labels and
+    classifies engine text — the invariant's subject, not an exception to it. The one
+    real exemption (``briefs.py``, whose single-statement mint had no typed contention
+    error to catch) died with finding #108: the mint calls the shared driver now, and
+    the label import went with the loop.
     """
 
     @pytest.mark.parametrize(("evasion", "source"), _LABEL_EVASIONS)
@@ -3909,55 +3917,30 @@ class TestNoProductionModuleHoldsAClassificationLabel:
             f"on the exception TYPE: catch TxnContentionExhaustedError."
         )
 
-    def test_the_briefs_exemption_is_still_needed(self) -> None:
-        """SELF-CLEANING. When finding #108 migrates briefs to the typed error, this
-        goes RED and forces the exemption's deletion — a stale exemption is a hole
-        that silently grandfathers the next violation.
-        """
-        briefs = _PRODUCTION_ROOT / "briefs.py"
-        assert _classification_label_holders(briefs.read_text(encoding="utf-8")), (
-            "briefs.py no longer holds a classification label — DELETE it from "
-            "_LABEL_MATCH_EXEMPT_PATHS"
-        )
 
-
-class TestBriefsInheritedConflictBudgetIsNotSilentlyRepointed:
-    """``briefs.py`` (READ-ONLY for #102) composes its OWN live retry budget out
-    of the seam's constant::
-
-        _BRIEF_MINT_MAX_ATTEMPTS = _BRIEF_PUBLISH_MAX_ATTEMPTS * _MAX_TXN_CONFLICT_ATTEMPTS
-
-    That product — 4 × 5 = 20 — is a MEASURED number (briefs.py:170-177 cites
-    the receipt: at 8-way contention a bare 4-attempt budget exhausts roughly 1
-    mint in 240, and the product carries a ~5× margin over it). It drives a loop
-    that genuinely runs: ``for attempt in range(_BRIEF_MINT_MAX_ATTEMPTS)``.
-
-    So the seam's ``_MAX_TXN_CONFLICT_ATTEMPTS`` has a consumer OUTSIDE
-    ``execute_transaction``, and #102 must not disturb it:
-
-      * DELETE the constant and ``loremaster.briefs`` fails to import — the
-        whole package goes down.
-      * REPOINT it at the repaired seam's structural attempt ceiling and briefs
-        silently starts retrying that ceiling × 4 times, its measured margin
-        replaced by an unmeasured one and its error prose quoting a number
-        nobody chose.
-
-    Neither is visible to mypy, ruff, or any existing test. This pin is that
-    missing instrument. It is #102's own trap — a constant tuned for one purpose,
-    silently inherited by another — and the finding exists precisely because
-    nobody re-measured one of those.
-    """
-
-    def test_briefs_mint_budget_is_still_the_measured_twenty(self) -> None:
-        from loremaster import briefs
-
-        assert briefs._BRIEF_MINT_MAX_ATTEMPTS == 20, (
-            "briefs' live mint retry budget moved. It is DERIVED from the shared "
-            "_MAX_TXN_CONFLICT_ATTEMPTS, so a #102 repair that deletes or repurposes "
-            "that constant silently re-tunes a measured budget in a file it does not "
-            "own. Give the repaired execute_transaction its OWN constants and leave "
-            "the seam's inherited one alone."
-        )
+# ===========================================================================
+# DELETED HERE (finding #108, the DRY retry seam):
+#
+#   * ``test_the_briefs_exemption_is_still_needed`` — the self-cleaning assertion that
+#     forced this deletion. It fired exactly as designed: briefs no longer holds a
+#     label, so the exemption had to go, and the assertion with it.
+#
+#   * ``TestBriefsInheritedConflictBudgetIsNotSilentlyRepointed`` — it pinned briefs'
+#     PRIVATE 20-attempt mint budget (the seam's floor, multiplied by briefs' own
+#     4-attempt app-level ladder) and the loop it drove, hand-rolled because the
+#     substrate offered nothing to call. Every one of those things is now gone — the
+#     retired names live in test_retired_symbols.py's registry, and naming them here
+#     would be the very dangling reference that gate exists to forbid. **A test written
+#     before a semantic change certifies the OLD world** (CLAUDE.md), and this one
+#     certified the exact structure the change deletes — a suite can be green BECAUSE it
+#     still asserts the corpse.
+#
+# Its LIVE half — the seam's floor must not be silently re-tuned or repointed — is not
+# lost: it is re-pinned for the new world in
+# test_retry_seam.py::TestTheAttemptFloorOutlivesItsBriefsConsumer, which asserts the
+# floor is still 5 AND that it now has exactly ONE consumer (the driver that owns the
+# policy) — the opposite invariant, for the opposite reason.
+# ===========================================================================
 
 
 # ===========================================================================

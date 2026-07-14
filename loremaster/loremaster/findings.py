@@ -90,16 +90,15 @@ from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
-    _SERVER_LOG_HINT,
     SurrealConnectionError,
     SurrealStoreError,
     TxnContentionExhaustedError,
     TxnFragment,
-    _classify_engine_error,
     _SurrealConnection,
+    bootstrap_session,
     compose,
     execute_transaction,
-    is_connection_error,
+    run_query,
 )
 from loremaster.store.surreal_schema import (
     FINDING_COUNTER_SINGLETON_ID,
@@ -421,13 +420,21 @@ class FindingLedger:
         """Return the live connection, opening + signing in on first use.
 
         Double-checked locking (mirrors :class:`~loremaster.tasks.TaskLedger`): the
-        fast path never touches the lock; a first caller signs in, materialises the
-        namespace/database idempotently and selects them. Any transport/auth failure
-        is a LOUD, typed :class:`SurrealConnectionError` — never a hang or a silent
-        empty result.
+        fast path never touches the lock. The session bootstrap is
+        :func:`~loremaster.store._txn.bootstrap_session` — the ONE shared
+        implementation every connection owner in the package calls
+        (blindreader F3; see its docstring for the mechanism). This method's
+        own job is DISPOSITION: any bootstrap failure — a transport/auth fault
+        OR exhausted contention alike — is wrapped as
+        :class:`SurrealConnectionError` after closing the half-open socket
+        (the F4 ruling: the connection never became usable, whatever the
+        reason). ``bootstrap_session`` itself never performs this wrap
+        (adversary P-1): scout's reconnect ladder needs the RAW exhaustion
+        type, so the wrap lives here, at the seam, not in the shared helper.
 
         Raises:
-            SurrealConnectionError: The server is unreachable or rejected auth.
+            SurrealConnectionError: The server is unreachable, rejected auth,
+                or the session bootstrap exhausted its retry budget.
         """
         if self._connection is not None:
             return self._connection
@@ -443,9 +450,14 @@ class FindingLedger:
             }
             try:
                 await connection.signin(credentials)
-                await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
-                await connection.use(self._namespace, self._database)
-                await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
+                await bootstrap_session(connection, self._namespace, self._database)
+            except TxnContentionExhaustedError as error:
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): "
+                    f"the session bootstrap exhausted its retry budget"
+                ) from error
             except _CONNECTION_ERRORS as error:
                 # Close the half-open socket so a failed connect never leaks a
                 # dangling connection, then surface a typed connection error.
@@ -469,8 +481,12 @@ class FindingLedger:
         ``finding_counter`` sibling) inside ONE ``BEGIN … COMMIT`` via
         :func:`~loremaster.store._txn.execute_transaction`, which verifies EVERY
         statement's status (the SDK's plain ``query()`` inspects only the first).
-        The DDL is ``IF NOT EXISTS``, so a second call neither raises nor wipes data
-        — every per-test fresh database depends on this.
+        The DDL is a MIX (finding #107): the table and its indexes are ``IF NOT
+        EXISTS``, so a second call neither raises nor wipes existing rows —
+        every per-test fresh database depends on this — but every FIELD is
+        ``DEFINE FIELD OVERWRITE`` (see :mod:`loremaster.store.surreal_schema`),
+        so a field definition CHANGE still migrates a live store instead of
+        silently no-op'ing against it.
 
         Raises:
             SurrealConnectionError: The server is unreachable or the socket died.
@@ -517,35 +533,21 @@ class FindingLedger:
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         """Run a single statement on the (lazily opened) connection, self-healing.
 
-        Classifies a failure exactly as :meth:`~loremaster.tasks.TaskLedger._query`
-        does (via :func:`~loremaster.store._txn.is_connection_error`): a transport /
-        socket / auth fault (or the SDK's ``KeyError`` response-routing race) drops
-        the cached handle so the next call reconnects and surfaces a LOUD
-        :class:`SurrealConnectionError`; a domain/schema rejection keeps the healthy
-        connection and surfaces as :class:`SurrealStoreError`. Never a silent empty
-        result, never a raw engine string leaked to the caller (ledger #31: the raw
-        text can echo a bound VALUE back verbatim and flows to MCP clients, so the
-        FULL detail is logged server-side and the RAISED error carries only a
-        CLASSIFIED, generic label plus a "see the server log" hint).
+        Delegates to :func:`~loremaster.store._txn.run_query` — the ONE shared
+        attempt body every single-statement seam in the package now calls
+        (blindreader F3; see its docstring for the classify/self-heal/log
+        mechanism, including its RETRYABLE-conflict path, finding #120/#108).
         """
-        connection = await self._ensure_connection()
-        try:
-            return await connection.query(statement, params or {})
-        except (*_CONNECTION_ERRORS, KeyError) as error:
-            if isinstance(error, KeyError) or is_connection_error(error):
-                await self._drop_connection(connection)
-                raise SurrealConnectionError(
-                    f"SurrealDB finding query failed against {self._url!r}: {error}"
-                ) from error
-            error_class = _classify_engine_error(error)
-            logger.error(
-                "finding.query.rejected",
-                extra={"url": self._url, "error_class": error_class, "engine_error": str(error)},
-            )
-            raise SurrealStoreError(
-                f"SurrealDB finding query rejected against {self._url!r} ({error_class}); "
-                f"{_SERVER_LOG_HINT}"
-            ) from error
+        return await run_query(
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+            noun="finding query",
+            label="finding.query.rejected",
+            statement=statement,
+            params=params or {},
+            logger=logger,
+        )
 
     async def _apply(self, fragments: list[TxnFragment]) -> None:
         """Compose ``fragments`` into ONE transaction and run it atomically.

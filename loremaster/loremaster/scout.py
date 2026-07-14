@@ -59,7 +59,14 @@ from loremaster.index.reconcile import ReconcileEngine
 from loremaster.index.snapshots import SnapshotStamper
 from loremaster.index.surreal_manifest import SurrealManifest
 from loremaster.index.watcher import LiveWatcher
-from loremaster.store._txn import _CONNECTION_ERRORS
+from loremaster.store._txn import (
+    _CONNECTION_ERRORS,
+    RetryableConflictSignal,
+    TxnContentionExhaustedError,
+    bootstrap_session,
+    is_retryable_conflict_error,
+    retry_on_conflict,
+)
 from loremaster.store.surreal import (
     _SIGNIN_PASS_KEY,
     _SIGNIN_USER_KEY,
@@ -109,15 +116,75 @@ class UnknownCommandError(Exception):
     """
 
 
+# ---------------------------------------------------------------------------
+# THE ONE RETRY SEAM FOR SCOUT'S QUERIES (findings #108/#120). Scout owns no
+# ``_query`` and takes its connection as a PARAMETER (not ``self``), so its
+# ``query()``-shaped call sites — the bootstrap DDL, the pending-command
+# drain, the command CAS, and establishing the LIVE subscription — share ONE
+# module-level attempt body rather than a private copy each. Routing every
+# one of them through the SAME function means driving any ONE of them
+# exercises the SAME call site every other one uses — the property the
+# runtime SDK guard's coverage pin depends on
+# (``TestNoSdkCallEscapesTheDriverAtRuntime.test_every_production_sdk_call_site_was_OBSERVED_by_the_guard``
+# in ``test_retry_seam.py``): a call site nothing drives is a call site the
+# guard certifies NOTHING about, and `_drain_pending` shipping finding #120
+# alive through an unwatched site is exactly how this session's fifth
+# instrument was defeated. (``use()``, ``kill()`` and ``subscribe_live()``
+# are each already directly exercised by their own caller — the bootstrap,
+# ``_safe_kill``, ``_consume_live`` — so they keep their own NAMED attempt
+# closures rather than sharing this one; a shared body would have to accept
+# an arbitrary bound method, which the AST lint's connection-receiver pattern
+# cannot see through a parameter indirection.)
+#
+# This helper does NOT wrap a transport fault as ``SurrealConnectionError``
+# the way the ten ledgers do. Scout must NOT: its reconnect ladder in
+# :meth:`CommandSubscriber.run` is built on the RAW SDK types, and
+# ``SurrealConnectionError`` is a ``RuntimeError`` outside that tuple —
+# wrapping it would fly a socket drop straight past the ladder and kill
+# scout's reconnect. Transport is not contention: a conflict means "the write
+# did not land, try again"; a dead socket means "reconnect", and only the
+# former is this function's business.
+# ---------------------------------------------------------------------------
+
+
+async def _scout_query_once(
+    connection: Any, statement: str, params: dict[str, Any] | None = None
+) -> Any:
+    """One SDK ``query()`` call, classifying a retryable conflict into the
+    shared signal. Everything else — a transport fault, a domain rejection,
+    an empty CAS (a lost race, not an error) — propagates RAW and UNTOUCHED.
+    """
+    try:
+        if params is None:
+            return await connection.query(statement)
+        return await connection.query(statement, params)
+    except (*_CONNECTION_ERRORS, KeyError) as error:
+        if is_retryable_conflict_error(error):
+            raise RetryableConflictSignal() from error
+        raise
+
+
+async def _scout_query(
+    connection: Any, statement: str, params: dict[str, Any] | None = None
+) -> Any:
+    """Every scout QUERY rides the ONE retry seam."""
+    return await retry_on_conflict(lambda: _scout_query_once(connection, statement, params))
+
+
 async def _open_command_connection(
     *, url: str, namespace: str, database: str, user: str, password: str
 ) -> Any:
     """Open a raw signed-in SDK connection bound to ``namespace`` + ``database``.
 
-    Mirrors the store's own connect idiom (:meth:`SurrealStore._ensure_connection`):
-    sign in, materialise the namespace/database (idempotent), select them. Used as
-    the :class:`CommandSubscriber`'s ``connect`` factory so the command channel
-    speaks to the SAME per-project database as the rest of the write stack.
+    The session bootstrap is :func:`~loremaster.store._txn.bootstrap_session` —
+    the ONE shared implementation every connection owner in the package calls
+    (blindreader F3). This function used to carry the ELEVENTH hand-rolled copy
+    of the same three BARE, UNRETRIED inline ``await`` statements (no closures,
+    no shared anything — audit-polish-1 P1) — invisible to any scan keyed on
+    ``_query``, since scout owns none — a module-level function instead of a
+    method. Used as the :class:`CommandSubscriber`'s ``connect`` factory so the
+    command channel speaks to the SAME per-project database as the rest of the
+    write stack.
 
     Args:
         url: The SurrealDB RPC URL.
@@ -128,13 +195,38 @@ async def _open_command_connection(
 
     Returns:
         A live, signed-in SDK connection bound to ``namespace``/``database``.
+
+    Deliberately UNWRAPPED (adversary P-1, ``W1-SCOUTKILL``): unlike the ten
+    store/manifest/ledger seams, this function does NOT translate a bootstrap
+    failure — including exhausted contention — into
+    :class:`~loremaster.store._txn.SurrealConnectionError`. The caller's own
+    reconnect ladder (:meth:`CommandSubscriber.run`) catches RAW SDK types
+    (and :class:`~loremaster.store._txn.TxnContentionExhaustedError` directly)
+    to back off and retry the whole connect — a wrap here would fly straight
+    past that ladder and kill the command channel dead, with no backoff and no
+    reconnect.
+
+    It DOES self-heal the half-open socket on a failed bootstrap
+    (blindreader-dry-2 F7 / audit-fix-1 B1): every one of the ten ledger seams
+    closes theirs on a failed connect; this function used to close nothing,
+    leaking one socket per failed connect — unbounded in a long-running
+    process under sustained store contention, now that the bootstrap can take
+    seconds instead of failing in milliseconds. **Closed AND raw, or
+    neither** — a bare ``except Exception: close(); raise`` re-raises the
+    SAME exception object, unmodified, so this cleanup can never become a
+    second, accidental wrap.
     """
     connection = AsyncSurreal(url)
     credentials: dict[str, Any] = {_SIGNIN_USER_KEY: user, _SIGNIN_PASS_KEY: password}
-    await connection.signin(credentials)
-    await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {namespace}")
-    await connection.use(namespace, database)
-    await connection.query(f"DEFINE DATABASE IF NOT EXISTS {database}")
+    try:
+        await connection.signin(credentials)
+        await bootstrap_session(connection, namespace, database)
+    except Exception:
+        try:
+            await connection.close()
+        except _CONNECTION_ERRORS:
+            logger.debug("scout.connect.close_after_failed_bootstrap.already_closed")
+        raise
     return connection
 
 
@@ -263,9 +355,17 @@ class CommandSubscriber:
         return await self._drain_pending(connection)
 
     async def _drain_pending(self, connection: Any) -> int:
-        """Select + dispatch + stamp every pending command under the drain lock."""
+        """Select + dispatch + stamp every pending command under the drain lock.
+
+        The pending SELECT routes through :func:`_scout_query` (finding #120:
+        this is the FIRST statement of every poll — an unretried conflict here
+        raised a raw SDK error straight out of the drain, which kills the
+        subscriber). A genuine transport fault is reclassified nowhere: it
+        propagates in its RAW SDK type, exactly as before, so :meth:`run`'s
+        reconnect ladder (built on the raw types) still catches it.
+        """
         async with self._drain_lock:
-            result = await connection.query(self._pending_select_statement())
+            result = await _scout_query(connection, self._pending_select_statement())
             processed = 0
             for row in self._rows(result):
                 await self._dispatch(connection, row)
@@ -311,6 +411,13 @@ class CommandSubscriber:
         exactly-once dispatch is scoped to a SINGLE-instance deployment (the
         module's own single-writer architecture), matching a redundant sweep's
         existing idempotence.
+
+        The CAS routes through :func:`_scout_query` (finding #120/#108): a
+        RETRYABLE conflict on the claim is retried transparently — never an
+        EMPTY result, which is a lost race with a defined meaning (another
+        instance already completed this command) and must NEVER be retried.
+        A genuine transport fault propagates in its RAW SDK type, so
+        :meth:`run`'s reconnect ladder still catches it.
         """
         params: dict[str, Any] = {
             "command_id": command_id,
@@ -325,7 +432,7 @@ class CommandSubscriber:
             f"UPDATE $command_id SET {', '.join(set_clauses)} "
             f"WHERE status = $pending_status RETURN BEFORE"
         )
-        result = await connection.query(statement, params)
+        result = await _scout_query(connection, statement, params)
         if not self._rows(result):
             logger.info(
                 "command.duplicate_completion",
@@ -349,6 +456,15 @@ class CommandSubscriber:
         socket drop (whether the connect itself failed or the socket died
         mid-serve), so a transient store outage never permanently wedges the
         channel.
+
+        The ladder ALSO catches :class:`~loremaster.store._txn.TxnContentionExhaustedError`
+        (finding #108's removed-behaviour preservation): pre-#108, ANY
+        ``SurrealError`` out of a command claim reached this ladder (it is a
+        member of :data:`~loremaster.store._txn._CONNECTION_ERRORS`), so
+        sustained contention backed off and reconnected same as a transport
+        fault. The typed exhaustion error is a ``RuntimeError``, not a member
+        of that tuple, so without this it would fly straight past the ladder
+        and kill the subscriber where it used to recover.
         """
         self._running = True
         attempt = 0
@@ -356,7 +472,7 @@ class CommandSubscriber:
             while self._running:
                 try:
                     connection = await self._ensure_connection()
-                except (*_CONNECTION_ERRORS, KeyError):
+                except (*_CONNECTION_ERRORS, KeyError, TxnContentionExhaustedError):
                     # The connect itself failed — back off (bounded) and retry.
                     logger.debug("command_subscriber.connect_failed", exc_info=True)
                     await self._backoff(attempt)
@@ -365,10 +481,12 @@ class CommandSubscriber:
                 attempt = 0  # a live connection resets the backoff ladder
                 try:
                     await self._serve(connection)
-                except (*_CONNECTION_ERRORS, KeyError):
-                    # The socket dropped mid-serve — reconnect + poll-reconcile
-                    # the gap (a command inserted during the drop is recovered
-                    # exactly once by the re-read of pending on the new socket).
+                except (*_CONNECTION_ERRORS, KeyError, TxnContentionExhaustedError):
+                    # The socket dropped mid-serve, OR sustained contention on a
+                    # command claim exhausted the shared seam's retry budget —
+                    # reconnect + poll-reconcile the gap (a command inserted
+                    # during the drop is recovered exactly once by the re-read
+                    # of pending on the new socket).
                     logger.debug("command_subscriber.socket_dropped", exc_info=True)
                     await self._drop_connection()
                     # ``stop()`` flips ``self._running`` from ANOTHER coroutine —
@@ -394,8 +512,15 @@ class CommandSubscriber:
         signal a dead socket (it propagates to :meth:`run`'s reconnect). The live
         notification stream is consumed best-effort in a background task; when it
         is unavailable, the poll loop alone carries the load.
+
+        The establishing SELECT routes through :func:`_scout_query` — the SAME
+        call site the pending-command drain and the command CAS use, so
+        driving any one of the three watches all three: a RETRYABLE conflict
+        is retried transparently; a genuine transport fault propagates in its
+        RAW SDK type, unchanged, so :meth:`run`'s reconnect ladder still
+        catches it exactly as before.
         """
-        live_uuid = await connection.query(self.live_select_statement())
+        live_uuid = await _scout_query(connection, self.live_select_statement())
         live_task = asyncio.create_task(self._consume_live(connection, live_uuid))
         try:
             while self._running:
@@ -412,28 +537,59 @@ class CommandSubscriber:
 
         LIVE is best-effort: an unavailable or dropped subscription is caught
         here (the poll backstop keeps serving) rather than crashing the loop.
+        A RETRYABLE conflict on establishing the subscription routes through
+        the shared :func:`~loremaster.store._txn.retry_on_conflict` driver;
+        sustained contention there is likewise best-effort and falls back to
+        "unavailable" rather than crashing the loop.
         """
         try:
-            # ``subscribe_live`` is a COROUTINE returning an async iterator in the
-            # installed SDK, but an async-generator FUNCTION under the test fake;
-            # await the former, iterate either. ``inspect.isawaitable`` is False
-            # for an async generator (it exposes ``__aiter__``, not ``__await__``).
-            subscription = connection.subscribe_live(live_uuid)
-            if inspect.isawaitable(subscription):
-                subscription = await subscription
+
+            async def _attempt() -> Any:
+                try:
+                    # ``subscribe_live`` is a COROUTINE returning an async
+                    # iterator in the installed SDK, but an async-generator
+                    # FUNCTION under the test fake; await the former, iterate
+                    # either. ``inspect.isawaitable`` is False for an async
+                    # generator (it exposes ``__aiter__``, not ``__await__``).
+                    subscription = connection.subscribe_live(live_uuid)
+                    if inspect.isawaitable(subscription):
+                        subscription = await subscription
+                    return subscription
+                except (*_CONNECTION_ERRORS, KeyError) as error:
+                    if is_retryable_conflict_error(error):
+                        raise RetryableConflictSignal() from error
+                    raise
+
+            subscription = await retry_on_conflict(_attempt)
             async for _notification in subscription:
                 # A pending insert fired — reconcile via the (idempotent) poll
                 # path so the live and poll routes can never double-dispatch.
                 await self._drain_pending(connection)
-        except (*_CONNECTION_ERRORS, KeyError):
+        except (*_CONNECTION_ERRORS, KeyError, TxnContentionExhaustedError):
             logger.debug("command_subscriber.live_unavailable", exc_info=True)
 
     @staticmethod
     async def _safe_kill(connection: Any, live_uuid: Any) -> None:
-        """Kill the live query, swallowing a failure on an already-dead socket."""
+        """Kill the live query, swallowing a failure on an already-dead socket.
+
+        The kill routes through the shared
+        :func:`~loremaster.store._txn.retry_on_conflict` driver so a
+        RETRYABLE conflict is retried transparently; this remains BEST-EFFORT
+        cleanup, so a genuine transport fault OR sustained contention is
+        swallowed the same way (never crashes the caller).
+        """
+
+        async def _attempt() -> None:
+            try:
+                await connection.kill(live_uuid)
+            except (*_CONNECTION_ERRORS, KeyError) as error:
+                if is_retryable_conflict_error(error):
+                    raise RetryableConflictSignal() from error
+                raise
+
         try:
-            await connection.kill(live_uuid)
-        except (*_CONNECTION_ERRORS, KeyError):
+            await retry_on_conflict(_attempt)
+        except (*_CONNECTION_ERRORS, KeyError, TxnContentionExhaustedError):
             logger.debug("command_subscriber.kill.already_closed")
 
     async def _backoff(self, attempt: int) -> None:

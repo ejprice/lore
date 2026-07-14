@@ -473,9 +473,28 @@ _STATUS_DONE = "done"
 # repo's own named failure mode, in the contract written to prevent it.
 # ===========================================================================
 
-# The message the seam raises TODAY. Contains the current label.
-_TODAYS_LABEL_MESSAGE = (
-    "SurrealDB transaction gave up after 64 attempts over 2.000s "
+# An ARBITRARY message that CARRIES the current classification label ("retryable
+# conflict"). That property — the label is present — is its entire job here: it is the
+# row a prose-matching build passes, and the discriminator against the two rows below
+# (a reworded message that shares no token, and no message at all).
+#
+# ⚠ ITS EXACT WORDING IS NOT PRODUCTION'S, AND MUST NEVER BE RE-SYNCED TO IT. Every pin
+# fed this value is message-AGNOSTIC by construction (see the block above), so the seam's
+# real sentence is irrelevant — and pinning it here would re-create the coupling this
+# whole file exists to kill.
+#
+# THE PROOF THAT IT IS ARBITRARY IS THIS CONSTANT'S OWN HISTORY. It used to be called
+# `_LABEL_BEARING_MESSAGE`, above a comment reading "the message the seam raises TODAY",
+# and it spelled "SurrealDB **transaction** gave up…". Finding #108's DRY consolidation
+# then changed the seam to raise "SurrealDB **operation** gave up…" (`_txn.py:851`), and
+# **not one test noticed, because not one test reads it** — exactly as designed. The
+# comment simply went on lying for a whole wave until a cold audit caught it
+# (audit-dry-2 F5). English beside the code, saying what the code does, and wrong: this
+# repo's most-shipped defect class, inside the file written to end a defect of the same
+# family. The name now states the PROPERTY it must have instead of a fact about
+# production it cannot keep.
+_LABEL_BEARING_MESSAGE = (
+    "SurrealDB operation gave up after 64 attempts over 2.000s "
     "(retryable conflict); see the server log for the full engine detail"
 )
 
@@ -496,13 +515,13 @@ _EMPTY_MESSAGE = ""
 
 # If the code can branch on a value, at least one pin must use a DIFFERENT value.
 _CONTENTION_MESSAGES = [
-    pytest.param(_TODAYS_LABEL_MESSAGE, id="todays-label"),
+    pytest.param(_LABEL_BEARING_MESSAGE, id="label-bearing"),
     pytest.param(_REWORDED_LABEL_MESSAGE, id="REWORDED-label"),
     pytest.param(_EMPTY_MESSAGE, id="EMPTY-message"),
 ]
 
 
-def _contention_exhausted(message: str = _TODAYS_LABEL_MESSAGE) -> TxnContentionExhaustedError:
+def _contention_exhausted(message: str = _LABEL_BEARING_MESSAGE) -> TxnContentionExhaustedError:
     """The exception the repaired seam raises when a real conflict outlives the
     budget — the exact object these handlers must let past untouched.
 
@@ -568,7 +587,7 @@ async def live_task_ledger(live_env: SurrealEnv) -> Any:
 
 
 def _explode_with_contention(
-    monkeypatch: pytest.MonkeyPatch, module: Any, message: str = _TODAYS_LABEL_MESSAGE
+    monkeypatch: pytest.MonkeyPatch, module: Any, message: str = _LABEL_BEARING_MESSAGE
 ) -> None:
     """Replace ``module``'s transaction seam with one that always reports exhausted
     contention, carrying ``message``. Everything else about the ledger stays real.

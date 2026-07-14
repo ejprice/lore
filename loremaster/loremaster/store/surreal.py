@@ -96,16 +96,16 @@ from surrealdb import AsyncSurreal, RecordID
 from loremaster.index.records import Record
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
-    _SERVER_LOG_HINT,
     TXN_STATEMENT_WARN_THRESHOLD,
     SurrealConnectionError,
     SurrealStoreError,
+    TxnContentionExhaustedError,
     TxnFragment,
-    _classify_engine_error,
     _SurrealConnection,
+    bootstrap_session,
     compose,
     execute_transaction,
-    is_connection_error,
+    run_query,
 )
 from loremaster.store.candidate import Candidate, CandidateOrigin
 
@@ -158,11 +158,16 @@ __all__ = [
 
 # The connection/transport error vocabulary (:class:`SurrealStoreError`,
 # :class:`SurrealConnectionError`, :data:`_CONNECTION_ERRORS`,
-# :data:`_SurrealConnection`) and the shared transaction / error-classification
-# seams (:func:`execute_transaction`, :func:`is_connection_error`) live in
-# :mod:`loremaster.store._txn` so the store and the manifest raise/catch one
-# audited set — they are imported (and thereby re-exported) above; see that
-# module's docstring for why.
+# :data:`_SurrealConnection`) lives in :mod:`loremaster.store._txn` so every
+# seam raises/catches one audited set — imported (and thereby re-exported)
+# above. The transaction seam (:func:`execute_transaction`) and the shared
+# session-bootstrap/single-statement-attempt seams
+# (:func:`~loremaster.store._txn.bootstrap_session`,
+# :func:`~loremaster.store._txn.run_query` — blindreader F3) are called from
+# here but no longer import the classification helpers directly: the
+# classify-and-signal decision (:func:`~loremaster.store._txn.is_connection_error`
+# et al.) is now made INSIDE those shared functions, not re-derived per seam.
+# See that module's docstring for why.
 
 # The signin credential keys the SDK expects.
 _SIGNIN_USER_KEY = "username"
@@ -398,17 +403,35 @@ class SurrealStore:
         touches the lock; a first caller acquires :attr:`_connect_lock` and
         re-checks — a concurrent racer that lost the race to acquire the lock
         finds the connection already assigned by the winner and returns it
-        without opening a second one. Signs in, materialises the
-        namespace/database (idempotent) and selects them. Any transport or
-        auth failure is wrapped in :class:`SurrealConnectionError` — a down
-        server or bad password is a LOUD, typed failure, never a hang or a
-        silent empty result.
+        without opening a second one.
+
+        The session bootstrap (sign in, materialise the namespace/database,
+        select them) is :func:`~loremaster.store._txn.bootstrap_session` — the
+        ONE shared implementation every connection owner in the package calls
+        (blindreader F3; see its docstring for the mechanism, including why a
+        retryable conflict there — measured 6.2%–34.4% across three 160-connect
+        runs of 16-way concurrent virgin first-connects (a range, not a point
+        estimate: the contention swamps its own mean) — is retried
+        transparently rather than misclassified as "could not connect").
+
+        This method's own job is DISPOSITION, not mechanism: ANY bootstrap
+        failure — a transport/auth fault, a domain rejection, OR exhausted
+        contention — is wrapped as :class:`SurrealConnectionError` after
+        closing the half-open socket. That is deliberately uniform (the F4
+        ruling): the connection never became usable, whatever the reason, and
+        every caller of this method — including ``server.py``'s per-item
+        graceful-degradation handlers — was written against exactly that
+        meaning. ``bootstrap_session`` itself never performs this wrap
+        (adversary P-1, ``W1-SCOUTKILL``): scout's reconnect ladder needs the
+        RAW exhaustion type to back off and reconnect, so the wrap belongs at
+        the seam that owns the disposition, not inside the shared helper.
 
         Returns:
             The cached, signed-in connection bound to this store's ns/db.
 
         Raises:
-            SurrealConnectionError: The server is unreachable or rejected auth.
+            SurrealConnectionError: The server is unreachable, rejected auth,
+                or the session bootstrap exhausted its retry budget.
         """
         if self._connection is not None:
             return self._connection
@@ -428,9 +451,18 @@ class SurrealStore:
             }
             try:
                 await connection.signin(credentials)
-                await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
-                await connection.use(self._namespace, self._database)
-                await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
+                await bootstrap_session(connection, self._namespace, self._database)
+            except TxnContentionExhaustedError as error:
+                # Sustained conflict, not a transport fault — but this seam's
+                # disposition is uniform regardless (see the docstring above):
+                # the connection never became usable, so the caller sees the
+                # SAME typed error it would for a dead socket.
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): "
+                    f"the session bootstrap exhausted its retry budget"
+                ) from error
             except _CONNECTION_ERRORS as error:
                 # Close the half-open socket (if any) so a failed connect never
                 # leaks a dangling connection, then surface a typed connection
@@ -529,62 +561,28 @@ class SurrealStore:
         seam so the public methods stay strictly typed without union-narrowing
         noise (the same pattern the test harness uses).
 
-        This is also the store's single self-heal seam, and it CLASSIFIES a
-        failure (see :func:`~loremaster.store._txn.is_connection_error`): a
-        transport/socket/auth failure (the WS socket died mid-life) drops the
-        cached handle so the NEXT call transparently reconnects via
-        :meth:`_ensure_connection`, and is surfaced as a typed, LOUD
-        :class:`SurrealConnectionError`; a domain/schema/type rejection of the
-        write itself (an ``ASSERT`` violation, a type-coercion failure) is NOT a
-        connection fault — it keeps the healthy connection and surfaces as a
-        :class:`SurrealStoreError`. Either way it is LOUD, never a silent empty
-        result.
-
-        Message hygiene (ledger #31, mirroring :func:`~loremaster.store._txn.
-        execute_transaction`): a domain rejection's raw engine text can echo a
-        bound VALUE back verbatim (an ``ASSERT``/coercion rejection), and that text
-        flows to MCP clients in P8 — so the raised :class:`SurrealStoreError`
-        carries only a CLASSIFIED, generic label
-        (:func:`~loremaster.store._txn._classify_engine_error`) plus a "see the
-        server log" hint; the full engine detail is logged server-side instead.
-
-        The ``except`` also catches a raw ``KeyError``: probe-verified live (a
-        socket drop with a query in flight), the installed SDK's OWN response
-        routing raises ``builtins.KeyError(<request-uuid>)`` straight out of
-        ``connection.query(...)`` — never a domain rejection — so it is ALWAYS
-        classified as a connection fault (self-heal + :class:`SurrealConnectionError`),
-        never mistaken for a domain rejection of the statement itself. The
-        ``except`` wraps ONLY the bare SDK call above — never our own
-        dict-indexing code — so this can never misclassify a ``KeyError``
-        raised by application logic.
+        Delegates to :func:`~loremaster.store._txn.run_query` — the ONE shared
+        attempt body every single-statement seam in the package now calls
+        (blindreader F3; see its docstring for the classify/self-heal/log
+        mechanism: a transport/socket/auth fault self-heals and raises
+        :class:`SurrealConnectionError`; a domain/schema rejection keeps the
+        healthy connection and raises :class:`SurrealStoreError`, logged under
+        this store's OWN ``store.query.rejected`` event so an operator can grep
+        just this seam's rejections; a RETRYABLE write-write conflict
+        (finding #120/#108) is retried transparently). This store's own job is
+        naming itself to the shared body — its ``noun`` and ``label`` — nothing
+        else.
         """
-        connection = await self._ensure_connection()
-        try:
-            return await connection.query(statement, params or {})
-        except (*_CONNECTION_ERRORS, KeyError) as error:
-            if isinstance(error, KeyError) or is_connection_error(error):
-                # A genuine transport/auth fault: self-heal and surface loudly.
-                await self._drop_connection(connection)
-                raise SurrealConnectionError(
-                    f"SurrealDB query failed against {self._url!r}: {error}"
-                ) from error
-            # A domain/schema rejection of the write — the connection is healthy
-            # and must not be thrown away for a fault that is not the transport's.
-            # Message hygiene (ledger #31, mirroring ``execute_transaction``): the
-            # raw engine text can echo a bound VALUE back verbatim (an ASSERT /
-            # coercion rejection), and that text flows to MCP clients in P8 — so the
-            # FULL detail is logged server-side and the RAISED error carries only a
-            # CLASSIFIED, generic label plus a "see the server log" correlation
-            # hint, never the raw engine text itself.
-            error_class = _classify_engine_error(error)
-            logger.error(
-                "store.query.rejected",
-                extra={"url": self._url, "error_class": error_class, "engine_error": str(error)},
-            )
-            raise SurrealStoreError(
-                f"SurrealDB query rejected against {self._url!r} ({error_class}); "
-                f"{_SERVER_LOG_HINT}"
-            ) from error
+        return await run_query(
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+            noun="query",
+            label="store.query.rejected",
+            statement=statement,
+            params=params or {},
+            logger=logger,
+        )
 
     # -- writes -------------------------------------------------------------
 

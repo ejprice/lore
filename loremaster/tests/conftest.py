@@ -175,3 +175,37 @@ def _inert_calibration_counter(monkeypatch: pytest.MonkeyPatch) -> None:
         "AsyncClaudeTokenCounter",
         _InertCalibrationTokenCounter,
     )
+
+
+# ===========================================================================
+# THE RUNTIME SDK GUARD — AUTOUSE, SUITE-WIDE. (findings #108/#120)
+#
+# `_sdk_guard.install` wraps every public coroutine on the real SurrealDB connection
+# classes and records any call a production frame makes without the retry driver above it.
+#
+# IT IS AUTOUSE BECAUSE COVERAGE BECAME THE NEW NAME-LIST. The v4 gate was a runtime gate
+# — armed inside four tests. It therefore watched only what those four tests drove, and
+# `scout.py::_drain_pending` was never among them: an unretried SELECT there scored
+# 932 passed / 0 failed and shipped finding #120 ALIVE in the tree certified as having
+# fixed it. A runtime gate is an invariant only over code it actually RUNS, and arming it
+# by hand is a list of remembered flows wearing a different hat.
+#
+# Armed for EVERY test, it watches every production path any test drives — by nobody's
+# memory. Inert (and loudly so) until the shared driver exists, so the un-repaired tree
+# fails on the contract's own pins rather than on 800 confusing ones.
+# ===========================================================================
+@pytest.fixture(autouse=True)
+def _no_sdk_call_escapes_the_retry_driver(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    from _sdk_guard import install
+
+    report = install(monkeypatch)
+    yield
+    assert not report.escapes, (
+        f"{len(report.escapes)} SurrealDB call(s) escaped the retry driver during this "
+        f"test:\n  " + "\n  ".join(str(escape) for escape in report.escapes) + "\n\n"
+        "Every call on a live connection must be an attempt the driver runs (hand it to "
+        "retry_on_conflict, and CLASSIFY the conflict into the shared signal — routing "
+        "alone retries zero times). Checked at RUNTIME on the real SDK class, so it cannot "
+        "be evaded by aliasing, a helper module, `getattr`, a detached `gather`, or an SDK "
+        "method nobody has listed."
+    )

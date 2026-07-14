@@ -84,13 +84,13 @@ from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
-    _SERVER_LOG_HINT,
     SurrealConnectionError,
     SurrealStoreError,
-    _classify_engine_error,
+    TxnContentionExhaustedError,
     _SurrealConnection,
+    bootstrap_session,
     execute_transaction,
-    is_connection_error,
+    run_query,
 )
 from loremaster.store.surreal_schema import AGENT_TABLE, generate_agent_ddl
 
@@ -380,8 +380,20 @@ class AgentRegistry:
     async def _ensure_connection(self) -> _SurrealConnection:
         """Return the live connection, opening + signing in on first use.
 
+        The session bootstrap is :func:`~loremaster.store._txn.bootstrap_session`
+        — the ONE shared implementation every connection owner in the package
+        calls (blindreader F3; see its docstring for the mechanism). This
+        method's own job is DISPOSITION: any bootstrap failure — a
+        transport/auth fault OR exhausted contention alike — is wrapped as
+        :class:`SurrealConnectionError` after closing the half-open socket
+        (the F4 ruling: the connection never became usable, whatever the
+        reason). ``bootstrap_session`` itself never performs this wrap
+        (adversary P-1): scout's reconnect ladder needs the RAW exhaustion
+        type, so the wrap lives here, at the seam, not in the shared helper.
+
         Raises:
-            SurrealConnectionError: The server is unreachable or rejected auth.
+            SurrealConnectionError: The server is unreachable, rejected auth,
+                or the session bootstrap exhausted its retry budget.
         """
         if self._connection is not None:
             return self._connection
@@ -398,9 +410,14 @@ class AgentRegistry:
             }
             try:
                 await connection.signin(credentials)
-                await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
-                await connection.use(self._namespace, self._database)
-                await connection.query(f"DEFINE DATABASE IF NOT EXISTS {self._database}")
+                await bootstrap_session(connection, self._namespace, self._database)
+            except TxnContentionExhaustedError as error:
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): "
+                    f"the session bootstrap exhausted its retry budget"
+                ) from error
             except _CONNECTION_ERRORS as error:
                 await self._safe_close(connection)
                 raise SurrealConnectionError(
@@ -460,30 +477,21 @@ class AgentRegistry:
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         """Run a single statement on the (lazily opened) connection, self-healing.
 
-        Mirrors :meth:`~loremaster.tasks.TaskLedger._query` exactly: a
-        transport/socket/auth fault drops the cached handle and surfaces
-        :class:`SurrealConnectionError`; a domain/schema rejection keeps the
-        healthy connection and surfaces :class:`SurrealStoreError` carrying
-        only a CLASSIFIED label — never the raw engine text (ledger #31).
+        Delegates to :func:`~loremaster.store._txn.run_query` — the ONE shared
+        attempt body every single-statement seam in the package now calls
+        (blindreader F3; see its docstring for the classify/self-heal/log
+        mechanism, including its RETRYABLE-conflict path, finding #120/#108).
         """
-        connection = await self._ensure_connection()
-        try:
-            return await connection.query(statement, params or {})
-        except (*_CONNECTION_ERRORS, KeyError) as error:
-            if isinstance(error, KeyError) or is_connection_error(error):
-                await self._drop_connection(connection)
-                raise SurrealConnectionError(
-                    f"SurrealDB agent query failed against {self._url!r}: {error}"
-                ) from error
-            error_class = _classify_engine_error(error)
-            logger.error(
-                "agent.query.rejected",
-                extra={"url": self._url, "error_class": error_class, "engine_error": str(error)},
-            )
-            raise SurrealStoreError(
-                f"SurrealDB agent query rejected against {self._url!r} ({error_class}); "
-                f"{_SERVER_LOG_HINT}"
-            ) from error
+        return await run_query(
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+            noun="agent query",
+            label="agent.query.rejected",
+            statement=statement,
+            params=params or {},
+            logger=logger,
+        )
 
     # -- id + resolution ------------------------------------------------------
 

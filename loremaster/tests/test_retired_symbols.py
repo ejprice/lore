@@ -105,6 +105,25 @@ _RETIRED_SYMBOLS: dict[str, str] = {
         "duration and re-collided in lockstep. REPLACED by per-attempt full jitter "
         "(finding #102)."
     ),
+    "_BRIEF_PUBLISH_": (
+        "the four private mint-retry constants briefs.py hand-rolled because the "
+        "substrate offered nothing to call: _BRIEF_PUBLISH_MAX_ATTEMPTS (4), "
+        "_BRIEF_PUBLISH_BACKOFF_SECONDS, and a FOUR-SLOT deterministic jitter table "
+        "(_BRIEF_PUBLISH_JITTER_SLOTS / _BRIEF_PUBLISH_JITTER_SECONDS) — at the "
+        "contract's own 8-way contention the pigeonhole guarantees two racers share a "
+        "slot and then stay lockstepped for the entire ladder. DELETED by finding #108; "
+        "the shared _txn.retry_on_conflict driver owns the policy now. A PREFIX, so all "
+        "four are caught by one entry (the _REPORT_MINT precedent). Anything citing "
+        "these as a budget is quoting a number nobody chose any more."
+    ),
+    "_BRIEF_MINT_MAX_ATTEMPTS": (
+        "the product (_BRIEF_PUBLISH_MAX_ATTEMPTS * _MAX_TXN_CONFLICT_ATTEMPTS = 20) "
+        "that drove briefs' hand-rolled mint loop. It inherited the SEAM's attempt "
+        "floor for an unrelated purpose — finding #102's own trap, a constant tuned for "
+        "one thing and silently borrowed by another. DELETED by finding #108. The floor "
+        "(_MAX_TXN_CONFLICT_ATTEMPTS) SURVIVES and keeps its value of 5; what is gone is "
+        "every consumer of it outside the seam that owns it."
+    ),
 }
 
 # ---------------------------------------------------------------------------

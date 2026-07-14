@@ -870,9 +870,11 @@ def _snapshot_entry_statements() -> list[str]:
     key an object may carry. Corollary of the non-``option`` ``[*].sub_ordinal``
     typing (live-verified): every NEW ``chunk_hashes`` write must carry
     ``sub_ordinal`` on every element; a pre-F1 (old-schema) row that lacks it
-    survives untouched because ``DEFINE FIELD IF NOT EXISTS`` does NOT
-    retro-validate existing rows — the diff reader degrades honestly on those
-    legacy rows. The plain (non-UNIQUE) index on ``snapshot`` backs a purge/diff
+    survives untouched because a ``DEFINE FIELD`` (``OVERWRITE`` since finding
+    #107 — see :func:`_define_field`) changes what FUTURE writes must satisfy,
+    never a retroactive scan/rewrite of rows already stored — the diff reader
+    degrades honestly on those legacy rows. The plain (non-UNIQUE) index on
+    ``snapshot`` backs a purge/diff
     scan by parent; it must stay non-unique since many entries legitimately share
     one snapshot.
     """
