@@ -144,13 +144,13 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 14 | config-derive-excludes (#26, #28, #72 corpus pollution) | PKT-09a | L ∥ | 0.20 | — | open |
 | 15 | config-boot-validation (+ dead fields, #12) | PKT-09b | L ∥ | 0.20 | — | open |
 | 16 | surreal-ops-hardening (#109, #110, #113, #114, #116, #117) | PKT-31 | L ∥ | 0.15 | — | open |
-| 17 | worktree-overlay-design (#125; delta-only RULED) | PKT-33 | L | 0.15 | **#136 FIXED FIRST** (row 6531b6f5) | open — **BLOCKED on #136** |
+| 17 | worktree-overlay-design (#125; delta-only RULED) | PKT-33 | L | 0.15 | — (#136 FIXED 2026-07-14) | open |
 | 18 | ledger-retirement (singular-store ruling) | PKT-24 | M | 0.20 | — (before 20 finalizes, 22 ships) | open |
 | 19 | lore-deploy-rework (finding #13, scaffold; all-mode only) | PKT-11 | M | 0.30 →split | 14, 15 | open |
 | 20 | migration-machinery (Shape D) | PKT-12 | M | 0.30 →split | §8 Q1–Q4 ruled at kickoff; 19; 18 | open |
 | 21 | single-node-drills (§8.6 + watcher skip-path) | PKT-10a | M | 0.15 | — | open |
 | 22 | di-migration + **v1.0 SHIP (single-node)** | PKT-13 | M | 0.25 | 19, 20, 18, GO/NO-GO | open |
-| 23 | worktree-overlay-build (#125) | PKT-34 | O | 0.25 | 17 ruled; **#136 FIXED**; before 26 completes | open — **BLOCKED on #136** |
+| 23 | worktree-overlay-build (#125) | PKT-34 | O | 0.25 | 17 ruled; before 26 completes | open |
 | 24 | odoo-scale-certification (MRO/ORM assessment defines 25) | PKT-27 | O ∥ | 0.30 →split | 13 rec.; v1.0 | open |
 | 25 | odoo-onboarding-design (XML extractor, MRO capture, tiers, cutover) | PKT-32 | O | 0.15 | 24 receipts | open |
 | 26 | odoo-onboarding-build (26a, 26b, … minted by 25) | PKT-35+ | O | ≤0.25 each | 25 ruled | open |
@@ -229,28 +229,19 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
 
 ## Watch list (no packet; verify-on-contact)
 - **NO WORKTREES UNTIL WORKTREES WORK (operator, 2026-07-14).** Do not use git worktrees for lore
-  work — agents, audits, mutation probes — until they actually work (#134 cannot deploy · #125
-  cannot be indexed · #136 blinds the retry guard). ⚠ **The ruling contains LESS protection than it
-  looks like: #136 is an OUT-OF-TREE COPY bug, not a worktree bug — and scratch copies are how we
-  work** (every contract author and cold audit builds one). Until #136 is fixed, a green
-  `test_retry_seam` verdict in ANY copy means NOTHING, and briefs must NEVER tell an agent to
-  "ignore those 3 failures as unrelated" (packet 01's lead did, in five briefs — training five
-  agents to discard the alarm and trust the green beside it). Full law: repo CLAUDE.md.
-- **#136 — HARD BLOCKER ON PACKETS 17 + 23, ledger row `6531b6f5` (operator-caught 2026-07-14).**
-  The #102 retry seam's RUNTIME SDK-escape guard — the store's most load-bearing runtime invariant —
-  reports GREEN in any OUT-OF-TREE copy while its three POSITIVE CONTROLS (the only evidence it can
-  SEE an escape) FAIL. Measured on a pristine copy with production code byte-identical to HEAD:
-  399 passed in-tree vs **3 failed** out-of-tree, and the 3 failures ARE the controls. A gate whose
-  controls are red is a gate whose greens are unfalsifiable. **Packets 17/23 make worktrees
-  first-class — the exact shape that breaks it.** Anyone auditing store code from a worktree TODAY
-  is already running it blind. Root cause NOT isolated. Fix it, or make the guard FAIL LOUD when its
-  controls cannot arm. NB it was originally "routed" to the #102/#120 owner — a chain that is CLOSED,
-  i.e. to NOBODY; a note on a finding is not a schedule.
-- ~~Wave-A boot duty~~ **SUPERSEDED 2026-07-14: packet 01 owns the full triage** — its
-  packet file carries the operator-approved finding→destination routing table (every
-  open + acknowledged row, individually; no silent drops), the stale-row resolves
-  (#97/#98/#99/#107 fixed-but-open, #34/#90 superseded-by-#92, #112, #106→#124 dedupe),
-  and the dead task-row closes.
+  work — agents, audits, mutation probes — until they actually work. Still broken: **#134** (lore
+  cannot be DEPLOYED against a worktree: `.git` is a FILE naming a host gitdir outside the mount)
+  and **#125** (lore cannot INDEX an uncommitted worktree; packets 17/23 build the overlay).
+  ✅ **#136 is FIXED** (bbe367f) — the retry guard no longer goes blind out-of-tree; packets 17/23
+  are UNBLOCKED. Full law: repo CLAUDE.md.
+- **#140 — A `cp -a` COPY NEVER RUNS ITS OWN PRODUCTION CODE.** It imports `loremaster` from the
+  ORIGINAL checkout (the copied `.venv` carries an editable `.pth` with an absolute path home), and
+  `cp -a` preserves mtimes so the stale `__pycache__` carries the ORIGINAL `co_filename` too. **A
+  mutation proof or reference build made in a naive copy is grading the tree it was supposed to be
+  isolated from — and nothing tells you.** Packet 01's exposure was NIL (all 13 agent reports
+  audited: every mutation proof either PYTHONPATH-shadowed with `loremaster.__file__` VERIFIED, or
+  mutated the real tree with a content backup) — **that was the habit working, not the tooling.**
+  THE LAW: **prove which tree you are testing, or you are not testing anything** (repo CLAUDE.md).
 - #124 (engine first-write race) stays acknowledged-watch; packet 16's #109 conflict
   metric is its observability support.
 - Open research note (no evidence either way in literature/vendor practice): whether
@@ -474,3 +465,21 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   MEASURE-FIRST: the divergence count is unknowable until run; it scopes its own triage (split to 01b
   if it exceeds budget). Prediction recorded: **it will find real defects — if it finds none, suspect
   the harness.** Runs BEFORE packet 02.
+- 2026-07-14 · **#136 FIXED (operator-directed, commit bbe367f) — packets 17/23 UNBLOCKED.** The #102
+  retry seam's runtime SDK-escape guard reported GREEN in any out-of-tree copy while its POSITIVE
+  CONTROLS went RED. Root cause, TWO heads: it classifies frames by `co_filename` but compared them
+  against roots derived from `__file__` PATHS — identical in the checkout, divergent in a copy.
+  (1) the copied `.venv`'s editable `.pth` names the ORIGINAL absolute path, so production executes
+  from the original tree and NO frame ever matched the watched root ⇒ zero observations ⇒ "no escapes"
+  was true *the way "no unicorns escaped" is true*; (2) `cp -a` preserves mtimes ⇒ stale `__pycache__`
+  ⇒ even the test functions' code objects carry the ORIGINAL path ⇒ the controls' staged escape was
+  unmatchable ⇒ RED, beside that GREEN.
+  FIX (the general form, operator-ruled): **A GATE MUST NEVER RETURN A VERDICT IT CANNOT SUBSTANTIATE.**
+  `artifact_root()` derives the watched root from the IMPORTED MODULE (where code RUNS);
+  `_require_a_root_the_code_runs_from()` cross-checks it against a live witness's `co_filename` and
+  RAISES on divergence; `require_observations()` RAISES on zero observations — *blindness wearing
+  cleanliness*. Lead-mutation-proven both legs + a positive control. 404 in-tree (was 399) · 9/9 in a
+  copy · suite **5556/0** · ruff · mypy 0. The poison state is now UNREACHABLE.
+  **RESIDUAL #140, bigger than the bug:** a `cp -a` copy never runs its own production code — the guard
+  was merely the first instrument to NOTICE, being the only one that compares what it WATCHES against
+  what actually RAN. THIRD instance of one law (#24, #139, #140): **prove which tree you are testing.**

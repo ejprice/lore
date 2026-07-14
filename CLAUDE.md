@@ -409,30 +409,43 @@ them. Therefore:
 
 ## NO WORKTREES UNTIL WORKTREES WORK (operator, 2026-07-14)
 **Standing directive: do not use git worktrees for lore work** — not for agents, not for audits, not
-for mutation probes — **until worktrees actually work.** Today they do not, in three independent ways:
+for mutation probes — **until worktrees actually work.** Still broken:
 - **#134**: lore CANNOT BE DEPLOYED against a worktree — `.git` is a FILE naming an absolute host
   gitdir OUTSIDE the `/workspace` mount, so git fails inside the container and the honesty line reads
   null for the exact topology it is named after.
-- **#125 / packets 17+23**: lore's index cannot see an uncommitted worktree at all. The overlay is
-  designed but unbuilt.
-- **#136**: the #102 retry seam's RUNTIME SDK-escape guard goes BLIND out-of-tree while still
-  printing green (below). Packets 17/23 are BLOCKED on it (ledger row `6531b6f5`).
+- **#125 / packets 17+23**: lore's index cannot see an uncommitted worktree. The overlay is designed
+  but unbuilt.
+- ✅ **#136 is FIXED** (bbe367f): the retry seam's runtime guard no longer goes blind out-of-tree. It
+  now REFUSES to certify what it cannot see. Packets 17/23 are UNBLOCKED.
 
-⚠ **THE RULING CONTAINS LESS PROTECTION THAN IT LOOKS LIKE.** #136 is NOT a worktree bug — it is an
-**OUT-OF-TREE COPY** bug, and **scratch copies are how we work**: every contract author and every cold
-audit builds one (reference builds, satisfiability receipts, mutation proofs — several per packet).
-Banning worktrees does not touch that path. Therefore, **until #136 is fixed**:
+## PROVE WHICH TREE YOU ARE TESTING, OR YOU ARE NOT TESTING ANYTHING (#24 · #139 · #140 — three instances)
+**The identity of the code under test is NOT obvious, and it is NEVER checked unless you check it.**
+Three separate instruments have now been fooled by this, in three different directions:
+- **#24**: in the container, astroid resolves project imports to the INSTALLED site-packages copy, not
+  the mounted source → dead-code false positives on LIVE production code.
+- **#140**: a **`cp -a` copy of this repo NEVER RUNS ITS OWN PRODUCTION CODE.** The copied `.venv`
+  carries an editable `.pth` naming an ABSOLUTE original path, so `import loremaster` resolves to the
+  ORIGINAL checkout; and `cp -a` preserves mtimes, so the stale `__pycache__` carries the ORIGINAL
+  `co_filename` too. **A mutation proof or reference build made in a naive copy is grading the tree it
+  was supposed to be isolated from — and NOTHING TELLS YOU.** The copy looks isolated. `git diff` shows
+  your mutation. The tests run. They are simply not running YOUR code.
+- **#139 / packet 01a**: the in-container conformance run must assert `loremaster.__file__` is in
+  site-packages (**mount the TESTS, import the ARTIFACT**) or the whole gate is theatre.
 
-- **A green `test_retry_seam` verdict in ANY copy of the tree means NOTHING.** Its three POSITIVE
-  CONTROLS — the only evidence the guard can SEE an escape — fail there, while its "no escapes"
-  assertions stay GREEN. A gate whose controls are red is a gate whose greens are unfalsifiable.
-- **NEVER brief an agent to "ignore those 3 failures as unrelated".** Packet 01's lead did exactly
-  that, in five briefs, and thereby trained five agents to discard the alarm and trust the green
-  beside it. **The correct brief line is: "if those 3 controls fail, the retry-seam guard is BLIND in
-  your copy — its verdict is void; do not rely on it, and say so in your report."**
-- The general fix (and the one to prefer): **make the guard FAIL LOUD when its controls cannot arm.**
-  A gate must never return a verdict it cannot substantiate. That kills the class; fixing the root
-  resolution only kills the instance.
+**THE LAW: any scratch copy, reference build, or isolated run ASSERTS ITS OWN PROVENANCE before it is
+trusted.**
+```python
+assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_ROOT), "you are grading the ORIGINAL tree"
+```
+- **Every agent doing a scratch mutation proof PRINTS `loremaster.__file__` in its report as a
+  receipt.** Packet 01's exposure was NIL only because the careful agents did this voluntarily
+  (PYTHONPATH-shadowed + verified) or mutated the real tree with a content backup. **That was the habit
+  working, not the tooling** — and the next session may not have the habit.
+- **This is the same law as #136's fix, one level up:** a gate must never return a verdict it cannot
+  substantiate, and "I tested it" is a verdict about a TREE. If you cannot name the tree, you have not
+  tested anything.
+- ⚠ UNVERIFIED: `uv sync --reinstall-package loremaster` inside a copy did NOT repair the import in the
+  fixer's probe. Treat any remediation recipe as unproven until someone measures it.
 
 ## Orchestration (multi-agent phases)
 - The lead writes no code — tests included. Ladder: ground-truth verify → TaskStop →
