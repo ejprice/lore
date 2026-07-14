@@ -1,5 +1,5 @@
 # PKT-21 — Hosted security for the split topology (design first)
-size ~0.30 wu · wave G · depends: PKT-20 (external-review ordering) · gates PKT-23's exposure story
+size ~0.30 wu →split at kickoff (sizing law) · wave S, LAST (re-waved 2026-07-14; REQUIRED before any off-LAN exposure) · depends: PKT-20 (external-review ordering) · gates PKT-23's exposure story
 law: DESIGN-LAW §12 · driver: LORE_EXTERNAL_REVIEW.md gap 5 · DEPLOY: per design outcome
 
 ## Mission

@@ -1,5 +1,5 @@
 # PKT-01 — Per-corpus floor calibration · DESIGN (finding #83)
-size ~0.15 wu · wave A (**operator-sequenced FIRST**, Option B) · depends: none
+size ~0.15 wu · wave L (re-waved 2026-07-14; the 2026-07-07 "first" ruling was superseded by the comms + local-first re-sequences) · depends: none
 law: DESIGN-LAW §3 (weak-match), §6 (measurement pins)
 
 ## Mission

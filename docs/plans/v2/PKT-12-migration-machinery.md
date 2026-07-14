@@ -1,5 +1,5 @@
 # PKT-12 — Fleet-migration machinery (Shape D, ledger #11)
-size ~0.30 wu · wave E · depends: **operator answers to §8 Q1–Q4** (INDEX pool item 2)
+size ~0.30 wu →split at kickoff (sizing law) · wave M (re-waved 2026-07-14) · depends: **operator answers to §8 Q1–Q4 at kickoff** (INDEX pool item 2 — the one ruling on the v1.0 critical path); PKT-11; PKT-24 before this finalizes
 law: DESIGN-LAW §7 (I1–I4, endpoint-swap-last) · spec: docs/design/2026-07-04-migration-concurrency.md §7 (:275-313) + Shape D runbook (:165-271)
 
 ## Mission

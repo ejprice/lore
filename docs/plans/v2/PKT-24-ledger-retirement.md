@@ -1,5 +1,5 @@
 # PKT-24 — SQLite ledger retirement (singular-store ruling, 2026-07-11)
-size ~0.20 wu · wave D (parallel-safe; MUST land before PKT-12 finalizes and PKT-13 ships) · depends: none
+size ~0.20 wu · wave M, FIRST (re-waved 2026-07-14; MUST land before PKT-12 finalizes and PKT-13 ships) · depends: none
 law: DESIGN-LAW §14 (the ruling), §9 (memory contract), §7 (non-destructive until retire) · DEPLOY: yes
 
 ## Mission

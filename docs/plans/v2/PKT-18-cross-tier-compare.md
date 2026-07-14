@@ -1,5 +1,5 @@
 # PKT-18 — Cross-tier compare (Odoo 15→19/20 migration prep)
-size ~0.25 wu · wave F (parallel-safe) · depends: v1.0
+size ~0.25 wu · wave O ∥ (re-waved 2026-07-14; 15→19 prep feature, NOT an onboarding prerequisite — may slip to F) · depends: v1.0
 law: DESIGN-LAW §1 (client law), §12 · spec: MASTER-PLAN §6 "Cross-tier compare" (operator-directed 2026-07-03) · DEPLOY: yes
 
 ## Mission

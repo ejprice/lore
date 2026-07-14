@@ -1,5 +1,5 @@
 # PKT-03 — Served-surface + docs-truth residues
-size ~0.20 wu · wave A (parallel-safe; operator may fold into wave A or B) · depends: none
+size ~0.20 wu · wave L (parallel-safe; re-waved 2026-07-14) · depends: none · #92 supersedes the #34/#90 chain this file predates
 law: DESIGN-LAW §1 (client law), §2 (map semantics — read before touching map renders)
 
 ## Mission

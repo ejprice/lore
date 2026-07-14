@@ -1,5 +1,5 @@
 # PKT-05 — Chunker detection layer · BUILD + DEPLOY
-size ~0.35 wu · wave B · depends: PKT-04 ruled
+size ~0.35 wu →split at kickoff (sizing law) · wave L (re-waved 2026-07-14) · depends: PKT-04 ruled · recommended before PKT-27 (Odoo file zoo)
 law: DESIGN-LAW §11, §12 · DEPLOY: yes (both containers)
 
 ## Mission

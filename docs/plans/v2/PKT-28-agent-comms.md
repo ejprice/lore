@@ -86,13 +86,23 @@ traffic pends (`_comms_footer`). PKT-06 rollup gains messages/fleet/skew section
   register/heartbeat/brief_*/fleet + all four structural pins updated (exact-set 14→15
   ~server.py:1016; dead-name scan :1104; instructions pin :1201; `_MUTATING_TOOLS` ~:1163) +
   deploy both + smoke: register→brief served→briefed edge queryable→fleet.
-- **C2** — message graph + blocks: schema (message, to, blocks) + messages.py (send txn,
-  sequence::next mint) + send/drain/ack + fleet unread/directive columns + `_comms_footer` +
-  blocks mirroring w/ edge≡blocked_by+acyclicity tests + hostile render fixtures (mandatory,
-  brief-base §3) + concurrency pins + UNIQUE-on-edge cascade probe + smoke.
+- **C2 — SPLIT INTO THREE SESSION PACKETS (operator sizing law, 2026-07-14):**
+  - **C2a** (~0.20) — the ruled STEP 0 before any message-graph work: **#104 render
+    architecture** (name the ROLE via one accessor, type the applicability, kill the
+    fixture monoculture) + **#103** heartbeat skew (spec v8 ruled) + **#100** created_by
+    identity split + **#101** log-capture test isolation. Deploy.
+  - **C2b** (~0.25) — message graph core: schema (message, to) + messages.py (send txn,
+    `seq` minted via native `sequence::nextval("<name>")` — probe-settled, task f86af162)
+    + send/drain/ack + hostile render fixtures (mandatory, brief-base §3) + concurrency
+    pins (20-consecutive law) + UNIQUE-on-edge cascade probe + smoke. Deploy.
+  - **C2c** (~0.20) — blocks mirroring w/ edge≡blocked_by+acyclicity tests + fleet
+    unread/directive columns + `_comms_footer` + **#105** dangling-edge guard (RELATE
+    in-existence check). Deploy.
 - **C3** — await + story + hooks + rollup extension: LIVE-on-edge spike w/ poll fallback (seven
   scout.py constraints; injection pin) + `story` + rollup sections + `comms_cli.py` +
-  teammate-idle-gate v2 (fail-open). Opus 4.8 builder leg.
+  teammate-idle-gate v2 (fail-open; **folds #121** — worktree-aware artifact check) +
+  **folds #89** — lore_tasks single-task detail read. Opus 4.8 builder leg. Split at
+  kickoff if the folds push it past 0.25.
 - **C4** — protocol + live drill: brief-base v3 (register-first, drain points, directive-ack
   duty, SendMessage=nudge-only) + spawn-prompt template + UserPromptSubmit/PostToolUse hooks
   (drop PostToolUse if unsupported) + THE DRILL (below) + receipts doc.

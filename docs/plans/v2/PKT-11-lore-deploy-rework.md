@@ -1,5 +1,5 @@
 # PKT-11 — lore-deploy skill rework (finding #13 + the scaffold defect)
-size ~0.30 wu · wave E · depends: PKT-09 (dispositions shape the scaffold)
+size ~0.30 wu →split at kickoff · wave M (re-waved 2026-07-14) · depends: PKT-09a/09b (dispositions shape the scaffold)
 law: DESIGN-LAW §7 (Qdrant-pod law), §12 · skill tests idiom: `cd skills/lore-deploy/scripts && uv run python -m pytest -q . ../tests`
 
 ## Mission
@@ -15,7 +15,9 @@ Bring the lore-deploy skill (in-repo at skills/lore-deploy/, symlinked from
   FAILS TO PARSE, so `lore-deploy setup` onboarding is broken today (lead-confirmed
   2026-07-05). Must template `surreal:` + the required `anthropic:` block + PKT-09's
   new keys. Verify what the post-P8d fix b8e41a8 already covers — build ON it.
-- **Role-aware verbs**: start/stop/status per role (all|mcp|scout), per PKT-07 wiring.
+- **Single-node (`all`-mode) verbs only — TRIMMED 2026-07-14** (client/server pushed to
+  wave S): keep the verb signatures role-extensible (a role arg defaulting to `all`) but
+  build/wire NOTHING beyond `all`; PKT-07 regains the per-role wiring when wave S runs.
 - **git_sync pattern** documented + wired (sidecar pulls → post-sync reconcile command
   row as the deterministic alternative to inotify storms).
 - **Drop Qdrant verbs** from the skill (the shared POD stays until post-soak —

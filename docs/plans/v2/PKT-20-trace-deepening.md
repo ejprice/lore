@@ -1,5 +1,5 @@
 # PKT-20 — Trace deepening + the trace_monitor backstop
-size ~0.30 wu · wave G, FIRST (external-review ordering: traces before UI) · depends: v1.0
+size ~0.30 wu →split at kickoff (sizing law) · wave F, LAST (re-waved 2026-07-14; external-review ordering preserved: traces before security/UI — this packet gates waves S and G) · depends: v1.0
 law: DESIGN-LAW §1 (client law), §8 (pull-only) · spec: MASTER-PLAN §3 (friction backstop) + LORE_EXTERNAL_REVIEW.md gap 3 · DEPLOY: yes
 
 ## Mission

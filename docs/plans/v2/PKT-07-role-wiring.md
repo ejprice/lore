@@ -1,5 +1,5 @@
 # PKT-07 — Role wiring: all | mcp | scout + per-role creds
-size ~0.30 wu · wave D · depends: none within the wave
+size ~0.30 wu →split at kickoff · wave S (re-waved 2026-07-14; cloud-for-Odoo track) · depends: none within the wave
 law: DESIGN-LAW §12 · spec: MASTER-PLAN §1 (two-role decomposition, server-mode-everywhere) · DEPLOY: yes (single-node stays live)
 
 ## Mission
@@ -15,6 +15,8 @@ runs where the repo lives), `mcp` (read side, stateless, cloud-hostable), `all`
 - SurrealConfig per-role creds (env-indirected per house resolve_secret style).
 - Command-channel round-trip in split mode (reconcile command row: MCP inserts, scout
   consumes via LIVE SELECT with poll fallback — machinery exists from P5; wire + pin).
+- **Per-role lore-deploy verbs** (regained from PKT-11's 2026-07-14 trim): light up the
+  role arg PKT-11 left defaulting to `all`.
 - Degraded-honesty when the peer role is absent (mcp with a dead scout serves with
   honest staleness ages; never silent).
 - **Memory writes are store-only in every role (RULED 2026-07-11, DESIGN-LAW §14):**
@@ -22,7 +24,7 @@ runs where the repo lives), `mcp` (read side, stateless, cloud-hostable), `all`
   on store failure; there is no silent durability fallback to wire.
 
 ## Scope OUT
-- Containerfile/topology drills (PKT-08/10); hosted auth beyond current Bearer (PKT-21).
+- Containerfile/topology drills (PKT-08b/10b); hosted auth beyond current Bearer (PKT-21).
 
 ## Entry check
 Suite green at HEAD; grep/lore for any role stub left by P5 (scout entrypoint shipped

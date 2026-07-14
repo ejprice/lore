@@ -1,10 +1,12 @@
-# lore v2 — DeadReckoning+ · PACKET INDEX (plan of record, restructured 2026-07-10)
+# lore v2 — DeadReckoning+ · PACKET INDEX (plan of record, restructured 2026-07-10, re-sequenced 2026-07-14)
 
 This replaces the monolithic resume-doc chain (`~/.claude/plans/lore-v2-*-RESUME.md`)
-as the forward plan. The remaining work is decomposed into **work packets** (PKT-01…23),
-each sized to build inside ONE session (≈0.1–0.35 P7-window-units) with a fresh context
-that loads only: repo CLAUDE.md (auto) · this INDEX · its own packet file · the
-DESIGN-LAW sections the packet names · the spec files the packet points at. Nothing else.
+as the forward plan. The remaining work is decomposed into **work packets** (PKT-01…35+),
+each sized to build inside ONE session with a fresh context that loads only: repo
+CLAUDE.md (auto) · this INDEX · its own packet file · the DESIGN-LAW sections the packet
+names · the spec files the packet points at. Nothing else.
+**Wave letters were re-assigned 2026-07-14 (operator local-first ruling) — THIS TABLE is
+authoritative over any stale wave letter in a packet file's header.**
 
 Sources folded in (extraction receipts in `receipts/`): MASTER-PLAN.md (§-references
 below point into it) · the P7/P8a–P8e/SLATE/DETECTION resume docs · all 9 docs/design
@@ -13,22 +15,29 @@ specs · both docs/orchestration records · docs/eval records · LORE_EXTERNAL_R
 HERE now** — a packet session must not need to read them.
 
 ## Declared targets (operator)
+- **Goals ladder (ruled 2026-07-14):** (1) lore on DI locally → (2) lore on Odoo locally
+  → (3) eventually lore in the cloud for Odoo. Comms stays top priority (Claude Code
+  native comms broken by open bug #50779); results-impacting / LLM-impeding bugs get
+  fixed on the way; client/server pushed to wave S (verified: nothing on the v1.0
+  critical path needs it); WebUI last. **v1.0 = the single-node local ship.**
 - **Replace the odoo-code MCP** (declared 2026-07-11): lore serves the Odoo corpus
-  (~20k+ files / ~53k chunks) as its code-intelligence surface. The Odoo track:
-  PKT-18 (cross-tier compare) → PKT-27 (scale certification) → Odoo onboarding packet
-  (pool item 19). Live-DB introspection stays with odoo-dev by design.
+  (~20k+ files / ~53k chunks) as its code-intelligence surface. The Odoo track
+  (wave O, re-sequenced 2026-07-14): PKT-34 worktree overlay ∥ PKT-27 (scale
+  certification) → PKT-32 (onboarding design) → PKT-35+ (onboarding build); PKT-18
+  (cross-tier compare) rides ∥. Live-DB introspection stays with odoo-dev by design.
 
-## State of record (verified 2026-07-10)
-- Branch `feat/surreal-unification` @ **f0616ed** (not pushed). Full suite at last
-  lead-run: **3184 passed / 1 skipped**.
-- **Deployed image f891c89e212d** on BOTH containers (lore-lore :9202, DI :9201).
-  14-tool surface; cosine substrate live; floor **0.50649** (4-group survey + drift
-  trigger); P7→P8d′, SLATE S1–S7, and the closure wave (#74–#79, #81) all CLOSED.
+## State of record (verified 2026-07-14)
+- Branch `feat/surreal-unification` @ **8836baf** (not pushed). Full suite at last
+  lead-run: **5385 passed / 0 failed** (`-n auto`, the standing runner).
+- **Deployed image b0fce6904fc5** on BOTH containers (lore-lore :9202, DI :9201).
+  15-tool surface (lore_comms landed C1); cosine substrate live; floor **0.50649**
+  (4-group survey + drift trigger); P7→P8d′, SLATE S1–S7, the closure wave, PKT-06/C0,
+  PKT-28 C1, and the #102 retry-substrate chain all CLOSED.
 - Standing eval bar: **35-pair set, pinned claude-sonnet-4-5-20250929, client metrics**
   (accuracy ≥33/35 · tokens-per-correct ≈1375-era · taxed-calls ≈0). 11-pair calls-leg
   retired. Last receipts: 33/35 · 6.46 calls · 1440.8 tok (2026-07-07).
-- Test store: spike-surreal ws://127.0.0.1:18000 (podman start after reboot).
-  Production store :18500 — NEVER pointed at by tests.
+- Test store: spike-surreal ws://127.0.0.1:18000; production store :18500 — NEVER
+  pointed at by tests. Both systemd/quadlet-managed, auto-start on boot.
 
 ## Packet protocol (read once — this is the whole ritual)
 **Boot:** (1) repo CLAUDE.md auto-loads (process law: gates, TDD, orchestration,
@@ -49,49 +58,67 @@ the lore ledger.
 surfaced to the operator (repo law). Packet files are STATIC — scope changes are an
 operator ruling recorded as an edit to the packet + a Log line.
 
+**Sizing law (operator-ruled 2026-07-14):** target ≤0.25 wu per packet; any packet at
+≥0.30 is SPLIT AT ITS KICKOFF into sub-packets with their own entry/exit (table rows
+marked "→split"); every session plans ~⅓ context reserve for emergent findings (C1
+receipts: every phase spawned follow-up waves). One packet per session — anything found
+en route is surfaced/ledgered, never absorbed.
+
 ## Sequence + status
-Operator-ruled order (2026-07-07): floor calibration first (Option B), then detection,
-then ledger verbs, then P8e → P8f → v1.0 → P9 → P10. `∥` = parallel-safe with its wave.
-**Resequenced 2026-07-11 (operator, see Log): the agent-comms subsystem — PKT-06 (C0)
-then PKT-28 (C1–C5) — now precedes PKT-01 floor-calibration.**
+**Operator-ruled order (2026-07-14, local-first):** PKT-29 ledger triage → wave C
+(comms completion) → wave L (local correctness: results-impacting / LLM-impeding bugs)
+→ wave M (DI local = **v1.0 SHIP**, single-node) → wave O (Odoo local) → wave F
+(remaining features) → wave S (cloud for Odoo — pull-forward on operator call) →
+wave G (UI, lowest). `∥` = parallel-safe with its wave. `→split` = splits at kickoff
+per the sizing law.
 
 | # | Packet | Wave | Size | Depends on | Status |
 |---|--------|------|------|-----------|--------|
-| 01 | floor-calibration-design | A | 0.15 | — | open (after comms) |
-| 02 | floor-calibration-build | A | 0.30 | 01 ruled | open |
-| 03 | surface-residues (#84–#88, #64, #80, #82, docs truth) | A ∥ | 0.20 | — | open |
-| 04 | detection-contract | B | 0.15 | — | open |
-| 05 | detection-build | B | 0.35 | 04 ruled | open |
-| 06 | ledger-verbs (row f38f3b96) — C0 of agent-comms | C | 0.30 | — | **done** |
-| 28 | agent-comms C1–C5 (C0 done+deployed; Phase-0 render-safety foundation done @ c30edd6 commit-only; C1 registry+briefs NEXT) | C | ~1.4 phased | 06 | **NEXT** |
-| 07 | role-wiring (all\|mcp\|scout + creds) | D | 0.30 | — | open |
-| 08 | containerfile-astroid (#24) | D ∥ | 0.25 | — | open |
-| 09 | config-dynamism (ruled #13 table, #72, #12) | D ∥ | 0.35 | — | open |
-| 10 | drills + split-topology e2e | D | 0.30 | 07, 08 | open |
-| 24 | ledger-retirement (singular-store ruling) | D ∥ | 0.20 | — (before 12, 13) | open |
-| 11 | lore-deploy-rework (finding #13, scaffold) | E | 0.30 | 09 | open |
-| 12 | migration-machinery (Shape D, N1/N2/N3/N6) | E | 0.30 | §8 Q1–Q4 answered | open |
-| 13 | DI-migration + **v1.0 SHIP** | E | 0.25 | 11, 12, GO/NO-GO | open |
+| 06 | ledger-verbs (C0 of agent-comms) | C | 0.30 | — | **done** |
+| 29 | ledger-triage + lore_index watched-path/branch honesty line | pre | 0.15 | — | open — **FIRST work packet** |
+| 28 | agent-comms C2a/C2b/C2c/C3/C4 (C0+C1 done+deployed; C5 deferred, no ruling) | C | ≤0.25/phase | 06 | C2a **NEXT** |
+| 30 | store-error-honesty (#118, #119, #128; #126/#127 adjudication) | L ∥ | 0.20 | — | open |
+| 08 | astroid-shadow #24 (rescoped; containerfile roles → 08b) | L ∥ | 0.15 | — | open |
+| 03 | surface-residues (#15, #64, #80, #82, #84–#86, #88, #92, docs truth) | L ∥ | 0.20 | — | open |
+| 01 | floor-calibration-design (#83, #87) | L | 0.15 | — | open |
+| 02 | floor-calibration-build | L | 0.25 | 01 ruled | open |
+| 04 | detection-contract (#10, #11, #27) | L | 0.15 | — | open |
+| 05 | detection-build | L | →split | 04 ruled | open |
+| 09a | config: exclude auto-detect + #72 corpus pollution (#26, #28) | L ∥ | 0.20 | — | open |
+| 09b | config: boot validations + dead-field cleanup (#12) | L ∥ | 0.20 | — | open |
+| 31 | surreal-ops-hardening (#109, #110, #113, #114, #116, #117) | L ∥ | 0.15 | — | open |
+| 33 | worktree-overlay DESIGN (#125; delta-only RULED 2026-07-14) | L | 0.15 | — | open |
+| 24 | ledger-retirement (singular-store ruling) | M | 0.20 | — (before 12 finalizes, 13 ships) | open |
+| 11 | lore-deploy-rework (finding #13, scaffold; all-mode only) | M | 0.30 →split | 09a, 09b | open |
+| 12 | migration-machinery (Shape D, N1/N2/N3/N6) | M | 0.30 →split | §8 Q1–Q4 ruled at kickoff; 11; 24 | open |
+| 10a | single-node resilience drills (§8.6 + watcher skip-path) | M | 0.15 | — | open |
+| 13 | DI-migration + **v1.0 SHIP (single-node, per 2026-07-14 ruling)** | M | 0.25 | 11, 12, 24, GO/NO-GO | open |
+| 34 | worktree-overlay BUILD (#125) | O | 0.25 | 33 ruled; MUST land before 35 completes | open |
+| 27 | Odoo-scale ingest certification (gap 6; MRO/ORM assessment defines 32) | O ∥ | 0.30 →split | 05 rec.; v1.0 | open |
+| 32 | Odoo onboarding DESIGN (XML extractor, MRO/_inherit capture, chunkers, tiers, cutover) | O | 0.15 | 27 receipts | open |
+| 35+ | Odoo onboarding BUILD (packets minted by 32) | O | ≤0.25 each | 32 ruled | open |
+| 18 | cross-tier compare (Odoo 15→19 prep) | O ∥ | 0.25 | v1.0 | open |
+| 17 | graph/search v1.1 (#3, #70; + #20/#37/#40/#41 candidates) | F | 0.35 →split | v1.0 | open |
 | 14 | loresage package | F | 0.25 | v1.0 | open |
-| 15 | enrichment-worker | F | 0.30 | 14 | open |
+| 15 | enrichment-worker | F | 0.30 →split | 14 | open |
 | 16 | detectors + raise_issue escalation | F ∥ | 0.25 | v1.0 | open |
-| 17 | graph/search v1.1 (#70, #3, RELATE, PageRank) | F ∥ | 0.35 | v1.0 | open |
-| 18 | cross-tier compare (Odoo 15→19 prep) | F ∥ | 0.25 | v1.0 | open |
 | 19 | memory maintenance (decay/expiry sweeps) | F ∥ | 0.15 | v1.0 | open |
-| 25 | memory reconciler (det. tier + loresage tier) | F | 0.35 | v1.0; 14 for LLM tier | open |
+| 25 | memory reconciler (det. tier + loresage tier) | F | 0.35 →split | v1.0; 14 for LLM tier | open |
 | 26 | semantic summary reuse (5b, promoted) | F | 0.25 | 14; 20 helpful | open |
-| 27 | Odoo-scale ingest certification (gap 6) | F ∥ | 0.30 | 05 rec.; pull-earlier OK | open |
-| 20 | trace-deepening + trace_monitor backstop | G | 0.30 | v1.0 | open |
-| 21 | hosted-security (design first) | G | 0.30 | 20 | open |
-| 22 | ui-foundation | G | 0.30 | 20 | open |
-| 23 | ui-graph-explorer + Agent-SDK chat | G | 0.35 | 21, 22 | open |
+| 20 | trace-deepening + trace_monitor backstop | F LAST | 0.30 →split | v1.0 | open |
+| 07 | role-wiring (all\|mcp\|scout + creds; regains role verbs from 11) | S | 0.30 →split | — | open |
+| 08b | containerfile roles + image slimming | S | 0.20 | 07 | open |
+| 10b | split-topology e2e | S | 0.20 | 07, 08b | open |
+| 21 | hosted-security (design first; REQUIRED before off-LAN) | S | 0.30 →split | 20 | open |
+| 22 | ui-foundation | G | 0.30 →split | 20, 21 | open |
+| 23 | ui-graph-explorer + Agent-SDK chat | G | 0.35 →split | 21, 22 | open |
 
 External-review ordering constraint (2026-07-10, adopted): **UI ships after trace and
-authorization models stabilize** — hence wave G's internal order.
+authorization models stabilize** — hence PKT-20 closing wave F and wave S preceding G.
 
 ## Operator decision pool (each blocks nothing until its packet arrives)
 1. **PKT-04 fork:** prose-ish suspect flag — in-text vs metadata + serve-time injection.
-2. **PKT-12 entry gate:** migration §8 Q1–Q4 (docs/design/2026-07-04-migration-concurrency.md:317-333). Rec: Q1=(a)+(b), Q2=confirm ns/db-only, Q3=accept seconds-long freeze, Q4=dry-run Phase A first.
+2. **PKT-12 entry gate:** migration §8 Q1–Q4 (docs/design/2026-07-04-migration-concurrency.md:317-333). Rec: Q1=(a)+(b), Q2=confirm ns/db-only, Q3=accept seconds-long freeze, Q4=dry-run Phase A first. **Ruled at wave-M kickoff — the ONE operator ruling on the v1.0 critical path.**
 3. **PKT-13:** Shape-D GO/NO-GO after Phase A; deferred retire confirmation; post-soak shared-Qdrant orphan cleanup + `QDRANT__SERVICE__API_KEY` removal from lore.env.
 4. ~~SQLite memory-ledger exception~~ **RULED (operator, 2026-07-11): SurrealDB is the
    SINGULAR durable store for lore data — the SQLite ledger retires in ALL modes**
@@ -102,7 +129,7 @@ authorization models stabilize** — hence wave G's internal order.
    semantics move into the N3 driver); PKT-07's fork dissolved. DESIGN-LAW §14 carries
    the ruling. v0.3 ledger files stay frozen as the migration import source until
    post-soak.
-5. **#49 instructions sizing** (575 tok vs plan ~350; full surface 8,245 claude-equiv vs ~2.5k estimate). REC: ACCEPT — the 35-pair bar is the arbiter.
+5. **#49 instructions sizing** (575 tok vs plan ~350; full surface 8,245 claude-equiv vs ~2.5k estimate). REC: ACCEPT — the 35-pair bar is the arbiter. **PKT-29 presents this for ruling.**
 6. **detail_level reshape** (§5 `detail: refs|signatures|source`) — ruled out of P8d; place in PKT-17 or REJECT.
 7. **T7** search default budget 1100→~1600 · **T8** `memories=` param (possibly mooted by T3) · **T9** re-expose what_imports/tests_for (NOT recommended; only if the bar re-misses) — docs/design/2026-07-06-p8dprime-fix-specs.md:480-491.
 8. **D4 rename** served fused `score` → `fusion_rank` (ledgered at weak-match close). Fits PKT-03 if approved.
@@ -111,7 +138,7 @@ authorization models stabilize** — hence wave G's internal order.
 11. **Watcher skip-path posture** ack (store blip during live-drain skip kills the watcher worker — P8e-RESUME item 3).
 12. **Spectron**: waitlist standing; backend re-decision on invite (spike list in MASTER-PLAN §6 P7).
 13. **DI doc-content import** (DECISIONS.md/GOTCHAS.md → kind-tagged memories) — separate content migration, schedule ad hoc.
-14. **#55 investigation row**: fresh-session ToolSearch can't resolve lore tools (2nd recurrence) — dedicate a row.
+14. **#55 investigation row**: fresh-session ToolSearch can't resolve lore tools (2nd recurrence) — dedicate a row. **PKT-29 mints it (pairs with #22).**
 15. **Upstream report** of the mcp-builder TextContent serialization bug (docs/eval/2026-07-04-p8a-baseline.md:123).
 16. ~~Response/render caching~~ **RULED (operator, 2026-07-11):** flavor (a) render
     memoization DROPPED — no latency need at this time; do not build. Flavor (b)
@@ -124,28 +151,30 @@ authorization models stabilize** — hence wave G's internal order.
     prod refs" is a strictly stronger dead signal. Cheap byproduct; strike or keep —
     if kept, rides PKT-20's exit as an extra dead_code caveat line, still HEURISTIC-
     bannered.
-19. **Odoo onboarding packet — sequencing + scope** (after PKT-27 receipts): XML
-    reference extractor (framework-mediated calls — the dead-code truth prerequisite,
-    memory: odoo-target-needs-xml-reference-extractor), **MRO + ORM metadata capture
-    per PKT-27's assessment** (operator-flagged: _inherit/_inherits model merges,
-    field-string refs, super()-chain dispatch), manifest/csv chunker extensions, tier
-    layout (odoo15-core/odoo19-core static + custom live), cutover from odoo-code per
-    the struck parity matrix. Operator schedules; wants its own design pass.
+19. ~~Odoo onboarding packet — sequencing + scope~~ **SCHEDULED 2026-07-14: this is now
+    PKT-32 (design pass, after PKT-27 receipts) + PKT-35+ (build packets minted by the
+    design), wave O.** Scope carried into PKT-32's file: XML reference extractor,
+    MRO + ORM metadata capture per PKT-27's assessment, manifest/csv chunker extensions,
+    tier layout, cutover from odoo-code per the struck parity matrix.
+20. **#73 eval-fixture maintenance** (corpus-dependent ground truths go stale as the
+    tree grows) — decision point: next standing-bar eval run.
+21. **#111 typed conflict check** — switch `_txn`'s substring match to
+    `is_transaction_conflict` when surrealdb-py 3.0.0 ships. Watch the release.
 
 ## Watch list (no packet; verify-on-contact)
-- Findings whose live state needs a ledger check at next boot: #1 (indirect-coverage,
-  acknowledged-canonical), #2 (tests_for misses config.py — a bug), #3 (routed PKT-17),
-  #4 (routed PKT-02), #10 (routed PKT-04), #12 (routed PKT-09), #34 (routed PKT-03), #48.
-- **Wave-A boot duty:** the pre-P8d open-finding inheritance (#14–#16, #20–#22,
-  #26–#29, #33, #35, #37, #40–#42, #44, #47…) is NOT individually routed here — the
-  first wave-A session triages the live open set: route each to a packet, the pool, or
-  an operator wontfix. No silent drops.
+- ~~Wave-A boot duty~~ **SUPERSEDED 2026-07-14: PKT-29 owns the full triage** — its
+  packet file carries the operator-approved finding→destination routing table (every
+  open + acknowledged row, individually; no silent drops), the stale-row resolves
+  (#97/#98/#99/#107 fixed-but-open, #34/#90 superseded-by-#92, #112, #106→#124 dedupe),
+  and the dead task-row closes.
+- #124 (engine first-write race) stays acknowledged-watch; PKT-31's #109 conflict
+  metric is its observability support.
 - Open research note (no evidence either way in literature/vendor practice): whether
   displaying scores to tool-using LLM consumers helps — our three-model consult remains
   the only direct data (weak-match external validation, element d).
 - Graph composition invariant + hot-row minting retry pattern + two-step recreate —
   now in DESIGN-LAW.md; cite it, don't rediscover.
-- `scratchpad/` at repo root is finding #72 corpus pollution — fixed by PKT-09;
+- `scratchpad/` at repo root is finding #72 corpus pollution — fixed by PKT-09a;
   until then keep session artifacts OUT of the repo root.
 
 ## Log (append-only; ≤5 lines per entry)
@@ -284,3 +313,8 @@ authorization models stabilize** — hence wave G's internal order.
   merged @ 634da1c (9d29111 code · b649f28 law · f72beeb reference); suite **5385/0** `-n auto`,
   399-pin contract, 20/20 concurrency. Trail: adversary→satisfiability gate born, 2 cold audits,
   2 blind reads. C2 `message.seq` = native sequence (task f86af162). NEXT = **C2** (step 0 #104).
+- 2026-07-14 · **OPERATOR LOCAL-FIRST RE-SEQUENCE** (goals: DI local → Odoo local → cloud-for-
+  Odoo eventually): waves now C(comms)→L(correctness)→M(DI=v1.0 SINGLE-NODE)→O(Odoo local)→
+  F(features)→S(cloud)→G(UI); sizing law ≤0.25/split-at-0.30; C2 split C2a/C2b/C2c; new PKT-29
+  (triage) 30 (store error-honesty) 31 (surreal ops) 32/35+ (Odoo onboarding) 33/34 (#125
+  worktree overlay, RULED first-class DELTA-ONLY) 08b/10b (split-off halves). Row df2b5345.

@@ -1,5 +1,5 @@
 # PKT-02 — Per-corpus floor calibration · BUILD (finding #83)
-size ~0.30 wu · wave A · depends: PKT-01 ruled
+size ~0.25 wu (re-sized 2026-07-14; split at kickoff if the ruled design grows it to ≥0.30) · wave L · depends: PKT-01 ruled
 law: DESIGN-LAW §3, §5 (store idioms), §6, §12 · DEPLOY: yes (both containers)
 
 ## Mission

@@ -1,5 +1,8 @@
 # PKT-13 — Execute the DI migration + v1.0 SHIP
-size ~0.25 wu · wave E, LAST · depends: PKT-11, PKT-12, operator GO/NO-GO
+size ~0.25 wu · wave M, LAST (re-waved 2026-07-14) · depends: PKT-11, PKT-12, PKT-24, operator GO/NO-GO
+**v1.0 DEFINITION (operator-ruled 2026-07-14): the SINGLE-NODE local ship** — DI migrated,
+singular store, onboarding fixed, single-node drills (PKT-10a) green. Client/server roles,
+split topology, and hosted security are wave S, post-features, explicitly NOT v1.0 gates.
 law: DESIGN-LAW §7 (I1–I4 — receipts before trust), §6 · DEPLOY: v1.0 tag + cutover receipts
 
 ## Mission

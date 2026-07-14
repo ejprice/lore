@@ -1,5 +1,5 @@
 # PKT-04 — Chunker detection layer · CONTRACT (operator-agreed feature, ruled 2026-07-06)
-size ~0.15 wu · wave B · depends: none (runs after wave A per operator sequencing)
+size ~0.15 wu · wave L (re-waved 2026-07-14) · depends: none
 law: DESIGN-LAW §11 (chunkers opt-in guard), §12 · TDD skill CONTRACT phase — pauses for review
 
 ## Mission

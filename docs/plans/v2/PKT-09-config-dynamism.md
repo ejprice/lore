@@ -1,13 +1,21 @@
 # PKT-09 — Config dynamism: the ruled disposition table (ledger #13)
-size ~0.35 wu · wave D (parallel-safe) · depends: none
-law: DESIGN-LAW §11 (hazard guards — binding as written) · spec: docs/design/2026-07-05-p13-config-dynamism-disposition.md (operator-ACCEPTED WHOLESALE 2026-07-05) · DEPLOY: yes
+size ~0.35 wu — **SPLIT 2026-07-14 into two session packets (sizing law)** · wave L (parallel-safe) · depends: none
+law: DESIGN-LAW §11 (hazard guards — binding as written) · spec: docs/design/2026-07-05-p13-config-dynamism-disposition.md (operator-ACCEPTED WHOLESALE 2026-07-05) · DEPLOY: yes (each half)
+
+## Session split (2026-07-14)
+- **PKT-09a (~0.20)**: the 5 derive-at-boot items — headlined by `exclude_dirs`
+  auto-detection (#26, plus the #28 include-glob decision recorded) — **finding #72**
+  (scratchpad/session-artifact exclusion + polluted-corpus reconcile).
+- **PKT-09b (~0.20)**: the validate-against-reality boot assertions + the 9-dead-field
+  cleanup + finding #12 annotation.
+Each half runs the shared Entry check and owes its own gates/deploy/Log line.
 
 ## Mission
 Implement the operator-accepted disposition table. NOTE the numbering trap: this is
 **ledger #13** (config-dynamism); **finding #13** (lore-deploy status manifest) is
 PKT-11's. Static config rots — this packet makes lore.yaml self-healing where ruled.
 
-## Scope IN (the ruled table, spec :27-113)
+## Scope IN (the ruled table, spec :27-113 — split per the sessions above)
 - **5 derive-at-boot items:** (1) `exclude_dirs` venv/binary/VCS additive auto-detection
   — union with operator config, logged, dir-shape signal required (DESIGN-LAW §11);
   (2) `chunkers` fingerprint-vs-selection reconciliation (coordinate with PKT-05's

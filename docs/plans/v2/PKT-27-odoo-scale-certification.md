@@ -1,5 +1,5 @@
 # PKT-27 — Odoo-scale ingest + resumability certification (gap 6, operator-directed 2026-07-11)
-size ~0.30 wu · wave F (parallel-safe; operator may pull earlier — it only reads the target corpus) · depends: PKT-05 recommended (detection routes Odoo's file zoo); v1.0 core
+size ~0.30 wu →split at kickoff · wave O (re-waved 2026-07-14 — the Odoo-local track; runs ∥ PKT-34) · depends: PKT-05 recommended (detection routes Odoo's file zoo); v1.0 core · its MRO/ORM assessment DEFINES PKT-32's scope
 law: DESIGN-LAW §6 (measure, never assume), §12 · driver: **lore's declared target — replace the odoo-code MCP** · DEPLOY: receipts + red-first fixes
 
 ## Mission
@@ -45,10 +45,11 @@ workflow resumability") is answered with receipts, not positioning.
 - **Docs line**: resumability described as what the drills prove (manifest-grained,
   batch-job re-attach) — never as workflow/LangGraph checkpointing.
 
-## Scope OUT (sequenced after certification — the Odoo onboarding packet)
+## Scope OUT (sequenced after certification — the Odoo onboarding packets)
 - The XML reference extractor (framework-mediated calls; dead-code truth on Odoo),
   manifest/csv chunker extensions, tier layout (odoo15-core static / custom live),
-  actual cutover from odoo-code. Pool item 19 schedules it.
+  actual cutover from odoo-code. **Scheduled 2026-07-14: PKT-32 (design) + PKT-35+
+  (build)** — pool item 19 closed into them.
 
 ## Entry check
 Detection layer state (what routes Odoo's .xml/.po/.csv/manifest zoo today); Voyage
