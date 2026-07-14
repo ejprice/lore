@@ -144,13 +144,13 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 14 | config-derive-excludes (#26, #28, #72 corpus pollution) | PKT-09a | L ∥ | 0.20 | — | open |
 | 15 | config-boot-validation (+ dead fields, #12) | PKT-09b | L ∥ | 0.20 | — | open |
 | 16 | surreal-ops-hardening (#109, #110, #113, #114, #116, #117) | PKT-31 | L ∥ | 0.15 | — | open |
-| 17 | worktree-overlay-design (#125; delta-only RULED) | PKT-33 | L | 0.15 | — | open |
+| 17 | worktree-overlay-design (#125; delta-only RULED) | PKT-33 | L | 0.15 | **#136 FIXED FIRST** (row 6531b6f5) | open — **BLOCKED on #136** |
 | 18 | ledger-retirement (singular-store ruling) | PKT-24 | M | 0.20 | — (before 20 finalizes, 22 ships) | open |
 | 19 | lore-deploy-rework (finding #13, scaffold; all-mode only) | PKT-11 | M | 0.30 →split | 14, 15 | open |
 | 20 | migration-machinery (Shape D) | PKT-12 | M | 0.30 →split | §8 Q1–Q4 ruled at kickoff; 19; 18 | open |
 | 21 | single-node-drills (§8.6 + watcher skip-path) | PKT-10a | M | 0.15 | — | open |
 | 22 | di-migration + **v1.0 SHIP (single-node)** | PKT-13 | M | 0.25 | 19, 20, 18, GO/NO-GO | open |
-| 23 | worktree-overlay-build (#125) | PKT-34 | O | 0.25 | 17 ruled; before 26 completes | open |
+| 23 | worktree-overlay-build (#125) | PKT-34 | O | 0.25 | 17 ruled; **#136 FIXED**; before 26 completes | open — **BLOCKED on #136** |
 | 24 | odoo-scale-certification (MRO/ORM assessment defines 25) | PKT-27 | O ∥ | 0.30 →split | 13 rec.; v1.0 | open |
 | 25 | odoo-onboarding-design (XML extractor, MRO capture, tiers, cutover) | PKT-32 | O | 0.15 | 24 receipts | open |
 | 26 | odoo-onboarding-build (26a, 26b, … minted by 25) | PKT-35+ | O | ≤0.25 each | 25 ruled | open |
@@ -228,6 +228,16 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
     `is_transaction_conflict` when surrealdb-py 3.0.0 ships. Watch the release.
 
 ## Watch list (no packet; verify-on-contact)
+- **#136 — HARD BLOCKER ON PACKETS 17 + 23, ledger row `6531b6f5` (operator-caught 2026-07-14).**
+  The #102 retry seam's RUNTIME SDK-escape guard — the store's most load-bearing runtime invariant —
+  reports GREEN in any OUT-OF-TREE copy while its three POSITIVE CONTROLS (the only evidence it can
+  SEE an escape) FAIL. Measured on a pristine copy with production code byte-identical to HEAD:
+  399 passed in-tree vs **3 failed** out-of-tree, and the 3 failures ARE the controls. A gate whose
+  controls are red is a gate whose greens are unfalsifiable. **Packets 17/23 make worktrees
+  first-class — the exact shape that breaks it.** Anyone auditing store code from a worktree TODAY
+  is already running it blind. Root cause NOT isolated. Fix it, or make the guard FAIL LOUD when its
+  controls cannot arm. NB it was originally "routed" to the #102/#120 owner — a chain that is CLOSED,
+  i.e. to NOBODY; a note on a finding is not a schedule.
 - ~~Wave-A boot duty~~ **SUPERSEDED 2026-07-14: packet 01 owns the full triage** — its
   packet file carries the operator-approved finding→destination routing table (every
   open + acknowledged row, individually; no silent drops), the stale-row resolves
