@@ -145,7 +145,7 @@ from typing import Any, cast
 
 import pytest
 import pytest_asyncio
-from _sdk_guard import GuardReport
+from _sdk_guard import GuardCannotSubstantiate, GuardReport, _witness_file, artifact_root
 from _sdk_guard import install as _install_shared_guard
 from _surreal_harness import (
     PRODUCTION_DIM,
@@ -738,7 +738,25 @@ def _construct_live(seam: type, env: SurrealEnv) -> Any:
 # unrepaired tree AND on a correct build: pinning them to real production code would make
 # the positive control go silently vacuous the moment the repair lands, which is precisely
 # the kind of instrument that stops discriminating without telling anyone.
-_THIS_FILE_ROOT = Path(__file__).resolve().parent
+#
+# DERIVED FROM A CODE OBJECT, NOT FROM ``__file__`` (finding #136). The guard classifies a
+# frame by its ``co_filename``, so a root it is compared against must be minted from the
+# same string the interpreter puts in a frame. ``__file__`` is a DIFFERENT answer to a
+# similar-looking question, and in an out-of-tree copy the two diverge: pytest sets
+# ``__file__`` from the copy's path while the module runs bytecode cached under the
+# original path (``cp -a`` preserves mtimes, so the stale ``__pycache__`` is reused and its
+# code objects carry the ORIGINAL ``co_filename``). The controls staged their escape, the
+# guard could not see the file it came from, and they went RED beside a GREEN "no escapes".
+
+
+def _a_function_defined_in_this_file() -> None:
+    """A WITNESS, and nothing else: its ``__code__.co_filename`` is this file exactly as a
+    stack frame reports it. The controls hand it to the guard so the guard can prove, at
+    arm time, that it can actually SEE the code it is about to be asked to judge.
+    """
+
+
+_THIS_FILE_ROOT = _witness_file(_a_function_defined_in_this_file).parent
 
 
 class TestTheSeamEnumerationIsHonest:
@@ -2205,7 +2223,10 @@ class Ledger:
 
 
 def _install_runtime_sdk_guard(
-    monkeypatch: pytest.MonkeyPatch, *, production_root: Path = _PACKAGE_ROOT
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    production_root: Path | None = None,
+    witness: Any = None,
 ) -> GuardReport:
     """Arm the SHARED guard (``tests/_sdk_guard.py``) for a focused, in-test assertion.
 
@@ -2214,13 +2235,29 @@ def _install_runtime_sdk_guard(
     assert on WHAT IT SAW, and the controls aim its notion of "production" at this file so
     they fire identically on a repaired tree. (A control that goes vacuous the day the fix
     lands is the disease, not the cure.)
+
+    ``production_root=None`` means the ARTIFACT's root — where the imported ``loremaster``
+    executes from, not where this file sits (#136). Aiming it elsewhere requires a
+    ``witness`` from there: you may not point this guard at a directory and then be told,
+    with a straight face, that nothing happened in it.
     """
-    report = _install_shared_guard(monkeypatch, production_root=production_root)
+    report = _install_shared_guard(
+        monkeypatch, production_root=production_root, witness=witness
+    )
     assert report.armed, (
         "the shared retry driver does not exist, so the runtime guard cannot arm: there is "
         "nothing for a call to be INSIDE. Build `_txn.retry_on_conflict` first."
     )
     return report
+
+
+def _install_guard_aimed_at_this_file(monkeypatch: pytest.MonkeyPatch) -> GuardReport:
+    """Arm the guard with THIS FILE as "production" — the controls' idiom, in one place."""
+    return _install_runtime_sdk_guard(
+        monkeypatch,
+        production_root=_THIS_FILE_ROOT,
+        witness=_a_function_defined_in_this_file,
+    )
 
 
 class TestNoSdkCallEscapesTheDriverAtRuntime:
@@ -2266,6 +2303,10 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
         finally:
             await store.close()
 
+        # A CLEAN VERDICT IT CANNOT SUBSTANTIATE IS NOT A CLEAN VERDICT (#136). Every seam
+        # above bootstrapped a connection and ran a statement: if the guard saw NOTHING, it
+        # is blind, not satisfied — and its silence must not read as a pass.
+        report.require_observations("driving every discovered seam against the real engine")
         assert not report.escapes, (
             f"{len(report.escapes)} SurrealDB call(s) escaped the retry driver:\n  "
             + "\n  ".join(str(escape) for escape in report.escapes)
@@ -2301,6 +2342,7 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
         finally:
             await connection.close()
 
+        report.require_observations("driving scout's CAS write against the real engine")
         assert not report.escapes, (
             "scout's command channel escaped the driver:\n  "
             + "\n  ".join(str(escape) for escape in report.escapes)
@@ -2318,7 +2360,7 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
         anyone is the whole disease.)
         """
         connection = await connect_admin(live_env)  # connect BEFORE arming the guard
-        report = _install_runtime_sdk_guard(monkeypatch, production_root=_THIS_FILE_ROOT)
+        report = _install_guard_aimed_at_this_file(monkeypatch)
         try:
             await connection.query("INFO FOR DB")  # no driver above this call
         finally:
@@ -2337,7 +2379,7 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
         cannot satisfy it and deletes it — and then we have nothing.
         """
         connection = await connect_admin(live_env)  # connect BEFORE arming the guard
-        report = _install_runtime_sdk_guard(monkeypatch, production_root=_THIS_FILE_ROOT)
+        report = _install_guard_aimed_at_this_file(monkeypatch)
         try:
 
             async def _attempt() -> Any:
@@ -2347,6 +2389,7 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
         finally:
             await connection.close()
 
+        report.require_observations("making a driver-run call from this file")
         assert not report.escapes, (
             "a call the driver DID run was reported as an escape — the guard rejects the "
             "correct idiom and will be deleted by the first engineer it blocks"
@@ -2377,7 +2420,7 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
         driven: bool,
     ) -> None:
         connection = await connect_admin(live_env)
-        report = _install_runtime_sdk_guard(monkeypatch, production_root=_THIS_FILE_ROOT)
+        report = _install_guard_aimed_at_this_file(monkeypatch)
 
         async def _call() -> Any:
             if detached:
@@ -2389,6 +2432,7 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
         finally:
             await connection.close()
 
+        report.require_observations("making a call from this file, driven or not")
         if driven:
             assert not report.escapes, (
                 "a call the driver DID run was flagged — detaching an attempt's own call "
@@ -2493,6 +2537,24 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
         all_sites = _all_sdk_call_sites()
         unobserved = sorted(site for site in all_sites if site not in observed)
 
+        # This pin compares two trees: the SOURCE the AST scanner reads (`_PACKAGE_ROOT`)
+        # and the ARTIFACT the guard watches execute. They are the same directory in the
+        # checkout. When they are not — an out-of-tree copy importing `loremaster` from the
+        # original via an editable install — the comparison is apples to oranges, and the
+        # honest thing is to SAY so in the failure rather than let the reader conclude their
+        # code is unwatched when in fact their code never ran at all (#136).
+        divergent_trees = (
+            ""
+            if _PACKAGE_ROOT.resolve() == artifact_root()
+            else (
+                f"\n\nNB: THE TREE YOU ARE SCANNING IS NOT THE TREE THAT RAN. The call sites "
+                f"above were enumerated from {_PACKAGE_ROOT.resolve()}, but `loremaster` "
+                f"imported from {artifact_root()} — so your edits to production code in this "
+                f"tree were NEVER EXECUTED by this run. Re-sync this checkout's venv "
+                f"(`uv sync --reinstall-package loremaster`) before trusting ANY verdict here."
+            )
+        )
+
         assert all_sites, "the ALL-call-site enumeration found nothing — the scanner is broken"
         assert not unobserved, (
             f"the runtime guard never EXECUTED {len(unobserved)} of {len(all_sites)} "
@@ -2501,7 +2563,121 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
             + "\n\nA runtime gate is an invariant only over code it RUNS. An unwatched call "
             "site is how `_drain_pending` shipped finding #120 alive through a suite that "
             "scored 932/0. Drive it here — or it is watched by nothing but a name-keyed lint."
+            + divergent_trees
         )
+
+
+class TestTheGuardRefusesAVerdictItCannotSubstantiate:
+    """**FINDING #136 — a gate whose controls are red is a gate whose greens are worthless.**
+
+    In an out-of-tree copy of this repo, the guard's watched root was derived from THIS
+    FILE's path while ``loremaster`` imported from the ORIGINAL checkout (an editable
+    install's ``.pth`` names an absolute path). So the guard watched a directory nothing
+    executed from: it observed ZERO calls, every ``assert not report.escapes`` in the file
+    passed — **vacuously** — and the three positive controls, the only evidence the guard
+    can SEE a breach, went RED beside them. The suite reported "no escapes" from an
+    instrument that could not have seen one.
+
+    Repairing the root resolution alone fixes the INSTANCE. These pins kill the CLASS: the
+    guard now proves, at arm time, that it can see the code it is about to judge — and
+    REFUSES to arm when it cannot. A vacuous green is no longer a reachable state, whatever
+    tree the suite is run from and however its roots are computed tomorrow.
+    """
+
+    def test_the_guard_REFUSES_a_root_no_code_executes_from(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """THE FAIL-LOUD PATH. Aim it at an empty directory and it must refuse, naming both
+        the root it was given and the file the code it must judge actually runs from.
+        """
+        with pytest.raises(GuardCannotSubstantiate) as refusal:
+            _install_shared_guard(monkeypatch, production_root=tmp_path)
+
+        message = str(refusal.value)
+        assert str(tmp_path) in message, "the refusal must name the root it was asked to watch"
+        assert "_txn.py" in message, (
+            "the refusal must name where the code it has to judge ACTUALLY executes — a "
+            "refusal that does not say what diverged sends the reader hunting"
+        )
+
+    def test_the_POSITIVE_CONTROL_the_guard_arms_normally_against_the_real_artifact(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control on the pin above: a gate that refuses EVERYTHING is not discriminating,
+        it is broken. The default arming must succeed and watch the artifact that ran.
+        """
+        report = _install_runtime_sdk_guard(monkeypatch)
+
+        assert report.armed
+        assert report.watched_root == artifact_root()
+        assert _driver().__code__.co_filename.startswith(str(report.watched_root)), (
+            "the guard's watched root does not contain the retry driver itself — it is "
+            "watching a tree the production code does not execute from"
+        )
+
+    def test_the_watched_root_comes_from_the_IMPORTED_package_not_this_files_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """**THE #136 REGRESSION PIN, and it discriminates IN THE CHECKOUT** — where the two
+        roots coincide and so a plain equality assertion would prove nothing.
+
+        Move where the IMPORTED package says it lives. A guard that derives its root from
+        the imported module follows it there, finds that production does not execute from
+        the new root, and REFUSES. A guard that derives its root from ``__file__`` (the bug)
+        never notices the move at all: it keeps watching the real package and arms happily —
+        which is exactly how it came to watch a copy's directory while the code ran elsewhere.
+        """
+        import loremaster
+
+        monkeypatch.setattr(loremaster, "__file__", str(tmp_path / "loremaster" / "__init__.py"))
+
+        with pytest.raises(GuardCannotSubstantiate) as refusal:
+            _install_shared_guard(monkeypatch)
+
+        assert str(tmp_path) in str(refusal.value)
+
+    def test_the_witness_is_CHECKED_not_decorative(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Aiming the guard at this file while naming a witness that executes SOMEWHERE ELSE
+        must refuse. Otherwise "name the code you expect to be watched" is a comment, not a
+        precondition — and the controls could go blind again without a word.
+        """
+        with pytest.raises(GuardCannotSubstantiate):
+            _install_shared_guard(
+                monkeypatch, production_root=_THIS_FILE_ROOT, witness=_driver()
+            )
+
+        # ...and the controls' OWN witness, which does execute from here, arms fine.
+        assert _install_guard_aimed_at_this_file(monkeypatch).armed
+
+    def test_a_clean_verdict_requires_OBSERVATIONS(self) -> None:
+        """**"No escapes" having seen NOTHING is blindness wearing cleanliness.**
+
+        The poison state, stated exactly: ``escapes == []`` and ``observed == set()`` in a
+        flow that provably called the SDK. It must not be assertable as a pass.
+        """
+        blind = GuardReport(
+            escapes=[],
+            observed=set(),
+            armed=True,
+            watched_root=artifact_root(),
+            intercepted=7,  # it SAW seven SDK calls and attributed none of them
+        )
+        with pytest.raises(GuardCannotSubstantiate) as refusal:
+            blind.require_observations("driving a flow that provably calls the SDK")
+        assert "BLINDNESS" in str(refusal.value)
+
+        # POSITIVE CONTROL: a report that DID see production is not refused — or the check
+        # is an unconditional raise and discriminates nothing.
+        seeing = GuardReport(
+            escapes=[],
+            observed={"store/_txn.py:1092 in _attempt()"},
+            armed=True,
+            watched_root=artifact_root(),
+            intercepted=7,
+        )
+        seeing.require_observations("driving a flow that provably calls the SDK")
 
 
 # ===========================================================================

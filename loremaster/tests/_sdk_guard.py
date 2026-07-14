@@ -130,7 +130,26 @@ SDK_CONNECTION_CLASSES = (
 # Receipt: ``scratchpad/blindreader2/probe_bootstrap.py``.
 SAFE_CONNECTION_METHODS = frozenset({"signin", "close"})
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "loremaster"
+
+class GuardCannotSubstantiate(RuntimeError):
+    """The guard was asked for a verdict it has no evidence for. (finding #136)
+
+    A gate must never return a verdict it cannot back. Two ways it could:
+
+    * **It watches a root no code executes from.** Then no frame is ever classified as
+      production, it observes NOTHING, and "no escapes" is TRUE the way "no unicorns
+      escaped" is true. That state was REACHABLE and REACHED: in an out-of-tree copy of
+      the repo, the watched root was derived from the TEST FILE's path while ``loremaster``
+      imported from the original checkout (an editable install's ``.pth`` names an absolute
+      path). The three positive controls went RED — and every "no escapes" assertion beside
+      them stayed GREEN, which is the whole disease in one line.
+    * **It reports clean having seen nothing at all**, in a flow that provably calls the SDK.
+      That is BLINDNESS wearing cleanliness. :meth:`GuardReport.require_observations` is how
+      a caller refuses it.
+
+    Both now RAISE. A green this guard reports is a green it can substantiate, or it is not
+    a green at all.
+    """
 
 
 @dataclass(frozen=True)
@@ -151,6 +170,26 @@ class GuardReport:
     escapes: list[SdkEscape]
     observed: set[str]
     armed: bool
+    watched_root: Path | None = None
+    intercepted: int = 0
+
+    def require_observations(self, flow: str) -> None:
+        """Refuse a "no escapes" verdict this report cannot substantiate. (#136)
+
+        Call this before asserting cleanliness on a flow that PROVABLY calls the SDK.
+        Zero production observations there does not mean the code was clean — it means the
+        guard never saw the code at all, and its silence is worth nothing.
+        """
+        if self.observed:
+            return
+        raise GuardCannotSubstantiate(
+            f"the guard observed ZERO production SDK calls while {flow} — a flow that "
+            f"provably makes them. It intercepted {self.intercepted} SDK call(s) in total "
+            f"and attributed NONE of them to production code under the watched root "
+            f"{self.watched_root}. A 'no escapes' verdict here is BLINDNESS, not "
+            "cleanliness, and a gate must never return a verdict it cannot substantiate "
+            "(finding #136)."
+        )
 
 
 def _driver() -> Any:
@@ -160,8 +199,74 @@ def _driver() -> Any:
     return getattr(_txn, "retry_on_conflict", None)
 
 
-def install(monkeypatch: Any, *, production_root: Path = PACKAGE_ROOT) -> GuardReport:
+def artifact_root() -> Path:
+    """The directory ``loremaster`` ACTUALLY EXECUTES FROM — asked of the IMPORTED module.
+
+    Never derived from this file's path. The guard judges a frame by its
+    ``co_filename``, so the root it compares against must come from the same place the
+    interpreter gets that string: the module it imported. Those two answers are identical
+    in the checkout and DIFFERENT in an out-of-tree copy, where the tests are collected
+    from the copy while an editable install's ``.pth`` imports ``loremaster`` from the
+    original tree (finding #136). Deriving the root from ``__file__`` there aimed the guard
+    at a directory nothing executes from — and it reported "no escapes" about it.
+    """
+    import loremaster
+
+    location = loremaster.__file__
+    if location is None:  # a namespace package: no __init__, nothing to execute
+        raise GuardCannotSubstantiate(
+            "the imported `loremaster` package has no __file__, so the guard cannot know "
+            "where production code executes from and cannot judge a single frame."
+        )
+    return Path(location).resolve().parent
+
+
+def _witness_file(witness: Any) -> Path:
+    """The file the witness EXECUTES from, as a stack frame would report it."""
+    code = getattr(witness, "__code__", witness)
+    return Path(code.co_filename).resolve()
+
+
+def _require_a_root_the_code_runs_from(production_root: Path, witness: Any) -> None:
+    """The guard's arm-time precondition: the code it must judge lives under the root it
+    watches. If it does not, no frame can EVER match and every verdict is vacuous — so it
+    raises here instead of certifying nothing at all. (finding #136)
+    """
+    executes_from = _witness_file(witness)
+    if executes_from.is_relative_to(production_root):
+        return
+    name = getattr(witness, "__qualname__", repr(witness))
+    raise GuardCannotSubstantiate(
+        f"the runtime SDK guard is watching {production_root}, but `{name}` — code it must "
+        f"be able to see — executes from {executes_from}. No frame of it can ever match the "
+        "watched root, so the guard would observe ZERO calls and report 'no escapes' for a "
+        "reason that has nothing to do with the code being correct.\n\n"
+        "That verdict would be VACUOUS, and a gate must never return a verdict it cannot "
+        "substantiate (finding #136).\n\n"
+        "USUAL CAUSE: the suite is running from an OUT-OF-TREE COPY whose `.venv` still "
+        "carries an editable install pointing at the original checkout, so `loremaster` "
+        "imports from there and NOT from the tree you are editing. Re-sync the copy's venv "
+        "(`uv sync --reinstall-package loremaster`), or run the suite in the tree the venv "
+        "points at."
+    )
+
+
+def install(
+    monkeypatch: Any,
+    *,
+    production_root: Path | None = None,
+    witness: Any = None,
+) -> GuardReport:
     """Arm the guard for the current test. Returns the (live) report it fills in.
+
+    ``production_root`` defaults to :func:`artifact_root` — where the imported package
+    executes from, never where this file happens to sit on disk.
+
+    ``witness`` is the code the guard must be able to SEE under that root; it defaults to
+    the retry driver, which is production code by definition. Aiming the guard somewhere
+    else (the controls aim it at their own test file) therefore REQUIRES naming the code
+    you expect it to watch — and if that code does not execute from there, arming RAISES.
+    You cannot ask this guard to watch a directory and then be told nothing happened there.
 
     ``armed=False`` when the shared driver does not exist yet: pre-build there is nothing
     to be "inside", so every call would be an escape and the whole suite would go red for
@@ -174,8 +279,12 @@ def install(monkeypatch: Any, *, production_root: Path = PACKAGE_ROOT) -> GuardR
     if driver is None:
         return report
 
+    watched = (artifact_root() if production_root is None else production_root).resolve()
+    _require_a_root_the_code_runs_from(watched, driver if witness is None else witness)
+    report.watched_root = watched
+
     driver_code = driver.__code__
-    root = str(production_root)
+    root = str(watched)
 
     def _judge() -> tuple[bool, str | None]:
         """``(allowed, site)`` for the call happening RIGHT NOW.
@@ -193,7 +302,7 @@ def install(monkeypatch: Any, *, production_root: Path = PACKAGE_ROOT) -> GuardR
         if not filename.startswith(root):
             return True, None
         site = (
-            f"{Path(filename).relative_to(production_root).as_posix()}"
+            f"{Path(filename).relative_to(watched).as_posix()}"
             f":{immediate.f_lineno} in {immediate.f_code.co_name}()"
         )
 
@@ -210,6 +319,7 @@ def install(monkeypatch: Any, *, production_root: Path = PACKAGE_ROOT) -> GuardR
         # is gone — so `asyncio.gather(connection.query(...))` was invisible while the
         # identical direct call was caught. One keyword.
         def _guarded(self: Any, *args: Any, **kwargs: Any) -> Any:
+            report.intercepted += 1  # EVERY call, whoever made it: the guard's own reach
             allowed, site = _judge()
             if site is not None:
                 report.observed.add(site)
