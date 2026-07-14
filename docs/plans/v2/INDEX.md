@@ -34,16 +34,22 @@ HERE now** — a packet session must not need to read them.
   design) → 26a+ (onboarding build); 27 (cross-tier compare) rides ∥. Live-DB
   introspection stays with odoo-dev by design.
 
-## State of record (verified 2026-07-14)
-- Branch `feat/surreal-unification` @ **8836baf** (not pushed). Full suite at last
-  lead-run: **5385 passed / 0 failed** (`-n auto`, the standing runner).
-- Deployed: lore-lore (:9202) runs an image baking clean HEAD (byte-verified at
-  82a4ef1; 77b2486f733a at verification — a snapshot, not a pin); DI (:9201) is
-  on-demand and picks up the latest image on next start. 15-tool surface (lore_comms
-  landed C1); cosine substrate live; floor **0.50649** (4-group survey + drift
-  trigger); P7→P8d′, SLATE S1–S7, the closure wave, PKT-06/C0, PKT-28 C1, and the
-  #102 retry-substrate chain all CLOSED. Hashes here are as-of-verification snapshots;
-  the authoritative deployment check is always RELATIVE (protocol, Boot 4).
+## State of record (verified 2026-07-14, after packet 01)
+- Branch `feat/surreal-unification` @ **5053bb0** (not pushed). Full suite at last
+  lead-run: **5551 passed / 0 failed** (`-n auto`, the standing runner); skill suite
+  **89 passed**; mypy 0 / 141 files; ruff clean.
+- Deployed: **BOTH containers recreated on an image baking HEAD** — lore-lore (:9202)
+  and DI (:9201). The deploy now GATES ITSELF: `verb_start` runs an artifact probe
+  (required container binaries, derived from source) + a workspace-honesty probe
+  (a watched root with a `.git` MUST serve a non-null branch), on all three start
+  paths; a failure STOPS the deploy. Live receipt: `container binaries OK (git)` ·
+  `workspace honesty OK (1 watched root(s) served)` on both. `lore_index()` serves
+  `git_branch: feat/surreal-unification` + the real ref.
+  15-tool surface; cosine substrate live; floor **0.50649** (STALE — measured over 214
+  files, now 291; #87, packets 10/11); P7→P8d′, SLATE S1–S7, the closure wave,
+  PKT-06/C0, PKT-28 C1, the #102 retry-substrate chain, and **packet 01** all CLOSED.
+  Hashes are as-of-verification snapshots (image `6d599942cc69`); the authoritative
+  deployment check is always RELATIVE (protocol, Boot 4).
 - Standing eval bar: **35-pair set, pinned claude-sonnet-4-5-20250929, client metrics**
   (accuracy ≥33/35 · tokens-per-correct ≈1375-era · taxed-calls ≈0). 11-pair calls-leg
   retired. Last receipts: 33/35 · 6.46 calls · 1440.8 tok (2026-07-07).
@@ -121,8 +127,8 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 
 | # | Packet (file) | was | Wave | Size | Depends on | Status |
 |---|---------------|-----|------|------|-----------|--------|
-| 01 | ledger-triage + lore_index watched-path/branch line | PKT-29 | pre | 0.15 | — | open — **FIRST** |
-| 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.20 | — | **NEXT after 01** |
+| 01 | ledger-triage + lore_index watched-path/branch line | PKT-29 | pre | 0.15 | — | **DONE 2026-07-14** (image 6d599942cc69, both containers) |
+| 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.20 | — | **NEXT** |
 | 03 | comms-message-graph (send/drain/ack, seq) | PKT-28 C2b | C | 0.25 | 02 | open |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
 | 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121) | PKT-28 C3 | C | 0.30 →split | 04 | open |
@@ -181,7 +187,12 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
    reshaped (replay semantics move into the N3 driver); packet 36's fork dissolved. DESIGN-LAW §14 carries
    the ruling. v0.3 ledger files stay frozen as the migration import source until
    post-soak.
-5. **#49 instructions sizing** (575 tok vs plan ~350; full surface 8,245 claude-equiv vs ~2.5k estimate). REC: ACCEPT — the 35-pair bar is the arbiter. **Packet 01 presents this for ruling.**
+5. ~~#49 instructions sizing~~ **RULED (operator, 2026-07-14): ACCEPT the overage.** The arbiter is the
+   35-pair bar, not a token target. ⚠ Both circulating figures were STALE RUMORS: the INDEX said 575, #49's
+   body said ~538 — **MEASURED 2026-07-14 it is 717 Claude tokens / 1743 chars** (both predated the 14→15
+   tool surface). AND the bar that justifies ACCEPT has never been run against that surface (last receipt
+   2026-07-07; lore_comms landed 2026-07-12) — operator-agreed re-run rides pool item 20 / ledger row
+   73516abe.
 6. **detail_level reshape** (§5 `detail: refs|signatures|source`) — ruled out of P8d; place in packet 28 or REJECT.
 7. **T7** search default budget 1100→~1600 · **T8** `memories=` param (possibly mooted by T3) · **T9** re-expose what_imports/tests_for (NOT recommended; only if the bar re-misses) — docs/design/2026-07-06-p8dprime-fix-specs.md:480-491.
 8. **D4 rename** served fused `score` → `fusion_rank` (ledgered at weak-match close). Fits packet 09 if approved.
@@ -190,7 +201,9 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
 11. **Watcher skip-path posture** ack (store blip during live-drain skip kills the watcher worker — P8e-RESUME item 3).
 12. **Spectron**: waitlist standing; backend re-decision on invite (spike list in MASTER-PLAN §6 P7).
 13. **DI doc-content import** (DECISIONS.md/GOTCHAS.md → kind-tagged memories) — separate content migration, schedule ad hoc.
-14. **#55 investigation row**: fresh-session ToolSearch can't resolve lore tools (2nd recurrence) — dedicate a row. **Packet 01 mints it (pairs with #22).**
+14. ~~#55 investigation row~~ **MINTED by packet 01** (row a6f38fc0, pairs #22 + #55): fresh-session
+    ToolSearch can't resolve lore tools. NB it resolved FINE this session with a healthy container — the
+    failure is INTERMITTENT, which is the hardest shape and why it has recurred twice unrooted.
 15. **Upstream report** of the mcp-builder TextContent serialization bug (docs/eval/2026-07-04-p8a-baseline.md:123).
 16. ~~Response/render caching~~ **RULED (operator, 2026-07-11):** flavor (a) render
     memoization DROPPED — no latency need at this time; do not build. Flavor (b)
@@ -385,3 +398,44 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   byte-verified). Law added to protocol Boot 4: entry checks assert relative facts (deployed
   ⊇ cited commits), never pinned snapshots; packet 01 + state-of-record amended. Packet 01
   proceeding (Opus session, first KICKOFF.md boot — STOP-and-surface worked as designed).
+- 2026-07-14 · **PACKET 01 DONE + DEPLOYED** (image `6d599942cc69`, BOTH containers; 13 commits
+  `3415041`→`5053bb0`; suite **5551/0**, skill **89**, mypy 0, ruff clean). Ledger triage: open
+  findings **60+ → 0** (18 resolved w/ receipts, 46 acknowledged with an INDIVIDUAL destination
+  note, 7 dead task rows closed, #22+#55 investigation row minted). **#125 honesty line LIVE:**
+  `lore_index()` serves each watched root + its real git branch/ref, the served INSTRUCTIONS tell
+  agents to look, and the DEPLOY now gates the ARTIFACT (binaries + non-null branch) on all three
+  start paths — it would have REFUSED the old image.
+  **#131 — git was NEVER IN THE IMAGE.** `capture_git_identity` shells out; the binary was absent,
+  the OSError was swallowed into a silent `(None, None)`, so EVERY production snapshot's git_ref
+  has been empty for months, invisible because no render shows it. The honesty line would have
+  shipped as `branch: null` in the only environment it exists for — #107's shape exactly (the
+  fixture guarantees the one condition under which the bug is invisible: tests run where git EXISTS).
+  **THE EXEC-SEAM CHAIN — three scanners, and the lesson is the lead's, not a model's.** The image
+  gate must derive which binaries the shipped code execs. v1 keyed on receiver NAMES → beaten by 4
+  shapes (**an OPUS contract author wrote it**). v2 went binding-aware → closed those, opened 4 more,
+  **3 REGRESSIONS** incl. one that LOST a binary v1 found (**a SONNET builder designed it — because
+  the LEAD briefed a DESIGN problem as a build task**). v3 held: **receiver-blind deny + ALLOWLIST
+  THE SAFE** (one sanctioned exec seam), designed by an Opus author who BUILT and ATTACKED its own
+  design (2 of its own 23 invented shapes broke its first attempt). **The variable was never the
+  model — it was the frame.** → OPERATOR RULING: roster is **OPUS END TO END**, and **a DESIGN
+  problem never reaches a builder** (CLAUDE.md + protocol §Roster). Corollary: when a defect class
+  survives TWO waves, STOP briefing a third fix and escalate the DESIGN.
+  **NEW LAW SHIPPED — WHEN YOU CANNOT CLOSE A HOLE, PIN IT.** #137 (a third-party dep that spawns is
+  invisible to any AST scan of our source) and #138 (4 obfuscation doors, kept open because closing
+  them taxes honest code) are pinned by tests that ASSERT THE MISS and go RED if anyone closes them.
+  A bound that is pinned is met deliberately; an unpinned limitation is indistinguishable from an
+  unknown one. Both carry the THREAT MODEL nobody had written down: this gate is for the HONEST
+  developer, NOT a boundary against a hostile author — *"a gate that refuses honest code is a gate
+  that gets switched off, and then #131 happens again with nothing watching at all."*
+  New: **#129** (an acknowledged finding is ANNOTATION-FROZEN — ack→ack illegal, only resolve/wontfix
+  carry notes; it blocked this very triage) · **#130** (lore_tasks `status=open` serves SUPERSEDED rows
+  the claim CAS refuses) · **#132** (git present but REFUSING — uid mismatch → exit 128 → the same
+  silent null; installing git is necessary, NOT sufficient) · **#133** (a satisfiability receipt that
+  skips the PRE-EXISTING suites the change's seam touches is not a receipt — it trapped a builder) ·
+  **#134** (worktree mounts cannot deploy: `.git` is a FILE naming a host gitdir outside `/workspace`
+  → packets 17/23) · **#135** (subdir-of-a-repo: host and container disagree, silently) · **#136**
+  (⚠ **the #102 runtime SDK-escape guard is BLIND out-of-tree** — its 3 POSITIVE CONTROLS fail in any
+  copy while its "no escapes" verdicts stay GREEN. Packets 17/23 make worktrees first-class; that is
+  exactly the shape that breaks it. Route to the #102/#120 owner BEFORE 17). Pool 5 RULED (#49 ACCEPT;
+  the block is **717 tok MEASURED**, not the 575/538 rumors — and the eval bar justifying it predates
+  the 15-tool surface: re-run ledgered, row 73516abe). NEXT = **packet 02** (#104 render architecture).
