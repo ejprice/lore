@@ -279,3 +279,8 @@ authorization models stabilize** — hence wave G's internal order.
   drains under N-way contention — a worktree kickoff prompt exists; blocks `message.seq`) ·
   then #103 (heartbeat generalization, spec v8 ruled) · #105 (dangling-edge landmine) · #100
   (`created_by` identity split) · #101 (log-capture isolation). NEXT = PKT-28 **C2**.
+- 2026-07-14 · **#102 CHAIN CLOSED** (#33→#102→#122, + #108 #120): ONE retry seam
+  (`retry_on_conflict`/`bootstrap_session`/`run_query`, eleven hand-rolled copies deleted)
+  merged @ 634da1c (9d29111 code · b649f28 law · f72beeb reference); suite **5385/0** `-n auto`,
+  399-pin contract, 20/20 concurrency. Trail: adversary→satisfiability gate born, 2 cold audits,
+  2 blind reads. C2 `message.seq` = native sequence (task f86af162). NEXT = **C2** (step 0 #104).
