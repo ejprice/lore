@@ -5,6 +5,23 @@ the ``capture_git_identity`` seam shells out to. It did NOT, and so the git-deri
 (``lore_index()``'s watched-root branch, every snapshot's ``git_ref``) were a silent ``None``
 in production for three months while every test on a git-having host stayed green.
 
+THE THREAT MODEL — who this gate is for, and who it is NOT for
+--------------------------------------------------------------
+It is for the **HONEST DEVELOPER** who adds a shell-out while the image silently lacks the
+binary. That is #131 verbatim, and it is the only failure this instrument has ever actually
+suffered: a seam shelled out to a ``git`` the image did not carry, the ``OSError`` was
+swallowed into a silent ``(None, None)``, and no test could see it, because tests run on a
+dev host that HAS git.
+
+It is **NOT** a security boundary against a **HOSTILE** author. Anyone who can commit to this
+repo can already ship anything they like, with or without this scan. So *"a clever attacker
+gets through"* is not a defect for this gate, while *"an honest engineer's shell-out goes
+unnoticed"* is — and that distinction decides what gets closed. A door an honest author could
+plausibly walk through is closed even at a cost. A door that only opens for deliberately
+unusual code is LEDGERED as a bound (below, finding #138) rather than paid for in false
+positives on shipped modules that are doing nothing wrong: a gate that refuses honest code is
+a gate that gets switched off, and then #131 happens again with nothing watching at all.
+
 ONE SANCTIONED EXEC SEAM
 ------------------------
 No shipped module may reach a process spawner AT ALL, except an explicit allowlist —
@@ -24,11 +41,14 @@ So the posture is inverted, per this repo's standing law (*"the forbidden set is
 the SAFE set is small and enumerable — allowlist the safe"*):
 
 * **The DENY side over-approximates and fails LOUD.** Outside the seam this scan does not try
-  to recognise HOW a module reaches a spawner — only that it MIGHT. Any doubt is a refusal
-  naming ``file:line``. A false positive is CHEAP and CORRECT: a human either sanctions the
-  module (a visible, reviewed edit to the allowlist) or routes it through the seam. **Erring
-  loud is the design.** It is what ends the shape game — an evading shape in a non-sanctioned
-  module still trips a detector that is not trying to be clever.
+  to recognise HOW a module reaches a spawner — only that it MIGHT. Every reach the scan can
+  SEE is a refusal naming ``file:line``, whether or not the module goes on to use it. A false
+  positive is CHEAP and CORRECT: a human either sanctions the module (a visible, reviewed edit
+  to the allowlist) or routes it through the seam. **Erring loud is the design.** It ends the
+  shape game for the honest author — there is no ordinary way to write a shell-out that this
+  does not see, and a shape invented to slip past it in a non-sanctioned module still trips a
+  detector that is not trying to be clever. What the scan CANNOT see it cannot refuse; those
+  reaches are named below, not hidden.
 * **The RESOLVE side is precise, and lives ONLY inside the seam.** We cannot demand a
   canonical, readable form of the whole codebase. We can demand it of ONE file. Inside it,
   ``argv[0]`` resolves to a literal or the scan fails loud.
@@ -46,10 +66,34 @@ An empty set is not, in itself, the danger — the CAUSE is:
 * the shipped packages genuinely exec nothing → a legitimate ``frozenset()``, which the
   deploy reports in words.
 
-KNOWN BOUND (ledgered, not fixed): a THIRD-PARTY dependency that spawns on our behalf
-(``plumbum``, ``pexpect``, ``GitPython``) is invisible to an AST scan of our own source.
-Closing it means scanning site-packages, which would make the deploy demand every binary
-every dependency can reach. We ship no such dependency today.
+KNOWN BOUNDS (ledgered, not fixed — the perimeter has edges, and they are NAMED)
+--------------------------------------------------------------------------------
+The deny side refuses every reach it can SEE: an import of a spawn-capable module (plain,
+aliased, dotted, star, by-name); a name from the ``os``/``asyncio`` spawn API, on any
+receiver; a spawn-capable module NAMED as an identifier without being imported — which is how
+a module reaches the SEAM's own re-exported ``subprocess`` (``snapshots.subprocess.run(...)``),
+the one door an honest author could plausibly hit; the import machinery; and the namespace
+doors it can follow (``os.__dict__``, ``getattr(os, ...)``, ``sys.modules``, on names the
+module imported). That is not everything, and this docstring will not pretend it is — the two
+bounds below survive BY DESIGN, and a future author is meant to meet them deliberately rather
+than rediscover them in the next audit:
+
+* **A THIRD-PARTY dependency that spawns on our behalf** (``plumbum``, ``pexpect``,
+  ``GitPython``) is invisible to an AST scan of our own source. Closing it means scanning
+  site-packages, which would make the deploy demand every binary every dependency can reach.
+  We ship no such dependency today (finding #137, pinned).
+* **DYNAMIC REACH that never names a primitive at all** (finding **#138** — cold-audited,
+  operator-ruled): the spawner is fetched through a STRING KEY or a rebound builtin, so no
+  ``Name``/``Attribute`` in the source names it. ``from sys import modules`` →
+  ``modules["subprocess"]``; ``s = sys`` → ``s.modules[...]``; ``fetch = getattr`` →
+  ``fetch(os, "system")``; ``globals()["__builtins__"]["__import__"]("subprocess")``. These
+  four are OPEN, deliberately. Refusing them receiver-blindly would refuse four shipped
+  modules that use ``getattr``/``vars``/``globals``/``sys.modules`` legitimately, and would
+  buy nothing against the only actor this gate is for: nobody reaches a spawner through
+  ``sys.modules`` by accident. The bound is PINNED
+  (``loremaster/tests/test_shellout_seam_perimeter.py``) — those pins ASSERT THE MISS and go
+  RED the day a build closes a door, so the trade is re-opened on purpose, with the false-
+  positive cost paid knowingly, or not at all.
 
 This is the SOLE authority for the derivation (repo standing law, "ONE IMPLEMENTATION"):
 both the repo's own contract (``loremaster/tests/test_shellout_allowlist.py``) and the
@@ -200,12 +244,29 @@ def _verdict(relative: str, lineno: int, why: str) -> UnresolvedExecSiteError:
 
 
 def _deny_identifier(identifier: str, relative: str, lineno: int) -> None:
-    """Refuse a bare name or attribute that IS a spawn / import-machinery primitive.
+    """Refuse a bare name or attribute that IS a spawn module / spawn / import-machinery primitive.
 
     Receiver-blind on purpose: ``anything.system(...)`` is refused on the strength of
     ``system`` alone. v1 keyed on the receiver names, and the repo's instrument table records
     the result — *"a gate keyed on 2 receiver names, defeated by six other doors."*
+
+    The module-NAME rule (finding #138) is the same posture one level up. Outside the seam,
+    an import of ``subprocess`` already refuses — so a module that merely NAMES it can only be
+    holding it through some OTHER namespace, and the sanctioned seam re-exports every spawner
+    it imports (``snapshots.subprocess.run(...)``). Denying the name costs zero false
+    positives: across the shipped tree, the only ``Name``/``Attribute`` nodes naming a
+    spawn-capable module are the seam's own, and the seam is resolved, never denied.
     """
+    if identifier in _SPAWN_CAPABLE_MODULES:
+        raise _verdict(
+            relative, lineno,
+            f"names the process-spawn module {identifier!r} without importing it (an import "
+            f"would already have been refused) — so it is reaching one through ANOTHER "
+            f"module's namespace, and the sanctioned exec seam re-exports every spawner it "
+            f"imports. The scan cannot follow a spawner across a namespace: route the "
+            f"shell-out through the seam itself, or sanction this file and install its binary "
+            f"in the image",
+        )
     if identifier in _SPAWN_PRIMITIVES:
         raise _verdict(
             relative, lineno,
@@ -292,11 +353,16 @@ def _deny_namespace_doors(tree: ast.Module, relative: str, imported: set[str]) -
 
 
 def _deny_spawn_capability(tree: ast.Module, relative: str) -> None:
-    """A module outside the seam may not reach a process spawner. Any doubt is a refusal.
+    """A module outside the seam may not reach a process spawner — by any route the scan SEES.
 
     Deliberately blind to the RECEIVER and to the CALL SHAPE: the verdict is a function of the
     CAPABILITY reaching this module, never of what it then does with it. That is what makes
-    the shape game unwinnable — there is nothing here for a clever shape to evade.
+    the shape game unwinnable for an HONEST author — no ordinary spelling of a shell-out is
+    invisible here, and a refusal costs a human one ruling. It is not unwinnable for a
+    determined one, and this docstring will not claim it is: a reach that names no primitive
+    at all (a spawner fetched by STRING KEY through ``sys.modules``, a rebound ``getattr``)
+    is not seen, and what is not seen is not refused. Those four reaches are a ledgered bound
+    — see the module docstring's KNOWN BOUNDS, finding #138 — not an oversight.
 
     Args:
         tree: The module's parsed AST.
