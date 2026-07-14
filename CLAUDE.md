@@ -434,18 +434,24 @@ Three separate instruments have now been fooled by this, in three different dire
 
 **THE LAW: any scratch copy, reference build, or isolated run ASSERTS ITS OWN PROVENANCE before it is
 trusted.**
-```python
-assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_ROOT), "you are grading the ORIGINAL tree"
+```bash
+./scripts/scratch_copy.sh /abs/path/to/copy    # excludes the poison, uv syncs, ASSERTS provenance (non-zero if poisoned)
 ```
+**Use the tool** — a recipe re-derived in every brief is a defect generator; `scratch_copy.sh` is the
+recipe as ONE call that fails loud rather than handing back a poisoned copy. If you must roll your own,
+assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_ROOT)`.
 - **Every agent doing a scratch mutation proof PRINTS `loremaster.__file__` in its report as a
   receipt.** Packet 01's exposure was NIL only because the careful agents did this voluntarily
   (PYTHONPATH-shadowed + verified) or mutated the real tree with a content backup. **That was the habit
-  working, not the tooling** — and the next session may not have the habit.
+  working, not the tooling** — now the tool exists, so the habit is `scratch_copy.sh`.
 - **This is the same law as #136's fix, one level up:** a gate must never return a verdict it cannot
   substantiate, and "I tested it" is a verdict about a TREE. If you cannot name the tree, you have not
   tested anything.
-- ⚠ UNVERIFIED: `uv sync --reinstall-package loremaster` inside a copy did NOT repair the import in the
-  fixer's probe. Treat any remediation recipe as unproven until someone measures it.
+- **THREE poison modes, all measured (#140):** (1) the copied venv's editable `.pth` names an ABSOLUTE
+  original path → `import loremaster` resolves home; (2) `cp -a` preserves mtimes → the stale
+  `__pycache__` carries the original `co_filename`; (3) a plain `uv sync` in a copy installs NO
+  workspace members → `import loremaster` succeeds as an empty NAMESPACE PACKAGE with `__file__ = None`
+  and no production code loads. `scratch_copy.sh` closes all three (`--all-packages`, not a plain sync).
 
 ## Orchestration (multi-agent phases)
 - The lead writes no code — tests included. Ladder: ground-truth verify → TaskStop →
