@@ -1,5 +1,6 @@
 # 39 — Hosted security for the split topology (design first) (formerly PKT-21)
 size ~0.30 wu →split at kickoff (sizing law) · wave S, LAST (re-waved 2026-07-14; REQUIRED before any off-LAN exposure) · depends: packet 35 (external-review ordering) · gates packet 41's exposure story
+lead: **Opus + Fable design sidecar** for the threat-model/design leg (operator roster 2026-07-14 — INDEX; sidecar mechanics in repo CLAUDE.md → Orchestration)
 law: DESIGN-LAW §12 · driver: LORE_EXTERNAL_REVIEW.md gap 5 · DEPLOY: per design outcome
 
 ## Mission

@@ -1,5 +1,6 @@
 # 35 — Trace deepening + the trace_monitor backstop (formerly PKT-20)
 size ~0.30 wu →split at kickoff (sizing law) · wave F, LAST (re-waved 2026-07-14; external-review ordering preserved: traces before security/UI — this packet gates waves S and G) · depends: v1.0
+lead: **Opus + Fable design sidecar** for the record/aggregate design leg (operator roster 2026-07-14 — INDEX; sidecar mechanics in repo CLAUDE.md → Orchestration)
 law: DESIGN-LAW §1 (client law), §8 (pull-only) · spec: MASTER-PLAN §3 (friction backstop) + LORE_EXTERNAL_REVIEW.md gap 3 · DEPLOY: yes
 
 ## Mission

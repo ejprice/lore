@@ -281,8 +281,10 @@ them. Therefore:
   for, and nothing else. Delegate frontier-generation to the contract adversary rather
   than relying on the lead to enumerate it.
 - **CONTRACT AUTHORS ARE OPUS (operator, 2026-07-12).** Roster: **Opus contract authors**
-  · Sonnet builders · Opus contract-adversary · Opus cold code-audits · Fable lead + design
-  consultant. Rationale, measured: the contract is where the thinking is and where the
+  · Sonnet builders · Opus contract-adversary · Opus cold code-audits · lead: **Opus by
+  default (operator-AMENDED 2026-07-14** — Fable is the long-running design sidecar +
+  escalation valve only; mechanics in Orchestration below, per-packet assignments + the
+  escalation triggers in the INDEX roster). Rationale, measured: the contract is where the thinking is and where the
   defects are born, and Sonnet contracts kept shipping the same *class* of gap — small-N
   fixtures that cannot discriminate. Twice: (1) the #94 contract went green (561 passed,
   exit 0) with the defect fully intact — every pin tested a new method *nothing required
@@ -320,6 +322,26 @@ them. Therefore:
 ## Orchestration (multi-agent phases)
 - The lead writes no code — tests included. Ladder: ground-truth verify → TaskStop →
   respawn fresh (never reuse a teammate name).
+- **LEAD MODEL (operator, 2026-07-14): OPUS orchestrates packets by default — Fable
+  context is never spent on agent management.** Fable appears in exactly two shapes:
+  the design sidecar on the INDEX-marked design packets (10/17/25/33/35/39), and the
+  escalation valve on the INDEX-named triggers (two failed fix-waves at one gate ·
+  production-touching surprise · unresolvable spec ambiguity · NO-GO with cross-packet
+  residuals). The safeguards that once demanded a heavier lead are procedural law the
+  lead RUNS, not IS.
+- **THE FABLE-SIDECAR PATTERN (operator, 2026-07-14):** spawn ONCE per session as a
+  **general-purpose agent — NEVER a fork** (forks inherit orchestrator identity; memory:
+  orchestration-fork-and-path-hazards) — and keep it **LONG-RUNNING for the whole
+  packet** so follow-up questions answer from already-loaded context instead of
+  re-reading the world. Front-load the spawn brief: the design question, the exact file
+  pointers (spec, packet, DESIGN-LAW sections, relevant findings), and the standing
+  instruction to STAND BY for follow-ups after each answer. Follow-ups travel via
+  SendMessage — sanctioned HERE because a standing-by consultant is AT REST between
+  questions (the one shape inbox delivery is reliable for); its reply is its receipt.
+  Its idle-between-questions state is BENIGN — never wake-loop it, and exempt it from
+  the idle-gate until its design doc is owed. Never respawn per question; if it must be
+  respawned, suffix the name (standing law). Its output is a DOC + recommendation —
+  the operator rules; the consultant decides nothing.
 - Directives travel ONLY in fully-front-loaded spawn briefs; the inbox is advisory
   both directions; proof of receipt is the recipient's artifact (or its process on
   the process table). An idle agent with a live gate-pytest + self-watcher is the

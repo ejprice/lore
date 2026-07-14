@@ -29,7 +29,8 @@ a contentless wake signal only, never a source of truth.
 5. Graph: lean in — `blocks` dependency edge; delivery + brief acks as stateful RELATE edges.
 6. Append-only struck as a requirement — remaining immutability is a strikeable design choice.
 7. Roster: Sonnet 5 builders except the C3 await/LIVE leg (Opus 4.8); cold audits Opus 4.8;
-   lead Fable writes no code; drill teammates Sonnet 5.
+   lead Fable writes no code; drill teammates Sonnet 5. **(Lead AMENDED 2026-07-14, operator:
+   OPUS leads packets 02–06 — INDEX roster; the lead-writes-no-code law is unchanged.)**
 8. SurrealDB 3.1 audit adopted (Opus scout): DEFINE SEQUENCE replaces a hand-rolled counter;
    UNIQUE-on-edge unbanned (≥3.1.0, #7061 fixed); recursive traversal idiom for `blocks`;
    DEFINE EVENT + CHANGEFEED considered-and-deferred.
@@ -94,7 +95,8 @@ shared reference; the step files carry scope/entry/exit and CITE this doc, never
 - **C5** — deferred, no ruling yet: checkpoint/respawn workflow; per-agent auth rides packet 39.
 
 Roster: Sonnet 5 builders on C0–C2/C4; Opus 4.8 on C3's await/LIVE leg; Opus 4.8 cold audits
-every phase; Fable leads throughout.
+every phase; **Opus leads** (2026-07-14 roster ruling — Fable = design sidecar/escalation
+valve only; INDEX carries the triggers).
 
 ## Build-time probes (run in the phase that first depends on each)
 C1 — `sequence::next()` vs `sequence::nextval()` real name + first-boot seeding smoke. C2 —

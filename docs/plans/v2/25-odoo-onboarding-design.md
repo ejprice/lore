@@ -1,5 +1,6 @@
 # 25 — Odoo onboarding · DESIGN (pool item 19, scheduled 2026-07-14) (formerly PKT-32)
 size ~0.15 wu · wave O · depends: packet 24 receipts (the MRO/ORM assessment DEFINES this scope)
+lead: **Opus + Fable design sidecar** (operator roster 2026-07-14 — INDEX; sidecar mechanics in repo CLAUDE.md → Orchestration)
 law: DESIGN-LAW §4 (graph invariants), §11 (chunkers opt-in guard), §12 · driver: **replace
 the odoo-code MCP** (declared target 2026-07-11) · operator wants its own design pass
 

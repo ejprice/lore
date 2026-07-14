@@ -1,5 +1,6 @@
 # 17 — Worktree overlay · DESIGN (#125, operator-ruled first-class 2026-07-14) (formerly PKT-33)
 size ~0.15 wu · wave L · depends: none · builds: packet 23
+lead: **Opus + Fable design sidecar** (operator roster 2026-07-14 — INDEX; sidecar mechanics in repo CLAUDE.md → Orchestration)
 law: DESIGN-LAW §1 (client law — honest, cited renders), §12 · feedback law: brief the
 operator in plain language before the ruling
 

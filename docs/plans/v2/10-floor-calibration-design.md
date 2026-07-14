@@ -1,5 +1,6 @@
 # 10 — Per-corpus floor calibration · DESIGN (finding #83) (formerly PKT-01)
 size ~0.15 wu · wave L (re-waved 2026-07-14; the 2026-07-07 "first" ruling was superseded by the comms + local-first re-sequences) · depends: none
+lead: **Opus + Fable design sidecar** (operator roster 2026-07-14 — INDEX; sidecar mechanics in repo CLAUDE.md → Orchestration)
 law: DESIGN-LAW §3 (weak-match), §6 (measurement pins)
 
 ## Mission

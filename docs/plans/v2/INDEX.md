@@ -72,6 +72,21 @@ marked "→split"); every session plans ~⅓ context reserve for emergent findin
 receipts: every phase spawned follow-up waves). One packet per session — anything found
 en route is surfaced/ledgered, never absorbed.
 
+**Roster (operator-ruled 2026-07-14): the packet lead is OPUS by default — Fable context
+is not spent on orchestration.** The judgment that once demanded a heavier lead is now
+procedural law (contract-adversary, cold audits, satisfiability receipts, mutation
+proofs) that any lead RUNS rather than IS. Fable appears in exactly two shapes:
+(a) the **long-running design sidecar** on the packets whose header says
+`lead: Opus + Fable design sidecar` (10, 17, 25, 33, 35, 39 — design authorship only;
+the operator rules on its doc); (b) the **escalation valve**, on named triggers ONLY:
+two consecutive failed fix-waves at the same gate · any surprise touching production
+(:18500 or a deployed surface — the #107 class) · a spec-ambiguity escalation the packet
+cannot resolve · a cold-audit NO-GO whose residuals imply cross-packet redesign.
+Sidecar mechanics (general-purpose agent, never a fork; spawned ONCE and kept alive so
+follow-ups answer from loaded context) live in repo CLAUDE.md → Orchestration. The rest
+of the roster is unchanged law: Sonnet 5 builders · Opus contract authors · Opus
+contract-adversary · Opus cold audits.
+
 ## Sequence + status
 **Operator-ruled order (2026-07-14, local-first), numbered as it runs:** 01 ledger
 triage → 02–06 comms completion (wave C) → 07–17 local correctness (wave L:
@@ -337,3 +352,8 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   file header carries "formerly PKT-xx"). Comms phases C2a–C4 became step files 02–06 over the
   shared `comms-subsystem.md`; PKT-09 split into 14/15; insertions take letter suffixes
   (13a, 26a) — the top-level sequence never renumbers again. Log/receipts keep old ids.
+- 2026-07-14 · **ROSTER RULING (operator): OPUS leads every packet by default** — Fable =
+  long-running design sidecar on 10/17/25/33/35/39 + escalation valve on named triggers only
+  (protocol §Roster). Sidecar pattern codified in repo CLAUDE.md → Orchestration: general-
+  purpose (never fork), spawned once, standing by for SendMessage follow-ups from loaded
+  context. comms-subsystem ruling 7 + the 2026-07-12 CLAUDE.md roster line amended in place.

@@ -1,5 +1,6 @@
 # 33 — Memory reconciler + maintenance engine (operator-directed 2026-07-11) (formerly PKT-25)
 size ~0.35 wu · wave F · depends: v1.0 (deterministic tier); packet 29 loresage (LLM tier)
+lead: **Opus; Fable design sidecar at the CONTRACT-TIME autonomy fork** (operator roster 2026-07-14 — INDEX; sidecar mechanics in repo CLAUDE.md → Orchestration)
 law: DESIGN-LAW §9 (memory contract), §10 (generated-text honesty applies to proposals), §14 · TDD contract pause for the autonomy ruling · DEPLOY: yes
 
 ## Mission
