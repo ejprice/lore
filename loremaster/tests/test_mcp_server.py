@@ -1299,6 +1299,42 @@ class TestServerInstructions:
             "impact order (orient, then locate, then verify safety)"
         )
 
+    def test_instructions_teaches_that_lore_may_be_indexing_a_DIFFERENT_tree(
+        self, tmp_path: Path
+    ) -> None:
+        # Finding #125 (the honesty line), adversary §A5 — the escalation the operator
+        # ruled on 2026-07-14. Shipping the watched-root/branch field in lore_index()'s
+        # response closes #125 in the CODE and leaves it open IN PRACTICE: nothing tells
+        # an agent that lore might be indexing a DIFFERENT tree than the one it is
+        # editing, and the LADDER routes it straight to lore_map/lore_search. An agent
+        # following these instructions never calls lore_index() for that purpose — which
+        # is precisely what happened: both auditors in the #102 wave INFERRED the
+        # worktree mismatch and fell back to grep; neither called lore_index().
+        #
+        # This is the author's own pin-20 reasoning ("shipping the field while the
+        # description omits it means no agent ever learns to look") applied one level up,
+        # where every agent actually reads.
+        #
+        # Pinned LOOSELY, in this block's house style (co-occurrence on one line): a
+        # truthful REWORD keeps passing; DELETING the guidance goes RED. The block is
+        # already over its token budget (717 Claude tokens, operator-ACCEPTED), so the
+        # sentence must be TIGHT — the author keeps full editorial freedom over wording.
+        instructions = self._instructions(tmp_path)
+        teaching_lines = [
+            line
+            for line in instructions.splitlines()
+            if "lore_index" in line
+            and "branch" in line.lower()
+            and ("tree" in line.lower() or "worktree" in line.lower())
+        ]
+        assert teaching_lines, (
+            "the instructions must tell an agent that lore may be indexing a DIFFERENT "
+            "TREE than the one it is working in, and that lore_index() names the watched "
+            "root + its git BRANCH so the agent can check — one line, naming lore_index, "
+            "the tree, and the branch (finding #125: an agent in a sibling worktree must "
+            "see the mismatch BEFORE it trusts a single result)"
+        )
+
     def test_instructions_teaches_impact_ladder_authority(self, tmp_path: Path) -> None:
         # S7 (client-needs consult docs/design/2026-07-06-client-needs-
         # consult.md §S7 + Fable's "ladder authority line"): the LADDER

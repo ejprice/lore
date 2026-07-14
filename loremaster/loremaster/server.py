@@ -109,6 +109,7 @@ from loremaster.impact import _DEPTH_MIN as _IMPACT_DEPTH_MIN
 from loremaster.impact import ImpactEngine, ImpactResult
 from loremaster.index.indexer import _PYTHON_SUFFIX as PYTHON_SUFFIX
 from loremaster.index.indexer import IndexSummary
+from loremaster.index.snapshots import capture_git_identity
 from loremaster.map import _BUDGET_CAP as _MAP_BUDGET_CAP
 from loremaster.map import _BUDGET_DEFAULT as _MAP_DEFAULT_BUDGET
 from loremaster.map import _BUDGET_FLOOR as _MAP_BUDGET_FLOOR
@@ -1357,7 +1358,9 @@ _INSTRUCTIONS = (
     "FRESHNESS: a watcher indexes a save in seconds; wait_for_fresh=True "
     "races a fresh edit. lore_index() is a cheap health read; "
     "reconcile=True forces a sweep. Impact / dead_code verdicts reflect the "
-    "INDEX. lore_diff (no since = list) diffs snapshots.\n"
+    "INDEX. lore_diff (no since = list) diffs snapshots. lore may be indexing a "
+    "DIFFERENT tree than yours (a sibling worktree): lore_index() names each "
+    "watched root + its git branch — check it before trusting a result.\n"
     "\n"
     "HONEST FAILURE: a miss teaches (nearest path/name), not a bare error; "
     "empty means a genuine no-match. lore_dead_code / lore_impact verdicts "
@@ -1650,6 +1653,66 @@ class TraceSummary(BaseModel):
     latest_at: str | None = None
 
 
+class WatchedRoot(BaseModel):
+    """One live root lore is actually watching: its ABSOLUTE path + git identity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tier: str
+    path: str
+    git_branch: str | None = None
+    git_ref: str | None = None
+
+
+class WorkspaceStatus(BaseModel):
+    """The honesty line (finding #125): the tree(s) lore is ACTUALLY indexing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    roots: list[WatchedRoot] = Field(default_factory=list)
+
+
+def build_workspace_status(config: LoreConfig) -> WorkspaceStatus:
+    """Name every LIVE root lore watches, with the git identity of that same tree.
+
+    Excludes ``static`` roots (batch-indexed, frozen, never watched — listing
+    one here would be a freshness lie in the one section whose job is not
+    lying). The exclusion keys on the watch POLICY (``watch != "live"``),
+    never on the proxy "declares no path" — a static root may legally declare
+    a ``path`` too. Git identity is read from the SAME resolved tree that is
+    reported, via the shared :func:`~loremaster.index.snapshots.
+    capture_git_identity` seam (ONE IMPLEMENTATION — never a second git
+    reader here). Re-derived on every call: the watched root is a live bind
+    mount, and a cached answer would be a confidently WRONG one after a
+    checkout.
+
+    Args:
+        config: The server's live config — read from ``config.effective_roots``
+            so both documented deploy styles (an explicit ``roots:`` list, or
+            a single-tree config synthesising one root at ``project.root``)
+            are covered.
+
+    Returns:
+        The section, in root order, with no de-duplication (two tiers may
+        legally share one path).
+    """
+    roots: list[WatchedRoot] = []
+    for root in config.effective_roots:
+        if root.watch != WATCH_LIVE or root.path is None:
+            continue
+        resolved = Path(root.path).resolve()
+        git_ref, git_branch = capture_git_identity(resolved)
+        roots.append(
+            WatchedRoot(
+                tier=root.tier,
+                path=str(resolved),
+                git_branch=git_branch,
+                git_ref=git_ref,
+            )
+        )
+    return WorkspaceStatus(roots=roots)
+
+
 class IndexStatusSummary(IndexSummary):
     """``lore_index``'s return shape (P8d Wave 3 merge) — an
     :class:`~loremaster.index.indexer.IndexSummary` plus the server-level
@@ -1678,6 +1741,7 @@ class IndexStatusSummary(IndexSummary):
     newest_snapshot: AgeStatus = Field(default_factory=AgeStatus)
     traces: TraceSummary = Field(default_factory=TraceSummary)
     cosine_floor: CosineFloorStatus = Field(default_factory=CosineFloorStatus)
+    workspace: WorkspaceStatus = Field(default_factory=WorkspaceStatus)
 
 
 class DeadCodeSweepResult(BaseModel):
@@ -3826,6 +3890,7 @@ class AppContext:
             newest_snapshot=newest_snapshot,
             traces=traces,
             cosine_floor=cosine_floor,
+            workspace=build_workspace_status(self._config),
         )
 
     async def _age_status(self, meta_key: str) -> AgeStatus:
@@ -7594,7 +7659,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "former separate reindex + index-status tools into this one). With NO "
             "arguments: a CHEAP status-only read (files indexed / in-flight / failed "
             "counts, embedding-schema + calibration state, last-sync/last-sweep ages, "
-            "newest-snapshot age, per-tool trace-call aggregates) — zero embeds, NEVER "
+            "newest-snapshot age, per-tool trace-call aggregates, and the WATCHED ROOT paths "
+            "+ their git BRANCH — the tree lore is ACTUALLY indexing, so a caller in a "
+            "sibling worktree sees the mismatch) — zero embeds, NEVER "
             "sweeps. Pass reconcile=True to first force a whole-tier reconcile sweep "
             "(optionally scoped via tier) — the heavy 'make everything current now' "
             "hammer, NOT a per-file wait — THEN render the same status over the "
