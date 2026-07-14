@@ -303,35 +303,45 @@ gapless-number mechanism — and its standard footgun.
 
 **The three rules, each bought with a defect:**
 
-1. **The retry budget must derive from the RACER COUNT, not a 2-way-tuned constant.**
-   [#102, MEASURED] The findings-ledger mint shows **43% txn-exhaustion at N=8**
-   ([CODE] `findings.py:244`). A budget tuned for two writers **drains** under N-way contention.
+1. **Retry policy lives in ONE driver — never hand-roll it.** [#102/#108/#120, FIXED 2026-07-14,
+   commit 9d29111] `_txn.retry_on_conflict` owns: per-attempt **fresh full jitter drawn from the
+   process PRNG on EVERY attempt** (never cached, never derived from the contended row's identity
+   or any call parameter), a guaranteed attempt **floor**, a wall-clock **deadline** that may cut
+   retries only once the floor is met, a generous attempt **ceiling** as runaway backstop, and the
+   typed exhaustion error. `bootstrap_session` (the ONE session bootstrap, composed single budget)
+   and `run_query` (the ONE single-statement attempt body, classify-and-signal) ride it; so does
+   every `_query` seam, scout, and `execute_transaction`. A caller that routes through the driver
+   but classifies the conflict locally is a private copy wearing the shared name — **prove sharing
+   by mutation** (move the marker: every seam's pin must go red).
    > *A concurrency guarantee is only as good as the contention you have actually tested it at.*
-   > Pin hot-row mints at **≥8-way**, never 2-way.
-2. **Jitter must be unique PER RACER — never derived from the contended row's identity.** [#102]
-   That bug made every loser sleep the *same* duration and re-collide **in lockstep, forever**.
-   Derive it from something unique to the *writer* (`findings.py` uses the unique `finding_id`).
-3. **A mint failing under contention is a STOP, not "flaky".** The C1 brief mint failed ~4 of 5
+   > Pin hot-row mints at **≥8-way**, never 2-way — and structure fixtures so racer LIFETIMES
+   > overlap (repeated operations per racer); a start-line barrier synchronises Python, not the
+   > wire. Historical receipt for why: the pre-fix deterministic shared backoff measured **43%
+   > txn-exhaustion at N=8** on the findings mint.
+2. **A mint failing under contention is a STOP, not "flaky".** The C1 brief mint failed ~4 of 5
    runs, was called flaky, and shipped. **A single green run NEVER clears a concurrency test —
    require 20 consecutive.**
 
-**⚠ The shared `execute_transaction` retry has NO JITTER AT ALL.** [CODE `_txn.py:549`, verified
-2026-07-13] — the backoff is `_TXN_CONFLICT_BACKOFF_SECONDS * (attempt + 1)`: **purely
-deterministic and identical across every racer.** Its own comment claims it is *"non-zero so two
-colliding retries do not immediately re-race in lockstep"* — **non-zero but IDENTICAL *is*
-lockstep** for N>2. Budget: `_MAX_TXN_CONFLICT_ATTEMPTS = 5`. The two ledgers that survive N-way
-contention (`findings.py`, `briefs.py`) each **hand-roll their own jittered, wider budget on top**;
-the shared seam does not do this job. **This is the open substrate under #102** — anything new
-leaning on the shared seam alone for a hot row inherits the bug.
-
 **A TOCTOU read-max-then-CREATE is not a mint.** The proven shape is the **counter-row UPSERT**
-(`findings.py`, cloned into `briefs.py`). Note the `UNIQUE` index stays the **backstop**, never the
-mechanism.
+riding the shared driver. Note the `UNIQUE` index stays the **backstop**, never the mechanism.
 
-**[MEASURED]** `DEFINE SEQUENCE` / `sequence::next()` (native, clustered-safe, lock-free) is **NOT
-gapless** — values never roll back, an aborted txn **burns the number**. Fine for monotonic ids
-where gaps are OK; **not** for gapless human handles (that is why the counter-row mint stays).
-**[UNVERIFIED]** the real function name — docs disagree on `next` vs `nextval`. **Probe before use.**
+**[MEASURED 2026-07-12, probe-sequence-1] Native sequences are REAL and the correct spelling is
+`sequence::nextval("<name>")`** — `sequence::next()` and bare `sequence::nextval()` are wrong.
+Syntax: `DEFINE SEQUENCE <name> [BATCH <n>] [START <n>] [TIMEOUT <duration>];` then
+`RETURN sequence::nextval("<name>");` (defaults `BATCH 1000 START 0`, confirmed via `INFO FOR
+DB`). Contention-free measured to **32-way** (3200 calls: 100% distinct, zero gaps, zero errors)
+and **zero retryable conflicts** with `nextval` inside `BEGIN/COMMIT` alongside a `CREATE`
+(16-way × 30 × 5 runs). **NOT gapless** — an aborted txn burns the number. Fine for monotonic ids
+where gaps are OK (PKT-28 C2's `message.seq` — task f86af162); **not** for gapless human handles
+(that is why the counter-row mint stays for `finding.number` / `brief.version`).
+
+**⚠ [MEASURED, finding #124] Auto-schema table creation RACES under concurrent first-write —
+and LOSES DATA SILENTLY.** Many concurrent transactions issuing the first-ever `CREATE` against a
+table with no `DEFINE TABLE`: commits report success, yet an independent read finds rows missing
+(466–474 of 480; always each worker's first txn; zero errors surfaced). Cured completely by
+`DEFINE TABLE` before first write — which our bootstrap always does. **Every table production
+code writes to must be covered by `generate_ddl` before first write; this is load-bearing against
+silent data loss, not tidiness.** (Probes: `scratchpad/102-recovery/`.)
 
 ---
 
