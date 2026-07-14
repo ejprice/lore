@@ -121,6 +121,64 @@ Therefore, standing law:
   defaulting to `name="project"` MANUFACTURED this blind spot: every render fixture silently
   tested the one value where the lies were true. No default ⇒ every call site must choose.
 
+## ONE IMPLEMENTATION — a pattern to clone is a defect to clone (#102, operator 2026-07-13)
+The operator's question, on reading a design-law line: *"Can this just be written as a helper
+method or decorator? DRY principle."* It was the root cause, one level above the code.
+
+`DESIGN-LAW.md:75 (at 7e4f9b5)` said `findings.py::_apply_mint` *(bounded app-retry,
+**deterministic jitter**)* **"is the reference pattern for ANY new hot-row mint."** It was
+standing law. So `briefs.py` cloned it — and cloned the jitter bug, in a *different* wrong way
+(4 fixed slots vs 16; both lockstep). Beneath both, `_query` turned out to be **TEN hand-rolled
+copies of one seam, and NONE of the ten had any retry AT THE SEAM** (#120): the only retry
+anywhere near it lived one level up, in the two CALLERS just named (`findings.py::_apply_mint`'s
+16-slot jitter, `briefs.py`'s 4-slot jitter) — never in `_query` itself. **TWO POPULATIONS, not
+one** — a distinction this very paragraph got wrong on its first pass (audit-fix-1 A3,
+corroborated independently by blindreader-dry-2 F9): `scout.py` owns no `_query` at all, so a
+`_query`-keyed search cannot find it — but one level BELOW `_query`, at the SESSION BOOTSTRAP
+(`DEFINE NAMESPACE` / `use()` / `DEFINE DATABASE`), scout carries an ELEVENTH hand-rolled copy of
+*that*. Ten `_query` bodies and eleven bootstraps are two different counts; conflating them into
+one sentence is the exact defect class this section exists to stop. **The doc did not document
+the defect. It propagated it.**
+
+Therefore, standing law:
+- **If two call sites need the same POLICY, it is a FUNCTION THEY CALL — never a pattern they
+  clone.** Policy = retry budgets, backoff/jitter, error classification, sanitisation, auth,
+  validation. A doc that says *"copy this pattern"* is an instruction to duplicate a defect
+  nobody has found yet. Write `retry_on_conflict`; do not describe it.
+- **ROUTING IS NOT SHARING.** A caller that calls the shared driver but hand-rolls the
+  *decision* underneath it is a private copy wearing the shared name. Measured: a build where
+  all eleven seams routed through the driver but each matched `"Resource busy"` locally scored
+  **839 passed / 0 failed — indistinguishable from correct** — and under a reworded engine
+  message **all eleven silently stopped retrying.** Another routed `kill` through the driver and
+  retried **ZERO times**, because routing without CLASSIFY-AND-SIGNAL is a no-op. **A green gate
+  over a dead mechanism — #102's own shape, reproduced inside the fix for #102.**
+- **PROVE SHARING BY MUTATION.** Change the shared constant / jitter / marker → **every**
+  caller's pin must go RED. A caller that stays green is not sharing. This is the only test that
+  distinguishes DRY from looks-DRY, and it caught builds nothing else could.
+- **Duplication is a DESIGN decision. ESCALATE it; never quietly write copy #2.**
+
+### The instrument lesson (six defeats, one shape — the most expensive thing we learned)
+| instrument | keyed on | defeated by |
+|---|---|---|
+| retry gate | a label's **literal** | a substring of it |
+| retired-symbol pin | a symbol's **name** | a numeric claim naming nothing |
+| seam enumerator | `async def _query` | `scout.py`, which spells it differently |
+| SDK gate | **3 method names** | the other 30 (`upsert`: 31 conflicts / 64 live attempts) |
+| SDK gate | **2 receiver names** | six other doors |
+| runtime gate | **the 4 tests that armed it** (its REACH) | a path no test executed |
+
+**When you catch yourself enumerating what is FORBIDDEN, you have already lost.** The forbidden
+set is unbounded; the SAFE set is small and enumerable. **Allowlist the safe.** When even that
+fails, stop looking at *code* — enforce at **RUNTIME** (wrap the SDK connection; any call with
+no driver frame above it is an escape, named by `file:line`). ⚠ And a runtime gate is an
+invariant **only over code it RUNS** — so make coverage a *checked* variable (AST-enumerate every
+call site; assert the guard OBSERVED each), or reach becomes the next name-list. Every exemption
+in a deny-by-default safe-set must be **evidence-backed** (a live probe proving it cannot
+conflict), never *"it writes no row"* — that opinion is what blessed the bootstrap DDL right
+before it lost **6.2%–34.4% of concurrent first-connects** (measured across three 160-connect
+runs, 16-way; a range, not a point — audit-fix-1 A4 / blindreader-dry-2 F4 caught this section's
+own earlier "13%" as a fourth, unreproducible value alongside two production comments' "16.2%").
+
 ## Every artifact gets an adversary — not just the code (PKT-28 C1, 2026-07-12)
 C1 shipped FIVE defects that no builder gate caught. Their provenance, measured: THREE
 were tests that were never written (fleet grouping, the `brief_counter` declaration,
@@ -199,6 +257,30 @@ them. Therefore:
   mechanical — that is where Sonnet stays. **The adversary is NOT retired by this change:**
   an Opus author is still its own only grader, and that is the structural fault this
   section exists to fix.
+- **A CONTRACT SHIPS WITH A SATISFIABILITY RECEIPT (the C-DEF class, 2026-07-14):** before
+  any builder sees it, prove the contract goes 0-failed against a known-correct build — the
+  adversary's own reference build (it must BUILD the fix to grade the contract anyway) is
+  the natural instrument. Receipts: 20 pins RED on a correct build shipped inside an
+  otherwise-strong fix-wave contract — one a `TypeError` hiding behind a pin that was red
+  today *for the right reason* (so its author could never see it), one a pre-existing pin
+  the reshape structurally contradicted, trapping the builder between ruff and a test it
+  may not edit. Include the harder leg: still satisfiable AFTER the cleanups the lint will
+  demand (orphaned-import deletion).
+- **A FAILURE MESSAGE THAT PROMISES A CHECK THE ASSERTION DOES NOT PERFORM IS A FALSE GATE
+  (P2, 2026-07-14):** the shared-deadline pin's message said *"three equal values is three
+  independent budgets wearing a parameter"* while asserting only non-increasing — which
+  ADMITS three equal values; the exact wrong build the pin existed to catch passed 399/399
+  + mypy + ruff. Interrogate every assertion against its own message: the message is the
+  spec the author believed, the assertion is the check the suite performs, and any gap
+  between them is a wrong build's door. Corollary, same day: **sweep from the GREP, never
+  from a report's hand-list** — the retired-number sweep found a ninth survivor ("16%")
+  that the auditor's own "13%/16.2%" list structurally could not see.
+- **AN MD5 LIST IS A DETECTOR, NOT A BACKUP (near-miss, 2026-07-14):** an auditor mutating
+  an uncommitted tree had hashes but no content when the time came to restore — and a
+  `git checkout --` would have discarded the wave (the working tree was its ONLY copy;
+  15-minute ZFS autosnapshots saved it, by luck of timing). Any agent that mutates an
+  UNCOMMITTED tree `cp -a`'s the full content FIRST and restores from content, proving
+  byte-exactness after; every mutation brief carries this line.
 
 ## Orchestration (multi-agent phases)
 - The lead writes no code — tests included. Ladder: ground-truth verify → TaskStop →
