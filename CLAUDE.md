@@ -407,6 +407,33 @@ them. Therefore:
   UNCOMMITTED tree `cp -a`'s the full content FIRST and restores from content, proving
   byte-exactness after; every mutation brief carries this line.
 
+## NO WORKTREES UNTIL WORKTREES WORK (operator, 2026-07-14)
+**Standing directive: do not use git worktrees for lore work** — not for agents, not for audits, not
+for mutation probes — **until worktrees actually work.** Today they do not, in three independent ways:
+- **#134**: lore CANNOT BE DEPLOYED against a worktree — `.git` is a FILE naming an absolute host
+  gitdir OUTSIDE the `/workspace` mount, so git fails inside the container and the honesty line reads
+  null for the exact topology it is named after.
+- **#125 / packets 17+23**: lore's index cannot see an uncommitted worktree at all. The overlay is
+  designed but unbuilt.
+- **#136**: the #102 retry seam's RUNTIME SDK-escape guard goes BLIND out-of-tree while still
+  printing green (below). Packets 17/23 are BLOCKED on it (ledger row `6531b6f5`).
+
+⚠ **THE RULING CONTAINS LESS PROTECTION THAN IT LOOKS LIKE.** #136 is NOT a worktree bug — it is an
+**OUT-OF-TREE COPY** bug, and **scratch copies are how we work**: every contract author and every cold
+audit builds one (reference builds, satisfiability receipts, mutation proofs — several per packet).
+Banning worktrees does not touch that path. Therefore, **until #136 is fixed**:
+
+- **A green `test_retry_seam` verdict in ANY copy of the tree means NOTHING.** Its three POSITIVE
+  CONTROLS — the only evidence the guard can SEE an escape — fail there, while its "no escapes"
+  assertions stay GREEN. A gate whose controls are red is a gate whose greens are unfalsifiable.
+- **NEVER brief an agent to "ignore those 3 failures as unrelated".** Packet 01's lead did exactly
+  that, in five briefs, and thereby trained five agents to discard the alarm and trust the green
+  beside it. **The correct brief line is: "if those 3 controls fail, the retry-seam guard is BLIND in
+  your copy — its verdict is void; do not rely on it, and say so in your report."**
+- The general fix (and the one to prefer): **make the guard FAIL LOUD when its controls cannot arm.**
+  A gate must never return a verdict it cannot substantiate. That kills the class; fixing the root
+  resolution only kills the instance.
+
 ## Orchestration (multi-agent phases)
 - The lead writes no code — tests included. Ladder: ground-truth verify → TaskStop →
   respawn fresh (never reuse a teammate name).

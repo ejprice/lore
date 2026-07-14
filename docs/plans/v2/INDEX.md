@@ -228,6 +228,14 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
     `is_transaction_conflict` when surrealdb-py 3.0.0 ships. Watch the release.
 
 ## Watch list (no packet; verify-on-contact)
+- **NO WORKTREES UNTIL WORKTREES WORK (operator, 2026-07-14).** Do not use git worktrees for lore
+  work — agents, audits, mutation probes — until they actually work (#134 cannot deploy · #125
+  cannot be indexed · #136 blinds the retry guard). ⚠ **The ruling contains LESS protection than it
+  looks like: #136 is an OUT-OF-TREE COPY bug, not a worktree bug — and scratch copies are how we
+  work** (every contract author and cold audit builds one). Until #136 is fixed, a green
+  `test_retry_seam` verdict in ANY copy means NOTHING, and briefs must NEVER tell an agent to
+  "ignore those 3 failures as unrelated" (packet 01's lead did, in five briefs — training five
+  agents to discard the alarm and trust the green beside it). Full law: repo CLAUDE.md.
 - **#136 — HARD BLOCKER ON PACKETS 17 + 23, ledger row `6531b6f5` (operator-caught 2026-07-14).**
   The #102 retry seam's RUNTIME SDK-escape guard — the store's most load-bearing runtime invariant —
   reports GREEN in any OUT-OF-TREE copy while its three POSITIVE CONTROLS (the only evidence it can
