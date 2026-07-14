@@ -123,6 +123,11 @@ def test_start_when_already_running_still_rewires_mcp_json(
     env_file = tmp_path / "secrets.env"
     # The env-file need not exist: verb_start only checks env_file.exists() on the
     # non-running code path (past the early-return bug site), never on the running path.
+    # The artifact gates (#125/#131/#132) run on every start path that ends
+    # with a running container. Arrange them as passing — this test is about
+    # a different concern, and both probes talk to a real container.
+    _stub_artifact_gates(monkeypatch)
+
 
     # --- Act ---
     return_code = lore_deploy.verb_start(project, env_file)
@@ -212,6 +217,33 @@ def _stub_read_config_field(config_path: Path, expr: str) -> str:
     if "static" in expr:
         return "0"  # no static roots → no /source mount
     return _LORE_MOUNT_PATH
+
+
+def _stub_artifact_gates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Arrange the ARTIFACT gates (findings #125/#131/#132) as PASSING.
+
+    Every ``verb_start`` path that ends with a RUNNING container now also runs two
+    artifact probes — the container carries every binary the shipped code execs
+    (``_probe_container_binaries``), and the served honesty line is actually alive for
+    every git-backed watched root (``_probe_workspace_honesty``). Both talk to a real
+    container over ``podman exec`` / a real MCP endpoint over HTTP, so a test that drives
+    ``verb_start`` to success must arrange them, exactly as it already arranges
+    ``_probe_embed`` and ``_probe_surreal``.
+
+    Deliberately stubs the two PROBES and NOT ``_probe_artifact``: their orchestrator
+    keeps running for real in these tests, and — more importantly — the pins that prove
+    the probes are WIRED IN AT ALL live in ``../tests/test_workspace_probe.py``
+    (``TestTheProbesAreWiredIntoTheDeployVerb``) and monkeypatch these same two names to
+    assert BOTH were called on all three start paths. Stubbing them here therefore
+    arranges the new world without weakening that gate: an ``unwired`` build still goes
+    RED over there (re-proven — see REPORT-pkt01-contract-2.md §AMENDMENT-7).
+    """
+    monkeypatch.setattr(
+        lore_deploy, "_probe_container_binaries", lambda *a, **k: lore_deploy._EXIT_OK
+    )
+    monkeypatch.setattr(
+        lore_deploy, "_probe_workspace_honesty", lambda *a, **k: lore_deploy._EXIT_OK
+    )
 
 
 class TestVerbStartStaleImageRecreateBehavior:
@@ -320,6 +352,11 @@ class TestVerbStartStaleImageRecreateBehavior:
         # stale detection; but the implementation may check env_file.exists() before
         # launching, so create it to avoid an _EXIT_ERROR short-circuit there.
         env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
+        # The artifact gates (#125/#131/#132) run on every start path that ends
+        # with a running container. Arrange them as passing — this test is about
+        # a different concern, and both probes talk to a real container.
+        _stub_artifact_gates(monkeypatch)
+
 
         # --- Act ---
         return_code = lore_deploy.verb_start(project, env_file)
@@ -425,6 +462,11 @@ class TestVerbStartStaleImageRecreateBehavior:
         monkeypatch.setattr(lore_deploy, "_probe_mcp_port", lambda *args, **kwargs: True)
 
         env_file = tmp_path / "secrets.env"
+        # The artifact gates (#125/#131/#132) run on every start path that ends
+        # with a running container. Arrange them as passing — this test is about
+        # a different concern, and both probes talk to a real container.
+        _stub_artifact_gates(monkeypatch)
+
 
         # --- Act ---
         return_code = lore_deploy.verb_start(project, env_file)
@@ -524,6 +566,11 @@ class TestVerbStartStaleImageRecreateBehavior:
 
         env_file = tmp_path / "secrets.env"
         env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
+        # The artifact gates (#125/#131/#132) run on every start path that ends
+        # with a running container. Arrange them as passing — this test is about
+        # a different concern, and both probes talk to a real container.
+        _stub_artifact_gates(monkeypatch)
+
 
         # --- Act ---
         return_code = lore_deploy.verb_start(project, env_file)
@@ -1055,6 +1102,11 @@ class TestVerbStartRecreateValidatesBeforeTeardown:
         # pinned by TestRecreateGatesOnStorePreflight).
         monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
         monkeypatch.setattr(lore_deploy, "_probe_surreal", lambda *a, **k: lore_deploy._EXIT_OK)
+        # The artifact gates (#125/#131/#132) run on every start path that ends
+        # with a running container. Arrange them as passing — this test is about
+        # a different concern, and both probes talk to a real container.
+        _stub_artifact_gates(monkeypatch)
+
 
         # --- Act ---
         return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
@@ -1428,6 +1480,11 @@ class TestVerbStartGatesOnSurreal:
 
         env_file = tmp_path / "secrets.env"
         env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
+        # The artifact gates (#125/#131/#132) run on every start path that ends
+        # with a running container. Arrange them as passing — this test is about
+        # a different concern, and both probes talk to a real container.
+        _stub_artifact_gates(monkeypatch)
+
 
         rc = lore_deploy.verb_start(project, env_file)
 
@@ -1661,6 +1718,11 @@ class TestRecreateGatesOnStorePreflight:
 
         monkeypatch.setattr(lore_deploy, "_probe_surreal", _recording_probe_surreal)
         monkeypatch.setattr(lore_deploy, "_await_bind", lambda *a, **k: lore_deploy._EXIT_OK)
+        # The artifact gates (#125/#131/#132) run on every start path that ends
+        # with a running container. Arrange them as passing — this test is about
+        # a different concern, and both probes talk to a real container.
+        _stub_artifact_gates(monkeypatch)
+
 
         return_code = lore_deploy.verb_start(fixture.project, fixture.env_file)
 

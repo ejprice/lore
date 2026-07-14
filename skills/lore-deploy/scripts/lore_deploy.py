@@ -40,6 +40,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Constants (no hardcoded magic scattered through the logic).
@@ -48,6 +49,12 @@ IMAGE = "localhost/lore:latest"
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROBE_SCRIPT = SCRIPT_DIR / "probe_embed.py"
 MERGE_SCRIPT = SCRIPT_DIR / "merge_mcp_json.py"
+
+# The lore workspace root (skills/lore-deploy/scripts -> skills/lore-deploy -> skills
+# -> repo root) — where the uv-workspace pyproject.toml lives, so the shell-out
+# derivation (see the ARTIFACT-gates block below) scans the SAME tree the image is
+# built from.
+REPO_ROOT = SCRIPT_DIR.parent.parent.parent
 
 # The persistent SurrealDB backing-store container — the unified store since P8a
 # (chunks, search, memory, the code graph and the task ledger all live in it).
@@ -106,6 +113,11 @@ _BIND_PROGRESS_INTERVAL_S = 30.0
 _SURREAL_PROBE_TIMEOUT_S = 3.0
 _SURREAL_START_BUDGET_S = 15.0
 _SURREAL_START_POLL_INTERVAL_S = 1.0
+
+# ---------------------------------------------------------------------------
+# Workspace-honesty artifact-gate constants (findings #125/#131/#132).
+# ---------------------------------------------------------------------------
+_WORKSPACE_PROBE_TIMEOUT_S = 30.0
 
 # A minimal, well-formed MCP `initialize` JSON-RPC request. The probe's success
 # criterion doesn't care about the reply shape (any HTTP response — even a
@@ -732,7 +744,7 @@ def verb_setup(project: Path, env_file: Path) -> int:  # noqa: PLR0911 - P8e rew
     return _EXIT_OK
 
 
-def verb_start(  # noqa: PLR0911, PLR0912 - P8e reworks this skill
+def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
     project: Path,
     env_file: Path,
     *,
@@ -751,6 +763,14 @@ def verb_start(  # noqa: PLR0911, PLR0912 - P8e reworks this skill
     ``_await_bind``) — a "running" container can still be mid-boot
     delta-reconcile with the port unbound. ``bind_timeout_s``/``no_wait`` are
     the ``--bind-timeout``/``--no-wait`` CLI knobs.
+
+    Every one of those same three paths then runs the ARTIFACT gates
+    (``_probe_artifact`` — findings #125/#131/#132) before declaring success: the
+    required binaries must be present in the container AND the served honesty
+    line must actually be alive for every git-backed watched root. A runtime
+    gate is an invariant only over code it actually RUNS, so this is wired into
+    every path that ends with a running container, not documented as a
+    should-run-this smoke step.
     """
     config_path = project / "lore.yaml"
     slug = project.name
@@ -779,6 +799,11 @@ def verb_start(  # noqa: PLR0911, PLR0912 - P8e reworks this skill
                     timeout_s=bind_timeout_s, no_wait=no_wait,
                 )) != _EXIT_OK:
                     return rc
+            # The artifact gates (findings #125/#131/#132): the container is up and
+            # accepting connections, so prove the honesty line is actually alive in
+            # THIS image before declaring success.
+            if (rc := _probe_artifact(container_name, host, port, mount)) != _EXIT_OK:
+                return rc
             # Re-merge .mcp.json (cheap, idempotent) so wiring stays current even
             # after a reboot or out-of-band container restart — mirrors verb_setup's
             # already-provisioned no-op branch.
@@ -844,6 +869,8 @@ def verb_start(  # noqa: PLR0911, PLR0912 - P8e reworks this skill
                 timeout_s=bind_timeout_s, no_wait=no_wait,
             )) != _EXIT_OK:
                 return rc
+            if (rc := _probe_artifact(container_name, host, port, mount)) != _EXIT_OK:
+                return rc
             _merge_mcp_from_config(project, slug, config_path)
             print(_MCP_RECONNECT_REMINDER)
             return _EXIT_OK
@@ -872,6 +899,8 @@ def verb_start(  # noqa: PLR0911, PLR0912 - P8e reworks this skill
         container_name, host, port, mount,
         timeout_s=bind_timeout_s, no_wait=no_wait,
     )) != _EXIT_OK:
+        return rc
+    if (rc := _probe_artifact(container_name, host, port, mount)) != _EXIT_OK:
         return rc
     merged_port = _merge_mcp_from_config(project, slug, config_path)
     print(f"start: {container_name} launched (delta-reconcile on startup) on port {merged_port}.")
@@ -1029,6 +1058,223 @@ def _probe_surreal(config_path: Path) -> int:
         file=sys.stderr,
     )
     return _EXIT_ERROR
+
+
+# ---------------------------------------------------------------------------
+# The ARTIFACT gates (findings #125 / #131 / #132).
+#
+# The repo-local suites prove the honesty line is COMPUTED and SERVED correctly.
+# Neither can see the environment the image actually runs in: the deployed image
+# had no ``git`` binary, so the correct code served ``git_branch: null`` — and
+# every snapshot's ``git_ref`` was silently ``None`` — while every test on a
+# git-having host stayed green. These two probes gate the CAKE, not the recipe.
+#
+# Layer 2: every binary the shipped code can exec is present in the container.
+#   The set is DERIVED (loremaster.shellout.required_binaries), never a list
+#   someone must remember to update.
+# Layer 3: for every root lore_index() SERVES, if that root's tree carries a
+#   ``.git`` then its ``git_branch`` must be non-null. This is the only layer
+#   that can see a git that is present but REFUSING (dubious-ownership exit 128,
+#   #132) — layer 2 would be green over it.
+#
+# Both assert RELATIVE facts and run against the RUNNING container.
+# ---------------------------------------------------------------------------
+def required_container_binaries(repo_root: Path | None = None) -> list[str]:
+    """The external binaries the image MUST carry, derived from the shipped source.
+
+    Delegates to the ONE derivation (``loremaster.shellout.required_binaries``) through
+    the loremaster interpreter — this dispatcher stays stdlib-only, and there is no
+    second scanner to drift (ONE IMPLEMENTATION, repo standing law, finding #102).
+    """
+    root = REPO_ROOT if repo_root is None else repo_root
+    snippet = (
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "from loremaster.shellout import required_binaries\n"
+        "print(json.dumps(sorted(required_binaries(Path(sys.argv[1])))))\n"
+    )
+    result = _run(
+        [_loremaster_python(), "-c", snippet, str(root)], check=False, capture=True
+    )
+    if result.returncode != _EXIT_OK:
+        raise RuntimeError(
+            f"could not derive the required-binary set from {root}: {result.stderr.strip()}"
+        )
+    return [str(binary) for binary in json.loads(result.stdout.strip())]
+
+
+def _exec_in_container(
+    container_name: str, argv: list[str]
+) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` INSIDE the container — the one container-exec seam both probes use.
+
+    The predicates below are about the container's filesystem and PATH, never the host's:
+    the served root path (``/workspace``) does not exist here, so a host-side check would
+    find nothing, skip itself, and report success over a dead feature.
+    """
+    return _run(["podman", "exec", container_name, *argv], check=False, capture=True)
+
+
+def _probe_container_binaries(container_name: str) -> int:
+    """Layer 2 — every DERIVED binary must exist in the running container."""
+    try:
+        required = required_container_binaries()
+    except RuntimeError as error:
+        print(
+            f"probe: cannot derive the binaries {container_name} must carry: {error}. "
+            f"Refusing to deploy on a required set the scan will not vouch for — an "
+            f"unknown set is not an empty one (findings #125/#131).",
+            file=sys.stderr,
+        )
+        return _EXIT_ERROR
+    missing = [
+        binary
+        for binary in required
+        if _exec_in_container(
+            container_name, ["sh", "-c", f"command -v {binary} >/dev/null 2>&1"]
+        ).returncode
+        != _EXIT_OK
+    ]
+    if missing:
+        print(
+            f"probe: container {container_name} is MISSING binaries the shipped code "
+            f"execs: {', '.join(missing)}. The image must install them (Containerfile) — "
+            f"without them the git-derived fields (lore_index()'s watched-root branch, "
+            f"every snapshot's git_ref) are a silent null in production "
+            f"(findings #125/#131).",
+            file=sys.stderr,
+        )
+        return _EXIT_ERROR
+    print(f"probe: container binaries OK ({', '.join(required)}).")
+    return _EXIT_OK
+
+
+def _sse_payload(raw: str) -> dict[str, Any]:
+    """The JSON object carried by an SSE ``data:`` line (FastMCP's streamable transport)."""
+    for line in raw.splitlines():
+        if line.startswith("data: "):
+            parsed: dict[str, Any] = json.loads(line[len("data: ") :])
+            return parsed
+    return {}
+
+
+def _served_workspace_roots(host: str, port: int, path: str) -> list[dict[str, Any]] | None:
+    """The watched roots the RUNNING server SERVES from ``lore_index()``.
+
+    Returns the served rows, or ``None`` when the response carries no ``workspace``
+    section at all (a container running an image that predates the honesty line, or an
+    endpoint that could not be reached). ``None`` is NOT an empty list: "the field is
+    missing" must never read as "there is nothing to check".
+    """
+    url = f"http://{host}:{port}{path}"
+    session_id: str | None = None
+
+    def _post(body: dict[str, Any]) -> dict[str, Any]:
+        nonlocal session_id
+        request = urllib.request.Request(  # noqa: S310 - fixed http scheme, localhost
+            url, data=json.dumps(body).encode("utf-8"), method="POST"
+        )
+        request.add_header("Content-Type", "application/json")
+        request.add_header("Accept", "application/json, text/event-stream")
+        if session_id is not None:
+            request.add_header("mcp-session-id", session_id)
+        with urllib.request.urlopen(  # noqa: S310
+            request, timeout=_WORKSPACE_PROBE_TIMEOUT_S
+        ) as response:
+            served_session = response.headers.get("mcp-session-id")
+            if served_session:
+                session_id = served_session
+            raw = response.read().decode("utf-8")
+        return _sse_payload(raw)
+
+    try:
+        _post(
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05", "capabilities": {},
+                    "clientInfo": {"name": "lore-deploy-probe", "version": "1.0"},
+                },
+            }
+        )
+        _post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        answer = _post(
+            {
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "lore_index", "arguments": {}},
+            }
+        )
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+    structured = answer.get("result", {}).get("structuredContent")
+    if not isinstance(structured, dict):
+        return None
+    workspace = structured.get("workspace")
+    if not isinstance(workspace, dict):
+        return None
+    roots = workspace.get("roots")
+    if not isinstance(roots, list):
+        return None
+    return [root for root in roots if isinstance(root, dict)]
+
+
+def _probe_workspace_honesty(container_name: str, host: str, port: int, path: str) -> int:
+    """Layer 3 — a served root whose tree carries a ``.git`` must name its branch.
+
+    The RELATIVE fact: ``.git`` present ⇒ ``git_branch`` non-null. A project whose tree is
+    not a git checkout legitimately has no branch, and a flat "the branch is not null"
+    gate would false-fail it (commit c06c3ac: entry checks assert relative facts).
+
+    ``.git`` is a FILE in a linked git WORKTREE and a DIRECTORY in a normal checkout — and
+    worktrees are the entire point of #125 — so the predicate is "exists", never "is a
+    directory".
+    """
+    roots = _served_workspace_roots(host, port, path)
+    if roots is None:
+        print(
+            f"probe: lore_index() on {container_name} served NO workspace section — the "
+            f"container is running an image that predates the honesty line (or the MCP "
+            f"endpoint could not be read). Rebuild the image and recreate the container "
+            f"(finding #125).",
+            file=sys.stderr,
+        )
+        return _EXIT_ERROR
+
+    dishonest: list[str] = []
+    for root in roots:
+        root_path = str(root.get("path", ""))
+        if not root_path:
+            continue
+        carries_git = _exec_in_container(
+            container_name, ["sh", "-c", 'test -e "$1/.git"', "_", root_path]
+        ).returncode == _EXIT_OK
+        if carries_git and root.get("git_branch") is None:
+            dishonest.append(root_path)
+
+    if dishonest:
+        print(
+            f"probe: {container_name} serves a NULL git_branch for watched root(s) that "
+            f"ARE git trees: {', '.join(dishonest)}. The honesty line is dead in the "
+            f"deployed image — either the git binary is missing, or git refuses the tree "
+            f"(dubious ownership: run the container with --userns=keep-id --user $(id -u), "
+            f"finding #132). Findings #125/#131.",
+            file=sys.stderr,
+        )
+        return _EXIT_ERROR
+    print(f"probe: workspace honesty OK ({len(roots)} watched root(s) served).")
+    return _EXIT_OK
+
+
+def _probe_artifact(container_name: str, host: str, port: int, path: str) -> int:
+    """Both artifact gates, in cause-localising order (binary present, then feature alive).
+
+    Wired into every ``verb_start`` path that ends with a running container — a runtime
+    gate is an invariant only over code it actually RUNS (repo standing law).
+    """
+    if (result := _probe_container_binaries(container_name)) != _EXIT_OK:
+        return result
+    return _probe_workspace_honesty(container_name, host, port, path)
 
 
 def _merge_mcp(project: Path, slug: str, port: int, mount_path: str) -> None:
