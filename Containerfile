@@ -129,6 +129,14 @@ CMD ["/app/.venv/bin/python", "-m", "loremaster.server"]
 #       -t localhost/lore:latest -f Containerfile .
 # (run from the workspace root so the build context contains all three members.)
 #
+# Conformance (packet 01a, finding #139) — POST-BUILD, before deploying the image:
+#   python skills/lore-deploy/scripts/lore_deploy.py conform                       # localhost/lore:latest
+#   python skills/lore-deploy/scripts/lore_deploy.py conform --image localhost/lore:<tag>
+# Runs the BAKED pytest inside the freshly-built image against this repo mounted :ro, so
+# the run tests the ARTIFACT (the cake), not the dev-host source (the recipe). A provenance
+# guard asserts the members import the baked code, not the mount. It is NOT on `start` (it
+# adds ~3 min); see skills/lore-deploy/scripts/conformance_run.sh + conformance_provenance.py.
+#
 # Run (one container per project; never a per-project image):
 #   podman run -d --name lore-<slug> \
 #     --network=host \

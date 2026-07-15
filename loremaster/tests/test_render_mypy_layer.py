@@ -48,10 +48,25 @@ only the committed on-disk artifact's extension differs, never its content.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
+
+# Packet 01a §C (#139): this is a SOURCE-TYPE meta-test — it shells `uv run mypy` with the
+# repo root as cwd. Under the conformance harness the repo is a :ro /workspace mount, so
+# `uv run` cannot create its project env and the test fails on an os-level write error that
+# says nothing about the shipped artifact. Opt out inside the container (the harness sets
+# LORE_CONFORMANCE_IN_CONTAINER=1); the DEFAULT is RUN, so the host gate is unaffected.
+pytestmark = pytest.mark.skipif(
+    os.environ.get("LORE_CONFORMANCE_IN_CONTAINER") == "1",
+    reason=(
+        "source-type meta-test: invokes the mypy dev-toolchain via `uv run`, needs a "
+        "writable uv project env (the conformance mount is :ro); validates SOURCE "
+        "annotations, not the shipped artifact's runtime (the shipped code never runs mypy)"
+    ),
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FIXTURES_DIR = Path(__file__).resolve().parent / "render_mypy_fixtures"

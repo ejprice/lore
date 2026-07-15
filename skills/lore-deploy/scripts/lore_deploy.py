@@ -49,6 +49,10 @@ IMAGE = "localhost/lore:latest"
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROBE_SCRIPT = SCRIPT_DIR / "probe_embed.py"
 MERGE_SCRIPT = SCRIPT_DIR / "merge_mcp_json.py"
+# The in-image conformance harness (packet 01a, #139) — a bash sibling that runs the
+# baked pytest against this repo mounted :ro, gated by the provenance guard. Invoked by
+# the `conform` verb; see `conformance_run.sh` + `conformance_provenance.py`.
+CONFORMANCE_SCRIPT = SCRIPT_DIR / "conformance_run.sh"
 
 # The lore workspace root (skills/lore-deploy/scripts -> skills/lore-deploy -> skills
 # -> repo root) — where the uv-workspace pyproject.toml lives, so the shell-out
@@ -997,6 +1001,25 @@ def verb_status(project: Path) -> int:
     return _EXIT_OK
 
 
+def _run_conformance(image: str = IMAGE) -> int:
+    """``conform`` — run the in-image conformance suite for ``image``, gate on its exit.
+
+    Delegates to the bash harness ``conformance_run.sh``: it starts an ephemeral
+    container from ``image``, ASSERTS the baked members' provenance (the tests must
+    import the BAKED artifact, not the :ro ``/workspace`` mount — #139), then runs the
+    baked pytest over the mounted test tree. This gates the CAKE, not the recipe: a suite
+    green on the dev host proves the SOURCE, never the deployed ARTIFACT (findings
+    #139/#131/#107).
+
+    It is the operator's post-``podman build`` step and is deliberately NOT wired into
+    ``start`` (it adds ~3 min; start keeps only its cheap artifact probes). Returns
+    :data:`_EXIT_OK` when the harness exits 0, else :data:`_EXIT_ERROR` — a non-zero
+    harness exit (provenance refused OR a failing test) must never read as success.
+    """
+    result = _run([str(CONFORMANCE_SCRIPT), image], check=False)
+    return _EXIT_OK if result.returncode == _EXIT_OK else _EXIT_ERROR
+
+
 # ---------------------------------------------------------------------------
 # Step delegators.
 # ---------------------------------------------------------------------------
@@ -1482,10 +1505,20 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="lore_deploy",
         description="Idempotent on-demand lifecycle for a project's lore RAG MCP server.",
     )
-    parser.add_argument("verb", choices=("setup", "start", "stop", "status"))
+    parser.add_argument("verb", choices=("setup", "start", "stop", "status", "conform"))
     parser.add_argument(
-        "--project", required=True,
-        help="Absolute path to the project directory (its name is the slug).",
+        "--project", default=None,
+        help=(
+            "Absolute path to the project directory (its name is the slug). Required for "
+            "setup/start/stop/status; `conform` gates the IMAGE artifact and takes none."
+        ),
+    )
+    parser.add_argument(
+        "--image", default=IMAGE,
+        help=(
+            f"`conform` only: the image to run the in-image conformance suite against "
+            f"(default {IMAGE}). Ignored by the other verbs."
+        ),
     )
     parser.add_argument(
         "--env-file", default=None,
@@ -1513,9 +1546,24 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - conform + project-guard exits
     """Dispatch a verb. Pre-checks podman availability for the container verbs."""
     args = _build_parser().parse_args(argv)
+    if shutil.which("podman") is None:
+        print("lore_deploy: podman not found on PATH.", file=sys.stderr)
+        return _EXIT_ERROR
+
+    # `conform` gates the IMAGE artifact, not a project — it takes no --project and is
+    # dispatched BEFORE project resolution (which would crash on the None default).
+    if args.verb == "conform":
+        return _run_conformance(image=args.image)
+
+    if args.project is None:
+        print(
+            "lore_deploy: --project is required for setup/start/stop/status.",
+            file=sys.stderr,
+        )
+        return _EXIT_ERROR
     project = Path(args.project).resolve()
     # Resolve the env-file AFTER the project is known so an unsupplied --env-file
     # (default None) resolves per-slug; an explicit value passes through verbatim.
@@ -1523,9 +1571,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if not project.is_dir():
         print(f"lore_deploy: --project {project} is not a directory.", file=sys.stderr)
-        return _EXIT_ERROR
-    if shutil.which("podman") is None:
-        print("lore_deploy: podman not found on PATH.", file=sys.stderr)
         return _EXIT_ERROR
 
     if args.verb == "setup":

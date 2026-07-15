@@ -195,6 +195,38 @@ podman run -d --name lore-<slug> \
    <slug>.db` counts) so the user knows the index is preserved. **Skip the port
    probe entirely** — there is nothing to probe.
 
+## `conform` — in-image artifact conformance (post-build, NOT on `start`)
+
+The instrument for finding #139 (*the test environment is a fiction*): a suite green on
+the dev host proves the SOURCE is correct in the test env — never that the deployed
+ARTIFACT is correct in production. Both of lore's worst outages (#107 virgin-DB migration,
+#131 git-not-in-image) lived in exactly that gap. `conform` runs the **baked** pytest, from
+the deployed image, over this repo mounted `:ro` — it gates the CAKE, not the recipe.
+
+```
+python scripts/lore_deploy.py conform                       # localhost/lore:latest
+python scripts/lore_deploy.py conform --image localhost/lore:<tag>
+```
+
+- Takes **no `--project`** — it gates the IMAGE artifact, not a project. `--image`
+  overrides the default `localhost/lore:latest`.
+- It is a **post-`podman build`** step, run BEFORE deploying a rebuilt image. It is
+  deliberately **NOT** wired into `start` (it adds ~3 min); start keeps only its cheap
+  artifact probes (Layer 2 binaries / Layer 3 honesty line).
+- Delegates to `scripts/conformance_run.sh <image>`, which starts an ephemeral container
+  (the deploy's own topology: `--network=host`, `--userns=keep-id --user $(id -u):$(id -g)`,
+  repo `:ro` at `/workspace`, `LORE_CONFORMANCE_IN_CONTAINER=1`) and, IN ORDER:
+  1. **provenance gate FIRST** — `conformance_provenance.py --mount-root /workspace` asserts
+     every workspace member (`loremaster`/`loresigil`/`lorescribe`) imports the **baked**
+     artifact (`/app/...` or site-packages), NOT the `/workspace` mount. A member grading the
+     mount aborts the run non-zero and pytest never runs — a green suite over the mount is
+     worse than a red one. Provenance-before-pytest is load-bearing.
+  2. the **baked pytest** over `/workspace` (`-n auto`, cache redirected to `/tmp` since the
+     mount is `:ro`). The source-type mypy meta-test opts out inside the container (it needs a
+     writable `uv` project env the `:ro` mount cannot provide).
+- Exit: `_EXIT_OK` iff the harness exits 0 (provenance honest AND every test passed); a
+  non-zero harness exit (provenance refused OR a failing test) ⇒ `_EXIT_ERROR`, loud.
+
 ## Failure / STOP conditions (loud, never silent)
 
 | Condition | Action |

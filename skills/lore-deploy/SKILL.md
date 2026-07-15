@@ -52,6 +52,7 @@ python3 ~/.claude/skills/lore-deploy/scripts/lore_deploy.py <verb> --project <ab
 | `start` | Launch the container (delta-reconcile runs on startup) + merge `.mcp.json`, then **waits for the MCP port to actually accept connections** before declaring success — a "running" container can still be mid-boot delta-reconcile with the port unbound (see "Port-probe / wait-for-bind" below). Already-running-and-bound ⇒ fast no-op. |
 | `stop` | Stop + remove the container. Collections + manifest **persist**. Not-running ⇒ no-op. |
 | `status` | Report running/stopped + `index_status()` freshness (in-flight/failed files), AND **probes the live MCP port** to report `ACCEPTING`/`NOT ACCEPTING` — container state alone does not prove the server is reachable. For a stopped container it reads the manifest directly and skips the probe. |
+| `conform` | **Post-build, NOT on `start`.** Runs the **baked** pytest inside the deployed image against this repo mounted `:ro`, gated by a provenance guard that asserts the members import the BAKED artifact, not the mount — the instrument for #139 (*the test env is a fiction*: a suite green on the dev host proves the source, never the deployed artifact). Takes **no `--project`** (it gates the IMAGE); `--image` overrides `localhost/lore:latest`. Run it after `podman build`, before deploying (~3 min). |
 
 Read `references/lifecycle.md` for the precise step sequence, the persistence
 guarantees, and the failure/STOP conditions of each verb. Read
@@ -84,8 +85,6 @@ connection-refused or timeout counts as **NOT ACCEPTING**.
   it exits non-zero with the tail of `podman logs`. The already-running path
   probes first and only enters the wait loop if not yet accepting, so the
   common case (already running and already bound) stays a fast no-op.
-
-## Activating it in-session (read this — the #1 onboarding gotcha)
 
 ## Activating it in-session (read this — the #1 onboarding gotcha)
 
@@ -182,6 +181,11 @@ server's own `instructions`.
   observed dimension or exits non-zero (unreachable / wrong dim / 5xx).
 - `scripts/merge_mcp_json.py` — idempotently merge the project's `.mcp.json`
   `mcpServers.lore_<slug>` entry (preserves every other server + key).
+- `scripts/conformance_run.sh` — the `conform` verb's bash harness: runs the baked
+  pytest inside the deployed image against this repo `:ro`, provenance-gated (#139).
+- `scripts/conformance_provenance.py` — the provenance guard: asserts every workspace
+  member imports the BAKED artifact, not the `:ro` `/workspace` mount (the inverse of
+  `scripts/scratch_provenance.py`).
 
 All scripts are stdlib + the loremaster venv only; they print nothing on
 success beyond the structured status line and exit non-zero (loud) on failure.
