@@ -48,11 +48,12 @@ WORKDIR /app
 # root pyproject's `[tool.uv.workspace] members = [...]` present at the install
 # CWD. Installing the members in isolation (no root) fails with
 # "references a workspace ... but is not a workspace member". Copying the root +
-# uv.lock makes the install workspace-aware and pins the exact locked dependency
-# set (identical to the developer's `uv sync`).
+# uv.lock makes the install workspace-aware; `uv sync --locked` (below) then
+# installs the EXACT locked dependency set — the developer's `uv sync`, byte for
+# byte — and fails the build if the lock is stale.
 #
-# Layer ordering: metadata first so the heavy `uv pip install` layer caches
-# across source-only edits. The shared modules' pinned tokenizer
+# Layer ordering: metadata first so the heavy `uv sync` layer caches across
+# source-only edits. The shared modules' pinned tokenizer
 # (loresigil/loresigil/data/voyage4_tokenizer.json, 2.2 MB) ships in the
 # loresigil package — no runtime HuggingFace/network fetch.
 # ---------------------------------------------------------------------------
@@ -62,14 +63,25 @@ COPY lorescribe/ /app/lorescribe/
 COPY loresigil/  /app/loresigil/
 COPY loremaster/ /app/loremaster/
 
-# Install each member with --system into the image's interpreter, FROM the
-# workspace root (WORKDIR /app holds the root pyproject) so `workspace = true`
-# resolves. Order is shared-modules-before-consumer; uv resolves the closure
-# either way, but it documents the dependency direction.
-RUN uv pip install --system \
-        ./lorescribe \
-        ./loresigil \
-        ./loremaster
+# `uv sync --locked` mirrors the developer's own `uv sync` EXACTLY: it installs
+# the full LOCKED dependency closure (uv.lock) plus the workspace members and the
+# dev group (pytest, pytest-asyncio, pytest-xdist, mypy, ruff, type stubs) into
+# /app/.venv. Two reasons, one instrument:
+#   1. FIDELITY (#141): the old `uv pip install ./members` resolved dependencies
+#      FRESH from the index and DRIFTED from the lock (measured 2026-07-15:
+#      mcp/starlette/uvicorn/sqlglot shipped NEWER than uv.lock — versions the
+#      suite never tested). `--locked` FAILS the build if uv.lock is out of date,
+#      so the image can never again silently diverge from the tested closure.
+#   2. CONFORMANCE (#139 / packet 01a): baking the pinned test runner makes the
+#      deployed image itself runnable by the in-image conformance suite — no
+#      run-time dependency install, and conformance tests the LITERAL artifact.
+# --all-packages installs every workspace member (loremaster depends on the other
+# two via `workspace = true`; this documents + guarantees all three are present).
+RUN uv sync --locked --all-packages
+
+# The sync installs into /app/.venv; put it first on PATH so `python`, `pytest`
+# and `python -m loremaster.{server,index}` all resolve to the locked interpreter.
+ENV PATH="/app/.venv/bin:${PATH}"
 
 # Run as a non-root, no-login service account. With `podman --userns=keep-id`
 # this UID is remapped to the invoking host user so the :ro bind mounts at
@@ -109,7 +121,7 @@ ENV LORE_VERSION=${LORE_VERSION}
 # --config <lore.yaml>` — invoked by the skill's `setup` (cold index) and each
 # `start` (delta-reconcile), independent of this CMD.
 # ---------------------------------------------------------------------------
-CMD ["python", "-m", "loremaster.server"]
+CMD ["/app/.venv/bin/python", "-m", "loremaster.server"]
 
 # ---------------------------------------------------------------------------
 # Build (bake the version from git so the server advertises it):
