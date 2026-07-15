@@ -1745,3 +1745,239 @@ class TestRecreateGatesOnStorePreflight:
         assert "check:surreal" in before_teardown, (
             f"the SurrealDB store pre-flight must precede the first teardown; transcript={transcript}"
         )
+
+
+# ===========================================================================
+# Packet 01a §B — the `conform` verb <-> conformance_run.sh contract.
+# ===========================================================================
+#
+# `conform` is the thin, testable entry the operator runs after `podman build`
+# (design doc §B): it resolves the target image and invokes the bash harness
+# `skills/lore-deploy/scripts/conformance_run.sh <image>` via `_run`, then gates
+# on the script's exit. The load-bearing LOGIC (provenance-before-pytest, the
+# podman topology) lives in the bash and is integration-validated by an actual
+# conformance run — so these pins cover ONLY the verb<->script contract, per the
+# brief ("pin only the verb<->script contract; do NOT unit-test the podman argv
+# or the provenance-before-pytest ordering"):
+#   - a `conform` verb exists (argparse choice + dispatch in main), and it does
+#     NOT require --project (it gates the IMAGE artifact, not a project);
+#   - it invokes conformance_run.sh with the RESOLVED image (default
+#     localhost/lore:latest, overridable);
+#   - a non-zero script exit => _EXIT_ERROR; a zero exit => _EXIT_OK.
+#
+# Seams pinned (CONTRACT DECISIONS — see REPORT-contract-01a.md §SATISFIABILITY;
+# the design doc names `_run_conformance` but NOT the CLI override-flag name or
+# whether conform requires --project):
+#   - lore_deploy._run_conformance(image: str = IMAGE) -> int
+#   - main(["conform"])                 -> dispatches, default image, NO --project
+#   - main(["conform", "--image", X])   -> dispatches with image X
+
+_DEFAULT_CONFORM_IMAGE = lore_deploy.IMAGE  # localhost/lore:latest (DERIVED, not magic)
+# A NON-default image (fixture-monoculture killer): the design doc's ground-truth build.
+_OVERRIDE_CONFORM_IMAGE = "localhost/lore:01a"
+_CONFORMANCE_SCRIPT_NAME = "conformance_run.sh"
+
+
+def _record_run_returning(
+    monkeypatch: pytest.MonkeyPatch, return_code: int
+) -> list[list[str]]:
+    """Install a recording `_run` that returns a CompletedProcess with `return_code`.
+
+    Mirrors the mock-`_run` pattern used throughout this module: capture the podman/script
+    argv, and hand back a non-raising CompletedProcess so the caller reads the exit CODE
+    (the conform contract gates on the script's exit, not on an exception).
+    """
+    calls: list[list[str]] = []
+
+    def _recording_run(cmd: list[str], **kwargs: bool) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, return_code, stdout="", stderr="")
+
+    monkeypatch.setattr(lore_deploy, "_run", _recording_run)
+    return calls
+
+
+class TestRunConformance:
+    """`_run_conformance` invokes the harness with the resolved image and propagates its exit."""
+
+    def test_invokes_the_harness_script_with_the_default_image(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Default resolution: conform runs conformance_run.sh with localhost/lore:latest."""
+        assert hasattr(lore_deploy, "_run_conformance"), (
+            "lore_deploy._run_conformance seam is not yet defined; the builder must add the "
+            "thin conform entry that invokes conformance_run.sh (packet 01a §B)"
+        )
+        calls = _record_run_returning(monkeypatch, 0)
+        # Defensive: if the builder gates on image presence, keep the test deterministic
+        # regardless of what images happen to exist on the runner host.
+        monkeypatch.setattr(lore_deploy, "_image_exists", lambda image: True)
+
+        return_code = lore_deploy._run_conformance()
+
+        assert return_code == lore_deploy._EXIT_OK
+        assert len(calls) == 1, "conform must invoke the harness exactly once"
+        cmd = calls[0]
+        assert any(str(part).endswith(_CONFORMANCE_SCRIPT_NAME) for part in cmd), (
+            f"conform must invoke {_CONFORMANCE_SCRIPT_NAME}; got {cmd}"
+        )
+        # Kills a build that hardcodes a different image or never passes one through.
+        assert _DEFAULT_CONFORM_IMAGE in cmd, (
+            f"conform must pass the resolved default image {_DEFAULT_CONFORM_IMAGE} to the "
+            f"harness; got {cmd}"
+        )
+
+    def test_passes_an_overriding_image_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit image REPLACES the default in the harness invocation."""
+        assert hasattr(lore_deploy, "_run_conformance"), "seam not yet defined"
+        calls = _record_run_returning(monkeypatch, 0)
+        monkeypatch.setattr(lore_deploy, "_image_exists", lambda image: True)
+
+        return_code = lore_deploy._run_conformance(image=_OVERRIDE_CONFORM_IMAGE)
+
+        assert return_code == lore_deploy._EXIT_OK
+        cmd = calls[0]
+        assert _OVERRIDE_CONFORM_IMAGE in cmd, f"the override image must be used; got {cmd}"
+        # Kills a build that ignores the override and always conforms the default image.
+        assert _DEFAULT_CONFORM_IMAGE not in cmd, (
+            f"an override must REPLACE the default image, not be ignored; got {cmd}"
+        )
+
+    def test_returns_error_when_the_harness_script_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-zero script exit => _EXIT_ERROR (the conformance run found a defect)."""
+        assert hasattr(lore_deploy, "_run_conformance"), "seam not yet defined"
+        _record_run_returning(monkeypatch, 1)  # script exited non-zero
+        monkeypatch.setattr(lore_deploy, "_image_exists", lambda image: True)
+
+        # Kills a build that ignores the script's exit code and always reports success —
+        # a green conform over a failing suite is the exact silent-pass this packet closes.
+        assert lore_deploy._run_conformance() == lore_deploy._EXIT_ERROR
+
+    def test_returns_ok_when_the_harness_script_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POSITIVE CONTROL: a zero script exit => _EXIT_OK (the artifact conformed)."""
+        assert hasattr(lore_deploy, "_run_conformance"), "seam not yet defined"
+        _record_run_returning(monkeypatch, 0)
+        monkeypatch.setattr(lore_deploy, "_image_exists", lambda image: True)
+
+        assert lore_deploy._run_conformance() == lore_deploy._EXIT_OK
+
+
+class TestConformVerbDispatch:
+    """`conform` is a registered verb that main dispatches to `_run_conformance`.
+
+    CONTRACT DECISION (surfaced for the lead): `conform` gates the IMAGE artifact, so it
+    must NOT require --project. The `--image` override-flag name is likewise a contract
+    decision the design doc left unnamed. Both are flagged in the report.
+    """
+
+    def test_conform_is_a_registered_verb_dispatched_without_a_project(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`main(["conform"])` dispatches to `_run_conformance` — no --project required."""
+        monkeypatch.setattr(lore_deploy.shutil, "which", lambda name: "/usr/bin/podman")
+        received: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def _stub_run_conformance(*args: object, **kwargs: object) -> int:
+            received.append((args, kwargs))
+            return lore_deploy._EXIT_OK
+
+        monkeypatch.setattr(
+            lore_deploy, "_run_conformance", _stub_run_conformance, raising=False
+        )
+
+        return_code = lore_deploy.main(["conform"])
+
+        assert return_code == lore_deploy._EXIT_OK
+        # Kills a build that never wires conform into argparse/dispatch, and a build that
+        # forces conform through the --project-required path (which would SystemExit here).
+        assert len(received) == 1, (
+            "main must dispatch `conform` to _run_conformance exactly once, without "
+            "requiring --project (conform gates the image, not a project)"
+        )
+
+    def test_conform_verb_propagates_a_failure_exit_from_the_harness(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failing conformance run must surface through main as a non-zero exit."""
+        monkeypatch.setattr(lore_deploy.shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(
+            lore_deploy,
+            "_run_conformance",
+            lambda *a, **k: lore_deploy._EXIT_ERROR,
+            raising=False,
+        )
+
+        # Kills a build that dispatches conform but discards its exit (always exits 0).
+        assert lore_deploy.main(["conform"]) == lore_deploy._EXIT_ERROR
+
+    def test_conform_cli_forwards_an_image_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`main(["conform", "--image", X])` forwards X to `_run_conformance`.
+
+        CONTRACT DECISION: `--image` is the chosen override-flag name (the design doc says
+        the image is "overridable" but does not name the flag). Flagged in the report.
+        """
+        monkeypatch.setattr(lore_deploy.shutil, "which", lambda name: "/usr/bin/podman")
+        received: dict[str, object] = {}
+
+        def _stub_run_conformance(*args: object, **kwargs: object) -> int:
+            if args:
+                received["image"] = args[0]
+            if "image" in kwargs:
+                received["image"] = kwargs["image"]
+            return lore_deploy._EXIT_OK
+
+        monkeypatch.setattr(
+            lore_deploy, "_run_conformance", _stub_run_conformance, raising=False
+        )
+
+        return_code = lore_deploy.main(["conform", "--image", _OVERRIDE_CONFORM_IMAGE])
+
+        assert return_code == lore_deploy._EXIT_OK
+        assert received.get("image") == _OVERRIDE_CONFORM_IMAGE, (
+            f"the --image override must be forwarded to _run_conformance; got {received!r}"
+        )
+
+    def test_conform_cli_forwards_the_default_image_when_no_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PIN 3 (adversary §MISSING-PINS) — `main(["conform"])` with NO --image forwards the
+        DEFAULT image (localhost/lore:latest) to `_run_conformance`, asserted on the VALUE.
+
+        Kills a wrong argparse `--image default=` (e.g. `localhost/lore:TYPO`): the dispatch
+        pin only checks `len(received) == 1`, and the override pin supplies an EXPLICIT
+        --image, so the DEFAULT the CLI forwards is otherwise never inspected. A build whose
+        argparse default is a typo dispatches once and forwards the WRONG image, passing both
+        existing pins while conforming the wrong artifact. The function-level default is pinned
+        (TestRunConformance) — this pins the CLI->function default WIRING.
+        """
+        monkeypatch.setattr(lore_deploy.shutil, "which", lambda name: "/usr/bin/podman")
+        received: dict[str, object] = {}
+
+        def _stub_run_conformance(*args: object, **kwargs: object) -> int:
+            if args:
+                received["image"] = args[0]
+            if "image" in kwargs:
+                received["image"] = kwargs["image"]
+            return lore_deploy._EXIT_OK
+
+        monkeypatch.setattr(
+            lore_deploy, "_run_conformance", _stub_run_conformance, raising=False
+        )
+
+        return_code = lore_deploy.main(["conform"])
+
+        assert return_code == lore_deploy._EXIT_OK
+        # The DEFAULT image the CLI forwards must be the real default, not a typo'd argparse
+        # default that no other pin inspects.
+        assert received.get("image") == _DEFAULT_CONFORM_IMAGE, (
+            f"main(['conform']) must forward the default image {_DEFAULT_CONFORM_IMAGE!r} to "
+            f"_run_conformance; got {received!r}"
+        )
