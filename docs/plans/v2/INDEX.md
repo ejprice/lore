@@ -128,7 +128,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | # | Packet (file) | was | Wave | Size | Depends on | Status |
 |---|---------------|-----|------|------|-----------|--------|
 | 01 | ledger-triage + lore_index watched-path/branch line | PKT-29 | pre | 0.15 | — | **DONE 2026-07-14** (image 6d599942cc69, both containers) |
-| 01a | **artifact-conformance — run the suite IN the deployed image** (#139) | — | pre | 0.25 (measure-first) | 01 | open — **NEXT** |
+| 01a | **artifact-conformance — run the suite IN the deployed image** (#139) | — | pre | 0.25 (measure-first) | 01 | **CODE DONE + cold-audit GO 2026-07-15** (c90df55/b528ac1/a35cdca; in-image suite 5545/0; no 01b split) — **DEPLOY pending operator** (#141 fix committed, live image still on old drifted deps) |
 | 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.20 | — | open (after 01a) |
 | 03 | comms-message-graph (send/drain/ack, seq) | PKT-28 C2b | C | 0.25 | 02 | open |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
@@ -483,3 +483,17 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   **RESIDUAL #140, bigger than the bug:** a `cp -a` copy never runs its own production code — the guard
   was merely the first instrument to NOTICE, being the only one that compares what it WATCHES against
   what actually RAN. THIRD instance of one law (#24, #139, #140): **prove which tree you are testing.**
+- 2026-07-15 · **PACKET 01a CODE DONE — cold-audit GO; the DEPLOY is the operator's call.** `conform` verb +
+  `conformance_run.sh` + `conformance_provenance.py` run the BAKED suite IN the deployed image, import-provenance
+  gated (each member resolves to a BAKED root — /app or site-packages — NOT the /workspace mount; `.resolve()`→
+  `is_relative_to`, mutation-proven). Measurement: **5545 passed**, the ONLY divergence a (b)-class mypy
+  dev-toolchain meta-test (shells `uv run mypy`, needs a writable env) now opting out with a reasoned skipif;
+  **ZERO artifact defects** — the two predicted are already closed (#131 git baked in, #107 unseeable by any
+  suite). Contract-first: RED contract b528ac1 (30 pins), cold contract-adversary (built wrong guards → +4
+  pins), Opus builder, cold REFUTE audit **GO** (coverage EXACT host 5566 == in-container 5566; both pins
+  mutation-proven w/ positive controls; provenance-aborts-pytest chain proven; #141 lock pin discriminates).
+  **Operator-EXPANDED with #141**: the image built via `uv pip install ./members` resolved FRESH and DRIFTED
+  from uv.lock (mcp/starlette/uvicorn/sqlglot newer — untested in prod) → now `uv sync --locked --all-packages`
+  (deps pinned to the lock + pytest baked; conformance == the LITERAL artifact). Wired as the post-`podman build`
+  step, OFF `start`. Commits c90df55 (image) / b528ac1 (contract) / a35cdca (harness). #139 RESOLVED; #141 ack'd
+  (fix committed, LIVE image still drifted until rebuild+recreate — the operator's production-touching deploy).
