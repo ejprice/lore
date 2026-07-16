@@ -128,7 +128,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | # | Packet (file) | was | Wave | Size | Depends on | Status |
 |---|---------------|-----|------|------|-----------|--------|
 | 01 | ledger-triage + lore_index watched-path/branch line | PKT-29 | pre | 0.15 | — | **DONE 2026-07-14** (image 6d599942cc69, both containers) |
-| 01a | **artifact-conformance — run the suite IN the deployed image** (#139) | — | pre | 0.25 (measure-first) | 01 | **CODE DONE + cold-audit GO 2026-07-15** (c90df55/b528ac1/a35cdca; in-image suite 5545/0; no 01b split) — **DEPLOY pending operator** (#141 fix committed, live image still on old drifted deps) |
+| 01a | **artifact-conformance — run the suite IN the deployed image** (#139) | — | pre | 0.25 (measure-first) | 01 | **DONE + DEPLOYED 2026-07-16** (c90df55/b528ac1/a35cdca/062bf60; image **f25c18976b2b**, both containers; in-image suite 5545/0; no 01b split; **#141 drift closed in the running artifact**) |
 | 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.20 | — | open (after 01a) |
 | 03 | comms-message-graph (send/drain/ack, seq) | PKT-28 C2b | C | 0.25 | 02 | open |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
@@ -497,3 +497,10 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   (deps pinned to the lock + pytest baked; conformance == the LITERAL artifact). Wired as the post-`podman build`
   step, OFF `start`. Commits c90df55 (image) / b528ac1 (contract) / a35cdca (harness). #139 RESOLVED; #141 ack'd
   (fix committed, LIVE image still drifted until rebuild+recreate — the operator's production-touching deploy).
+- 2026-07-16 · **PACKET 01a DEPLOYED (operator-approved).** Rebuilt `localhost/lore:latest` from HEAD 062bf60
+  via `uv sync --locked --all-packages` → image **f25c18976b2b** (LORE_VERSION v0.4-226-g062bf60); deps now
+  match uv.lock live (mcp 1.27.2 / starlette 1.2.0 / uvicorn 0.48.0 / pytest 9.0.3 baked). `conform` GREEN
+  against :latest BEFORE recreate (provenance all /app, 5545 passed). Both containers recreated on it from
+  captured CreateCommands + boot-smoked GREEN (Uvicorn serving :9202/:9201, reconcile clean); `lore_index`
+  serves branch feat/surreal-unification @ 062bf60. #139 + #141 RESOLVED. Old image 6d599942cc69 kept as
+  rollback. The #141 drift is now closed in the RUNNING ARTIFACT, not just the recipe.
