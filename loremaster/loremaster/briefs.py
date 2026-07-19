@@ -137,6 +137,15 @@ BriefAckVia = Literal["register", "explicit", "publish"]
 BRIEF_NAME_PROJECT = "project"
 BRIEF_NAME_BASE = "base"
 
+# The ONE named standing-brief ROLE (finding #104): the brief every agent
+# auto-acks at register, whose skew the heartbeat surfaces universally, and
+# whose ack level the fleet's project column tracks. It is a ROLE bound to a
+# name, not the literal name — the four standing surfaces in ``server.py``
+# read THIS symbol (never a private ``== BRIEF_NAME_PROJECT`` copy), so the
+# binding is one edit, provable by mutation. Distinct from ``BRIEF_NAME_PROJECT``
+# (the literal default ``brief_get`` resolves when no name is given).
+STANDING_BRIEF = BRIEF_NAME_PROJECT
+
 # The teaching-error known-names cap (design doc §4/§7; v4 audit D2 fix):
 # ``_unknown_brief_error``'s "some briefs published" clause dumped an
 # UNBOUNDED, uncounted ``', '.join(known)`` — the same context-blowout class
@@ -208,6 +217,8 @@ _EDGE_IN_PARAM = "edge_in"
 _EDGE_OUT_PARAM = "edge_out"
 _ACKED_IN_PARAM = "acked_in"
 _COVERAGE_ROSTER_PARAM = "coverage_roster_ids"
+_SKEW_ACKED_IDS_PARAM = "skew_acked_ids"
+_SKEW_NAMES_PARAM = "skew_names"
 
 
 class AgentRefLike(Protocol):
@@ -1078,6 +1089,88 @@ class BriefLedger:
         return await self._acked_versions_for_roster(
             roster, version_by_brief_id=version_by_brief_id
         )
+
+    async def subscribed_name_skew(
+        self, *, agent_id: str, exclude: str
+    ) -> list[tuple[str, int, int]]:
+        """Per subscribed non-``exclude`` brief name this agent is behind on, a
+        ``(name, head_version, acked_version)`` tuple (the #103 heartbeat read).
+
+        A name is SUBSCRIBED when this agent holds >=1 ``briefed`` edge to ANY
+        of its versions (design doc §5.3); ``acked`` is the MAX such version;
+        the name is surfaced only when ``acked < head`` (skew > 0). ``exclude``
+        — the standing brief, which the heartbeat surfaces universally — is
+        dropped even when the agent is behind on it. The result is UNORDERED
+        and UNCAPPED: skew-magnitude ordering and the per-name cap are §9.2
+        RENDER concerns (:meth:`AppContext._render_comms_heartbeat`).
+
+        Bounded query count (mirrors :meth:`acked_versions_for_ids`'s grouped-
+        query discipline, finding #94 — never a per-name :meth:`acked_version`
+        loop): exactly three, each independent of how many names, versions, or
+        edges exist. (1) the agent's ``briefed`` edges; (2) ONE grouped lookup
+        of those acked briefs BY ID -> the subscribed names + this agent's
+        acked MAX version per name; (3) ONE grouped lookup of every version of
+        exactly those subscribed names BY NAME -> the head per name. It is one
+        query more than :meth:`acked_versions_for_ids` because the subscribed
+        names are not known in advance — they are DISCOVERED from the agent's
+        edges (the reverse id->name lookup the name-given readers skip) — and
+        never a full-table ``SELECT * FROM brief`` scan.
+        """
+        edge_rows = self._as_rows(
+            await self._query(
+                f"SELECT {_COL_EDGE_OUT} FROM {BRIEFED_RELATION} WHERE {_COL_EDGE_IN} = ${_ACKED_IN_PARAM}",
+                {_ACKED_IN_PARAM: RecordID(AGENT_TABLE, agent_id)},
+            )
+        )
+        acked_brief_ids = {
+            self._bare_id(row[_COL_EDGE_OUT]) for row in edge_rows if _COL_EDGE_OUT in row
+        }
+        if not acked_brief_ids:
+            return []
+        acked_rows = self._as_rows(
+            await self._query(
+                f"SELECT {_COL_NAME}, {_COL_VERSION} FROM {BRIEF_TABLE} "
+                f"WHERE {_ID_KEY} IN ${_SKEW_ACKED_IDS_PARAM}",
+                {_SKEW_ACKED_IDS_PARAM: [RecordID(BRIEF_TABLE, bid) for bid in acked_brief_ids]},
+            )
+        )
+        acked_by_name = self._max_version_by_name(acked_rows, exclude=exclude)
+        if not acked_by_name:
+            return []
+        head_rows = self._as_rows(
+            await self._query(
+                f"SELECT {_COL_NAME}, {_COL_VERSION} FROM {BRIEF_TABLE} "
+                f"WHERE {_COL_NAME} IN ${_SKEW_NAMES_PARAM}",
+                {_SKEW_NAMES_PARAM: list(acked_by_name)},
+            )
+        )
+        head_by_name = self._max_version_by_name(head_rows, exclude=None)
+        result: list[tuple[str, int, int]] = []
+        for subscribed_name, acked in acked_by_name.items():
+            head = head_by_name.get(subscribed_name)
+            if head is not None and acked < head:
+                result.append((subscribed_name, head, acked))
+        return result
+
+    @staticmethod
+    def _max_version_by_name(
+        rows: list[dict[str, Any]], *, exclude: str | None
+    ) -> dict[str, int]:
+        """Fold ``(name, version)`` rows into ``name -> MAX version`` (skipping
+        ``exclude`` when given). Shared by :meth:`subscribed_name_skew`'s acked
+        and head folds so the MAX-over-versions rule is written once."""
+        by_name: dict[str, int] = {}
+        for row in rows:
+            if _COL_NAME not in row or _COL_VERSION not in row:
+                continue
+            name = str(row[_COL_NAME])
+            if exclude is not None and name == exclude:
+                continue
+            version = int(row[_COL_VERSION])
+            current = by_name.get(name)
+            if current is None or version > current:
+                by_name[name] = version
+        return by_name
 
     async def _acked_versions_for_roster(
         self, roster: Sequence[AgentRefLike], *, version_by_brief_id: dict[str, int]

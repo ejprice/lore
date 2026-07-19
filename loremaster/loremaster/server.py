@@ -51,7 +51,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMappi
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, Protocol, cast
 from uuid import uuid4
 
 from lorescribe.javascript import JavascriptChunker
@@ -68,7 +68,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from loremaster.agents import AGENT_NAME_PATTERN
 from loremaster.agents import UnknownAgentError as _UnknownAgentError
-from loremaster.briefs import BRIEF_NAME_PROJECT
+from loremaster.briefs import BRIEF_NAME_PROJECT, STANDING_BRIEF
 from loremaster.briefs import UnknownBriefError as _UnknownBriefError
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, load_config
 from loremaster.diff import SnapshotNotFoundError
@@ -1115,6 +1115,11 @@ _COVERAGE_NAMES_CAP = 5
 # remainder collapses to one counted "at older versions" group. The spec
 # DECLARES this value — it is not a builder's choice.
 _SKEW_BREAKDOWN_CAP = 3
+# design doc §9.2 (v8): the cap on per-name subscribed-brief skew notice lines
+# a single heartbeat renders — beyond it the remainder collapses to ONE counted
+# ``behind on {k} more briefs`` line, so an agent behind on many briefs never
+# gets unbounded heartbeat spam (#103). The spec DECLARES this value.
+_HEARTBEAT_SKEW_NAMES_CAP = 3
 # design doc §4: the enforceable clamp behind ``fleet``'s ``limit=`` re-ask —
 # a counted elision's re-ask value is always honest AND clamped to this
 # ceiling (DESIGN-LAW §1.2), never an unbounded "ask for everything".
@@ -1811,6 +1816,25 @@ class _CalibrationFindingsAdapter:
             category=category,
             created_by=created_by,
         )
+
+
+class _HeartbeatAgentLike(Protocol):
+    """The minimal agent shape :meth:`AppContext._render_comms_heartbeat` reads.
+
+    The heartbeat render only ever reads ``.name`` and ``.status`` off the
+    agent (never its id, timestamps, or the rest of :class:`~loremaster.agents.
+    Agent`), so it is typed against this structural READ-ONLY Protocol rather
+    than the full nominal ``Agent`` — the same decoupling (and the same
+    read-only-property rationale) as :class:`~loremaster.briefs.AgentRefLike`.
+    A real ``Agent`` satisfies it, and so does a minimal duck-typed stand-in
+    the §9.2 cap/collapse/order pin drives the render with directly.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def status(self) -> str: ...
 
 
 class AppContext:
@@ -4358,26 +4382,15 @@ class AppContext:
         body: str | None = None,
         version: int | None = None,
         limit: int | None = None,
-        created_by: str | None = None,
     ) -> Rendered:
         """Dispatch a ``lore_comms`` action (register/heartbeat/brief_get/
 
         brief_publish/brief_ack/fleet) through :data:`_COMMS_ACTIONS`.
 
-        ``created_by`` is NOT part of the ``_COMMS_ACTIONS`` table (it is
-        never a ``spec.params``/``spec.required`` member for any action, and
-        is never exposed on the ``lore_comms`` MCP tool's own signature —
-        confirmed against ``test_param_honesty__every_spec_param_is_in_the_
-        tool_signature``) and is therefore EXEMPT from the strict-param law
-        below, exactly like the universal ``agent``/``session`` names: it is
-        a Python-level convenience the RED contract suite's own
-        ``test_first_version_variant`` calls with (a deviation from
-        ``REPORT-c1-contract-surface.md``'s pinned signature — the test file
-        is the specification per brief-base §1, so this follows the test).
-        When given, it overrides the publishing identity's name as the
-        recorded ``Brief.created_by``; ``brief_publish`` falls back to the
-        acting ``agent``'s own name when omitted (the common case — the MCP
-        tool never sends it at all).
+        The acting ``agent`` IS the author of anything it publishes (#100):
+        ``brief_publish`` records ``Brief.created_by`` as the acting agent's
+        own name and self-acks it (finding #98), so identity is never split
+        across a separate ``created_by`` affordance the MCP tool never sent.
 
         Raises:
             ValueError: An unknown action, a charset violation, a foreign
@@ -4468,7 +4481,6 @@ class AppContext:
             body=body,
             version=version,
             limit=limit,
-            created_by=created_by,
         )
 
     @staticmethod
@@ -4554,7 +4566,7 @@ class AppContext:
         brief: Brief | None
         brief_age_s = 0
         try:
-            brief = await self.brief_ledger.get_head(BRIEF_NAME_PROJECT)
+            brief = await self.brief_ledger.get_head(STANDING_BRIEF)
         except _UnknownBriefError:
             brief = None
         if brief is not None:
@@ -4562,7 +4574,7 @@ class AppContext:
             await self.brief_ledger.ack(
                 agent_id=result.agent.id,
                 agent_name=result.agent.name,
-                name=BRIEF_NAME_PROJECT,
+                name=STANDING_BRIEF,
                 version=brief.version,
                 via="register",
             )
@@ -4575,20 +4587,32 @@ class AppContext:
         )
 
     async def _comms_heartbeat(self, *, agent_row: Agent, **_ignored: Any) -> Rendered:
-        """heartbeat — the touch already ran; render the post-touch state + skew."""
+        """heartbeat — the touch already ran; render the post-touch state + skew.
+
+        The standing brief's skew is surfaced UNIVERSALLY (every agent is a
+        subscriber, §5.3); non-standing brief skew is surfaced only for names
+        this agent actually SUBSCRIBED to — the §9.2 v8 subscribed-name skew
+        (#103), excluding the standing brief handled above.
+        """
         head_version: int | None
         acked_version: int | None
         try:
-            head = await self.brief_ledger.get_head(BRIEF_NAME_PROJECT)
+            head = await self.brief_ledger.get_head(STANDING_BRIEF)
             head_version = head.version
             acked_version = await self.brief_ledger.acked_version(
-                agent_id=agent_row.id, name=BRIEF_NAME_PROJECT
+                agent_id=agent_row.id, name=STANDING_BRIEF
             )
         except _UnknownBriefError:
             head_version = None
             acked_version = None
+        subscribed_skew = await self.brief_ledger.subscribed_name_skew(
+            agent_id=agent_row.id, exclude=STANDING_BRIEF
+        )
         return AppContext._render_comms_heartbeat(
-            agent_row, project_head_version=head_version, project_acked_version=acked_version
+            agent_row,
+            project_head_version=head_version,
+            project_acked_version=acked_version,
+            subscribed_skew=subscribed_skew,
         )
 
     async def _comms_brief_get(
@@ -4619,17 +4643,18 @@ class AppContext:
         name: str,
         body: str,
         note: str | None,
-        created_by: str | None = None,
         **_ignored: Any,
     ) -> Rendered:
         """brief_publish — race-safe counter-row mint + skew/warn consequence lines.
 
-        The skew count obeys the §5.3 scoping law: session-filtered roster and
-        a ``(session X)``-tagged line IFF ``session`` was passed explicitly.
+        The acting ``agent`` IS the author (#100): ``created_by`` is the acting
+        agent's own name, self-acked in the same transaction (finding #98) — no
+        separate author affordance. The skew count obeys the §5.3 scoping law:
+        session-filtered roster and a ``(session X)``-tagged line IFF
+        ``session`` was passed explicitly.
         """
-        publisher = created_by if created_by is not None else agent_row.name
         result = await self.brief_ledger.publish(
-            name, body, created_by=publisher, note=note, agent_id=agent_row.id
+            name, body, created_by=agent_row.name, note=note, agent_id=agent_row.id
         )
         # Skew's denominator rides the SAME §5.3 plumbing as coverage (v4
         # audit D1 fix) — the complete in-scope membership, never the
@@ -4646,6 +4671,7 @@ class AppContext:
             behind=coverage.behind,
             body_chars=len(body),
             warn_threshold_chars=self.config.comms.brief_body_warn_chars,
+            auto_ack_at_register=name == STANDING_BRIEF,
         )
 
     async def _comms_brief_ack(
@@ -4675,7 +4701,7 @@ class AppContext:
         window = await self.agent_registry.fleet(session=session, limit=display_limit)
         project_head_version: int | None
         try:
-            head = await self.brief_ledger.get_head(BRIEF_NAME_PROJECT)
+            head = await self.brief_ledger.get_head(STANDING_BRIEF)
             project_head_version = head.version
         except _UnknownBriefError:
             project_head_version = None
@@ -4691,7 +4717,7 @@ class AppContext:
         acked_versions: dict[str, int | None] = {}
         if project_head_version is not None:
             acked_by_id = await self.brief_ledger.acked_versions_for_ids(
-                [row.id for row in window.rows], name=BRIEF_NAME_PROJECT
+                [row.id for row in window.rows], name=STANDING_BRIEF
             )
             acked_versions = {row.id: acked_by_id.get(row.id) for row in window.rows}
         return AppContext._render_comms_fleet(
@@ -4772,34 +4798,84 @@ class AppContext:
 
     @staticmethod
     def _render_comms_heartbeat(
-        agent: Agent, *, project_head_version: int | None, project_acked_version: int | None
+        agent: _HeartbeatAgentLike,
+        *,
+        project_head_version: int | None,
+        project_acked_version: int | None,
+        subscribed_skew: Sequence[tuple[str, int, int]],
     ) -> Rendered:
-        """heartbeat's render (design doc §9.2): silent one-line, or +1 skew line."""
-        line1 = render_line(
-            "heartbeat {name} — status {status}",
-            name=sanitise_line(agent.name),
-            status=sanitise_line(agent.status),
-        )
-        if project_head_version is None or project_acked_version == project_head_version:
-            return line1
-        if project_acked_version is None:
-            return render_compose(
-                line1,
-                render_line(
-                    "you have not acked brief 'project' (head v{head}) — "
-                    "lore_comms action=brief_get",
-                    head=project_head_version,
-                ),
-            )
-        return render_compose(
-            line1,
+        """heartbeat's render (design doc §9.2 v8): status line, the universal
+        'project' skew line, then the SUBSCRIBED non-'project' name skew (#103).
+
+        The subscribed skew (``(name, head, acked)`` tuples, arbitrary store
+        order) is rendered skew-magnitude DESCENDING (name ascending on ties),
+        the ``_HEARTBEAT_SKEW_NAMES_CAP`` largest as individual per-name
+        notices, and the remainder collapsed into ONE counted line (names
+        capped at ``_COVERAGE_NAMES_CAP`` with a ``(+{j} more)`` suffix) so an
+        agent behind on many briefs never gets unbounded heartbeat spam. The
+        'project' skew line's LABEL and grammar stay byte-stable (§9.2).
+        """
+        lines: list[Rendered] = [
             render_line(
-                "brief 'project' v{head} is head — you acked v{acked}; "
-                "catch up: lore_comms action=brief_get",
-                head=project_head_version,
-                acked=project_acked_version,
-            ),
-        )
+                "heartbeat {name} — status {status}",
+                name=sanitise_line(agent.name),
+                status=sanitise_line(agent.status),
+            )
+        ]
+        if project_head_version is not None and project_acked_version != project_head_version:
+            if project_acked_version is None:
+                lines.append(
+                    render_line(
+                        "you have not acked brief 'project' (head v{head}) — "
+                        "lore_comms action=brief_get",
+                        head=project_head_version,
+                    )
+                )
+            else:
+                lines.append(
+                    render_line(
+                        "brief 'project' v{head} is head — you acked v{acked}; "
+                        "catch up: lore_comms action=brief_get",
+                        head=project_head_version,
+                        acked=project_acked_version,
+                    )
+                )
+        # Skew-magnitude DESCENDING, name ascending on ties — the store returns
+        # arbitrary order, so ordering is the render's job (§9.2).
+        ordered = sorted(subscribed_skew, key=lambda entry: (-(entry[1] - entry[2]), entry[0]))
+        for skew_name, skew_head, skew_acked in ordered[:_HEARTBEAT_SKEW_NAMES_CAP]:
+            lines.append(
+                render_line(
+                    "brief '{name}' v{head} is head — you acked v{acked}; "
+                    "catch up: lore_comms action=brief_get name='{name}'",
+                    name=sanitise_line(skew_name),
+                    head=skew_head,
+                    acked=skew_acked,
+                )
+            )
+        remainder = ordered[_HEARTBEAT_SKEW_NAMES_CAP:]
+        if remainder:
+            shown = [sanitise_line(entry[0]) for entry in remainder[:_COVERAGE_NAMES_CAP]]
+            over = len(remainder) - len(shown)
+            if over > 0:
+                lines.append(
+                    render_line(
+                        "behind on {k} more briefs: {names} (+{extra} more) — "
+                        "brief_get each by name",
+                        k=len(remainder),
+                        names=render_join(", ", shown),
+                        extra=over,
+                    )
+                )
+            else:
+                lines.append(
+                    render_line(
+                        "behind on {k} more briefs: {names} — brief_get each by name",
+                        k=len(remainder),
+                        names=render_join(", ", shown),
+                    )
+                )
+        return render_compose(*lines)
 
     @staticmethod
     def _render_comms_behind_entry(entry: BriefBehindEntry) -> SafeLine:
@@ -4930,10 +5006,21 @@ class AppContext:
         behind: Sequence[BriefBehindEntry],
         body_chars: int,
         warn_threshold_chars: int,
+        auto_ack_at_register: bool,
     ) -> Rendered:
-        """brief_publish's render (design doc §9.4): publish line + skew/warn lines."""
+        """brief_publish's render (design doc §9.4 v8): publish line + skew/warn.
+
+        ``auto_ack_at_register`` carries TYPED applicability (finding #104): the
+        render branches on what is TRUE — whether agents auto-ack this brief at
+        register (the standing role) — never on ``result.brief.name``, so a
+        brief literally named 'project' with the flag False renders the
+        brief_ack tail and a non-'project' standing brief renders the register
+        tail. It also selects, with ``has_unbriefed`` (an unbriefed agent in
+        ``behind``), which of §9.4's three name-conditioned skew tails is TRUE
+        for THIS publish (the §5.3 mechanism-promise corollary).
+        """
         if result.first_version:
-            if result.brief.name == BRIEF_NAME_PROJECT:
+            if auto_ack_at_register:
                 lines = [
                     render_line(
                         "brief '{name}' v{version} published by {publisher} — first version; "
@@ -4964,25 +5051,59 @@ class AppContext:
             ]
         if len(behind) > 0:
             breakdown = AppContext._render_comms_skew_breakdown(behind)
-            if session is not None:
+            has_unbriefed = any(entry.acked_version is None for entry in behind)
+            if auto_ack_at_register or not has_unbriefed:
+                # Tail 1 (standing) / tail 2 (non-standing, no unbriefed group):
+                # the notice truly surfaces universally at every agent's next
+                # heartbeat — every behind agent is a subscriber here.
+                if session is not None:
+                    lines.append(
+                        render_line(
+                            "skew (session {session}): {behind} non-retired agents behind "
+                            "head v{head} — {breakdown}; surfaces at their next heartbeat",
+                            session=sanitise_line(session),
+                            behind=len(behind),
+                            head=result.brief.version,
+                            breakdown=breakdown,
+                        )
+                    )
+                else:
+                    lines.append(
+                        render_line(
+                            "skew: {behind} non-retired agents behind head v{head} — "
+                            "{breakdown}; surfaces at their next heartbeat",
+                            behind=len(behind),
+                            head=result.brief.version,
+                            breakdown=breakdown,
+                        )
+                    )
+            # Tail 3 (non-standing, unbriefed group non-empty): the promise is
+            # HALF-true — ackers see it at heartbeat, but unbriefed non-'project'
+            # agents are never nagged and must brief_get by name (the §9.7
+            # mechanism-promise honesty for instance 9).
+            elif session is not None:
                 lines.append(
                     render_line(
                         "skew (session {session}): {behind} non-retired agents behind "
-                        "head v{head} — {breakdown}; surfaces at their next heartbeat",
+                        "head v{head} — {breakdown}; ackers see it at next heartbeat — "
+                        "unbriefed agents only via brief_get name='{name}'",
                         session=sanitise_line(session),
                         behind=len(behind),
                         head=result.brief.version,
                         breakdown=breakdown,
+                        name=sanitise_line(result.brief.name),
                     )
                 )
             else:
                 lines.append(
                     render_line(
                         "skew: {behind} non-retired agents behind head v{head} — "
-                        "{breakdown}; surfaces at their next heartbeat",
+                        "{breakdown}; ackers see it at next heartbeat — unbriefed "
+                        "agents only via brief_get name='{name}'",
                         behind=len(behind),
                         head=result.brief.version,
                         breakdown=breakdown,
+                        name=sanitise_line(result.brief.name),
                     )
                 )
         if body_chars > warn_threshold_chars:
@@ -5023,14 +5144,18 @@ class AppContext:
     def _render_comms_fleet_brief_cell(
         project_head_version: int | None, acked_version: int | None
     ) -> SafeLine | None:
-        """The fleet row's 'project'-brief cell — ``None`` when omitted entirely."""
+        """The fleet row's 'project'-brief cell — ``None`` when omitted entirely.
+
+        Labelled 'project' now that non-'project' briefs are first-class (§9.6
+        v8 item 4): the cell names the standing brief the column describes.
+        """
         if project_head_version is None:
             return None
         if acked_version is None:
-            return safe_str("brief unbriefed")
+            return safe_str("project unbriefed")
         if acked_version == project_head_version:
-            return safe_str(f"brief v{project_head_version}")
-        return safe_str(f"brief v{acked_version} (head v{project_head_version})")
+            return safe_str(f"project v{project_head_version}")
+        return safe_str(f"project v{acked_version} (head v{project_head_version})")
 
     @staticmethod
     def _render_comms_fleet_row(
