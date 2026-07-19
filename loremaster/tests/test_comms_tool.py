@@ -2651,7 +2651,8 @@ class TestRenderCommsBriefPublish:
     def test_first_version(self) -> None:
         result = BriefPublishResult(brief=_brief(name="project", version=1), first_version=True)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=[], body_chars=10, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
+            result, behind=[], body_chars=10, warn_threshold_chars=4000,
+            session=None, auto_ack_at_register=True,
         )
         assert "first version" in rendered
         assert "skew" not in rendered
@@ -2777,7 +2778,8 @@ class TestRenderCommsBriefPublish:
         behind = [BriefBehindEntry(agent_name=f"agent-{v}", acked_version=v) for v in range(cap, 0, -1)]
         result = BriefPublishResult(brief=_brief(name="project", version=cap + 1), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
+            result, behind=behind, body_chars=10, warn_threshold_chars=4000,
+            session=None, auto_ack_at_register=True,
         )
         expected_breakdown = ", ".join(f"1 at v{v}" for v in range(cap, 0, -1))
         assert (
@@ -2799,7 +2801,8 @@ class TestRenderCommsBriefPublish:
         ]
         result = BriefPublishResult(brief=_brief(name="project", version=cap + 2), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
+            result, behind=behind, body_chars=10, warn_threshold_chars=4000,
+            session=None, auto_ack_at_register=True,
         )
         shown = ", ".join(f"1 at v{v}" for v in range(cap + 1, 1, -1))
         assert (
@@ -2847,7 +2850,8 @@ class TestRenderCommsBriefPublish:
 
         result = BriefPublishResult(brief=_brief(name="project", version=head_version), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
+            result, behind=behind, body_chars=10, warn_threshold_chars=4000,
+            session=None, auto_ack_at_register=True,
         )
 
         tail_total = sum(tail_counts)
@@ -2897,17 +2901,20 @@ class TestRenderCommsBriefPublish:
         module's report."""
         result = BriefPublishResult(brief=_brief(name="project", version=2), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=[], body_chars=10, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
+            result, behind=[], body_chars=10, warn_threshold_chars=4000,
+            session=None, auto_ack_at_register=True,
         )
         assert "skew" not in rendered
 
     def test_warn_line_only_past_threshold(self) -> None:
         result = BriefPublishResult(brief=_brief(name="project", version=1), first_version=True)
         under = AppContext._render_comms_brief_publish(
-            result, behind=[], body_chars=100, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
+            result, behind=[], body_chars=100, warn_threshold_chars=4000,
+            session=None, auto_ack_at_register=True,
         )
         over = AppContext._render_comms_brief_publish(
-            result, behind=[], body_chars=5000, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
+            result, behind=[], body_chars=5000, warn_threshold_chars=4000,
+            session=None, auto_ack_at_register=True,
         )
         assert "exceeds" not in under
         assert "exceeds" in over
@@ -3447,7 +3454,9 @@ async def _render_brief_get_name(value: str, _ctx: Any) -> str:
 
 async def _render_brief_get_author(value: str, _ctx: Any) -> str:
     coverage = BriefCoverage(name="project", head_version=1, total_agents=1, current_count=1, behind=[])
-    return AppContext._render_comms_brief_get(_brief(name="project", created_by=value), 0, coverage, session=None)
+    return AppContext._render_comms_brief_get(
+        _brief(name="project", created_by=value), 0, coverage, session=None
+    )
 
 
 async def _render_brief_get_behind_names(value: str, _ctx: Any) -> str:

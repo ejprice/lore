@@ -261,7 +261,7 @@ class TestEveryCommsRenderLiteralIsClassified:
         dead = sorted(text for text in _classified() if text not in live)
         assert not dead, (
             "classified literal(s) no longer emitted by any comms render — remove the stale "
-            f"registry/free entry:\n" + "\n".join(f"  {text!r}" for text in dead)
+            "registry/free entry:\n" + "\n".join(f"  {text!r}" for text in dead)
         )
 
 
