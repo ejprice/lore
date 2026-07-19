@@ -646,6 +646,31 @@ class FakeBriefLedger:
             behind=behind,
         )
 
+    async def subscribed_name_skew(
+        self, *, agent_id: str, exclude: str
+    ) -> list[tuple[str, int, int]]:
+        # [pkt02 ref] per-name (name, head, acked) for names this agent is
+        # SUBSCRIBED to (has >=1 briefed edge to) with acked < head, excluding
+        # ``exclude`` (the standing name, handled separately). Independent
+        # implementation over self.db.edges, same idiom as acked_version.
+        await asyncio.sleep(0)
+        acked_by_name: dict[str, int] = {}
+        for (edge_agent_id, brief_id) in self.db.edges:
+            if edge_agent_id != agent_id:
+                continue
+            brief = self.db.briefs[brief_id]
+            if brief.name == exclude:
+                continue
+            current = acked_by_name.get(brief.name)
+            if current is None or brief.version > current:
+                acked_by_name[brief.name] = brief.version
+        result: list[tuple[str, int, int]] = []
+        for subscribed_name, acked in acked_by_name.items():
+            head = max(brief.version for brief in self._versions_of(subscribed_name))
+            if acked < head:
+                result.append((subscribed_name, head, acked))
+        return result
+
     async def acked_versions_for_ids(self, agent_ids: Sequence[str], *, name: str) -> dict[str, int]:
         """The bulk, self-contained sibling of :meth:`acked_version` (finding
         #94, REPORT-c1b-contract-9495.md): the ``fleet`` action's fix for a

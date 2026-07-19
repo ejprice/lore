@@ -189,7 +189,7 @@ def _agent(
 
 def _brief(
     *,
-    name: str = "project",
+    name: str,
     version: int = 1,
     body: str = "read the plan",
     created_by: str = "lead",
@@ -1033,7 +1033,6 @@ class TestBriefPublishAction:
                 session="wave7",
                 name="project",
                 body="v1 body",
-                created_by="fixer-b",
             )
         )
         assert "brief 'project' v1 published by fixer-b" in rendered
@@ -1112,17 +1111,31 @@ class TestBriefPublishAction:
                 body="the standing instruction, v2",
             )
         )
-        assert (
-            "skew (session wave7): 1 non-retired agents behind head v2 — 1 unbriefed; "
+        # The skew TAIL is auto_ack_at_register-aware (pkt02): only the
+        # standing 'project' brief surfaces universally at heartbeat; a
+        # non-'project' brief with an unbriefed agent behind teaches the
+        # brief_get path for those unbriefed agents instead.
+        expected_tail = (
             "surfaces at their next heartbeat"
+            if brief_name == "project"
+            else (
+                "ackers see it at next heartbeat — unbriefed agents only via "
+                f"brief_get name='{brief_name}'"
+            )
+        )
+        assert (
+            f"skew (session wave7): 1 non-retired agents behind head v2 — 1 unbriefed; {expected_tail}"
         ) in rendered, f"the author of {brief_name!r} must not be counted behind itself: {rendered!r}"
 
-    async def test_the_self_ack_is_keyed_by_the_agent_row_id_never_the_created_by_name(self) -> None:
+    async def test_the_self_ack_is_keyed_by_the_agent_row_id_never_the_agent_name(self) -> None:
         """The edge is ``agent->briefed->brief``: only the acting agent's opaque
-        ROW ID can carry it. ``created_by`` is a display string (and here it
-        deliberately names someone else entirely) — a build that passed it as
-        the edge's ``in`` endpoint writes an ack for an agent that does not
-        exist, and the real author stays a phantom straggler.
+        ROW ID can carry it — never the agent's display NAME. A build that keyed
+        the self-ack edge on the name string ``'lead'`` (rather than the uuid5
+        row id ``_agent_id('wave7', 'lead')``) writes an ack under an endpoint
+        that is not a real agent row, and the true author stays a phantom
+        straggler. The publishing identity is now the acting agent itself (the
+        old ``created_by`` display override is gone), so the discriminator is
+        the row-id-vs-name distinction, not a third-party name.
         """
         harness = _harness()
         await _register(harness, name="lead", session="wave7", role="lead")
@@ -1133,11 +1146,10 @@ class TestBriefPublishAction:
             session="wave7",
             name="project",
             body="v1",
-            created_by="somebody-else",
         )
         lead_id = FakeAgentRegistry._agent_id("wave7", "lead")
         assert await harness.brief_ledger.acked_version(agent_id=lead_id, name="project") == 1
-        assert await harness.brief_ledger.acked_version(agent_id="somebody-else", name="project") is None
+        assert await harness.brief_ledger.acked_version(agent_id="lead", name="project") is None
 
     async def test_zero_behind_renders_no_skew_line_through_the_tool(self) -> None:
         """THE REACHABILITY PIN (design doc §9.4, v7): "a single-agent fleet
@@ -1610,7 +1622,7 @@ class TestTheFirstVersionLineTeachesAnAckMechanismThatACTUALLYEXISTS:
         )
         assert (
             "skew (session wave7): 1 non-retired agents behind head v2 — 1 unbriefed; "
-            "surfaces at their next heartbeat"
+            "ackers see it at next heartbeat — unbriefed agents only via brief_get name='wave9'"
         ) in rendered, (
             f"an agent that registered AFTER the wave9 publish is STILL unbriefed — which is "
             f"exactly what the v1 line's 'ack at register' clause denies: {rendered!r}"
@@ -1898,7 +1910,7 @@ class TestFleetAction:
 
     async def test_the_publishers_own_fleet_row_renders_current(self) -> None:
         """§9.6's v7 consequence (finding #98): "author's row renders current".
-        Today the publisher's own row reads ``brief unbriefed`` — the fleet, the
+        Today the publisher's own row reads ``project unbriefed`` — the fleet, the
         surface a lead scans to see who is behind, accuses the author of not
         having read its own brief.
         """
@@ -1911,9 +1923,9 @@ class TestFleetAction:
         rendered = str(await AppContext.comms(harness, action="fleet", agent="lead", session="wave7"))
         lead_row = next(line for line in rendered.splitlines() if line.startswith("- lead ["))
         fixer_row = next(line for line in rendered.splitlines() if line.startswith("- fixer-b ["))
-        assert "brief v1" in lead_row
+        assert "project v1" in lead_row
         assert "unbriefed" not in lead_row
-        assert "brief unbriefed" in fixer_row, "the genuinely-unbriefed agent still says so"
+        assert "project unbriefed" in fixer_row, "the genuinely-unbriefed agent still says so"
 
 
 class TestFleetActionBriefCellRendering:
@@ -1924,9 +1936,9 @@ class TestFleetActionBriefCellRendering:
     must STAY green after the fix). Pinned through the RENDERED fleet
     output -- what an agent actually reads -- not the ledger method in
     isolation (test_brief_ledger.py's ``TestAckedVersionsForIds`` pins that
-    separately): an unbriefed agent must still render ``brief unbriefed``
+    separately): an unbriefed agent must still render ``project unbriefed``
     and MUST NOT vanish from the listing; an agent behind head renders
-    ``brief vX (head vY)``; an agent at head renders ``brief vY``; an agent
+    ``project vX (head vY)``; an agent at head renders ``project vY``; an agent
     acked at MULTIPLE versions (out of order) resolves to the MAX.
     """
 
@@ -1974,12 +1986,12 @@ class TestFleetActionBriefCellRendering:
             "every registered agent must still be listed -- an unbriefed agent "
             f"must not vanish from the fleet: {rendered!r}"
         )
-        assert "brief unbriefed" in row_by_name["ghost"], row_by_name["ghost"]
-        assert "brief v1 (head v2)" in row_by_name["behind"], row_by_name["behind"]
-        assert "brief v2" in row_by_name["athead"] and "(head" not in row_by_name["athead"], (
+        assert "project unbriefed" in row_by_name["ghost"], row_by_name["ghost"]
+        assert "project v1 (head v2)" in row_by_name["behind"], row_by_name["behind"]
+        assert "project v2" in row_by_name["athead"] and "(head" not in row_by_name["athead"], (
             row_by_name["athead"]
         )
-        assert "brief v2" in row_by_name["multiack"] and "(head" not in row_by_name["multiack"], (
+        assert "project v2" in row_by_name["multiack"] and "(head" not in row_by_name["multiack"], (
             f"multiack acked v1 then v2 out of order -- must resolve to the MAX "
             f"(v2), not the first/last-written edge: {row_by_name['multiack']!r}"
         )
@@ -2447,8 +2459,9 @@ class TestBriefPublishSkewOverTheWholeRoster:
     ) -> None:
         """v7 / finding #98, at the seam: the ledger writes the self-ack edge,
         but only the DISPATCHER knows who the author is. This pins the exact
-        value crossing that seam — the acting agent's ``id``, not its name, not
-        ``created_by``, and never ``None`` (which would silently mean "no
+        value crossing that seam — the acting agent's ``id``, not its name (the
+        old ``created_by`` display override is gone), and never ``None`` (which
+        would silently mean "no
         self-ack" and restore the phantom-straggler defect with every other test
         still green).
 
@@ -2473,7 +2486,6 @@ class TestBriefPublishSkewOverTheWholeRoster:
             name=brief_name,
             body="standing instructions",
             note=None,
-            created_by="a-different-display-name",
         )
 
         assert ledger_spy.publish_agent_ids == [caller.id]
@@ -2566,26 +2578,26 @@ class TestRenderCommsRegister:
 class TestRenderCommsHeartbeat:
     def test_current_is_silent_one_line(self) -> None:
         rendered = AppContext._render_comms_heartbeat(
-            _agent(), project_head_version=3, project_acked_version=3
+            _agent(), project_head_version=3, project_acked_version=3, subscribed_skew=[]
         )
         assert rendered.count("\n") == 0
 
     def test_no_project_brief_yet_is_silent_one_line(self) -> None:
         rendered = AppContext._render_comms_heartbeat(
-            _agent(), project_head_version=None, project_acked_version=None
+            _agent(), project_head_version=None, project_acked_version=None, subscribed_skew=[]
         )
         assert rendered.count("\n") == 0
 
     def test_skew_is_two_lines(self) -> None:
         rendered = AppContext._render_comms_heartbeat(
-            _agent(), project_head_version=5, project_acked_version=4
+            _agent(), project_head_version=5, project_acked_version=4, subscribed_skew=[]
         )
         assert rendered.count("\n") == 1
         assert "v5" in rendered and "v4" in rendered
 
     def test_unbriefed_with_head_is_two_lines(self) -> None:
         rendered = AppContext._render_comms_heartbeat(
-            _agent(), project_head_version=5, project_acked_version=None
+            _agent(), project_head_version=5, project_acked_version=None, subscribed_skew=[]
         )
         assert rendered.count("\n") == 1
         assert "not acked" in rendered
@@ -2595,7 +2607,7 @@ class TestRenderCommsBriefGet:
     def test_full_coverage(self) -> None:
         coverage = BriefCoverage(name="project", head_version=5, total_agents=5, current_count=5, behind=[])
         rendered = AppContext._render_comms_brief_get(
-            _brief(version=5, body="body text"), 7200, coverage, session=None
+            _brief(name="project", version=5, body="body text"), 7200, coverage, session=None
         )
         assert "body text" in rendered
         assert "coverage: all 5" in rendered
@@ -2612,7 +2624,7 @@ class TestRenderCommsBriefGet:
             ],
         )
         rendered = AppContext._render_comms_brief_get(
-            _brief(version=5, body="body text"), 0, coverage, session=None
+            _brief(name="project", version=5, body="body text"), 0, coverage, session=None
         )
         assert "1/3" in rendered
         assert "fixer-b (v4)" in rendered
@@ -2621,7 +2633,7 @@ class TestRenderCommsBriefGet:
     def test_session_scoped_names_the_session(self) -> None:
         coverage = BriefCoverage(name="project", head_version=1, total_agents=1, current_count=1, behind=[])
         rendered = AppContext._render_comms_brief_get(
-            _brief(version=1, body="b"), 0, coverage, session="wave7"
+            _brief(name="project", version=1, body="b"), 0, coverage, session="wave7"
         )
         assert "wave7" in rendered
 
@@ -2637,9 +2649,9 @@ class TestRenderCommsBriefPublish:
     intended, disclosed RED, not an accidental break of a passing test."""
 
     def test_first_version(self) -> None:
-        result = BriefPublishResult(brief=_brief(version=1), first_version=True)
+        result = BriefPublishResult(brief=_brief(name="project", version=1), first_version=True)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=[], body_chars=10, warn_threshold_chars=4000, session=None
+            result, behind=[], body_chars=10, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
         )
         assert "first version" in rendered
         assert "skew" not in rendered
@@ -2656,7 +2668,12 @@ class TestRenderCommsBriefPublish:
         in miniature)."""
         result = BriefPublishResult(brief=_brief(name=brief_name, version=1), first_version=True)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=[], body_chars=10, warn_threshold_chars=4000, session=None
+            result,
+            behind=[],
+            body_chars=10,
+            warn_threshold_chars=4000,
+            session=None,
+            auto_ack_at_register=(brief_name == "project"),
         )
         assert "first version" in rendered
         assert ("agents ack at register" in rendered) == (brief_name == "project"), (
@@ -2667,7 +2684,7 @@ class TestRenderCommsBriefPublish:
             assert "agents ack with lore_comms action=brief_ack" in rendered
 
     def test_skew_line_renders_only_when_behind_is_nonempty(self) -> None:
-        result = BriefPublishResult(brief=_brief(version=2), first_version=False)
+        result = BriefPublishResult(brief=_brief(name="project", version=2), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
             result,
             behind=[
@@ -2678,6 +2695,7 @@ class TestRenderCommsBriefPublish:
             body_chars=10,
             warn_threshold_chars=4000,
             session=None,
+            auto_ack_at_register=True,
         )
         assert (
             "skew: 3 non-retired agents behind head v2 — 2 at v1, 1 unbriefed; "
@@ -2689,13 +2707,14 @@ class TestRenderCommsBriefPublish:
         """The scoping law's render-helper leg (spec §5.3/§9.4, v2 amendment)
         -- mirrors TestRenderCommsBriefGet.test_session_scoped_names_the_
         session, brief_publish's twin surface."""
-        result = BriefPublishResult(brief=_brief(version=2), first_version=False)
+        result = BriefPublishResult(brief=_brief(name="project", version=2), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
             result,
             behind=[BriefBehindEntry(agent_name="a", acked_version=1)],
             body_chars=10,
             warn_threshold_chars=4000,
             session="wave7",
+            auto_ack_at_register=True,
         )
         assert (
             "skew (session wave7): 1 non-retired agents behind head v2 — 1 at v1; "
@@ -2708,7 +2727,7 @@ class TestRenderCommsBriefPublish:
         function from the ledger/registry stack: a first-version publish
         result with never-acked agents must never name v0 -- old code
         computed prior = result.brief.version - 1 = 1 - 1 = 0."""
-        result = BriefPublishResult(brief=_brief(version=1), first_version=True)
+        result = BriefPublishResult(brief=_brief(name="project", version=1), first_version=True)
         rendered = AppContext._render_comms_brief_publish(
             result,
             behind=[
@@ -2718,6 +2737,7 @@ class TestRenderCommsBriefPublish:
             body_chars=10,
             warn_threshold_chars=4000,
             session=None,
+            auto_ack_at_register=True,
         )
         assert "v0" not in rendered
         assert (
@@ -2730,7 +2750,7 @@ class TestRenderCommsBriefPublish:
         order -- the render helper must sort by stored version itself,
         never trust caller ordering (§9.4: 'stored-acked version groups,
         DESCENDING')."""
-        result = BriefPublishResult(brief=_brief(version=5), first_version=False)
+        result = BriefPublishResult(brief=_brief(name="project", version=5), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
             result,
             behind=[
@@ -2741,6 +2761,7 @@ class TestRenderCommsBriefPublish:
             body_chars=10,
             warn_threshold_chars=4000,
             session=None,
+            auto_ack_at_register=True,
         )
         assert (
             "skew: 3 non-retired agents behind head v5 — 1 at v3, 1 at v2, 1 at v1; "
@@ -2754,9 +2775,9 @@ class TestRenderCommsBriefPublish:
 
         cap = _SKEW_BREAKDOWN_CAP
         behind = [BriefBehindEntry(agent_name=f"agent-{v}", acked_version=v) for v in range(cap, 0, -1)]
-        result = BriefPublishResult(brief=_brief(version=cap + 1), first_version=False)
+        result = BriefPublishResult(brief=_brief(name="project", version=cap + 1), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None
+            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
         )
         expected_breakdown = ", ".join(f"1 at v{v}" for v in range(cap, 0, -1))
         assert (
@@ -2776,9 +2797,9 @@ class TestRenderCommsBriefPublish:
         behind = [
             BriefBehindEntry(agent_name=f"agent-{v}", acked_version=v) for v in range(cap + 1, 0, -1)
         ]
-        result = BriefPublishResult(brief=_brief(version=cap + 2), first_version=False)
+        result = BriefPublishResult(brief=_brief(name="project", version=cap + 2), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None
+            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
         )
         shown = ", ".join(f"1 at v{v}" for v in range(cap + 1, 1, -1))
         assert (
@@ -2824,9 +2845,9 @@ class TestRenderCommsBriefPublish:
             for i in range(count):
                 behind.append(BriefBehindEntry(agent_name=f"agent-v{version}-{i}", acked_version=version))
 
-        result = BriefPublishResult(brief=_brief(version=head_version), first_version=False)
+        result = BriefPublishResult(brief=_brief(name="project", version=head_version), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None
+            result, behind=behind, body_chars=10, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
         )
 
         tail_total = sum(tail_counts)
@@ -2874,19 +2895,19 @@ class TestRenderCommsBriefPublish:
         therefore reachable ONLY at the render layer — which is exactly
         where this pin lives. Flagged, not silently decided, per this
         module's report."""
-        result = BriefPublishResult(brief=_brief(version=2), first_version=False)
+        result = BriefPublishResult(brief=_brief(name="project", version=2), first_version=False)
         rendered = AppContext._render_comms_brief_publish(
-            result, behind=[], body_chars=10, warn_threshold_chars=4000, session=None
+            result, behind=[], body_chars=10, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
         )
         assert "skew" not in rendered
 
     def test_warn_line_only_past_threshold(self) -> None:
-        result = BriefPublishResult(brief=_brief(version=1), first_version=True)
+        result = BriefPublishResult(brief=_brief(name="project", version=1), first_version=True)
         under = AppContext._render_comms_brief_publish(
-            result, behind=[], body_chars=100, warn_threshold_chars=4000, session=None
+            result, behind=[], body_chars=100, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
         )
         over = AppContext._render_comms_brief_publish(
-            result, behind=[], body_chars=5000, warn_threshold_chars=4000, session=None
+            result, behind=[], body_chars=5000, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
         )
         assert "exceeds" not in under
         assert "exceeds" in over
@@ -2952,26 +2973,26 @@ class TestRenderCommsFleetRow:
         rendered = AppContext._render_comms_fleet_row(
             _agent(), project_head_version=None, acked_version=None, stale_after_s=600, heartbeat_age_s=1
         )
-        assert "brief" not in rendered
+        assert "project" not in rendered
 
     def test_brief_cell_current(self) -> None:
         rendered = AppContext._render_comms_fleet_row(
             _agent(), project_head_version=5, acked_version=5, stale_after_s=600, heartbeat_age_s=1
         )
-        assert "brief v5" in rendered
+        assert "project v5" in rendered
         assert "head" not in rendered
 
     def test_brief_cell_behind(self) -> None:
         rendered = AppContext._render_comms_fleet_row(
             _agent(), project_head_version=5, acked_version=4, stale_after_s=600, heartbeat_age_s=1
         )
-        assert "brief v4 (head v5)" in rendered
+        assert "project v4 (head v5)" in rendered
 
     def test_brief_cell_unbriefed(self) -> None:
         rendered = AppContext._render_comms_fleet_row(
             _agent(), project_head_version=5, acked_version=None, stale_after_s=600, heartbeat_age_s=1
         )
-        assert "brief unbriefed" in rendered
+        assert "project unbriefed" in rendered
 
     def test_optional_cells_omitted_when_unset(self) -> None:
         rendered = AppContext._render_comms_fleet_row(
@@ -3408,14 +3429,14 @@ async def _render_register_brief_author(value: str, _ctx: Any) -> str:
         _agent(),
         re_registered=False,
         registered_age_s=0,
-        brief=_brief(created_by=value),
+        brief=_brief(name="project", created_by=value),
         brief_age_s=0,
     )
 
 
 async def _render_heartbeat_name(value: str, _ctx: Any) -> str:
     return AppContext._render_comms_heartbeat(
-        _agent(name=value), project_head_version=None, project_acked_version=None
+        _agent(name=value), project_head_version=None, project_acked_version=None, subscribed_skew=[]
     )
 
 
@@ -3426,7 +3447,7 @@ async def _render_brief_get_name(value: str, _ctx: Any) -> str:
 
 async def _render_brief_get_author(value: str, _ctx: Any) -> str:
     coverage = BriefCoverage(name="project", head_version=1, total_agents=1, current_count=1, behind=[])
-    return AppContext._render_comms_brief_get(_brief(created_by=value), 0, coverage, session=None)
+    return AppContext._render_comms_brief_get(_brief(name="project", created_by=value), 0, coverage, session=None)
 
 
 async def _render_brief_get_behind_names(value: str, _ctx: Any) -> str:
@@ -3437,20 +3458,20 @@ async def _render_brief_get_behind_names(value: str, _ctx: Any) -> str:
         current_count=1,
         behind=[BriefBehindEntry(agent_name=value, acked_version=1)],
     )
-    return AppContext._render_comms_brief_get(_brief(version=2), 0, coverage, session=None)
+    return AppContext._render_comms_brief_get(_brief(name="project", version=2), 0, coverage, session=None)
 
 
 async def _render_brief_publish_name(value: str, _ctx: Any) -> str:
     result = BriefPublishResult(brief=_brief(name=value), first_version=True)
     return AppContext._render_comms_brief_publish(
-        result, behind=[], body_chars=1, warn_threshold_chars=4000, session=None
+        result, behind=[], body_chars=1, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
     )
 
 
 async def _render_brief_publish_publisher(value: str, _ctx: Any) -> str:
-    result = BriefPublishResult(brief=_brief(created_by=value), first_version=True)
+    result = BriefPublishResult(brief=_brief(name="project", created_by=value), first_version=True)
     return AppContext._render_comms_brief_publish(
-        result, behind=[], body_chars=1, warn_threshold_chars=4000, session=None
+        result, behind=[], body_chars=1, warn_threshold_chars=4000, session=None, auto_ack_at_register=True
     )
 
 
@@ -3463,13 +3484,14 @@ async def _render_brief_publish_session(value: str, _ctx: Any) -> str:
     (and its ``{session}`` slot) never rendered under the hostile battery
     at all. ``behind`` is non-empty here so the scoped skew line actually
     renders and the battery reaches the field."""
-    result = BriefPublishResult(brief=_brief(version=2), first_version=False)
+    result = BriefPublishResult(brief=_brief(name="project", version=2), first_version=False)
     return AppContext._render_comms_brief_publish(
         result,
         behind=[BriefBehindEntry(agent_name="a", acked_version=1)],
         body_chars=1,
         warn_threshold_chars=4000,
         session=value,
+        auto_ack_at_register=True,
     )
 
 
@@ -3615,7 +3637,7 @@ class TestFencedBodyIntegrity:
             _agent(),
             re_registered=False,
             registered_age_s=0,
-            brief=_brief(body=self._HOSTILE_BODY),
+            brief=_brief(name="project", body=self._HOSTILE_BODY),
             brief_age_s=0,
         )
         self._assert_fence_integrity(rendered, self._HOSTILE_BODY)
@@ -3623,7 +3645,7 @@ class TestFencedBodyIntegrity:
     def test_brief_get_body_round_trips_verbatim_inside_a_wider_fence(self) -> None:
         coverage = BriefCoverage(name="project", head_version=1, total_agents=1, current_count=1, behind=[])
         rendered = AppContext._render_comms_brief_get(
-            _brief(body=self._HOSTILE_BODY), 0, coverage, session=None
+            _brief(name="project", body=self._HOSTILE_BODY), 0, coverage, session=None
         )
         self._assert_fence_integrity(rendered, self._HOSTILE_BODY)
 

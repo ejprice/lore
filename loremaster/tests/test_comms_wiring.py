@@ -931,11 +931,11 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
         assert "STALE" not in rendered
         lead_row = _fleet_row(rendered, "lead")
         assert "role lead" in lead_row
-        assert "brief v2" in lead_row
+        assert "project v2" in lead_row
         assert "unbriefed" not in lead_row, "the author's own row renders CURRENT (§9.6, v7)"
         fixer_row = _fleet_row(rendered, "fixer-b")
         assert "role builder" in fixer_row
-        assert "brief v2" in fixer_row
+        assert "project v2" in fixer_row
 
 
 # =========================================================================== #
