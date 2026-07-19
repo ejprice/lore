@@ -559,7 +559,7 @@ Where each surfaces in C1 (all four, exactly):
 | `heartbeat` | notice lines when skew>0 or unbriefed for 'project', PLUS one per behind SUBSCRIBED non-project name (v8, capped — §9.2); silent when current — a no-news heartbeat stays one line |
 | `brief_get name=X` | coverage line for X: who is behind/unbriefed, counted-capped (§9.3) |
 | `brief_publish name=X` | consequence line: how many non-retired agents are now behind (§9.4) |
-| `fleet` | per-row 'project' ack: `brief v4` / `brief v4 (head v5)` / `brief unbriefed` (§9.6) |
+| `fleet` | per-row 'project' ack: `project v4` / `project v4 (head v5)` / `project unbriefed` (§9.6) |
 
 'project' rides heartbeat and fleet universally (the standing per-project law
 every agent must track). **v8:** heartbeat ADDITIONALLY reports skew for every
