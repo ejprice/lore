@@ -227,11 +227,31 @@ def _called_name(func: ast.expr) -> str | None:
     return None
 
 
-def _comms_render_literals() -> list[tuple[str, int, str]]:
-    """Every ``render_line``/``render_join`` template LITERAL (function, lineno, text)
-    that appears inside a comms render/handler function in server.py. Implicit string
-    concatenation is already joined by the parser into one ``ast.Constant``."""
-    tree = ast.parse(_SERVER_PY.read_text(encoding="utf-8"), filename="server.py")
+def _scan_render_literals_over_tree(tree: ast.AST) -> list[tuple[str, int, str]]:
+    """Every ``render_line``/``render_join`` TEMPLATE literal (function, lineno, text)
+    inside a comms render/handler function of the given tree.
+
+    TWO template shapes are scanned, and BOTH land in the ONE classified set:
+
+    * a plain ``ast.Constant`` — passed through BYTE-IDENTICALLY, keeping its named
+      ``{version}``-style placeholders, so every existing :data:`_PROMISE_REGISTRY` /
+      :data:`_PROMISE_FREE` key matches exactly as before. (Implicit string
+      concatenation is already joined by the parser into one ``ast.Constant``.)
+    * an ``ast.JoinedStr`` (an f-string template) — canonicalised through item 2's
+      :func:`_string_templates`, so its dynamic parts become the stable ``{}``
+      placeholder. Before this, an f-string template was scanned by NEITHER scanner
+      (this one required a ``Constant``; the safe_str scanner only reaches
+      safe_str/sanitise_line args), so ``render_line(f"do the thing: ... {n}")``
+      served a promise INVISIBLY — mypy does not enforce ``LiteralString``/PEP 675
+      (see render.py's own enforcement story) and house style is "f-strings always",
+      so an honest developer naturally writes the invisible form. Closing it is a
+      REUSE of the existing canonicaliser, not a second policy.
+
+    An f-string template with no literal text at all (only placeholders) carries no
+    promise and is skipped — the same "nothing to classify" rule the safe_str scanner
+    applies. A promise carried in a render VALUE rather than the template is a
+    separate, pinned bound (see ``TestSafeStrLiteralCoverageBound``).
+    """
     literals: list[tuple[str, int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -244,9 +264,29 @@ def _comms_render_literals() -> list[tuple[str, int, str]]:
             if not sub.args:
                 continue
             template = sub.args[0]
-            if isinstance(template, ast.Constant) and isinstance(template.value, str):
-                literals.append((node.name, sub.lineno, template.value))
+            if isinstance(template, ast.Constant):
+                if isinstance(template.value, str):
+                    literals.append((node.name, sub.lineno, template.value))
+            elif isinstance(template, ast.JoinedStr):
+                # ``_string_templates`` is defined further down (item 2's section); the
+                # reference resolves at call time, well after module import.
+                for canonical in _string_templates(template, node, frozenset()):
+                    if _has_literal_text(canonical):
+                        literals.append((node.name, sub.lineno, canonical))
     return literals
+
+
+def _comms_render_literals() -> list[tuple[str, int, str]]:
+    """The render-template scan over the SHIPPED server.py."""
+    tree = ast.parse(_SERVER_PY.read_text(encoding="utf-8"), filename="server.py")
+    return _scan_render_literals_over_tree(tree)
+
+
+def _scan_render_literals_source(source: str) -> list[str]:
+    """The SAME render-template scanner applied to arbitrary source — the self-attack
+    surface. Shares :func:`_scan_render_literals_over_tree` rather than re-walking, so
+    the self-attacks exercise the REAL scanner and can never drift from it."""
+    return [text for _fn, _line, text in _scan_render_literals_over_tree(ast.parse(source))]
 
 
 def _classified() -> frozenset[str]:
@@ -325,21 +365,11 @@ class TestTheGuardActuallyCatchesViolations:
 
     @staticmethod
     def _scan_source(source: str) -> list[str]:
-        """The guard's classifier applied to arbitrary source — the same walk as
-        :func:`_comms_render_literals`, over a synthetic module string."""
-        tree = ast.parse(source)
-        found: list[str] = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            if not (node.name.startswith("_render_comms") or node.name.startswith("_comms_")):
-                continue
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Call) and _called_name(sub.func) in _RENDER_VERB_NAMES and sub.args:
-                    template = sub.args[0]
-                    if isinstance(template, ast.Constant) and isinstance(template.value, str):
-                        found.append(template.value)
-        return found
+        """The guard's classifier applied to arbitrary source. Delegates to the REAL
+        scanner (:func:`_scan_render_literals_source`) rather than re-walking the tree
+        itself — a private copy of the walk would have kept passing these self-attacks
+        after the production scanner changed (routing is not sharing, repo DRY law)."""
+        return _scan_render_literals_source(source)
 
     def test_catches_a_new_unclassified_promise_literal(self) -> None:
         """(i) a builder adds a NEW promise-bearing line and forgets to register it."""
@@ -368,6 +398,53 @@ class TestTheGuardActuallyCatchesViolations:
         outside = (
             "def _render_finding_detail(x):\n"
             "    return render_line('some other surface: action=whatever')\n"
+        )
+        assert self._scan_source(outside) == []
+
+    # -- f-string TEMPLATE closure (fix-wave item 2) -------------------------------
+    # Before this, ``render_line(f"...")`` was scanned by NEITHER scanner: this one
+    # required an ``ast.Constant`` template, and the safe_str scanner only reaches
+    # safe_str/sanitise_line arguments. A promise in an f-string template served
+    # invisibly.
+
+    def test_catches_a_promise_in_an_FSTRING_render_line_template(self) -> None:
+        """(iv) the invisible form: a builder writes the template as an f-string (house
+        style is "f-strings always"; mypy does not enforce LiteralString/PEP 675)."""
+        hostile = (
+            "def _render_comms_new(n):\n"
+            "    return render_line(f'do the thing: lore_comms action=teleport {n}')\n"
+        )
+        literals = self._scan_source(hostile)
+        unclassified = [text for text in literals if text not in _classified()]
+        assert unclassified == ["do the thing: lore_comms action=teleport {}"], unclassified
+
+    def test_positive_control_a_classified_fstring_template_is_accepted(self) -> None:
+        """POSITIVE control for the f-string path: an f-string template whose canonical
+        form IS classified is NOT flagged — so the red above is discrimination, not
+        blanket rejection of every f-string template."""
+        known = "no agents registered"
+        assert known in _PROMISE_FREE  # sanity: a placeholder-free classified literal
+        benign = f"def _render_comms_ok(n):\n    return render_line(f{known!r})\n"
+        literals = self._scan_source(benign)
+        assert literals == [known], literals
+        assert [text for text in literals if text not in _classified()] == []
+
+    def test_positive_control_a_CONSTANT_template_still_passes_through_byte_identically(
+        self,
+    ) -> None:
+        """REGRESSION control for the extension: a plain (non-f-string) template must
+        still be scanned BYTE-IDENTICALLY, named ``{placeholders}`` intact — otherwise
+        every existing registry/promise-free key would stop matching."""
+        known = "brief 'project' v{head} is head — you acked v{acked}; catch up: lore_comms action=brief_get"
+        assert known in _PROMISE_REGISTRY
+        benign = f"def _render_comms_ok(x):\n    return render_line({known!r})\n"
+        assert self._scan_source(benign) == [known]
+
+    def test_ignores_an_fstring_template_outside_a_comms_function(self) -> None:
+        """Different-reason negative for the f-string path too."""
+        outside = (
+            "def _render_finding_detail(n):\n"
+            "    return render_line(f'teleport now: do it {n}')\n"
         )
         assert self._scan_source(outside) == []
 
@@ -635,7 +712,11 @@ _PROOF_LIST: list[PromiseProof] = [
     ),
     PromiseProof(
         literal="behind on {k} more briefs: {names} — brief_get each by name",
-        marker=f"behind on {_P7B_REMAINDER} more briefs:",
+        # FULL rendered line, not the shared "behind on {k} more briefs:" prefix: that
+        # prefix is common to BOTH collapse variants, so a build that ALWAYS renders the
+        # "(+{extra} more)" variant satisfied it and passed vacuously (fix-wave item 1).
+        # ``n00`` is _skew_fixture's smallest skew — the sole remainder after the cap slice.
+        marker=f"behind on {_P7B_REMAINDER} more briefs: n00 {_EM_DASH} brief_get each by name",
         render_emit=lambda: _render_heartbeat(
             project_head=None, project_acked=None, subscribed=_skew_fixture(_P7B_LEN)
         ),
@@ -670,7 +751,11 @@ _PROOF_LIST: list[PromiseProof] = [
     PromiseProof(
         literal="skew (session {session}): {behind} non-retired agents behind head v{head} — "
         "{breakdown}; surfaces at their next heartbeat",
-        marker="skew (session wave7): 2 non-retired agents behind head v2",
+        # FULL rendered line (fix-wave item 3): the bare "skew (session wave7): 2
+        # non-retired agents behind head v2" prefix is ALSO satisfied by the tail-3
+        # scoped variant, so it could not distinguish tail 1 from tail 3.
+        marker=f"skew (session wave7): 2 non-retired agents behind head v2 {_EM_DASH} "
+        "2 at v1; surfaces at their next heartbeat",
         render_emit=lambda: _render_publish(
             name="wave9",
             version=2,
@@ -686,7 +771,9 @@ _PROOF_LIST: list[PromiseProof] = [
     PromiseProof(
         literal="skew: {behind} non-retired agents behind head v{head} — "
         "{breakdown}; surfaces at their next heartbeat",
-        marker="skew: 2 non-retired agents behind head v2",
+        # FULL rendered line (fix-wave item 3) — same reason as the scoped tail 1.
+        marker=f"skew: 2 non-retired agents behind head v2 {_EM_DASH} "
+        "2 at v1; surfaces at their next heartbeat",
         render_emit=lambda: _render_publish(
             name="wave9",
             version=2,
@@ -703,8 +790,12 @@ _PROOF_LIST: list[PromiseProof] = [
         literal="skew (session {session}): {behind} non-retired agents behind head v{head} — "
         "{breakdown}; ackers see it at next heartbeat — unbriefed agents only via "
         "brief_get name='{name}'",
-        marker=f"ackers see it at next heartbeat {_EM_DASH} unbriefed agents only via "
-        "brief_get name='wave9'",
+        # FULL rendered line (fix-wave item 3): the bare tail-3 clause is byte-identical
+        # in the SCOPED and UNSCOPED variants, so it could not distinguish them. The
+        # "skew (session wave7):" head is what makes this proof scoped-specific.
+        marker=f"skew (session wave7): 2 non-retired agents behind head v2 {_EM_DASH} "
+        f"1 at v1, 1 unbriefed; ackers see it at next heartbeat {_EM_DASH} "
+        "unbriefed agents only via brief_get name='wave9'",
         render_emit=lambda: _render_publish(
             name="wave9",
             version=2,
@@ -728,7 +819,11 @@ _PROOF_LIST: list[PromiseProof] = [
         literal="skew: {behind} non-retired agents behind head v{head} — "
         "{breakdown}; ackers see it at next heartbeat — unbriefed agents only via "
         "brief_get name='{name}'",
-        marker=f"{_EM_DASH} unbriefed agents only via brief_get name='wave9'",
+        # FULL rendered line (fix-wave item 3, extended to this fourth tail — same class
+        # as the three named: the bare clause cannot distinguish unscoped from scoped).
+        marker=f"skew: 2 non-retired agents behind head v2 {_EM_DASH} "
+        f"1 at v1, 1 unbriefed; ackers see it at next heartbeat {_EM_DASH} "
+        "unbriefed agents only via brief_get name='wave9'",
         render_emit=lambda: _render_publish(
             name="wave9",
             version=2,
@@ -1144,3 +1239,32 @@ class TestSafeStrLiteralCoverageBound:
             "the safe_str scanner unexpectedly reached ACROSS a function boundary — if you "
             f"CLOSED this known bound deliberately, delete this pin and say so: {found!r}"
         )
+
+    def test_KNOWN_BOUND_a_promise_carried_in_a_render_VALUE_is_not_inspected(self) -> None:
+        """PIN THE MISS #2 (fix-wave item 4): neither scanner inspects the VALUE kwargs of
+        ``render_line`` — only the TEMPLATE. A promise passed as a value, e.g.
+        ``render_line("{msg}", msg=...)``, is caught TODAY only incidentally, because the
+        structural template ``"{msg}"`` is itself UNCLASSIFIED and so fails the default-FAIL
+        classification check.
+
+        RE-OPEN TRIGGER — read this before classifying anything: the day a
+        placeholder-only, structural-LOOKING template (``"{msg}"``, ``"{line}"``, ``"{cells}"``)
+        is added to :data:`_PROMISE_FREE`, this bound MUST be closed first (extend the scan to
+        literal kwarg VALUES), because that classification is exactly what would make a
+        value-carried promise invisible. Classifying such a template without closing the bound
+        silently disarms the guard for that call site."""
+        source = (
+            "def _render_comms_x():\n"
+            '    return render_line("{msg}", msg="do the thing: lore_comms action=teleport now")\n'
+        )
+        templates = _scan_render_literals_source(source)
+        # The TEMPLATE is all that is seen — and it is unclassified, which is the ONLY
+        # reason this shape fails today.
+        assert templates == ["{msg}"], templates
+        assert "{msg}" not in _classified(), (
+            "'{msg}' has been classified as promise-free — the value-carried promise bound "
+            "documented here is now OPEN. Close it (scan literal kwarg values) or revert."
+        )
+        # The promise TEXT itself is invisible to BOTH scanners.
+        assert not any("teleport" in text for text in templates), templates
+        assert _scan_safe_str_source(source) == []
