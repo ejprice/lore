@@ -1104,17 +1104,29 @@ class BriefLedger:
         and UNCAPPED: skew-magnitude ordering and the per-name cap are §9.2
         RENDER concerns (:meth:`AppContext._render_comms_heartbeat`).
 
-        Bounded query count (mirrors :meth:`acked_versions_for_ids`'s grouped-
-        query discipline, finding #94 — never a per-name :meth:`acked_version`
-        loop): exactly three, each independent of how many names, versions, or
-        edges exist. (1) the agent's ``briefed`` edges; (2) ONE grouped lookup
-        of those acked briefs BY ID -> the subscribed names + this agent's
-        acked MAX version per name; (3) ONE grouped lookup of every version of
-        exactly those subscribed names BY NAME -> the head per name. It is one
-        query more than :meth:`acked_versions_for_ids` because the subscribed
-        names are not known in advance — they are DISCOVERED from the agent's
-        edges (the reverse id->name lookup the name-given readers skip) — and
-        never a full-table ``SELECT * FROM brief`` scan.
+        Bounded per-query COST (mirrors :meth:`acked_versions_for_ids`'s
+        grouped-query discipline, finding #94 — never a per-name
+        :meth:`acked_version` loop): exactly three queries, and the cost of
+        EACH is independent of how many brief names, versions, or edges the
+        store holds — none is a full-table ``brief`` scan.
+        (1) the agent's ``briefed`` edges — ``WHERE in = $agent``, an IndexScan
+        on ``briefed_in_out``.
+        (2) those acked briefs BY ID -> the subscribed names + this agent's
+        acked MAX version per name — DIRECT RECORD ACCESS (``SELECT … FROM
+        $ids``, the bound RecordID list AS the ``FROM`` source), O(len(ids)).
+        NOT an ``id IN $ids`` predicate: on this engine a primary-key ``IN``
+        does not use record access — the planner runs it as a full ``brief``
+        TableScan whose cost scales with the row count (#103 / packet-02
+        cold-audit F1: measured 6.1× leaf-elapsed at 11× rows, on EVERY
+        heartbeat of EVERY agent).
+        (3) every version of exactly those subscribed names BY NAME —
+        ``WHERE name IN $names``, an IndexScan on ``brief_name_version``.
+        It is one query more than :meth:`acked_versions_for_ids` because the
+        subscribed names are not known in advance — they are DISCOVERED from
+        the agent's edges (the reverse id->name lookup the name-given readers
+        skip). The three plans are pinned against a real store by
+        ``TestSubscribedNameSkewQueryPlans`` (an EXPLAIN-plan invariant — that
+        pin is the guard; this paragraph is only its description).
         """
         edge_rows = self._as_rows(
             await self._query(
@@ -1129,8 +1141,9 @@ class BriefLedger:
             return []
         acked_rows = self._as_rows(
             await self._query(
-                f"SELECT {_COL_NAME}, {_COL_VERSION} FROM {BRIEF_TABLE} "
-                f"WHERE {_ID_KEY} IN ${_SKEW_ACKED_IDS_PARAM}",
+                # `FROM $ids` = direct record access (O(len ids)); an `id IN $ids`
+                # predicate is a full `brief` TableScan here — pinned #103 / cold-audit F1.
+                f"SELECT {_COL_NAME}, {_COL_VERSION} FROM ${_SKEW_ACKED_IDS_PARAM}",
                 {_SKEW_ACKED_IDS_PARAM: [RecordID(BRIEF_TABLE, bid) for bid in acked_brief_ids]},
             )
         )
