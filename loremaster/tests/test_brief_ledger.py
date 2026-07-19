@@ -1469,3 +1469,180 @@ class TestBriefLedgerConnectionLifecycle:
         finally:
             await ledger.close()
             await drop_database(env)
+
+
+# ===========================================================================
+# pkt02 (#103, spec v8 §5.3 subscription + §9.2): the SUBSCRIBED-NAME SKEW read
+# heartbeat uses to surface non-'project' briefs an agent has ACKED and is now
+# behind on. The FAKE (``_comms_fakes.py::FakeBriefLedger.subscribed_name_skew``)
+# is the surface spec; these pins run it against the REAL store too via the
+# parametrized ``brief_ledger`` fixture. Against CLEAN production they are RED for
+# the right reason — ``BriefLedger`` has no ``subscribed_name_skew`` yet, so the
+# call raises ``AttributeError`` (a real-store BUILDER deliverable, validated
+# reference impl in REPORT-pkt02-contract.md). Against the fake they are GREEN.
+#
+# Contract (mirroring the fake — the fake is the contract):
+#   subscribed(agent, name) = >=1 briefed edge to ANY version of ``name`` (ack =
+#   subscribe); per subscribed name acked = MAX acked version; skew = head - acked
+#   returned ONLY when > 0; the ``exclude`` (standing) name is omitted (heartbeat
+#   renders it via its own universal path). Returns (name, head, acked) tuples.
+#   ORDER + CAP are RENDER concerns (§9.2) — the fake returns unordered/uncapped,
+#   so these set-compare (see REPORT §FOLLOW-UP for the ordering/cap flag).
+# ===========================================================================
+
+
+async def _publish_versions(ledger: BriefLedger, name: str, count: int) -> None:
+    for version in range(1, count + 1):
+        await ledger.publish(name, f"{name} standing instruction v{version}", created_by=PUBLISHER_LEAD)
+
+
+async def _subscribe(ledger: BriefLedger, *, agent_id: str, name: str, version: int) -> None:
+    """Record an ack edge — i.e. SUBSCRIBE ``agent_id`` to ``name`` at ``version``."""
+    await ledger.ack(agent_id=agent_id, agent_name="probe", name=name, version=version, via="explicit")
+
+
+class TestSubscribedNameSkew:
+    """§5.3 subscription + §9.2 heartbeat subscribed-name skew (the #103 ledger read)."""
+
+    async def test_a_subscribed_behind_name_is_returned_with_head_and_acked(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        await _publish_versions(brief_ledger, WAVE_BRIEF_NAME, 3)
+        await _subscribe(brief_ledger, agent_id=AGENT_FIXER_B_ID, name=WAVE_BRIEF_NAME, version=1)
+        result = await brief_ledger.subscribed_name_skew(
+            agent_id=AGENT_FIXER_B_ID, exclude=BRIEF_NAME_PROJECT
+        )
+        # (name, head, acked) — pins the tuple SHAPE (head is v3, acked is v1).
+        assert (WAVE_BRIEF_NAME, 3, 1) in result, result
+
+    async def test_a_subscribed_but_current_name_is_omitted_when_skew_is_zero(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        await _publish_versions(brief_ledger, WAVE_BRIEF_NAME, 2)
+        await _subscribe(brief_ledger, agent_id=AGENT_FIXER_B_ID, name=WAVE_BRIEF_NAME, version=2)
+        result = await brief_ledger.subscribed_name_skew(
+            agent_id=AGENT_FIXER_B_ID, exclude=BRIEF_NAME_PROJECT
+        )
+        assert all(entry[0] != WAVE_BRIEF_NAME for entry in result), (
+            f"a subscribed agent AT head (skew 0) must not be surfaced: {result!r}"
+        )
+
+    async def test_an_unsubscribed_name_with_a_head_is_never_returned(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        # fixer-b subscribes to 'base' (behind) but NEVER acks 'wave7' (which HAS a head).
+        await _publish_versions(brief_ledger, BRIEF_NAME_BASE, 2)
+        await _subscribe(brief_ledger, agent_id=AGENT_FIXER_B_ID, name=BRIEF_NAME_BASE, version=1)
+        await _publish_versions(brief_ledger, WAVE_BRIEF_NAME, 2)
+        result = await brief_ledger.subscribed_name_skew(
+            agent_id=AGENT_FIXER_B_ID, exclude=BRIEF_NAME_PROJECT
+        )
+        assert (BRIEF_NAME_BASE, 2, 1) in result, result
+        assert all(entry[0] != WAVE_BRIEF_NAME for entry in result), (
+            f"an UNSUBSCRIBED name with a head was surfaced — subscription bound (§5.3): {result!r}"
+        )
+
+    async def test_the_excluded_standing_name_is_omitted_even_when_behind(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        await _publish_versions(brief_ledger, BRIEF_NAME_PROJECT, 2)
+        await _subscribe(brief_ledger, agent_id=AGENT_FIXER_B_ID, name=BRIEF_NAME_PROJECT, version=1)
+        await _publish_versions(brief_ledger, WAVE_BRIEF_NAME, 2)
+        await _subscribe(brief_ledger, agent_id=AGENT_FIXER_B_ID, name=WAVE_BRIEF_NAME, version=1)
+        result = await brief_ledger.subscribed_name_skew(
+            agent_id=AGENT_FIXER_B_ID, exclude=BRIEF_NAME_PROJECT
+        )
+        assert (WAVE_BRIEF_NAME, 2, 1) in result, result
+        assert all(entry[0] != BRIEF_NAME_PROJECT for entry in result), (
+            f"the EXCLUDED standing brief was surfaced — heartbeat renders it universally: {result!r}"
+        )
+
+    async def test_acked_is_the_MAX_version_across_an_agents_edges(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        """acked is the MAX version the agent has an edge to — never the edge
+        COUNT, the MIN, or the last/first edge recorded. The fixture makes those
+        wrong builds each return a DIFFERENT number: head 4, edges to v1 and v3
+        (recorded out of order, v3 then v1). MAX=3 (correct, skew 1); COUNT=2;
+        MIN=1; last-recorded=1. Only a max-over-edges build yields (…, 4, 3) — an
+        acked-v1-then-v2/head-3 fixture would let a COUNT build pass (2 == 2).
+        """
+        await _publish_versions(brief_ledger, WAVE_BRIEF_NAME, 4)
+        # Record the HIGHER edge first so a last-write-wins build resolves to v1,
+        # not v3 — max and last-seen then disagree (mirrors the out-of-order ack
+        # in TestAckedVersionsForIds.test_agent_acked_at_multiple_versions_...).
+        await _subscribe(brief_ledger, agent_id=AGENT_FIXER_B_ID, name=WAVE_BRIEF_NAME, version=3)
+        await _subscribe(brief_ledger, agent_id=AGENT_FIXER_B_ID, name=WAVE_BRIEF_NAME, version=1)
+        result = await brief_ledger.subscribed_name_skew(
+            agent_id=AGENT_FIXER_B_ID, exclude=BRIEF_NAME_PROJECT
+        )
+        assert (WAVE_BRIEF_NAME, 4, 3) in result, (
+            f"acked must be the MAX acked version (3): a COUNT build yields 2, a "
+            f"MIN/last-recorded build yields 1 — only max-over-edges gives (…, 4, 3): {result!r}"
+        )
+
+    async def test_another_agents_edges_never_leak(self, brief_ledger: BriefLedger) -> None:
+        await _publish_versions(brief_ledger, WAVE_BRIEF_NAME, 2)
+        await _subscribe(brief_ledger, agent_id=AGENT_FIXER_B_ID, name=WAVE_BRIEF_NAME, version=1)  # behind
+        await _subscribe(brief_ledger, agent_id=AGENT_SCOUT_C_ID, name=WAVE_BRIEF_NAME, version=2)  # at head
+        fixer = await brief_ledger.subscribed_name_skew(
+            agent_id=AGENT_FIXER_B_ID, exclude=BRIEF_NAME_PROJECT
+        )
+        scout = await brief_ledger.subscribed_name_skew(
+            agent_id=AGENT_SCOUT_C_ID, exclude=BRIEF_NAME_PROJECT
+        )
+        assert (WAVE_BRIEF_NAME, 2, 1) in fixer, fixer
+        assert all(entry[0] != WAVE_BRIEF_NAME for entry in scout), (
+            f"scout-c is AT head — another agent's behind-edge must not leak into its skew: {scout!r}"
+        )
+
+    async def test_an_agent_with_no_subscriptions_gets_an_empty_list(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        """Boundary (N=0 subscriptions): a behind-able head EXISTS, but this agent
+        has acked nothing — the result is exactly ``[]``. Kills a build that
+        ignores ``agent_id`` and returns every behind name (the §5.3 subscription
+        bound: an agent that never acked a name is not a party to it).
+        """
+        await _publish_versions(brief_ledger, WAVE_BRIEF_NAME, 2)  # a behind-able head exists...
+        result = await brief_ledger.subscribed_name_skew(
+            agent_id=AGENT_SCOUT_C_ID, exclude=BRIEF_NAME_PROJECT  # ...but scout-c never acked it
+        )
+        assert result == [], (
+            f"an agent with zero briefed edges is subscribed to nothing — "
+            f"nothing may be surfaced: {result!r}"
+        )
+
+    async def test_DISCRIMINATOR_two_subscribed_skews_plus_unsubscribed_plus_excluded(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        """The repo-law single discriminating fixture. ONE agent, four names:
+          - wave7:  head 4, acked v1 -> subscribed+behind, skew 3
+          - base:   head 3, acked v2 -> subscribed+behind, skew 1 (acked-VALUE 2
+                    != its edge-COUNT of 1, so a count-not-version build reds here)
+          - loner:  head 2, UNSUBSCRIBED (never acked)
+          - project(excluded): head 2, acked v1 -> subscribed+behind but EXCLUDED
+
+        The result set must be EXACTLY the two kept names. This ONE fixture kills,
+        at once: a build that returns unsubscribed names (loner leaks); a build
+        that forgets ``exclude`` (project leaks despite skew 1); a build that
+        returns the edge COUNT instead of the acked VERSION (base -> (base,3,1));
+        and a build that drops a subscribed-behind name (base or wave7 missing).
+        Distinct heads/acked/skews across the two kept names avoid the
+        monoculture/alignment blind spots — no two fixture values coincide.
+        """
+        await _publish_versions(brief_ledger, WAVE_BRIEF_NAME, 4)  # head 4
+        await _subscribe(brief_ledger, agent_id=AGENT_FIXER_B_ID, name=WAVE_BRIEF_NAME, version=1)  # skew 3
+        await _publish_versions(brief_ledger, BRIEF_NAME_BASE, 3)  # head 3
+        await _subscribe(  # acked v2 (NOT v1): acked-value 2 != edge-count 1
+            brief_ledger, agent_id=AGENT_FIXER_B_ID, name=BRIEF_NAME_BASE, version=2
+        )  # skew 1
+        await _publish_versions(brief_ledger, "loner", 2)  # head 2 — fixer-b UNSUBSCRIBED
+        await _publish_versions(brief_ledger, BRIEF_NAME_PROJECT, 2)  # head 2
+        await _subscribe(  # subscribed + behind on the standing brief -> EXCLUDED
+            brief_ledger, agent_id=AGENT_FIXER_B_ID, name=BRIEF_NAME_PROJECT, version=1
+        )
+        result = await brief_ledger.subscribed_name_skew(
+            agent_id=AGENT_FIXER_B_ID, exclude=BRIEF_NAME_PROJECT
+        )
+        assert set(result) == {(WAVE_BRIEF_NAME, 4, 1), (BRIEF_NAME_BASE, 3, 2)}, result
