@@ -1,5 +1,14 @@
 # 02 — Comms: render architecture (#104 step-0) · formerly PKT-28 phase C2a
-size ~0.20 wu · wave C · depends: — (C1 deployed) · **NEXT after packet 01**
+size ~0.40 wu (measured; operator SPLIT 2026-07-19 — promise-instrument HARDENING → 02a) · wave C · depends: — (C1 deployed) · **NEXT after packet 01**
+
+> **OPERATOR SPLIT (2026-07-19):** the contract author measured the real work at ~3–4× the
+> original 0.20 estimate. Ruling: packet 02 KEEPS all render work (#104 typed applicability +
+> the one-accessor standing-brief ROLE + #103 heartbeat-skew generalization incl. the REAL
+> `subscribed_name_skew` store method + the three §9.4 tails + the `brief v`→`project v` fleet
+> cell rename) + #100 + #101 + the promise-string completeness-guard CORE (classify every comms
+> render literal; default-FAIL) — this half delivers the exit smoke. The promise instrument's
+> ADVANCED HARDENING (full §9.7 per-entry executable-predicate emission proofs + the `safe_str`
+> literal-text coverage closure `_SAFE_STR_LITERAL_RESIDUAL`) moves to **`02a-comms-promise-instrument-hardening.md`** — not smoke-critical.
 law: read `comms-subsystem.md` FIRST (data model, tool surface, rulings, honest limits,
 roster) + DESIGN-LAW §8/§5/§1 · design source: ~/.claude/plans/one-of-claude-codes-nifty-garden.md · DEPLOY: yes (both)
 
