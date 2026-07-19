@@ -71,6 +71,16 @@ contradicts the packet, STOP and surface — never build on a stale premise.
 at HEAD) — **never pinned snapshots** ("image hash Y still deployed"); snapshot hashes
 live in receipts and the Log only (operator, 2026-07-14 — a pinned-hash entry check
 false-STOPped packet 01 the first time it ran; any rebuild rots an absolute pin).
+**A SCOPE BOUNDARY THAT RESTS ON "X IS ALREADY COVERED" IS A PREMISE, NOT A FACT — IT
+BECOMES AN ENTRY CHECK WITH A PROBE (operator-ruled 2026-07-19, packet 02a).** Whenever a
+packet's IN/OUT list excludes something because another instrument, packet, or layer is
+believed to handle it ("outside a `render_line` template", "the CORE scanner owns that",
+"mypy catches it"), that belief is TESTED at kickoff — one probe, one receipt — before the
+exclusion is honoured. Receipt: 02a's scope said *"outside a `render_line` template"* on the
+assumption those were covered; they were not (an f-string template was invisible to every
+scanner, and `mypy` does NOT enforce `LiteralString`/PEP 675 here). A REAL in-scope hole was
+thereby formally ruled OUT of scope, and surfaced only at cold audit — a full NO-GO cycle
+later. An untested coverage premise is how a defect acquires an alibi.
 Operator kickoff: **load `docs/plans/v2/KICKOFF.md` at session start** — it is the
 standing spawn prompt and encodes this ritual.
 

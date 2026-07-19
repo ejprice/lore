@@ -179,3 +179,29 @@ Source: docs/design/2026-07-04-p8-decomposition-rationale.md:80-93.
 - Write paths fail LOUD on store failure; a silent durability fallback is a defect.
 - The only sanctioned ledger touch-point is READING v0.3 `<slug>.memory.db` files as
   a migration import source (packet 20 N3, formerly PKT-12), frozen and deleted post-soak.
+
+## 15. Test-instrument packets get an adversary too (operator-ruled 2026-07-19, packet 02a)
+A packet whose DELIVERABLE is an instrument (a scanner, a pin battery, a completeness
+guard) has no separate contract for the contract-adversary to grade — the instrument IS
+the tests. Today that means it ships with a builder and a cold audit but **skips the one
+role whose killer question is exactly right for it**: *"if a builder satisfied this
+perfectly but fixed NOTHING, would it still pass?"*
+- **Instrument packets route through the `contract-adversary`, grading the INSTRUMENT'S
+  DISCRIMINATION** (does each pin go RED on a plausible wrong build?) before the lead
+  accepts the wave. The adversary builds wrong implementations; here it builds wrong
+  RENDERS and wrong SHAPES and reports what the instrument waves through.
+- **Receipts (packet 02a, why this exists).** The cold audit caught a pin whose marker was
+  a shared PREFIX of a sibling variant, so an always-wrong-variant build passed the entire
+  instrument file 40/40 — **a vacuous proof inside the anti-vacuity instrument**, caught
+  only by a sibling packet's test. It also caught a promise shape invisible to both
+  scanners. Both are the adversary's native question, found one stage late and at the cost
+  of a full NO-GO cycle.
+- **A scanner's unknown-shape branch DENIES, it never silently placeholders.** Measured in
+  02a: an `else: [_PLACEHOLDER]` fallthrough made `%`-format, `.format()` and `str.join`
+  promises **invisible while the guard reported green** — allow-by-default wearing
+  deny-by-default's clothes. Enumerate the SAFE set (evidence-backed per entry); everything
+  else fails loud naming `file:line` + the AST shape. Patching shapes one at a time is the
+  repo's six-defeats lesson recurring inside the packet built to prevent it.
+- **Every marker/pin proves it discriminates AGAINST ITS SIBLINGS, mechanically** — a
+  cross-satisfaction meta-test, not a human's reading. A marker satisfiable by a sibling
+  branch's output cannot prove its own predicate gates emission.

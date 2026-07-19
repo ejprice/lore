@@ -21,9 +21,25 @@ default-FAIL AST scan; coverage a checked variable) without carrying the heavier
   a gate is an invariant only over code it RUNS — enumerate every comms render literal site and
   assert each is observed, or the scan's reach is the next name-list.
 
+## Scope IN — OPERATOR-RULED ADDITIONS (2026-07-19, recorded per the protocol's scope rule)
+Both found by the cold audit / lead probes AFTER kickoff; the operator ruled them into this
+packet rather than deferring (the packet's original scope line rested on an untested premise —
+see the INDEX protocol's coverage-premise rule, which this packet's experience minted).
+- **f-string `render_line` templates** — the CORE scanner required `ast.Constant`, so
+  `render_line(f"…")` was invisible to BOTH scanners while rendering and serving normally.
+  The original scope line ("OUTSIDE a `render_line` template") formally excluded it on the
+  belief the CORE covered it; it did not, and `mypy` does NOT enforce `LiteralString`/PEP 675
+  here. Ruled IN: close it, do not merely pin it.
+- **Deny-by-default canonicaliser + marker cross-satisfaction meta-test** — shape-patching the
+  f-string case left `%`-format, `.format()` and `str.join` promises still invisible (lead-probed,
+  measured). Unknown AST shape must FAIL LOUD, never silently placeholder; and every proof marker
+  must be proven non-satisfiable by its sibling branches MECHANICALLY, not by a human reading.
+  Ruled IN so the defect CLASSES die here rather than recurring shape-by-shape.
+
 ## Scope OUT
 - Any render/mechanism change (those all land in packet 02). This packet only HARDENS the
-  instrument that guards them.
+  instrument that guards them. (The additions above are INSTRUMENT changes, not render changes —
+  the served surface is untouched; production stayed byte-identical throughout.)
 
 ## Entry check
 Packet 02 deployed; the promise-guard CORE (`test_comms_promise_registry.py`) is live and the
