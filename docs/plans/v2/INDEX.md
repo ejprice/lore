@@ -34,10 +34,14 @@ HERE now** — a packet session must not need to read them.
   design) → 26a+ (onboarding build); 27 (cross-tier compare) rides ∥. Live-DB
   introspection stays with odoo-dev by design.
 
-## State of record (verified 2026-07-19, after packet 02)
-- Branch `feat/surreal-unification` @ **2b69616** (not pushed). Full suite at last
-  lead-run: **5611 passed / 0 failed** (`-n auto`, the standing runner); skill suite
-  **117 passed**; mypy 0 / 144 files; ruff clean.
+## State of record (verified 2026-07-19, after packet 02a)
+- Branch `feat/surreal-unification` @ **ceac2d0** (not pushed). Full suite at last
+  lead-run: **5694 passed / 0 failed** (3 skipped, 3 xfailed; `-n auto`, the standing
+  runner); skill suite **117 passed**; mypy 0 / 144 files; ruff clean.
+- **Packet 02a shipped NO deploy and is not owed one — it is TEST-ONLY.** Production was
+  byte-identical throughout (`server.py` md5 `1caac4bd…` unchanged across every probe by
+  three independent parties), so the deployed image below still matches HEAD's production
+  code exactly. Do not read the unchanged image hash as a stale deployment.
 - Deployed: **BOTH containers recreated on an image baking HEAD** — lore-lore (:9202)
   and DI (:9201). The deploy now GATES ITSELF: `verb_start` runs an artifact probe
   (required container binaries, derived from source) + a workspace-honesty probe
@@ -47,8 +51,9 @@ HERE now** — a packet session must not need to read them.
   `git_branch: feat/surreal-unification` + the real ref.
   15-tool surface; cosine substrate live; floor **0.50649** (STALE — measured over 214
   files, now 291; #87, packets 10/11); P7→P8d′, SLATE S1–S7, the closure wave,
-  PKT-06/C0, PKT-28 C1, the #102 retry-substrate chain, **packet 01**, **01a**, and
-  **packet 02** (comms render architecture) all CLOSED.
+  PKT-06/C0, PKT-28 C1, the #102 retry-substrate chain, **packet 01**, **01a**,
+  **packet 02** (comms render architecture) and **packet 02a** (promise-instrument
+  hardening) all CLOSED.
   Hashes are as-of-verification snapshots (image `ae0e78d9a504`); the authoritative
   deployment check is always RELATIVE (protocol, Boot 4).
 - Standing eval bar: **35-pair set, pinned claude-sonnet-4-5-20250929, client metrics**
@@ -141,7 +146,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 01 | ledger-triage + lore_index watched-path/branch line | PKT-29 | pre | 0.15 | — | **DONE 2026-07-14** (image 6d599942cc69, both containers) |
 | 01a | **artifact-conformance — run the suite IN the deployed image** (#139) | — | pre | 0.25 (measure-first) | 01 | **DONE + DEPLOYED 2026-07-16** (c90df55/b528ac1/a35cdca/062bf60; image **f25c18976b2b**, both containers; in-image suite 5545/0; no 01b split; **#141 drift closed in the running artifact**) |
 | 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.40 | — | **DONE + DEPLOYED 2026-07-19** (image **ae0e78d9a504**, both containers; d3c899f→05a8bb2; cold-audit GO + F1 fixed; live-wire smoke PASS; promise HARDENING split → 02a) |
-| 02a | comms-promise-instrument-hardening (full §9.7 per-entry executable-predicate proofs + `safe_str` literal-coverage closure `_SAFE_STR_LITERAL_RESIDUAL`) | — | C | 0.20 | 02 | open (after 02; NOT smoke-critical) |
+| 02a | comms-promise-instrument-hardening (full §9.7 per-entry executable-predicate proofs + `safe_str` literal-coverage closure `_SAFE_STR_LITERAL_RESIDUAL`) | — | C | 0.20 (ran ~4×) | 02 | **DONE 2026-07-19** (a2e9a70→ceac2d0, 6 commits; TEST-ONLY, **no deploy** — production byte-identical, `server.py` md5 unchanged throughout; scoped gates 34→117) |
 | 03 | comms-message-graph (send/drain/ack, seq) | PKT-28 C2b | C | 0.25 | 02 | open |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
 | 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121) | PKT-28 C3 | C | 0.30 →split | 04 | open |
@@ -547,3 +552,25 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   `safe_str` literal-coverage closure) → **packet 02a**. Rollback image `f25c18976b2b` (lore:pre-pkt02)
   retained. Smoke artifacts: session `pkt02smoke` agents + brief in the prod comms store (documented,
   smoke_p8b precedent). Ledger row c2009c94 done. NEXT = **packet 03** (comms-message-graph).
+- 2026-07-19 · **PACKET 02a DONE — TEST-ONLY, NO DEPLOY** (a2e9a70→ceac2d0, 6 commits; full
+  suite **5694/0**, +83 = exactly the scoped suite's 34→117; skill 117; mypy 0; ruff clean;
+  `server.py` md5 UNCHANGED throughout, verified by lead + 2 audits). §9.7 is now MECHANIZED:
+  16 executable emit/no-emit proofs driving the real renders, with `registered ⟺ proven` a
+  CHECKED invariant — a promise cannot be registered without proving its predicate gates it.
+  The `safe_str` residual was closed, then GENERALIZED to **deny-by-default**: an unknown AST
+  shape now FAILS LOUD (file:line + `ast.dump`) instead of silently becoming a placeholder.
+  **THE LESSON, and it is not the code: 5 of the 8 defects were CLAIMS STATED AS REASONS AND
+  NEVER EXECUTED** — an exemption comment asserting "BoolOp yields a bool" (`"" or "prose"` →
+  `'prose'`) hid the commonest Python default idiom in plain sight; a bounded sweep then
+  EXECUTED all 18 opaque-half claims and found **3 more false**. Every condemning measurement
+  is now an executable pin, so no retired claim can be re-asserted from memory. Two defects
+  were **vacuous proofs INSIDE the anti-vacuity instrument** (a marker that was a sibling's
+  prefix passed 40/40 on a wrong build) — found by cold audit, not by any builder gate.
+  3 audit passes (each NO-GO, each productive); 3 bounds PINNED w/ re-open triggers; #143
+  ledgered (cross-satisfaction cannot see a k-specific prefix weakening — the mutation
+  discipline is NOT retired by it). Operator ruled 2 scope expansions + 2 process laws:
+  **coverage-premise entry checks** (a scope boundary resting on "X is already covered" is a
+  PREMISE — probe it at kickoff; 02a's own scope line gave a real hole a formal alibi) and
+  **DESIGN-LAW §15** (instrument packets route through the contract-adversary). Sized 0.20,
+  ran ~4× — the holes were not visible until the instrument existed, so it could not have
+  split at kickoff. NEXT = **packet 03** (comms-message-graph), unblocked all along (deps 02).
