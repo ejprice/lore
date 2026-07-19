@@ -1087,40 +1087,121 @@ def _canonicalise_join_parts(
     return combos
 
 
+# TRANSPARENT-IN-POSITION calls: the named argument POSITIONS can be returned VERBATIM,
+# so literal text there reaches the output — the same transparency ``BoolOp``/``IfExp``
+# have in their operands, applied to argument positions. Deliberately NOT a blunt
+# "recurse into every call argument" rule: that was MEASURED at 6 false positives on the
+# shipped surface (it surfaces dict-lookup KEYS and similar non-output literals), and a
+# gate that refuses honest code is a gate that gets switched off. This precise set
+# measures ZERO (see TestCallArgumentTransparency).
+_TRANSPARENT_ARG_POSITIONS: dict[str, tuple[int, ...]] = {
+    "get": (1,),  # d.get(key, DEFAULT) -> DEFAULT returned verbatim on a miss
+    "getattr": (2,),  # getattr(obj, name, DEFAULT)
+    "next": (1,),  # next(iterator, DEFAULT)
+    "str": (0,),  # str(VALUE) -> a literal argument passes straight through
+}
+
+
+def _substitute_placeholders(templates: tuple[str, ...], arg_canons: list[_Canon]) -> tuple[str, ...]:
+    """Fill a canonical's ``{}`` slots, left to right, with the canonicals of the
+    arguments that supply them — so ``"{}".format("PROMISE")`` canonicalises to
+    ``"PROMISE"`` rather than hiding the argument's literal text behind a placeholder.
+    Slots with no corresponding argument stay ``{}``."""
+    results: list[str] = []
+    for template in templates:
+        segments = template.split(_PLACEHOLDER)
+        combos = [segments[0]]
+        for index in range(1, len(segments)):
+            canon = arg_canons[index - 1] if index - 1 < len(arg_canons) else None
+            fills = canon.templates if canon is not None else (_PLACEHOLDER,)
+            combos = [combo + fill + segments[index] for combo in combos for fill in fills]
+            if len(combos) > _MAX_CANONICALS:
+                raise _UnclassifiableShape(ast.Constant(value=template))
+        results.extend(combos)
+    return tuple(results)
+
+
+def _canonicalise_transparent_positions(
+    node: ast.Call,
+    positions: tuple[int, ...],
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+    seen: frozenset[str],
+) -> _Canon:
+    """A transparent-in-position call can return EITHER the looked-up/converted value
+    (opaque) OR the literal at a transparent position — so both are canonical
+    alternatives, exactly like the two branches of an ``IfExp``."""
+    templates: list[str] = [_PLACEHOLDER]
+    is_string = False
+    for index in positions:
+        if index < len(node.args):
+            canon = _canonicalise(node.args[index], func, seen)
+            templates.extend(canon.templates)
+            is_string = is_string or canon.is_string
+    return _Canon(tuple(templates), is_string)
+
+
 def _canonicalise_call(
     node: ast.Call, func: ast.FunctionDef | ast.AsyncFunctionDef, seen: frozenset[str]
 ) -> _Canon:
-    """Calls split three ways: the render seam's own string wrappers, a string METHOD
-    on a text-bearing receiver (must canonicalise or FAIL), and everything else."""
-    if _called_name(node.func) in _SAFE_STR_VERB_NAMES:
+    """Calls split four ways: the render seam's own string wrappers, a string METHOD on a
+    text-bearing receiver (must canonicalise or FAIL), a TRANSPARENT-IN-POSITION call
+    (recurse into the position it can return verbatim), and everything else (opaque)."""
+    called = _called_name(node.func)
+    if isinstance(node.func, ast.Lambda):
+        # An IMMEDIATELY-INVOKED lambda is transparent in its body (auditor's R3). Cheap
+        # to close and it measures zero false positives, so it is closed rather than
+        # pinned: production's only lambdas are ``sorted(key=...)``, never invoked here.
+        return _canonicalise(node.func.body, func, seen)
+    if called in _SAFE_STR_VERB_NAMES:
         if not node.args:
             return _OPAQUE
         return _Canon(_canonicalise(node.args[0], func, seen).templates, is_string=True)
     if isinstance(node.func, ast.Attribute):
         receiver = _canonicalise(node.func.value, func, seen)
-        if not receiver.is_string:
-            # EVIDENCE: an ordinary method on a runtime object (``AppContext._render_age(x)``,
-            # ``entry.acked_version.bit_length()``) contributes no literal text HERE. Text it
-            # returns from another function is the PINNED cross-function bound, not this gate.
-            return _OPAQUE
-        if node.func.attr == "format":
-            return _Canon(
-                tuple(_format_fields_to_placeholders(t) for t in receiver.templates), True
-            )
-        if node.func.attr == "join":
-            if len(node.args) != 1:
-                raise _UnclassifiableShape(node)
-            combos = _canonicalise_join_parts(node.args[0], func, seen)
-            joined = tuple(sep.join(combo) for sep in receiver.templates for combo in combos)
-            if len(joined) > _MAX_CANONICALS:
-                raise _UnclassifiableShape(node)
-            return _Canon(joined, True)
-        # A string method we cannot canonicalise (.replace/.upper/.strip/...) is a
-        # TEXT TRANSFORM on literal text -> deny, never guess.
-        raise _UnclassifiableShape(node)
+        if receiver.is_string:
+            return _canonicalise_string_method(node, receiver, func, seen)
+        # EVIDENCE: an ordinary method on a runtime object (``AppContext._render_age(x)``,
+        # ``entry.acked_version.bit_length()``) contributes no literal text HERE. Text it
+        # returns from another function is the PINNED cross-function bound, not this gate.
+        # A method that is transparent in a POSITION (``d.get(k, DEFAULT)``) still recurses.
+    if called in _TRANSPARENT_ARG_POSITIONS:
+        return _canonicalise_transparent_positions(
+            node, _TRANSPARENT_ARG_POSITIONS[called], func, seen
+        )
     # EVIDENCE: a plain function call returns a runtime value; literal text built in
     # ANOTHER function is the pinned cross-function bound (TestSafeStrLiteralCoverageBound).
     return _OPAQUE
+
+
+def _canonicalise_string_method(
+    node: ast.Call,
+    receiver: _Canon,
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+    seen: frozenset[str],
+) -> _Canon:
+    """A method on a text-bearing receiver: ``.format``/``.join`` canonicalise (both
+    INCORPORATE their arguments' literal text), everything else denies."""
+    attribute = node.func.attr if isinstance(node.func, ast.Attribute) else ""
+    if attribute == "format":
+        # A keyword/starred argument carrying literal text cannot be placed faithfully
+        # (the field names were already normalised away) -> deny rather than guess.
+        for keyword in node.keywords:
+            if _canonicalise(keyword.value, func, seen).is_string:
+                raise _UnclassifiableShape(node)
+        base = tuple(_format_fields_to_placeholders(t) for t in receiver.templates)
+        arg_canons = [_canonicalise(argument, func, seen) for argument in node.args]
+        return _Canon(_substitute_placeholders(base, arg_canons), True)
+    if attribute == "join":
+        if len(node.args) != 1:
+            raise _UnclassifiableShape(node)
+        combos = _canonicalise_join_parts(node.args[0], func, seen)
+        joined = tuple(sep.join(combo) for sep in receiver.templates for combo in combos)
+        if len(joined) > _MAX_CANONICALS:
+            raise _UnclassifiableShape(node)
+        return _Canon(joined, True)
+    # A string method we cannot canonicalise (.replace/.upper/.strip/...) is a
+    # TEXT TRANSFORM on literal text -> deny, never guess.
+    raise _UnclassifiableShape(node)
 
 
 def _canonicalise(  # noqa: PLR0911, PLR0912
@@ -1158,6 +1239,15 @@ def _canonicalise(  # noqa: PLR0911, PLR0912
         body = _canonicalise(node.body, func, seen)
         orelse = _canonicalise(node.orelse, func, seen)
         return _Canon(body.templates + orelse.templates, body.is_string or orelse.is_string)
+    if isinstance(node, ast.BoolOp):
+        # `or`/`and` return an OPERAND, not a bool (`"" or "prose"` -> 'prose'), so this is
+        # TRANSPARENT in exactly the way ``IfExp`` above is. The honest shape this catches:
+        # ``safe_str(row.last_note or "no note — run lore_comms action=... to add one")``.
+        operands = [_canonicalise(value, func, seen) for value in node.values]
+        return _Canon(
+            tuple(text for canon in operands for text in canon.templates),
+            any(canon.is_string for canon in operands),
+        )
     if isinstance(node, ast.Call):
         return _canonicalise_call(node, func, seen)
     if isinstance(node, ast.Name):
@@ -1221,8 +1311,14 @@ def _canonicalise(  # noqa: PLR0911, PLR0912
     if isinstance(node, ast.Starred):
         # Unpacking is TRANSPARENT: it carries whatever its operand carries.
         return _canonicalise(node.value, func, seen)
-    if isinstance(node, ast.Compare | ast.BoolOp | ast.UnaryOp):
-        return _OPAQUE  # EVIDENCE: these evaluate to bools/numbers, never to prose.
+    if isinstance(node, ast.Compare | ast.UnaryOp):
+        # EVIDENCE (executed, not reasoned): `"a" == "b"` -> False, `not "a"` -> False —
+        # both evaluate to a bool, so neither can carry prose. ``BoolOp`` was ONCE bundled
+        # into this exemption under the same claim, and that claim was FALSE: `or`/`and`
+        # return an OPERAND, not a bool (`"" or "prose"` -> 'prose'), so it now lives in
+        # the TEXT-BUILDING half above. Do not re-bundle them: one comment stating a
+        # reason true for two node types and false for a third is how that defect was born.
+        return _OPAQUE
     if isinstance(node, ast.Await):
         return _OPAQUE  # EVIDENCE: same cross-function bound as a plain call.
     raise _UnclassifiableShape(node)
@@ -1245,7 +1341,15 @@ def _canonicalise_binop(
     if isinstance(node.op, ast.Mod):
         if not left.is_string:
             return _OPAQUE  # EVIDENCE: numeric modulo, not %-formatting.
-        return _Canon(tuple(_printf_to_placeholders(t) for t in left.templates), True)
+        base = tuple(_printf_to_placeholders(t) for t in left.templates)
+        # The RIGHT operand supplies the slots — its literal text reaches the output, so
+        # it is incorporated rather than dropped. A tuple/list of values is unpacked
+        # positionally; anything else fills the first slot.
+        if isinstance(node.right, ast.Tuple | ast.List):
+            arg_canons = [_canonicalise(element, func, seen) for element in node.right.elts]
+        else:
+            arg_canons = [_canonicalise(node.right, func, seen)]
+        return _Canon(_substitute_placeholders(base, arg_canons), True)
     right = _canonicalise(node.right, func, seen)
     if left.is_string or right.is_string:
         raise _UnclassifiableShape(node)
@@ -1570,6 +1674,79 @@ class TestTheCanonicaliserDeniesByDefault:
         denied = _scan_safe_str_source_unclassifiable(benign)
         assert denied == [], f"honest opaque code was falsely denied: {denied}"
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            'safe_str(x or "do it: action=teleport")',
+            'safe_str(x and "do it: action=teleport")',
+            'safe_str(row.last_note or "no note — run lore_comms action=heartbeat note=… to add one")',
+        ],
+        ids=["or-default", "and-default", "honest-or-default-render"],
+    )
+    def test_a_BoolOp_operand_is_transparent_not_a_bool(self, body: str) -> None:
+        """R1 REGRESSION PIN. ``BoolOp`` was once exempted as opaque under the evidence
+        "these evaluate to bools/numbers, never to prose". EXECUTED, that claim is FALSE:
+        `or`/`and` return an OPERAND (`"" or "prose"` -> 'prose'), so the ``x or "…"``
+        default idiom — an HONEST render shape — served its literal fully INVISIBLY.
+        ``Compare``/``UnaryOp`` keep the exemption because for them the claim is true."""
+        source = f"def _render_comms_new(x, row):\n    return {body}\n"
+        found = _scan_safe_str_source(source)
+        assert found, f"BoolOp operand text went invisible again: {body}"
+        assert any("action=" in text for text in found), found
+
+    def test_the_retired_BoolOp_evidence_claim_is_false_by_execution(self) -> None:
+        """The measurement that condemns the retired exemption, kept executable so the
+        claim can never be re-asserted from memory: two of the three bundled node types
+        yield a bool; ``BoolOp`` yields an operand."""
+        assert isinstance(eval('"a" == "b"'), bool)  # noqa: S307 - literal, no input
+        assert isinstance(eval('not "a"'), bool)  # noqa: S307 - literal, no input
+        assert eval('"" or "prose"') == "prose"  # noqa: S307 - literal, no input
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            'safe_str(d.get(k, "do it: action=teleport"))',
+            'safe_str(getattr(o, n, "do it: action=teleport"))',
+            'safe_str(next(it, "do it: action=teleport"))',
+            'safe_str(str("do it: action=teleport"))',
+            'safe_str("{}".format("do it: action=teleport"))',
+            'safe_str("%s" % ("do it: action=teleport",))',
+            'safe_str((lambda: "do it: action=teleport")())',
+        ],
+        ids=[
+            "dict-get-default",
+            "getattr-default",
+            "next-default",
+            "str-of-literal",
+            "format-argument",
+            "printf-argument",
+            "immediately-invoked-lambda",
+        ],
+    )
+    def test_literal_text_in_a_transparent_ARGUMENT_position_is_reached(self, body: str) -> None:
+        """R2. Text-building calls (``.format``/``%``/``.join``) INCORPORATE their
+        arguments; transparent-in-position calls (``d.get(k, DEFAULT)``, ``getattr``,
+        ``next``, ``str``) can return a position VERBATIM. Both recurse — the same
+        transparency ``BoolOp``/``IfExp`` have, applied to argument positions. The
+        ``d.get(k, "…")`` default-lookup idiom is the high-realism one."""
+        source = f"def _render_comms_new(d, k, o, n, it):\n    return {body}\n"
+        found = _scan_safe_str_source(source)
+        assert any("action=" in text for text in found), found
+
+    def test_the_precise_argument_rule_has_ZERO_false_positives(self) -> None:
+        """THE control that keeps R2 honest. A BLUNT "recurse into every call argument"
+        rule was measured at SIX false positives on the shipped surface (it surfaces
+        dict-lookup KEYS and other literals that never reach output). The precise rule —
+        text-building calls plus a named transparent-position set — measures ZERO. If this
+        ever fires, REPORT the honest shape that tripped it; do NOT widen the opaque set
+        to silence it."""
+        assert _comms_render_unclassifiable_shapes() == []
+        for _fn, _line, text in _comms_render_safe_str_literals():
+            assert text in _safe_str_classified(), (
+                f"argument-position recursion surfaced an unclassified literal {text!r} — "
+                "if this is honest production code, the rule is too blunt: report it"
+            )
+
     def test_the_denial_names_the_shape_it_could_not_canonicalise(self) -> None:
         """A denial must be ACTIONABLE: it carries the ``ast.dump`` so the next author
         can see exactly which shape to teach or exempt."""
@@ -1728,7 +1905,8 @@ class TestMarkerCrossSatisfactionBound:
         assert _cross_satisfied_markers(prefix_weakened, _MARKER_CO_EMISSION_EXEMPTIONS) == [], (
             "the cross-satisfaction meta-test NOW catches a k-specific prefix weakening — "
             "this KNOWN BOUND is closed. If you closed it deliberately (e.g. the "
-            "sibling-branch render check landed), delete this pin and say so."
+            "sibling-branch render check landed), delete this pin and say so — or the "
+            "production renders changed — check the other failures first."
         )
 
         # POSITIVE CONTROL: the meta-test is not simply dead — the shared-SUFFIX weakening,
