@@ -34,10 +34,10 @@ HERE now** — a packet session must not need to read them.
   design) → 26a+ (onboarding build); 27 (cross-tier compare) rides ∥. Live-DB
   introspection stays with odoo-dev by design.
 
-## State of record (verified 2026-07-14, after packet 01)
-- Branch `feat/surreal-unification` @ **5053bb0** (not pushed). Full suite at last
-  lead-run: **5551 passed / 0 failed** (`-n auto`, the standing runner); skill suite
-  **89 passed**; mypy 0 / 141 files; ruff clean.
+## State of record (verified 2026-07-19, after packet 02)
+- Branch `feat/surreal-unification` @ **2b69616** (not pushed). Full suite at last
+  lead-run: **5611 passed / 0 failed** (`-n auto`, the standing runner); skill suite
+  **117 passed**; mypy 0 / 144 files; ruff clean.
 - Deployed: **BOTH containers recreated on an image baking HEAD** — lore-lore (:9202)
   and DI (:9201). The deploy now GATES ITSELF: `verb_start` runs an artifact probe
   (required container binaries, derived from source) + a workspace-honesty probe
@@ -47,8 +47,9 @@ HERE now** — a packet session must not need to read them.
   `git_branch: feat/surreal-unification` + the real ref.
   15-tool surface; cosine substrate live; floor **0.50649** (STALE — measured over 214
   files, now 291; #87, packets 10/11); P7→P8d′, SLATE S1–S7, the closure wave,
-  PKT-06/C0, PKT-28 C1, the #102 retry-substrate chain, and **packet 01** all CLOSED.
-  Hashes are as-of-verification snapshots (image `6d599942cc69`); the authoritative
+  PKT-06/C0, PKT-28 C1, the #102 retry-substrate chain, **packet 01**, **01a**, and
+  **packet 02** (comms render architecture) all CLOSED.
+  Hashes are as-of-verification snapshots (image `ae0e78d9a504`); the authoritative
   deployment check is always RELATIVE (protocol, Boot 4).
 - Standing eval bar: **35-pair set, pinned claude-sonnet-4-5-20250929, client metrics**
   (accuracy ≥33/35 · tokens-per-correct ≈1375-era · taxed-calls ≈0). 11-pair calls-leg
@@ -129,7 +130,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 |---|---------------|-----|------|------|-----------|--------|
 | 01 | ledger-triage + lore_index watched-path/branch line | PKT-29 | pre | 0.15 | — | **DONE 2026-07-14** (image 6d599942cc69, both containers) |
 | 01a | **artifact-conformance — run the suite IN the deployed image** (#139) | — | pre | 0.25 (measure-first) | 01 | **DONE + DEPLOYED 2026-07-16** (c90df55/b528ac1/a35cdca/062bf60; image **f25c18976b2b**, both containers; in-image suite 5545/0; no 01b split; **#141 drift closed in the running artifact**) |
-| 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.40 | — | **IN PROGRESS** (operator SPLIT 2026-07-19: measured ~3–4× the 0.20 est; promise-instrument HARDENING → 02a; 02 keeps all render work + real subscribed_name_skew store method + promise-guard CORE) |
+| 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.40 | — | **DONE + DEPLOYED 2026-07-19** (image **ae0e78d9a504**, both containers; d3c899f→05a8bb2; cold-audit GO + F1 fixed; live-wire smoke PASS; promise HARDENING split → 02a) |
 | 02a | comms-promise-instrument-hardening (full §9.7 per-entry executable-predicate proofs + `safe_str` literal-coverage closure `_SAFE_STR_LITERAL_RESIDUAL`) | — | C | 0.20 | 02 | open (after 02; NOT smoke-critical) |
 | 03 | comms-message-graph (send/drain/ack, seq) | PKT-28 C2b | C | 0.25 | 02 | open |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
@@ -517,3 +518,22 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   captured CreateCommands + boot-smoked GREEN (Uvicorn serving :9202/:9201, reconcile clean); `lore_index`
   serves branch feat/surreal-unification @ 062bf60. #139 + #141 RESOLVED. Old image 6d599942cc69 kept as
   rollback. The #141 drift is now closed in the RUNNING ARTIFACT, not just the recipe.
+- 2026-07-19 · **PACKET 02 DONE + DEPLOYED (comms render architecture).** Image **ae0e78d9a504**
+  (both containers, from HEAD 2b69616 via `uv sync --locked --all-packages`; conform **5596/0**
+  in-artifact, provenance-asserted). Closes **#104** (STANDING_BRIEF role via ONE accessor — 4
+  standing surfaces mutation-proven; renders take TYPED applicability `auto_ack_at_register`, ZERO
+  name-comparison residual; `_brief()` monoculture default removed; promise-guard CORE), **#103**
+  (heartbeat generalized to subscribed-name skew §5.3; §9.4 three name-conditioned tails; fleet cell
+  `brief`→`project`; new BOUNDED `subscribed_name_skew`), **#100** (created_by removed), **#101**
+  (confirmed fixed-by-4c2efbf). **LIVE-WIRE SMOKE PASS:** deployed heartbeat renders the non-'project'
+  skew line truthfully with the explicit `name=` teach. Full contract-first cycle: Opus contract →
+  contract-adversary (satisfiability **736/0**, closed a small-N cap/collapse gap) → Opus builder →
+  cold REFUTE audit (**GO** on behavior; caught **F1** — `subscribed_name_skew` Q2 `id IN` was a full
+  `brief` TableScan on EVERY heartbeat, green at every builder gate because the contract pinned query
+  COUNT not PLAN; measured 6.1× at 11× rows) → **F1 FIXED** (`FROM $ids` direct record-access + an
+  EXPLAIN-plan invariant pin, mutation-proven). Commits **d3c899f→05a8bb2** (+ ceb90ac spec residual,
+  2b69616 report cleanup). Gates: full-repo **5611/0**, skill **117/0**, mypy 0, ruff clean. **OPERATOR
+  SPLIT:** the promise-instrument ADVANCED hardening (full §9.7 per-entry predicate proofs + the
+  `safe_str` literal-coverage closure) → **packet 02a**. Rollback image `f25c18976b2b` (lore:pre-pkt02)
+  retained. Smoke artifacts: session `pkt02smoke` agents + brief in the prod comms store (documented,
+  smoke_p8b precedent). Ledger row c2009c94 done. NEXT = **packet 03** (comms-message-graph).
