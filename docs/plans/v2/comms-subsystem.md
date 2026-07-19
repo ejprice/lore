@@ -87,16 +87,29 @@ shared reference; the step files carry scope/entry/exit and CITE this doc, never
   done-summary+report_path. Row f38f3b96.
 - **C1** — DONE + DEPLOYED: registry + briefs (agent/brief/briefed slices, agents.py/briefs.py,
   register/heartbeat/brief_*/fleet, all four structural pins updated 14→15).
-- **C2a** → `02-comms-render-architecture.md` (#104 step-0 + #103 + #100 + #101).
+- **C2a** — **DONE + DEPLOYED 2026-07-19** (`02-comms-render-architecture.md`): #104 step-0
+  (STANDING_BRIEF role via ONE accessor, renders take TYPED applicability, `_brief()`
+  monoculture default removed) + #103 (heartbeat generalized to subscribed-name skew, three
+  name-conditioned §9.4 tails, fleet cell `brief`→`project`) + #100 + #101. Image
+  **ae0e78d9a504**, both containers; d3c899f→05a8bb2; cold-audit GO + F1 fixed; live-wire
+  smoke PASS. All four findings RESOLVED. Row c2009c94.
+- **02a** — **DONE 2026-07-19, TEST-ONLY / no deploy** (`02a-comms-promise-instrument-hardening.md`;
+  split off C2a by the operator): §9.7 mechanized as 16 executable emit/no-emit proofs with
+  `registered ⟺ proven` a CHECKED invariant, and the `safe_str` residual closed then
+  GENERALIZED to deny-by-default (an unknown AST shape FAILS LOUD). a2e9a70→ceac2d0;
+  production byte-identical throughout. 3 bounds pinned; #143 ledgered. Row 5807c930.
 - **C2b** → `03-comms-message-graph.md` (message/to schema, seq, send/drain/ack).
 - **C2c** → `04-comms-blocks-footer.md` (blocks edge, fleet columns, footer, #105).
 - **C3** → `05-comms-await-story.md` (await, story, rollup sections, CLI, idle-gate v2).
 - **C4** → `06-comms-protocol-drill.md` (brief-base v3, hooks, THE DRILL below).
 - **C5** — deferred, no ruling yet: checkpoint/respawn workflow; per-agent auth rides packet 39.
 
-Roster: Sonnet 5 builders on C0–C2/C4; Opus 4.8 on C3's await/LIVE leg; Opus 4.8 cold audits
-every phase; **Opus leads** (2026-07-14 roster ruling — Fable = design sidecar/escalation
-valve only; INDEX carries the triggers).
+Roster: **OPUS END TO END** — Opus contract authors · OPUS BUILDERS · Opus contract-adversary ·
+Opus cold audits · **Opus leads** (operator, 2026-07-14; **Sonnet is RETIRED from the builder
+slot** — this line previously read "Sonnet 5 builders on C0–C2/C4" and was stale). Fable =
+design sidecar / escalation valve only; INDEX carries the triggers. And the half that binds the
+LEAD: **a DESIGN problem never reaches a builder** — a property to INVENT escalates to the
+operator or goes to an Opus author who must adversarially attack its own design.
 
 ## Build-time probes (run in the phase that first depends on each)
 C1 — `sequence::next()` vs `sequence::nextval()` real name + first-boot seeding smoke. C2 —

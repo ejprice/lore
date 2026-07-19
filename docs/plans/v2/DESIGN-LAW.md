@@ -205,3 +205,16 @@ perfectly but fixed NOTHING, would it still pass?"*
 - **Every marker/pin proves it discriminates AGAINST ITS SIBLINGS, mechanically** — a
   cross-satisfaction meta-test, not a human's reading. A marker satisfiable by a sibling
   branch's output cannot prove its own predicate gates emission.
+- **EXECUTE YOUR OWN CLAIMS — a comment stating a reason is a SOURCE, not an oracle.** This
+  is `READ THE DEPENDENCY'S DOCS — THEN VERIFY THEM` (repo CLAUDE.md) turned inward: we
+  already knew a vendor's doc can lie, and 02a proved OUR OWN evidence comments lie the same
+  way. **5 of 02a's 8 defects were claims stated as reasons and never run.** The exemption
+  `# EVIDENCE: these evaluate to bools/numbers, never to prose` covered `Compare | BoolOp |
+  UnaryOp` — TRUE for two, FALSE for the third (`"" or "prose"` → `'prose'`), hiding the
+  commonest Python default idiom (`x or "…"`) in plain sight. A bounded sweep then EXECUTED
+  all 18 claims in that exemption set and found **3 more false**. Therefore: any exemption
+  asserting *"this cannot happen"* ships with the EXECUTED probe that establishes it, and the
+  condemning measurement stays an executable PIN (`test_the_retired_<X>_claim_is_false_by_execution`)
+  so a retired claim can never be re-asserted from memory. Corollary for reviewers: in any
+  deny-by-default gate, **attack the SAFE set first** — the allowlist is where the claims are,
+  and claims are where the defects live.
