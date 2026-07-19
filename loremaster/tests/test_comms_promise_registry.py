@@ -66,6 +66,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import loremaster.server as server_module
 import pytest
@@ -1064,6 +1065,34 @@ def _resolve_name_canons(
     return results
 
 
+def _param_default_canons(
+    name_id: str,
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+    seen: frozenset[str],
+) -> list[_Canon]:
+    """Canonicalisations a name can hold from THIS function's own PARAMETER DEFAULTS.
+
+    EXECUTED, not assumed: ``def f(label="PROMISE"): return label`` returns ``'PROMISE'``.
+    The retired evidence on the ``Name`` branch — *"a parameter/free name binds no literal
+    HERE"* — was FALSE for exactly this case, and the text is LOCAL to the function, so it
+    is emphatically NOT the pinned cross-function bound. ``_resolve_name_canons`` walks
+    only ``Assign``/``AnnAssign``, so a defaulted parameter served its literal invisibly."""
+    results: list[_Canon] = []
+    arguments = func.args
+    positional = [*arguments.posonlyargs, *arguments.args]
+    # ``defaults`` aligns to the TAIL of positional parameters, never the head.
+    offset = len(positional) - len(arguments.defaults)
+    for index, default in enumerate(arguments.defaults):
+        if positional[offset + index].arg == name_id:
+            results.append(_canonicalise(default, func, seen))
+    for keyword_arg, keyword_default in zip(
+        arguments.kwonlyargs, arguments.kw_defaults, strict=True
+    ):
+        if keyword_default is not None and keyword_arg.arg == name_id:
+            results.append(_canonicalise(keyword_default, func, seen))
+    return results
+
+
 def _canonicalise_join_parts(
     arg: ast.expr, func: ast.FunctionDef | ast.AsyncFunctionDef, seen: frozenset[str]
 ) -> list[tuple[str, ...]]:
@@ -1101,6 +1130,12 @@ _TRANSPARENT_ARG_POSITIONS: dict[str, tuple[int, ...]] = {
     "str": (0,),  # str(VALUE) -> a literal argument passes straight through
 }
 
+# The KEYWORD spelling of the same transparency. EXECUTED, not assumed: `str(object="X")`
+# ACCEPTS the keyword and returns 'X', while `dict.get`/`getattr`/`next` all raise
+# "takes no keyword arguments" — so `str` is the ONLY one reachable this way. That is a
+# measurement, not a guess; re-measure before adding an entry here.
+_TRANSPARENT_ARG_KEYWORDS: dict[str, tuple[str, ...]] = {"str": ("object",)}
+
 
 def _substitute_placeholders(templates: tuple[str, ...], arg_canons: list[_Canon]) -> tuple[str, ...]:
     """Fill a canonical's ``{}`` slots, left to right, with the canonicals of the
@@ -1123,18 +1158,28 @@ def _substitute_placeholders(templates: tuple[str, ...], arg_canons: list[_Canon
 
 def _canonicalise_transparent_positions(
     node: ast.Call,
+    called: str,
     positions: tuple[int, ...],
     func: ast.FunctionDef | ast.AsyncFunctionDef,
     seen: frozenset[str],
 ) -> _Canon:
     """A transparent-in-position call can return EITHER the looked-up/converted value
     (opaque) OR the literal at a transparent position — so both are canonical
-    alternatives, exactly like the two branches of an ``IfExp``."""
+    alternatives, exactly like the two branches of an ``IfExp``.
+
+    BOTH spellings are read: the positional argument AND the keyword one. Reading only
+    ``node.args`` let ``str(object="PROMISE")`` through invisibly."""
     templates: list[str] = [_PLACEHOLDER]
     is_string = False
     for index in positions:
         if index < len(node.args):
             canon = _canonicalise(node.args[index], func, seen)
+            templates.extend(canon.templates)
+            is_string = is_string or canon.is_string
+    keyword_names = _TRANSPARENT_ARG_KEYWORDS.get(called, ())
+    for keyword in node.keywords:
+        if keyword.arg is not None and keyword.arg in keyword_names:
+            canon = _canonicalise(keyword.value, func, seen)
             templates.extend(canon.templates)
             is_string = is_string or canon.is_string
     return _Canon(tuple(templates), is_string)
@@ -1166,7 +1211,7 @@ def _canonicalise_call(
         # A method that is transparent in a POSITION (``d.get(k, DEFAULT)``) still recurses.
     if called in _TRANSPARENT_ARG_POSITIONS:
         return _canonicalise_transparent_positions(
-            node, _TRANSPARENT_ARG_POSITIONS[called], func, seen
+            node, called, _TRANSPARENT_ARG_POSITIONS[called], func, seen
         )
     # EVIDENCE: a plain function call returns a runtime value; literal text built in
     # ANOTHER function is the pinned cross-function bound (TestSafeStrLiteralCoverageBound).
@@ -1253,9 +1298,15 @@ def _canonicalise(  # noqa: PLR0911, PLR0912
     if isinstance(node, ast.Name):
         if node.id in seen:
             return _OPAQUE  # EVIDENCE: cycle guard; the binding is already in flight.
-        resolved = _resolve_name_canons(node.id, func, seen | {node.id})
+        resolved = _resolve_name_canons(node.id, func, seen | {node.id}) + _param_default_canons(
+            node.id, func, seen | {node.id}
+        )
         if not resolved:
-            return _OPAQUE  # EVIDENCE: a parameter/free name binds no literal HERE.
+            # EVIDENCE (corrected): a name with no local binding AND no parameter DEFAULT
+            # binds no literal here. The retired wording said "a parameter/free name binds
+            # no literal HERE", which was FALSE for a defaulted parameter — its literal is
+            # bound in this function's OWN signature (see _param_default_canons).
+            return _OPAQUE
         return _Canon(
             tuple(text for canon in resolved for text in canon.templates),
             any(canon.is_string for canon in resolved),
@@ -1340,7 +1391,15 @@ def _canonicalise_binop(
         return _Canon(combined, left.is_string or right.is_string)
     if isinstance(node.op, ast.Mod):
         if not left.is_string:
-            return _OPAQUE  # EVIDENCE: numeric modulo, not %-formatting.
+            # The retired evidence here — "numeric modulo, not %-formatting" — was FALSE
+            # whenever the LEFT side is a RUNTIME format string: `fmt % "PROMISE"` returns
+            # 'PROMISE'. With an opaque template the slot structure is unknowable, so the
+            # right operand's literal text cannot be placed — DENY rather than drop it,
+            # matching the Add/final-branch discipline (this was the only binop path that
+            # returned opaque while a string operand was present).
+            if _canonicalise(node.right, func, seen).is_string:
+                raise _UnclassifiableShape(node)
+            return _OPAQUE  # EVIDENCE: numeric modulo over runtime values.
         base = tuple(_printf_to_placeholders(t) for t in left.templates)
         # The RIGHT operand supplies the slots — its literal text reaches the output, so
         # it is incorporated rather than dropped. A tuple/list of values is unpacked
@@ -1732,6 +1791,87 @@ class TestTheCanonicaliserDeniesByDefault:
         source = f"def _render_comms_new(d, k, o, n, it):\n    return {body}\n"
         found = _scan_safe_str_source(source)
         assert any("action=" in text for text in found), found
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'def _render_comms_cell(label="do it: action=teleport"):\n    return safe_str(label)\n',
+            'def _render_comms_cell(*, label="do it: action=teleport"):\n    return safe_str(label)\n',
+            'def _render_comms_cell(a, b=1, label="do it: action=teleport"):\n    return safe_str(label)\n',
+        ],
+        ids=["positional-default", "keyword-only-default", "default-in-tail-position"],
+    )
+    def test_O1_a_parameter_DEFAULT_binds_a_literal_locally(self, source: str) -> None:
+        """O1 REGRESSION PIN. The retired evidence *"a parameter/free name binds no
+        literal HERE"* was FALSE: a defaulted parameter binds its literal in THIS
+        function's own signature and serves it. Not the cross-function bound — the text
+        is local, so it is in scope."""
+        found = _scan_safe_str_source(source)
+        assert any("action=" in text for text in found), found
+
+    def test_O1_the_retired_claim_is_false_by_execution(self) -> None:
+        """Keep the condemning measurement EXECUTABLE (the BoolOp lesson): a parameter
+        default is a local literal binding, whatever a comment may claim."""
+
+        def positional(label: str = "PROMISE") -> str:
+            return label
+
+        def keyword_only(*, label: str = "KWPROMISE") -> str:
+            return label
+
+        assert positional() == "PROMISE"
+        assert keyword_only() == "KWPROMISE"
+
+    def test_O2_percent_with_a_runtime_left_operand_is_denied_not_dropped(self) -> None:
+        """O2 REGRESSION PIN. The retired evidence *"numeric modulo, not %-formatting"*
+        was FALSE when the LEFT side is a runtime format string. With an opaque template
+        the slot structure is unknowable, so this DENIES rather than dropping the right
+        operand — the only binop path that used to return opaque with a string present."""
+        source = (
+            'def _render_comms_cell(fmt):\n    return safe_str(fmt % "do it: action=teleport")\n'
+        )
+        assert _scan_safe_str_source_unclassifiable(source), "the right operand was dropped again"
+        assert _scan_safe_str_source(source) == []
+
+    def test_O2_numeric_modulo_still_does_not_deny(self) -> None:
+        """The false-positive control for O2: ordinary arithmetic modulo over runtime
+        values must stay opaque, or honest math would red."""
+        source = "def _render_comms_cell(a, b):\n    return safe_str(a % b)\n"
+        assert _scan_safe_str_source_unclassifiable(source) == []
+
+    def test_O2_the_retired_claim_is_false_by_execution(self) -> None:
+        format_string = "%s"
+        assert format_string % "PROMISE" == "PROMISE"
+
+    def test_O3_the_keyword_spelling_of_a_transparent_position_is_read(self) -> None:
+        """O3 REGRESSION PIN. ``_canonicalise_transparent_positions`` read only
+        ``node.args``, so the keyword spelling slipped through."""
+        source = (
+            'def _render_comms_cell():\n    return safe_str(str(object="do it: action=teleport"))\n'
+        )
+        found = _scan_safe_str_source(source)
+        assert any("action=" in text for text in found), found
+
+    def test_O3_str_is_the_only_kwarg_reachable_transparent_builtin(self) -> None:
+        """The EVIDENCE behind the one-entry keyword table, kept executable: the other
+        three transparent-in-position builtins reject keywords outright, so they cannot be
+        reached this way. Re-measure before adding an entry."""
+        # Bound through ``Any`` on purpose: mypy/ruff reject these calls STATICALLY, but
+        # what this test measures is what CPython does at RUNTIME — which is precisely the
+        # kind of claim that must be executed rather than reasoned about.
+        string_builtin: Any = str
+        assert string_builtin(object="PROMISE") == "PROMISE"
+        mapping_get: Any = {}.get
+        getattr_builtin: Any = getattr
+        next_builtin: Any = next
+        rejecting: list[tuple[Any, tuple[Any, ...]]] = [
+            (mapping_get, ("k",)),
+            (getattr_builtin, (object(), "x")),
+            (next_builtin, (iter([]),)),
+        ]
+        for call, arguments in rejecting:
+            with pytest.raises(TypeError, match="takes no keyword arguments"):
+                call(*arguments, default="X")
 
     def test_the_precise_argument_rule_has_ZERO_false_positives(self) -> None:
         """THE control that keeps R2 honest. A BLUNT "recurse into every call argument"
