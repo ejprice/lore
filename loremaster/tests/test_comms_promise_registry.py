@@ -61,8 +61,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -227,9 +228,12 @@ def _called_name(func: ast.expr) -> str | None:
     return None
 
 
-def _scan_render_literals_over_tree(tree: ast.AST) -> list[tuple[str, int, str]]:
-    """Every ``render_line``/``render_join`` TEMPLATE literal (function, lineno, text)
-    inside a comms render/handler function of the given tree.
+def _scan_render_literals_over_tree(
+    tree: ast.AST,
+) -> tuple[list[tuple[str, int, str]], list[tuple[str, int, str]]]:
+    """``(classifiable TEMPLATE literals, UNCLASSIFIABLE sites)`` for every
+    ``render_line``/``render_join`` call inside a comms render/handler function of the
+    given tree.
 
     TWO template shapes are scanned, and BOTH land in the ONE classified set:
 
@@ -253,6 +257,7 @@ def _scan_render_literals_over_tree(tree: ast.AST) -> list[tuple[str, int, str]]
     separate, pinned bound (see ``TestSafeStrLiteralCoverageBound``).
     """
     literals: list[tuple[str, int, str]] = []
+    unclassifiable: list[tuple[str, int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
@@ -264,29 +269,36 @@ def _scan_render_literals_over_tree(tree: ast.AST) -> list[tuple[str, int, str]]
             if not sub.args:
                 continue
             template = sub.args[0]
-            if isinstance(template, ast.Constant):
-                if isinstance(template.value, str):
-                    literals.append((node.name, sub.lineno, template.value))
-            elif isinstance(template, ast.JoinedStr):
-                # ``_string_templates`` is defined further down (item 2's section); the
-                # reference resolves at call time, well after module import.
-                for canonical in _string_templates(template, node, frozenset()):
-                    if _has_literal_text(canonical):
-                        literals.append((node.name, sub.lineno, canonical))
-    return literals
+            if isinstance(template, ast.Constant) and isinstance(template.value, str):
+                literals.append((node.name, sub.lineno, template.value))
+                continue
+            # Anything that is NOT a plain string template routes through the
+            # deny-by-default canonicaliser (defined further down, in item 2's
+            # section; the reference resolves at call time). A shape it cannot
+            # canonicalise is REPORTED, never silently skipped — the retired
+            # `elif JoinedStr` chain simply ignored every other shape.
+            try:
+                templates = _string_templates(template, node, frozenset())
+            except _UnclassifiableShape as shape:
+                unclassifiable.append((node.name, sub.lineno, shape.dump))
+                continue
+            for canonical in templates:
+                if _has_literal_text(canonical):
+                    literals.append((node.name, sub.lineno, canonical))
+    return literals, unclassifiable
 
 
 def _comms_render_literals() -> list[tuple[str, int, str]]:
     """The render-template scan over the SHIPPED server.py."""
     tree = ast.parse(_SERVER_PY.read_text(encoding="utf-8"), filename="server.py")
-    return _scan_render_literals_over_tree(tree)
+    return _scan_render_literals_over_tree(tree)[0]
 
 
 def _scan_render_literals_source(source: str) -> list[str]:
     """The SAME render-template scanner applied to arbitrary source — the self-attack
     surface. Shares :func:`_scan_render_literals_over_tree` rather than re-walking, so
     the self-attacks exercise the REAL scanner and can never drift from it."""
-    return [text for _fn, _line, text in _scan_render_literals_over_tree(ast.parse(source))]
+    return [text for _fn, _line, text in _scan_render_literals_over_tree(ast.parse(source))[0]]
 
 
 def _classified() -> frozenset[str]:
@@ -964,31 +976,280 @@ class TestItem1ProofHarnessDiscriminates:
 _SAFE_STR_VERB_NAMES: frozenset[str] = frozenset({"safe_str", "sanitise_line"})
 _PLACEHOLDER = "{}"
 
+# A product guard: a pathological nest of IfExp/join branches could blow up the
+# canonical count. Past this, the shape is UNCLASSIFIABLE rather than silently
+# truncated (truncation would be allow-by-default wearing a cap).
+_MAX_CANONICALS = 64
 
-def _resolve_name_literals(
+# printf-style conversion specifiers, and str.format replacement fields — both
+# normalised to _PLACEHOLDER so a %-built or .format-built string canonicalises
+# into the SAME shape an f-string would produce.
+_PRINTF_SPEC = re.compile(r"%(?:\([^)]*\))?[-+ #0]*[\d*]*(?:\.[\d*]+)?[hlL]?[diouxXeEfFgGcrsa%]")
+_FORMAT_FIELD = re.compile(r"\{[^{}]*\}")
+
+
+class _UnclassifiableShape(Exception):
+    """DENY-BY-DEFAULT: a string-producing AST shape the canonicaliser does not know
+    how to turn into a stable template.
+
+    THE LAW THIS ENFORCES (repo instrument-lesson, "the forbidden set is unbounded;
+    allowlist the SAFE"): an unknown shape must FAIL LOUD, never silently become a
+    placeholder. The retired canonicaliser ended in ``else: [_PLACEHOLDER]``, so an
+    unrecognised shape vanished into "{}" and was then discarded as textless — three
+    live holes shipped behind that one line (``%``-format, ``.format``, ``str.join``
+    all served promises INVISIBLY). Unknown shape = RED, naming file:line + the
+    ``ast.dump``, so the next author either teaches the canonicaliser the shape or
+    declares it opaque WITH evidence."""
+
+    def __init__(self, node: ast.AST) -> None:
+        self.dump = ast.dump(node)
+        super().__init__(self.dump)
+
+
+@dataclass(frozen=True)
+class _Canon:
+    """A canonicalisation outcome.
+
+    ``templates`` are the canonical strings this expression can produce (more than
+    one when an ``IfExp`` branches). ``is_string`` records whether the node is a
+    STRING-BUILDING shape (a literal, an f-string, a concatenation of them...) as
+    opposed to an OPAQUE RUNTIME VALUE. That distinction is the whole design: a
+    string-building shape MUST canonicalise or fail; an opaque value legitimately
+    carries no literal text at this site and renders as a single placeholder, so
+    honest code (``sanitise_line(agent.name)``, ``row.task_id[:8] + "…"``) never
+    goes red. Getting the opaque set wrong floods honest code with false positives —
+    and "a gate that refuses honest code is a gate that gets SWITCHED OFF"."""
+
+    templates: tuple[str, ...]
+    is_string: bool
+
+
+# Every OPAQUE exemption below is EVIDENCE-BACKED in its branch comment (why the
+# shape cannot carry literal TEXT at this site), never "it looks fine".
+_OPAQUE = _Canon((_PLACEHOLDER,), is_string=False)
+
+
+def _printf_to_placeholders(template: str) -> str:
+    """``"v%s of %d"`` -> ``"v{} of {}"``; a literal ``%%`` collapses to ``%``."""
+    return _PRINTF_SPEC.sub(lambda m: "%" if m.group(0) == "%%" else _PLACEHOLDER, template)
+
+
+def _format_fields_to_placeholders(template: str) -> str:
+    """``"v{0} of {n}"`` -> ``"v{} of {}"``; ``{{``/``}}`` unescape to ``{``/``}``."""
+    return _FORMAT_FIELD.sub(_PLACEHOLDER, template).replace("{{", "{").replace("}}", "}")
+
+
+def _resolve_name_canons(
     name_id: str,
     func: ast.FunctionDef | ast.AsyncFunctionDef,
     seen: frozenset[str],
-) -> list[str]:
-    """String-literal templates a NAME can hold, from same-function assignments
-    (``Assign``/``AnnAssign``). Cycle-guarded via ``seen``. Only assignments that
-    FLOW INTO a scanned sink are ever resolved (this is called only from within
-    ``_string_templates`` reached from a safe_str/sanitise_line arg), so an
-    unrelated non-rendered assignment is never swept in."""
-    results: list[str] = []
+) -> list[_Canon]:
+    """Canonicalisations a NAME can hold, from same-function ``Assign``/``AnnAssign``
+    bindings. Cycle-guarded via ``seen``. Reached ONLY from a scanned sink, so an
+    unrelated non-rendered assignment is never swept in. A binding that is itself
+    unclassifiable PROPAGATES the denial — a name is not an escape hatch."""
+    results: list[_Canon] = []
     for stmt in ast.walk(func):
         if isinstance(stmt, ast.Assign):
             for target in stmt.targets:
                 if isinstance(target, ast.Name) and target.id == name_id:
-                    results.extend(_string_templates(stmt.value, func, seen))
+                    results.append(_canonicalise(stmt.value, func, seen))
         elif (
             isinstance(stmt, ast.AnnAssign)
             and isinstance(stmt.target, ast.Name)
             and stmt.target.id == name_id
             and stmt.value is not None
         ):
-            results.extend(_string_templates(stmt.value, func, seen))
+            results.append(_canonicalise(stmt.value, func, seen))
     return results
+
+
+def _canonicalise_join_parts(
+    arg: ast.expr, func: ast.FunctionDef | ast.AsyncFunctionDef, seen: frozenset[str]
+) -> list[tuple[str, ...]]:
+    """The element-template combinations of a ``str.join`` argument. Only an
+    ENUMERABLE literal sequence (or a name bound to one) can be canonicalised; a
+    runtime iterable is UNCLASSIFIABLE, never silently dropped."""
+    if isinstance(arg, ast.Name) and arg.id not in seen:
+        for stmt in ast.walk(func):
+            if isinstance(stmt, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == arg.id for t in stmt.targets
+            ):
+                return _canonicalise_join_parts(stmt.value, func, seen | {arg.id})
+    if not isinstance(arg, ast.List | ast.Tuple):
+        raise _UnclassifiableShape(arg)
+    combos: list[tuple[str, ...]] = [()]
+    for element in arg.elts:
+        element_canon = _canonicalise(element, func, seen)
+        combos = [combo + (text,) for combo in combos for text in element_canon.templates]
+        if len(combos) > _MAX_CANONICALS:
+            raise _UnclassifiableShape(arg)
+    return combos
+
+
+def _canonicalise_call(
+    node: ast.Call, func: ast.FunctionDef | ast.AsyncFunctionDef, seen: frozenset[str]
+) -> _Canon:
+    """Calls split three ways: the render seam's own string wrappers, a string METHOD
+    on a text-bearing receiver (must canonicalise or FAIL), and everything else."""
+    if _called_name(node.func) in _SAFE_STR_VERB_NAMES:
+        if not node.args:
+            return _OPAQUE
+        return _Canon(_canonicalise(node.args[0], func, seen).templates, is_string=True)
+    if isinstance(node.func, ast.Attribute):
+        receiver = _canonicalise(node.func.value, func, seen)
+        if not receiver.is_string:
+            # EVIDENCE: an ordinary method on a runtime object (``AppContext._render_age(x)``,
+            # ``entry.acked_version.bit_length()``) contributes no literal text HERE. Text it
+            # returns from another function is the PINNED cross-function bound, not this gate.
+            return _OPAQUE
+        if node.func.attr == "format":
+            return _Canon(
+                tuple(_format_fields_to_placeholders(t) for t in receiver.templates), True
+            )
+        if node.func.attr == "join":
+            if len(node.args) != 1:
+                raise _UnclassifiableShape(node)
+            combos = _canonicalise_join_parts(node.args[0], func, seen)
+            joined = tuple(sep.join(combo) for sep in receiver.templates for combo in combos)
+            if len(joined) > _MAX_CANONICALS:
+                raise _UnclassifiableShape(node)
+            return _Canon(joined, True)
+        # A string method we cannot canonicalise (.replace/.upper/.strip/...) is a
+        # TEXT TRANSFORM on literal text -> deny, never guess.
+        raise _UnclassifiableShape(node)
+    # EVIDENCE: a plain function call returns a runtime value; literal text built in
+    # ANOTHER function is the pinned cross-function bound (TestSafeStrLiteralCoverageBound).
+    return _OPAQUE
+
+
+def _canonicalise(  # noqa: PLR0911, PLR0912
+    node: ast.expr,
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+    seen: frozenset[str],
+) -> _Canon:
+    """Canonicalise a string-producing expression, or raise :class:`_UnclassifiableShape`.
+
+    The dispatch is an explicit ALLOWLIST in two halves — (a) text-building shapes,
+    canonicalised; (b) opaque runtime values, each exempted WITH the evidence that it
+    cannot carry literal text at this site — and it ends in ``raise``, so any shape
+    outside both halves fails loud."""
+    # --- (a) TEXT-BUILDING shapes -------------------------------------------------
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            return _Canon((node.value,), is_string=True)
+        if node.value is None or isinstance(node.value, int | float | complex):
+            return _OPAQUE  # EVIDENCE: a numeric/None literal cannot carry prose.
+        raise _UnclassifiableShape(node)  # bytes, Ellipsis: could decode to text.
+    if isinstance(node, ast.JoinedStr):
+        accumulated = [""]
+        for value in node.values:
+            piece = _canonicalise(value, func, seen)
+            accumulated = [prefix + text for prefix in accumulated for text in piece.templates]
+            if len(accumulated) > _MAX_CANONICALS:
+                raise _UnclassifiableShape(node)
+        return _Canon(tuple(accumulated), is_string=True)
+    if isinstance(node, ast.FormattedValue):
+        inner = _canonicalise(node.value, func, seen)
+        return _Canon(inner.templates, inner.is_string)
+    if isinstance(node, ast.BinOp):
+        return _canonicalise_binop(node, func, seen)
+    if isinstance(node, ast.IfExp):
+        body = _canonicalise(node.body, func, seen)
+        orelse = _canonicalise(node.orelse, func, seen)
+        return _Canon(body.templates + orelse.templates, body.is_string or orelse.is_string)
+    if isinstance(node, ast.Call):
+        return _canonicalise_call(node, func, seen)
+    if isinstance(node, ast.Name):
+        if node.id in seen:
+            return _OPAQUE  # EVIDENCE: cycle guard; the binding is already in flight.
+        resolved = _resolve_name_canons(node.id, func, seen | {node.id})
+        if not resolved:
+            return _OPAQUE  # EVIDENCE: a parameter/free name binds no literal HERE.
+        return _Canon(
+            tuple(text for canon in resolved for text in canon.templates),
+            any(canon.is_string for canon in resolved),
+        )
+    # --- (b) OPAQUE RUNTIME VALUES (each exemption evidence-backed) ---------------
+    if isinstance(node, ast.Attribute):
+        return _OPAQUE  # EVIDENCE: attribute access reads a runtime value, not a literal.
+    if isinstance(node, ast.Subscript):
+        base = _canonicalise(node.value, func, seen)
+        if base.is_string:
+            # Indexing/slicing a LITERAL is a text transform we will not guess.
+            raise _UnclassifiableShape(node)
+        return _OPAQUE  # EVIDENCE: subscripting a runtime container yields a value.
+    if isinstance(node, ast.List | ast.Tuple | ast.Set):
+        # EVERY element, INCLUDING a ``*unpacked`` one: skipping Starred was a real
+        # hole in this design's first attempt (self-attack #26) — ``[*["do it: ..."]]``
+        # walked straight past the container check.
+        if any(_canonicalise(element, func, seen).is_string for element in node.elts):
+            # A container of LITERAL TEXT reaching a string sink renders its repr —
+            # promise text would survive into the output. Deny; do not guess a repr.
+            raise _UnclassifiableShape(node)
+        return _OPAQUE  # EVIDENCE: a container of runtime values carries no literal text.
+    if isinstance(node, ast.Dict):
+        # ``keys`` carries a None entry for each ``**unpacking``; its dict rides in values.
+        if any(
+            item is not None and _canonicalise(item, func, seen).is_string
+            for item in [*node.keys, *node.values]
+        ):
+            raise _UnclassifiableShape(node)
+        return _OPAQUE  # EVIDENCE: as above, for mappings.
+    if isinstance(node, ast.ListComp | ast.SetComp | ast.GeneratorExp):
+        # The ELEMENT *and* every ITERABLE: checking only ``elt`` was the one attack
+        # of my own 25 that defeated the first attempt (self-attack #20) —
+        # ``[x for x in ["do it: teleport"]]`` has an opaque element and a
+        # literal-bearing iterable, so the text survived invisibly.
+        if any(
+            _canonicalise(part, func, seen).is_string
+            for part in [node.elt, *(generator.iter for generator in node.generators)]
+        ):
+            raise _UnclassifiableShape(node)
+        return _OPAQUE  # EVIDENCE: a comprehension over runtime values.
+    if isinstance(node, ast.DictComp):
+        if any(
+            _canonicalise(part, func, seen).is_string
+            for part in [
+                node.key,
+                node.value,
+                *(generator.iter for generator in node.generators),
+            ]
+        ):
+            raise _UnclassifiableShape(node)
+        return _OPAQUE  # EVIDENCE: as above, for mapping comprehensions.
+    if isinstance(node, ast.Starred):
+        # Unpacking is TRANSPARENT: it carries whatever its operand carries.
+        return _canonicalise(node.value, func, seen)
+    if isinstance(node, ast.Compare | ast.BoolOp | ast.UnaryOp):
+        return _OPAQUE  # EVIDENCE: these evaluate to bools/numbers, never to prose.
+    if isinstance(node, ast.Await):
+        return _OPAQUE  # EVIDENCE: same cross-function bound as a plain call.
+    raise _UnclassifiableShape(node)
+
+
+def _canonicalise_binop(
+    node: ast.BinOp, func: ast.FunctionDef | ast.AsyncFunctionDef, seen: frozenset[str]
+) -> _Canon:
+    """``+`` concatenates; ``%`` is printf-formatting when its LEFT side is text;
+    every other operator over TEXT (``"-" * 20``) is denied rather than guessed."""
+    left = _canonicalise(node.left, func, seen)
+    if isinstance(node.op, ast.Add):
+        right = _canonicalise(node.right, func, seen)
+        combined = tuple(
+            lhs + rhs for lhs in left.templates for rhs in right.templates
+        )
+        if len(combined) > _MAX_CANONICALS:
+            raise _UnclassifiableShape(node)
+        return _Canon(combined, left.is_string or right.is_string)
+    if isinstance(node.op, ast.Mod):
+        if not left.is_string:
+            return _OPAQUE  # EVIDENCE: numeric modulo, not %-formatting.
+        return _Canon(tuple(_printf_to_placeholders(t) for t in left.templates), True)
+    right = _canonicalise(node.right, func, seen)
+    if left.is_string or right.is_string:
+        raise _UnclassifiableShape(node)
+    return _OPAQUE  # EVIDENCE: arithmetic over runtime values yields no prose.
 
 
 def _string_templates(
@@ -996,42 +1257,9 @@ def _string_templates(
     func: ast.FunctionDef | ast.AsyncFunctionDef,
     seen: frozenset[str],
 ) -> list[str]:
-    """Canonical string template(s) an expression can produce, with every dynamic
-    sub-expression rendered as ``_PLACEHOLDER``. Returns a LIST because an
-    ``IfExp`` (two branches) or a reassigned name can yield more than one. One
-    exit point (an if/elif/else assigning ``result``) keeps the branch dispatch
-    below ruff's return-count ceiling."""
-    result: list[str]
-    if isinstance(node, ast.Constant):
-        result = [node.value] if isinstance(node.value, str) else [_PLACEHOLDER]
-    elif isinstance(node, ast.JoinedStr):
-        result = [""]
-        for value in node.values:
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                pieces = [value.value]
-            elif isinstance(value, ast.FormattedValue):
-                pieces = _string_templates(value.value, func, seen)
-            else:
-                pieces = [_PLACEHOLDER]
-            result = [prefix + piece for prefix in result for piece in pieces]
-    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        result = [
-            lhs + rhs
-            for lhs in _string_templates(node.left, func, seen)
-            for rhs in _string_templates(node.right, func, seen)
-        ]
-    elif isinstance(node, ast.IfExp):
-        result = _string_templates(node.body, func, seen) + _string_templates(node.orelse, func, seen)
-    elif isinstance(node, ast.Name):
-        resolved = (
-            [] if node.id in seen else _resolve_name_literals(node.id, func, seen | {node.id})
-        )
-        result = resolved or [_PLACEHOLDER]
-    elif isinstance(node, ast.Call) and _called_name(node.func) in _SAFE_STR_VERB_NAMES and node.args:
-        result = _string_templates(node.args[0], func, seen)
-    else:
-        result = [_PLACEHOLDER]
-    return result
+    """Thin compatibility wrapper over :func:`_canonicalise` for the render-template
+    scanner. Raises :class:`_UnclassifiableShape` on an unknown shape."""
+    return list(_canonicalise(node, func, seen).templates)
 
 
 def _has_literal_text(template: str) -> bool:
@@ -1041,10 +1269,15 @@ def _has_literal_text(template: str) -> bool:
     return template.replace(_PLACEHOLDER, "").strip() != ""
 
 
-def _scan_safe_str_over_tree(tree: ast.AST) -> list[tuple[str, int, str]]:
-    """Every classifiable safe_str/sanitise_line literal (function, lineno,
-    canonical) inside a comms render/handler function of the given tree."""
+def _scan_safe_str_over_tree(
+    tree: ast.AST,
+) -> tuple[list[tuple[str, int, str]], list[tuple[str, int, str]]]:
+    """``(classifiable literals, UNCLASSIFIABLE sites)`` for every safe_str/
+    sanitise_line call inside a comms render/handler function of the given tree.
+    The second list is the deny-by-default channel: a shape we cannot canonicalise
+    is REPORTED, never silently skipped."""
     literals: list[tuple[str, int, str]] = []
+    unclassifiable: list[tuple[str, int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
@@ -1057,21 +1290,39 @@ def _scan_safe_str_over_tree(tree: ast.AST) -> list[tuple[str, int, str]]:
                 and sub.args
             ):
                 continue
-            for template in _string_templates(sub.args[0], node, frozenset()):
+            try:
+                templates = _string_templates(sub.args[0], node, frozenset())
+            except _UnclassifiableShape as shape:
+                unclassifiable.append((node.name, sub.lineno, shape.dump))
+                continue
+            for template in templates:
                 if _has_literal_text(template):
                     literals.append((node.name, sub.lineno, template))
-    return literals
+    return literals, unclassifiable
 
 
 def _comms_render_safe_str_literals() -> list[tuple[str, int, str]]:
     tree = ast.parse(_SERVER_PY.read_text(encoding="utf-8"), filename="server.py")
-    return _scan_safe_str_over_tree(tree)
+    return _scan_safe_str_over_tree(tree)[0]
+
+
+def _comms_render_unclassifiable_shapes() -> list[tuple[str, int, str]]:
+    """Every UNCLASSIFIABLE string shape in the shipped comms render surface, across
+    BOTH scanners — the deny-by-default channel's production reading."""
+    tree = ast.parse(_SERVER_PY.read_text(encoding="utf-8"), filename="server.py")
+    return _scan_render_literals_over_tree(tree)[1] + _scan_safe_str_over_tree(tree)[1]
 
 
 def _scan_safe_str_source(source: str) -> list[str]:
     """The item-2 scanner applied to arbitrary source (the self-attack surface,
     mirroring the CORE's ``_scan_source``)."""
-    return [text for _fn, _line, text in _scan_safe_str_over_tree(ast.parse(source))]
+    return [text for _fn, _line, text in _scan_safe_str_over_tree(ast.parse(source))[0]]
+
+
+def _scan_safe_str_source_unclassifiable(source: str) -> list[str]:
+    """The DENIED shapes for arbitrary source — the self-attack surface for the
+    deny-by-default branch."""
+    return [dump for _fn, _line, dump in _scan_safe_str_over_tree(ast.parse(source))[1]]
 
 
 # --------------------------------------------------------------------------- #
@@ -1214,6 +1465,282 @@ class TestTheSafeStrGuardCatchesViolations:
         the comms surface and must not be scanned."""
         outside = "def _render_finding_detail(a):\n    return safe_str('teleport now: do it')\n"
         assert _scan_safe_str_source(outside) == []
+
+
+class TestTheCanonicaliserDeniesByDefault:
+    """ITEM A — DENY-BY-DEFAULT. The retired canonicaliser ended in
+    ``else: [_PLACEHOLDER]``: an unknown shape silently became "{}" and was then
+    discarded as textless, so ``%``-format, ``.format`` and ``str.join`` each served
+    promises INVISIBLY. Unknown shape now FAILS LOUD. These tests pin both halves —
+    the text-building shapes that must canonicalise, and the ones that must deny —
+    plus the positive control that honest opaque code never reds."""
+
+    def test_no_unclassifiable_shape_in_the_shipped_comms_surface(self) -> None:
+        """COVERAGE IS A CHECKED VARIABLE — this is the deny branch's OWN reach check.
+        Every render-verb and safe_str call site in production must canonicalise; a
+        shape that denies here is either a real new smuggling surface or a
+        canonicaliser gap, and either way it must be looked at, not tolerated."""
+        unclassifiable = _comms_render_unclassifiable_shapes()
+        assert not unclassifiable, (
+            "a comms render call site uses a string shape the canonicaliser cannot turn "
+            "into a stable template. Teach it the shape, or declare the shape OPAQUE with "
+            "evidence that it cannot carry literal text — never leave it unclassified:\n"
+            + "\n".join(f"  {fn}:{line}: {dump}" for fn, line, dump in unclassifiable)
+        )
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ('safe_str("do it: action=teleport %s" % n)', "do it: action=teleport {}"),
+            ('safe_str("do it: action=teleport %(k)s" % d)', "do it: action=teleport {}"),
+            ('safe_str("do it: action=teleport {}".format(n))', "do it: action=teleport {}"),
+            ('safe_str("".join(["do it: ", "action=teleport"]))', "do it: action=teleport"),
+            ('safe_str("do" + " it: " + "action=teleport")', "do it: action=teleport"),
+            ('safe_str(("do it: action=teleport %s" % n) + "!")', "do it: action=teleport {}!"),
+        ],
+        ids=["printf", "printf-mapping", "format", "join", "concat-chain", "printf-then-concat"],
+    )
+    def test_a_text_building_shape_is_canonicalised_not_invisible(
+        self, body: str, expected: str
+    ) -> None:
+        """The three shapes the audit found live, plus their compositions: each must
+        surface its literal text so the classification check can red on it."""
+        source = f"def _render_comms_new(n, d):\n    return {body}\n"
+        found = _scan_safe_str_source(source)
+        assert found == [expected], found
+        assert expected not in _safe_str_classified()  # ...and therefore UNCLASSIFIED -> RED
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            'safe_str("do it: action=teleport".upper())',
+            'safe_str("do it: XX".replace("XX", "action=teleport"))',
+            'safe_str("do it: action=teleport!!"[:-2])',
+            'safe_str("do it: action=teleport" * 2)',
+            'safe_str(["do it: action=teleport"])',
+            'safe_str({"k": "do it: action=teleport"})',
+            'safe_str([*["do it: action=teleport"]])',
+            'safe_str([x for x in ["do it: action=teleport"]])',
+            'safe_str("".join(x for x in ["do it: action=teleport"]))',
+            'safe_str(b"do it".decode())',
+        ],
+        ids=[
+            "str-upper",
+            "str-replace",
+            "slice-of-literal",
+            "literal-times-n",
+            "list-to-sink",
+            "dict-to-sink",
+            "starred-unpack",
+            "comprehension-iterable",
+            "join-over-genexp",
+            "bytes-constant",
+        ],
+    )
+    def test_an_uncanonicalisable_text_shape_is_DENIED_not_silently_dropped(
+        self, body: str
+    ) -> None:
+        """Every one of these carries literal text through a shape we will not guess.
+        Deny-by-default means they surface as UNCLASSIFIABLE (RED), never vanish.
+        ``starred-unpack`` and ``comprehension-iterable`` are here because they broke
+        this design's FIRST attempt — see REPORT-pkt02a-finalwave.md's attack table."""
+        source = f"def _render_comms_new(x):\n    return {body}\n"
+        denied = _scan_safe_str_source_unclassifiable(source)
+        assert denied, f"shape was silently dropped instead of denied: {body}"
+        assert _scan_safe_str_source(source) == []
+
+    def test_positive_control_honest_opaque_production_shapes_never_deny(self) -> None:
+        """THE false-positive control (repo law: "a gate that refuses honest code is a
+        gate that gets SWITCHED OFF"). Every opaque shape production actually uses —
+        attribute reads, slices of runtime values, ordinary calls, containers of
+        runtime values, comprehensions — must canonicalise quietly, not red."""
+        benign = (
+            "def _render_comms_ok(entry, row, agent, versions):\n"
+            "    name = sanitise_line(entry.agent_name)\n"
+            "    suffix = '(unbriefed)' if entry.acked_version is None else f'(v{entry.acked_version})'\n"
+            "    counts = {}\n"
+            "    cells = [render_join(' ', [safe_str('role'), sanitise_line(row.role)])]\n"
+            "    ranked = [v for v in versions if v > 0]\n"
+            "    _ = safe_str(row.task_id[:8] + '…')\n"
+            "    _ = safe_str(AppContext._render_age(5))\n"
+            "    _ = sanitise_line(agent.name)\n"
+            "    _ = safe_str(f'{counts[1]} at v{1}')\n"
+            "    return safe_str(f'{name} {suffix}')\n"
+        )
+        denied = _scan_safe_str_source_unclassifiable(benign)
+        assert denied == [], f"honest opaque code was falsely denied: {denied}"
+
+    def test_the_denial_names_the_shape_it_could_not_canonicalise(self) -> None:
+        """A denial must be ACTIONABLE: it carries the ``ast.dump`` so the next author
+        can see exactly which shape to teach or exempt."""
+        source = "def _render_comms_new(x):\n    return safe_str('do it'.upper())\n"
+        denied = _scan_safe_str_source_unclassifiable(source)
+        assert len(denied) == 1, denied
+        assert "Call" in denied[0] and "upper" in denied[0], denied[0]
+
+
+# =========================================================================== #
+# ITEM B — MARKER CROSS-SATISFACTION META-TEST.
+#
+# The cold audit found 6/16 non-discriminating markers BY HAND. This mechanizes
+# that review permanently: for every proof P and every OTHER proof Q, P's marker
+# must NOT appear in Q's emit render — otherwise P's marker is not specific to the
+# line it claims to prove, and P could pass while its own line never rendered.
+# An exemption is a DECLARATION WITH A REASON, never a way to silence a red.
+# =========================================================================== #
+
+
+def _proof_literal_containing(fragment: str) -> str:
+    """The single registry literal containing ``fragment`` — self-validating, so the
+    exemption set below can never silently bind to the wrong (or an ambiguous) proof."""
+    matches = sorted(literal for literal in _PROMISE_PROOFS if fragment in literal)
+    assert len(matches) == 1, f"{fragment!r} matched {len(matches)} literals: {matches!r}"
+    return matches[0]
+
+
+_REGISTER_ACK_LINE = _proof_literal_containing("ack recorded (via register)")
+_REGISTER_ECHO_LINE = _proof_literal_containing("echo in your report")
+
+# The ONLY sanctioned co-emission: both lines are rendered by the SAME
+# ``_render_comms_register`` call under ONE structural gate (``brief is not None``),
+# so each necessarily appears in the other's emit render. That is correct behaviour,
+# not a weak marker — and each still has a NO-EMIT leg (brief=None) that gates it.
+_MARKER_CO_EMISSION_EXEMPTIONS: dict[tuple[str, str], str] = {
+    (_REGISTER_ACK_LINE, _REGISTER_ECHO_LINE): (
+        "same register render, one structural gate (brief is not None) — co-emission is "
+        "the specified behaviour; both are still gated by the brief=None NO-EMIT leg"
+    ),
+    (_REGISTER_ECHO_LINE, _REGISTER_ACK_LINE): (
+        "the mirror of the above — same render, same single gate"
+    ),
+}
+
+
+def _cross_satisfied_markers(
+    proofs: dict[str, PromiseProof], exemptions: dict[tuple[str, str], str]
+) -> list[tuple[str, str]]:
+    """Every ``(marker_owner, other_proof)`` pair where the owner's marker is ALSO
+    satisfied by the other proof's emit render, minus declared exemptions."""
+    renders = {literal: proof.render_emit() for literal, proof in proofs.items()}
+    violations: list[tuple[str, str]] = []
+    for owner, proof in proofs.items():
+        for other in proofs:
+            if owner == other:
+                continue
+            if proof.marker in renders[other] and (owner, other) not in exemptions:
+                violations.append((owner, other))
+    return violations
+
+
+class TestNoMarkerIsCrossSatisfiedByAnotherProof:
+    """Mechanized replacement for the audit's by-hand marker review."""
+
+    def test_no_marker_is_cross_satisfied(self) -> None:
+        violations = _cross_satisfied_markers(_PROMISE_PROOFS, _MARKER_CO_EMISSION_EXEMPTIONS)
+        assert not violations, (
+            "a proof's marker is ALSO satisfied by another proof's emit render, so it is "
+            "not specific to the line it claims to prove — strengthen it to the FULL "
+            "rendered line, or declare a co-emission exemption WITH A REASON (never to "
+            "silence a red):\n"
+            + "\n".join(
+                f"  marker of {owner!r}\n    also emitted by {other!r}"
+                for owner, other in violations
+            )
+        )
+
+    def test_every_exemption_is_declared_with_a_reason(self) -> None:
+        blank = [pair for pair, reason in _MARKER_CO_EMISSION_EXEMPTIONS.items() if not reason.strip()]
+        assert not blank, f"exemption(s) without a reason: {blank!r}"
+
+    def test_every_exemption_names_registered_proofs(self) -> None:
+        """A stale exemption (naming a literal no longer registered) would silently
+        widen the allowance — the same dead-entry rot the registry scanners forbid."""
+        stale = [
+            pair
+            for pair in _MARKER_CO_EMISSION_EXEMPTIONS
+            if pair[0] not in _PROMISE_PROOFS or pair[1] not in _PROMISE_PROOFS
+        ]
+        assert not stale, f"exemption(s) naming unregistered literals: {stale!r}"
+
+    def test_the_meta_test_catches_a_reintroduced_weak_marker(self) -> None:
+        """SELF-ATTACK: shorten the 7b collapse marker back to the suffix it SHARES with
+        the 7a variant. The meta-test must go RED — with the correct marker set green as
+        the positive control (the sibling test above)."""
+        weak_target = _proof_literal_containing("more briefs: {names} — brief_get")
+        weakened = dict(_PROMISE_PROOFS)
+        weakened[weak_target] = replace(
+            _PROMISE_PROOFS[weak_target], marker=f"{_EM_DASH} brief_get each by name"
+        )
+        violations = _cross_satisfied_markers(weakened, _MARKER_CO_EMISSION_EXEMPTIONS)
+        assert violations, (
+            "the cross-satisfaction meta-test did NOT catch a marker weakened to a "
+            "shared suffix — the instrument is not discriminating"
+        )
+
+    def test_an_undeclared_exemption_does_not_hide_a_violation(self) -> None:
+        """The exemption set must be the ONLY escape: with exemptions emptied, the one
+        sanctioned co-emission pair reappears as a violation (proving the set is load-
+        bearing and not decorative)."""
+        violations = _cross_satisfied_markers(_PROMISE_PROOFS, {})
+        assert (_REGISTER_ACK_LINE, _REGISTER_ECHO_LINE) in violations, violations
+
+
+class TestMarkerCrossSatisfactionBound:
+    """PIN THE MISS (repo law: "an unpinned known limitation is indistinguishable from an
+    unknown one"). The cross-satisfaction meta-test above compares proofs against EACH
+    OTHER — it fires only when one proof's marker is satisfied by ANOTHER proof's render.
+    It therefore CANNOT see a marker that is weak against a BROKEN BUILD but happens to be
+    textually absent from every sibling render.
+
+    The measured instance is the very weakness the cold audit found by hand: 7b's marker
+    shortened to the k-specific prefix ``"behind on 1 more briefs:"``. No other proof's
+    render contains it (7a's fixture renders ``k=6``, so the two renders are textually
+    disjoint) — yet it is still a bad marker, because a build that ALWAYS renders the
+    ``(+{extra} more)`` variant satisfies it. That build is caught by the emit/no-emit
+    MUTATION proof, not by this meta-test.
+
+    THE POINT, for whoever reads a green suite next: **a green cross-satisfaction run does
+    NOT mean "my markers are proven strong."** Item B does not retire the mutation
+    discipline; the two instruments answer different questions (proof-vs-proof, and
+    proof-vs-broken-implementation) and a marker needs both.
+
+    NAMED RE-OPEN TRIGGER: the day a per-proof "marker must not survive a SIBLING-BRANCH
+    render of the SAME helper" check lands (the instrument shape proposed in
+    REPORT-pkt02a-finalwave.md §F, ledgered as its own item), this bound is CLOSED —
+    delete this pin and say so."""
+
+    def test_KNOWN_BOUND_a_k_specific_prefix_weakening_is_not_caught(self) -> None:
+        target = _proof_literal_containing("more briefs: {names} — brief_get")
+        prefix_marker = f"behind on {_P7B_REMAINDER} more briefs:"
+
+        # THE MECHANISM of the bound, pinned explicitly: the sibling (7a) fixture renders a
+        # DIFFERENT k, so its render cannot contain 7b's k-specific prefix. This is WHY
+        # proof-vs-proof comparison is blind here.
+        seven_a = _proof_literal_containing("(+{extra} more)")
+        assert prefix_marker not in _PROMISE_PROOFS[seven_a].render_emit(), (
+            "the 7a fixture now renders the same k as 7b — the mechanism behind this known "
+            "bound has changed; re-derive the bound before trusting this pin"
+        )
+
+        # THE BOUND ITSELF: a k-specific prefix weakening slips through cross-satisfaction.
+        prefix_weakened = dict(_PROMISE_PROOFS)
+        prefix_weakened[target] = replace(_PROMISE_PROOFS[target], marker=prefix_marker)
+        assert _cross_satisfied_markers(prefix_weakened, _MARKER_CO_EMISSION_EXEMPTIONS) == [], (
+            "the cross-satisfaction meta-test NOW catches a k-specific prefix weakening — "
+            "this KNOWN BOUND is closed. If you closed it deliberately (e.g. the "
+            "sibling-branch render check landed), delete this pin and say so."
+        )
+
+        # POSITIVE CONTROL: the meta-test is not simply dead — the shared-SUFFIX weakening,
+        # which IS textually present in 7a's render, is caught.
+        suffix_weakened = dict(_PROMISE_PROOFS)
+        suffix_weakened[target] = replace(
+            _PROMISE_PROOFS[target], marker=f"{_EM_DASH} brief_get each by name"
+        )
+        assert _cross_satisfied_markers(suffix_weakened, _MARKER_CO_EMISSION_EXEMPTIONS), (
+            "the meta-test failed to catch even a shared-SUFFIX weakening — the instrument "
+            "is broken, not merely bounded"
+        )
 
 
 class TestSafeStrLiteralCoverageBound:
