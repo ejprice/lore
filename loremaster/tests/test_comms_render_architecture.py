@@ -476,6 +476,124 @@ class TestHeartbeatSurfacesSubscribedNameSkew:
             f"and the heartbeat did not deliver it (#103): {rendered!r}"
         )
 
+    def test_over_cap_subscribed_skews_collapse_ordered_by_magnitude(self) -> None:
+        """§9.2 v8 CAP + collapse + ORDER (the adversary-found gap): with MORE
+        than ``_HEARTBEAT_SKEW_NAMES_CAP`` subscribed-behind non-'project'
+        names, the heartbeat renders EXACTLY the cap-many LARGEST-skew names as
+        individual per-name lines, skew-DESCENDING, then ONE counted collapse
+        line naming the remainder — and the smaller-skew names never appear as
+        individual lines.
+
+        Driven at the render directly (like ``TestSkewTailIsNameConditioned``),
+        NOT through the dispatcher, on purpose: ``BriefLedger.subscribed_name_skew``
+        returns skews in arbitrary store order, so only a CONTROLLED input order
+        that DIFFERS from skew-descending can prove the render itself sorts.
+        Every sibling fixture holds ≤1 subscribed-behind name, so this
+        cap/collapse/order branch was dead code no test reached — two wrong
+        builds (``_HEARTBEAT_SKEW_NAMES_CAP`` raised to 99 → never collapses; the
+        skew-descending sort removed → store order) each passed the FULL render
+        contract 617/0 (REPORT-pkt02-adversary.md §"surviving wrong builds").
+
+        RED against clean production: ``_render_comms_heartbeat`` has no
+        ``subscribed_skew`` parameter yet ⇒ ``TypeError`` (the right RED). The
+        cap/coverage constants are read only AFTER that call, so a clean tree —
+        which has no ``_HEARTBEAT_SKEW_NAMES_CAP`` symbol — never reaches them.
+        """
+        import loremaster.server as server_module
+
+        # Five subscribed-and-behind non-'project' briefs, DISTINCT skews, and
+        # every head/acked number distinct (no small-N / arithmetic-alignment
+        # coincidence a sort-by-head, sort-by-acked, or count-not-version build
+        # could ride). Names are chosen so ALPHABETICAL order is neither the same
+        # as nor the reverse of skew order. The input order below is deliberately
+        # scrambled — neither skew-ascending nor -descending — so a render that
+        # emits store/input order (no sort) picks the WRONG names as individuals.
+        subscribed_skew: list[tuple[str, int, int]] = [
+            ("zeta", 26, 23),   # skew 3
+            ("mike", 30, 25),   # skew 5  <- largest
+            ("romeo", 19, 18),  # skew 1  <- smallest
+            ("alpha", 28, 24),  # skew 4
+            ("delta", 22, 20),  # skew 2
+        ]
+        agent = SimpleNamespace(name="fixer-b", status="active")
+
+        # First production touch — RED here (TypeError, missing kwarg) against a
+        # clean tree, BEFORE any constant lookup.
+        rendered = str(
+            AppContext._render_comms_heartbeat(
+                agent,
+                project_head_version=None,  # no 'project' skew line: isolate the mechanism
+                project_acked_version=None,
+                subscribed_skew=subscribed_skew,
+            )
+        )
+
+        skew_cap = server_module._HEARTBEAT_SKEW_NAMES_CAP
+        coverage_cap = server_module._COVERAGE_NAMES_CAP
+        # Precondition AND the cap-not-binding kill in one: the fixture must have
+        # at least cap + 2 subscribed skews so >cap names force a plural collapse.
+        # A build whose per-name cap is >= the number of subscribed skews (e.g.
+        # _HEARTBEAT_SKEW_NAMES_CAP raised to 99) NEVER collapses, so every agent
+        # behind on many briefs gets unbounded per-name heartbeat spam (#103) —
+        # that build fails HERE, naming the non-binding cap. If a smaller cap was
+        # deliberately raised at/above the fixture size, grow the fixture instead.
+        assert len(subscribed_skew) >= skew_cap + 2, (
+            "_HEARTBEAT_SKEW_NAMES_CAP does not bind on this fixture: a cap >= the "
+            "number of subscribed skews never collapses and spams every heartbeat "
+            "(#103) — grow the fixture only if the cap was deliberately raised: "
+            f"cap={skew_cap}, subscribed_skews={len(subscribed_skew)}"
+        )
+
+        ordered = sorted(subscribed_skew, key=lambda row: (-(row[1] - row[2]), row[0]))
+        shown, remainder = ordered[:skew_cap], ordered[skew_cap:]
+
+        def _skew_line(name: str, head: int, acked: int) -> str:
+            return (
+                f"brief '{name}' v{head} is head {_EM_DASH} you acked v{acked}; "
+                f"catch up: lore_comms action=brief_get name='{name}'"
+            )
+
+        # ORDER: exactly the cap-many largest skews, skew-DESCENDING, as one
+        # contiguous block — a store-order (no-sort) build renders other names
+        # here and FAILS.
+        shown_block = "\n".join(_skew_line(*row) for row in shown)
+        assert shown_block in rendered, (
+            "heartbeat did not render the top-cap subscribed skews in "
+            f"skew-descending order (#103 order gap): {rendered!r}"
+        )
+        # CAP: no MORE than the cap individual per-name lines — a build that
+        # raised the cap (never collapses) renders one per name and FAILS. The
+        # per-name teach carries the explicit ``name=``; the bare-'project' skew
+        # line (absent here) and the collapse line do not, so this counts only
+        # the individual non-project skew lines.
+        name_line_count = rendered.count("catch up: lore_comms action=brief_get name=")
+        assert name_line_count == skew_cap, (
+            "heartbeat rendered a per-name skew line for MORE than "
+            f"_HEARTBEAT_SKEW_NAMES_CAP={skew_cap} names (counted {name_line_count}) — "
+            f"the cap never collapsed (unbounded heartbeat spam, #103): {rendered!r}"
+        )
+        # COLLAPSE: the smaller-skew remainder is ABSENT as individual lines...
+        for name, head, acked in remainder:
+            assert _skew_line(name, head, acked) not in rendered, (
+                f"over-cap brief '{name}' leaked as an individual skew line "
+                f"instead of collapsing (#103): {rendered!r}"
+            )
+        # ...and appears ONLY in ONE counted collapse line naming the remainder
+        # (names capped _COVERAGE_NAMES_CAP, '(+{j} more)' suffix when over — both
+        # derived from the constants, never hardcoded).
+        remainder_names = [row[0] for row in remainder]
+        names_text = ", ".join(remainder_names[:coverage_cap])
+        if len(remainder_names) > coverage_cap:
+            names_text += f" (+{len(remainder_names) - coverage_cap} more)"
+        collapse_line = (
+            f"behind on {len(remainder_names)} more briefs: {names_text} "
+            f"{_EM_DASH} brief_get each by name"
+        )
+        assert collapse_line in rendered, (
+            "heartbeat did not counted-collapse the over-cap remainder into one "
+            f"line (#103): expected {collapse_line!r} in {rendered!r}"
+        )
+
 
 # =========================================================================== #
 # #104 STRUCTURAL — a RENDER helper must NEVER reference the standing-brief NAME
