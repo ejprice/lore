@@ -134,10 +134,12 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import functools
 import importlib
 import inspect
 import logging
 import re
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -220,6 +222,7 @@ def _signal() -> Any:
 
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "loremaster"
+_TESTS_ROOT = Path(__file__).resolve().parent
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -4777,6 +4780,352 @@ def generate_brief_ddl():
         assert not _bootstrap_sites_in(source), (
             "the scan flagged a module that bootstraps nothing — it is keyed on the SESSION "
             "bootstrap (namespace/database/use), not on the word DEFINE"
+        )
+
+
+# ===========================================================================
+# THE SAME GATE, OVER THE TEST TREE — closing the CLASS, not the instance (#150)
+#
+# The pin above scans ``_PACKAGE_ROOT``: production modules only. That is not an
+# implementation detail, it is the whole reason finding #150 existed. The harness's
+# session bootstrap was three BARE, UNRETRIED ``await``\s in ``tests/_surreal_harness.py``,
+# and it rode out the entire #102/#108 consolidation wave untouched — not because anyone
+# waved it through, but because a sweep whose root is the package cannot see a seam that
+# lives in the test tree. Ten hand-rolled copies were found and deleted; the ELEVENTH was
+# structurally invisible to the instrument that found the ten.
+#
+# Fixing #150 removed the INSTANCE. This removes the BLINDNESS. Without it, the next test
+# helper that hand-rolls a bootstrap is exactly as invisible as the last one was.
+#
+# ---------------------------------------------------------------------------
+# THREAT MODEL — WHO THIS GATE IS FOR. Stated in the instrument, because a gate whose
+# audience is unwritten gets re-argued from scratch by every auditor who meets it, and
+# each of them is entitled to their own verdict.
+#
+#   IT IS FOR THE HONEST ENGINEER who writes a test helper that opens a socket and
+#   hand-rolls ``DEFINE NAMESPACE`` / ``DEFINE DATABASE`` / ``use()`` because they did
+#   not know ``_txn.bootstrap_session`` existed. That is #150 verbatim, written by an
+#   author doing their best with the seam one directory away and no sign pointing at it.
+#
+#   IT IS NOT A SECURITY BOUNDARY against an author trying to get past it. Anyone who
+#   can commit here can already bootstrap a session in a way no AST scan will name — via
+#   a helper, a getattr, a receiver spelled something else entirely. Saying so is not a
+#   weakness admitted; it is this pin's SPEC.
+#
+#   So the verdicts follow mechanically, and no future auditor has to guess:
+#     * "a determined author could evade this"      -> NOT a defect. Out of model.
+#     * "an honest engineer's hand-rolled bootstrap
+#        in a test helper goes unnoticed"           -> A DEFECT. The only one this
+#                                                      pin answers to.
+#
+#   And the reason that trade is the correct one, which is the half worth remembering:
+#   A GATE THAT REFUSES HONEST CODE IS A GATE THAT GETS SWITCHED OFF, and then the next
+#   #150 ships with nothing watching at all. This tree is FULL of legitimate fakes that
+#   define ``async def use(...)`` and fixtures that hold ``DEFINE NAMESPACE`` as a plain
+#   string, and not one of them may ever cost an engineer a red suite.
+#
+# ---------------------------------------------------------------------------
+# WHY THE TEST-TREE SCAN IS NARROWER THAN PRODUCTION'S — same property, different
+# population. In ``loremaster/``, a ``DEFINE NAMESPACE`` literal is necessarily a
+# bootstrap: production has no reason to hold that string as DATA. In ``tests/`` it is
+# data 22 times out of 23 — expected-value constants, source fixtures fed to the scanners
+# above, prose in pin messages. Run production's literal-keyed scan over this tree
+# verbatim and it reports 23 sites, 22 of them correct code. That gate lasts one afternoon.
+#
+# The property that survives the move is EXECUTION: a bootstrap is not a string, it is
+# three operations RUN ON A LIVE CONNECTION. So the test-tree scan keys on the call —
+# ``<connection>.use(...)``, or a connection call carrying the engine's own DDL keywords
+# in its arguments. Measured over all 92 test modules, that yields exactly ONE site: the
+# harness's seam-wrapped teardown select. Twenty-two fixture strings, zero false
+# positives, and the #150 construct still caught (proved below, both directions).
+#
+# This is a NARROWING OF THE SAME PREDICATE, not a second implementation: both legs read
+# ``_is_connection_receiver``, ``_SESSION_SELECT_METHOD`` and ``_BOOTSTRAP_DDL_KEYWORDS``
+# — the production gate's own constants. Mutate one and BOTH scans change, which is the
+# only proof of sharing that a private copy wearing a shared name cannot fake. That
+# mutation is not an argument here; it is executed, below.
+
+# THE SAFE SET, ENUMERATED — and it is one file.
+#
+# This is an ALLOWLIST, and deliberately so. Six instruments in this repo have now been
+# defeated by keying on what is FORBIDDEN (a label's literal, beaten by a substring of it;
+# ``async def _query``, beaten by a module that spelled it differently; three SDK method
+# names, beaten by the other thirty). The forbidden set is unbounded and the next entry in
+# it is by definition the one nobody thought of. The SAFE set here is one row long, and a
+# reviewer can read it in full.
+#
+# Every allowance carries its REASON and its expected SITE COUNT. The count is the half
+# that matters: a bare file-level exemption would make ``_surreal_harness.py`` — the file
+# #150 actually lived in — a permanent blind spot, which is the failure this whole section
+# exists to end. A new bootstrap operation appearing in an allowlisted file goes RED and
+# has to be justified in a diff a reviewer can see.
+_TEST_TREE_BOOTSTRAP_ALLOWANCES: dict[str, tuple[int, str]] = {
+    "_surreal_harness.py": (
+        1,
+        "`drop_database` selects the namespace+database for teardown and runs that select "
+        "UNDER the store's retry seam, on a deadline composed with the drop's (#150 R4). "
+        "`open_connection` holds no site at all — it hands the whole three-statement "
+        "bootstrap to `_txn.bootstrap_session`, which is exactly why it is invisible to "
+        "this scan. Both halves are the #150 fix; this row is the standing receipt that "
+        "they stayed fixed.",
+    ),
+}
+
+# The scan must actually reach the tree it claims to scan. REACH IS A CHECKED VARIABLE,
+# never an assumption: this repo has already shipped a gate that certified nothing because
+# it enumerated from a set that was empty by construction, and a scan that silently visits
+# zero files passes forever while promising everything. 92 modules today.
+_MIN_SCANNED_TEST_MODULES = 60
+
+
+def _executed_bootstrap_sites_in(source: str) -> list[tuple[int, str]]:
+    """Every session-bootstrap operation ``source`` RUNS ON A LIVE CONNECTION.
+
+    Two legs, both keyed on the CALL rather than on a string, because in this tree the
+    string is usually data:
+
+      * ``<connection>.use(...)`` — the session select, the leg that cannot be faked by a
+        literal and the one measured LOSING the race on virgin first-connects.
+      * ``<connection>.<anything>(... "DEFINE NAMESPACE" ...)`` — the engine's own DDL
+        keywords reaching a live connection as an argument. f-string parts are walked, so
+        the near-universal ``f"DEFINE NAMESPACE IF NOT EXISTS {ns}"`` is seen; a scan
+        reading only ``ast.Constant`` values would find none of them and go silently green.
+
+    A fake that DEFINES ``async def use`` is not a bootstrap and is not matched here — a
+    ``FunctionDef`` is not a ``Call``. That distinction is the difference between this gate
+    and a gate that gets deleted; it is pinned as a control, not left to this docstring.
+    """
+    sites: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and _is_connection_receiver(node.func.value)
+        ):
+            continue
+        if node.func.attr == _SESSION_SELECT_METHOD:
+            sites.append((node.lineno, f"connection.{_SESSION_SELECT_METHOD}()"))
+            continue
+        for argument in ast.walk(node):
+            if not (isinstance(argument, ast.Constant) and isinstance(argument.value, str)):
+                continue
+            upper = argument.value.upper()
+            for keyword in _BOOTSTRAP_DDL_KEYWORDS:
+                if keyword in upper:
+                    sites.append((node.lineno, f"connection.{node.func.attr}({keyword} ...)"))
+    return sites
+
+
+@functools.cache
+def _scanned_test_tree() -> tuple[tuple[str, tuple[tuple[int, str], ...]], ...]:
+    """Every test module and its bootstrap sites, parsed ONCE per session.
+
+    Parsing 92 modules costs ~400ms and three pins below need the same answer; without
+    this the extension put ~2s on a 14s run for nothing. Cached as tuples so the shared
+    result cannot be mutated by one caller under another — the callers get fresh
+    containers from :func:`_test_tree_bootstrap_sites`.
+    """
+    return tuple(
+        (
+            path.relative_to(_TESTS_ROOT).as_posix(),
+            tuple(_executed_bootstrap_sites_in(path.read_text(encoding="utf-8"))),
+        )
+        for path in sorted(_TESTS_ROOT.rglob("*.py"))
+        if "__pycache__" not in path.parts
+    )
+
+
+def _test_tree_bootstrap_sites() -> tuple[dict[str, list[tuple[int, str]]], list[str]]:
+    """``(sites by test-tree-relative path, every module actually scanned)``.
+
+    The scanned list is returned rather than discarded so REACH can be asserted by the
+    pins below instead of assumed by their author.
+    """
+    scanned = _scanned_test_tree()
+    held = {key: list(sites) for key, sites in scanned if sites}
+    return held, [key for key, _ in scanned]
+
+
+class TestTheTestTreeRoutesThroughTheOneBootstrapToo:
+    """**Finding #150's blindness, closed.** The production pin above cannot see this tree;
+    a hand-rolled bootstrap lived here through an entire consolidation wave because of it.
+
+    Read the threat model in the block above before grading this class: it is built for the
+    honest engineer who did not know the seam existed, and it is explicitly NOT a boundary
+    against an author working around it.
+    """
+
+    def test_the_test_tree_scan_actually_reaches_the_test_tree(self) -> None:
+        """**THE REACH CONTROL.** A scan that visits nothing is green forever, and this repo
+        has shipped exactly that instrument before. Reach is checked, never assumed.
+        """
+        _, scanned = _test_tree_bootstrap_sites()
+
+        assert len(scanned) >= _MIN_SCANNED_TEST_MODULES, (
+            f"the test-tree scan visited only {len(scanned)} modules — this pin was written "
+            f"against 92, and its floor is {_MIN_SCANNED_TEST_MODULES}. Either the suite "
+            f"shrank dramatically (lower this floor deliberately, in a diff a reviewer can "
+            f"see) or the WALK broke and every pin in this class just went vacuously green."
+        )
+        assert "_surreal_harness.py" in scanned, (
+            "the scan did not visit `_surreal_harness.py` — the file finding #150 actually "
+            "lived in. A reach that excludes the one known offender is not reach."
+        )
+        assert "test_retry_seam.py" in scanned, (
+            "the scan did not visit its own file. This module holds more `DEFINE NAMESPACE` "
+            "string fixtures than any other in the tree, so it is also the strongest "
+            "evidence that the scan tells DATA from EXECUTION — skipping it would hide "
+            "exactly the false positives this design exists to avoid."
+        )
+
+    def test_no_test_module_outside_the_allowlist_bootstraps_a_session(self) -> None:
+        """THE GATE. Every site outside the enumerated safe set, named ``file:line`` —
+        because "all remaining hits are fixtures" is banned output in this repo, and
+        wholesale classification under volume is how a real defect gets re-buried.
+        """
+        held, _ = _test_tree_bootstrap_sites()
+        violations = {key: sites for key, sites in held.items() if key not in _TEST_TREE_BOOTSTRAP_ALLOWANCES}
+
+        assert not violations, (
+            "a test-tree module hand-rolls a SurrealDB session bootstrap:\n  "
+            + "\n  ".join(
+                f"{key}:{lineno}  {what}" for key, sites in violations.items() for lineno, what in sites
+            )
+            + "\n\nIt is ONE function — `loremaster.store._txn.bootstrap_session` — and the "
+            "test harness calls it like every production `_ensure_connection` does; see "
+            "`_surreal_harness.open_connection`. THIS IS FINDING #150: the harness carried "
+            "three bare, unretried bootstrap `await`s that no gate could see, because the "
+            "gate above this one scans production only. Live-probed, 16-way concurrent, "
+            "6.2%-34.4% of virgin first-connects LOSE that race — under the standing "
+            "`-n auto` runner that is a stochastic setup failure across the whole suite.\n"
+            "If your site is legitimate (it routes through the seam), add it to "
+            "`_TEST_TREE_BOOTSTRAP_ALLOWANCES` with its reason — an allowance is a diff a "
+            "reviewer can see, which is the point."
+        )
+
+    def test_every_allowance_still_holds_exactly_the_sites_it_was_granted(self) -> None:
+        """An allowance is bounded by COUNT, so an allowlisted file cannot become a blind
+        spot. ``_surreal_harness.py`` is the file #150 lived in; exempting it wholesale
+        would re-open the exact hole this class closes, one level down.
+        """
+        held, _ = _test_tree_bootstrap_sites()
+
+        for key, (expected, reason) in _TEST_TREE_BOOTSTRAP_ALLOWANCES.items():
+            found = held.get(key, [])
+            assert len(found) == expected, (
+                f"`{key}` is allowed {expected} bootstrap site(s), and the scan found "
+                f"{len(found)}: {found}. The allowance reads:\n  {reason}\n"
+                f"If you ADDED a site, it is not covered by that reason — route it through "
+                f"`_txn.bootstrap_session` (or the store retry seam) and raise the count "
+                f"here with a reason of its own. If you REMOVED one, lower the count: an "
+                f"allowance for a site that no longer exists is a standing exemption nobody "
+                f"is checking."
+            )
+
+    def test_the_scan_SEES_the_hand_rolled_bootstrap_of_finding_150(self) -> None:
+        """**POSITIVE CONTROL, and it is #150's own construct.** A scan never shown firing
+        is not a scan. This is the shape the harness actually held: bare awaits, the DDL
+        interpolated into f-strings, the select on a live socket.
+        """
+        source = """
+async def open_connection(env):
+    connection = AsyncSurreal(env.url)
+    await connection.signin({"username": env.user, "password": env.password})
+    await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {env.namespace}")
+    await connection.query(f"DEFINE DATABASE IF NOT EXISTS {env.database}")
+    await connection.use(env.namespace, env.database)
+    return connection
+"""
+        found = _executed_bootstrap_sites_in(source)
+
+        assert [what for _, what in found] == [
+            "connection.query(DEFINE NAMESPACE ...)",
+            "connection.query(DEFINE DATABASE ...)",
+            "connection.use()",
+        ], (
+            f"the scan saw {found} in finding #150's verbatim construct. It must see all "
+            f"three legs — both f-string DDL statements and the select — or the next helper "
+            f"to hand-roll a bootstrap is as invisible as the last one was."
+        )
+
+    def test_the_scan_SPARES_a_fake_that_merely_DEFINES_the_bootstrap_methods(self) -> None:
+        """**NEGATIVE CONTROL 1 — the false positive that would kill this gate on day one.**
+        This tree is full of doubles that define ``async def use`` / ``async def query``;
+        ``_FakeConnection`` in ``test_surreal_harness.py`` is one, and it exists precisely
+        to test the #150 fix. DEFINING a method is not RUNNING a bootstrap.
+        """
+        source = '''
+class _FakeConnection:
+    """A double: it defines the bootstrap surface and records what it is asked to run."""
+
+    async def use(self, namespace, database):
+        self.used = (namespace, database)
+
+    async def query(self, statement, params=None):
+        self.statements.append(statement)
+
+    async def signin(self, credentials):
+        self.signed_in = True
+'''
+        assert not _executed_bootstrap_sites_in(source), (
+            "the scan flagged a test double for DEFINING `use`/`query`. Every fake in this "
+            "tree defines them; a gate that reds the suite for writing a fake is a gate the "
+            "next engineer switches off, and then nothing is watching at all."
+        )
+
+    def test_the_scan_SPARES_bootstrap_DDL_held_as_fixture_DATA(self) -> None:
+        """**NEGATIVE CONTROL 2 — the discrimination that makes a test-tree scan possible.**
+        22 of the 23 literal-keyed hits in this tree are DATA: expected values, source
+        fixtures fed to the scanners above, prose inside assertion messages. Production's
+        literal-keyed pin is right for production and would be wrong here, and the reason
+        is population, not rigour.
+        """
+        source = '''
+_EXPECTED_BOOTSTRAP_DDL = "DEFINE NAMESPACE IF NOT EXISTS lore; DEFINE DATABASE IF NOT EXISTS main;"
+
+_HAND_ROLLED_FIXTURE = """
+    await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {ns}")
+    await connection.use(ns, db)
+"""
+
+
+def test_the_seam_emits_the_bootstrap_ddl(recorded):
+    assert recorded.statements[0] == _EXPECTED_BOOTSTRAP_DDL, (
+        "the seam must emit DEFINE NAMESPACE before DEFINE DATABASE"
+    )
+'''
+        assert not _executed_bootstrap_sites_in(source), (
+            "the scan flagged bootstrap DDL held as DATA — a fixture, an expected value, a "
+            "message. Nothing here reaches a live connection. Firing on these is how a "
+            "test-tree gate earns 22 false positives and one very short life."
+        )
+
+    def test_the_two_scans_SHARE_their_predicates_rather_than_cloning_them(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """**PROVED BY MUTATION, the only proof a private copy cannot fake.** Routing is not
+        sharing and neither is looking identical: a second scan that hand-rolled its own
+        notion of "the select method" would pass every pin above while drifting silently
+        from the production gate it claims to extend.
+
+        So: move the shared constant, and BOTH scans must go blind together.
+        """
+        bootstrap = "await connection.use(namespace, database)\n"
+        assert _bootstrap_sites_in(bootstrap), "control: the production scan sees the select"
+        assert _executed_bootstrap_sites_in(bootstrap), "control: the test-tree scan sees it"
+
+        monkeypatch.setattr(sys.modules[__name__], "_SESSION_SELECT_METHOD", "not_the_select")
+
+        assert not _bootstrap_sites_in(bootstrap), (
+            "the PRODUCTION scan kept finding `use()` after `_SESSION_SELECT_METHOD` moved "
+            "— it is not reading the shared constant, so this mutation proves nothing about "
+            "either scan."
+        )
+        assert not _executed_bootstrap_sites_in(bootstrap), (
+            "the TEST-TREE scan kept finding `use()` after `_SESSION_SELECT_METHOD` moved: "
+            "it is a private copy wearing the shared name. Fold it back onto the production "
+            "gate's constants — one implementation, or the two drift and only one gets the "
+            "next fix."
         )
 
 
