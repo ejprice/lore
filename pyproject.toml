@@ -34,7 +34,15 @@ line-length = 110
 target-version = "py314"
 # Session debris under scratchpad/ is untracked and not part of the workspace
 # packages; dist/ is already skipped via .gitignore-derived defaults.
-extend-exclude = ["scratchpad"]
+#
+# docs/plans/v2/receipts/ carries ARCHIVED probe scripts and wave reports — the
+# instruments behind measured numbers this repo serves (#152/#153). They are
+# preserved BYTE-FAITHFUL to what was actually run, because a receipt that has
+# been reformatted is no longer evidence of the run it documents. Linting them
+# would mean editing them, so they are excluded rather than fixed. They are
+# archived artifacts, never maintained source: nothing imports them, and a
+# change to one is a falsification, not a refactor.
+extend-exclude = ["scratchpad", "docs/plans/v2/receipts"]
 
 [tool.ruff.lint]
 # The "pylint gate" is ruff's PL family (real pylint is upstream-blocked on
