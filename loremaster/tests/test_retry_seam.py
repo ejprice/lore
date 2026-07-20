@@ -4920,8 +4920,11 @@ def _executed_bootstrap_sites_in(source: str) -> list[tuple[int, str]]:
       * **The ``use()`` leg — receiver-keyed**, via :func:`_is_connection_receiver`. Here
         the method name carries no evidence at all (``use`` is a generic English verb, and
         an unqualified deny on it would fire on any unrelated helper), so the receiver is
-        the only signal available. Its blindness is a KNOWN BOUND, disclosed in that
-        predicate's docstring — and it is now covered on the population that matters,
+        the only signal available. Its blindness is a KNOWN BOUND, now ASSERTED — with its
+        rationale and its re-open trigger — by :meth:`TestTheTestTreeRoutesThroughTheOne
+        BootstrapToo.test_the_use_leg_MISSES_a_DDL_LESS_bootstrap_on_an_oddly_named_handle`,
+        so it goes RED the day someone closes it rather than being silently inherited or
+        silently "fixed" — and it is covered on the population that matters,
         because a hand-rolled bootstrap that runs ``use()`` runs the DDL too, and the DDL
         leg sees that with no opinion about naming.
 
@@ -5164,6 +5167,72 @@ async def open_connection(env):
             "because `use` is too generic to deny on; if this ever goes blind the fix is "
             "not to widen it but to lean on the receiver-blind DDL leg, which sees any "
             "real bootstrap anyway."
+        )
+
+    def test_the_use_leg_MISSES_a_DDL_LESS_bootstrap_on_an_oddly_named_handle(self) -> None:
+        """**PINNING A HOLE WE DID NOT CLOSE** (CLAUDE.md: "when you cannot close a hole,
+        PIN IT"). This asserts the bound EXISTS, so the next engineer meets it deliberately
+        instead of rediscovering it from an outage — or "helpfully" closing it and re-opening
+        the noise problem that closing it costs.
+
+        **THE BOUND:** a bootstrap that runs ONLY ``use()``, on a handle whose name the
+        receiver predicate does not recognise, and that runs NO DDL, is NOT seen by this
+        scan.
+
+        **WHY IT IS NOT CLOSED, and it is a trade rather than an oversight:** ``use`` is a
+        generic English verb. A receiver-blind deny on ``.use(...)`` — the shape the DDL leg
+        rightly took — would fire on ``monkeypatch.use()``, ``fixture.use()`` and any
+        unrelated helper that happens to spell a method that way. That is the false-positive
+        class that gets an instrument SWITCHED OFF, and then the next #150 ships with nothing
+        watching at all. The DDL leg can afford blindness because ``DEFINE NAMESPACE`` is the
+        engine's own vocabulary and means one thing; ``use`` is not, and does not. Blinding
+        this leg was MEASURED at zero sites in this tree at the time, and that was declined as
+        grounds to ship: zero-today on a token that generic is luck, not a property.
+
+        **WHY THE EXPOSURE IS NARROW:** a hand-rolled bootstrap does not select a session it
+        never defined — it runs the DDL too, and the receiver-blind DDL leg sees that with no
+        opinion about naming (the control below proves it on this very handle). So the
+        *bootstrap* population is still covered; what escapes is a select with no DDL beside
+        it.
+
+        **RE-OPEN TRIGGER: the day a reconnect path selects a session without re-running the
+        DDL** — a resume/reconnect that calls ``use()`` on an already-defined namespace. That
+        is when DDL-less selects stop being hypothetical, the narrowness argument above stops
+        holding, and this trade must be re-decided rather than inherited.
+
+        **THE DURABLE ADDRESS IS FINDING #150** (this is its residual) and commit
+        ``2105c7e``, the wave that made the DDL leg receiver-blind and left this leg keyed.
+        Cite those, never the review reports of that wave — they are untracked scratch files
+        at the repo root that repo law requires be DELETED before any image build, so a bound
+        whose rationale points at one is a bound nobody can act on.
+        """
+        # CONTROL 1 — the scan is ALIVE on this exact handle. Without this, the bound below
+        # is indistinguishable from a scanner that returns nothing for everything.
+        assert _executed_bootstrap_sites_in(
+            'await db.query(f"DEFINE NAMESPACE IF NOT EXISTS {ns}")\n'
+        ), (
+            "the receiver-blind DDL leg stopped seeing `db.query(DEFINE NAMESPACE ...)`. "
+            "Fix that first — until it holds, the known-bound assertion below proves nothing, "
+            "because a dead scan misses everything."
+        )
+        # CONTROL 2 — the use() leg itself is live, on a name the predicate DOES recognise.
+        assert _executed_bootstrap_sites_in("await connection.use(ns, database)\n"), (
+            "the use() leg stopped seeing `connection.use(...)` on a connection-named "
+            "receiver. That is not this bound widening — that is the leg going blind "
+            "entirely, and it makes the assertion below vacuous."
+        )
+
+        # THE BOUND ITSELF.
+        assert not _executed_bootstrap_sites_in("await db.use(ns, database)\n"), (
+            "the use() leg now SEES `db.use(...)` on a receiver the predicate does not "
+            "recognise. **This is a KNOWN BOUND (#150, commit 2105c7e) — if you closed it "
+            "deliberately, delete this pin and say so in the same diff.** That is the "
+            "conversation this pin exists to force, because closing it means denying "
+            "receiver-blind on a generic English verb: check that `monkeypatch.use()` and "
+            "every unrelated `.use()` in this tree still pass, or you have built the gate "
+            "that gets switched off. If instead you arrived here because a RECONNECT path "
+            "now selects a session without re-running the DDL, that is this bound's stated "
+            "re-open trigger and the trade genuinely needs re-deciding."
         )
 
     def test_the_receiver_blind_DDL_leg_costs_this_tree_NOTHING(self) -> None:
