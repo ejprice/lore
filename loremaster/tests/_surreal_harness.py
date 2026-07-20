@@ -19,16 +19,26 @@ Isolation: every test/fixture gets a UNIQUE throwaway database under the
 whatever connection the test used, which a resilience test may have deliberately
 broken). Nothing leaks; a reused PID later harmlessly reaps any prior orphan.
 
-This module imports ONLY the ``surrealdb`` SDK and the pre-existing
-``loremaster.index.records`` helpers (both of which already exist), so it always
-imports cleanly. The new-code imports (``SurrealStore`` / ``generate_ddl`` /
-``Candidate``) live in the individual test files, so a P2-not-yet-implemented
-collection error stays confined to those new test files.
+Import isolation: at MODULE level this imports ONLY the ``surrealdb`` SDK and the
+pre-existing ``loremaster.index.records`` helpers, so it always imports cleanly.
+21 test files import this harness, so a module-level import of code still being
+built would turn one mid-TDD breakage into a COLLECTION error across all of them.
+The new-code imports (``SurrealStore`` / ``generate_ddl`` / ``Candidate``) live in
+the individual test files, so such a collection error stays confined to them.
+
+That isolation is why the store's shared retry seam (``loremaster.store._txn``) is
+reached by IN-FUNCTION import only — never at module level (operator RULING 1,
+2026-07-20). The harness owns NO retry policy of its own: no attempt budget, no
+backoff, no copy of the engine's conflict marker. ``connect_admin`` bootstraps its
+session through ``_txn.bootstrap_session``; teardown's ``use()`` and its ``REMOVE
+DATABASE`` both go through :func:`_run_under_store_retry_seam`, this module's single
+classify-and-signal site over ``_txn.retry_on_conflict``. Moving a constant in the
+seam moves this harness with it — pinned by mutation in ``test_surreal_harness.py``
+(finding #150).
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 import uuid
@@ -44,7 +54,6 @@ from surrealdb import (
     AsyncSurreal,
     AsyncWsSurrealConnection,
 )
-from surrealdb.errors import SurrealError
 
 # ``AsyncSurreal`` is a factory that returns one of these concrete connection
 # classes by URL scheme; this alias is exactly its return union so raw-SDK helpers
@@ -86,30 +95,6 @@ ANALYZER_NAME = "code_ident"
 SLUG = "demo"
 TIER_A = "custom"
 TIER_B = "community"
-
-# The exact substring the engine appends to a rolled-back transaction caused by
-# optimistic-concurrency contention — mirrors
-# ``loremaster.store._txn._RETRYABLE_CONFLICT_MARKER`` (the canonical home for
-# this exact handling on the write path; see that module for the live-verified
-# message text and reasoning). Kept as a small LOCAL copy here, rather than an
-# import, so this module keeps its own import-cleanliness invariant (see the
-# module docstring): it must import cleanly using ONLY the ``surrealdb`` SDK +
-# ``loremaster.index.records`` — never a new-code store module that may not
-# exist yet mid-TDD.
-_RETRYABLE_CONFLICT_MARKER = "can be retried"
-
-# The bounded number of attempts :func:`_remove_database_with_retry` makes
-# when the engine reports a retryable conflict on teardown's ``REMOVE
-# DATABASE`` — mirrors ``_txn._MAX_TXN_CONFLICT_ATTEMPTS``'s generous-but-
-# bounded headroom so sustained contention still fails loudly rather than
-# hanging teardown forever.
-_MAX_DROP_DATABASE_ATTEMPTS = 5
-
-# The linear backoff between teardown retries, in seconds. Deliberately NOT the
-# store seam's backoff: that one is per-attempt full jitter (finding #102 —
-# a fixed delay puts every racer to sleep for the same duration and they
-# re-collide in lockstep). Teardown has ONE waiter, so it needs no jitter.
-_DROP_DATABASE_BACKOFF_SECONDS = 0.01
 
 
 def surreal_url() -> str:
@@ -229,19 +214,80 @@ async def call_until_recovered[T](
     raise AssertionError(f"{label} never recovered within {attempts} calls: {last!r}")
 
 
+async def _run_under_store_retry_seam[T](operation: Callable[[], Awaitable[T]]) -> T:
+    """Run ``operation`` under the store package's ONE retry driver (finding #150).
+
+    This module's SINGLE classify-and-signal site. Both teardown operations that can
+    hit the engine's retryable write-write conflict — selecting the database
+    (``use()``) and removing it — call THIS; neither clones the shape, because two
+    call sites needing the same policy is a function they call, never a pattern they
+    copy. ``connect_admin`` needs no helper at all:
+    :func:`~loremaster.store._txn.bootstrap_session` already IS the shared,
+    budget-composing form of exactly this over its three statements.
+
+    Detection stays with the caller by the seam's own design (see
+    ``retry_on_conflict``'s docstring: "detection stays with the caller that owns the
+    wire shape"), so this classifies what it catches through the seam's ONE
+    classifier and raises the seam's signal. It owns no attempt budget, no backoff
+    and no marker of its own — move any of those in ``_txn`` and this moves with it
+    (pinned by mutation in ``test_surreal_harness.py``).
+
+    The ``_txn`` import is IN-FUNCTION deliberately (RULING 1) — see the module
+    docstring's import-isolation note.
+
+    Args:
+        operation: The zero-argument async operation to run. Must be safe to re-run
+            from scratch: true for both callers here, since a conflicted
+            single-statement DDL commits nothing.
+
+    Returns:
+        ``operation``'s successful return value.
+
+    Raises:
+        TxnContentionExhaustedError: The conflict outlived the SEAM's budget. Every
+            other exception propagates untouched, unretried.
+    """
+    from loremaster.store._txn import (
+        _CONNECTION_ERRORS,
+        RetryableConflictSignal,
+        is_retryable_conflict_error,
+        retry_on_conflict,
+    )
+
+    async def _attempt() -> T:
+        try:
+            return await operation()
+        except _CONNECTION_ERRORS as error:
+            if is_retryable_conflict_error(error):
+                raise RetryableConflictSignal() from error
+            raise
+
+    return await retry_on_conflict(_attempt)
+
+
 async def connect_admin(env: SurrealEnv) -> SurrealConnection:
     """Open a raw signed-in SDK connection bound to ``env``'s namespace + database.
 
     Ensures the namespace and database exist so a later ``REMOVE DATABASE`` always
     has a target. Used by the schema tests (which apply generated DDL directly,
     independently of :class:`SurrealStore`) and by teardown.
+
+    The three-statement session bootstrap is the store package's shared
+    :func:`~loremaster.store._txn.bootstrap_session` — the same one every production
+    ``_ensure_connection`` uses. It used to be three BARE, UNRETRIED ``await``\\ s
+    here, which is precisely the defect that seam was built to close on the
+    production side (probed live, 16-way concurrent: 6.2%-34.4% of virgin
+    first-connects lost). Every ``[real]`` fixture in this suite opens one of these,
+    and the standing runner is ``-n auto``, so the hole was a stochastic
+    setup-failure rate across the whole suite (finding #150).
     """
     connection = AsyncSurreal(env.url)
     credentials: dict[str, Any] = {"username": env.user, "password": env.password}
     await connection.signin(credentials)
-    await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {env.namespace}")
-    await connection.use(env.namespace, env.database)
-    await connection.query(f"DEFINE DATABASE IF NOT EXISTS {env.database}")
+
+    from loremaster.store._txn import bootstrap_session
+
+    await bootstrap_session(connection, env.namespace, env.database)
     return connection
 
 
@@ -260,31 +306,24 @@ class _RemovableDatabaseConnection(Protocol):
 async def _remove_database_with_retry(
     connection: _RemovableDatabaseConnection, database: str
 ) -> None:
-    """Run ``REMOVE DATABASE IF EXISTS``, retrying a bounded number of times on
-    the engine's retryable write-write conflict.
+    """Run ``REMOVE DATABASE IF EXISTS`` under the store seam's retry policy.
 
     Teardown races background RocksDB/index maintenance work on the shared dev
     server, which intermittently rolls the ``REMOVE`` back with
     ``surrealdb.errors.QueryError: ... This transaction can be retried`` — an
-    ENGINE-FLAGGED retryable conflict, not a real problem with the database
-    being removed (confirmed live: it hit ~30-50% of standalone store-suite
-    runs, on a different random test's teardown each time). Mirrors
-    ``loremaster.store._txn.execute_transaction``'s handling of the identical
-    marker on the write path.
+    ENGINE-FLAGGED retryable conflict, not a real problem with the database being
+    removed (confirmed live: it hit ~30-50% of standalone store-suite runs, on a
+    different random test's teardown each time).
 
-    Any OTHER error — a non-retryable rejection, or the conflict marker still
-    present on the FINAL attempt — propagates immediately: teardown must never
-    silently swallow a real problem.
+    The budget, the backoff and the conflict classification are ALL the seam's —
+    see :func:`_run_under_store_retry_seam`. Any other error propagates immediately,
+    unretried: teardown must never silently swallow a real problem.
     """
-    for attempt in range(_MAX_DROP_DATABASE_ATTEMPTS):
-        try:
-            await connection.query(f"REMOVE DATABASE IF EXISTS {database}")
-            return
-        except SurrealError as error:
-            attempts_remaining = attempt < _MAX_DROP_DATABASE_ATTEMPTS - 1
-            if not attempts_remaining or _RETRYABLE_CONFLICT_MARKER not in str(error):
-                raise
-            await asyncio.sleep(_DROP_DATABASE_BACKOFF_SECONDS * (attempt + 1))
+
+    async def _remove() -> None:
+        await connection.query(f"REMOVE DATABASE IF EXISTS {database}")
+
+    await _run_under_store_retry_seam(_remove)
 
 
 async def drop_database(env: SurrealEnv) -> None:
@@ -294,13 +333,19 @@ async def drop_database(env: SurrealEnv) -> None:
     pointed its store at a dead port or closed the socket — so teardown always
     runs against a healthy admin connection and never leaks the database.
 
-    The ``REMOVE DATABASE`` itself is retried, bounded, on the engine's
-    retryable-conflict marker — see :func:`_remove_database_with_retry`.
+    BOTH engine operations here are retried on the engine's retryable conflict
+    through the shared store seam: selecting the database (which was a bare,
+    unretried ``await`` until finding #150 — the same hole as the bootstrap's, one
+    function over) and the ``REMOVE DATABASE`` itself.
     """
     connection = AsyncSurreal(env.url)
     credentials: dict[str, Any] = {"username": env.user, "password": env.password}
     await connection.signin(credentials)
-    await connection.use(env.namespace, env.database)
+
+    async def _select_database() -> None:
+        await connection.use(env.namespace, env.database)
+
+    await _run_under_store_retry_seam(_select_database)
     await _remove_database_with_retry(connection, env.database)
     await connection.close()
 

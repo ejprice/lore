@@ -34,7 +34,6 @@ showing the same assertion at the unmutated values.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -225,9 +224,8 @@ class TestConnectAdminBootstrapsThroughTheSharedSeam:
         )
         _patch_connection(monkeypatch, fake)
 
-        connection = await _surreal_harness.connect_admin(_FAKE_ENV)
+        await _surreal_harness.connect_admin(_FAKE_ENV)
 
-        assert connection is fake
         # The exact bootstrap sequence, retry included: DEFINE NAMESPACE (conflicted,
         # retried), then use(), then DEFINE DATABASE. Order is load-bearing against the
         # real engine — `use()` on an unmaterialised namespace is a different failure.

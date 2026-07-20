@@ -5023,72 +5023,28 @@ class TestTheBootstrapClassifiesThroughTheONEAuthority:
 
 
 # ---------------------------------------------------------------------------
-# 7e. THE TWELFTH COPY — and it is in the TEST HARNESS.
-#     (audit-dry-2 F2. Found by lore, by nobody's grep. Ruled on by the lead.)
+# 7e. THE TWELFTH COPY — RETIRED, because the copy is GONE (finding #150).
 #
-# ``tests/_surreal_harness.py::_remove_database_with_retry`` hand-rolls its own retry budget
-# and linear backoff, and reads its OWN literal copy of the engine's conflict marker —
-# DECLARED, not imported. This wave's own mutation proof
-# (``TestDetectionFollowsTheOneSharedMarker`` moves ``_txn._RETRYABLE_CONFLICT_MARKER``)
-# **would not move it**: a private copy wearing the shared name, the exact shape the new
-# CLAUDE.md law forbids, surviving inside the wave that wrote the law.
+# This section used to hold a ruling and its instrument: ``tests/_surreal_harness.py``
+# hand-rolled its own retry budget, its own linear backoff and its own DECLARED literal
+# copy of the engine's conflict marker, and the lead ruled the copy KEEPS — on ONE stated
+# ground, that the harness must never import a store module (21 test files import it, so a
+# mid-TDD store breakage would become a collection error across all of them). A duplicate
+# that could not be deleted at least got a drift pin.
 #
-# THE RULING (lead): the harness KEEPS its private copy. That is not a shrug — it is a real
-# constraint, stated in the harness's own docstring: it must import cleanly using ONLY the
-# ``surrealdb`` SDK plus ``loremaster.index.records``, never a store module that may not
-# exist yet mid-TDD. Importing ``_txn`` would couple the harness every RED phase depends on
-# to the very code being built. The isolation is deliberate, and it is worth keeping.
+# **THE OPERATOR OVERTURNED THAT RULING ON 2026-07-20**, because RULING 1 removes the ground
+# it stood on: the harness reaches ``_txn`` by IN-FUNCTION import, so the collection-isolation
+# guarantee is fully preserved AND the duplication is deleted. The harness now declares NO
+# retry policy at all — no budget, no backoff, no marker — and the drift pin is deleted with
+# the copy it guarded, exactly as its own failure message instructed ("if teardown no longer
+# needs to detect a retryable conflict, delete this pin in the same diff").
 #
-# WHAT IS NOT ACCEPTABLE IS THE SILENCE. The harness's own docstring says teardown conflicts
-# hit "~30-50% of standalone store-suite runs" — so if the engine rewords its message, the
-# harness's teardown retry dies quietly and the whole suite starts flaking on teardown, in a
-# way nobody will connect to a marker change. A duplicate that cannot be deleted must at
-# least be UNABLE TO DRIFT.
-#
-# So the divergence gets an INSTRUMENT, in the same breath as the ruling — because a rule
-# people must remember is not a guard, it is a hope, and this repo has already paid ten
-# times for the difference. The copy stays; the day it stops agreeing with the seam, THIS
-# goes red and names both values.
+# The sharing is now proven where it belongs: by MUTATION, in ``test_surreal_harness.py``
+# (``TestTheHarnessRetryPolicyIsTheSeamsPolicy``), which moves this seam's ceiling, deadline
+# and marker at run time and requires the harness's OBSERVED attempt count to move with them
+# at BOTH its paths. That is strictly stronger than the equality assertion it replaces: two
+# literals being EQUAL is something a private copy satisfies by definition.
 # ---------------------------------------------------------------------------
-
-
-class TestTheTestHarnessCannotDriftFromTheSeamsMarker:
-    """The harness's deliberate private copy of the conflict marker must EQUAL the seam's.
-
-    Read from both modules at ASSERT time (never a module-level ``from … import``, which
-    would freeze a value and pin nothing): the harness's declared literal, and the seam's
-    live authority.
-    """
-
-    def test_the_harnesss_private_marker_copy_still_agrees_with_the_seam(self) -> None:
-        import _surreal_harness
-
-        harness_marker = getattr(_surreal_harness, "_RETRYABLE_CONFLICT_MARKER", None)
-        seam_marker = getattr(txn_module, _MARKER_NAME, None)
-
-        assert harness_marker is not None, (
-            "the harness's private conflict marker is gone. If teardown no longer needs to "
-            "detect a retryable conflict, delete this pin in the same diff; if it was "
-            "merely RENAMED, the copy is now drifting invisibly and that is what this pin "
-            "exists to stop."
-        )
-        assert seam_marker is not None, (
-            "the seam's conflict marker is gone — detection has no single authority left"
-        )
-        assert harness_marker == seam_marker, (
-            f"the test harness's private copy of the engine's conflict marker "
-            f"({harness_marker!r}) no longer equals the seam's ({seam_marker!r}).\n\n"
-            f"The harness KEEPS its own copy on purpose — it must import with only the SDK "
-            f"and `loremaster.index.records`, never a store module that may not exist yet "
-            f"mid-TDD, and that isolation is what makes every RED phase in this repo "
-            f"possible. But `_remove_database_with_retry` reads that copy to decide whether a "
-            f"teardown conflict is retryable, and teardown conflicts hit ~30-50% of "
-            f"standalone store-suite runs. If the two ever disagree, teardown's retry dies "
-            f"SILENTLY and the suite starts flaking in a way nobody will connect to a marker "
-            f"change.\n\n"
-            f"A duplicate that may not be deleted must at least be unable to drift. Move BOTH "
-            f"or move NEITHER."
-        )
 
 
 # ---------------------------------------------------------------------------
