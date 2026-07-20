@@ -15,26 +15,28 @@ Execute the spec verbatim; a genuine gap is a STOP-and-flag, never an improvised
 decision (brief-base §1 / repo CLAUDE.md). Contract-writers turn the spec into
 tests verbatim.
 
-RED EXPECTATION (this whole module is the RED half of a TDD cycle — the builder
-makes it green):
+RED EXPECTATION AS AUTHORED — HISTORICAL, NOT CURRENT. This whole module was
+the RED half of a TDD cycle; packet 02 (17277d1) shipped the fix and these pins
+are GREEN today. What each pin caught, preserved because it records what the
+pin is FOR:
 
-* The ``_render_comms_brief_publish`` calls below pass a NEW keyword
-  ``auto_ack_at_register`` that today's shipped signature does not accept — the
-  render currently re-derives that applicability from ``result.brief.name ==
-  BRIEF_NAME_PROJECT`` (server.py:4936, the #104 smoking gun). Those pins are
-  RED with a ``TypeError`` today and GREEN once the render takes the typed
-  flag. The DISCRIMINATING fixtures (a brief literally named 'project' with the
-  flag FALSE, and a non-'project' brief with the flag TRUE) then go RED for any
-  build that still compares the NAME.
+* The ``_render_comms_brief_publish`` calls below pass a then-NEW keyword
+  ``auto_ack_at_register`` that the shipped signature did not accept — the
+  render re-derived that applicability from ``result.brief.name ==
+  BRIEF_NAME_PROJECT`` (server.py:4936, the #104 smoking gun). Those pins were
+  RED with a ``TypeError`` before 17277d1 and GREEN once the render took the
+  typed flag. The DISCRIMINATING fixtures (a brief literally named 'project'
+  with the flag FALSE, and a non-'project' brief with the flag TRUE) still go
+  RED for any build that goes back to comparing the NAME.
 * The ``TestStandingBriefIsOneSharedRole`` mutation pins monkeypatch
-  ``loremaster.server.STANDING_BRIEF`` (a NEW named-role constant the fix
-  introduces) — with ``raising=False`` so today's code (which has no such
-  symbol and keys every surface off ``BRIEF_NAME_PROJECT``) simply ignores the
-  patch and FAILS the "every surface followed the role" assertions: red for the
-  RIGHT reason (the role is not centralised), never a ``TypeError``.
+  ``loremaster.server.STANDING_BRIEF`` (the named-role constant the fix
+  introduced) — with ``raising=False`` so the pre-fix code (which had no such
+  symbol and keyed every surface off ``BRIEF_NAME_PROJECT``) simply ignored the
+  patch and FAILED the "every surface followed the role" assertions: red for
+  the RIGHT reason (the role is not centralised), never a ``TypeError``.
 * ``TestHeartbeatSurfacesSubscribedNameSkew`` drives the real dispatcher and
-  asserts on the served string only — no new symbol referenced — so it is RED
-  because the current handler reads only 'project' skew, not because of a
+  asserts on the served string only — no new symbol referenced — so it was RED
+  because the pre-fix handler read only 'project' skew, not because of a
   collection error.
 
 See REPORT-pkt02-contract.md for the RED-for-right-reason table and the
@@ -492,12 +494,15 @@ class TestHeartbeatSurfacesSubscribedNameSkew:
         cap/collapse/order branch was dead code no test reached — two wrong
         builds (``_HEARTBEAT_SKEW_NAMES_CAP`` raised to 99 → never collapses; the
         skew-descending sort removed → store order) each passed the FULL render
-        contract 617/0 (REPORT-pkt02-adversary.md §"surviving wrong builds").
+        contract with zero failures (REPORT-pkt02-adversary.md §"surviving wrong
+        builds"; the pass COUNT it reported is not restated here — the suite has
+        since changed shape and no in-tree instrument reproduces it).
 
-        RED against clean production: ``_render_comms_heartbeat`` has no
-        ``subscribed_skew`` parameter yet ⇒ ``TypeError`` (the right RED). The
-        cap/coverage constants are read only AFTER that call, so a clean tree —
-        which has no ``_HEARTBEAT_SKEW_NAMES_CAP`` symbol — never reaches them.
+        RED before 17277d1: ``_render_comms_heartbeat`` had no
+        ``subscribed_skew`` parameter ⇒ ``TypeError`` (the right RED). The
+        cap/coverage constants are read only AFTER that call, so the pre-fix
+        tree — which had no ``_HEARTBEAT_SKEW_NAMES_CAP`` symbol — never
+        reached them.
         """
         import loremaster.server as server_module
 

@@ -5,9 +5,13 @@ against an ADVERSARIAL in-memory fake too — see ``_comms_fakes.py``).
 Binding spec: ``docs/design/2026-07-12-pkt28-c1-semantics.md`` §0, §5, §7-§8
 (brief/briefed schema, publish/head/coverage/skew semantics, brief_get/
 brief_ack legality, the error taxonomy). Where this file's contract decisions
-are genuinely open in the spec, they are recorded in
-``REPORT-c1-contract-ledgers.md`` — the spec is executed verbatim everywhere
-it speaks; this docstring does not re-transcribe it.
+are genuinely open in the spec, they are recorded AT THEIR USE SITES, beside
+the pin each one governs (verified: decision #4 at ``test_comms_tool.py``'s
+``test_unknown_agent_error_is_enriched_with_a_capped_non_retired_roster``,
+decisions #5/#6 at ``test_comms_wiring.py``'s
+``TestSchemaIsActuallyAppliedNotJustConstructed``, the d1d2-b decision at
+``TestUnknownBriefErrorCappedKnownNames`` below) — the spec is executed verbatim
+everywhere it speaks; this docstring does not re-transcribe it.
 
 The pinned contract (the public surface THIS FILE decides — the module does
 not exist yet, so these names ARE the contract a later STUB/GREEN phase must
@@ -1215,8 +1219,10 @@ class TestAckedVersionsForIds:
 
 class TestAckedVersionsForIdsQueryCountIsBounded:
     """finding #94 (REPORT-c1b-contract-9495.md): ``_comms_fleet``'s per-row
-    ``acked_version()`` loop -- measured 407 store round-trips / 234 ms at
-    limit=200 -- is BOUNDED by the display cap (never grows past the
+    ``acked_version()`` loop -- measured 407 store round-trips at
+    limit=200 (the wall-clock figure once carried here is struck: no in-tree
+    instrument reproduces it, while the round-trip count is re-derivable from
+    ``_query_count`` in this file) -- is BOUNDED by the display cap (never grows past the
     display limit no matter the roster size), unlike ``coverage()``'s
     pre-fix N+1 which was genuinely unbounded. Not a correctness defect --
     every served number stays true -- but a scaling defect with a fix that
@@ -1478,10 +1484,11 @@ class TestBriefLedgerConnectionLifecycle:
 # heartbeat uses to surface non-'project' briefs an agent has ACKED and is now
 # behind on. The FAKE (``_comms_fakes.py::FakeBriefLedger.subscribed_name_skew``)
 # is the surface spec; these pins run it against the REAL store too via the
-# parametrized ``brief_ledger`` fixture. Against CLEAN production they are RED for
-# the right reason — ``BriefLedger`` has no ``subscribed_name_skew`` yet, so the
-# call raises ``AttributeError`` (a real-store BUILDER deliverable, validated
-# reference impl in REPORT-pkt02-contract.md). Against the fake they are GREEN.
+# parametrized ``brief_ledger`` fixture. Before 17277d1 they were RED against the
+# real store for the right reason — ``BriefLedger`` had no ``subscribed_name_skew``,
+# so the call raised ``AttributeError`` (a real-store BUILDER deliverable, validated
+# reference impl in REPORT-pkt02-contract.md); packet 02 shipped it at
+# ``briefs.py::subscribed_name_skew`` and they are GREEN on both tiers today.
 #
 # Contract (mirroring the fake — the fake is the contract):
 #   subscribed(agent, name) = >=1 briefed edge to ANY version of ``name`` (ack =
@@ -1657,7 +1664,9 @@ class TestSubscribedNameSkewQueryPlans:
     its acked-brief-by-id fetch (Q2) MUST use DIRECT RECORD ACCESS
     (``SELECT … FROM $ids``), never an ``id IN $ids`` predicate — which this
     engine's planner runs as a full ``brief`` TableScan whose cost scales with
-    the table's row count (measured 6.1× leaf-elapsed at 11× rows). Correctness
+    the table's row count (the audit's leaf-elapsed ratio is struck: its
+    instrument is gone and no in-tree pin reproduces it — the PLAN assertion
+    below is what makes the claim checkable). Correctness
     is pinned by :class:`TestSubscribedNameSkew`; this pins the PLAN, which no
     query-COUNT bound can see — the exact green-at-gate hole F1 shipped through.
 

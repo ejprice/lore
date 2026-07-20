@@ -1,9 +1,17 @@
 """Contract tests for the PKT-28 Phase 0 render-safety seam.
 
-Spec: /tmp/claude-1000/-home-ejprice-PycharmProjects-lore/bed98428-ca59-4bfb-83cc-2e9eec6f4724/
-scratchpad/phase0-render-safety-ruling.md (v2, post-audit) — §ENFORCEMENT (the
+Spec: phase0-render-safety-ruling.md (v2, post-audit) — §ENFORCEMENT (the
 failure matrix), §BUILD-NOW items 1-3/9, §C1-C5-AUTHORING, §D1.4. Cold audit:
 REPORT-phase0-audit-1.md.
+
+NOTE — THE BINDING SPEC IS UNRECOVERABLE. That ruling lived only at a
+per-session ``/tmp`` scratch path; it was never in the repo and is gone from
+disk entirely (verified: no copy anywhere on this host, nothing tracked). Every
+``§`` reference to it in this module and in its two siblings
+(``test_render_seam_pins.py``, ``test_render_mypy_layer.py``) therefore resolves
+to NOTHING. The tests below encode most of what the ruling required, but they
+are not a substitute for it: treat the §-citations as unverified provenance, and
+re-derive from the tests rather than assuming an authority behind them.
 
 **CORRECTED (fix-wave, post cold-audit NO-GO):** the v1 docstring here claimed
 rows 1-4 (raw str value / f-string return / hostile LiteralString template /

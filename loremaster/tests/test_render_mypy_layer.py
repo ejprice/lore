@@ -1,6 +1,11 @@
 """Subprocess-mypy meta-test (PKT-28 Phase 0 fix-wave, ruling v2 §BUILD-NOW
 item 9 / cold audit REPORT-phase0-audit-1.md §REMEDIATION item 4).
 
+NOTE: the "ruling v2" cited above is UNRECOVERABLE (a per-session ``/tmp``
+scratch file, gone from disk — see ``test_render.py``'s module docstring), so
+its §-references are unverified provenance. This module's own substance below
+does not depend on it.
+
 The cold audit's headline finding: the render-safety seam's mypy layer was
 NEVER TESTED -- test_render.py's v1 docstring declared "this module cannot
 drive a real mypy failure from inside pytest" and skipped failure-matrix

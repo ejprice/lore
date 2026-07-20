@@ -56,7 +56,9 @@ Expected until C1-S1 lands: collection ERROR in THIS FILE —
 The UNIQUE(in, out)-on-a-RELATION-edge mechanism itself (cascade-delete-then-
 re-RELATE safety, SurrealDB bug #7061) was independently probed and verified
 SAFE on this same 3.1.5 floor in a PRIOR session — see
-``REPORT-probe-7061-c1.md`` at the repo root. This file's own
+``docs/reference/surrealdb-31-capabilities.md`` §4 (UNIQUE-on-relation is legal
+and the #7061 cascade hazard is settled ABSENT, with the probe transcript).
+This file's own
 ``TestBriefedUniqueInOutIndex`` re-proves the UNIQUE rejection itself (a
 plain, cheap, in-suite assertion) but does not re-run that cascade probe —
 out of S1's scope per the design doc (§BUILD-TIME PROBES: "the full cascade

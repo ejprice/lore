@@ -2228,8 +2228,8 @@ class TestMarkerCrossSatisfactionBound:
     proof-vs-broken-implementation) and a marker needs both.
 
     NAMED RE-OPEN TRIGGER: the day a per-proof "marker must not survive a SIBLING-BRANCH
-    render of the SAME helper" check lands (the instrument shape proposed in
-    REPORT-pkt02a-finalwave.md §F, ledgered as its own item), this bound is CLOSED —
+    render of the SAME helper" check lands (the instrument shape ledgered as
+    finding #143), this bound is CLOSED —
     delete this pin and say so."""
 
     def test_KNOWN_BOUND_a_k_specific_prefix_weakening_is_not_caught(self) -> None:

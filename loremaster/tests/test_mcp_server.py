@@ -4972,11 +4972,15 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         keep the ``memories:`` section header while every memory entry
         beneath it gets squeezed out -- a CLASS invariant (header survives
         iff >=1 memory-kind entry survives with it), not a numbers-specific
-        fix. Mirrors the audit's live repro (scratchpad/probe_budget.py) --
-        the same list shape ``[*hits, header, mem1, mem2, mem3]`` fed
-        straight into the real ``_enforce_search_budget`` -- swept across a
-        budget range wide enough to cross the dangling window the audit
-        measured (7 of 119 budgets dangled for its fixture shape).
+        fix. Mirrors the audit's live repro (scratchpad/probe_budget.py, an
+        UNTRACKED scratch file -- it is still on disk today but repo law does
+        not preserve it, so it is not a durable instrument) -- the same list
+        shape ``[*hits, header, mem1, mem2, mem3]`` fed straight into the real
+        ``_enforce_search_budget`` -- swept across a budget range wide enough to
+        cross the dangling window the audit measured (the audit's
+        dangled-budget COUNT is struck: it was specific to that fixture shape
+        and no in-tree instrument reproduces it; the sweep below is what makes
+        the invariant checkable).
         """
         from loremaster.search import _MEMORY_SECTION_HEADER, SearchResult
 

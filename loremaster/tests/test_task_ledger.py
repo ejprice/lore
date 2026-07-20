@@ -1232,7 +1232,9 @@ class TestSameTargetTransitionRace:
     a member of ``LEGAL_TRANSITIONS`` and must be refused exactly as any other
     illegal edge is (``TestTransitions.test_illegal_transition_raises_and_leaves_row_untouched``
     already pins that a ``done -> done`` no-op is illegal). The CURRENT bug
-    (REPORT-fix-audit.md finding 1, reproduced live 30/30) instead returns TWO
+    (REPORT-fix-audit.md finding 1, reproduced live and repeatably at authoring
+    time; the reproduction COUNT is struck — it measured a build that no longer
+    exists and no in-tree instrument reproduces it) instead returns TWO
     ``Task`` successes and silently drops the loser's provenance stamp — this
     pin targets exactly that: never two clean returns, never zero, and the
     winner's own transition event must still be readable afterward.
@@ -1305,7 +1307,9 @@ class TestProvenanceAppendOnly:
     """Finding 2: ``transition`` and ``supersede_task`` guard DIFFERENT columns
     (``status`` vs ``superseded_by``), so both may legitimately commit against
     the SAME claimed-or-in-progress row concurrently — that is not itself a bug.
-    The bug (REPORT-fix-audit.md finding 2, reproduced live 40/40) is that both
+    The bug (REPORT-fix-audit.md finding 2, reproduced live and repeatably at
+    authoring time; the reproduction COUNT is struck for the same reason as
+    :class:`TestSameTargetTransitionRace`'s) is that both
     mutators implement provenance as a Python read-modify-write of the WHOLE
     ``provenance`` object, so whichever commits its write LAST silently drops
     the other's appended event — violating the module's own "append-only …
@@ -1421,8 +1425,10 @@ class TestProvenanceAppendOnly:
 # A synthetic ASSERT rejection carrying a value that must NEVER reach the raised
 # message (mirrors ``test_surreal_store.py``'s ``_SENSITIVE_ENGINE_TEXT``).
 _TASK_SENSITIVE_MARKER = "TOP-SECRET-TASK-BOUND-VALUE-7c1f9a"
-# LIVE-CAPTURED ASSERT text (SurrealDB 3.1.5, spike-surreal, 2026-07-13,
-# scratchpad/contract-v5/capture_engine.py). The engine says "must conform to";
+# LIVE-CAPTURED ASSERT text (SurrealDB 3.1.5, spike-surreal, 2026-07-13; the
+# capture script was a scratch file and is gone, but the same wording is
+# transcribed from a live probe in
+# docs/reference/surrealdb-31-capabilities.md §6.1). The engine says "must conform to";
 # it has NEVER said "assertion". The previous, hand-typed value here contained the
 # word "assert" and so matched the classifier's marker — which is exactly why the
 # ASSERT class looked alive for this repo's entire life while never once firing in
@@ -1527,18 +1533,24 @@ class TestQueryClassifiedErrorPosture:
 #
 # The design source (comms-c0-designer, resolved contract):
 #   scratchpad/PKT-06-build-design.md
-# Every error text below is asserted VERBATIM against that document — it is
-# the contract, not a paraphrase. Every test in this section routes through
+# Every error text below was asserted VERBATIM against that document — it is
+# the contract, not a paraphrase. NOTE: that design doc was a scratch file,
+# deleted per repo law and never archived; it is gone from disk entirely, so
+# the verbatim-transcription claim can no longer be re-checked against its
+# source — treat the literals pinned below as the surviving contract and
+# re-derive from the spec before changing any of them.
+# Every test in this section routes through
 # the SAME ``task_ledger``/``task_ledger_factory`` fixtures the rest of this
 # file uses, so it runs against BOTH backends (fake-vs-real parity, per the
 # repo's adversarial-doubles law) unless a docstring says otherwise.
 #
-# ``TaskLedger.create_many`` / ``.updated_since`` / the extended
-# ``.transition(summary=, report_path=)`` do not exist on the REAL ledger
-# yet — this is RED by construction. The FAKE tier (``_task_fakes.py``,
-# extended in step with these tests) already enforces the §4 rules and
-# stamps ``updated_at``, so several fake-tier assertions here may already be
-# GREEN; the real tier is the RED that matters until the builder phase lands.
+# RED AS AUTHORED — HISTORICAL, NOT CURRENT. ``TaskLedger.create_many`` /
+# ``.updated_since`` / the extended ``.transition(summary=, report_path=)`` did
+# not exist on the REAL ledger when these pins were written, so this section was
+# RED by construction; PKT-06 (f80e95a) shipped all three and it is GREEN today.
+# The FAKE tier (``_task_fakes.py``, extended in step with these tests) already
+# enforced the §4 rules and stamped ``updated_at``, so several fake-tier
+# assertions were GREEN even then; the real tier was the RED that mattered.
 # ===========================================================================
 
 _ROLLUP_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)

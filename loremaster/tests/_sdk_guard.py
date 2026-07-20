@@ -127,7 +127,15 @@ SDK_CONNECTION_CLASSES = (
 # how a noisy sample becomes standing law. The DIRECTION is what is load-bearing here — an
 # unretried bootstrap loses first-connects, often — and a range with its protocol says that
 # honestly where a point estimate lies precisely.
-# Receipt: ``scratchpad/blindreader2/probe_bootstrap.py``.
+# Receipt: NONE THAT CAN BE FOLLOWED. The probe named here was
+# ``scratchpad/blindreader2/probe_bootstrap.py``, a scratch file that was never
+# tracked and is gone from disk — so neither the three runs above nor
+# ``signin``'s 256-connect clean bill can be re-checked against their
+# instrument. The protocol IS stated in full above and is re-runnable, but
+# until someone re-runs it, treat both as UNVERIFIED — and note that this is a
+# deny-by-default safe set, where repo law requires every exemption to be
+# evidence-backed. Re-measuring and archiving the probe under
+# ``docs/plans/v2/receipts/`` is the standing fix.
 SAFE_CONNECTION_METHODS = frozenset({"signin", "close"})
 
 

@@ -6,9 +6,13 @@ Binding spec: ``docs/design/2026-07-12-pkt28-c1-semantics.md`` §0-§4, §7-§8
 (agent identity/schema, bootstrap, re-register, the status state machine,
 config knobs, the error taxonomy, the dispatch algorithm this ledger is
 called from). Where this file's contract decisions are genuinely open in the
-spec, they are recorded in ``REPORT-c1-contract-ledgers.md`` — the spec is
+spec, they were recorded in ``REPORT-c1-contract-ledgers.md`` — the spec is
 executed verbatim everywhere it speaks; this docstring does not re-transcribe
-it.
+it. NOTE: that report was deleted per repo law and never archived, and — unlike
+``test_brief_ledger.py``, whose open decisions are restated at their use sites —
+no restatement of them survives anywhere in this file. The list of what this
+contract chose where the spec was silent is LOST; treat any such decision as
+unverified and re-derive it from the spec.
 
 The pinned contract (the public surface THIS FILE decides — the module does
 not exist yet, so these names ARE the contract a later STUB/GREEN phase must
@@ -766,20 +770,25 @@ class TestRosterCompletenessBeyondTheDisplayCap:
     UNLIMITED completeness -- the entire basis of the D1 fix's coverage/skew
     denominators -- had NO covering test. The audit proved capping
     ``members`` at ``_MAX_FLEET_LIMIT`` (in the real registry OR the fake)
-    left the WHOLE SUITE GREEN (715 passed): a future edit that silently
-    re-adds a cap here -- exactly the shape of the defect D1 fixed --
+    left the WHOLE SUITE GREEN (the pass COUNT it reported is struck: the suite
+    has since changed shape and no in-tree instrument reproduces it): a future
+    edit that silently re-adds a cap here -- exactly the shape of the defect D1 fixed --
     regresses ``brief_get`` coverage and ``brief_publish`` skew back to D1
     with every gate staying green. This pin closes that gap directly: at
     N > ``_MAX_FLEET_LIMIT`` non-retired agents, ``members`` must still be
     the COMPLETE membership, not a display-capped window.
 
-    This pin is expected GREEN against today's (already-correct) ``roster()``
-    -- see ``REPORT-c1-contract-f123.md`` for the mutation receipt proving it
-    goes RED the moment ``members`` is capped (real registry AND fake alike);
-    a pin that cannot be shown failing is not a pin.
+    This pin is expected GREEN against today's (already-correct) ``roster()``.
+    A mutation receipt proving it goes RED the moment ``members`` is capped
+    (real registry AND fake alike) was recorded at authoring time, but its
+    report was deleted per repo law and never archived -- NOTE: the receipt is
+    therefore UNVERIFIED today, and by this docstring's own standard ("a pin
+    that cannot be shown failing is not a pin") it is owed a re-run rather than
+    trusted.
 
     Cost (real store, spike-surreal): 205 sequential ``register()`` calls
-    per parametrization -- see the report for the measured wall time.
+    per parametrization; the wall time once cited here is struck -- it was
+    never stated in-tree and its report is gone.
     """
 
     async def test_members_length_exceeds_the_display_cap_at_true_scale(

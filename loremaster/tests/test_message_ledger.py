@@ -20,6 +20,11 @@ Binding sources — CITED, never re-transcribed:
   syntax gotchas).
 * ``REPORT-probe-pkt03-store.md`` §"CONSEQUENCES FOR THE BUILD" — the 14 items
   the engine FORCES or FORBIDS, each measured live on 3.1.5.
+* ``docs/plans/v2/receipts/2026-07-19-packet03/REPORT-adversary-pkt03.md``
+  §W1–W11 — the wrong-build enumeration the ``KILLS the adversary's W<n>``
+  docstrings below name. W1–W5 and W8–W10 are the builds that SURVIVED the
+  contract (each pinned below); W6, W7 and W11 are the report's own CONTROLS —
+  already correctly killed, so no pin here is owed for them.
 * ``~/.claude/plans/one-of-claude-codes-nifty-garden.md`` §"Data model" /
   §"Tool surface" — the approved field set and the send/drain/ack semantics.
 

@@ -1986,9 +1986,10 @@ class TestDeadCodeTotal:
     idiom by giving a caller ``total`` so it can compute ``elided = total -
     len(kept)`` itself. It is intentionally an ADDITIVE new method (never a
     change to ``dead_code``'s existing signature/behaviour) -- wiring the
-    counted-elision signal onto the ``lore_dead_code`` MCP tool itself is a
-    server.py change out of this method's writable set (see
-    REPORT-slate-builder-s1.md's #60 resolution note).
+    counted-elision signal onto the ``lore_dead_code`` MCP tool itself was a
+    server.py change out of this method's writable set (see finding #60, since
+    RESOLVED: the wire exposure landed as
+    ``server.py::DeadCodeSweepResult{nodes, elided}``).
     """
 
     async def test_total_matches_the_length_of_a_fully_uncapped_scan(

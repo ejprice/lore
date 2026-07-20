@@ -1,10 +1,12 @@
 """PKT-28 Phase 0 render-safety seam pins.
 
-Spec: /tmp/claude-1000/-home-ejprice-PycharmProjects-lore/bed98428-ca59-4bfb-83cc-2e9eec6f4724/
-scratchpad/phase0-render-safety-ruling.md — §ENFORCEMENT failure-matrix row 6
+Spec: phase0-render-safety-ruling.md — §ENFORCEMENT failure-matrix row 6
 (the AST mint-pin) and §REGISTRY-MIGRATION (the dispatch-table completeness
 helper for a future comms battery's own action registry, e.g. C1's
-``_COMMS_ACTIONS``).
+``_COMMS_ACTIONS``). NOTE: that ruling is UNRECOVERABLE — a per-session
+``/tmp`` scratch file, never in the repo and now gone from disk (see
+``test_render.py``'s module docstring). Its §-references resolve to nothing
+and are unverified provenance.
 
 Two independent, zero-semantics invariants live here:
 
@@ -428,7 +430,12 @@ class TestRenderLineTemplateLiteralPin:
     confirmed to fail (NameError), THEN the scanner is implemented below.
 
     **R1 residual, and its accepted narrower gap (REPORT-phase0-audit-1.md
-    §RESIDUALS):** this scanner matches ``render_line``/``render_join`` by
+    §RESIDUALS — NOTE: that report was deleted per repo law and never archived,
+    and its parent ruling is the unrecoverable ``/tmp`` spec above, so the
+    AUTHORITY for accepting this bound is unverified. The mechanism below is
+    self-contained; the ACCEPTANCE is not. Repo law wants a known bound carried
+    as a ledgered finding with a named re-open trigger — this one has never been
+    filed):** this scanner matches ``render_line``/``render_join`` by
     CALLEE NAME (``_called_name`` in ``_scan_for_nonliteral_render_
     templates``), so `from loremaster.render import render_line as rl`
     followed by `rl(f"...")` evades it -- the alias is a DIFFERENT name, so
