@@ -451,7 +451,7 @@ class SurrealStore:
             }
             try:
                 await connection.signin(credentials)
-                await bootstrap_session(connection, self._namespace, self._database)
+                await bootstrap_session(connection, self._namespace, self._database, url=self._url)
             except TxnContentionExhaustedError as error:
                 # Sustained conflict, not a transport fault — but this seam's
                 # disposition is uniform regardless (see the docstring above):

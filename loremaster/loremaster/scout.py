@@ -168,7 +168,15 @@ async def _scout_query(
     connection: Any, statement: str, params: dict[str, Any] | None = None
 ) -> Any:
     """Every scout QUERY rides the ONE retry seam."""
-    return await retry_on_conflict(lambda: _scout_query_once(connection, statement, params))
+    # Attributed by LABEL ONLY (finding #151, operator ruling R4): the exhaustion record
+    # names WHICH seam and WHAT THE ENGINE SAID, but NOT which server — `_scout_query` takes
+    # a bare `connection` and `CommandSubscriber` holds a `connect` callable rather than a
+    # url, so full url attribution here is a design change to scout's connection ownership, a
+    # separate wave. The partial attribution is pinned in both directions in test_retry_seam.py.
+    return await retry_on_conflict(
+        lambda: _scout_query_once(connection, statement, params),
+        label="command_subscriber.query.rejected",
+    )
 
 
 async def _open_command_connection(
@@ -220,7 +228,7 @@ async def _open_command_connection(
     credentials: dict[str, Any] = {_SIGNIN_USER_KEY: user, _SIGNIN_PASS_KEY: password}
     try:
         await connection.signin(credentials)
-        await bootstrap_session(connection, namespace, database)
+        await bootstrap_session(connection, namespace, database, url=url)
     except Exception:
         try:
             await connection.close()

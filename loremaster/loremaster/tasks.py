@@ -463,7 +463,7 @@ class TaskLedger:
             }
             try:
                 await connection.signin(credentials)
-                await bootstrap_session(connection, self._namespace, self._database)
+                await bootstrap_session(connection, self._namespace, self._database, url=self._url)
             except TxnContentionExhaustedError as error:
                 await self._safe_close(connection)
                 raise SurrealConnectionError(

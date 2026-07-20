@@ -854,9 +854,11 @@ async def retry_on_conflict[T](
         label: The caller's OWN canonical rejection event (e.g.
             ``"brief.query.rejected"``), carried into the exhaustion record so
             it is attributable (blindreader-dry-2 F1 / audit-fix-1 B3).
-            ``None`` (the default — :func:`bootstrap_session` and
-            :func:`execute_transaction`, which have their own attribution) omits
-            the seam-identity extras entirely rather than logging a hole.
+            ``None`` (the default — :func:`execute_transaction`, which keeps its
+            own attribution via ``_log_rollback``) omits the seam-identity extras
+            entirely rather than logging a hole. Every other caller — the ten
+            single-statement seams, the three session-bootstrap statements, and
+            scout's query seam — passes its own ``label``.
         url: The caller's RPC URL, logged alongside ``label`` — ``None`` unless
             ``label`` is also given.
 
@@ -873,11 +875,19 @@ async def retry_on_conflict[T](
     )
     started = time.monotonic()
     attempts = 0
-    # blindreader-dry-2 F1 / audit-fix-1 B3: the LATEST classified conflict's own cause —
-    # every caller that raises the signal does so ``from error`` (the original engine
-    # exception) — so the exhaustion record can quote the SAME engine text the seam's own
-    # non-exhausted rejections already log, instead of leaving the operator with only an
-    # attempt count and a hint pointing at a server log that holds nothing.
+    # blindreader-dry-2 F1 / audit-fix-1 B3: the LATEST classified conflict's own cause. Every
+    # caller that raises the signal FROM AN ``except`` HANDLER does so ``from error`` (the
+    # original engine exception) — the ten single-statement seams and the three
+    # session-bootstrap statements alike — so the exhaustion record can quote the SAME engine
+    # text the seam's own non-exhausted rejections already log, instead of leaving the operator
+    # with only an attempt count and a hint pointing at a server log that holds nothing. The
+    # ONE exception is ``execute_transaction``'s nested ``_attempt`` (:1242, LEAD RULING
+    # 2026-07-20): the transactional caller detects a conflict by INSPECTING a returned
+    # response's failed statements, not by catching a raise, so it raises the signal BARE —
+    # there is no exception in scope to chain — which is also why §10's allowlist exempts that
+    # same body from ``label=``. On that path ``last_conflict_cause`` stays ``None`` and the
+    # ``engine_error`` extra is the empty string, but the record still carries the failing
+    # statement via ``_log_rollback``.
     last_conflict_cause: BaseException | None = None
     while True:
         try:
@@ -926,7 +936,20 @@ async def retry_on_conflict[T](
         await asyncio.sleep(_txn_conflict_backoff_seconds(attempts))
 
 
-async def bootstrap_session(connection: _SurrealConnection, namespace: str, database: str) -> None:
+# The three session-bootstrap statements each carry their OWN canonical rejection event into
+# the driver's exhaustion record, so an operator greeting a contended virgin first-connect
+# lands on WHICH of the three statements died, not merely THAT one did (finding #151). Each
+# value names its statement in the engine's own SurrealQL vocabulary — `DEFINE NAMESPACE`
+# concerns a namespace, `use()` SELECTS a database, `DEFINE DATABASE` concerns a database —
+# and the three are pairwise distinct so a single shared label cannot masquerade as three.
+_BOOTSTRAP_DEFINE_NAMESPACE_LABEL = "store.bootstrap.define_namespace.rejected"
+_BOOTSTRAP_SELECT_DATABASE_LABEL = "store.bootstrap.select_database.rejected"
+_BOOTSTRAP_DEFINE_DATABASE_LABEL = "store.bootstrap.define_database.rejected"
+
+
+async def bootstrap_session(
+    connection: _SurrealConnection, namespace: str, database: str, *, url: str
+) -> None:
     """Materialise and select ``namespace``/``database`` on a freshly signed-in socket —
     THE ONE SESSION BOOTSTRAP (blindreader F3, finding #108's own sixth hole).
 
@@ -972,10 +995,21 @@ async def bootstrap_session(connection: _SurrealConnection, namespace: str, data
     (:data:`_MAX_TXN_CONFLICT_ATTEMPTS`, audit-102 B1) guarantees every statement its
     attempts regardless of wall time, deadline or no.
 
+    Each of the three statements carries its OWN canonical rejection event
+    (:data:`_BOOTSTRAP_DEFINE_NAMESPACE_LABEL` / :data:`_BOOTSTRAP_SELECT_DATABASE_LABEL`
+    / :data:`_BOOTSTRAP_DEFINE_DATABASE_LABEL`) and ``url`` into
+    :func:`retry_on_conflict`, so a bootstrap that exhausts logs a record naming WHICH
+    statement died, WHICH server it was talking to, and WHAT THE ENGINE SAID — the full
+    triple the raised ``TxnContentionExhaustedError``'s "see the server log" hint promises
+    (finding #151, which this closed: the three calls previously passed neither).
+
     Args:
         connection: The freshly constructed, already SIGNED-IN socket to bootstrap.
         namespace: The namespace to materialise and select.
         database: The database to materialise and select.
+        url: The caller's RPC URL (KEYWORD-ONLY, REQUIRED — every owner has it in hand
+            at the call site). Threaded into each statement's exhaustion record so the
+            server named there is the one THIS caller was connecting to, never a default.
 
     Raises:
         TxnContentionExhaustedError: The DDL or ``use()`` contended past the shared
@@ -1018,9 +1052,24 @@ async def bootstrap_session(connection: _SurrealConnection, namespace: str, data
                 raise RetryableConflictSignal() from error
             raise
 
-    await retry_on_conflict(_define_namespace, deadline_seconds=_remaining_budget())
-    await retry_on_conflict(_select_namespace_database, deadline_seconds=_remaining_budget())
-    await retry_on_conflict(_define_database, deadline_seconds=_remaining_budget())
+    await retry_on_conflict(
+        _define_namespace,
+        deadline_seconds=_remaining_budget(),
+        label=_BOOTSTRAP_DEFINE_NAMESPACE_LABEL,
+        url=url,
+    )
+    await retry_on_conflict(
+        _select_namespace_database,
+        deadline_seconds=_remaining_budget(),
+        label=_BOOTSTRAP_SELECT_DATABASE_LABEL,
+        url=url,
+    )
+    await retry_on_conflict(
+        _define_database,
+        deadline_seconds=_remaining_budget(),
+        label=_BOOTSTRAP_DEFINE_DATABASE_LABEL,
+        url=url,
+    )
 
 
 async def run_query(

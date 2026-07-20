@@ -336,7 +336,7 @@ async def connect_admin(env: SurrealEnv) -> SurrealConnection:
     from loremaster.store._txn import bootstrap_session
 
     try:
-        await bootstrap_session(connection, env.namespace, env.database)
+        await bootstrap_session(connection, env.namespace, env.database, url=env.url)
     except BaseException:
         # The caller never receives this connection, so nobody else can close it. The
         # bootstrap now RETRIES a conflict for up to the seam's budget while holding
