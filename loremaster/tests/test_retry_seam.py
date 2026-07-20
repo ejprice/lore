@@ -137,9 +137,11 @@ import contextlib
 import functools
 import importlib
 import inspect
+import io
 import logging
 import re
 import sys
+import tokenize
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -7224,6 +7226,15 @@ def _retry_driver_call_sites_in(source: str) -> list[tuple[int, str, bool]]:
     return _call_sites_in(source, _RETRY_DRIVER_NAME, _RETRY_ATTRIBUTION_KEYWORD)
 
 
+def _retry_driver_docstring() -> str:
+    """The retry driver's OWN docstring, read live from the seam module's source.
+
+    Read from ``__doc__`` rather than re-parsed so it reflects exactly what a reader of the
+    running code sees; the empty string when the function somehow has none, so callers can
+    assert non-emptiness as a reach control rather than crashing on ``None``."""
+    return txn_module.retry_on_conflict.__doc__ or ""
+
+
 def _all_retry_driver_call_sites() -> list[tuple[str, int, str, bool]]:
     """``(module, lineno, enclosing, has_label)`` for the whole production package."""
     found: list[tuple[str, int, str, bool]] = []
@@ -7434,6 +7445,16 @@ async def run_query(*, url, label, statement):
         coverage-as-a-checked-variable leg, or an assignment/alias tracker, which is the
         shape that produced three REGRESSIONS the last time this repo tried it (packet 01's
         v2 image gate).
+
+        ⚠ ONE SHAPE THE MEASUREMENT ABOVE DOES NOT ENUMERATE, AND IT FAILS SAFE
+        (adversary-151b residual 4): ``retry_on_conflict(_attempt, **attribution)`` IS seen
+        as a call site, but scores ``has_label=False`` — ``keyword.arg`` is ``None`` for a
+        ``**`` unpacking, so no keyword can ever match ``label``. That is a FALSE POSITIVE:
+        the gate is too STRICT, not too loose, and it errs toward reporting an attributed
+        call as unattributed. It is recorded here rather than fixed because the safe
+        direction needs no urgency and because a matcher that tried to reason about what a
+        ``**`` mapping contains would be guessing — the author can simply pass ``label=``
+        explicitly, which is what every caller does today.
 
         ⚠ ONE HONEST DISAGREEMENT, RECORDED RATHER THAN SETTLED (adversary §3-E): the
         scanner's own docstring says an aliased call "would have to be written deliberately,
@@ -8023,6 +8044,36 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
             f"different callers cannot report the same server."
         )
 
+    def test_the_per_owner_urls_this_class_drives_are_PAIRWISE_DISTINCT(self) -> None:
+        """**THE FIXTURE'S OWN DISCRIMINATION, ASSERTED RATHER THAN ASSUMED** (adversary-151b
+        I16). Every per-owner pin above compares one observation to ``_owner_url(name)``. All
+        of their discriminating power therefore lives in ONE property of the fixture: that
+        the template's ``{owner}`` slot makes eleven DIFFERENT values.
+
+        Measured by the adversary: collapse that slot to a shared constant and the correct
+        build and the hardcoded-url blocker build become INDISTINGUISHABLE across all ten
+        per-owner pins — every one of them passes for both. The collapse is currently
+        self-announcing only INDIRECTLY, via
+        ``test_two_owners_at_two_urls_log_TWO_DIFFERENT_urls`` going red for a reason that
+        names the production code rather than the fixture. This pin names the real cause.
+
+        It is GREEN today by design: it asserts a property of this file's own fixture, not of
+        the tree under test, so it goes red only if someone edits ``_OWNER_URL_TEMPLATE`` in a
+        way that silently un-discriminates ten pins.
+        """
+        owners = [seam.__name__ for _, seam in _discover_query_seams()] + [
+            _SCOUT_BOOTSTRAP_FUNCTION
+        ]
+        urls = [_owner_url(owner) for owner in owners]
+
+        assert len(set(urls)) == len(urls), (
+            f"the {len(urls)} owners this class drives resolve to only {len(set(urls))} "
+            f"distinct url(s). Two owners sharing a url makes the pins that drive them "
+            f"unable to tell a threaded url from a hardcoded one — they would pass for the "
+            f"blocker build this whole class exists to catch. `_OWNER_URL_TEMPLATE` must "
+            f"keep its `{{owner}}` slot, and no two owners may share a name."
+        )
+
     def test_every_owner_the_scan_finds_is_DRIVEN_here(self) -> None:
         """**COVERAGE AS A CHECKED VARIABLE** — the failure this repo has been bitten by six
         times (CLAUDE.md's instrument table: *a runtime gate is an invariant only over code
@@ -8190,4 +8241,482 @@ class TestScoutsQuerySeamIsAttributedByLabelOnly:
             f"LABEL ONLY, because `_scout_query` has no url in scope. If you closed this "
             f"deliberately, delete this pin and say so in the same diff**, and extend the "
             f"label pin above to assert the url as well."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10e. THE PROSE HALF OF #151 — the driver's own ENGLISH, DERIVED FROM ITS CALLERS.
+#      (finding #151 HALF 2 · adversary-151b MP7 · adversary-151b residual R1)
+#
+# #151's defect statement has TWO coupled halves, and every pin above grades the first.
+# HALF 2, verbatim from the finding: `retry_on_conflict`'s own docstring (`_txn.py:857-859`)
+# justifies the `None` default with *"`bootstrap_session` and `execute_transaction`, which
+# have their own attribution"* — TRUE of `execute_transaction` (`_log_rollback`), FALSE of
+# `bootstrap_session`, which logs nothing at all. The finding is explicit that this clause
+# "did not document the hole; it CLOSED THE QUESTION for every reader who trusted it."
+#
+# MEASURED (adversary-151b §4): a build with the BEHAVIOUR perfectly correct and that clause
+# left in place scores **515 passed / 0 failed** — indistinguishable from the real fix. And
+# after the fix the sentence does not merely go stale, it INVERTS: `bootstrap_session` no
+# longer uses the `None` default it is documented as using, so the prose describes a RETIRED
+# world in the one place a future caller looks to decide whether IT needs a label. That is
+# #151 re-planted, in the exact function #151 is about.
+#
+# WHY THIS IS A GATE AND NOT A REMINDER. CLAUDE.md, "A DIAGNOSIS IS NOT AN INSTRUMENT":
+# *"when a defect CLASS is identified, ship the INSTRUMENT in the same breath as the law"* —
+# written because this repo shipped TEN more instances of the served-English class in one
+# phase AFTER naming it. The instrument for exactly this shape already existed thirty lines
+# away in `test_surreal_harness.py` (`test_the_harnesss_docstring_counts_are_the_DERIVED_counts`)
+# and was simply never pointed at the docstring the finding names.
+#
+# ⚠ AND IT IS NOT A STRING MATCH ON PROSE. CLAUDE.md: *"prose that describes behaviour must
+# be DERIVED from the behaviour, not re-stated beside it."* A pin asserting a sentence's text
+# would pin the CURRENT wording and go red on every honest rewrite — the cry-wolf gate that
+# gets switched off. So both pins below CROSS-REFERENCE two independently-derived sets: what
+# the prose NAMES, and what the AST scan MEASURES. Neither set is written down here.
+# ---------------------------------------------------------------------------
+
+# The one variable whose explanation carries R1's universal. Named, not inlined: the comment
+# extractor is keyed on it, and a rename must move the pin rather than blind it.
+_LAST_CONFLICT_CAUSE_VARIABLE = "last_conflict_cause"
+_RETRY_SIGNAL_NAME = "RetryableConflictSignal"
+
+# Every `raise RetryableConflictSignal` the seam module holds today: three in
+# `bootstrap_session`'s statement bodies, one in `run_query`'s attempt, one in
+# `execute_transaction`'s. A FLOOR, not an equality — a new seam must not have to edit this
+# number — but a walker that suddenly finds FEWER has gone blind and both pins below would
+# go vacuously green.
+_MIN_KNOWN_CONFLICT_SIGNAL_RAISE_SITES = 5
+
+
+def _seam_module_source() -> str:
+    """The retry seam's own source, read from the tree the AST scans already enumerate."""
+    return (_PACKAGE_ROOT / _SEAM_MODULE).read_text(encoding="utf-8")
+
+
+# The callers whose SELF-ATTRIBUTION CLAIM this pin audits: the two the driver's docstring
+# has ever named as deliberately omitting `label=` (its `None`-default users). NOT "every
+# caller the docstring mentions" — a docstring may legitimately name a LABELLED caller in
+# passing (e.g. as a positive example), and a universe of all callers would then red-flag it
+# for being mentioned at all, which is a gate that fires on correct code. This set is the
+# enumeration of CLAIMS under audit, not a forbidden-name list: a claim outside it is simply
+# not checked (a completeness bound the reach control below makes visible), never mis-flagged.
+#
+# It is not required to stay in the docstring: the whole point of #151's fix is that
+# `bootstrap_session` LEAVES this clause, so a member absent from the current docstring means
+# "no longer claimed" (fine), while a member present-and-labelled means "claimed but false"
+# (the liar). What the reach control DOES pin is that every member is a real driver caller, so
+# a renamed caller cannot leave a dead audit entry that silently checks nothing.
+_DOCUMENTED_SELF_ATTRIBUTING = frozenset({"bootstrap_session", "execute_transaction"})
+
+
+def _prose_liars(prose: str, audited: frozenset[str], unlabelled: set[str]) -> list[str]:
+    """Audited callers the ``prose`` names as label-less that in fact PASS a label.
+
+    A PURE FUNCTION of three derived inputs, so it can be exercised against a KNOWN-BROKEN
+    case (a probe that reports "no liars" because it is broken reports that for everything —
+    CLAUDE.md's positive-control law). ``audited`` scopes which claims are checked, so a
+    labelled caller the prose merely mentions cannot trip the pin — only a caller the prose
+    names AND that is under audit AND that turns out to pass a label is a liar.
+    """
+    named = {caller for caller in audited if caller in prose}
+    return sorted(named - unlabelled)
+
+
+def _unlabelled_driver_callers() -> set[str]:
+    """The enclosing functions that call the driver WITHOUT a label, from the scan §10 gates.
+
+    Read from `_all_retry_driver_call_sites`, so this class and §10 can never disagree about
+    who omits the label — and §10's reach control already guards the scan.
+    """
+    return {enclosing for _, _, enclosing, has_label in _all_retry_driver_call_sites() if not has_label}
+
+
+class TestTheDriversProseAboutItsCallersIsDerivedFromItsCallers:
+    """**FINDING #151, HALF 2 (adversary-151b MP7 / invariant I14).**
+
+    The driver's docstring tells the next author which callers deliberately omit `label=`.
+    That is a claim ABOUT CODE, and this class is the only thing in the repository that
+    checks it against the code.
+    """
+
+    def test_the_reach_the_liar_check_depends_on_is_ALL_LIVE(self) -> None:
+        """**THE REACH CONTROL.** This pin is a statement about an INTERSECTION over three
+        derived inputs, and any one of them going quiet satisfies it forever: an empty
+        docstring, an empty audit set, or an audit-set entry that no longer names a real
+        caller (so its claim is checked against nothing). All three are asserted live.
+        """
+        prose = _retry_driver_docstring()
+        every_caller = {enclosing for _, _, enclosing, _ in _all_retry_driver_call_sites()}
+
+        assert prose.strip(), (
+            f"`{_RETRY_DRIVER_NAME}` has no docstring at all, so the pin below compares the "
+            f"empty set against the callers and passes vacuously. If the docstring was "
+            f"deliberately removed, this pin has nothing left to guard — say so in the diff."
+        )
+        assert _DOCUMENTED_SELF_ATTRIBUTING, (
+            "the audit set of self-attribution claims is empty, so the pin below checks "
+            "nothing. It must name every caller the driver's docstring has claimed omits "
+            "`label=` deliberately."
+        )
+        dead = sorted(_DOCUMENTED_SELF_ATTRIBUTING - every_caller)
+        assert not dead, (
+            f"these audited self-attribution claims name no live driver caller: {dead}. An "
+            f"audit entry for a caller that no longer exists checks its claim against nothing "
+            f"— the vacuously-green failure this control exists to catch. If a caller was "
+            f"renamed, rename it here; if it was removed, drop it and say so."
+        )
+
+    def test_the_liar_detector_FIRES_on_a_known_lie(self) -> None:
+        """**POSITIVE CONTROL, plus the two negatives that make it mean something.**
+
+        Four legs, deliberately: a prose/behaviour pair that IS a lie must be reported; the
+        SAME prose against behaviour that matches must not; a name the prose does not mention
+        must not be reported however it behaves; and a caller OUTSIDE the audit set that the
+        prose names as label-less while it passes a label must NOT be reported — that last
+        leg is the false-positive door this pin's audit-set scoping exists to shut.
+        """
+        audited = frozenset({"bootstrap_session", "execute_transaction"})
+        prose = (
+            "``bootstrap_session`` and ``execute_transaction`` have their own attribution; "
+            "``run_query`` passes its own label."
+        )
+
+        assert _prose_liars(prose, audited, {"execute_transaction"}) == ["bootstrap_session"], (
+            "CONTROL FAILED: the detector cannot see a caller the prose names as unlabelled "
+            "that in fact passes a label. The pin below then proves nothing — it would hold "
+            "for a detector that reports nothing at all."
+        )
+        assert _prose_liars(prose, audited, {"bootstrap_session", "execute_transaction"}) == [], (
+            "CONTROL FAILED: the detector reports a lie when the prose and the behaviour "
+            "AGREE. A gate that fires on correct code is a gate that gets switched off."
+        )
+        assert _prose_liars(prose, audited, set()) == [
+            "bootstrap_session",
+            "execute_transaction",
+        ], (
+            "CONTROL FAILED: the detector must report EVERY audited caller whose behaviour "
+            "contradicts the prose, not just the first."
+        )
+        # `run_query` is named by the prose AND passes a label (so it is NOT in `unlabelled`),
+        # yet it must NOT be a liar — because it is not a claim under audit. This is the leg
+        # that distinguishes audit-set scoping from a universe of all callers.
+        assert "run_query" not in _prose_liars(prose, audited, {"execute_transaction"}), (
+            "CONTROL FAILED: the detector flagged a LABELLED caller the prose merely mentions. "
+            "That is exactly the false positive the audit-set scoping exists to prevent — a "
+            "gate that reds on a docstring naming a caller that already does the right thing."
+        )
+
+    def test_every_caller_the_docstring_names_as_UNLABELLED_really_passes_no_label(self) -> None:
+        """**GREEN TODAY, BY DESIGN — and RED the moment #151's behaviour lands unaccompanied.**
+
+        Today the docstring names `bootstrap_session` and `execute_transaction` as omitting
+        the seam-identity extras, and both genuinely do: the prose is TRUE, so this pin passes
+        on the UNFIXED tree. It is therefore not an always-red trap that a builder could
+        satisfy by doing nothing, and not a pin that can be inherited silently.
+
+        The instant `bootstrap_session` starts passing `label=` — i.e. the instant HALF 1 of
+        #151 is fixed — the docstring's claim becomes false and this goes RED, naming
+        `bootstrap_session`. The fix is to retire the clause in the SAME diff, exactly as the
+        finding directs.
+
+        DERIVED, NOT MATCHED: the verdict is `{claims the docstring still names} − {callers
+        the AST scan measured as unlabelled}`. Nothing here asserts a sentence's WORDING —
+        reword the clause however you like, and it only ever objects when a caller the English
+        still names as label-less has in fact grown a label. Adding a NEW self-attribution
+        claim to the docstring is a deliberate act (extend `_DOCUMENTED_SELF_ATTRIBUTING` in
+        the same diff), which is why the audit set is enumerated rather than derived from the
+        prose: a claim nobody registered is a claim nobody meant to make.
+        """
+        prose = _retry_driver_docstring()
+        unlabelled = _unlabelled_driver_callers()
+        liars = _prose_liars(prose, _DOCUMENTED_SELF_ATTRIBUTING, unlabelled)
+
+        assert not liars, (
+            f"`{_RETRY_DRIVER_NAME}`'s docstring names these callers as omitting `label=`, "
+            f"and every one of them now PASSES a label: {liars}.\n\n"
+            f"  docstring names as label-less : "
+            f"{sorted(caller for caller in _DOCUMENTED_SELF_ATTRIBUTING if caller in prose)}\n"
+            f"  callers that ACTUALLY pass no label : {sorted(unlabelled)}\n\n"
+            "This is finding #151's SECOND half. The first was the missing label; the second "
+            "was the sentence that licensed it — *'`bootstrap_session` and "
+            "`execute_transaction`, which have their own attribution'* — TRUE of one and "
+            "FALSE of the other, and it is the stated reasoning that made the omission look "
+            "deliberate rather than like a hole.\n\n"
+            "Fixing the behaviour without retiring the prose does not leave that sentence "
+            "merely stale: it INVERTS it. The named function no longer uses the `None` "
+            "default it is documented as using, and the next author reads that claim in the "
+            "one place they look to decide whether THEIR caller needs a label — re-planting "
+            "the exact belief that hid #151, in the exact function #151 is about. Measured: "
+            "a build with the behaviour perfect and this prose untouched scores 515/0.\n\n"
+            "Retire the clause in the SAME diff (finding #151, and DESIGN-LAW's rule that "
+            "prose describing behaviour is DERIVED from it, never restated beside it)."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10e-2. THE DRIVER'S `from error` UNIVERSAL IS FALSE — AND THE EXCEPTION IS ARCHITECTURAL.
+#        (adversary-151b residual R1 / invariant I15 · LEAD-RULED 2026-07-20)
+#
+# `_txn.py:876-880` explains `last_conflict_cause` with an unqualified ∀: *"every caller that
+# raises the signal does so ``from error`` (the original engine exception)"*. The whole
+# `engine_error` extra — the artifact #151 exists to restore — is built on that premise.
+#
+# MEASURED: FOUR sites raise `from error` (`:1002`, `:1010`, `:1018`, `:1103`); `:1242`,
+# inside `execute_transaction._attempt`, raises `RetryableConflictSignal()` BARE.
+#
+# THE LEAD INSPECTED `:1242` AND RULED: THE CODE CANNOT CONFORM, SO THE COMMENT MUST CHANGE.
+# At that site there is no exception in scope AT ALL — the transactional caller detects a
+# conflict by INSPECTING a returned response's `failed_statements`, not by catching a raise,
+# so there is nothing to chain `from`. This is not an oversight; it is the architectural split
+# the driver's OWN docstring already describes: *"the transactional caller reads a returned
+# response's failed statements; every single-statement seam reads a RAISED exception."*
+#
+# SO THE PINS BELOW SPLIT THE POPULATION THE WAY THE CODE ACTUALLY DOES, and neither of them
+# can be satisfied by deleting the sentence:
+#   * the ∀ holds over the seams that raise FROM AN `except` HANDLER — that population is
+#     derived structurally (being inside a handler IS "reads a RAISED exception"), so a new
+#     seam that forgets `from error` goes red without anyone maintaining a list;
+#   * and the comment must NAME whichever callers raise with no exception in scope, so the
+#     exemption is documented WHERE THE PREMISE IS STATED rather than merely being true.
+#
+# The second pin therefore does more than correct prose: it makes the driver's own
+# explanation carry the EVIDENCE for why `execute_transaction` is exempt from the label
+# requirement §10's allowlist already grants it. Delete the comment and it goes red; leave the
+# false universal and it goes red; name the exception and it goes green.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ConflictSignalRaise:
+    """One ``raise RetryableConflictSignal`` site, with everything the pins need."""
+
+    lineno: int
+    enclosing: tuple[str, ...]
+    """Every enclosing function, outermost first — so a nested `_attempt` can be named by
+    either its own name or its parent's, and the pin holds no opinion on which reads better."""
+    handler_name: str | None
+    """The name bound by the innermost `except ... as NAME:` in scope, or `None` when the
+    raise sits outside any handler — i.e. when there is no exception to chain from."""
+    chained_from: str | None
+    """The name in `raise ... from NAME`, or `None` for a bare raise."""
+
+
+def _conflict_signal_raise_sites(source: str) -> list[_ConflictSignalRaise]:
+    """Every ``raise RetryableConflictSignal(...)`` in ``source``, classified.
+
+    The handler stack is reset at every function boundary: a closure defined inside an
+    ``except`` block does not run with that block's name bound (Python deletes it on the way
+    out), so crediting its raises to the enclosing handler would be a lie in the safe-looking
+    direction — it would report a bare raise as chainable.
+    """
+    sites: list[_ConflictSignalRaise] = []
+
+    def raised_name(node: ast.expr | None) -> str | None:
+        if isinstance(node, ast.Call):
+            node = node.func
+        return node.id if isinstance(node, ast.Name) else None
+
+    def visit(node: ast.AST, functions: tuple[str, ...], handlers: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                visit(child, (*functions, child.name), ())
+                continue
+            if isinstance(child, ast.ExceptHandler):
+                visit(child, functions, (*handlers, child.name) if child.name else handlers)
+                continue
+            if isinstance(child, ast.Raise) and raised_name(child.exc) == _RETRY_SIGNAL_NAME:
+                sites.append(
+                    _ConflictSignalRaise(
+                        lineno=child.lineno,
+                        enclosing=functions,
+                        handler_name=handlers[-1] if handlers else None,
+                        chained_from=raised_name(child.cause),
+                    )
+                )
+            visit(child, functions, handlers)
+
+    visit(ast.parse(source), (), ())
+    return sites
+
+
+def _explanation_above(source: str, variable: str) -> list[str] | None:
+    """The contiguous ``#`` comment block immediately above ``variable``'s annotated assignment.
+
+    ``None`` when the assignment itself cannot be found (the pin then fails loudly rather than
+    passing over a variable it could not locate) and ``[]`` when the assignment is there but
+    carries no explanation at all — which is the "deleted the comment" build.
+    """
+    declared_at: int | None = None
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == variable
+        ):
+            declared_at = node.lineno
+            break
+    if declared_at is None:
+        return None
+
+    comments: dict[int, str] = {
+        token.start[0]: token.string
+        for token in tokenize.generate_tokens(io.StringIO(source).readline)
+        if token.type == tokenize.COMMENT
+    }
+    block: list[str] = []
+    lineno = declared_at - 1
+    while lineno in comments:
+        block.append(comments[lineno])
+        lineno -= 1
+    return list(reversed(block))
+
+
+class TestTheSignalsChainingUniversalHoldsOverThePopulationItIsTrueOf:
+    """**adversary-151b R1 / invariant I15.** The driver's `engine_error` extra is only as
+    good as the chaining premise it rests on — so the premise is pinned where it is TRUE, and
+    the architectural exception is pinned as an exception.
+    """
+
+    def test_the_raise_site_walker_is_not_silently_finding_nothing(self) -> None:
+        """**THE REACH CONTROL.** Both pins below quantify over a set the walker produces, and
+        the empty set satisfies both. Assert the reach, or the reach becomes the bug.
+        """
+        sites = _conflict_signal_raise_sites(_seam_module_source())
+
+        assert len(sites) >= _MIN_KNOWN_CONFLICT_SIGNAL_RAISE_SITES, (
+            f"the walker found {len(sites)} `raise {_RETRY_SIGNAL_NAME}` site(s) "
+            f"({[site.lineno for site in sites]}) — this contract was written against "
+            f"{_MIN_KNOWN_CONFLICT_SIGNAL_RAISE_SITES} (three in the session bootstrap's "
+            f"statement bodies, one in `run_query`'s attempt, one in the transactional "
+            f"caller's). Either seams were consolidated (good — lower this floor "
+            f"deliberately) or the walker broke and both pins below are vacuous."
+        )
+
+    def test_the_walker_TELLS_APART_a_chained_raise_from_a_bare_one(self) -> None:
+        """**POSITIVE CONTROL.** A classifier that reported everything as chained would make
+        the ∀ pin vacuous; one that reported everything as bare would make the naming pin
+        unsatisfiable. Both directions are shown on synthetic source.
+        """
+        source = """
+async def _seam():
+    try:
+        await connection.query("...")
+    except Exception as error:
+        raise RetryableConflictSignal() from error
+
+async def _transactional():
+    if failed:
+        raise RetryableConflictSignal()
+"""
+        classified = [
+            (site.enclosing, site.handler_name, site.chained_from)
+            for site in _conflict_signal_raise_sites(source)
+        ]
+
+        assert classified == [
+            (("_seam",), "error", "error"),
+            (("_transactional",), None, None),
+        ], (
+            f"the walker classified {classified}. It must see BOTH shapes and must record "
+            f"the handler name and the chained name separately — a classifier that conflates "
+            f"them cannot tell 'chained correctly' from 'nothing was in scope to chain'."
+        )
+
+    def test_every_signal_raised_FROM_AN_EXCEPT_HANDLER_chains_that_exception(self) -> None:
+        """**GREEN TODAY, BY DESIGN** — all four handler-borne raises already chain. This is
+        the ∀ half of R1: pinned over the population where the driver's premise is TRUE, so a
+        new single-statement seam that raises the signal bare inside its `except` goes red
+        here instead of silently emptying `engine_error` for its own exhaustion records.
+
+        The population is DERIVED, not listed: being lexically inside `except ... as NAME:` is
+        what "reads a RAISED exception" means structurally, so no one has to maintain a set.
+        """
+        unchained = [
+            site
+            for site in _conflict_signal_raise_sites(_seam_module_source())
+            if site.handler_name is not None and site.chained_from != site.handler_name
+        ]
+
+        assert not unchained, (
+            f"these `raise {_RETRY_SIGNAL_NAME}` sites are inside an `except ... as NAME:` "
+            f"handler and do NOT chain that exception:\n  "
+            + "\n  ".join(
+                f"{_SEAM_MODULE}:{site.lineno} in {'.'.join(site.enclosing)}() — caught as "
+                f"{site.handler_name!r}, raised `from {site.chained_from}`"
+                for site in unchained
+            )
+            + f"\n\nThe driver stashes `{_LAST_CONFLICT_CAUSE_VARIABLE} = signal.__cause__` "
+            "and puts it on the exhaustion record as `engine_error`. An unchained raise "
+            "leaves that empty, and the operator is back to an attempt count under a message "
+            "promising 'the full engine detail' — finding #151's exact harm, arriving through "
+            "a different door. Write `raise RetryableConflictSignal() from <the caught name>`."
+        )
+
+    def test_the_drivers_explanation_NAMES_every_caller_that_raises_UNCHAINABLY(self) -> None:
+        """**RED TODAY.** The comment above `last_conflict_cause` claims *"every caller that
+        raises the signal does so ``from error``"*. `_txn.py:1242` does not, and cannot: the
+        transactional caller detects its conflict by INSPECTING a returned response's failed
+        statements, so at that raise there is no exception in scope to chain.
+
+        LEAD RULING (2026-07-20): the code cannot conform, so the COMMENT changes. And it must
+        change by NAMING the exception rather than by dropping the claim — this pin fails on a
+        deleted comment exactly as it fails on a false one.
+
+        WHY NAMING IS THE RIGHT REPAIR AND NOT BOOKKEEPING: `execute_transaction` is also the
+        one body §10's allowlist exempts from `label=`. Naming it HERE, where the chaining
+        premise is stated, is what makes that exemption's reason visible at the premise it
+        depends on — the driver's own explanation ends up carrying the evidence instead of the
+        reader having to reconstruct it from two files.
+
+        DERIVED, NOT MATCHED: the required names come from the AST walk, and the check is
+        membership in the comment block the tokenizer finds above the declaration. Any wording
+        passes as long as it names the callers that genuinely cannot chain — and if a future
+        refactor makes every raise chainable, the required set empties and the unqualified
+        universal becomes true again, so this pin correctly stops asking for anything.
+        """
+        source = _seam_module_source()
+        explanation = _explanation_above(source, _LAST_CONFLICT_CAUSE_VARIABLE)
+
+        assert explanation is not None, (
+            f"`{_LAST_CONFLICT_CAUSE_VARIABLE}` has no annotated declaration in "
+            f"{_SEAM_MODULE}, so this pin cannot find the explanation it grades. If the "
+            f"variable was renamed, move `_LAST_CONFLICT_CAUSE_VARIABLE` with it — do not "
+            f"leave the pin pointing at a name that no longer exists."
+        )
+        assert explanation, (
+            f"`{_LAST_CONFLICT_CAUSE_VARIABLE}` now carries NO explanatory comment at all. "
+            f"Deleting the sentence is not a repair: the `engine_error` extra rests on a "
+            f"premise about how callers raise the signal, and an unstated premise is one the "
+            f"next author cannot check. State it — accurately."
+        )
+
+        prose = "\n".join(explanation)
+        unnameable = [
+            site
+            for site in _conflict_signal_raise_sites(source)
+            if site.handler_name is None
+            and not any(function in prose for function in site.enclosing)
+        ]
+
+        assert not unnameable, (
+            f"the explanation above `{_LAST_CONFLICT_CAUSE_VARIABLE}` states a universal "
+            f"about how callers raise the signal, and these sites raise it with NO exception "
+            f"in scope — un-chainable by construction — while the comment names neither them "
+            f"nor any function enclosing them:\n  "
+            + "\n  ".join(
+                f"{_SEAM_MODULE}:{site.lineno} in {'.'.join(site.enclosing)}()"
+                for site in unnameable
+            )
+            + "\n\nThe comment currently reads:\n  "
+            + "\n  ".join(explanation)
+            + "\n\nThat ∀ is FALSE, and the `engine_error` extra is built on it: the day "
+            "anyone passes a `label=` at one of the sites above, the record silently gets the "
+            "driver's `\"\"` fallback while this comment says that cannot happen.\n\n"
+            "The code cannot conform (LEAD RULING): the transactional caller reads a RETURNED "
+            "response's failed statements rather than catching a raise, exactly as this "
+            "driver's own docstring describes — so there is nothing to chain `from`. Qualify "
+            "the claim to the callers that raise from an `except` handler, and NAME the "
+            "caller that does not, with its reason. Naming it here is also where the reader "
+            "learns why that same body is the one §10's allowlist exempts from `label=`."
         )
