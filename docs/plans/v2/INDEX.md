@@ -147,7 +147,9 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 01a | **artifact-conformance — run the suite IN the deployed image** (#139) | — | pre | 0.25 (measure-first) | 01 | **DONE + DEPLOYED 2026-07-16** (c90df55/b528ac1/a35cdca/062bf60; image **f25c18976b2b**, both containers; in-image suite 5545/0; no 01b split; **#141 drift closed in the running artifact**) |
 | 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.40 | — | **DONE + DEPLOYED 2026-07-19** (image **ae0e78d9a504**, both containers; d3c899f→05a8bb2; cold-audit GO + F1 fixed; live-wire smoke PASS; promise HARDENING split → 02a) |
 | 02a | comms-promise-instrument-hardening (full §9.7 per-entry executable-predicate proofs + `safe_str` literal-coverage closure `_SAFE_STR_LITERAL_RESIDUAL`) | — | C | 0.20 (ran ~4×) | 02 | **DONE 2026-07-19** (a2e9a70→ceac2d0, 6 commits; TEST-ONLY, **no deploy** — production byte-identical, `server.py` md5 unchanged throughout; scoped gates 34→117) |
-| 03 | comms-message-graph (send/drain/ack, seq) | PKT-28 C2b | C | 0.25 | 02 | open |
+| 03 | **comms STORE** — message/`to` slices, `DEFINE SEQUENCE`, `ENFORCED`, the relation-table policy flip + dirty-store migration pins | PKT-28 C2b | C | 0.20 | 02 | open — contract READY (400 pins, adversary-closed) |
+| 03a | **comms LEDGER** — `messages.py` send/drain/ack, derived waiting state, ≥8-way concurrency, retry-seam coverage | — | C | 0.35 | 03 | open — contract READY |
+| 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **DEPLOYS BOTH** | — | C | 0.30 | 03a | open — contract READY |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
 | 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121) | PKT-28 C3 | C | 0.30 →split | 04 | open |
 | 06 | comms-protocol-drill (brief-base v3 + THE DRILL) | PKT-28 C4 | C | 0.25 | 05 | open |

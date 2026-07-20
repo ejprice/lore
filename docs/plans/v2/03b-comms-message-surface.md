@@ -1,5 +1,5 @@
-# 03a — Comms: the message SURFACE (send/drain/ack on `lore_comms`) · split from 03
-size ~0.3 wu (measured; FLOOR — see 03's SPLIT note) · wave C · depends: **packet 03**
+# 03b — Comms: the message SURFACE (send/drain/ack on `lore_comms`) · split from 03
+size ~0.3 wu (measured; FLOOR — see 03's SPLIT note) · wave C · depends: **packet 03a** (which depends on 03)
 law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1/§15 · design source:
 ~/.claude/plans/one-of-claude-codes-nifty-garden.md · **DEPLOY: yes (BOTH containers)**
 

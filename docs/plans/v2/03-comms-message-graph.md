@@ -1,65 +1,86 @@
-# 03 — Comms: message graph — THE DURABLE CORE (store + ledger) · formerly PKT-28 phase C2b
-size ~0.35 wu (measured; see SPLIT) · wave C · depends: packet 02
+# 03 — Comms: the STORE (schema, relation-table policy, ENFORCED) · formerly PKT-28 phase C2b
+size ~0.2 wu (measured post-adversary) · wave C · depends: packet 02
 law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1 · design source:
 ~/.claude/plans/one-of-claude-codes-nifty-garden.md · **DEPLOY: NO — test+store only**
 
-## SPLIT (operator-ruled 2026-07-19, on the contract author's measurement)
-The contract was written IN FULL and then measured, per operator direction: **296 pins,
-0.6–0.8 wu against a 0.25 sizing** — packet 02's miss, caught earlier. Split along the
-contract's own pin groups:
-- **03 (this file)** — schema/DDL + the `messages.py` ledger + concurrency + the retry-seam
-  coverage + the relation-table flip. **TEST-ONLY, NO DEPLOY** (precedent: 02a).
-- **03a** (`03a-comms-message-surface.md`) — tool dispatch + renders/promises; **DEPLOYS BOTH**
-  and owns the live-wire smoke.
-⚠ These numbers are a FLOOR: the contract-adversary had not run when they were measured, and
-it reliably adds pins. Re-check before 03a starts.
+## SPLIT — TWICE (operator-ruled 2026-07-19; second cut lead-ruled on the same instrument)
+The contract was written IN FULL, then measured, then adversary-graded, then re-measured — each
+time by the contract author, never estimated by the lead.
+
+| stage | measurement |
+|---|---|
+| packet as written | 0.25 wu (before discovery) |
+| contract complete | **296 pins · 0.6–0.8 wu** → operator ruled SPLIT (core / surface) |
+| + operator rulings folded in | **347 pins · 0.7–0.9 wu** |
+| + adversary blockers closed | **400 pins · packet-03-half alone 0.55 wu** |
+
+0.55 is well past the 0.30 split threshold, so the core was cut again along the author's
+recommended seam:
+- **03 (this file) — the STORE.** Schema/DDL, the relation-table policy flip, `ENFORCED`, all
+  three dirty-store migration pins, the guard-kind pin. **47 pins + 1 changed, ≈0.2 wu.**
+  Touches ONLY `surreal_schema.py`; no dependency on `messages.py` existing.
+  **Why it is its own packet:** it is the ONLY part of this work that changes behaviour for code
+  ALREADY IN PRODUCTION — 101,479 live edge rows across `briefed`/`refers`/`answers_to`. That
+  deserves its own cold audit rather than riding behind a new module inside a large wave.
+- **03a — the LEDGER** (`03a-comms-message-ledger.md`): `messages.py`, the shared `AgentRefLike`
+  module, 180 ledger pins. ≈0.35 wu. Depends on this packet.
+- **03b — the SURFACE** (`03b-comms-message-surface.md`): dispatch + renders + promises, DEPLOYS
+  BOTH. ≈0.3 wu. Depends on 03a.
+
+**The contract is ONE file across all three** — pin groups are labelled, not forked. Selectors are
+in `REPORT-contract-pkt03.md` §UPDATE 5eb445b.
+
+⚠ **The `[real]`-tier ledger leg is UNGRADED and is the largest residual risk** (adversary §7.8,
+author concurring): neither could close it without building the real store. It is the reason 03 and
+03a ship TEST-ONLY with a cold audit each, before 03b deploys anything.
 
 ## Mission
-The durable core: store-and-forward messages with per-recipient delivery state, proven at
-contention BEFORE any surface depends on them. Nothing user-visible ships here — and that is
-the point: the mint, the atomic fan-out, the recipient guard and the write-once CAS all land
-where their failure is a test failure, not a production one.
+The STORE half: every schema change this subsystem needs, including the one that touches tables
+already carrying production data. Nothing user-visible ships here, and no new module is written —
+`messages.py` is packet 03a. What lands here is the ground the ledger stands on, proven against a
+DIRTY store rather than the virgin one every test fixture mints.
 
 ## Scope IN
-- Schema slices: `message` node (id `ulid()`, `grade` signal|directive, bodies immutable
-  after send — strikeable design choice) + `to` delivery edge (UNIQUE(in,out); write-once
-  CAS stamps `seen_at`/`acked_at` — only the recipient stamps its own edges, zero hot-row
-  contention).
-- `message.seq` minted via native `DEFINE SEQUENCE` + `sequence::nextval("<name>")` —
-  probe-settled, operator-confirmed (ledger task f86af162; not gapless, accepted).
-- `messages.py` ledger module (tasks.py blueprint): send txn (node + to-edge fan-out;
-  `to=[]` ⇒ broadcast **all non-retired** agents; unregistered recipient = teaching error),
-  drain (stamps exactly what's rendered; `peek` skips), ack (write-once CAS).
-- **`set_status` on `send`** (operator-ruled 2026-07-19, pulled in from the design's tool
-  table): a sender may park itself in the same call — the one-call operator question.
-- **`ENFORCED` on the `to` edge** (operator-ruled 2026-07-19; probed
-  `REPORT-probe-enforced-clause.md`): ship it as
+- **Schema slices**: `message` node (id `ulid()`, `grade` signal|directive, `seq`, `question`,
+  `asked_at`; bodies immutable after send — strikeable design choice) + the `to` delivery edge
+  (`seen_at`/`acked_at`/`ack_note` as `option<>` so `IS NONE` is the CAS guard; UNIQUE(in,out)).
+- **`message.seq` via native `DEFINE SEQUENCE IF NOT EXISTS` + `sequence::nextval("<name>")`** —
+  probe-settled, operator-confirmed (ledger task f86af162). A bare `DEFINE SEQUENCE` RAISES on
+  re-apply → boot crash; no variant resets the counter; the BATCH/START residual is **#146**.
+  Gaps are REAL, so `seq` is an ORDERING key — never a count, never a gapless handle.
+- **`ENFORCED` on the `to` edge** (operator-ruled; probed `REPORT-probe-enforced-clause.md`):
   `DEFINE TABLE OVERWRITE to TYPE RELATION IN message OUT agent ENFORCED SCHEMAFULL`.
-  It is a BACKSTOP, **not** a replacement for the app-level recipient check — it reports one
-  bad recipient per attempt as untyped prose AFTER the write is attempted, it cannot see
-  ghosts already stored, and it is the only thing that closes the `INSERT RELATION` door
-  (which no app check on `send` can reach).
-- **RELATION-TABLE POLICY FLIP** (operator-ruled 2026-07-19, scope EXPANSION): flip
-  `_define_relation_table` to `DEFINE TABLE OVERWRITE` and give it real `IN`/`OUT` parameters
-  — **it emits neither today**, so `briefed`/`refers`/`answers_to` currently carry NO endpoint
-  typing at all. ⚠ `IF NOT EXISTS` is a measured SILENT NO-OP for a changed relation clause
-  (#107's shape, invisible to every virgin-DB test). REQUIRED with it: a **pre-flight audit of
-  existing rows** (typing a populated edge WRITE-POISONS any row whose endpoint is of a
-  forbidden table — `REPORT-audit-edge-preflight.md`) and a **dirty-store migration pin** in
-  the §1.6 `TestSchemaMigrationAgainstAnExistingStore` shape: apply OLD DDL → write a row →
-  apply NEW DDL → assert the guard is LIVE **and** the old row survived. A virgin-DB fixture
-  proves nothing here, by construction.
-- **`AgentRefLike` is promoted to ONE shared module both `briefs.py` and `messages.py` import**
-  (operator-ruled 2026-07-19, DRY law: duplication is a design decision, never a quiet copy #2).
-- Concurrency pins at ≥8-way with SEPARATE ledger instances (N coroutines on one socket do not
-  contend); 20-consecutive-green law — note it has NO mechanical enforcement, it is builder
-  discipline measured in runs.
+  A BACKSTOP, not a replacement for 03a's app-level recipient check — it reports ONE bad recipient
+  per attempt as untyped prose AFTER the write is attempted, and cannot see ghosts already stored.
+  It IS the only thing that closes the `INSERT RELATION` door, which no app check can reach.
+- **RELATION-TABLE POLICY FLIP — the production-touching work, and the reason this is its own
+  packet.** `_define_relation_table` moves to `DEFINE TABLE OVERWRITE` and gains real `IN`/`OUT`
+  params; **it emits NEITHER today**, so `briefed`/`refers`/`answers_to` carry no endpoint typing
+  at all. ⚠ `IF NOT EXISTS` is a MEASURED silent no-op for a changed relation clause (#107's
+  shape) — a flip that ships unchanged returns OK, passes every virgin-DB test, and leaves
+  production exactly as untyped as today.
+- **DIRTY-STORE MIGRATION PINS AGAINST THE TABLES THAT ACTUALLY EXIST.** The §1.6
+  `TestSchemaMigrationAgainstAnExistingStore` shape — apply OLD DDL → write a row → apply NEW DDL
+  → assert the guard is LIVE **and** the old row survived — parametrized over
+  `briefed`/`refers`/`answers_to`, each starting from a BASELINE proving it really was untyped.
+  Plus the narrowing's documented hazard: a heterogeneous row is **write-poisoned, readable, never
+  dropped**, with a homogeneous CONTROL (the adversary's own first probe failed on both arms for
+  two different reasons — attribution is unsound without it).
+  **Pre-flight audit is DONE** (`REPORT-audit-edge-preflight.md`): all 101,479 live edge rows are
+  endpoint-homogeneous, zero would be poisoned, zero ghosts. The DATA is safe; the MECHANISM is
+  the risk.
+- **The guard-kind pin widened** (`test_surreal_schema.py`): `TABLE (RELATION)` becomes its own
+  kind requiring `OVERWRITE`, and `SEQUENCE` is added. ⚠ This pin previously asserted that EVERY
+  `DEFINE TABLE` must be `IF NOT EXISTS` — i.e. **the instrument built to prevent #107 actively
+  certified the silent-no-op as correct for edges.** It would have gone RED on a correct build.
 
 ## Scope OUT
-- Tool dispatch, all renders, promise-registry entries, hostile render fixtures, deploy and
-  live-wire smoke → **packet 03a**.
-- `blocks` mirroring, fleet columns, `_comms_footer` (packet 04); await/story (05).
-- `drain`'s `since=` (packet 05, lead-ruled).
+- `messages.py` / `MessageLedger`, `send`/`drain`/`ack`, `set_status`, the shared `AgentRefLike`
+  module, the derived waiting state, all concurrency pins, the retry-seam driving body →
+  **packet 03a (the ledger)**.
+- Tool dispatch, renders, promise proofs, hostile render fixtures, deploy, live-wire smoke →
+  **packet 03b (the surface)**.
+- `blocks` mirroring, fleet columns, `_comms_footer` (04); await/story/`since=` (05).
 
 ## Entry check
 **FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
