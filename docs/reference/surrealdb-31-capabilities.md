@@ -56,7 +56,8 @@ The single most expensive area in this file. Read all of it before changing any 
 | **FIELD** | **`OVERWRITE`** | The only clause that makes a changed definition actually land. [#107] |
 | **INDEX** | **`IF NOT EXISTS`** | `OVERWRITE` **rebuilds** the index over every row → boot-time crash on a dim change. |
 | **ANALYZER** | **`IF NOT EXISTS`** | `OVERWRITE` lands the definition but does **not** re-tokenise built indexes → silent recall bug. |
-| **TABLE** | **`IF NOT EXISTS`** | `OVERWRITE` is *safe* (probed) but our table clauses never change. Nothing to migrate. |
+| **TABLE (plain)** | **`IF NOT EXISTS`** | `OVERWRITE` is *safe* (probed, see below) but plain table clauses never change. Nothing to migrate. |
+| **TABLE (RELATION)** | **`OVERWRITE`** | ⚠ **The only clause that lands a changed `IN`/`OUT`/`ENFORCED`.** `IF NOT EXISTS` is a **silent no-op** on an existing edge table [PROBED 2026-07-19] — #107's shape, and invisible to every virgin-DB fixture. Safe: preserves fields, indexes and rows, and does **not** rebuild. |
 | **SEQUENCE** | **`IF NOT EXISTS`** | A **bare** `DEFINE SEQUENCE` **RAISES** *"The sequence 'x' already exists"* — and `ensure_ready()` re-applies the DDL every boot, so a bare DEFINE is a **boot-time crash**, exactly the INDEX failure mode. ⚠ Residual: like ANALYZER/INDEX, a changed `BATCH`/`START` then **never migrates** onto an existing store ([#146](#146)). Verified: **no** variant (`IF NOT EXISTS` *or* `OVERWRITE`) resets the counter — the catastrophic case (re-issuing numbers from zero at every boot) is ruled out. [PROBED 2026-07-19] |
 
 [CODE] `loremaster/store/surreal_schema.py` — `_define_field` (:637–671, `OVERWRITE`),
@@ -152,6 +153,16 @@ re-DEFINE INDEX dim 4 -> 8 (OVERWRITE):     RAISED  InternalError:
 **hard-fail `ensure_ready()`** on an embedding-dim change. The dim change already has its own
 mechanism (the schema-fingerprint rebuild). **Do not flip it.**
 
+> **⚠ DO NOT GENERALISE THAT WARNING TO `DEFINE TABLE OVERWRITE` — it is a different verb and it is
+> SAFE.** [PROBED 2026-07-19] On a populated table carrying **both** an HNSW vector index and a
+> UNIQUE index: `DEFINE TABLE OVERWRITE … SCHEMAFULL` completed in **1.7 ms**, rows intact (8/8),
+> the HNSW definition preserved verbatim, KNN results identical, and the UNIQUE index still
+> rejecting duplicates. **It does not rebuild.**
+> **Positive control, on the same table:** `DEFINE INDEX OVERWRITE` with a changed dimension raised
+> `Incorrect vector dimension (8). Expected a vector of 16 dimension.` — §1.5's crash reproduces on
+> demand, which proves the clean TABLE result is a real negative and not a blind instrument.
+> This is what makes the relation-table flip to `OVERWRITE` (§1.1) affordable.
+
 **An ANALYZER change needs `OVERWRITE` *plus* `REBUILD INDEX`.** [PROBED 2026-07-12] —
 `DEFINE ANALYZER OVERWRITE` updates the definition but leaves every already-built FULLTEXT index
 tokenised the **old** way:
@@ -234,7 +245,16 @@ The house rules for reading and writing rows. Each one was found the hard way.
   existing id whose WHERE fails **cannot create** a row.
 - **`record<t>` links do NOT auto-clean on target delete** — but graph RELATION edges **do**
   self-delete when an endpoint node is deleted. Snapshot GC must delete `snapshot_entry` rows
-  explicitly.
+  explicitly. **[VENDOR]** [RELATE](https://surrealdb.com/docs/surrealql/statements/relate):
+  *"a graph edge will also automatically be deleted if it is no longer connected to a record at
+  both `in` and `out`."*
+- **⚠ `UPDATE` of a relation edge's `in`/`out` is a SILENT NO-OP.** [PROBED 2026-07-19] Setting
+  either endpoint to a **real, existing** record returns `OK` **with a returned record**, and the
+  endpoint is **unchanged**. Not a rejection — a silent no-op, the §2 degradation shape rather than
+  a loud failure. **Any future "rewire this delivery to a different agent" written as an `UPDATE`
+  will report success and do nothing.** The upside: endpoints are effectively immutable after
+  `RELATE`, so `ENFORCED` (§4) cannot be walked around via `UPDATE`. To re-point an edge, DELETE
+  and re-`RELATE`.
 
 ---
 
@@ -246,14 +266,26 @@ The house rules for reading and writing rows. Each one was found the hard way.
   bit us as silent-partial-SCHEMA in all three `ensure_ready` DDL paths.
   > **NEVER send multi-statement SurrealQL through `query()`. Use `execute_transaction`, which
   > checks every statement.** (`DEFINE`-in-transaction is allowed on 3.1.5.)
-- **⚠ Classify the FIRST failed statement, never the last.** [#93, RESOLVED @ 93a9aab] In a
+- **⚠ Classify SEMANTICALLY — POSITION IS WRONG AT BOTH ENDS.** [#93, RESOLVED @ 93a9aab] In a
   `BEGIN; …; COMMIT;` body, once *any* statement fails, **the COMMIT also errors** — with
   *"Cannot COMMIT: the transaction was aborted due to a prior error"*, which carries none of the
-  real error's markers. Classifying `failed_statements[-1]` therefore **discards the real cause**
-  and reports "unspecified rejection" for every rolled-back multi-statement txn. `_txn.py` now
-  raises on `failed_statements[0]` — the first ERR is the root cause by execution order — and logs
-  all of them. *This defect is why the C1 mint bug could hide: the collision's own rejection text
+  real error's markers. So `failed_statements[-1]` **discards the real cause**.
+  **⚠ BUT `[0]` IS ALSO WRONG, AND A PRIOR VERSION OF THIS SECTION TAUGHT IT.** [PROBED 2026-07-19]
+  The engine stamps CASCADE notices on statements *before* the offender, so `[0]` is typically
+  *"The query was not executed due to a failed transaction"* — a notice, not the cause.
+  **The CODE was already right and this prose was stale**: `_txn.py:416` defines
+  `_CASCADE_NOT_EXECUTED_MARKER = "was not executed due to"` and `_domain_root_cause` (:714) picks
+  the first **non-cascade** entry, its docstring stating outright that *"selecting by POSITION is
+  refused at both ends … only a SEMANTIC (marker-seeking) selector is correct."* Fixed here
+  2026-07-19; the code never had the bug. *(This is the §8 stale-prose class: a doc teaching a
+  retired mechanism, which no gate will ever catch.)*
+  *The original #93 defect is why the C1 mint bug could hide: the collision's own rejection text
   was masked by the COMMIT's.*
+- **[VENDOR] The supported all-statements call is `query_raw()`** —
+  [executing-queries](https://surrealdb.com/docs/sdk/python/concepts/executing-queries):
+  *"If you need the results from every statement, use `.query_raw()` instead"* (per-statement
+  `status`/`time`/`result`). It is what `execute_transaction` already rides. ⚠ The same page lies
+  about `.query()` itself — see §6.5.
 - **Client-side conflict retry is MANDATORY.** [PROBED] The engine does **not** auto-retry user
   transactions. The only signal is the literal marker string **`"can be retried"`**
   ([CODE] `_txn.py:326`). 3.1 exposes OTel counters `surrealdb.transaction.retries` / `.conflicts`.
@@ -282,6 +314,10 @@ The house rules for reading and writing rows. Each one was found the hard way.
   A `RELATE` with a bogus record id on **either or both** ends **silently writes a DANGLING edge**
   to a phantom record — no error. In a brief/ack or delivery graph this is a **receipt for an agent
   who does not exist**: provenance you cannot trust is worse than no provenance.
+  - **[VENDOR — and the vendor endorses our guard]** [RELATE](https://surrealdb.com/docs/surrealql/statements/relate):
+    *"`RELATE` will create a relation regardless of whether the records to relate to exist or not"*,
+    and it is *"advisable to … ensure that they exist."* So the application-level existence check is
+    **vendor-recommended**, not merely prudent.
   - **[PROBED 2026-07-19]** all four legs, verbatim: bogus `out` → **OK**; bogus `in` → **OK**;
     both bogus → **OK**; both real (positive control) → OK. ⚠ The instrument's own first run said the
     opposite — endpoints bound as **strings** made every leg fail, and *only the positive control
@@ -306,10 +342,21 @@ The house rules for reading and writing rows. Each one was found the hard way.
     `TYPE RELATION [IN|FROM] @table [OUT|TO] @table [ENFORCED]`. Present since ≥2.0.3 (issue #5039
     is filed against it there), so it is **on our floor, not a 3.2+ feature**.
     **An earlier version of this bullet said an application-level check was "the only guard". That
-    was FALSE — see §6.3.** Adoption status: probed by packet 03 (`REPORT-probe-enforced-clause.md`);
-    ⚠ note that `ENFORCED` is a `DEFINE TABLE` clause and §1.1 puts TABLE on `IF NOT EXISTS`, so
-    **adding it to an existing relation table is a candidate silent no-op — #107's shape.** Settle
-    the migration before relying on it.
+    was FALSE — see §6.3.**
+  - **[PROBED 2026-07-19, 8 legs — `REPORT-probe-enforced-clause.md`] Everything you need to adopt it:**
+    | question | answer |
+    |---|---|
+    | Does it work on 3.1.5? | **YES**, and it validates **BOTH** endpoints. Error: `The record 'agent:a_ghost' does not exist`. Vendor CONFIRMED verbatim. |
+    | ⚠ **Migration onto an EXISTING table** | **`IF NOT EXISTS` is a SILENT NO-OP** — #107's shape, invisible to every virgin-DB test. **`OVERWRITE` is the only clause that lands it**, and it preserves fields, indexes and rows. |
+    | Pre-existing dangling edges | **Entirely unaffected** — readable, traversable, updatable, deletable. `ENFORCED` neither hides them, breaks them, nor helps you find them. **Turning it on and calling the ghost problem closed is a false all-clear**; cleanup is a separate data migration. |
+    | Endpoint-delete cascade | **Unchanged** — still cascades, still cleans the UNIQUE entry, re-`RELATE` succeeds. |
+    | Composition | Fine with `UNIQUE(in,out)` **and** `SCHEMAFULL` fields; the three failures are distinguishable by error text. |
+    | Cost | **None measurable** — ~2.8% at 16-way × 20, inside run-to-run noise. |
+    | Error ergonomics | ⚠ **ONE bad endpoint per attempt, as untyped PROSE, only AFTER the write is attempted, aborting the whole txn.** So it does **NOT** replace an app-level check that names EVERY bad recipient BEFORE the write — and parsing `"The record 'x:y' does not exist"` to recover the id would be a literal-keyed instrument of the kind this repo forbids. |
+    | Issue #5039 (chained relations) | Does **not** reproduce on 3.1.5; the closure is genuine. |
+    | `INSERT RELATION` | **The door only `ENFORCED` shuts** — `TYPE RELATION` alone rejects `CREATE`/`INSERT`/`UPSERT`, but `INSERT RELATION INTO` writes a dangling edge on a non-ENFORCED table. An app check on one verb cannot reach it; **`ENFORCED` guards the TABLE, including write paths nobody has written yet.** |
+    **Shape to ship:** `DEFINE TABLE OVERWRITE <edge> TYPE RELATION IN <a> OUT <b> ENFORCED SCHEMAFULL`,
+    with the app-level check kept as the ergonomic layer. Neither is redundant.
   - A **bare `str`** endpoint (rather than a bound `RecordID`) is rejected LOUDLY:
     `"Cannot execute RELATE statement where property 'in' is: 'message:m_real'"`. That is a helpful
     failure — do not "fix" it by pre-formatting ids into strings.
@@ -318,7 +365,11 @@ The house rules for reading and writing rows. Each one was found the hard way.
 - **UNIQUE index on a RELATION edge is LEGAL on our floor.** [CODE + PRODUCTION] `briefed` declares
   `UNIQUE(in, out)` (`surreal_schema.py:1071`) and runs in production. The old ban (#7061
   ghost-entry cascade bug) is **retired** — fixed in ≥3.1.0.
-  - **SETTLED — the #7061 cascade hazard is ABSENT on 3.1.5.** [PROBED 2026-07-19] `RELATE` →
+  - **SETTLED — the #7061 cascade hazard is ABSENT on 3.1.5, and the VENDOR SAYS SO TOO.**
+    [VENDOR] [Release 3.1](https://surrealdb.com/releases/3.1) §Indexes names **both** of our probe's
+    legs as fixed in 3.1 — *"ghost UNIQUE-index entries on relation tables"* and *"phantom
+    UNIQUE-index entries when `IN`/`OUT` records were deleted before the relation."* The fix landed
+    **on our floor**. [PROBED 2026-07-19] `RELATE` →
     **hard-delete an endpoint** → re-`RELATE`: deleting either endpoint **cascades the edge away**
     (confirmed, not assumed) **and cleans its UNIQUE index entry**, so the re-`RELATE` SUCCEEDS —
     for a recreated endpoint, an absent endpoint, and an `in`-side delete alike. Positive control:
@@ -371,7 +422,12 @@ Syntax: `DEFINE SEQUENCE <name> [BATCH <n>] [START <n>] [TIMEOUT <duration>];` t
 `RETURN sequence::nextval("<name>");` (defaults `BATCH 1000 START 0`, confirmed via `INFO FOR
 DB`). Contention-free measured to **32-way** (3200 calls: 100% distinct, zero gaps, zero errors)
 and **zero retryable conflicts** with `nextval` inside `BEGIN/COMMIT` alongside a `CREATE`
-(16-way × 30 × 5 runs). **NOT gapless** — an aborted txn burns the number. Fine for monotonic ids
+(16-way × 30 × 5 runs). **NOT gapless — and this is a DOCUMENTED GUARANTEE, not an accident we
+observed.** [VENDOR] [DEFINE SEQUENCE](https://surrealdb.com/docs/surrealql/statements/define/sequence):
+*"Sequences are never rolled back, even in a failed transaction"* (with a `0 → 2` cancelled-txn
+example). The vendor also documents `sequence::nextval('mySeq2')` and a BNF carrying **both**
+`OVERWRITE | IF NOT EXISTS` — so the clause CHOICE in §1.1 is ours (driven by the bare-DEFINE boot
+crash), not a syntax limit. An aborted txn burns the number. Fine for monotonic ids
 where gaps are OK (PKT-28 C2's `message.seq` — task f86af162); **not** for gapless human handles
 (that is why the counter-row mint stays for `finding.number` / `brief.version`).
 
@@ -520,6 +576,31 @@ and of #144's mechanism correction — arrived at with no probe at all.
 **[VENDOR] The supported all-statements call is `query_raw()`** (per-statement `status`/`time`/
 `result`) — which is what `execute_transaction` already rides.
 
+### 6.6 Where the vendor is SILENT — claims for which WE ARE THE ONLY SOURCE
+
+A documentation sweep (2026-07-19) checked every load-bearing claim in this file against the
+official docs. Most upgraded to `[VENDOR]+[PROBED]`. **These did not** — no vendor page addresses
+them, so they rest entirely on our own probes. **Treat them as the most fragile knowledge here:
+they are the ones an engine upgrade could silently invalidate, with nothing upstream to warn us.**
+
+1. `RELATE` onto an **undeclared** table auto-creates it `TYPE ANY`, silently discarding the
+   `IN`/`OUT` guard (§4). Vendor silent on undefined targets entirely.
+2. Concurrent first-write to an undeclared table **storms with retryable conflicts** (§5, #144).
+3. The retryable marker is the literal string **`"can be retried"`** — it appears in no vendor doc,
+   and there is still **no typed alternative** (§3, #111).
+4. **Re-`DEFINE SEQUENCE` semantics** — bare `DEFINE` raises; no variant resets the counter;
+   `BATCH`/`START` never migrate (#146).
+5. `TYPE RELATION IN/OUT` rejects a **wrong-table** endpoint by field coercion — mechanism and
+   error text are ours.
+6. `RELATE $expr.field->…` is a **parse error** (§7); a bare `str` endpoint is rejected loudly (§4).
+7. The **four-way-ambiguous** CAS return (§5) — the vendor confirms only the two-way ambiguity.
+8. `UPDATE` of a relation edge's `in`/`out` is a **silent no-op** (§2).
+9. Everything in §6.2's silences table — existing-row behaviour on a definition change, `ALTER FIELD`
+   creation, `OVERWRITE` clause-dropping, `DEFINE TABLE OVERWRITE` on a populated table, analyzer
+   re-tokenisation, the `option<>` requirement.
+10. The SDK's **later-statement error swallowing** — undocumented, and the docs actively describe the
+    opposite (§6.5).
+
 ---
 
 ## 7. SYNTAX GOTCHAS
@@ -667,10 +748,31 @@ reconciliation against the original `scratchpad/102-recovery/` harness.*
 <a id="146"></a>*#146 — `DEFINE SEQUENCE IF NOT EXISTS` inherits the silent-no-op migration hazard for
 `BATCH`/`START`. Named re-open trigger: the day anyone changes either.*
 
-**Correction pass 2026-07-19** (packet 03 kickoff probes, operator-ruled): §1.1 gained a SEQUENCE
-row · §4's RELATE entry corrected from "`in`" to **both endpoints**, with the `out`/caller-supplied
-half and the ghost-in-traversal receipt · the #7061 cascade question **settled ABSENT** and its two
-`[UNVERIFIED]` flags retired · §5's #124 paragraph **rewritten** (mechanism was wrong, conclusion
-stands, now on two measured reasons) · §5 gained the one-transaction fan-out measurement · §7 gained
-two RELATE syntax gotchas · §8's `sequence::next` `[UNVERIFIED]` line **deleted** as a
-self-contradiction of §5. Receipts: `REPORT-probe-pkt03-store.md`.
+**Correction pass 2026-07-19/20** (packet 03 kickoff — five live probes, then a documentation-first
+reconciliation against the official docs, operator-ruled). Two of the three biggest results
+CONTRADICTED careful prior reasoning, including reasoning in this file.
+
+*From the probes:* §1.1 gained SEQUENCE and split TABLE into plain vs RELATION · §4's RELATE entry
+corrected from "`in`" to **both endpoints**, with the caller-supplied `out` half and the
+ghost-in-traversal receipt · the #7061 cascade question **settled ABSENT** · §5's #124 paragraph
+**rewritten** (mechanism was wrong, conclusion stands, now on two measured reasons — see #144) ·
+§5 gained the one-transaction fan-out measurement · §7 gained two RELATE gotchas · §8's
+`sequence::next` `[UNVERIFIED]` line **deleted** as a self-contradiction of §5.
+
+*From the docs-first pass (the one that found what probing could not):* **`ENFORCED` exists** and
+this file had asserted the opposite — see §6.3, and §4 for its eight probed legs · §6.4 and §6.5
+added (two more vendor falsehoods, the second an independent source-level corroboration of #144) ·
+§3's root-cause rule was **FALSE and is fixed** — the code was always right, the prose taught a
+retired mechanism · §2 gained the `UPDATE`-endpoint silent no-op · §1.5 gained the
+`DEFINE TABLE OVERWRITE` safety proof with its positive control · citations upgraded from
+`[PROBED]` to `[VENDOR]+[PROBED]` throughout §3/§4/§5 · **§6.6 added: the claims for which we are
+the ONLY source.** · #111 answered (keep the substring; the trigger is not met).
+
+**The method lesson, since it cost the most:** five live probes and a cold audit did not find
+`ENFORCED`, because probing can only find what you already thought to test — and nobody thinks to
+test a keyword they do not know exists. One doc page found it in minutes. **Read the docs first;
+probe to confirm them and to find what they omit.**
+
+Receipts: `REPORT-probe-pkt03-store.md` · `REPORT-docs-surreal-31-reconcile.md` ·
+`REPORT-probe-enforced-clause.md` · `REPORT-audit-edge-preflight.md` (all preserved under
+`docs/plans/v2/receipts/2026-07-19-packet03/`).
