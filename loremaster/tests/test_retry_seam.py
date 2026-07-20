@@ -1794,16 +1794,27 @@ _SEAM_MODULE = "store/_txn.py"
 def _is_connection_receiver(node: ast.expr) -> bool:
     """Is this expression a live SDK connection?
 
-    Three shapes, and they are the only three the package uses: a local/parameter named
-    ``connection`` (every seam and scout), the cached handle ``self._connection``, and a
-    ``_connection``-suffixed attribute. Stated limit: this is syntactic, not type
-    inference — a connection bound to some other name would be missed. But the receiver
-    surface is FIXED by this codebase's own idiom, whereas the METHOD surface is the
-    SDK's and grows without asking us. Gating the fixed half is the point.
+    ``ast.Name`` and ``ast.Attribute`` are tested by the SAME rule — ends with
+    ``connection``, or is the short idiom ``conn``. The asymmetry this replaces was a
+    real hole: ``self._connection`` (an ``Attribute``, matched by the suffix test) was
+    caught while a plain local ``_connection`` (a ``Name``, tested against a two-item
+    frozenset) was MISSED, so an entirely idiomatic private-local name evaded the scan
+    that the identical attribute name could not (#150 audit R1b).
+
+    ⚠ **STATED LIMIT, and it is why this predicate no longer gates the DDL leg.** This is
+    syntactic, not type inference: a connection bound to any name not ending in
+    ``connection`` is invisible here. The names measured sailing past it are not listed in
+    this docstring — they are the non-control half of
+    :meth:`TestTheTestTreeRoutesThroughTheOneBootstrapToo
+    .test_the_DDL_leg_is_RECEIVER_BLIND_whatever_the_handle_is_called`'s parameter list,
+    which is executable and cannot drift from a prose copy of itself. Receiver-name keying
+    is the sixth entry in this repo's own table of instruments defeated by enumerating a
+    NAME as a proxy for a PROPERTY. So the DDL leg of :func:`_executed_bootstrap_sites_in`
+    is now RECEIVER-BLIND and does not call this at all; this predicate survives only on
+    the ``use()`` leg, where the method name alone is too generic to deny on.
     """
-    if isinstance(node, ast.Name):
-        return node.id in _CONNECTION_NAMES
-    return isinstance(node, ast.Attribute) and node.attr.endswith("connection")
+    name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+    return name is not None and (name in _CONNECTION_NAMES or name.endswith("connection"))
 
 
 def _driver_run_bodies(tree: ast.AST) -> tuple[set[str], set[int]]:
@@ -4827,23 +4838,39 @@ def generate_brief_ddl():
 # ---------------------------------------------------------------------------
 # WHY THE TEST-TREE SCAN IS NARROWER THAN PRODUCTION'S — same property, different
 # population. In ``loremaster/``, a ``DEFINE NAMESPACE`` literal is necessarily a
-# bootstrap: production has no reason to hold that string as DATA. In ``tests/`` it is
-# data 22 times out of 23 — expected-value constants, source fixtures fed to the scanners
-# above, prose in pin messages. Run production's literal-keyed scan over this tree
-# verbatim and it reports 23 sites, 22 of them correct code. That gate lasts one afternoon.
+# bootstrap: production has no reason to hold that string as DATA. In ``tests/`` the same
+# literal is OVERWHELMINGLY data — expected-value constants, source fixtures fed to the
+# scanners above, prose inside pin messages. Run production's literal-keyed scan over this
+# tree verbatim and nearly every hit is correct code. That gate lasts one afternoon.
+#
+# ⚠ NO NUMERALS IN THIS BLOCK, AND THAT IS THE POINT. It used to say "23 sites, 22 of
+# them correct code". That was MEASURED, HONEST, AND TRUE WHEN WRITTEN — and the very
+# commit that wrote it added new `DEFINE NAMESPACE` fixtures to this file and falsified it
+# in the same diff (a cold audit measured 31 at that commit, 23 at its parent). A
+# self-invalidating measurement, in served English, with nothing able to catch it: this
+# repo's single most-named defect class, shipped inside the wave that was fixing that
+# class. So the quantitative claim is not RESTATED here — it is DERIVED at assert time by
+# `test_the_literal_keyed_scan_would_be_MOSTLY_FALSE_POSITIVES_here`, which re-measures
+# both populations on every run and can never drift from the tree.
 #
 # The property that survives the move is EXECUTION: a bootstrap is not a string, it is
-# three operations RUN ON A LIVE CONNECTION. So the test-tree scan keys on the call —
-# ``<connection>.use(...)``, or a connection call carrying the engine's own DDL keywords
-# in its arguments. Measured over all 92 test modules, that yields exactly ONE site: the
-# harness's seam-wrapped teardown select. Twenty-two fixture strings, zero false
-# positives, and the #150 construct still caught (proved below, both directions).
+# three operations RUN ON A LIVE CONNECTION. So the test-tree scan keys on the CALL — a
+# `use()` on a connection-named receiver, or ANY call carrying the engine's own DDL
+# keywords in its arguments, on ANY receiver. The DDL leg is receiver-blind and
+# method-blind by ruling (#150 audit R1): keyed on the receiver NAME it was measured
+# missing most natural handle names, `db` among them — i.e. the literal #150 construct
+# ships green — which made this tree strictly WEAKER than the production gate on the one
+# population that has actually failed. The names are enumerated ONCE, in the parameter
+# list of `test_the_DDL_leg_is_RECEIVER_BLIND_whatever_the_handle_is_called`, where they
+# execute; and the cost of the blindness is DERIVED by
+# `test_the_receiver_blind_DDL_leg_costs_this_tree_NOTHING` rather than claimed here.
 #
 # This is a NARROWING OF THE SAME PREDICATE, not a second implementation: both legs read
-# ``_is_connection_receiver``, ``_SESSION_SELECT_METHOD`` and ``_BOOTSTRAP_DDL_KEYWORDS``
-# — the production gate's own constants. Mutate one and BOTH scans change, which is the
-# only proof of sharing that a private copy wearing a shared name cannot fake. That
-# mutation is not an argument here; it is executed, below.
+# `_SESSION_SELECT_METHOD` and `_BOOTSTRAP_DDL_KEYWORDS`, and both `use()` legs read
+# `_is_connection_receiver` — the production gate's own constants. Mutate any one of the
+# three and BOTH scans go blind together, which is the only proof of sharing that a
+# private copy wearing a shared name cannot fake. That mutation is not an argument here;
+# ALL THREE are executed, below — the claim used to name three constants and execute one.
 
 # THE SAFE SET, ENUMERATED — and it is one file.
 #
@@ -4882,14 +4909,43 @@ def _executed_bootstrap_sites_in(source: str) -> list[tuple[int, str]]:
     """Every session-bootstrap operation ``source`` RUNS ON A LIVE CONNECTION.
 
     Two legs, both keyed on the CALL rather than on a string, because in this tree the
-    string is usually data:
+    string is usually data — and they are keyed DIFFERENTLY on purpose:
 
-      * ``<connection>.use(...)`` — the session select, the leg that cannot be faked by a
-        literal and the one measured LOSING the race on virgin first-connects.
-      * ``<connection>.<anything>(... "DEFINE NAMESPACE" ...)`` — the engine's own DDL
-        keywords reaching a live connection as an argument. f-string parts are walked, so
-        the near-universal ``f"DEFINE NAMESPACE IF NOT EXISTS {ns}"`` is seen; a scan
-        reading only ``ast.Constant`` values would find none of them and go silently green.
+      * **The DDL leg — RECEIVER-BLIND.** ``<anything>.<anything>(... "DEFINE NAMESPACE"
+        ...)``: the engine's own session DDL reaching *any* method on *any* receiver as an
+        argument. It does NOT ask what the receiver is called. f-string parts are walked,
+        so the near-universal ``f"DEFINE NAMESPACE IF NOT EXISTS {ns}"`` is seen; a scan
+        reading only bare ``ast.Constant`` values would find none of them and go silently
+        green.
+      * **The ``use()`` leg — receiver-keyed**, via :func:`_is_connection_receiver`. Here
+        the method name carries no evidence at all (``use`` is a generic English verb, and
+        an unqualified deny on it would fire on any unrelated helper), so the receiver is
+        the only signal available. Its blindness is a KNOWN BOUND, disclosed in that
+        predicate's docstring — and it is now covered on the population that matters,
+        because a hand-rolled bootstrap that runs ``use()`` runs the DDL too, and the DDL
+        leg sees that with no opinion about naming.
+
+    **WHY THE DDL LEG IS BLIND, since it was not always** (#150 audit R1): keyed on the
+    receiver NAME, this scan MEASURED the majority of natural handle names walking
+    straight past it — the exact set is the parameter list of
+    :meth:`TestTheTestTreeRoutesThroughTheOneBootstrapToo
+    .test_the_DDL_leg_is_RECEIVER_BLIND_whatever_the_handle_is_called`, stated once, there,
+    where it executes. The literal #150 construct with the handle called ``db`` was green,
+    which is the one that settled it. That is the sixth time
+    an instrument in this repo keyed on a name as a proxy for a property and lost; the
+    settled reframe is *receiver-blind deny, and allowlist the safe* — which is exactly the
+    shape here, with :data:`_TEST_TREE_BOOTSTRAP_ALLOWANCES` as the one-row safe set.
+
+    **It is method-blind as well as receiver-blind, and that is deliberate.** Keying the
+    deny on ``{query, execute}`` would have re-opened the same hole one column over: the
+    installed SDK ships ``query_raw`` beside ``query``, so a method-name enumeration is
+    already defeated on the day it lands. The MEASURED cost of blindness on both axes is
+    zero — over every module in this tree, receiver-blind-and-method-blind finds exactly
+    the same single site the receiver-keyed version did, because this tree's bootstrap DDL
+    literals are bare strings and scanner fixtures, never call ARGUMENTS. That measurement
+    is not restated as a numeral anywhere; it is re-derived at assert time by
+    :meth:`TestTheTestTreeRoutesThroughTheOneBootstrapToo
+    .test_the_receiver_blind_DDL_leg_costs_this_tree_NOTHING`.
 
     A fake that DEFINES ``async def use`` is not a bootstrap and is not matched here — a
     ``FunctionDef`` is not a ``Call``. That distinction is the difference between this gate
@@ -4897,13 +4953,9 @@ def _executed_bootstrap_sites_in(source: str) -> list[tuple[int, str]]:
     """
     sites: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and _is_connection_receiver(node.func.value)
-        ):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             continue
-        if node.func.attr == _SESSION_SELECT_METHOD:
+        if node.func.attr == _SESSION_SELECT_METHOD and _is_connection_receiver(node.func.value):
             sites.append((node.lineno, f"connection.{_SESSION_SELECT_METHOD}()"))
             continue
         for argument in ast.walk(node):
@@ -4912,7 +4964,7 @@ def _executed_bootstrap_sites_in(source: str) -> list[tuple[int, str]]:
             upper = argument.value.upper()
             for keyword in _BOOTSTRAP_DDL_KEYWORDS:
                 if keyword in upper:
-                    sites.append((node.lineno, f"connection.{node.func.attr}({keyword} ...)"))
+                    sites.append((node.lineno, f".{node.func.attr}({keyword} ...)"))
     return sites
 
 
@@ -5039,13 +5091,171 @@ async def open_connection(env):
         found = _executed_bootstrap_sites_in(source)
 
         assert [what for _, what in found] == [
-            "connection.query(DEFINE NAMESPACE ...)",
-            "connection.query(DEFINE DATABASE ...)",
+            ".query(DEFINE NAMESPACE ...)",
+            ".query(DEFINE DATABASE ...)",
             "connection.use()",
         ], (
             f"the scan saw {found} in finding #150's verbatim construct. It must see all "
             f"three legs — both f-string DDL statements and the select — or the next helper "
             f"to hand-roll a bootstrap is as invisible as the last one was."
+        )
+
+    @pytest.mark.parametrize(
+        "receiver",
+        [
+            # the four the OLD receiver-keyed predicate already caught — the control leg,
+            # so a build that merely broke the scan cannot pass this by failing everything
+            "connection", "conn", "self._connection", "_connection",
+            # and the seven MEASURED sailing straight past it
+            "db", "client", "surreal", "sdb", "session", "handle", "store",
+        ],
+    )
+    def test_the_DDL_leg_is_RECEIVER_BLIND_whatever_the_handle_is_called(self, receiver: str) -> None:
+        """**THE R1 FIX, AND ITS DISCRIMINATION.** An engineer who calls a SurrealDB handle
+        ``db`` is not evading a gate — they are naming a variable. The previous predicate
+        keyed on the receiver's NAME, and every name in the second group below was MEASURED
+        walking past it — `db` among them, which is finding #150's own construct passing
+        green in the file class this gate was built for. **The list is the measurement**;
+        no ratio is restated in prose, because a ratio beside a list is one edit away from
+        contradicting it (#150 audit R2 is that exact defect).
+
+        Every name here must be CAUGHT, and the first four are the control: they were
+        caught before the fix too, so a build that simply broke the scan cannot pass this
+        by failing everything. (``_connection`` is R1b — an ``ast.Name`` that the old
+        asymmetric predicate missed while catching the identical ``self._connection``.)
+        """
+        source = f'''
+async def open_connection(env):
+    {receiver} = AsyncSurreal(env.url)
+    await {receiver}.signin({{"username": env.user}})
+    await {receiver}.query(f"DEFINE NAMESPACE IF NOT EXISTS {{env.namespace}}")
+    await {receiver}.query(f"DEFINE DATABASE IF NOT EXISTS {{env.database}}")
+    return {receiver}
+'''
+        found = _executed_bootstrap_sites_in(source)
+
+        assert [what for _, what in found] == [
+            ".query(DEFINE NAMESPACE ...)",
+            ".query(DEFINE DATABASE ...)",
+        ], (
+            f"a hand-rolled bootstrap whose connection is called `{receiver}` was seen as "
+            f"{found}. The DDL leg must not care what the handle is named: keying it on the "
+            f"receiver name is the sixth instrument in this repo defeated by enumerating a "
+            f"NAME as a proxy for a PROPERTY, and it left this tree strictly weaker than the "
+            f"production gate on the one population that has actually failed (#150 audit R1)."
+        )
+
+    def test_the_use_leg_still_reads_the_shared_receiver_predicate(self) -> None:
+        """The other half of R1b, and the reason :func:`_is_connection_receiver` still
+        exists: ``use`` is a generic English verb, so the ``use()`` leg cannot deny
+        receiver-blind without firing on unrelated helpers. It therefore keeps the
+        predicate — and the predicate must now treat ``_connection`` (an ``ast.Name``) and
+        ``self._connection`` (an ``ast.Attribute``) IDENTICALLY, which it did not before.
+        """
+        for receiver in ("connection", "conn", "_connection", "self._connection", "self._db_connection"):
+            assert _executed_bootstrap_sites_in(f"await {receiver}.use(ns, db)\n"), (
+                f"the use() leg missed `{receiver}.use(ns, db)`. `self._connection` was "
+                f"caught by a suffix test while a plain local `_connection` was tested "
+                f"against a two-item frozenset and missed — an idiomatic private-local name "
+                f"evading the scan its own attribute spelling could not (#150 audit R1b)."
+            )
+        assert not _executed_bootstrap_sites_in("await monkeypatch.use(thing)\n"), (
+            "the use() leg fired on an unrelated receiver. It is receiver-KEYED precisely "
+            "because `use` is too generic to deny on; if this ever goes blind the fix is "
+            "not to widen it but to lean on the receiver-blind DDL leg, which sees any "
+            "real bootstrap anyway."
+        )
+
+    def test_the_receiver_blind_DDL_leg_costs_this_tree_NOTHING(self) -> None:
+        """**THE FALLOUT MEASUREMENT, DERIVED — never a numeral in a comment.**
+
+        Receiver-blindness is only affordable if honest code does not pay for it. That was
+        MEASURED before the leg shipped and it is re-measured here on every run, because a
+        measurement written into English is a measurement that goes stale silently — which
+        is precisely what happened to this section's previous "23 sites, 22 correct code"
+        (true when written, falsified by its own commit, #150 audit R2).
+
+        The property, stated so it cannot drift: widening the DDL leg from
+        connection-named receivers to ALL receivers adds no site anywhere in this tree.
+        """
+        blind, _ = _test_tree_bootstrap_sites()
+
+        def _receiver_keyed(source: str) -> list[tuple[int, str]]:
+            """The predicate as it was BEFORE R1 — the narrow leg, for comparison only."""
+            sites: list[tuple[int, str]] = []
+            for node in ast.walk(ast.parse(source)):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and _is_connection_receiver(node.func.value)
+                ):
+                    continue
+                if node.func.attr == _SESSION_SELECT_METHOD:
+                    sites.append((node.lineno, "use"))
+                    continue
+                for argument in ast.walk(node):
+                    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                        upper = argument.value.upper()
+                        sites.extend(
+                            (node.lineno, keyword) for keyword in _BOOTSTRAP_DDL_KEYWORDS if keyword in upper
+                        )
+            return sites
+
+        narrow = {
+            path.relative_to(_TESTS_ROOT).as_posix(): found
+            for path in sorted(_TESTS_ROOT.rglob("*.py"))
+            if "__pycache__" not in path.parts
+            and (found := _receiver_keyed(path.read_text(encoding="utf-8")))
+        }
+
+        widened = {
+            key: sites for key, sites in blind.items() if len(sites) != len(narrow.get(key, []))
+        }
+        assert not widened, (
+            "going receiver-blind added bootstrap sites to this tree:\n  "
+            + "\n  ".join(
+                f"{key}:{lineno}  {what}" for key, sites in widened.items() for lineno, what in sites
+            )
+            + "\n\nThat is the STOP condition the widening shipped under: a gate that "
+            "refuses honest code is a gate that gets switched off, and then the next #150 "
+            "ships with nothing watching at all. Classify every site above individually "
+            "(`all remaining hits are fixtures` is banned output here). If they are "
+            "legitimate, they belong in `_TEST_TREE_BOOTSTRAP_ALLOWANCES` with reasons — "
+            "if they are not, the widening just caught what it was built to catch."
+        )
+
+    def test_the_literal_keyed_scan_would_be_MOSTLY_FALSE_POSITIVES_here(self) -> None:
+        """**THE POPULATION CLAIM, DERIVED.** The block above this class asserts that
+        production's literal-keyed scan is right for production and wrong here, because in
+        ``tests/`` that literal is overwhelmingly DATA. That claim used to be carried by a
+        hardcoded pair of numerals which the commit that wrote them falsified in the same
+        diff (#150 audit R2). Numerals in prose cannot be checked; this can.
+
+        Both populations are re-derived from the tree on every run, and the pin asserts the
+        RELATIONSHIP the design rests on rather than either count.
+        """
+        executed, scanned = _test_tree_bootstrap_sites()
+        executed_total = sum(len(sites) for sites in executed.values())
+        literal_total = sum(
+            len(_bootstrap_sites_in((_TESTS_ROOT / key).read_text(encoding="utf-8"))) for key in scanned
+        )
+
+        assert literal_total > 4 * executed_total, (
+            f"the literal-keyed scan found {literal_total} sites in this tree and the "
+            f"execution-keyed scan found {executed_total}. The whole justification for the "
+            f"test-tree gate being keyed on EXECUTION rather than on the string is that the "
+            f"string is overwhelmingly data here. If those two numbers have converged, that "
+            f"justification no longer holds and this section's reasoning needs rewriting — "
+            f"not this threshold nudging."
+        )
+        assert executed_total == sum(
+            expected for expected, _ in _TEST_TREE_BOOTSTRAP_ALLOWANCES.values()
+        ), (
+            f"the execution-keyed scan found {executed_total} sites tree-wide but the "
+            f"allowlist grants "
+            f"{sum(expected for expected, _ in _TEST_TREE_BOOTSTRAP_ALLOWANCES.values())}. "
+            f"Those must agree exactly, or some site is being tolerated by neither the "
+            f"gate nor a reasoned allowance."
         )
 
     def test_the_scan_SPARES_a_fake_that_merely_DEFINES_the_bootstrap_methods(self) -> None:
@@ -5075,7 +5285,7 @@ class _FakeConnection:
 
     def test_the_scan_SPARES_bootstrap_DDL_held_as_fixture_DATA(self) -> None:
         """**NEGATIVE CONTROL 2 — the discrimination that makes a test-tree scan possible.**
-        22 of the 23 literal-keyed hits in this tree are DATA: expected values, source
+        nearly every literal-keyed hit in this tree is DATA: expected values, source
         fixtures fed to the scanners above, prose inside assertion messages. Production's
         literal-keyed pin is right for production and would be wrong here, and the reason
         is population, not rigour.
@@ -5108,24 +5318,82 @@ def test_the_seam_emits_the_bootstrap_ddl(recorded):
         notion of "the select method" would pass every pin above while drifting silently
         from the production gate it claims to extend.
 
-        So: move the shared constant, and BOTH scans must go blind together.
+        So: move each shared name, and BOTH scans must go blind together.
+
+        **ALL THREE SHARED NAMES ARE MUTATED HERE, and that is the repair.** This
+        docstring's predecessor named three — ``_is_connection_receiver``,
+        ``_SESSION_SELECT_METHOD``, ``_BOOTSTRAP_DDL_KEYWORDS`` — and then promised
+        *"that mutation is not an argument here; it is executed, below"*. Only
+        ``_SESSION_SELECT_METHOD`` was ever mutated. A comment that tells a reviewer a
+        case is covered when it is not is a FALSE GATE of exactly the class this file
+        hunts (#150 audit R4), and the cure for a claim is to EXECUTE it, not to soften
+        the prose.
         """
-        bootstrap = "await connection.use(namespace, database)\n"
-        assert _bootstrap_sites_in(bootstrap), "control: the production scan sees the select"
-        assert _executed_bootstrap_sites_in(bootstrap), "control: the test-tree scan sees it"
+        module = sys.modules[__name__]
 
-        monkeypatch.setattr(sys.modules[__name__], "_SESSION_SELECT_METHOD", "not_the_select")
+        # --- shared name 1: the select method, on both use() legs -------------------
+        select = "await connection.use(namespace, database)\n"
+        assert _bootstrap_sites_in(select), "control: the production scan sees the select"
+        assert _executed_bootstrap_sites_in(select), "control: the test-tree scan sees it"
 
-        assert not _bootstrap_sites_in(bootstrap), (
+        monkeypatch.setattr(module, "_SESSION_SELECT_METHOD", "not_the_select")
+
+        assert not _bootstrap_sites_in(select), (
             "the PRODUCTION scan kept finding `use()` after `_SESSION_SELECT_METHOD` moved "
             "— it is not reading the shared constant, so this mutation proves nothing about "
             "either scan."
         )
-        assert not _executed_bootstrap_sites_in(bootstrap), (
+        assert not _executed_bootstrap_sites_in(select), (
             "the TEST-TREE scan kept finding `use()` after `_SESSION_SELECT_METHOD` moved: "
             "it is a private copy wearing the shared name. Fold it back onto the production "
             "gate's constants — one implementation, or the two drift and only one gets the "
             "next fix."
+        )
+        monkeypatch.undo()
+
+        # --- shared name 2: the DDL keywords, on both DDL legs ----------------------
+        ddl = 'await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {ns}")\n'
+        assert _bootstrap_sites_in(ddl), "control: the production scan sees the DDL literal"
+        assert _executed_bootstrap_sites_in(ddl), "control: the test-tree scan sees the DDL call"
+
+        monkeypatch.setattr(module, "_BOOTSTRAP_DDL_KEYWORDS", ("DEFINE GALAXY",))
+
+        assert not _bootstrap_sites_in(ddl), (
+            "the PRODUCTION scan kept finding `DEFINE NAMESPACE` after "
+            "`_BOOTSTRAP_DDL_KEYWORDS` moved — it holds its own private copy of the "
+            "engine's vocabulary."
+        )
+        assert not _executed_bootstrap_sites_in(ddl), (
+            "the TEST-TREE scan kept finding `DEFINE NAMESPACE` after "
+            "`_BOOTSTRAP_DDL_KEYWORDS` moved: it hand-rolled its own keyword tuple. Teach "
+            "the engine a new bootstrap statement and only one of these two scans would "
+            "learn it — which is the drift this pin exists to make impossible."
+        )
+        monkeypatch.undo()
+
+        # --- shared name 3: the receiver predicate, on both use() legs --------------
+        # NOTE the asymmetry, and it is by design rather than an oversight: only the
+        # use() legs consult this predicate now. The DDL legs are receiver-blind (test
+        # tree) and literal-keyed (production), so neither can be blinded by moving it —
+        # asserting that they COULD would be a second false gate, in the fix for the first.
+        assert _bootstrap_sites_in(select), "control: the production scan sees the select again"
+        assert _executed_bootstrap_sites_in(select), "control: the test-tree scan does too"
+
+        monkeypatch.setattr(module, "_is_connection_receiver", lambda node: False)
+
+        assert not _bootstrap_sites_in(select), (
+            "the PRODUCTION scan still matched a receiver after `_is_connection_receiver` "
+            "was blinded — it is not the predicate this section claims both scans read."
+        )
+        assert not _executed_bootstrap_sites_in(select), (
+            "the TEST-TREE scan still matched a receiver after `_is_connection_receiver` "
+            "was blinded: its use() leg hand-rolls its own notion of what a connection is, "
+            "so widening the shared predicate would reach only one of the two scans."
+        )
+        assert _executed_bootstrap_sites_in(ddl), (
+            "the test-tree DDL leg went blind when `_is_connection_receiver` did — it is "
+            "supposed to be RECEIVER-BLIND (#150 audit R1). If it consults the predicate "
+            "again, `db = AsyncSurreal(url)` is invisible to this gate once more."
         )
 
 
@@ -5379,7 +5647,7 @@ class TestTheBootstrapClassifiesThroughTheONEAuthority:
 # copy of the engine's conflict marker, and the lead ruled the copy KEEPS — on ONE stated
 # ground, that the harness must never import a store module (35 test files import it — the
 # ruling was argued from a FALSE count of 21, which is the number that CALL ``connect_admin``,
-# a smaller and different population; corrected per audit-150 R2 — so a
+# a smaller and different population; corrected in finding #150's wave at fff1382 — so a
 # mid-TDD store breakage would become a collection error across all of them). A duplicate
 # that could not be deleted at least got a drift pin.
 #
