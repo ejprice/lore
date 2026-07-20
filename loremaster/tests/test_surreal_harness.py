@@ -46,6 +46,25 @@ attribution (the seam's exhaustion record must carry the label, the url and WHAT
 ENGINE SAID — blindreader-150 F1), budget COMPOSITION (several operations driven by one
 caller share ONE wall-clock budget rather than each resolving a fresh copy — F2 / audit
 R1+R4), and socket hygiene on the FAILURE paths (F10 / audit R5).
+
+------------------------------------------------------------------------------
+HOW TO RESOLVE THE ``blindreader-150 F*`` / ``audit-150 R*`` CITATIONS IN THIS FILE.
+
+They are review-pass identifiers from finding **#150**'s review wave, and the reports
+they name (``REPORT-blindreader-150.md``, ``REPORT-audit-150*.md``) are UNTRACKED
+scratch files at the repo root that repo law requires be deleted before any image
+build — so the citations are not followable and were never meant to be. Their durable
+addresses are the ledger row **#150** (this wave's subject; **#151** for the one defect
+deliberately left open) and the wave's commits, in order:
+
+    6be78d6 RED  ·  0734d78 route  ·  20e7635 attribute/compose/release
+    4659056 repair the instruments  ·  fff1382 + 9d4b48d the counts and the reach
+
+Every citation below states its own substance inline; none of them is a pointer a
+reader must follow to act. Where a citation IS load-bearing — a known bound's re-open
+trigger — it names a finding number instead, and
+:meth:`TestTheHarnessRetryPolicyIsTheSeamsPolicy.test_the_bootstrap_paths_exhaustion_is_UNATTRIBUTED_a_known_bound`
+is the one such site (#151).
 """
 
 from __future__ import annotations
@@ -586,10 +605,18 @@ class TestTheSeamsExhaustionRecordIsAttributable:
         omission by saying ``bootstrap_session`` "ha[s] its own attribution", which is
         FALSE: it logs nothing at all. Both are PRODUCTION defects in
         ``loremaster/store/_txn.py``, deliberately OUT of this fix wave's writable set
-        and with the operator (blindreader-150 F1, "adjacent, outside the diff").
+        and with the operator.
+
+        **THE DURABLE ADDRESS IS FINDING #151**, which is open and carries the full
+        analysis. Cite it, not this docstring — and not the review reports this pin used
+        to name ("blindreader-150 F1"), which are untracked scratch files at the repo root
+        that repo law requires be DELETED before any image build. A bound whose stated
+        re-open trigger points at a file that no longer exists is a bound nobody can act
+        on; #151 is a ledger row that outlives every report in this wave.
 
         This asserts the bound so it is inherited DELIBERATELY rather than rediscovered
-        from an outage. **RE-OPEN TRIGGER: the day ``bootstrap_session`` passes a label.**
+        from an outage. **RE-OPEN TRIGGER: the day ``bootstrap_session`` passes a label**
+        — i.e. the day #151 is fixed.
         If you closed this in ``_txn`` on purpose, delete this pin in the same diff and
         say so — that is the conversation it exists to force.
         """
@@ -604,9 +631,10 @@ class TestTheSeamsExhaustionRecordIsAttributable:
         record = self._exhaustion_record(caplog)
         assert not hasattr(record, "label"), (
             "the bootstrap path's exhaustion record is now ATTRIBUTED — "
-            "`_txn.bootstrap_session` has grown a label. That is the fix this pin's "
-            "docstring names as its re-open trigger: delete this pin, and extend the "
-            "attribution assertions above to cover the bootstrap path."
+            "`_txn.bootstrap_session` has grown a label. THAT IS FINDING #151 BEING FIXED, "
+            "and it is this pin's stated re-open trigger, not a regression: delete this "
+            "pin, resolve #151, and extend the attribution assertions above to cover the "
+            "bootstrap path."
         )
         # …and this is the cost of that bound, stated rather than implied: the attempt
         # count survives, the engine's own words do not.
