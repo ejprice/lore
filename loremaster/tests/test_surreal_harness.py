@@ -50,12 +50,13 @@ R1+R4), and socket hygiene on the FAILURE paths (F10 / audit R5).
 ------------------------------------------------------------------------------
 HOW TO RESOLVE THE ``blindreader-150 F*`` / ``audit-150 R*`` CITATIONS IN THIS FILE.
 
-They are review-pass identifiers from finding **#150**'s review wave, and the reports
-they name (``REPORT-blindreader-150.md``, ``REPORT-audit-150*.md``) are UNTRACKED
-scratch files at the repo root that repo law requires be deleted before any image
-build — so the citations are not followable and were never meant to be. Their durable
-addresses are the ledger row **#150** (this wave's subject; **#151** for the one defect
-deliberately left open) and the wave's commits, in order:
+They are review-pass identifiers from finding **#150**'s review wave. The reports they
+name (``REPORT-blindreader-150.md``, ``REPORT-audit-150*.md``) were untracked scratch
+files at the repo root — the class repo law requires be deleted before any image build —
+but were ARCHIVED at ``7d2ff44`` and now resolve, section-exactly, under
+``docs/plans/v2/receipts/2026-07-20-150/`` (#152). Their durable addresses remain the
+ledger row **#150** (this wave's subject; **#151** for the one defect deliberately left
+open) and the wave's commits, in order:
 
     6be78d6 RED  ·  0734d78 route  ·  20e7635 attribute/compose/release
     4659056 repair the instruments  ·  fff1382 + 9d4b48d the counts and the reach
