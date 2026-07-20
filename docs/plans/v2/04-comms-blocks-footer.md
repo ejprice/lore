@@ -14,8 +14,26 @@ pending-traffic nudge footer, and the dangling-edge hardening.
   over the WHOLE set their label claims, per the spec's counting law).
 - `_comms_footer`: lore_tasks/lore_claim_task/lore_findings mutations append one line
   when traffic pends.
-- **#105** — RELATE does not validate `in` exists: guard every edge-writing verb so a
+- **#105** — RELATE does not validate its endpoints: guard every edge-writing verb so a
   bogus agent_id is a teaching error, never a dangling read-receipt.
+  ⚠ **THE EXPOSURE WENT LIVE IN PACKET 03 — THIS IS NO LONGER LATENT WORK** (operator-ruled
+  2026-07-19: *"we're the only consumer, and we're local"* — deferred DELIBERATELY, with the
+  risk accepted, NOT because it is still theoretical).
+  **What packet 03's kickoff probe measured** (`REPORT-probe-pkt03-store.md` PROBE 1, and now
+  reference §4): the engine validates **NEITHER `in` NOR `out`** — the recorded `in`-only half
+  was the *safe* half. Packet 03's `send` takes recipient NAMES from a caller, so the
+  caller-supplied side is `out`. A bogus recipient writes a permanent edge, and
+  `SELECT ->to->agent` lists the ghost as a **first-class recipient** while the agent table
+  shows it never existed. A reader can only tell by projecting a field / `FETCH`ing and
+  checking for `None`.
+  **What packet 03 shipped as mitigation**: its own scoped "unregistered recipient = teaching
+  error" app-level check on `send`, plus a typed `TYPE RELATION IN message OUT agent` (which
+  catches only wrong-**table** endpoints, never a non-existent record of the right table).
+  **What is therefore STILL OWED HERE**: the structural half — the guard must cover EVERY
+  edge-writing verb, not just `send`; `BriefLedger.publish(agent_id=...)` still takes a BARE
+  STRING; and the covering pins must use a **negative fixture** (an identity that does not
+  exist must be REJECTED), since a fixture where every endpoint is registered cannot
+  discriminate. Widen #105's own text from "latent — we never hard-delete" when resolving it.
 
 ## Scope OUT
 - await/story/rollup/hooks (packet 05); protocol + drill (06).
