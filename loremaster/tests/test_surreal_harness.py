@@ -61,10 +61,18 @@ deliberately left open) and the wave's commits, in order:
     4659056 repair the instruments  ·  fff1382 + 9d4b48d the counts and the reach
 
 Every citation below states its own substance inline; none of them is a pointer a
-reader must follow to act. Where a citation IS load-bearing — a known bound's re-open
-trigger — it names a finding number instead, and
-:meth:`TestTheHarnessRetryPolicyIsTheSeamsPolicy.test_the_bootstrap_paths_exhaustion_is_UNATTRIBUTED_a_known_bound`
-is the one such site (#151).
+reader must follow to act.
+
+**#151 IS CLOSED, AND THIS FILE NO LONGER PINS IT AS A BOUND.** This file used to carry
+``test_the_bootstrap_paths_exhaustion_is_UNATTRIBUTED_a_known_bound``, which ASSERTED that
+the ``connect_admin`` path's exhaustion record had NO ``label`` — a hole pinned rather than
+closed, whose stated re-open trigger was "the day ``bootstrap_session`` passes a label".
+That day is this diff: ``_txn.bootstrap_session`` now takes a required keyword-only ``url``
+and labels each of its three statements, so the bound is GONE and the pin that asserted it
+is DELETED rather than weakened — weakening it to keep it green would re-hide the defect it
+was built to force a conversation about. What replaces it is
+:class:`TestTheBootstrapPathsExhaustionIsAttributable`, which asserts the attribution that
+is now present, on all three statements.
 """
 
 from __future__ import annotations
@@ -117,6 +125,40 @@ _DEFINE_NAMESPACE = "DEFINE NAMESPACE"
 _DEFINE_DATABASE = "DEFINE DATABASE"
 _REMOVE_DATABASE = "REMOVE DATABASE"
 
+# --- #151: the bootstrap-attribution fixture values ---------------------------------
+# A url used by the BOOTSTRAP attribution pins and by NOTHING else in this tree.
+#
+# WHY IT IS NOT `_FAKE_ENV.url`: the defect being closed is that `bootstrap_session`
+# carried no url at all, and the fix threads the CALLER's url through a new required
+# parameter. A pin that asserted `_FAKE_ENV.url` would be satisfied by a build that
+# hardcoded a url, defaulted one, or read some module global that happened to hold the
+# same value — parameter-value MONOCULTURE, which this repo's own law names as a defect
+# class that has produced a blocker four times. This value is an RFC-5737 TEST-NET-2
+# address with a path that appears nowhere else in the repo, so the ONLY way for it to
+# reach a log record is for the record to have been given THIS CALL's url.
+#
+# It is never dialed: `AsyncSurreal` is monkeypatched out in every pin that uses it.
+_DISTINCT_BOOTSTRAP_URL = "ws://198.51.100.77:19998/rpc-151-bootstrap-attribution"
+
+_DISTINCT_URL_ENV = SurrealEnv(
+    url=_DISTINCT_BOOTSTRAP_URL,
+    user="root",
+    password="fake",
+    namespace="lore_test",
+    database="test_fake_db",
+    dim=8,
+)
+
+# The three labels `_txn.bootstrap_session` must attribute its three statements to, in
+# BOOTSTRAP ORDER. Read as module constants off `_txn` (never re-declared here) for the
+# same reason the harness reads `_TEARDOWN_*_LABEL` off `_surreal_harness`: the seam owns
+# its own canonical event names, and a copy in a test is a copy that goes stale.
+_BOOTSTRAP_LABEL_CONSTANTS = (
+    "_BOOTSTRAP_DEFINE_NAMESPACE_LABEL",
+    "_BOOTSTRAP_SELECT_DATABASE_LABEL",
+    "_BOOTSTRAP_DEFINE_DATABASE_LABEL",
+)
+
 # --- budget-COMPOSITION fixture values --------------------------------------------
 # A short seam deadline the composition pins mutate to, and a per-attempt delay that
 # deliberately OVERSPENDS it on the caller's FIRST operation. The arithmetic is the
@@ -148,6 +190,19 @@ def _non_retryable_error() -> QueryError:
 def _sustained_conflicts() -> list[BaseException | None]:
     """A script of DISTINCT conflict instances long enough to outlast any bound."""
     return [_conflict_error() for _ in range(_SUSTAINED_CONFLICTS)]
+
+
+def _the_one_exhaustion_record(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+    """The single ``store.retry.exhausted`` record, or a loud failure.
+
+    Exactly-once is itself a pinned property of the driver (``test_retry_seam.py``), so
+    reading "the" record must never silently take the first of several.
+    """
+    records = [r for r in caplog.records if r.getMessage() == "store.retry.exhausted"]
+    assert len(records) == 1, (
+        f"expected exactly one `store.retry.exhausted` record, got {len(records)}"
+    )
+    return records[0]
 
 
 @dataclass
@@ -542,11 +597,7 @@ class TestTheSeamsExhaustionRecordIsAttributable:
     """
 
     def _exhaustion_record(self, caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
-        records = [r for r in caplog.records if r.getMessage() == "store.retry.exhausted"]
-        assert len(records) == 1, (
-            f"expected exactly one `store.retry.exhausted` record, got {len(records)}"
-        )
-        return records[0]
+        return _the_one_exhaustion_record(caplog)
 
     @pytest.mark.parametrize(
         ("script", "expected_label"),
@@ -594,52 +645,271 @@ class TestTheSeamsExhaustionRecordIsAttributable:
             f"its conflict message, that wording now exists nowhere."
         )
 
-    async def test_the_bootstrap_paths_exhaustion_is_UNATTRIBUTED_a_known_bound(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+
+def _bootstrap_conflicting_on_define_namespace() -> _FakeConnection:
+    return _FakeConnection(statement_outcomes={_DEFINE_NAMESPACE: _sustained_conflicts()})
+
+
+def _bootstrap_conflicting_on_use() -> _FakeConnection:
+    return _FakeConnection(
+        statement_outcomes={_DEFINE_NAMESPACE: [None], _DEFINE_DATABASE: [None]},
+        use_outcomes=_sustained_conflicts(),
+    )
+
+
+def _bootstrap_conflicting_on_define_database() -> _FakeConnection:
+    return _FakeConnection(
+        statement_outcomes={_DEFINE_NAMESPACE: [None], _DEFINE_DATABASE: _sustained_conflicts()}
+    )
+
+
+# EACH of the bootstrap's three statements, driven to exhaustion ON ITS OWN. Three
+# separate fixtures, not one: the wrong build this discriminates against is a bootstrap
+# that labels only its FIRST statement (or labels all three the same), which a fixture
+# that only ever conflicts DEFINE NAMESPACE cannot tell from a correct one. The
+# QUANTIFIER LAW — force every fate, do not infer the others from the one you tested.
+_BOOTSTRAP_STATEMENT_BUILDERS: list[tuple[str, Callable[[], _FakeConnection], str]] = [
+    ("DEFINE-NAMESPACE", _bootstrap_conflicting_on_define_namespace, _BOOTSTRAP_LABEL_CONSTANTS[0]),
+    ("use", _bootstrap_conflicting_on_use, _BOOTSTRAP_LABEL_CONSTANTS[1]),
+    ("DEFINE-DATABASE", _bootstrap_conflicting_on_define_database, _BOOTSTRAP_LABEL_CONSTANTS[2]),
+]
+
+_BOOTSTRAP_STATEMENT_FATES = [
+    pytest.param(build_connection, label_constant, id=statement_id)
+    for statement_id, build_connection, label_constant in _BOOTSTRAP_STATEMENT_BUILDERS
+]
+
+
+class TestTheBootstrapPathsExhaustionIsAttributable:
+    """**FINDING #151, CLOSED.** The bootstrap's exhaustion record says WHICH statement,
+    WHICH server, and WHAT THE ENGINE SAID.
+
+    This class REPLACES ``test_the_bootstrap_paths_exhaustion_is_UNATTRIBUTED_a_known_bound``,
+    which asserted the opposite and named its own re-open trigger as "the day
+    ``bootstrap_session`` passes a label". That day is this diff. The old pin is DELETED,
+    not weakened: a bound that gets quietly relaxed to stay green re-hides the defect it
+    existed to force a conversation about.
+
+    THE DEFECT IT CLOSES (#151, measured): ``bootstrap_session`` called
+    ``retry_on_conflict`` three times passing NO ``label`` and NO ``url``. The driver gates
+    the record's ``label``/``url``/``engine_error`` extras on ``label is not None``, and its
+    ``raise`` sits OUTSIDE the ``except RetryableConflictSignal`` block so implicit chaining
+    never fires either. A bootstrap that exhausted therefore raised a message saying "see
+    the server log for the full engine detail" over a record holding
+    ``{attempts, elapsed_seconds}`` and nothing else, with ``__cause__`` and ``__context__``
+    both ``None``. **The message promised a receipt that did not exist.**
+
+    WHY THE ENGINE TEXT IS THE LOAD-BEARING HALF: if the engine ever REWORDS its conflict
+    message — the exact drift the marker pins exist to catch — the operator cannot see the
+    new wording anywhere, because the one artifact that would diagnose it was discarded.
+    """
+
+    @pytest.mark.parametrize(("build_connection", "label_constant"), _BOOTSTRAP_STATEMENT_FATES)
+    async def test_each_bootstrap_statement_logs_its_own_label_url_and_engine_text(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        build_connection: Callable[[], _FakeConnection],
+        label_constant: str,
     ) -> None:
-        """PINNING A HOLE WE DID NOT CLOSE (CLAUDE.md: "when you cannot close a hole, PIN IT").
+        """RED today x3: the record carries ``attempts`` and ``elapsed_seconds`` and nothing else.
 
-        ``connect_admin`` reaches the seam through ``_txn.bootstrap_session``, which
-        passes NO ``label`` of its own — so its exhaustion record carries an attempt
-        count and nothing else, and ``retry_on_conflict``'s own docstring justifies that
-        omission by saying ``bootstrap_session`` "ha[s] its own attribution", which is
-        FALSE: it logs nothing at all. Both are PRODUCTION defects in
-        ``loremaster/store/_txn.py``, deliberately OUT of this fix wave's writable set
-        and with the operator.
-
-        **THE DURABLE ADDRESS IS FINDING #151**, which is open and carries the full
-        analysis. Cite it, not this docstring — and not the review reports this pin used
-        to name ("blindreader-150 F1"), which are untracked scratch files at the repo root
-        that repo law requires be DELETED before any image build. A bound whose stated
-        re-open trigger points at a file that no longer exists is a bound nobody can act
-        on; #151 is a ledger row that outlives every report in this wave.
-
-        This asserts the bound so it is inherited DELIBERATELY rather than rediscovered
-        from an outage. **RE-OPEN TRIGGER: the day ``bootstrap_session`` passes a label**
-        — i.e. the day #151 is fixed.
-        If you closed this in ``_txn`` on purpose, delete this pin in the same diff and
-        say so — that is the conversation it exists to force.
+        Driven through ``connect_admin``, which reaches the seam via
+        ``_txn.bootstrap_session`` — the same function every production
+        ``_ensure_connection`` calls.
         """
         _silence_backoff(monkeypatch)
-        fake = _FakeConnection(statement_outcomes={_DEFINE_NAMESPACE: _sustained_conflicts()})
+        fake = build_connection()
         _patch_connection(monkeypatch, fake)
 
         with caplog.at_level(logging.WARNING, logger=txn_module.logger.name):
             with pytest.raises(txn_module.TxnContentionExhaustedError):
-                await _surreal_harness.connect_admin(_FAKE_ENV)
+                await _surreal_harness.connect_admin(_DISTINCT_URL_ENV)
 
-        record = self._exhaustion_record(caplog)
-        assert not hasattr(record, "label"), (
-            "the bootstrap path's exhaustion record is now ATTRIBUTED — "
-            "`_txn.bootstrap_session` has grown a label. THAT IS FINDING #151 BEING FIXED, "
-            "and it is this pin's stated re-open trigger, not a regression: delete this "
-            "pin, resolve #151, and extend the attribution assertions above to cover the "
-            "bootstrap path."
+        record = self._record_for(caplog, label_constant)
+
+        expected_label = getattr(txn_module, label_constant, None)
+        assert isinstance(expected_label, str) and expected_label, (
+            f"`_txn.{label_constant}` is {expected_label!r}. Each of the bootstrap's three "
+            f"statements needs its OWN canonical event name, declared on the seam that owns "
+            f"it — the same way each `_query` seam declares its rejection event and the "
+            f"harness declares `_TEARDOWN_*_LABEL`. An operator who greps the exhaustion "
+            f"record must land on WHICH of the three statements died."
         )
-        # …and this is the cost of that bound, stated rather than implied: the attempt
-        # count survives, the engine's own words do not.
-        assert getattr(record, "attempts", None) == _seam_attempt_ceiling()
-        assert not hasattr(record, "engine_error")
+        assert getattr(record, "label", None) == expected_label, (
+            f"the bootstrap's exhaustion record is labelled "
+            f"{getattr(record, 'label', None)!r}, expected `_txn.{label_constant}` "
+            f"({expected_label!r}). This assertion checks the label ALONE — but an "
+            f"unlabelled call also suppresses `url` and `engine_error` in the driver "
+            f"(they are gated on `label is not None`), so a missing label is three "
+            f"missing facts, and the raised message then points an operator at a log "
+            f"record that holds none of them. That is finding #151 verbatim."
+        )
+
+    @pytest.mark.parametrize(("build_connection", "label_constant"), _BOOTSTRAP_STATEMENT_FATES)
+    async def test_each_bootstrap_statement_carries_the_CALLERS_url(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        build_connection: Callable[[], _FakeConnection],
+        label_constant: str,
+    ) -> None:
+        """The url on the record must be the one THIS CALL was given — not a default.
+
+        The distinguishing wrong build hardcodes a url, or defaults the new parameter to
+        something, or reads a module global. :data:`_DISTINCT_BOOTSTRAP_URL` appears
+        nowhere else in the repo, so the only way it reaches the record is by being
+        threaded from this call site.
+        """
+        _silence_backoff(monkeypatch)
+        _patch_connection(monkeypatch, build_connection())
+
+        with caplog.at_level(logging.WARNING, logger=txn_module.logger.name):
+            with pytest.raises(txn_module.TxnContentionExhaustedError):
+                await _surreal_harness.connect_admin(_DISTINCT_URL_ENV)
+
+        record = self._record_for(caplog, label_constant)
+        assert getattr(record, "url", None) == _DISTINCT_BOOTSTRAP_URL, (
+            f"the bootstrap's exhaustion record names the server "
+            f"{getattr(record, 'url', None)!r}; this connect was made against "
+            f"{_DISTINCT_BOOTSTRAP_URL!r}. This assertion checks EXACT equality with the "
+            f"url the caller passed — a build that hardcodes, defaults, or globals its way "
+            f"to a url fails here even when it logs a url that looks plausible."
+        )
+
+    @pytest.mark.parametrize(("build_connection", "label_constant"), _BOOTSTRAP_STATEMENT_FATES)
+    async def test_each_bootstrap_statement_carries_the_ENGINES_OWN_text(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        build_connection: Callable[[], _FakeConnection],
+        label_constant: str,
+    ) -> None:
+        """**THE LOAD-BEARING PIN OF THE WHOLE FINDING.**
+
+        The raised ``TxnContentionExhaustedError`` deliberately carries only an attempt
+        count and the hint "see the server log for the full engine detail" (ledger #31:
+        generic message, FULL detail server-side). That contract is satisfiable ONLY if the
+        record actually holds the engine's words. A build that threads a label and a url but
+        loses the engine text — one that raises the signal without ``from error``, or drops
+        ``last_conflict_cause`` — satisfies the two pins above and still leaves the hint
+        pointing at nothing.
+
+        An EMPTY ``engine_error`` fails here, and is called out separately from a WRONG one,
+        because the driver's own fallback for "no cause" is exactly ``""`` — the failure
+        mode this pin most needs to name.
+        """
+        _silence_backoff(monkeypatch)
+        _patch_connection(monkeypatch, build_connection())
+
+        with caplog.at_level(logging.WARNING, logger=txn_module.logger.name):
+            with pytest.raises(txn_module.TxnContentionExhaustedError):
+                await _surreal_harness.connect_admin(_DISTINCT_URL_ENV)
+
+        record = self._record_for(caplog, label_constant)
+        engine_error = str(getattr(record, "engine_error", ""))
+        assert engine_error, (
+            "the bootstrap's exhaustion record carries an EMPTY `engine_error`. That is the "
+            "driver's own `last_conflict_cause is None` fallback: the signal reached it "
+            "without a `__cause__`, so the engine's words were never captured. The raised "
+            "message still says 'see the server log for the full engine detail'."
+        )
+        assert _CONFLICT_MESSAGE in engine_error, (
+            f"the bootstrap's exhaustion record carries `engine_error`={engine_error!r}, "
+            f"which does not contain the engine's own conflict text "
+            f"({_CONFLICT_MESSAGE!r}). This assertion is a SUBSTRING check against the text "
+            f"the fake engine actually raised — a placeholder, a repr of the signal, or our "
+            f"own prose about the conflict all fail it, and are worse than nothing because "
+            f"they make the log look complete. If the engine reworded its conflict message, "
+            f"this record is the only place that wording would survive."
+        )
+
+    async def test_the_three_statements_carry_THREE_DISTINCT_labels(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """One shared label ("store.bootstrap") would satisfy every per-statement pin above
+        if the constants all held the same string. This reads the three labels the three
+        runs ACTUALLY logged and requires them to be pairwise distinct.
+
+        DERIVED, not declared: it compares the observed records to each other, so it cannot
+        be satisfied by three constant NAMES pointing at one value. Without it, an operator
+        looking at a bootstrap exhaustion still could not tell WHICH statement died — which
+        is half of what #151 asked for.
+        """
+        _silence_backoff(monkeypatch)
+        observed: list[Any] = []
+
+        for _, build_connection, _label_constant in _BOOTSTRAP_STATEMENT_BUILDERS:
+            caplog.clear()
+            _patch_connection(monkeypatch, build_connection())
+            with caplog.at_level(logging.WARNING, logger=txn_module.logger.name):
+                with pytest.raises(txn_module.TxnContentionExhaustedError):
+                    await _surreal_harness.connect_admin(_DISTINCT_URL_ENV)
+            observed.append(getattr(_the_one_exhaustion_record(caplog), "label", None))
+
+        assert len(observed) == 3, "the fixture did not drive all three statements"
+        assert len(set(observed)) == 3, (
+            f"the bootstrap's three statements logged labels {observed} — they must be "
+            f"PAIRWISE DISTINCT. This assertion compares the three OBSERVED labels to each "
+            f"other, so three constants holding one shared string (e.g. 'store.bootstrap') "
+            f"fails here even though every per-statement pin passes. A single label tells an "
+            f"operator that A bootstrap statement exhausted; #151 asks WHICH one."
+        )
+
+    def _record_for(
+        self, caplog: pytest.LogCaptureFixture, label_constant: str
+    ) -> logging.LogRecord:
+        del label_constant  # the fixture drives ONE statement; the record is unambiguous
+        return _the_one_exhaustion_record(caplog)
+
+
+class TestBootstrapSessionRequiresItsUrl:
+    """**R2 — ``url`` is REQUIRED and KEYWORD-ONLY, not an optional defaulting to None.**
+
+    All eleven production owners have their url in hand at the call site. A defaulted
+    parameter is a silent hole a future caller falls into: it would type-check, lint clean,
+    and log ``url=None`` on the one path where an operator needs a server name. Required is
+    the deny-by-default choice, and deny-by-default only holds if something asserts it.
+    """
+
+    # Both pins below call the seam with a DELIBERATELY WRONG signature, so both are
+    # invoked through an ``Any``-typed reference rather than the imported name.
+    #
+    # That is not a style dodge, it is a satisfiability requirement: mypy runs over the
+    # test tree with zero errors permitted (repo law), and a direct call would be a STATIC
+    # error — `Too many arguments` today, `Missing named argument "url"` after the fix
+    # lands. Either way the builder would be trapped between the type gate and a test it
+    # may not edit, which this repo names the C-DEF class. The runtime binding is exactly
+    # what these pins are about; the static call shape is not.
+    @property
+    def _bootstrap(self) -> Any:
+        return txn_module.bootstrap_session
+
+    async def test_omitting_url_is_a_TypeError_at_the_call(self) -> None:
+        """A build that defaults ``url=None`` passes every attribution pin that supplies a
+        url, and silently admits every future caller that forgets one.
+        """
+        with pytest.raises(TypeError):
+            await self._bootstrap(_FakeConnection(), _FAKE_ENV.namespace, _FAKE_ENV.database)
+
+    async def test_passing_url_POSITIONALLY_is_a_TypeError(self) -> None:
+        """Keyword-only, not merely required. A positional fourth parameter is orderable
+        with ``namespace``/``database`` at a glance and mis-orderable in a diff — all three
+        are strings, so a swap type-checks and the store silently bootstraps the wrong
+        database while logging the right url.
+
+        ⚠ This pin does NOT discriminate on the unfixed tree: with only three parameters, a
+        fourth positional argument is a ``TypeError`` for the WRONG reason (arity, not
+        keyword-only-ness), so it is green today and cannot be red-by-design. It is
+        mutation-proven instead — dropping the ``*`` from the fixed signature turns it red.
+        """
+        with pytest.raises(TypeError):
+            await self._bootstrap(
+                _FakeConnection(),
+                _FAKE_ENV.namespace,
+                _FAKE_ENV.database,
+                _FAKE_ENV.url,
+            )
 
 
 class TestSeveralOperationsUnderOneCallerShareONEBudget:

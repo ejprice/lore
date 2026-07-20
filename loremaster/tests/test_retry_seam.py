@@ -7019,6 +7019,10 @@ class TestTheBootstrapSharesOneDeadline:
             cast("Any", _BootstrapScriptedConnection(error=_conflict_error(), failures=0)),
             _CTOR_VALUES["namespace"],
             _CTOR_VALUES["database"],
+            # #151: `url` is REQUIRED and keyword-only. It plays no part in THIS pin (which
+            # reads only the deadlines each driver call receives) but the call does not bind
+            # without it — see `TestBootstrapSessionRequiresItsUrl` in test_surreal_harness.py.
+            url=_CTOR_VALUES["url"],
         )
 
         assert len(deadlines) == 3, (
@@ -7071,4 +7075,312 @@ class TestTheBootstrapSharesOneDeadline:
             f"what is LEFT of it, and time passes between them. Three EQUAL values is three "
             f"independent budgets wearing a parameter — which is the whole defect, and which "
             f"a merely non-increasing check cannot tell apart from the real thing."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10. EVERY CALL INTO THE RETRY DRIVER IS ATTRIBUTABLE.  (finding #151, R3)
+#
+# §9a made the driver's exhaustion record carry `label`/`url`/`engine_error` — but it
+# gates all three on `label is not None`, so the record is only as attributable as the
+# CALL SITE chose to be. `bootstrap_session` chose nothing, for three statements, and the
+# result was a raised message promising "see the server log for the full engine detail"
+# over a record holding `{attempts, elapsed_seconds}`. **The behaviour pin and the
+# structural pin are not redundant: §9a proves the driver CAN attribute; this proves every
+# caller DOES.**
+#
+# DENY BY DEFAULT, ALLOWLIST THE SAFE. This repo's instrument lesson is a table of six
+# gates defeated by enumerating what is FORBIDDEN. So this one does not hunt for known-bad
+# call sites: it requires `label=` at EVERY call into the driver and carries a small,
+# EVIDENCE-BACKED allowlist of sites that are attributable by another mechanism. An
+# exemption states the mechanism; "it writes no row" is not evidence, and neither is "it
+# has always been that way".
+# ---------------------------------------------------------------------------
+
+_RETRY_DRIVER_NAME = "retry_on_conflict"
+
+# Call sites that reach the driver WITHOUT a label and are attributable anyway. Each entry
+# is (module path relative to the package root, innermost enclosing function) -> the
+# EVIDENCE. A site not listed here must pass `label=`.
+_ATTRIBUTED_BY_ANOTHER_MECHANISM: dict[tuple[str, str], str] = {
+    ("store/_txn.py", "execute_transaction"): (
+        "calls `_log_rollback` on the way out (_txn.py:789-801), which logs the failing "
+        "statement's INDEX, the full engine result and every failed statement — strictly "
+        "more detail than a label. This is the asymmetry #151 measured: the transactional "
+        "caller kept its receipt, the bootstrap had none."
+    ),
+    ("scout.py", "_consume_live"): (
+        "swallows `TxnContentionExhaustedError` and logs its own "
+        "`command_subscriber.live_unavailable` record with `exc_info=True` (scout.py:568-569). "
+        "The exception never escapes, and the engine's text rides the traceback."
+    ),
+    ("scout.py", "_safe_kill"): (
+        "swallows `TxnContentionExhaustedError` and logs its own "
+        "`command_subscriber.kill.already_closed` record (scout.py:593-594). Best-effort "
+        "cleanup by design; the exception never reaches a caller."
+    ),
+}
+
+# Every call site the scan finds today. A FLOOR, not an equality: a new labelled caller
+# must not have to edit this number, but a scan that suddenly finds FEWER sites has gone
+# blind and every pin below it would go vacuously green.
+_MIN_KNOWN_RETRY_DRIVER_CALL_SITES = 8
+
+
+def _retry_driver_call_sites_in(source: str) -> list[tuple[int, str, bool]]:
+    """Every call into the retry driver in ``source`` — ``(lineno, enclosing, has_label)``.
+
+    ``enclosing`` is the INNERMOST enclosing function (a call inside a nested ``_attempt``
+    is that function's, not its parent's), because the allowlist keys on it.
+
+    ⚠ KEYED ON THE DRIVER'S NAME, and that bound is stated rather than hidden: this
+    matcher sees ``retry_on_conflict(...)`` and ``<anything>.retry_on_conflict(...)``. It
+    does NOT see a call through an import alias, a variable holding the function, or
+    ``getattr``. Those are the shapes the repo's instrument-lesson table records as having
+    defeated six name-keyed gates. They are accepted here because the ONE property that
+    makes them reachable — a module that calls the driver at all — is already pinned
+    structurally elsewhere (the seams hold `_txn.retry_on_conflict` BY IDENTITY, and no
+    production module may hand-roll a bootstrap), so an aliased call would have to be
+    written deliberately, by an author who knew this gate existed. The gate's threat model
+    is the HONEST engineer adding a new caller, not an author routing around it.
+    """
+    sites: list[tuple[int, str, bool]] = []
+
+    def visit(node: ast.AST, enclosing: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                visit(child, child.name)
+                continue
+            if isinstance(child, ast.Call):
+                func = child.func
+                name = (
+                    func.id
+                    if isinstance(func, ast.Name)
+                    else func.attr
+                    if isinstance(func, ast.Attribute)
+                    else None
+                )
+                if name == _RETRY_DRIVER_NAME:
+                    sites.append(
+                        (
+                            child.lineno,
+                            enclosing,
+                            any(keyword.arg == "label" for keyword in child.keywords),
+                        )
+                    )
+            visit(child, enclosing)
+
+    visit(ast.parse(source), "<module>")
+    return sites
+
+
+def _all_retry_driver_call_sites() -> list[tuple[str, int, str, bool]]:
+    """``(module, lineno, enclosing, has_label)`` for the whole production package."""
+    found: list[tuple[str, int, str, bool]] = []
+    for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        key = path.relative_to(_PACKAGE_ROOT).as_posix()
+        for lineno, enclosing, has_label in _retry_driver_call_sites_in(
+            path.read_text(encoding="utf-8")
+        ):
+            found.append((key, lineno, enclosing, has_label))
+    return found
+
+
+class TestEveryCallIntoTheRetryDriverIsAttributable:
+    """**FINDING #151, STRUCTURALLY.** A label is what makes the driver's one exhaustion
+    record say WHO — and the driver suppresses the url and the engine text without it.
+    """
+
+    def test_the_call_site_scan_is_not_silently_finding_nothing(self) -> None:
+        """**THE REACH CONTROL.** A scan that matched nothing would report a perfectly
+        attributable tree forever. This is the failure mode the repo's own instrument-lesson
+        table records for a runtime gate — an invariant only over the code it actually
+        REACHES — hoisted to an AST scan: assert the reach, or the reach becomes the bug.
+        """
+        sites = _all_retry_driver_call_sites()
+
+        assert len(sites) >= _MIN_KNOWN_RETRY_DRIVER_CALL_SITES, (
+            f"the scan found {len(sites)} call(s) into `{_RETRY_DRIVER_NAME}` "
+            f"({[(module, lineno) for module, lineno, _, _ in sites]}) — this contract was "
+            f"written against {_MIN_KNOWN_RETRY_DRIVER_CALL_SITES}. Either callers were "
+            f"consolidated (good — lower this floor deliberately, in a diff a reviewer can "
+            f"see) or the SCANNER broke and the gate below just went vacuously green."
+        )
+
+    def test_every_exemption_matches_a_REAL_call_site(self) -> None:
+        """A stale allowlist entry is a silent hole: it exempts nothing today and silently
+        blesses whatever is written at that address tomorrow. Every exemption must be
+        REACHED, so the allowlist can only shrink by accident, never grow blind.
+        """
+        addresses = {(module, enclosing) for module, _, enclosing, _ in _all_retry_driver_call_sites()}
+        stale = sorted(set(_ATTRIBUTED_BY_ANOTHER_MECHANISM) - addresses)
+
+        assert not stale, (
+            f"these allowlist entries match no call site: {stale}. An exemption for code "
+            f"that no longer exists is not harmless — it pre-approves the next unlabelled "
+            f"call written at that address. Delete it, or fix the address."
+        )
+
+    def test_every_call_into_the_driver_passes_a_label(self) -> None:
+        """RED today x3: ``bootstrap_session``'s three calls (``_txn.py:1021-1023``) pass
+        neither ``label`` nor ``url``, so their exhaustion record carries only an attempt
+        count and an elapsed time — over a raised message that says "see the server log for
+        the full engine detail".
+
+        Every residual site is named with ``file:line`` and its enclosing function. This
+        repo's law bans "all remaining hits are X" as an output: wholesale classification
+        under volume is how a found defect gets re-buried.
+        """
+        unattributed = [
+            (module, lineno, enclosing)
+            for module, lineno, enclosing, has_label in _all_retry_driver_call_sites()
+            if not has_label and (module, enclosing) not in _ATTRIBUTED_BY_ANOTHER_MECHANISM
+        ]
+
+        assert not unattributed, (
+            "these calls into the retry driver pass no `label=`, so the driver suppresses "
+            "`label`, `url` AND `engine_error` on their exhaustion record (it gates all "
+            "three on `label is not None`):\n  "
+            + "\n  ".join(
+                f"{module}:{lineno}  in {enclosing}()" for module, lineno, enclosing in unattributed
+            )
+            + "\n\nEach then raises 'see the server log for the full engine detail' over a "
+            "record holding `{attempts, elapsed_seconds}` — a hint pointing at a log that "
+            "holds nothing (finding #151, measured). Pass the caller's own canonical event "
+            "name as `label=` and its RPC url as `url=`.\n\n"
+            "If a site is attributable by ANOTHER mechanism, add it to "
+            "`_ATTRIBUTED_BY_ANOTHER_MECHANISM` WITH THE EVIDENCE — the record it emits "
+            "instead, by name and file:line. 'It writes no row' is not evidence."
+        )
+
+    def test_the_scan_SEES_an_unlabelled_call(self) -> None:
+        """**POSITIVE CONTROL.** A gate that has never been shown firing is not a gate.
+        Exercised on both call shapes the matcher claims to see.
+        """
+        source = """
+async def _ensure_connection(self):
+    async def _define_namespace():
+        await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {self._namespace}")
+
+    await retry_on_conflict(_define_namespace, deadline_seconds=_remaining_budget())
+    await txn.retry_on_conflict(_define_database)
+"""
+        found = _retry_driver_call_sites_in(source)
+
+        assert [(enclosing, has_label) for _, enclosing, has_label in found] == [
+            ("_ensure_connection", False),
+            ("_ensure_connection", False),
+        ], (
+            f"the scan saw {found} in a textbook unlabelled bootstrap. It must see BOTH the "
+            f"bare call and the attribute call, and must not mistake `deadline_seconds` for "
+            f"attribution — or the sites it is hunting are invisible to it."
+        )
+
+    def test_the_scan_ATTRIBUTES_a_call_to_its_INNERMOST_function(self) -> None:
+        """The allowlist keys on the enclosing function, so a call inside a nested closure
+        must not be credited to its parent — otherwise one exemption silently covers every
+        call written anywhere inside an exempt function.
+        """
+        source = """
+async def execute_transaction():
+    async def _attempt():
+        await retry_on_conflict(_inner)
+    await retry_on_conflict(_attempt, label="x")
+"""
+        found = _retry_driver_call_sites_in(source)
+
+        assert sorted((enclosing, has_label) for _, enclosing, has_label in found) == [
+            ("_attempt", False),
+            ("execute_transaction", True),
+        ], (
+            f"the scan reported {found}. The nested call belongs to `_attempt`, not to "
+            f"`execute_transaction` — crediting it to the parent would let one allowlist "
+            f"entry exempt every call inside an exempt function."
+        )
+
+    def test_the_scan_SPARES_a_labelled_call(self) -> None:
+        """**NEGATIVE CONTROL.** A gate that fires on correct code gets switched off by the
+        first engineer it blocks, and then nothing is watching at all.
+        """
+        source = """
+async def run_query(*, url, label, statement):
+    return await retry_on_conflict(_attempt, label=label, url=url)
+"""
+        found = _retry_driver_call_sites_in(source)
+
+        assert [has_label for _, _, has_label in found] == [True], (
+            f"the scan reported {found} for a correctly-attributed call — a gate that "
+            f"flags `run_query`, the one caller that already does this right, is a gate "
+            f"that gets deleted."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10a. ATTRIBUTING THE BOOTSTRAP MUST NOT CHANGE ITS DISPOSITION.
+#
+# `bootstrap_session` propagates EVERY failure UNWRAPPED (`_txn.py:950-963`): scout's
+# reconnect ladder catches raw SDK types and `TxnContentionExhaustedError` DIRECTLY, never
+# `SurrealConnectionError`. §8a pins that end-to-end through scout's real `run()` loop, and
+# §7c pins each SEAM's wrap. Neither pins the helper ITSELF — so a #151 fix that added a
+# `try/except` to log the label locally, and wrapped on the way out, would satisfy every
+# attribution pin above and kill the command channel. This is the removed-behaviour half:
+# the fix must ADD attribution and SUBTRACT nothing.
+# ---------------------------------------------------------------------------
+
+
+class TestAttributingTheBootstrapDoesNotChangeItsDisposition:
+    """∀ the four ways a bootstrap can fail — the fate is UNCHANGED by #151's fix."""
+
+    @pytest.mark.parametrize(("build_error", "is_retryable"), _BOOTSTRAP_FAILURE_FATES)
+    async def test_bootstrap_session_propagates_every_failure_UNWRAPPED(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        build_error: Callable[[], BaseException],
+        is_retryable: bool,
+    ) -> None:
+        """RED today x4 — but for the PLUMBING, not the property: the call below passes
+        ``url=``, which ``bootstrap_session`` does not yet accept, so all four fates die on
+        a ``TypeError`` before any disposition is exercised. Once the signature lands, this
+        becomes a pure NON-REGRESSION pin: it goes green on a fix that only ADDS
+        attribution, and red on one that also gave the helper a disposition of its own.
+
+        Stated because the distinction is load-bearing: a pin that is red today for a
+        reason OTHER than the property it names cannot demonstrate that property, and its
+        author is the one person who will never notice (the C-DEF class, CLAUDE.md). The
+        mutation proof for the property itself is therefore owed AFTER the signature
+        change, and is recorded as such in REPORT-contract-151.md.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)  # the floor governs: exhaust in 5 attempts
+        raised = build_error()
+        connection = _BootstrapFailingConnection(error=raised)
+
+        with pytest.raises(BaseException) as exc_info:  # noqa: PT011 — the TYPE is the assertion
+            await _shared("bootstrap_session")(
+                cast("Any", connection),
+                _CTOR_VALUES["namespace"],
+                _CTOR_VALUES["database"],
+                url=_CTOR_VALUES["url"],
+            )
+
+        expected = TxnContentionExhaustedError if is_retryable else type(raised)
+        assert type(exc_info.value) is expected, (
+            f"`bootstrap_session` raised {type(exc_info.value).__name__}, expected "
+            f"{expected.__name__}. This assertion checks the EXACT type (not isinstance): "
+            f"the helper must translate NOTHING.\n\n"
+            f"scout's reconnect ladder catches (*_CONNECTION_ERRORS, KeyError, "
+            f"TxnContentionExhaustedError) — RAW types. `SurrealConnectionError` is a "
+            f"RuntimeError and is NOT among them, so a bootstrap that wrapped its own "
+            f"failure (the obvious place to put a `try/except` that logs a label) would "
+            f"satisfy every attribution pin and fly straight past that ladder: no backoff, "
+            f"no reconnect, the command channel dead until the process restarts.\n\n"
+            f"THE WRAP GOES AT THE SEAM. Attribution is added by passing `label=`/`url=` "
+            f"INTO the driver, never by catching anything here."
+        )
+        assert not isinstance(exc_info.value, SurrealConnectionError), (
+            "`bootstrap_session` raised a `SurrealConnectionError`. The ten ledger seams "
+            "wrap what this raises, in their OWN `_ensure_connection`; scout deliberately "
+            "does not wrap at all. Wrapping here takes that choice away from both."
         )
