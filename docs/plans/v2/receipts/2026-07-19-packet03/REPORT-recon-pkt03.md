@@ -415,9 +415,12 @@ A test receives the **ledger object**, not a bare connection, in the common case
 
 > ⚠ **SUPERSEDED BY #150 (2026-07-20) — the paragraph above is left as written, because it
 > correctly records the world of 2026-07-19; it is no longer true of the code.** All four of
-> its teardown claims are dead: `_MAX_DROP_DATABASE_ATTEMPTS`, `_DROP_DATABASE_BACKOFF_SECONDS`,
-> the private `"can be retried"` marker copy, and `_remove_database_with_retry` itself were
-> **deleted**. The harness now owns no conflict-retry policy of its own: teardown and
+> its teardown claims are dead. Three names were **deleted outright** —
+> `_MAX_DROP_DATABASE_ATTEMPTS`, `_DROP_DATABASE_BACKOFF_SECONDS`, and the private
+> `"can be retried"` marker copy. **`_remove_database_with_retry` still EXISTS**
+> (`_surreal_harness.py:363`, called from `drop_database`): what was deleted is its private
+> retry LOOP — it now delegates budget, backoff and conflict classification to the shared
+> seam. The harness now owns no conflict-retry policy of its own: teardown and
 > `connect_admin` both route through the ONE shared seam
 > (`loremaster/loremaster/store/_txn.py` — `bootstrap_session` / `retry_on_conflict` /
 > `is_retryable_conflict_error`), so budget, backoff and marker are the seam's, and the
