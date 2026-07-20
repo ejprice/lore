@@ -19,6 +19,18 @@
 
 set -uo pipefail
 
+# Anchor to the repo root, whatever directory the caller invoked us from.
+#
+# The member arguments below are RELATIVE paths.  Run from anywhere but the repo
+# root they resolve to nothing, and mypy answers "Cannot read file 'lorescribe'"
+# — ONE error per member, three total.  The exit code stays 1 (so a gate keyed on
+# exit status is safe), but the OUTPUT lies: the real error count never appears,
+# and a grep asking "are there errors in MY files?" comes back empty and reads as
+# a pass.  Measured 2026-07-20: 3 errors reported from ``loremaster/`` vs the true
+# 55 from the root.  It produced a false all-clear for two separate readers in one
+# session before anyone noticed, so cwd is no longer allowed to change the verdict.
+cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.."
+
 MEMBERS=(lorescribe loresigil loremaster)
 status=0
 
