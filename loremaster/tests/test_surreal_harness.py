@@ -679,6 +679,29 @@ _BOOTSTRAP_STATEMENT_FATES = [
     for statement_id, build_connection, label_constant in _BOOTSTRAP_STATEMENT_BUILDERS
 ]
 
+# What each statement's label must NAME, and what it must NOT — derived from the ENGINE's own
+# SurrealQL vocabulary, never from the constants under test. `DEFINE NAMESPACE` concerns a
+# namespace and no database; `use()` SELECTS a database and is not a `DEFINE`; `DEFINE
+# DATABASE` is both a define and about a database. Exactly one assignment of three values
+# satisfies all three rows, so every permutation — including the NS/DB swap that passed the
+# previous contract 489/0 — fails at least one of them.
+#
+# The middle row admits any of three words because the SDK call is `use()` and the operation
+# is "select the database": a builder may reasonably name it for either, and a contract that
+# dictated one spelling would be a C-DEF trap rather than a property.
+_BOOTSTRAP_LABEL_NAMING: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+    (("namespace",), ("database",)),  # DEFINE NAMESPACE
+    (("database", "select", "use"), ("namespace", "define")),  # use() — selects, never defines
+    (("database",), ("namespace",)),  # DEFINE DATABASE
+]
+
+_BOOTSTRAP_LABEL_NAMING_FATES = [
+    pytest.param(build_connection, label_constant, required, forbidden, id=statement_id)
+    for (statement_id, build_connection, label_constant), (required, forbidden) in zip(
+        _BOOTSTRAP_STATEMENT_BUILDERS, _BOOTSTRAP_LABEL_NAMING, strict=True
+    )
+]
+
 
 class TestTheBootstrapPathsExhaustionIsAttributable:
     """**FINDING #151, CLOSED.** The bootstrap's exhaustion record says WHICH statement,
@@ -727,6 +750,31 @@ class TestTheBootstrapPathsExhaustionIsAttributable:
                 await _surreal_harness.connect_admin(_DISTINCT_URL_ENV)
 
         record = self._record_for(caplog, label_constant)
+
+        # MP6 — THE ORPHANED VIRTUE, restored. The deleted `…is_UNATTRIBUTED_a_known_bound`
+        # pin asserted THREE things: no `label` (the bound), no `engine_error` (its cost),
+        # and `attempts == _seam_attempt_ceiling()` — the attempt count ON THE LOG RECORD.
+        # The first two are the bound, correctly INVERTED by this class. The third was a
+        # behaviour the old world pinned and the new world did not: this class asserts label,
+        # url, engine_error and distinctness, and never `attempts`.
+        #
+        # Repo law (the removed-behaviour inventory): a delete/replace ships with every
+        # dropped behaviour ADJUDICATED, and "the old code did it" is banned as a reason.
+        # The adjudication here is PRESERVED-WITH-PIN, and the spec clause is #151's own R1 —
+        # the record must let an operator reconstruct what happened, and how many attempts
+        # were spent is half of "what happened". It survives at the EXCEPTION level
+        # (`test_sustained_conflict_raises_the_seams_own_exhaustion_type`) but nothing
+        # required the two artifacts to agree; the driver computes the count once for both,
+        # so they cannot diverge without a deliberate edit — which is exactly when a pin is
+        # worth having.
+        assert getattr(record, "attempts", None) == _seam_attempt_ceiling(), (
+            f"the exhaustion record reports attempts={getattr(record, 'attempts', None)!r}; "
+            f"the seam's ceiling is {_seam_attempt_ceiling()} and this fixture conflicts "
+            f"forever, so the record must show the seam ran to that ceiling. The raised "
+            f"exception carries the same number (it is computed ONCE, for both artifacts) — "
+            f"a record disagreeing with the exception it accompanies means an operator "
+            f"reconciling a log line against a traceback gets two different stories."
+        )
 
         expected_label = getattr(txn_module, label_constant, None)
         assert isinstance(expected_label, str) and expected_label, (
@@ -854,6 +902,84 @@ class TestTheBootstrapPathsExhaustionIsAttributable:
             f"other, so three constants holding one shared string (e.g. 'store.bootstrap') "
             f"fails here even though every per-statement pin passes. A single label tells an "
             f"operator that A bootstrap statement exhausted; #151 asks WHICH one."
+        )
+
+    @pytest.mark.parametrize(
+        ("build_connection", "label_constant", "required", "forbidden"),
+        _BOOTSTRAP_LABEL_NAMING_FATES,
+    )
+    async def test_each_bootstrap_label_NAMES_its_own_statement(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        build_connection: Callable[[], _FakeConnection],
+        label_constant: str,
+        required: tuple[str, ...],
+        forbidden: tuple[str, ...],
+    ) -> None:
+        """**THE WRONG BUILD THIS CATCHES, MEASURED: 489 passed / 0 failed.**
+
+        Swap the VALUES of ``_BOOTSTRAP_DEFINE_NAMESPACE_LABEL`` and
+        ``_BOOTSTRAP_DEFINE_DATABASE_LABEL`` — so the DEFINE-NAMESPACE statement reports
+        itself as ``…define_database.rejected`` and vice versa — and every pin above stays
+        green. The labels are still present, still three, still pairwise distinct; they
+        simply name the WRONG statements, and an operator greeted with a bootstrap
+        exhaustion lands on the wrong one of the three.
+
+        WHY THE PINS ABOVE CANNOT SEE IT: they assert ``record.label ==
+        getattr(txn_module, <constant name>)`` — comparing the observation to the constant
+        that is itself under test. Self-referential, and therefore true for any assignment
+        of values to those three names. The existing pin's own failure message promises
+        more than that: *"An operator who greps the exhaustion record must land on WHICH of
+        the three statements died."* **A message promising a check the assertion does not
+        perform is a FALSE GATE** — this repo has already shipped one in this exact area
+        whose wrong build passed 399/399.
+
+        SO THIS PIN DERIVES ITS EXPECTATION FROM THE STATEMENT, NOT FROM THE CONSTANT: the
+        record for the statement that ran must carry that statement's own SurrealQL
+        vocabulary and must NOT carry the vocabulary that distinguishes the other two.
+        ``DEFINE NAMESPACE`` says "namespace" and never "database"; ``use()`` selects a
+        database and is not a ``DEFINE``; ``DEFINE DATABASE`` is both. Those three
+        constraints are jointly satisfied by exactly one assignment, so ANY permutation of
+        the three values fails — which is the property, stated as a property.
+
+        (Vocabulary, not spelling: the check is case-insensitive and substring-based, so
+        `store.bootstrap.select_database.rejected` and `store.bootstrap.use_session.rejected`
+        both pass for the middle statement. It constrains what a label must NAME, not how
+        its author must punctuate.)
+        """
+        _silence_backoff(monkeypatch)
+        _patch_connection(monkeypatch, build_connection())
+
+        with caplog.at_level(logging.WARNING, logger=txn_module.logger.name):
+            with pytest.raises(txn_module.TxnContentionExhaustedError):
+                await _surreal_harness.connect_admin(_DISTINCT_URL_ENV)
+
+        label = str(getattr(_the_one_exhaustion_record(caplog), "label", "")).lower()
+
+        # ANY-OF, not all-of: `required` is a set of ALTERNATIVES (see the table's middle
+        # row, where "select"/"use"/"database" are three reasonable names for one statement).
+        assert any(word in label for word in required), (
+            f"the statement this fixture drove to exhaustion logged label={label!r}, which "
+            f"does not name what it is: it carries none of {list(required)}. "
+            f"`_txn.{label_constant}` is "
+            f"the constant the seam declares for this statement, and its VALUE must say "
+            f"which statement it belongs to — the label is the string an operator greps, "
+            f"and a label that does not name its statement leaves them exactly where #151 "
+            f"found them: knowing A bootstrap statement died, not WHICH."
+        )
+
+        intruding = [word for word in forbidden if word in label]
+        assert not intruding, (
+            f"the statement this fixture drove to exhaustion logged label={label!r}, which "
+            f"carries {intruding} — vocabulary belonging to a DIFFERENT bootstrap "
+            f"statement.\n\nThis is the wrong build that passed the previous contract "
+            f"489/0: three labels, present, distinct, and rotated so each names its "
+            f"neighbour. The pins that compare a record to `getattr(txn_module, "
+            f"'{label_constant}')` cannot see it — they compare the observation to the very "
+            f"constant under test. An operator reading a rotated label is sent to the wrong "
+            f"statement with full confidence, which is worse than the missing label #151 "
+            f"began with."
         )
 
     def _record_for(

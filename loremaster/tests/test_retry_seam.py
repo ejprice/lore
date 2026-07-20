@@ -6776,8 +6776,9 @@ class TestTheConnectionIsReAcquiredOnEveryAttempt:
 #     store.retry.exhausted {attempts: 64, elapsed_seconds: 2.1}   from loremaster.store._txn
 #     TxnContentionExhaustedError: SurrealDB operation gave up … see the server log …
 #
-# — a record attributable to NONE of the eleven possible emitters (ten `_query` seams, scout,
-# `bootstrap_session`), naming no server, carrying no engine text. **The hint points at a log
+# — a record attributable to NONE of the possible emitters (the ten `_query` seams, scout's
+# query seam, `bootstrap_session`), naming no server, carrying no engine text. **The hint
+# points at a log
 # that does not exist**, which makes ledger #31's contract ("raised message generic, FULL
 # detail server-side") unsatisfiable on this path.
 #
@@ -6837,8 +6838,9 @@ class TestTheExhaustionRecordIsATTRIBUTABLE:
             f"log record is missing {missing}.\n\n"
             f"The raised error tells the operator to '{_SERVER_LOG_HINT_TEXT}'. The record it "
             f"points at carries only the attempt count and the elapsed time — no seam, no "
-            f"server, no engine text. It cannot be attributed to ANY of the eleven possible "
-            f"emitters (ten `_query` seams, scout, the bootstrap), so the hint points at a log "
+            f"server, no engine text. It cannot be attributed to ANY of the possible "
+            f"emitters (the ten `_query` seams, scout's query seam, the session bootstrap), "
+            f"so the hint points at a log "
             f"that does not exist and ledger #31's contract (generic message, FULL detail "
             f"server-side) is unsatisfiable on this path.\n\n"
             f"`execute_transaction` KEPT its receipt on exhaustion (it stashes `last_conflict` "
@@ -7098,26 +7100,60 @@ class TestTheBootstrapSharesOneDeadline:
 # ---------------------------------------------------------------------------
 
 _RETRY_DRIVER_NAME = "retry_on_conflict"
+# The keyword each gate requires at its call sites. Named constants, not literals at the
+# call: both gates read them, and the mutation proof that the two scanners SHARE one
+# implementation moves these and requires both to change behaviour together.
+_RETRY_ATTRIBUTION_KEYWORD = "label"
+_SESSION_BOOTSTRAP_NAME = "bootstrap_session"
+_BOOTSTRAP_URL_KEYWORD = "url"
 
 # Call sites that reach the driver WITHOUT a label and are attributable anyway. Each entry
 # is (module path relative to the package root, innermost enclosing function) -> the
-# EVIDENCE. A site not listed here must pass `label=`.
-_ATTRIBUTED_BY_ANOTHER_MECHANISM: dict[tuple[str, str], str] = {
+# EVIDENCE and the NUMBER of unlabelled calls that evidence covers. A site not listed here
+# must pass `label=`.
+#
+# ⚠ THE COUNT IS NOT BOOKKEEPING — IT IS THE EXEMPTION'S SCOPE (adversary MP4, wrong build
+# D3). The first version of this allowlist keyed on `(module, enclosing_function)` alone,
+# which exempts a FUNCTION rather than a CALL. Measured: an unreachable
+# `await retry_on_conflict(lambda: None)` added inside `execute_transaction` — zero runtime
+# effect, so only this gate could ever object — passed the entire contract **489/0**. One
+# evidence-backed exemption silently pre-approved every unlabelled call any future author
+# writes anywhere in that body, and the evidence cited (`_log_rollback` runs on the way out)
+# is true of the ORIGINAL call and says nothing whatever about a new one.
+#
+# A COUNT, not a line number, deliberately: a lineno makes the gate go red on every
+# unrelated edit above it, and a gate that cries wolf is a gate that gets switched off
+# (CLAUDE.md's threat-model rule). The count changes only when the number of unlabelled
+# calls in that body changes — which is exactly the event that needs a human to re-read the
+# evidence and decide whether it still covers what is there.
+_Exemption = tuple[str, int]
+
+_ATTRIBUTED_BY_ANOTHER_MECHANISM: dict[tuple[str, str], _Exemption] = {
     ("store/_txn.py", "execute_transaction"): (
-        "calls `_log_rollback` on the way out (_txn.py:789-801), which logs the failing "
-        "statement's INDEX, the full engine result and every failed statement — strictly "
-        "more detail than a label. This is the asymmetry #151 measured: the transactional "
-        "caller kept its receipt, the bootstrap had none."
+        (
+            "calls `_log_rollback` on the way out (_txn.py:789-801), which logs the failing "
+            "statement's INDEX, the full engine result and every failed statement — strictly "
+            "more detail than a label. This is the asymmetry #151 measured: the transactional "
+            "caller kept its receipt, the bootstrap had none."
+        ),
+        1,
     ),
     ("scout.py", "_consume_live"): (
-        "swallows `TxnContentionExhaustedError` and logs its own "
-        "`command_subscriber.live_unavailable` record with `exc_info=True` (scout.py:568-569). "
-        "The exception never escapes, and the engine's text rides the traceback."
+        (
+            "swallows `TxnContentionExhaustedError` and logs its own "
+            "`command_subscriber.live_unavailable` record with `exc_info=True` "
+            "(scout.py:568-569). The exception never escapes, and the engine's text rides "
+            "the traceback."
+        ),
+        1,
     ),
     ("scout.py", "_safe_kill"): (
-        "swallows `TxnContentionExhaustedError` and logs its own "
-        "`command_subscriber.kill.already_closed` record (scout.py:593-594). Best-effort "
-        "cleanup by design; the exception never reaches a caller."
+        (
+            "swallows `TxnContentionExhaustedError` and logs its own "
+            "`command_subscriber.kill.already_closed` record (scout.py:593-594). Best-effort "
+            "cleanup by design; the exception never reaches a caller."
+        ),
+        1,
     ),
 }
 
@@ -7127,8 +7163,16 @@ _ATTRIBUTED_BY_ANOTHER_MECHANISM: dict[tuple[str, str], str] = {
 _MIN_KNOWN_RETRY_DRIVER_CALL_SITES = 8
 
 
-def _retry_driver_call_sites_in(source: str) -> list[tuple[int, str, bool]]:
-    """Every call into the retry driver in ``source`` — ``(lineno, enclosing, has_label)``.
+def _call_sites_in(source: str, callee: str, required_keyword: str) -> list[tuple[int, str, bool]]:
+    """Every call to ``callee`` in ``source`` — ``(lineno, enclosing, has_required_keyword)``.
+
+    ONE IMPLEMENTATION, TWO KEYS (CLAUDE.md's DRY law). Both attribution gates in this file
+    ask the identical structural question — *does every call to X pass Y?* — of two different
+    pairs: ``(retry_on_conflict, label=)`` for R3, and ``(bootstrap_session, url=)`` for R1's
+    url leg. That is a POLICY (what counts as a call site, what counts as the innermost
+    enclosing function, which call shapes are in reach), and a policy shared by two callers
+    is a function they call, never a pattern the second one clones. A second copy is where
+    the two gates' reach silently diverges, and only one of them gets the next fix.
 
     ``enclosing`` is the INNERMOST enclosing function (a call inside a nested ``_attempt``
     is that function's, not its parent's), because the allowlist keys on it.
@@ -7160,18 +7204,24 @@ def _retry_driver_call_sites_in(source: str) -> list[tuple[int, str, bool]]:
                     if isinstance(func, ast.Attribute)
                     else None
                 )
-                if name == _RETRY_DRIVER_NAME:
+                if name == callee:
                     sites.append(
                         (
                             child.lineno,
                             enclosing,
-                            any(keyword.arg == "label" for keyword in child.keywords),
+                            any(keyword.arg == required_keyword for keyword in child.keywords),
                         )
                     )
             visit(child, enclosing)
 
     visit(ast.parse(source), "<module>")
     return sites
+
+
+def _retry_driver_call_sites_in(source: str) -> list[tuple[int, str, bool]]:
+    """Every call into the retry driver — ``(lineno, enclosing, has_label)``. See
+    :func:`_call_sites_in` for the shared policy and its stated reach bound."""
+    return _call_sites_in(source, _RETRY_DRIVER_NAME, _RETRY_ATTRIBUTION_KEYWORD)
 
 
 def _all_retry_driver_call_sites() -> list[tuple[str, int, str, bool]]:
@@ -7214,13 +7264,41 @@ class TestEveryCallIntoTheRetryDriverIsAttributable:
         blesses whatever is written at that address tomorrow. Every exemption must be
         REACHED, so the allowlist can only shrink by accident, never grow blind.
         """
-        addresses = {(module, enclosing) for module, _, enclosing, _ in _all_retry_driver_call_sites()}
+        sites = _all_retry_driver_call_sites()
+        addresses = {(module, enclosing) for module, _, enclosing, _ in sites}
         stale = sorted(set(_ATTRIBUTED_BY_ANOTHER_MECHANISM) - addresses)
 
         assert not stale, (
             f"these allowlist entries match no call site: {stale}. An exemption for code "
             f"that no longer exists is not harmless — it pre-approves the next unlabelled "
             f"call written at that address. Delete it, or fix the address."
+        )
+
+        # THE OTHER DIRECTION, and it is the one MP4 exists for: an exemption whose COUNT
+        # exceeds the unlabelled calls actually present is a budget for calls that are gone —
+        # headroom nobody voted for, waiting to bless the next unlabelled call written in
+        # that body. The count may only ever be EXACT.
+        unlabelled_per_body: dict[tuple[str, str], int] = {}
+        for module, _lineno, enclosing, has_label in sites:
+            if not has_label:
+                key = (module, enclosing)
+                unlabelled_per_body[key] = unlabelled_per_body.get(key, 0) + 1
+
+        overdrawn = sorted(
+            (address, allowed, unlabelled_per_body.get(address, 0))
+            for address, (_evidence, allowed) in _ATTRIBUTED_BY_ANOTHER_MECHANISM.items()
+            if allowed > unlabelled_per_body.get(address, 0)
+        )
+
+        assert not overdrawn, (
+            "these exemptions budget MORE unlabelled calls than their body contains:\n  "
+            + "\n  ".join(
+                f"{module}:{enclosing}() — exemption allows {allowed}, found {found}"
+                for (module, enclosing), allowed, found in overdrawn
+            )
+            + "\n\nThe surplus is silent headroom: the next unlabelled call written there is "
+            "pre-approved by a number, with no human ever re-reading the evidence. Lower "
+            "the count to what is actually there."
         )
 
     def test_every_call_into_the_driver_passes_a_label(self) -> None:
@@ -7233,11 +7311,20 @@ class TestEveryCallIntoTheRetryDriverIsAttributable:
         repo's law bans "all remaining hits are X" as an output: wholesale classification
         under volume is how a found defect gets re-buried.
         """
-        unattributed = [
-            (module, lineno, enclosing)
-            for module, lineno, enclosing, has_label in _all_retry_driver_call_sites()
-            if not has_label and (module, enclosing) not in _ATTRIBUTED_BY_ANOTHER_MECHANISM
-        ]
+        by_body: dict[tuple[str, str], list[int]] = {}
+        for module, lineno, enclosing, has_label in _all_retry_driver_call_sites():
+            if not has_label:
+                by_body.setdefault((module, enclosing), []).append(lineno)
+
+        # THE EXEMPTION IS A BUDGET, NOT A BLANKET (MP4). A body whose evidence covers ONE
+        # unlabelled call and which now holds TWO reports the WHOLE group: which of them the
+        # evidence was written for is exactly the question a human has to answer, and this
+        # gate must not answer it by guessing.
+        unattributed: list[tuple[str, int, str]] = []
+        for (module, enclosing), linenos in sorted(by_body.items()):
+            _evidence, allowed = _ATTRIBUTED_BY_ANOTHER_MECHANISM.get((module, enclosing), ("", 0))
+            if len(linenos) > allowed:
+                unattributed.extend((module, lineno, enclosing) for lineno in sorted(linenos))
 
         assert not unattributed, (
             "these calls into the retry driver pass no `label=`, so the driver suppresses "
@@ -7246,6 +7333,13 @@ class TestEveryCallIntoTheRetryDriverIsAttributable:
             + "\n  ".join(
                 f"{module}:{lineno}  in {enclosing}()" for module, lineno, enclosing in unattributed
             )
+            + "\n\nIf a body above is ALREADY in `_ATTRIBUTED_BY_ANOTHER_MECHANISM`, it now "
+            "holds MORE unlabelled calls than its evidence was written to cover, and every "
+            "call in that body is listed: an exemption is a BUDGET for the calls its "
+            "evidence actually describes, never a blanket over the function (adversary MP4 "
+            "— an unreachable unlabelled call added inside an exempt body passed the whole "
+            "contract 489/0). Re-read the evidence against what is now there, then either "
+            "label the new call or raise the count DELIBERATELY, in a diff a reviewer sees."
             + "\n\nEach then raises 'see the server log for the full engine detail' over a "
             "record holding `{attempts, elapsed_seconds}` — a hint pointing at a log that "
             "holds nothing (finding #151, measured). Pass the caller's own canonical event "
@@ -7316,6 +7410,82 @@ async def run_query(*, url, label, statement):
             f"that gets deleted."
         )
 
+    def test_the_scan_does_NOT_see_an_ALIASED_call_a_KNOWN_BOUND(self) -> None:
+        """**THIS IS A KNOWN BOUND (#151), PINNED — it is not a passing gate.**
+
+        The scan is keyed on the driver's NAME, so a call reached through an import alias,
+        a variable holding the function, ``getattr``, or ``functools.partial`` is invisible
+        to it. Measured across twelve call shapes: six seen (bare · attribute · in a lambda ·
+        in a comprehension · class method · module level), six not (the four above plus dict
+        dispatch and a decorator).
+
+        Repo law: *an unpinned known limitation is indistinguishable from an unknown one* —
+        the next engineer either rediscovers it from an outage or "helpfully" closes it and
+        silently re-opens a settled trade. So the hole is asserted here, and this test goes
+        RED the day someone closes it.
+
+        **IF YOU CLOSED THIS DELIBERATELY, DELETE THIS PIN AND SAY SO IN THE SAME DIFF.**
+
+        WHY THE HOLE IS ACCEPTED TODAY: the gate's threat model is the HONEST ENGINEER
+        adding a new caller (#131 verbatim), not an author routing around it — and anyone
+        who can commit here can already ship anything. Closing it means either a runtime
+        guard (wrap the driver; assert every call arrives with an attributed frame), which
+        per CLAUDE.md is an invariant only over code it RUNS and would need its own
+        coverage-as-a-checked-variable leg, or an assignment/alias tracker, which is the
+        shape that produced three REGRESSIONS the last time this repo tried it (packet 01's
+        v2 image gate).
+
+        ⚠ ONE HONEST DISAGREEMENT, RECORDED RATHER THAN SETTLED (adversary §3-E): the
+        scanner's own docstring says an aliased call "would have to be written deliberately,
+        by an author who knew this gate existed." ``from ._txn import retry_on_conflict as
+        _retry`` is ORDINARY Python — routinely written to dodge a name clash, by exactly
+        the honest engineer the gate is declared to be for. The BOUND is accepted; that
+        REASON for accepting it is too generous, and the pin does not rely on it.
+
+        **NAMED RE-OPEN TRIGGER:** the day any production module imports the driver under an
+        alias, holds it in a variable, or dispatches to it indirectly — i.e. the day
+        ``test_every_call_into_the_driver_passes_a_label`` could go green on a caller that
+        genuinely has no label. The reach floor cannot catch that: an aliased call is not a
+        FEWER-sites signal, it is a never-was-a-site signal.
+        """
+        aliased = """
+from ._txn import retry_on_conflict as _retry
+
+async def _ensure_connection(self):
+    await _retry(_define_namespace)
+"""
+        indirect = """
+async def _ensure_connection(self):
+    driver = txn.retry_on_conflict
+    await driver(_define_namespace)
+"""
+        # POSITIVE CONTROL FIRST — a probe that reports "not seen" because it is broken
+        # reports "not seen" for everything (CLAUDE.md: a probe needs a control).
+        visible = """
+async def _ensure_connection(self):
+    await retry_on_conflict(_define_namespace)
+"""
+        assert _retry_driver_call_sites_in(visible), (
+            "CONTROL FAILED: the scan cannot see even a bare `retry_on_conflict(...)` call, "
+            "so the two assertions below prove nothing about aliasing — they would hold for "
+            "a scanner that sees nothing at all."
+        )
+
+        assert _retry_driver_call_sites_in(aliased) == [], (
+            f"the scan now SEES an aliased driver call: {_retry_driver_call_sites_in(aliased)}. "
+            f"That is an IMPROVEMENT, not a failure — this pin exists so the improvement "
+            f"cannot happen silently. **This is a KNOWN BOUND (#151) — the gate is "
+            f"name-keyed; if you closed this deliberately, delete this pin and say so.** "
+            f"Then widen `_MIN_KNOWN_RETRY_DRIVER_CALL_SITES` if the new reach found real "
+            f"sites, and re-read the scanner's docstring, which still declares the bound."
+        )
+        assert _retry_driver_call_sites_in(indirect) == [], (
+            f"the scan now SEES a call through a variable holding the driver: "
+            f"{_retry_driver_call_sites_in(indirect)}. Same verdict as the aliased case "
+            f"above — **KNOWN BOUND (#151), deliberately closed ⇒ delete this pin and say "
+            f"so in the same diff.**"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 10a. ATTRIBUTING THE BOOTSTRAP MUST NOT CHANGE ITS DISPOSITION.
@@ -7383,4 +7553,641 @@ class TestAttributingTheBootstrapDoesNotChangeItsDisposition:
             "`bootstrap_session` raised a `SurrealConnectionError`. The ten ledger seams "
             "wrap what this raises, in their OWN `_ensure_connection`; scout deliberately "
             "does not wrap at all. Wrapping here takes that choice away from both."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10b. EVERY `bootstrap_session` CALL PASSES ITS OWN URL.  (finding #151, R1 + adversary MP2)
+#
+# §10 proves the LABEL half of R1's triple over every caller. It proves the URL half over
+# NONE — it never looks at a `bootstrap_session` call site at all. The consequence was
+# measured: a build in which **all eleven production connection owners hardcode
+# `url="ws://127.0.0.1:8000/rpc"`** passed the contract 489/0 AND produced a ZERO failure
+# delta across all 6079 tests in the repository. Nothing anywhere could tell it from the
+# real fix.
+#
+# THE OPERATIONAL HARM IS WORSE THAN THE HOLE #151 SET OUT TO CLOSE. Production connects to
+# `:18500`. A hardcoded `:8000` in the exhaustion record is a PLAUSIBLE-LOOKING WRONG SERVER
+# NAME — an absent url tells an operator nothing; a confident wrong one sends them to the
+# wrong host. "Looks complete" is the failure mode.
+#
+# Same deny-by-default discipline as §10, same shared scanner (`_call_sites_in`), same
+# evidence-backed allowlist — which is EMPTY, because all eleven owners have their url in
+# hand at the call site (the ten seams hold `self._url`; scout's `_open_command_connection`
+# takes `url` as a parameter). An empty allowlist is the strongest possible statement of the
+# rule, and `test_every_bootstrap_exemption_is_EVIDENCE_BACKED` keeps it that way.
+# ---------------------------------------------------------------------------
+
+# Bootstrap call sites that pass no `url=` and are attributable anyway — `(module,
+# enclosing) -> (evidence, count)`, exactly as §10's allowlist. EMPTY BY DESIGN: no
+# production owner lacks a url at the call. An entry here needs the same quality of evidence
+# §10 demands ("it writes no row" is not evidence), and the count is the exemption's SCOPE.
+_BOOTSTRAP_ATTRIBUTED_BY_ANOTHER_MECHANISM: dict[tuple[str, str], _Exemption] = {}
+
+# A floor on how much text an exemption's evidence must carry. Not a quality measure — no
+# assertion can read English — but it makes the CHEAPEST way to punch a hole in a
+# deny-by-default gate ("n/a", "", "TODO") mechanically impossible, so an author who wants
+# one has to write a sentence a reviewer can then judge. §10's three entries run 180-300
+# characters; this is set well below them so a genuinely terse real citation still passes.
+_MIN_EVIDENCE_CHARACTERS = 60
+
+# The eleven production connection owners: ten `_query` seams plus scout's
+# `_open_command_connection`. A FLOOR, not an equality — a twelfth owner must not have to
+# edit this number — but a scan finding FEWER has gone blind and every pin below it would
+# go vacuously green. This is the same count `_MIN_KNOWN_BOOTSTRAP_OWNERS` pins from the
+# `_ensure_connection` side; the two are derived independently and must agree.
+_MIN_KNOWN_BOOTSTRAP_CALL_SITES = 11
+
+
+def _bootstrap_call_sites_in(source: str) -> list[tuple[int, str, bool]]:
+    """Every call to the shared session bootstrap — ``(lineno, enclosing, has_url)``."""
+    return _call_sites_in(source, _SESSION_BOOTSTRAP_NAME, _BOOTSTRAP_URL_KEYWORD)
+
+
+def _all_bootstrap_call_sites() -> list[tuple[str, int, str, bool]]:
+    """``(module, lineno, enclosing, has_url)`` for the whole production package."""
+    found: list[tuple[str, int, str, bool]] = []
+    for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        key = path.relative_to(_PACKAGE_ROOT).as_posix()
+        for lineno, enclosing, has_url in _bootstrap_call_sites_in(
+            path.read_text(encoding="utf-8")
+        ):
+            # The DEFINITION site is not a call site: `_txn.py` declares the helper, it does
+            # not invoke it. The scanner is call-shaped (`ast.Call`), so this never fires
+            # today — it is stated so a reader does not go looking for a twelfth owner.
+            found.append((key, lineno, enclosing, has_url))
+    return found
+
+
+class TestEveryBootstrapCallThreadsItsOwnUrl:
+    """**FINDING #151, THE URL LEG, STRUCTURALLY (adversary MP2 / invariant I8).**
+
+    §10 asks *does every caller pass a label?* This asks *does every caller pass a url?* —
+    the half of R1's triple that, before this class existed, was enforced by nothing at all.
+    """
+
+    def test_the_bootstrap_call_scan_is_not_silently_finding_nothing(self) -> None:
+        """**THE REACH CONTROL**, and it is not optional decoration: every assertion below is
+        a statement about a SET, and a scanner that returns the empty set satisfies all of
+        them forever. Assert the reach, or the reach becomes the bug.
+        """
+        sites = _all_bootstrap_call_sites()
+
+        assert len(sites) >= _MIN_KNOWN_BOOTSTRAP_CALL_SITES, (
+            f"the scan found {len(sites)} call(s) to `{_SESSION_BOOTSTRAP_NAME}` "
+            f"({[(module, lineno) for module, lineno, _, _ in sites]}) — this contract was "
+            f"written against {_MIN_KNOWN_BOOTSTRAP_CALL_SITES} (ten `_query` seams + "
+            f"scout's `_open_command_connection`). Either owners were consolidated (good — "
+            f"lower this floor deliberately, in a diff a reviewer can see) or the SCANNER "
+            f"broke and the gate below just went vacuously green."
+        )
+
+    def test_the_two_independent_owner_counts_AGREE(self) -> None:
+        """The `_ensure_connection` side and the `bootstrap_session` side are enumerated by
+        two different scans over two different properties. They describe the same eleven
+        owners, so they must agree — and a disagreement means one of them has gone blind,
+        which is precisely the failure neither can detect about itself.
+        """
+        assert _MIN_KNOWN_BOOTSTRAP_CALL_SITES == _MIN_KNOWN_BOOTSTRAP_OWNERS, (
+            f"the bootstrap CALL-SITE floor ({_MIN_KNOWN_BOOTSTRAP_CALL_SITES}) and the "
+            f"connection-OWNER floor ({_MIN_KNOWN_BOOTSTRAP_OWNERS}) disagree. They count "
+            f"the same eleven owners from opposite ends; if one moved deliberately, move "
+            f"the other in the same diff and say why."
+        )
+
+    def test_every_bootstrap_exemption_is_EVIDENCE_BACKED_and_REAL(self) -> None:
+        """The allowlist is empty today. This pin is what makes "empty" a decision rather
+        than an accident: a future entry must name a REAL call site and carry real evidence.
+        """
+        addresses = {(module, enclosing) for module, _, enclosing, _ in _all_bootstrap_call_sites()}
+        stale = sorted(set(_BOOTSTRAP_ATTRIBUTED_BY_ANOTHER_MECHANISM) - addresses)
+        assert not stale, (
+            f"these bootstrap exemptions match no call site: {stale}. An exemption for code "
+            f"that no longer exists pre-approves the next url-less call written there."
+        )
+
+        thin = sorted(
+            address
+            for address, (evidence, _count) in _BOOTSTRAP_ATTRIBUTED_BY_ANOTHER_MECHANISM.items()
+            if len(evidence.strip()) < _MIN_EVIDENCE_CHARACTERS
+        )
+        assert not thin, (
+            f"these bootstrap exemptions carry no real evidence: {thin}. An exemption must "
+            f"name the record the caller emits INSTEAD, by event name and file:line. 'It "
+            f"writes no row' and 'out of scope for this wave' are not evidence — the repo "
+            f"forbids exactly that, and an un-evidenced hole in a deny-by-default gate is "
+            f"the thing the gate exists to prevent."
+        )
+
+    def test_every_bootstrap_session_call_passes_a_url(self) -> None:
+        """RED today x11: not one production owner passes a ``url``, because
+        ``bootstrap_session`` does not yet take one.
+
+        THE WRONG BUILD THIS EXISTS FOR is not the unfixed tree — it is the *fixed-looking*
+        one: `bootstrap_session` grows its `url` parameter, threads it faithfully into all
+        three `retry_on_conflict` calls, every behavioural pin in
+        `TestTheBootstrapPathsExhaustionIsAttributable` goes green... and the eleven callers
+        hardcode a constant into it. Measured: 489/0 on the contract, zero failure delta
+        across 6079 tests. This gate is the thing that sees it, and
+        `TestEveryProductionOwnerThreadsITSOWNUrl` is the behavioural half.
+
+        Every residual site is named with `file:line` and its enclosing function — repo law
+        bans "all remaining hits are X" as an output.
+        """
+        by_body: dict[tuple[str, str], list[int]] = {}
+        for module, lineno, enclosing, has_url in _all_bootstrap_call_sites():
+            if not has_url:
+                by_body.setdefault((module, enclosing), []).append(lineno)
+
+        without_url: list[tuple[str, int, str]] = []
+        for (module, enclosing), linenos in sorted(by_body.items()):
+            _evidence, allowed = _BOOTSTRAP_ATTRIBUTED_BY_ANOTHER_MECHANISM.get(
+                (module, enclosing), ("", 0)
+            )
+            if len(linenos) > allowed:
+                without_url.extend((module, lineno, enclosing) for lineno in sorted(linenos))
+
+        assert not without_url, (
+            "these calls to the shared session bootstrap pass no `url=`:\n  "
+            + "\n  ".join(
+                f"{module}:{lineno}  in {enclosing}()" for module, lineno, enclosing in without_url
+            )
+            + "\n\nR1: the exhaustion record carries the full triple — WHICH statement "
+            "(`label`), WHICH server (`url`), and WHAT THE ENGINE SAID (`engine_error`). "
+            "A bootstrap that is labelled but not addressed tells an operator that "
+            "DEFINE NAMESPACE exhausted somewhere. Every owner listed above has its url "
+            "in hand at the call site: the ten `_query` seams hold `self._url`, and "
+            "scout's `_open_command_connection` takes `url` as a parameter. Pass it.\n\n"
+            "⚠ DO NOT satisfy this by hardcoding a url inside `bootstrap_session` or by "
+            "defaulting the parameter. That build passes 489/0 and adds a plausible-looking "
+            "WRONG server name to every exhaustion record — worse than the absent url #151 "
+            "set out to fix. `TestEveryProductionOwnerThreadsITSOWNUrl` drives all eleven "
+            "owners at eleven DIFFERENT urls and will catch it."
+        )
+
+    def test_the_bootstrap_scan_SEES_a_url_less_call(self) -> None:
+        """**POSITIVE CONTROL.** A gate never shown firing is not a gate — and this one must
+        not mistake a POSITIONAL fourth argument for the keyword R2 requires.
+        """
+        source = """
+async def _ensure_connection(self):
+    await bootstrap_session(connection, self._namespace, self._database)
+    await _txn.bootstrap_session(connection, ns, db, self._url)
+"""
+        found = _bootstrap_call_sites_in(source)
+
+        assert [(enclosing, has_url) for _, enclosing, has_url in found] == [
+            ("_ensure_connection", False),
+            ("_ensure_connection", False),
+        ], (
+            f"the scan saw {found} in a textbook url-less bootstrap. It must see BOTH the "
+            f"bare call and the attribute call, and must NOT count a positional fourth "
+            f"argument as the url — R2 makes `url` KEYWORD-ONLY precisely because all four "
+            f"parameters are strings and a swap type-checks."
+        )
+
+    def test_the_bootstrap_scan_SPARES_a_url_carrying_call(self) -> None:
+        """**NEGATIVE CONTROL.** A gate that fires on the correct build gets switched off,
+        and then nothing is watching at all.
+        """
+        source = """
+async def _ensure_connection(self):
+    await bootstrap_session(connection, self._namespace, self._database, url=self._url)
+"""
+        found = _bootstrap_call_sites_in(source)
+
+        assert [has_url for _, _, has_url in found] == [True], (
+            f"the scan reported {found} for a correctly-threaded call — it flags the exact "
+            f"shape the fix asks every owner to write."
+        )
+
+    def test_the_TWO_gates_SHARE_one_scanner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """**PROVE SHARING BY MUTATION** — the only test that distinguishes DRY from
+        looks-DRY (CLAUDE.md #102: routing is not sharing, and a caller that keeps working
+        after the shared thing moves is a private copy wearing the shared name).
+
+        Move the keyword each gate requires, and BOTH gates' verdicts must move with it. A
+        second, hand-rolled `_bootstrap_call_sites_in` would keep answering the old way — and
+        then the day someone widens one scanner's reach (to see decorated calls, say), only
+        one of the two attribution gates would learn it.
+        """
+        module = sys.modules[__name__]
+        labelled = "await retry_on_conflict(_attempt, label='x')\n"
+        addressed = "await bootstrap_session(connection, ns, db, url=self._url)\n"
+
+        assert _retry_driver_call_sites_in(labelled)[0][2], "control: the retry gate sees `label=`"
+        assert _bootstrap_call_sites_in(addressed)[0][2], "control: the bootstrap gate sees `url=`"
+
+        monkeypatch.setattr(module, "_RETRY_ATTRIBUTION_KEYWORD", "not_the_keyword")
+        assert not _retry_driver_call_sites_in(labelled)[0][2], (
+            "the retry gate still recognised `label=` after `_RETRY_ATTRIBUTION_KEYWORD` "
+            "moved — it holds a private copy of the keyword, so this mutation proves "
+            "nothing about either scanner."
+        )
+        monkeypatch.undo()
+
+        monkeypatch.setattr(module, "_BOOTSTRAP_URL_KEYWORD", "not_the_keyword")
+        assert not _bootstrap_call_sites_in(addressed)[0][2], (
+            "the bootstrap gate still recognised `url=` after `_BOOTSTRAP_URL_KEYWORD` "
+            "moved: it is a SECOND scanner wearing the shared name, not a caller of "
+            "`_call_sites_in`. Fold it back onto the shared function — two copies of one "
+            "policy is where the two gates' reach silently diverges."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10c. EACH PRODUCTION OWNER LOGS *ITS OWN* URL.  (finding #151 — adversary B1/MP1, BLOCKER)
+#
+# THE HOLE THIS CLOSES, MEASURED. The first contract's url invariant was quantified over
+# exactly ONE caller — `_surreal_harness.connect_admin` — and that caller is a TEST FILE the
+# builder is allowed to edit (R5). The eleven PRODUCTION owners carried zero url pins. A
+# build in which all eleven hardcode `url="ws://127.0.0.1:8000/rpc"` passed the contract
+# **489 / 0** and produced a **ZERO failure delta across all 6079 tests in the repository**.
+# Nothing anywhere could tell it from the real fix.
+#
+# THE QUANTIFIER LAW, VERBATIM (CLAUDE.md): never condition an invariant on the failure mode
+# that prompted the work. #151 was *"the record carries no url"*, so the contract pinned
+# *"a url arrives"* — and every wrong build that carries a url, from anywhere, walks through.
+# Pin the OUTCOME property ∀ callers and FORCE each fate with a fixture.
+#
+# THE GENERALISATION THE ADVERSARY DREW, worth keeping: the first contract broke
+# parameter-value monoculture correctly at the driver (`_DISTINCT_BOOTSTRAP_URL`, a
+# TEST-NET-2 address appearing nowhere else) and then reintroduced it one level up as
+# **CALLER-POPULATION MONOCULTURE**. The repo's law reads *"if the code can branch on a
+# value, at least one pin must use a DIFFERENT value."* Its dual: **if a value must be
+# THREADED from N call sites, at least two pins must drive DIFFERENT call sites with
+# DIFFERENT values** — and one caller is a monoculture, a test-tree caller doubly so.
+#
+# So this class drives ALL ELEVEN owners at ELEVEN DIFFERENT urls, and
+# `test_every_owner_the_scan_finds_is_DRIVEN_here` makes that coverage a CHECKED VARIABLE
+# rather than a claim in a comment.
+# ---------------------------------------------------------------------------
+
+# One url per owner, derived from the owner's OWN name — never a shared constant, which is
+# the very build this class exists to catch. RFC-5737 TEST-NET-2 with an owner-specific path,
+# so no two owners share a value and no value appears anywhere else in the repository. Never
+# dialed: `AsyncSurreal` is monkeypatched out in every pin here.
+#
+# ⚠ DERIVED FROM THE NAME, NEVER FROM `hash()`: string hashing is per-process randomised, so
+# a hash-derived url is a value that differs between xdist workers and can COLLIDE between
+# two owners — a 1-in-N flake in the one pin that compares two owners' urls to each other.
+# A failing test is a STOP in this repo and "flaky" is not a verdict anyone may render, so
+# the fixture may not manufacture one.
+_OWNER_URL_TEMPLATE = "ws://198.51.100.151:19151/rpc-151-owner-{owner}"
+
+# Scout's bootstrap owner is a module-level FUNCTION, not a class with an
+# `_ensure_connection` — which is exactly why it was the eleventh hand-rolled copy that no
+# `_query`-keyed enumeration could see (#120). It is driven by its own pin below; naming it
+# here keeps the coverage check honest about why it is not in `_QUERY_SEAMS`.
+_SCOUT_BOOTSTRAP_MODULE = "loremaster.scout"
+_SCOUT_BOOTSTRAP_FUNCTION = "_open_command_connection"
+
+
+def _owner_url(owner: str) -> str:
+    """A url unique to ``owner`` — stable across runs, distinct across owners."""
+    return _OWNER_URL_TEMPLATE.format(owner=owner)
+
+
+def _construct_at_url(seam: type, url: str) -> Any:
+    """Build ``seam`` from :data:`_CTOR_VALUES` but pointed at ``url``.
+
+    Deliberately NOT a mutation of `_CTOR_VALUES`: this class's whole point is that two
+    owners alive at once hold two DIFFERENT urls, which a shared dict cannot express.
+    """
+    values = dict(_CTOR_VALUES, url=url)
+    signature = inspect.signature(cast("Any", seam))
+    required = [
+        name
+        for name, parameter in signature.parameters.items()
+        if name != "self" and parameter.default is inspect.Parameter.empty
+    ]
+    unknown = [name for name in required if name not in values]
+    assert not unknown, (
+        f"{seam.__name__} requires constructor parameter(s) {unknown} this contract cannot "
+        f"supply. Add them to `_CTOR_VALUES` — do NOT drop the owner from the enumeration; "
+        f"an owner that quietly falls out of this class is the blocker walking back in."
+    )
+    assert "url" in required, (
+        f"{seam.__name__} takes no required `url` constructor parameter, so this pin cannot "
+        f"give it a url of its own and would pass for a FIXTURE reason. If an owner now "
+        f"obtains its url some other way, drive it explicitly — do not let it fall out."
+    )
+    return seam(**{name: values[name] for name in required})
+
+
+def _forever_conflicting_bootstrap() -> Any:
+    """A connection whose every bootstrap step conflicts, forever."""
+    return cast("Any", _BootstrapScriptedConnection(error=_conflict_error(), failures=None))
+
+
+def _exhaustion_record(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+    """The single ``store.retry.exhausted`` record, or a loud failure.
+
+    Exactly-once on every path is itself a pinned property of the driver
+    (:class:`TestExhaustionIsLoggedExactlyOnceOnBothPaths`), so reading "the" record must
+    never silently take the first of several — a build that logged one record per statement
+    would otherwise let this class read a url that belongs to a different call.
+    """
+    records = _records(caplog, _EXHAUSTION_EVENT)
+    assert len(records) == 1, (
+        f"expected exactly one `{_EXHAUSTION_EVENT}` record, got {len(records)}"
+    )
+    return records[0]
+
+
+class TestEveryProductionOwnerThreadsITSOWNUrl:
+    """**FINDING #151, THE BLOCKER (adversary B1/MP1).** Eleven owners, eleven urls, and each
+    exhaustion record names the server THAT owner was connecting to.
+    """
+
+    @pytest.mark.parametrize(("module_path", "seam"), _QUERY_SEAMS)
+    async def test_each_production_owner_logs_ITS_OWN_url_on_bootstrap_exhaustion(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        module_path: str,
+        seam: type,
+    ) -> None:
+        """RED today x10: the record carries ``attempts`` and ``elapsed_seconds`` and nothing
+        else, because no owner passes a ``url`` and the driver gates the extra on ``label``.
+
+        Each owner is constructed at a url derived from its OWN class name, so the value on
+        the record can only have arrived by being threaded from THIS owner's call site. A
+        build that hardcodes, defaults, or module-globals its way to a url fails here for
+        ten of the eleven owners even when the url it logs looks entirely plausible.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)  # the attempt floor governs: 5 and out
+        _point_at(monkeypatch, module_path, _forever_conflicting_bootstrap())
+        url = _owner_url(seam.__name__)
+        owner = _construct_at_url(seam, url)
+
+        with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):
+            with pytest.raises(SurrealConnectionError):
+                await owner._ensure_connection()
+
+        record = _exhaustion_record(caplog)
+        assert getattr(record, "url", None) == url, (
+            f"{seam.__name__} ({module_path}) exhausted its session bootstrap and logged "
+            f"url={getattr(record, 'url', None)!r}; it was connecting to {url!r}.\n\n"
+            f"This assertion checks EXACT equality with the url THIS OWNER holds, and this "
+            f"pin runs once per owner at a DIFFERENT url each time — because the wrong build "
+            f"it exists for is not 'no url' but 'the same url for everyone'. Measured: all "
+            f"eleven owners hardcoding one RPC address passed the previous contract 489/0 "
+            f"with a ZERO failure delta over 6079 tests. In production, where the real "
+            f"server is `:18500`, that build writes a confident WRONG hostname into the one "
+            f"record an operator reads at 3am.\n\n"
+            f"The fix is one argument at this owner's call site: "
+            f"`await bootstrap_session(connection, ns, db, url=self._url)`."
+        )
+
+    async def test_scouts_command_connection_logs_ITS_OWN_url_on_bootstrap_exhaustion(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """RED today: **the ELEVENTH owner**, and the one every symbol-keyed enumeration
+        misses — a module-level function, not a class with an ``_ensure_connection``. It was
+        the eleventh hand-rolled bootstrap copy for exactly that reason (#120), so a pin
+        parametrized over `_QUERY_SEAMS` alone would leave it exactly as unpinned as before.
+
+        Note the disposition differs and MUST: scout's ladder needs the RAW exhaustion type,
+        so this raises `TxnContentionExhaustedError` where the ten seams wrap.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+        monkeypatch.setattr(
+            scout_module, "AsyncSurreal", lambda url: _forever_conflicting_bootstrap()
+        )
+        url = _owner_url(_SCOUT_BOOTSTRAP_FUNCTION)
+
+        with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):
+            with pytest.raises(TxnContentionExhaustedError):
+                await scout_module._open_command_connection(
+                    url=url,
+                    namespace=_CTOR_VALUES["namespace"],
+                    database=_CTOR_VALUES["database"],
+                    user=_CTOR_VALUES["user"],
+                    password=_CTOR_VALUES["password"],
+                )
+
+        record = _exhaustion_record(caplog)
+        assert getattr(record, "url", None) == url, (
+            f"scout's `{_SCOUT_BOOTSTRAP_FUNCTION}` exhausted its session bootstrap and "
+            f"logged url={getattr(record, 'url', None)!r}; it was connecting to {url!r}. "
+            f"The url is a PARAMETER of this function — it is in hand at the call site, "
+            f"exactly as `self._url` is for the ten seams. Pass it: "
+            f"`await bootstrap_session(connection, namespace, database, url=url)`."
+        )
+
+    async def test_two_owners_at_two_urls_log_TWO_DIFFERENT_urls(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """**DERIVED, not declared** — the same idiom as the three-distinct-labels pin.
+
+        The per-owner pins above each compare an observation to a CONSTANT this file chose.
+        This one compares two OBSERVATIONS to EACH OTHER, so it cannot be satisfied by any
+        build in which the url reaching the record is a single value — a module global, a
+        cached last-connected address, a class attribute on a shared base — however that
+        value was obtained. Two owners, two urls, one assertion that they differ.
+        """
+        seams = sorted(_discover_query_seams(), key=lambda entry: entry[1].__name__)
+        assert len(seams) >= 2, (
+            f"this pin needs TWO distinct production owners to compare and found "
+            f"{len(seams)}. With one owner it cannot tell 'threaded' from 'hardcoded to the "
+            f"value this fixture happens to use' — the exact non-discrimination that made "
+            f"the blocker invisible."
+        )
+
+        observed: list[tuple[str, Any]] = []
+        for module_path, seam in seams[:2]:
+            caplog.clear()
+            with monkeypatch.context() as patch:
+                _silence_sleep(patch)
+                _set_default_deadline(patch, 0.0)
+                _point_at(patch, module_path, _forever_conflicting_bootstrap())
+                url = _owner_url(seam.__name__)
+                owner = _construct_at_url(seam, url)
+                with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):
+                    with pytest.raises(SurrealConnectionError):
+                        await owner._ensure_connection()
+            observed.append((seam.__name__, getattr(_exhaustion_record(caplog), "url", None)))
+
+        first, second = observed
+        assert first[1] != second[1], (
+            f"{first[0]} and {second[0]} were connecting to two DIFFERENT servers and both "
+            f"exhaustion records name {first[1]!r}. Whatever the record's url is being read "
+            f"from, it is not this owner's — it is one shared value wearing eleven owners' "
+            f"names. This assertion compares the two OBSERVED urls to each other, so it "
+            f"holds no opinion about what the right value is: it only requires that two "
+            f"different callers cannot report the same server."
+        )
+
+    def test_every_owner_the_scan_finds_is_DRIVEN_here(self) -> None:
+        """**COVERAGE AS A CHECKED VARIABLE** — the failure this repo has been bitten by six
+        times (CLAUDE.md's instrument table: *a runtime gate is an invariant only over code
+        it actually RUNS*). This class asserts a property ∀ owners; that quantifier is a LIE
+        the moment an owner exists that no pin drives, and nothing about a green run would
+        say so.
+
+        So: enumerate the owners STRUCTURALLY (every module the bootstrap call-site scan
+        finds), enumerate the owners this class DRIVES, and require the two sets to match. A
+        twelfth owner added tomorrow fails HERE, by name, instead of quietly inheriting the
+        blocker.
+        """
+        scanned = {
+            f"loremaster.{module.removesuffix('.py').replace('/', '.')}"
+            for module, _, _, _ in _all_bootstrap_call_sites()
+        }
+        driven = {module_path for module_path, _ in _discover_query_seams()} | {
+            _SCOUT_BOOTSTRAP_MODULE
+        }
+
+        undriven = sorted(scanned - driven)
+        assert not undriven, (
+            f"these modules call the shared session bootstrap and NO pin in this class "
+            f"drives them to exhaustion: {undriven}.\n\nThey are therefore exempt from the "
+            f"one invariant that catches the #151 blocker, and the class's ∀-over-owners "
+            f"claim is false for them. Add a pin (a class owner joins `_QUERY_SEAMS` "
+            f"automatically by owning an `async def _query`; a module-level owner needs its "
+            f"own pin, as scout's does) — do not widen this exclusion."
+        )
+
+        phantom = sorted(driven - scanned)
+        assert not phantom, (
+            f"this class drives {phantom}, which the structural scan does not see calling "
+            f"`{_SESSION_BOOTSTRAP_NAME}` at all. Either the scanner has gone blind (in "
+            f"which case every gate in §10b is vacuous) or these owners stopped using the "
+            f"shared bootstrap — which is finding #120 reopening. Neither is a test-list "
+            f"problem; do not fix it by deleting a pin."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10d. SCOUT'S QUERY SEAM IS ATTRIBUTED BY LABEL ONLY — A PINNED, KNOWN BOUND.
+#      (finding #151, OPERATOR RULING R4)
+#
+# `scout.py:171` (`_scout_query`) is a FOURTH unlabelled call into the retry driver, and it
+# is #151's exact shape in a different function: it propagates, it logs nothing of its own,
+# and its exhaustion produces the same unattributable record under the same "see the server
+# log" hint. It is NOT exempt — there is no evidence to offer, and "out of scope for this
+# wave" is precisely what this repo forbids an exemption to say.
+#
+# THE OPERATOR RULED (R4): it gets a LABEL only. Partial attribution — label + engine text,
+# `url=None`. The reason is structural, not a scheduling excuse: `_scout_query` takes a
+# `connection` and nothing else, and `CommandSubscriber` holds a `connect` CALLABLE rather
+# than a url, so full url attribution there means threading a url through scout's whole
+# connection ownership — a design change, not a one-line fix.
+#
+# AND SO THE HOLE IS PINNED, NOT INHERITED (CLAUDE.md: *when you cannot close a hole, pin
+# it* — an unpinned known limitation is indistinguishable from an unknown one, and the next
+# engineer either rediscovers it from an outage or closes it and silently re-opens a settled
+# trade).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _ForeverConflictingQuery:
+    """A connection whose every ``query`` conflicts — scout's query seam, driven to exhaustion."""
+
+    calls: int = field(default=0, init=False)
+
+    async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
+        self.calls += 1
+        if self.calls > _ABSURD_ATTEMPT_CEILING:
+            raise AssertionError("unbounded retry in scout's query seam")
+        raise _conflict_error()
+
+
+class TestScoutsQuerySeamIsAttributedByLabelOnly:
+    """**OPERATOR RULING R4, pinned in both directions.**"""
+
+    async def test_scouts_query_exhaustion_carries_a_label_OF_ITS_OWN(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """RED today: `scout.py:171` passes no `label`, so the driver suppresses all three
+        extras and scout's exhaustion is as unattributable as the bootstrap's was.
+
+        The expected label is checked as a PROPERTY, not against a constant this file
+        declares: it must be a non-empty string that is none of the bootstrap's three and not
+        `run_query`'s either. That deliberately holds no opinion on scout's naming vocabulary
+        (its own log events are `command_subscriber.*`, not `scout.*`, so a substring pin on
+        "scout" would have been a C-DEF trap for a builder doing the right thing) while still
+        refusing the wrong build that borrows another caller's label to satisfy a gate.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+        connection = _ForeverConflictingQuery()
+
+        with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):
+            with pytest.raises(TxnContentionExhaustedError):
+                await scout_module._scout_query(cast("Any", connection), "SELECT * FROM command")
+
+        record = _exhaustion_record(caplog)
+        label = getattr(record, "label", None)
+
+        assert isinstance(label, str) and label, (
+            f"scout's query seam exhausted and logged label={label!r}. Every other caller of "
+            f"the driver names itself; this one raises 'see the server log for the full "
+            f"engine detail' over a record holding `{{attempts, elapsed_seconds}}`. That is "
+            f"finding #151's shape, in `_scout_query` instead of `bootstrap_session`. Pass a "
+            f"canonical event name as `label=` (operator ruling R4)."
+        )
+
+        borrowed = {
+            getattr(txn_module, name)
+            for name in (
+                "_BOOTSTRAP_DEFINE_NAMESPACE_LABEL",
+                "_BOOTSTRAP_SELECT_DATABASE_LABEL",
+                "_BOOTSTRAP_DEFINE_DATABASE_LABEL",
+            )
+            if isinstance(getattr(txn_module, name, None), str)
+        }
+        assert label not in borrowed, (
+            f"scout's query seam labelled its exhaustion {label!r} — a label that belongs to "
+            f"the session bootstrap. A borrowed label satisfies a presence check and sends "
+            f"the operator to the wrong emitter, which is worse than no label at all."
+        )
+
+    async def test_scouts_query_exhaustion_carries_NO_url_a_KNOWN_BOUND(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """**THIS IS A KNOWN BOUND (#151, operator ruling R4), PINNED — not a passing gate.**
+
+        Scout's query seam is attributed by LABEL ONLY. The record names WHICH seam and WHAT
+        THE ENGINE SAID; it does NOT name WHICH SERVER, because `_scout_query` has no url in
+        scope and `CommandSubscriber` holds a `connect` callable rather than an address.
+        Closing that is a design change to scout's connection ownership, and the operator
+        ruled it a separate wave.
+
+        **IF YOU CLOSED THIS DELIBERATELY, DELETE THIS PIN AND SAY SO IN THE SAME DIFF** —
+        then extend `test_scouts_query_exhaustion_carries_a_label_OF_ITS_OWN` to assert the
+        url too, so the seam does not go from pinned-partial to unpinned-complete.
+
+        **NAMED RE-OPEN TRIGGER:** the day `_scout_query` (or its caller chain) gains a url —
+        e.g. `CommandSubscriber` taking a url alongside its `connect` factory, or the command
+        channel joining the ten `_query` seams' shape. At that point the bound has no reason
+        left to exist and this pin is what makes closing it a DECISION rather than a drift.
+
+        ⚠ DISCLOSED: this assertion does not discriminate on the UNFIXED tree — today the
+        record carries no url because it carries no label either, so `url is None` is true
+        for the wrong reason. Its proof is a MUTATION (thread a url into `scout.py:171` and
+        watch this go red), recorded in REPORT-contract-151b.md, and it becomes a real
+        tripwire the moment the label lands.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+        connection = _ForeverConflictingQuery()
+
+        with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):
+            with pytest.raises(TxnContentionExhaustedError):
+                await scout_module._scout_query(cast("Any", connection), "SELECT * FROM command")
+
+        record = _exhaustion_record(caplog)
+        assert getattr(record, "url", None) is None, (
+            f"scout's query seam now logs url={getattr(record, 'url', None)!r}. **This is a "
+            f"KNOWN BOUND (#151, operator ruling R4) — scout's query seam is attributed by "
+            f"LABEL ONLY, because `_scout_query` has no url in scope. If you closed this "
+            f"deliberately, delete this pin and say so in the same diff**, and extend the "
+            f"label pin above to assert the url as well."
         )
