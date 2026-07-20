@@ -98,7 +98,26 @@ shared reference; the step files carry scope/entry/exit and CITE this doc, never
   `registered ⟺ proven` a CHECKED invariant, and the `safe_str` residual closed then
   GENERALIZED to deny-by-default (an unknown AST shape FAILS LOUD). a2e9a70→ceac2d0;
   production byte-identical throughout. 3 bounds pinned; #143 ledgered. Row 5807c930.
-- **C2b** → `03-comms-message-graph.md` (message/to schema, seq, send/drain/ack).
+- **C2b** → **SPLIT THREE WAYS at its contract phase** (2026-07-19/20). The contract was written
+  IN FULL, sized, adversary-graded and re-sized — **400 pins, committed RED @ `efef2b3`, covering
+  all three packets in ONE file** (pin groups labelled, selectors in
+  `REPORT-contract-pkt03.md §UPDATE 5eb445b`). Sizing walked 0.25 → 0.6-0.8 → 0.7-0.9 → 0.55 for
+  the 03 half alone, every number measured by the author.
+  - `03-comms-message-graph.md` — **the STORE** (~0.20): `message`/`to` slices, `DEFINE SEQUENCE`,
+    **`ENFORCED`**, and the relation-table policy flip with dirty-store migration pins. TEST-ONLY.
+    Its own packet because it is the only part changing behaviour for code ALREADY IN PRODUCTION.
+  - `03a-comms-message-ledger.md` — **the LEDGER** (~0.35): `messages.py`, send/drain/ack, the
+    DERIVED waiting state, ≥8-way concurrency, retry-seam coverage. TEST-ONLY.
+  - `03b-comms-message-surface.md` — **the SURFACE** (~0.30): dispatch, renders, promise proofs,
+    drain telemetry. **DEPLOYS BOTH.**
+  ⚠ **Three data-model facts settled since this document was written, which OVERRIDE its
+  §"Data model" text:** `sequence::next()` at line 45 is WRONG — the correct spelling is
+  `sequence::nextval("<name>")` and the DDL is `DEFINE SEQUENCE IF NOT EXISTS` (a bare DEFINE
+  raises → boot crash) · the `to` edge ships **`ENFORCED`** (engine-level endpoint validation the
+  design predates) via `DEFINE TABLE OVERWRITE`, because `IF NOT EXISTS` is a measured silent
+  no-op for a changed relation clause · the design's *"drain by a parked agent flips it back to
+  active"* is **STRUCK** — the waiting state is DERIVED from an unanswered question thread, never
+  stored, so nothing un-parks (packet 03's ruling 9 carries the reasoning).
 - **C2c** → `04-comms-blocks-footer.md` (blocks edge, fleet columns, footer, #105).
 - **C3** → `05-comms-await-story.md` (await, story, rollup sections, CLI, idle-gate v2).
 - **C4** → `06-comms-protocol-drill.md` (brief-base v3, hooks, THE DRILL below).

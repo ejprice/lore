@@ -34,10 +34,17 @@ HERE now** — a packet session must not need to read them.
   design) → 26a+ (onboarding build); 27 (cross-tier compare) rides ∥. Live-DB
   introspection stays with odoo-dev by design.
 
-## State of record (verified 2026-07-19, after packet 02a)
-- Branch `feat/surreal-unification` @ **ceac2d0** (not pushed). Full suite at last
-  lead-run: **5694 passed / 0 failed** (3 skipped, 3 xfailed; `-n auto`, the standing
-  runner); skill suite **117 passed**; mypy 0 / 144 files; ruff clean.
+## State of record (verified 2026-07-20, after the packet-03 CONTRACT phase)
+- Branch `feat/surreal-unification` @ **9200e5b** (not pushed).
+- ⚠ **THE SUITE NUMBER HAS CHANGED SHAPE — read this before you run pytest.** The RED
+  contract for packets 03/03a/03b is COMMITTED (`efef2b3`, 400 pins, 4154 lines). So:
+  **6079 tests collected, ZERO collection errors**, of which **180 in
+  `test_message_ledger.py` are EXPECTED RED** — every one of them
+  `ModuleNotFoundError: No module named 'loremaster.messages'`, the module packet 03a
+  builds. The pre-contract green baseline was **5694 passed** (lead-measured 2026-07-19,
+  matching the recorded figure). A packet-03 session's job is to move a subset of those
+  180 to green — NOT to see 0 failures at start.
+- Skill suite **117 passed**; mypy 0 / 144 files; ruff clean (contract tree included).
 - **Packet 02a shipped NO deploy and is not owed one — it is TEST-ONLY.** Production was
   byte-identical throughout (`server.py` md5 `1caac4bd…` unchanged across every probe by
   three independent parties), so the deployed image below still matches HEAD's production
@@ -576,3 +583,25 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   **DESIGN-LAW §15** (instrument packets route through the contract-adversary). Sized 0.20,
   ran ~4× — the holes were not visible until the instrument existed, so it could not have
   split at kickoff. NEXT = **packet 03** (comms-message-graph), unblocked all along (deps 02).
+- 2026-07-19/20 · **PACKET 03 CONTRACT PHASE DONE — packet SPLIT THREE WAYS, no code written.**
+  Contract written IN FULL then sized (operator-directed), adversary-graded, fixed: **400 pins,
+  committed RED @ efef2b3**. Sizing walked 0.25 → 0.6-0.8 → 0.7-0.9 → the 03 half alone 0.55, every
+  number measured by the author, never estimated by the lead → **03 STORE (0.20) · 03a LEDGER
+  (0.35) · 03b SURFACE (0.30, deploys)**. Store is its own packet because it is the ONLY part
+  changing behaviour for code already in production (101,479 live edge rows, endpoint-audited: zero
+  poisoned, zero ghosts — the DATA is safe, the MECHANISM is the risk).
+  **THE ENGINE SHIPS `ENFORCED`** — a declarative RELATE endpoint guard, on our floor since 2.0.3 —
+  and this repo's own store reference had asserted an app-level check was "the only guard". FALSE.
+  Five live probes and a cold audit never found it; **one doc page found it in minutes**, on the
+  operator's "read the docs, probes only confirm" directive. Store reference corrected in three
+  passes (§6.3/6.4/6.5 + a FALSE §3 root-cause rule of our own + §6.6 "claims we are the sole source
+  for"). #105 ruled to stay in 04 with the exposure widened there; broadcast = ALL NON-RETIRED; the
+  waiting state is **DERIVED, never stored** (both the design sentence AND shipped behaviour struck).
+  Adversary: **8 wrong builds passed the ledger contract 57/0**, all now mutation-proven RED; B1's
+  root cause was a FIXTURE CORRELATION, not a missing assertion. One defect neither author nor
+  adversary could see (both graded in scratch copies holding the reference build): the contract
+  poisoned a SHARED fixture module, making **6 pre-existing suites UNCOLLECTABLE — ~1220 tests gone,
+  tail reading "no tests collected"** (#133's shape). Fixed; collection clean at 6079/0.
+  New findings **#144-#149**; agent-comms MEASUREMENT recorded in docs/orchestration (self-armed
+  watchers deliver MID-CHAIN; a 4-model consult was FALSIFIED 0-for-2 where testable).
+  NEXT = **packet 03 (the STORE)**, fresh session.
