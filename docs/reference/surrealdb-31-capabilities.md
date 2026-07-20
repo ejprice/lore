@@ -57,6 +57,7 @@ The single most expensive area in this file. Read all of it before changing any 
 | **INDEX** | **`IF NOT EXISTS`** | `OVERWRITE` **rebuilds** the index over every row → boot-time crash on a dim change. |
 | **ANALYZER** | **`IF NOT EXISTS`** | `OVERWRITE` lands the definition but does **not** re-tokenise built indexes → silent recall bug. |
 | **TABLE** | **`IF NOT EXISTS`** | `OVERWRITE` is *safe* (probed) but our table clauses never change. Nothing to migrate. |
+| **SEQUENCE** | **`IF NOT EXISTS`** | A **bare** `DEFINE SEQUENCE` **RAISES** *"The sequence 'x' already exists"* — and `ensure_ready()` re-applies the DDL every boot, so a bare DEFINE is a **boot-time crash**, exactly the INDEX failure mode. ⚠ Residual: like ANALYZER/INDEX, a changed `BATCH`/`START` then **never migrates** onto an existing store ([#146](#146)). Verified: **no** variant (`IF NOT EXISTS` *or* `OVERWRITE`) resets the counter — the catastrophic case (re-issuing numbers from zero at every boot) is ruled out. [PROBED 2026-07-19] |
 
 [CODE] `loremaster/store/surreal_schema.py` — `_define_field` (:637–671, `OVERWRITE`),
 `_define_index`/`_hnsw_index`/`_analyzer_statement`/`_define_table` (all `IF NOT EXISTS`).
@@ -271,23 +272,46 @@ The house rules for reading and writing rows. Each one was found the hard way.
   RELATE $from->edge->$to SET ...     -- $from / $to bound as RecordIDs
   ```
   (Matches the `graph_surreal.py` precedent.) The **edge name itself cannot be bound** — inline it.
-- **⚠⚠ `RELATE` does NOT validate that `in` exists.** [#105] A `RELATE` with a bogus record id
-  **silently writes a DANGLING edge** to a phantom record (`in_name: None`) — no error. In a
-  brief/ack graph this is a **read receipt for an agent who does not exist**: provenance you cannot
-  trust is worse than no provenance.
-  - *Latent today* only because agents are **retired, never hard-deleted**, and callers pass
-    store-resolved ids. **It goes live the day anything hard-deletes a node** (a GC pass, a purge
-    verb, a test-cleanup helper reaching production) or a caller passes an unvalidated id —
-    `BriefLedger.publish(agent_id=...)` takes a **bare string**.
-  - Note the audit **could not make the RELATE fail with a bad id at all**. That inability *is* the
-    finding.
+- **⚠⚠ `RELATE` does NOT validate that its ENDPOINTS exist — NEITHER `in` NOR `out`.** [#105]
+  A `RELATE` with a bogus record id on **either or both** ends **silently writes a DANGLING edge**
+  to a phantom record — no error. In a brief/ack or delivery graph this is a **receipt for an agent
+  who does not exist**: provenance you cannot trust is worse than no provenance.
+  - **[PROBED 2026-07-19]** all four legs, verbatim: bogus `out` → **OK**; bogus `in` → **OK**;
+    both bogus → **OK**; both real (positive control) → OK. ⚠ The instrument's own first run said the
+    opposite — endpoints bound as **strings** made every leg fail, and *only the positive control
+    exposed it.* A run without that control would have reported "RELATE rejects bad ids".
+  - **The traversal cannot distinguish a ghost at all**: `SELECT ->to->agent AS recipients` lists
+    `agent:a_ghost` as a first-class recipient while `SELECT count() FROM agent` = 1 and no phantom
+    node is materialised. A reader sees it **only** by projecting a field or `FETCH`ing and checking
+    for `None` — §2's silent-`None`-projection trap, one level deeper.
+  - **`in` was the recorded half; `out` is the DANGEROUS half.** In a `message->to->agent` fan-out
+    `in` is a row we just created, and **`out` is the CALLER-SUPPLIED recipient**.
+  - *Formerly filed as latent* because agents are **retired, never hard-deleted**, and callers passed
+    store-resolved ids. **The second clause dies the moment any verb accepts a recipient NAME from a
+    caller** (comms `send`), and the first dies the day anything hard-deletes a node. Note
+    `BriefLedger.publish(agent_id=...)` already takes a **bare string**.
+  - **The only endpoint validation the engine offers** is a typed relation table:
+    `DEFINE TABLE to TYPE RELATION IN message OUT agent` rejects a wrong-**table** endpoint with a
+    field-coercion error [PROBED 2026-07-19]. It does **not** reject a non-existent record of the
+    RIGHT table — so an application-level existence check remains the only guard against a ghost.
+  - A **bare `str`** endpoint (rather than a bound `RecordID`) is rejected LOUDLY:
+    `"Cannot execute RELATE statement where property 'in' is: 'message:m_real'"`. That is a helpful
+    failure — do not "fix" it by pre-formatting ids into strings.
+  - Note the original audit **could not make the RELATE fail with a bad id at all**. That inability
+    *is* the finding.
 - **UNIQUE index on a RELATION edge is LEGAL on our floor.** [CODE + PRODUCTION] `briefed` declares
   `UNIQUE(in, out)` (`surreal_schema.py:1071`) and runs in production. The old ban (#7061
   ghost-entry cascade bug) is **retired** — fixed in ≥3.1.0.
-  - **[UNVERIFIED]** the #7061 *cascade* interaction itself — i.e. `RELATE` → **cascade-delete an
-    endpoint** → re-`RELATE` — has **never been probed here**, because we never hard-delete nodes.
-    Same trigger as #105 above: **if you introduce node deletion, probe both.** Still interacts with
-    UPDATE-inside-EVENT (#7310 — moot while those edges carry no events).
+  - **SETTLED — the #7061 cascade hazard is ABSENT on 3.1.5.** [PROBED 2026-07-19] `RELATE` →
+    **hard-delete an endpoint** → re-`RELATE`: deleting either endpoint **cascades the edge away**
+    (confirmed, not assumed) **and cleans its UNIQUE index entry**, so the re-`RELATE` SUCCEEDS —
+    for a recreated endpoint, an absent endpoint, and an `in`-side delete alike. Positive control:
+    a genuine duplicate while both endpoints live IS rejected, proving the index was enforcing.
+    `UNIQUE(in, out)` is safe to ship on relation edges. Still interacts with UPDATE-inside-EVENT
+    (#7310 — moot while those edges carry no events).
+  - ⚠ Because `UNIQUE(in, out)` makes a duplicate a **loud ERR**, a fan-out that may repeat a
+    recipient must **dedupe before the RELATE loop** (or catch it) — the index is a correctness
+    backstop, not a de-duplicator you can lean on silently.
 - **Recursive graph paths** — `@.{n}` fixed, `@.{1..n}` bounded, `@.{..}` open (cap 256); nested
   shapes `@.{1..n}.{ id, kids: ->edge->t.@ }`. **Add a `TIMEOUT`** and assert DAG acyclicity (3.1.5
   fixed min-depth>1 node drops on cycles).
@@ -335,13 +359,39 @@ and **zero retryable conflicts** with `nextval` inside `BEGIN/COMMIT` alongside 
 where gaps are OK (PKT-28 C2's `message.seq` — task f86af162); **not** for gapless human handles
 (that is why the counter-row mint stays for `finding.number` / `brief.version`).
 
-**⚠ [MEASURED, finding #124] Auto-schema table creation RACES under concurrent first-write —
-and LOSES DATA SILENTLY.** Many concurrent transactions issuing the first-ever `CREATE` against a
-table with no `DEFINE TABLE`: commits report success, yet an independent read finds rows missing
-(466–474 of 480; always each worker's first txn; zero errors surfaced). Cured completely by
-`DEFINE TABLE` before first write — which our bootstrap always does. **Every table production
-code writes to must be covered by `generate_ddl` before first write; this is load-bearing against
-silent data loss, not tidiness.** (Probes: `scratchpad/102-recovery/`.)
+**[PROBED 2026-07-19, re-confirmed in the real write shape]** `sequence::nextval` + `CREATE` +
+N×`RELATE` **composes in ONE `execute_transaction`**: 16-way × 20 = **320/320 OK, zero conflicts,
+zero duplicates, zero gaps**. So a fan-out send does **not** contend — contention lives on the
+per-recipient CAS stamp, not on the mint. `sequence::next` is a **PARSE ERROR** on 3.1.5 (the engine
+itself suggests `nextval`), settling the contradiction §8 used to carry. Declare the sequence
+`IF NOT EXISTS` — see the §1.1 row for why, and for the BATCH/START residual ([#146](#146)).
+**Gaps are REAL**: an aborted txn burns a number, so `seq` is a monotonic ORDERING key — never a
+count, never a "how many messages" display, never a gapless handle. Pin that consumers tolerate gaps.
+
+**⚠ [MEASURED, finding #124 — MECHANISM CORRECTED 2026-07-19, see [#144](#144)] Auto-schema table
+creation STORMS WITH RETRYABLE CONFLICTS under concurrent first-write, and `query()` makes them
+LOOK like silent data loss.** Many concurrent transactions issuing the first-ever `CREATE` against a
+table with no `DEFINE TABLE` appeared to commit while an independent read found rows missing
+(466–474 of 480; always each worker's first txn; zero errors surfaced).
+
+> **The engine was NOT losing committed rows.** [PROBED 2026-07-19] Those "successes" were
+> **retryable conflicts**, invisible because they were issued through the SDK's `.query()`, which
+> validates **statement[0] only** (§3) — with `BEGIN` at index 0, every later `ERR` is discarded and
+> the call reads as success. Under full per-statement checking: **10 OK / 10 readable, ZERO loss**;
+> with the retry driver, **160/160 land**. #124 is an **INSTANCE OF THE §3 `query()` GAP**, not a
+> separate engine defect. **Do not cite it as evidence that SurrealDB loses committed data.**
+
+**The conclusion is UNCHANGED and now rests on two independently measured reasons: every table
+production code writes to must be declared before first write.** (1) Undeclared tables storm with
+retryable conflicts under concurrent first-write. (2) An undeclared **edge** table is auto-created
+`TYPE ANY`, silently discarding the `IN`/`OUT` type constraint — which §4 records as the *only*
+endpoint validation the engine offers. Reason (2) was previously unrecorded: a missing DDL entry for
+an edge does not fail loudly, it **silently downgrades the guard**.
+
+⚠ **OPEN RECONCILIATION ([#144](#144)):** the 2026-07-19 probe did **not** re-read the original
+`scratchpad/102-recovery/` harness before contradicting its result, and says so — its own verdict on
+that point is INCONCLUSIVE. Two harnesses can each be right about their own run. Read the original
+FIRST and reconcile before rewriting finding #124 itself.
 
 ---
 
@@ -414,6 +464,8 @@ Small, sharp, and each one cost somebody an hour. All [PROBED 2026-07-12] unless
 | A record from parts | `type::record(..)` | `type::thing(..)` — **not a 3.1.5 function** |
 | FULLTEXT index clause | `FULLTEXT ANALYZER <name> BM25` | `SEARCH ANALYZER …` (the older form) |
 | Max of a datetime column under GROUP BY | `time::max()` | `math::max` / `array::max` — accept it, **return garbage silently** |
+| RELATE an endpoint you just created | `LET $m = (CREATE ONLY t …).id;` then `RELATE $m->e->$x` | `RELATE $m.id->e->$x` — **PARSE ERROR** (*"Unexpected token `.`, expected a relation arrow"*). Bind the id INTO the `LET`; you cannot reach through a field at the arrow. |
+| RELATE endpoint values | bound **`RecordID`** objects | a bare **`str`** — `"Cannot execute RELATE statement where property 'in' is: 'message:m_real'"` |
 
 ---
 
@@ -431,13 +483,17 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
   covered by the fingerprint rebuild; **the others are covered by nothing.**
 - **[#102, OPEN] The shared `_txn` conflict-retry budget is 2-way-tuned and completely un-jittered**
   (§5). Blocks `-n auto` as the full-suite checkpoint gate.
-- **[#105, OPEN] Dangling `RELATE` edges** (§4).
-- **[UNVERIFIED] `sequence::next` vs `sequence::nextval`** — the docs disagree; never probed here.
+- **[#105, OPEN — and NO LONGER LATENT] Dangling `RELATE` edges, on BOTH endpoints** (§4). Goes live
+  the moment any verb accepts a recipient/endpoint identity from a caller rather than resolving it
+  from the store. An application-level existence check is the only guard; a typed
+  `TYPE RELATION IN a OUT b` catches only wrong-*table* endpoints.
 - **[UNVERIFIED] Does an edge-table LIVE SELECT fire on `RELATE`?** Never probed. The
   contentless-wake design makes an empty payload harmless (so #5014 cannot bite), but the *firing*
   itself is an assumption.
-- **[UNVERIFIED] The #7061 cascade-delete interaction with UNIQUE-on-edge** (§4) — unreachable
-  today; probe it the day anything hard-deletes a node.
+- ~~[UNVERIFIED] The #7061 cascade-delete interaction with UNIQUE-on-edge~~ — **SETTLED ABSENT**
+  [PROBED 2026-07-19], see §4. Endpoint deletion cascades the edge and cleans the UNIQUE entry;
+  re-`RELATE` succeeds. Kept struck rather than deleted so a reader who remembers the old ban sees
+  it was retired deliberately.
 - **[STALE PROSE, found 2026-07-13]** `surreal_schema.py:873` still explains behaviour in terms of
   *"`DEFINE FIELD IF NOT EXISTS` does NOT retro-validate existing rows"* — the **mechanism was
   retired** by #107's fix (fields are `OVERWRITE` now). The *behaviour* claim happens to remain true
@@ -533,3 +589,18 @@ spike-surreal 3.1.5 (throwaway DBs; production `:18500` never touched).
 
 <a id="107"></a>*#107 — `lore_findings get 107`. Read it once. It is the whole reason this file has
 a "read this first" block.*
+
+<a id="144"></a>*#144 — the #124 mechanism correction (the engine does **not** silently lose committed
+rows; `query()`'s statement[0]-only validation hid retryable conflicts). Carries an OPEN
+reconciliation against the original `scratchpad/102-recovery/` harness.*
+
+<a id="146"></a>*#146 — `DEFINE SEQUENCE IF NOT EXISTS` inherits the silent-no-op migration hazard for
+`BATCH`/`START`. Named re-open trigger: the day anyone changes either.*
+
+**Correction pass 2026-07-19** (packet 03 kickoff probes, operator-ruled): §1.1 gained a SEQUENCE
+row · §4's RELATE entry corrected from "`in`" to **both endpoints**, with the `out`/caller-supplied
+half and the ghost-in-traversal receipt · the #7061 cascade question **settled ABSENT** and its two
+`[UNVERIFIED]` flags retired · §5's #124 paragraph **rewritten** (mechanism was wrong, conclusion
+stands, now on two measured reasons) · §5 gained the one-transaction fan-out measurement · §7 gained
+two RELATE syntax gotchas · §8's `sequence::next` `[UNVERIFIED]` line **deleted** as a
+self-contradiction of §5. Receipts: `REPORT-probe-pkt03-store.md`.
