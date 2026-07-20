@@ -413,6 +413,18 @@ Two `pytest_asyncio` fixtures own the lifecycle: `surreal_env()` `:379-396` (pro
 
 A test receives the **ledger object**, not a bare connection, in the common case. Teardown is always `REMOVE DATABASE IF EXISTS` via a **fresh** admin connection (`drop_database:290-305`) — deliberately independent of the test's own connection, since a resilience test may have killed it. The REMOVE itself retries up to `_MAX_DROP_DATABASE_ATTEMPTS = 5` (`:106`) on the `"can be retried"` marker (`_remove_database_with_retry:260-287`), linear backoff `0.01s * attempt` (`:112`), unjittered (one waiter).
 
+> ⚠ **SUPERSEDED BY #150 (2026-07-20) — the paragraph above is left as written, because it
+> correctly records the world of 2026-07-19; it is no longer true of the code.** All four of
+> its teardown claims are dead: `_MAX_DROP_DATABASE_ATTEMPTS`, `_DROP_DATABASE_BACKOFF_SECONDS`,
+> the private `"can be retried"` marker copy, and `_remove_database_with_retry` itself were
+> **deleted**. The harness now owns no conflict-retry policy of its own: teardown and
+> `connect_admin` both route through the ONE shared seam
+> (`loremaster/loremaster/store/_txn.py` — `bootstrap_session` / `retry_on_conflict` /
+> `is_retryable_conflict_error`), so budget, backoff and marker are the seam's, and the
+> backoff is now **jittered** — the old "one waiter" premise was false under the standing
+> `-n auto` runner, where teardown has one waiter *per worker*. Do not cite this paragraph
+> for current behaviour; read `_surreal_harness.py` and finding #150.
+
 ### F.2 The `[real]` tier — NOT a pytest marker
 
 **There is no `markers =` list anywhere in the repo** (`pyproject.toml:107-118` is the full `[tool.pytest.ini_options]`). `[real]` is the **auto-generated parametrize id**: every ledger contract file declares
