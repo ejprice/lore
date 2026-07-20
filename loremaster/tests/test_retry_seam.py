@@ -5028,14 +5028,17 @@ class TestTheBootstrapClassifiesThroughTheONEAuthority:
 # This section used to hold a ruling and its instrument: ``tests/_surreal_harness.py``
 # hand-rolled its own retry budget, its own linear backoff and its own DECLARED literal
 # copy of the engine's conflict marker, and the lead ruled the copy KEEPS — on ONE stated
-# ground, that the harness must never import a store module (21 test files import it, so a
+# ground, that the harness must never import a store module (35 test files import it — the
+# ruling was argued from a FALSE count of 21, which is the number that CALL ``connect_admin``,
+# a smaller and different population; corrected per audit-150 R2 — so a
 # mid-TDD store breakage would become a collection error across all of them). A duplicate
 # that could not be deleted at least got a drift pin.
 #
 # **THE OPERATOR OVERTURNED THAT RULING ON 2026-07-20**, because RULING 1 removes the ground
 # it stood on: the harness reaches ``_txn`` by IN-FUNCTION import, so the collection-isolation
 # guarantee is fully preserved AND the duplication is deleted. The harness now declares NO
-# retry policy at all — no budget, no backoff, no marker — and the drift pin is deleted with
+# CONFLICT-RETRY policy at all — no conflict budget, no backoff, no marker — and the drift
+# pin is deleted with
 # the copy it guarded, exactly as its own failure message instructed ("if teardown no longer
 # needs to detect a retryable conflict, delete this pin in the same diff").
 #
