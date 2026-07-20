@@ -203,14 +203,26 @@ _DEFINE_FIELD_RE = re.compile(r"^DEFINE FIELD\b.*?(?P<field>\S+)\s+ON\s+(?P<tabl
 # stay IF NOT EXISTS — measured, ``DEFINE INDEX OVERWRITE`` re-validates every row of
 # a populated HNSW index and RAISES on a dim change, turning a silent no-op into a
 # boot-time crash.
+# ⚠ WIDENED by packet 03's relation-table policy flip (operator-ruled 2026-07-19).
+# TABLE is no longer ONE ruling: a RELATION table's clause (IN/OUT/ENFORCED) is a
+# thing that CHANGES, and `IF NOT EXISTS` was MEASURED to be a SILENT NO-OP for it
+# — the DDL returns OK, the stored definition is untouched, and the guard never
+# reaches a live store. That is #107's shape, and this pin previously certified it
+# as correct. A NODE table's clauses never change, so those stay IF NOT EXISTS.
 _REQUIRED_GUARDS: dict[str, str] = {
     "FIELD": "OVERWRITE",
     "TABLE": "IF NOT EXISTS",
+    "TABLE (RELATION)": "OVERWRITE",
     "INDEX": "IF NOT EXISTS",
     "ANALYZER": "IF NOT EXISTS",
+    # A bare `DEFINE SEQUENCE` RAISES on re-apply, and `ensure_ready()` re-applies
+    # every boot — so an un-guarded one is a boot-time crash. No variant resets the
+    # counter (probed), so IF NOT EXISTS is a clean no-op.
+    "SEQUENCE": "IF NOT EXISTS",
 }
 _DEFINE_GUARD_RE = re.compile(
-    r"^DEFINE\s+(?P<kind>FIELD|TABLE|INDEX|ANALYZER)\s+(?P<guard>OVERWRITE|IF NOT EXISTS)\b"
+    r"^DEFINE\s+(?P<kind>FIELD|TABLE|INDEX|ANALYZER|SEQUENCE)\s+"
+    r"(?P<guard>OVERWRITE|IF NOT EXISTS)\b"
 )
 
 
@@ -408,6 +420,12 @@ class TestFieldDdlConvergesOnAnExistingStore:
     the 34 per-field pins only cover fields somebody thought to pin.
     """
 
+    @staticmethod
+    def _generate_message_ddl_or_fail() -> str:
+        from loremaster.store.surreal_schema import generate_message_ddl
+
+        return str(generate_message_ddl())
+
     def _generated_ddl(self) -> dict[str, str]:
         """Every DDL generator lore serves, by name."""
         return {
@@ -419,6 +437,13 @@ class TestFieldDdlConvergesOnAnExistingStore:
             "generate_agent_ddl": generate_agent_ddl(),
             "generate_brief_ddl": generate_brief_ddl(),
             "generate_graph_ddl": generate_graph_ddl(),
+            # packet 03 — registered HERE deliberately: a new generator outside
+            # this dict is the registration gap this whole class exists to
+            # close. ⚠ Imported at CALL time: a module-level import of a
+            # not-yet-built symbol makes this whole file UNCOLLECTABLE at clean
+            # HEAD (deleting its ~300 pre-existing pins from the run) rather
+            # than turning THIS pin red, which is what a contract wants.
+            "generate_message_ddl": self._generate_message_ddl_or_fail(),
         }
 
     def test_every_define_statement_carries_the_guard_its_kind_requires(self) -> None:
@@ -442,6 +467,9 @@ class TestFieldDdlConvergesOnAnExistingStore:
                     f"there (finding #107). Statement: {statement!r}"
                 )
                 kind, guard = match.group("kind"), match.group("guard")
+                # A RELATION table is its own ruling — see _REQUIRED_GUARDS.
+                if kind == "TABLE" and "TYPE RELATION" in statement:
+                    kind = "TABLE (RELATION)"
                 seen[kind] += 1
                 if guard != _REQUIRED_GUARDS[kind]:
                     offenders.append(f"{generator}: {statement!r}")
@@ -463,9 +491,13 @@ class TestFieldDdlConvergesOnAnExistingStore:
             "  FIELD must be OVERWRITE: `IF NOT EXISTS` is a NO-OP on a field that "
             "already exists, so a changed definition never lands on a deployed store "
             "(this broke brief_publish 100% in production, green in every test).\n"
-            "  TABLE / INDEX / ANALYZER must stay IF NOT EXISTS: `DEFINE INDEX "
-            "OVERWRITE` re-validates every row of a populated HNSW index and RAISES on "
-            "a dim change — a boot-time crash.\n"
+            "  NODE TABLE / INDEX / ANALYZER / SEQUENCE must stay IF NOT EXISTS: "
+            "`DEFINE INDEX OVERWRITE` re-validates every row of a populated HNSW index "
+            "and RAISES on a dim change, and a bare `DEFINE SEQUENCE` raises on "
+            "re-apply — both are boot-time crashes.\n"
+            "  A RELATION TABLE must be OVERWRITE: `IF NOT EXISTS` is a MEASURED silent "
+            "no-op for a changed relation clause (IN/OUT/ENFORCED), so the guard never "
+            "reaches a live store — #107's shape, on the edge tables.\n"
             "Offenders:\n  " + "\n  ".join(offenders)
         )
 

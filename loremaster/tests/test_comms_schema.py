@@ -79,14 +79,42 @@ from _surreal_harness import (
 )
 from loremaster.store.surreal_schema import (
     AGENT_TABLE,
+    ANSWERS_TO_RELATION,
     BRIEF_COUNTER_TABLE,
     BRIEF_TABLE,
     BRIEFED_RELATION,
+    CODE_NODE_TABLE,
+    NAME_TABLE,
+    REFERS_RELATION,
     generate_agent_ddl,
     generate_brief_ddl,
+    generate_graph_ddl,
 )
 from render_injection_scaffold import _INJECTION_THREAT_CHARS, _ROW_FORGE_PAYLOAD
 from surrealdb import RecordID
+
+# --------------------------------------------------------------------------- #
+# LAZY access to packet 03's schema additions.
+#
+# ⚠ CALL-TIME IMPORTS ON PURPOSE. ``_schema().MESSAGE_TABLE`` / ``_schema().TO_RELATION`` /
+# ``_schema().MESSAGE_SEQUENCE_NAME`` / ``generate_message_ddl`` do not exist until packet
+# 03 lands. A module-level import of them makes this file UNCOLLECTABLE at clean
+# HEAD — deleting its ~180 PRE-EXISTING pins from the run — rather than RED.
+# Those are different states, and the uncollectable one is the dangerous one
+# (see the same note in test_message_ledger.py; finding #133).
+# --------------------------------------------------------------------------- #
+
+
+def _schema() -> Any:
+    """``surreal_schema``'s packet-03 additions, read at CALL time."""
+    import loremaster.store.surreal_schema
+
+    return loremaster.store.surreal_schema
+
+
+def generate_message_ddl() -> str:
+    """The packet-03 DDL generator, resolved at CALL time (see above)."""
+    return str(_schema().generate_message_ddl())
 
 # --- local contract constants -------------------------------------------------
 #
@@ -527,8 +555,27 @@ class TestBriefedDdlOffline:
     """
 
     def test_table_is_a_schemafull_relation(self) -> None:
+        """⚠ REWRITTEN by packet 03's relation-table policy flip (operator-ruled
+        2026-07-19). This pin previously asserted the byte-exact OLD literal
+        ``DEFINE TABLE IF NOT EXISTS briefed TYPE RELATION SCHEMAFULL`` — i.e. it
+        CERTIFIED THE OLD WORLD, and would have gone red on a correct build,
+        trapping the builder between this file and the new policy pins. Caught by
+        grepping the test tree for assertions pinning the retired string (repo
+        law: "tests written before a semantic change certify the OLD world").
+        The endpoint-typing and OVERWRITE assertions now live in
+        ``TestRelationTablePolicyFlip``; this pin keeps only what it always
+        meant — briefed is a SCHEMAFULL relation table.
+        """
         ddl = generate_brief_ddl()
-        assert f"DEFINE TABLE IF NOT EXISTS {BRIEFED_RELATION} TYPE RELATION SCHEMAFULL" in ddl
+        matches = [
+            statement
+            for statement in _statements(ddl)
+            if statement.startswith("DEFINE TABLE")
+            and f" {BRIEFED_RELATION} " in statement
+            and "TYPE RELATION" in statement
+        ]
+        assert matches, f"no relation DEFINE TABLE for {BRIEFED_RELATION}"
+        assert "SCHEMAFULL" in matches[0], matches[0]
 
     def test_via_domain_is_exactly_register_explicit_and_publish(self) -> None:
         """v7 (finding #98): the ASSERT's domain is the closed THREE-value set
@@ -1532,3 +1579,852 @@ class TestBriefCounterPerNamePartition:
         # bumps, proving the two names never share a counter row.
         assert beta_first["next"] == 1
         assert str(alpha_first["id"]) != str(beta_first["id"])
+
+
+# ===========================================================================
+# PACKET 03 (the durable core — TEST-ONLY, no deploy) — the ``message`` node
+# + the ``to`` delivery edge + the native
+# ``DEFINE SEQUENCE`` that mints ``message.seq``.
+#
+# Every store fact asserted here is CITED, never re-derived:
+# ``docs/reference/surrealdb-31-capabilities.md`` §1.1 (the SEQUENCE row of the
+# DDL decision rule, and why INDEX/TABLE/SEQUENCE stay ``IF NOT EXISTS`` while
+# FIELD is ``OVERWRITE``), §4 (UNIQUE-on-relation is legal and the #7061
+# cascade hazard is settled ABSENT), §5 (``sequence::nextval``; gaps are real),
+# plus ``REPORT-probe-pkt03-store.md`` probes 2/3/5.
+# ===========================================================================
+
+
+class TestMessageDdlOffline:
+    """``generate_message_ddl()`` — pure string-level pins (no server needed)."""
+
+    def test_defines_the_message_node_table_schemafull(self) -> None:
+        assert f"DEFINE TABLE IF NOT EXISTS {_schema().MESSAGE_TABLE} SCHEMAFULL" in _statements(
+            generate_message_ddl()
+        )
+
+    def test_defines_the_to_edge_as_a_typed_relation_table(self) -> None:
+        """Probe 5d: without ``TYPE RELATION`` the engine auto-creates the edge
+        table as ``TYPE ANY``, SILENTLY discarding the ``IN``/``OUT`` type
+        constraint — which store reference §4 records as the ONLY endpoint
+        validation the engine offers. A missing DDL entry does not fail loudly;
+        it downgrades the guard.
+        """
+        statements = _statements(generate_message_ddl())
+        relation = [
+            statement
+            for statement in statements
+            if statement.startswith("DEFINE TABLE")
+            and f" {_schema().TO_RELATION} " in statement
+            and "TYPE RELATION" in statement
+        ]
+        assert relation, f"no DEFINE TABLE for the {_schema().TO_RELATION} edge"
+        # OPERATOR-RULED 2026-07-19: the statement is named VERBATIM in Scope IN.
+        # Every clause is load-bearing and each was measured, not assumed:
+        #   OVERWRITE  — ``IF NOT EXISTS`` is a MEASURED SILENT NO-OP for a
+        #                changed relation clause (probe Q2). It returns OK, the
+        #                stored definition is unchanged, and a ghost RELATE still
+        #                succeeds. #107's shape — and WORSE, because on a virgin
+        #                DB the table does not exist, so IF NOT EXISTS creates it
+        #                WITH the guard and every test passes while no long-lived
+        #                store ever gains it.
+        #   IN/OUT     — the house helper emits NEITHER today, so every shipped
+        #                relation table is untyped. Without them there is no
+        #                endpoint typing at all.
+        #   ENFORCED   — validates BOTH endpoints against existing records, and
+        #                is the ONLY thing that closes the ``INSERT RELATION``
+        #                door (probe UNASKED-1) — a door no app-level check on
+        #                ``send`` can reach, because it is not on that path.
+        expected = (
+            f"DEFINE TABLE OVERWRITE {_schema().TO_RELATION} TYPE RELATION "
+            f"IN {_schema().MESSAGE_TABLE} OUT {AGENT_TABLE} ENFORCED SCHEMAFULL"
+        )
+        assert relation[0] == expected, (
+            f"the delivery edge's DEFINE TABLE must be exactly:\n  {expected}\nserved:\n  "
+            f"{relation[0]}\nEach clause was probed; see this test's own comment for which "
+            f"failure each one prevents."
+        )
+
+    @pytest.mark.parametrize(
+        ("field", "type_fragment"),
+        [
+            ("seq", "int"),
+            ("session", "string"),
+            ("thread", "string"),
+            ("sender", f"record<{AGENT_TABLE}>"),
+            ("grade", "string"),
+            ("body", "string"),
+            ("refs", "array"),
+            ("task_id", "option<string>"),
+            ("created_at", "datetime"),
+        ],
+    )
+    def test_message_field_is_declared_with_the_overwrite_guard(
+        self, field: str, type_fragment: str
+    ) -> None:
+        statement = _field_statement(generate_message_ddl(), _schema().MESSAGE_TABLE, field)
+        assert type_fragment in statement, f"{field}: expected {type_fragment!r} in {statement!r}"
+
+    def test_grade_is_a_closed_two_value_domain(self) -> None:
+        statement = _field_statement(generate_message_ddl(), _schema().MESSAGE_TABLE, "grade")
+        assert "ASSERT" in statement
+        assert "'signal'" in statement
+        assert "'directive'" in statement
+
+    def test_body_carries_a_length_bound_the_store_itself_enforces(self) -> None:
+        """The app-level teaching reject is the primary guard; the schema ASSERT
+        is the backstop that makes a bypassing writer fail LOUDLY rather than
+        landing an unbounded body.
+        """
+        statement = _field_statement(generate_message_ddl(), _schema().MESSAGE_TABLE, "body")
+        assert "ASSERT" in statement
+        assert "2000" in statement, f"expected the 2000-char pointer bound in {statement!r}"
+
+    @pytest.mark.parametrize("field", ["seen_at", "acked_at"])
+    def test_the_cas_stamp_columns_are_option_datetime(self, field: str) -> None:
+        """Consequence #10: the stamps MUST be ``option<datetime>`` so
+        ``WHERE ... IS NONE`` is a real write-once guard. A non-option column
+        with a DEFAULT would make every edge look already-stamped.
+        """
+        statement = _field_statement(generate_message_ddl(), _schema().TO_RELATION, field)
+        assert "option<datetime>" in statement, statement
+
+    def test_the_to_edge_never_hand_declares_in_or_out(self) -> None:
+        declared = _declared_fields(generate_message_ddl(), _schema().TO_RELATION)
+        assert not ({"in", "out"} & declared), (
+            f"{_schema().TO_RELATION} is a TYPE RELATION table — SurrealDB defines its in/out "
+            f"endpoint columns itself; hand-declaring them fights the engine"
+        )
+
+    def test_unique_in_out_index_is_defined_on_the_to_edge(self) -> None:
+        """Probe 2: UNIQUE(in, out) is SAFE on 3.1.5 (endpoint deletion cascades
+        the edge AND cleans the index entry; the #7061 hazard is settled ABSENT)
+        and gives one delivery edge per message-recipient pair.
+        """
+        matches = _index_statements(
+            generate_message_ddl(), _schema().TO_RELATION, fields_pattern=r"in,\s*out"
+        )
+        assert matches, f"expected a DEFINE INDEX on {_schema().TO_RELATION}.(in, out)"
+        assert any("UNIQUE" in statement for statement in matches)
+
+    def test_a_drain_index_on_out_and_seen_at_exists(self) -> None:
+        """"Unread" = my unstamped to-edges. Without an index the drain SELECT
+        table-scans every delivery edge in the store on every comms call.
+        """
+        matches = _index_statements(
+            generate_message_ddl(), _schema().TO_RELATION, fields_pattern=r"out,\s*seen_at"
+        )
+        assert matches, (
+            f"expected a DEFINE INDEX on {_schema().TO_RELATION}.(out, seen_at) for the drain SELECT"
+        )
+
+    def test_the_sequence_is_defined_IF_NOT_EXISTS(self) -> None:
+        """Store reference §1.1's SEQUENCE row (settled by this packet's own
+        probe 3 leg D): a BARE ``DEFINE SEQUENCE`` RAISES *"the sequence
+        already exists"* — and ``ensure_ready()`` re-applies the DDL at EVERY
+        boot, so a bare DEFINE is a boot-time crash, the same failure mode
+        §1.1 cites for flipping INDEX to OVERWRITE.
+        """
+        statements = _statements(generate_message_ddl())
+        matching = [
+            statement
+            for statement in statements
+            if statement.startswith("DEFINE SEQUENCE") and _schema().MESSAGE_SEQUENCE_NAME in statement
+        ]
+        assert matching, f"no DEFINE SEQUENCE for {_schema().MESSAGE_SEQUENCE_NAME!r}"
+        assert matching[0].startswith("DEFINE SEQUENCE IF NOT EXISTS"), (
+            f"the sequence must be IF NOT EXISTS (a bare DEFINE raises on re-apply and a "
+            f"boot-time crash is the result); served: {matching[0]!r}"
+        )
+
+    def test_every_field_uses_the_overwrite_guard_and_every_object_uses_if_not_exists(
+        self,
+    ) -> None:
+        """The #107 decision rule, asserted structurally over the WHOLE slice so
+        a field added later cannot quietly arrive with ``IF NOT EXISTS``.
+        """
+        # ⚠ SUPERSEDES this pin's own first version (contract UPDATE 5eb445b):
+        # it originally asserted IF NOT EXISTS for EVERY ``DEFINE TABLE``, which
+        # the relation-table policy flip makes wrong for edges. The rule is now
+        # per-OBJECT-KIND, and each branch carries the failure it prevents:
+        #   FIELD           OVERWRITE      — #107: INE never migrates a changed field
+        #   RELATION TABLE  OVERWRITE      — probe Q2: INE never migrates a changed
+        #                                    relation clause, silently
+        #   NODE TABLE      IF NOT EXISTS  — our node table clauses never change
+        #   INDEX           IF NOT EXISTS  — OVERWRITE REBUILDS; a boot-time crash
+        #   SEQUENCE        IF NOT EXISTS  — a bare DEFINE RAISES on re-apply
+        for statement in _statements(generate_message_ddl()):
+            if statement.startswith("DEFINE FIELD"):
+                assert statement.startswith("DEFINE FIELD OVERWRITE "), statement
+            elif statement.startswith("DEFINE TABLE") and "TYPE RELATION" in statement:
+                assert statement.startswith("DEFINE TABLE OVERWRITE "), (
+                    f"a RELATION table must be OVERWRITE — IF NOT EXISTS is a measured "
+                    f"silent no-op for a changed relation clause: {statement!r}"
+                )
+            elif statement.startswith(("DEFINE TABLE", "DEFINE INDEX", "DEFINE SEQUENCE")):
+                assert "IF NOT EXISTS" in statement, statement
+
+
+class TestMessageSchemaLive:
+    """Live behavioural pins against the real engine (spike-surreal :18000)."""
+
+    async def test_the_slice_applies_and_creates_every_object(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, _env = admin_db
+        await run(connection, generate_agent_ddl())
+        await run(connection, generate_message_ddl())
+        info = await run(connection, "INFO FOR DB")
+        assert {_schema().MESSAGE_TABLE, _schema().TO_RELATION} <= set(info.get("tables", {}))
+        assert _schema().MESSAGE_SEQUENCE_NAME in set(info.get("sequences", {}))
+
+    async def test_the_slice_is_idempotent(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """Probe 3 leg D's catastrophic case, pinned: re-applying the slice must
+        neither raise nor RESET the counter. A re-issued number would silently
+        collide every message id and delivery edge in a long-lived store.
+        """
+        connection, _env = admin_db
+        ddl = generate_message_ddl()
+        await run(connection, generate_agent_ddl())
+        await run(connection, ddl)
+        first = await run(connection, f'RETURN sequence::nextval("{_schema().MESSAGE_SEQUENCE_NAME}")')
+        await run(connection, ddl)
+        second = await run(connection, f'RETURN sequence::nextval("{_schema().MESSAGE_SEQUENCE_NAME}")')
+        assert int(second) > int(first), (
+            f"re-applying the slice rewound the sequence ({first} -> {second})"
+        )
+
+    async def test_the_typed_relation_rejects_a_wrong_TABLE_endpoint(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """Probe 5d: ``TYPE RELATION IN message OUT agent`` DOES reject a
+        wrong-table endpoint by field coercion — the only endpoint validation
+        the engine offers, and the reason ``TYPE ANY`` (what an undeclared edge
+        table auto-creates as) is not acceptable.
+        """
+        connection, env = admin_db
+        await run(connection, generate_agent_ddl())
+        await run(connection, generate_message_ddl())
+        message_id = await _create_message(connection, session="wave7", seq=1)
+        # ⚠ RESIDUAL 7.4 (adversary): this endpoint must be an EXISTING record of
+        # the WRONG table. A NONEXISTENT one is rejected by ``ENFORCED`` before
+        # endpoint TYPING is ever consulted — so the test would pass for a
+        # neighbouring reason and silently stop testing its own subject.
+        brief_id = _brief_record_id("project", 1)
+        await _create_brief(connection, brief_id=brief_id, name="project", version=1)
+        with pytest.raises(Exception):  # noqa: B017 - engine coercion error surface
+            await run(
+                connection,
+                f"RELATE $from->{_schema().TO_RELATION}->$to SET session = $edge_session, created_at = $at",
+                {
+                    "from": RecordID(_schema().MESSAGE_TABLE, message_id),
+                    "to": RecordID(BRIEF_TABLE, brief_id),
+                    "edge_session": "wave7",
+                    "at": datetime.now(UTC),
+                },
+            )
+        assert env is not None
+
+    async def test_a_duplicate_recipient_edge_is_a_LOUD_error(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """Probe 2's positive control, in-suite: the UNIQUE index genuinely
+        enforces, which is what makes "dedupe before the RELATE loop" a
+        requirement rather than a preference — and what makes the ledger's own
+        dedupe pin meaningful.
+        """
+        connection, _env = admin_db
+        await run(connection, generate_agent_ddl())
+        await run(connection, generate_message_ddl())
+        agent_id = _agent_record_id("wave7", "fixer-b")
+        await _create_agent(connection, agent_id=agent_id, name="fixer-b", session="wave7")
+        message_id = await _create_message(connection, session="wave7", seq=2)
+        await _relate_to(connection, message_id=message_id, agent_id=agent_id)
+        with pytest.raises(Exception):  # noqa: B017 - UNIQUE index violation surface
+            await _relate_to(connection, message_id=message_id, agent_id=agent_id)
+
+    async def test_a_DIFFERENT_recipient_on_the_same_message_is_accepted(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """The NEGATIVE control for the pin above — an over-broad index (say,
+        UNIQUE on ``in`` alone) would pass the duplicate test while breaking
+        every multi-recipient send.
+        """
+        connection, _env = admin_db
+        await run(connection, generate_agent_ddl())
+        await run(connection, generate_message_ddl())
+        message_id = await _create_message(connection, session="wave7", seq=3)
+        for name in ("fixer-b", "audit-c"):
+            agent_id = _agent_record_id("wave7", name)
+            await _create_agent(connection, agent_id=agent_id, name=name, session="wave7")
+            await _relate_to(connection, message_id=message_id, agent_id=agent_id)
+        rows = await run(connection, f"SELECT count() FROM {_schema().TO_RELATION} GROUP ALL")
+        assert _one(rows)["count"] == 2
+
+    async def test_an_out_of_domain_grade_is_rejected_by_the_store(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, _env = admin_db
+        await run(connection, generate_message_ddl())
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_message(connection, session="wave7", seq=4, grade="urgent")
+
+    @pytest.mark.parametrize("grade", ["signal", "directive"])
+    async def test_both_legal_grades_are_accepted(
+        self,
+        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+        grade: str,
+    ) -> None:
+        """POSITIVE CONTROL: an over-strict ASSERT would pass the rejection test
+        above while breaking every real send.
+        """
+        connection, _env = admin_db
+        await run(connection, generate_message_ddl())
+        await _create_message(connection, session="wave7", seq=5, grade=grade)
+
+    async def test_an_oversize_body_is_rejected_by_the_store_backstop(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, _env = admin_db
+        await run(connection, generate_message_ddl())
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_message(connection, session="wave7", seq=6, body="z" * 2001)
+
+
+async def _create_message(
+    connection: SurrealConnection,
+    *,
+    session: str,
+    seq: int,
+    grade: str = "signal",
+    body: str = "a body",
+    sender_id: str | None = None,
+) -> str:
+    """CREATE one ``message`` row and return its bare record id.
+
+    ``CONTENT`` (never ``SET session = $session``) — ``session`` is a PROTECTED
+    variable name on 3.1.5 (store reference §2).
+    """
+    message_id = uuid.uuid4().hex
+    resolved_sender = sender_id if sender_id is not None else _agent_record_id(session, "lead")
+    await run(
+        connection,
+        f"CREATE type::record('{_schema().MESSAGE_TABLE}', $id) CONTENT $content",
+        {
+            "id": message_id,
+            "content": {
+                "seq": seq,
+                "session": session,
+                "thread": session,
+                "sender": RecordID(AGENT_TABLE, resolved_sender),
+                "grade": grade,
+                "body": body,
+                "refs": [],
+                "task_id": None,
+                "created_at": datetime.now(UTC),
+            },
+        },
+    )
+    return message_id
+
+
+async def _relate_to(
+    connection: SurrealConnection, *, message_id: str, agent_id: str
+) -> Any:
+    """RELATE one ``message->to->agent`` delivery edge.
+
+    Endpoints are bound as SDK ``RecordID`` objects — a bare ``str`` is
+    rejected LOUDLY (*"Cannot execute RELATE statement where property 'in'
+    is..."*) and ``type::record(..)`` in endpoint position is a PARSE ERROR
+    (store reference §7).
+    """
+    return await run(
+        connection,
+        # ``$session`` is a PROTECTED variable name on 3.1.5 (store reference
+        # §2) — binding it is rejected even at a RELATE ``SET``. The COLUMN is
+        # still ``session``; only the PARAM must be spelled differently. The
+        # production fan-out inherits this constraint verbatim.
+        f"RELATE $from->{_schema().TO_RELATION}->$to SET session = $edge_session, created_at = $at",
+        {
+            "from": RecordID(_schema().MESSAGE_TABLE, message_id),
+            "to": RecordID(AGENT_TABLE, agent_id),
+            "edge_session": "wave7",
+            "at": datetime.now(UTC),
+        },
+    )
+
+
+# ===========================================================================
+# packet 03 — the RELATION-TABLE POLICY FLIP (operator-ruled 2026-07-19, a
+# deliberate scope EXPANSION) and the `ENFORCED` backstop.
+#
+# `_define_relation_table` today emits `DEFINE TABLE IF NOT EXISTS <n> TYPE
+# RELATION SCHEMAFULL` — no `IN`, no `OUT`, no `ENFORCED`, and on the clause
+# that cannot migrate. Consequence, measured: EVERY shipped relation table
+# (`briefed`, `refers`, `answers_to`) carries NO endpoint typing at all.
+#
+# ⚠ THE MECHANISM IS THE RISK, NOT THE DATA. The pre-flight audit
+# (`REPORT-audit-edge-preflight.md`) read BOTH production databases and all
+# 101,479 edge rows: perfectly endpoint-homogeneous, zero would be poisoned,
+# zero ghosts. What can still go wrong is the MIGRATION — and a virgin-DB
+# fixture cannot see it by construction (§1.6). Hence the dirty-store pin below.
+# ===========================================================================
+
+
+class TestRelationTablePolicyFlip:
+    """The helper's own contract, asserted through its three shipped callers.
+
+    Pinned via the GENERATORS rather than by reading the private helper, so a
+    build that "fixes" `_define_relation_table` while forgetting to pass the
+    endpoint tables at a call site still fails.
+    """
+
+    @staticmethod
+    def _relation_statement(ddl: str, table: str) -> str:
+        matches = [
+            statement
+            for statement in _statements(ddl)
+            if statement.startswith(("DEFINE TABLE OVERWRITE ", "DEFINE TABLE IF NOT EXISTS "))
+            and f" {table} " in statement
+            and "TYPE RELATION" in statement
+        ]
+        assert matches, f"no relation DEFINE TABLE found for {table!r}"
+        return matches[0]
+
+    def test_briefed_declares_its_endpoint_tables(self) -> None:
+        """`briefed` is `agent->briefed->brief`. It has shipped UNTYPED since C1
+        — this is the flip reaching an EXISTING table, which is exactly the case
+        the migration hazard applies to.
+        """
+        statement = self._relation_statement(generate_brief_ddl(), BRIEFED_RELATION)
+        assert f"TYPE RELATION IN {AGENT_TABLE} OUT {BRIEF_TABLE}" in statement, statement
+
+    def test_briefed_uses_the_overwrite_guard(self) -> None:
+        statement = self._relation_statement(generate_brief_ddl(), BRIEFED_RELATION)
+        assert statement.startswith("DEFINE TABLE OVERWRITE "), (
+            f"a relation table on IF NOT EXISTS can never migrate its clause — the flip "
+            f"would return OK and change nothing on every existing store: {statement!r}"
+        )
+
+    def test_every_relation_table_in_every_comms_generator_is_typed(self) -> None:
+        """The ∀ form. A per-table hand-list is exactly the enumerate-the-known
+        instrument the repo's six-defeats table forbids — this quantifies over
+        whatever the generators actually emit, so a relation table added
+        tomorrow is covered the day it is written.
+        """
+        for ddl in (
+            generate_agent_ddl(),
+            generate_brief_ddl(),
+            generate_message_ddl(),
+            generate_graph_ddl(),  # refers / answers_to — the flip reaches them too
+        ):
+            for statement in _statements(ddl):
+                if "TYPE RELATION" not in statement:
+                    continue
+                assert re.search(r"TYPE RELATION IN \w+ OUT \w+", statement), (
+                    f"an UNTYPED relation table — it accepts an endpoint of ANY table, "
+                    f"silently: {statement!r}"
+                )
+                assert statement.startswith("DEFINE TABLE OVERWRITE "), statement
+
+
+class TestEnforcedIsLiveOnTheDeliveryEdge:
+    """`ENFORCED` validates BOTH endpoints against EXISTING records — the guard
+    probe 1 proved the engine otherwise does not offer.
+
+    It is a BACKSTOP, never a replacement for the ledger's own recipient check:
+    it reports ONE bad recipient per attempt, as untyped prose, only AFTER the
+    write is attempted and the transaction aborted, and it cannot see ghosts
+    already stored. Both layers are pinned (ruling 8).
+    """
+
+    @staticmethod
+    async def _ready(connection: SurrealConnection) -> str:
+        await run(connection, generate_agent_ddl())
+        await run(connection, generate_message_ddl())
+        agent_id = _agent_record_id("wave7", "fixer-b")
+        await _create_agent(connection, agent_id=agent_id, name="fixer-b", session="wave7")
+        return agent_id
+
+    async def test_CONTROL_a_real_endpoint_pair_is_accepted(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """THE POSITIVE CONTROL, first and deliberately: an over-strict guard
+        that rejected EVERYTHING would pass every rejection pin below while
+        breaking every real send. Probe 1's own first run reported the exact
+        opposite of the truth for want of this leg.
+        """
+        connection, _env = admin_db
+        agent_id = await self._ready(connection)
+        message_id = await _create_message(connection, session="wave7", seq=1)
+        await _relate_to(connection, message_id=message_id, agent_id=agent_id)
+        rows = await run(connection, f"SELECT count() FROM {_schema().TO_RELATION} GROUP ALL")
+        assert _one(rows)["count"] == 1
+
+    async def test_a_ghost_OUT_endpoint_is_REJECTED(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """`out` is the CALLER-SUPPLIED half of a `message->to->agent` fan-out —
+        the dangerous one. Without `ENFORCED` this silently writes a permanent
+        delivery receipt for an agent who does not exist.
+        """
+        connection, _env = admin_db
+        await self._ready(connection)
+        message_id = await _create_message(connection, session="wave7", seq=2)
+        with pytest.raises(Exception):  # noqa: B017 - engine ENFORCED rejection surface
+            await _relate_to(connection, message_id=message_id, agent_id="a-ghost-that-never-was")
+
+    async def test_a_ghost_IN_endpoint_is_REJECTED(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, _env = admin_db
+        agent_id = await self._ready(connection)
+        with pytest.raises(Exception):  # noqa: B017 - engine ENFORCED rejection surface
+            await _relate_to(connection, message_id="m-ghost-that-never-was", agent_id=agent_id)
+
+    async def test_no_dangling_edge_survives_a_rejected_relate(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """The OUTCOME property, not just the raise: an exception that still
+        left a row would satisfy `pytest.raises` and defeat the whole point.
+        """
+        connection, _env = admin_db
+        await self._ready(connection)
+        message_id = await _create_message(connection, session="wave7", seq=3)
+        with pytest.raises(Exception):  # noqa: B017 - engine ENFORCED rejection surface
+            await _relate_to(connection, message_id=message_id, agent_id="a-ghost-that-never-was")
+        rows = await run(connection, f"SELECT count() FROM {_schema().TO_RELATION} GROUP ALL")
+        assert rows == [] or _one(rows)["count"] == 0
+
+    async def test_ENFORCED_closes_the_INSERT_RELATION_door(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """The door NO application check can reach (probe UNASKED-1). An app
+        guard protects the code path it sits on; `ENFORCED` protects the TABLE,
+        including every write path nobody has written yet.
+
+        Measured: `CREATE`/`INSERT INTO`/`UPSERT` are all closed by `TYPE
+        RELATION` alone — `INSERT RELATION` is closed by `ENFORCED` and by
+        nothing else.
+        """
+        connection, _env = admin_db
+        await self._ready(connection)
+        message_id = await _create_message(connection, session="wave7", seq=4)
+        with pytest.raises(Exception):  # noqa: B017 - engine ENFORCED rejection surface
+            await run(
+                connection,
+                f"INSERT RELATION INTO {_schema().TO_RELATION} $payload",
+                {
+                    "payload": {
+                        "in": RecordID(_schema().MESSAGE_TABLE, message_id),
+                        "out": RecordID(AGENT_TABLE, "a-ghost-that-never-was"),
+                        "session": "wave7",
+                        "created_at": datetime.now(UTC),
+                    }
+                },
+            )
+
+    async def test_CONTROL_INSERT_RELATION_is_legal_with_real_endpoints(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """Proves the rejection above is the CLAUSE and not the VERB — without
+        it, "INSERT RELATION raised" could simply mean the verb is unsupported.
+        """
+        connection, _env = admin_db
+        agent_id = await self._ready(connection)
+        message_id = await _create_message(connection, session="wave7", seq=5)
+        await run(
+            connection,
+            f"INSERT RELATION INTO {_schema().TO_RELATION} $payload",
+            {
+                "payload": {
+                    "in": RecordID(_schema().MESSAGE_TABLE, message_id),
+                    "out": RecordID(AGENT_TABLE, agent_id),
+                    "session": "wave7",
+                    "created_at": datetime.now(UTC),
+                }
+            },
+        )
+        rows = await run(connection, f"SELECT count() FROM {_schema().TO_RELATION} GROUP ALL")
+        assert _one(rows)["count"] == 1
+
+
+class TestRelationFlipAgainstAnExistingStore:
+    """⚠⚠ THE PIN THE WHOLE FLIP HANGS ON — the §1.6
+    `TestSchemaMigrationAgainstAnExistingStore` shape, because **a virgin-DB
+    fixture proves NOTHING here by construction.**
+
+    Measured (probe Q2): `DEFINE TABLE IF NOT EXISTS ... ENFORCED` against an
+    existing relation table returns **OK**, leaves the stored definition
+    **unchanged**, and a ghost RELATE still **succeeds**. That is #107 verbatim
+    — and worse in one specific way: on a FRESH database the table does not
+    exist, so `IF NOT EXISTS` creates it WITH the guard and **every test
+    passes** while no long-lived store ever gains it. The suite would certify a
+    guard that production does not have.
+
+    So the shape is mandatory and is exactly §1.6's: apply the OLD DDL → write a
+    row under it → apply the NEW DDL → assert the guard is LIVE **and** the old
+    row survived.
+    """
+
+    @staticmethod
+    def _old_ddl() -> str:
+        relation = _schema().TO_RELATION
+        return (
+            f"DEFINE TABLE IF NOT EXISTS {relation} TYPE RELATION SCHEMAFULL;\n"
+            f"DEFINE FIELD OVERWRITE session ON {relation} TYPE string;\n"
+            f"DEFINE FIELD OVERWRITE created_at ON {relation} TYPE datetime;\n"
+        )
+
+    async def _old_world(self, connection: SurrealConnection) -> tuple[str, str]:
+        await run(connection, generate_agent_ddl())
+        await run(connection, f"DEFINE TABLE IF NOT EXISTS {_schema().MESSAGE_TABLE} SCHEMALESS")
+        await run(connection, self._old_ddl())
+        agent_id = _agent_record_id("wave7", "fixer-b")
+        await _create_agent(connection, agent_id=agent_id, name="fixer-b", session="wave7")
+        message_id = uuid.uuid4().hex
+        await run(
+            connection,
+            f"CREATE type::record('{_schema().MESSAGE_TABLE}', $id) CONTENT $content",
+            {"id": message_id, "content": {"body": "written under the OLD definition"}},
+        )
+        await _relate_to(connection, message_id=message_id, agent_id=agent_id)
+        return message_id, agent_id
+
+    async def test_BASELINE_the_old_world_really_is_unguarded(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """Without this, "the guard is live after migrating" could be true
+        because it was ALWAYS live, and the migration would be untested.
+        """
+        connection, _env = admin_db
+        message_id, _agent_id = await self._old_world(connection)
+        await _relate_to(connection, message_id=message_id, agent_id="a-ghost-under-the-old-ddl")
+        rows = await run(connection, f"SELECT count() FROM {_schema().TO_RELATION} GROUP ALL")
+        assert _one(rows)["count"] == 2, "the OLD definition was supposed to accept a ghost"
+
+    async def test_the_guard_is_LIVE_after_applying_the_new_ddl_to_a_dirty_store(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, _env = admin_db
+        await self._old_world(connection)
+        await run(connection, generate_message_ddl())
+        # ⚠ INSTRUMENT NOTE: ``INFO FOR TABLE`` carries fields/indexes/events —
+        # NOT the table's own DEFINE statement. The stored table definition
+        # lives in ``INFO FOR DB``'s ``tables`` map (the same place
+        # test_graph_surreal.py reads it). Reading the wrong one made this pin
+        # fail on a CORRECT build; a probe needs its instrument checked too.
+        info = (await run(connection, "INFO FOR DB")).get("tables", {}).get(_schema().TO_RELATION, "")
+        # Instrument #1: the STORED definition actually changed.
+        assert "ENFORCED" in str(info), (
+            f"the new DDL applied to an EXISTING table and the stored definition did NOT "
+            f"gain the guard — the silent-no-op migration, shipped: {info!r}"
+        )
+        # Instrument #2 (independent of introspection): a ghost is now refused.
+        fresh_message = await _create_message(connection, session="wave7", seq=99)
+        with pytest.raises(Exception):  # noqa: B017 - engine ENFORCED rejection surface
+            await _relate_to(
+                connection, message_id=fresh_message, agent_id="a-ghost-after-migration"
+            )
+
+    async def test_the_row_written_under_the_OLD_definition_SURVIVES(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """§1.6's second half, and the half a migration pin usually forgets: the
+        schema converging must not poison existing DATA. The pre-flight audit
+        says all 101,479 production edge rows are endpoint-homogeneous, so this
+        must hold — and "must hold" is a claim until it is executed.
+        """
+        connection, _env = admin_db
+        await self._old_world(connection)
+        relation = _schema().TO_RELATION
+        before = _one(await run(connection, f"SELECT count() FROM {relation} GROUP ALL"))["count"]
+        await run(connection, generate_message_ddl())
+        after = await run(connection, f"SELECT count() FROM {_schema().TO_RELATION} GROUP ALL")
+        assert _one(after)["count"] == before, "the migration DROPPED an existing edge row"
+        readable = await run(connection, f"SELECT in, out, session FROM {_schema().TO_RELATION}")
+        assert readable and all(row.get("session") == "wave7" for row in readable), (
+            f"an edge written under the OLD definition is no longer readable intact: {readable!r}"
+        )
+
+    async def test_the_migration_is_idempotent_on_an_already_migrated_store(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """`ensure_ready()` re-applies the DDL at EVERY boot. `OVERWRITE` is a
+        FULL REPLACE, so the second application must land the same definition
+        rather than drift, and must not disturb the rows.
+        """
+        connection, _env = admin_db
+        await self._old_world(connection)
+        await run(connection, generate_message_ddl())
+        first = str((await run(connection, "INFO FOR DB")).get("tables", {}).get(_schema().TO_RELATION))
+        await run(connection, generate_message_ddl())
+        second = str((await run(connection, "INFO FOR DB")).get("tables", {}).get(_schema().TO_RELATION))
+        assert first == second, "re-applying the slice DRIFTED the stored definition"
+
+
+class TestTheFlipAgainstTheTablesThatACTUALLYEXISTInProduction:
+    """⚠⚠ MAJOR-4 (adversary) — THE INSTRUMENT WAS AIMED AT THE WRONG TABLE.
+
+    ``TestRelationFlipAgainstAnExistingStore`` above is a good pin, and it
+    covers ``to`` — a table that **does not exist in either production
+    database** (`REPORT-audit-edge-preflight.md` §Q5: packet 03 is genuinely
+    greenfield there). On a table that does not exist, `IF NOT EXISTS` would
+    have worked anyway. So the ONE instrument capable of seeing the
+    silent-no-op class was pointed at the single case where the no-op cannot
+    hurt us, and away from the three where it can.
+
+    The tables the flip actually ships against — and their live row counts from
+    the pre-flight audit — are ``briefed``, ``refers`` and ``answers_to``:
+    **101,479 rows across two production databases.**
+
+    Two things are pinned here, and the second is the one a migration pin
+    usually forgets:
+
+    1. **The flip LANDS** on each of them when applied to a store where the
+       table already exists under the OLD, untyped definition.
+    2. **The narrowing's documented hazard is PINNED, not assumed.** Typing a
+       populated edge WRITE-POISONS any row whose endpoint is of a
+       now-forbidden table: readable, traversable, but any future UPDATE is
+       rejected (store reference §1.4 — the schema converges, the DATA does
+       not). The pre-flight audit found production homogeneous TODAY, so
+       nothing would be poisoned — but **that is a fact about data at a point
+       in time, not a guarded invariant.** Pinning the BEHAVIOUR means the next
+       engineer meets this deliberately instead of from an incident.
+    """
+
+    # (generator, relation table, in-table, out-table) — the three that ship.
+    _SHIPPED_EDGES = (
+        ("generate_brief_ddl", BRIEFED_RELATION, AGENT_TABLE, BRIEF_TABLE),
+        ("generate_graph_ddl", REFERS_RELATION, CODE_NODE_TABLE, NAME_TABLE),
+        ("generate_graph_ddl", ANSWERS_TO_RELATION, CODE_NODE_TABLE, NAME_TABLE),
+    )
+
+    @staticmethod
+    def _ddl_for(generator_name: str) -> str:
+        return {
+            "generate_brief_ddl": generate_brief_ddl,
+            "generate_graph_ddl": generate_graph_ddl,
+        }[generator_name]()
+
+    @pytest.mark.parametrize(
+        ("generator_name", "relation", "in_table", "out_table"),
+        _SHIPPED_EDGES,
+        ids=[edge[1] for edge in _SHIPPED_EDGES],
+    )
+    async def test_the_flip_LANDS_on_an_existing_untyped_relation_table(
+        self,
+        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+        generator_name: str,
+        relation: str,
+        in_table: str,
+        out_table: str,
+    ) -> None:
+        connection, _env = admin_db
+        # THE OLD WORLD: the untyped definition every production store carries.
+        await run(connection, f"DEFINE TABLE IF NOT EXISTS {relation} TYPE RELATION SCHEMAFULL")
+        before = (await run(connection, "INFO FOR DB")).get("tables", {}).get(relation, "")
+        assert "IN " not in str(before), (
+            f"BASELINE: {relation} was supposed to start UNTYPED — otherwise this pin "
+            f"proves nothing about migrating: {before!r}"
+        )
+        await run(connection, self._ddl_for(generator_name))
+        after = str((await run(connection, "INFO FOR DB")).get("tables", {}).get(relation, ""))
+        assert f"IN {in_table} OUT {out_table}" in after, (
+            f"the flip applied to an EXISTING {relation} table and the stored definition "
+            f"did NOT gain its endpoint typing — the silent no-op, shipped against "
+            f"101,479 live rows: {after!r}"
+        )
+
+    async def test_a_HETEROGENEOUS_row_is_write_poisoned_not_dropped(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """The narrowing's DOCUMENTED outcome, executed rather than trusted
+        (store reference §1.4). An edge whose endpoint is of a now-forbidden
+        table survives READABLE and is never silently dropped — but any future
+        write to it is rejected LOUDLY.
+
+        This is the hazard the pre-flight audit cleared for TODAY's data. Pinned
+        so that "production is homogeneous" stops being an unguarded premise.
+        """
+        connection, _env = admin_db
+        await run(connection, generate_agent_ddl())
+        await run(connection, f"DEFINE TABLE IF NOT EXISTS {BRIEFED_RELATION} TYPE RELATION SCHEMAFULL")
+        await run(connection, f"DEFINE FIELD OVERWRITE via ON {BRIEFED_RELATION} TYPE string")
+        await run(connection, f"DEFINE FIELD OVERWRITE at ON {BRIEFED_RELATION} TYPE datetime")
+        agent_id = _agent_record_id("wave7", "fixer-b")
+        await _create_agent(connection, agent_id=agent_id, name="fixer-b", session="wave7")
+        # A FORBIDDEN endpoint under the new definition: agent->briefed->AGENT.
+        # Legal under the old untyped table; a heterogeneous row by construction.
+        other_id = _agent_record_id("wave7", "audit-c")
+        await _create_agent(connection, agent_id=other_id, name="audit-c", session="wave7")
+        await run(
+            connection,
+            f"RELATE $from->{BRIEFED_RELATION}->$to SET via = $via, at = $at",
+            {
+                "from": RecordID(AGENT_TABLE, agent_id),
+                "to": RecordID(AGENT_TABLE, other_id),
+                "via": "register",
+                "at": datetime.now(UTC),
+            },
+        )
+        await run(connection, generate_brief_ddl())
+
+        rows = await run(connection, f"SELECT via FROM {BRIEFED_RELATION}")
+        assert rows and rows[0].get("via") == "register", (
+            f"the heterogeneous row was DROPPED or became unreadable by the migration — "
+            f"the documented outcome is write-poisoned, never lost: {rows!r}"
+        )
+        with pytest.raises(Exception):  # noqa: B017 - engine coercion error surface
+            await run(
+                connection,
+                f"UPDATE {BRIEFED_RELATION} SET via = $via",
+                {"via": "explicit"},
+            )
+
+    async def test_CONTROL_a_HOMOGENEOUS_row_stays_fully_writable(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """THE CONTROL that makes the pin above a finding rather than a guess.
+
+        Without it, "the UPDATE raised" could be caused by anything — a missing
+        field, an unrelated ASSERT, a typo in the statement. The adversary's own
+        first write-poisoning probe failed exactly this way (§8.2): it showed
+        poisoning on BOTH arms because its control was broken for a DIFFERENT
+        reason, and the attribution was unsound until a single variable was
+        isolated. Here the ONLY difference from the pin above is the endpoint's
+        TABLE.
+
+        This is also the pin that proves the pre-flight audit's verdict is
+        actionable: production's rows are all of this shape, and this shape
+        migrates cleanly.
+        """
+        connection, _env = admin_db
+        await run(connection, generate_agent_ddl())
+        await run(connection, f"DEFINE TABLE IF NOT EXISTS {BRIEFED_RELATION} TYPE RELATION SCHEMAFULL")
+        await run(connection, f"DEFINE FIELD OVERWRITE via ON {BRIEFED_RELATION} TYPE string")
+        await run(connection, f"DEFINE FIELD OVERWRITE at ON {BRIEFED_RELATION} TYPE datetime")
+        agent_id = _agent_record_id("wave7", "fixer-b")
+        await _create_agent(connection, agent_id=agent_id, name="fixer-b", session="wave7")
+        brief_id = _brief_record_id("project", 1)
+        await _create_brief(connection, brief_id=brief_id, name="project", version=1)
+        await run(
+            connection,
+            f"RELATE $from->{BRIEFED_RELATION}->$to SET via = $via, at = $at",
+            {
+                "from": RecordID(AGENT_TABLE, agent_id),
+                "to": RecordID(BRIEF_TABLE, brief_id),
+                "via": "register",
+                "at": datetime.now(UTC),
+            },
+        )
+        await run(connection, generate_brief_ddl())
+        # The ONLY variable vs the pin above is the endpoint table. This row is
+        # of the shape production actually holds — it must stay WRITABLE.
+        await run(
+            connection, f"UPDATE {BRIEFED_RELATION} SET via = $via", {"via": "explicit"}
+        )
+        rows = await run(connection, f"SELECT via FROM {BRIEFED_RELATION}")
+        assert rows and rows[0].get("via") == "explicit"

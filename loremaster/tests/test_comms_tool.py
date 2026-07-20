@@ -95,6 +95,40 @@ from test_render_seam_pins import assert_actions_covered
 _DIM = 2048
 
 
+# --------------------------------------------------------------------------- #
+# LAZY access to the packet-03 message module and its fake.
+#
+# ⚠ THESE ARE CALL-TIME IMPORTS ON PURPOSE. ``loremaster.messages`` does not
+# exist until packet 03 lands, and a MODULE-LEVEL import of it here would make
+# this file UNCOLLECTABLE at clean HEAD — taking its ~700 pre-existing pins with
+# it. RED and UNCOLLECTABLE are different states: a red test runs and fails for
+# its own reason; an uncollectable module never loads.
+#
+# This contract shipped exactly that defect once (via ``_comms_fakes.py``, a
+# SHARED fixture module — six suites went uncollectable, ~1,220 tests stopped
+# being counted, and the tail read ``no tests collected``). It was invisible to
+# every satisfiability run because those ran in scratch copies where the module
+# EXISTS — finding #133. Call-time import keeps each packet-03a pin failing for
+# its OWN reason instead of deleting the file from the run.
+#
+# (PLC0415 import-outside-top-level is an ignored house idiom in this repo.)
+# --------------------------------------------------------------------------- #
+
+
+def _msg() -> Any:
+    """The packet-03 message module, imported at CALL time. See above."""
+    import loremaster.messages
+
+    return loremaster.messages
+
+
+def _msg_fakes() -> Any:
+    """The packet-03 message fake, imported at CALL time. See above."""
+    import _message_fakes
+
+    return _message_fakes
+
+
 def _config(slug: str) -> LoreConfig:
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -210,8 +244,10 @@ def _harness(
     *,
     agent_registry: FakeAgentRegistry | None = None,
     brief_ledger: FakeBriefLedger | None = None,
+    message_ledger: Any = None,
     stale_heartbeat_s: int = 600,
     fleet_limit: int = 20,
+    drain_limit: int = 20,
     brief_body_warn_chars: int = 4000,
 ) -> Any:
     """A minimal ``AppContext``-shaped double: exactly the attributes
@@ -233,10 +269,14 @@ def _harness(
         if agent_registry is not None
         else FakeAgentRegistry(db=FakeAgentDatabase()),
         brief_ledger=brief_ledger if brief_ledger is not None else FakeBriefLedger(db=FakeBriefDatabase()),
+        message_ledger=message_ledger
+        if message_ledger is not None
+        else _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase()),
         config=SimpleNamespace(
             comms=SimpleNamespace(
                 stale_heartbeat_s=stale_heartbeat_s,
                 fleet_limit=fleet_limit,
+                drain_limit=drain_limit,
                 brief_body_warn_chars=brief_body_warn_chars,
             )
         ),
@@ -297,7 +337,19 @@ class TestCommsActionsTable:
     the exact shape spec §8 pins verbatim (six actions, D3: a SANCTIONED
     deviation from the tasks()/findings() if/elif house idiom)."""
 
-    _EXPECTED_ACTIONS = {"register", "heartbeat", "brief_get", "brief_publish", "brief_ack", "fleet"}
+    # packet 03 widens the table by three (send/drain/ack) — the growth points
+    # server.py:1097-1099 already names. The set stays EXACT, never a subset.
+    _EXPECTED_ACTIONS = {
+        "register",
+        "heartbeat",
+        "brief_get",
+        "brief_publish",
+        "brief_ack",
+        "fleet",
+        "send",
+        "drain",
+        "ack",
+    }
 
     def test_exact_action_set(self) -> None:
         assert set(_COMMS_ACTIONS) == self._EXPECTED_ACTIONS
@@ -387,7 +439,7 @@ class TestCommsToolRegistration:
     async def test_description_names_every_action(self, monkeypatch: pytest.MonkeyPatch) -> None:
         tools = await _tools_by_name(monkeypatch)
         description = tools["lore_comms"].description or ""
-        for action in ("register", "heartbeat", "brief_get", "brief_publish", "brief_ack", "fleet"):
+        for action in sorted(_COMMS_ACTIONS):
             assert action in description, f"the tool description must name {action!r}"
 
     async def test_param_honesty__every_spec_param_is_in_the_tool_signature(
@@ -3573,6 +3625,148 @@ async def _render_fleet_session(value: str, _ctx: Any) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+# packet 03 — send / drain / ack render fixtures.
+#
+# HOSTILE-FIXTURE LAW: a message body is STORED FREE TEXT written by another
+# agent, so every one of these is driven with the full threat-char corpus plus
+# the row-forge payload by ``TestC1RenderInjectionBattery`` below. A drain row
+# is a SINGLE line (the design's numbered ``#seq [grade] sender->you: body``
+# form), so the body is sanitised into it rather than fenced — which is exactly
+# why the injection battery, not the fence-integrity class, is its oracle.
+# --------------------------------------------------------------------------- #
+
+
+def _message(
+    *,
+    seq: int = 1,
+    grade: str = "signal",
+    body: str = "the body",
+    sender_name: str = "lead",
+    session: str = "wave7",
+    thread: str | None = None,
+    task_id: str | None = None,
+    refs: list[str] | None = None,
+) -> Any:
+    return _msg().Message(
+        id=f"{seq:026x}",
+        seq=seq,
+        session=session,
+        thread=thread if thread is not None else session,
+        sender_id="lead-id-0000",
+        sender_name=sender_name,
+        grade=cast(Any, grade),
+        body=body,
+        refs=refs if refs is not None else [],
+        task_id=task_id,
+        question=False,
+        created_at=datetime.now(UTC),
+    )
+
+
+def _inbox_entry(
+    *,
+    seq: int = 1,
+    grade: str = "signal",
+    body: str = "the body",
+    sender_name: str = "lead",
+    thread: str = "wave7",
+    task_id: str | None = None,
+    refs: list[str] | None = None,
+    acked_at: datetime | None = None,
+) -> Any:
+    return _msg().InboxEntry(
+        seq=seq,
+        message_id=f"{seq:026x}",
+        grade=cast(Any, grade),
+        sender_name=sender_name,
+        thread=thread,
+        task_id=task_id,
+        body=body,
+        refs=refs if refs is not None else [],
+        created_at=datetime.now(UTC),
+        acked_at=acked_at,
+        ack_note=None,
+    )
+
+
+def _send_result(
+    *, message: Any = None, recipient_names: list[str] | None = None
+) -> Any:
+    names = recipient_names if recipient_names is not None else ["fixer-b"]
+    return _msg().MessageSendResult(
+        message=message if message is not None else _message(),
+        recipient_names=names,
+        recipient_count=len(names),
+    )
+
+
+def _drain_result(
+    *,
+    entries: list[Any] | None = None,
+    total_pending: int | None = None,
+    directive_pending: int | None = None,
+    peeked: bool = False,
+) -> Any:
+    rows = entries if entries is not None else [_inbox_entry()]
+    return _msg().MessageDrainResult(
+        entries=rows,
+        total_pending=total_pending if total_pending is not None else len(rows),
+        directive_pending=directive_pending
+        if directive_pending is not None
+        else sum(1 for row in rows if row.grade == "directive"),
+        stamped_seqs=[] if peeked else [row.seq for row in rows],
+        peeked=peeked,
+    )
+
+
+def _ack_result(*, entries: list[Any] | None = None) -> Any:
+    default = [_msg().MessageAckEntry(seq=1, outcome="acked", acked_at=datetime.now(UTC))]
+    rows = entries if entries is not None else default
+    return _msg().MessageAckResult(
+        entries=rows,
+        acked_count=sum(1 for row in rows if row.outcome == "acked"),
+        already_acked_count=sum(1 for row in rows if row.outcome == "already_acked"),
+    )
+
+
+async def _render_send_recipients(value: str, _ctx: Any) -> str:
+    return AppContext._render_comms_send(
+        _send_result(recipient_names=[value]), broadcast=False, session="wave7"
+    )
+
+
+async def _render_send_sender(value: str, _ctx: Any) -> str:
+    return AppContext._render_comms_send(
+        _send_result(message=_message(sender_name=value)), broadcast=False, session="wave7"
+    )
+
+
+async def _render_drain_body(value: str, _ctx: Any) -> str:
+    return AppContext._render_comms_drain(
+        _drain_result(entries=[_inbox_entry(body=value)]), agent_name="fixer-b", limit=20
+    )
+
+
+async def _render_drain_sender(value: str, _ctx: Any) -> str:
+    return AppContext._render_comms_drain(
+        _drain_result(entries=[_inbox_entry(sender_name=value)]), agent_name="fixer-b", limit=20
+    )
+
+
+async def _render_drain_thread(value: str, _ctx: Any) -> str:
+    return AppContext._render_comms_drain(
+        _drain_result(entries=[_inbox_entry(thread=value)]), agent_name="fixer-b", limit=20
+    )
+
+
+async def _render_ack_agent_name(value: str, _ctx: Any) -> str:
+    return AppContext._render_comms_ack(
+        _ack_result(entries=[_msg().MessageAckEntry(seq=1, outcome="not_addressed", acked_at=None)]),
+        agent_name=value,
+    )
+
+
 # The FENCE cases (register.brief_body / brief_get.body) are deliberately
 # NOT in this list -- see TestFencedBodyIntegrity below and the report's
 # "genuine spec tension" flag: bodies are contractually verbatim/newline-
@@ -3599,6 +3793,12 @@ C1_RENDER_CASES: list[RenderCase] = [
     RenderCase("fleet.task_id", _render_fleet_task_id),
     RenderCase("fleet.note", _render_fleet_note),
     RenderCase("fleet.session", _render_fleet_session),
+    RenderCase("send.recipients", _render_send_recipients),
+    RenderCase("send.sender", _render_send_sender),
+    RenderCase("drain.body", _render_drain_body),
+    RenderCase("drain.sender", _render_drain_sender),
+    RenderCase("drain.thread", _render_drain_thread),
+    RenderCase("ack.name", _render_ack_agent_name),
 ]
 
 # The two FENCE-labeled cases from spec §10, tracked separately (see
@@ -3694,3 +3894,377 @@ def test_control_char_pattern_and_max_backtick_run_are_the_shared_seam() -> None
     # sanitise.py/render.py already enforce -- not a locally re-derived one.
     assert CONTROL_CHAR_PATTERN.search("a\nb") is not None
     assert max_backtick_run("```") == 3
+
+
+# =========================================================================== #
+# PACKET 03a — send / drain / ack at the DISPATCHER
+#
+# ⚠ PACKET LABEL (SPLIT, operator-ruled 2026-07-19): everything in this file
+# and in test_comms_promise_registry.py is **packet 03a** (the surface; deploys
+# both). The store + ledger groups are **packet 03** (test-only, no deploy) and
+# live in test_comms_schema.py + test_message_ledger.py. The contract is
+# deliberately kept WHOLE — one file per concern, run per packet by selector;
+# see REPORT-contract-pkt03.md §UPDATE 5eb445b for the exact pytest invocations.
+#
+# The message LEDGER's own contract lives in ``test_message_ledger.py``. What
+# is pinned HERE is everything the dispatcher owns and the ledger deliberately
+# does not (the ``briefs.py:79-89`` decoupling: the ledger stays key-agnostic,
+# the CALLER resolves the roster) — which is precisely where kickoff rulings 1
+# and 7 live.
+# =========================================================================== #
+
+
+class TestNewActionSpecs:
+    def test_send_params_and_required(self) -> None:
+        spec = _COMMS_ACTIONS["send"]
+        # ``set_status`` is IN (operator-ruled 2026-07-19, pulled in from the
+        # design's tool table): a sender may park itself in the same call — the
+        # one-call operator question. Per ruling 9 it does NOT store a waiting
+        # state; it MARKS the message as the question the derivation reads.
+        assert spec.params == frozenset(
+            {"to", "body", "grade", "thread", "task_id", "refs", "set_status"}
+        )
+        assert spec.required == frozenset({"body", "grade"})
+        assert spec.requires_registration is True
+
+    def test_drain_params(self) -> None:
+        spec = _COMMS_ACTIONS["drain"]
+        assert spec.params == frozenset({"limit", "peek"})
+        assert spec.required == frozenset()
+        assert spec.requires_registration is True
+
+    def test_ack_params_and_required(self) -> None:
+        spec = _COMMS_ACTIONS["ack"]
+        assert spec.params == frozenset({"seqs", "note"})
+        assert spec.required == frozenset({"seqs"})
+        assert spec.requires_registration is True
+
+    def test_grade_is_REQUIRED_for_send(self) -> None:
+        """A defaulted grade is a silent policy decision: every message would
+        become a ``signal`` (never ack-tracked) or every one a ``directive``
+        (ack-nagging on trivia). The design's own table lists it unqualified.
+        """
+        assert "grade" in _COMMS_ACTIONS["send"].required
+
+
+class TestBroadcastFanOut:
+    """RULING 1 (binding): ``to=[]`` / omitted ⇒ ALL NON-RETIRED agents
+    (active + idle + input_required), never ``status == 'active'`` alone. An
+    idle or parked agent silently missing a broadcast is message LOSS — the
+    failure this subsystem exists to remove — and a parked agent MUST receive
+    messages, since that is how its answer arrives.
+
+    RULING 7: a broadcast does NOT deliver to its own sender.
+
+    The fixture carries one agent of EVERY status plus a second SESSION, so it
+    can discriminate all four wrong builds at once. A fixture of active agents
+    only is decoration here.
+    """
+
+    @staticmethod
+    def _fleet() -> tuple[Any, Any]:
+        db = FakeAgentDatabase()
+        registry = FakeAgentRegistry(db=db)
+        message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
+        return _harness(agent_registry=registry, message_ledger=message_ledger), message_ledger
+
+    @staticmethod
+    async def _populate(harness: Any, message_ledger: Any) -> None:
+        registry: FakeAgentRegistry = harness.agent_registry
+        for name, session, status in (
+            ("lead", "wave7", "active"),  # the SENDER
+            ("fixer-b", "wave7", "active"),
+            ("idle-c", "wave7", "idle"),
+            ("parked-d", "wave7", "input_required"),
+            ("retired-e", "wave7", "retired"),
+            ("other-f", "wave9", "active"),  # the CROSS-SESSION control
+        ):
+            await registry.register(name, session=session, role="builder")
+            if status != "active":
+                await registry.touch(name, session=session, status=status)
+            agent = await registry.get_agent(name, session=session)
+            message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+
+    async def _broadcast_recipients(self) -> list[str]:
+        harness, message_ledger = self._fleet()
+        await self._populate(harness, message_ledger)
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            body="all hands: the gate is red",
+            grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+        )
+        [message] = list(message_ledger.db.messages.values())
+        return sorted(
+            message_ledger.db.agents[agent_id]
+            for (message_id, agent_id) in message_ledger.db.edges
+            if message_id == message.id
+        )
+
+    async def test_broadcast_reaches_active_idle_and_parked(self) -> None:
+        recipients = await self._broadcast_recipients()
+        assert "fixer-b" in recipients
+        assert "idle-c" in recipients, (
+            "an IDLE agent missed a broadcast — a build fanning out over status=='active' "
+            "alone loses exactly the traffic this subsystem exists to make durable (ruling 1)"
+        )
+        assert "parked-d" in recipients, (
+            "an INPUT_REQUIRED agent missed a broadcast — a parked agent MUST receive "
+            "messages, since that is how its answer arrives (ruling 1)"
+        )
+
+    async def test_broadcast_excludes_retired_agents(self) -> None:
+        assert "retired-e" not in await self._broadcast_recipients()
+
+    async def test_broadcast_never_crosses_sessions(self) -> None:
+        assert "other-f" not in await self._broadcast_recipients()
+
+    async def test_broadcast_does_not_deliver_to_its_own_sender(self) -> None:
+        assert "lead" not in await self._broadcast_recipients(), (
+            "ruling 7: a broadcast does not deliver to its own sender"
+        )
+
+    async def test_the_exact_broadcast_set(self) -> None:
+        """The four assertions above, stated once as an EXACT set — an
+        individually-passing build that ALSO delivers somewhere unexpected
+        (say, to every session) fails here and only here.
+        """
+        assert await self._broadcast_recipients() == ["fixer-b", "idle-c", "parked-d"]
+
+    async def test_broadcast_is_not_bounded_by_the_fleet_display_limit(self) -> None:
+        """DISCRIMINATOR: ``AgentRegistry.fleet()`` is a display window (limited
+        and status-ordered); ``roster()`` is the row-UNLIMITED membership. A
+        build resolving the broadcast through ``fleet()`` silently drops every
+        recipient past the limit — invisible at small N.
+        """
+        harness, message_ledger = self._fleet()
+        registry: FakeAgentRegistry = harness.agent_registry
+        names = ["lead"] + [f"agent-{index:02d}" for index in range(30)]
+        for name in names:
+            await registry.register(name, session="wave7", role="builder")
+            agent = await registry.get_agent(name, session="wave7")
+            message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            body="all hands",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+        )
+        [message] = list(message_ledger.db.messages.values())
+        delivered = {
+            agent_id
+            for (message_id, agent_id) in message_ledger.db.edges
+            if message_id == message.id
+        }
+        assert len(delivered) == len(names) - 1, (
+            f"broadcast reached {len(delivered)} of {len(names) - 1} non-sender agents — the "
+            f"fan-out was bounded by a DISPLAY limit"
+        )
+
+    async def test_an_explicit_recipient_list_is_not_a_broadcast(self) -> None:
+        """PARAMETER MONOCULTURE: every pin above omits ``to=``. A build that
+        ignores ``to=`` entirely and always broadcasts passes all of them.
+        """
+        harness, message_ledger = self._fleet()
+        await self._populate(harness, message_ledger)
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            to=["fixer-b"],
+            body="just for you",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+        )
+        [message] = list(message_ledger.db.messages.values())
+        recipients = sorted(
+            message_ledger.db.agents[agent_id]
+            for (message_id, agent_id) in message_ledger.db.edges
+            if message_id == message.id
+        )
+        assert recipients == ["fixer-b"]
+
+    async def test_a_broadcast_with_no_other_agent_is_a_teaching_error(self) -> None:
+        harness, message_ledger = self._fleet()
+        registry: FakeAgentRegistry = harness.agent_registry
+        await registry.register("lead", session="wave7", role="lead")
+        agent = await registry.get_agent("lead", session="wave7")
+        message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+        with pytest.raises(_msg().EmptyRecipientSetError):
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                body="anybody out there",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+
+
+class TestUnregisteredRecipientIsTheEXISTINGTeachingError:
+    """RULING 2: packet 03 builds its own scoped ``unregistered recipient =
+    teaching error`` and routes it through the EXISTING
+    ``_comms_enrich_unknown_agent`` (``server.py:4527-4545``) rather than
+    minting a second one. ONE IMPLEMENTATION — a second roster-enrichment
+    helper is copy #2 of a policy.
+
+    The fixture uses a recipient name that DOES NOT EXIST. A fixture where
+    every recipient is registered cannot discriminate (probe consequence #1).
+    """
+
+    async def test_an_unknown_recipient_names_itself_and_the_live_roster(self) -> None:
+        db = FakeAgentDatabase()
+        registry = FakeAgentRegistry(db=db)
+        message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
+        harness = _harness(agent_registry=registry, message_ledger=message_ledger)
+        for name in ("lead", "fixer-b"):
+            await registry.register(name, session="wave7", role="builder")
+            agent = await registry.get_agent(name, session="wave7")
+            message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+        with pytest.raises((UnknownAgentError, _msg().UnknownRecipientError)) as excinfo:
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["fixer-b", "typo-agent"],
+                body="who are you",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        text = str(excinfo.value)
+        assert "typo-agent" in text, "the teaching error must NAME the unresolvable recipient"
+        assert "fixer-b" in text, (
+            "the teaching error must carry the capped/counted live roster the existing "
+            "_comms_enrich_unknown_agent produces — a second, roster-less error is copy #2"
+        )
+
+    async def test_nothing_is_delivered_when_one_recipient_is_unknown(self) -> None:
+        db = FakeAgentDatabase()
+        registry = FakeAgentRegistry(db=db)
+        message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
+        harness = _harness(agent_registry=registry, message_ledger=message_ledger)
+        for name in ("lead", "fixer-b"):
+            await registry.register(name, session="wave7", role="builder")
+            agent = await registry.get_agent(name, session="wave7")
+            message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+        with pytest.raises(Exception):  # noqa: B017 - either teaching error is acceptable here
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["fixer-b", "typo-agent"],
+                body="who are you",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        assert message_ledger.db.messages == {}, "a rejected send wrote a message row"
+        assert message_ledger.db.edges == {}, "a rejected send wrote a delivery edge"
+
+
+class TestDrainAndAckAtTheDispatcher:
+    @staticmethod
+    async def _ready() -> tuple[Any, Any]:
+        db = FakeAgentDatabase()
+        registry = FakeAgentRegistry(db=db)
+        message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
+        harness = _harness(agent_registry=registry, message_ledger=message_ledger, drain_limit=5)
+        for name in ("lead", "fixer-b"):
+            await registry.register(name, session="wave7", role="builder")
+            agent = await registry.get_agent(name, session="wave7")
+            message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+        return harness, message_ledger
+
+    async def test_drain_defaults_to_the_configured_limit_not_a_hardcoded_one(self) -> None:
+        """The drain window is CONFIG (``comms.drain_limit``), like
+        ``fleet_limit`` — never a literal buried in the handler. The harness
+        sets 5; a build hardcoding 20 serves 8 rows here.
+        """
+        harness, message_ledger = await self._ready()
+        for index in range(8):
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["fixer-b"],
+                body=f"message {index}",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        rendered = str(
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        )
+        assert rendered.count("#") >= 5
+        remaining = sum(
+            1 for edge in message_ledger.db.edges.values() if edge.seen_at is None
+        )
+        assert remaining == 3, (
+            f"the default drain window was not the configured 5 (3 expected still unread, "
+            f"got {remaining}) — {rendered!r}"
+        )
+
+    async def test_peek_is_a_real_boolean_param_the_dispatcher_forwards(self) -> None:
+        harness, message_ledger = await self._ready()
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            to=["fixer-b"],
+            body="peek me",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+        )
+        await AppContext.comms(
+            harness, action="drain", agent="fixer-b", session="wave7", peek=True
+        )
+        assert all(edge.seen_at is None for edge in message_ledger.db.edges.values()), (
+            "peek=True stamped anyway — the dispatcher dropped the flag on the floor"
+        )
+
+    async def test_ack_forwards_the_seqs_list(self) -> None:
+        harness, message_ledger = await self._ready()
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            to=["fixer-b"],
+            body="ack me",
+            grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+        )
+        [message] = list(message_ledger.db.messages.values())
+        await AppContext.comms(
+            harness, action="ack", agent="fixer-b", session="wave7", seqs=[message.seq]
+        )
+        assert all(edge.acked_at is not None for edge in message_ledger.db.edges.values())
+
+    @pytest.mark.parametrize(
+        ("action", "foreign"),
+        [("send", {"peek": True}), ("drain", {"grade": "signal"}), ("ack", {"body": "x"})],
+    )
+    async def test_the_strict_param_law_covers_the_new_actions(
+        self, action: str, foreign: dict[str, Any]
+    ) -> None:
+        harness, _ = await self._ready()
+        with pytest.raises(ValueError, match="omit it for"):
+            await AppContext.comms(
+                harness, action=action, agent="fixer-b", session="wave7", **foreign
+            )
+
+    async def test_an_oversize_body_is_a_teaching_reject_at_the_surface(self) -> None:
+        harness, message_ledger = await self._ready()
+        with pytest.raises(Exception) as excinfo:  # noqa: B017 - MessageBodyError surface
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["fixer-b"],
+                body="z" * (_msg().MESSAGE_BODY_MAX_CHARS + 1),
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        assert "refs" in str(excinfo.value)
+        assert message_ledger.db.messages == {}

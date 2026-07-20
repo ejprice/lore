@@ -157,6 +157,30 @@ _PROMISE_REGISTRY: dict[str, str] = {
         "brief_get BY NAME — the behind-ack teach carries explicit name= for EVERY name so a "
         "non-'project' reader is not sent to the wrong brief (§9.7 #11, v8/instance 10)"
     ),
+    # --- packet 03: send / drain / ack -------------------------------------
+    "recipients must ack: lore_comms action=ack seqs=[{seq}]": (
+        "ack — emitted IFF the message's grade is 'directive'; ack runs for any delivery "
+        "edge addressed to the caller (packet 03)"
+    ),
+    "peeked {shown} of {total} pending — nothing stamped; "
+    "re-run without peek=true to mark them seen": (
+        "drain WITHOUT peek — emitted IFF peek is True; the re-run it names is the same "
+        "action with the flag dropped, always available (packet 03)"
+    ),
+    "+{more} more unread — re-run with limit={next_limit}": (
+        "drain limit= re-ask — actionable IFF the served window was bounded by limit rather "
+        "than by the pending set; elided rows stay UNREAD, so the re-ask really does serve "
+        "them (packet 03)"
+    ),
+    "ACK REQUIRED: {seqs} — lore_comms action=ack seqs=[{seqs_csv}]": (
+        "ack — emitted IFF at least one SERVED row is an unacked directive; only served rows "
+        "are stamped seen, so only they can be acked from this render (packet 03)"
+    ),
+    "unknown message seq(s): {seqs} — no such message; "
+    "lore_comms action=drain lists what is addressed to you": (
+        "drain — emitted IFF at least one requested seq names no message at all; drain is "
+        "the caller's authoritative list (packet 03)"
+    ),
     "+{more} more — re-run with limit={next_limit}": (
         "fleet limit= re-ask — actionable IFF shown < display cap; the cap-disclosure variant "
         "handles the dead-end case (§9.7 #12, sound since v4)"
@@ -201,6 +225,26 @@ _PROMISE_FREE: dict[str, str] = {
     "+{count} retired": "status report (retired trailer)",
     "session {session}:": "label (per-session group header)",
     "+{more} more beyond the display cap ({cap})": "discloses the cap, promises nothing (§9.7 #13)",
+    # --- packet 03: send / drain / ack -------------------------------------
+    "sent #{seq} [{grade}] → {recipients}": "status report (send receipt)",
+    "sent #{seq} [{grade}] → {recipients} (+{more} more)": (
+        "status report (send receipt, capped recipient list)"
+    ),
+    "sent #{seq} [{grade}] → broadcast: {count} agents in session {session}": (
+        "status report (broadcast send receipt)"
+    ),
+    "drained {shown} of {total} pending": "status report (drain header)",
+    "#{seq} [{grade}] {sender}→you{context}: {body}": "drain row structural template",
+    "#{seq} [{grade}] {sender}→you{context}: {body} ({refs})": (
+        "drain row structural template (refs variant)"
+    ),
+    "no unread messages": "status report (empty inbox)",
+    "acked {acked} of {requested}: {seqs}": "status report (ack receipt)",
+    "already acked: {seqs} — no new stamp": "status report (idempotent ack)",
+    "not addressed to you: {seqs} — these messages carry no delivery to {name}": (
+        "status report (ownership rejection); the CAS return alone cannot say this, which is "
+        "why the module disambiguates it before rendering (probe 4c)"
+    ),
     ", ": "join separator",
     " ": "join separator",
     " · ": "join separator",
@@ -664,6 +708,110 @@ def _assert_predicate_gates(proof: PromiseProof) -> None:
     )
 
 
+# --- packet 03 render drivers -------------------------------------------------
+# Each drives the REAL ``AppContext._render_comms_*`` method, exactly like the
+# C1 drivers above. Fixture values are chosen so no marker below is a substring
+# of another proof's emit render (TestNoMarkerIsCrossSatisfiedByAnotherProof).
+
+
+def _p03_message(*, seq: int = 41, grade: str = "signal", body: str = "the body") -> Any:
+    from loremaster.messages import Message
+
+    return Message(
+        id=f"{seq:026x}",
+        seq=seq,
+        session="wave7",
+        thread="wave7",
+        sender_id="lead-id-0000",
+        sender_name="lead",
+        grade=grade,  # type: ignore[arg-type]
+        body=body,
+        refs=[],
+        task_id=None,
+        question=False,
+        created_at=datetime.now(UTC),
+    )
+
+
+def _p03_entry(*, seq: int, grade: str = "signal", acked_at: Any = None) -> Any:
+    from loremaster.messages import InboxEntry
+
+    return InboxEntry(
+        seq=seq,
+        message_id=f"{seq:026x}",
+        grade=grade,  # type: ignore[arg-type]
+        sender_name="lead",
+        thread="wave7",
+        task_id=None,
+        body=f"body of {seq}",
+        refs=[],
+        created_at=datetime.now(UTC),
+        acked_at=acked_at,
+        ack_note=None,
+    )
+
+
+def _render_send(*, grade: str) -> str:
+    from loremaster.messages import MessageSendResult
+
+    return str(
+        AppContext._render_comms_send(
+            MessageSendResult(
+                message=_p03_message(grade=grade),
+                recipient_names=["fixer-b"],
+                recipient_count=1,
+            ),
+            broadcast=False,
+            session="wave7",
+        )
+    )
+
+
+def _render_drain(
+    *, entries: list[Any], total_pending: int, peek: bool = False, limit: int = 20
+) -> str:
+    from loremaster.messages import MessageDrainResult
+
+    return str(
+        AppContext._render_comms_drain(
+            MessageDrainResult(
+                entries=entries,
+                total_pending=total_pending,
+                directive_pending=sum(1 for entry in entries if entry.grade == "directive"),
+                stamped_seqs=[] if peek else [entry.seq for entry in entries],
+                peeked=peek,
+            ),
+            agent_name="fixer-b",
+            limit=limit,
+        )
+    )
+
+
+def _render_message_ack(*, outcomes: list[tuple[int, str]]) -> str:
+    from loremaster.messages import MessageAckEntry, MessageAckResult
+
+    entries = [
+        MessageAckEntry(
+            seq=seq,
+            outcome=outcome,  # type: ignore[arg-type]
+            acked_at=datetime.now(UTC) if outcome in {"acked", "already_acked"} else None,
+        )
+        for seq, outcome in outcomes
+    ]
+    return str(
+        AppContext._render_comms_ack(
+            MessageAckResult(
+                entries=entries,
+                acked_count=sum(1 for entry in entries if entry.outcome == "acked"),
+                already_acked_count=sum(
+                    1 for entry in entries if entry.outcome == "already_acked"
+                ),
+            ),
+            agent_name="fixer-b",
+        )
+    )
+
+
 _PROOF_LIST: list[PromiseProof] = [
     # --- register (§9.7 #1/#2/#3): brief present vs the bootstrap path. -------
     PromiseProof(
@@ -873,6 +1021,60 @@ _PROOF_LIST: list[PromiseProof] = [
         render_no_emit=lambda: _render_fleet(
             rows=[_agent("a"), _agent("b")], total_active=2, limit=2
         ),
+    ),
+    # --- packet 03: send / drain / ack -------------------------------------
+    PromiseProof(
+        literal="recipients must ack: lore_comms action=ack seqs=[{seq}]",
+        marker="recipients must ack: lore_comms action=ack seqs=[41]",
+        render_emit=lambda: _render_send(grade="directive"),
+        render_no_emit=lambda: _render_send(grade="signal"),
+    ),
+    PromiseProof(
+        literal="peeked {shown} of {total} pending — nothing stamped; "
+        "re-run without peek=true to mark them seen",
+        marker="nothing stamped; re-run without peek=true to mark them seen",
+        render_emit=lambda: _render_drain(
+            entries=[_p03_entry(seq=51)], total_pending=1, peek=True
+        ),
+        render_no_emit=lambda: _render_drain(
+            entries=[_p03_entry(seq=51)], total_pending=1, peek=False
+        ),
+    ),
+    PromiseProof(
+        literal="+{more} more unread — re-run with limit={next_limit}",
+        marker="more unread — re-run with limit=",
+        # EMIT: the served window (2 rows) is bounded by limit=2 while 7 are
+        # pending — N > cap, the fixture shape no comms contract had ever
+        # written. NO-EMIT: the same rows with nothing elided.
+        render_emit=lambda: _render_drain(
+            entries=[_p03_entry(seq=61), _p03_entry(seq=62)], total_pending=7, limit=2
+        ),
+        render_no_emit=lambda: _render_drain(
+            entries=[_p03_entry(seq=61), _p03_entry(seq=62)], total_pending=2, limit=2
+        ),
+    ),
+    PromiseProof(
+        literal="ACK REQUIRED: {seqs} — lore_comms action=ack seqs=[{seqs_csv}]",
+        marker="ACK REQUIRED: #71",
+        # The NO-EMIT leg is a SIGNAL, not an empty drain: a build that emits
+        # the trailer for EVERY served row (rather than for directives) passes
+        # an empty-vs-nonempty discrimination and fails this one.
+        render_emit=lambda: _render_drain(
+            entries=[_p03_entry(seq=71, grade="directive")], total_pending=1
+        ),
+        render_no_emit=lambda: _render_drain(
+            entries=[_p03_entry(seq=71, grade="signal")], total_pending=1
+        ),
+    ),
+    PromiseProof(
+        literal="unknown message seq(s): {seqs} — no such message; "
+        "lore_comms action=drain lists what is addressed to you",
+        marker="no such message; lore_comms action=drain lists what is addressed to you",
+        render_emit=lambda: _render_message_ack(outcomes=[(81, "unknown_message")]),
+        # NO-EMIT is the NEIGHBOURING no-op cause, not a success: the whole
+        # point of ruling 4 is that "no such message" and "not addressed to
+        # you" are DIFFERENT conditions the raw CAS collapses into one [].
+        render_no_emit=lambda: _render_message_ack(outcomes=[(81, "not_addressed")]),
     ),
 ]
 
@@ -1496,6 +1698,10 @@ def _scan_safe_str_source_unclassifiable(source: str) -> list[str]:
 # silent addition here (packet 02a §2).
 # --------------------------------------------------------------------------- #
 _SAFE_STR_PROMISE_FREE: dict[str, str] = {
+    # --- packet 03: send / drain / ack -------------------------------------
+    "#{}": "label (the seq sigil on a drain row and in an ack receipt list)",
+    " (thread {})": "label (drain row context cell — the thread variant)",
+    " (task {})": "label (drain row context cell — the task-anchored variant)",
     "{} (unbriefed)": "behind-entry acked-version label (unbriefed agent)",
     "{} (v{})": "behind-entry acked-version label (acked version)",
     "{} at v{}": "skew-breakdown named version-group count label",
@@ -2113,3 +2319,4 @@ class TestSafeStrLiteralCoverageBound:
         # The promise TEXT itself is invisible to BOTH scanners.
         assert not any("teleport" in text for text in templates), templates
         assert _scan_safe_str_source(source) == []
+

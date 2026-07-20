@@ -705,3 +705,4 @@ class FakeBriefLedger:
             if current_max is None or brief_version > current_max:
                 result[edge_agent_id] = brief_version
         return result
+
