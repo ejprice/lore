@@ -257,6 +257,12 @@ The house rules for reading and writing rows. Each one was found the hard way.
 - **Client-side conflict retry is MANDATORY.** [PROBED] The engine does **not** auto-retry user
   transactions. The only signal is the literal marker string **`"can be retried"`**
   ([CODE] `_txn.py:326`). 3.1 exposes OTel counters `surrealdb.transaction.retries` / `.conflicts`.
+  - **#111 ANSWERED — keep the substring, the trigger is NOT met.** [CODE, 2026-07-19] SDK 2.0.0
+    *does* ship a typed `kind`/`details` error hierarchy (`surrealdb/errors.py`), which is what #111
+    was waiting for — but **`ErrorKind` has no retryable member** (`Validation, Configuration,
+    Thrown, Query, Serialization, NotAllowed, NotFound, AlreadyExists, Connection, Internal`), and a
+    conflict arrives as a plain `QueryError`. A typed check is therefore not yet possible. Re-open
+    when `ErrorKind` gains a retryable/conflict member — not merely when the SDK version bumps.
 - **[PROBED]** A socket drop with queries **in flight** surfaces a raw `builtins.KeyError(uuid)`
   from SDK 2.0.0's response routing (6/6 futures) — *not* `CancelledError`. The next call heals via
   `ConnectionClosedError`. Classify `KeyError` tightly, at the SDK-await boundary only.
@@ -290,10 +296,20 @@ The house rules for reading and writing rows. Each one was found the hard way.
     store-resolved ids. **The second clause dies the moment any verb accepts a recipient NAME from a
     caller** (comms `send`), and the first dies the day anything hard-deletes a node. Note
     `BriefLedger.publish(agent_id=...)` already takes a **bare string**.
-  - **The only endpoint validation the engine offers** is a typed relation table:
-    `DEFINE TABLE to TYPE RELATION IN message OUT agent` rejects a wrong-**table** endpoint with a
-    field-coercion error [PROBED 2026-07-19]. It does **not** reject a non-existent record of the
-    RIGHT table — so an application-level existence check remains the only guard against a ghost.
+  - A typed relation table `DEFINE TABLE to TYPE RELATION IN message OUT agent` rejects a
+    wrong-**table** endpoint with a field-coercion error [PROBED 2026-07-19], but does **not**
+    reject a non-existent record of the RIGHT table.
+  - ⚠ **THE ENGINE SHIPS A DECLARATIVE GUARD FOR EXACTLY THIS — `ENFORCED`.** [VENDOR]
+    [DEFINE TABLE](https://surrealdb.com/docs/surrealql/statements/define/table): *"the `ENFORCED`
+    clause can be used on a table of `TYPE RELATION` to disallow a `RELATE` statement from working
+    unless it points to existing data."* BNF:
+    `TYPE RELATION [IN|FROM] @table [OUT|TO] @table [ENFORCED]`. Present since ≥2.0.3 (issue #5039
+    is filed against it there), so it is **on our floor, not a 3.2+ feature**.
+    **An earlier version of this bullet said an application-level check was "the only guard". That
+    was FALSE — see §6.3.** Adoption status: probed by packet 03 (`REPORT-probe-enforced-clause.md`);
+    ⚠ note that `ENFORCED` is a `DEFINE TABLE` clause and §1.1 puts TABLE on `IF NOT EXISTS`, so
+    **adding it to an existing relation table is a candidate silent no-op — #107's shape.** Settle
+    the migration before relying on it.
   - A **bare `str`** endpoint (rather than a bound `RecordID`) is rejected LOUDLY:
     `"Cannot execute RELATE statement where property 'in' is: 'message:m_real'"`. That is a helpful
     failure — do not "fix" it by pre-formatting ids into strings.
@@ -449,6 +465,60 @@ A prior version of **this file** sold `ALTER` as *"in-place schema migration ins
 drop+recreate"* with *"full ALTER coverage"*. That generalised "3.1 added ALTER for 9 more resource
 types" into "ALTER is how you migrate," and **nobody checked**. It is corrected in §1.3.
 **Our own reference docs are a source, not an oracle, either.**
+
+**And again, 2026-07-19, in the worse direction.** A version of §4 written EARLIER THE SAME DAY stated
+that a typed relation table was *"the **only** endpoint validation the engine offers"*, and that
+*"an application-level existence check remains the only guard"*. **FALSE** — the engine ships
+`ENFORCED` (§4), documented, on our floor since 2.0.3. The ALTER error made us avoid a trap; **this
+one would have made us hand-roll a guard the vendor already ships** — the packages-over-hand-rolling
+failure, committed inside the file that exists to prevent exactly this.
+**How it happened, because the mechanism is the lesson:** the claim was derived from five live
+probes and never checked against the vendor's `DEFINE TABLE` page. **Probing can only find what you
+already thought to test, and nobody thought to test a keyword they did not know existed.** One doc
+page, read first, would have cost nothing and found it. That is the docs-first law's actual argument,
+and this is its cleanest receipt.
+
+### 6.4 The "dangling edges read as an empty array" claim
+
+**[VENDOR]** [RELATE](https://surrealdb.com/docs/surrealql/statements/relate):
+
+> "If the records to relate to don't exist, a query on the relation will still work but will return
+> an empty array."
+
+**FALSE as a reader would apply it.** [PROBED 2026-07-19] The *identity* traversal — the natural
+fan-out query — returns the ghost as a **first-class member**:
+
+```
+SELECT ->to->agent AS recipients FROM message:m_real;
+  [{'recipients': [agent:a_ghost, agent:a_real]}]      <-- ghost listed as a real recipient
+SELECT count() FROM agent;  ->  1                      <-- no such node exists
+```
+
+The sentence is true only of the **dereferencing** forms (`FETCH`, or projecting a field) — and those
+yield `None`, not `[]`, either. **Why it matters:** an engineer reading it concludes a dangling edge
+is *self-announcing* (an empty result is visible; a wrong result is not). It is not — it is silently
+indistinguishable in exactly the query a delivery-graph reader writes. Load-bearing misinformation
+about a hazard we already carry as #105.
+
+### 6.5 The Python SDK doc names the WRONG statement
+
+**[VENDOR]** [executing-queries](https://surrealdb.com/docs/sdk/python/concepts/executing-queries):
+
+> "When a query string contains multiple semicolon-separated statements, `.query()` returns only the
+> result of the **last** statement."
+
+**FALSE on SDK 2.0.0 — it returns the FIRST.** [CODE] `surrealdb/connections/async_ws.py:206-219`
+checks and returns `response["result"][0]`; identical at ~20 `blocking_http.py`/`async_http.py`
+sites.
+
+**Why this one is worth more than the others:** the docs' version is the *reassuring* one. In
+`BEGIN; …; COMMIT;` the LAST statement is the **COMMIT**, so an engineer trusting the doc believes a
+failed transaction surfaces — because the COMMIT errors. The SDK reads index 0, which is the
+**`BEGIN`**, and is always `OK`. **The doc describes precisely the behaviour that would have
+prevented [#144](#144); the SDK does the opposite.** Independent, source-level corroboration of §3
+and of #144's mechanism correction — arrived at with no probe at all.
+**[VENDOR] The supported all-statements call is `query_raw()`** (per-statement `status`/`time`/
+`result`) — which is what `execute_transaction` already rides.
 
 ---
 
