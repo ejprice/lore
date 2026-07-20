@@ -605,3 +605,25 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   New findings **#144-#149**; agent-comms MEASUREMENT recorded in docs/orchestration (self-armed
   watchers deliver MID-CHAIN; a 4-model consult was FALSIFIED 0-for-2 where testable).
   NEXT = **packet 03 (the STORE)**, fresh session.
+- 2026-07-20 · **#150 DONE — TEST-ONLY, NO DEPLOY, ZERO PRODUCTION DRIFT** (`6be78d6`→`9e226e5`,
+  10 commits; blob-hash tree over `loremaster/loremaster/` IDENTICAL at `8c96451` and HEAD).
+  The test harness hand-rolled an un-retried session bootstrap — **the TWELFTH copy of the #120
+  shape, and the correction to this Log's own "eleven hand-rolled copies deleted" line above**:
+  the #102 chain deleted eleven in PRODUCTION and never swept the harness, because the gate that
+  found the eleven scans production ONLY. `connect_admin` (21 callers / 35 importers, both counts
+  DERIVED at assert time and pinned as a strict subset) now routes through `bootstrap_session`;
+  teardown's `use()` + REMOVE share ONE composed budget through `retry_on_conflict`; the private
+  marker/budget/backoff are DELETED and the harness owns no conflict-retry policy at all.
+  **Instruments, not just fixes:** the bootstrap gate now scans the TEST TREE with a
+  **receiver-blind AND method-blind** deny leg (the SDK ships `query_raw` beside `query` — a
+  `{query,execute}` allowlist was the six-defeats table's own row) + a one-row **site-count**
+  allowance, measured fallout **ZERO**; the `use()` leg stays receiver-keyed on purpose (`use` is
+  an English verb) and its bound is **PINNED with a named re-open trigger**, not silently
+  inherited. Graders earned their keep: a contract-blind diff reader found teardown running TWO
+  uncomposed 2.0s budgets (**measured 3.812s**) that nobody else saw, and a cold audit built a
+  wrong build — `connect_admin` with three independent budgets — that **passed the contract
+  17/17**; both now RED. Also fixed: `scripts/typecheck.sh` reported **3 errors instead of 55**
+  depending on cwd (`a59d759`; exit code was always honest, the OUTPUT lied). New finding **#151**
+  (bootstrap_session passes no retry `label`, and `retry_on_conflict`'s docstring FALSELY claims
+  it "has its own attribution" when it logs nothing) — deliberately OPEN by operator ruling, with
+  a tripwire pin that reddens the day it is closed. NEXT = **packet 03 (the STORE)**, unchanged.
