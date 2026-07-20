@@ -24,8 +24,8 @@ pre-existing ``loremaster.index.records`` helpers, so it always imports cleanly.
 35 test files import this harness, so a module-level import of code still being
 built would turn one mid-TDD breakage into a COLLECTION error across all of them.
 (A SMALLER, DIFFERENT population — 21 test files — calls ``connect_admin``; those two
-numbers are not interchangeable, and committed prose conflated them until audit-150
-R2. Both are pinned against an AST derivation in ``test_surreal_harness.py``, so this
+numbers are not interchangeable, and committed prose conflated them until fff1382.
+Both are pinned against an AST derivation in ``test_surreal_harness.py``, so this
 sentence cannot rot.) The new-code imports (``SurrealStore`` / ``generate_ddl`` /
 ``Candidate``) live in the individual test files, so such a collection error stays
 confined to them.
@@ -105,7 +105,7 @@ TIER_B = "community"
 # The canonical event names this module's two seam call sites are attributed under in
 # ``_txn``'s exhaustion log record. These are IDENTITY, not policy — the seam gates
 # ``engine_error``/``url`` on the presence of a label, so an unlabelled call raises a
-# message pointing an operator at a log record that holds nothing (blindreader-150 F1).
+# message pointing an operator at a log record that holds nothing (#151, blindreader-150 F1).
 # Shape follows the store seams' own ``_SEAM_REJECTION_EVENTS`` convention.
 _TEARDOWN_SELECT_DATABASE_LABEL = "harness.teardown.select_database"
 _TEARDOWN_REMOVE_DATABASE_LABEL = "harness.teardown.remove_database"
