@@ -21,20 +21,26 @@ broken). Nothing leaks; a reused PID later harmlessly reaps any prior orphan.
 
 Import isolation: at MODULE level this imports ONLY the ``surrealdb`` SDK and the
 pre-existing ``loremaster.index.records`` helpers, so it always imports cleanly.
-21 test files import this harness, so a module-level import of code still being
+35 test files import this harness, so a module-level import of code still being
 built would turn one mid-TDD breakage into a COLLECTION error across all of them.
-The new-code imports (``SurrealStore`` / ``generate_ddl`` / ``Candidate``) live in
-the individual test files, so such a collection error stays confined to them.
+(A SMALLER, DIFFERENT population — 21 test files — calls ``connect_admin``; those two
+numbers are not interchangeable, and committed prose conflated them until audit-150
+R2. Both are pinned against an AST derivation in ``test_surreal_harness.py``, so this
+sentence cannot rot.) The new-code imports (``SurrealStore`` / ``generate_ddl`` /
+``Candidate``) live in the individual test files, so such a collection error stays
+confined to them.
 
 That isolation is why the store's shared retry seam (``loremaster.store._txn``) is
 reached by IN-FUNCTION import only — never at module level (operator RULING 1,
-2026-07-20). The harness owns NO retry policy of its own: no attempt budget, no
-backoff, no copy of the engine's conflict marker. ``connect_admin`` bootstraps its
-session through ``_txn.bootstrap_session``; teardown's ``use()`` and its ``REMOVE
-DATABASE`` both go through :func:`_run_under_store_retry_seam`, this module's single
-classify-and-signal site over ``_txn.retry_on_conflict``. Moving a constant in the
-seam moves this harness with it — pinned by mutation in ``test_surreal_harness.py``
-(finding #150).
+2026-07-20). The harness owns NO CONFLICT-RETRY policy of its own: no conflict
+budget, no backoff, no copy of the engine's conflict marker. (:func:`call_until_recovered`
+does own an attempt bound, and correctly so — it is a lifecycle RECOVERY probe for
+degradation/recovery tests, a different concern from conflict retry, and it must NOT
+route through ``_txn``.) ``connect_admin`` bootstraps its session through
+``_txn.bootstrap_session``; teardown's ``use()`` and its ``REMOVE DATABASE`` both go
+through :func:`_run_under_store_retry_seam`, this module's single classify-and-signal
+site over ``_txn.retry_on_conflict``. Moving a constant in the seam moves this harness
+with it — pinned by mutation in ``test_surreal_harness.py`` (finding #150).
 """
 
 from __future__ import annotations
@@ -95,6 +101,14 @@ ANALYZER_NAME = "code_ident"
 SLUG = "demo"
 TIER_A = "custom"
 TIER_B = "community"
+
+# The canonical event names this module's two seam call sites are attributed under in
+# ``_txn``'s exhaustion log record. These are IDENTITY, not policy — the seam gates
+# ``engine_error``/``url`` on the presence of a label, so an unlabelled call raises a
+# message pointing an operator at a log record that holds nothing (blindreader-150 F1).
+# Shape follows the store seams' own ``_SEAM_REJECTION_EVENTS`` convention.
+_TEARDOWN_SELECT_DATABASE_LABEL = "harness.teardown.select_database"
+_TEARDOWN_REMOVE_DATABASE_LABEL = "harness.teardown.remove_database"
 
 
 def surreal_url() -> str:
@@ -214,7 +228,25 @@ async def call_until_recovered[T](
     raise AssertionError(f"{label} never recovered within {attempts} calls: {last!r}")
 
 
-async def _run_under_store_retry_seam[T](operation: Callable[[], Awaitable[T]]) -> T:
+def _seam_default_deadline_seconds() -> float:
+    """The seam's LIVE default wall-clock retry budget, read at CALL time.
+
+    Never a module-level ``from … import``: that would freeze the value at import and
+    the composed budget below would then be a private copy of a number rather than the
+    seam's own (and RULING 1 forbids the module-level store import anyway).
+    """
+    from loremaster.store import _txn
+
+    return float(_txn._TXN_CONFLICT_DEFAULT_DEADLINE_SECONDS)
+
+
+async def _run_under_store_retry_seam[T](
+    operation: Callable[[], Awaitable[T]],
+    *,
+    label: str,
+    url: str,
+    deadline_seconds: float | None = None,
+) -> T:
     """Run ``operation`` under the store package's ONE retry driver (finding #150).
 
     This module's SINGLE classify-and-signal site. Both teardown operations that can
@@ -228,7 +260,7 @@ async def _run_under_store_retry_seam[T](operation: Callable[[], Awaitable[T]]) 
     Detection stays with the caller by the seam's own design (see
     ``retry_on_conflict``'s docstring: "detection stays with the caller that owns the
     wire shape"), so this classifies what it catches through the seam's ONE
-    classifier and raises the seam's signal. It owns no attempt budget, no backoff
+    classifier and raises the seam's signal. It owns no conflict budget, no backoff
     and no marker of its own — move any of those in ``_txn`` and this moves with it
     (pinned by mutation in ``test_surreal_harness.py``).
 
@@ -239,6 +271,20 @@ async def _run_under_store_retry_seam[T](operation: Callable[[], Awaitable[T]]) 
         operation: The zero-argument async operation to run. Must be safe to re-run
             from scratch: true for both callers here, since a conflicted
             single-statement DDL commits nothing.
+        label: This call site's canonical event name, carried into the seam's
+            exhaustion log record. REQUIRED, not optional: the seam gates
+            ``engine_error``/``url`` on ``label is not None``
+            (``_txn.retry_on_conflict``), so a call that omits it raises a message
+            pointing the operator at a server log record that does NOT contain what
+            the engine said. There is no call site here that should be anonymous.
+        url: The RPC URL this operation runs against, logged beside ``label``.
+        deadline_seconds: What is LEFT of the CALLER's one wall-clock budget, so a
+            caller driving several operations composes ONE budget across them rather
+            than handing each a fresh copy (``_txn.bootstrap_session``'s
+            ``_remaining_budget`` is the same shape; its docstring: "three equal
+            deadlines would be three independent budgets wearing a parameter").
+            ``None`` lets the seam resolve its own default — correct only for a
+            caller that drives exactly ONE operation.
 
     Returns:
         ``operation``'s successful return value.
@@ -262,7 +308,9 @@ async def _run_under_store_retry_seam[T](operation: Callable[[], Awaitable[T]]) 
                 raise RetryableConflictSignal() from error
             raise
 
-    return await retry_on_conflict(_attempt)
+    return await retry_on_conflict(
+        _attempt, deadline_seconds=deadline_seconds, label=label, url=url
+    )
 
 
 async def connect_admin(env: SurrealEnv) -> SurrealConnection:
@@ -287,7 +335,16 @@ async def connect_admin(env: SurrealEnv) -> SurrealConnection:
 
     from loremaster.store._txn import bootstrap_session
 
-    await bootstrap_session(connection, env.namespace, env.database)
+    try:
+        await bootstrap_session(connection, env.namespace, env.database)
+    except BaseException:
+        # The caller never receives this connection, so nobody else can close it. The
+        # bootstrap now RETRIES a conflict for up to the seam's budget while holding
+        # the socket, so a contended-and-exhausted connect used to leak one socket per
+        # failure against the shared dev server (audit-150 R5 / blindreader F10, one
+        # function over from `drop_database`'s identical leak).
+        await connection.close()
+        raise
     return connection
 
 
@@ -304,7 +361,11 @@ class _RemovableDatabaseConnection(Protocol):
 
 
 async def _remove_database_with_retry(
-    connection: _RemovableDatabaseConnection, database: str
+    connection: _RemovableDatabaseConnection,
+    database: str,
+    *,
+    url: str,
+    deadline_seconds: float | None = None,
 ) -> None:
     """Run ``REMOVE DATABASE IF EXISTS`` under the store seam's retry policy.
 
@@ -318,12 +379,24 @@ async def _remove_database_with_retry(
     The budget, the backoff and the conflict classification are ALL the seam's —
     see :func:`_run_under_store_retry_seam`. Any other error propagates immediately,
     unretried: teardown must never silently swallow a real problem.
+
+    Args:
+        connection: The signed-in, database-selected connection to run the REMOVE on.
+        database: The database to remove.
+        url: The RPC URL, for the seam's exhaustion log attribution.
+        deadline_seconds: What is LEFT of the CALLER's one teardown budget — see
+            :func:`_run_under_store_retry_seam`.
     """
 
     async def _remove() -> None:
         await connection.query(f"REMOVE DATABASE IF EXISTS {database}")
 
-    await _run_under_store_retry_seam(_remove)
+    await _run_under_store_retry_seam(
+        _remove,
+        label=_TEARDOWN_REMOVE_DATABASE_LABEL,
+        url=url,
+        deadline_seconds=deadline_seconds,
+    )
 
 
 async def drop_database(env: SurrealEnv) -> None:
@@ -337,17 +410,50 @@ async def drop_database(env: SurrealEnv) -> None:
     through the shared store seam: selecting the database (which was a bare,
     unretried ``await`` until finding #150 — the same hole as the bootstrap's, one
     function over) and the ``REMOVE DATABASE`` itself.
+
+    Those two operations share ONE wall-clock budget, exactly as
+    :func:`~loremaster.store._txn.bootstrap_session` composes one across its three
+    (see its docstring: "three equal deadlines would be three independent budgets
+    wearing a parameter"). Handing each call a fresh copy of the seam's default made
+    teardown's real bound DOUBLE its designed one — measured at **3.812s** against a
+    designed 2.0s (blindreader-150 F2 / audit-150 R4), on a path that runs for EVERY
+    ``[real]`` test under the standing ``-n auto`` runner. Composing cannot starve
+    either operation of retries: the seam's attempt FLOOR guarantees each its
+    attempts regardless of wall time.
     """
     connection = AsyncSurreal(env.url)
     credentials: dict[str, Any] = {"username": env.user, "password": env.password}
     await connection.signin(credentials)
 
+    started = time.monotonic()
+    budget = _seam_default_deadline_seconds()
+
+    def _remaining_budget() -> float:
+        """What is LEFT of teardown's ONE wall-clock budget, never negative."""
+        return max(0.0, budget - (time.monotonic() - started))
+
     async def _select_database() -> None:
         await connection.use(env.namespace, env.database)
 
-    await _run_under_store_retry_seam(_select_database)
-    await _remove_database_with_retry(connection, env.database)
-    await connection.close()
+    try:
+        await _run_under_store_retry_seam(
+            _select_database,
+            label=_TEARDOWN_SELECT_DATABASE_LABEL,
+            url=env.url,
+            deadline_seconds=_remaining_budget(),
+        )
+        await _remove_database_with_retry(
+            connection,
+            env.database,
+            url=env.url,
+            deadline_seconds=_remaining_budget(),
+        )
+    finally:
+        # `close()` used to be reachable ONLY on the success path, so every failure
+        # leaked the socket — pre-existing, but the window widened from ~0.1s to the
+        # seam's full budget once these two operations started retrying (audit-150 R5
+        # / blindreader-150 F10).
+        await connection.close()
 
 
 def unit_vector(axis: int, dim: int, magnitude: float = 1.0) -> list[float]:
