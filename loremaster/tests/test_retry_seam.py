@@ -1013,7 +1013,7 @@ class TestRetryOnConflictDriver:
 # ===========================================================================
 # 2. FINDING #120 — EVERY single-statement seam must RETRY. All TEN of them.
 #
-# RED today in all ten: a retryable write-write conflict raises on its FIRST occurrence.
+# RED before 9d29111 in all ten: a retryable write-write conflict raised on its FIRST occurrence.
 # (``briefs.py`` is no exception — its retry sits ABOVE ``_query``, in the mint's own
 # loop, so its ``_query`` is as unprotected as the other nine. That is precisely how a
 # hand-rolled fix leaves the seam it was hand-rolled around still broken.)
@@ -1037,7 +1037,7 @@ class TestEverySingleStatementSeamRetriesAConflict:
     async def test_a_retryable_conflict_is_retried_and_the_statement_succeeds(
         self, monkeypatch: pytest.MonkeyPatch, module_path: str, seam: type
     ) -> None:
-        """RED today, ×10: raises ``SurrealStoreError('… (retryable conflict) …')`` on
+        """RED before 9d29111, ×10: raised ``SurrealStoreError('… (retryable conflict) …')`` on
         the first conflict, having made exactly one attempt.
         """
         _silence_sleep(monkeypatch)
@@ -1320,7 +1320,7 @@ class TestBriefMintSharesTheDriver:
         """THE DISCRIMINATING PIN (brief §3): a mutation to the SHARED jitter must turn
         briefs' mint RED.
 
-        RED today: the mint sleeps ``backoff + jitter_slot * 0.001``, drawn from its OWN
+        RED before 9d29111: the mint slept ``backoff + jitter_slot * 0.001``, drawn from its OWN
         4-slot table (``uuid4().hex[:4] % 4``) — the shared jitter is never called, so
         the recorder sees ZERO draws.
 
@@ -1371,7 +1371,7 @@ class TestBriefMintSharesTheDriver:
     ) -> None:
         """Sustained contention out of ``publish()`` is ``TxnContentionExhaustedError``.
 
-        RED today: the mint raises ``BriefLedgerError('failed to mint a version ... after
+        RED before 9d29111: the mint raised ``BriefLedgerError('failed to mint a version ... after
         20 attempts')`` — a message, not a type. It is the LAST production site that
         branches on an exception's prose, and this is the pin that ends it.
         """
@@ -1681,7 +1681,7 @@ class TestEverySeamHoldsTheOneDriver:
 # **BLOCKER 2, closed.** My enumerator discovered classes owning an ``async def _query``.
 # It found ten. It structurally COULD NOT find ``scout.py``, which calls
 # ``connection.query(...)`` inline, owns no ``_query``, and runs a **compare-and-set
-# WRITE** on the command table (scout.py:328) with no retry and a raw SDK ``QueryError``.
+# WRITE** on the command table (``scout.py::_mark``) with no retry and a raw SDK ``QueryError``.
 # On the CORRECT build it still raised on the first conflict: **#120 would have shipped
 # alive, in a tree that had just been told it fixed #120.**
 #
@@ -2049,7 +2049,7 @@ class TestNoProductionCodeCallsTheSdkOutsideTheSeam:
     """
 
     def test_every_sdk_call_site_is_run_by_the_retry_seam(self) -> None:
-        """RED today: the ten ``_query`` bodies, scout's bare calls (one a compare-and-set
+        """RED before 9d29111: the ten ``_query`` bodies, scout's bare calls (one a compare-and-set
         WRITE), and the bootstrap DDL + ``use`` that a probe proved conflict on 6.2%-34.4%
         of 16-way virgin first-connects.
         """
@@ -2292,7 +2292,7 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
     async def test_no_seam_escapes_the_driver_against_the_real_engine(
         self, live_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """RED today with the full list of escapes — every seam's bootstrap and every
+        """RED before 9d29111 with the full list of escapes — every seam's bootstrap and every
         seam's ``_query``.
         """
         report = _install_runtime_sdk_guard(monkeypatch)
@@ -2823,7 +2823,7 @@ class TestScoutCommandClaimRidesTheSeam:
     async def test_a_retryable_conflict_on_the_command_claim_is_retried(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """RED today: raises a bare ``surrealdb.errors.QueryError`` on the first
+        """RED before 9d29111: raised a bare ``surrealdb.errors.QueryError`` on the first
         conflict — not even wrapped in a store error. This is finding #120, live, in the
         one module my first enumerator could not see.
         """
@@ -3590,7 +3590,7 @@ class TestNoCallerEverReadsAnEngineMessage:
     """
 
     def test_no_production_module_mentions_a_classification_label(self) -> None:
-        """RED today: briefs.py imports ``_ERROR_CLASS_RETRYABLE_CONFLICT`` (line 107),
+        """RED before 9d29111: briefs.py imported ``_ERROR_CLASS_RETRYABLE_CONFLICT`` (line 107),
         teaches it in a docstring (line 634) and branches on it (line 677).
         """
         offenders = {
@@ -3657,7 +3657,7 @@ class TestTheAttemptFloorOutlivesItsBriefsConsumer:
         )
 
     def test_no_production_module_outside_the_seam_consumes_the_floor(self) -> None:
-        """RED today: briefs.py:108 imports it to compose its own budget.
+        """RED before 9d29111: briefs.py:108 imported it to compose its own budget.
 
         A constant tuned for one purpose and silently inherited by another IS finding
         #102's trap. After this wave the floor has exactly one consumer — the driver
@@ -3710,7 +3710,7 @@ def _hot_row_bullet() -> str:
 
 class TestStandingLawNamesTheFunctionInsteadOfDescribingIt:
     def test_the_hot_row_bullet_tells_the_reader_what_to_CALL(self) -> None:
-        """RED today: the bullet describes a mechanism and never names a callable."""
+        """RED before 9d29111: the bullet described a mechanism and never named a callable."""
         bullet = _hot_row_bullet()
 
         assert "retry_on_conflict" in bullet, (
@@ -3720,7 +3720,7 @@ class TestStandingLawNamesTheFunctionInsteadOfDescribingIt:
         )
 
     def test_the_hot_row_bullet_does_not_prescribe_a_pattern_to_reproduce(self) -> None:
-        """RED today: it says "The reference pattern for ANY new hot-row mint is ...".
+        """RED before 9d29111: it said "The reference pattern for ANY new hot-row mint is ...".
 
         Prose that describes behaviour must be DERIVED from the behaviour, not restated
         beside it (CLAUDE.md). The only honest instruction now is a call.
@@ -3932,7 +3932,7 @@ class TestTheAckEdgeNeverReportsAnExhaustedRelateAsAReAck:
     async def test_exhausted_contention_on_the_ack_RELATE_raises_the_TYPED_error(
         self, monkeypatch: pytest.MonkeyPatch, existing_edge_via: str | None
     ) -> None:
-        """RED today in the ``A-RACERS-EDGE-IS-PRESENT`` case: the handler catches the
+        """RED before 9d29111 in the ``A-RACERS-EDGE-IS-PRESENT`` case: the handler caught the
         exhaustion, re-reads, finds the racer's edge and returns
         ``BriefAckResult(already_acked=True, via='register')`` — a successful idempotent
         re-ack, reported for a write that never landed.
@@ -4084,7 +4084,7 @@ class TestExhaustionIsLoggedExactlyOnceOnBothPaths:
         module_path: str,
         seam: type,
     ) -> None:
-        """RED today, x10: an exhausted ``_query`` logs NOTHING and raises an error telling
+        """RED before 9d29111, x10: an exhausted ``_query`` logged NOTHING and raised an error telling
         the operator to consult a log line that does not exist.
         """
         _silence_sleep(monkeypatch)
@@ -4122,7 +4122,7 @@ class TestExhaustionIsLoggedExactlyOnceOnBothPaths:
     ) -> None:
         """One driver, one exhaustion record — for the transactional caller too.
 
-        RED today: ``execute_transaction`` logs its rollback detail on exhaustion, but no
+        RED before 9d29111: ``execute_transaction`` logged its rollback detail on exhaustion, but no
         record carries the ATTEMPTS or the ELAPSED time, which are the two facts the raised
         message quotes and the only two the driver owns.
         """
@@ -4431,7 +4431,7 @@ class TestTheBootstrapAlwaysSurfacesAsAConnectionFailure:
         build_error: Callable[[], BaseException],
         is_retryable: bool,
     ) -> None:
-        """RED today x10 on the ``EXHAUSTED-CONTENTION`` row: the bootstrap re-raises the
+        """RED before 9d29111 x10 on the ``EXHAUSTED-CONTENTION`` row: the bootstrap re-raised the
         typed ``TxnContentionExhaustedError`` out of ``_ensure_connection``, past every
         handler in the tree that catches ``SurrealConnectionError`` to degrade gracefully.
 
@@ -4714,7 +4714,7 @@ class TestTheSessionBootstrapLivesInExactlyOnePlace:
         )
 
     def test_no_production_module_outside_the_seam_bootstraps_a_session(self) -> None:
-        """RED today: 30 closures across ten modules, plus scout's eleventh copy.
+        """RED before 9d29111: 30 closures across ten modules, plus scout's eleventh copy.
 
         Every residual site is named with ``file:line`` — this repo's own law bans "all
         remaining hits are X" as an output, because wholesale classification under volume is
@@ -5488,7 +5488,7 @@ class TestOneBootstrapImplementationAndOneQueryImplementation:
     def test_every_connection_owner_holds_the_ONE_shared_bootstrap(
         self, module_path: str, class_name: str
     ) -> None:
-        """RED today x11 (the ten store seams + scout): the name does not exist."""
+        """RED before 9d29111 x11 (the ten store seams + scout): the name did not exist."""
         module = importlib.import_module(module_path)
         held = getattr(module, "bootstrap_session", None)
 
@@ -5559,7 +5559,7 @@ class TestOneBootstrapImplementationAndOneQueryImplementation:
         files but for one log-event string. It carries the classification LADDER — the
         decision this wave's own law says may never be cloned — so it is one function too.
 
-        RED today x10: ``_txn.run_query`` does not exist and each seam hand-rolls the body.
+        RED before 9d29111 x10: ``_txn.run_query`` did not exist and each seam hand-rolled the body.
         """
         module = importlib.import_module(module_path)
         held = getattr(module, "run_query", None)
@@ -6158,8 +6158,9 @@ class TestTheSeamsRejectionLogSurvivesTheCollapse:
 # restarts.** That build scores 342/342 here, 33/33 on test_scout.py, and is indistinguishable
 # from correct across the whole suite.
 #
-# scout.py:138-145 states this law in PROSE. Prose is not an instrument — this repo's own law,
-# and this is the third time it has been proven on this wave. The instrument is below.
+# `scout.py::_scout_query_once`'s banner states this law in PROSE. Prose is not an instrument
+# — this repo's own law, and this is the third time it has been proven on this wave. The
+# instrument is below.
 #
 # WHERE THE WRAP GOES IS THEREFORE PART OF THE CONTRACT: at the SEAM (each
 # `_ensure_connection` wraps what the shared bootstrap raises), never inside the shared
@@ -6585,7 +6586,7 @@ class TestNoGuardedCasHandlerReinterpretsExhaustedContention:
 
     @pytest.mark.parametrize("door", sorted(_GUARDED_CAS_DOORS))
     def test_every_door_guards_the_typed_error_ABOVE_its_rollback_handler(self, door: str) -> None:
-        """RED today on `briefs.py::_relate_briefed` (item B's defect, seen structurally).
+        """RED before 9d29111 on `briefs.py::_relate_briefed` (item B's defect, seen structurally).
 
         ``TxnContentionExhaustedError`` SUBCLASSES ``SurrealStoreError`` and ``except``
         clauses are tried IN ORDER — so without a clause naming the typed error first, an
@@ -6619,7 +6620,7 @@ class TestEveryGuardedCasDoorPropagatesExhaustionUNREAD:
     """
 
     async def test_the_brief_ack_door(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Door 1 — the one item B fixes. RED today (it returns ``already_acked=True``)."""
+        """Door 1 — the one item B fixes. RED before 9d29111 (it returned ``already_acked=True``)."""
         _silence_sleep(monkeypatch)
         _set_default_deadline(monkeypatch, 0.0)
         connection = _AckConnection(
@@ -6765,7 +6766,7 @@ class TestTheConnectionIsReAcquiredOnEveryAttempt:
 
 # ---------------------------------------------------------------------------
 # 9a. THE EXHAUSTION RECORD MUST SAY WHO, WHERE, AND WHAT THE ENGINE SAID.
-#     (blindreader-dry-2 F1 / audit-fix-1 B3 — expected RED)
+#     (blindreader-dry-2 F1 / audit-fix-1 B3 — RED before 9d29111)
 #
 # The raised error says: *"…; see the server log for the full engine detail"*.
 #
@@ -6813,7 +6814,7 @@ class TestTheExhaustionRecordIsATTRIBUTABLE:
         module_path: str,
         seam: type,
     ) -> None:
-        """RED today, x10: the record carries `attempts` and `elapsed_seconds` and nothing else.
+        """RED before 9d29111, x10: the record carried `attempts` and `elapsed_seconds` and nothing else.
 
         The `label` is what makes it attributable (it is the seam's own canonical event name —
         the string an operator already greps). The `url` names the server. The `engine_error`
@@ -6871,7 +6872,7 @@ class TestTheExhaustionRecordIsATTRIBUTABLE:
 
 # ---------------------------------------------------------------------------
 # 9b. SCOUT'S FAILED CONNECT MUST NOT LEAK ITS SOCKET — AND MUST NOT CHANGE TYPE.
-#     (blindreader-dry-2 F7 / audit-fix-1 B1 — expected RED)
+#     (blindreader-dry-2 F7 / audit-fix-1 B1 — RED before 9d29111)
 #
 # `_open_command_connection`: `AsyncSurreal(url)` -> `signin` -> `bootstrap_session` ->
 # `return`. **No try/except, no close.** On ANY failure the half-open socket is abandoned;
@@ -6977,7 +6978,7 @@ class TestScoutsFailedConnectClosesItsSocketWithoutChangingTheType:
 
 # ---------------------------------------------------------------------------
 # 9c. THE BOOTSTRAP SHARES ONE WALL-CLOCK BUDGET.
-#     (blindreader-dry-2 F2 / audit-fix-1 B2 — expected RED)
+#     (blindreader-dry-2 F2 / audit-fix-1 B2 — RED before 9d29111)
 #
 # `bootstrap_session` makes THREE separate `retry_on_conflict` calls (DEFINE NAMESPACE ->
 # use() -> DEFINE DATABASE), each taking the module DEFAULT deadline. The budget is therefore
@@ -7006,7 +7007,7 @@ class TestTheBootstrapSharesOneDeadline:
     async def test_the_three_bootstrap_statements_compose_one_budget(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """RED today: all three calls pass NO deadline, so each silently takes the module
+        """RED before 9d29111: all three calls passed NO deadline, so each silently took the module
         default and the bootstrap's real budget is 3x what any reader would compute.
         """
         _silence_sleep(monkeypatch)
@@ -7305,7 +7306,7 @@ class TestEveryCallIntoTheRetryDriverIsAttributable:
         )
 
     def test_every_call_into_the_driver_passes_a_label(self) -> None:
-        """RED today x3: ``bootstrap_session``'s three calls (``_txn.py:1021-1023``) pass
+        """RED before 352db0e x3: ``bootstrap_session``'s three calls (``_txn.py:1021-1023``) passed
         neither ``label`` nor ``url``, so their exhaustion record carries only an attempt
         count and an elapsed time — over a raised message that says "see the server log for
         the full engine detail".
@@ -7523,7 +7524,7 @@ class TestAttributingTheBootstrapDoesNotChangeItsDisposition:
         build_error: Callable[[], BaseException],
         is_retryable: bool,
     ) -> None:
-        """RED today x4 — but for the PLUMBING, not the property: the call below passes
+        """RED before 352db0e x4 — but for the PLUMBING, not the property: the call below passed
         ``url=``, which ``bootstrap_session`` does not yet accept, so all four fates die on
         a ``TypeError`` before any disposition is exercised. Once the signature lands, this
         becomes a pure NON-REGRESSION pin: it goes green on a fix that only ADDS
@@ -7695,7 +7696,7 @@ class TestEveryBootstrapCallThreadsItsOwnUrl:
         )
 
     def test_every_bootstrap_session_call_passes_a_url(self) -> None:
-        """RED today x11: not one production owner passes a ``url``, because
+        """RED before 352db0e x11: not one production owner passed a ``url``, because
         ``bootstrap_session`` does not yet take one.
 
         THE WRONG BUILD THIS EXISTS FOR is not the unfixed tree — it is the *fixed-looking*
@@ -7923,7 +7924,7 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
         module_path: str,
         seam: type,
     ) -> None:
-        """RED today x10: the record carries ``attempts`` and ``elapsed_seconds`` and nothing
+        """RED before 352db0e x10: the record carried ``attempts`` and ``elapsed_seconds`` and nothing
         else, because no owner passes a ``url`` and the driver gates the extra on ``label``.
 
         Each owner is constructed at a url derived from its OWN class name, so the value on
@@ -7959,7 +7960,7 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
     async def test_scouts_command_connection_logs_ITS_OWN_url_on_bootstrap_exhaustion(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """RED today: **the ELEVENTH owner**, and the one every symbol-keyed enumeration
+        """RED before 352db0e: **the ELEVENTH owner**, and the one every symbol-keyed enumeration
         misses — a module-level function, not a class with an ``_ensure_connection``. It was
         the eleventh hand-rolled bootstrap copy for exactly that reason (#120), so a pin
         parametrized over `_QUERY_SEAMS` alone would leave it exactly as unpinned as before.
@@ -8110,11 +8111,11 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
 # 10d. SCOUT'S QUERY SEAM IS ATTRIBUTED BY LABEL ONLY — A PINNED, KNOWN BOUND.
 #      (finding #151, OPERATOR RULING R4)
 #
-# `scout.py:171` (`_scout_query`) is a FOURTH unlabelled call into the retry driver, and it
-# is #151's exact shape in a different function: it propagates, it logs nothing of its own,
-# and its exhaustion produces the same unattributable record under the same "see the server
-# log" hint. It is NOT exempt — there is no evidence to offer, and "out of scope for this
-# wave" is precisely what this repo forbids an exemption to say.
+# Before 352db0e, `scout.py::_scout_query` was a FOURTH unlabelled call into the retry
+# driver, and it was #151's exact shape in a different function: it propagates, it logs
+# nothing of its own, and its exhaustion produced the same unattributable record under the
+# same "see the server log" hint. It was NOT exempt — there was no evidence to offer, and
+# "out of scope for this wave" is precisely what this repo forbids an exemption to say.
 #
 # THE OPERATOR RULED (R4): it gets a LABEL only. Partial attribution — label + engine text,
 # `url=None`. The reason is structural, not a scheduling excuse: `_scout_query` takes a
@@ -8148,8 +8149,9 @@ class TestScoutsQuerySeamIsAttributedByLabelOnly:
     async def test_scouts_query_exhaustion_carries_a_label_OF_ITS_OWN(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """RED today: `scout.py:171` passes no `label`, so the driver suppresses all three
-        extras and scout's exhaustion is as unattributable as the bootstrap's was.
+        """RED before 352db0e: `scout.py::_scout_query` passed no `label`, so the driver
+        suppressed all three extras and scout's exhaustion was as unattributable as the
+        bootstrap's was.
 
         The expected label is checked as a PROPERTY, not against a constant this file
         declares: it must be a non-empty string that is none of the bootstrap's three and not
@@ -8212,11 +8214,11 @@ class TestScoutsQuerySeamIsAttributedByLabelOnly:
         channel joining the ten `_query` seams' shape. At that point the bound has no reason
         left to exist and this pin is what makes closing it a DECISION rather than a drift.
 
-        ⚠ DISCLOSED: this assertion does not discriminate on the UNFIXED tree — today the
-        record carries no url because it carries no label either, so `url is None` is true
-        for the wrong reason. Its proof is a MUTATION (thread a url into `scout.py:171` and
-        watch this go red), recorded in REPORT-contract-151b.md, and it becomes a real
-        tripwire the moment the label lands.
+        ⚠ DISCLOSED (HISTORICAL — closed at 352db0e): this assertion did not discriminate on
+        the UNFIXED tree — the record carried no url because it carried no label either, so
+        `url is None` was true for the wrong reason. Its proof is a MUTATION (thread a url
+        into `scout.py::_scout_query` and watch this go red), recorded in
+        REPORT-contract-151b.md, and it became a real tripwire the moment the label landed.
         """
         _silence_sleep(monkeypatch)
         _set_default_deadline(monkeypatch, 0.0)
@@ -8851,8 +8853,9 @@ class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
     async def test_scouts_live_subscription_exhaustion_carries_a_label_OF_ITS_OWN(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """RED today: `scout.py:571` passes no `label`, so the driver suppresses all three
-        extras and this seam's exhaustion is as unattributable as the bootstrap's was.
+        """RED before 98980bd: `scout.py::_consume_live` passed no `label`, so the driver
+        suppressed all three extras and this seam's exhaustion was as unattributable as the
+        bootstrap's was.
 
         The label is checked as a PROPERTY, never against a constant this file declares —
         the same choice §10d made and for the same reason: scout's own log events are
@@ -8885,7 +8888,7 @@ class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
             f"exhaustion error BARE, so `__cause__` is `None` and the engine's text is "
             f"nowhere (the cold audit measured exactly this — the clause claiming otherwise "
             f"is the defect this section replaced). Pass a canonical event name as `label=` "
-            f"at `scout.py:571`."
+            f"at `scout.py::_consume_live`."
         )
         assert label not in _bootstrap_labels(), (
             f"scout's live-subscription seam labelled its exhaustion {label!r} — a label "
@@ -8897,7 +8900,7 @@ class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
     async def test_scouts_live_subscription_exhaustion_carries_the_ENGINES_OWN_TEXT(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """RED today, and it is the HALF THE FALSE CLAUSE PROMISED.
+        """RED before 98980bd, and it is the HALF THE FALSE CLAUSE PROMISED.
 
         The retired evidence said the engine's text "rides the traceback". It does not, and
         it never did. Once labelled, the ONE place it survives is this record's
@@ -8932,7 +8935,7 @@ class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
     async def test_scouts_kill_exhaustion_carries_a_label_OF_ITS_OWN(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """RED today: `scout.py:599` passes no `label`.
+        """RED before 98980bd: `scout.py::_safe_kill` passed no `label`.
 
         SEPARATE FROM THE LIVE SEAM'S PIN ON PURPOSE. A build that labels one of scout's two
         best-effort calls and forgets the other is the likeliest wrong build here — the two
@@ -8958,7 +8961,7 @@ class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
             f"still swallows the exception — which is exactly why the record is the only "
             f"artifact left, and why an unlabelled one loses the engine's text with nothing "
             f"downstream to recover it. Pass a canonical event name as `label=` at "
-            f"`scout.py:599`."
+            f"`scout.py::_safe_kill`."
         )
         assert label not in _bootstrap_labels(), (
             f"scout's kill seam labelled its exhaustion {label!r} — a label that belongs to "
@@ -8969,9 +8972,9 @@ class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
     async def test_scouts_kill_exhaustion_carries_the_ENGINES_OWN_TEXT(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """RED today. Same property as the live seam's, pinned independently for the same
-        reason its label pin is: one seam labelled and the other not must go RED on the one
-        that is not."""
+        """RED before 98980bd. Same property as the live seam's, pinned independently for the
+        same reason its label pin is: one seam labelled and the other not must go RED on the
+        one that is not."""
         _silence_sleep(monkeypatch)
         _set_default_deadline(monkeypatch, 0.0)
         connection = _ForeverConflictingKill()

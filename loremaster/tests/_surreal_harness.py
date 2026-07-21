@@ -41,6 +41,21 @@ route through ``_txn``.) ``connect_admin`` bootstraps its session through
 through :func:`_run_under_store_retry_seam`, this module's single classify-and-signal
 site over ``_txn.retry_on_conflict``. Moving a constant in the seam moves this harness
 with it — pinned by mutation in ``test_surreal_harness.py`` (finding #150).
+
+------------------------------------------------------------------------------
+HOW TO RESOLVE THE ``blindreader-150 F*`` / ``audit-150 R*`` CITATIONS IN THIS FILE.
+
+They are review-pass identifiers from finding **#150**'s review wave. The reports they
+name were ARCHIVED at ``7d2ff44`` and resolve, section-exactly, under
+``docs/plans/v2/receipts/2026-07-20-150/`` — ``REPORT-blindreader-150.md`` for the ``F*``
+ids, and ``REPORT-audit-150-cold.md`` for EVERY ``audit-150 R*`` id below (#152).
+
+Naming that one file is not pedantry: the archive holds TWO ``audit-150`` reports, and
+both define an R4 AND an R5 meaning entirely different things — so a citation that says
+only ``audit-150`` is ambiguous, and this block is what disambiguates it. The durable
+address for the CLAIMS remains the ledger row **#150** (**#151** for the one defect
+deliberately left open). Every citation below states its own substance inline; none of
+them is a pointer a reader must follow in order to act.
 """
 
 from __future__ import annotations
@@ -341,7 +356,7 @@ async def connect_admin(env: SurrealEnv) -> SurrealConnection:
         # The caller never receives this connection, so nobody else can close it. The
         # bootstrap now RETRIES a conflict for up to the seam's budget while holding
         # the socket, so a contended-and-exhausted connect used to leak one socket per
-        # failure against the shared dev server (audit-150 R5 / blindreader F10, one
+        # failure against the shared dev server (audit-150 R5 / blindreader-150 F10, one
         # function over from `drop_database`'s identical leak).
         await connection.close()
         raise
