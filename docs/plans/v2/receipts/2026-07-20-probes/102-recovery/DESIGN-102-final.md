@@ -1,5 +1,12 @@
 # DESIGN-102 — FINAL ruling: the hot-row mint retry substrate
 
+> **SUPERSEDED — DATED RECORD.** This is the #102 design record as written in July 2026,
+> archived at `1666856` under the archive-don't-delete law (`968883d`, #153). It is preserved
+> as EVIDENCE of the reasoning of its time, not as a description of the code today.
+> Retired symbols it names, which NO LONGER EXIST: `_REPORT_MINT`, `_apply_mint`.
+> The retry substrate shipped at `9d29111`; read `loremaster/store/_txn.py` for what is real.
+
+
 brief-base v2 read
 design-consultant · 2026-07-12 · status: FINAL. Supersedes `DESIGN-102-preliminary.md`
 + its 2026-07-12 addendum where they conflict (one root-cause layer corrected, §0; all

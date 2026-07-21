@@ -472,7 +472,7 @@ class TestEagerLifespanComposition:
         # lifespan scope through the Origin middleware to the inner app (auth.py
         # passthrough), so inner.lifespan_entered alone is True even with NO eager
         # composition. The bug is that no eager lease is taken — so requiring BOTH
-        # "inner entered" AND "eager build fired" goes RED today and only passes
+        # "inner entered" AND "eager build fired" went RED before 001f632 and only passes
         # once the composition does both (server both BUILDS eagerly and SERVES).
         guard = _SpyGuard()
         inner = _SpyInnerApp()
@@ -889,7 +889,7 @@ async def _drive_startup_expecting_failure(app: Any) -> bool:
 
     Feeds the full ``startup`` → ``shutdown`` message sequence (not an endless
     stream of ``startup``) so that a composition WITHOUT an eager build completes
-    its passthrough cleanly and reports ``...complete`` → ``False`` (the RED today),
+    its passthrough cleanly and reports ``...complete`` → ``False`` (the RED before 001f632),
     rather than tripping an inner app's protocol assertion and looking like a
     failure for the wrong reason.
     """
@@ -938,7 +938,7 @@ _LEAK_SENTINEL = "SENTINEL-SECRET-abc123 ws://secret_user:secret_pw@leak.interna
 # The contract's independent oracle: the startup.failed message must be a FIXED,
 # operator-safe phrase that is NOT a function of the exception. This is the
 # *requirement*, not a transcription of the impl — the message is asserted to be
-# a constant string the implementation may not yet emit (RED today). The fixed
+# a constant string the implementation did not yet emit (RED before 001f632). The fixed
 # wording itself is the impl's choice; the contract pins (a) the sentinel is
 # absent and (b) the message names the eager-build-startup failure generically.
 _OPERATOR_SAFE_PHRASE_FRAGMENT = "startup"

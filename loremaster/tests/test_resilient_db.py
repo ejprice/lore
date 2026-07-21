@@ -566,7 +566,7 @@ class TestSqliteExceptionHierarchyIsTheBugSurface:
 #     NOT as a 0700 assertion. The contract: tighten what we create, never
 #     re-permission what we inherit.
 #
-# These tests are BEHAVIOURALLY RED today: the default-mode mkdir yields 0755 (or
+# These tests were BEHAVIOURALLY RED before 333ba50: the default-mode mkdir yielded 0755 (or
 # whatever ``0777 & ~umask`` gives), which ``== 0o700`` rejects. The oracle is the
 # requirement (owner-only), not the implementation's current mode (clause 2).
 # ---------------------------------------------------------------------------
@@ -753,7 +753,7 @@ class TestStateDirCreatedOwnerOnly:
 # helper, so the guarantee covers the path the server runs (clause 3/4: the
 # production open seam, with the memory ledger as the at-risk artifact).
 #
-# These mode assertions are BEHAVIOURALLY RED today: a default-mode connect yields
+# These mode assertions were BEHAVIOURALLY RED before 333ba50: a default-mode connect yields
 # 0o644, which ``== 0o600`` and ``& 0o077 == 0`` both reject. They are NOT
 # structurally red — ``open_resilient_sqlite`` / ``MemoryLedger`` both exist and
 # import cleanly; only the FILE permission is wrong.

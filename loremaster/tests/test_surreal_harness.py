@@ -737,7 +737,7 @@ class TestTheBootstrapPathsExhaustionIsAttributable:
         build_connection: Callable[[], _FakeConnection],
         label_constant: str,
     ) -> None:
-        """RED today x3: the record carries ``attempts`` and ``elapsed_seconds`` and nothing else.
+        """RED before 352db0e x3: the record carried ``attempts`` and ``elapsed_seconds`` and nothing else.
 
         Driven through ``connect_admin``, which reaches the seam via
         ``_txn.bootstrap_session`` — the same function every production

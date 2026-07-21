@@ -7793,7 +7793,7 @@ RENDER_CASES: list[RenderCase] = [
     RenderCase("rollup.subject", _render_rollup_subject),
     RenderCase("rollup.summary", _render_rollup_summary),
     # PKT-28 Phase 0 pull-forward (see the block comment above): genuinely
-    # RED today (raw f-string interpolation, no wrap) except
+    # RED before c30edd6 (raw f-string interpolation, no wrap) except
     # task_rows.blocked_by, which is a regression guard (see its render
     # function's docstring).
     RenderCase("finding_rows.subject", _render_finding_rows_subject),

@@ -245,7 +245,7 @@ class TestChunkerFaultIsolationInSweep:
             config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
         )
 
-        # RED today: the ParseError propagates out of index_all instead of returning.
+        # RED before 0a90687: the ParseError propagated out of index_all instead of returning.
         summary = await indexer.index_all()
 
         assert summary.files_failed == len(_POISON_FILES)

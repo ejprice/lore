@@ -1001,7 +1001,7 @@ class TestBlastRadius:
 # edge ``dst`` is the resolved SYMBOL fqn (``demo.reflib.widget``), not the bare
 # module. Model A's ``answers_to`` fan-out only bridges a name to nodes whose own
 # FQN/bare-name literally IS that name — there is no equivalent "symbols defined
-# under module M" reverse match, so these queries return [] today (RED below).
+# under module M" reverse match, so these queries returned [] before b04d89a (RED below).
 #
 # ORACLE: every expected importer set is read straight off the ALREADY-AUTHORED
 # fixture sources this file uses elsewhere (REFCONSUMER_SOURCE / REFTEST_SOURCE /
@@ -1012,7 +1012,7 @@ class TestBlastRadius:
 class TestWhatImportsModuleTarget:
     """``what_imports`` queried BY MODULE NAME finds ``from module import X`` importers.
 
-    RED today: Model A has no module-prefix reverse arm (see the section banner
+    RED before b04d89a: Model A had no module-prefix reverse arm (see the section banner
     above). Kept in the SAME file as the rest of ``TestWhatImports`` (same target,
     same live server, same fixtures) — only the QUERY ARGUMENT is new: a module's
     own dotted name instead of a symbol's own FQN.
@@ -1521,7 +1521,7 @@ async def rlib_graph(
 class TestTestsForModuleTarget:
     """``tests_for`` reaches a test file that ``from``-imports a MODULE target.
 
-    RED today: ``tests_for`` has no module-prefix arm (see the section banner
+    RED before 4afdbf4: ``tests_for`` had no module-prefix arm (see the section banner
     above) — a test importing ``from rlib.factory import make_widget`` is
     reachable only by luck of the ``test_x`` <-> ``x`` name heuristic, which
     this fixture's test file NAME deliberately defeats (finding #53's live
@@ -1625,7 +1625,7 @@ class TestReferences:
 class TestReferencesModuleTarget:
     """``references`` queried BY MODULE NAME finds ``from module import X`` importers.
 
-    RED today: ``references`` has no module-prefix arm (see the 5b/6b section
+    RED before 4afdbf4: ``references`` had no module-prefix arm (see the 5b/6b section
     banner above) — this is the exact finding #53 defect
     (``lore_impact("loresigil.factory")`` rendering "dead, 0 refs" while
     ``loremaster.embedding`` genuinely ``from loresigil.factory import
@@ -3043,8 +3043,8 @@ class TestQueryClassifiedErrorPosture:
 # binds the base arm the same way — LITERAL equality against the stored
 # ``name`` id. A resolved ``calls``/``imports`` edge's dst is the FULL FQN
 # (``demo.reflib.widget``), which never equals the bare id ``widget`` as a
-# string, so today ``references("widget")`` and ``blast_radius("widget", ...)``
-# silently return an all-zero / empty result even though a real production
+# string, so before 297194e ``references("widget")`` and ``blast_radius("widget", ...)``
+# silently returned an all-zero / empty result even though a real production
 # caller exists — a false-dead verdict / false not-found. ``what_imports``
 # already closes this exact gap via the target node's OWN ``answers_to``
 # fan-out (``TestWhatImports.test_matches_by_bare_name_under_whole_package_
@@ -3056,8 +3056,8 @@ class TestQueryClassifiedErrorPosture:
 class TestReferencesBareNameBridge:
     """``references`` must reach a RESOLVED FQN dst via a bare-name query.
 
-    RED today (live-verified against this exact fixture): ``references
-    ("widget")`` returns ``production_references == 0`` / ``test_references
+    RED before 297194e (live-verified against this exact fixture): ``references
+    ("widget")`` returned ``production_references == 0`` / ``test_references
     == 0`` although ``demo.consumer.run`` (production) and ``tests.
     test_reflib.test_widget`` (test) both really call it — the false-negative
     this bridge cycle exists to fix.
@@ -3109,8 +3109,8 @@ class TestReferencesBareNameBridge:
 class TestBlastRadiusBareNameBridge:
     """``blast_radius`` must reach a direct RESOLVED consumer via a bare query.
 
-    RED today (live-verified): ``blast_radius("widget", depth=1, ...)``
-    returns ``[]`` although ``demo.consumer.run`` is one real reverse hop away
+    RED before 297194e (live-verified): ``blast_radius("widget", depth=1, ...)``
+    returned ``[]`` although ``demo.consumer.run`` is one real reverse hop away
     — ``_reverse_neighbours``'s base arm suffers the identical literal-equality
     gap ``references`` does.
     """
@@ -3178,8 +3178,8 @@ class TestTestsForBareNameBridge:
     ) -> None:
         """THE PIN: ``tests_for("widget")`` must equal ``tests_for(FQN_WIDGET)``.
 
-        RED today (live-reproduced): the bare query's literal name-id lookup
-        never rides the ``answers_to`` bridge, so it returns an EMPTY set
+        RED before 9171021 (live-reproduced): the bare query's literal name-id lookup
+        never rode the ``answers_to`` bridge, so it returned an EMPTY set
         while the qualified form returns the real covering-test set — the
         0-vs-137 friction (FRICTION.md 2026-07-03) reproduced at fixture
         scale. Set equality (not mere non-emptiness) is the pin: the bare
@@ -3350,7 +3350,7 @@ class TestReferencesBareNameFqnCollisionFanOut:
         module-level import site + one calling-function site == 2 distinct
         production sources per target). Two non-overlapping targets therefore
         sum to 4 — read off THIS fixture's own two consumer files, never
-        derived from the bridge code under test. RED today: the aggregate is 0
+        derived from the bridge code under test. RED before 297194e: the aggregate was 0
         (neither collidee's FQN dst equals the bare id).
         """
         graph, _env = routing_collide_graph

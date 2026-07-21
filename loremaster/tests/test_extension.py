@@ -689,8 +689,8 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
     async def test_extension_tool_appears_in_tools_list_with_the_builtins(
         self, tmp_path: Path
     ) -> None:
-        # RED today: the extension's ``bump_counter`` tool is collected by
-        # ``server.tool_specs`` but NEVER registered, so it is absent from the live
+        # RED before 76f04c5: the extension's ``bump_counter`` tool was collected by
+        # ``server.tool_specs`` but NEVER registered, so it was absent from the live
         # ``tools/list``. The built-ins are present either way.
         from loremaster.server import LoreServer, build_mcp_server
 
@@ -799,8 +799,8 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
         # ``factor: int = SCHEMA_TOOL_FACTOR_DEFAULT``; the published inputSchema
         # must therefore NOT list ``factor`` in ``required`` (a required scalar with
         # no default stays required), AND the tool must be invocable WITHOUT
-        # ``factor`` — the handler supplies its default. RED today: ``factor`` is
-        # wrongly published as required (every arg is KEYWORD_ONLY with no default).
+        # ``factor`` — the handler supplies its default. RED before 07dd5d8: ``factor`` was
+        # wrongly published as required (every arg was KEYWORD_ONLY with no default).
         from loremaster.server import LoreServer, build_mcp_server
 
         live = tmp_path / "live"
@@ -840,7 +840,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
     ) -> None:
         # CONTRACT GAP #2 (non-scalar collapse to string). A ``list[str]`` arg must
         # publish ``type: array`` and a ``dict[str, int]`` arg ``type: object`` — NOT
-        # silently ``type: string``. RED today: both collapse to string.
+        # silently ``type: string``. RED before 07dd5d8: both collapsed to string.
         from loremaster.server import LoreServer, build_mcp_server
 
         slug = self._slug()

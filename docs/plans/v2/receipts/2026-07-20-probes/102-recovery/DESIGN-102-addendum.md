@@ -1,5 +1,12 @@
 # DESIGN-102 addendum — post-audit rulings: deadline semantics, dead marker, positional selection
 
+> **SUPERSEDED — DATED RECORD.** This is the #102 design record as written in July 2026,
+> archived at `1666856` under the archive-don't-delete law (`968883d`, #153). It is preserved
+> as EVIDENCE of the reasoning of its time, not as a description of the code today.
+> Retired symbols it names, which NO LONGER EXIST: `_apply_mint`, `_TXN_CONFLICT_BACKOFF_SECONDS`.
+> The retry substrate shipped at `9d29111`; read `loremaster/store/_txn.py` for what is real.
+
+
 brief-base v2 read
 design-consultant · 2026-07-13 · status: FINAL for the three audit questions + R14.
 Inputs: `REPORT-audit-102.md` (read in full, residuals table included), the built loop

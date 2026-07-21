@@ -504,12 +504,13 @@ class TestResolveSecret:
 # to the wrong place.
 #
 # The contract (from the requirement, NOT from any implementation): the slug must
-# match ``^[a-z0-9][a-z0-9_-]*$`` — lowercase alphanumerics plus ``-`` / ``_``,
+# match ``^[a-z0-9][a-z0-9_]*$`` — lowercase alphanumerics plus ``_`` (HYPHENS
+# were permitted at 333ba50 and REJECTED at 604b113; see the note at the constant below),
 # not starting with a separator, non-empty. A valid slug is accepted; an invalid
 # one raises a pydantic ``ValidationError`` at config load (parsing time), exactly
 # like every other strict field on the model.
 #
-# These tests are BEHAVIOURALLY RED today: the unconstrained ``str`` accepts every
+# These tests were BEHAVIOURALLY RED before 333ba50: the unconstrained ``str`` accepted every
 # malicious value below without error. The assertions are accept-vs-reject
 # (independent of HOW the constraint is implemented — a regex, an annotated type,
 # a validator); they do not re-state any implementation formula (clause 2).

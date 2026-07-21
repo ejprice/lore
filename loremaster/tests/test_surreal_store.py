@@ -3420,9 +3420,9 @@ class TestConcurrentRacersDrawDistinctBackoffs:
     ) -> None:
         """Two racers that just collided must not sleep the SAME duration.
 
-        RED today: every racer sleeps a fixed base delay x (attempt + 1) — a pure
-        function of the attempt index, identical for all of them. All 16 wake together
-        and re-collide. That is the lockstep, and it is what makes the live 8-way mint
+        RED before 8f24e11: every racer slept a fixed base delay x (attempt + 1) — a pure
+        function of the attempt index, identical for all of them. All 16 woke together
+        and re-collided. That was the lockstep, and it is what made the live 8-way mint
         fail 6 runs in 10.
 
         **Catches (each proven by the adversary as a build the old pins could not
@@ -4582,8 +4582,8 @@ class TestLiveEngineClassification:
     async def test_a_real_assert_violation_is_classified_as_an_assert_violation(
         self, classification_probe: tuple[SurrealEnv, Any]
     ) -> None:
-        """RED today: the engine says "must conform to", the marker says "assert", and
-        the caller is told "unspecified rejection". THE defect, provoked for real.
+        """RED before 8f24e11: the engine says "must conform to", the marker said "assert", and
+        the caller was told "unspecified rejection". THE defect, provoked for real.
         """
         env, connection = classification_probe
         message = await _provoke_rejection(

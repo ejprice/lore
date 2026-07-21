@@ -38,7 +38,7 @@ a builder that red means nothing — the single worst thing a contract can do.
 The defect is a **leak ACROSS a test boundary**, so the pin must observe a test
 boundary. It runs the ordered pair in a **fresh, serial pytest subprocess**: order is
 deterministic, the outer run's xdist sharding cannot split it, and the repo's real
-``conftest.py`` — where the fix belongs — is still loaded. RED today; GREEN the moment a
+``conftest.py`` — where the fix belongs — is still loaded. RED before 4c2efbf; GREEN the moment a
 restore fixture exists.
 
 The pair is skipped in the outer run (see ``_NESTED_RUN_ENV``) precisely so this module
@@ -91,8 +91,8 @@ class TestTheLeak:
         """THE VICTIM. It never touches logging config; it just wants to read a log
         record — exactly like finding #102's root-cause pins.
 
-        RED today: the previous test's ``propagate=False`` is still in force, caplog's
-        root handler is never reached, and this sees an empty list while believing the
+        RED before 4c2efbf: the previous test's ``propagate=False`` was still in force, caplog's
+        root handler was never reached, and this saw an empty list while believing the
         code under test simply emitted nothing.
         """
         with caplog.at_level(logging.ERROR, logger=_PROBE_LOGGER):
@@ -112,7 +112,7 @@ class TestCaplogIsNotLeakedAcrossTests:
     """The driver: proves the leak, or proves it is fixed."""
 
     def test_caplog_still_works_in_a_test_that_follows_configure_logging(self) -> None:
-        """RED today. GREEN once lore-logger state is restored at the test boundary.
+        """RED before 4c2efbf. GREEN once lore-logger state is restored at the test boundary.
 
         Runs the ordered pair in a FRESH, SERIAL pytest subprocess:
 
