@@ -7140,24 +7140,15 @@ _ATTRIBUTED_BY_ANOTHER_MECHANISM: dict[tuple[str, str], _Exemption] = {
         ),
         1,
     ),
-    ("scout.py", "_consume_live"): (
-        (
-            "swallows `TxnContentionExhaustedError` and logs its own "
-            "`command_subscriber.live_unavailable` record with `exc_info=True` "
-            "(scout.py:568-569). The exception never escapes, and the engine's text rides "
-            "the traceback."
-        ),
-        1,
-    ),
-    ("scout.py", "_safe_kill"): (
-        (
-            "swallows `TxnContentionExhaustedError` and logs its own "
-            "`command_subscriber.kill.already_closed` record (scout.py:593-594). Best-effort "
-            "cleanup by design; the exception never reaches a caller."
-        ),
-        1,
-    ),
 }
+# ⚠ TWO SCOUT ENTRIES USED TO LIVE HERE AND WERE DELETED DELIBERATELY (§10f, the cold
+# audit's NO-GO — REPORT-audit-151-cold.md §FINDING). `_consume_live`'s evidence claimed
+# the swallowed exception carried "the engine's text ... on the traceback"; that clause was
+# MEASURED FALSE (the driver raises the exhaustion error BARE, so `__cause__` is `None`),
+# and nothing here could ever have caught it — this gate reads an evidence string for
+# PRESENCE, never for TRUTH. The operator ruled the aspiration made TRUE rather than the
+# clause reworded: both seams now pass `label=`, so both are ordinary attributed callers
+# with no exemption to justify. Do not re-add them; §10f pins what replaced them.
 
 # Every call site the scan finds today. A FLOOR, not an equality: a new labelled caller
 # must not have to edit this number, but a scan that suddenly finds FEWER sites has gone
@@ -8719,4 +8710,464 @@ async def _transactional():
             "the claim to the callers that raise from an `except` handler, and NAME the "
             "caller that does not, with its reason. Naming it here is also where the reader "
             "learns why that same body is the one §10's allowlist exempts from `label=`."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10f. SCOUT'S TWO BEST-EFFORT SEAMS ARE ATTRIBUTED BY LABEL TOO — AND THE EXEMPTION THAT
+#      USED TO COVER THEM CARRIED A CLAUSE THAT WAS FALSE.
+#      (finding #151 · REPORT-audit-151-cold.md §FINDING · OPERATOR RULING, this wave)
+#
+# THE COLD AUDIT'S NO-GO, verbatim. §10's allowlist exempted `_consume_live` on this
+# evidence: *"swallows `TxnContentionExhaustedError` and logs its own
+# `command_subscriber.live_unavailable` record with `exc_info=True`. The exception never
+# escapes, AND THE ENGINE'S TEXT RIDES THE TRACEBACK."*
+#
+# The final clause was MEASURED FALSE. The driver's `raise TxnContentionExhaustedError`
+# sits OUTSIDE the `except RetryableConflictSignal` block, so `__cause__` and `__context__`
+# are both `None`: the engine's own "can be retried" text does NOT ride the traceback.
+# `exc_info=True` captured only the driver's "see the server log for the full engine
+# detail" sentence — over a record that, being unlabelled, held `{attempts,
+# elapsed_seconds}` and nothing else. **A hint pointing at a log that holds nothing: #151's
+# exact false-promise shape, reproduced inside #151's own contract**, and green at every
+# gate because §10's exemption check reads an evidence string for PRESENCE and a length
+# floor and CANNOT READ IT FOR TRUTH. That is not a bug in §10 — it is the reason this
+# section exists. *A DIAGNOSIS IS NOT AN INSTRUMENT*: the repair for a false claim about
+# behaviour is a pin on the BEHAVIOUR, never a better sentence.
+#
+# THE OPERATOR RULED: make the aspiration TRUE rather than reword it. Both seams pass a
+# `label=`, so the driver's ONE `store.retry.exhausted` record carries the engine's own
+# text server-side — where ledger #31 says the detail belongs — and both LEAVE the
+# allowlist. `execute_transaction` is the only exemption left.
+#
+# THE SHAPE IS §10d's, DELIBERATELY: label + engine text, `url=None`. Neither seam has a
+# url in scope, for the same structural reason `_scout_query` has none — `CommandSubscriber`
+# holds a `connect` CALLABLE rather than an address — so the url gap is INHERITED here, and
+# pinned as a KNOWN BOUND in both directions rather than left to be rediscovered from an
+# outage (CLAUDE.md: *when you cannot close a hole, pin it*).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _ForeverConflictingSubscription:
+    """A connection whose every ``subscribe_live`` conflicts — scout's LIVE seam, exhausted.
+
+    Deliberately answers ONLY ``subscribe_live``. ``_consume_live`` must never reach the
+    drain on this fixture: a fake that also answered ``query`` would let a wrong build
+    satisfy this section from a different code path, and the retry count below would stop
+    being a statement about the subscription attempt.
+    """
+
+    calls: int = field(default=0, init=False)
+
+    async def subscribe_live(self, live_uuid: Any) -> Any:
+        self.calls += 1
+        if self.calls > _ABSURD_ATTEMPT_CEILING:
+            raise AssertionError("unbounded retry in scout's live-subscription seam")
+        raise _conflict_error()
+
+
+@dataclass
+class _ForeverConflictingKill:
+    """A connection whose every ``kill`` conflicts — scout's cleanup seam, exhausted."""
+
+    calls: int = field(default=0, init=False)
+
+    async def kill(self, live_uuid: Any) -> None:
+        self.calls += 1
+        if self.calls > _ABSURD_ATTEMPT_CEILING:
+            raise AssertionError("unbounded retry in scout's kill seam")
+        raise _conflict_error()
+
+
+async def _drive_scouts_live_subscription_to_exhaustion(connection: Any) -> None:
+    """Exhaust ``_consume_live``. It SWALLOWS by design, so nothing propagates from here."""
+    await _subscriber()._consume_live(connection, "live-uuid")
+
+
+async def _drive_scouts_kill_to_exhaustion(connection: Any) -> None:
+    """Exhaust ``_safe_kill``. Best-effort cleanup — it SWALLOWS by design."""
+    await _subscriber()._safe_kill(connection, "live-uuid")
+
+
+async def _drive_scouts_query_to_exhaustion(connection: Any) -> None:
+    """Exhaust ``_scout_query`` — §10d's seam, which PROPAGATES (its disposition differs)."""
+    with pytest.raises(TxnContentionExhaustedError):
+        await scout_module._scout_query(connection, "SELECT * FROM command")
+
+
+async def _scout_seam_exhaustion_record(
+    caplog: pytest.LogCaptureFixture, drive: Callable[[], Awaitable[None]]
+) -> logging.LogRecord:
+    """Drive ONE scout seam to exhaustion; return its ONE ``store.retry.exhausted`` record.
+
+    ``caplog`` is CLEARED first so a single test may drive several seams in sequence and
+    still read *the* record for each — :func:`_exhaustion_record` refuses to take the first
+    of several, which is what lets the three-way distinctness pin below attribute each
+    observed label to the seam that actually emitted it.
+
+    IT IS ALSO THE REACH CONTROL, and that is not incidental: a seam that never ran emits
+    ZERO records, and :func:`_exhaustion_record` fails loudly on zero. No pin in this
+    section can go vacuously green by simply not driving anything.
+    """
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):
+        await drive()
+    return _exhaustion_record(caplog)
+
+
+def _bootstrap_labels() -> set[str]:
+    """The session bootstrap's three canonical rejection events, read from the seam module.
+
+    Read live rather than re-typed: these are the labels a wrong build is most likely to
+    BORROW to satisfy a presence check, and a copy of them here would go stale exactly when
+    it mattered.
+    """
+    names = (
+        "_BOOTSTRAP_DEFINE_NAMESPACE_LABEL",
+        "_BOOTSTRAP_SELECT_DATABASE_LABEL",
+        "_BOOTSTRAP_DEFINE_DATABASE_LABEL",
+    )
+    found = {getattr(txn_module, name, None) for name in names}
+    return {label for label in found if isinstance(label, str)}
+
+
+# A label no production caller may ever use. It exists only for the control below, which
+# proves the driver's `engine_error` extra CAN be the empty string on a LABELLED call —
+# the wrong build the two engine-text pins in this section exist to refuse.
+_UNCHAINED_CONTROL_LABEL = "test.control.labelled_but_unchained.rejected"
+
+
+class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
+    """**THE COLD AUDIT'S NO-GO, CLOSED BY MAKING THE CLAIM TRUE (operator ruling).**
+
+    `_consume_live` and `_safe_kill` swallow their exhaustion — that is correct and stays.
+    What was wrong was believing the swallow PRESERVED the engine's text. It does not, and
+    the only place that text can now survive is the driver's own record, which requires a
+    label. These pins grade the record, not the sentence.
+    """
+
+    async def test_scouts_live_subscription_exhaustion_carries_a_label_OF_ITS_OWN(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """RED today: `scout.py:571` passes no `label`, so the driver suppresses all three
+        extras and this seam's exhaustion is as unattributable as the bootstrap's was.
+
+        The label is checked as a PROPERTY, never against a constant this file declares —
+        the same choice §10d made and for the same reason: scout's own log events are
+        `command_subscriber.*` rather than `scout.*`, so any substring pin on a naming
+        vocabulary would be a C-DEF trap for a builder doing the right thing. What IS
+        refused is a label BORROWED from the session bootstrap, which satisfies a presence
+        check while sending the operator to the wrong emitter.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+        connection = _ForeverConflictingSubscription()
+
+        record = await _scout_seam_exhaustion_record(
+            caplog,
+            lambda: _drive_scouts_live_subscription_to_exhaustion(cast("Any", connection)),
+        )
+        label = getattr(record, "label", None)
+
+        assert connection.calls > 1, (
+            f"`subscribe_live` was attempted {connection.calls} time(s) under a sustained "
+            f"conflict, so this fixture reached exhaustion without ever RETRYING. Every "
+            f"assertion below would then be grading a path that is not the one #151 is "
+            f"about — fix the fixture (or the seam), never the pin."
+        )
+        assert isinstance(label, str) and label, (
+            f"scout's live-subscription seam exhausted and logged label={label!r}. The "
+            f"exception is swallowed, so the OPERATOR-FACING artifact is this record and "
+            f"only this record — and unlabelled, the driver suppresses `label`, `url` AND "
+            f"`engine_error` on it. The traceback does not rescue it: the driver raises the "
+            f"exhaustion error BARE, so `__cause__` is `None` and the engine's text is "
+            f"nowhere (the cold audit measured exactly this — the clause claiming otherwise "
+            f"is the defect this section replaced). Pass a canonical event name as `label=` "
+            f"at `scout.py:571`."
+        )
+        assert label not in _bootstrap_labels(), (
+            f"scout's live-subscription seam labelled its exhaustion {label!r} — a label "
+            f"that belongs to the session bootstrap. A borrowed label satisfies a presence "
+            f"check and points the operator at the wrong emitter, which is worse than no "
+            f"label at all."
+        )
+
+    async def test_scouts_live_subscription_exhaustion_carries_the_ENGINES_OWN_TEXT(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """RED today, and it is the HALF THE FALSE CLAUSE PROMISED.
+
+        The retired evidence said the engine's text "rides the traceback". It does not, and
+        it never did. Once labelled, the ONE place it survives is this record's
+        `engine_error` — so this pin asserts the engine's ACTUAL conflict text is IN it,
+        not merely that the key exists. A build that lands a label but raises the signal
+        BARE (no `from error`) gets `engine_error == ""` from the driver's own fallback and
+        fails HERE while the label pin above stays green; that empty-string build is
+        demonstrated live by
+        `test_a_LABELLED_call_that_raises_the_signal_BARE_logs_an_EMPTY_engine_error`.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+        connection = _ForeverConflictingSubscription()
+
+        record = await _scout_seam_exhaustion_record(
+            caplog,
+            lambda: _drive_scouts_live_subscription_to_exhaustion(cast("Any", connection)),
+        )
+        engine_error = str(getattr(record, "engine_error", ""))
+
+        assert _LIVE_CONFLICT_TEXT in engine_error, (
+            f"scout's live-subscription seam exhausted and its record carries "
+            f"engine_error={engine_error!r}; the engine said {_LIVE_CONFLICT_TEXT!r}. This "
+            f"assertion checks CONTAINMENT of the engine's own words — an empty string, a "
+            f"placeholder, or a re-worded summary all fail it, and all three make the log "
+            f"look complete while holding nothing the operator can act on. If the label "
+            f"landed but this is empty, the attempt body raised "
+            f"`{_RETRY_SIGNAL_NAME}()` without `from error`, so the driver had no cause to "
+            f"quote."
+        )
+
+    async def test_scouts_kill_exhaustion_carries_a_label_OF_ITS_OWN(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """RED today: `scout.py:599` passes no `label`.
+
+        SEPARATE FROM THE LIVE SEAM'S PIN ON PURPOSE. A build that labels one of scout's two
+        best-effort calls and forgets the other is the likeliest wrong build here — the two
+        sit sixteen lines apart in one class — and a single pin over "scout's best-effort
+        paths" would go green on it.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+        connection = _ForeverConflictingKill()
+
+        record = await _scout_seam_exhaustion_record(
+            caplog, lambda: _drive_scouts_kill_to_exhaustion(cast("Any", connection))
+        )
+        label = getattr(record, "label", None)
+
+        assert connection.calls > 1, (
+            f"`kill` was attempted {connection.calls} time(s) under a sustained conflict, "
+            f"so this fixture exhausted without ever RETRYING — the assertions below would "
+            f"be grading the wrong path."
+        )
+        assert isinstance(label, str) and label, (
+            f"scout's kill seam exhausted and logged label={label!r}. Best-effort cleanup "
+            f"still swallows the exception — which is exactly why the record is the only "
+            f"artifact left, and why an unlabelled one loses the engine's text with nothing "
+            f"downstream to recover it. Pass a canonical event name as `label=` at "
+            f"`scout.py:599`."
+        )
+        assert label not in _bootstrap_labels(), (
+            f"scout's kill seam labelled its exhaustion {label!r} — a label that belongs to "
+            f"the session bootstrap. Borrowing one satisfies a presence check and misroutes "
+            f"the operator."
+        )
+
+    async def test_scouts_kill_exhaustion_carries_the_ENGINES_OWN_TEXT(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """RED today. Same property as the live seam's, pinned independently for the same
+        reason its label pin is: one seam labelled and the other not must go RED on the one
+        that is not."""
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+        connection = _ForeverConflictingKill()
+
+        record = await _scout_seam_exhaustion_record(
+            caplog, lambda: _drive_scouts_kill_to_exhaustion(cast("Any", connection))
+        )
+        engine_error = str(getattr(record, "engine_error", ""))
+
+        assert _LIVE_CONFLICT_TEXT in engine_error, (
+            f"scout's kill seam exhausted and its record carries "
+            f"engine_error={engine_error!r}; the engine said {_LIVE_CONFLICT_TEXT!r}. "
+            f"Containment of the engine's own words is the check — empty, placeholder and "
+            f"paraphrase all fail it."
+        )
+
+    async def test_scouts_three_seams_label_their_exhaustion_THREE_DIFFERENT_WAYS(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """**DERIVED, not declared** — three OBSERVATIONS compared to EACH OTHER.
+
+        The per-seam pins above each compare an observation to a property. This one compares
+        scout's three driver callers to one another, so it cannot be satisfied by any build
+        in which one string reaches all three records — a module constant, a
+        `label="command_subscriber.rejected"` copied twice, a shared default on a helper —
+        however that string was obtained. A single shared scout label passes every
+        presence check in this file and still tells an operator only that *something in the
+        command channel* died, which is precisely the state #151 is about.
+
+        The bootstrap's three labels are excluded by the same argument, one layer out: a
+        borrowed label is a confidently WRONG attribution, and the driver's record is the
+        artifact an operator reads at 3am.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+        subscription_connection = _ForeverConflictingSubscription()
+        kill_connection = _ForeverConflictingKill()
+        query_connection = _ForeverConflictingQuery()
+
+        observed = {
+            "_consume_live": getattr(
+                await _scout_seam_exhaustion_record(
+                    caplog,
+                    lambda: _drive_scouts_live_subscription_to_exhaustion(
+                        cast("Any", subscription_connection)
+                    ),
+                ),
+                "label",
+                None,
+            ),
+            "_safe_kill": getattr(
+                await _scout_seam_exhaustion_record(
+                    caplog,
+                    lambda: _drive_scouts_kill_to_exhaustion(cast("Any", kill_connection)),
+                ),
+                "label",
+                None,
+            ),
+            "_scout_query": getattr(
+                await _scout_seam_exhaustion_record(
+                    caplog,
+                    lambda: _drive_scouts_query_to_exhaustion(cast("Any", query_connection)),
+                ),
+                "label",
+                None,
+            ),
+        }
+
+        assert len(set(observed.values())) == len(observed), (
+            f"scout's three driver callers labelled their exhaustion {observed} — the "
+            f"values must be PAIRWISE DISTINCT, and this assertion counts distinct values "
+            f"against the number of seams. Two seams sharing a label (or both carrying "
+            f"`None`) makes the record name the CHANNEL rather than the STATEMENT, which is "
+            f"the whole of what a label is for: an operator lands on WHICH of the three "
+            f"died, not merely that one did."
+        )
+        borrowed = sorted(
+            (seam, label) for seam, label in observed.items() if label in _bootstrap_labels()
+        )
+        assert not borrowed, (
+            f"these scout seams labelled their exhaustion with a SESSION BOOTSTRAP label: "
+            f"{borrowed}. Distinct-from-each-other is not enough — three scout labels that "
+            f"are all borrowed from `bootstrap_session` are three confidently wrong "
+            f"attributions."
+        )
+
+    async def test_scouts_live_subscription_exhaustion_carries_NO_url_a_KNOWN_BOUND(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """**THIS IS A KNOWN BOUND (#151), PINNED — not a passing gate.**
+
+        `_consume_live` is attributed by LABEL ONLY, inheriting §10d's bound for the same
+        structural reason: it holds a bare `connection`, and `CommandSubscriber` holds a
+        `connect` callable rather than an address. Closing it means threading a url through
+        scout's whole connection ownership — a design change, ruled a separate wave.
+
+        **IF YOU CLOSED THIS DELIBERATELY, DELETE THIS PIN AND SAY SO IN THE SAME DIFF** —
+        then extend the label pin above to assert the url too, so the seam does not go from
+        pinned-partial to unpinned-complete.
+
+        **NAMED RE-OPEN TRIGGER:** the day `CommandSubscriber` takes a url alongside its
+        `connect` factory, or the command channel joins the ten `_query` seams' shape. It is
+        the SAME trigger §10d names, and both pins must be retired together.
+
+        ⚠ DISCLOSED, exactly as §10d disclosed it: on the UNFIXED tree this assertion does
+        not discriminate — the record carries no url because it carries no label either, so
+        `url is None` holds for the wrong reason. It becomes a real tripwire the moment the
+        label lands, which is the same diff that turns the pins above green.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+        connection = _ForeverConflictingSubscription()
+
+        record = await _scout_seam_exhaustion_record(
+            caplog,
+            lambda: _drive_scouts_live_subscription_to_exhaustion(cast("Any", connection)),
+        )
+
+        assert getattr(record, "url", None) is None, (
+            f"scout's live-subscription seam now logs url={getattr(record, 'url', None)!r}. "
+            f"**This is a KNOWN BOUND (#151) — scout's best-effort seams are attributed by "
+            f"LABEL ONLY, because `_consume_live` has no url in scope. If you closed this "
+            f"deliberately, delete this pin and say so in the same diff**, and extend the "
+            f"label pin above to assert the url as well."
+        )
+
+    async def test_scouts_kill_exhaustion_carries_NO_url_a_KNOWN_BOUND(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """**THIS IS A KNOWN BOUND (#151), PINNED — not a passing gate.**
+
+        `_safe_kill`'s bound is stricter than its sibling's and worth stating: it is a
+        `@staticmethod`, so it does not even hold the subscriber, let alone a url. Same
+        ruling, same re-open trigger, same instruction.
+
+        **IF YOU CLOSED THIS DELIBERATELY, DELETE THIS PIN AND SAY SO IN THE SAME DIFF.**
+
+        ⚠ DISCLOSED: does not discriminate on the UNFIXED tree (no label ⇒ no url either).
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+        connection = _ForeverConflictingKill()
+
+        record = await _scout_seam_exhaustion_record(
+            caplog, lambda: _drive_scouts_kill_to_exhaustion(cast("Any", connection))
+        )
+
+        assert getattr(record, "url", None) is None, (
+            f"scout's kill seam now logs url={getattr(record, 'url', None)!r}. **This is a "
+            f"KNOWN BOUND (#151) — attributed by LABEL ONLY. If you closed this "
+            f"deliberately, delete this pin and say so in the same diff**, and extend the "
+            f"label pin above to assert the url as well."
+        )
+
+    async def test_a_LABELLED_call_that_raises_the_signal_BARE_logs_an_EMPTY_engine_error(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """**POSITIVE CONTROL for the two engine-text pins in this section.**
+
+        Those pins assert the engine's words are IN `engine_error`. A probe that reports
+        "the text is present" because it cannot see an absence reports that for everything —
+        so here is the absence, driven live: a call that passes a `label=` and whose attempt
+        raises `RetryableConflictSignal()` BARE (nothing to chain `from`) exhausts into a
+        record that is labelled and whose `engine_error` is the EMPTY STRING, straight from
+        the driver's own `"" if last_conflict_cause is None` fallback.
+
+        This is the wrong build that matters: a builder can satisfy every label pin above
+        and still lose the engine's text, and the failure would be invisible without this
+        leg. It also pins the driver's fallback itself — the day `engine_error` stops being
+        `""` for an unchained cause, the two containment pins change meaning and this goes
+        RED first, naming why.
+        """
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)
+
+        async def _labelled_but_unchained() -> None:
+            raise txn_module.RetryableConflictSignal()
+
+        with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):
+            with pytest.raises(TxnContentionExhaustedError):
+                await txn_module.retry_on_conflict(
+                    _labelled_but_unchained, label=_UNCHAINED_CONTROL_LABEL
+                )
+
+        record = _exhaustion_record(caplog)
+
+        assert getattr(record, "label", None) == _UNCHAINED_CONTROL_LABEL, (
+            "CONTROL FAILED: a call passing `label=` did not put that label on its "
+            "exhaustion record, so this control cannot demonstrate the labelled-but-empty "
+            "build the engine-text pins exist to refuse."
+        )
+        assert getattr(record, "engine_error", None) == "", (
+            f"CONTROL FAILED: an attempt raising `{_RETRY_SIGNAL_NAME}()` with no `from` "
+            f"clause logged engine_error="
+            f"{getattr(record, 'engine_error', None)!r} rather than the empty string. Either "
+            f"the driver now recovers a cause from somewhere (in which case the containment "
+            f"pins above are no longer testing what they claim, and this control is the "
+            f"right place to find that out) or this probe is not reaching the fallback at "
+            f"all — in which case the containment pins have never been shown able to fail."
         )
