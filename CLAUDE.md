@@ -505,10 +505,37 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   FILE.** Five agents, a cold audit, a contract-adversary and the lead all probed the
   engine from scratch instead of reading it. The knowledge existed; the POINTER did not.
   A fact that is written down and unread is a fact we do not have.
-- Reports: REPORT-<agent-name>.md at repo root, EXACT name; delete all before any
-  image build. One concern per commit; cold REFUTE audit before every wave commit
-  (builder ≠ grader; P8d receipts: 3 of 4 waves shipped a defect green at every
-  builder gate and only the cold audit caught it).
+- Reports: REPORT-<agent-name>.md at repo root, EXACT name. One concern per commit;
+  cold REFUTE audit before every wave commit (builder ≠ grader; P8d receipts: 3 of 4
+  waves shipped a defect green at every builder gate and only the cold audit caught it).
+- **ARCHIVE REPORTS — NEVER DELETE THEM (operator, 2026-07-21; this REPLACES the old
+  "delete all before any image build" rule, which was the root cause of #152).** The repo
+  root must still be clear of `REPORT-*.md` before an image build, but the way you clear it
+  is `git mv` into `docs/plans/v2/receipts/<YYYY-MM-DD>-<packet>/`, as part of the wave's
+  close-out — never `rm`.
+  **WHY, measured (#152 / #153):** the old rule mandated an address *and* mandated its
+  destruction, with no step in between that preserved the content. Every citation an agent
+  wrote pointing at its own or a sibling's report dangled the moment the wave closed — not
+  stale, **absent**. Derived 2026-07-20: **57 distinct `REPORT-*.md` names cited across
+  `loremaster/`; only 3 resolved; 54 dangled.** The 3 that resolved were exactly the 3 that
+  had been archived — the convention already worked, it just was not law. Archiving eight
+  surviving #150-wave reports (`7d2ff44`) made **15 citations resolve at a stroke**, for one
+  `git mv`.
+  **So: cite the archived path, and cite it section-exactly.** A citation naming a report is
+  a durable address only once the report is tracked; until then it is a promise you have
+  already broken. Prefer, in order: a committed script that regenerates a measurement > a
+  tracked `docs/plans/v2/receipts/…` path > a finding number > a commit SHA > an in-tree
+  symbol or test name. **Never cite a bare `REPORT-*.md`, a `scratchpad/` path, or a `/tmp`
+  path** — those are unrecoverable by construction, and #154 exists because two modules bound
+  themselves to specs at exactly such addresses.
+  **And cite SYMBOLS, not LINE NUMBERS.** `scout.py`'s `_scout_query` survives an edit above
+  it; `scout.py:171` is stale the moment anyone inserts a line. Measured in one session: a
+  wave's own fix shifted three seams (`171→176`, `571→576→578`, `599→608→610`) and falsified
+  nine prose citations, twice — renumbering would have shipped stale *within the same
+  session*.
+  ⚠ Archiving is not free of judgement: a report that is superseded or wrong gets archived
+  **with a one-line header saying so**, not silently preserved as if current. The point is
+  that the address resolves, not that every archived claim is true.
 - Lead context checklist (P8d retro + fresh-Fable review, 2026-07-06): consume report
   SUMMARY BLOCKS first — Read(limit≈40) — and the body only for rulings/audits; point
   briefs at spec/scout files, never transcribe them; agents drive their OWN ledger
