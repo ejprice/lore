@@ -671,3 +671,48 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   New findings **#153** (report-protocol root cause, FIXED in law) · **#154** (dead SPEC paths) ·
   **#155** (an unfiled obligation living in a test docstring) · **#156** · **#157** (the legacy
   tail, deliberate). NEXT = **packet 03 (the STORE)**, unchanged.
+- 2026-07-21 · **#151/#152 CLOSE-OUT — the final cold audit said NO-GO, and it was right.**
+  The entry above was written before the wave's own audit reported. That audit CONFIRMED #151's
+  behaviour fixed end-to-end (all six seams driven to exhaustion; label + url + engine text
+  present; a positive control reproducing the pre-fix empty record) and then returned **NO-GO on
+  the wave's PROSE**: seven false claims of the exact class the wave existed to close, two born in
+  its own commits, all green at ruff/mypy/the full suite because no gate reads English.
+  **The worst was in STANDING LAW and it was the lead's.** `CLAUDE.md` claimed archiving the
+  #150-wave reports "made **15 citations** resolve at a stroke". Measured: **1** — seven of the
+  eight reports were cited zero times. The 15 came from counting bare AGENT-NAME mentions
+  (`blindreader-150 F3`) and reporting them as report ADDRESSES. **Two populations conflated into
+  one count — #102/#120 verbatim, inside the law written to stop it, by the lead who had just
+  written "re-derive it yourself" into four agent briefs.** Same figure had gone into #153 and a
+  commit message simultaneously. Corrected at `7d20afe`, WITH the story of its own falseness left
+  in the file; ledger correction **#158**. Also fixed: a false line citation shipped into
+  PRODUCTION by the #151 fix itself (`:1242` was a docstring line; the raise was at `:1293` — the
+  number was copied from the pre-fix tree by the commit that moved it).
+  **Then the lead broke the same gate twice.** `2a080e0` archived a report naming retired symbols
+  with no SUPERSEDED banner and re-broke `test_retired_symbols` — the identical defect
+  `db9973b`'s own message confesses to, eight commits earlier, still in the log. Caught only
+  because the auditor **re-verified at the new HEAD** ("a cold auditor does not accept 'fixed' as a
+  claim") — and it could catch it because the lead had archived its report WHILE IT WAS STILL
+  WRITING: the copy acted on was 546 lines, the complete one 690, and the 144 unread lines held the
+  gate failure. Fixed `7e52af9`. **Two rules out of it:** archive a report only AFTER its author is
+  reaped; and after repairing a prose instance, **re-run the bare grep and confirm the count went to
+  ZERO** — never repair from a report's list (the fixed-one-missed-the-sibling shape hit three times
+  in this wave alone).
+  **Also:** `git add -A` tracked 61 files / 397K of `scratchpad/`, breaking an invariant
+  `pyproject.toml:35` had stated for months with nothing enforcing it — now in `.gitignore`
+  (`7383342`), mechanical rather than remembered.
+  **brief-base bumped to v6 GLOBALLY** (operator-directed): a report is a DURABLE artifact; **a
+  retrieved chunk arrives without its header, so date claims WHERE YOU MAKE THEM**; cite durable
+  addresses and SYMBOLS not line numbers. ⚠ `~/.claude` is **not** a git repo, so v6 is unversioned
+  on disk — operator informed, decision deferred (the `lore-deploy` symlink-into-a-repo pattern is
+  the precedent).
+  **The archived reports turned out to be SEMANTICALLY SEARCHABLE already** — `lore.yaml` includes
+  `**/*.md`, so archiving IS ingestion (receipt: an adversary's mutation proof retrieved mid-file at
+  sim 0.57). Three rows out of that: **#161** (cosine floor stale — corpus 214→353, lore says so
+  itself), **#162** (an UNBANNERED `scratchpad/` twin outranked the bannered archive), and **#163**
+  (PACKET: serve chunks as an ordered, section-aware, chronological THREAD + graph reports to
+  findings/commits/symbols — subsumes #160; the chunker already computes the breadcrumb, nothing
+  serves it; #162 must land first).
+  Final: 22 commits · full suite **5722 passed** (+63) with packet-03's RED unmoved at 309/166
+  (attributed 309/309, incl. one non-obvious `test_surreal_schema.py` site) · ruff clean ·
+  typecheck 55/5 baseline · #151 + #152 RESOLVED · open: #153–#159, #161–#163.
+  NEXT = **packet 03 (the STORE)**, unchanged.
