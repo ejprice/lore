@@ -1,5 +1,12 @@
 # REPORT-apply-152-tests-d
 
+> **SUPERSEDED — DATED RECORD.** An agent report from the #151/#152 wave, archived under the
+> archive-don't-delete law (`968883d`). Preserved as EVIDENCE of its run, not as a description of
+> the code today. Retired symbols it names, which NO LONGER EXIST: `_REPORT_MINT`,
+> `_TXN_CONFLICT_BACKOFF_SECONDS`, `_apply_mint`. The retry substrate shipped at `9d29111`;
+> read `loremaster/store/_txn.py` for what is real.
+
+
 brief-base v5 read
 
 - **state:** done-with-deviations — 26 hits re-derived, 24 rewritten, 2 left (§2.3, §3)

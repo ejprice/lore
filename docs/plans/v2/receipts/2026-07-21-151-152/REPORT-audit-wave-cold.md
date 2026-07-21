@@ -4,29 +4,140 @@ brief-base v5 read
 
 state: **done — NO-GO**
 deviations:
-- HEAD MOVED MID-AUDIT: a 17th commit `01e7885` (INDEX.md Log entry) landed while I worked. Audited; docs-only, no code/test delta. My findings stand at `01e7885`.
+- HEAD MOVED MID-AUDIT, TWICE: `01e7885` (INDEX.md Log entry) and `2a080e0` (archive commit). Both audited; docs-only, no code/test delta. Findings stand.
+- ⚠ **`2a080e0` ARCHIVED THIS REPORT WHILE I WAS STILL WRITING IT.** A glob swept my in-progress `REPORT-audit-wave-cold.md` into `docs/plans/v2/receipts/2026-07-21-151-152/` and **committed it**, so a stale, unfinished cold audit is now in the permanent receipts record as if it were the finished one. I restored a working copy to the repo root (my brief's writable address) and finished here. **The tracked archived copy is stale and must be replaced with this file or dropped — I cannot touch it (tracked, outside my writable set).** The wave's own law says archiving happens "as part of the wave's close-out"; archiving an audit that has not returned a verdict is that law fired one step early.
 - Two mutation proofs mutated the REAL tree (not a scratch copy) with `cp -a` content backups; both restored and proven byte-exact by md5 + empty `git diff`. Backups: `/tmp/coldaudit/backup-3556869/`, `/tmp/coldaudit/bk2/`.
 - CWD trap fired on me TWICE (tenth and eleventh instances in this work), once while restoring a mutated file. Caught both; tree verified clean.
-decisions-needed:
-- D1 — six false "RED today" claims survive `db9973b` ("retire the **last** false RED claims"); TWO were created by this wave. Fix now or ledger?
-- D2b/D2c — a FALSE line citation `:1242` in PRODUCTION (`_txn.py:884`) plus 5 stale ones in `test_retry_seam.py`, all falsified by the wave's OWN `352db0e`, and a builder's explicit "Verified line-stable" that answered the wrong question.
-- D3 — `test_retry_seam.py:5205-5209` still teaches the RETIRED report-deletion law; `968883d`'s own message queued this fix and it was never applied.
-- D4 — `~/.claude/orchestration/brief-base.md` was NOT updated (outside repo); #153's own fix is half-shipped.
-- (D2a — `CLAUDE.md:522`'s false "15 citations resolve at a stroke" — **already corrected by the lead mid-audit**; recorded, no action owed.)
-receipt POINTERS: §1 targets 1–2 probes · §2 D1 · §3 D2 · §4 D3/D4 · §5 targets 5–7 · §6 gates · §RESIDUALS · §OVERLAP
+decisions-needed (OPEN AT HEAD `2a080e0` — the rest were fixed by `7d20afe` mid-audit and re-verified in §0):
+- **A — 🔴 `test_retired_symbols` IS RED AT HEAD.** `2a080e0` archived `REPORT-apply-152-tests-d.md`, which names `_apply_mint`/`_REPORT_MINT`/`_TXN_CONFLICT_BACKOFF_SECONDS` with no SUPERSEDED banner. **This is `db9973b`'s own defect — same gate, same three symbols, same archive-commit cause — eight commits after it wrote the lesson down.** Fix = one banner. §0b.
+- **B — `test_retry_seam.py:8460-8463`** still carries five stale line numbers (`:1002 :1010 :1018 :1103 :1242`; real 1038/1046/1054/1154/1293) in a present-tense "MEASURED:". The production twin was fixed; this was named in the draft and missed. §0a.
+- **C — `test_txn_contention.py:5-6`** still says `TxnContentionExhaustedError` "does not exist yet"; it exists at `_txn.py:155`. Line 8 of the same paragraph WAS fixed. §0a.
+- **D4** — `~/.claude/orchestration/brief-base.md` still mandates only the repo-root address; #153's fix is half-shipped. Outside this repo — operator's call. Correctly acknowledged by the lead.
+- **D5** — 19 surviving `does not exist yet` claims (11 verified FALSE), a phrasing the wave's "RED today" grep structurally could not see. Never in declared scope, but #157 should carry it. §2.
+receipt POINTERS: §0 RE-VERIFICATION AT HEAD · §1 targets 1–2 probes · §2 D1/D5 · §3 D2 · §4 D3/D4 · §5 targets 3/5/6/7 · §6 gates · §RESIDUALS · §OVERLAP
 
 ---
 
 ## VERDICT: **NO-GO**
 
 The behaviour half of #151 is **CONFIRMED FIXED**, measured end-to-end with controls (§1). The
-prose half is not. **This wave shipped, at minimum, seven new or surviving false claims of the
-exact class it exists to close — including one in PRODUCTION code, one in STANDING REPO LAW
-(`CLAUDE.md`), and two born inside the wave's own commits.** Every one is green at ruff, mypy and
-the entire test suite, because no gate reads English. That is the NO-GO class verbatim.
+gates are **genuinely green** — every number in `01e7885` re-measured EXACT, including the full
+suite (§6). The findings are **honest** — every count I could re-derive was exact to the unit (§5).
+The SHA markers are **72/72 correct** (§5). This was, by a distance, the most careful wave in the
+receipts archive.
 
-Nothing I found is a *behavioural* regression. The tree is functionally correct. It is the wave's
-**completeness and honesty claims** that fail.
+**And it still fails, on the one thing it existed to fix.**
+
+| # | false claim shipped/left standing | where | born in this wave? |
+|---|---|---|---|
+| 1 | *"`url=`, which `bootstrap_session` does not yet accept"* | `test_retry_seam.py:7528` | **YES** (`d2d7b2c`, falsified by `352db0e`) |
+| 2 | *"**RED TODAY.**"* on a passing pin | `test_retry_seam.py:8651` | **YES** (`d5fd333`) |
+| 3 | `:1002 :1010 :1018 :1103 :1242` — five stale line numbers in a present-tense *"MEASURED:"* | `test_retry_seam.py:8459-8462` | **YES** (`d5fd333`, falsified by `352db0e`) |
+| 4 | `:1242` claimed to be `execute_transaction._attempt` — **in PRODUCTION**, wrong at birth (real: 1276/1293) | `_txn.py:884` | **YES** (`352db0e`) |
+| 5 | *"15 citations resolve at a stroke"* — **in STANDING LAW**; measured **1** | `CLAUDE.md:522` | **YES** — ✅ fixed by the lead mid-audit |
+| 6 | *"all 12 touched test files"* — actual **10** | `db9973b` message | **YES** |
+| 7-10 | four *"red today"* / *"do not exist yet"* claims on green pins, surviving a commit titled *"retire the **LAST** false RED claims"* | `test_retry_seam.py:196,:793` · `test_retired_symbols.py:438` · `test_txn_contention.py:8` | no — **but the completeness claim covering them is** |
+| 11 | *"repo law requires [reports] be DELETED before any image build"* — the RETIRED law, taught live; the fix was named in `968883d`'s own message and never applied | `test_retry_seam.py:5205-5209` | no — **known, queued, dropped** |
+
+Every one was green at ruff, mypy and all 5722 passing tests, because **no gate reads English**. That
+is the NO-GO class verbatim, and it is the class this wave was convened to close.
+
+**Rows 1–5, 7–11 have since been FIXED** by `7d20afe`, which the lead shipped off a draft of this
+report; I re-measured each (§0). **Three items remain open at HEAD `2a080e0`, and one of them is a
+RED GATE:**
+
+| # | open at HEAD | severity |
+|---|---|---|
+| **A** | 🔴 **`test_retired_symbols` is RED.** `2a080e0` archived a report naming three retired symbols with no SUPERSEDED banner — **`db9973b`'s own defect, same gate, same three symbols, eight commits later** (§0b) | **blocking** |
+| **B** | `test_retry_seam.py:8460-8463` — five stale line numbers in a present-tense *"MEASURED:"* (real: 1038/1046/1054/1154/1293). The production twin was fixed; this one was named in the draft and missed | one edit |
+| **C** | `test_txn_contention.py:5-6` — *"a name that does not exist yet (`TxnContentionExhaustedError`)"*; it exists at `_txn.py:155`. Line 8 of the same paragraph WAS fixed | one edit |
+
+Nothing here is a *behavioural* regression — the tree is functionally correct. What fails is the
+wave's **completeness claim** ("the last", "12 files", "15 citations") and now a **green-gate
+claim**. The recommendation is narrow: **fix A, B and C — A is a one-line banner — then GO.**
+D4 (`brief-base.md`, outside this repo) and D5 (§2) are operator scope calls, not blockers.
+
+**And the one structural lesson, which is worth more than the eleven fixes** (§3 D2d): the wave had
+an adversary that measured `:1242` *correctly*, a contract that then pinned the *stale* value into
+its own failure text, and a builder that proved `LINE-STABLE BELOW THE CLAUSE: True, byte-for-byte`.
+Three graders, one number, nobody wrong — because **each verified "did *I* break it," and the answer
+to "was it already broken" was never asked.** A scope-limited verification is indistinguishable from
+a complete one in a report.
+
+---
+
+## 0. RE-VERIFICATION AT THE CURRENT HEAD (`2a080e0`) — READ THIS FIRST
+
+While this audit was running, the lead read an in-progress draft and shipped fixes
+(`7d20afe docs: #152 close the cold audit's NO-GO`). **A cold auditor does not accept "fixed" as a
+claim**, so I re-measured every item against the new HEAD. Results:
+
+| item | status at `2a080e0` |
+|---|---|
+| D2a — `CLAUDE.md` "15 citations" | ✅ **FIXED**, and correctly: now *"seven of the eight were cited ZERO times and the eighth once, so it repaired exactly ONE dangling address"*, plus a paragraph recording its own falseness. Matches my measurement exactly. |
+| D2b — `_txn.py:884`'s `:1242` in production | ✅ **FIXED** — the line number is gone; it now names the symbol, which is what `968883d`'s own law requires. |
+| D3 — retired report-deletion law taught in `test_retry_seam.py` | ✅ **FIXED** — zero hits repo-wide for *"DELETED before any image build"*. |
+| D1 — six false RED claims | ✅ **5 of 6 FIXED** (`:196`, `:793`, `:7528`, `:8652`, `test_retired_symbols.py:438`), each retired to past tense naming a derived commit. |
+| **D2c — the FIVE stale line numbers in `test_retry_seam.py:8460-8463`** | ❌ **NOT FIXED.** |
+| **D1 residual — `test_txn_contention.py:5-6`** | ❌ **NOT FIXED.** |
+| D4 — `brief-base.md` | ⏸ acknowledged open with the operator. Correct handling. |
+| D5 — the `does not exist yet` population | ⏸ 22 → 19 sites (3 fixed incidentally). Not addressed as a class. |
+| **NEW — a LIVE RED GATE at HEAD** | 🔴 **`2a080e0` BROKE `test_retired_symbols`.** See §0b. |
+
+### 0a. The two that were fixed one line away from their siblings
+
+- **`test_retry_seam.py:8460-8463` still reads, in the present tense:**
+  > `# MEASURED: FOUR sites raise` from error `(:1002, :1010, :1018, :1103); :1242, inside execute_transaction._attempt, raises RetryableConflictSignal() BARE.`
+  > `# THE LEAD INSPECTED :1242 AND RULED: …`
+
+  Measured at HEAD: those five sites are at **1038, 1046, 1054, 1154** and **1293**. All five numbers
+  are wrong. The production instance of this exact error (D2b) was repaired; the test-tree instance
+  that D2c named explicitly was not.
+- **`test_txn_contention.py:8` was rewritten to past tense — and `:5-6`, two lines above it in the
+  same paragraph, still says** *"Every pin here needs a name that **does not exist yet**
+  (`TxnContentionExhaustedError`)"*. That class exists at `_txn.py:155`.
+
+**Both are the same shape: the named instance repaired, the adjacent sibling left.** That is the
+third occurrence of that shape in this wave (`968883d` fixed `_surreal_harness.py` and left
+`test_retry_seam.py`; `7d20afe` fixed production and left the test tree; `7d20afe` fixed line 8 and
+left line 5). It is worth a rule, not another fix: **after repairing a prose instance, re-run the
+BARE grep and confirm the count went to zero — do not repair from the report's list.**
+
+### 0b. 🔴 A LIVE RED GATE, SHIPPED — and it is `db9973b`'s own defect, verbatim, eight commits later
+
+```
+FAILED tests/test_retired_symbols.py::TestNoFileReferencesARetiredSymbol::test_no_file_references_a_retired_symbol
+1 failed, 598 passed in 34.92s
+```
+```
+docs/plans/v2/receipts/2026-07-21-151-152/REPORT-apply-152-tests-d.md
+  [DATED RECORD, banner incomplete] mentions
+  ['_REPORT_MINT', '_TXN_CONFLICT_BACKOFF_SECONDS', '_apply_mint']
+  but the SUPERSEDED banner does not name them
+```
+
+`git log --diff-filter=A` confirms **`2a080e0` — the current HEAD — introduced that file**, which
+carries 8 mentions of retired symbols and no SUPERSEDED banner at all. The gate was green at
+`01e7885`.
+
+Now read `db9973b`'s own commit message, from eight commits earlier:
+
+> *"A RED GATE WAS ALREADY IN THE TREE, AND I PUT IT THERE. `test_retired_symbols` has been failing
+> since `1666856` — **my own archive commit** tracked the #102 design documents, which name retired
+> symbols (`_apply_mint`, `_REPORT_MINT`, `_TXN_CONFLICT_BACKOFF_SECONDS`), and the gate scans
+> tracked docs. It went unnoticed for 13 commits because my verification ran the changed suites and
+> the blast-radius suites but NOT the structural pins."*
+
+**Same gate. Same three symbols. Same cause (an archive commit tracking docs into the gate's scan
+scope). Same verification gap (structural pins not run).** The wave diagnosed this failure in
+writing, named the missing step, and then did it again — because the diagnosis was a lesson and not
+an instrument. That is `CLAUDE.md`'s "A DIAGNOSIS IS NOT AN INSTRUMENT" section describing this
+wave, in advance.
+
+**The fix is one SUPERSEDED banner** naming those three symbols in that file, exactly as `db9973b`
+did for the three `DESIGN-102-*.md` files. **The instrument this needs** — and it is cheap — is that
+`test_retired_symbols` runs on any commit that adds a tracked file under `docs/`, i.e. it belongs in
+the archive step itself, not in a lead's memory.
 
 ---
 
@@ -419,6 +530,14 @@ the derived count is **10**. A wrong numeric claim inside the commit retiring wr
 The findings are the strongest artifact of this wave. **#157's "already done" claims all check out.**
 Its one flaw is the 26-vs-31 undercount, which is why D1 is not in its remainder.
 
+Two #157 claims I could NOT independently re-derive with a cheap instrument, stated as such rather
+than waved through: *"~350 citation sites adjudicated"* and *"~87% came back PROVENANCE"*. What I can
+confirm: **exactly 7 adjudicator reports** exist (`REPORT-adj-152-{prod,rep-comms,rep-prod,rep-rest,retryseam,tests,txn}.md`)
+— the "seven readers" is EXACT — carrying **290** numbered per-site verdict rows plus other table
+forms, so "~350 sites" is plausible. The 87% I cannot check: the verdict column uses several
+spellings (`PROVENANCE`, `P`, `P — already resolved`) and a crude grep undercounts it. **Not a
+challenge to the number — a statement that I did not verify it.**
+
 **Observation, not a defect:** the test tree's `blindreader|audit-102|audit-fix-1|adversary` site
 count went **139 → 157** across the wave (+18). Production went 61 → 54. The wave added 18 new
 agent-name citations to the test tree while closing the class. They are almost certainly legitimate
@@ -434,9 +553,11 @@ the wrong direction and nobody counted it.
 | `tests/test_surreal_harness.py tests/test_retry_seam.py` | 531 / 0 | **531 passed, 0 failed** (25.87s) ✓ |
 | `uv run ruff check .` (absolute cd, re-run twice) | clean, exit 0 | **All checks passed! exit 0** ✓ |
 | `./scripts/typecheck.sh` | exit 1, exactly 55 in 5 files | **Found 55 errors in 5 files (checked 146 source files), exit 1** ✓ |
-| `test_retired_symbols.py` + `test_txn_contention.py` | — | **38 passed** ✓ |
+| `test_retired_symbols.py` + `test_txn_contention.py` (at `01e7885`) | — | **38 passed** ✓ |
+| **the same, re-run at HEAD `2a080e0`** | — | 🔴 **1 failed, 598 passed** — `test_no_file_references_a_retired_symbol`, broken by `2a080e0` itself. See §0b. |
 | structural/AST pins: `test_render_seam_pins` `test_text_hygiene` `test_shellout_allowlist` `test_shellout_seam_perimeter` `test_render_mypy_layer` | — | **168 passed** ✓ |
-| full suite (`-n auto`) | 5722 passed, packet-03 RED unmoved at 309/166 | *see §6a* |
+| **full suite, repo root, `-n auto -p no:randomly`, run ALONE** | 5722 passed, packet-03 RED unmoved at 309/166 | **309 failed, 5722 passed, 3 skipped, 3 xfailed, 166 errors** (160.79s) — **EXACT on all three** ✓ |
+| full suite, `loremaster/` scope only, run ALONE | — | 309 failed, 4912 passed, 2 skipped, 3 xfailed, 166 errors; collected **5392** = 4912+309+2+3+166 exactly, so the run was complete |
 
 **Sweep for gates nobody ran** (the brief's "assume there is another one"): I enumerated every test
 that scans the tree rather than importing it —
@@ -451,9 +572,27 @@ error (`unrecognized arguments: --timeout=600`) and the shell reported **exit 0*
 was behind a pipe. That is the "piped test run lies by omission" failure mode, live. Every number
 above is from a run with a passed-COUNT in the tail.
 
-### 6a. Full-suite result
+### 6a. Full-suite result — **the INDEX's headline numbers are EXACT.**
 
-*(appended below when the run completes — see §6a-RESULT)*
+```
+309 failed, 5722 passed, 3 skipped, 3 xfailed, 1 warning, 166 errors in 160.79s
+```
+(repo root, `uv run pytest -n auto -q -p no:randomly`, nothing else running.)
+
+**5722 / 309 / 166 — all three match `01e7885`'s claim exactly. The packet-03 RED has NOT grown.**
+
+Two notes on how I got there, because the first attempt misled me and the story is instructive:
+
+- The `loremaster/`-scope run gives **4912 passed / 309 failed / 166 errors**, and `--collect-only`
+  reports **5392** = 4912+309+2+3+166 exactly, so that run was complete, not truncated. The
+  repo-ROOT scope collects **6203** (it picks up `skills/` and `scripts/` tests). The INDEX's 5722
+  is the root scope. **Both are internally consistent; the scopes simply differ.** My brief's gate
+  list names the `loremaster/` scope, so I checked both.
+- ⚠ I briefly ran two full suites CONCURRENTLY and got **339/407** and **364/411** — worse on both
+  axes. Run solo, both scopes are perfectly reproducible (309/166 twice). **The degradation was my
+  own concurrency, not the tree.** See RESIDUAL 11: I could not separate DB contention from ~124
+  xdist workers on 64 cores, and I am not claiming the harness's parallel-safety invariant is broken
+  — only that my accidental experiment is the one datum against it and deserves a deliberate probe.
 
 ---
 
@@ -499,7 +638,12 @@ above is from a run with a passed-COUNT in the tail.
    names the file exactly, the other keeps a glob while the surrounding prose claims
    "section-exactly". The two archived audit reports define a *different* R4 and R5, so the glob
    is genuinely ambiguous — that is exactly why `e81a3ff` disambiguated the other one.
-11. **⚠ MY OWN INSTRUMENT ERROR, disclosed:** I briefly ran two full suites CONCURRENTLY against
+11. **The archived copy of THIS report is stale.**
+   `docs/plans/v2/receipts/2026-07-21-151-152/REPORT-audit-wave-cold.md` was committed at `2a080e0`
+   from an unfinished draft (missing D5, §6a, the overlap table, the D2d withdrawal, and the
+   verdict's evidence). Replace it with the root copy or drop it — as it stands the receipts
+   archive contains a cold audit that never reached a conclusion, at a durable address.
+12. **⚠ MY OWN INSTRUMENT ERROR, disclosed:** I briefly ran two full suites CONCURRENTLY against
    the same `spike-surreal` test store. Both degraded (339/407 and 364/411 vs the solo run's
    309/166). I do not know whether that is DB contention or simply ~124 xdist workers on a 64-core
    box, and I did not resolve it — but CLAUDE.md asserts the harness is parallel-safe *by

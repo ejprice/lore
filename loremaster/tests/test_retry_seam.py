@@ -8457,10 +8457,12 @@ class TestTheDriversProseAboutItsCallersIsDerivedFromItsCallers:
 # raises the signal does so ``from error`` (the original engine exception)"*. The whole
 # `engine_error` extra — the artifact #151 exists to restore — is built on that premise.
 #
-# MEASURED: FOUR sites raise `from error` (`:1002`, `:1010`, `:1018`, `:1103`); `:1242`,
-# inside `execute_transaction._attempt`, raises `RetryableConflictSignal()` BARE.
+# MEASURED: FOUR sites raise `from error` (the three `bootstrap_session` statement closures
+# and `run_query`'s `_attempt`); the fifth, inside `execute_transaction._attempt`, raises
+# `RetryableConflictSignal()` BARE. (Symbols, not line numbers — 968883d: a line number is
+# stale the moment anyone inserts a line, and these five were wrong within one commit.)
 #
-# THE LEAD INSPECTED `:1242` AND RULED: THE CODE CANNOT CONFORM, SO THE COMMENT MUST CHANGE.
+# THE LEAD INSPECTED THAT BARE RAISE AND RULED: THE CODE CANNOT CONFORM, SO THE COMMENT MUST CHANGE.
 # At that site there is no exception in scope AT ALL — the transactional caller detects a
 # conflict by INSPECTING a returned response's `failed_statements`, not by catching a raise,
 # so there is nothing to chain `from`. This is not an oversight; it is the architectural split

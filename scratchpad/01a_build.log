@@ -1,0 +1,165 @@
+STEP 1/17: FROM python:3.14-slim
+STEP 2/17: RUN apt-get update -qq     && apt-get install -y -qq --no-install-recommends curl git     && rm -rf /var/lib/apt/lists/*
+--> Using cache fce52d629ae0835e0983ed71aaaa2e647adfed5c59418680625da4a4a8ca2ba9
+--> fce52d629ae0
+STEP 3/17: RUN pip install --no-cache-dir uv
+--> Using cache 78dcb4322ec4813f6e963d4396ee12bbfa97a39ebab675b40f61d43aa8352f66
+--> 78dcb4322ec4
+STEP 4/17: WORKDIR /app
+--> Using cache b00cbf17fdd54746e428a5236bab6f32f60abd33ff03d819400454454d175362
+--> b00cbf17fdd5
+STEP 5/17: COPY pyproject.toml /app/pyproject.toml
+--> Using cache 63a406bc4b7f7ca9eb98f26d76810aeeaea9f8213a4573a5bd0a89f1e8fa8bdf
+--> 63a406bc4b7f
+STEP 6/17: COPY uv.lock        /app/uv.lock
+--> Using cache cdb55ccb8015df54d3ce36ed5c4c5200a8639916e4b4151b2a9733d70e7d1dce
+--> cdb55ccb8015
+STEP 7/17: COPY lorescribe/ /app/lorescribe/
+--> Using cache 33c15cfb32217ed1dd4987949467a52ab090e8e809bf37d728ff95db11ce0d00
+--> 33c15cfb3221
+STEP 8/17: COPY loresigil/  /app/loresigil/
+--> Using cache 868e476702d2fe639fb5877921efca8a106ce1465e1b3393995651db728c7219
+--> 868e476702d2
+STEP 9/17: COPY loremaster/ /app/loremaster/
+--> c9351e6dfd5c
+STEP 10/17: RUN uv sync --locked --all-packages
+Using CPython 3.14.5 interpreter at: /usr/local/bin/python3
+Creating virtual environment at: .venv
+Resolved 93 packages in 9ms
+   Building lorescribe @ file:///app/lorescribe
+   Building loresigil @ file:///app/loresigil
+   Building loremaster @ file:///app/loremaster
+Downloading hf-xet (4.3MiB)
+Downloading mypy (14.3MiB)
+Downloading pygments (1.2MiB)
+Downloading aiohttp (1.7MiB)
+Downloading tokenizers (3.2MiB)
+Downloading zstandard (5.3MiB)
+Downloading pydantic-core (2.0MiB)
+Downloading ruff (10.9MiB)
+Downloading ast-serialize (1.2MiB)
+Downloading cryptography (4.5MiB)
+Downloading surrealdb (5.4MiB)
+ Downloaded pygments
+ Downloaded ast-serialize
+ Downloaded aiohttp
+ Downloaded pydantic-core
+ Downloaded tokenizers
+ Downloaded hf-xet
+ Downloaded cryptography
+ Downloaded zstandard
+ Downloaded surrealdb
+      Built lorescribe @ file:///app/lorescribe
+      Built loremaster @ file:///app/loremaster
+ Downloaded ruff
+      Built loresigil @ file:///app/loresigil
+ Downloaded mypy
+Prepared 89 packages in 1.31s
+Installed 89 packages in 225ms
+ + aiohappyeyeballs==2.7.1
+ + aiohttp==3.14.1
+ + aiosignal==1.4.0
+ + annotated-doc==0.0.4
+ + annotated-types==0.7.0
+ + anyio==4.13.0
+ + ast-serialize==0.5.0
+ + astroid==4.1.2
+ + attrs==26.1.0
+ + certifi==2026.5.20
+ + cffi==2.0.0
+ + charset-normalizer==3.4.7
+ + click==8.4.1
+ + cryptography==48.0.0
+ + defusedxml==0.7.1
+ + execnet==2.1.2
+ + filelock==3.29.0
+ + frozenlist==1.8.0
+ + fsspec==2026.4.0
+ + h11==0.16.0
+ + hf-xet==1.5.0
+ + httpcore==1.0.9
+ + httpx==0.28.1
+ + httpx-sse==0.4.3
+ + huggingface-hub==1.16.1
+ + idna==3.17
+ + iniconfig==2.3.0
+ + jsonpatch==1.33
+ + jsonpointer==3.1.1
+ + jsonschema==4.26.0
+ + jsonschema-specifications==2025.9.1
+ + langchain-core==1.4.0
+ + langchain-protocol==0.0.16
+ + langchain-text-splitters==1.1.2
+ + langsmith==0.8.7
+ + librt==0.11.0
+ + loremaster==0.1.0 (from file:///app/loremaster)
+ + lorescribe==0.1.0 (from file:///app/lorescribe)
+ + loresigil==0.1.0 (from file:///app/loresigil)
+ + markdown-it-py==4.2.0
+ + mcp==1.27.2
+ + mdurl==0.1.2
+ + multidict==6.7.1
+ + mypy==2.1.0
+ + mypy-extensions==1.1.0
+ + orjson==3.11.9
+ + packaging==26.2
+ + pathspec==1.1.1
+ + pluggy==1.6.0
+ + propcache==0.5.2
+ + pycparser==3.0
+ + pydantic==2.13.4
+ + pydantic-core==2.46.4
+ + pydantic-settings==2.14.1
+ + pygments==2.20.0
+ + pyjwt==2.13.0
+ + pytest==9.0.3
+ + pytest-asyncio==1.4.0
+ + pytest-xdist==3.8.0
+ + python-dotenv==1.2.2
+ + python-multipart==0.0.29
+ + pyyaml==6.0.3
+ + referencing==0.37.0
+ + requests==2.34.2
+ + requests-toolbelt==1.0.0
+ + rich==15.0.0
+ + rpds-py==2026.5.1
+ + ruff==0.15.15
+ + shellingham==1.5.4
+ + sqlglot==30.8.0
+ + sse-starlette==3.4.4
+ + starlette==1.2.0
+ + surrealdb==2.0.0
+ + tenacity==9.1.4
+ + tokenizers==0.23.1
+ + tqdm==4.67.3
+ + typer==0.26.4
+ + types-defusedxml==0.7.0.20260504
+ + types-pyyaml==6.0.12.20260518
+ + typing-extensions==4.15.0
+ + typing-inspection==0.4.2
+ + urllib3==2.7.0
+ + uuid-utils==0.16.0
+ + uvicorn==0.48.0
+ + watchdog==6.0.0
+ + websockets==16.0
+ + xxhash==3.7.0
+ + yarl==1.24.2
+ + zstandard==0.25.0
+--> a1d376e49a35
+STEP 11/17: ENV PATH="/app/.venv/bin:${PATH}"
+--> 5c2c9c8cc567
+STEP 12/17: RUN useradd -r -s /bin/false lore
+--> 557417e41b60
+STEP 13/17: USER lore
+--> c88f2630877e
+STEP 14/17: ENV LORE_CONFIG=/workspace/lore.yaml
+--> 43fbd1c9c344
+STEP 15/17: ARG LORE_VERSION=unknown
+--> 0f0df1a4b774
+STEP 16/17: ENV LORE_VERSION=${LORE_VERSION}
+--> a93afde5e3a1
+STEP 17/17: CMD ["/app/.venv/bin/python", "-m", "loremaster.server"]
+COMMIT localhost/lore:01a
+--> 744d7f99aa8a
+Successfully tagged localhost/lore:01a
+744d7f99aa8abbf424e61172313e6b2c79eb6d3b8f8b278a36db62106c3c43fe

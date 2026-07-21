@@ -1,0 +1,125 @@
+{
+  "single": {
+    "response_text": "<response>42</response>",
+    "tool_call_order": [
+      [
+        "lore_search",
+        {
+          "query": "foo"
+        }
+      ]
+    ],
+    "tool_metrics_counts": {
+      "lore_search": 1
+    },
+    "usage_metrics": {
+      "input_tokens": 20,
+      "output_tokens": 40,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    },
+    "api_calls_messages": [
+      [
+        {
+          "role": "user",
+          "content": "probe question"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "probe question"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_single_1",
+              "name": "lore_search",
+              "input": {
+                "query": "foo"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "toolu_single_1",
+              "content": "search result text"
+            }
+          ]
+        }
+      ]
+    ]
+  },
+  "parallel": {
+    "response_text": "<response>done</response>",
+    "tool_call_order": [
+      [
+        "lore_search",
+        {
+          "query": "foo"
+        }
+      ]
+    ],
+    "tool_metrics_counts": {
+      "lore_search": 1
+    },
+    "usage_metrics": {
+      "input_tokens": 20,
+      "output_tokens": 40,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    },
+    "api_calls_messages": [
+      [
+        {
+          "role": "user",
+          "content": "probe question"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "probe question"
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_parallel_a",
+              "name": "lore_search",
+              "input": {
+                "query": "foo"
+              }
+            },
+            {
+              "type": "tool_use",
+              "id": "toolu_parallel_b",
+              "name": "lore_read",
+              "input": {
+                "tier": "custom",
+                "path": "x.py"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "toolu_parallel_a",
+              "content": "search result text"
+            }
+          ]
+        }
+      ]
+    ]
+  }
+}
