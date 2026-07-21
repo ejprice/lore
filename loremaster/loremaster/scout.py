@@ -568,7 +568,12 @@ class CommandSubscriber:
                         raise RetryableConflictSignal() from error
                     raise
 
-            subscription = await retry_on_conflict(_attempt)
+            # Attributed by LABEL ONLY (finding #151), inheriting `_scout_query`'s bound and
+            # its reasoning — no url is in scope here either. The label matters MORE on this
+            # seam than on that one: the exhaustion is SWALLOWED below, so the driver's own
+            # record is the only artifact an operator ever gets, and the driver suppresses the
+            # engine's text on it unless a label is passed.
+            subscription = await retry_on_conflict(_attempt, label="command_subscriber.live.rejected")
             async for _notification in subscription:
                 # A pending insert fired — reconcile via the (idempotent) poll
                 # path so the live and poll routes can never double-dispatch.
@@ -596,7 +601,11 @@ class CommandSubscriber:
                 raise
 
         try:
-            await retry_on_conflict(_attempt)
+            # Attributed by LABEL ONLY (finding #151), the same bound its two siblings carry:
+            # a `@staticmethod` holds no subscriber, let alone a url. Best-effort cleanup
+            # still swallows the exhaustion, so the driver's labelled record is the one place
+            # the engine's text survives.
+            await retry_on_conflict(_attempt, label="command_subscriber.kill.rejected")
         except (*_CONNECTION_ERRORS, KeyError, TxnContentionExhaustedError):
             logger.debug("command_subscriber.kill.already_closed")
 

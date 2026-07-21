@@ -854,11 +854,11 @@ async def retry_on_conflict[T](
         label: The caller's OWN canonical rejection event (e.g.
             ``"brief.query.rejected"``), carried into the exhaustion record so
             it is attributable (blindreader-dry-2 F1 / audit-fix-1 B3).
-            ``None`` (the default — :func:`execute_transaction`, which keeps its
-            own attribution via ``_log_rollback``) omits the seam-identity extras
-            entirely rather than logging a hole. Every other caller — the ten
-            single-statement seams, the three session-bootstrap statements, and
-            scout's query seam — passes its own ``label``.
+            ``None`` (the default) omits the seam-identity extras entirely rather
+            than logging a hole. EVERY caller passes its own ``label`` except one:
+            :func:`execute_transaction`, which keeps its own attribution via
+            ``_log_rollback``. The EXEMPT caller is what is named — enumerating the
+            attributed ones instead goes stale at the next caller (finding #151).
         url: The caller's RPC URL, logged alongside ``label`` — ``None`` unless
             ``label`` is also given.
 
