@@ -435,7 +435,7 @@ class TestNoFileReferencesARetiredSymbol:
             )
 
     def test_no_file_references_a_retired_symbol(self) -> None:
-        """RED today at every site below.
+        """RED before 00f4301 at every site below.
 
         A LIVE document goes GREEN when its prose is rewritten to describe the
         BEHAVIOUR instead of naming the corpse. A DATED RECORD goes GREEN when it gains

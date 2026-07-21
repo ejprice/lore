@@ -519,8 +519,17 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   stale, **absent**. Derived 2026-07-20: **57 distinct `REPORT-*.md` names cited across
   `loremaster/`; only 3 resolved; 54 dangled.** The 3 that resolved were exactly the 3 that
   had been archived — the convention already worked, it just was not law. Archiving eight
-  surviving #150-wave reports (`7d2ff44`) made **15 citations resolve at a stroke**, for one
-  `git mv`.
+  surviving #150-wave reports (`7d2ff44`) cost one `git mv`; **seven of the eight were cited
+  ZERO times and the eighth once, so it repaired exactly ONE dangling address** — the value
+  was preserving eight waves' reasoning before the old rule destroyed it, not the citation
+  count.
+  ⚠ **AND THE SENTENCE ABOVE IS ITSELF A RECEIPT.** It first shipped claiming *"15 citations
+  resolve at a stroke"* — a number that matches NO scoping of the tree. It came from counting
+  bare AGENT-NAME mentions (`blindreader-150 F3`, 16 of them) and reporting them as report
+  ADDRESSES (1). Archiving a FILE cannot make a prose mention of a NAME resolve; there is no
+  address to follow. **Two populations, conflated into one count — the #102/#120 defect, in the
+  law written to stop it, by the lead who had just written "re-derive before acting" into the
+  brief.** A cold audit caught it. Re-derive every number you inherit, INCLUDING from this file.
   **So: cite the archived path, and cite it section-exactly.** A citation naming a report is
   a durable address only once the report is tracked; until then it is a promise you have
   already broken. Prefer, in order: a committed script that regenerates a measurement > a

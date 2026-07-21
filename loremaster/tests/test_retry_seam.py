@@ -193,7 +193,7 @@ from loremaster import scout as scout_module
 # A module-level ``from loremaster.store._txn import retry_on_conflict`` would make this
 # whole file uncollectable against the unrepaired tree — its RED would be a collection
 # ImportError, which proves nothing about behaviour and would hide the ~20 pins here
-# that ARE behaviourally red today (#120's missing retry, briefs' private loop, the
+# that WERE behaviourally red before 9d29111 (#120's missing retry, briefs' private loop, the
 # policy divergence, the label prose). Every pin must be red for its OWN reason.
 #
 # It also keeps the CONTRACT itself mypy-clean against the unrepaired tree, so the
@@ -790,9 +790,9 @@ class TestTheSeamEnumerationIsHonest:
 # ===========================================================================
 # 1. THE DRIVER ITSELF.
 #
-# Every pin here is red today with an ImportError naming ``retry_on_conflict`` /
-# ``RetryableConflictSignal`` — the names do not exist yet. The pins that follow
-# (sections 2-6) are behaviourally red against the real, unrepaired code.
+# Every pin here was red before 9d29111 with an ImportError naming ``retry_on_conflict`` /
+# ``RetryableConflictSignal`` — the names did not exist yet. The pins that follow
+# (sections 2-6) were behaviourally red against the then-unrepaired code.
 # ===========================================================================
 
 
@@ -5204,8 +5204,9 @@ async def open_connection(env):
 
         **THE DURABLE ADDRESS IS FINDING #150** (this is its residual) and commit
         ``2105c7e``, the wave that made the DDL leg receiver-blind and left this leg keyed.
-        Cite those, never the review reports of that wave — they are untracked scratch files
-        at the repo root that repo law requires be DELETED before any image build, so a bound
+        Cite those, or the wave's reports now ARCHIVED under
+        ``docs/plans/v2/receipts/2026-07-20-150/`` (968883d made archival the law, replacing
+        the delete-before-image-build rule that was #152's root cause), so a bound
         whose rationale points at one is a bound nobody can act on.
         """
         # CONTROL 1 — the scan is ALIVE on this exact handle. Without this, the bound below
@@ -7525,9 +7526,9 @@ class TestAttributingTheBootstrapDoesNotChangeItsDisposition:
         is_retryable: bool,
     ) -> None:
         """RED before 352db0e x4 — but for the PLUMBING, not the property: the call below passed
-        ``url=``, which ``bootstrap_session`` does not yet accept, so all four fates die on
-        a ``TypeError`` before any disposition is exercised. Once the signature lands, this
-        becomes a pure NON-REGRESSION pin: it goes green on a fix that only ADDS
+        ``url=``, which ``bootstrap_session`` did not accept before 352db0e, so all four fates
+        died on a ``TypeError`` before any disposition was exercised. The signature has landed,
+        so this is now a pure NON-REGRESSION pin: it goes green on a fix that only ADDS
         attribution, and red on one that also gave the helper a disposition of its own.
 
         Stated because the distinction is load-bearing: a pin that is red today for a
@@ -8648,8 +8649,9 @@ async def _transactional():
         )
 
     def test_the_drivers_explanation_NAMES_every_caller_that_raises_UNCHAINABLY(self) -> None:
-        """**RED TODAY.** The comment above `last_conflict_cause` claims *"every caller that
-        raises the signal does so ``from error``"*. `_txn.py:1242` does not, and cannot: the
+        """**RED before 98980bd.** The comment above `last_conflict_cause` claimed *"every caller
+        that raises the signal does so ``from error``"*. ``execute_transaction``'s nested
+        ``_attempt`` does not, and cannot: the
         transactional caller detects its conflict by INSPECTING a returned response's failed
         statements, so at that raise there is no exception in scope to chain.
 

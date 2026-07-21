@@ -881,7 +881,7 @@ async def retry_on_conflict[T](
     # session-bootstrap statements alike — so the exhaustion record can quote the SAME engine
     # text the seam's own non-exhausted rejections already log, instead of leaving the operator
     # with only an attempt count and a hint pointing at a server log that holds nothing. The
-    # ONE exception is ``execute_transaction``'s nested ``_attempt`` (:1242, LEAD RULING
+    # ONE exception is ``execute_transaction``'s nested ``_attempt`` (LEAD RULING
     # 2026-07-20): the transactional caller detects a conflict by INSPECTING a returned
     # response's failed statements, not by catching a raise, so it raises the signal BARE —
     # there is no exception in scope to chain — which is also why §10's allowlist exempts that

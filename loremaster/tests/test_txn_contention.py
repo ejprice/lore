@@ -5,7 +5,7 @@ caller that has to tell that apart from its own domain failures.
 WHY THIS MODULE EXISTS SEPARATELY. Every pin here needs a name that does not
 exist yet (``TxnContentionExhaustedError``), so this module cannot even be
 COLLECTED against the unrepaired tree — its failure is an ``ImportError``, which
-proves nothing about behaviour. The pins that CAN be behaviourally red today
+proves nothing about behaviour. The pins that COULD be behaviourally red (pre-9d29111)
 therefore live in the modules they belong to, where they are red for the right
 reason and the rest of the suite still runs:
 
