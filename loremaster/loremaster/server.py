@@ -4446,9 +4446,10 @@ class AppContext:
         # Validating in the handler lets a REJECTED call mutate the caller's
         # row first (stamped heartbeat_at, an idle->active auto-flip) before
         # the raise; that is a side effect a rejected call must never have
-        # (contract-adversary §2). Below 1 teaches the valid range; above the
-        # display cap is legal here — it clamps inside the fleet handler, it
-        # never raises.
+        # (pinned by ``test_comms_tool.py::TestFleetLimitBounds::
+        # test_a_rejected_limit_never_touches_the_callers_row``). Below 1 teaches
+        # the valid range; above the display cap is legal here — it clamps inside
+        # the fleet handler, it never raises.
         if limit is not None and limit < _MIN_COUNT:
             raise ValueError(
                 f"limit={limit} is out of range for action={action!r} — the valid range is "

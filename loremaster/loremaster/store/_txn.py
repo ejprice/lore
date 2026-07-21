@@ -463,7 +463,7 @@ _MAX_TXN_CONFLICT_ATTEMPTS = 5
 #   N=16  n=800   attempts p50=2 p90=3 p99=4   latency p50=0.011s p90=0.019s p99=0.047s
 #   N=32  n=1600  attempts p50=2 p90=3 p99=5   latency p50=0.011s p90=0.021s p99=0.045s
 #
-# (full JSON receipt in ``REPORT-builder-102.md``). ZERO exhaustions across all
+# (regenerate the full JSON receipt with the survey script above). ZERO exhaustions across all
 # 2900 observed mints; the attempt distribution at every N was a narrow spread
 # (max observed attempt count 6, at N=32) with no multi-modal clustering near
 # the ceiling — no lockstep signature. BASE/CAP are therefore left at the
@@ -911,10 +911,9 @@ async def retry_on_conflict[T](
             # there is only one driver) — the terminal DISPOSITION, never the journey: a
             # conflict that resolves logs nothing here (see
             # ``test_nothing_is_logged_when_the_conflict_RESOLVES``), because contention
-            # is the NORMAL case — blindreader-dry-1's live probe (16 racers x 40 rounds on
-            # ONE hot row, raw SDK): 193/640 attempts = 30.2% conflicted (a single
-            # measurement at 16-way, not a general constant) — and a line per retried
-            # attempt would be a log storm in production.
+            # is the NORMAL case — the committed survey (``scripts/survey_txn_contention_102.py``,
+            # cited above) measures a p50 of TWO attempts per mint at every N >= 8 — and a line
+            # per retried attempt would be a log storm in production.
             extra: dict[str, Any] = {"attempts": attempts, "elapsed_seconds": elapsed}
             if label is not None:
                 # Attributable: WHICH seam (the canonical event an operator already
@@ -974,7 +973,10 @@ async def bootstrap_session(
     conflict, retried to exhaustion, or a genuine transport/domain fault) propagates
     UNWRAPPED to the caller, EXACTLY as raised by the SDK or by
     :func:`retry_on_conflict` — no ``except`` clause of this function's own translates
-    anything. That is load-bearing (contract adversary P-1, ``W1-SCOUTKILL``): scout's
+    anything. That is load-bearing (``W1-SCOUTKILL`` — pinned by
+    ``TestScoutsConnectFailureReachesTheReconnectLadder`` and
+    ``TestScoutsFailedConnectClosesItsSocketWithoutChangingTheType`` in
+    ``test_retry_seam.py``): scout's
     reconnect ladder catches raw SDK types and :class:`TxnContentionExhaustedError`
     directly, never :class:`SurrealConnectionError`. A ``bootstrap_session`` that
     wrapped its own exhaustion would satisfy every store-seam pin and still fly straight
@@ -1110,7 +1112,7 @@ async def run_query(
         statement: The SurrealQL statement to run.
         params: The statement's bound parameters.
         logger: The CALLING seam's OWN module logger (``logging.getLogger(__name__)``
-            in that seam's file) — blindreader-dry-2 F6: ``JsonFormatter`` writes
+            in that seam's file) — ``JsonFormatter`` in ``loremaster/logging_setup.py`` writes
             ``"logger": record.name``, a served field, and every Mezmo query/alert
             keyed on ``logger:loremaster.tasks`` for ``task.query.rejected`` must keep
             matching. A shared attempt body logging under its OWN ``_txn`` logger would

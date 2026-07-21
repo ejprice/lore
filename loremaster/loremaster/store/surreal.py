@@ -422,9 +422,11 @@ class SurrealStore:
         every caller of this method — including ``server.py``'s per-item
         graceful-degradation handlers — was written against exactly that
         meaning. ``bootstrap_session`` itself never performs this wrap
-        (adversary P-1, ``W1-SCOUTKILL``): scout's reconnect ladder needs the
-        RAW exhaustion type to back off and reconnect, so the wrap belongs at
-        the seam that owns the disposition, not inside the shared helper.
+        (``W1-SCOUTKILL`` — pinned by ``test_retry_seam.py``'s
+        ``TestScoutsFailedConnectClosesItsSocketWithoutChangingTheType``):
+        scout's reconnect ladder needs the RAW exhaustion type to back off and
+        reconnect, so the wrap belongs at the seam that owns the disposition,
+        not inside the shared helper.
 
         Returns:
             The cached, signed-in connection bound to this store's ns/db.

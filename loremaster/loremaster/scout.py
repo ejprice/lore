@@ -204,7 +204,8 @@ async def _open_command_connection(
     Returns:
         A live, signed-in SDK connection bound to ``namespace``/``database``.
 
-    Deliberately UNWRAPPED (adversary P-1, ``W1-SCOUTKILL``): unlike the ten
+    Deliberately UNWRAPPED (``W1-SCOUTKILL`` — pinned by ``test_retry_seam.py``'s
+    ``TestScoutsFailedConnectClosesItsSocketWithoutChangingTheType``): unlike the ten
     store/manifest/ledger seams, this function does NOT translate a bootstrap
     failure — including exhausted contention — into
     :class:`~loremaster.store._txn.SurrealConnectionError`. The caller's own
@@ -214,12 +215,13 @@ async def _open_command_connection(
     past that ladder and kill the command channel dead, with no backoff and no
     reconnect.
 
-    It DOES self-heal the half-open socket on a failed bootstrap
-    (blindreader-dry-2 F7 / audit-fix-1 B1): every one of the ten ledger seams
-    closes theirs on a failed connect; this function used to close nothing,
-    leaking one socket per failed connect — unbounded in a long-running
-    process under sustained store contention, now that the bootstrap can take
-    seconds instead of failing in milliseconds. **Closed AND raw, or
+    It DOES self-heal the half-open socket on a failed bootstrap (pinned by
+    ``test_retry_seam.py``'s
+    ``TestScoutsFailedConnectClosesItsSocketWithoutChangingTheType``): every one
+    of the ten ledger seams closes theirs on a failed connect; this function used
+    to close nothing, leaking one socket per failed connect — unbounded in a
+    long-running process under sustained store contention, now that the bootstrap
+    can take seconds instead of failing in milliseconds. **Closed AND raw, or
     neither** — a bare ``except Exception: close(); raise`` re-raises the
     SAME exception object, unmodified, so this cleanup can never become a
     second, accidental wrap.

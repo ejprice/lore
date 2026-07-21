@@ -571,8 +571,7 @@ _QUERY_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+")
 # identity + bare_name + file_stem, so an English-shaped heading/file-stem
 # token sits in the SAME set as real code identifiers) — that is not
 # evidence the caller pasted a real symbol. Measured
-# (scripts/search_score_survey.py run, 2026-07-06, REPORT-slate-fixer-
-# survey.md / search_score_survey_summary.md): 9/15 nonsense queries
+# (scripts/search_score_survey.py run, 2026-07-06): 9/15 nonsense queries
 # anchored this way (e.g. "rate limiting middleware per client IP address"
 # anchored via bare "rate"/"client"), capping nonsense catch at 40% against
 # D2's 60% adoption bar. The QUERY side of the anchor is therefore

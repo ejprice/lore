@@ -13,7 +13,8 @@ enforces nothing: Python's f-strings and ``str.format`` happily coerce ANY
 value via ``str()``/``format()``, so ``f"{raw}"`` is never a mypy error no
 matter what type ``raw`` claims to be. A v1 draft of this module claimed
 ``typing.LiteralString`` closed the template slot at the mypy layer; the cold
-audit (REPORT-phase0-audit-1.md §PROBE-A) refuted that with a working exploit
+audit (docs/design/2026-07-11-render-safety-foundation-ruling.md, its v2
+CHANGELOG and §PROBE-A environment facts) refuted that with a working exploit
 (``scratchpad/audit1/row3_exploit.py``): mypy 2.1.0 PARSES the
 ``LiteralString`` annotation and then ERASES it to plain ``str`` — PEP 675
 enforcement is a pyright-only feature mypy has never shipped — so a hostile,

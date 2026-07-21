@@ -897,8 +897,8 @@ class BriefLedger:
     async def _relate_briefed(self, *, agent_id: str, brief_id: str, via: str) -> tuple[bool, str]:
         """RELATE one ``agent->briefed->brief`` edge, idempotent on UNIQUE(in, out).
 
-        Live 3.1.5 gotcha (verified this session, see
-        ``REPORT-c1-contract-schema.md``): ``RELATE type::record(...)->edge->
+        Live 3.1.5 gotcha (see ``docs/reference/surrealdb-31-capabilities.md``
+        §7): ``RELATE type::record(...)->edge->
         type::record(...)`` is a PARSE ERROR. The working shape — cloned from
         ``loremaster.graph_surreal``'s ``_edge_statement``/``_node_statements``
         — is ``RELATE $from->edge->$to SET ...`` with ``$from``/``$to`` bound
@@ -937,11 +937,12 @@ class BriefLedger:
             # nobody) — reporting it as ``already_acked=True`` would tell the
             # caller its ack was an idempotent no-op against an existing edge,
             # when in fact the write was DROPPED. Propagate untouched, never
-            # re-read. This is one of FOUR guarded-CAS doors in the package (audit-
-            # fix-1 A6: a hand-list here once named only two and quietly dropped a
-            # third) — its three siblings carry the identical guard, with the
-            # identical reasoning; the contract quantifies over all four
-            # structurally, so a fifth is pinned the day it is written.
+            # re-read. This is one of FOUR guarded-CAS doors in the package (an EXACT-SET
+            # pin — ``test_retry_seam.py::TestNoGuardedCasHandlerReinterpretsExhaustedContention
+            # ::test_the_door_enumeration_matches_the_canonical_set``: a hand-list here once
+            # named only two and quietly dropped a third) — its three siblings carry the
+            # identical guard, with the identical reasoning; the contract quantifies over all
+            # four structurally, so a fifth is pinned the day it is written.
             raise
         except SurrealStoreError:
             existing_via = await self._select_briefed_edge(agent_id=agent_id, brief_id=brief_id)
