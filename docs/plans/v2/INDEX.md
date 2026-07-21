@@ -627,3 +627,47 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   (bootstrap_session passes no retry `label`, and `retry_on_conflict`'s docstring FALSELY claims
   it "has its own attribution" when it logs nothing) — deliberately OPEN by operator ruling, with
   a tripwire pin that reddens the day it is closed. NEXT = **packet 03 (the STORE)**, unchanged.
+- 2026-07-21 · **#151 + #152 CLOSED — the wave that kept regenerating its own defect class.**
+  **#151** (`352db0e` + `98980bd`): `bootstrap_session` called `retry_on_conflict` three times
+  with NO `label`/`url`, so an exhausted bootstrap raised *"see the server log for the full
+  engine detail"* over a record holding `{attempts, elapsed_seconds}` — **a message promising a
+  receipt that did not exist**, with `__cause__` None. Now every one of the **eleven** owners
+  threads its OWN url (two — `SurrealStore`, `TaskLedger` — were missing from the lead's
+  hand-list and were found only because operator ruling R2 made `url` REQUIRED, so the type
+  system enumerated the population a grep could not). Scout's three seams are label-attributed;
+  the exemption allowlist is down to `execute_transaction` alone. **THREE INDEPENDENT GRADERS
+  EACH FOUND A DISTINCT HOLE THE PREVIOUS ONE MISSED:** adversary #1, a missing QUANTIFIER — a
+  build hardcoding the url passed **489/0 with ZERO delta across all 6079 tests**; adversary #2,
+  a missing HALF — a behaviourally-perfect build with the false docstring intact scored
+  **515/0**; and the cold audit, a FALSE exemption clause (*"the engine's text rides the
+  traceback"* — measured false) that **both adversaries had blessed by INSPECTION and neither had
+  MEASURED**. That last one is **#156**: an exemption's evidence is an assertion about runtime
+  behaviour, and the §10 gate checks it for presence and a 60-char floor because *"no assertion
+  can read English"* — so **every allowlist in this repo can carry a false justification
+  forever**. Final: 35 pins, **531/0** scoped, **1168/0** structural, full suite **5722 passed**
+  (+63) with the packet-03 RED unmoved at 309/166.
+  **#152** (`ee0bec2` `9601455` `e81a3ff` `db9973b`): ~350 citation sites adjudicated per-site by
+  seven readers; **~87% were PROVENANCE and deliberately LEFT ALONE** (their verdict tables are
+  the archived record of why). ~54 false "RED today" claims retired to past tense naming **13+
+  distinct closing commits**, each derived by `git log -S`, never assumed.
+  **THE ROOT CAUSE IS NOW LAW (`968883d`, #153):** the old rule mandated an address *and* mandated
+  its destruction — *"delete all before any image build"* — so **57 report names were cited and
+  only 3 resolved**. Reports are now ARCHIVED into `docs/plans/v2/receipts/<date>-<packet>/`;
+  three archives landed (`7d2ff44` `1666856` `b3e7687`) and resolving citations went 3 → 9. The law
+  also fixes the two forms this wave watched fail live: **cite the archived path, and cite SYMBOLS
+  not LINE NUMBERS** — one fix shifted three scout seams and falsified nine citations TWICE, so
+  renumbering would have shipped stale within the same session.
+  **THE LESSON, and it is the reason this entry is long: the fix kept regenerating the defect.**
+  Landing the labels falsified two caller enumerations; shifting scout falsified nine line cites;
+  archiving the reports falsified a claim that they were untracked; archiving the #102 design docs
+  **broke `test_retired_symbols` for 13 commits** because the lead ran the changed and
+  blast-radius suites but NOT the structural pins. Nine times a hand-list lost to the tree (twice
+  the lead's own); the CWD trap fired nine times, once SILENTLY returning 0 where 26 was true.
+  Every one was caught by the NEXT grader, never by a gate. So the wave stopped extending lists
+  and started **inverting** them — name what is EXEMPT, not what is covered — which is
+  "allowlist the safe" applied to prose. Deliberately NOT built: the citation allowlist pin,
+  because on day one it needs a **51-entry exemption list**, in the wave that discovered
+  exemption evidence is unguarded (**#157**, with a named re-open trigger).
+  New findings **#153** (report-protocol root cause, FIXED in law) · **#154** (dead SPEC paths) ·
+  **#155** (an unfiled obligation living in a test docstring) · **#156** · **#157** (the legacy
+  tail, deliberate). NEXT = **packet 03 (the STORE)**, unchanged.
