@@ -38,3 +38,7 @@ htmlcov/
 # Claude Code: personal overrides + worktrees stay local
 .claude/settings.local.json
 .claude/worktrees/
+
+# Session debris — never tracked (pyproject.toml:35 states this invariant; it was
+# broken once by a lazy `git add -A` in 7e52af9, so it is now mechanical, not a rule).
+scratchpad/

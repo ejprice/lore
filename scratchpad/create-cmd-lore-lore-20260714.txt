@@ -1,1 +1,0 @@
-podman run -d --name lore-lore --network=host --userns=keep-id --user 1000:1000 -e HOME=/home/lore -v /home/ejprice/PycharmProjects/lore:/workspace:ro -v /home/ejprice/.local/state/lore:/home/lore/.local/state/lore --env-file /home/ejprice/docker/mcp/lore-secrets/lore.env -e LORE_CONFIG=/workspace/lore.yaml localhost/lore:latest
