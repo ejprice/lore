@@ -86,6 +86,16 @@ DIRTY store rather than the virgin one every test fixture mints.
 **FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
 packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
 outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
+**⚠ THE ENGINE IS NOW 3.2.1 (migrated 2026-07-22, reference §0)** — this contract was
+probe-settled on 3.1.5. The migration receipts cover: identical suite behaviour, #107
+re-probed, SDK unchanged. NOT covered: two `[VENDOR]` release-note claims touching THIS
+packet's seams — the **duplicate edge record ID fix (#349)** (bears on `UNIQUE(in,out)`
+dedupe behaviour) and the **cold-start `Session not found` router-race fix (#308)**.
+Re-probe each on 3.2.1 where a pin leans on it; un-re-probed 3.1.5 facts keep their
+provenance labels (reference law).
+**#146 adjudication (slotted 2026-07-22):** verify the dirty-store migration pins cover a
+changed `DEFINE SEQUENCE` BATCH/START on an existing store (the #107 shape for sequences)
+— pin it, or record the accepted residual with a named re-open trigger. No silent gap.
 Packet 02 deployed; task f86af162 claimed; `comms-subsystem.md` build-time probe list
 (the C2 probe is this packet's); spike-surreal up.
 
@@ -154,5 +164,9 @@ Packet 02 deployed; task f86af162 claimed; `comms-subsystem.md` build-time probe
    price it; it is the one ruling here that ADDS pins.
 
 ## Exit
-Full gates + cold audit + deploy BOTH + smoke: send→drain→ack round-trip on the live
-wire incl. a broadcast and a hostile body staying fenced; INDEX row + Log.
+**TEST + STORE ONLY — NO DEPLOY** (header law; the stale send→drain→ack/deploy exit that
+previously sat here belonged to the pre-split packet — send/drain/ack are 03a/03b).
+Scoped gates green with passed-COUNTs (the 47 store pins + the dirty-store migration pins
++ the `[real]` tier) + `scripts/typecheck.sh` + ruff + **cold audit** (production-touching
+relation flip) → one-concern commits at natural boundaries → INDEX row + Log + ledger
+rows; 03a unblocked.

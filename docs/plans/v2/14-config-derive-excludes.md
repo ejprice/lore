@@ -20,6 +20,11 @@ packet 19's. Static config rots — this packet makes lore.yaml self-healing whe
   derive-from-backend or informational.
 - **Finding #72**: `scratchpad/` (and session artifacts generally) excluded from the
   index — lands with the exclude_dirs work; reconcile the polluted corpus after.
+- **Finding #162** (slotted 2026-07-22, same fix family): duplicate copies of ARCHIVED
+  content are indexed — search surfaced an unbannered `scratchpad/` twin ABOVE the
+  bannered archive in `docs/plans/v2/receipts/`. The exclude work must also REAP the
+  already-indexed duplicates during the reconcile (verify by re-running #162's own query:
+  the archived, bannered copy must be the only hit). Prerequisite for packet 28a (#163).
 
 ## Scope OUT
 - Boot validation assertions, dead-field cleanup, #12 (packet 15).

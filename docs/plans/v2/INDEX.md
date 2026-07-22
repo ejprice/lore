@@ -68,6 +68,16 @@ HERE now** — a packet session must not need to read them.
   retired. Last receipts: 33/35 · 6.46 calls · 1440.8 tok (2026-07-07).
 - Test store: spike-surreal ws://127.0.0.1:18000; production store :18500 — NEVER
   pointed at by tests. Both systemd/quadlet-managed, auto-start on boot.
+- **ENGINE: SurrealDB 3.2.1 on BOTH stores (migrated from 3.1.5 on 2026-07-22)** —
+  receipts in the store reference §0 (ff7128e): prod byte-identical (174,161 rows /
+  20 tables), full suite behaviour-identical across engines, #107 re-probed, SDK 2.0.0
+  unchanged. 3.1.5-probed facts KEEP their provenance labels — re-probe on contact.
+  Sole rollback: the verified 3.1.5 backup at /backups/lore/surreal-pre-3.2.1-20260721
+  (RocksDB format is forward-only). New static vendor tiers indexed (`surrealdb-docs`,
+  `surrealql-tests` @ v3.2.0 tag) — corpus now 2764 files by design.
+  ⚠ Substrate caveats at verification: lore-lore's schema rebuild sits in a FAILED
+  fingerprint-mismatch state while serving the old fingerprint (finding #167), and
+  traces serve total=0 (#147, routed 03b).
 
 ## Packet protocol (read once — this is the whole ritual)
 **Boot:** (1) repo CLAUDE.md auto-loads (process law: gates, TDD, orchestration,
@@ -154,25 +164,26 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 01a | **artifact-conformance — run the suite IN the deployed image** (#139) | — | pre | 0.25 (measure-first) | 01 | **DONE + DEPLOYED 2026-07-16** (c90df55/b528ac1/a35cdca/062bf60; image **f25c18976b2b**, both containers; in-image suite 5545/0; no 01b split; **#141 drift closed in the running artifact**) |
 | 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.40 | — | **DONE + DEPLOYED 2026-07-19** (image **ae0e78d9a504**, both containers; d3c899f→05a8bb2; cold-audit GO + F1 fixed; live-wire smoke PASS; promise HARDENING split → 02a) |
 | 02a | comms-promise-instrument-hardening (full §9.7 per-entry executable-predicate proofs + `safe_str` literal-coverage closure `_SAFE_STR_LITERAL_RESIDUAL`) | — | C | 0.20 (ran ~4×) | 02 | **DONE 2026-07-19** (a2e9a70→ceac2d0, 6 commits; TEST-ONLY, **no deploy** — production byte-identical, `server.py` md5 unchanged throughout; scoped gates 34→117) |
-| 03 | **comms STORE** — message/`to` slices, `DEFINE SEQUENCE`, `ENFORCED`, the relation-table policy flip + dirty-store migration pins | PKT-28 C2b | C | 0.20 | 02 | open — contract READY (400 pins, adversary-closed) |
-| 03a | **comms LEDGER** — `messages.py` send/drain/ack, derived waiting state, ≥8-way concurrency, retry-seam coverage | — | C | 0.35 | 03 | open — contract READY |
-| 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **DEPLOYS BOTH** | — | C | 0.30 | 03a | open — contract READY |
+| 03 | **comms STORE** — message/`to` slices, `DEFINE SEQUENCE`, `ENFORCED`, the relation-table policy flip + dirty-store migration pins; **#146 adjudication + 3.2.1 re-probes** | PKT-28 C2b | C | 0.20 | 02 | open — contract READY (400 pins, adversary-closed) |
+| 03a | **comms LEDGER** — `messages.py` send/drain/ack, derived waiting state, ≥8-way concurrency, retry-seam coverage | — | C | 0.35 →split | 03 | open — contract READY |
+| 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a | open — contract READY |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
-| 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121) | PKT-28 C3 | C | 0.30 →split | 04 | open |
+| 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121 #149) | PKT-28 C3 | C | 0.30 →split | 04 | open |
 | 06 | comms-protocol-drill (brief-base v3 + THE DRILL) | PKT-28 C4 | C | 0.25 | 05 | open |
-| 07 | store-error-honesty (#118, #119, #128; #126/#127 adjudication) | PKT-30 | L ∥ | 0.20 | — | open |
+| 07 | store-error-honesty: CLASSIFICATION (#118, #119, #144 — the #124 rediagnosis) | PKT-30 | L ∥ | 0.20 | — | open |
+| 07a | store-error-honesty: RECOVERY + DEGRADATION (#164 reconnect-on-bounce, #128; #126/#127 adjudication) | — | L ∥ | 0.20 | 07 rec. (same seam) | open |
 | 08 | astroid-shadow (#24; containerfile roles → 37) | PKT-08 | L ∥ | 0.15 | — | open |
 | 09 | surface-residues (#15, #64, #80, #82, #84–#86, #88, #92, docs truth) | PKT-03 | L ∥ | 0.20 | — | open |
 | 10 | floor-calibration-design (#83, #87) | PKT-01 | L | 0.15 | — | open |
 | 11 | floor-calibration-build | PKT-02 | L | 0.25 | 10 ruled | open |
 | 12 | detection-contract (#10, #11, #27) | PKT-04 | L | 0.15 | — | open |
 | 13 | detection-build | PKT-05 | L | →split | 12 ruled | open |
-| 14 | config-derive-excludes (#26, #28, #72 corpus pollution) | PKT-09a | L ∥ | 0.20 | — | open |
+| 14 | config-derive-excludes (#26, #28, #72 corpus pollution + #162 archive-twin dedup) | PKT-09a | L ∥ | 0.20 | — | open |
 | 15 | config-boot-validation (+ dead fields, #12) | PKT-09b | L ∥ | 0.20 | — | open |
 | 16 | surreal-ops-hardening (#109, #110, #113, #114, #116, #117) | PKT-31 | L ∥ | 0.15 | — | open |
 | 17 | worktree-overlay-design (#125; delta-only RULED) | PKT-33 | L | 0.15 | — (#136 FIXED 2026-07-14) | open |
 | 18 | ledger-retirement (singular-store ruling) | PKT-24 | M | 0.20 | — (before 20 finalizes, 22 ships) | open |
-| 19 | lore-deploy-rework (finding #13, scaffold; all-mode only) | PKT-11 | M | 0.30 →split | 14, 15 | open |
+| 19 | **deploy-architecture DESIGN** (#166 one-toolchain ⊃ #165; partitions the old rework — #13, scaffold, verbs — into minted 19b+ builds ≤0.25 each) | PKT-11 | M | 0.15 | — (builds inherit 14/15) | open — REDESIGNATED 2026-07-22 |
 | 20 | migration-machinery (Shape D) | PKT-12 | M | 0.30 →split | §8 Q1–Q4 ruled at kickoff; 19; 18 | open |
 | 21 | single-node-drills (§8.6 + watcher skip-path) | PKT-10a | M | 0.15 | — | open |
 | 22 | di-migration + **v1.0 SHIP (single-node)** | PKT-13 | M | 0.25 | 19, 20, 18, GO/NO-GO | open |
@@ -181,7 +192,8 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 25 | odoo-onboarding-design (XML extractor, MRO capture, tiers, cutover) | PKT-32 | O | 0.15 | 24 receipts | open |
 | 26 | odoo-onboarding-build (26a, 26b, … minted by 25) | PKT-35+ | O | ≤0.25 each | 25 ruled | open |
 | 27 | cross-tier-compare (Odoo 15→19 prep) | PKT-18 | O ∥ | 0.25 | v1.0 | open |
-| 28 | graph-search-v11 (#3, #70; + #20/#37/#40/#41 candidates) | PKT-17 | F | 0.35 →split | v1.0 | open |
+| 28 | graph-search-v11 (#3, #70, #155; + #20/#37/#40/#41 candidates) | PKT-17 | F | 0.35 →split | v1.0 | open |
+| 28a | report/thread serving (#163 ⊃ #160 — section-aware chronological threads + report graph) | — | F ∥ | 0.25 | 14 (#162 first); v1.0 | open |
 | 29 | loresage package | PKT-14 | F | 0.25 | v1.0 | open |
 | 30 | enrichment-worker | PKT-15 | F | 0.30 →split | 29 | open |
 | 31 | detectors-escalation (raise_issue) | PKT-16 | F ∥ | 0.25 | v1.0 | open |
@@ -251,7 +263,17 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
 20. **#73 eval-fixture maintenance** (corpus-dependent ground truths go stale as the
     tree grows) — decision point: next standing-bar eval run.
 21. **#111 typed conflict check** — switch `_txn`'s substring match to
-    `is_transaction_conflict` when surrealdb-py 3.0.0 ships. Watch the release.
+    `is_transaction_conflict` when surrealdb-py 3.0.0 ships (alphas a1–a4 exist as of
+    2026-07-16, NOT adopted — reference §0). Watch the release.
+22. **#154 + #157 — legacy citation debt** (dead SPEC paths + 51 dangling report names +
+    116 line-number cites in the test tree). Recurrence is CLOSED by the archive law;
+    the legacy tail is inert. Decision point: wave-L kickoff — one hygiene mini-packet,
+    or accept-with-trigger.
+23. **#156 — exemption evidence is unexecutable (DESIGN item):** every allowlist can
+    carry a false justification forever ("no assertion can read English"); both
+    adversaries blessed a false one by inspection. The fix is a property to INVENT
+    (executable exemption evidence) — per roster law it needs an Opus design pass that
+    attacks its own design, not a builder. Operator schedules.
 
 ## Watch list (no packet; verify-on-contact)
 - **NO WORKTREES UNTIL WORKTREES WORK (operator, 2026-07-14).** Do not use git worktrees for lore
@@ -268,8 +290,13 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   audited: every mutation proof either PYTHONPATH-shadowed with `loremaster.__file__` VERIFIED, or
   mutated the real tree with a content backup) — **that was the habit working, not the tooling.**
   THE LAW: **prove which tree you are testing, or you are not testing anything** (repo CLAUDE.md).
-- #124 (engine first-write race) stays acknowledged-watch; packet 16's #109 conflict
-  metric is its observability support.
+- #124 (engine first-write race) — **rediagnosis pending: #144 says the "lost rows" were
+  retryable conflicts hidden by statement[0]-only validation, not an engine defect.**
+  Packet 07 settles it; until then #124 stays acknowledged-watch; packet 16's #109
+  conflict metric is its observability support.
+- **#159** (24 non-passing tests once, unreproduced ×5; evidence destroyed by tail-only
+  echo) — watch. Trigger: on ANY anomalous run, preserve the FULL output before
+  re-running; a green claim needs the passed-count tail, an anomaly needs the whole body.
 - Open research note (no evidence either way in literature/vendor practice): whether
   displaying scores to tool-using LLM consumers helps — our three-model consult remains
   the only direct data (weak-match external validation, element d).
@@ -716,3 +743,15 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   (attributed 309/309, incl. one non-obvious `test_surreal_schema.py` site) · ruff clean ·
   typecheck 55/5 baseline · #151 + #152 RESOLVED · open: #153–#159, #161–#163.
   NEXT = **packet 03 (the STORE)**, unchanged.
+- 2026-07-22 · **SURREALDB 3.2.1 MIGRATION CONFIRMED (Fable consult, verifying the migration
+  session's work):** both stores 3.1.5→3.2.1; prod byte-identical (174,161 rows/20 tables);
+  suite behaviour-IDENTICAL across engines (the substring conflict-classifier demonstrably still
+  fires — the suite IS the probe); #107 re-probed; vendor doc tiers indexed (corpus 2764 by
+  design); reference §0 = ff7128e; #164 wedge mitigated by recreate; findings #164–#166 filed.
+- 2026-07-22 · **SLOTTING RULING (operator; sizing-checked):** #144+#164 split packet 07 →
+  **07 CLASSIFICATION / 07a RECOVERY** (both 0.20); **#166 (⊃ #165) REDESIGNATES 19 as
+  deploy-architecture DESIGN** (0.15, mints 19b+ ≤0.25 — a design problem never reaches a
+  builder); **28a minted** (#163 threads, dep 14/#162); #146→03 · #145/#147/#143→03b probes ·
+  #149→05 · #155→28 · #162→14; #154/#157 pool 22 · #156 pool 23 (DESIGN) · #159 watch; 03a/03b
+  gain →split marks (0.35/0.30 ≥ law); #153/#158 resolved (law + correction landed); **#167
+  filed** (schema rebuild stuck failed/fingerprint-mismatch, serving old fingerprint).

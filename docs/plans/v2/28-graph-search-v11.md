@@ -15,6 +15,9 @@ pre-registered rule or not at all.
 - **Markdown outbound-link extractor** → refers edges (shares the future Odoo-XML
   extractor seam).
 - **Finding #70**: depth>1 channel honesty on impact rollups.
+- **Finding #155** (slotted 2026-07-22): the LIVE `graph_surreal.tests_for` friction
+  recorded only in `test_impact.py:812`'s docstring — adjudicate and fix or pin the bound
+  here with the other graph candidates.
 - **Finding #3** (attribute-access reference granularity — engine-level astroid
   attribute edges): OPERATOR SCOPE GRANT REQUIRED before building; present cost first.
 - **Relative-score fusion** (Weaviate relativeScoreFusion / Qdrant DBSF analogue) —

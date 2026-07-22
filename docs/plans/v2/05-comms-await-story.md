@@ -16,9 +16,11 @@ rollup extension, CLI, and the idle-gate hook rework.
   versions→transitions→report_path).
 - Rollup gains messages/fleet/skew sections (the C0 rollup extension).
 - `comms_cli.py`.
-- teammate-idle-gate v2, fail-open — **folds #121**: worktree-aware artifact check
-  (today every agent briefed into a sibling worktree gets a false 'report missing'
-  nudge).
+- teammate-idle-gate v2, fail-open — **folds #121** (worktree-aware artifact check —
+  today every agent briefed into a sibling worktree gets a false 'report missing' nudge)
+  **and #149** (slotted 2026-07-22: the gate fires on COMPLIANT agents whose briefs
+  legitimately owe no artifact — v2 must key on what the brief actually OWES, not a
+  hardcoded REPORT-<name>.md expectation; a gate that punishes honest work gets ignored).
 - **Folds #89**: lore_tasks single-task detail read (full description reachable via MCP).
 
 ## Scope OUT

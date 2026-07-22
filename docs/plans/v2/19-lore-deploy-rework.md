@@ -1,39 +1,55 @@
-# 19 — lore-deploy skill rework (finding #13 + the scaffold defect) (formerly PKT-11)
-size ~0.30 wu →split at kickoff · wave M (re-waved 2026-07-14) · depends: packets 14/15 (dispositions shape the scaffold)
-law: DESIGN-LAW §7 (Qdrant-pod law), §12 · skill tests idiom: `cd skills/lore-deploy/scripts && uv run python -m pytest -q . ../tests`
+# 19 — Deploy architecture · DESIGN (#166 ⊃ #165; mints 19b+ builds) (formerly PKT-11's rework, REDESIGNATED 2026-07-22)
+size ~0.15 wu (design only) · wave M · depends: none (the design; the minted BUILD packets inherit 14/15 where the scaffold needs them)
+law: DESIGN-LAW §7 (Qdrant-pod law), §12 · roster law: **this is a DESIGN problem — an Opus
+author who adversarially ATTACKS ITS OWN DESIGN, never a builder with "work out the general
+form"; operator rules on the doc** · skill tests idiom: `cd skills/lore-deploy/scripts && uv run python -m pytest -q . ../tests`
 
-## Mission
-Bring the lore-deploy skill (in-repo at skills/lore-deploy/, symlinked from
-~/.claude/skills) into the v2/role era. NOTE: **finding #13** here (status verb) is not
-**ledger #13** (packets 14/15's table).
+## REDESIGNATED (operator slotting, 2026-07-22)
+**#166** landed: deploying lore requires TWO loremaster toolchains — the baked container
+AND a host install, resolved through a path HARDCODED to the author's personal clone
+(`lore_deploy.py:369-388`), because four load-bearing shell-outs (config-parse ×2, the
+cold index, a snippet check — L442/L466/L736/L1137) run loremaster ON THE HOST while the
+image already bakes everything needed (verified live: the skill itself is stdlib-only;
+the image imports `loremaster.index.cli` + `loremaster.config` today). The clean shape —
+run every loremaster operation IN the container, host needs only podman + the stdlib
+script + the image — also **DISSOLVES #165** (the /source-vs-snapshot three-paths-must-
+agree mount bug: indexer and server sharing one filesystem view removes the class).
+That is an ARCHITECTURE decision plus a build well past this packet's old 0.30 → so 19
+becomes the DESIGN pass and **mints 19b+ build packets, each ≤0.25 with its own
+entry/exit** (the packet-25→26a+ pattern).
 
-## Scope IN
-- **Finding #13**: the `status` verb reads the LEGACY SQLite manifest (printed 169 vs
-  true 196) — read SurrealDB's file table (the P8a migration moved it).
-- **Scaffold fix, complete**: `_scaffold_lore_yaml` still emits a `qdrant:` block and
-  no `surreal:` block (lore_deploy.py:452-454) — with `extra="forbid"` a fresh scaffold
-  FAILS TO PARSE, so `lore-deploy setup` onboarding is broken today (lead-confirmed
-  2026-07-05). Must template `surreal:` + the required `anthropic:` block + packets 14/15's
-  new keys. Verify what the post-P8d fix b8e41a8 already covers — build ON it.
-- **Single-node (`all`-mode) verbs only — TRIMMED 2026-07-14** (client/server pushed to
-  wave S): keep the verb signatures role-extensible (a role arg defaulting to `all`) but
-  build/wire NOTHING beyond `all`; packet 36 regains the per-role wiring when wave S runs.
-- **git_sync pattern** documented + wired (sidecar pulls → post-sync reconcile command
-  row as the deterministic alternative to inotify storms).
-- **Drop Qdrant verbs** from the skill (the shared POD stays until post-soak —
-  DESIGN-LAW §7; only the skill's verbs retire).
+## Scope IN (the design doc answers each; operator rules)
+- **The one-toolchain ruling (#166):** in-container execution for all four shell-outs
+  (`podman run --rm <image> … -m loremaster.index --config …`, corpora `:ro`, snapshot
+  `rw`); kill the hardcoded `~/PycharmProjects/lore/.venv` path (the #24/#140 provenance
+  class); define what a PUBLIC user needs (podman + script + image, nothing else).
+- **#165 dissolution stated as a design consequence** with the verification receipt the
+  build must produce (a static-tier deploy where indexer and server read the same mounts).
+- **Incremental-add verb** (#166 adjacent gap 1): add/refresh a static tier on an existing
+  deployment — the 3.2.1 vendor tiers needed a manual `loremaster.index --tier` by hand.
+- **Snapshot/boot-check keying** (#166 adjacent gap 2): for DB-served tiers, key the boot
+  `_snapshot_materialized` skip on the STORE (file_text presence), not a disk snapshot —
+  decide, or record why disk stays.
+- **Partition the inherited rework scope into the minted builds**: finding #13 (status
+  verb reads the legacy SQLite manifest), the scaffold fix (`_scaffold_lore_yaml` emits
+  qdrant:/no surreal: — onboarding is broken today; verify b8e41a8's actual coverage),
+  all-mode verbs (role arg defaulting `all`; packet 36 regains roles), git_sync pattern,
+  Qdrant-verb drop (DESIGN-LAW §7). NOTE: **finding #13** here (status verb) is not
+  **ledger #13** (packets 14/15's table).
 
 ## Scope OUT
-- The `migrate` verb machinery (packet 20 builds it; this packet leaves the seam).
+- Building ANY of it (the minted 19b+ packets). The `migrate` verb machinery (packet 20
+  builds it; the design leaves the seam).
 
 ## Entry check
-**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
-packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
-outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
-`lore_findings` → #13 open; run the skill's test suite green before touching it;
-confirm b8e41a8's actual coverage against the scaffold defect (don't trust the note).
+**FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** (incl. §0 —
+the engine is 3.2.1). Read finding **#166 in full** (it carries live verification receipts
+for every mechanism claim — cite them, do not re-derive) and **#165**. `lore_findings` →
+#166 #165 #13 states; skill test suite green at HEAD before the design prescribes changes
+to it.
 
 ## Exit
-Skill tests + full gates + cold audit; a FRESH `lore-deploy setup` on a throwaway
-project produces a parsing, booting lore.yaml (the onboarding smoke that is broken
-today); finding #13 resolved; INDEX row + Log.
+Design doc at docs/design/2026-07-XX-deploy-architecture.md; the author's adversarial
+attack on its own design recorded in the doc; operator rulings recorded; **19b+ build
+packet files minted (each ≤0.25 with entry/exit)** + INDEX table rows added; #166/#165
+annotated with their build destinations; INDEX row + Log.

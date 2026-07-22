@@ -1,5 +1,5 @@
 # 03a — Comms: the LEDGER (`messages.py` — send/drain/ack) · split from 03
-size ~0.35 wu (measured post-adversary) · wave C · depends: **packet 03** (the store)
+size ~0.35 wu (measured post-adversary) **→split at kickoff (sizing law: ≥0.30)** · wave C · depends: **packet 03** (the store)
 law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1 · design source:
 ~/.claude/plans/one-of-claude-codes-nifty-garden.md · **DEPLOY: NO — test-only**
 

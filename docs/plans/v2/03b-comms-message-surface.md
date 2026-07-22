@@ -1,5 +1,5 @@
 # 03b — Comms: the message SURFACE (send/drain/ack on `lore_comms`) · split from 03
-size ~0.3 wu (measured; FLOOR — see 03's SPLIT note) · wave C · depends: **packet 03a** (which depends on 03)
+size ~0.3 wu (measured; FLOOR — see 03's SPLIT note) **→split at kickoff (sizing law: ≥0.30)** · wave C · depends: **packet 03a** (which depends on 03)
 law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1/§15 · design source:
 ~/.claude/plans/one-of-claude-codes-nifty-garden.md · **DEPLOY: yes (BOTH containers)**
 
@@ -63,6 +63,11 @@ hygiene on the grounds that packets 02/02a's instruments cover it. **PROBE THAT 
 one receipt showing a new `_render_comms*` helper in `server.py` is actually seen by the
 promise scan. 02a's own scope rested on an untested coverage premise and gave a real hole a
 formal alibi.
+**#143 adjudication (slotted 2026-07-22):** the sibling-branch marker mechanization ("a
+marker must not survive a SIBLING-BRANCH render of the same helper") — adjudicate whether
+the committed contract's promise-proof pins already deliver it for the new templates; if
+not, pin it here or record the bound with a re-open trigger. It sits beside the
+`test_comms_promise_registry.py:2088-2115` KNOWN BOUND this packet already checks.
 
 ## Exit
 Full gates + cold REFUTE audit + **contract-adversary on the surface pin groups** (DESIGN-LAW
