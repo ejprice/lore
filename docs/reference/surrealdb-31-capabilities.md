@@ -1,8 +1,16 @@
 # SurrealDB — the canonical reference for this project
 
-**Engine: `surrealdb-3.1.5`** (`docker.io/surrealdb/surrealdb:v3.1.5`) — live-read from the
-test store, 2026-07-13. Python SDK `surrealdb>=2.0` (installed: 2.0.0; officially supports
-servers 2.0.0–3.2.0). Server floor ≥3.1.0 (CVE-2026-49997).
+**Engine: `surrealdb-3.2.1`** (`docker.io/surrealdb/surrealdb:v3.2.1`) — live-read from the
+running stores, 2026-07-22, **migrated from 3.1.5 that day** (both stores; prod data byte-identical,
+full suite regression-free, #107 fact re-probed on 3.2.1 — receipts in [§0](#0-the-321-migration-receipts)).
+Python SDK `surrealdb>=2.0` (installed: 2.0.0; officially supports servers 2.0.0–3.2.0). Server floor
+≥3.1.0 (CVE-2026-49997).
+
+> **Version-provenance honesty:** most facts below were `[PROBED]` on **3.1.5** and are dated as such.
+> The migration to 3.2.1 was validated to introduce **no behavioural regression** the suite can see
+> (§0), and the load-bearing #107 fact was **re-probed directly on 3.2.1**. But an un-re-probed
+> `[PROBED … 3.1.5]` fact keeps its 3.1.5 provenance — it was **not** silently relabelled to 3.2.1. If
+> you depend on one on 3.2.1, re-probe it (the store IS 3.2.1 now — that is the store to probe).
 
 > ## ⚠ READ THIS BEFORE YOU TOUCH THE STORE
 >
@@ -11,6 +19,7 @@ servers 2.0.0–3.2.0). Server floor ≥3.1.0 (CVE-2026-49997).
 > 1. **`DEFINE … IF NOT EXISTS` is a SILENT NO-OP on an object that already exists.** It does
 >    not error. Your changed definition simply never lands on a live store. **This caused a
 >    100% production outage** ([#107](#107)) — and it was written in *this file* at the time.
+>    **Re-probed on 3.2.1 (2026-07-22): still true** ([§0](#0-the-321-migration-receipts)).
 > 2. **Fields therefore use `DEFINE FIELD OVERWRITE`. Indexes, analyzers and tables stay
 >    `IF NOT EXISTS`.** Not a style choice — flipping indexes turns a silent no-op into a
 >    **boot-time crash**. [§1](#1-ddl--migration)
@@ -36,12 +45,56 @@ probe is worthless; that is exactly how we got here.**
 | Tag | Meaning |
 |---|---|
 | **[VENDOR]** | Official SurrealDB docs, with URL + quoted passage. |
-| **[PROBED]** | Run live against spike-surreal 3.1.5 by us, with the date. |
+| **[PROBED]** | Run live against spike-surreal by us, with the date **and engine version**. Historical probes are **3.1.5**; **3.2.1** re-probes are marked as such (§0). |
 | **[MEASURED]** | Observed in our own test/production runs (receipts named). |
 | **[#n]** | A finding in the ledger (`lore_findings get n`). |
 | **[CODE]** | Read out of our source, file:line. |
 | **[INFERRED]** | Reasoned, not observed. Treat as a hypothesis. |
 | **[UNVERIFIED]** | We do **not** know. Probe before depending on it. |
+
+---
+
+## 0. The 3.2.1 migration receipts
+
+We moved off 3.1.5 on **2026-07-22** — the engine had drifted two minors ahead (3.1.5 → 3.2.0 → 3.2.1)
+while we ran the old floor. Latest stable is `v3.2.1` (released 2026-07-10); note there is **no
+`v3.2.1` git tag** — SurrealDB does **not** tag patch releases, so version questions go to
+`surrealdb.com/releases` + Docker Hub, never `git ls-remote --tags`. Both stores now run
+`surrealdb-3.2.1`. Validation, all first-hand this session:
+
+- **[MEASURED] Data integrity — prod migrated byte-for-byte.** The 1.2 GB production RocksDB store
+  (`lore-surreal :18500`, **174,161 rows across 20 tables**) opened on 3.2.1 in **2 s** with **every
+  table count byte-identical** to the pre-migration 3.1.5 baseline (per-table diff: no difference). A
+  cold backup of the 3.1.5 store sits at `/backups/lore/surreal-pre-3.2.1-20260721` (verified
+  byte-exact) — the RocksDB format change is **forward-only**, so that backup is the sole path back to
+  3.1.5.
+- **[MEASURED] No behavioural regression the suite can see.** The full test suite (`-n auto`) run
+  against a 3.1.5 store vs a 3.2.1 store returned an **IDENTICAL failure set** — 309 failed / 5598 vs
+  5597 passed; the diff of the two sorted 309-line failure lists is empty. The single passed-count
+  delta was one setup-time harness connection race ([#150](#150)/[#164](#164)), **not** an engine
+  behaviour change. (The 309 failures are the packet-03 RED contract, unrelated to the engine.)
+- **[PROBED 2026-07-22, spike-surreal 3.2.1] The #107 fact still holds on 3.2.1.** Re-run directly on
+  the new engine: `DEFINE FIELD IF NOT EXISTS a ON u TYPE int` against an existing `a TYPE string`
+  **raised nothing** and left the field `TYPE string` — a **silent no-op**, exactly as on 3.1.5.
+  `DEFINE FIELD OVERWRITE a ON u TYPE int` then migrated it to `TYPE int`. So the §1.1 decision rule is
+  unchanged on 3.2.1: **`OVERWRITE` for fields; `IF NOT EXISTS` never migrates.**
+- **[MEASURED] SDK unchanged.** `surrealdb==2.0.0` (our pin) talks to the 3.2.1 engine with no code
+  change — it is what produced the identical suite result above. The `surrealdb` 3.0.0 alphas
+  (a1–a4, 2026-07-13→16) are **not** adopted.
+
+**What 3.2.1 brought that we have NOT independently verified** (from the vendor release notes,
+`surrealdb.com/releases/3.2` — `[VENDOR]`, not probed here): an index-backed `COUNT` fix for
+multiple-`WHERE`-conjunct queries (a *silently wrong served number* — worth a probe if we lean on
+indexed counts), `FLEXIBLE` field-propagation fixes, ~8 security advisories we did not have, and two
+**breaking changes** (view tables are now read-only; permissions-predicate restrictions). A `duplicate
+edge record ID` fix (#349) and a cold-start `Session not found` router-race fix (#308) touch our edge +
+bootstrap seams. **These are release-note claims, not our probes — verify before relying on them.**
+
+Corpus note: this repo now indexes the SurrealDB **3.2 docs** and the engine's **CI-verified SurrealQL
+language tests** as lore tiers (`surrealdb-docs`, `surrealql-tests`, pinned at the `v3.2.0` tag). A
+claim like the §6.1 falsehood below can now be checked against the vendor's own **executable spec** via
+`lore_search(tier="surrealql-tests", …)` instead of a hand-run probe — that corpus is *why* this
+reference can cite the engine's own tests rather than only our probes.
 
 ---
 
@@ -478,7 +531,8 @@ Both the **DEFINE FIELD** and **DEFINE INDEX** pages state, verbatim:
 > "If the field already exists, the `DEFINE FIELD` statement **will return an error**."
 > "If the index already exists, the `DEFINE INDEX` statement **will return an error**."
 
-**FALSE on 3.1.5.** [PROBED 2026-07-12] Re-defining an existing field with `IF NOT EXISTS` and a
+**FALSE on 3.1.5 — and still FALSE on 3.2.1.** [PROBED 2026-07-12 on 3.1.5; RE-PROBED 2026-07-22 on
+3.2.1 — §0] Re-defining an existing field with `IF NOT EXISTS` and a
 *different* body returns **OK** and **silently keeps the old definition**. It does not error.
 
 ```
@@ -665,7 +719,7 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
   `WantedBy=default.target` + linger) → they **auto-start on boot**. No manual `podman start`.
   Manage with `systemctl --user {start,stop,restart} {lore-surreal,spike-surreal}.service`
   (after editing a `.container`: `systemctl --user daemon-reload`).
-- **Recovery** (image + both stores gone): image `docker.io/surrealdb/surrealdb:v3.1.5`,
+- **Recovery** (image + both stores gone): image `docker.io/surrealdb/surrealdb:v3.2.1`,
   `--network=host`, `--userns=keep-id --user 1000:1000` (the `nonroot` image user + a 0700 data dir
   owned by 1000 → `PermissionDenied` without this), `--env-file ~/docker/mcp/lore-secrets/lore.env`,
   `start --bind 127.0.0.1:<port> rocksdb:/data/store.db`. Then rebuild the lore image and
