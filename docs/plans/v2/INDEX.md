@@ -34,20 +34,24 @@ HERE now** — a packet session must not need to read them.
   design) → 26a+ (onboarding build); 27 (cross-tier compare) rides ∥. Live-DB
   introspection stays with odoo-dev by design.
 
-## State of record (verified 2026-07-23, after packet 03 STORE — DONE)
-- Branch `feat/surreal-unification` @ **905b35e** (6 commits ahead of origin, not pushed).
+## State of record (verified 2026-07-23, after packet 03a-1 — DONE)
+- Branch `feat/surreal-unification` @ **b32839b** (not pushed).
 - ⚠ **THE SUITE HAS A COMMITTED RED CONTRACT — read this before you run pytest.** The RED
-  contract for packets 03/03a/03b is COMMITTED (`efef2b3`, 400 pins). **Packet 03 (the
-  STORE) is now GREEN** (`df59f76`): `test_comms_schema.py` + `test_surreal_schema.py`
-  pass (**scoped 304/0**, blast-radius 432/0). Still EXPECTED RED — built by 03a/03b —
-  are the **180 pins in `test_message_ledger.py`** (every one
-  `ModuleNotFoundError: No module named 'loremaster.messages'`, the module 03a builds)
-  plus the dispatch/render pins in `test_comms_tool.py` / `test_comms_promise_registry.py`
-  (03b). A 03a/03b session's job is to move those to green — NOT to see 0 failures at start.
-- typecheck: **54 mypy errors, ALL in the immutable RED 03a/03b contract test files**
-  (forward refs to `loremaster.messages` / `_render_comms_*`); **ZERO in any production
-  file**. Global-zero returns when 03a/03b build their modules — a structural property of
-  the TEST-ONLY 3-way split, not a regression. Skill suite **117 passed**; ruff clean.
+  contract for packets 03/03a/03b is COMMITTED (`efef2b3`, 400 pins; **+ the one-line #173
+  C-DEF fix** `_seed_agents` CREATE→UPSERT at `42eeedc`). **Packet 03 (STORE) GREEN** (`df59f76`;
+  `test_comms_schema` + `test_surreal_schema`, scoped 304/0). **Packet 03a-1 (send + drain +
+  `AgentRefLike` home + foundations) GREEN + DONE** (`2d1f75d`→`13da377`): `test_message_ledger.py`
+  is now **140 passed / 31 failed / 9 skipped** — the 31 RED are EXACTLY the **03a-2 stubs**
+  (13 `ack` + 18 `awaiting_answer`, all `[real]`-leg `NotImplementedError`; their `[fake]` legs
+  PASS). Still EXPECTED RED beyond those: the dispatch/render pins in `test_comms_tool.py` /
+  `test_comms_promise_registry.py` (03b). A 03a-2/03b session moves those to green — NOT 0
+  failures at start.
+- typecheck: **36 mypy errors** — all in the RED 03b contract test files (`test_comms_tool.py` 31,
+  `test_comms_promise_registry.py` 3: forward refs to `_render_comms_*` / new `comms(...)` kwargs)
+  + 2 pre-existing frozen-contract `no-any-return` (`test_message_ledger.py:1716/1736`, untouched);
+  **ZERO in any production file** (03a-1's `messages.py`/`agent_ref.py`/`briefs.py` are clean).
+  Global mypy-zero returns when 03b builds its surface — the TEST-ONLY split's structural property,
+  not a regression (operator deferral 2026-07-23). Skill suite **117 passed** (unaffected); ruff clean.
 - **Packet 02a shipped NO deploy and is not owed one — it is TEST-ONLY.** Production was
   byte-identical throughout (`server.py` md5 `1caac4bd…` unchanged across every probe by
   three independent parties), so the deployed image below still matches HEAD's production
