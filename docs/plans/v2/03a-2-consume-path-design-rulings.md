@@ -140,12 +140,24 @@ fixture at `ac38246`), so the change is invisible to all 180 pins.
    the `answered` predicate) gains `candidate.sender_id != agent_id`. ⚠ This is an ORACLE change —
    a contract-phase edit made by 03b's contract author and graded by the contract-adversary
    (DESIGN-LAW §15), never a builder drive-by.
-3. New pin (03b contract, both legs):
+   **[SHIPPED `f04729c`, 2026-07-23 — with a premise correction this section originally missed:**
+   the oracle has TWO consumers, not one — `test_comms_tool.py` imports `_message_fakes.py`
+   lazily, and the oracle's own docstring claiming a single consumer was false (prose corrected at
+   ship). The R2 wave measured that suite before/after the conjunct (149 failed / 554 passed,
+   identical) so the ruling stands — but **the blast radius of ANY future oracle change is two
+   suites**, and its satisfiability receipt must cover both.]
+3. ~~New pin (03b contract, both legs)~~ **[SHIPPED `f04729c` in 03a-2's contract, 2026-07-23 — do
+   NOT re-author it in 03b; both legs already exist and are green]**
    `test_an_explicitly_SELF_ADDRESSED_message_on_the_question_thread_is_NOT_an_answer` — asker
    asks on thread T (recipients `[lead]`); asker then sends on thread T with
    `recipients=[_ref(AGENT_FIXER_B)]` (and a second leg with `[lead, me]` — the mixed-recipient
    variant, so a "self-only sends are special" build cannot pass); `awaiting_answer` is still
    not-None. Positive control is the adjacent existing pin (a lead answer clears it).
+   *(Shipped as that exact name plus a sibling,
+   `test_a_self_addressed_message_with_ANOTHER_recipient_is_STILL_not_an_answer`, in
+   `test_message_ledger.py`. Lead correction at close-out: this item still read "03b contract"
+   after its sibling item 2 was marked SHIPPED — the stale half of a two-part change, which is the
+   natural-language-surface class this repo keeps paying for.)*
 
 ---
 
@@ -446,6 +458,14 @@ transient, and in the SAFE direction — and it is governed by a binding render 
    waiting line's clearing rule (R2: "cleared by any teammate's on-thread reply delivered to you")
    are both worth one teaching clause in the served render — the consumer is an LLM; the render is
    where it learns the contract.
+9. **[Closure addendum, 2026-07-23] Finding #175 constrains any FUTURE message-scoped edge
+   write:** during the R2 wave, `UPDATE <edge> … WHERE in IN $ids` WITHOUT an `out` conjunct was
+   observed to silently match ZERO rows on 3.2.1 — no error — while the identical SELECT predicate
+   matches (mechanism UNVERIFIED; deliberately not asserted here). Shipped code is unaffected
+   (every such UPDATE carries `out = $agent`). But R6's re-open remedy, a retract/redact verb, or
+   any GC sweep over `to` edges is exactly a message-scoped edge write — **whoever builds one
+   reads #175 FIRST**, and the mechanism gets verified + a store-reference entry before any code
+   leans on it.
 
 ## Consolidated implementation delta (for the lead's 03b builder brief)
 
