@@ -240,7 +240,7 @@ async def _seed_agents(ledger: Any, refs: list[_AgentRef], *, session: str) -> N
     now = datetime.now(UTC)
     for ref in refs:
         await cast(Any, ledger)._query(
-            f"CREATE type::record('{AGENT_TABLE}', $id) CONTENT $content",
+            f"UPSERT type::record('{AGENT_TABLE}', $id) CONTENT $content",
             {
                 "id": ref.id,
                 "content": {
