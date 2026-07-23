@@ -56,6 +56,22 @@ so the protocol is: **check, then trust**.
    created_by). Routing around a lore weakness without filing it is the one
    unacceptable move.
 
+## Project memory is IN LORE, not in MEMORY.md (dogfood, operator 2026-07-22)
+Durable project memory lives in the lore `memory` table — write it with `lore_remember`,
+recall it with `lore_recall`. The harness's auto-loaded `MEMORY.md` is a **thin bootstrap**
+(a pointer + a few second-zero operational landmines), **never a growing store**: it is
+loaded in FULL every session, so accumulating memory there is the exact anti-pattern lore
+exists to kill — and this project hit that file's size ceiling and needed manual compaction
+before the 2026-07-22 migration into lore. So:
+- **Do NOT add facts back into `MEMORY.md`.** Learn something durable → `lore_remember` it
+  (atomic fact, `kind` fact/decision/gotcha, never `ongoing` — that TTLs out in 7 days).
+- The mechanical half lives in the **lore-deploy skill** ("Project memory" section): it
+  bootstraps `MEMORY.md` and migrates a legacy flat one into lore on setup/start. This rule
+  is the behavioural half that stops the regression when the skill is not in context.
+- The 2026-07-22 migration moved 51 flat topic files into lore (labelled
+  `origin=claude_native_memory`, traceable by `source_file=`); originals archived beside
+  `MEMORY.md`. Recall project memory (`lore_recall("<topic>")`), do not expect it in the file.
+
 ## Rename/reshape sweeps (audited failure pattern, P8d — 3 of 4 confirmed defects)
 Confirmed green-at-gate defects cluster in *natural-language surfaces whose consistency
 with code no gate checks* (error prose, tool descriptions, instructions claims,

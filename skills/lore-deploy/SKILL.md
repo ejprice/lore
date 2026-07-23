@@ -116,6 +116,119 @@ a fresh agent.
 no-ops the expensive parts, so it doubles as a "make sure everything is wired"
 check.
 
+## Project memory lives in lore — `MEMORY.md` is only a bootstrap
+
+lore is a RAG whose whole purpose is preserving context, so a project's **durable
+memory belongs in lore** — the SurrealDB `memory` table, written with `lore_remember`
+and recalled with `lore_recall` — **not** accumulated in the flat `MEMORY.md` that the
+Claude Code harness auto-loads into every session. That flat file does not scale: it is
+loaded *in full* every session, so it has a hard size ceiling, and past it you pay
+context for memory you may never touch. Storing project memory there is the exact
+anti-pattern lore exists to kill — and a dogfood miss for any project on lore.
+
+So `MEMORY.md` must be a **thin bootstrap**: a one-paragraph pointer plus a handful of
+second-zero operational landmines. Everything else is recalled on demand.
+
+**This is a lifecycle responsibility, not just documentation.** When you run this skill
+for a project: once lore is up, locate the native memory dir, and **if `MEMORY.md` is a
+legacy flat store, migrate it** into lore and slim it to the bootstrap.
+
+### Where the native memory lives
+
+The harness keeps a project's auto-memory at `~/.claude/projects/<ENC>/memory/`, where
+`<ENC>` is the project's **absolute** path with **every non-alphanumeric character
+replaced by `-`** (per character — no collapsing of runs, no lowercasing). Examples:
+
+- `/home/ejprice/PycharmProjects/lore` → `-home-ejprice-PycharmProjects-lore`
+- `/home/u/.config/x_y` → `-home-u--config-x-y` (`.` and `_` both become `-`)
+
+**Derive this path, then assert the directory exists before trusting it.** If it does
+not, do **not** conclude "no memory" — the derivation can be wrong for an edge-case path.
+STOP and find the real dir (`ls ~/.claude/projects/ | grep <project-basename>`), or have
+the operator name it. A wrong derivation silently migrates nothing.
+
+The dir holds `MEMORY.md` (the auto-loaded index/store) plus one `<slug>.md` topic file
+per memory — each with YAML frontmatter (`name` / `description` / `metadata.type`) and a
+body.
+
+### Detecting a legacy flat `MEMORY.md`
+
+`MEMORY.md` is already a thin bootstrap **iff** it carries the marker
+`<!-- LORE-MEMORY-BOOTSTRAP -->` near the top. Absent that marker (and with topic files
+or index entries present), it is **legacy/flat** and must be migrated. The marker makes
+the whole protocol **idempotent** — a re-run on a bootstrapped file is a no-op.
+
+### The migration protocol (run once lore is up)
+
+Migration **writes to lore, so lore must be running** (after `start`). On `setup` (lore
+not yet up) do only the file side: write the thin bootstrap if `MEMORY.md` is absent; if
+it is legacy, say so loudly and defer the migration to after `start`.
+
+**Memory loss is unrecoverable — follow every step, skip none:**
+
+1. **Back up first.** `cp -a <memdir> <memdir>.bak-<UTC-stamp>` before touching
+   anything. Nothing below ever deletes this backup.
+2. **Build the worklist** — the **union** of (a) every `*.md` topic file except
+   `MEMORY.md`, and (b) every entry line in `MEMORY.md`. Reconcile the two: a topic file
+   with no index entry is *still a memory* (migrate it); an index entry with no file is a
+   one-line memory (migrate its text). This union is your completeness checklist — a file
+   referenced twice, or not at all, is exactly why you enumerate **both** sides.
+3. **Migrate each item** into lore:
+   - Read the topic file and carry its body **verbatim** — a memory records what was true
+     when written; do **not** summarise, "improve", or invent.
+   - **Dedup:** `lore_recall(query=<the item's title/description>, k=5)`. If an existing
+     memory (one *without* an `origin=claude_native_memory` label) already states the same
+     fact, record it as "covered by `<id>`" and **skip the write**. When in doubt, **write**
+     — a redundant memory is cheap; a dropped fact violates no-loss.
+   - **Write:** `lore_remember(text=<verbatim body>, kind=<mapped>, trust=<mapped>,
+     labels=["origin=claude_native_memory", "source_file=<name>", "harness_type=<type>"])`.
+     Map the frontmatter `type` to a lore `kind`: `reference`→`fact` (`trust=authoritative`)
+     · `feedback`→`decision` · `project`→`fact` · `user`→`fact` · anything else→`fact`.
+     **Never `ongoing`** — it carries a 7-day TTL and would silently **expire** the
+     migrated memory. The labels preserve the original type and make every migrated memory
+     traceable back to its source file.
+   - **Verify:** `lore_recall` the fact you just wrote and confirm it comes back.
+4. **Account for every item.** Each worklist item is now either *written-and-verified* or
+   *covered-by-existing*. No item unaccounted — this is the no-loss gate. Cross-check the
+   count against step 2.
+5. **Rewrite `MEMORY.md` as the bootstrap** (template below): the marker, the pointer
+   directive, and a **small curated set** of second-zero operational landmines — the facts
+   an agent needs before it can even work safely, **not** a table of contents. Everything
+   else now recalls from lore.
+6. **Archive, don't delete, the topic files** — move them into
+   `<memdir>/archived-<stamp>/`, only after step 4 passes. The step-1 backup stays
+   regardless. (Archiving over deletion mirrors this repo's report-archival law: an
+   address that resolves beats a clean tree.)
+
+### The bootstrap `MEMORY.md` template
+
+```markdown
+# Project Memory — <project>
+
+<!-- LORE-MEMORY-BOOTSTRAP -->
+
+**Durable project memory lives in LORE, not in this file.** Call
+`lore_recall("<topic>")` to retrieve it; write new durable facts with `lore_remember(...)`.
+Do NOT accumulate memory here — this file is auto-loaded into every session, so it must
+stay small. It holds only this pointer plus the second-zero landmines below.
+
+## Operational landmines (know these before you touch anything)
+- <curated fact 1>
+- <curated fact 2>
+```
+
+Curate the landmines **per project**: the pointer, plus the few facts that cause damage
+or wasted effort if unknown at second zero — store/port topology, "do not run X",
+forward-only migrations, where the plan of record lives. Keep it under a page.
+
+### Writing memory going forward
+
+Once bootstrapped, **do not add facts back into `MEMORY.md`.** Write durable project
+memory with `lore_remember`; recall it with `lore_recall`. The bootstrap's own directive
+says this — honor it, and so should every other agent on the project (the project's
+`CLAUDE.md` should carry the same instruction so it is not lost when this skill is not in
+context).
+
 ## Hard rules (why they matter)
 
 - **Secrets are env-refs only.** `lore.yaml` carries the *name* of an
