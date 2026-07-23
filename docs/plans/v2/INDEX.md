@@ -34,18 +34,19 @@ HERE now** — a packet session must not need to read them.
   design) → 26a+ (onboarding build); 27 (cross-tier compare) rides ∥. Live-DB
   introspection stays with odoo-dev by design.
 
-## State of record (verified 2026-07-23, after packet 03a-1 — DONE)
-- Branch `feat/surreal-unification` @ **b32839b** (not pushed).
+## State of record (verified 2026-07-23, after packet 03a-2 — DONE, 03a CLOSED)
+- Branch `feat/surreal-unification` @ **0223291** (not pushed).
 - ⚠ **THE SUITE HAS A COMMITTED RED CONTRACT — read this before you run pytest.** The RED
   contract for packets 03/03a/03b is COMMITTED (`efef2b3`, 400 pins; **+ the one-line #173
-  C-DEF fix** `_seed_agents` CREATE→UPSERT at `42eeedc`). **Packet 03 (STORE) GREEN** (`df59f76`;
-  `test_comms_schema` + `test_surreal_schema`, scoped 304/0). **Packet 03a-1 (send + drain +
-  `AgentRefLike` home + foundations) GREEN + DONE** (`2d1f75d`→`13da377`): `test_message_ledger.py`
-  is now **140 passed / 31 failed / 9 skipped** — the 31 RED are EXACTLY the **03a-2 stubs**
-  (13 `ack` + 18 `awaiting_answer`, all `[real]`-leg `NotImplementedError`; their `[fake]` legs
-  PASS). Still EXPECTED RED beyond those: the dispatch/render pins in `test_comms_tool.py` /
-  `test_comms_promise_registry.py` (03b). A 03a-2/03b session moves those to green — NOT 0
-  failures at start.
+  C-DEF fix** `_seed_agents` CREATE→UPSERT at `42eeedc`; **+ the operator-authorized 03a-2
+  amendments** at `50d65a0`/`f04729c` — see the Log). **Packet 03 (STORE) GREEN** (`df59f76`;
+  `test_comms_schema` + `test_surreal_schema`, scoped 304/0). **Packets 03a-1 (send + drain +
+  `AgentRefLike` home) and 03a-2 (ack + derived waiting state) GREEN + DONE**, so
+  `test_message_ledger.py` is now **180 passed / 0 failed / 12 skipped** (all 12 skips are
+  `[fake]`-leg; **zero `[real]`-leg skips**). Still EXPECTED RED: the dispatch/render pins in
+  `test_comms_tool.py` (**149 failed / 554 passed**, measured `f04729c`) and
+  `test_comms_promise_registry.py` — both are 03b's contract. **A 03b session does NOT start
+  from 0 failures.**
 - typecheck: **36 mypy errors** — all in the RED 03b contract test files (`test_comms_tool.py` 31,
   `test_comms_promise_registry.py` 3: forward refs to `_render_comms_*` / new `comms(...)` kwargs)
   + 2 pre-existing frozen-contract `no-any-return` (`test_message_ledger.py:1716/1736`, untouched);
@@ -176,7 +177,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 02a | comms-promise-instrument-hardening (full §9.7 per-entry executable-predicate proofs + `safe_str` literal-coverage closure `_SAFE_STR_LITERAL_RESIDUAL`) | — | C | 0.20 (ran ~4×) | 02 | **DONE 2026-07-19** (a2e9a70→ceac2d0, 6 commits; TEST-ONLY, **no deploy** — production byte-identical, `server.py` md5 unchanged throughout; scoped gates 34→117) |
 | 03 | **comms STORE** — message/`to` slices, `DEFINE SEQUENCE`, `ENFORCED`, the relation-table policy flip + dirty-store migration pins; **#146 adjudication + 3.2.1 re-probes** | PKT-28 C2b | C | 0.20 | 02 | **DONE 2026-07-23** (df59f76; scoped 304/0, blast 432/0; cold-audit GO; #146 accept-with-trigger; TEST-ONLY, no deploy; 03a unblocked) |
 | 03a-1 | **comms ledger SEND + drain** — `messages.py` foundations + `AgentRefLike` home + `send` + drain/peek; ≥8-way send concurrency | — | C | 0.20 | 03 | **DONE 2026-07-23** (2d1f75d→42eeedc; cold-audit GO, [real] leg graded; 140 passed / 31 red=03a-2 stubs; #173 fix; TEST-ONLY, no deploy) |
-| 03a-2 | **comms ledger ACK + WAITING** — ack (4-way disambiguation), derived waiting state; 16-way ack concurrency (**closes 03a**; drain landed in 03a-1) | — | C | 0.15 | 03a-1 | open — contract READY |
+| 03a-2 | **comms ledger ACK + WAITING** — ack (4-way disambiguation), derived waiting state; 16-way ack concurrency (**closes 03a**; drain landed in 03a-1) | — | C | 0.15 | 03a-1 | **DONE 2026-07-23** (`853a95b`→`0223291`; cold-audit GO, [real] leg graded 31 pins / 0 silent skips; 180 passed / 12 skipped; 20/20 16-way ack concurrency; **closes 03a**; TEST-ONLY, no deploy) |
 | 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a | open — contract READY |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
 | 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121 #149) | PKT-28 C3 | C | 0.30 →split | 04 | open |
@@ -840,3 +841,45 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   root pyproject zero-diff). Time-sortable for pkt-05 `since=`; pre-deploy, no migration. Commit
   `13da377`; lead-verified (small-fix path — diff + re-run): bareness pin both legs, full file
   140/31/9 unchanged, ruff clean, mypy +0. Follow-up report archived in receipts/2026-07-23-packet03a1/.
+- 2026-07-23 · **PACKET 03a-2 DONE — ack + derived waiting state; 03a CLOSED (TEST-ONLY, no deploy).**
+  Commits `853a95b` (ack = write-once CAS + 4-way disambiguation, three set-based statements;
+  `awaiting_answer` = ruling 9's read-time derivation) → `f0f3e79` (design rulings) → `50d65a0`
+  (audit residuals R1+R8) → `f04729c` (the ruled `sender != me` conjunct) → `0223291` (receipts).
+  Ledger file **180 passed / 12 skipped / 0 failed**; retry_seam 503; ruff clean; typecheck held at
+  36 (31/3/2 — **all in 03b's RED contract test files, zero in any production module**, per the
+  2026-07-23 operator ruling deferring global mypy-zero to 03b's end). 16-way ack concurrency
+  **20/20 consecutive**, re-derived independently by the cold audit. Driver sharing proven by
+  MUTATION (6/6 legs follow the moved `_RETRYABLE_CONFLICT_MARKER`), not by inspection.
+  Cold-audit **GO**, `[real]` leg graded: **31 real-leg pins execute, 0 silent skips.**
+  **THREE DEFECTS the builder gates could not see, all found after green:**
+  (a) **R1, a FALSE GATE** — `test_the_derivation_writes_NOTHING` promised to catch a build that
+  "stamps an `agent` column (or any row)" and asserted only ROW COUNTS; injecting ruling 9's struck
+  stored state verbatim (`UPDATE agent SET status='input_required'`) passed the whole `[real]` leg
+  86/0. Closed at the **statement seam** + a receiver-blind content leg — NOT by counting more
+  tables (enumerating the forbidden is the defeat this repo has now paid for seven times). The
+  content leg earns its place: a write SMUGGLED INSIDE A SELECT SUBQUERY is legal SurrealQL that
+  lands [PROBED 3.2.1], defeats the seam leg, and is caught by content. **Operator-authorized
+  amendment** to the immutable contract (precedent `42eeedc`); pins 85→91, no assertion weakened.
+  (b) **R8** — `_ack_entries` tested `not in stored_stamps` BEFORE `in won_stamps`, so a CAS WINNER
+  whose edge vanished mid-call was reported `not_addressed`. Ladder re-ordered by strength of
+  evidence. Latent (#105 clause), never correct.
+  (c) **R2, design-ruled** — a SELF-ADDRESSED follow-up discharged the asker's own debt
+  (false-NOT-waiting, the invisible direction ruling 9 refuses). The existing pin is NAMED for this
+  unconditionally but its fixture could not reach the door. Fourth conjunct `sender != me` RULED IN
+  by design-comms; the docstring had ALREADY promised it. Ruling 7 intact — self-addressed messages
+  still DELIVER (positive control passes UNDER the mutation, so it is independent of the conjunct).
+  **DESIGN RULINGS (design-comms, delegated authority — the consumer is an agent fleet):**
+  `docs/plans/v2/03a-2-consume-path-design-rulings.md` — 6 rulings + a delta table.
+  **INHERITED BY 03b** (rows 1–11 of that table): both `message` indexes (`seq`, `(sender, question)`)
+  BEFORE its deploy — production carries zero message rows until then, so the index build is free
+  exactly once; the deliveries-SELECT bounding; pins for duplicate-seq, thread-level debt (both
+  directions), read-order + short-circuit; and a **binding RENDER LAW** — ack-nudges key on
+  `acked_at` never `seen_at`, queue counts say "unread" not "unactioned".
+  **NEW FINDING #175** (store, latent): `UPDATE <edge> … WHERE in IN $ids` **silently matches ZERO
+  rows** on 3.2.1 while the identical SELECT matches; adding `out = $x` makes it work. Shipped code
+  unaffected (every such UPDATE carries `out = $agent`); the hazard is any future message-scoped
+  edge write. Mechanism UNVERIFIED — disposition: re-probe with the UNIQUE index dropped, then land
+  the confirmed fact in the store reference §2/§6.6.
+  Receipts `docs/plans/v2/receipts/2026-07-23-packet03a2/` (six waves; the auditor's report carries
+  an **archive-correction header** — its mypy distribution summed to 48 beside its own correct 36).
+  **NEXT = 03b** (task `b7f89c12`, now unblocked) — it ships the surface AND deploys both containers.
