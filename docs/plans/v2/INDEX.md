@@ -755,3 +755,10 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   #149→05 · #155→28 · #162→14; #154/#157 pool 22 · #156 pool 23 (DESIGN) · #159 watch; 03a/03b
   gain →split marks (0.35/0.30 ≥ law); #153/#158 resolved (law + correction landed); **#167
   filed** (schema rebuild stuck failed/fingerprint-mismatch, serving old fingerprint).
+- 2026-07-22 · SESSION: both stores migrated 3.1.5→**3.2.1** (prod 174,161 rows byte-identical;
+  backup /backups/lore/; ref doc→3.2.1). **SurrealDB docs + CI-verified specs indexed as lore
+  static tiers `surrealdb-docs`/`surrealql-tests`** (v3.2.0; 1st static-tier use → deploy defects
+  **#165** /source-mount + **#166** two-toolchain-arch). **#167 RESOLVED** (hand-stamped fingerprint
+  f6e2ee34) → **embedding-schema RECONCILIATION design #171** (docs/design/2026-07-22-…, FULLY RULED,
+  ⊃#168/#169, adopts #170; awaiting planner). CLAUDE.md→agents search the tiers; new **#164–#171**.
+  ⚠ **lore-lore on a HAND-ROLLED /source mount — NOT restart-durable pre-#165/#166**; 210→218 symlink.
