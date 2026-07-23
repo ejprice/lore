@@ -5,16 +5,19 @@ law: read `03a-comms-message-ledger.md` (shared 03a reference) + `comms-subsyste
 DESIGN-LAW §8/§5/§1 · **FIRST READ (repo store law):
 `docs/reference/surrealdb-31-capabilities.md`** · task `96f9f3a0003049b8bd4cb44a35b3ddef`
 
+> **⚠ SCOPE UPDATE (2026-07-23, after 03a-1 landed):** `drain`/`peek` **already landed in 03a-1**
+> (11 SEND pins call `drain(peek=True)` to verify delivery, so a stub made the send target
+> unsatisfiable — lead-confirmed, cold-audit GO). 03a-2's remaining scope is **`ack` +
+> `awaiting_answer`** (+ 16-way ack concurrency + the derived-waiting read). Do NOT re-implement
+> `drain`. The `[real]`-tier leg is already graded for send/drain; grade it for ack/awaiting.
+
 ## Mission
-Build the CONSUME path (`drain`/`peek`, `ack`, `awaiting_answer`) onto the `messages.py` that 03a-1
-committed, taking the WHOLE contract (all 180 pins) green. The `[real]`-tier leg is the largest
-residual risk (adversary §7.8, ungraded until the module existed) — the cold audit grades it.
+Build `ack` + `awaiting_answer` onto the `messages.py` that 03a-1 committed (send + drain already
+green), taking the WHOLE contract (all 180 pins) green. The remaining 31 RED pins are the `ack`
+(13) + `awaiting_answer` (18) `[real]`-leg `NotImplementedError` stubs.
 
 ## Scope IN
-- **`drain` / `peek`** — a windowed SELECT over my unstamped `to`-edges + a scoped CAS stamp of
-  EXACTLY the served window (`peek` stamps nothing; elided rows stay unread — NO cursor arithmetic);
-  `total_pending` / `directive_pending` computed over the WHOLE set, never the capped window;
-  scoped to the caller (`AND out = $me`), with a cross-session negative.
+- ~~`drain` / `peek`~~ — **DONE in 03a-1** (see the scope-update banner above); do NOT re-implement.
 - **`ack`** — a write-once CAS (`UPDATE … WHERE acked_at IS NONE AND out = $me`) + a disambiguating
   follow-up SELECT returning the four-way `AckOutcome`
   (`acked`/`already_acked`/`unknown_message`/`not_addressed`); a batch reports every seq's own fate;
