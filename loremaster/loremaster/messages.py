@@ -41,13 +41,14 @@ finding #105) — is that EVERY supplied recipient id must EXIST in the ``agent`
 table before a single ``RELATE`` runs: a raw SELECT over ``agent`` by id, NOT an
 import of the registry module, so the decoupling holds.
 
-⚠ SCOPE (03a-1, the SEND path): :meth:`~MessageLedger.ack` and
-:meth:`~MessageLedger.awaiting_answer` are packet 03a-2 (the CONSUME path) — they
-land here as :class:`NotImplementedError` stubs so the module imports and the full
-type surface exists, and their contract pins stay RED for 03a-2. NOTE:
-:meth:`~MessageLedger.drain` is IMPLEMENTED here (not stubbed) because the 03a-1
-SEND contract verifies delivery THROUGH ``drain(peek=True)`` — stubbing it makes
-the assigned SEND pins unsatisfiable (see ``REPORT-builder-03a1.md``).
+SCOPE HISTORY (both packets are now landed, so this is provenance, not a caveat):
+packet **03a-1** built the SEND path plus :meth:`~MessageLedger.drain` — drain was
+implemented there rather than stubbed because the SEND contract verifies delivery
+THROUGH ``drain(peek=True)``. Packet **03a-2** (2026-07-23) built the CONSUME path:
+:meth:`~MessageLedger.ack` (the write-once CAS + its four-way disambiguation) and
+:meth:`~MessageLedger.awaiting_answer` (ruling 9's read-time derivation, which
+writes NOTHING). Receipts for both waves are archived under
+``docs/plans/v2/receipts/``.
 """
 
 from __future__ import annotations
@@ -110,6 +111,15 @@ MESSAGE_GRADES: frozenset[str] = frozenset({MESSAGE_GRADE_SIGNAL, MESSAGE_GRADE_
 # three; the vocabulary carries them separately so no build can silently accept a
 # forged edge id as an idempotent re-ack.
 AckOutcome = Literal["acked", "already_acked", "unknown_message", "not_addressed"]
+
+# The four outcome VALUES, as named constants ``ack`` classifies and counts with —
+# each ANNOTATED :data:`AckOutcome`, so a value that ever drifts from the closed
+# vocabulary above is a TYPE ERROR at its declaration rather than a string
+# mismatch discovered by a served outcome nobody can match on.
+_ACK_OUTCOME_ACKED: AckOutcome = "acked"
+_ACK_OUTCOME_ALREADY_ACKED: AckOutcome = "already_acked"
+_ACK_OUTCOME_UNKNOWN_MESSAGE: AckOutcome = "unknown_message"
+_ACK_OUTCOME_NOT_ADDRESSED: AckOutcome = "not_addressed"
 
 # ``set_status`` marks a send as the question whose thread the derived waiting
 # state reads (ruling 9); ONLY this value asks a question — any other status is an
@@ -802,29 +812,264 @@ class MessageLedger:
     async def ack(
         self, *, agent_id: str, seqs: Sequence[int], note: str | None = None
     ) -> MessageAckResult:
-        """Write-once CAS ack of one or more delivery edges (packet 03a-2).
+        """Write-once CAS ack of one or more delivery edges, reporting EVERY
+        requested seq's own fate.
 
-        Not implemented in 03a-1 (the SEND path): the write-once CAS, its
-        four-way-ambiguous return disambiguation, and the 16-way ack concurrency
-        proof are packet 03a-2's target. The signature and return type exist here
-        so the module's full public surface is present.
+        The stamp is ONE guarded ``UPDATE`` over the whole requested set —
+        ``SET acked_at … WHERE acked_at IS NONE AND out = $me AND in IN $ids`` —
+        so a second ack (or a losing racer) writes NOTHING: the ``IS NONE`` guard
+        is what makes the door write-once, and the guard covers the NOTE as well
+        as the stamp (a later ack cannot smuggle a new ``ack_note`` past a guard
+        that only protected ``acked_at``, because ``SET`` never reaches an
+        unmatched row).
+
+        ⚠ That raw return is FOUR-WAY AMBIGUOUS (ruling 4 / store reference §4):
+        an empty result means already-stamped, no-such-message, not-addressed-to-me,
+        OR never-ran-due-to-conflict — byte-identically. The fourth is killed by
+        riding the shared retry driver (:meth:`_query` → ``run_query`` →
+        ``retry_on_conflict``: a conflicted attempt is RETRIED, never surfaced as a
+        legitimate outcome). The other three are disambiguated by reading the store
+        back: a seq→message resolution BEFORE the CAS separates
+        ``unknown_message``, and a follow-up SELECT of MY edges over the resolved
+        messages separates ``not_addressed`` (no edge) from ``already_acked`` (an
+        edge someone else's — or an earlier call's — CAS already won). Losers
+        report the STORED stamp, never a fabricated one, so every racer on one edge
+        observes the SAME single ``acked_at``.
+
+        Three set-based statements regardless of batch size — never a per-seq loop.
+
+        Args:
+            agent_id: The acking agent's opaque row id. ONLY this agent's delivery
+                edges are reachable: acking another agent's edge leaves that edge
+                untouched and reports ``not_addressed``.
+            seqs: The message ordering keys to ack, in the caller's own order. An
+                EMPTY list is nothing to do, reported honestly (never an error).
+                A seq repeated inside one batch reports its own fate per
+                occurrence — the first wins the CAS, the rest are
+                ``already_acked``, exactly as two separate calls would read.
+            note: The note to record on the edge(s) this call's CAS WINS, or
+                ``None`` to leave ``ack_note`` unset (never a placeholder).
+
+        Returns:
+            The :class:`MessageAckResult` — one :class:`MessageAckEntry` per
+            REQUESTED seq, in request order (the quantifier law: a batch never
+            silently drops a seq, whatever its fate).
+
+        Raises:
+            SurrealConnectionError: A transport fault.
+            SurrealStoreError: The engine rejected a statement.
+            TxnContentionExhaustedError: The CAS outlived the shared retry budget.
         """
-        raise NotImplementedError(
-            "MessageLedger.ack is packet 03a-2 (the CONSUME path); not implemented in 03a-1"
+        requested = list(seqs)
+        if not requested:
+            return MessageAckResult(entries=[], acked_count=0, already_acked_count=0)
+        agent_rec = RecordID(AGENT_TABLE, agent_id)
+        message_id_by_seq = await self._resolve_message_ids(requested)
+        won_stamps: dict[str, datetime | None] = {}
+        stored_stamps: dict[str, datetime | None] = {}
+        message_records = [
+            RecordID(MESSAGE_TABLE, message_id)
+            for message_id in dict.fromkeys(message_id_by_seq.values())
+        ]
+        if message_records:
+            won_stamps = self._stamps_by_message(
+                await self._query(
+                    f"UPDATE {TO_RELATION} SET acked_at = $acked_at, ack_note = $ack_note "
+                    f"WHERE acked_at IS NONE AND out = $agent AND in IN $message_ids",
+                    {
+                        "acked_at": datetime.now(UTC),
+                        "ack_note": note,
+                        "agent": agent_rec,
+                        "message_ids": message_records,
+                    },
+                ),
+                id_key="in",
+            )
+            stored_stamps = self._stamps_by_message(
+                await self._query(
+                    f"SELECT in.{_ID_KEY} AS message_id, acked_at FROM {TO_RELATION} "
+                    f"WHERE out = $agent AND in IN $message_ids",
+                    {"agent": agent_rec, "message_ids": message_records},
+                ),
+                id_key="message_id",
+                require_stamp=False,
+            )
+        entries = self._ack_entries(requested, message_id_by_seq, won_stamps, stored_stamps)
+        return MessageAckResult(
+            entries=entries,
+            acked_count=sum(1 for entry in entries if entry.outcome == _ACK_OUTCOME_ACKED),
+            already_acked_count=sum(
+                1 for entry in entries if entry.outcome == _ACK_OUTCOME_ALREADY_ACKED
+            ),
         )
+
+    async def _resolve_message_ids(self, seqs: Sequence[int]) -> dict[int, str]:
+        """Map each EXISTING requested ``seq`` to its message's BARE id.
+
+        ONE set-based read over the whole batch. A requested seq missing from the
+        result names no message row at all — which is what separates
+        ``unknown_message`` from the three conditions the guarded CAS collapses
+        together, so a FORGED seq can never read back as an idempotent re-ack.
+        """
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT {_ID_KEY}, seq FROM {MESSAGE_TABLE} WHERE seq IN $seqs",
+                {"seqs": list(dict.fromkeys(seqs))},
+            )
+        )
+        return {
+            int(row["seq"]): self._bare_id(row[_ID_KEY])
+            for row in rows
+            if row.get("seq") is not None and row.get(_ID_KEY) is not None
+        }
+
+    def _stamps_by_message(
+        self, result: Any, *, id_key: str, require_stamp: bool = True
+    ) -> dict[str, datetime | None]:
+        """Index edge rows by their message's BARE id, carrying each ``acked_at``.
+
+        Args:
+            result: A raw ``to``-edge result — the CAS ``UPDATE``'s returned rows
+                (whose message endpoint is the edge's own ``in``) or the follow-up
+                SELECT's (which projects it as ``message_id``).
+            id_key: The column carrying that endpoint in THIS result shape.
+            require_stamp: When ``True`` the stamp is mandatory (a CAS winner
+                always carries the value it just wrote, so a missing/garbage one is
+                a store fault, not a ``None`` to swallow — store reference §2: a
+                missing projection reads ``None`` SILENTLY).
+        """
+        indexed: dict[str, datetime | None] = {}
+        for row in self._as_rows(result):
+            if row.get(id_key) is None:
+                continue
+            stamp = row.get("acked_at")
+            indexed[self._bare_id(row[id_key])] = (
+                self._require_aware_utc(stamp) if require_stamp else self._to_aware_utc(stamp)
+            )
+        return indexed
+
+    @staticmethod
+    def _ack_entries(
+        requested: Sequence[int],
+        message_id_by_seq: dict[int, str],
+        won_stamps: dict[str, datetime | None],
+        stored_stamps: dict[str, datetime | None],
+    ) -> list[MessageAckEntry]:
+        """Give EVERY requested seq its own typed fate, in request order.
+
+        THE QUANTIFIER LAW: the walk is over the REQUEST, never over what the
+        store returned, so no seq can be silently dropped whatever its cause —
+        every one of the four outcomes is reachable from this one loop.
+        """
+        entries: list[MessageAckEntry] = []
+        claimed: set[str] = set()
+        for seq in requested:
+            message_id = message_id_by_seq.get(seq)
+            if message_id is None:
+                entries.append(MessageAckEntry(seq=seq, outcome=_ACK_OUTCOME_UNKNOWN_MESSAGE))
+            elif message_id not in stored_stamps:
+                # The message is real; there is simply no delivery edge to me.
+                # INVISIBLE in the raw CAS return (probe 4c) — only this read
+                # distinguishes it from a nonexistent message.
+                entries.append(MessageAckEntry(seq=seq, outcome=_ACK_OUTCOME_NOT_ADDRESSED))
+            elif message_id in won_stamps and message_id not in claimed:
+                claimed.add(message_id)
+                entries.append(
+                    MessageAckEntry(
+                        seq=seq, outcome=_ACK_OUTCOME_ACKED, acked_at=won_stamps[message_id]
+                    )
+                )
+            else:
+                entries.append(
+                    MessageAckEntry(
+                        seq=seq,
+                        outcome=_ACK_OUTCOME_ALREADY_ACKED,
+                        acked_at=stored_stamps[message_id],
+                    )
+                )
+        return entries
 
     async def awaiting_answer(self, *, agent_id: str) -> WaitingOnAnswer | None:
-        """The DERIVED waiting state — the oldest unanswered question this agent
-        asked (packet 03a-2, ruling 9).
+        """The DERIVED waiting state — the OLDEST unanswered question this agent
+        asked, or ``None`` (ruling 9).
 
-        Not implemented in 03a-1 (the SEND path): the read-time derivation is
-        packet 03a-2's target. The signature and return type exist here so the
-        module's full public surface is present.
+        DERIVED AT READ TIME, NEVER STORED — computed exactly as ``orphaned`` is
+        derived from ``heartbeat_at``. Nothing is stamped, so nothing can be lost
+        and no caller has to REMEMBER to clear it; in particular a
+        :meth:`drain` does NOT clear it (that struck design sentence clears the
+        signal on NO information — "the answer has not come" and "the answer was
+        lost" are the same observation), while draining an ANSWER does, because
+        the answer's EXISTENCE is the whole mechanism.
+
+        A QUESTION is ``message.question`` — the column ``set_status='input_required'``
+        sets — read DIRECTLY. Never ``grade``: the two are ORTHOGONAL (a signal can
+        ask; a directive need not), and a grade-keyed derivation leaves ruling 9's
+        mechanism present in the schema and DEAD in the code.
+
+        An ANSWER is a message satisfying all THREE conjuncts: DELIVERED TO this
+        agent (a ``to`` edge to it — so the asker's own follow-up on its own thread
+        is not an answer), ON the question's own thread (unrelated traffic never
+        silently resolves an outstanding debt), and created AFTER it (``seq``, the
+        monotonic ordering key — prior chatter cannot answer a later question). An
+        answer's ``grade`` is irrelevant.
+
+        ⚠ KNOWN BOUND, shipped deliberately with ruling 9 and PINNED
+        (``TestTheDerivedWaitingStateKnownBound``): an answer that arrives
+        OUT-OF-BAND never lands on the thread, so the state reads "waiting" until
+        someone relays it in. That is the SAFE direction of error — a false-waiting
+        is visible beside a fresh ``heartbeat_at``; a false-not-waiting is
+        invisible. Its re-open trigger lives on that pin.
+
+        Args:
+            agent_id: The agent whose waiting state to derive. Another agent's
+                outstanding question never makes THIS one wait.
+
+        Returns:
+            The :class:`WaitingOnAnswer` for the OLDEST unanswered question (the
+            longest-standing debt is the signal worth surfacing), or ``None``.
+            ``asked_at`` IS that question's own ``created_at`` — read back, never
+            fabricated at read time, so a "waiting 40m" render ages the real debt.
+
+        Raises:
+            SurrealConnectionError: A transport fault.
+            SurrealStoreError: The engine rejected a statement, or a question row
+                carries no usable ``created_at``.
         """
-        raise NotImplementedError(
-            "MessageLedger.awaiting_answer is packet 03a-2 (the derived waiting state); "
-            "not implemented in 03a-1"
+        agent_rec = RecordID(AGENT_TABLE, agent_id)
+        question_rows = self._as_rows(
+            await self._query(
+                f"SELECT thread, seq, created_at FROM {MESSAGE_TABLE} "
+                f"WHERE question = true AND sender = $agent",
+                {"agent": agent_rec},
+            )
         )
+        if not question_rows:
+            return None
+        delivered_rows = self._as_rows(
+            await self._query(
+                f"SELECT in.thread AS thread, in.seq AS seq FROM {TO_RELATION} WHERE out = $agent",
+                {"agent": agent_rec},
+            )
+        )
+        delivered = [
+            (str(row.get("thread") or ""), int(row["seq"]))
+            for row in delivered_rows
+            if row.get("seq") is not None
+        ]
+        for question in sorted(question_rows, key=lambda row: int(row["seq"])):
+            thread = str(question.get("thread") or "")
+            question_seq = int(question["seq"])
+            answered = any(
+                answer_thread == thread and answer_seq > question_seq
+                for answer_thread, answer_seq in delivered
+            )
+            if not answered:
+                return WaitingOnAnswer(
+                    thread=thread,
+                    question_seq=question_seq,
+                    asked_at=self._require_aware_utc(question.get("created_at")),
+                )
+        return None
 
     # -- result narrowing / mapping ----------------------------------------
 
