@@ -1339,6 +1339,138 @@ class TestAckDisambiguatesTheFourWayEmptyReturn:
         ]
 
 
+class TestACasWinnerIsAlwaysReportedAcked:
+    """R8 (cold audit of packet 03a-2, §7): ``_ack_entries`` tested
+    ``message_id not in stored_stamps`` (→ ``not_addressed``) BEFORE
+    ``message_id in won_stamps`` (→ ``acked``). So a CAS WINNER whose follow-up
+    SELECT row had gone missing was reported ``not_addressed`` — *"you were never
+    sent this"* about a message the very same call had just successfully stamped.
+    The stamp is real and durable; only the report is a lie, which is the worst
+    direction: the caller re-acks, or files the delivery as never made.
+
+    THE INVARIANT: a CAS winner is ALWAYS reported ``acked``. It follows from what
+    the two statements ARE — the follow-up SELECT drops only the
+    ``acked_at IS NONE`` conjunct, so it is a strict SUPERSET of the CAS's matched
+    set, and a winner missing from it is not evidence of "no edge to me", it is
+    evidence the edge DISAPPEARED between two statements.
+
+    Reachable only when that happens: a hard agent delete cascades its edges away
+    (store reference §4). LATENT today because agents are RETIRED, never
+    hard-deleted — the same latency clause as finding #105, and the same reason to
+    pin it rather than wait: latent is not absent, and the clause dies the day
+    anything hard-deletes a node.
+    """
+
+    @staticmethod
+    async def _ack_with_the_edge_deleted_mid_call(
+        ledger: Any, *, agent_id: str, seqs: list[int]
+    ) -> Any:
+        """Ack ``seqs`` with this agent's delivery edges deleted between the CAS
+        and its read-back — the R8 window, forced deterministically.
+
+        The injection is keyed on the CAS's own write-once guard
+        (:data:`_ACK_CAS_GUARD_MARKER`) and the caller ASSERTS it fired, so a
+        rename that stops the marker matching turns the pin RED rather than
+        letting it pass on an injection that never happened.
+        """
+        original_query = cast(Any, ledger)._query
+        fired: list[str] = []
+
+        async def query_deleting_the_edge_after_the_cas(
+            statement: str, params: Any = None
+        ) -> Any:
+            result = await original_query(statement, params)
+            if _ACK_CAS_GUARD_MARKER in statement and not fired:
+                fired.append(statement)
+                await original_query(
+                    f"DELETE {_schema().TO_RELATION} WHERE out = $out",
+                    {"out": RecordID(AGENT_TABLE, agent_id)},
+                )
+            return result
+
+        cast(Any, ledger)._query = query_deleting_the_edge_after_the_cas
+        try:
+            result = await ledger.ack(agent_id=agent_id, seqs=seqs)
+        finally:
+            cast(Any, ledger)._query = original_query
+        assert fired, (
+            "the fixture never matched the ack CAS, so the edge was never deleted and "
+            "this pin proves nothing — the guarded UPDATE no longer carries "
+            f"{_ACK_CAS_GUARD_MARKER!r}"
+        )
+        return result
+
+    async def test_a_winner_whose_edge_VANISHES_mid_call_is_still_acked(
+        self, message_ledger: Any
+    ) -> None:
+        """The pin. The CAS won and the stamp landed; the edge then vanished
+        before the disambiguating read. ``not_addressed`` is the one outcome that
+        cannot be true here.
+        """
+        if not _is_real(message_ledger):
+            pytest.skip("deleting an edge between two statements is a REAL-backend fixture")
+        [seq] = await _send_n(message_ledger, 1, grade=_msg().MESSAGE_GRADE_DIRECTIVE)
+        result = await self._ack_with_the_edge_deleted_mid_call(
+            message_ledger, agent_id=AGENT_FIXER_B[0], seqs=[seq]
+        )
+        assert result.entries[0].outcome == "acked", (
+            f"a CAS WINNER was reported {result.entries[0].outcome!r} — the ack stamped "
+            f"the edge and then told its caller it was never sent the message. The "
+            f"outcome ladder tests 'no stored edge' BEFORE 'I won the CAS'; the win is "
+            f"the stronger evidence and must be read first"
+        )
+        assert result.acked_count == 1
+        assert result.entries[0].acked_at is not None, (
+            "the winner reported `acked` with no stamp — a winner always carries the "
+            "value it just wrote"
+        )
+
+    async def test_a_REPEATED_seq_whose_edge_vanishes_is_ALREADY_acked(
+        self, message_ledger: Any
+    ) -> None:
+        """The same lie one notch down. Inside ONE batch the first occurrence of a
+        seq wins the CAS and the rest are idempotent no-ops. With the edge gone
+        before the read-back, those repeats must read ``already_acked`` — this
+        call demonstrably HAS an edge to this agent (it just stamped it), so
+        "you were never sent this" is false for EVERY occurrence, not only the
+        first. Without this the ``won_stamps`` fallback in the ladder's
+        already-acked branch is code no pin reaches.
+        """
+        if not _is_real(message_ledger):
+            pytest.skip("deleting an edge between two statements is a REAL-backend fixture")
+        [seq] = await _send_n(message_ledger, 1, grade=_msg().MESSAGE_GRADE_DIRECTIVE)
+        result = await self._ack_with_the_edge_deleted_mid_call(
+            message_ledger, agent_id=AGENT_FIXER_B[0], seqs=[seq, seq]
+        )
+        assert [entry.outcome for entry in result.entries] == ["acked", "already_acked"]
+        assert result.entries[1].acked_at == result.entries[0].acked_at, (
+            "the repeat reported a different stamp from the win it duplicates — every "
+            "occurrence of one seq observes the SAME single `acked_at`"
+        )
+
+    async def test_a_genuinely_UNADDRESSED_seq_still_reports_not_addressed(
+        self, message_ledger: Any
+    ) -> None:
+        """THE CONTROL. The two pins above are satisfiable by deleting
+        ``not_addressed`` from the ladder entirely — so this forces the outcome
+        the reordering must NOT swallow: a real message, never delivered to the
+        caller, no CAS win and no stored edge. It stays distinguishable from a
+        seq that names no message at all.
+        """
+        [seq] = await _send_n(
+            message_ledger, 1, recipient=AGENT_FIXER_B, grade=_msg().MESSAGE_GRADE_DIRECTIVE
+        )
+        result = await message_ledger.ack(agent_id=AGENT_SCOUT_D[0], seqs=[seq, 999_999])
+        assert [entry.outcome for entry in result.entries] == [
+            "not_addressed",
+            "unknown_message",
+        ], (
+            "reordering the outcome ladder to read the CAS win first must not swallow "
+            "`not_addressed` — an agent with NO edge to a real message is still exactly "
+            "as distinguishable from a forged seq as it was before"
+        )
+
+
 # =========================================================================== #
 # Section E — the mint: native sequence, gaps, and live contention
 # =========================================================================== #
@@ -1597,6 +1729,165 @@ async def _edge_row_count(ledger: Any) -> int:
     if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
         return 0
     return int(rows[0].get("count", 0))
+
+
+# --------------------------------------------------------------------------- #
+# THE WRITE WATCH — the instrument behind ``test_the_derivation_writes_NOTHING``.
+#
+# ⚠ WHY IT IS NOT A ROW COUNT. That pin used to read ``message`` and ``to`` row
+# COUNTS: the two tables its author thought to count. That is the forbidden-set
+# shape this repo has now lost to six times (CLAUDE.md §"the instrument lesson" —
+# *the forbidden set is unbounded; the SAFE set is small and enumerable, so
+# allowlist the safe*). Measured, cold audit of packet 03a-2 §3.2: injecting
+# ``UPDATE agent SET status = 'input_required'`` into ``awaiting_answer`` —
+# ruling 9's STRUCK stored state, verbatim, and a legal member of the schema's own
+# closed status vocabulary — left the WHOLE ``[real]`` leg at 86 passed / 0
+# failed. So did ``UPDATE agent SET last_note = …`` and ``UPDATE to SET seen_at =
+# …`` (which silently marks the entire inbox seen). Only a row CREATE was caught,
+# because only a row CREATE moves a row COUNT.
+#
+# So this allowlists the SAFE set instead, and the safe set is one word long.
+# --------------------------------------------------------------------------- #
+
+# The only statement form a pure READ needs. Everything else — any verb, any
+# table, including a table nobody has thought of yet — counts as a WRITE.
+# Widening this set is a deliberate act: add a form only when it provably cannot
+# write, and say why beside the entry.
+_READ_ONLY_STATEMENT_HEADS = frozenset({"SELECT"})
+
+# The one marker that identifies the ack CAS among the statements ``ack`` issues:
+# the write-once guard itself (``TestAckIsWriteOnce`` is the pin that makes it
+# load-bearing). Used by the R8 fixture to make an edge vanish BETWEEN the CAS and
+# its read-back; that fixture asserts the injection FIRED, so a marker that ever
+# stops matching turns the test RED rather than silently vacuous.
+_ACK_CAS_GUARD_MARKER = "acked_at IS NONE"
+
+
+class _WriteWatch:
+    """Records EVERY SurrealQL statement a ledger issues at its CONNECTION seam,
+    classifying each against :data:`_READ_ONLY_STATEMENT_HEADS`.
+
+    Installed by shadowing the ledger's ``_ensure_connection`` — the ONE
+    acquisition every seam resolves at call time (``run_query``'s and
+    ``execute_transaction``'s ``acquire=`` argument alike) — and wrapping
+    ``query_raw`` on whatever connection it hands back. ``query_raw`` ALONE covers
+    both store seams: the SDK's own ``query()`` is implemented as
+    ``self.query_raw(...)`` ([CODE] ``surrealdb/connections/async_ws.py``), so the
+    single-statement seam reaches it too, and wrapping both would double-count.
+    Re-installs on a reconnect, because the wrap follows the ACQUISITION rather
+    than one connection object.
+
+    ⚠ WHO THIS GATE IS FOR — stated in the instrument, so its verdicts follow
+    mechanically (CLAUDE.md, "a gate needs a threat model"). It catches the HONEST
+    ENGINEER who adds a stamp to a derivation that must stay a pure read: someone
+    writing ``await self._query("UPDATE …")`` or ``self._apply([...])`` the way
+    the rest of the module does. It is NOT a boundary against an author
+    deliberately routing around the store seam — anyone who can commit here can
+    ship anything. That is why the content-snapshot leg exists beside it: that leg
+    is RECEIVER-BLIND (it observes the store's state, not the call), so it still
+    sees a write issued through some SDK method this never wraps.
+
+    ⚠ ITS REACH IS A BOUND, AND THE BOUND IS CHECKED, NOT ASSUMED (CLAUDE.md: *a
+    runtime gate is an invariant only over code it actually RUNS*). A statement
+    issued on a connection obtained WITHOUT going through ``_ensure_connection``
+    is invisible here — which is exactly why every pin using this watch asserts
+    :attr:`reads` is non-empty before trusting an empty :attr:`writes`.
+
+    Usage::
+
+        async with _WriteWatch(ledger) as watch:
+            await ledger.awaiting_answer(agent_id=...)
+        assert watch.reads and watch.writes == []
+    """
+
+    def __init__(self, ledger: Any) -> None:
+        self.statements: list[str] = []
+        self._ledger = ledger
+        self._original_ensure: Any = None
+        self._restores: list[tuple[Any, Any]] = []
+
+    @staticmethod
+    def _is_read_only(statement: str) -> bool:
+        """Is ``statement`` a SINGLE allowlisted read?
+
+        Multi-statement text is refused outright rather than judged by its first
+        word: the SDK's ``query()`` validates statement[0] ONLY (store reference
+        §3), so a trailing write behind a leading ``SELECT`` is precisely the shape
+        a head-keyed classifier must not bless.
+        """
+        body = statement.strip().rstrip(";").strip()
+        if ";" in body:
+            return False
+        head = body.split(maxsplit=1)[0].upper() if body.split() else ""
+        return head in _READ_ONLY_STATEMENT_HEADS
+
+    @property
+    def reads(self) -> list[str]:
+        """The observed statements that ARE allowlisted reads."""
+        return [statement for statement in self.statements if self._is_read_only(statement)]
+
+    @property
+    def writes(self) -> list[str]:
+        """The observed statements that are NOT allowlisted reads."""
+        return [statement for statement in self.statements if not self._is_read_only(statement)]
+
+    def _instrument(self, connection: Any) -> None:
+        """Wrap ``connection``'s single SDK statement entry point, once.
+
+        The passthrough is ``*args``/``**kwargs`` rather than a re-declared
+        signature: the SDK's ``query()`` forwards ``session_id``/``txn_id``
+        keywords into ``query_raw``, and a wrapper that re-spells the signature
+        breaks on the ones it forgot.
+        """
+        if any(existing is connection for existing, _ in self._restores):
+            return
+        original_query_raw = connection.query_raw
+
+        async def watched_query_raw(statement: str, *args: Any, **kwargs: Any) -> Any:
+            self.statements.append(statement)
+            return await original_query_raw(statement, *args, **kwargs)
+
+        connection.query_raw = watched_query_raw
+        self._restores.append((connection, original_query_raw))
+
+    async def __aenter__(self) -> _WriteWatch:
+        self._original_ensure = self._ledger._ensure_connection
+
+        async def watched_ensure_connection() -> Any:
+            connection = await self._original_ensure()
+            self._instrument(connection)
+            return connection
+
+        self._ledger._ensure_connection = watched_ensure_connection
+        return self
+
+    async def __aexit__(self, *_exc_info: Any) -> None:
+        self._ledger._ensure_connection = self._original_ensure
+        for connection, original_query_raw in self._restores:
+            connection.query_raw = original_query_raw
+        self._restores.clear()
+
+
+async def _database_snapshot(ledger: Any) -> dict[str, list[str]]:
+    """EVERY table's full content, keyed by table name.
+
+    The table set is enumerated from ``INFO FOR DB`` at read time — never from a
+    hand-written list — so a write to a table nobody thought to count still moves
+    the snapshot, and an auto-created table (store reference §5: an undeclared
+    write auto-creates its table) appears as a brand-new key.
+
+    This is the leg that closes the allowlist's OWN door: a write SMUGGLED INSIDE
+    a read — ``SELECT * FROM (UPDATE agent SET status = 'x')`` — is ACCEPTED by
+    the engine and DOES write [PROBED 2026-07-23, spike-surreal 3.2.1], so a
+    head-keyed classifier alone would be the next name-list to fall.
+    """
+    info = await cast(Any, ledger)._query("INFO FOR DB")
+    tables = sorted(info.get("tables", {})) if isinstance(info, dict) else []
+    snapshot: dict[str, list[str]] = {}
+    for table in tables:
+        rows = await cast(Any, ledger)._query("SELECT * FROM type::table($table)", {"table": table})
+        snapshot[table] = sorted(repr(row) for row in rows) if isinstance(rows, list) else [repr(rows)]
+    return snapshot
 
 
 # =========================================================================== #
@@ -1935,19 +2226,91 @@ class TestTheWaitingStateIsDerived:
 
     async def test_the_derivation_writes_NOTHING(self, message_ledger: Any) -> None:
         """The load-bearing structural property: ``orphaned``-style derivation
-        means a READ. A build that stamps an ``agent`` column (or any row) on
-        the way past has reintroduced the stored state ruling 9 struck, and
-        with it the lost-update and forgot-to-clear failure modes.
+        means a READ. A build that stamps an ``agent`` column (or any row) on the
+        way past has reintroduced the stored state ruling 9 struck, and with it
+        the lost-update and forgot-to-clear failure modes.
+
+        WHAT THIS ASSERTS, EXACTLY — because a failure message that promises a
+        check the assertion does not perform is a FALSE GATE, and this pin WAS
+        one (cold audit of packet 03a-2, §3.2): it promised "an ``agent`` column
+        (or any row)" and asserted ``message``/``to`` ROW COUNTS, so three real
+        writes — ``UPDATE agent SET status = 'input_required'`` (ruling 9's
+        struck stored state, verbatim), ``UPDATE agent SET last_note = …``, and
+        ``UPDATE to SET seen_at = …`` — each passed the whole ``[real]`` leg
+        86/0. The three assertions below are the whole promise, and nothing more:
+
+        1. **Every statement is an allowlisted READ.** Not "no new rows in two
+           tables" — every statement ``awaiting_answer`` issues at the connection
+           seam must be a single ``SELECT`` (:data:`_READ_ONLY_STATEMENT_HEADS`).
+           Any other verb, against ANY table, including one no pin enumerates,
+           fails here.
+        2. **Nothing in the database changed.** Every table ``INFO FOR DB`` names,
+           compared by full content. This closes leg 1's own door: a write
+           smuggled inside a read (``SELECT * FROM (UPDATE …)``) is accepted by
+           the engine and DOES write [PROBED 2026-07-23, spike-surreal 3.2.1].
+        3. **The watch actually SAW the derivation.** A runtime gate is an
+           invariant only over code it RUNS, so an empty write list is trusted
+           only once the watch has observed the derivation's own reads —
+           otherwise a build whose statements never reach this seam passes
+           vacuously.
+
+        ⚠ KNOWN BOUND, stated rather than implied: a write that is BOTH shaped as
+        a ``SELECT`` and leaves every table byte-identical, or one issued on a
+        connection obtained without going through ``_ensure_connection``, is not
+        seen. The instrument's positive control is
+        ``test_the_write_watch_SEES_a_real_write`` below — without it, "no writes"
+        would be indistinguishable from a blind instrument.
         """
         if not _is_real(message_ledger):
-            pytest.skip("raw row counts are a REAL-backend observation")
+            pytest.skip("statement-seam and raw-content observation is a REAL-backend observation")
         await _ask(message_ledger, thread="q:cap-boundary")
-        before_messages = await _message_row_count(message_ledger)
-        before_edges = await _edge_row_count(message_ledger)
-        for _ in range(3):
-            await message_ledger.awaiting_answer(agent_id=AGENT_FIXER_B[0])
-        assert await _message_row_count(message_ledger) == before_messages
-        assert await _edge_row_count(message_ledger) == before_edges
+        before = await _database_snapshot(message_ledger)
+        async with _WriteWatch(message_ledger) as watch:
+            for _ in range(3):
+                await message_ledger.awaiting_answer(agent_id=AGENT_FIXER_B[0])
+        after = await _database_snapshot(message_ledger)
+        assert watch.reads, (
+            "the write watch observed NO statement at all — it is detached from the seam "
+            "the derivation actually uses, so an empty write list below would be vacuous"
+        )
+        assert watch.writes == [], (
+            f"the derivation issued {len(watch.writes)} statement(s) that are not "
+            f"allowlisted reads: {watch.writes} — ruling 9's derivation is a pure READ, "
+            f"and a stamp on ANY table (an `agent` column, another agent's `to` edge, a "
+            f"table this file never names) reintroduces the stored state it struck"
+        )
+        assert after == before, (
+            "the database CONTENT changed across the derivation even though every "
+            "statement looked like a read — a write was smuggled inside one (a subquery "
+            "write is legal SurrealQL and does land), so the derivation is not pure"
+        )
+
+    async def test_the_write_watch_SEES_a_real_write(self, message_ledger: Any) -> None:
+        """POSITIVE CONTROL for the pin above — a probe needs a control, and the
+        instrument that pin depends on is itself the thing most worth doubting
+        (the row-count instrument it replaced returned a clean negative for three
+        real writes).
+
+        A non-``peek`` ``drain`` genuinely stamps ``seen_at``. BOTH legs of the
+        pin above must fire on it: a non-read statement at the connection seam,
+        AND a moved content snapshot. If either stays silent here, the negative
+        above is a blind instrument rather than a real negative.
+        """
+        if not _is_real(message_ledger):
+            pytest.skip("statement-seam and raw-content observation is a REAL-backend observation")
+        await _ask(message_ledger, thread="q:cap-boundary")
+        before = await _database_snapshot(message_ledger)
+        async with _WriteWatch(message_ledger) as watch:
+            await message_ledger.drain(agent_id=SENDER_LEAD[0], limit=20)
+        after = await _database_snapshot(message_ledger)
+        assert watch.writes, (
+            f"a stamping drain issued no statement the watch classified as a write — the "
+            f"statement-seam leg cannot see writes at all; observed: {watch.statements}"
+        )
+        assert after != before, (
+            "a stamping drain left the content snapshot unchanged — the snapshot leg "
+            "cannot see writes at all, so its use as a gate above is theatre"
+        )
 
     async def test_draining_does_not_change_the_derived_state(
         self, message_ledger: Any

@@ -960,6 +960,19 @@ class MessageLedger:
         THE QUANTIFIER LAW: the walk is over the REQUEST, never over what the
         store returned, so no seq can be silently dropped whatever its cause —
         every one of the four outcomes is reachable from this one loop.
+
+        THE LADDER IS ORDERED BY STRENGTH OF EVIDENCE, and that order is
+        load-bearing (``TestACasWinnerIsAlwaysReportedAcked``). ``won_stamps`` is
+        this call's OWN successful write — the strongest fact available — so it is
+        read BEFORE the follow-up SELECT's ``stored_stamps``, and
+        ``not_addressed`` is the FALLBACK rather than a positional test:
+        "not addressed to me" is what is left when there is no evidence of an edge
+        to me ANYWHERE, neither won nor stored. Read the other way round, a CAS
+        WINNER whose edge vanished between the two statements (a hard agent delete
+        cascades its edges away, store reference §4) was reported
+        ``not_addressed`` — *"you were never sent this"* about a message this very
+        call had just stamped. Latent while agents are retired rather than
+        hard-deleted (the #105 latency clause), never correct.
         """
         entries: list[MessageAckEntry] = []
         claimed: set[str] = set()
@@ -967,11 +980,6 @@ class MessageLedger:
             message_id = message_id_by_seq.get(seq)
             if message_id is None:
                 entries.append(MessageAckEntry(seq=seq, outcome=_ACK_OUTCOME_UNKNOWN_MESSAGE))
-            elif message_id not in stored_stamps:
-                # The message is real; there is simply no delivery edge to me.
-                # INVISIBLE in the raw CAS return (probe 4c) — only this read
-                # distinguishes it from a nonexistent message.
-                entries.append(MessageAckEntry(seq=seq, outcome=_ACK_OUTCOME_NOT_ADDRESSED))
             elif message_id in won_stamps and message_id not in claimed:
                 claimed.add(message_id)
                 entries.append(
@@ -979,14 +987,22 @@ class MessageLedger:
                         seq=seq, outcome=_ACK_OUTCOME_ACKED, acked_at=won_stamps[message_id]
                     )
                 )
-            else:
+            elif message_id in stored_stamps or message_id in won_stamps:
                 entries.append(
                     MessageAckEntry(
                         seq=seq,
                         outcome=_ACK_OUTCOME_ALREADY_ACKED,
-                        acked_at=stored_stamps[message_id],
+                        # A repeat of a seq THIS call won falls back to the won
+                        # stamp, so every occurrence observes the same single
+                        # value even if the edge is gone by the read-back.
+                        acked_at=stored_stamps.get(message_id, won_stamps.get(message_id)),
                     )
                 )
+            else:
+                # The message is real; there is no delivery edge to me at all.
+                # INVISIBLE in the raw CAS return (probe 4c) — only this read
+                # distinguishes it from a nonexistent message.
+                entries.append(MessageAckEntry(seq=seq, outcome=_ACK_OUTCOME_NOT_ADDRESSED))
         return entries
 
     async def awaiting_answer(self, *, agent_id: str) -> WaitingOnAnswer | None:
