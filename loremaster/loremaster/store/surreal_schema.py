@@ -525,6 +525,103 @@ _BRIEFED_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
 # fixed; independently probed safe, see ``REPORT-probe-7061-c1.md``).
 _BRIEFED_IN_OUT_INDEX_FIELDS = ("in", "out")
 
+# --- packet 03 ``message`` node + ``to`` delivery edge + ``message_seq`` --------
+#
+# The durable comms MESSAGE GRAPH (:mod:`loremaster.messages`, packet 03a — this
+# packet lands only the SCHEMA it stands on). ``message`` is a node table (one
+# row per sent message, id ``ulid()`` at write time — an ORDERING concern, not a
+# DDL one); ``to`` is the native ``TYPE RELATION`` delivery edge
+# (``message->to->agent``) carrying per-recipient CAS state. Single source of
+# truth shared by :mod:`loremaster.messages` and its contract tests.
+MESSAGE_TABLE = "message"
+TO_RELATION = "to"
+
+# The native sequence backing ``message.seq``. Store reference §1.1 (SEQUENCE
+# row) / §5: ``seq`` is a monotonic ORDERING key minted by
+# ``sequence::nextval("message_seq")`` — GAPS ARE REAL (an aborted txn burns a
+# number), so it is never a count nor a gapless handle. The DDL is
+# ``DEFINE SEQUENCE IF NOT EXISTS`` (never a BARE ``DEFINE SEQUENCE``, which
+# RAISES on the re-apply ``ensure_ready()`` performs every boot → a boot-time
+# crash, the INDEX failure mode of §1.1) and carries NO ``BATCH``/``START``
+# clause — the day either is added, a changed clause never migrates onto an
+# existing store (#146, the silent-no-op residual §1.1 records for SEQUENCE; its
+# named re-open trigger is exactly that change).
+MESSAGE_SEQUENCE_NAME = "message_seq"
+
+# The closed TWO-value ``message.grade`` domain — a message is exactly one of
+# these (design ruling 9: ``grade`` is ORTHOGONAL to whether a message is a
+# ``question``). An out-of-domain grade is rejected by the field ASSERT, mirroring
+# how :data:`_AGENT_STATUSES` guards ``agent.status``.
+_MESSAGE_GRADE_SIGNAL = "signal"
+_MESSAGE_GRADE_DIRECTIVE = "directive"
+_MESSAGE_GRADES = (_MESSAGE_GRADE_SIGNAL, _MESSAGE_GRADE_DIRECTIVE)
+_MESSAGE_GRADE_ALLOWED = ", ".join(f"'{grade}'" for grade in _MESSAGE_GRADES)
+
+# The store-enforced ``message.body`` length bound. This is the BACKSTOP, not the
+# primary guard: :mod:`loremaster.messages` (packet 03a) owns the app-level
+# teaching reject, and imports THIS constant so the two bounds can never drift —
+# a body over the bound that bypasses the ledger fails LOUDLY at the store rather
+# than landing unbounded (ONE source of truth for the policy value, per the DRY
+# law — 03a must import, never re-declare, 2000).
+MESSAGE_BODY_MAX_CHARS = 2000
+
+# The ``message`` node table's fields as ``(name, type_expr, constraint)`` triples
+# — the single source of truth :func:`_message_statements` emits one ``DEFINE
+# FIELD`` per, mirroring :data:`_AGENT_FIELD_SPECS`. ``seq`` is the native-sequence
+# ORDERING key; ``sender`` is a real ``record<agent>`` link (a delivery reader can
+# dot-traverse ``in.sender.name``); ``grade`` carries the closed two-value domain;
+# ``body`` carries the length-bound backstop ASSERT; ``refs`` defaults to ``[]`` so
+# a ref-less send may omit it; ``task_id`` is ``option``; ``question`` (design
+# ruling 9 — the message ASKS; the waiting state is DERIVED from it, never stored
+# on the agent) is a ``bool`` DEFAULTing to ``false`` so an ordinary send that
+# omits it is correctly NOT a question, while ``bool`` (never ``option<bool>``)
+# keeps the value object's ``question: bool`` non-optional; ``created_at`` is
+# ledger-stamped (the ``agent``/``task`` idiom, not the engine-stamped
+# ``finding``/``brief`` one) since the derived ``asked_at`` a render ages is
+# exactly this column read back. NOTE (verified against the 03a contract): there
+# is NO ``asked_at`` COLUMN — ``WaitingOnAnswer.asked_at`` IS the question's own
+# ``created_at`` (``test_asked_at_IS_the_questions_own_created_at``), derived at
+# read time, not stored.
+_MESSAGE_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("seq", "int", ""),
+    ("session", _CHUNK_STRING_TYPE, ""),
+    ("thread", _CHUNK_STRING_TYPE, ""),
+    ("sender", f"record<{AGENT_TABLE}>", ""),
+    ("grade", _CHUNK_STRING_TYPE, f"ASSERT $value IN [{_MESSAGE_GRADE_ALLOWED}]"),
+    ("body", _CHUNK_STRING_TYPE, f"ASSERT string::len($value) <= {MESSAGE_BODY_MAX_CHARS}"),
+    ("refs", "array<string>", "DEFAULT []"),
+    ("task_id", "option<string>", ""),
+    ("question", "bool", "DEFAULT false"),
+    ("created_at", "datetime", ""),
+)
+
+# The ``to`` delivery-edge table's edge-local fields as ``(name, type_expr,
+# constraint)`` triples — ``in``/``out`` are auto-defined by ``TYPE RELATION`` and
+# are NEVER hand-declared here (mirrors ``briefed``/``refers``/``answers_to``).
+# ``seen_at``/``acked_at`` are ``option<datetime>`` so ``WHERE ... IS NONE`` is a
+# real write-once CAS guard (design ruling 4 — a non-``option`` column with a
+# DEFAULT would make every edge look already-stamped); ``ack_note`` is
+# ``option<string>``; ``session``/``created_at`` are the per-delivery scope +
+# stamp the fan-out RELATE sets.
+_TO_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("session", _CHUNK_STRING_TYPE, ""),
+    ("created_at", "datetime", ""),
+    ("seen_at", "option<datetime>", ""),
+    ("acked_at", "option<datetime>", ""),
+    ("ack_note", "option<string>", ""),
+)
+
+# The ``to`` UNIQUE(in, out) index — one delivery edge per (message, recipient)
+# pair. Store reference §4: SAFE on our floor (the #7061 cascade hazard is settled
+# ABSENT); re-probed on 3.2.1 (packet-03 entry check) — a duplicate pair RAISES a
+# LOUD ``InternalError`` (the #349 duplicate-edge fix did NOT make it a silent
+# dedupe), so a fan-out that may repeat a recipient MUST dedupe before the RELATE
+# loop (03a) — the index is a correctness backstop, not a de-duplicator.
+_TO_IN_OUT_INDEX_FIELDS = ("in", "out")
+# The drain index: "unread" = a recipient's unstamped ``to`` edges. Without it the
+# drain SELECT table-scans every delivery edge in the store on every comms call.
+_TO_DRAIN_INDEX_FIELDS = ("out", "seen_at")
+
 # --- P8a ``trace`` table (lore's per-tool-invocation OBSERVABILITY row) --------
 #
 # ``trace`` is the row the mcp role writes async on every served tool call: six
@@ -612,14 +709,53 @@ def _define_table(name: str) -> str:
     return f"DEFINE TABLE IF NOT EXISTS {name} SCHEMAFULL"
 
 
-def _define_relation_table(name: str) -> str:
-    """A SCHEMAFULL native ``TYPE RELATION`` ``DEFINE TABLE`` statement (idempotent).
+def _define_relation_table(
+    name: str, in_table: str, out_table: str, *, enforced: bool = False
+) -> str:
+    """A SCHEMAFULL native ``TYPE RELATION`` ``DEFINE TABLE`` — ``OVERWRITE``, endpoint-typed.
 
     A ``TYPE RELATION`` table is a first-class edge table: SurrealDB auto-defines
     its ``in``/``out`` endpoint columns, and native graph traversal
     (``->refers->name`` / ``name<-refers<-code_node``) walks it directly.
+
+    ``in_table``/``out_table`` emit the ``IN``/``OUT`` endpoint typing — WITHOUT
+    them a relation table accepts an endpoint of ANY table, silently, which store
+    reference §4 records as forfeiting the only endpoint validation the engine
+    offers. ``enforced=True`` adds the ``ENFORCED`` clause (store reference §4
+    "Shape to ship"): it validates that BOTH endpoints reference EXISTING records
+    and is the only thing that closes the ``INSERT RELATION`` door no app-level
+    check can reach.
+
+    ``OVERWRITE``, NOT ``IF NOT EXISTS`` (store reference §1.1, the RELATION-TABLE
+    row): a changed relation clause (``IN``/``OUT``/``ENFORCED``) under
+    ``IF NOT EXISTS`` is a MEASURED SILENT NO-OP on an existing edge table — the
+    DDL returns OK, the stored definition is untouched, and the guard never reaches
+    a live store (#107's shape, invisible to every virgin-DB fixture). ``OVERWRITE``
+    is the only clause that lands it, and — unlike ``DEFINE INDEX OVERWRITE`` — it
+    does NOT rebuild: it preserves the edge's fields, indexes and rows (§1.5's
+    probed ``DEFINE TABLE OVERWRITE`` safety proof). Re-probed on 3.2.1 (packet-03
+    entry check): the flip lands ``ENFORCED``+``IN``/``OUT`` on an existing untyped
+    edge table.
     """
-    return f"DEFINE TABLE IF NOT EXISTS {name} TYPE RELATION SCHEMAFULL"
+    enforced_clause = " ENFORCED" if enforced else ""
+    return (
+        f"DEFINE TABLE OVERWRITE {name} TYPE RELATION "
+        f"IN {in_table} OUT {out_table}{enforced_clause} SCHEMAFULL"
+    )
+
+
+def _define_sequence(name: str) -> str:
+    """A native ``DEFINE SEQUENCE`` statement (idempotent via ``IF NOT EXISTS``).
+
+    Store reference §1.1 (SEQUENCE row) / §5: ``IF NOT EXISTS``, never a BARE
+    ``DEFINE SEQUENCE`` — a bare one RAISES *"the sequence already exists"* on the
+    re-apply :meth:`ensure_ready` performs every boot, a boot-time crash (the same
+    failure mode flipping INDEX to ``OVERWRITE`` would cause). No ``BATCH``/``START``
+    clause is emitted: a changed one never migrates onto an existing store (#146),
+    and the default ``BATCH 1000 START 0`` is what ``message.seq`` wants. Verified
+    (packet-03 entry check, 3.2.1): re-applying the DDL does NOT reset the counter.
+    """
+    return f"DEFINE SEQUENCE IF NOT EXISTS {name}"
 
 
 def _define_schemaless_table(name: str) -> str:
@@ -1064,7 +1200,9 @@ def _briefed_statements() -> list[str]:
     endpoint-pair index (no precedent to clone verbatim; see the module's own
     field-spec comment for the live-probed safety confirmation).
     """
-    statements: list[str] = [_define_relation_table(BRIEFED_RELATION)]
+    statements: list[str] = [
+        _define_relation_table(BRIEFED_RELATION, AGENT_TABLE, BRIEF_TABLE)
+    ]
     statements += [
         _define_field(BRIEFED_RELATION, name, type_expr, constraint=constraint)
         for name, type_expr, constraint in _BRIEFED_FIELD_SPECS
@@ -1098,6 +1236,50 @@ def _brief_counter_statements() -> list[str]:
             BRIEF_COUNTER_TABLE, _BRIEF_COUNTER_NEXT_FIELD, "int", constraint="DEFAULT 0"
         ),
     ]
+
+
+def _message_statements() -> list[str]:
+    """The ``message`` node + the ``message_seq`` sequence + the ``to`` delivery edge.
+
+    Emits, in order: the SCHEMAFULL ``message`` node table and one ``DEFINE FIELD``
+    per :data:`_MESSAGE_FIELD_SPECS` entry (the closed ``grade`` domain, the
+    length-bound ``body`` backstop, the ``record<agent>`` ``sender``, the
+    ruling-9 ``question`` bool); the native ``DEFINE SEQUENCE`` backing
+    ``message.seq`` (:func:`_define_sequence`); then the ``to`` relation edge —
+    ``DEFINE TABLE OVERWRITE to TYPE RELATION IN message OUT agent ENFORCED
+    SCHEMAFULL`` (:func:`_define_relation_table` with ``enforced=True``; ``in``/
+    ``out`` auto-defined, never hand-declared) — its edge-local CAS fields
+    (:data:`_TO_FIELD_SPECS`), the UNIQUE(in, out) index (one edge per
+    message-recipient pair), and the plain (out, seen_at) drain index.
+
+    The ``message`` NODE table stays ``IF NOT EXISTS`` (its clauses never change);
+    the ``to`` RELATION table is ``OVERWRITE`` (a changed IN/OUT/ENFORCED clause is
+    a silent no-op under IF NOT EXISTS — store reference §1.1). Applied AFTER
+    :func:`generate_agent_ddl` in every consumer, so ``agent`` exists for the edge's
+    ``OUT agent``/``sender``'s ``record<agent>``. UNLIKE ``chunk``/``memory`` the
+    slice carries no HNSW/FULLTEXT index — a message is coordinated by sequence and
+    delivery edge, never retrieved semantically.
+    """
+    statements: list[str] = [_define_table(MESSAGE_TABLE)]
+    statements += [
+        _define_field(MESSAGE_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _MESSAGE_FIELD_SPECS
+    ]
+    statements.append(_define_sequence(MESSAGE_SEQUENCE_NAME))
+    statements.append(
+        _define_relation_table(TO_RELATION, MESSAGE_TABLE, AGENT_TABLE, enforced=True)
+    )
+    statements += [
+        _define_field(TO_RELATION, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _TO_FIELD_SPECS
+    ]
+    statements.append(
+        _unique_index(TO_RELATION, f"{TO_RELATION}_in_out", _TO_IN_OUT_INDEX_FIELDS)
+    )
+    statements.append(
+        _plain_index(TO_RELATION, f"{TO_RELATION}_out_seen_at", _TO_DRAIN_INDEX_FIELDS)
+    )
+    return statements
 
 
 def _code_node_statements() -> list[str]:
@@ -1143,7 +1325,9 @@ def _name_statements() -> list[str]:
 
 def _refers_statements() -> list[str]:
     """The ``refers`` relation edge table: fields + the ``src_file_path`` purge index."""
-    statements: list[str] = [_define_relation_table(REFERS_RELATION)]
+    statements: list[str] = [
+        _define_relation_table(REFERS_RELATION, CODE_NODE_TABLE, NAME_TABLE)
+    ]
     statements += [
         _define_field(REFERS_RELATION, name, type_expr)
         for name, type_expr in _REFERS_FIELD_SPECS
@@ -1156,7 +1340,9 @@ def _refers_statements() -> list[str]:
 
 def _answers_to_statements() -> list[str]:
     """The ``answers_to`` relation edge table: fields + the ``(tier, file_path)`` index."""
-    statements: list[str] = [_define_relation_table(ANSWERS_TO_RELATION)]
+    statements: list[str] = [
+        _define_relation_table(ANSWERS_TO_RELATION, CODE_NODE_TABLE, NAME_TABLE)
+    ]
     statements += [
         _define_field(ANSWERS_TO_RELATION, name, type_expr)
         for name, type_expr in _ANSWERS_TO_FIELD_SPECS
@@ -1342,6 +1528,34 @@ def generate_brief_ddl() -> str:
         single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
     """
     statements: list[str] = _brief_statements() + _briefed_statements() + _brief_counter_statements()
+    return ";\n".join(statements) + ";\n"
+
+
+def generate_message_ddl() -> str:
+    """Generate the packet-03 ``message`` + ``to`` + ``message_seq`` DDL — the
+    durable comms MESSAGE GRAPH's schema slice.
+
+    Mirrors :func:`generate_agent_ddl`: a schema SLICE
+    :class:`~loremaster.messages.MessageLedger` (packet 03a) applies on its OWN
+    connection at :meth:`ensure_ready`, AFTER :func:`generate_agent_ddl` (the
+    ``to`` edge's ``OUT agent`` and ``message.sender``'s ``record<agent>`` both
+    reference the ``agent`` table). Needs NEITHER the embedding ``dim`` NOR the
+    analyzer — a message is coordinated by sequence and delivery edge, never
+    retrieved semantically.
+
+    NOT fully idempotent-by-no-op like the other slices: the ``message`` node
+    table, its indexes and the sequence are ``IF NOT EXISTS`` (safe re-apply), and
+    the ``to`` relation table is ``OVERWRITE`` — a FULL REPLACE that re-lands the
+    same definition on every :meth:`ensure_ready`, which is exactly what makes a
+    changed IN/OUT/ENFORCED clause converge on an existing store rather than
+    silently no-op (store reference §1.1). Re-applying the UNCHANGED slice is still
+    a safe no-op that neither raises nor resets the sequence (verified 3.2.1).
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string ready to hand to a
+        single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
+    """
+    statements: list[str] = _message_statements()
     return ";\n".join(statements) + ";\n"
 
 
