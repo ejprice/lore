@@ -1037,14 +1037,61 @@ class TestPeekStampsNothing:
     ) -> None:
         """Frontier #7. Discrimination requires the SECOND read: a build that
         stamps under ``peek`` still returns the right rows on the FIRST call.
+
+        WHAT THIS ASSERTS, EXACTLY — residual **S1** of the 03a-2 cold-audit fix
+        wave (``REPORT-fixer-r1r8.md`` §6, archived under
+        ``docs/plans/v2/receipts/``), i.e. R1's FALSE-GATE class on a sibling
+        verb. The message *"peek stamped something"* was unqualified while the
+        only assertion behind it was ``again.total_pending == _OVER_CAP`` — the
+        CALLER's own unstamped-edge count. A peek that stamped ANOTHER agent's
+        edges, wrote an ``agent`` column, or set ``ack_note`` moved nothing that
+        assertion could see and passed.
+
+        The ``[real]`` leg therefore adopts :class:`_WriteWatch` — the SAME
+        instrument ``test_the_derivation_writes_NOTHING`` uses, never a second
+        copy of it (ONE IMPLEMENTATION) — with the same threat model (the HONEST
+        engineer who adds a stamp through the module's own store seam), the same
+        allowlist-the-safe classification, and the same anti-vacuity guard: an
+        empty write list is trusted only once the watch has been shown to observe
+        the call at all. Its POSITIVE CONTROL is
+        ``test_the_write_watch_SEES_a_real_write`` (the instrument firing on a
+        stamping drain) plus ``test_a_non_peek_drain_after_a_peek_still_stamps``
+        immediately below (this verb genuinely mutating through the same path).
+
+        The counting assertion STAYS and is now stated honestly: it is
+        backend-agnostic, so the ``[fake]`` leg still discriminates a fake that
+        stamps under peek, and the two legs fail for different reasons.
         """
         seqs = await _send_n(message_ledger, _OVER_CAP)
-        peeked = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, peek=True)
+        watch: _WriteWatch | None = None
+        if _is_real(message_ledger):
+            async with _WriteWatch(message_ledger) as real_watch:
+                peeked = await message_ledger.drain(
+                    agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, peek=True
+                )
+            watch = real_watch
+        else:
+            peeked = await message_ledger.drain(
+                agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, peek=True
+            )
         assert [entry.seq for entry in peeked.entries] == sorted(seqs)[:_DRAIN_CAP]
         assert peeked.stamped_seqs == []
         assert peeked.peeked is True
+        if watch is not None:
+            assert watch.reads, (
+                "the write watch observed NO statement at all — it is detached from the "
+                "seam the peek actually uses, so an empty write list below would be vacuous"
+            )
+            assert watch.writes == [], (
+                f"a PEEK issued {len(watch.writes)} statement(s) that are not allowlisted "
+                f"reads: {watch.writes} — look-don't-consume means ZERO writes, to ANY "
+                f"table, including another agent's `to` edge or a column no count below "
+                f"would move"
+            )
         again = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_OVER_CAP, peek=True)
-        assert again.total_pending == _OVER_CAP, "peek stamped something"
+        assert again.total_pending == _OVER_CAP, (
+            "a peek stamped the CALLER's OWN edges — the second peek sees fewer pending"
+        )
 
     async def test_a_non_peek_drain_after_a_peek_still_stamps(
         self, message_ledger: Any
@@ -1217,6 +1264,23 @@ class TestAckDisambiguatesTheFourWayEmptyReturn:
         return value (probe 4c), so the pin must assert POSITIVELY on the
         victim's row. One message, two recipients; A acks; B's edge must be
         untouched.
+
+        WHAT "UNCHANGED" MEANS HERE — residual **S3** of the 03a-2 cold-audit fix
+        wave (``REPORT-fixer-r1r8.md`` §6, archived under
+        ``docs/plans/v2/receipts/``): the docstring promised the whole EDGE while
+        the assertion read ONE column (``acked_at``). ``ack_note`` is a second
+        column written through the same door, so a build that scopes the STAMP by
+        ownership and the NOTE separately — one agent's report landing on
+        another's receipt — passed. ``test_a_note_never_reaches_an_ALREADY_acked_edge``
+        covers write-ONCE for the note; nothing covered OWNERSHIP of it.
+
+        ⚠ THE FIXTURE MUST CARRY A NOTE OR THE NEW ASSERTION IS DECORATION: with
+        ``note=None`` there is nothing to leak and ``ack_note is None`` holds for
+        every build. So this ack passes a note, and its OWN landing on the acker's
+        edge is asserted as the positive control — otherwise a build that discards
+        ``note`` entirely would satisfy the victim assertion for the wrong reason.
+        The note string is deliberately NOT the one
+        ``test_ack_note_lands_on_the_edge_the_CAS_WON`` uses (value monoculture).
         """
         result = await message_ledger.send(
             sender=_ref(SENDER_LEAD),
@@ -1226,12 +1290,28 @@ class TestAckDisambiguatesTheFourWayEmptyReturn:
             recipients=[_ref(AGENT_FIXER_B), _ref(AGENT_AUDIT_C)],
         )
         seq = result.message.seq
-        acked = await message_ledger.ack(agent_id=AGENT_FIXER_B[0], seqs=[seq])
+        fixer_b_note = "fixer-b only: gate re-run, 5551/0"
+        acked = await message_ledger.ack(
+            agent_id=AGENT_FIXER_B[0], seqs=[seq], note=fixer_b_note
+        )
         assert acked.entries[0].outcome == "acked"
         victim = await message_ledger.drain(agent_id=AGENT_AUDIT_C[0], limit=20, peek=True)
         assert len(victim.entries) == 1
         assert victim.entries[0].acked_at is None, (
             "fixer-b's ack stamped audit-c's edge — the CAS is not scoped by ownership"
+        )
+        assert victim.entries[0].ack_note is None, (
+            f"fixer-b's ack NOTE landed on audit-c's edge ({victim.entries[0].ack_note!r}) "
+            f"— the stamp is scoped by ownership but the note is not, so one agent's "
+            f"report is written onto another agent's delivery receipt"
+        )
+        # POSITIVE CONTROL: the note is not merely being DISCARDED. It did land on
+        # the acker's own edge, so the assertion above discriminates OWNERSHIP
+        # rather than a build that ignores `note` altogether.
+        mine = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=20, peek=True)
+        assert mine.entries[0].ack_note == fixer_b_note, (
+            "the acker's own note never landed — the victim assertion above would then "
+            "pass for a build that discards every note, which is not the property"
         )
 
     async def test_ack_note_lands_on_the_edge_the_CAS_WON(
@@ -2156,6 +2236,103 @@ class TestTheWaitingStateIsDerived:
             thread="q:cap-boundary",
         )
         assert await message_ledger.awaiting_answer(agent_id=AGENT_FIXER_B[0]) is not None
+
+    async def test_an_explicitly_SELF_ADDRESSED_message_on_the_question_thread_is_NOT_an_answer(
+        self, message_ledger: Any
+    ) -> None:
+        """RULING R2 (``docs/plans/v2/03a-2-consume-path-design-rulings.md`` §R2,
+        design-comms, binding): an ANSWER satisfies FOUR conjuncts — delivered TO
+        me, ON the question's thread, AFTER it (``seq``), and **sent by ANOTHER
+        AGENT**. The waiting state means *"this agent needs INPUT"*, and input is
+        by definition external: an agent that has sent itself a memo has, by
+        construction, received nothing from outside.
+
+        THE DOOR THE PIN ABOVE CANNOT REACH, and why that is a defect rather than
+        a gap. That pin is NAMED for this property unconditionally
+        (``..._the_ASKER_sends_on_its_own_thread_is_not_an_answer``) and its
+        docstring names "delivered TO the asker" as the MECHANISM — but its
+        fixture addresses the follow-up to the LEAD only, so delivered-to-me
+        happens to enforce the property for free. An EXPLICIT self-addressed send
+        — a legitimate, separately pinned deliverable (kickoff ruling 7,
+        ``test_an_EXPLICIT_self_addressed_send_IS_delivered``) — walks straight
+        past that mechanism while the property's name stays green. Fixture
+        monoculture verbatim: the message is the spec the author believed, the
+        assertion is the check the suite performs.
+
+        THE ERROR DIRECTION decides it (ruling 9's asymmetry, third application).
+        Questions ride ordinary work threads and self-notes are blessed, so
+        without the conjunct a self-memo landing on the same thread as an open
+        question silently reads as its answer — **false-NOT-waiting, the
+        INVISIBLE direction**. With it, the residual error is an agent that
+        self-resolved still reading "waiting" — visible beside a fresh
+        ``heartbeat_at``, and remediable by any teammate's on-thread reply.
+
+        Ruling 7 is UNTOUCHED and asserted here: the self-note still DELIVERS. It
+        simply does not answer its own sender's question.
+        """
+        await _ask(message_ledger, thread="q:cap-boundary")
+        self_note = await message_ledger.send(
+            sender=_ref(AGENT_FIXER_B),
+            session=SESSION_WAVE7,
+            body="note to self: I think the cap boundary should be 5",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+            recipients=[_ref(AGENT_FIXER_B)],
+            thread="q:cap-boundary",
+        )
+        inbox = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=20, peek=True)
+        assert self_note.message.seq in [entry.seq for entry in inbox.entries], (
+            "the self-addressed note was not DELIVERED — ruling 7 blesses an explicit "
+            "self-note, so this pin must fail because the note is not an ANSWER, never "
+            "because delivery itself broke"
+        )
+        assert await message_ledger.awaiting_answer(agent_id=AGENT_FIXER_B[0]) is not None, (
+            "the asker's own self-addressed follow-up on its own question thread cleared "
+            "its own debt — R2's fourth conjunct (`sender != me`) is missing, so an agent "
+            "can answer itself and the debt vanishes INVISIBLY"
+        )
+        # POSITIVE CONTROL: the fixture is not simply stuck at "waiting". The same
+        # thread, answered by SOMEONE ELSE, still clears normally — so the
+        # assertion above discriminates the SENDER, not "nothing ever clears".
+        await _answer(message_ledger, thread="q:cap-boundary")
+        assert await message_ledger.awaiting_answer(agent_id=AGENT_FIXER_B[0]) is None, (
+            "an external answer on the thread did not clear the debt — the fourth "
+            "conjunct was applied to the whole predicate rather than to the SENDER"
+        )
+
+    async def test_a_self_addressed_message_with_ANOTHER_recipient_is_STILL_not_an_answer(
+        self, message_ledger: Any
+    ) -> None:
+        """R2's PARAMETER-MONOCULTURE break (the designer's mixed-recipient leg).
+
+        The pin above addresses the follow-up to the asker ALONE, so a build keyed
+        on "am I the ONLY recipient" — or on ``recipients == [sender]`` — passes it
+        with the defect fully intact for the realistic shape: a reply-all bump that
+        keeps the lead on the thread while copying yourself. Here the recipients
+        are ``[lead, me]``: delivered-to-me holds, another agent IS on the message,
+        and the sender is still me.
+
+        What must NOT be read into it: the lead's copy is irrelevant to the
+        asker's debt. Only a message the asker did not SEND can discharge it.
+        """
+        await _ask(message_ledger, thread="q:cap-boundary")
+        bump = await message_ledger.send(
+            sender=_ref(AGENT_FIXER_B),
+            session=SESSION_WAVE7,
+            body="bumping, and copying myself so it lands in my own inbox",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+            recipients=[_ref(SENDER_LEAD), _ref(AGENT_FIXER_B)],
+            thread="q:cap-boundary",
+        )
+        inbox = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=20, peek=True)
+        assert bump.message.seq in [entry.seq for entry in inbox.entries], (
+            "the mixed-recipient self-copy was not delivered to its own sender — the "
+            "fixture cannot reach the door it exists to test"
+        )
+        assert await message_ledger.awaiting_answer(agent_id=AGENT_FIXER_B[0]) is not None, (
+            "a self-SENT message that merely CC'd another agent cleared the sender's own "
+            "debt — the conjunct is keyed on the RECIPIENT SET ('am I the only one?') "
+            "rather than on the SENDER, which is R2's actual rule"
+        )
 
     async def test_a_message_that_PREDATES_the_question_is_not_an_answer(
         self, message_ledger: Any

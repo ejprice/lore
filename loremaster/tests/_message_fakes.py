@@ -24,9 +24,10 @@ verbatim — *a satisfiability receipt that skips the PRE-EXISTING suites the
 change's seam touches is not a receipt.*
 
 Living in its own module makes the regression STRUCTURALLY IMPOSSIBLE rather
-than merely remembered: only ``test_message_ledger.py`` imports this file, so
-the blast radius of the not-yet-existing module is the one new contract file,
-which is where contract-first wants it.
+than merely remembered: its consumers are exactly the packet-03 contract files
+(``test_message_ledger.py``, ``test_comms_tool.py``) — never the shared
+``_comms_fakes.py`` seam, so a not-yet-existing ``loremaster.messages`` can never
+take an unrelated suite down with it.
 
 The adversarial properties are documented at the class below; they mirror
 ``_comms_fakes.py``'s rather than re-deriving them.
@@ -353,10 +354,15 @@ class FakeMessageLedger:
         """Derived, never stored: this agent is awaiting input IFF it has a
         question thread carrying no answer.
 
-        An ANSWER is any message DELIVERED TO this agent on the question's own
-        thread, created after the question. Computed exactly as ``orphaned`` is
-        derived from ``heartbeat_at`` — nothing is stamped, so nothing can be
-        lost, and no caller has to REMEMBER to clear it.
+        An ANSWER satisfies FOUR conjuncts: DELIVERED TO this agent, ON the
+        question's own thread, created AFTER it (``seq``), and sent by ANOTHER
+        AGENT (ruling R2, ``docs/plans/v2/03a-2-consume-path-design-rulings.md``
+        §R2 — a self-note is information, never INPUT, and the waiting state
+        means "this agent needs input"; an explicit self-addressed send remains
+        fully DELIVERABLE per kickoff ruling 7, it simply cannot discharge its
+        own sender's debt). Computed exactly as ``orphaned`` is derived from
+        ``heartbeat_at`` — nothing is stamped, so nothing can be lost, and no
+        caller has to REMEMBER to clear it.
 
         An INDEPENDENT implementation over ``self.db`` (never a delegation to
         production's own query), so this fake stays able to FAIL a wrong build.
@@ -378,7 +384,9 @@ class FakeMessageLedger:
         ]
         for question in questions:
             answered = any(
-                candidate.thread == question.thread and candidate.seq > question.seq
+                candidate.thread == question.thread
+                and candidate.seq > question.seq
+                and candidate.sender_id != agent_id
                 for candidate in delivered_to_me
             )
             if not answered:

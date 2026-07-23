@@ -1022,19 +1022,36 @@ class MessageLedger:
         ask; a directive need not), and a grade-keyed derivation leaves ruling 9's
         mechanism present in the schema and DEAD in the code.
 
-        An ANSWER is a message satisfying all THREE conjuncts: DELIVERED TO this
-        agent (a ``to`` edge to it — so the asker's own follow-up on its own thread
-        is not an answer), ON the question's own thread (unrelated traffic never
-        silently resolves an outstanding debt), and created AFTER it (``seq``, the
-        monotonic ordering key — prior chatter cannot answer a later question). An
-        answer's ``grade`` is irrelevant.
+        An ANSWER is a message satisfying all FOUR conjuncts: DELIVERED TO this
+        agent (a ``to`` edge to it — a reply nobody addressed to you is not yours),
+        ON the question's own thread (unrelated traffic never silently resolves an
+        outstanding debt), created AFTER it (``seq``, the monotonic ordering key —
+        prior chatter cannot answer a later question), and sent FROM ANOTHER AGENT
+        (``in.sender != $agent``). An answer's ``grade`` is irrelevant.
+
+        THE FOURTH CONJUNCT IS RULING R2
+        (``docs/plans/v2/03a-2-consume-path-design-rulings.md`` §R2, design-comms,
+        binding): the waiting state means *"this agent needs INPUT"*, and input is
+        by definition EXTERNAL — a self-note is information, never input, so the
+        asker's own follow-up on its own thread cannot discharge its own debt, not
+        even an explicitly self-addressed one. Without it the failure mode is a
+        self-memo silently clearing a live debt (false-NOT-waiting, the invisible
+        direction ruling 9 refuses). It RECONCILES with kickoff ruling 7 rather
+        than narrowing it: an explicit self-addressed send is still delivered,
+        drained and acked (``test_an_EXPLICIT_self_addressed_send_IS_delivered``);
+        it simply cannot answer its own sender's question.
 
         ⚠ KNOWN BOUND, shipped deliberately with ruling 9 and PINNED
         (``TestTheDerivedWaitingStateKnownBound``): an answer that arrives
         OUT-OF-BAND never lands on the thread, so the state reads "waiting" until
         someone relays it in. That is the SAFE direction of error — a false-waiting
         is visible beside a fresh ``heartbeat_at``; a false-not-waiting is
-        invisible. Its re-open trigger lives on that pin.
+        invisible. Its re-open trigger lives on that pin. R2's consequence folds
+        INTO this bound rather than adding one: because no self-sent message
+        qualifies, an agent that resolved its own question keeps reading "waiting"
+        until some OTHER party sends on the thread — in practice the lead's
+        one-line on-thread reply, which both clears the debt and puts the
+        resolution into the durable record.
 
         Args:
             agent_id: The agent whose waiting state to derive. Another agent's
@@ -1063,7 +1080,8 @@ class MessageLedger:
             return None
         delivered_rows = self._as_rows(
             await self._query(
-                f"SELECT in.thread AS thread, in.seq AS seq FROM {TO_RELATION} WHERE out = $agent",
+                f"SELECT in.thread AS thread, in.seq AS seq FROM {TO_RELATION} "
+                f"WHERE out = $agent AND in.sender != $agent",
                 {"agent": agent_rec},
             )
         )
