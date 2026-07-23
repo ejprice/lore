@@ -818,7 +818,8 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   `03a-comms-message-ledger.md` file stays the shared reference (split banner added). Entry check
   CLEARED (HEAD f90bbf0, store slice live, 180 pins RED for the right reason, :18000 healthy,
   coverage-premise render→03b CONFIRMED). Ledger: umbrella `54634b3d`→03a-1 `6804b707` (in_progress);
-  03a-2 `96f9f3a0` (blocked_by 03a-1); 03b rewired onto 03a-2 (successor `618cd45d`).
+  03a-2 `96f9f3a0` (blocked_by 03a-1); 03b rewired onto 03a-2 (task `b7f89c12`; transient successor
+  `618cd45d` retired to wontfix — `supersede` drops `blocked_by`, so 03b was re-created with the dep).
 - 2026-07-23 · **PACKET 03a-1 DONE — send + drain + `AgentRefLike` home + foundations (TEST-ONLY,
   no deploy).** Commits 2d1f75d (AgentRefLike → `loremaster/agent_ref.py`, briefs re-exports) →
   e6b9b81 (`messages.py` MessageLedger: send = `sequence::nextval` + CREATE + N×RELATE in ONE txn,

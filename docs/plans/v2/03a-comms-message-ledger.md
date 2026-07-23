@@ -9,8 +9,9 @@ law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1 · design source:
 > four-way disambiguation, the derived waiting state; 16-way ack concurrency — CLOSES 03a). This file
 > remains the shared detailed reference (Scope IN/OUT, the rulings, entry/exit) that BOTH children
 > cite; it is no longer a directly-executed row. Ledger: 03a umbrella `54634b3d` → superseded into
-> 03a-1 `6804b707`; 03a-2 `96f9f3a0` (blocked_by 03a-1); 03b rewired onto 03a-2 (successor
-> `618cd45d`).
+> 03a-1 `6804b707`; 03a-2 `96f9f3a0` (blocked_by 03a-1); 03b rewired onto 03a-2 (task
+> `b7f89c12`; the transient successor `618cd45d` was retired to wontfix — `supersede` does not carry
+> `blocked_by`, so 03b was re-`create`d with the dependency).
 
 ## Why this packet exists
 Second cut of the packet-03 split (see `03-comms-message-graph.md` §SPLIT — TWICE). The store
