@@ -2,7 +2,7 @@
 
 **Status:** DESIGN PROPOSAL — awaiting operator ruling. Supersedes [#168], folds in [#169],
 adopts [#170]. Author: surreal-321-migration-lead (Opus), 2026-07-22. Finalized by the Fable
-design sidecar 2026-07-22: Q1–Q6 are all DECIDED (§12); the operator reviews the whole design;
+design sidecar 2026-07-22: Q1–Q6 are all DECIDED (§12); the operator RULED §13 on 2026-07-22 (recorded there);
 §13 carries the residual flags. Two defects in the v1 proposal were found and corrected during
 finalization — they are labeled D1/D2 in §11.
 
@@ -434,6 +434,12 @@ corrected above):
    stored on the chunk row and is the ONLY key the chunk diff matches on (§5).
 
 ## 13. Residual flags for the operator (new, surfaced by finalization)
+
+**OPERATOR RULINGS (2026-07-22):** **#1 — NO cost gate** (do not add; reconciles run unattended,
+including the §8 fail-safe `REEMBED_ALL`). **#3 — HARD CUTOVER agreed** (rename
+`schema_rebuild_status` → `schema_reconcile_status` with a retired-name sweep incl. prose; NO
+alias). **#2 and #4** are scope/heads-up FYIs, acknowledged — no design change. With Q1–Q6 (§12)
+plus these, the design is FULLY RULED; awaiting the planner to slot it into the plan of record.
 
 1. **Cloud cost gate.** The executor knows its embed bill up front (the pending-chunk count).
    On a PAID embedder (Voyage cloud), should a config threshold pause a large reconcile in an
