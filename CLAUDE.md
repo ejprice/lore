@@ -102,6 +102,16 @@ Nobody read it. Everyone probed the engine empirically instead, and the schema w
 - **Check `docs/reference/` before probing.** Prior sessions commit capability references there
   precisely so the next session need not rediscover the engine. Not reading it wasted a
   session and cost an outage.
+- **The vendor docs AND the engine's CI-verified specs are now IN the RAG — search them, never
+  scout or probe from scratch (that IS the #107 failure mode).** SurrealDB's 3.2 documentation is
+  indexed as lore tier `surrealdb-docs`; the engine's own SurrealQL language tests as
+  `surrealql-tests` (pinned at the v3.2.0 tag — a spec's expected-result IS the behaviour, so it
+  CANNOT lie). Order for a "how does the engine behave" question: (1)
+  `docs/reference/surrealdb-31-capabilities.md` — OUR authority, incl. §6 (where the vendor docs
+  are FALSE); (2) `lore_search(tier="surrealql-tests", …)` — the executable specs; (3)
+  `lore_search(tier="surrealdb-docs", …)` — vendor prose, which CAN lie → treat a hit as a lead to
+  VERIFY, never as final; (4) a live probe against the 3.2.1 test store (`ws://127.0.0.1:18000`) —
+  the LAST resort, for what none of the above cover. (Corpora added 2026-07-22.)
 
 ## THE TEST ENVIRONMENT IS A FICTION (#131 + #107 — the same root, twice)
 **The suite runs on a dev host. Production is a container. EVERY difference between them is an
