@@ -16,7 +16,7 @@ The P7 punt: importance defaults-by-kind and reinforcement-on-recall shipped;
 
 ## Scope OUT
 - Any recall wire-shape change (DESIGN-LAW §9: the chunk-key ref shape is a consumer
-  contract). Spectron backend work (invite-gated, INDEX pool item 12).
+  contract). Spectron backend work (docs now public + indexed as `spectron-docs`; INDEX pool item 12).
 
 ## Entry check
 **FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this

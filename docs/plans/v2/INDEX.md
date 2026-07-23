@@ -243,7 +243,7 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
 9. **Air-gapped opt-out** for the hard Anthropic-key boot requirement (revisit-later TODO, P8a:110).
 10. **Verify rebuild-caveat**: harder gate than caveat-during-rebuild? (P8c:154).
 11. **Watcher skip-path posture** ack (store blip during live-drain skip kills the watcher worker — P8e-RESUME item 3).
-12. **Spectron**: waitlist standing; backend re-decision on invite (spike list in MASTER-PLAN §6 P7).
+12. **Spectron**: the DOCS are now PUBLIC + indexed as lore tier `spectron-docs` (2026-07-23, 143 .mdx) — the design half of the re-decision is UNBLOCKED: run the spike list (MASTER-PLAN §6 P7) against the REAL docs, not the 2026-07-02 Fable study. The `ghcr.io/surrealdb/spectron` BINARY may still be gated (the "on invite" trigger applies only to RUNNING it). Superseded verdict: `lore_recall("spectron status update")`.
 13. **DI doc-content import** (DECISIONS.md/GOTCHAS.md → kind-tagged memories) — separate content migration, schedule ad hoc.
 14. ~~#55 investigation row~~ **MINTED by packet 01** (row a6f38fc0, pairs #22 + #55): fresh-session
     ToolSearch can't resolve lore tools. NB it resolved FINE this session with a healthy container — the
@@ -776,3 +776,11 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   Q5 ruled it its own packet; 12/13 now ride 11b's extracted `ChunkerRegistry.resolve` and #10's
   retroactivity composes with the routing sweep (my earlier same-day 12/13 folds REVISED — the
   design supersedes them). 24 certifies the reconciler at 53k. Mount hazard → watch list.
+- 2026-07-23 · SESSION: (1) **lore is now the SOURCE OF TRUTH for project memory** — the lore-deploy
+  SKILL.md gained a bootstrap+migration protocol; this repo's flat auto-loaded `MEMORY.md` (17KB, 51
+  topic files) MIGRATED into lore byte-exact (2 independent oracles; finding **#172**), `MEMORY.md`
+  slimmed to a 1.9KB bootstrap; repo+skill instructions carry the standing rule. (2) **Spectron docs
+  indexed as static tier `spectron-docs`** (143 .mdx / 1467 chunks, surrealdb/docs @ 9d42eba) — pool
+  item 12 design-half UNBLOCKED, verdict memory superseded. New-static-tier gotcha: `acquire` reads
+  the un-mounted corpora `source` (#165/#166) → index HOST-SIDE (`--tier`) then recreate; `.mdx`
+  already-mapped ⇒ fingerprint unchanged (f6e2ee34), no re-embed/stamp fix.
