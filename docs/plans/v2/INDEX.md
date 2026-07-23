@@ -283,12 +283,12 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
     adversaries blessed a false one by inspection. The fix is a property to INVENT
     (executable exemption evidence) — per roster law it needs an Opus design pass that
     attacks its own design, not a builder. Operator schedules.
-24. **Message id form (03a-1 residual, cold-audit #1):** `message.id` is `uuid4().hex` — bare and
-    contract-compliant (the only id pin checks bare-ness/round-trip, NOT sortability; ordering rides
-    `seq`, recency rides `created_at`). The design DOC noted `ulid()` (time-sortable), made moot by
-    `seq` being the ordering key. No current consumer needs sortable ids. Fork: ACCEPT `uuid4` (rec.),
-    or authorize installing `python-ulid` if a downstream (03b renders / pkt-05 `since=`) will want
-    time-sortable message ids. Non-blocking; settle before 03b/05 lean on it — changing it is one line.
+24. ~~**Message id form (03a-1 residual):** `uuid4().hex` vs `ulid()`~~ — **RULED (operator,
+    2026-07-23): use `ULID`.** Time-sortable for a future pkt-05 `since=` cursor; pre-deployment, so
+    no records to migrate. Implemented `13da377`: `message.id = str(ULID())` (python-ulid 4.0.1,
+    client-side mint, dep on `loremaster/pyproject.toml`), aligning with the contract's stated
+    `bare ulid` intent. Verified: bareness pin green both legs, full file 140/31/9 unchanged, ruff
+    clean, mypy +0.
 
 ## Watch list (no packet; verify-on-contact)
 - **NO WORKTREES UNTIL WORKTREES WORK (operator, 2026-07-14).** Do not use git worktrees for lore
@@ -831,3 +831,8 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   stubs) **/ 9 skipped**; send-concurrency **20/20** ×3; ruff clean; writable-prod mypy-0; retry_seam
   503; brief_ledger 120. Receipts `docs/plans/v2/receipts/2026-07-23-packet03a1/`. #173 resolved.
   NEXT = 03a-2. uuid-vs-ulid id → decision pool 24.
+- 2026-07-23 · **pool #24 RULED (operator): message id → ULID.** Follow-up to 03a-1: `message.id`
+  `uuid4().hex` → `str(ULID())` (python-ulid 4.0.1, client-side; dep on `loremaster/pyproject.toml`,
+  root pyproject zero-diff). Time-sortable for pkt-05 `since=`; pre-deploy, no migration. Commit
+  `13da377`; lead-verified (small-fix path — diff + re-run): bareness pin both legs, full file
+  140/31/9 unchanged, ruff clean, mypy +0. Follow-up report archived in receipts/2026-07-23-packet03a1/.
