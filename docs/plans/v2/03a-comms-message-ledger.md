@@ -3,6 +3,15 @@ size ~0.35 wu (measured post-adversary) **→split at kickoff (sizing law: ≥0.
 law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1 · design source:
 ~/.claude/plans/one-of-claude-codes-nifty-garden.md · **DEPLOY: NO — test-only**
 
+> **⚠ SPLIT AT KICKOFF (2026-07-23, operator-confirmed).** 03a (0.35) was split per the sizing law
+> (≥0.30) into **`03a-1-comms-ledger-send.md`** (the SEND path + `AgentRefLike` home + module
+> foundations; ≥8-way send concurrency) and **`03a-2-comms-ledger-consume.md`** (drain/peek, ack +
+> four-way disambiguation, the derived waiting state; 16-way ack concurrency — CLOSES 03a). This file
+> remains the shared detailed reference (Scope IN/OUT, the rulings, entry/exit) that BOTH children
+> cite; it is no longer a directly-executed row. Ledger: 03a umbrella `54634b3d` → superseded into
+> 03a-1 `6804b707`; 03a-2 `96f9f3a0` (blocked_by 03a-1); 03b rewired onto 03a-2 (successor
+> `618cd45d`).
+
 ## Why this packet exists
 Second cut of the packet-03 split (see `03-comms-message-graph.md` §SPLIT — TWICE). The store
 landed in 03 because it changes behaviour for tables already holding production data; this packet

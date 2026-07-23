@@ -171,7 +171,8 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.40 | — | **DONE + DEPLOYED 2026-07-19** (image **ae0e78d9a504**, both containers; d3c899f→05a8bb2; cold-audit GO + F1 fixed; live-wire smoke PASS; promise HARDENING split → 02a) |
 | 02a | comms-promise-instrument-hardening (full §9.7 per-entry executable-predicate proofs + `safe_str` literal-coverage closure `_SAFE_STR_LITERAL_RESIDUAL`) | — | C | 0.20 (ran ~4×) | 02 | **DONE 2026-07-19** (a2e9a70→ceac2d0, 6 commits; TEST-ONLY, **no deploy** — production byte-identical, `server.py` md5 unchanged throughout; scoped gates 34→117) |
 | 03 | **comms STORE** — message/`to` slices, `DEFINE SEQUENCE`, `ENFORCED`, the relation-table policy flip + dirty-store migration pins; **#146 adjudication + 3.2.1 re-probes** | PKT-28 C2b | C | 0.20 | 02 | **DONE 2026-07-23** (df59f76; scoped 304/0, blast 432/0; cold-audit GO; #146 accept-with-trigger; TEST-ONLY, no deploy; 03a unblocked) |
-| 03a | **comms LEDGER** — `messages.py` send/drain/ack, derived waiting state, ≥8-way concurrency, retry-seam coverage | — | C | 0.35 →split | 03 | open — contract READY |
+| 03a-1 | **comms ledger SEND** — `messages.py` foundations + `AgentRefLike` home + `send`; ≥8-way send concurrency | — | C | 0.20 | 03 | **in progress** — contract READY (split of 03a) |
+| 03a-2 | **comms ledger DRAIN/ACK** — drain/peek, ack (4-way), derived waiting state; 16-way ack concurrency (**closes 03a**) | — | C | 0.18 | 03a-1 | open — contract READY |
 | 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a | open — contract READY |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
 | 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121 #149) | PKT-28 C3 | C | 0.30 →split | 04 | open |
@@ -804,3 +805,11 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   Prod-touching flip lands at 03b's deploy (dirty-store pins verify row preservation). NEXT = **03a
   (the LEDGER)**, now unblocked. Minor: R3 `question`/`ack_note` offline TYPE-unpinned but ∀-guard- +
   live-covered (met deliberately); R4 typecheck-gate read = "writable file clean + no new errors".
+- 2026-07-23 · **PACKET 03a SPLIT AT KICKOFF** (0.35 → split, operator-confirmed) into **03a-1**
+  (SEND path + `AgentRefLike` home + module foundations; ≥8-way send concurrency — THIS session) and
+  **03a-2** (drain/peek, ack + four-way disambiguation, derived waiting state; 16-way ack concurrency —
+  closes 03a). New bootable files `03a-1-comms-ledger-send.md` / `03a-2-comms-ledger-consume.md`; the
+  `03a-comms-message-ledger.md` file stays the shared reference (split banner added). Entry check
+  CLEARED (HEAD f90bbf0, store slice live, 180 pins RED for the right reason, :18000 healthy,
+  coverage-premise render→03b CONFIRMED). Ledger: umbrella `54634b3d`→03a-1 `6804b707` (in_progress);
+  03a-2 `96f9f3a0` (blocked_by 03a-1); 03b rewired onto 03a-2 (successor `618cd45d`).
