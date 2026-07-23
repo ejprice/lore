@@ -1825,7 +1825,7 @@ class _HeartbeatAgentLike(Protocol):
     agent (never its id, timestamps, or the rest of :class:`~loremaster.agents.
     Agent`), so it is typed against this structural READ-ONLY Protocol rather
     than the full nominal ``Agent`` — the same decoupling (and the same
-    read-only-property rationale) as :class:`~loremaster.briefs.AgentRefLike`.
+    read-only-property rationale) as :class:`~loremaster.agent_ref.AgentRefLike`.
     A real ``Agent`` satisfies it, and so does a minimal duck-typed stand-in
     the §9.2 cap/collapse/order pin drives the render with directly.
     """

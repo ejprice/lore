@@ -96,12 +96,13 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict
 from surrealdb import AsyncSurreal, RecordID
 
+from loremaster.agent_ref import AgentRefLike as AgentRefLike  # noqa: PLC0414 (re-export)
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
@@ -219,27 +220,6 @@ _ACKED_IN_PARAM = "acked_in"
 _COVERAGE_ROSTER_PARAM = "coverage_roster_ids"
 _SKEW_ACKED_IDS_PARAM = "skew_acked_ids"
 _SKEW_NAMES_PARAM = "skew_names"
-
-
-class AgentRefLike(Protocol):
-    """The structural shape :meth:`BriefLedger.coverage` accepts per roster item.
-
-    Matches an :class:`~loremaster.agents.Agent` STRUCTURALLY, never
-    nominally — this module never imports :mod:`loremaster.agents` (see the
-    module docstring's decoupling note). Declared as READ-ONLY properties
-    (rather than plain mutable attributes) so a frozen/immutable duck-typed
-    caller-supplied stand-in (e.g. a contract test's ``@dataclass(frozen=True)``
-    roster item) structurally satisfies this Protocol — mypy treats a plain
-    attribute Protocol member as requiring a SETTABLE variable, which a frozen
-    dataclass field is not; ``coverage`` only ever READS ``.id``/``.name``, so
-    the narrower read-only shape is the correct (and more permissive) contract.
-    """
-
-    @property
-    def id(self) -> str: ...
-
-    @property
-    def name(self) -> str: ...
 
 
 @dataclass(frozen=True)
