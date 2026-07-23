@@ -167,7 +167,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 01a | **artifact-conformance — run the suite IN the deployed image** (#139) | — | pre | 0.25 (measure-first) | 01 | **DONE + DEPLOYED 2026-07-16** (c90df55/b528ac1/a35cdca/062bf60; image **f25c18976b2b**, both containers; in-image suite 5545/0; no 01b split; **#141 drift closed in the running artifact**) |
 | 02 | comms-render-architecture (#104 step-0, #103, #100, #101) | PKT-28 C2a | C | 0.40 | — | **DONE + DEPLOYED 2026-07-19** (image **ae0e78d9a504**, both containers; d3c899f→05a8bb2; cold-audit GO + F1 fixed; live-wire smoke PASS; promise HARDENING split → 02a) |
 | 02a | comms-promise-instrument-hardening (full §9.7 per-entry executable-predicate proofs + `safe_str` literal-coverage closure `_SAFE_STR_LITERAL_RESIDUAL`) | — | C | 0.20 (ran ~4×) | 02 | **DONE 2026-07-19** (a2e9a70→ceac2d0, 6 commits; TEST-ONLY, **no deploy** — production byte-identical, `server.py` md5 unchanged throughout; scoped gates 34→117) |
-| 03 | **comms STORE** — message/`to` slices, `DEFINE SEQUENCE`, `ENFORCED`, the relation-table policy flip + dirty-store migration pins; **#146 adjudication + 3.2.1 re-probes** | PKT-28 C2b | C | 0.20 | 02 | open — contract READY (400 pins, adversary-closed) |
+| 03 | **comms STORE** — message/`to` slices, `DEFINE SEQUENCE`, `ENFORCED`, the relation-table policy flip + dirty-store migration pins; **#146 adjudication + 3.2.1 re-probes** | PKT-28 C2b | C | 0.20 | 02 | **DONE 2026-07-23** (df59f76; scoped 304/0, blast 432/0; cold-audit GO; #146 accept-with-trigger; TEST-ONLY, no deploy; 03a unblocked) |
 | 03a | **comms LEDGER** — `messages.py` send/drain/ack, derived waiting state, ≥8-way concurrency, retry-seam coverage | — | C | 0.35 →split | 03 | open — contract READY |
 | 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a | open — contract READY |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
@@ -784,3 +784,20 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   item 12 design-half UNBLOCKED, verdict memory superseded. New-static-tier gotcha: `acquire` reads
   the un-mounted corpora `source` (#165/#166) → index HOST-SIDE (`--tier`) then recreate; `.mdx`
   already-mapped ⇒ fingerprint unchanged (f6e2ee34), no re-embed/stamp fix.
+- 2026-07-23 · **PACKET 03 (comms STORE) DONE — TEST+STORE only, NO deploy** (df59f76 schema ·
+  10d8de4 receipts). One file: `surreal_schema.py` gains the `message` node + `to` delivery edge +
+  `message_seq` native sequence + `generate_message_ddl()`, and the **relation-table POLICY FLIP** —
+  `_define_relation_table` extended (ONE impl, not a fork) to emit `DEFINE TABLE OVERWRITE … TYPE
+  RELATION IN … OUT … [ENFORCED] SCHEMAFULL`; all four edges flip bare-`IF NOT EXISTS`→typed-OVERWRITE
+  (only `to` ENFORCED). Contract efef2b3 (400 pins); scoped **304/0**, blast-radius **432/0**, ruff
+  clean; 03a `test_message_ledger.py` stays RED unchanged; typecheck `surreal_schema.py` clean, 55→54
+  (all residual in the RED 03a/03b contract — TEST-ONLY split; global-zero returns when 03a/03b build).
+  **3.2.1 re-probes:** #349 dup-`(in,out)` still a LOUD err (edge count 1, no silent dedupe) → dedupe-
+  before-RELATE holds; #308 no packet-03 pin leans (warm conns). **#146 adjudicated (lead): bare
+  `DEFINE SEQUENCE IF NOT EXISTS message_seq`, no BATCH/START → hazard dormant; accept-with-trigger =
+  the day any sequence gains/changes BATCH/START.** Full contract-first cycle: committed RED contract →
+  Opus builder → cold REFUTE audit **GO** (independent gates + own mutation matrix restored byte-exact +
+  edge-directions verified against real RELATE sites; residuals R1–R5 all adjudicated, none escalated).
+  Prod-touching flip lands at 03b's deploy (dirty-store pins verify row preservation). NEXT = **03a
+  (the LEDGER)**, now unblocked. Minor: R3 `question`/`ack_note` offline TYPE-unpinned but ∀-guard- +
+  live-covered (met deliberately); R4 typecheck-gate read = "writable file clean + no new errors".
