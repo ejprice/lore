@@ -57,10 +57,10 @@ import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
-from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 from surrealdb import AsyncSurreal, RecordID
+from ulid import ULID
 
 from loremaster.agent_ref import AgentRefLike
 from loremaster.store._txn import (
@@ -557,7 +557,12 @@ class MessageLedger:
         await self._reject_unknown_recipients(recipients)
         deduped = self._dedupe_by_identity(recipients)
         created_at = datetime.now(UTC)
-        message_id = uuid4().hex
+        # A BARE, client-minted ULID (26-char Crockford, colon-free) — time-sortable
+        # for a future ``since=`` cursor (pkt-05); the contract pins bareness only,
+        # ordering rides ``seq``. Client-side (before the fan-out) so it binds
+        # directly as the RELATE ``in`` endpoint without capturing an engine-minted
+        # id back out of the transaction.
+        message_id = str(ULID())
         fragment = self._send_fragment(
             message_id=message_id,
             session=session,
@@ -657,7 +662,7 @@ class MessageLedger:
 
         ``$minted_seq`` is a transaction-scoped ``LET`` binding (the native
         sequence value), not a bound param — every other ``$name`` is a bound
-        param. The ``message`` id is minted in Python (a bare hex id) so it can be
+        param. The ``message`` id is minted in Python (a bare ULID) so it can be
         bound as the RELATE ``in`` endpoint directly (store reference §7 — a
         RELATE endpoint is a bound ``RecordID``, never a ``type::record()`` call).
         """
