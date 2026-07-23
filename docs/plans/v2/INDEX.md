@@ -34,17 +34,20 @@ HERE now** — a packet session must not need to read them.
   design) → 26a+ (onboarding build); 27 (cross-tier compare) rides ∥. Live-DB
   introspection stays with odoo-dev by design.
 
-## State of record (verified 2026-07-20, after the packet-03 CONTRACT phase)
-- Branch `feat/surreal-unification` @ **9200e5b** (not pushed).
-- ⚠ **THE SUITE NUMBER HAS CHANGED SHAPE — read this before you run pytest.** The RED
-  contract for packets 03/03a/03b is COMMITTED (`efef2b3`, 400 pins, 4154 lines). So:
-  **6079 tests collected, ZERO collection errors**, of which **180 in
-  `test_message_ledger.py` are EXPECTED RED** — every one of them
-  `ModuleNotFoundError: No module named 'loremaster.messages'`, the module packet 03a
-  builds. The pre-contract green baseline was **5694 passed** (lead-measured 2026-07-19,
-  matching the recorded figure). A packet-03 session's job is to move a subset of those
-  180 to green — NOT to see 0 failures at start.
-- Skill suite **117 passed**; mypy 0 / 144 files; ruff clean (contract tree included).
+## State of record (verified 2026-07-23, after packet 03 STORE — DONE)
+- Branch `feat/surreal-unification` @ **905b35e** (6 commits ahead of origin, not pushed).
+- ⚠ **THE SUITE HAS A COMMITTED RED CONTRACT — read this before you run pytest.** The RED
+  contract for packets 03/03a/03b is COMMITTED (`efef2b3`, 400 pins). **Packet 03 (the
+  STORE) is now GREEN** (`df59f76`): `test_comms_schema.py` + `test_surreal_schema.py`
+  pass (**scoped 304/0**, blast-radius 432/0). Still EXPECTED RED — built by 03a/03b —
+  are the **180 pins in `test_message_ledger.py`** (every one
+  `ModuleNotFoundError: No module named 'loremaster.messages'`, the module 03a builds)
+  plus the dispatch/render pins in `test_comms_tool.py` / `test_comms_promise_registry.py`
+  (03b). A 03a/03b session's job is to move those to green — NOT to see 0 failures at start.
+- typecheck: **54 mypy errors, ALL in the immutable RED 03a/03b contract test files**
+  (forward refs to `loremaster.messages` / `_render_comms_*`); **ZERO in any production
+  file**. Global-zero returns when 03a/03b build their modules — a structural property of
+  the TEST-ONLY 3-way split, not a regression. Skill suite **117 passed**; ruff clean.
 - **Packet 02a shipped NO deploy and is not owed one — it is TEST-ONLY.** Production was
   byte-identical throughout (`server.py` md5 `1caac4bd…` unchanged across every probe by
   three independent parties), so the deployed image below still matches HEAD's production
