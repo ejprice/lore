@@ -75,9 +75,12 @@ HERE now** — a packet session must not need to read them.
   Sole rollback: the verified 3.1.5 backup at /backups/lore/surreal-pre-3.2.1-20260721
   (RocksDB format is forward-only). New static vendor tiers indexed (`surrealdb-docs`,
   `surrealql-tests` @ v3.2.0 tag) — corpus now 2764 files by design.
-  ⚠ Substrate caveats at verification: lore-lore's schema rebuild sits in a FAILED
-  fingerprint-mismatch state while serving the old fingerprint (finding #167), and
-  traces serve total=0 (#147, routed 03b).
+  Substrate: **#167 RESOLVED 2026-07-22** by a verified fingerprint reconcile (all
+  17,287 chunks proven non-null + cosine 1.000000 vs fresh re-embeds on all three
+  tiers; measured safe-stamp with rollback recorded; restart clean, no re-trigger).
+  The durable fixes are the **#171 ruled design → packets 11a/11b** (⊃ #168/#169,
+  adopts #170; certified at scale in 24). Cosine floor legitimately stale
+  post-reconcile (#161 → packets 10/11); traces still serve total=0 (#147 → 03b).
 
 ## Packet protocol (read once — this is the whole ritual)
 **Boot:** (1) repo CLAUDE.md auto-loads (process law: gates, TDD, orchestration,
@@ -176,7 +179,9 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 09 | surface-residues (#15, #64, #80, #82, #84–#86, #88, #92, docs truth) | PKT-03 | L ∥ | 0.20 | — | open |
 | 10 | floor-calibration-design (#83, #87) | PKT-01 | L | 0.15 | — | open |
 | 11 | floor-calibration-build | PKT-02 | L | 0.25 | 10 ruled | open |
-| 12 | detection-contract (#10, #11, #27) | PKT-04 | L | 0.15 | — | open |
+| 11a | embedding-reconciliation CONTRACT (#171 FULLY-RULED design ⊃ #168/#169, adopts #170) | — | L | 0.20 | — (design ruled) | open |
+| 11b | embedding-reconciliation BUILD (reconciler + resolve extraction + #170 hash; `rebuild_all` retires, hard-cutover rename) | — | L | 0.25 →split if 11a measures over | 11a ruled | open |
+| 12 | detection-contract (#10, #11, #27; rides 11b's extracted resolve seam) | PKT-04 | L | 0.15 | 11b rec. | open |
 | 13 | detection-build | PKT-05 | L | →split | 12 ruled | open |
 | 14 | config-derive-excludes (#26, #28, #72 corpus pollution + #162 archive-twin dedup) | PKT-09a | L ∥ | 0.20 | — | open |
 | 15 | config-boot-validation (+ dead fields, #12) | PKT-09b | L ∥ | 0.20 | — | open |
@@ -297,6 +302,10 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
 - **#159** (24 non-passing tests once, unreproduced ×5; evidence destroyed by tail-only
   echo) — watch. Trigger: on ANY anomalous run, preserve the FULL output before
   re-running; a green claim needs the passed-count tail, an anomaly needs the whole body.
+- ⚠ **lore-lore runs on a HAND-ROLLED /source mount — NOT restart-durable until the
+  packet-19 deploy architecture (#165/#166) lands** (migration lead, 2026-07-22). A
+  recreate before then needs the hand mount reapplied; treat any lore-lore restart as
+  an operator-visible step, not routine.
 - Open research note (no evidence either way in literature/vendor practice): whether
   displaying scores to tool-using LLM consumers helps — our three-model consult remains
   the only direct data (weak-match external validation, element d).
@@ -762,3 +771,8 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   f6e2ee34) → **embedding-schema RECONCILIATION design #171** (docs/design/2026-07-22-…, FULLY RULED,
   ⊃#168/#169, adopts #170; awaiting planner). CLAUDE.md→agents search the tiers; new **#164–#171**.
   ⚠ **lore-lore on a HAND-ROLLED /source mount — NOT restart-durable pre-#165/#166**; 210→218 symlink.
+- 2026-07-22 · **#171 SLOTTED (Fable planner; sizing-checked): packets 11a (contract, 0.20) +
+  11b (build, 0.25) minted in wave L BEFORE 12/13** — the ruled design is a spec-to-implement;
+  Q5 ruled it its own packet; 12/13 now ride 11b's extracted `ChunkerRegistry.resolve` and #10's
+  retroactivity composes with the routing sweep (my earlier same-day 12/13 folds REVISED — the
+  design supersedes them). 24 certifies the reconciler at 53k. Mount hazard → watch list.

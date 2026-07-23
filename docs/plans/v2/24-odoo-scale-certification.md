@@ -22,6 +22,18 @@ workflow resumability") is answered with receipts, not positioning.
 - **Kill-and-resume drills per stage**: kill -9 mid-chunking, mid-derivation,
   mid-embed, mid-enrich; receipt = manifest-state audit proving only in-flight files
   redo work. Repeat once with the store connection cut instead of the process.
+  **The EMBEDDING-SCHEMA RECONCILER is explicitly on this list (2026-07-22; #171's
+  design, built by packets 11a/11b):** certify at 53k scale that a reconcile retries
+  transient embed failures, resumes from per-file checkpoints (never from zero), and
+  CONVERGES with static tiers present — this packet proves it at the scale where
+  dying-from-zero costs hours and a Voyage bill (note: the operator RULED no cloud
+  cost gate — reconciles run unattended, so the resume property is the whole safety
+  story at cloud scale). Also certify the diff scoping: adding a chunker route for a
+  new extension triggers ZERO re-embeds of unaffected content (receipt = before/after
+  embed count, not an assertion). **#170's `embedding_text_sha512` is the at-scale
+  verification instrument** — sample stored embeddings against their recorded input
+  hashes instead of hand-reconstructing (the reconstruction path produced a false
+  0.98 in #167's incident).
 - **Warm-boot cost at scale**: boot with zero staleness must be near-constant, not
   tree-linear — if any eager path (graph re-derivation, fingerprint sweep, PageRank)
   scales with corpus size rather than delta, that is a DEFECT fixed in this packet.

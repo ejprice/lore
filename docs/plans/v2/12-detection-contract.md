@@ -1,5 +1,5 @@
 # 12 — Chunker detection layer · CONTRACT (operator-agreed feature, ruled 2026-07-06) (formerly PKT-04)
-size ~0.15 wu · wave L (re-waved 2026-07-14) · depends: none
+size ~0.15 wu · wave L (re-waved 2026-07-14) · depends: packet 11b recommended first (the reconciler extracts the shared `ChunkerRegistry.resolve` this contract's dispatch redesign rides)
 law: DESIGN-LAW §11 (chunkers opt-in guard), §12 · TDD skill CONTRACT phase — pauses for review
 
 ## Mission
@@ -27,9 +27,20 @@ with token/honesty trade-offs and a recommendation.
   re-dispatches unchanged files after a route change (DI's yaml needed manual reindex).
   The contract must state the retroactivity behavior (auto re-dispatch on route change,
   or an explicit announced re-chunk per DESIGN-LAW §11) — operator picks.
+- **COORDINATION with the #171 reconciler (packets 11a/11b — re-slotted 2026-07-22):**
+  the fingerprint/rebuild/provenance work (#168/#169/#170) is OWNED by the fully-ruled
+  embedding-schema reconciliation design (docs/design/2026-07-22-embedding-schema-
+  reconciliation.md), NOT by this contract. Two seams touch: (a) this contract's
+  dispatch redesign rides the **extracted shared `ChunkerRegistry.resolve`** the
+  reconciler mints (its Q4) — one resolve, never two; (b) **#10's retroactivity is
+  partially ANSWERED by the reconciler's routing sweep** (a changed route re-dispatches
+  exactly its files) — rule #10 CONSISTENTLY with that mechanism, never a second one.
 
 ## Entry check
-- `lore_findings`: #10, #11 open. Scouts on the dispatch seam BEFORE writing the
+- `lore_findings`: #10, #11 states; packets 11a/11b state (if 11b landed, the extracted
+  `ChunkerRegistry.resolve` is the dispatch seam — build on it; if not, STOP and surface
+  the ordering). Read the #171 design's Q4/§7 for the resolve/routing-sweep mechanics
+  this contract must compose with. Scouts on the dispatch seam BEFORE writing the
   contract: chunkers registry, bcba046 wiring, indexer routing (lore-first).
 - `identify` package importable in the project venv (else escalate for install
   authorization — never hand-roll the tagger; packages-over-hand-rolling law).

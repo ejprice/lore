@@ -16,10 +16,12 @@ retroactivity behavior.
 - Resolve findings #10 and #11 with receipts.
 - Re-chunk announcement flow if the #10 ruling requires it (DESIGN-LAW §11: announce
   before executing).
-
 ## Scope OUT (surface, don't build)
 - New chunkers of any kind; Odoo manifest/csv_access extensions (future Odoo extension).
-- Re-embedding policy changes.
+- Re-embedding policy, the fingerprint, the reconciler, the embed-provenance hash —
+  ALL owned by packets 11a/11b (the #171 ruled design). This build changes ROUTING
+  through the reconciler-extracted `ChunkerRegistry.resolve`; route changes flow into
+  re-dispatch via the reconciler's routing sweep, never a second mechanism.
 
 ## Entry check
 packet 12 contract tests exist and are RED; suite snapshot green otherwise; spike-surreal up.
