@@ -54,4 +54,6 @@ ALL 180 pins green (whole contract) with a passed-COUNT; `scripts/typecheck.sh` 
 ruff + `test_retry_seam.py` green; **cold REFUTE audit GRADING THE `[real]` LEG** for the consume
 path; one-concern commits at natural boundaries; **NO deploy** (03b ships the surface + deploys
 both); INDEX row + Log + ledger row done. Concurrency 20 consecutive runs — a single green run never
-clears it. On close, 03b (successor `618cd45d`) unblocks.
+clears it. On close, 03b (task `b7f89c12`) unblocks. (The transient successor `618cd45d` this line
+used to name was retired to wontfix — `supersede` DROPS `blocked_by`, so 03b was re-created with the
+dependency instead; see finding #174 and `INDEX.md`'s Log.)
