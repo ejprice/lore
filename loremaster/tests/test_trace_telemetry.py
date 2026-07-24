@@ -60,8 +60,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import gc
 import inspect
 import json
+import logging
+import weakref
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -159,6 +162,21 @@ TRACE_LATENCY_MS = "latency_ms"
 TRACE_PARAMS_HASH = "params_hash"
 
 _DIM = 2048
+
+
+def _trace_field_statement(statements: Sequence[str], field: str) -> str:
+    """The single ``DEFINE FIELD`` statement for ``field`` on the trace table.
+
+    Raises:
+        AssertionError: No (or more than one) matching statement — a schema-shape
+            failure the caller surfaces rather than silently reading an empty type.
+    """
+    prefix = f"DEFINE FIELD OVERWRITE {field} ON {TRACE_TABLE} "
+    matches = [statement for statement in statements if statement.startswith(prefix)]
+    assert len(matches) == 1, (
+        f"expected exactly ONE '{prefix}...' statement, got {len(matches)}: {matches}"
+    )
+    return matches[0]
 
 # --------------------------------------------------------------------------- #
 # Probe tools registered onto the REAL built server.
@@ -705,6 +723,26 @@ class TestTheSeamRecordsItsOwnFieldsHonestly:
             "hashed precisely so message bodies never enter the trace"
         )
 
+    async def test_a_zero_argument_call_records_a_non_empty_params_hash(
+        self, traced_server: tuple[Any, _RecordingStore]
+    ) -> None:
+        """An empty ``arguments`` dict still hashes to a real, non-empty digest.
+
+        What wrong build does this catch: WB22 — ``params_hash = ""`` (or any
+        falsy sentinel) when ``arguments`` is empty. Most lore tools that will ride
+        this seam take no arguments at the MCP boundary (``lore_index``,
+        ``lore_comms action=fleet``), so a build that special-cases the empty dict
+        collapses every one of them to a single blank digest and destroys grouping
+        for exactly the common case. ``hash({})`` is a fixed, non-empty value.
+        """
+        mcp, recorder = traced_server
+        await _call(mcp, recorder, PROBE_PLAIN)
+        params_hash = recorder.one_row_for(PROBE_PLAIN)[TRACE_PARAMS_HASH]
+        assert isinstance(params_hash, str) and params_hash, (
+            f"a zero-argument call recorded params_hash={params_hash!r}; the empty dict "
+            "must hash to a real digest, not a blank/sentinel special case"
+        )
+
 
 # =========================================================================== #
 # Section D — the request-scoped annotation channel (row H, annotation-leak leg)
@@ -943,9 +981,17 @@ class TestTheS7RungSelectionFact:
         @probe.tool(name=PROBE_OK, description="Probe: records the session object identity.")
         async def _observe(context: Context[Any, Any, Any]) -> str:
             request_context = context.request_context
+            # ⚠ MP11: hold the ServerSession OBJECT (not ``id()``), so identity is
+            # compared with ``is`` below. ``id()`` is aggressively recycled — the
+            # adversary measured 200 freed objects yielding 2 distinct ``id()``
+            # values — so an ``id()``-keyed cross-session control is exposed to a
+            # SPURIOUS pass by address reuse on the very assertion that exists to
+            # detect a per-request session. Holding the objects alive keeps the
+            # WeakKeyDictionary the production key uses from collecting them and
+            # keeps every address distinct.
             observed.append(
                 {
-                    "session_id": id(request_context.session),
+                    "session": request_context.session,
                     "request_id": request_context.request_id,
                     "header": (
                         request_context.request.headers.get("mcp-session-id")
@@ -966,7 +1012,7 @@ class TestTheS7RungSelectionFact:
         assert first["request_id"] != second["request_id"], (
             "the two same-session calls must be distinct REQUESTS, or this measures nothing"
         )
-        assert first["session_id"] == second["session_id"], (
+        assert first["session"] is second["session"], (
             "S7 DECISION RULE FIRED: the SDK now mints a ServerSession object PER REQUEST, "
             "so rung 1 (WeakKeyDictionary keyed on the session object) is INVALID — it would "
             "degenerate to a fresh key per call and every per-agent denominator would read 1. "
@@ -974,7 +1020,7 @@ class TestTheS7RungSelectionFact:
             "request_context, streamable-http only, stdio gap documented). Do NOT patch the "
             "object-keyed implementation."
         )
-        assert first["session_id"] != other_session["session_id"], (
+        assert first["session"] is not other_session["session"], (
             "CONTROL: two DIFFERENT MCP sessions shared one ServerSession object — the key "
             "would collide across agents and pool every caller into one"
         )
@@ -1045,6 +1091,110 @@ class TestTheCallerKeyAtTheSeam:
         assert all(char.isalnum() or char in "-_" for char in caller), (
             f"caller key {caller!r} leaves the safe charset; a server-minted opaque id keeps "
             "the no-injection-surface property S7 relies on"
+        )
+
+
+# The number of sequentially-created-and-FREED session objects the lifetime pin
+# churns. The adversary measured ``str(id(session))`` collapse to 17 distinct
+# keys over 400 non-overlapping sessions (383 collisions) and 2 distinct ``id()``
+# values over 200 freed objects; well past the point where address recycling is
+# certain, while a uuid4 mint is trivially 1:1. Kept modest because the seam call
+# is cheap (~0.05 ms/call measured), so the pin is not a wall-clock burden.
+_LIFETIME_SESSIONS = 400
+
+
+class TestTheCallerKeyAcrossLifetimes:
+    """WB9/WB32 — the caller key must be distinct ∀ TIME, and the map must not hoard.
+
+    ⚠ THE TWO PINS BELOW INTERLOCK AND NEITHER WORKS ALONE (design §S7 WB9
+    correction, item 2, which states the interlock so it is not dropped). The
+    contract that shipped before this wave pinned only "distinct across sessions
+    that OVERLAP in time" — and ``caller = str(id(session))`` satisfied it while
+    collapsing 400 non-overlapping sessions to 17 keys, because CPython recycles
+    ``id()`` the instant an object is freed. The needed property is "distinct ∀
+    TIME"; the needed guard is a key drawn from a source that CANNOT RECYCLE
+    (freshly-drawn process randomness / a monotonic mint), NEVER object identity
+    or a memory address.
+
+    The interlock, stated so a future reader cannot delete half of it:
+
+      * a RETAINING plain dict passes uniqueness (nothing is ever collected, so
+        ``id()`` never recycles) but FAILS retention;
+      * WEAK retention forces the churn that recycles addresses, so an
+        identity-derived key then FAILS uniqueness.
+
+    So ``str(id())``+``WeakKeyDictionary`` is caught by uniqueness; plain-``dict``
+    (with any key) is caught by retention; only ``uuid4``+``WeakKeyDictionary``
+    survives both. Either pin ALONE is escapable. The pair is not.
+    """
+
+    async def test_the_caller_key_is_unique_across_session_lifetimes(
+        self, traced_server: tuple[Any, _RecordingStore]
+    ) -> None:
+        """Uniqueness half: N sequentially-created-and-FREED sessions ⇒ N distinct keys.
+
+        What wrong build does this catch: WB9 — ``caller = str(id(session))``.
+        Each session object is minted, dispatched, then dropped, so CPython frees
+        it and the next object reuses the address. An identity-derived key
+        collapses (the adversary measured 383/400 collisions); a uuid4 mint stays
+        1:1. Crucially the sessions do NOT overlap in time — that is the exact
+        regime a long-lived server runs in and the exact regime the pre-wave
+        "distinct while coexisting" pin could not see.
+        """
+        mcp, recorder = traced_server
+        for index in range(_LIFETIME_SESSIONS):
+            session = _SessionStandIn(f"lifetime-{index}")
+            await _call(mcp, recorder, PROBE_OK, session=session)
+            del session  # free it BEFORE the next mint, so the address can recycle
+        callers = [row[TRACE_CALLER] for row in recorder.rows]
+        assert len(callers) == _LIFETIME_SESSIONS, (
+            f"expected {_LIFETIME_SESSIONS} traced calls, got {len(callers)}"
+        )
+        distinct = len(set(callers))
+        assert distinct == _LIFETIME_SESSIONS, (
+            f"{_LIFETIME_SESSIONS - distinct} caller-key COLLISIONS across "
+            f"{_LIFETIME_SESSIONS} NON-overlapping session lifetimes (only {distinct} "
+            "distinct). The key derives from a RECYCLED value (object id / memory "
+            "address); it must be freshly-drawn process randomness or a monotonic mint. "
+            "Separate agents are silently pooled into one denominator otherwise"
+        )
+
+    async def test_the_caller_key_map_does_not_retain_finished_sessions(
+        self, traced_server: tuple[Any, _RecordingStore]
+    ) -> None:
+        """Retention half: the caller map must hold the session WEAKLY.
+
+        Observed WITHOUT naming the production map, deliberately: a plain ``dict``
+        and a ``WeakKeyDictionary`` mint identical keys for a live session, so the
+        only observable difference is whether the session object stays REACHABLE
+        after the dispatch that minted its key returns. A ``weakref`` to the
+        session is the instrument — it is dead iff nothing (the map included)
+        retains a strong reference.
+
+        What wrong build does this catch: WB32 — a plain ``dict`` keyed on the
+        session object. It grows without bound across a long-lived server's whole
+        session history (the adversary measured 500 retained entries for 500
+        finished sessions). A NON-vacuity control runs first: the seam must
+        actually mint against the session, or "the object was collected" would be
+        true of a build with no caller map at all.
+        """
+        mcp, recorder = traced_server
+
+        session = _SessionStandIn("retention-probe")
+        monitor = weakref.ref(session)
+        await _call(mcp, recorder, PROBE_OK, session=session)
+        assert recorder.rows and recorder.rows[-1].get(TRACE_CALLER), (
+            "NON-VACUITY GUARD: the seam minted no caller key against this session, so "
+            "'the session was collected' below would be true of a build with no map at all"
+        )
+
+        del session
+        gc.collect()
+        assert monitor() is None, (
+            "the session object is STILL REACHABLE after the dispatch that minted its "
+            "caller key returned and every local reference was dropped — the caller map "
+            "holds it with a STRONG reference (a plain dict), so it accumulates one entry "
+            "per session for the process lifetime. The map must key sessions WEAKLY"
         )
 
 
@@ -1189,6 +1339,147 @@ class TestTelemetryNeverBreaksTheCall:
         assert await mcp.call_tool(PROBE_OK, {}) is not None, (
             "a dispatch with NO request context must still serve its result — the seam has "
             "nowhere to write, which is a reason to skip the row, never to fail the call"
+        )
+
+    async def test_a_failing_trace_write_is_logged_loudly(
+        self, traced_server: tuple[Any, _RecordingStore], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """§S6v2 item 6: "never fail silently". A swallowed write MUST be logged.
+
+        What wrong build does this catch: WB4 — ``except Exception: pass``. It
+        satisfies "a telemetry failure never fails the call" (the pins above) while
+        re-creating #147's silent zero: every trace write could be failing in
+        production and ``traces.total`` sit at 0 with not one log line to say why.
+        The posture is catch-AND-LOG, never catch-and-swallow.
+
+        A NON-VACUITY control runs first: a HEALTHY store must produce NO
+        ≥WARNING record, or "the broken store logged" could be true of a build
+        that logs on every call.
+        """
+        mcp, recorder = traced_server
+        with caplog.at_level(logging.WARNING):
+            await _call(mcp, recorder, PROBE_OK)
+        assert not [record for record in caplog.records if record.levelno >= logging.WARNING], (
+            "NON-VACUITY GUARD: a HEALTHY dispatch emitted a ≥WARNING log record, so the "
+            "broken-store leg below cannot tell a loud failure from ordinary chatter"
+        )
+
+        caplog.clear()
+        broken = _RecordingStore(fail_with=RuntimeError("the store is down"))
+        with caplog.at_level(logging.WARNING):
+            await _call(mcp, broken, PROBE_OK, app_context=SimpleNamespace(write_store=broken))
+        loud = [
+            record
+            for record in caplog.records
+            if record.levelno >= logging.WARNING and PROBE_OK in record.getMessage()
+        ]
+        assert loud, (
+            "a trace write RAISED and nothing was logged at ≥WARNING naming the tool "
+            f"({PROBE_OK!r}). Records seen: "
+            f"{[(record.levelname, record.getMessage()[:60]) for record in caplog.records]}. "
+            "A silently-swallowed telemetry failure is #147 reproduced inside its own fix"
+        )
+
+
+class TestTelemetrySurvivesCancellation:
+    """§S6v2 item 2 / MP2: "an errored pull is still a pull" — cancellation included.
+
+    A client disconnect or a request timeout CANCELS the dispatch task, raising
+    ``asyncio.CancelledError`` (a ``BaseException``, NOT an ``Exception``). That is
+    precisely the struggling-session population the decay curve is about, so its
+    row must still land. Emission therefore lives in a ``finally``, never in an
+    ``except Exception`` (which cannot see ``BaseException``) or on the success
+    path alone.
+    """
+
+    async def test_a_cancelled_dispatch_still_writes_its_row(
+        self, traced_server: tuple[Any, _RecordingStore]
+    ) -> None:
+        """What wrong build does this catch: WB30 — emission in ``except Exception``
+        plus the success path, not a ``finally``. A cancelled dispatch writes ZERO
+        rows there (``CancelledError`` escapes the ``except Exception``); a
+        ``finally`` writes ONE.
+
+        The dispatch runs as a task and is cancelled while suspended inside the
+        (sleeping) tool, so the cancellation is delivered mid-handler — the real
+        disconnect shape. ``asyncio.CancelledError`` must still propagate to the
+        awaiter (the call is NOT swallowed), AND the row must be present.
+        """
+        mcp, recorder = traced_server
+
+        async def dispatch() -> Any:
+            return await _call(mcp, recorder, PROBE_SLOW, session=_SessionStandIn("cancelled"))
+
+        task = asyncio.create_task(dispatch())
+        # Let the task reach the tool's ``await asyncio.sleep`` before cancelling,
+        # so the cancellation lands DURING the handler, not before it starts.
+        await asyncio.sleep(_SLOW_TOOL_SLEEP_S / 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Let any shield-protected finally-path write drain before asserting.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert recorder.rows_for(PROBE_SLOW), (
+            "a CANCELLED dispatch wrote no trace row. CancelledError is a BaseException, "
+            "so an emission in `except Exception` (or on the success path) misses it "
+            "entirely — the write must live in a `finally`. Client disconnects and "
+            "timeouts are exactly the sessions the decay curve must not under-count"
+        )
+
+    async def test_annotations_do_not_leak_after_a_cancelled_call(
+        self, traced_server: tuple[Any, _RecordingStore]
+    ) -> None:
+        """The annotation channel must survive cancellation without stranding state.
+
+        What wrong build does this catch: an annotation channel that is NOT
+        request-local (a module-level dict) whose cleanup rides the success/except
+        path rather than a finally. A cancelled ANNOTATING dispatch then leaves its
+        domain fields installed and stamps them onto the next unrelated call —
+        ``CancelledError`` is a ``BaseException`` and skips an ``except Exception``
+        cleanup, which is precisely the door the same-context leak pins (Exception
+        path) cannot see.
+
+        ⚠ The probe annotates and THEN sleeps, so the cancel lands AFTER the
+        annotation is contributed but BEFORE the dispatch completes — the only
+        window in which a leak can exist. (A probe that annotates-then-returns has
+        no suspension between the two, so cancel lands either before the annotation
+        or after cleanup, and the pin cannot discriminate. Mutation-proven against a
+        module-dict/except-clear build; see REPORT-contract-telemetry-03b-fix.md.)
+        """
+        mcp, recorder = traced_server
+
+        async def probe_annotate_then_slow() -> str:
+            _annotate_trace(**_PROBE_ANNOTATION)
+            await asyncio.sleep(_SLOW_TOOL_SLEEP_S)
+            return "annotated then slept"
+
+        probe_name = "probe_trace_annotate_then_slow"
+        mcp.add_tool(probe_annotate_then_slow, name=probe_name, description="Probe: annotates, then sleeps.")
+
+        async def dispatch() -> Any:
+            return await _call(mcp, recorder, probe_name, session=_SessionStandIn("cancel-leak"))
+
+        task = asyncio.create_task(dispatch())
+        # Let the dispatch ANNOTATE and enter the sleep before cancelling, so the
+        # cancellation lands with the annotation already contributed.
+        await asyncio.sleep(_SLOW_TOOL_SLEEP_S / 2)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        await _call(mcp, recorder, PROBE_PLAIN)
+        leaked = {
+            key: recorder.one_row_for(PROBE_PLAIN).get(key)
+            for key in _ANNOTATION_KEYS
+            if recorder.one_row_for(PROBE_PLAIN).get(key) is not None
+        }
+        assert not leaked, (
+            f"a cancelled ANNOTATING dispatch leaked its annotations into the next call: "
+            f"{leaked}. The channel must be request-local (a ContextVar per dispatch) and its "
+            "cleanup must ride a finally, so cancellation cannot strand it"
         )
 
 
@@ -1454,6 +1745,199 @@ class TestARealDrainWritesAnEnrichedRow:
             )
         assert row[TRACE_CALLER], "caller is seam-written on EVERY row, generic calls included"
 
+    async def test_a_drain_whose_limit_exceeds_pending_records_the_served_count(
+        self, traced_server: tuple[Any, _RecordingStore], live_trace_store: SurrealStore
+    ) -> None:
+        """``hit_count`` is the SERVED count, discriminated from the LIMIT.
+
+        ⚠ This pin is the second leg of a PAIR and is worthless without the first
+        (``test_a_drain_lands_every_enrichment_field``, ``limit < pending``).
+        Because drain forces ``served = min(pending, limit)``, served is ALWAYS
+        either ``pending`` or ``limit``, so a single drain fixture can never
+        separate all three — and the committed ``limit < pending`` fixture is
+        ARITHMETIC-ALIGNED (served ≡ limit), the exact defect the adversary proved:
+        ``hit_count = limit`` passes it. Here ``limit`` EXCEEDS ``pending``, so
+        served ≡ pending and the two readings diverge.
+
+        What wrong build does this catch: WB2 — ``hit_count = limit``. Seed
+        ``_DRAIN_SEEDED`` (5), drain with a limit of 20: served is 5, and a build
+        writing the limit records 20 — a lie on every ordinary drain whose inbox
+        is smaller than the cap, i.e. the common case packet 06's decay curve reads.
+        """
+        mcp, _recorder = traced_server
+        double = _comms_double(write_store=live_trace_store)
+        await _seed_inbox(double)
+
+        over_limit = _DRAIN_SEEDED + 15
+        await _call(
+            mcp,
+            _RecordingStore(),
+            "lore_comms",
+            {
+                "action": "drain",
+                "agent": _DRAIN_AGENT,
+                "session": _DRAIN_SESSION,
+                "limit": over_limit,
+            },
+            app_context=double,
+        )
+        rows = [row for row in await _live_rows(live_trace_store) if row[TRACE_TOOL] == "lore_comms"]
+        assert len(rows) == 1, f"expected exactly one lore_comms trace row, got {len(rows)}"
+        row = rows[0]
+        assert row[TRACE_HIT_COUNT] == _DRAIN_SEEDED, (
+            f"hit_count must be the SERVED count ({_DRAIN_SEEDED}) when limit ({over_limit}) "
+            f"exceeds pending, got {row[TRACE_HIT_COUNT]} — a build writing the LIMIT would "
+            f"read {over_limit} here while passing the limit<pending fixture"
+        )
+        assert row[TRACE_PENDING] == _DRAIN_SEEDED, (
+            f"pending must be total_pending ({_DRAIN_SEEDED}), got {row[TRACE_PENDING]}"
+        )
+
+
+class TestCommsActionsAnnotateIdentity:
+    """MP4 / MP9 — every comms row carries ``agent``; ``session`` is a DECLARED fact.
+
+    §S7 item 2: "every comms row carries BOTH caller (seam) and agent
+    (annotation), so caller↔agent binding falls out of the data … the register-
+    first spawn protocol means a fleet agent's FIRST lore call binds its key." So
+    the identity annotation is NOT drain-only — it must ride register, heartbeat,
+    and every other registration-bearing action, or an agent that registers and
+    then makes only generic calls is permanently unattributable.
+
+    §S8 MP9 rules ``trace.session`` an EXPLICIT-FACT column: "what the CALL
+    DECLARED, never what the server inferred; populated iff the call itself carried
+    the fleet session; NONE means the call declared nothing." The resolved agent's
+    stored session is an INFERENCE — it must not be laundered into this column.
+    """
+
+    async def test_a_heartbeat_records_the_resolved_agent_and_declared_session(
+        self, traced_server: tuple[Any, _RecordingStore], live_trace_store: SurrealStore
+    ) -> None:
+        """A NON-drain action (heartbeat) carries the resolved agent + declared session.
+
+        What wrong build does this catch: WB1 — a drain-ONLY annotator. Then every
+        register/heartbeat/fleet row carries ``agent=None``, §S7 item 2's join is
+        broken, and only agents that happen to drain are ever attributable.
+        """
+        mcp, _recorder = traced_server
+        double = _comms_double(write_store=live_trace_store)
+        agent_id = FakeAgentRegistry._agent_id(_DRAIN_SESSION, _DRAIN_AGENT)  # noqa: SLF001
+        # Register OUT of band (direct call, no seam) so exactly ONE lore_comms row
+        # — the heartbeat under test — reaches the live store.
+        await double.comms(action="register", agent=_DRAIN_AGENT, session=_DRAIN_SESSION, role="builder")
+
+        await _call(
+            mcp,
+            _RecordingStore(),
+            "lore_comms",
+            {"action": "heartbeat", "agent": _DRAIN_AGENT, "session": _DRAIN_SESSION},
+            app_context=double,
+        )
+        rows = [row for row in await _live_rows(live_trace_store) if row[TRACE_TOOL] == "lore_comms"]
+        assert len(rows) == 1, f"expected one heartbeat trace row, got {len(rows)}"
+        row = rows[0]
+        assert row[TRACE_AGENT] == agent_id, (
+            f"a heartbeat recorded agent={row[TRACE_AGENT]!r}, not the resolved RecordID "
+            f"{agent_id!r}. Identity annotation is not drain-only (§S7 item 2) — a drain-only "
+            "annotator leaves every heartbeat unattributable"
+        )
+        assert row[TRACE_SESSION] == _DRAIN_SESSION, (
+            f"a heartbeat that DECLARED session={_DRAIN_SESSION!r} recorded "
+            f"{row[TRACE_SESSION]!r}"
+        )
+        assert row[TRACE_CALLER], "every comms row also carries the seam's caller key (§S7 item 2)"
+
+    async def test_a_register_records_the_resolved_agent_and_declared_session(
+        self, traced_server: tuple[Any, _RecordingStore], live_trace_store: SurrealStore
+    ) -> None:
+        """Register — the FIRST lore call — must bind the key too (§S7 item 2).
+
+        ⚠ This obligates the builder to annotate the REGISTER path specifically:
+        register creates the agent inside its handler and does not ride the
+        dispatcher's touch→annotate branch, so a build that annotates only on the
+        touch path (the natural delta-row-G shape) leaves the register row with
+        ``agent=None`` — and an agent that registers, then only makes generic
+        calls, never binds its caller key to its identity. Escalated in
+        ``REPORT-contract-telemetry-03b-fix.md``.
+        """
+        mcp, _recorder = traced_server
+        double = _comms_double(write_store=live_trace_store)
+        agent_id = FakeAgentRegistry._agent_id(_DRAIN_SESSION, "newcomer")  # noqa: SLF001
+
+        await _call(
+            mcp,
+            _RecordingStore(),
+            "lore_comms",
+            {"action": "register", "agent": "newcomer", "session": _DRAIN_SESSION, "role": "builder"},
+            app_context=double,
+        )
+        rows = [row for row in await _live_rows(live_trace_store) if row[TRACE_TOOL] == "lore_comms"]
+        assert len(rows) == 1, f"expected one register trace row, got {len(rows)}"
+        row = rows[0]
+        assert row[TRACE_AGENT] == agent_id, (
+            f"the REGISTER row recorded agent={row[TRACE_AGENT]!r}, not the newly-minted "
+            f"RecordID {agent_id!r}. §S7 item 2's 'the FIRST lore call binds its key' requires "
+            "the register path to annotate the agent it just created"
+        )
+        assert row[TRACE_SESSION] == _DRAIN_SESSION, (
+            f"register DECLARED session={_DRAIN_SESSION!r} (it is required) but recorded "
+            f"{row[TRACE_SESSION]!r}"
+        )
+
+    async def test_trace_session_records_only_what_the_call_declared(
+        self, traced_server: tuple[Any, _RecordingStore], live_trace_store: SurrealStore
+    ) -> None:
+        """§S8 MP9: an OMITTED ``session=`` records NONE, even though the agent has one.
+
+        What wrong build does this catch: one that annotates the RESOLVED agent's
+        stored session (``agent_row.session``) — the adversary's "control" reading,
+        which the operator OVERRULED. A heartbeat resolved by bare name still has a
+        stored fleet session, but the CALL declared nothing, so the column must be
+        NONE. The two legs run in one live store and are read by ``seq`` order; the
+        WITH-session leg is the positive control that proves the annotator can write
+        a session at all (so the NONE leg is not vacuously green).
+        """
+        mcp, _recorder = traced_server
+        double = _comms_double(write_store=live_trace_store)
+        await double.comms(action="register", agent=_DRAIN_AGENT, session=_DRAIN_SESSION, role="builder")
+
+        # Leg 1 (control): the call DECLARES the session.
+        await _call(
+            mcp,
+            _RecordingStore(),
+            "lore_comms",
+            {"action": "heartbeat", "agent": _DRAIN_AGENT, "session": _DRAIN_SESSION},
+            app_context=double,
+        )
+        # Leg 2: the call OMITS session= (agent resolved by bare name); the server
+        # KNOWS the session but the CALL declared none.
+        await _call(
+            mcp,
+            _RecordingStore(),
+            "lore_comms",
+            {"action": "heartbeat", "agent": _DRAIN_AGENT},
+            app_context=double,
+        )
+        rows = [row for row in await _live_rows(live_trace_store) if row[TRACE_TOOL] == "lore_comms"]
+        assert len(rows) == 2, f"expected two heartbeat trace rows, got {len(rows)}"
+        declared, omitted = rows  # _live_rows orders by seq
+        assert declared[TRACE_SESSION] == _DRAIN_SESSION, (
+            "POSITIVE CONTROL: a heartbeat that DECLARED a session recorded "
+            f"{declared[TRACE_SESSION]!r}, not {_DRAIN_SESSION!r} — the annotator cannot write "
+            "a session at all, so the NONE leg below proves nothing"
+        )
+        assert omitted[TRACE_SESSION] is None, (
+            f"a heartbeat that OMITTED session= recorded session={omitted[TRACE_SESSION]!r}; "
+            "trace.session is a DECLARED-fact column (§S8 MP9) — the resolved agent's stored "
+            "session is an INFERENCE and must not be laundered into it. NONE means the call "
+            "declared nothing"
+        )
+        # Both still carry the agent — identity is NOT gated on a declared session.
+        assert omitted[TRACE_AGENT] and declared[TRACE_AGENT], (
+            "a heartbeat that omitted session= dropped its agent annotation too; agent is "
+            "always the resolved identity, independent of whether session was declared"
+        )
+
 
 # =========================================================================== #
 # Section H — ``seq`` is minted STORE-SIDE by one global native sequence
@@ -1631,16 +2115,28 @@ class TestTheTraceSchemaDelta:
         long-lived deployment is a DIRTY store. So: apply the OLD trace DDL, DIRTY
         it with a row that is legal only under the old world, then apply the
         PRODUCTION emitter's DDL and demand (a) the loosening actually landed and
-        (b) the pre-existing row survived.
+        (b) the pre-existing row survived — then SURFACE the dirty-store
+        consequence loudly: (c) the pre-``seq`` row is UPDATE-POISONED and (d) new
+        writes must MINT.
 
-        ⚠ KNOWN BOUND, recorded rather than closed: ``seq`` ships NON-``option``
-        (§S6v2 item 5), so an existing row that predates it is left WRITE-POISONED
-        per store reference §1.4 — readable, but rejected on any future UPDATE.
-        That is acceptable here for a reason with a receipt, not by assumption:
-        trace rows are append-only (``record_trace``'s docstring: "a trace is an
+        ⚠ KNOWN BOUND, now ASSERTED rather than merely recorded (§S8 E3 REVISITED):
+        ``seq`` ships NON-``option`` (§S6v2 item 5), so an existing row that
+        predates it is left WRITE-POISONED per store reference §1.4 — readable
+        (``seq`` reads back ``None`` per §2's silent-None projection, so packet 06
+        treats ``seq is None`` as "pre-03b row"), but REJECTED on any future UPDATE.
+        That is accepted here for a reason with a receipt, not by assumption: trace
+        rows are append-only (``record_trace``'s docstring: "a trace is an
         append-only event, never keyed/deduped") and production holds ZERO of them
-        (scout-probed :18500, 2026-07-24). Re-open trigger: the day anything
-        UPDATEs a trace row, or any store carries pre-03b trace rows.
+        (scout-probed :18500, 2026-07-24). Re-open trigger: the day anything UPDATEs
+        a trace row, or any store carries pre-03b trace rows.
+
+        WHY ASSERT (c)/(d) AND NOT SIMPLY LOOSEN ``seq`` TO ``option<int>``: a
+        migration pin that surfaces its dirty-store consequence LOUDLY is the pin
+        doing its job. ``option<int>`` would GREEN this pin by making the schema
+        SILENT — seq-less rows admissible forever from any writer — so the flagship
+        invariant would be certifying a hole as health. (c) and (d) are exactly the
+        assertions ``option<int>`` cannot satisfy: under it the poisoned UPDATE and
+        the seq-less CREATE both SUCCEED, turning this pin RED.
         """
         import loremaster.store.surreal_schema as schema_module
 
@@ -1703,6 +2199,46 @@ class TestTheTraceSchemaDelta:
                 "the pre-existing row did not survive the migration; §1.4 says old rows are "
                 "left intact and readable — anything else is data loss"
             )
+            # ...and its ``seq`` reads back NONE (the §2 silent-None projection): the
+            # read side of the bound, which neither `int` nor `option` changes.
+            assert legacy[0][TRACE_SEQ] is None, (
+                f"the pre-03b row read back seq={legacy[0][TRACE_SEQ]!r}; a TYPE int field "
+                "does NOT retro-fill an existing row (§1.4), so packet 06 must treat "
+                "seq is None as a pre-03b marker"
+            )
+
+            # (c) The pre-``seq`` row is UPDATE-POISONED (§1.4): the whole record is
+            #     re-validated on write, and its missing ``seq`` is now illegal. This is
+            #     the accepted, append-only-shielded bound — asserted, so ``option<int>``
+            #     (which would make the UPDATE succeed) turns this pin RED.
+            with pytest.raises(Exception) as poison:  # noqa: B017 - the store layer is bypassed; raw engine error
+                await run(connection, f"UPDATE {TRACE_TABLE}:legacy SET {TRACE_LATENCY_MS} = 99.0")
+            assert TRACE_SEQ in str(poison.value), (
+                "an UPDATE of the pre-03b row must be REJECTED naming the missing seq "
+                f"(§1.4 write-poisoning); got: {str(poison.value)!r}. If seq were option<int> "
+                "this UPDATE would silently succeed — the bound would be gone and unpinned"
+            )
+
+            # (d) NEW writes must MINT: a raw CREATE that omits seq is rejected. This is
+            #     ground 3 of E3 — the schema guards the TABLE, every writer, present and
+            #     future, not just the paths a presence-pin happens to drive.
+            with pytest.raises(Exception) as unminted:  # noqa: B017 - raw engine coercion error
+                await run(
+                    connection,
+                    f"CREATE {TRACE_TABLE}:unminted CONTENT $content",
+                    {
+                        "content": {
+                            TRACE_TOOL: "lore_read",
+                            TRACE_PARAMS_HASH: "f" * 8,
+                            TRACE_LATENCY_MS: 4.0,
+                            TRACE_CALLER: "c-unminted",
+                        }
+                    },
+                )
+            assert TRACE_SEQ in str(unminted.value), (
+                "a new trace write that OMITS the seq mint must be REJECTED naming seq — the "
+                f"standing guard E3 buys over option<int>; got: {str(unminted.value)!r}"
+            )
         finally:
             await connection.close()
             await drop_database(env)
@@ -1741,6 +2277,87 @@ class TestTheTraceSchemaDelta:
         assert "BATCH" not in joined and "START" not in joined, (
             "the sequence must carry neither BATCH nor START — a changed one never migrates "
             "onto an existing store (#146), so setting either creates a permanent divergence"
+        )
+
+    def test_seq_is_typed_int_not_option(self) -> None:
+        """MP1 / §S8 E3: ``seq`` ships ``TYPE int``, NEVER ``option<int>`` — mutation-proven.
+
+        THE HIGHEST-VALUE PIN OF THIS WAVE, because it closes a five-test
+        INCENTIVE. The adversary measured that flipping ``seq`` to ``option<int>``
+        costs a green-chasing builder only 2 committed REDs while ``int`` costs 7 —
+        and E3's ground 3 ("``int`` buys a STANDING mechanical guard ``option<>``
+        cannot … Instrument over hope") was, until this pin, PURE HOPE: the schema
+        is code a builder can edit, so it could not be its own guard. With this pin
+        the flip is 1-RED-IMMEDIATELY, in the contract that owns the ruling, and the
+        asymmetry is dead.
+
+        This is the OFFLINE, string-level half (no server). The live consequences —
+        a seq-less write REJECTED, a pre-03b row UPDATE-poisoned — are asserted by
+        ``test_the_new_columns_land_on_an_ALREADY_EXISTING_trace_table`` (c)/(d).
+        """
+        import loremaster.store.surreal_schema as schema_module
+
+        seq_statement = _trace_field_statement(schema_module._trace_statements(), TRACE_SEQ)  # noqa: SLF001
+        assert "TYPE int" in seq_statement, (
+            f"the seq field must be TYPE int (§S8 E3), got: {seq_statement!r}"
+        )
+        assert "option" not in seq_statement, (
+            f"seq is TYPE int, NOT option<int> ({seq_statement!r}). option<int> would GREEN "
+            "the schema silently — seq-less rows admissible forever from any writer — undoing "
+            "E3's standing guard and re-opening #147's own shape. This flip is the wrong build "
+            "the adversary measured surviving at 41/41; here it is 1-RED-immediately"
+        )
+
+    def test_the_new_columns_and_index_are_typed_and_named(self) -> None:
+        """MP7: every row-F column carries its ruled type; the index names BOTH fields.
+
+        What wrong builds does this catch: WB5 — ``token_cost``/``model`` deleted
+        from the specs (they are RULED KEPT, unwired, §S6v2 item 5); WB6 — the
+        ``(caller, seq)`` index declared on the wrong field(s). Both currently pass
+        a bare substring check; here the type of every new column is pinned and the
+        index is asserted to name ``caller`` THEN ``seq``, in order.
+        """
+        import loremaster.store.surreal_schema as schema_module
+
+        statements = schema_module._trace_statements()  # noqa: SLF001
+        expected_types = {
+            TRACE_CALLER: "option<string>",
+            TRACE_SEQ: "int",
+            TRACE_AGENT: "option<string>",
+            TRACE_PENDING: "option<int>",
+            TRACE_PEEKED: "option<bool>",
+            TRACE_HIT_COUNT: "option<int>",
+            TRACE_SESSION: "option<string>",
+            # RULED KEPT (unwired, zero writers by design — §S6v2 item 5). Their
+            # deletion is WB5, which no other pin in this file catches.
+            "token_cost": "option<int>",
+            "model": "option<string>",
+        }
+        for field, type_expr in expected_types.items():
+            statement = _trace_field_statement(statements, field)
+            assert f"TYPE {type_expr}" in statement, (
+                f"field {field!r} must be TYPE {type_expr} (delta row F), got: {statement!r}"
+            )
+
+        index_statement = next(
+            (s for s in statements if "trace_caller_seq" in s and s.startswith("DEFINE INDEX")),
+            None,
+        )
+        assert index_statement is not None, (
+            f"the (caller, seq) index is not declared as a DEFINE INDEX: {statements}"
+        )
+        # ⚠ Check the FIELDS CLAUSE, never the whole statement: the index NAME
+        # ``trace_caller_seq`` itself contains the substrings "caller" and "seq", so
+        # a ``find()`` over the whole statement is a FALSE GATE — an index on
+        # FIELDS ``tool`` (WB6) passes it. Split off the fields list and read there.
+        assert " FIELDS " in index_statement, f"index has no FIELDS clause: {index_statement!r}"
+        fields_clause = index_statement.split(" FIELDS ", 1)[1]
+        caller_at = fields_clause.find(TRACE_CALLER)
+        seq_at = fields_clause.rfind(TRACE_SEQ)
+        assert 0 <= caller_at < seq_at, (
+            f"the trace_caller_seq index must be on FIELDS caller, seq in that order — packet "
+            f"06's per-caller ordered reads depend on it; got FIELDS {fields_clause!r}. An index "
+            "on (tool) or (seq, caller) passes a bare name-presence check but not this one"
         )
 
 
