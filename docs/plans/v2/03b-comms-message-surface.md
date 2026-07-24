@@ -23,7 +23,12 @@ The operator: all prior operator rulings from the struck session are RELITIGABLE
 lead; **the ONE fixed requirement is the CONSUMER LAW — the clients of 03b are Sonnet 5 /
 Opus / Fable agents, not humans.** The client battery is therefore the packet's ACCEPTANCE
 AUTHORITY: any conflict between a pinned shape and what the measured client needs resolves
-toward the client. Lead rulings under the grant, 2026-07-24:
+toward the client. **THE ACCEPTANCE CRITERION IS TRUST (operator doctrine, 2026-07-24,
+saved to lore memory):** agents that distrust the MCP route around it, taxing every future
+session — so the battery grades whether the surface EARNS TRUST (honest counts, loud
+failures, teaching that matches behavior, no over-claiming render), and every
+rigor-vs-speed trade in this packet resolves toward rigor. Lead rulings under the grant,
+2026-07-24:
 - **FK-1…FK-9 RULED as the adjudication recommends** (DIFF-adjudication-03b §6). The four
   committed-pin amendment forks (FK-1 fence · FK-2 marker promotion · FK-3 telemetry
   collateral pair · FK-4 ledger casts) land strengthen-only + mutation-proven +
