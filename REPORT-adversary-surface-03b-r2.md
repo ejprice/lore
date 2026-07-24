@@ -680,3 +680,392 @@ cheap — each is one fixture-shaped function, expensive only to think of.
 
 *Report written 2026-07-24 against HEAD `03b93d3`. Every claim above is dated to that commit; nothing
 here should be read as current after the contract changes.*
+
+---
+---
+
+# RE-GRADE (2026-07-24, second pass)
+
+**Re-graded at:** repo `feat/surreal-unification` HEAD `7668a84` (`test(03b): surface fix wave —
+unsatisfiability fixed both-directions, 15 missing pins closed`), after `f537051` (B3.2 ruled
+Reading A) and `bb8d106` (this report committed).
+**Delta graded:** `git diff 03b93d3..HEAD` over `test_comms_tool.py` (+889) and
+`test_comms_promise_registry.py` (+144); the other three graded files are unchanged (md5-verified
+against the repo).
+**Same scratch root, same battery.** Provenance re-asserted on every run:
+`loremaster.__file__ = /home/ejprice/scratch/adv-surface-03b-r2/loremaster/loremaster/__init__.py`.
+Repo untouched except this report (`git status --short` → empty).
+
+## RE-GRADE SUMMARY BLOCK
+
+- **VERDICT: CONTRACT INSUFFICIENT — narrowly.** One CRITICAL missing pin with a proven
+  perturbation pair, one MAJOR, one escalated ruling ambiguity. This is a different order of
+  magnitude from the first pass: **6 blockers → 0**.
+- **SATISFIABILITY: FIXED, and PROVEN on my reference — `1197 passed / 0 failed / 14 skipped`,
+  ruff clean *after* the orphaned-variable cleanup the lint demanded, `./scripts/typecheck.sh`
+  0 errors / 149 files.** All three RED-on-correct pin defects (§3.B3/§3.B4) are gone.
+- **P1 RESULT: 10 of the 11 previous survivors now DIE to named pins** — each verified
+  individually (§R2). The 11th (WB16) is the ruling ambiguity, not a defect.
+- **2 NEW SURVIVORS, both found this pass:**
+  - **WB39 (CRITICAL)** — the drain serves only the **'project'** half of the skew block; the
+    **subscribed-NAME half (#103) is unpinned**. All four FK-6 pins key on the standing brief.
+    `brief_publish`'s tail-3 literal — *"ackers see it at next heartbeat **or drain** — unbriefed
+    agents only via brief_get name='{name}'"* — is about exactly the NON-standing case, so this
+    is §3.B1's own defect, one brief-name over. P2 pair proven (§R5).
+  - **WB40 (MAJOR)** — the verbatim-sentence pin is an **INCLUSION** check. Serving all seven
+    ruled sentences AND appending a contradicting paragraph passes **1197/1197**.
+- **ALL 24 previously-caught builds still caught**, most with *more* pins than before (§R4).
+- **New MP obligations executed: 5 of 5 reproduce — but MP-D5's "and the identical-line pin"
+  is an OVER-CLAIM** (only the structural one-emitting-function pin fires; an output-identical
+  clone is invisible to the line comparison). §R6.
+- **RED honesty: 290F / 907P reproduced exactly; ZERO collection/import errors**; all reasons
+  classified to absent symbols/claims (§R7).
+- **Author self-corrections (F.5/F.6) independently confirmed** — including that MP-FK2 arm 2
+  was vacuous and MP-B12's exclusivity clause was an over-claim, both of which I had reported.
+
+---
+
+## R1 — Satisfiability, and how it was reached (the C-DEF leg)
+
+The **frozen** contract-blind reference, run unchanged against the fixed contract, went
+`11 failed / 1186 passed` — and **none of the 11 was one of the three pin defects.** All three
+are fixed:
+
+| pin defect (first pass) | status |
+|---|---|
+| `TestDrainBodiesAreFENCED::test_the_header_count_is_UNAFFECTED_by_a_hostile_body` | **FIXED** — and see the both-direction proof below |
+| `TestNoMarkerIsCrossSatisfiedByAnotherProof::test_no_marker_is_cross_satisfied` | **FIXED** |
+| `TestMarkerCrossSatisfactionBound::test_KNOWN_BOUND_a_k_specific_prefix_weakening_is_not_caught` | **FIXED** |
+
+The 11 were the *new* teaching pins demanding the ruled sentences verbatim (my reference carried
+my own wording) plus the new refs-remainder pin. Converging the reference onto the ruled wording
+left **2**, both my own shape:
+
+```
+FAILED …TestEveryCommsSafeStrLiteralIsClassified::test_every_comms_safe_str_literal_is_classified
+E   _render_comms_drain:5521: '{} +{} more'
+FAILED …TestTheCanonicaliserDeniesByDefault::test_the_precise_argument_rule_has_ZERO_false_positives
+```
+
+**This is worth recording because it nearly became a fourth C-DEF.** The new refs pin demands
+`f"+{over - _COVERAGE_NAMES_CAP} more"` in the render, and I enumerated the mechanisms:
+`safe_str(f"… +{n} more")` → unclassified · `render_join` with a `"+{} more"` part → unclassified ·
+a new `render_line("+{more} more refs")` → unclassified · a `" +"` separator → unclassified.
+**Nothing in `_SAFE_STR_PROMISE_FREE` or `_PROMISE_FREE` names a refs remainder.** The contract is
+satisfiable only via one pre-existing template — `"+{more} more beyond the display cap ({cap})"`
+rendered as its own line. That works:
+
+```
+$ uv run pytest -n auto -q <the five graded files>
+1197 passed, 14 skipped in 37.67s
+$ uv run ruff check loremaster/loremaster/server.py loremaster/loremaster/config.py
+All checks passed!
+$ ./scripts/typecheck.sh
+Success: no issues found in 149 source files ; typecheck: loremaster OK
+```
+
+**POST-LINT LEG, executed:** that shape left `refs_over` assigned-but-unused, and ruff
+`F841` failed it. Deleting the orphan is the "still satisfiable AFTER the cleanups the lint
+demands" leg — done, and the run above is post-cleanup.
+
+**RESIDUAL (MAJOR, §R8.1):** the refs-remainder shape is *forced* and *undescribed*. A builder
+who reaches for the obvious `safe_str(f"… +{n} more")` is reddened by an instrument that gives no
+hint the answer is a display-cap template from another render family. Frozen reference:
+`94af2bd44bd4a8fe296128fd97b2c934  server.py`.
+
+**Both-direction proof of the §3.B3 fix, at MY reference (the author could only prove it at helper
+level):** the pin now discriminates in the direction it always should have —
+
+| build | `test_the_header_count_is_UNAFFECTED_by_a_hostile_body` |
+|---|---|
+| correct (fenced, committed row template) | **PASSES** (was RED) |
+| **MP-FK1a** — body inline + `sanitise_line`d | **RED** (was GREEN) — inside a 6-RED set |
+| **MP-FK1b** — body sanitised, not fenced | **RED** (was GREEN) — inside a 5-RED set |
+| **WB24** — no row header at all | **RED**, inside a **12**-RED set (was 10) |
+| **WB35** — row header indented | **RED**, inside a 5-RED set (was 4) |
+
+The inversion is gone in both directions, on the four builds that measured it.
+
+---
+
+## R2 — The 11 previous survivors, verified one by one
+
+| build | first pass | re-grade | the pin that now kills it |
+|---|---|---|---|
+| **WB1** — drain never serves the skew block | SURVIVED | **DIES, 3 RED** | `TestDrainServesTheSharedBriefSkewBlock::test_a_drain_serves_the_brief_skew_catch_up_line` · `…test_the_SAME_agent_gets_the_SAME_line_from_heartbeat` · `…test_a_drain_FAILS_LOUD_when_the_brief_ledger_is_down` |
+| **WB18** — private skew clone (D5) | SURVIVED | **DIES, 1 RED** | `TestEveryPromiseLiteralHasExactlyONEEmittingFunction::test_no_promise_literal_is_emitted_from_two_functions` |
+| **WB8** — recipient resolution unscoped | SURVIVED | **DIES, 1 RED** | `TestAnExplicitRecipientResolvesInTheCALLERSSessionOnly::test_a_send_never_crosses_into_another_sessions_row` |
+| **WB25** — send never caps | SURVIVED | **DIES, 1 RED** | `TestTheSendReceiptCapsAndCountsHonestly::test_an_over_cap_recipient_list_shows_the_cap_and_counts_the_REMAINDER` |
+| **WB26** — private cap of 3 (#102 door) | SURVIVED | **DIES, 1 RED** | same pin |
+| **WB29** — capped-recipient template unreachable | SURVIVED | **DIES, 1 RED** | same pin |
+| **WB27** — broadcast count from a window | SURVIVED | **DIES, 1 RED** | `…test_a_broadcast_receipt_counts_the_WHOLE_delivered_set` |
+| **WB28** — refs uncapped | SURVIVED | **DIES, 1 RED** | `TestTheDrainRefsCellIsCappedAndCounted::test_an_over_cap_refs_list_is_capped_and_counted` |
+| **WB30** — `set_status` + `peek` descriptions inverted | SURVIVED | **DIES, 2 RED** | `…test_set_status_teaches_that_it_does_NOT_write_the_status_row` · `…test_peek_teaches_the_RE_SERVE_consequence` |
+| **WB31b** — instructions fully inverted | SURVIVED | **DIES, 8 RED** | 7× `test_every_ruled_clause_is_taught_VERBATIM` + `test_no_clause_is_served_in_its_INVERTED_form` |
+| **WB33** — acked ↔ already_acked swapped | SURVIVED | **DIES, 3 RED** | `TestEachRequestedSeqLandsInTheLineItsOwnOutcomeNames` ×2 + `…test_the_receipt_COUNTS_come_from_the_RESULT_not_from_len_entries` |
+| **WB16** — ack render dedupes + re-sorts | SURVIVED | **STILL SURVIVES (0 new)** | none — the escalated ruling ambiguity, §R8.3 |
+
+**11 of 12 rows closed** (WB16 was never scored a defect). Every "DIES" above is a
+`comm -13` against a **0-failure** reference baseline, so the counts are exact, not relative.
+
+---
+
+## R3 — The 2 NEW survivors
+
+### R3.1 — WB39 (CRITICAL): the drain serves only HALF the skew block
+
+```
+$ REFBUILD/wb.sh WB39_skew_only_when_behind_project …
+WB39: the shared skew block drops the subscribed-name half
+1197 passed, 14 skipped in 16.34s
+--- NEW failures caused by this mutation (EMPTY == the contract is BLIND):
+--- count: 0
+```
+
+**Mechanism.** The skew block has three parts: (a) the `'project'` catch-up line, (b) up to
+`_HEARTBEAT_SKEW_NAMES_CAP` subscribed-NAME lines (#103), (c) the collapsed
+`behind on {k} more briefs` remainder. **All four `TestDrainServesTheSharedBriefSkewBlock` pins
+assert on `"you have not acked brief 'project'"` only**, and
+`test_the_SAME_agent_gets_the_SAME_line_from_heartbeat` compares exactly that ONE line via
+`_line_containing`. Its fixture, `_fleet_with_a_published_brief()`, publishes only `'project'` —
+no agent subscribes to a non-standing brief. So a drain that serves (a) and drops (b)+(c) passes.
+
+**Why this is the same defect the wave was fixing, not a nicety.** `_render_comms_brief_publish`'s
+tail-3 literal is *specifically* the non-standing case, and E-S5(c) put `"or drain"` in it:
+
+> `"skew (session {session}): … ; ackers see it at next heartbeat or drain — unbriefed agents only via brief_get name='{name}'"`
+
+Under WB39 that sentence is false for **every** non-`'project'` brief — a served teach naming a
+verb that does not do the thing, which is verbatim §3.B1's charge. The wave closed the standing-brief
+half and left the half its own amended literal is about.
+
+**P2 pair (§R5) proves the pin is writable and discriminating.**
+
+### R3.2 — WB40 (MAJOR): the sentence pin is an INCLUSION check
+
+```
+$ REFBUILD/wb.sh WB40_contradiction_appended …
+WB40: ruled sentences kept, a contradicting paragraph appended
+1197 passed, 14 skipped
+--- count: 0
+```
+
+Served text (all seven ruled sentences present, verbatim, then):
+
+> *"In practice these are guidelines rather than requirements: acking is optional, the body cap is
+> not enforced, draining is unnecessary because the fleet notifies you, and posting a note to
+> yourself on the thread is enough to close out a question."*
+
+`_assert_teaches` checks presence; `_assert_never_claims` denylists the eleven phrases **I served
+last pass**. Nothing pins that the comms paragraph contains *only* the ruled sentences.
+
+**I want to be fair about the threat model** (repo law: a gate needs one). The primary attack —
+*replacing* the teaching with its inverse — is now dead, and that was the measured one. This
+residual is the honest-developer drift case: a packet-04 author "softening" a clause, or adding a
+carve-out sentence. It is also the repo's own named losing shape: **the denylist enumerates the
+FORBIDDEN.** The safe set here is small and enumerable — the ruled sentences themselves — so the
+fix is an exact-block pin, not a longer denylist (§R6 missing pin RG2).
+
+---
+
+## R4 — Regression sweep: all 24 previously-caught builds
+
+Counts are new-failures against the **0-failure** reference.
+
+| build | first pass | re-grade | | build | first pass | re-grade |
+|---|---|---|---|---|---|---|
+| WB2a send no-op | 2 | **6** | | WB15 header total = window | 4 | **4** |
+| WB2b drain no-op | 7 | **11** | | WB17 note unconditional | 1 | **1** |
+| WB2c ack no-op | 3 | **3** | | WB19 question by grade | 1 | **2** |
+| WB3 elision `shown+more` | 2 | **3** | | WB20 re-serve by `stamped_seqs` | 5 | **5** |
+| WB4 hardcoded `"wave7"` | 1 | **1** | | WB21 peek renders trailer | 2 | **2** |
+| WB5 trailer grade-only | 2 | **2** | | WB22 late `set_status` | 1 | **1** |
+| WB6 trailer gate-vs-list | 2 | **2** | | WB23 no ack teach | 2 | **2** |
+| WB7 broadcast crosses sessions | 4 | **4** | | WB24 no row header | 10 | **12** |
+| WB9 retired accepted | 2 | **3** | | WB32 ack counts swapped | 1 | **3** |
+| WB10 `set_status` open | 5 | **5** | | WB34 unknown↔not_addressed | 1 | **3** |
+| WB11 no recipient charset | 3 | **4** | | WB35 indented row | 4 | **5** |
+| WB12 hardcoded drain limit | 2 | **2** | | MP-FK1a inline body | 5 | **6** |
+| WB13 fleet cap for drain | 1 | **1** | | MP-FK1b sanitised body | 4 | **5** |
+| | | | | MP-FK2a fleet `more=total` | 6 | **6** |
+
+**Zero regressions; 13 of 27 strengthened.** No previously-caught build slipped through.
+
+**New builds invented this pass, all caught:**
+
+| build | count | pin |
+|---|---|---|
+| **WB16b** — a duplicate seq reports only its FIRST fate (a real R1 violation; the CONTROL for WB16) | 1 | `test_a_NON_ADJACENT_duplicate_seq_reports_in_BOTH_groups` |
+| **WB37** — refs use a PRIVATE cap of 3 | 1 | `TestTheDrainRefsCellIsCappedAndCounted` |
+| **WB38** — the COSMETIC fix: a skew block rendered for a *bogus agent id* | 1 | `test_a_CURRENT_agent_gets_no_skew_block_from_drain` (the emit/no-emit control) |
+| **MP-B5c** — the brief-ledger failure SWALLOWED, messages served without skew | 1 | `test_a_drain_FAILS_LOUD_when_the_brief_ledger_is_down` |
+
+WB16b is the P0 control for WB16: it proves my ack-mutation family **can** fire, so WB16's survival
+is a scope question, not a blind probe.
+
+---
+
+## R5 — P2 perturbation of the new load-bearing fixture, with its control
+
+`_fleet_with_a_published_brief()` is the fix wave's new load-bearing fixture and it is a
+**brief-name monoculture** (`'project'` only). The perturbation is the same family with a
+NON-standing subscription (`fixer-b` acks `wave9` v1 by publishing it; `lead` bumps head to v2):
+
+| leg | result |
+|---|---|
+| **A — CONTROL, correct reference** | **2 passed** (the drain leg AND the heartbeat control leg) |
+| **B — WB39** (subscribed half dropped at drain) | **RED** on the drain leg; the heartbeat leg still passes — exactly the half-a-block signature |
+| **C — WB1** (no skew at drain at all) | **RED** on the drain leg |
+
+Both legs green on the correct build, red on both wrong builds, and the heartbeat control isolates
+*which* half is missing. **The pin is writable today** — the fixture is ~10 lines on top of
+`_03b_fleet()`.
+
+---
+
+## R6 — P4: the fix wave's own claims, verified
+
+| claim | my measurement | verdict |
+|---|---|---|
+| **MP-FK6** — WB1 ⇒ `TestDrainServesTheSharedBriefSkewBlock` (≥3 legs) | 3 RED, exactly that class | **CONFIRMED** |
+| **MP-D5** — WB18 ⇒ the ONE-emitting-function pin **"and the identical-line pin"** | **1 RED only — the structural pin.** `test_the_SAME_agent_gets_the_SAME_line_from_heartbeat` does NOT fire | **OVER-CLAIM.** My clone emits byte-identical text, so a line comparison cannot see it. The structural pin is the SOLE guard for D5 — worth knowing, because it is an AST pin over *which function* emits a literal, and it would not survive a refactor that keeps one emitting function but diverges the reads beneath it |
+| **MP-B5c** — swallow the brief-ledger failure ⇒ the fail-loud pin | 1 RED, exactly that pin | **CONFIRMED** |
+| **MP-B6c** — WB33 ⇒ the group-exact pins | 3 RED (2 group-exact + the counts pin) | **CONFIRMED** |
+| **MP-B5d** — WB30/WB31b ⇒ sentence pins first, denylist second | WB30 → 2 RED (both sentence pins); WB31b → 8 RED (7 sentence + 1 denylist) | **CONFIRMED**, and the ordering claim is right: the sentence pins carry it, the denylist is genuinely secondary |
+| **F.6** — MP-FK2 arm 2 was VACUOUS | independently measured the same last pass (0 RED) | **CONFIRMED** — the author's correction matches mine |
+| **F.6** — MP-B12's "nothing else in the file" withdrawn | re-measured: send 6, drain 11, ack 3 | **CONFIRMED** as a withdrawal; the counts have grown, so the withdrawal was necessary |
+| **F.5** — the author's self-caught emitter-claim defect (the four skew literals are emitted by `_render_comms_brief_publish`, not heartbeat) | verified in the tree: the four literals live in `_render_comms_brief_publish`; the amended descriptions now distinguish emitter from redeemer | **CONFIRMED, and it is a good catch** — it is also the reason WB39 matters: the tail-3 literal *promises* the non-standing catch-up at "heartbeat or drain", and only the standing half is pinned |
+
+---
+
+## R7 — P7: RED honesty on the new failure set
+
+```
+$ uv run pytest -n auto -q <the five graded files>     # pristine HEAD production
+290 failed, 907 passed, 14 skipped in 16.74s
+collection/import errors: 0
+```
+
+| n | reason | verdict |
+|---|---|---|
+| 191 | `AttributeError: type object 'AppContext' has no attribute '_render_comms_*'` | RIGHT reason |
+| 52 | `TypeError: AppContext.comms() got an unexpected keyword argument …` | RIGHT reason |
+| 11 | `AssertionError: lore_comms does not expose '<param>' to an MCP client` | RIGHT reason |
+| 7 | `AssertionError: the served surface does not carry the RULED teaching sentence verbatim` | RIGHT reason — the NEW pins, red because the sentences are not served yet |
+| 6 | `KeyError: 'send'/'drain'/'ack'` | RIGHT reason |
+| 2 | `ValueError: unknown comms action …; valid actions are [six]` | RIGHT reason |
+| 5 | `AttributeError: module … has no attribute` (`DEFAULT_COMMS_DRAIN_LIMIT`, `_MAX_DRAIN_LIMIT`, `CommsConfig.drain_limit`) | RIGHT reason |
+| 3 | `AssertionError: the instructions never name action=send/drain/ack` | RIGHT reason |
+| 3 | `AssertionError: the raise did not name the retired recipient / the recipient — this pin must not pass for an unrelated error` | RIGHT reason, **and a well-built pin** — it refuses to pass on the wrong exception type |
+| 10 | assorted, each naming an absent served claim (`build_app_context never constructs a MessageLedger`, the promise-scan reach pin, the char-cap pin, …) | RIGHT reason |
+
+**907 tests still ran; nothing silently skipped.** Out of my graded set and confirmed unchanged:
+`test_comms_schema.py`'s 3 message-index REDs (telemetry wave, `bb64324`) — not counted above.
+
+---
+
+## R8 — Residuals, each with an individual verdict
+
+1. **The refs-remainder shape is forced and undescribed (MAJOR).** §R1. The only classified route
+   is `"+{more} more beyond the display cap ({cap})"` from the fleet render family, emitted as its
+   own line. **VERDICT: satisfiable but under-specified** — the contract should either classify a
+   refs-remainder label or say in the pin's docstring which template to reuse. → missing pin RG3.
+2. **`test_the_SAME_agent_gets_the_SAME_line_from_heartbeat` cannot see an output-identical
+   clone.** §R6/MP-D5. **VERDICT: real, and the structural pin covers it today.** Recorded so
+   nobody deletes the structural pin believing the line pin duplicates it — it does not.
+3. **WB16 / B5 within-group multiplicity — ESCALATED, still unruled.** B5.2's letter says every
+   occurrence reports its own fate; §A-GRAFT re-expressed R1 as MEMBERSHIP. A render that shows
+   `#911` once for a `[911, 911]` already-acked pair passes. **My control (WB16b) proves the
+   across-group semantics ARE pinned**, so this is precisely and only the multiplicity question.
+   Two readings that produce different code; **I would pick MEMBERSHIP** (the grafted reading — a
+   repeated seq in one group tells the reader nothing new, and B5.2's own honesty analysis says
+   "you listed it twice" and "acked earlier" need no different next action). B3.2 was ruled the
+   same way; this one should get the same one-line treatment so no future builder is reddened for
+   obeying the un-struck clause.
+4. **`_p03_entry` still defaults `acked_at`** — **VERDICT unchanged: acceptable, mitigated** (WB5
+   still dies, now 2 RED).
+5. **The drain elision proof marker is still value-free** (`"more unread — re-run with limit="`) —
+   **VERDICT unchanged: mitigated** by the arithmetic pins (WB3, now 3 RED). Hardening only.
+6. **`MessageLedger` is never closed in any `aclose` pin** — **VERDICT: still unpinned.** Carried
+   forward from §8.7; nothing in the fix wave addresses it.
+7. **`docs/design/2026-07-12-pkt28-c1-semantics.md` doc corpse (8 hits)** — **VERDICT: still
+   live.** Re-swept this pass; unchanged. One supersession line owed. Non-blocking.
+8. **The struck adversary's `test_surreal_harness.py` escalation** — **VERDICT: still unverified**
+   by me (outside the graded five). Carried forward.
+9. **`AppContext.comms` and `ruff PLR0912`** — **VERDICT: still real.** My reference still needs
+   the extracted `_validate_comms_identities`; nothing in the contract describes it. → missing
+   pin P14 stands.
+
+---
+
+## R9 — MISSING PINS (re-grade)
+
+| # | sev | the test to write | the defect it catches |
+|---|---|---|---|
+| **RG1** | CRITICAL | `test_a_drain_serves_the_SUBSCRIBED_NAME_half_of_the_skew_block` — fixture: `fixer-b` behind a NON-`'project'` brief (`wave9` v1 acked, head bumped to v2); assert the drain names `wave9`; **control leg**: the same agent's heartbeat names it too. (Ideally also the collapsed `behind on {k} more briefs` remainder past `_HEARTBEAT_SKEW_NAMES_CAP`.) | **WB39** — a drain serving only the standing-brief half, while `brief_publish`'s tail-3 literal promises the non-standing catch-up "at next heartbeat **or drain**". P2 pair proven §R5 |
+| **RG2** | MAJOR | `test_the_comms_clause_block_is_EXACTLY_the_ruled_sentences` — pin the comms paragraph as the ruled sentences joined (or assert no sentence in that paragraph lies outside the ruled set). Allowlist the safe set; stop growing the denylist | **WB40** — every ruled sentence served verbatim AND a contradicting paragraph appended, 1197/1197 green |
+| **RG3** | MAJOR | Either classify a refs-remainder label in `_SAFE_STR_PROMISE_FREE`, or name the reusable template in `TestTheDrainRefsCellIsCappedAndCounted`'s docstring | §R8.1 — the pin demands a counted remainder that has exactly one legal, non-obvious rendering; a builder taking the obvious route is reddened with no hint |
+| **RG4** | MINOR | A `[fake]`/`[real]` parity leg for `question` reaching the render through the dispatcher | carried forward (first-pass P15); unaddressed |
+| **RG5** | MINOR | `test_aclose_closes_the_message_ledger` | §R8.6 — a leaked SurrealDB connection per app context |
+
+Plus the carried-forward **P13** (a multi-recipient charset reject should name *which* recipient)
+and **P14** (the `PLR0912` seam).
+
+---
+
+## R10 — Updated P1b QUANTIFIER TABLE (deltas only)
+
+Rows unchanged from §2 are omitted; every row below is a re-classification.
+
+| # | invariant | was | now | receipt |
+|---|---|---|---|---|
+| 3 | explicit recipients resolve session-SCOPED | GUARDED | **∀** | WB8 → 1 RED (`TestAnExplicitRecipientResolvesInTheCALLERSSessionOnly`) |
+| 9 | the send receipt caps at the SHARED constant | GUARDED (small-N) | **∀** | WB25/WB26/WB29 → 1 RED each (N=7 fixture) |
+| 11 | broadcast renders a COUNT | GUARDED | **∀** | WB27 → 1 RED |
+| 19 | bodies FENCED, verbatim, over-wide | ∀ *but self-contradictory* | **∀** | MP-FK1a/b, WB24, WB35 — all RED, pin no longer inverted |
+| 28 | the refs cell is capped + counted | GUARDED | **∀** | WB28 → 1 RED; WB37 (private cap) → 1 RED |
+| 29 | **drain serves the shared skew block** | GUARDED by nothing | **∀ for the `'project'` half; GUARDED for the subscribed-NAME half** | WB1 → 3 RED · WB38 (bogus agent) → 1 RED · MP-B5c (swallowed failure) → 1 RED · **WB39 (subscribed half dropped) → 0 RED, the surviving door (§R3.1)** |
+| 30 | the skew block is ONE implementation | GUARDED by nothing | **∀** | WB18 → 1 RED (structural pin only — §R6) |
+| 33 | each requested seq lands in its OWN group's line | GUARDED | **∀** | WB33 → 3 RED; control WB34 → 3 RED |
+| 35 | the ack receipt's counts come from the RESULT | GUARDED | **∀** | WB32 → 3 RED incl. the dedicated counts pin |
+| 37 | within-group order / duplicate MULTIPLICITY | GUARDED | **GUARDED — escalated, unruled** | WB16 → 0 RED; control WB16b (across-group collapse) → 1 RED, so the family fires (§R8.3) |
+| 40 | the instructions teach the seven B9 clauses | GUARDED (invertible) | **∀ for replacement; GUARDED for ADDITION** | WB31b → 8 RED · **WB40 (contradiction appended) → 0 RED (§R3.2)** |
+| 41 | the tool schema teaches the params honestly | GUARDED (invertible) | **∀ for replacement; GUARDED for ADDITION** | WB30 → 2 RED; the same inclusion-check bound as row 40 |
+| **NEW 42** | a drain FAILS LOUD when the brief ledger is down | — | **∀** | MP-B5c → 1 RED; positive control pin present |
+| **NEW 43** | the skew block is computed for the DRAINING agent | — | **∀** | WB38 → 1 RED (the emit/no-emit control pin) |
+
+**Score: 43 invariants classified; 4 GUARDED (rows 29-partial, 37, 40-partial, 41-partial), every
+one carrying a door-build receipt.** Down from 15 GUARDED.
+
+---
+
+## RE-GRADE VERDICT
+
+# CONTRACT INSUFFICIENT — narrowly
+
+The fix wave is **genuinely good work, and I want that on the record**: it closed all six blockers,
+made the contract satisfiable (proven at my reference, post-lint, `1197 passed / 0 failed`), killed
+10 of 11 survivors, strengthened 13 previously-caught builds, and self-caught a defect of its own
+(F.5) that I had missed. Its two claim corrections (F.6) independently match my measurements.
+
+It is INSUFFICIENT on two concrete, reproducible pins:
+
+1. **RG1 (CRITICAL) — `WB39`.** The drain serves only the `'project'` half of the skew block. This
+   is §3.B1's own defect one brief-name over, on the same trust-doctrine axis, and the literal that
+   makes it a lie is `brief_publish`'s tail 3 — the very literal E-S5(c) amended. The P2 pair is
+   proven: green on the correct build (with a heartbeat control leg), red on WB39 and WB1.
+2. **RG2 (MAJOR) — `WB40`.** The teaching pin is an inclusion check; the contract can serve every
+   ruled sentence and its contradiction at once. The primary attack is dead; this is the drift
+   door, and the safe set is small and enumerable, so the fix is an exact-block pin rather than a
+   longer denylist.
+
+Plus **RG3** (the forced, undescribed refs shape) and one **escalation the lead should rule exactly
+as B3.2 was ruled**: B5's within-group duplicate multiplicity (§R8.3) — my recommendation is
+MEMBERSHIP, matching §A-GRAFT.
+
+**Recommended route:** one narrow fix wave (RG1 + RG2 + RG3, ~three fixtures), plus the B5
+multiplicity ruling. No blockers remain; nothing here needs a design re-open.
+
+*Re-grade written 2026-07-24 against HEAD `7668a84`. Reference build
+`94af2bd44bd4a8fe296128fd97b2c934 server.py` / `bdbda576ee327e3f0c547dccf2fcbd22 config.py`. Every
+claim above is dated to that commit.*
