@@ -44,6 +44,41 @@ packet 03 proved at contention, with renders that satisfy the promise instrument
   built here, the measurement cannot happen and 06 ships on opinion.
   ⚠ FIRST: `lore_index` currently serves `traces.total = 0` after heavy tool use (#147) —
   diagnose whether the trace path records at all BEFORE designing this against it.
+  ✅ **DONE at kickoff 2026-07-24** — receipt `receipts/2026-07-24-packet03b/REPORT-scout-147-traces.md`
+  (`6e175fd`); #147 → `acknowledged`. `SurrealStore.record_trace` EXISTS and is CORRECT but is
+  **NEVER CALLED** — zero prod call sites in source AND in the deployed artifact; the missing seam
+  is `FastMCP.call_tool` (`mcp` 1.27.2 has **no middleware API**). The READ side is FINE, proven by
+  POSITIVE CONTROL (3 rows written through the real `record_trace` on TEST `:18000`, returned
+  correctly by the real `trace_aggregates`). Production `:18500`, read-only: `trace` DEFINED,
+  `count() = 0`.
+- **SCOPE WIDENED — OPERATOR RULING 2026-07-24: 03b traces EVERY TOOL CALL, not drains only.**
+  RATIONALE (the scout's load-bearing finding): a drain-only ordinal is **a numerator with no
+  denominator**. Decay is an *absence* of drains across increasing turns, and an absence writes no
+  rows — so drain ordinals `[1,2,3]` are equally consistent with "3 drains in 5 tool calls" (no
+  decay) and "3 drains in 300" (total decay). As originally specced, this packet's telemetry
+  **could not answer the question it exists to answer**, and 06 would still ship on opinion.
+  Therefore 03b additionally owns:
+  1. Wiring the emission at the `FastMCP.call_tool` seam — **subclass + override**, delegating to
+     `super()` (the package does not do this job, so the hand-roll is the packages rule working as
+     intended: minimal surface, maximal verifiability). The `fastmcp` standalone migration is a
+     far larger trade → its own ledger item, met deliberately, NOT folded in here.
+  2. Extending `_TRACE_FIELD_SPECS` with `option<>` agent/ordinal columns — **`DEFINE FIELD
+     OVERWRITE`** per store reference §1.1 (this is the #107 trap exactly; `IF NOT EXISTS` is a
+     silent no-op on an existing field). Columns MUST be `option<…>` so a non-drain trace may omit
+     them. Production holds zero `trace` rows, so §1.4's back-fill hazard is nil.
+  3. The ordinal rides the **existing** sequence mechanism (`_define_sequence`, `DEFINE SEQUENCE IF
+     NOT EXISTS`) — a hand-rolled `trace_counter` hot row would be a third mint policy competing
+     with `finding_counter`/`brief_counter` (the #102 clone defect). Do NOT overload
+     `trace.session` with the agent name; a distinct `option<string> agent` is the honest shape.
+  4. **THE AGENT-IDENTITY PROBLEM IS A DESIGN QUESTION, NOT A BUILDER TASK.** Only `lore_comms`
+     carries an `agent` param; `lore_search`/`lore_read`/etc. carry none, and the SDK `Context`
+     exposes no plain session-id string. Deriving a stable per-agent key and joining it to the
+     `lore_comms register` identity is a property to INVENT → it goes to the Fable design sidecar
+     BEFORE any contract is written (CLAUDE.md: a design problem never reaches a builder).
+  5. **SHIP THE INSTRUMENT WITH THE FIX** — a pin that dispatches through the real server seam and
+     asserts a `trace` row lands, mutation-proven, enumerating tool names as a **checked coverage
+     variable** rather than asserting one hardcoded name. Without it the next refactor silently
+     un-wires the emission and `traces.total` returns to 0 with every gate green — #147's own shape.
 
 ## Scope OUT
 - Everything packet 03 owns (schema, `messages.py`, concurrency, the relation-table flip).
@@ -68,9 +103,19 @@ exist and will miss the index window.
   every SDK call site rides the shared driver — **keep it that way; the gate fails CLOSED.**
 - ⚠ **`test_comms_tool.py` → 149 failed / 554 passed**, and `test_comms_promise_registry.py` also
   RED. **That is THIS packet's contract.** Measured identical before and after 03a-2's changes.
-- `./scripts/typecheck.sh` → **36 errors (31/3/2), ALL in the two RED contract test files above,
-  zero in any production module.** The 2026-07-23 operator ruling defers **global mypy-zero to the
-  END of 03b** — this packet is where that debt is paid.
+- `./scripts/typecheck.sh` → **36 errors (31/3/2), zero in any production module.** The 2026-07-23
+  operator ruling defers **global mypy-zero to the END of 03b** — this packet is where that debt is
+  paid.
+  ⚠ **CORRECTED 2026-07-24 (lead re-measured at kickoff; the inherited half-claim was FALSE).** This
+  line and the INDEX both said the 36 were *"ALL in the two RED contract test files"*. The
+  `zero in production` half is TRUE and re-confirmed; the other half is NOT. The split is
+  `test_comms_tool.py` **31** · `test_comms_promise_registry.py` **3** · **`test_message_ledger.py` 2**
+  — and that third file is packet 03a's **GREEN, CLOSED** contract (180 passed / 0 failed), not a RED
+  03b file. Both are `Returning Any from function declared to return "int"` in the `_ask` / `_answer`
+  test HELPERS (they take `ledger: Any`), not in any pin. **Consequence: reaching global mypy-zero
+  requires editing a COMMITTED CONTRACT FILE from a closed packet** — the class of edit that needed
+  explicit operator authorization at `42eeedc`. Get that authorization before touching it; do not let
+  a builder treat it as a drive-by.
 - spike-surreal `:18000` up (`:18500` is PRODUCTION); the render scanners' current reach confirmed
   (#145 — if renders have moved out of `server.py` since, STOP).
 
