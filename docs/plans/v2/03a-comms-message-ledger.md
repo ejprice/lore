@@ -1,4 +1,12 @@
 # 03a — Comms: the LEDGER (`messages.py` — send/drain/ack) · split from 03
+
+> **CLOSED 2026-07-23 — BOTH children DONE.** `03a-1` (send + drain + `AgentRefLike` home,
+> `2d1f75d`→`13da377`) and `03a-2` (ack + the derived waiting state, `853a95b`→`f04729c`).
+> `test_message_ledger.py` **180 passed / 0 failed / 12 skipped**; both children cold-audited GO,
+> both TEST-ONLY. **03b (`b7f89c12`) is unblocked and owns the deploy.** This file remains the
+> shared reference (Scope IN/OUT, the rulings) — it was never a directly-executed row. Ruling 9's
+> derived waiting state gained a FOURTH conjunct in 03a-2 (`sender != me`, design-ruled): see
+> `03a-2-consume-path-design-rulings.md` §R2 and the R1–R6 delta table 03b inherits.
 size ~0.35 wu (measured post-adversary) **→split at kickoff (sizing law: ≥0.30)** · wave C · depends: **packet 03** (the store)
 law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1 · design source:
 ~/.claude/plans/one-of-claude-codes-nifty-garden.md · **DEPLOY: NO — test-only**

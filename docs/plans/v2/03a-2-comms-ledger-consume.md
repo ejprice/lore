@@ -1,4 +1,24 @@
 # 03a-2 — Comms ledger: DRAIN / ACK + derived waiting state · sub-packet 2/2 of 03a
+
+> **DONE 2026-07-23 — CLOSES 03a. TEST-ONLY, nothing deployed.** Commits `853a95b` (ack +
+> `awaiting_answer`) → `f0f3e79` (design rulings) → `50d65a0` (audit residuals) → `f04729c`
+> (the ruled `sender != me` conjunct) → `0223291`/`5211d05`/`bd524f0` (receipts, INDEX, addendum).
+> `test_message_ledger.py` **180 passed / 0 failed / 12 skipped** (all skips `[fake]`-leg; ZERO
+> `[real]`-leg skips) · retry_seam 503 · typecheck held at 36, **all in 03b's RED contract, zero
+> in any production module** · ruff clean · 16-way ack concurrency **20/20 consecutive** ·
+> driver sharing proven by MUTATION. Cold-audit **GO**, `[real]` leg graded 31 pins / 0 silent skips.
+>
+> ⚠ **THREE defects were found AFTER every builder gate was green** — a FALSE GATE (a pin promising
+> to catch an `agent`-column stamp while asserting only ROW COUNTS; ruling 9's struck stored state
+> passed it 86/0), a latent `ack` misclassification (a CAS WINNER reported `not_addressed`), and a
+> design-ruled correctness defect (a self-addressed follow-up discharged the asker's own debt).
+> None was reachable by re-running the builder's own gates. Receipts:
+> `docs/plans/v2/receipts/2026-07-23-packet03a2/` (six waves).
+>
+> **Rulings + what 03b INHERITS:** `03a-2-consume-path-design-rulings.md` (R1–R6 + delta table).
+> **New finding #175** (store, latent): `UPDATE <edge> … WHERE in IN $ids` silently matches ZERO
+> rows on 3.2.1 without an `out` conjunct. **The text below is the packet AS EXECUTED** — its
+> "remaining 31 RED pins" describes the entry state, not today's tree.
 size ~0.18 wu · wave C · depends: **03a-1** (SEND path + foundations) · **DEPLOY: NO — test-only** ·
 **CLOSES 03a**
 law: read `03a-comms-message-ledger.md` (shared 03a reference) + `comms-subsystem.md` +

@@ -1,4 +1,14 @@
 # 03a-1 — Comms ledger: the SEND path + AgentRefLike home + foundations · sub-packet 1/2 of 03a
+
+> **DONE 2026-07-23. TEST-ONLY, nothing deployed.** Commits `2d1f75d`→`42eeedc`, plus the pool-#24
+> ULID follow-up `13da377`. Cold-audit **GO**, `[real]` leg graded; send concurrency 20/20 ×3;
+> #173 C-DEF fix proven non-weakening. Receipts:
+> `docs/plans/v2/receipts/2026-07-23-packet03a1/`.
+>
+> ⚠ **STALE BELOW, deliberately preserved as the packet AS EXECUTED:** this doc describes `ack` and
+> `awaiting_answer` as `raise NotImplementedError` stubs. That was true at 03a-1's close and is
+> FALSE today — **03a-2 built both** (`f04729c` is the last of its commits), so the file now stands
+> at 180 passed / 0 failed. Read `03a-2-comms-ledger-consume.md` for the consume path.
 size ~0.20 wu · wave C · depends: **packet 03** (the store, DONE) · **DEPLOY: NO — test-only**
 law: read `03a-comms-message-ledger.md` (the shared 03a reference — Scope IN/OUT, rulings) +
 `comms-subsystem.md` + DESIGN-LAW §8/§5/§1 · **FIRST READ (repo store law):

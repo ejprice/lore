@@ -1,4 +1,11 @@
 # 03 — Comms: the STORE (schema, relation-table policy, ENFORCED) · formerly PKT-28 phase C2b
+
+> **DONE 2026-07-23. TEST-ONLY, nothing deployed** (the prod-touching relation-table flip against
+> the live edge rows lands at 03b's deploy). Commits `df59f76` (schema) → `10d8de4` (receipts) →
+> `905b35e` (INDEX); scoped 304/0, blast 432/0; cold-audit **GO**; #146 accepted with a named
+> re-open trigger. Receipts: `docs/plans/v2/receipts/2026-07-23-packet03-store/`.
+> *(Banner added at 03a-2's close-out — this packet finished without one while its siblings had
+> theirs, which made a DONE packet read as open.)*
 size ~0.2 wu (measured post-adversary) · wave C · depends: packet 02
 law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1 · design source:
 ~/.claude/plans/one-of-claude-codes-nifty-garden.md · **DEPLOY: NO — test+store only**

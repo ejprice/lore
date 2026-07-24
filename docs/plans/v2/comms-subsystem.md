@@ -106,10 +106,19 @@ shared reference; the step files carry scope/entry/exit and CITE this doc, never
   - `03-comms-message-graph.md` — **the STORE** (~0.20): `message`/`to` slices, `DEFINE SEQUENCE`,
     **`ENFORCED`**, and the relation-table policy flip with dirty-store migration pins. TEST-ONLY.
     Its own packet because it is the only part changing behaviour for code ALREADY IN PRODUCTION.
+    **DONE 2026-07-23** (`df59f76`; scoped 304/0; cold-audit GO; #146 accepted with a trigger).
   - `03a-comms-message-ledger.md` — **the LEDGER** (~0.35): `messages.py`, send/drain/ack, the
     DERIVED waiting state, ≥8-way concurrency, retry-seam coverage. TEST-ONLY.
+    **CLOSED 2026-07-23** — split at kickoff and both children DONE: `03a-1` (send + drain,
+    `2d1f75d`→`13da377`) and `03a-2` (ack + derived waiting, `853a95b`→`f04729c`).
+    `test_message_ledger.py` **180 passed / 0 failed / 12 skipped**; both cold-audited GO.
+    ⚠ Ruling 9's waiting state gained a **FOURTH conjunct** in 03a-2 (`sender != me` — a
+    self-addressed follow-up must not discharge your own debt), design-ruled; the derivation
+    still writes NOTHING. Six rulings + a delta table 03b inherits:
+    `03a-2-consume-path-design-rulings.md`.
   - `03b-comms-message-surface.md` — **the SURFACE** (~0.30): dispatch, renders, promise proofs,
-    drain telemetry. **DEPLOYS BOTH.**
+    drain telemetry. **DEPLOYS BOTH.** — **NEXT / the only C2b child still open** (task
+    `b7f89c12`, unblocked 2026-07-23).
   ⚠ **Three data-model facts settled since this document was written, which OVERRIDE its
   §"Data model" text:** `sequence::next()` at line 45 is WRONG — the correct spelling is
   `sequence::nextval("<name>")` and the DDL is `DEFINE SEQUENCE IF NOT EXISTS` (a bare DEFINE

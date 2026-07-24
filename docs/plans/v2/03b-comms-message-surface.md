@@ -55,9 +55,55 @@ packet 03 proved at contention, with renders that satisfy the promise instrument
 ## Entry check
 **FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this packet
 reads the store; cite it, never re-transcribe.
-Packet 03 DONE (schema + `MessageLedger` green at ≥8-way, 20 consecutive); the contract's
-surface pin groups RED for the right reason at HEAD; spike-surreal up; the render scanners'
-current reach confirmed (#145 — if renders have moved out of `server.py` since, STOP).
+**SECOND READ (binding, added at 03a-2's close): `03a-2-consume-path-design-rulings.md`** — six
+design rulings and a consolidated delta table, several of which are THIS packet's work. See
+§"Inherited from 03a-2" below; a 03b that does not open that doc will re-author pins that already
+exist and will miss the index window.
+
+**Predecessor state, MEASURED at `bd524f0` (2026-07-23) — do NOT expect a green tree at start:**
+- Packet **03** (store) DONE `df59f76`; **03a-1** (send + drain) DONE `2d1f75d`→`13da377`;
+  **03a-2** (ack + derived waiting) DONE `853a95b`→`f04729c`. **03a is CLOSED.**
+- `test_message_ledger.py` → **180 passed / 0 failed / 12 skipped** (all skips `[fake]`-leg).
+- `test_retry_seam.py` → **503 passed**. `MessageLedger` is discovered by the seam enumerator and
+  every SDK call site rides the shared driver — **keep it that way; the gate fails CLOSED.**
+- ⚠ **`test_comms_tool.py` → 149 failed / 554 passed**, and `test_comms_promise_registry.py` also
+  RED. **That is THIS packet's contract.** Measured identical before and after 03a-2's changes.
+- `./scripts/typecheck.sh` → **36 errors (31/3/2), ALL in the two RED contract test files above,
+  zero in any production module.** The 2026-07-23 operator ruling defers **global mypy-zero to the
+  END of 03b** — this packet is where that debt is paid.
+- spike-surreal `:18000` up (`:18500` is PRODUCTION); the render scanners' current reach confirmed
+  (#145 — if renders have moved out of `server.py` since, STOP).
+
+**⚠ FINDING #175, read BEFORE writing any edge write:** `UPDATE <edge> … WHERE in IN $ids` **silently
+matches ZERO rows** on 3.2.1 — no error — while the identical `SELECT` predicate matches; adding an
+`out = $x` conjunct makes it work. Mechanism UNVERIFIED. Shipped code is safe (every such UPDATE
+carries `out = $agent`), but any message-scoped edge write (a retract/redact verb, a `to`-edge GC
+sweep) will report success and do nothing.
+
+### Inherited from 03a-2 (design-ruled; delta table rows 1–11)
+1. **Both `message` indexes, BEFORE this packet's deploy, as their own one-concern commit** —
+   `(seq)` and `(sender, question)`. The window argument is decisive and expires here: production
+   carries **zero** `message` rows until 03b deploys, so the index build is free **exactly once**.
+   `IF NOT EXISTS` per store reference §1.1. `seq` is **PLAIN, not UNIQUE** (a strikeable divergence
+   from the approved design, with a named re-open trigger).
+2. **Bound `awaiting_answer`'s deliveries SELECT** by the question threads / min-seq (a
+   semantics-identical superset), with an EXPLAIN receipt settling whether `(out, seen_at)` covers
+   the `out` prefix, plus 20-consecutive re-runs of the send + ack concurrency pins after the
+   schema change.
+3. **New pins:** duplicate-seq in one batch (incl. a non-adjacent `[s1,s2,s1]` variant) ·
+   thread-level debt in BOTH directions · read-order + the zero-questions short-circuit, with the
+   KNOWN BOUND docstring and its re-open trigger.
+   ⚠ **NOT the self-addressed pins — those SHIPPED in 03a-2** (`f04729c`); do not re-author them.
+4. **BINDING RENDER LAW:** ack-nudges key on `acked_at`, **never** `seen_at` (an acked directive
+   must never re-nag; the two-counter footer is the confirmed required shape); queue counts key on
+   `seen_at` and say **"unread"**, never "unactioned", and must agree with what `drain` then serves.
+5. **Teaching clauses in the served render** (the consumer is an LLM; the render is where it learns
+   the contract): `already_acked` on a duplicate occurrence, and the waiting line's clearing rule.
+   Separate debts belong on separate threads — taught STATICALLY in the instructions block, not by
+   a send-time thread scan.
+6. **Any future ORACLE change** (`_message_fakes.py`) is a contract-author + adversary edit, never a
+   builder drive-by — and its satisfiability receipt must cover **BOTH** consumer suites
+   (`test_message_ledger.py` AND `test_comms_tool.py`; the single-consumer premise was measured false).
 **COVERAGE-PREMISE CHECK (INDEX law, 2026-07-19):** this packet's scope excludes render
 hygiene on the grounds that packets 02/02a's instruments cover it. **PROBE THAT AT KICKOFF** —
 one receipt showing a new `_render_comms*` helper in `server.py` is actually seen by the
