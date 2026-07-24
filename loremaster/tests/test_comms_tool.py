@@ -3787,19 +3787,39 @@ async def _render_send_thread(value: str, _ctx: Any) -> str:
 
 async def _render_drain_body(value: str, _ctx: Any) -> str:
     return AppContext._render_comms_drain(
-        _drain_result(entries=[_inbox_entry(body=value)]), agent_name="fixer-b", limit=20
+        _drain_result(entries=[_inbox_entry(body=value)]),
+        agent_name="fixer-b",
+        limit=20,
+        session="wave7",
     )
 
 
 async def _render_drain_sender(value: str, _ctx: Any) -> str:
     return AppContext._render_comms_drain(
-        _drain_result(entries=[_inbox_entry(sender_name=value)]), agent_name="fixer-b", limit=20
+        _drain_result(entries=[_inbox_entry(sender_name=value)]),
+        agent_name="fixer-b",
+        limit=20,
+        session="wave7",
     )
 
 
 async def _render_drain_thread(value: str, _ctx: Any) -> str:
+    """AUTHORIZED AMENDMENT 10 (operator 2026-07-24; design ruling D2 → reading A, S8).
+
+    ⚠ THIS CASE SURVIVES READING A, AND THE REASON IS THE FIXTURE'S: the injected
+    ``value`` is a HOSTILE string from ``_INJECTION_THREAT_CHARS``, never the
+    session ``"wave7"``, so ``thread != session`` holds on every threat character
+    and the context cell RENDERS — which is what keeps the sanitisation of
+    ``thread`` under test. Were this driver ever re-pointed at a session-default
+    thread, the cell would vanish and the case would pass VACUOUSLY, testing
+    nothing (the ``brief_publish.session``/``behind=[]`` shape the #96 adversary
+    caught). ``TestDrainThreadInjectionCaseIsNotVACUOUS`` asserts the value really
+    reaches the render, so that cannot happen silently."""
     return AppContext._render_comms_drain(
-        _drain_result(entries=[_inbox_entry(thread=value)]), agent_name="fixer-b", limit=20
+        _drain_result(entries=[_inbox_entry(thread=value)]),
+        agent_name="fixer-b",
+        limit=20,
+        session="wave7",
     )
 
 
@@ -4480,21 +4500,36 @@ class TestRenderCommsSendShape:
 class TestRenderCommsDrainShape:
     """S4.2 — the drain block: header, rows, trailers, elision.
 
-    ⚠ ESCALATION RECORDED IN THE INSTRUMENT (contract author, 2026-07-24; see
-    REPORT-contract-surface-03b.md §Escalations). S4.2 rules the context cell's
-    precedence as ``task_id present -> ' (task {task_id})'; else thread != session
-    -> ' (thread {thread})'; else empty``. The THIRD branch needs the SESSION, and
-    neither the ruled signature ``_render_comms_drain(result, *, agent_name,
-    limit)`` — which the COMMITTED drivers in this file and in
-    test_comms_promise_registry.py already pin by calling it — nor
-    ``MessageDrainResult``/``InboxEntry`` carries one. The two branches that ARE
-    determinable are pinned below, together with the SINGULARITY property; the
-    ``thread == session -> empty`` branch is UNPINNED pending an operator/design
-    ruling and MUST NOT be improvised by a builder."""
+    ⚠ ESCALATION D2, RAISED HERE AND NOW RULED (design sidecar 2026-07-24, S8;
+    AUTHORIZED AMENDMENT 10). S4.2 rules the context cell's precedence as
+    ``task_id present -> ' (task {task_id})'; else thread != session ->
+    ' (thread {thread})'; else empty``. The predecessor contract author found the
+    THIRD branch UNREACHABLE — it needs the SESSION, which neither the signature
+    S4.2 itself stated (``_render_comms_drain(result, *, agent_name, limit)``, the
+    one the committed drivers pinned by calling it) nor
+    ``MessageDrainResult``/``InboxEntry`` carried — pinned branches 1 and 2 plus
+    the SINGULARITY property, and left branch 3 deliberately unpinned rather than
+    improvising a design decision.
+
+    **RULED: reading A.** ``_render_comms_drain`` gains a REQUIRED ``session: str``
+    kwarg — the house shape (``_render_comms_send`` already takes one), REQUIRED
+    and never defaulted so that no call site can silently make the branch
+    unreachable again (a defaulted branch-comparand is the fixture-monoculture
+    hazard moved down to the SIGNATURE layer). Branch 3 is pinned below.
+
+    **Reading B — "drop branch 3; always render the thread cell when ``task_id``
+    is None" — was REFUSED, and the reason BINDS A BUILDER**, so it is recorded in
+    the instrument rather than only in the ruling: most fleet traffic rides the
+    session-default thread, so under B every row of this subsystem's
+    highest-volume render carries a ``(thread wave7)`` cell that teaches nothing
+    — and it destroys the signal S5's one-thread-one-debt teaching leans on, where
+    a thread label MEANS "a deliberate conversation" only because default-thread
+    rows stay bare. Suppression is load-bearing, not cosmetic."""
 
     _ACK_REQUIRED = "ACK REQUIRED"
     _ALREADY_ACKED = "ALREADY ACKED"
     _ELISION = "more unread"
+    _THREAD_CELL = "(thread "
 
     @staticmethod
     def _render(
@@ -4503,12 +4538,24 @@ class TestRenderCommsDrainShape:
         total_pending: int | None = None,
         peeked: bool = False,
         limit: int = 20,
+        session: str = "wave7",
     ) -> str:
+        """Drive the REAL drain render (AMENDMENT 10 added ``session``).
+
+        ``session`` carries a default ONLY so that the twenty committed call sites
+        below keep rendering exactly what they rendered before this amendment —
+        it is the mechanical half of the amendment, not a design choice about the
+        production signature, which is REQUIRED and un-defaulted per the ruling.
+        The default cannot manufacture a value monoculture here because
+        :meth:`test_the_SUPPRESSED_thread_is_the_SESSION_ARGUMENT_not_a_LITERAL`
+        drives a DIFFERENT session and inverts which of two rows draws the cell;
+        a build hardcoding ``"wave7"`` fails there and only there."""
         return str(
             AppContext._render_comms_drain(
                 _drain_result(entries=entries, total_pending=total_pending, peeked=peeked),
                 agent_name="fixer-b",
                 limit=limit,
+                session=session,
             )
         )
 
@@ -4685,6 +4732,147 @@ class TestRenderCommsDrainShape:
         rendered = self._render([_inbox_entry(seq=71, task_id=None, thread="q:cap-boundary")])
         row = _drain_line_containing(rendered, "#71")
         assert "q:cap-boundary" in row, row
+
+    # -- AUTHORIZED AMENDMENT 10: S4.2 branch 3, ruled reachable (D2 -> reading A)
+
+    async def test_a_SESSION_DEFAULT_thread_draws_no_cell_but_a_DELIBERATE_one_does(
+        self,
+    ) -> None:
+        """THE DISCRIMINATING PAIR the ruling requires — ONE render, TWO rows.
+
+        Row #71 rides ``thread == session``; row #72 rides a deliberate thread.
+        The pair is what a single-thread fixture cannot be: a build that IGNORES
+        ``session`` and always renders the cell fails on #71; a build that never
+        renders it fails on #72; a build that inverts the comparison fails on
+        both. Neither row alone discriminates — that is precisely why the two
+        committed context-cell pins above (both on non-default threads) could not
+        see this branch at all.
+
+        Both rows are in ONE render so the discrimination is PER-ROW, not
+        per-call: a build deciding the cell once for the whole drain (from the
+        first entry, or from ``result``) renders the same thing on both rows and
+        fails here."""
+        rendered = self._render(
+            [
+                _inbox_entry(seq=71, task_id=None, thread="wave7"),
+                _inbox_entry(seq=72, task_id=None, thread="q:cap-boundary"),
+            ],
+            session="wave7",
+        )
+        default_row = _drain_line_containing(rendered, "#71")
+        deliberate_row = _drain_line_containing(rendered, "#72")
+        assert self._THREAD_CELL not in default_row, (
+            "a row on the SESSION-DEFAULT thread drew a thread cell — S4.2 branch 3 rules it "
+            "EMPTY, and reading B was refused because labelling the default thread on every "
+            "row of the highest-volume comms render teaches nothing AND destroys the signal "
+            "S5's one-thread-one-debt teaching leans on (a thread label must MEAN a deliberate "
+            f"conversation): {default_row!r}"
+        )
+        assert "wave7" not in default_row, (
+            f"the session leaked into the default-thread row by some other route: {default_row!r}"
+        )
+        assert self._THREAD_CELL in deliberate_row and "q:cap-boundary" in deliberate_row, (
+            "a row on a DELIBERATE (non-session) thread drew NO thread cell — branch 2 is the "
+            f"half of the cell that must still fire: {deliberate_row!r}"
+        )
+
+    async def test_the_SUPPRESSED_thread_is_the_SESSION_ARGUMENT_not_a_LITERAL(self) -> None:
+        """THE MONOCULTURE KILLER: the same two thread values, SWAPPED ROLES.
+
+        Every other drain driver in this contract passes ``session="wave7"`` — so
+        a build spelling the branch ``entry.thread != "wave7"`` (a hardcoded
+        literal, ignoring its own argument) passes the pair above and every other
+        pin in this file. Here the session is ``"wave9"``: the row that was BARE
+        in the pair now draws a cell, and a ``"wave9"`` row is the bare one. The
+        value suppressed in one pin is the value REQUIRED to render in the other,
+        so no single literal can satisfy both.
+
+        Repo law, applied literally: "if the code can branch on a value, at least
+        one pin must use a DIFFERENT value"."""
+        rendered = self._render(
+            [
+                _inbox_entry(seq=71, task_id=None, thread="wave9"),
+                _inbox_entry(seq=72, task_id=None, thread="wave7"),
+            ],
+            session="wave9",
+        )
+        matching_row = _drain_line_containing(rendered, "#71")
+        other_row = _drain_line_containing(rendered, "#72")
+        assert self._THREAD_CELL not in matching_row, (
+            "the cell was suppressed for a hardcoded 'wave7' rather than for the SESSION this "
+            f"render was given ('wave9') — the branch ignores its own argument: {matching_row!r}"
+        )
+        assert self._THREAD_CELL in other_row and "wave7" in other_row, (
+            "the row whose thread differs from the session ('wave7' vs 'wave9') drew no cell — "
+            f"the build suppresses on a literal, not on the argument: {other_row!r}"
+        )
+
+    async def test_a_TASK_row_on_the_SESSION_thread_STILL_draws_its_TASK_cell(self) -> None:
+        """The wrong build reading A NEWLY ADMITS, and which no committed pin sees.
+
+        Branch 1 (task) is unconditional; only branch 2 is gated on
+        ``thread != session``. A builder who wraps the WHOLE cell in that gate —
+        ``if thread != session: <task or thread cell>`` — still passes
+        ``test_the_context_cell_prefers_the_TASK_over_the_thread`` (whose fixture
+        rides a NON-session thread, so its gate happens to be open) and silently
+        drops the task anchor from every task row on the session-default thread,
+        which is where most task traffic actually lives. The fixture that catches
+        it is the one no committed pin has: ``task_id`` set AND
+        ``thread == session``."""
+        rendered = self._render(
+            [_inbox_entry(seq=71, task_id="T-9", thread="wave7")], session="wave7"
+        )
+        row = _drain_line_containing(rendered, "#71")
+        assert "(task T-9)" in row, (
+            "a task-anchored row on the session-default thread lost its TASK cell — branch 1 is "
+            "UNCONDITIONAL; only the thread cell is gated on 'thread != session' (S4.2), and a "
+            f"build gating both drops the anchor exactly where task traffic lives: {row!r}"
+        )
+        assert self._THREAD_CELL not in row, (
+            f"the context cell is SINGULAR — the task cell wins and stands alone: {row!r}"
+        )
+
+
+class TestDrainThreadInjectionCaseIsNotVACUOUS:
+    """AMENDMENT 10's companion — the premise the ruling ASSERTS, CHECKED.
+
+    The ruling keeps the battery's ``drain.thread`` RenderCase valid on the
+    grounds that "hostile values are never ``'wave7'``, so the cell renders and
+    sanitisation is still exercised". That is a PREMISE about the corpus and the
+    driver, and reading A is what made it load-bearing: the day the driver's
+    thread rides the session, the context cell VANISHES, the injected value never
+    reaches the output, and twenty-one battery cases go on reporting green while
+    testing nothing — the ``brief_publish.session``/``behind=[]`` shape the #96
+    adversary caught, re-manufactured by a branch rather than by a fixture.
+
+    So the premise is asserted over the REAL corpus rather than trusted."""
+
+    @pytest.mark.parametrize("threat", _INJECTION_THREAT_CHARS, ids=lambda t: f"U+{ord(t):04X}")
+    async def test_every_battery_value_still_reaches_the_context_cell(self, threat: str) -> None:
+        """Driven with exactly what ``TestC1RenderInjectionBattery`` drives."""
+        rendered = await _render_drain_thread(f"benign{threat}{_ROW_FORGE_PAYLOAD}", None)
+        assert "(thread " in rendered, (
+            "the drain.thread injection case renders NO context cell — the hostile value is "
+            "discarded before it can be sanitised, so the battery's twenty-one green cases for "
+            f"this field are decoration: {rendered!r}"
+        )
+
+    async def test_the_batterys_BENIGN_baseline_reaches_it_too(self) -> None:
+        """The other arm of every battery case: its baseline render."""
+        rendered = await _render_drain_thread("benign", None)
+        assert "(thread benign)" in rendered, rendered
+
+    async def test_POSITIVE_CONTROL_the_check_can_actually_see_a_suppressed_cell(self) -> None:
+        """The control this pin needs to be worth anything: drive the SAME driver
+        with the value that DOES collide with its session and show the cell really
+        does disappear. Without it, the two assertions above could be passing
+        because the cell is unconditional — i.e. because branch 3 was never built
+        — and this class would then be certifying a build the pair pin rejects."""
+        rendered = await _render_drain_thread("wave7", None)
+        assert "(thread " not in rendered, (
+            "POSITIVE CONTROL FAILED: a thread equal to the driver's session STILL drew a cell, "
+            f"so this non-vacuity check cannot distinguish emitted from suppressed: {rendered!r}"
+        )
 
 
 class TestTheDrainSurfaceConvergesOnAnAckedButUndrainedMessage:

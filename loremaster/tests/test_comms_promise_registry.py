@@ -833,6 +833,16 @@ def _render_send(*, grade: str, question: bool) -> str:
 def _render_drain(
     *, entries: list[Any], total_pending: int, peek: bool = False, limit: int = 20
 ) -> str:
+    """Drive the REAL drain render.
+
+    AUTHORIZED AMENDMENT 10 (operator 2026-07-24; design ruling D2 → reading A, S8):
+    ``session`` is a REQUIRED kwarg of ``_render_comms_drain``, so this driver states
+    it. Every :func:`_p03_entry` rides ``thread="wave7"`` — the SESSION-DEFAULT
+    thread — so under the ruled branch 3 no row here draws a context cell, which is
+    exactly what these proofs' markers already assume (none of them names one).
+    The discrimination that the suppression is real, and keyed on this ARGUMENT
+    rather than on the literal ``"wave7"``, lives in
+    ``TestRenderCommsDrainShape`` in ``test_comms_tool.py`` — not duplicated here."""
     from loremaster.messages import MessageDrainResult
 
     return str(
@@ -846,6 +856,7 @@ def _render_drain(
             ),
             agent_name="fixer-b",
             limit=limit,
+            session="wave7",
         )
     )
 
