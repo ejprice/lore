@@ -62,6 +62,7 @@ from __future__ import annotations
 import ast
 import inspect
 import re
+import string
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -129,28 +130,45 @@ _PROMISE_REGISTRY: dict[str, str] = {
         "brief_ack — emitted IFF auto_ack_at_register is False; brief_ack runs for any "
         "existing (name, version) (§9.7 #9, v8)"
     ),
+    # E-S5(a), AUTHORIZED (lead ruling under the packet's §OPERATOR GRANT
+    # (second), `1e3a249`; FK-6 pre-flight). These four descriptions used to
+    # name "heartbeat" as THE emitting action ("heartbeat skew surfacing …").
+    # Under FK-6 the SAME literals are served by DRAIN as well, via one shared
+    # extracted helper — so an action-named emitter claim in the predicate is
+    # an incomplete description of when the promise is made. Rewritten
+    # ACTION-AGNOSTIC: the predicate now states the CONDITION (which is what
+    # §9.7's litmus actually needs) and names the emitters as a set that FK-6
+    # grew. Description-only: no literal, marker, proof or assertion changed.
+    # ⚠ NOT touched here: the literals' own "at their next heartbeat" wording.
+    # B4.1 ruled that a benign under-claim, but B4.1 predates the trust
+    # doctrine and C5(c) grades teaching-vs-behaviour — that is E-S5(c), open
+    # with the design owner.
     "skew (session {session}): {behind} non-retired agents behind head v{head} — "
     "{breakdown}; surfaces at their next heartbeat": (
-        "heartbeat skew surfacing — tail 1/2: emitted IFF standing OR the unbriefed group is "
-        "empty (every behind agent then a subscriber); pinned in TestSkewTailIsNameConditioned "
-        "(§9.7 #10, v8)"
+        "brief-skew surfacing — tail 1/2, emitted by EVERY action that serves the shared skew "
+        "block (heartbeat and, per FK-6, drain): emitted IFF standing OR the unbriefed group "
+        "is empty (every behind agent then a subscriber); pinned in "
+        "TestSkewTailIsNameConditioned (§9.7 #10, v8)"
     ),
     "skew: {behind} non-retired agents behind head v{head} — "
     "{breakdown}; surfaces at their next heartbeat": (
-        "heartbeat skew surfacing — tail 1/2, unscoped variant (§9.7 #10, v8)"
+        "brief-skew surfacing — tail 1/2, unscoped variant; same emitter set and predicate as "
+        "the scoped form above (§9.7 #10, v8)"
     ),
     "skew (session {session}): {behind} non-retired agents behind head v{head} — "
     "{breakdown}; ackers see it at next heartbeat — unbriefed agents only via "
     "brief_get name='{name}'": (
-        "heartbeat surfacing for ackers + brief_get name= for unbriefed — tail 3: emitted IFF "
-        "non-standing AND the unbriefed group is non-empty (unbriefed non-project agents are "
-        "never nagged) (§9.7 #10, v8)"
+        "brief-skew surfacing for ackers + brief_get name= for unbriefed — tail 3, emitted by "
+        "EVERY action that serves the shared skew block (heartbeat and, per FK-6, drain): "
+        "emitted IFF non-standing AND the unbriefed group is non-empty (unbriefed non-project "
+        "agents are never nagged) (§9.7 #10, v8) [E-S5(a)]"
     ),
     "skew: {behind} non-retired agents behind head v{head} — "
     "{breakdown}; ackers see it at next heartbeat — unbriefed agents only via "
     "brief_get name='{name}'": (
-        "heartbeat surfacing for ackers + brief_get name= for unbriefed — tail 3, unscoped "
-        "variant (§9.7 #10, v8)"
+        "brief-skew surfacing for ackers + brief_get name= for unbriefed — tail 3, unscoped "
+        "variant; same emitter set and predicate as the scoped form above (§9.7 #10, v8) "
+        "[E-S5(a)]"
     ),
     "acked brief '{name}' v{version} — head is v{head}; "
     "catch up: lore_comms action=brief_get name='{name}'": (
@@ -184,6 +202,32 @@ _PROMISE_REGISTRY: dict[str, str] = {
     "+{more} more — re-run with limit={next_limit}": (
         "fleet limit= re-ask — actionable IFF shown < display cap; the cap-disclosure variant "
         "handles the dead-end case (§9.7 #12, sound since v4)"
+    ),
+    # --- packet 03b: the three NEW promise lines this design creates ---------
+    # (03b-design-rulings-r2 §B8.2 names exactly these; registry GROWTH is the
+    # instrument working as designed — §B8.1 — and needs no operator ruling,
+    # unlike a deletion or a predicate weakening.)
+    "question on thread {thread} — clears when a teammate's reply lands on this thread "
+    "addressed to you; your own follow-ups do not clear it": (
+        "the SENDER-side clearing-rule teach (§B3.3) — emitted IFF this send was accepted "
+        "with set_status='input_required' (i.e. Message.question is True). §9.7 litmus: a "
+        "reader who waits for an on-thread reply FROM A TEAMMATE does get cleared — that is "
+        "exactly the four-conjunct answer test awaiting_answer runs (03a-2 R2). The R1 "
+        "per-ROW recipient marker is packet 05 by operator ruling, which makes this the ONLY "
+        "in-band carrier of the clearing rule in 03b"
+    ),
+    "re-served after ack: {seqs} — informational; these carry your ack stamp and need no new one": (
+        "ack (the ABSENCE of a duty) — emitted IFF at least one SERVED entry has "
+        "acked_at IS NOT NULL (§B4.2 / 03a-2 R6 clause 3). §9.7 litmus: a reader who does "
+        "NOT re-ack is correct — the ack stamp is WRITE-ONCE, so a second ack is an "
+        "already_acked no-op that returns the SAME stamp"
+    ),
+    "note recorded on the {acked} newly acked message(s)": (
+        "ack note durability (§B5.3) — emitted IFF the call carried a note AND acked_count > 0. "
+        "§9.7 litmus: the ledger writes ack_note ONLY on the edges its CAS actually WON, so "
+        "the note is durable for exactly the newly-acked set and for nothing else; a note on "
+        "a batch that won nothing was recorded NOWHERE, and saying nothing there would imply "
+        "it had been"
     ),
 }
 
@@ -234,9 +278,24 @@ _PROMISE_FREE: dict[str, str] = {
         "status report (broadcast send receipt)"
     ),
     "drained {shown} of {total} pending": "status report (drain header)",
-    "#{seq} [{grade}] {sender}→you{context}: {body}": "drain row structural template",
-    "#{seq} [{grade}] {sender}→you{context}: {body} ({refs})": (
-        "drain row structural template (refs variant)"
+    # FK-1 AUTHORIZED AMENDMENT (03b-design-rulings-r2 §A-GRAFT + B4 + B7.3;
+    # DIFF-adjudication-03b §2 + §6 item 1; packet file §OPERATOR GRANT (second),
+    # `1e3a249` — RULED: FENCE). The committed row template carried the body
+    # INLINE (``…{context}: {body}``); the packet exit demands "a hostile body
+    # staying inside its fence", and a body is the ONE surface where another
+    # agent's free text lands in a consumer's context. Under the ruling the row
+    # is a HEADER line and the body follows as a ``render_fenced`` block, so the
+    # ``: {body}`` tail leaves both templates.
+    # MUTATION-PROOF OBLIGATION (adversary, MP-FK1): (a) a build that re-inlines
+    # the body renders neither template below -> ``test_no_dead_registry_entries``
+    # RED **and** ``test_comms_tool.py::TestDrainFencedBodyIntegrity`` RED;
+    # (b) a build that ``sanitise_line``s the body instead of fencing it ->
+    # the same fence-integrity pin RED on byte-verbatim round-trip.
+    "#{seq} [{grade}] {sender}→you{context}": (
+        "drain row structural template (header; the body is fenced below it — FK-1)"
+    ),
+    "#{seq} [{grade}] {sender}→you{context} ({refs})": (
+        "drain row structural template (header, refs variant; body is fenced below it — FK-1)"
     ),
     "no unread messages": "status report (empty inbox)",
     "acked {acked} of {requested}: {seqs}": "status report (ack receipt)",
@@ -783,6 +842,12 @@ def _render_drain(
             ),
             agent_name="fixer-b",
             limit=limit,
+            # B14/AC-22 collateral: ``session`` is a REQUIRED kwarg on the drain
+            # render (the ``{context}`` cell's thread comparand). ``_p03_entry``
+            # hardcodes thread="wave7", so this value keeps every committed proof
+            # rendering byte-identically to its pre-B14 shape (the thread half of
+            # the cell is suppressed when thread == session).
+            session="wave7",
         )
     )
 
@@ -808,6 +873,193 @@ def _render_message_ack(*, outcomes: list[tuple[int, str]]) -> str:
                 ),
             ),
             agent_name="fixer-b",
+            # B5.3 collateral (see the 03b driver block below): ``note`` is a
+            # REQUIRED kwarg on the render, so this committed driver names it.
+            note=None,
+        )
+    )
+
+
+# =========================================================================== #
+# PACKET 03b — the SURFACE wave's render drivers.
+#
+# Design authority: ``docs/plans/v2/03b-design-rulings-r2.md`` (§A-GRAFT, B3-B5,
+# B7, B8, B13-B15) + ``docs/plans/v2/receipts/2026-07-24-packet03b/
+# DIFF-adjudication-03b.md`` (AC-01..AC-25). Cited, never re-transcribed.
+#
+# AC-11 IN FORCE: **no parameter these drivers branch on carries a default.**
+# Every call site chooses ``question`` / ``acked_at`` / ``thread`` / ``task_id``
+# / ``refs`` / ``session`` / ``broadcast`` / ``note`` explicitly. The committed
+# ``_p03_entry`` factory re-defaulted ``acked_at`` and hardcoded ``thread`` —
+# which is exactly how the committed ACK-REQUIRED proofs became an ``acked_at``
+# monoculture (finding #182.2) and how the drain row's thread branch stayed
+# untested (#182.5). A fixture factory must not default a parameter the code
+# branches on (repo CLAUDE.md, "A DIAGNOSIS IS NOT AN INSTRUMENT").
+#
+# ⚠ SIGNATURE COLLATERAL, ESCALATED (see REPORT-contract-surface-03b-r2.md
+# §escalations E-S2/E-S3): B14/AC-22 makes ``session`` a REQUIRED kwarg on
+# ``_render_comms_drain`` and B5.3 makes ``note`` a REQUIRED kwarg on
+# ``_render_comms_ack``. Both are branch COMPARANDS, and the fixture-default law
+# applies at the SIGNATURE layer (a defaulted comparand lets any call site
+# silently kill the branch). Committed drivers therefore name them explicitly.
+# Re-derived call-site counts at HEAD e7db965: ``_render_comms_drain`` 4 sites
+# (3 here in test_comms_tool.py's battery + 1 in this file), ``_render_comms_ack``
+# 2 sites, ``_render_comms_send`` 3 sites (UNCHANGED — the question teach derives
+# from the typed ``Message.question``, not from a new render parameter).
+# =========================================================================== #
+
+
+def _p03b_message(
+    *,
+    seq: int,
+    grade: str,
+    body: str,
+    thread: str,
+    question: bool,
+    session: str,
+    refs: list[str],
+    task_id: str | None,
+    sender_name: str = "lead",
+) -> Any:
+    """A ``Message`` with every render-branched field REQUIRED (AC-11)."""
+    from loremaster.messages import Message
+
+    return Message(
+        id=f"{seq:026x}",
+        seq=seq,
+        session=session,
+        thread=thread,
+        sender_id="lead-id-0000",
+        sender_name=sender_name,
+        grade=grade,  # type: ignore[arg-type]
+        body=body,
+        refs=refs,
+        task_id=task_id,
+        question=question,
+        created_at=datetime.now(UTC),
+    )
+
+
+def _p03b_entry(
+    *,
+    seq: int,
+    grade: str,
+    acked_at: Any,
+    thread: str,
+    task_id: str | None,
+    refs: list[str],
+    body: str = "body text",
+) -> Any:
+    """An ``InboxEntry`` with every render-branched field REQUIRED (AC-11)."""
+    from loremaster.messages import InboxEntry
+
+    return InboxEntry(
+        seq=seq,
+        message_id=f"{seq:026x}",
+        grade=grade,  # type: ignore[arg-type]
+        sender_name="lead",
+        thread=thread,
+        task_id=task_id,
+        body=body,
+        refs=refs,
+        created_at=datetime.now(UTC),
+        acked_at=acked_at,
+        ack_note=None,
+    )
+
+
+def _render_send_03b(
+    *,
+    grade: str,
+    question: bool,
+    thread: str,
+    session: str,
+    broadcast: bool,
+    recipient_names: list[str],
+    recipient_count: int,
+) -> str:
+    """Drive the REAL send render. ``question`` reaches the render through the
+    TYPED ``Message.question`` field the ledger already sets from
+    ``set_status == 'input_required'`` (``messages.py::send``) — prose derived
+    from typed state, never a name the render compares (#104 law), and the
+    reason ``_render_comms_send``'s committed signature needs no amendment."""
+    from loremaster.messages import MessageSendResult
+
+    return str(
+        AppContext._render_comms_send(
+            MessageSendResult(
+                message=_p03b_message(
+                    seq=41,
+                    grade=grade,
+                    body="the body",
+                    thread=thread,
+                    question=question,
+                    session=session,
+                    refs=[],
+                    task_id=None,
+                ),
+                recipient_names=recipient_names,
+                recipient_count=recipient_count,
+            ),
+            broadcast=broadcast,
+            session=session,
+        )
+    )
+
+
+def _render_drain_03b(
+    *,
+    entries: list[Any],
+    total_pending: int,
+    directive_pending: int,
+    peek: bool,
+    limit: int,
+    session: str,
+) -> str:
+    """Drive the REAL drain render. ``session`` is REQUIRED (B14/AC-22: it is
+    the ``{context}`` cell's thread comparand and must REACH the render)."""
+    from loremaster.messages import MessageDrainResult
+
+    return str(
+        AppContext._render_comms_drain(
+            MessageDrainResult(
+                entries=entries,
+                total_pending=total_pending,
+                directive_pending=directive_pending,
+                stamped_seqs=[] if peek else [entry.seq for entry in entries],
+                peeked=peek,
+            ),
+            agent_name="fixer-b",
+            limit=limit,
+            session=session,
+        )
+    )
+
+
+def _render_ack_03b(*, outcomes: list[tuple[int, str]], note: str | None) -> str:
+    """Drive the REAL ack render. ``note`` is REQUIRED (B5.3: the
+    ``note recorded`` line's emit predicate reads it)."""
+    from loremaster.messages import MessageAckEntry, MessageAckResult
+
+    entries = [
+        MessageAckEntry(
+            seq=seq,
+            outcome=outcome,  # type: ignore[arg-type]
+            acked_at=datetime.now(UTC) if outcome in {"acked", "already_acked"} else None,
+        )
+        for seq, outcome in outcomes
+    ]
+    return str(
+        AppContext._render_comms_ack(
+            MessageAckResult(
+                entries=entries,
+                acked_count=sum(1 for entry in entries if entry.outcome == "acked"),
+                already_acked_count=sum(
+                    1 for entry in entries if entry.outcome == "already_acked"
+                ),
+            ),
+            agent_name="fixer-b",
+            note=note,
         )
     )
 
@@ -1014,7 +1266,28 @@ _PROOF_LIST: list[PromiseProof] = [
     # --- fleet elision re-ask (§9.7 #12): remainder present vs none. ----------
     PromiseProof(
         literal="+{more} more — re-run with limit={next_limit}",
-        marker=f"{_EM_DASH} re-run with limit=5",
+        # FK-2 AUTHORIZED AMENDMENT (AC-01; DIFF-adjudication-03b §6 item 2;
+        # packet file §OPERATOR GRANT (second), `1e3a249`) — finding #182.1.
+        # THE OLD MARKER WAS ``f"{_EM_DASH} re-run with limit=5"``: value-bearing
+        # but line-INCOMPLETE, and a STRICT SUBSTRING of what the drain elision
+        # renders under the CORRECT (remainder) arithmetic B15 rules —
+        # ``+5 more unread — re-run with limit=5`` on the committed drain fixture
+        # (2 shown / 7 pending / limit 2). So the cross-satisfaction meta-test
+        # fired against a CORRECT build and stayed green against the dishonest
+        # ``shown + more`` build that renders ``limit=7``: the committed contract
+        # PUNISHED the right arithmetic and REWARDED the wrong one.
+        # Promotion (strengthen-only — the marker gets strictly longer, so every
+        # build the old marker rejected is still rejected): the FULL rendered
+        # line. ``+3 more`` is DERIVED, not chosen — the emit fixture below is
+        # 2 shown of total_active=5, and fleet's re-ask serves its WHOLE set, so
+        # more = 5 - 2 = 3 and next_limit = 5.
+        # MUTATION-PROOF OBLIGATION (adversary, MP-FK2): change the fleet
+        # render's remainder to ``total`` (or its next_limit to ``shown+more``)
+        # -> this proof's EMIT leg goes RED; and with the OLD marker restored
+        # alongside a correct ``_render_comms_drain``,
+        # ``TestNoMarkerIsCrossSatisfiedByAnotherProof`` fires — the defect this
+        # amendment removes.
+        marker=f"+3 more {_EM_DASH} re-run with limit=5",
         render_emit=lambda: _render_fleet(
             rows=[_agent("a"), _agent("b")], total_active=5, limit=2
         ),
@@ -1075,6 +1348,106 @@ _PROOF_LIST: list[PromiseProof] = [
         # point of ruling 4 is that "no such message" and "not addressed to
         # you" are DIFFERENT conditions the raw CAS collapses into one [].
         render_no_emit=lambda: _render_message_ack(outcomes=[(81, "not_addressed")]),
+    ),
+    # === packet 03b — the three NEW promise lines (§B8.2) ====================
+    # Markers are the FULL rendered line (§B8.3): the k-specific-prefix weakness
+    # of the cross-satisfaction meta-test is a pinned KNOWN BOUND
+    # (TestMarkerCrossSatisfactionBound), and a full-line marker moots it for
+    # this new population without closing the bound.
+    PromiseProof(
+        literal="question on thread {thread} — clears when a teammate's reply lands on this "
+        "thread addressed to you; your own follow-ups do not clear it",
+        marker=f"question on thread q:gate {_EM_DASH} clears when a teammate's reply lands on "
+        "this thread addressed to you; your own follow-ups do not clear it",
+        # EMIT / NO-EMIT vary EXACTLY ONE thing: whether the send was accepted
+        # as a question. Both legs are otherwise identical, so a build that
+        # emits the teach on every send fails NO-EMIT and one that never emits
+        # it fails EMIT.
+        # MUTATION-PROOF OBLIGATION (adversary, MP-B33): make the teach
+        # unconditional -> NO-EMIT RED; gate it on ``grade == 'directive'``
+        # instead of on ``question`` -> NO-EMIT RED (the no-emit leg is a
+        # DIRECTIVE that is not a question, so grade-gating cannot pass it).
+        render_emit=lambda: _render_send_03b(
+            grade="directive",
+            question=True,
+            thread="q:gate",
+            session="wave7",
+            broadcast=False,
+            recipient_names=["fixer-b"],
+            recipient_count=1,
+        ),
+        render_no_emit=lambda: _render_send_03b(
+            grade="directive",
+            question=False,
+            thread="q:gate",
+            session="wave7",
+            broadcast=False,
+            recipient_names=["fixer-b"],
+            recipient_count=1,
+        ),
+    ),
+    PromiseProof(
+        literal="re-served after ack: {seqs} — informational; these carry your ack stamp "
+        "and need no new one",
+        marker=f"re-served after ack: #91 {_EM_DASH} informational; these carry your ack "
+        "stamp and need no new one",
+        # 03a-2 R6 clause 3, ruled at §B4.2 / A-GRAFT: an acked-but-undrained
+        # message IS re-served once more, and the render must say so — otherwise
+        # a consumer reads a stamped duty it already discharged.
+        # The two legs differ ONLY in ``acked_at``; the grade is held at
+        # 'directive' on BOTH so a build keying this marker on grade rather than
+        # on the stamp fails NO-EMIT.
+        # MUTATION-PROOF OBLIGATION (adversary, MP-B42): key the line on
+        # ``seen_at``/``stamped_seqs`` instead of ``acked_at`` -> NO-EMIT RED.
+        render_emit=lambda: _render_drain_03b(
+            entries=[
+                _p03b_entry(
+                    seq=91,
+                    grade="directive",
+                    acked_at=datetime.now(UTC),
+                    thread="wave7",
+                    task_id=None,
+                    refs=[],
+                )
+            ],
+            total_pending=1,
+            directive_pending=1,
+            peek=False,
+            limit=20,
+            session="wave7",
+        ),
+        render_no_emit=lambda: _render_drain_03b(
+            entries=[
+                _p03b_entry(
+                    seq=91,
+                    grade="directive",
+                    acked_at=None,
+                    thread="wave7",
+                    task_id=None,
+                    refs=[],
+                )
+            ],
+            total_pending=1,
+            directive_pending=1,
+            peek=False,
+            limit=20,
+            session="wave7",
+        ),
+    ),
+    PromiseProof(
+        literal="note recorded on the {acked} newly acked message(s)",
+        marker="note recorded on the 1 newly acked message(s)",
+        # §B5.3: the guard covers the NOTE, not merely its presence — a note on
+        # a batch that won nothing was recorded nowhere. The NO-EMIT leg
+        # therefore CARRIES a note and wins nothing (``already_acked``), which
+        # is the discriminating case: a build gating on ``note is not None``
+        # alone passes an empty-vs-nonempty note discrimination and fails here.
+        # MUTATION-PROOF OBLIGATION (adversary, MP-B53): drop the
+        # ``acked_count > 0`` conjunct -> NO-EMIT RED.
+        render_emit=lambda: _render_ack_03b(outcomes=[(101, "acked")], note="picked it up"),
+        render_no_emit=lambda: _render_ack_03b(
+            outcomes=[(101, "already_acked")], note="picked it up"
+        ),
     ),
 ]
 
@@ -2320,3 +2693,173 @@ class TestSafeStrLiteralCoverageBound:
         assert not any("teleport" in text for text in templates), templates
         assert _scan_safe_str_source(source) == []
 
+
+
+# =========================================================================== #
+# PACKET 03b — the two ADDITIVE instruments finding #182 leaves ownerless.
+#
+# Both are ADDITIONS to this module, never edits to a committed pin: the
+# committed instruments stay exactly as they are and keep their own force.
+# Design authority: docs/plans/v2/03b-design-rulings-r2.md §B8.4 (AC-02) and
+# docs/plans/v2/receipts/2026-07-24-packet03b/DIFF-adjudication-03b.md AC-03.
+# =========================================================================== #
+
+
+def _is_placeholder_only(template: str) -> bool:
+    """Is ``template`` nothing but format fields (plus whitespace)?
+
+    The RULED form of the placeholder-only ban (AC-02 / §B8.4): **at least one
+    format field AND nothing but whitespace outside the fields.** Uses
+    :class:`string.Formatter`'s own parser rather than a regex, so what counts
+    as "a field" is exactly what ``str.format`` (and therefore ``render_line``)
+    counts as one — the parser is the same authority the render seam uses, not
+    a second opinion about it.
+    """
+    parsed = list(string.Formatter().parse(template))
+    has_field = any(field_name is not None for _lit, field_name, _spec, _conv in parsed)
+    outside_text = "".join(literal for literal, _f, _s, _c in parsed)
+    return has_field and not outside_text.strip()
+
+
+class TestNoPlaceholderOnlyTemplateIsEverClassified:
+    """AC-02 / finding #182.3 — **the ban gets an INSTRUMENT, not a paragraph.**
+
+    ``TestSafeStrLiteralCoverageBound::test_KNOWN_BOUND_a_promise_carried_in_a_
+    render_VALUE_is_not_inspected`` documents a real bound (neither scanner
+    inspects ``render_line``'s VALUE kwargs) and names its re-open trigger: the
+    day a placeholder-only, structural-LOOKING template is classified, a
+    value-carried promise goes invisible. But its assertion checks ONE literal
+    (``"{msg}"``) while its own docstring bans the whole CLASS — a failure
+    message promising a check the assertion does not perform is a FALSE GATE
+    (repo CLAUDE.md, P2 2026-07-14). Classifying ``"{line}"`` or ``"{cells}"``
+    walks straight past it.
+
+    This pin closes the any-OTHER-placeholder door. The committed bound pin is
+    UNTOUCHED and keeps asserting its own literal.
+
+    THREAT MODEL (repo law: write down who the gate is for): the HONEST
+    developer who reaches for ``render_line("{lines}", lines=...)`` to compose a
+    multi-line block and does not realise they have just moved served text out
+    of every scanner's sight. It is NOT a boundary against an author determined
+    to smuggle prose — ``render_compose`` of ``Rendered`` parts is the sanctioned
+    multi-line shape and needs no such template (§B8.4).
+    """
+
+    def test_no_classified_literal_is_placeholder_only(self) -> None:
+        classified = _classified()
+        # NON-VACUITY (AC-13): a ∀-over-collection assertion is trivially true
+        # of an empty collection. If the registry ever collapses, say so here
+        # rather than reporting a pass.
+        assert len(classified) >= 30, (
+            f"the classified set collapsed to {len(classified)} entries — this ∀-pin would "
+            f"pass vacuously; fix the registry before trusting this result"
+        )
+        offenders = sorted(text for text in classified if _is_placeholder_only(text))
+        assert not offenders, (
+            "a PLACEHOLDER-ONLY template has been classified. That is the re-open trigger "
+            "TestSafeStrLiteralCoverageBound names: neither scanner inspects render_line's "
+            "VALUE kwargs, so classifying a structural-LOOKING template makes any promise "
+            "passed through it INVISIBLE to this whole module. Close the bound (scan literal "
+            "kwarg values) BEFORE classifying one, or compose multi-line output with "
+            f"render_compose of Rendered parts (§B8.4): {offenders!r}"
+        )
+
+    @pytest.mark.parametrize("template", ["{msg}", "{line}", "{cells}", "  {lines}  ", "{a}{b}"])
+    def test_the_ban_catches_the_whole_CLASS_not_one_literal(self, template: str) -> None:
+        """DISCRIMINATION: the committed bound pin catches ``"{msg}"`` alone;
+        every sibling here is the same defect wearing a different field name."""
+        assert _is_placeholder_only(template) is True, template
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            " ",
+            ", ",
+            " · ",
+            "no unread messages",
+            "#{seq} [{grade}] {sender}→you{context}",
+            "+{more} more unread — re-run with limit={next_limit}",
+        ],
+    )
+    def test_positive_control_honest_templates_are_ADMITTED(self, template: str) -> None:
+        """POSITIVE CONTROL (a probe needs a control): the ban must not be a
+        blanket rejection. Three committed join separators and three real
+        multi-placeholder templates are admitted — so the reds above are
+        discrimination, not indiscriminate failure."""
+        assert _is_placeholder_only(template) is False, template
+        assert template in _classified(), (
+            f"{template!r} is no longer classified — this control has stopped controlling "
+            f"anything; re-derive it against the live registry"
+        )
+
+    def test_the_NAIVE_alternative_is_broken_in_BOTH_directions(self) -> None:
+        """RECEIPT for why the form above is ``_is_placeholder_only`` and not a
+        "has literal text" test. ``_has_literal_text`` is CORRECT in its own use
+        (it runs on CANONICALISED templates, where every field is already ``{}``)
+        — but adopting *that shape* as this ban would fail twice over:
+
+        * it ACCEPTS ``"{msg}"`` — the exact literal the KNOWN BOUND names — so
+          the gate would wave through the class it exists to stop; and
+        * it REJECTS ``" "`` — an honest, committed, promise-free join separator
+          — so it would go RED against a CORRECT build.
+
+        Pinned by EXECUTION, not by assertion-in-prose, so a future author who
+        "simplifies" the ban into that shape meets both failures as a red test.
+        """
+        assert _has_literal_text("{msg}") is True, (
+            "the naive shape no longer accepts '{msg}' — re-derive this receipt"
+        )
+        assert _has_literal_text(" ") is False, (
+            "the naive shape no longer rejects the ' ' separator — re-derive this receipt"
+        )
+        # And the ruled form gets BOTH right.
+        assert _is_placeholder_only("{msg}") is True
+        assert _is_placeholder_only(" ") is False
+
+
+class TestThePromiseScanReachesThe03bRenderHelpers:
+    """AC-03 / finding #182.4 — the committed reach pin is a **FLOOR**, not an
+    exact set.
+
+    ``TestTheScanReachedEveryCommsRenderHelper`` asserts ``expected - observed``
+    is empty: a helper that is NOT in ``expected`` is never demanded, so the
+    three helpers this packet adds could ship emitting nothing the scan sees and
+    the committed coverage pin would stay green. Coverage is a CHECKED variable
+    only for the names somebody wrote down.
+
+    ADDITIVE by construction: the committed ``expected`` set is untouched.
+    """
+
+    _NEW_HELPERS = frozenset(
+        {"_render_comms_send", "_render_comms_drain", "_render_comms_ack"}
+    )
+
+    def test_the_scan_observes_a_literal_from_each_03b_render_helper(self) -> None:
+        observed = {fn for fn, _line, _text in _comms_render_literals()}
+        missing = sorted(self._NEW_HELPERS - observed)
+        assert not missing, (
+            "the promise scan observed NO render template literal from these 03b helpers — "
+            "either they do not exist yet, or they compose served lines through a path this "
+            "module cannot see (an f-string outside render_line/render_join, a helper renamed "
+            "out of the _render_comms_/_comms_ prefix, or text built in a NON-comms function "
+            "and passed in — the cross-function bound). A render the scan cannot reach is a "
+            f"render whose promises ship unregistered: {missing!r}"
+        )
+
+    def test_the_MECHANISM_of_the_gap_the_committed_pin_leaves(self) -> None:
+        """Pin WHY this addition is not redundant with the committed pin, so a
+        future reader does not delete it as a duplicate: the committed
+        ``expected`` set does not name any 03b helper, and its assertion shape
+        (``expected - observed``) cannot demand a name it does not carry."""
+        committed = inspect.getsource(
+            TestTheScanReachedEveryCommsRenderHelper.test_the_scan_reached_every_comms_render_helper_that_emits
+        )
+        assert "missing = expected - observed_functions" in committed, (
+            "the committed reach pin's assertion shape changed — re-derive whether it is "
+            "still a floor before trusting this pin's rationale"
+        )
+        unnamed = sorted(name for name in self._NEW_HELPERS if name not in committed)
+        assert unnamed == sorted(self._NEW_HELPERS), (
+            "an 03b render helper is now named in the COMMITTED reach pin — the gap this "
+            f"addition covers has been closed there instead; reconcile the two: {unnamed!r}"
+        )

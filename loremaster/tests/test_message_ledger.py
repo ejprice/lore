@@ -113,6 +113,7 @@ Expected until the module lands: collection ERROR in THIS FILE —
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -2084,7 +2085,15 @@ async def _ask(
         thread=thread,
         set_status="input_required",
     )
-    return result.message.seq
+    # FK-4 (AUTHORIZED: DIFF-adjudication-03b AC-04 / §6 item 4; packet file
+    # §OPERATOR GRANT (second), `1e3a249`; precedent `42eeedc`). ``ledger: Any``
+    # makes ``result`` Any, so this return is the classic no-any-return pair —
+    # two of the 36 mypy errors 03b owns, and the ONLY two that building the
+    # surface cannot pay (the other 34 are forward references to the unbuilt
+    # ``_render_comms_*`` / ``comms(...)`` kwargs and clear themselves).
+    # STRENGTHEN-ONLY: a cast tightens the declared type at the boundary and
+    # changes NO assertion or rendered value in this closed contract.
+    return cast(int, result.message.seq)
 
 
 async def _answer(
@@ -2104,7 +2113,8 @@ async def _answer(
         recipients=[_ref(to)],
         thread=thread,
     )
-    return result.message.seq
+    # FK-4 — see ``_ask`` above for the authorization and the derivation.
+    return cast(int, result.message.seq)
 
 
 class TestTheWaitingStateIsDerived:
@@ -2590,3 +2600,262 @@ class TestAgentRefLikeHasONEHome:
             f"the shared Protocol makes its sibling import it, which is the coupling the "
             f"briefs decoupling law (briefs.py:79-89) exists to prevent"
         )
+
+
+# =========================================================================== #
+# PACKET 03b — the ledger legs 03a-2's delta table left to the IMPLEMENTING
+# packet (03b-design-rulings-r2 §B10 rows 5 and 8).
+#
+# ⚠ THIS IS A CLOSED PACKET'S CONTRACT. Every addition below cites the ruling
+# that authorizes it inline; a non-cited edit here is a violation. Nothing
+# existing is modified — these are new pins beside the committed ones.
+#
+# ⚠ NOT RE-AUTHORED (AC-25, probed): R2's two self-addressed pins already exist
+# at this baseline (``test_an_explicitly_SELF_ADDRESSED_message_on_the_question_
+# thread_is_NOT_an_answer`` and ``test_a_self_addressed_message_with_ANOTHER_
+# recipient_is_STILL_not_an_answer``, shipped during 03a-2). Re-authoring
+# committed pins duplicates them and invites drift.
+# =========================================================================== #
+
+
+class TestADuplicateSeqInOneBatchReportsPerOCCURRENCE:
+    """§B10 row 5 — 03a-2 R1, the pin the delta table assigns to this packet.
+
+    The only committed duplicate-seq test
+    (``TestACasWinnerIsAlwaysReportedAcked::test_a_REPEATED_seq_whose_edge_
+    vanishes_is_ALREADY_acked``) reaches this shape only THROUGH a hostile
+    fixture that DELETEs the edge mid-call, and it skips on ``[fake]``. The
+    ordinary path — a caller that simply lists a seq twice, which is exactly
+    what happens when an agent pastes an ACK REQUIRED trailer twice — has never
+    been pinned on either leg, and it is the semantics §B5 renders.
+    """
+
+    async def test_an_adjacent_duplicate_acks_once_and_reports_the_repeat(
+        self, message_ledger: Any
+    ) -> None:
+        [seq] = await _send_n(
+            message_ledger, 1, grade=_msg().MESSAGE_GRADE_DIRECTIVE
+        )
+        result = await message_ledger.ack(agent_id=AGENT_FIXER_B[0], seqs=[seq, seq])
+        assert [entry.outcome for entry in result.entries] == ["acked", "already_acked"], (
+            "a repeated seq must report its OWN fate per occurrence — a ledger that dedupes "
+            "the request cannot tell the render which occurrences won (R1)"
+        )
+        assert result.acked_count == 1, (
+            f"the batch stamped once but counted {result.acked_count} — the receipt would "
+            f"over-claim what this call actually did"
+        )
+        assert result.already_acked_count == 1
+        assert result.entries[1].acked_at == result.entries[0].acked_at, (
+            "the two occurrences reported DIFFERENT stamps for ONE write-once edge"
+        )
+
+    async def test_a_NON_ADJACENT_duplicate_behaves_identically(
+        self, message_ledger: Any
+    ) -> None:
+        """R1's explicitly-named variant. ``[s1, s2, s1]`` kills a build that
+        only compares each seq with its NEIGHBOUR — an adjacent-pair fixture
+        cannot see that defect, and the trailer an agent re-pastes is rarely
+        adjacent."""
+        first, second = await _send_n(
+            message_ledger, 2, grade=_msg().MESSAGE_GRADE_DIRECTIVE
+        )
+        result = await message_ledger.ack(
+            agent_id=AGENT_FIXER_B[0], seqs=[first, second, first]
+        )
+        assert [entry.seq for entry in result.entries] == [first, second, first], (
+            "the ledger re-ordered or deduped the REQUEST — request order is the contract "
+            "the render's membership pins depend on (R1)"
+        )
+        assert [entry.outcome for entry in result.entries] == [
+            "acked",
+            "acked",
+            "already_acked",
+        ]
+        assert result.acked_count == 2
+        assert result.already_acked_count == 1
+        assert result.entries[2].acked_at == result.entries[0].acked_at
+
+
+class TestTheDerivationReadsQuestionsFIRSTAndShortCircuits:
+    """§B10 row 5 — 03a-2 R4's read-order and zero-question short-circuit.
+
+    R4's whole value is that an agent with NO outstanding question pays ONE
+    indexed read, not two: ``awaiting_answer`` runs on every relevant call, and
+    the population that has no question is the common case. The short-circuit is
+    IMPLEMENTED (``if not question_rows: return None``) and, until now,
+    UNPINNED — so a refactor that hoists the deliveries read above it, or fetches
+    both concurrently, would be invisible.
+
+    Reuses ``_WriteWatch`` rather than cloning a statement recorder (ONE
+    IMPLEMENTATION). That makes these pins ``[real]``-only, exactly like the
+    watch's two committed consumers.
+
+    ⚠ KNOWN BOUND, inherited from the watch: a statement issued on a connection
+    obtained WITHOUT ``_ensure_connection`` is invisible here. Both pins
+    therefore assert on statements the watch DID see rather than on an absence
+    alone — and the zero-question pin's non-vacuity guard is that it observed
+    the questions read.
+    """
+
+    @staticmethod
+    def _matching(watch: Any, pattern: str) -> list[int]:
+        return [
+            index
+            for index, statement in enumerate(watch.statements)
+            if re.search(pattern, statement)
+        ]
+
+    async def test_zero_questions_never_issues_the_deliveries_query(
+        self, message_ledger: Any
+    ) -> None:
+        if not _is_real(message_ledger):
+            pytest.skip("statement-seam observation is a REAL-backend observation")
+        async with _WriteWatch(message_ledger) as watch:
+            waiting = await message_ledger.awaiting_answer(agent_id=AGENT_FIXER_B[0])
+        assert waiting is None
+        questions = self._matching(watch, r"FROM\s+message\b")
+        assert questions, (
+            "NON-VACUITY: the watch never saw the questions read, so an empty deliveries "
+            "list proves nothing about the short-circuit — the derivation's statements did "
+            "not reach this seam"
+        )
+        assert not self._matching(watch, r"FROM\s+to\b"), (
+            "an agent with NO outstanding question still paid for the deliveries read — the "
+            "R4 short-circuit is gone, and every no-question caller pays double (R4)"
+        )
+
+    async def test_the_questions_read_precedes_the_deliveries_read(
+        self, message_ledger: Any
+    ) -> None:
+        if not _is_real(message_ledger):
+            pytest.skip("statement-seam observation is a REAL-backend observation")
+        await _ask(message_ledger, thread="q:order")
+        async with _WriteWatch(message_ledger) as watch:
+            await message_ledger.awaiting_answer(agent_id=AGENT_FIXER_B[0])
+        questions = self._matching(watch, r"FROM\s+message\b")
+        deliveries = self._matching(watch, r"FROM\s+to\b")
+        assert questions and deliveries, (
+            f"NON-VACUITY: expected BOTH reads once a question exists; saw "
+            f"questions={questions!r} deliveries={deliveries!r} in {watch.statements!r}"
+        )
+        assert min(questions) < min(deliveries), (
+            "the deliveries read was issued BEFORE the questions read — the ordering R4 "
+            "derives is what makes the zero-question short-circuit possible at all, and a "
+            "build that reads deliveries first cannot short-circuit even when it returns "
+            "the right answer today (R4)"
+        )
+
+
+class TestOneAnswerDischargesITSWHOLETHREAD:
+    """§B10 row 8 — 03a-2 R5. The committed multi-question pins all use two
+    DIFFERENT threads, so "the answer discharged its thread" and "the answer
+    discharged that one question" are indistinguishable in the committed
+    contract. R5 is the SAME-thread case, and it is the semantics the
+    instructions block teaches (one thread carries ONE conversational debt; a
+    comprehensive reply discharges the whole thread; separate questions take
+    separate threads).
+    """
+
+    async def test_two_asks_on_ONE_thread_are_discharged_by_ONE_later_answer(
+        self, message_ledger: Any
+    ) -> None:
+        await _ask(message_ledger, thread="q:same")
+        await _ask(message_ledger, thread="q:same")
+        await _answer(message_ledger, thread="q:same")
+        waiting = await message_ledger.awaiting_answer(agent_id=AGENT_FIXER_B[0])
+        assert waiting is None, (
+            "a comprehensive on-thread reply left a debt outstanding — under R5 the THREAD "
+            "is the unit of debt, and a per-QUESTION derivation makes every multi-part "
+            f"question permanently unanswerable: {waiting!r}"
+        )
+
+    async def test_CONTROL_a_question_asked_AFTER_the_answer_is_still_outstanding(
+        self, message_ledger: Any
+    ) -> None:
+        """THE DISCRIMINATING CONTROL. Without it the pin above is satisfied by
+        a build where ANY answer on a thread discharges it FOREVER — the
+        false-NOT-waiting direction ruling 9 refuses. Discharge is bounded by
+        ``seq``, so a question asked after the reply is a NEW debt."""
+        await _ask(message_ledger, thread="q:reopen")
+        await _answer(message_ledger, thread="q:reopen")
+        second = await _ask(message_ledger, thread="q:reopen")
+        waiting = await message_ledger.awaiting_answer(agent_id=AGENT_FIXER_B[0])
+        assert waiting is not None, (
+            "a question asked AFTER the reply reads as answered — the thread was discharged "
+            "retroactively and every follow-up question is silently invisible (R5)"
+        )
+        assert waiting.question_seq == second
+        assert waiting.thread == "q:reopen"
+
+
+class TestAnAckedButUNDRAINEDMessageIsServedONCEMore:
+    """§B10 row 8 — 03a-2 R6, the anomaly path the ruling ACCEPTS.
+
+    ``seen_at`` and ``acked_at`` are INDEPENDENT stamps (R6 clause; the ack
+    deliberately does not stamp seen), so a peek-then-ack leaves a message acked
+    and unread. R6 rules that it is served ONCE more, carrying its ack stamp,
+    counted honestly — and then converges, because that drain stamps it.
+
+    The three committed ack-note pins read acked edges back through
+    ``drain(peek=True)`` and so already FORECLOSE "ack stamps seen"; none of
+    them exercises the STAMPING re-serve, its count, or the convergence. This is
+    also the ledger layer beneath §B4.2's ``re-served after ack`` render marker
+    and §B4.4's ``acked_at``-keyed trailer — the surface claim is meaningless if
+    the ledger never serves the row.
+    """
+
+    async def test_the_re_serve_carries_the_ACK_STAMP_and_is_counted(
+        self, message_ledger: Any
+    ) -> None:
+        [seq] = await _send_n(message_ledger, 1, grade=_msg().MESSAGE_GRADE_DIRECTIVE)
+        acked = await message_ledger.ack(agent_id=AGENT_FIXER_B[0], seqs=[seq])
+        assert acked.acked_count == 1
+        drained = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
+        assert [entry.seq for entry in drained.entries] == [seq], (
+            "an acked-but-UNDRAINED message was never served — the ack stamped seen_at, "
+            "collapsing two independent stamps into one and losing the row (R6)"
+        )
+        assert drained.entries[0].acked_at is not None, (
+            "the re-served entry carries no ack stamp, so the render cannot mark it as "
+            "already discharged and the consumer is nagged for a duty it has paid (R6 "
+            "clause 3 / §B4.2)"
+        )
+        assert drained.total_pending == 1, (
+            f"the acked-but-unread row was not counted as pending ({drained.total_pending}) "
+            f"— the header's count would disagree with the rows it just served"
+        )
+
+    async def test_the_re_serve_CONVERGES_the_next_drain_is_empty(
+        self, message_ledger: Any
+    ) -> None:
+        """R6's bound: served ONCE more, not forever. Without this the anomaly
+        is an infinite re-serve — an acked directive reappearing in every drain
+        for the life of the session."""
+        [seq] = await _send_n(message_ledger, 1, grade=_msg().MESSAGE_GRADE_DIRECTIVE)
+        await message_ledger.ack(agent_id=AGENT_FIXER_B[0], seqs=[seq])
+        first = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
+        assert first.stamped_seqs == [seq], (
+            "the re-serving drain did not stamp the row it served — it will be served again "
+            "on every future drain (R6 converges; it does not loop)"
+        )
+        second = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
+        assert second.entries == []
+        assert second.total_pending == 0
+
+    async def test_CONTROL_a_PEEK_does_not_consume_the_one_re_serve(
+        self, message_ledger: Any
+    ) -> None:
+        """The peek->ack->peek->drain path R6 actually describes: a peek stamps
+        nothing, so the single re-serve is still owed to the next STAMPING
+        drain. A build that converged on the peek would silently swallow it."""
+        [seq] = await _send_n(message_ledger, 1, grade=_msg().MESSAGE_GRADE_DIRECTIVE)
+        await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, peek=True)
+        await message_ledger.ack(agent_id=AGENT_FIXER_B[0], seqs=[seq])
+        peeked = await message_ledger.drain(
+            agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, peek=True
+        )
+        assert [entry.seq for entry in peeked.entries] == [seq]
+        stamping = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
+        assert [entry.seq for entry in stamping.entries] == [seq]
+        assert stamping.stamped_seqs == [seq]
