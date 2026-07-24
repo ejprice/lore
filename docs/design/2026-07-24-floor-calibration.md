@@ -488,9 +488,10 @@ Execute as one engine, in this order:
 ## Forks awaiting operator ruling
 
 > **2026-07-24, post-ruling ("let it decide the details"):** F1/F2/F4/F5/F6 are now
-> DECIDED BY DELEGATION — dispositions with rationale in Addendum B §B6. **F3 is the
-> one surviving operator fork** (verdict wording is ruled law). The list below is
-> preserved as the record of the original option space.
+> DECIDED BY DELEGATION — dispositions with rationale in Addendum B §B6. **F3 was
+> first routed to the operator and that was a MIS-FRAME (twice over — operator
+> challenge, same day): the corrected disposition is a CLIENT CONSULT, Addendum C.**
+> The list below is preserved as the record of the original option space.
 
 - **F1 — Corpus model (Q5):** pooled-first + measured per-tier conditional (R8) —
   *recommended* — vs immediate per-tier serving (packet 11 splits) vs pooled-forever.
@@ -664,8 +665,10 @@ copy (repo law).
 - **F6 — DECIDED as the default:** churn tolerance 10% inherited, with the named
   re-tune point (10 automatic adoptions or 3 months; operator reviews the
   floor-delta-vs-churn history the rows accumulate).
-- **F3 — remains the ONE operator fork:** verdict wording is ruled law. Default:
-  wording unchanged iff R2's lab validation passes.
+- **F3 — RE-DISPOSED (Addendum C, same day):** first framed here as "the one operator
+  fork" — that framing was WRONG twice over (operator challenge, 2026-07-24), and the
+  corrected disposition is a CLIENT CONSULT with a named decision point. See C2–C4;
+  this entry is preserved as the record of the error.
 
 **B7 — Consolidated build order for packet 11** (the sequence a builder executes;
 scope is R1–R8 + Addenda A/B, nothing new):
@@ -691,4 +694,122 @@ single-flight/coalescing/discard-requeue, churn counting at the shared seam,
 head-mint concurrency). Honest re-estimate crosses the 0.30 line in packet 11's own
 header. Recommended split at kickoff: **11-i "dark machinery"** (B7 steps 1–2 + the
 R2 lab validation; serving untouched; independently landable and auditable) and
-**11-ii "cutover"** (B7 steps 3–4 + 6; deploy both + smoke).
+**11-ii "cutover"** (B7 steps 3–4 + 6; deploy both + smoke). *(Executed: operator
+approved 2026-07-24; the lead split it as exactly this line —
+`11-i-floor-calibration-dark-machinery.md` / `11-ii-floor-calibration-cutover.md`,
+reviewed by this sidecar as faithful to B7.)*
+
+---
+
+## Addendum C (2026-07-24, third round — F3 re-disposed after two operator challenges)
+
+**C0 — The challenges, and why both land.** Operator, verbatim: *(A)* "How can a
+ruling on F3 be done if R2 lab verification is not done?" *(B)* "Me, the operator, is
+not the consumer of the F3 ruling. The consumer is agents (Sonnet 5, Opus, Fable) and
+each model has its own opinion on these matters… The question should be put to the
+clients, which are models."
+(B) has binding precedent this design already cited as prior art: the 2026-07-06
+weak-match consult's own header rules wording a **client design question** — *"the
+models who consume the tool decide what serves them; the operator only sequences the
+build"* (method precedent: `2026-07-04-map-test-segregation.md`,
+`2026-07-06-client-needs-consult.md`). The current wording is ruled law **because a
+three-model consult produced it** — "ruled law" means *no unilateral change*, not
+*the operator decides*. Routing F3 to the operator inverted the precedent; this
+sidecar wrote that routing and owns the error (the B6 entry is preserved, marked, not
+laundered). (A) is the repo's deferral law: "keep the wording iff R2 passes" was a
+conditional whose condition lands in 11-i — legitimate ONLY as measure-then-tune with
+a named decision point, and the *decider* named was the wrong one. Fixing the decider
+(C3) dissolves (A).
+
+**C1 — The factual half, settled at source (worktree @ `7f23223`): is the served
+phrase accurate TODAY?** What actually fed 0.50649, verified in
+`search_score_survey.py::main` and `choose_cosine_floor`:
+- The floor was selected over a **56-sample union**: 35 eval-XML prose questions
+  (human-authored) + 6 implementation-vocabulary informant probes (human-authored,
+  documented provenance per entry) + **15 identifier probes synthesized from the
+  corpus** (`sample_identifier_queries`: scrolled chunk identities, sorted, every
+  Nth — machine-derived instances of a real query class). Candidate floors are drawn
+  ONLY from that union's observed values; the nonsense set co-determines *which*
+  candidate wins (admissibility + catch), never contributes a value.
+- The specific value 0.50649 is one real sample's own measured cosine — the
+  "transitive ripple rollup for impact depth>1" probe, i.e. a HUMAN-authored
+  implementation-vocabulary query (the stamp's comment block in `search.py` records
+  this, including why 5 decimal places).
+- The measurement basis is **response-best cosines**: `VerdictSample.max_cosine` =
+  `max_cosine_of_response` — one sample per QUERY (its best shown hit), never a
+  distribution over individual hits.
+
+Verdict, per surface:
+- `_COSINE_ABSENCE_VERDICT_TEMPLATE` ("the range real answers measure on this
+  corpus"): **accurate today.** The floor bounds best-answer similarities of
+  answered queries on this corpus, and the aggregate verdict compares like with
+  like (max-of-shown-hits against a max-of-response floor).
+- `_COSINE_WEAK_MATCH_WARNING_TEMPLATE` ("below the {floor} floor **measured on
+  real-query hits**"): **a compression with two live precision gaps, today, before
+  any redesign:**
+  1. *Basis mismatch:* the floor was measured on response-BEST cosines, but the
+     per-hit flag applies it to EVERY individual hit while claiming hit-level
+     measurement. Mid-list hits of a well-answered query routinely sit below the
+     best-of-response distribution; the implied calibration basis was never
+     performed. Not a falsehood (the best hit is a hit) — an imprecision.
+  2. *Provenance blend:* "real-query" pools 41 human-authored with 15
+     corpus-synthesized probes; the phrase does not distinguish. Defensible today.
+     Under R1's self-supervised redesign the answered union becomes (near-)wholly
+     corpus-derived — the unmodified phrase would then claim a provenance the
+     instrument no longer has.
+
+**So the lead's hypothesis is CONFIRMED in shape:** F3 is not "will the redesign
+break this sentence" — the sentence is already imprecise on gap 1 and
+blend-dependent on gap 2; the redesign makes precision mandatory rather than
+optional. Gap 1 is provenance-independent and should be fixed under ANY wording
+outcome.
+
+**C2 — Corrected disposition.** F3 splits into the two questions it always was:
+(1) the factual question — settled above, no consult needed; (2) the client-fit
+question — *what wording best serves the model clients under self-supervised
+calibration* — which goes to a **three-model client consult** per the binding
+precedent. Not the operator's ruling; not this sidecar's alone.
+
+**C3 — The consult, with its decision point fully named.**
+- **Who:** Sonnet 5 + Opus informants, briefed BLIND (live probes against the 11-i
+  instance encouraged — the precedent's strongest sections were probe-grounded), a
+  Fable synthesis. **This sidecar is itself a consuming client: its preference (C4)
+  enters as a labeled first-hand data point, never the verdict** — the precedent's
+  own shape (its consultant conceded D1 to the informants; that is the protocol
+  working).
+- **Shown:** C1's factual finding; the R1 instrument design; **R2's lab-validation
+  receipts** (both floors, the measured divergence/bias); the C4 option space; the
+  standing D2 register constraint (hedged-advisory wording is ruled — hardening
+  voids the adoption ruling — and survives this consult unless re-opened with the
+  same three-model force).
+- **When:** RECOMMENDED — after 11-i lands, before 11-ii's serving swap. Rationale:
+  the consult should judge on R2's *measured* divergence, not hypotheticals; nothing
+  in 11-i needs the wording; 11-ii's entry check already gates on the disposition.
+  Running it NOW on C1's finding alone is the alternative; it buys earlier certainty
+  at the cost of judging blind on the one number that matters. **The timing choice
+  is the operator's legitimate slot (sequencing), and this is the recommendation.**
+- **Recorded by:** a dated consult doc in `docs/design/` (house format), cited by
+  11-ii's contract; outcome noted on #83's ruling trail.
+
+**C4 — The option space the consult judges (including the option this fork's
+original framing structurally barred).**
+- **W-A:** keep both phrases unchanged.
+- **W-B:** static re-word to match the new instrument (e.g. "below the floor
+  measured on this corpus's answered-probe survey").
+- **W-C — derived provenance:** the render composes its provenance clause from
+  TYPED fields of the adopted calibration row (probe basis, scope; the row is
+  dated), so a mechanism change updates the served description mechanically — repo
+  law applied to the one prose surface this design serves: *"prose that describes
+  behaviour must be DERIVED from the behaviour, not re-stated beside it."* A
+  wording change per mechanism becomes a type error at the render, not a prose bug
+  nobody can see — and F3 stops recurring at every future instrument change.
+- **This sidecar's data point (labeled as such):** W-C, with the consult judging
+  the SHAPE (which fields, what register) while the row supplies the content; and
+  gap 1 (basis mismatch) fixed regardless of which option wins.
+
+**C5 — Downstream edits this re-disposition owes (out of this packet's writable
+set — flagged for the lead, exact lines):** `11-i…dark-machinery.md` Scope OUT
+("F3 is the operator's, still open at time of writing") and `11-ii…cutover.md`
+Scope OUT + entry check ("F3 is the operator's fork" / "the operator approved the
+conditional default") should re-point at Addendum C: the gate becomes *"F3's
+client-consult outcome recorded (C3) — do not start the serving swap without it."*

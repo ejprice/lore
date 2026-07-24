@@ -3,8 +3,8 @@ brief-base v6 read
 ## SUMMARY BLOCK
 - state: done — design doc + Addenda A/B committed on `pkt10-floor-calibration-design`; operator's 2026-07-24 architecture ruling incorporated; standing by
 - deliverable: `docs/design/2026-07-24-floor-calibration.md` — §Recommendation R1–R8 (the WHAT) + Addendum B §B7 (the build order) + §B6 (fork dispositions)
-- ruling status: F1/F2/F4/F5/F6 DECIDED BY DELEGATION (doc §B6); **F3 (verdict wording) is the one surviving operator fork**, default = unchanged iff R2 lab validation passes
-- decisions-needed: F3; and packet-11 SPLIT confirmation at kickoff (§B8 — re-estimate crosses 0.30; recommended 11-i dark machinery / 11-ii cutover)
+- ruling status: F1/F2/F4/F5/F6 DECIDED BY DELEGATION (doc §B6); **F3 RE-DISPOSED as a three-model CLIENT CONSULT** (doc Addendum C — operator's two challenges both landed; the operator-fork framing was my error, owned in C0)
+- decisions-needed: consult TIMING only (operator sequences: recommended after 11-i/R2, before 11-ii — doc C3); split already executed (operator-approved, lead commit 6938281, reviewed faithful to B7)
 - deviations: (1) survey script read end-to-end, NOT executed (its default coordinate is prod :18500 — brief forbids; doc §1.5, now moot for the durable path per the ruling); (2) nothing executed from the worktree → no provenance receipt exists or is claimed
 - receipt pointers: ruling verified at the store (memory `f464cfda…`, kind=decision, re-read before citing) → doc §B0; live measurement → §1.1; source receipts → §1.2–§1.4 + A1/A2; thrash/cost story → §B2; 11a/11b composition → §B3; DDL mechanism → §B4 (capabilities §1.1–1.3/§1.5 cited); CalibrationEngine verdict → §B5
 - findings: #179 filed by me (foreign-instance per-hit surface — the ruling closes it by construction, resolution rides packet 11); #176/#177 answered in Addendum A
@@ -118,7 +118,34 @@ brief-base v6 read
 - Numbers law held: no corpus count pinned anywhere in Addendum B; cost claims are
   structural (fixed-N) with the adoption row named as the authority.
 
+## UPDATE 2026-07-24 (third round — F3 re-disposed, Addendum C)
+- Both operator challenges accepted; my error owned in C0 (routing wording to the
+  operator inverted the 2026-07-06 precedent that made the wording ruled law in the
+  first place — the precedent was in my own required-reads).
+- **Question 1 settled at source (C1):** 0.50649 was selected over a 56-sample union
+  (35 human eval questions + 6 human informant probes + 15 CORPUS-SYNTHESIZED
+  identifier probes); the value itself is a human-authored implementation-vocabulary
+  probe's own cosine; the basis is response-BEST cosines. Verdicts: the AGGREGATE
+  template is accurate today; the PER-HIT template is a compression with two live
+  gaps — (1) basis mismatch (response-best floor applied per-hit while claiming
+  hit-level measurement) and (2) provenance blend (real-query pools human + synthetic;
+  self-supervision widens the blend to near-total). Lead's hypothesis confirmed in
+  shape: already imprecise; the redesign forces the issue. Gap 1 should be fixed under
+  ANY wording outcome.
+- **Re-disposition (C2–C4):** three-model client consult (Sonnet 5 + Opus blind
+  informants with live probes, Fable synthesis; my own preference a LABELED data
+  point, never the verdict); shown C1 + R2 receipts + the option space incl. W-C
+  derived-provenance (the render composes its provenance clause from typed fields of
+  the adopted calibration row — dissolves F3's recurrence; my data point favors it);
+  recommended timing after 11-i/before 11-ii (operator sequences); recorded as a dated
+  consult doc cited by 11-ii's contract.
+- **C5 flags for the lead (files outside my writable set):** 11-i and 11-ii both still
+  say "F3 is the operator's fork" — exact re-point lines in C5.
+- Split review: 6938281 faithful to B7 (11-i = steps 1/2/5, 11-ii = steps 3/4/6;
+  F3-gate correctly at 11-ii entry).
+
 ## Standing by
-Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A+B)
+Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A+B+C)
 and this report are committed on `pkt10-floor-calibration-design`;
-idle-between-questions is expected.
+idle-between-questions is expected. Thrash/cost (§B2) is ready as the operator's next
+topic per the lead's note.
