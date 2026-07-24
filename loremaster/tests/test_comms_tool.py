@@ -4848,3 +4848,67 @@ class TestTheServedInstructionsTeachCommsMechanismsThatEXIST:
         agent that does not know this waits for a state change its own sends can
         never produce."""
         assert "your own sends never clear" in _INSTRUCTIONS.lower(), _INSTRUCTIONS
+
+
+class TestTheHarnessDoubleDoesNotHideAMissingProductionSurface:
+    """THE TEST ENVIRONMENT IS A FICTION (repo CLAUDE.md), in miniature — and
+    this file is where the fiction lives.
+
+    ``_harness`` is a ``SimpleNamespace`` double carrying exactly the attributes
+    ``AppContext.comms`` touches. That is a deliberate, documented testing
+    strategy and it is the right one for dispatch logic — but it means the double
+    DECLARES the production surface rather than checking it. Measured at 03b's
+    contract wave (2026-07-24), against a full reference build of the S4/S5
+    surface: the ENTIRE comms contract went **1060 passed / 0 failed** while the
+    real ``CommsConfig`` had no ``drain_limit`` field and the real ``AppContext``
+    took no ``message_ledger`` argument. No test could see it — every one of them
+    was handed a namespace that had both. Only mypy against the real classes did,
+    and 03b owns global mypy-zero.
+
+    "What CONDITION does this fixture guarantee, and does production guarantee the
+    opposite?" The double guarantees the dependency EXISTS. Production, today,
+    guarantees it does not.
+
+    The committed contract already leans on both:
+    ``TestDrainAndAckAtTheDispatcher::test_drain_defaults_to_the_configured_limit_
+    not_a_hardcoded_one`` states the drain window is ``comms.drain_limit`` config
+    "like ``fleet_limit``, never a literal buried in the handler" — a premise
+    nothing checked. These pins check it.
+    """
+
+    def test_CommsConfig_declares_the_drain_window_as_CONFIG(self) -> None:
+        from loremaster.config import CommsConfig
+
+        assert "drain_limit" in CommsConfig.model_fields, (
+            "CommsConfig has no 'drain_limit' — the drain window is then a literal buried in "
+            "the handler, which the committed dispatcher pin explicitly forbids, and the "
+            "SimpleNamespace harness cannot see the difference"
+        )
+        assert isinstance(CommsConfig().drain_limit, int), (
+            "drain_limit must carry a usable default like its fleet_limit sibling — a "
+            "required field would break every existing lore.yaml"
+        )
+
+    def test_AppContext_actually_TAKES_a_message_ledger(self) -> None:
+        import inspect
+
+        parameters = inspect.signature(AppContext.__init__).parameters
+        assert "message_ledger" in parameters, (
+            "AppContext takes no 'message_ledger' — the dispatcher's handlers reach for "
+            "self.message_ledger, so every lore_comms send/drain/ack raises AttributeError "
+            "in the ARTIFACT while this suite stays green on a namespace double that has it"
+        )
+
+    def test_POSITIVE_CONTROL_the_already_wired_siblings_pass_the_same_checks(self) -> None:
+        """A PROBE NEEDS A CONTROL. ``fleet_limit`` and ``agent_registry`` are the
+        wired siblings of the two above; if the introspection below could not see
+        THEM, the two pins would be failing for a reason that has nothing to do
+        with the comms surface."""
+        import inspect
+
+        from loremaster.config import CommsConfig
+
+        assert "fleet_limit" in CommsConfig.model_fields
+        assert isinstance(CommsConfig().fleet_limit, int)
+        parameters = inspect.signature(AppContext.__init__).parameters
+        assert "agent_registry" in parameters and "brief_ledger" in parameters
