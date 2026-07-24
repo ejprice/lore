@@ -12,6 +12,15 @@
 # Registered from the project's committed .claude/settings.json (promoted from a
 # local trial 2026-07-04 after a successful first live firing). Portable: the
 # repo root is derived from this script's own location, never hardcoded.
+#
+# WORKTREES (fixed 2026-07-24, packet 10-d cold audit residual 9.9): this script always
+# lives in the MAIN checkout, so BASH_SOURCE resolves there no matter which tree the
+# agent was assigned. A worktree-assigned agent's COMMITTED report therefore read as
+# "missing" and burned its one-shot nudge on a false positive — measured, every packet-10
+# agent, every idle. The report is now looked for in this root AND in every registered
+# worktree. That is strictly a superset of the old check: it can only ever REMOVE false
+# nudges, never add one. Why it matters beyond the noise (CLAUDE.md): a gate that refuses
+# honest work is a gate that gets switched off — and then nothing is watching at all.
 
 set -u
 
@@ -24,10 +33,21 @@ session_id=$(jq -r '.session_id // "nosession"' <<<"${hook_input}" 2>/dev/null)
 [ -z "${teammate_name}" ] && exit 0
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-report_file="${repo_root}/REPORT-${teammate_name}.md"
+report_name="REPORT-${teammate_name}.md"
 
 # Ground truth says the agent delivered: allow the idle.
-[ -f "${report_file}" ] && exit 0
+[ -f "${repo_root}/${report_name}" ] && exit 0
+
+# The agent may have been assigned a linked WORKTREE (see the WORKTREES note above), where
+# its report is committed at that tree's root. Check every registered worktree before
+# concluding the report is missing. Best-effort BY DESIGN: if git is absent (#131 — the
+# deployed image had no git binary) or this is not a repo, the loop simply yields nothing
+# and we fall through to the pre-existing nudge behaviour. The awk strips the leading
+# "worktree " key rather than taking $2, so paths containing spaces survive intact.
+while IFS= read -r worktree_root; do
+    [ -n "${worktree_root}" ] && [ -f "${worktree_root}/${report_name}" ] && exit 0
+done < <(git -C "${repo_root}" worktree list --porcelain 2>/dev/null \
+         | awk '/^worktree /{ sub(/^worktree /, ""); print }')
 
 # Once-per-agent-per-session semantics: a marker records that this teammate was
 # already nudged; a second idle without a report is allowed through (it is most
