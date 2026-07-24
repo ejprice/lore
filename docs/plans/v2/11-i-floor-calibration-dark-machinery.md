@@ -65,3 +65,15 @@ before the builder; cold audit. **No deploy** — prove the machinery with the l
 verb and the suite. Report the measured floor and its provenance (probe strategy, corpus,
 embedder+prompt fingerprint, date) as a receipt. INDEX row + Log. Findings stay OPEN — they
 resolve in 11-ii when the mechanism actually serves.
+
+**R2's measurement is a HANDOFF, not just an exit receipt — two downstream decisions block
+on it (operator ruling 2026-07-24: "we need to measure first"):**
+1. **The F3 client consult runs AFTER this packet, before 11-ii**, so the models judge on
+   R2's real divergence between the self-supervised and human-probe floors rather than on
+   hypotheticals. Publish that divergence in a form a consult can be shown.
+2. **#180's fix (basis mismatch) is a design choice that wants the same discipline.** Its
+   magnitude — how often a best-of-response-calibrated floor over-flags mid-list hits — is
+   UNMEASURED. If R2's instrument can cheaply emit the per-hit cosine distribution alongside
+   the per-response maxima, capture it here: that is the number the 11-ii design decision
+   needs, and packet 35 is the only other place it comes from. If it cannot, say so — do not
+   synthesise it.
