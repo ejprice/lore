@@ -4802,6 +4802,53 @@ class TestRenderCommsDrainShape:
 
     # -- AUTHORIZED AMENDMENT 10: S4.2 branch 3, ruled reachable (D2 -> reading A)
 
+    def test_the_session_kwarg_is_REQUIRED_and_never_DEFAULTED(self) -> None:
+        """The half of the ruling that is otherwise only PROSE.
+
+        D2 ruled the kwarg "REQUIRED, never defaulted", and gave the reason: a
+        defaulted branch-comparand lets any call site silently make branch 3
+        unreachable again — the fixture-monoculture hazard moved down to the
+        SIGNATURE layer. Nothing else in this contract enforces it. A builder who
+        ships ``session: str = ""`` satisfies every behavioural pin above (they
+        all pass a session explicitly) while leaving the door the ruling closed
+        standing wide open for the next call site — and this repo has already paid
+        for exactly that shape twice, at ``_p03_entry``'s ``acked_at`` (amendment
+        8, which pinned the same property as a ``TypeError``) and at ``_brief()``'s
+        ``name``.
+
+        Keyword-ONLY is pinned with it: the house shape is
+        ``_render_comms_send(result, *, broadcast, session)``, and a positional
+        ``session`` would let an argument land there by position — the same silent
+        wrong value from the other direction."""
+        import inspect
+
+        parameter = inspect.signature(AppContext._render_comms_drain).parameters["session"]
+        assert parameter.default is inspect.Parameter.empty, (
+            "`session` carries a DEFAULT — D2 ruled it REQUIRED precisely so that no call site "
+            f"can silently make branch 3 unreachable again (default was {parameter.default!r})"
+        )
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, (
+            f"`session` must be keyword-only, matching `_render_comms_send`: {parameter.kind}"
+        )
+
+    def test_POSITIVE_CONTROL_the_default_probe_can_actually_see_a_default(self) -> None:
+        """The control the pin above needs: `inspect` reporting ``empty`` must
+        MEAN something. A probe that reported ``empty`` unconditionally — or that
+        read the wrong parameter — would green-light the very build the pin
+        exists to reject, which is the "passed for the WRONG REASON" class this
+        repo made standing law."""
+        import inspect
+
+        def _defaulted(result: Any, *, session: str = "wave7") -> None:  # pragma: no cover
+            """A deliberately WRONG-shaped twin of the ruled signature."""
+
+        wrong = inspect.signature(_defaulted).parameters["session"]
+        assert wrong.default == "wave7", (
+            "POSITIVE CONTROL FAILED: the probe cannot see a default that is demonstrably "
+            f"there, so its verdict on the real signature is worthless: {wrong.default!r}"
+        )
+        assert wrong.default is not inspect.Parameter.empty
+
     async def test_a_SESSION_DEFAULT_thread_draws_no_cell_but_a_DELIBERATE_one_does(
         self,
     ) -> None:
