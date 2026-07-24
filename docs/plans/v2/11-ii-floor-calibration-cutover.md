@@ -55,6 +55,18 @@ never re-transcribe).
   packet's whole risk framing assumes it is reviving dark surfaces, not swapping live ones.
 - **F3's client-consult outcome recorded** (design doc §C3). Do not start the serving swap
   without it.
+- ⚠⚠ **THE 10-d TRAP — read this before writing a line of code (cold audit `d5345ad`, R-11ii).**
+  **Packet 10-d MASKED #176; it did not FIX it.** `_format_result`'s per-hit gate still reads
+  `_COSINE_WEAK_MATCH_FLOOR is not None and … cosine < floor` with **NO `disarmed_by_drift`
+  term** — the disarm works only because the constant is `None`. **The instant this packet
+  arms the floor by giving that constant a value, #176 returns intact and instantly.**
+  Therefore: this packet carries an EXPLICIT PIN for the per-hit drift gate, mutation-proven,
+  and may NOT treat 10-d as having addressed #176. A build that arms the floor and passes the
+  old pins is exactly the wrong build this entry exists to catch.
+  **Its sibling, same inheritance (audit Finding B):** `_cosine_absence_verdict`'s docstring
+  still says *"the per-hit weak-match flag/substrate line are unaffected — see their own gates
+  below"* — the sentence #176 quotes verbatim as a false promise. Untouched by 10-d, harmless
+  while dark, **live and wrong the moment you arm.** Fix it in the same breath as the gate.
 - **#180 has a ruled fix.** The BASIS MISMATCH is independent of both the F3 wording consult
   and the R1 probe redesign: the floor is calibrated on best-of-response cosines
   (`max_cosine_of_response`) and served per-hit, so mid-list hits are judged against a
