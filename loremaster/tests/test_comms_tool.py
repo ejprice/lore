@@ -3683,11 +3683,35 @@ def _inbox_entry(
     grade: str = "signal",
     body: str = "the body",
     sender_name: str = "lead",
-    thread: str = "wave7",
+    thread: str,
     task_id: str | None = None,
     refs: list[str] | None = None,
     acked_at: datetime | None = None,
 ) -> Any:
+    """An ``InboxEntry`` for the drain-render drivers.
+
+    AUTHORIZED AMENDMENT 10 / D10 (operator 2026-07-24): ``thread`` carries NO
+    DEFAULT. S4.2's branch 3 (D2 → reading A) makes the drain render BRANCH on
+    ``thread != session``, which brings this field under the same law that removed
+    ``acked_at``'s default from this factory's sibling ``_p03_entry`` (amendment 8,
+    where a defaulted branch-comparand WAS R3's root cause).
+
+    Two things this docstring must say, because both were argued and both decided
+    the shape:
+
+    * **"Today's pins already discriminate" is a DATED RECEIPT, not a standing
+      property.** The exposure of a defaulted comparand is definitionally to the
+      NEXT pin — written on the one day nobody re-runs the coverage analysis. This
+      packet's own S1 exists because an untested coverage premise hands a hole an
+      alibi; a fresh one was not ratified over a field this packet made
+      branched-on.
+    * **The comparison has TWO comparands, so half the law is none of it.** Closing
+      only this factory leaves the generator alive one layer down: a pin routed
+      through a session-defaulting DRIVER tests one branch exactly as silently as
+      one routed through a thread-defaulting FACTORY. ``_render``'s ``session`` is
+      required for the same reason and in the same wave.
+
+    Every existing call site states ``thread="wave7"``; no rendered value moved."""
     return _msg().InboxEntry(
         seq=seq,
         message_id=f"{seq:026x}",
@@ -3725,7 +3749,7 @@ def _drain_result(
     directive_pending: int | None = None,
     peeked: bool = False,
 ) -> Any:
-    rows = entries if entries is not None else [_inbox_entry()]
+    rows = entries if entries is not None else [_inbox_entry(thread="wave7")]
     return _msg().MessageDrainResult(
         entries=rows,
         total_pending=total_pending if total_pending is not None else len(rows),
@@ -3787,7 +3811,7 @@ async def _render_send_thread(value: str, _ctx: Any) -> str:
 
 async def _render_drain_body(value: str, _ctx: Any) -> str:
     return AppContext._render_comms_drain(
-        _drain_result(entries=[_inbox_entry(body=value)]),
+        _drain_result(entries=[_inbox_entry(body=value, thread="wave7")]),
         agent_name="fixer-b",
         limit=20,
         session="wave7",
@@ -3796,7 +3820,7 @@ async def _render_drain_body(value: str, _ctx: Any) -> str:
 
 async def _render_drain_sender(value: str, _ctx: Any) -> str:
     return AppContext._render_comms_drain(
-        _drain_result(entries=[_inbox_entry(sender_name=value)]),
+        _drain_result(entries=[_inbox_entry(sender_name=value, thread="wave7")]),
         agent_name="fixer-b",
         limit=20,
         session="wave7",
@@ -4605,7 +4629,7 @@ class TestRenderCommsDrainShape:
         total_pending: int | None = None,
         peeked: bool = False,
         limit: int = 20,
-        session: str = "wave7",
+        session: str,
     ) -> str:
         """Drive the REAL drain render (AMENDMENT 10 added ``session``).
 
@@ -4640,7 +4664,10 @@ class TestRenderCommsDrainShape:
         ("ack-nudges key on ``acked_at``, NEVER on ``seen_at``; an acked directive
         never re-nags"), enforced here on 03b's OWN surface rather than only on
         packet 04's footer."""
-        rendered = self._render([_inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC))])
+        rendered = self._render(
+            [_inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC), thread="wave7")],
+            session="wave7",
+        )
         assert "#82" in rendered, f"fixture check: the acked directive row must still be SERVED: {rendered!r}"
         assert self._ACK_REQUIRED not in rendered, (
             "an ALREADY-ACKED directive drew an ACK REQUIRED demand — the trailer is keyed on "
@@ -4657,9 +4684,10 @@ class TestRenderCommsDrainShape:
         digits, no shared substring — so neither assertion can pass by accident."""
         rendered = self._render(
             [
-                _inbox_entry(seq=71, grade="directive", acked_at=None),
-                _inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC)),
-            ]
+                _inbox_entry(seq=71, grade="directive", acked_at=None, thread="wave7"),
+                _inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC), thread="wave7"),
+            ],
+            session="wave7",
         )
         line = _drain_line_containing(rendered, self._ACK_REQUIRED)
         assert "71" in line, f"the UNACKED directive must be demanded: {line!r}"
@@ -4674,9 +4702,10 @@ class TestRenderCommsDrainShape:
         directive would pass the discrimination for the wrong reason."""
         rendered = self._render(
             [
-                _inbox_entry(seq=71, grade="directive", acked_at=None),
-                _inbox_entry(seq=82, grade="directive", acked_at=None),
-            ]
+                _inbox_entry(seq=71, grade="directive", acked_at=None, thread="wave7"),
+                _inbox_entry(seq=82, grade="directive", acked_at=None, thread="wave7"),
+            ],
+            session="wave7",
         )
         line = _drain_line_containing(rendered, self._ACK_REQUIRED)
         assert "71" in line and "82" in line, line
@@ -4691,7 +4720,10 @@ class TestRenderCommsDrainShape:
         parameter the code could branch on — repo law: "if the code can branch on
         a value, at least one pin must use a DIFFERENT value". A build that only
         reports already-acked DIRECTIVES passes the proof and fails here."""
-        rendered = self._render([_inbox_entry(seq=93, grade="signal", acked_at=datetime.now(UTC))])
+        rendered = self._render(
+            [_inbox_entry(seq=93, grade="signal", acked_at=datetime.now(UTC), thread="wave7")],
+            session="wave7",
+        )
         line = _drain_line_containing(rendered, self._ALREADY_ACKED)
         assert "93" in line, line
 
@@ -4702,9 +4734,10 @@ class TestRenderCommsDrainShape:
         never sees until this line existed (DESIGN-LAW §1.6)."""
         rendered = self._render(
             [
-                _inbox_entry(seq=71, grade="directive", acked_at=None),
-                _inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC)),
-            ]
+                _inbox_entry(seq=71, grade="directive", acked_at=None, thread="wave7"),
+                _inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC), thread="wave7"),
+            ],
+            session="wave7",
         )
         demanded = _drain_line_containing(rendered, self._ACK_REQUIRED)
         settled = _drain_line_containing(rendered, self._ALREADY_ACKED)
@@ -4712,7 +4745,10 @@ class TestRenderCommsDrainShape:
         assert "82" in settled and "71" not in settled, settled
 
     async def test_no_ALREADY_ACKED_trailer_when_nothing_is_acked(self) -> None:
-        rendered = self._render([_inbox_entry(seq=71, grade="directive", acked_at=None)])
+        rendered = self._render(
+            [_inbox_entry(seq=71, grade="directive", acked_at=None, thread="wave7")],
+            session="wave7",
+        )
         assert self._ALREADY_ACKED not in rendered, rendered
 
     # -- S4.2's elision arithmetic --------------------------------------------
@@ -4728,7 +4764,10 @@ class TestRenderCommsDrainShape:
         caller has already read — and the fixture is chosen so the two answers
         differ: 2 shown of 7 pending gives more=5 and shown+more=7."""
         rendered = self._render(
-            [_inbox_entry(seq=61), _inbox_entry(seq=62)], total_pending=7, limit=2
+            [
+                _inbox_entry(seq=61, thread="wave7"),
+                _inbox_entry(seq=62, thread="wave7")], total_pending=7, limit=2, session="wave7",
+            
         )
         line = _drain_line_containing(rendered, self._ELISION)
         assert "+5" in line, f"the elided count must be total_pending - shown = 5: {line!r}"
@@ -4740,7 +4779,12 @@ class TestRenderCommsDrainShape:
         assert "limit=2" not in line, f"the re-ask must not merely echo the caller's limit: {line!r}"
 
     async def test_no_elision_line_when_the_window_covered_everything(self) -> None:
-        rendered = self._render([_inbox_entry(seq=61), _inbox_entry(seq=62)], total_pending=2, limit=2)
+        rendered = self._render(
+            [_inbox_entry(seq=61, thread="wave7"), _inbox_entry(seq=62, thread="wave7")],
+            total_pending=2,
+            limit=2,
+            session="wave7",
+        )
         assert self._ELISION not in rendered, rendered
 
     # -- S4.2's peek rule (binding) -------------------------------------------
@@ -4750,33 +4794,41 @@ class TestRenderCommsDrainShape:
         ONLY. A peek is look-don't-consume; an ack demand on a peek MANUFACTURES
         the peek->ack anomaly 03a2-R6's render law exists to contain (the agent
         acks what it never had served, and the row then re-serves)."""
-        entries = [_inbox_entry(seq=71, grade="directive", acked_at=None)]
-        assert self._ACK_REQUIRED not in self._render(entries, peeked=True)
-        assert self._ACK_REQUIRED in self._render(entries, peeked=False), (
+        entries = [_inbox_entry(seq=71, grade="directive", acked_at=None, thread="wave7")]
+        assert self._ACK_REQUIRED not in self._render(entries, peeked=True, session="wave7")
+        assert self._ACK_REQUIRED in self._render(entries, peeked=False, session="wave7"), (
             "POSITIVE CONTROL FAILED: the trailer does not fire on the STAMPING drain either, "
             "so the peek assertion above passes for the wrong reason"
         )
 
     async def test_a_PEEK_serves_no_ALREADY_ACKED_trailer(self) -> None:
-        entries = [_inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC))]
-        assert self._ALREADY_ACKED not in self._render(entries, peeked=True)
-        assert self._ALREADY_ACKED in self._render(entries, peeked=False), "POSITIVE CONTROL FAILED"
+        entries = [_inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC), thread="wave7")]
+        assert self._ALREADY_ACKED not in self._render(entries, peeked=True, session="wave7")
+        assert self._ALREADY_ACKED in self._render(
+            entries, peeked=False, session="wave7"
+        ), "POSITIVE CONTROL FAILED"
 
     async def test_a_PEEK_serves_no_elision_line(self) -> None:
-        entries = [_inbox_entry(seq=61), _inbox_entry(seq=62)]
-        assert self._ELISION not in self._render(entries, total_pending=7, limit=2, peeked=True), (
+        entries = [_inbox_entry(seq=61, thread="wave7"), _inbox_entry(seq=62, thread="wave7")]
+        assert self._ELISION not in self._render(
+            entries, total_pending=7, limit=2, peeked=True, session="wave7"
+        ), (
             "a peek rendered the elision re-ask — its own header already discloses 'shown of "
             "total', and the re-ask would teach a re-run that stamps what the caller asked NOT "
             "to stamp"
         )
-        assert self._ELISION in self._render(entries, total_pending=7, limit=2, peeked=False), (
-            "POSITIVE CONTROL FAILED"
-        )
+        assert self._ELISION in self._render(
+            entries, total_pending=7, limit=2, peeked=False, session="wave7"
+        ), "POSITIVE CONTROL FAILED"
 
     async def test_a_PEEK_still_serves_its_header_and_rows(self) -> None:
         """The discrimination that stops "a peek renders nothing" from passing the
         three pins above: header + rows are exactly what a peek DOES serve."""
-        rendered = self._render([_inbox_entry(seq=71, grade="directive")], peeked=True)
+        rendered = self._render(
+            [_inbox_entry(seq=71, grade="directive", thread="wave7")],
+            peeked=True,
+            session="wave7",
+        )
         assert "#71" in rendered, rendered
         assert "nothing stamped" in rendered, rendered
 
@@ -4787,7 +4839,10 @@ class TestRenderCommsDrainShape:
         BOTH a task and a non-session thread — a fixture with only one of them
         cannot see a build that renders both cells, or one that picks the wrong
         winner."""
-        rendered = self._render([_inbox_entry(seq=71, task_id="T-9", thread="q:cap-boundary")])
+        rendered = self._render(
+            [_inbox_entry(seq=71, task_id="T-9", thread="q:cap-boundary")],
+            session="wave7",
+        )
         row = _drain_line_containing(rendered, "#71")
         assert "T-9" in row, f"the task cell must win when task_id is present: {row!r}"
         assert "q:cap-boundary" not in row, (
@@ -4796,7 +4851,10 @@ class TestRenderCommsDrainShape:
         )
 
     async def test_the_context_cell_falls_back_to_the_THREAD(self) -> None:
-        rendered = self._render([_inbox_entry(seq=71, task_id=None, thread="q:cap-boundary")])
+        rendered = self._render(
+            [_inbox_entry(seq=71, task_id=None, thread="q:cap-boundary")],
+            session="wave7",
+        )
         row = _drain_line_containing(rendered, "#71")
         assert "q:cap-boundary" in row, row
 

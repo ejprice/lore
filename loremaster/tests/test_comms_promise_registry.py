@@ -782,7 +782,7 @@ def _p03_message(
     )
 
 
-def _p03_entry(*, seq: int, acked_at: Any, grade: str = "signal") -> Any:
+def _p03_entry(*, seq: int, acked_at: Any, thread: str, grade: str = "signal") -> Any:
     """An ``InboxEntry`` for the drain-render drivers.
 
     AUTHORIZED AMENDMENT 8 (operator 2026-07-24): ``acked_at`` carries NO DEFAULT.
@@ -794,6 +794,16 @@ def _p03_entry(*, seq: int, acked_at: Any, grade: str = "signal") -> Any:
     code branches on) — and the 03b drain render branches on ``acked_at`` TWICE
     (the ACK REQUIRED trailer and the ALREADY ACKED trailer). No default ⇒ the next
     author to add a proof must CHOOSE, and the monoculture cannot re-form silently.
+
+    AUTHORIZED AMENDMENT 10 / D10 (operator 2026-07-24): ``thread`` is now a
+    PARAMETER, and a REQUIRED one. It was previously HARDCODED here — a monoculture
+    with no dial at all — which was harmless only while the drain render merely
+    INTERPOLATED the thread. S4.2's branch 3 (D2 → reading A) makes the render
+    BRANCH on ``thread != session``, so the same law that removed ``acked_at``'s
+    default now reaches its neighbour: the exposure of a defaulted branch-comparand
+    is definitionally to the NEXT pin, the one moment nobody re-runs today's
+    coverage analysis. Every existing call site states ``thread="wave7"`` and its
+    rendered value is unchanged.
     """
     from loremaster.messages import InboxEntry
 
@@ -802,7 +812,7 @@ def _p03_entry(*, seq: int, acked_at: Any, grade: str = "signal") -> Any:
         message_id=f"{seq:026x}",
         grade=grade,  # type: ignore[arg-type]
         sender_name="lead",
-        thread="wave7",
+        thread=thread,
         task_id=None,
         body=f"body of {seq}",
         refs=[],
@@ -1126,10 +1136,10 @@ _PROOF_LIST: list[PromiseProof] = [
         "re-run without peek=true to mark them seen",
         marker="nothing stamped; re-run without peek=true to mark them seen",
         render_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=51, acked_at=None)], total_pending=1, peek=True
+            entries=[_p03_entry(seq=51, acked_at=None, thread="wave7")], total_pending=1, peek=True
         ),
         render_no_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=51, acked_at=None)], total_pending=1, peek=False
+            entries=[_p03_entry(seq=51, acked_at=None, thread="wave7")], total_pending=1, peek=False
         ),
     ),
     PromiseProof(
@@ -1139,12 +1149,18 @@ _PROOF_LIST: list[PromiseProof] = [
         # pending — N > cap, the fixture shape no comms contract had ever
         # written. NO-EMIT: the same rows with nothing elided.
         render_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=61, acked_at=None), _p03_entry(seq=62, acked_at=None)],
+            entries=[
+                _p03_entry(seq=61, acked_at=None, thread="wave7"),
+                _p03_entry(seq=62, acked_at=None, thread="wave7"),
+            ],
             total_pending=7,
             limit=2,
         ),
         render_no_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=61, acked_at=None), _p03_entry(seq=62, acked_at=None)],
+            entries=[
+                _p03_entry(seq=61, acked_at=None, thread="wave7"),
+                _p03_entry(seq=62, acked_at=None, thread="wave7"),
+            ],
             total_pending=2,
             limit=2,
         ),
@@ -1156,10 +1172,10 @@ _PROOF_LIST: list[PromiseProof] = [
         # the trailer for EVERY served row (rather than for directives) passes
         # an empty-vs-nonempty discrimination and fails this one.
         render_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=71, grade="directive", acked_at=None)], total_pending=1
+            entries=[_p03_entry(seq=71, grade="directive", acked_at=None, thread="wave7")], total_pending=1
         ),
         render_no_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=71, grade="signal", acked_at=None)], total_pending=1
+            entries=[_p03_entry(seq=71, grade="signal", acked_at=None, thread="wave7")], total_pending=1
         ),
     ),
     PromiseProof(
@@ -1196,11 +1212,11 @@ _PROOF_LIST: list[PromiseProof] = [
         # leg is an UNACKED DIRECTIVE, i.e. the row that legitimately draws the
         # sibling ACK REQUIRED trailer, never an empty drain.
         render_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=91, grade="directive", acked_at=datetime.now(UTC))],
+            entries=[_p03_entry(seq=91, grade="directive", acked_at=datetime.now(UTC), thread="wave7")],
             total_pending=1,
         ),
         render_no_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=91, grade="directive", acked_at=None)], total_pending=1
+            entries=[_p03_entry(seq=91, grade="directive", acked_at=None, thread="wave7")], total_pending=1
         ),
     ),
 ]
