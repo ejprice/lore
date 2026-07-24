@@ -564,17 +564,150 @@ class _TraceRecorder:
     Keyword-only by construction: ``record_trace`` is keyword-only on the real
     store, so a build calling it positionally fails here with a ``TypeError``
     rather than silently working against a friendlier double.
+
+    **IT BINDS AGAINST THE REAL SIGNATURE, AND THAT IS THE STRUCTURAL PROPERTY:**
+    every call is first bound through ``inspect.signature(SurrealStore.record_trace)``,
+    so **the double can never accept what the real signature would reject.** A
+    keyword the real store does not declare, or a required one the seam forgot,
+    raises here exactly as it would there — which turns EVERY double-backed pin in
+    this file (success, error, cancellation, all eight identity legs, the hostile
+    body, the params-hash battery, all 16 coverage parametrisations) into an
+    end-to-end signature check, by construction rather than by remembering to add a
+    cell.
+
+    That is the fix for a defect CLASS, not for three instances of it. Three
+    grading rounds found the same shape three times — a bad kwarg supplied only for
+    successful calls (W11-adjacent), only against a real store (**W30**), only for
+    real tools (**W33**), then only on a real tool's FAILURE path (**D4**) and only
+    on a CANCELLED dispatch (**D6**). Each was a CELL of the input matrix
+    (outcome × store × subject), and chasing cells one pin at a time is the
+    enumerate-the-forbidden shape this repo has watched lose six times. Binding
+    against the real signature makes the whole matrix hold at once, and **signature
+    drift now reddens every consumer instantly** instead of silently widening the
+    double.
+
+    HONEST BOUND, stated so nobody over-trusts it: ``Signature.bind`` checks NAMES
+    and ARITY, never TYPES or values. A wrong-TYPED argument still passes here and
+    is caught only against the real engine — which is what
+    :class:`TestADispatchLandsARealRowInTheRealTraceTable` (MP-A/MP-H) and
+    ``test_the_widened_columns_still_REJECT_a_wrong_typed_value`` (R7) are for.
+    The binder replaces the cell-chasing, not the real-store legs.
     """
+
+    # Bound against the REAL store's signature, resolved once. Deliberately the
+    # PRODUCTION signature object rather than a transcribed name list: a list is a
+    # copy that goes stale, and the copy is the hole.
+    _REAL_SIGNATURE = inspect.signature(SurrealStore.record_trace)
 
     def __init__(self, *, failure: BaseException | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
         self._failure = failure
 
     async def record_trace(self, **fields: Any) -> None:
-        """Record (then optionally fail) one emission."""
+        """Bind against the real signature, then record (then optionally fail).
+
+        Binding happens BEFORE the append and before any injected failure, because
+        the real store writes NOTHING when the call itself is malformed: a
+        signature mismatch must leave ``calls`` empty, so the pin that expected a
+        row fails on the row's absence exactly as it would in production (where
+        T5.1's ruled swallow logs the ``TypeError`` and serves the tool anyway).
+
+        Raises:
+            TypeError: The emission passed a keyword the real ``record_trace``
+                does not declare, or omitted one it requires.
+        """
+        # ``None`` stands in for the bound ``self`` the unbound signature carries.
+        self._REAL_SIGNATURE.bind(None, **fields)
         self.calls.append(dict(fields))
         if self._failure is not None:
             raise self._failure
+
+
+class TestTheDoubleBindsAgainstTheRealSignature:
+    """The CONTROL for :class:`_TraceRecorder`'s binder — the file's own oracle.
+
+    Every double-backed pin in this file now leans on the binder, so a binder that
+    silently accepted everything would return the whole contract to the state three
+    grading rounds found holes in — and it would do so INVISIBLY, because a
+    permissive double makes pins PASS. An instrument with no control is exactly how
+    the unsatisfiable ordinal predicate (MP-C) survived authorship; this is that
+    lesson applied to the harness itself, before an adversary has to apply it for
+    me.
+
+    Three directions, because a one-directional control is how a binder that
+    rejects EVERYTHING would also pass: reject the unknown · accept the legal ·
+    reject the missing-required.
+    """
+
+    # Deliberately the set of names that binds under BOTH the committed signature
+    # (where `hit_count`/`session` are REQUIRED) and the T8 one (where they are
+    # optional). This control's subject is the BINDER; if the fixture only bound
+    # post-T8, these legs would be RED today for T8's reason and would isolate
+    # nothing — a control that fails for a neighbouring reason is not a control.
+    # T8's own signature change is pinned by FK-3b, where it belongs.
+    _LEGAL_CALL: dict[str, Any] = {
+        "tool": _SEAM_TOOL,
+        "params_hash": _SEAM_PARAMS_HASH,
+        "latency_ms": _SEAM_LATENCY_MS,
+        "hit_count": None,
+        "session": _DECLARED_SESSION,
+    }
+
+    async def test_a_keyword_the_real_store_does_not_declare_is_REJECTED(self) -> None:
+        recorder = _TraceRecorder()
+        with pytest.raises(TypeError) as rejected:
+            await recorder.record_trace(**self._LEGAL_CALL, request_id="not-a-real-column")
+        assert "request_id" in str(rejected.value), (
+            f"the double rejected the call but did not NAME the offending keyword; a builder "
+            f"reading this failure needs the parameter, not just a refusal. Served: {rejected.value}"
+        )
+        assert not recorder.calls, (
+            "the double recorded a row for a call the real store would have REJECTED. Nothing may "
+            "be recorded on a signature mismatch — the whole point is that the pin expecting a row "
+            "fails on the row's ABSENCE, exactly as production behaves when T5.1's swallow logs "
+            "the TypeError and serves the tool anyway."
+        )
+
+    async def test_the_legal_call_is_ACCEPTED(self) -> None:
+        # POSITIVE CONTROL. Without it, a binder that rejected every call would
+        # satisfy the leg above and quietly redden the entire contract.
+        recorder = _TraceRecorder()
+        await recorder.record_trace(**self._LEGAL_CALL)
+        assert len(recorder.calls) == 1
+        assert recorder.calls[0]["tool"] == _SEAM_TOOL
+
+    async def test_a_MISSING_required_argument_is_REJECTED(self) -> None:
+        # The other direction of arity: a build that forgets `params_hash`
+        # (or `tool`, or `latency_ms`) is as broken as one that invents a column,
+        # and the real store raises for it too.
+        recorder = _TraceRecorder()
+        with pytest.raises(TypeError) as rejected:
+            await recorder.record_trace(tool=_SEAM_TOOL, latency_ms=_SEAM_LATENCY_MS)
+        assert "params_hash" in str(rejected.value)
+        assert not recorder.calls
+
+    async def test_every_parameter_the_REAL_signature_declares_is_ACCEPTED(self) -> None:
+        """The binder must be the real signature, not a name list transcribed from it.
+
+        Derived from ``inspect.signature`` rather than written out, so a parameter
+        ADDED to the real ``record_trace`` later is covered without anyone editing
+        this test — which is the difference between sharing the signature and
+        cloning it. (Values are irrelevant: ``bind`` checks names and arity, never
+        types — the honest bound recorded on the recorder itself.)
+        """
+        declared = [
+            name
+            for name in inspect.signature(SurrealStore.record_trace).parameters
+            if name != "self"
+        ]
+        assert declared, "the real signature declares nothing — this control is vacuous"
+        recorder = _TraceRecorder()
+        await recorder.record_trace(**dict.fromkeys(declared))
+        assert len(recorder.calls) == 1, (
+            f"the double rejected a call using EVERY parameter the real store declares "
+            f"({declared!r}) — it is enforcing a narrower, hand-maintained set, which is a copy "
+            f"that will go stale against the signature it claims to mirror."
+        )
 
 
 class _TransportRequest:

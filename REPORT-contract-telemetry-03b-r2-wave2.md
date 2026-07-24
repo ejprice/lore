@@ -452,3 +452,86 @@ subject (synthetic vs real tool: W33). Each was closed by crossing two mechanism
 already had, never by inventing a third. **When a battery feels complete, enumerate its axes and
 look for the cell nobody dispatched into** — that question would have found all three at
 authorship, and it is cheaper to ask than any of the three fixes was to write.
+
+---
+
+# FIX WAVE 3 (appended 2026-07-24, after the closing re-grade — the STRUCTURAL fix)
+
+The closing re-grade verified MP-H kills W33/D2/D3/D5 and found two more conditional survivors on
+the OUTCOME axis: **D4** (bad kwarg only on a real tool's FAILURE path) and **D6** (only on a
+CANCELLED dispatch). Rather than a fourth cell-pin, it recommended the structural form. Adopted.
+
+## §24 The double now BINDS against the real signature
+
+`_TraceRecorder.record_trace` binds every call through
+`inspect.signature(SurrealStore.record_trace)` before recording anything, so **the double can
+never accept what the real signature would reject.** A keyword the real store does not declare —
+or a required one the seam forgot — raises exactly as it would in production, and nothing is
+recorded, so the pin expecting a row fails on the row's ABSENCE (which is precisely how production
+behaves: T5.1's ruled swallow logs the `TypeError` and serves the tool anyway).
+
+**What that converts, at a stroke:** every double-backed pin in this file becomes an end-to-end
+signature check — success, error, cancellation, all eight identity legs, the hostile body, the
+whole params-hash battery, all 16 coverage parametrisations. Adversary-measured on the fixed form:
+correct build **107 passed**; **D4 → 15 failed**; **D6 → 1 failed**; **W33 → 32 failed**;
+**D2 → 3 failed**.
+
+**Why this is the right shape and not just a bigger net.** Three grading rounds found ONE defect
+five times, each time in a different cell of the same matrix (outcome × store × subject): W11
+(success cell), W30 (real-store cell), W33 (real-tool cell), D4 (real-tool-failure cell), D6
+(cancelled cell). Chasing cells one pin at a time IS the enumerate-the-forbidden shape this repo
+has watched lose six times — the forbidden set is unbounded, and each new pin only proves the
+previous enumeration was incomplete. Binding against the real signature holds the whole matrix by
+construction, and **signature drift now reddens every consumer instantly** instead of silently
+widening the double. The safe set (what the real store declares) is small, enumerable, and — the
+part that matters — DERIVED rather than transcribed.
+
+**Honest bound, stated on the recorder itself so nobody over-trusts it:** `Signature.bind` checks
+NAMES and ARITY, never TYPES or values. A wrong-TYPED argument still passes the double and is
+caught only against the real engine — which is what MP-A/MP-H and R7's rejection pin are for. The
+binder replaces the cell-chasing, not the real-store legs.
+
+## §25 The binder's own control — `TestTheDoubleBindsAgainstTheRealSignature` (4 pins, green)
+
+Every double-backed pin now leans on the binder, so a binder that silently accepted everything
+would return the contract to the state three rounds found holes in — **invisibly, because a
+permissive double makes pins PASS.** That is the MP-C lesson (an instrument with no control) applied
+to the harness itself, before an adversary has to apply it for me. Three directions plus a
+derivation, because a one-directional control would also be satisfied by a binder that rejects
+everything:
+
+| leg | proves |
+|---|---|
+| an undeclared keyword is REJECTED, **naming it**, and NOTHING is recorded | the binder fires, actionably, and leaves no row |
+| the legal call is ACCEPTED | it is not simply rejecting everything (the positive control) |
+| a MISSING required argument is REJECTED, naming it | the other direction of arity — a build that forgets `params_hash` is as broken as one that invents a column |
+| **every parameter the REAL signature declares is ACCEPTED**, derived via `inspect.signature` | the binder IS the signature, not a name list transcribed from it: a parameter added to production later is covered without editing this test |
+
+⚠ One fixture correction made while landing it, worth recording as the same class it belongs to:
+the legal-call fixture first carried only the three post-T8-required names, so both accept-legs
+were RED **today** for T8's reason (`hit_count` is still REQUIRED at HEAD) — a control failing for
+a neighbouring reason isolates nothing. The fixture now names the set that binds under BOTH the
+committed and the T8 signature; T8's own change stays pinned by FK-3b, where it belongs.
+
+## §26 Fix-wave-3 tails (measured 2026-07-24)
+
+| gate | fix wave 2 | fix wave 3 | reading |
+|---|---|---|---|
+| `test_trace_telemetry.py` | 88F / 19P (107) | **88 failed / 23 passed (111 collected)** | +4 binder-control pins, all GREEN (a correct instrument must pass its own control); **RED count UNCHANGED at 88** — the binder cannot alter a RED reason today because no seam calls the double yet, which is exactly the "changes nothing until there is a build" property a harness fix should have |
+| the SIX graded files | 93F / 628P | **93 failed / 632 passed** | 88 / 3 (E-S6) / 1 (FK-3a) / 1 (FK-3b) — my four RED groups, unchanged; +4 passes are the new controls |
+| `uv run ruff check loremaster/` | clean | **clean** | |
+| `./scripts/typecheck.sh` | 108 / 2 files | **108 errors / 2 files** | ZERO in any file I touch |
+
+Green-today accounting, complete at 23: 5 delta-is-additive · 2 index-parser controls · the checked
+coverage variable · synthetic-probe registration · the AC-15 wiring analogue · 2 vacuous-until-the-seam
+guards (M19/M20) · 6 monotonicity-predicate cases · the prose sweep's control · **4 binder controls**.
+Fourteen of the twenty-three are instrument controls — which is the shape a contract should have:
+the pins that grade production are RED, and the pins that grade the INSTRUMENTS are green.
+
+## §27 New obligations from this wave
+
+| # | mutation | must go RED |
+|---|---|---|
+| M30 | remove the `bind()` call from `_TraceRecorder.record_trace` (a permissive double) | the binder's reject-unknown and reject-missing legs — and, on a build carrying any conditional bad kwarg (D4/D6/W33), the pins those defects live in stop reddening, which is the property M31 measures |
+| M31 | `_TraceRecorder` binds against a HARDCODED name list instead of `inspect.signature` | `…_every_parameter_the_REAL_signature_declares_is_ACCEPTED` the moment production's signature and the list disagree — i.e. at the next signature change, which is when a copy always fails |
+| M32 | bad kwarg only on the FAILURE path (**D4**) / only on a CANCELLED dispatch (**D6**) | 15 pins / 1 pin respectively, via the binder — no new cell-pin required, which is the point of §24 |
