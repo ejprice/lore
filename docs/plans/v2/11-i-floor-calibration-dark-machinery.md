@@ -66,6 +66,20 @@ verb and the suite. Report the measured floor and its provenance (probe strategy
 embedder+prompt fingerprint, date) as a receipt. INDEX row + Log. Findings stay OPEN — they
 resolve in 11-ii when the mechanism actually serves.
 
+**THE DETERMINISM CONTROL IS A MUST-PROVE PIN (lead's GO condition, affirmed in Addendum
+E5).** The exact-skip scheduler — "measure at every CHANGED post-sweep, skip unchanged" —
+rests on an unchanged corpus reproducing its measurement bit-identically. That property is
+ASSERTED, not yet verified: prove it, and mutation-prove the pin.
+**A RED pin here is NOT a stop** (ruled in advance so nobody improvises): the honest risk is
+TEI inference nondeterminism — GPU batch-composition floating point can break bit-exactness
+at the embedder, which is the instrument's fault and not the design's. If bit-exactness
+fails, the exact-skip's rationale falls back from *"bit-identical"* to *"within-CI by
+construction"* — an unchanged corpus's re-measurement differs only by instrument noise, and
+the disjoint-CI adoption test absorbs it (no adoption, no flap, and still no threshold) —
+and the E4-promoted probe-embed cache RESTORES bit-exactness for unchanged probes by
+construction. **Record in the run receipts WHICH leg held.** Do not report "deterministic"
+without saying which.
+
 **R2's measurement is a HANDOFF, not just an exit receipt — two downstream decisions block
 on it (operator ruling 2026-07-24: "we need to measure first"):**
 1. **The F3 client consult runs AFTER this packet, before 11-ii**, so the models judge on
