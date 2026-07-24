@@ -39,6 +39,40 @@ rigor-vs-speed trade in this packet resolves toward rigor. Lead rulings under th
   struck-session ruling. **R1→05 deferral RE-AFFIRMED** (priced, named decision point in
   05). No struck-session operator ruling is overturned on the merits.
 
+### BUILD-PHASE HANDOFF (2026-07-24 session boundary — contract phase CERTIFIED)
+State: both contract waves CERTIFIED SUFFICIENT (INDEX Log 2026-07-24); merged-build gate **GO**
+(`receipts/2026-07-24-packet03b/REPORT-merged-gate-03b.md`): composition clean, full suite
+6532/0, typecheck 0 all members (global mypy-zero PROVEN), ruff clean, skill 117. Packet ledger
+row `b7f89c12` in_progress — the build-session lead takes it over. Operator authorization for
+the whole build sequence is standing ("Go!", 2026-07-24).
+1. **FRESH Opus builder (ruled):** consumes ONLY the certified contract suites, the settled
+   `03b-design-rulings-r2.md`, this packet file, the gate report, and the store reference.
+   **WITHHELD: the adversaries' reference scratches** (graded instruments, never audited code)
+   **and the struck corpus** (tag `pkt03b-tainted-corpus`). Spec ambiguity = STOP; adjudicate
+   against the rulings doc; a genuinely new design question gets a fresh consultant with that
+   doc as canon.
+2. **Builder obligations, consolidated:** **B-OBL-1** (gate §3: do NOT delete the four
+   `action=` prefixes from the `_INSTRUCTIONS` MEMORY paragraph — CL3 pins it byte-exact;
+   necessary + sufficient, proven) · both `message` indexes ride `generate_message_ddl`
+   (inherited row 1; the free window closes at this deploy) · R3's deliveries-SELECT bound +
+   20-consecutive send/ack concurrency re-runs after the schema change (inherited row 2) ·
+   the `docs/design/2026-07-12-pkt28-c1-semantics.md` corpse's supersession line (surface
+   adversary C6.8) · the `test_surreal_harness.py` escalation verify (C6.9, unverified by
+   anyone) · P14: the gate needed NO lint refactor on the composed shape, but the builder
+   derives its own `comms` decomposition if ruff demands one.
+3. **Cold REFUTE audit** on the green build (fresh context; builder ≠ grader), incl. the
+   structural/AST pins and the [real]-leg grading.
+4. **Client battery** (rulings §C1–C5): 15 keyed tasks incl. the four trust probes; 3 models
+   (Sonnet 5 / Opus / Fable); the routing test (CALL_AGAIN vs ROUTE_AROUND) is the packet's
+   ACCEPTANCE AUTHORITY under the consumer law — the ONE fixed operator requirement.
+5. **DEPLOY BOTH** (rebuild + recreate, never restart; capture CreateCommand before rm;
+   lore-lore's hand-rolled `/source` mount MUST be reapplied — `lore_recall("lore-lore
+   hand-rolled mount")`). Gates: the conform run; the live smoke with named receipts —
+   send→drain→ack round-trip · hostile body fenced · broadcast to all non-retired · **drain
+   serves the skew block** (the E-S5(c) truth condition, deploy-gate law above) · first real
+   `trace` rows on `:18500` (T7.9 — closes #147 with a production receipt).
+6. Exit ritual per INDEX; #147 resolves at the smoke; #181/#182 resolve with close-out notes.
+
 ### Clean-phase leads from the struck record (re-derive, never inherit)
 The struck session's empirical findings are LEADS, not authority. The consolidated
 checklist (9 clusters, 27 items, one-line receipts) is the POST-SUPERSESSION ADDENDUM in

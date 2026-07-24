@@ -926,3 +926,9 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   matrix, one accepted bound with named trigger. Process held end-to-end: authors built NO
   references; adversaries built from rulings contract-blind-until-frozen; every ambiguity ruled
   same-day in-tree. NEXT = merged-build gate over the post-merge tree (incl. 10/10-d), then builder.
+- 2026-07-24 · **MERGED-BUILD GATE GO + SESSION BOUNDARY.** Both references composed clean onto the
+  post-merge tree (0 anchor failures / 0 conflicts); the gate caught a C-DEF escape first-try (CL3
+  had never met a correct build; the reference's un-ruled prose edit → B-OBL-1) — corrected: full
+  6532/0 · typecheck 0 all members (global mypy-zero PROVEN; RG-R3 settled) · ruff · skill 117.
+  Nine 03b reports archived to receipts. Build phase = a FRESH session per the packet file's
+  BUILD-PHASE HANDOFF section (fresh Opus builder, withheld set, obligations, battery, deploy).
