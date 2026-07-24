@@ -4,6 +4,21 @@ Standing rules for every session in this repo. Distilled from operator rulings a
 audited failure patterns (P7–P8d); the phase resume docs in `~/.claude/plans/` carry
 *phase state only* — process law lives here.
 
+## THE CONSUMER LAW + THE TRUST DOCTRINE (operator, 2026-07-24 — the fixed star)
+- **lore's clients are AGENTS — Sonnet 5, Opus, Fable — never humans.** Every served
+  surface (renders, instructions, counts, errors, teaching prose) is read by an LLM that
+  learns the contract FROM what is served. Design, pin, grade, and write for that reader.
+- **TRUST is the paramount property of every served surface** (operator, verbatim intent:
+  agents that do not trust the MCP route around it, wasting tokens in every future
+  session — better to spend tokens NOW earning trust than to tax every consumer forever).
+  Operationally: a served count describes the whole set its label claims; failures are
+  LOUD, never silent; teaching prose matches measured behavior; no render over-claims.
+  Rigor-vs-speed trades on serving surfaces resolve toward RIGOR.
+- Acceptance instrument: consumer-agent batteries with keyed honesty probes ending in the
+  routing test — CALL_AGAIN vs ROUTE_AROUND, where a ROUTE_AROUND on an honestly-rendered
+  surface is a FAILED acceptance to fix, never a waived answer. First instance: packet 03b
+  rulings §C5. Design mechanics: DESIGN-LAW §1. Memory: `lore_recall("trust doctrine")`.
+
 ## Quality gates (operator-ruled, every commit)
 - `scripts/typecheck.sh` — zero mypy errors including test trees. This runner is
   canonical; a single combined `mypy` invocation false-errors on `tests.conftest`.

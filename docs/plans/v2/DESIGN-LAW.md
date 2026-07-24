@@ -20,6 +20,14 @@ Source: docs/design/2026-07-06-client-needs-consult.md:449-473,490-495.
    confidence caveats → embedded per-response.
 6. Structured/secondary fields keep the primary render's discipline (the S1 reversal:
    over MCP the model IS the consumer — no unbudgeted JSON dumps beside a capped render).
+7. **THE TRUST RULING (operator, 2026-07-24 — elevates this section to the fixed star):**
+   the clients are agent models (Sonnet 5 / Opus / Fable), never humans, and TRUST is the
+   acceptance criterion for every served surface — an agent that catches the MCP wrong or
+   dishonest once routes around it, taxing every future session. Clause 3's mechanism
+   (one confident-wrong → authority→witness) is the measured form of the same law.
+   Acceptance = consumer-agent batteries with keyed honesty probes + the
+   CALL_AGAIN/ROUTE_AROUND routing test (packet 03b rulings §C5 is the reusable template;
+   repo CLAUDE.md carries the standing statement).
 
 ## 2. Map/impact semantics (2026-07-04 consult — semantic LAW; format-only changes still need a fresh operator decision + consult)
 Source: docs/design/2026-07-04-map-test-segregation.md.
