@@ -829,3 +829,172 @@ Everything else in this wave holds up under attack: the four survivors and the o
 all die to the killers §14 names, MP-C's unsatisfiability is genuinely fixed (the reference now
 goes 0-failed), the prose sweep does what a name-list could not (M26), the new fixtures survive
 perturbation with correct-build controls, and 9 of 10 author claims reproduce exactly.
+
+---
+
+# CLOSING RE-GRADE (appended 2026-07-24, after telemetry fix wave 2 at HEAD `297a498`)
+
+> Measured 2026-07-24 at HEAD **`297a498`** (`test(03b): telemetry closing fix wave — MP-H
+> closes the last matrix cell`), same frozen scratch reference, same patch scripts, test tree
+> re-synced. `loremaster.__file__ = /home/ejprice/scratch/adv-telemetry-03b-r2/loremaster/loremaster/__init__.py`.
+> Repo untouched except this report. Test store `:18000` only.
+
+## CLOSING SUMMARY BLOCK
+
+- **VERDICT: CONTRACT INSUFFICIENT — third round, same shape, TWO survivors left, and I am
+  recommending ONE structural fix instead of a fourth cell.**
+- **W33 dies to MP-H** (1 failed), and the ADAPTATION was right: **D2** (keyed on a single tool
+  NAME instead of the `lore_` prefix) also dies to the registry-sweep form and would have walked
+  straight through my single-tool prototype. **D3** (arity-keyed) and **D5** (identity-keyed)
+  die too.
+- **Two conditional shapes still survive at 486 passed / 0 failed** — the correct build's own
+  score: **D4** = the bad kwarg only on the FAILURE path of a REAL tool · **D6** = the bad kwarg
+  only on a CANCELLED dispatch. Both are cells of the SAME 3-axis matrix §23 names
+  (subject × store × OUTCOME); MP-H swept subject and store on the SUCCESS outcome only, and
+  MP-A's raising/cancel coverage uses synthetic subjects.
+- **THE RECOMMENDED FIX IS NOT A FOURTH CELL — it is three lines in the double.** Make
+  `_TraceRecorder.record_trace` bind its kwargs against `inspect.signature(SurrealStore.record_trace)`.
+  Every double-backed pin in the file — success, error, cancellation, identity, hostile args,
+  no-context, all 16 coverage parametrisations — instantly becomes an end-to-end signature check.
+  **Measured: correct build 107 passed · D4 → 15 failed · D6 → 1 failed · W33 → 32 failed ·
+  D2 → 3 failed.** It closes cells nobody has enumerated yet, which is the only way this
+  three-round pattern ends.
+- **MP-G's control now discriminates BOTH directions** (RG-R1 closed): blind sweep → FAILS,
+  unscoped sweep → **FAILS** (it passed before), real sweep → passes.
+- **Satisfiability: 486 passed / 0 failed** on my frozen reference (four graded files), MP-H
+  green. **RED honesty: 93 failed / 628 passed, distribution 88 / 3 / 1 / 1 — exactly as
+  claimed**, MP-H RED for the right reason (`0 of 16 dispatches landed a row in the REAL trace
+  table`), zero collection errors.
+
+## §CG-1 W33 and the conditional-shape sweep against MP-H
+
+| shape | build | result on the closing contract |
+|---|---|---|
+| prefix-keyed | **W33** `if tool.startswith("lore_")` | **1 failed** — MP-H. ✔ closed |
+| single-name-keyed | **D2** `if tool == "lore_search"` | **1 failed** — MP-H. ✔ **this is why ADAPTING my prototype was right**: my single-tool version could not have seen it |
+| arity-keyed | **D3** `if not arguments` | **2 failed** — MP-H + MP-A's raising leg |
+| identity-keyed | **D5** `if declared["agent"] is None` | **3 failed** — all three MP-A legs + MP-H |
+| **outcome-keyed (failure) × real tool** | **D4** `if not ok and tool.startswith("lore_")` | **486 passed / 0 failed — SURVIVES** |
+| **outcome-keyed (cancellation)** | **D6** kwarg supplied only when `CancelledError` was seen | **486 passed / 0 failed — SURVIVES** |
+| type-violating (legal NAME, illegal value) | **D7** `ok="yes"` | **23 failed** — MP-B, MP-A and MP-H all fire. ✔ (this is the division of labour: a signature bind would NOT catch D7; the real-store legs do) |
+
+**The matrix, completed.** Axes: SUBJECT (synthetic | real) × STORE (double | real) ×
+OUTCOME (success | error | cancelled).
+
+| cell | instrument |
+|---|---|
+| synthetic × double × {success, error, cancelled} | the seam batteries |
+| real × double × success | MP-B (16) |
+| real × double × error | the original coverage battery (16) |
+| synthetic × real × success | MP-A leg 1 |
+| synthetic × real × error | MP-A leg 2 |
+| real × real × success | **MP-H** (16, registry-equality) |
+| **real × real × error** | **EMPTY → D4** |
+| **any × real × cancelled** | **EMPTY → D6** |
+
+## §CG-2 The structural closure, with receipts (recommended over two more legs)
+
+Prototype: three lines in `_TraceRecorder.record_trace`
+
+```python
+async def record_trace(self, **fields: Any) -> None:
+    inspect.signature(SurrealStore.record_trace).bind(SurrealStore, **fields)   # <- the whole fix
+    self.calls.append(dict(fields))
+    ...
+```
+
+| build | REAL contract at `297a498` | with the binding double |
+|---|---|---|
+| correct reference | 107 passed | **107 passed** (no false positives) |
+| **D4** (error × real tool) | **486 passed — survives** | **15 failed** (the coverage battery's 15 real tools, on the error leg) |
+| **D6** (cancellation-keyed) | **486 passed — survives** | **1 failed** (the cancellation pin) |
+| W33 (prefix-keyed) | 1 failed (MP-H) | 32 failed |
+| D2 (single-name) | 1 failed (MP-H) | 3 failed |
+| D7 (legal name, illegal TYPE) | 23 failed (MP-A/B/H) | **unchanged — `bind()` accepts it** |
+
+Two honest caveats, so this is adopted with its bounds in view:
+1. **It does not replace MP-A/MP-H.** `bind()` validates NAMES/arity, never values or types —
+   D7 proves the real-store legs are what catch a type violation. Keep all of them.
+2. **It is a runtime guard, so its reach is the pins that execute it.** That reach is already
+   ∀-wide here (every double-backed pin, incl. the 16-way coverage battery), which is exactly
+   why it closes cells nobody enumerated — but the reach is a variable, and the repo's own law
+   says to check it rather than assume it.
+
+The alternative — adding an error pass to MP-H plus a cancelled-real-store leg — closes D4 and
+D6 and leaves the next cell (no-transport-context × real tool × real store, say) open. Three
+rounds of this pattern is the evidence for preferring the guard.
+
+## §CG-3 The three corrections, verified
+
+| item | claim | measured |
+|---|---|---|
+| **RG-R1** — MP-G control's negative leg | now discriminates scoping | ✔ **both directions**: blind sweep (token filter matches nothing) → `test_the_sweep_itself_fires` FAILS · **unscoped sweep (filter removed) → FAILS** (it PASSED before the fix) · the real sweep passes. The sample now carries a retired phrase about a non-telemetry subject, so scoping is what the leg proves |
+| **RG-R2** — MP-F "all three pins" | corrected to 2-of-3 + M25b as the third's own proof | ✔ §14 now names three directions for three pins; my M25b receipt stands |
+| **RG-R4** — M28 `option<any>` | replaced by M28b (`option<int \| string>`) | ✔ M28b reddens exactly R7 + the two widened-type pins |
+| **RG-R3** — the `test_message_ledger.py` mypy pair | ruled a stale mid-edit snapshot; live tree clean | ⚠ **my own measurement at `285a414` showed 2 errors there**, and I have not re-measured at `297a498` (the surface tree moved again between the two). Not telemetry either way; **I record the disagreement rather than adopt either reading** — one `./scripts/typecheck.sh` at the merge gate settles it, and 03b owns global mypy-zero |
+
+## §CG-4 RED honesty and satisfiability at `297a498`
+
+```
+$ uv run pytest -n auto -q <the six graded files>          # pristine production
+93 failed, 628 passed in 31.74s
+   88 test_trace_telemetry.py · 3 test_comms_schema.py · 1 test_surreal_schema.py · 1 test_surreal_fakes.py
+   MP-H's RED: "0 of 16 dispatches landed a row in the REAL trace table" (missing: all 16)
+   zero collection errors
+
+$ uv run pytest -n auto -q <the four graded files>          # my frozen reference
+486 passed in 27.54s                                        # MP-H green, 0 failed
+```
+
+## §CG-5 FINAL QUANTIFIER TABLE (state at `297a498`, all 19 invariants)
+
+| # | invariant | ∀ or GUARDED | receipt |
+|---|---|---|---|
+| I1 | every dispatch of every registered tool writes exactly one row | **∀ (registry × {success, error})** | W11 15/16; W1 39; W8 17; M4 |
+| I2 | the emission's call is one the REAL store ACCEPTS | **GUARDED by OUTCOME** — real-store legs cover success (∀ tools) and error/cancel (synthetic only) | **D4 and D6 SURVIVE at 486/0**; W33, D2, D3, D5, D7 die. → §CG-2 |
+| I3 | `ok` True iff the dispatch RETURNED | **∀ {return, raise, cancel}** | W6, W7, M4 |
+| I4 | the tool's outcome is never altered by telemetry | **∀ {success, raise, store-broken, no-context}** | M19, M20 |
+| I5 | a trace-write failure is LOUD and structured | **∀ over failure modes** | my reference's own first-pass RED |
+| I6 | identity is DECLARED, never guessed (synthetic AND real subjects) | **∀** | M7–M10, W2a, W17, W27, R6 |
+| I7 | correlator = header else NONE | **∀ {header, none, no transport}** | W27 |
+| I8 | `params_hash` recipe ∀ arguments, no raw content | **∀ {non-empty, empty}** | W31, W9, M12 |
+| I9 | latency reflects real duration | **∀ {zero, seconds, constant, scaled}** | W16, M18, P2-const, p2b-halved |
+| I10 | the seam never fabricates a `hit_count` | **∀ over values** | W5, W32 |
+| I11 | ordinal engine-minted, distinct, strictly increasing, gaps real | **∀, monotonicity leg ALIVE** | M27 (3/5 control), W4, M6, M14, W20, 20/20 |
+| I12 | schema delta (types, guard kinds, sequence, index) | **∀ over columns** | W3a, W3b, W22, W23, W13, M15b |
+| I13 | the delta migrates a DIRTY store | **∀ (4 legs)** | W22 |
+| I14 | signature + fake parity, no `ordinal` parameter | **∀ over the parameter list** | M14 |
+| I15 | no production prose teaches the retired plan | **∀ over every comment/string token of 3 modules**, control now two-directional | M26, GM1b, **GM2b** |
+| I16 | the two `message` hot-path indexes | **∀ {missing, UNIQUE, reversed, superset}** | W14b, W14, W28, W29 |
+| I17 | the ORACLE mirrors the real row shape | **∀ (3 directions, 3 pins)** | M25, M25b |
+| I18 | the widened columns still REJECT a wrong TYPE | **∀ (rejection + legal-value control)** | M28b |
+| I19 | a REAL registered tool's call is accepted by the REAL store | **∀ over the registry, on SUCCESS** (new, MP-H) | W33, D2, D3, D5, D7 die; D4/D6 are I2's residual |
+
+**18 of 19 rows are ∀. One row (I2) remains guarded — by OUTCOME — and it is the only thing
+between this contract and SUFFICIENT.**
+
+## §CG-6 Verdict
+
+**CONTRACT INSUFFICIENT**, narrowly and for the last time by my hand:
+
+- **Missing pin (one, and I recommend the structural form):** make the seam's kwargs
+  provably acceptable to `SurrealStore.record_trace` on EVERY outcome, not only on success.
+  Cheapest complete form — the signature-binding `_TraceRecorder` of §CG-2 (three lines,
+  correct build 107 passed, kills D4/D6/W33/D2). Minimum sufficient form if the double must
+  stay inert — an error pass and a cancellation leg inside MP-H's real-store loop.
+- **The defect it catches:** an emission whose call the store rejects on the failure or
+  cancelled path only. Production effect is the packet's worst and its third recurrence:
+  every errored and every timed-out real-tool call silently untraced, `traces.total` degraded
+  to "successes only", the swallow logging it where nothing fails a gate — and the errored /
+  cancelled population is precisely the denominator packet 06 was built to read.
+- **Everything else certifies.** All seven wave-1 MP groups plus MP-H hold under attack, the
+  five earlier survivors and the oracle mutation die to their named killers, MP-C's
+  unsatisfiability stays fixed (reference 486/0), the MP-G control now discriminates both
+  directions, the perturbed fixtures keep their correct-build controls, and the RED tail is
+  honest at 93F / 88·3·1·1.
+- **Standing note for whoever writes the next contract in this repo** (the transferable part,
+  and it agrees with the author's own §23): three rounds found three holes of one shape, and
+  the fourth round found two more. Enumerating the axes is necessary but has now failed four
+  times to be sufficient — **when a property can be violated through a conditional, the pin
+  that closes it should be a RUNTIME INVARIANT over every dispatch a test makes, not a cell
+  somebody remembered to dispatch into.**
