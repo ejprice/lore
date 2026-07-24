@@ -80,8 +80,38 @@ packet 03 proved at contention, with renders that satisfy the promise instrument
      variable** rather than asserting one hardcoded name. Without it the next refactor silently
      un-wires the emission and `traces.total` returns to 0 with every gate green — #147's own shape.
 
+## OPERATOR AUTHORIZATION 2026-07-24 — six amendments to COMMITTED contract files
+The committed contract is immutable without an explicit operator ruling (precedent `42eeedc`).
+**All six below are AUTHORIZED. Every one is STRENGTHEN-ONLY — no assertion may be weakened — and
+every one lands only after a MUTATION PROOF (break the production code, watch the pin go RED,
+restore). The contract-adversary's P2 fixture-perturbation confirms the fix wave.**
+1. **R3 — a LIVE FALSE GATE.** The committed `ACK REQUIRED` emit/no-emit fixtures never set
+   `acked_at` on a directive, so they are an **`acked_at` monoculture**: a build keying the trailer
+   on `grade == directive` ALONE, ignoring `acked_at IS None`, **passes the committed proofs**. Add
+   the discriminating pin. (Parameter-value monoculture, the class this repo has now paid for four
+   times — a fixture that cannot distinguish the correct build from a plausible wrong one is
+   decoration.)
+2. **R5 — a SECOND live false gate.** The value-carried bound's pin asserts `"{msg}"`-ONLY while its
+   own docstring bans the whole class. A failure message promising a check the assertion does not
+   perform is a false gate (P2, 2026-07-14). Closed by S3's placeholder-only ∀-ban pin.
+3. **R6** — the reach-pin `expected` set omits the three new helpers (S1 instrument item 2).
+4. **R7** — `send.thread` has no injection RenderCase in the committed battery; mandatory once
+   S4.1's question line puts `thread` into the send render for the first time.
+5. **+6. The two mypy errors in `test_message_ledger.py`** — 03a's GREEN, CLOSED contract.
+   ⚠ **Residual 8 of the design doc is WRONG on exactly these two.** It says global mypy-zero is
+   "structural… building S4's surface pays them". That holds for **34** of the 36 (forward refs to
+   `_render_comms_*` / `comms(...)` kwargs). It does NOT hold for these 2, which are
+   `Returning Any from function declared to return "int"` in the `_ask` / `_answer` HELPERS
+   (`ledger: Any`). **Building the surface will not pay them.** They need this authorized fix, or
+   03b misses the global mypy-zero it owns.
+
 ## Scope OUT
 - Everything packet 03 owns (schema, `messages.py`, concurrency, the relation-table flip).
+- **R1 — drain-row `question=true` markers: DEFERRED TO PACKET 05 by operator ruling 2026-07-24**,
+  with 05's Scope IN carrying the named decision point (a deferral without one is a can-kick).
+  Priced, not narrowed: the marker needs `question` on `InboxEntry` — an ORACLE + model change with
+  two-suite blast radius — for a teach 05's await/story work re-shapes anyway. The clearing rule is
+  still taught SENDER-side (S4.1) and STATICALLY (S5); only the per-row recipient marker waits.
 - `blocks` mirroring, fleet message columns, `_comms_footer` (04); await/story/`since=` (05);
   brief-base v3 + hooks + THE DRILL (06).
 - **The forced-drain mechanism itself is packet 06's** — this packet ships the telemetry that

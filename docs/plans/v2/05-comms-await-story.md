@@ -22,6 +22,22 @@ rollup extension, CLI, and the idle-gate hook rework.
   legitimately owe no artifact — v2 must key on what the brief actually OWES, not a
   hardcoded REPORT-<name>.md expectation; a gate that punishes honest work gets ignored).
 - **Folds #89**: lore_tasks single-task detail read (full description reachable via MCP).
+- **INHERITED DEBT — 03b's R1, DEFERRED HERE BY OPERATOR RULING 2026-07-24, WITH THIS AS ITS
+  NAMED DECISION POINT (a deferral without one is a can-kick — this line IS the mechanism).**
+  **05 MUST re-adjudicate drain-row question visibility when it designs `await`/`story`.**
+  THE HOLE: drain rows do NOT mark `question=true` messages — an inbox row that ASKS renders
+  like any other, so a recipient cannot see at a glance which rows owe an answer. It is taught
+  SENDER-side (03b S4.1's question line) and STATICALLY (03b S5's instructions paragraph), but
+  never marked per-row on the recipient's own inbox.
+  WHY IT WAS PRICED OUT OF 03b, not forgotten: the recipient-side marker needs `question` added
+  to `InboxEntry` — an **ORACLE + model change**, and an oracle change is contract-author +
+  adversary work by law (never a builder drive-by), whose satisfiability receipt must cover
+  **BOTH** consumer suites (`test_message_ledger.py` AND `test_comms_tool.py` — the
+  single-consumer premise was MEASURED FALSE; inherited delta row 6). And 05's await/story work
+  re-shapes this teach anyway, so paying it in 03b would have been paying it twice.
+  ⚠ **If 05 also declines it, that is a THIRD deferral of a known hole and it goes to the
+  operator as a fork, not into another doc.** Design source: `03b-comms-surface-design-rulings.md`
+  §Residuals item 1.
 
 ## Scope OUT
 - Protocol/brief-base/drill (packet 06). C5 (checkpoint/respawn) stays deferred, no ruling.
