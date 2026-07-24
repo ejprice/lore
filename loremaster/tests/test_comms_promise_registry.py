@@ -1766,18 +1766,28 @@ def _is_placeholder_only(template: str) -> bool:
     (see ``TestSafeStrLiteralCoverageBound.test_KNOWN_BOUND_a_promise_carried_in_a_
     render_VALUE_is_not_inspected``, whose docstring bans exactly this class).
 
-    ⚠ DELIBERATELY NARROWER THAN :func:`_has_literal_text`, and the difference is
-    load-bearing (03b contract, MEASURED at 7d2ad32 against the committed build):
-    design ruling S3 part 2 prescribes the ∀-ban as
-    ``all(_has_literal_text(t) for t in _classified())``. Executed verbatim that
-    assertion is RED ON THE CORRECT BUILD — ``_PROMISE_FREE`` contains ``" "``, the
-    render_join separator, which is whitespace-only and so fails
-    ``_has_literal_text`` while carrying NO placeholder and therefore NO value slot
-    to smuggle a promise through. A whitespace-only SEPARATOR and a placeholder-only
-    TEMPLATE are two different things; ``_has_literal_text`` conflates them because
-    it answers a different question ("is there anything here to classify?").
-    Banning the precise class needs no exemption list, so there is no exemption to
-    rot. (Reported to the lead as a design-doc correction, not silently taken.)
+    ⚠ DELIBERATELY NOT :func:`_has_literal_text`, and the difference is load-bearing.
+    Design ruling S3 part 2 originally prescribed the ∀-ban as
+    ``all(_has_literal_text(t) for t in _classified())``. Executed verbatim, that
+    assertion is a FALSE GATE IN BOTH DIRECTIONS (measured 2026-07-24 against the
+    committed build, at 7d2ad32):
+
+    * **RED on the CORRECT build** — ``_PROMISE_FREE`` contains ``" "``, the
+      ``render_join`` separator: whitespace-only, so it fails ``_has_literal_text``,
+      while carrying NO format field and therefore NO value slot to smuggle a
+      promise through.
+    * **BLIND to the target class** — ``_has_literal_text("{msg}") is True``. The
+      helper strips only the CANONICAL ``"{}"`` placeholder, so a NAMED field's
+      characters read as literal text. The one shape the ban exists to catch is the
+      one shape it would have waved through.
+
+    A whitespace-only SEPARATOR and a placeholder-only TEMPLATE are different
+    things; ``_has_literal_text`` conflates them because it answers a different
+    question ("is there anything here to classify?"). Banning the precise class
+    needs no exemption list, so there is no exemption to rot.
+
+    Reported to the lead as a design-doc correction rather than silently taken;
+    S3 part 2 is now AMENDED to rule this predicate (design rulings doc, D3).
     """
     if not _FORMAT_FIELD.search(template):
         return False
