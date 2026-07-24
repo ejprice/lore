@@ -5922,16 +5922,86 @@ class TestTheAckRenderAccountsForEveryRequestedSeq:
         """03a-2 R1, re-expressed at the RENDER as MEMBERSHIP (§A-GRAFT): the
         request ``[s1, s2, s1]`` acks s1 once and reports the repeat as already
         acked. The duplicate is NON-ADJACENT on purpose — an adjacent pair is
-        satisfied by a build that merely compares neighbours."""
+        satisfied by a build that merely compares neighbours.
+
+        ⚠ FIX WAVE 2 (B5 multiplicity RULED MEMBERSHIP, `851fef3`): the header
+        anchor here was ``"acked 2 of 3"`` — **3 is a RAW ENTRY COUNT**, and the
+        ruling's consistency clause requires every count beside the groups to
+        derive from DISPLAYED membership. Two distinct seqs are displayed, so a
+        correct build renders ``acked 2 of 2``. Left as it was, this pin would
+        have reddened the ruled build — a fourth C-DEF, created by a ruling that
+        landed after the pin. **A ruling is not only new pins; it is a re-read of
+        every pin already written.**
+        """
         rendered = _03b_ack(
             outcomes=[(911, "acked"), (912, "acked"), (911, "already_acked")], note=None
         )
-        acked_line = _line_containing(rendered, "acked 2 of 3")
+        acked_line = _line_containing(rendered, "acked 2 of 2")
         already_line = _line_containing(rendered, "already acked:")
         assert 911 in _seqs_named_in(acked_line), rendered
         assert 911 in _seqs_named_in(already_line), (
-            "the repeated occurrence did not report its OWN fate — a render that dedupes the "
-            "request hides the R1 semantics the ledger deliberately preserves"
+            "the repeated seq is absent from the already-acked group — MEMBERSHIP means every "
+            "requested seq appears in exactly the group(s) its ledger entries name, and this "
+            "one legitimately occupies BOTH (R1's one stored stamp, reported across groups)"
+        )
+
+    def test_a_seq_repeated_WITHIN_one_group_is_listed_ONCE(self) -> None:
+        """B5 multiplicity, RULED MEMBERSHIP (`851fef3`, §G row).
+
+        ``[s, s]`` where both occurrences are already-acked: the group lists
+        ``s`` ONCE. R1's own honesty analysis is the derivation — *"you listed
+        it twice"* and *"acked earlier"* require no different next action, so a
+        repeated seq inside ONE group is §1.1 zero-signal, the same class as the
+        B3.2 ruling. Per-occurrence accountability stays where it is real: the
+        TYPED ``MessageAckResult``, whose R1 pins are untouched.
+
+        This is the WB16 door the re-grade left open, now closed in the ruled
+        direction rather than guessed."""
+        rendered = _03b_ack(
+            outcomes=[(961, "already_acked"), (961, "already_acked")], note=None
+        )
+        already_line = _line_containing(rendered, "already acked:")
+        assert _seqs_named_in(already_line) == [961], (
+            f"a seq repeated within ONE group was listed more than once — the reader learns "
+            f"nothing from the repetition and pays per token for it (B5 RULED MEMBERSHIP): "
+            f"{already_line!r}"
+        )
+
+    def test_the_header_count_derives_from_DISPLAYED_membership_not_raw_entries(self) -> None:
+        """The ruling's CONSISTENCY CLAUSE (C5(b)), and the sharpest fixture for
+        it: two entries, ONE displayed seq. A build counting raw entries renders
+        ``acked 0 of 2`` beside a group showing exactly one seq — a served count
+        that contradicts the rows next to it, which is the count-vs-display
+        mismatch a dedupe opens and the trust doctrine's first clause forbids.
+
+        Note this is the ONLY fixture shape that discriminates: wherever the
+        requested seqs are distinct, displayed membership and raw entry count
+        coincide (which is why ``test_the_receipt_COUNTS_come_from_the_RESULT``
+        below stays valid but cannot see this)."""
+        rendered = _03b_ack(
+            outcomes=[(961, "already_acked"), (961, "already_acked")], note=None
+        )
+        assert "acked 0 of 1" in rendered, (
+            f"the header counted RAW ENTRIES (2) rather than the DISPLAYED membership (1 "
+            f"distinct seq) — the reader can see the group lists one seq and is told two were "
+            f"requested (B5 ruling, consistency clause): {rendered!r}"
+        )
+
+    def test_each_group_lists_its_seqs_ASCENDING(self) -> None:
+        """The ruled ordering convention — *distinct seqs, ascending* — which is
+        the one seq-list convention this surface already uses (the drain window,
+        the ACK REQUIRED trailer), learned once by the consumer and reused.
+
+        The fixture requests them OUT of order on purpose; a build echoing
+        request order passes every membership pin and fails only here."""
+        rendered = _03b_ack(
+            outcomes=[(973, "acked"), (971, "acked"), (972, "acked")], note=None
+        )
+        acked_line = _line_containing(rendered, "acked 3 of 3")
+        assert _seqs_named_in(acked_line) == [971, 972, 973], (
+            f"the group did not list its seqs ascending — request order is not a convention a "
+            f"reader can rely on, and §A-GRAFT retired the per-entry request-order render when "
+            f"the committed GROUP templates won (B5 RULED): {acked_line!r}"
         )
 
     def test_the_note_line_emits_only_when_the_batch_WON_something(self) -> None:
@@ -6175,10 +6245,60 @@ class TestTheInstructionsBlockTeachesTheMessageSurface:
         _assert_teaches(self._instructions(), _RULED_BODY_CAP_SENTENCE.format(cap=cap))
 
     def test_no_clause_is_served_in_its_INVERTED_form(self) -> None:
-        """SECONDARY gate: every phrase here was served by a wrong build that
-        passed the whole contract before this wave. It defines no correctness —
-        the sentence pins above do — it stops the measured attack recurring."""
+        """TERTIARY gate: every phrase here was served by a wrong build that
+        passed the whole contract before the first fix wave. It defines no
+        correctness — the exact-block pin below does — it stops the measured
+        attack recurring."""
         _assert_never_claims(self._instructions(), *_DEMONSTRATED_INVERSIONS)
+
+    # -- RG2: the ADDITION door ------------------------------------------------
+
+    def _comms_paragraphs(self) -> list[str]:
+        """Every ``_INSTRUCTIONS`` paragraph that makes a claim about the three
+        new verbs — identified by naming one of them, which B9.1 requires the
+        teaching to do."""
+        return [
+            paragraph
+            for paragraph in self._instructions().split("\n\n")
+            if any(f"action={verb}" in paragraph for verb in ("send", "drain", "ack"))
+        ]
+
+    def test_the_comms_block_is_EXACTLY_the_ruled_sentences(self) -> None:
+        """RG2 (adversary re-grade §R3.2 / WB40, MAJOR).
+
+        The verbatim-sentence pins closed the REPLACEMENT door: an inverted
+        instructions block now dies. They left the **ADDITION** door wide open —
+        WB40 served all seven ruled sentences AND appended a paragraph
+        contradicting them, and passed **1197/1197**. Inclusion cannot see a
+        contradiction that arrives alongside the truth, and a consumer reading
+        a block that says both things learns the wrong one just as easily.
+
+        ALLOWLIST THE SAFE (CLAUDE.md's six-defeats lesson, applied where it
+        actually works): the forbidden set here is every sentence anyone might
+        append — unbounded. The SAFE set is seven sentences the contract itself
+        states. So this pins the block by EQUALITY, and the denylist above is
+        demoted to a tertiary regression gate rather than being grown.
+        """
+        cap = _msg().MESSAGE_BODY_MAX_CHARS
+        ruled = " ".join(
+            (*_RULED_INSTRUCTION_CLAUSES, _RULED_BODY_CAP_SENTENCE.format(cap=cap))
+        )
+        paragraphs = self._comms_paragraphs()
+        assert paragraphs, (
+            "no paragraph of _INSTRUCTIONS names action=send/drain/ack — B9.1's teaching is "
+            "absent entirely, so this ∀-pin would pass vacuously"
+        )
+        assert len(paragraphs) == 1, (
+            f"the comms teaching is spread across {len(paragraphs)} paragraphs. Keep it in ONE "
+            f"block so it can be pinned by equality; a second block is where a contradicting "
+            f"claim lands without any pin seeing it (RG2/WB40):\n{paragraphs!r}"
+        )
+        assert paragraphs[0].strip() == ruled, (
+            "the served comms block is not EXACTLY the ruled sentences. Serving every ruled "
+            "sentence AND a contradicting one passes an inclusion check (measured: 1197/1197 "
+            "green), so the block is pinned by equality — the safe set is small and "
+            f"enumerable.\n  ruled:\n{ruled}\n  served:\n{paragraphs[0].strip()}"
+        )
 
 
 class TestTheCommsToolSchemaTeachesTheNewParams:
@@ -6659,6 +6779,26 @@ class TestTheDrainRefsCellIsCappedAndCounted:
     drain is the subsystem's highest-volume render and ``refs`` is uncapped at
     the LEDGER (this report's own residual 3), so a thousand-entry list is
     storable and would render in full.
+
+    ⚠ RG3 (adversary re-grade §R8.1, MAJOR) — **HOW to render the remainder,
+    named here so the builder does not pay for finding out.** This pin demands a
+    counted remainder, and the promise instruments admit exactly ONE legal
+    rendering of it: the pre-existing, already-classified template
+
+        ``"+{more} more beyond the display cap ({cap})"``
+
+    emitted as its OWN line. Every obvious alternative is UNCLASSIFIED and goes
+    red — ``safe_str(f"… +{n} more")``, a ``render_join`` part of ``"+{} more"``,
+    a fresh ``render_line("+{more} more refs")``, a ``" +"`` separator — because
+    nothing in ``_PROMISE_FREE`` or ``_SAFE_STR_PROMISE_FREE`` names a refs
+    remainder (measured by the adversary while proving satisfiability; it nearly
+    became a fourth C-DEF).
+
+    REUSED rather than given its own label ON PURPOSE: refs ARE elided by a
+    display cap, so the existing line is semantically correct, and minting a
+    second near-identical template is the duplicate-policy defect this packet
+    keeps paying for (#102). If a future author needs a distinct wording, that
+    is registry GROWTH with its own proof (B8.1) — not a second copy of this one.
     """
 
     def test_an_over_cap_refs_list_is_capped_and_counted(self) -> None:
@@ -6755,7 +6895,14 @@ class TestEachRequestedSeqLandsInTheLineItsOwnOutcomeNames:
         """P6. ``acked_count``, ``len(entries)`` and ``already_acked_count`` are
         pairwise DISTINCT here (2 / 5 / 1), so a build substituting any one for
         another is caught. Previously WB32 was caught only incidentally, by an
-        `"acked 2 of 3"` literal inside the duplicate pin."""
+        `"acked 2 of 3"` literal inside the duplicate pin.
+
+        ⚠ Every requested seq here is DISTINCT, so displayed membership and raw
+        entry count coincide and this fixture is blind to the difference — that
+        is what ``test_the_header_count_derives_from_DISPLAYED_membership_not_
+        raw_entries`` above exists for. The two are complementary, not
+        redundant: this one discriminates WHICH count, that one discriminates
+        which COUNTING RULE."""
         rendered = _03b_ack(
             outcomes=[
                 (941, "acked"),
@@ -6859,4 +7006,137 @@ class TestARejectedRecipientCharsetNamesWHICHRecipient:
         assert not innocent, (
             f"the reject echoed recipients that were FINE ({innocent!r}) — the caller cannot "
             f"tell which name to fix, which is the actionable-denial law (§B2.1)"
+        )
+
+
+# =========================================================================== #
+# FIX WAVE 2 (adversary re-grade `285fdf7`) — RG1 / RG2 / RG3.
+# =========================================================================== #
+
+
+async def _subscribe_and_fall_behind(
+    harness: Any, *, names: tuple[str, ...], subscriber: str = "fixer-b"
+) -> None:
+    """Leave ``subscriber`` SUBSCRIBED to each name and BEHIND its head.
+
+    Subscription is "has acked at least one version" and ``brief_publish``
+    self-acks its publisher (#98), so the subscriber publishes v1 (acking it)
+    and ``lead`` then bumps the head to v2. This is the ONLY state in which the
+    subscribed-NAME half of the skew block (#103) renders at all.
+    """
+    for name in names:
+        await AppContext.comms(
+            harness,
+            action="brief_publish",
+            agent=subscriber,
+            session="wave7",
+            name=name,
+            body=f"{name} v1",
+        )
+        await AppContext.comms(
+            harness,
+            action="brief_publish",
+            agent="lead",
+            session="wave7",
+            name=name,
+            body=f"{name} v2",
+        )
+
+
+class TestDrainServesTheSUBSCRIBEDNAMEHalfOfTheSkewBlock:
+    """RG1 (CRITICAL, adversary re-grade §R3.1 / WB39) — §3.B1's own defect, one
+    brief name over.
+
+    Every FK-6 pin the first fix wave wrote keys on the STANDING brief
+    (``'project'``), so ``_fleet_with_a_published_brief`` was a **brief-name
+    monoculture** — the exact fixture class this repo has now paid for five
+    times. WB39 (a drain that assembles only the standing half and drops the
+    subscribed-name half) passed every one of them.
+
+    And it is the same LIVE LIE, not a latent gap: the literal that promises
+    this half is ``brief_publish``'s tail 3 — *"ackers see it at next heartbeat
+    **or drain** — unbriefed agents only via brief_get name='{name}'"* — which
+    is the very literal E-S5(c) amended, and it is ABOUT the non-standing case.
+    A build serving only the standing half makes that "or drain" false for
+    exactly the population the line addresses.
+
+    MUTATION-PROOF OBLIGATION (adversary, MP-RG1): drop the subscribed-name half
+    at the drain (WB39) -> the drain leg RED, the heartbeat control leg still
+    GREEN (that asymmetry is the half-a-block signature); drop the whole block
+    (WB1) -> both RED.
+    """
+
+    _SUBSCRIBED = "wave9"
+
+    async def _behind_on_a_subscribed_name(self) -> Any:
+        harness, _ = await _03b_fleet()
+        await _subscribe_and_fall_behind(harness, names=(self._SUBSCRIBED,))
+        return harness
+
+    async def test_a_drain_names_the_subscribed_brief_the_agent_is_behind_on(self) -> None:
+        harness = await self._behind_on_a_subscribed_name()
+        await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
+        rendered = str(
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        )
+        assert f"brief '{self._SUBSCRIBED}' v2 is head" in rendered, (
+            "the drain served no SUBSCRIBED-NAME skew line. A build that assembles only the "
+            "standing-brief half passes every 'project'-keyed FK-6 pin while making "
+            "brief_publish's tail-3 promise ('ackers see it at next heartbeat or drain') false "
+            f"for the population it addresses (RG1/WB39): {rendered!r}"
+        )
+
+    async def test_CONTROL_the_heartbeat_names_it_too(self) -> None:
+        """The control that makes the pin above diagnostic rather than merely
+        red: if the heartbeat leg passes while the drain leg fails, the missing
+        piece is HALF the block at ONE verb — not a broken fixture."""
+        harness = await self._behind_on_a_subscribed_name()
+        rendered = str(
+            await AppContext.comms(harness, action="heartbeat", agent="fixer-b", session="wave7")
+        )
+        assert f"brief '{self._SUBSCRIBED}' v2 is head" in rendered, rendered
+
+    async def test_the_two_verbs_serve_the_IDENTICAL_subscribed_line(self) -> None:
+        harness = await self._behind_on_a_subscribed_name()
+        heartbeat = str(
+            await AppContext.comms(harness, action="heartbeat", agent="fixer-b", session="wave7")
+        )
+        await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
+        drain = str(
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        )
+        anchor = f"brief '{self._SUBSCRIBED}' v2 is head"
+        assert _line_containing(heartbeat, anchor) == _line_containing(drain, anchor), (
+            "heartbeat and drain served DIFFERENT subscribed-name skew lines for the same "
+            "state — one path is a private copy of the assembly (D5)"
+        )
+
+    async def test_a_CURRENT_subscriber_gets_no_subscribed_line(self) -> None:
+        """Emit/no-emit for this half specifically: ``lead`` published v2 last,
+        so it is AT head and must see nothing. Without this, 'drain always
+        appends every subscribed name' passes."""
+        harness = await self._behind_on_a_subscribed_name()
+        await _deliver(harness, to=["lead"], grade=_msg().MESSAGE_GRADE_SIGNAL, sender="fixer-b")
+        rendered = str(
+            await AppContext.comms(harness, action="drain", agent="lead", session="wave7")
+        )
+        assert f"brief '{self._SUBSCRIBED}'" not in rendered, rendered
+
+    async def test_the_collapsed_remainder_renders_PAST_the_skew_names_cap(self) -> None:
+        """The cap boundary the small-N law demands, on the drain path. N is
+        derived from ``_HEARTBEAT_SKEW_NAMES_CAP``, never written as a literal —
+        a cap change re-derives the fixture instead of silently unbinding the
+        collapse branch (the repo's four-time offender)."""
+        cap = _server()._HEARTBEAT_SKEW_NAMES_CAP
+        names = tuple(f"wave{index}" for index in range(cap + 1))
+        harness, _ = await _03b_fleet()
+        await _subscribe_and_fall_behind(harness, names=names)
+        await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
+        rendered = str(
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        )
+        assert "behind on 1 more briefs" in rendered, (
+            f"past the {cap}-name display cap the drain must COLLAPSE the remainder and count "
+            f"it — an uncapped list is the unbounded dump the cap exists to prevent, and a "
+            f"cap that is a silent dead end is the failure DESIGN-LAW §2 forbids: {rendered!r}"
         )

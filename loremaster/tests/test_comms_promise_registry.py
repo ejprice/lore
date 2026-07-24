@@ -2949,9 +2949,18 @@ class TestEveryPromiseLiteralHasExactlyONEEmittingFunction:
     forbids.
 
     MUTATION-PROOF OBLIGATION (adversary, MP-D5): rebuild the drain's skew
-    assembly as a private clone (WB18) -> this pin goes RED naming both
-    functions. Its complement is MP-FK6 on the behavioural pin in
-    ``test_comms_tool.py::TestDrainServesTheSharedBriefSkewBlock``.
+    assembly as a private clone (WB18) -> **this pin** goes RED naming both
+    functions.
+
+    ⚠ CLAIM CORRECTED (fix wave 2, adversary §R6/§R8.2): the obligation
+    previously read *"…and the identical-line pin"*. **That was an OVER-CLAIM.**
+    ``TestDrainServesTheSharedBriefSkewBlock::test_the_SAME_agent_gets_the_SAME_
+    line_from_heartbeat`` compares OUTPUT, so a clone that renders byte-identical
+    text is invisible to it — which is precisely the clone D5 is about, since a
+    fresh copy of the assembly starts out identical and drifts later. This
+    structural pin is the ONLY instrument that sees it. **Do not delete it
+    believing the line pin duplicates it: it does not.** The line pin catches a
+    DIVERGED clone; this one catches the clone's existence.
     """
 
     def test_no_promise_literal_is_emitted_from_two_functions(self) -> None:

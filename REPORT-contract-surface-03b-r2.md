@@ -749,3 +749,181 @@ Gates after the edit (docstring-only, no assertion changed): `test_comms_tool.py
 **275 failed, 556 passed**; `test_comms_promise_registry.py` **15 failed, 101 passed**;
 `test_message_ledger.py` **196 passed, 14 skipped**; `uv run ruff check .` → *All checks
 passed!* — identical to §F.1, as a prose-only edit must be.
+
+---
+
+# FIX WAVE 2 — response to the re-grade (`285fdf7`)
+
+*Appended 2026-07-24 by contract-surface-03b-r2. Narrow wave: RG1, RG2, RG3, one claim
+correction, one item held for a ruling.*
+
+## G.1 Fresh tails
+
+```
+test_comms_tool.py                 275F/556P  ->  280 failed, 557 passed   (837 collected)
+test_comms_promise_registry.py      15F/101P  ->   15 failed, 101 passed   (116 collected)
+test_message_ledger.py             196P/14s   ->  196 passed, 14 skipped   (210 collected)
+
+uv run ruff check .        All checks passed!
+./scripts/typecheck.sh     Found 108 errors in 2 files  (unchanged — this wave adds no new
+                           production symbol references, only fixtures over existing ones)
+```
+Passed counts held or rose in every file; nothing previously green broke.
+
+## G.2 RG1 (CRITICAL, WB39) — the subscribed-NAME half
+
+`TestDrainServesTheSUBSCRIBEDNAMEHalfOfTheSkewBlock`, five pins, on the adversary's proven P2
+pair. New fixture helper `_subscribe_and_fall_behind` puts an agent in the ONLY state where
+this half renders at all (subscription is "has acked ≥1 version", and `brief_publish` self-acks
+its publisher, so the subscriber publishes v1 and `lead` bumps the head to v2).
+
+- the drain names the subscribed brief the agent is behind on (the WB39 killer);
+- **the heartbeat control leg** — which **PASSES on this tree today**, and that is the
+  instrument working, not a vacuous pass: production already serves the subscribed half at
+  heartbeat, so the control proves the fixture genuinely puts `fixer-b` behind on `wave9` and
+  the drain leg's RED is about *drain*, not a broken fixture. Heartbeat-green + drain-red **is**
+  the half-a-block signature the adversary named;
+- the two verbs must serve the IDENTICAL subscribed line (the D5 divergence leg);
+- emit/no-emit: a CURRENT subscriber (`lead`, which published v2 last) gets nothing;
+- **the collapsed remainder past `_HEARTBEAT_SKEW_NAMES_CAP`**, N derived from the constant —
+  the cap-boundary leg the adversary marked "ideally", taken, because a skew block that renders
+  an uncapped name list in the highest-volume verb is the unbounded dump the cap exists to stop.
+
+**I accept the finding without qualification.** `_fleet_with_a_published_brief` was a
+brief-name monoculture — the fixture class this repo has now paid for five times, written into
+the wave whose report cites that law twice. The first fix wave closed §3.B1 for `'project'` and
+I did not ask what the *other* half of the same block was doing.
+
+## G.3 RG2 (MAJOR, WB40) — the ADDITION door
+
+The verbatim-sentence pins closed REPLACEMENT (an inverted block dies) and left ADDITION open:
+serving all seven ruled sentences **and** a contradicting paragraph passed 1197/1197. Inclusion
+cannot see a contradiction that arrives alongside the truth.
+
+`test_the_comms_block_is_EXACTLY_the_ruled_sentences` pins the block by **equality**, per the
+adversary's recommended shape: the paragraphs of `_INSTRUCTIONS` that name any of
+`action=send/drain/ack` must be exactly one, and it must equal the seven ruled sentences
+joined. **ALLOWLIST THE SAFE** — the forbidden set (every sentence anyone might append) is
+unbounded; the safe set is seven sentences the contract itself states. The denylist is
+therefore **demoted to tertiary** rather than grown, which is the whole point of the
+six-defeats lesson: I had started down the enumerate-the-forbidden road and the re-grade caught
+me one step in.
+
+Non-vacuity guard included: zero comms paragraphs is an explicit RED, not a silent pass (it is
+what the pin reports on today's tree).
+
+## G.4 RG3 (MAJOR) — the forced, undescribed refs shape
+
+Named in `TestTheDrainRefsCellIsCappedAndCounted`'s docstring: the counted remainder has
+exactly ONE legal rendering — the pre-existing, already-classified
+`"+{more} more beyond the display cap ({cap})"`, emitted as its own line — and every obvious
+alternative (`safe_str(f"… +{n} more")`, a `render_join` part, a fresh template, a `" +"`
+separator) is unclassified and dies. The docstring now lists those dead ends explicitly, so the
+builder meets the answer instead of the wall.
+
+**Chose "name the template" over "classify a refs-remainder label"** (the adversary offered
+both): refs ARE elided by a display cap, so the existing line is semantically correct, and
+minting a second near-identical template is the duplicate-policy defect this packet keeps
+paying for. A genuinely distinct wording later is registry GROWTH with its own proof (B8.1),
+not a second copy of this one. Recorded so the choice is reviewable.
+
+## G.5 Claim correction — MP-D5
+
+*"…and the identical-line pin"* was an **OVER-CLAIM**, corrected in the pin's own docstring and
+here. `test_the_SAME_agent_gets_the_SAME_line_from_heartbeat` compares OUTPUT, so a clone that
+renders byte-identical text is invisible to it — and that is precisely the D5 clone, which
+starts identical and drifts later. The structural one-emitting-function pin is the ONLY
+instrument that sees it. The docstring now says, in place: **do not delete the structural pin
+believing the line pin duplicates it — the line pin catches a DIVERGED clone, this one catches
+the clone's existence.**
+
+That is my second over-claim of this shape (MP-B12's "nothing else in the file" was the first).
+Both had the same cause: I wrote what the pin *ought* to catch instead of deriving what it
+*can*. The obligation table is where a contract author's claims are cheapest to check and most
+expensive to get wrong.
+
+## G.6 Held for a ruling — B5 within-group duplicate multiplicity
+
+> **✅ RESOLVED — see §G.9.** The ruling landed at `851fef3` (MEMBERSHIP) while this wave was
+> in flight and is FOLDED: three pins added, and one pin the ruling invalidated was corrected.
+> This section is kept as the reasoning record for why the hold was right; it is **not** an
+> open item. (Forward pointer added because a section that says "waiting" with no successor
+> reads as still-waiting to anyone who stops here — the lead ground-truthed this file at
+> exactly that moment.)
+
+**No pin changes made** *(at the time this section was written)*. Per the lead's instruction and the adversary's §R8.3, the question of
+whether a `[911, 911]` already-acked pair must show `#911` twice or once is a ruling ambiguity
+(B5.2's letter says every occurrence; §A-GRAFT re-expressed R1 as MEMBERSHIP). The adversary
+recommends MEMBERSHIP, which matches what the contract implements; I agree, and I am not
+implementing my own agreement. Waiting for the ruling in the tree or relayed, exactly as B3.2
+was handled.
+
+## G.7 Updated obligations for the closing re-grade
+
+Unchanged from §F.7 except:
+
+| id | change |
+|---|---|
+| **MP-D5** | *"and the identical-line pin"* **withdrawn** — the structural pin alone fires on an output-identical clone |
+| **MP-RG1** *(new)* | drop the subscribed-name half at the drain (WB39) → the drain leg RED **and the heartbeat control leg still GREEN** (the asymmetry is the diagnosis); drop the whole block (WB1) → both RED |
+| **MP-RG2** *(new)* | serve all seven ruled sentences **plus** a contradicting paragraph (WB40) → the exact-block pin RED |
+
+## G.8 Carried forward, unchanged, all outside my writable set or awaiting a ruling
+
+RG4/P15 parity leg (my `TestTheQuestionTeachReachesTheReaderThroughTheDispatcher` covers the
+surface half; a true `[fake]`/`[real]` parity leg needs the ledger fixture) · RG5/§R8.6
+`test_aclose_closes_the_message_ledger` in `test_comms_wiring.py` · P13 is **written** (see
+§F.4, `TestARejectedRecipientCharsetNamesWHICHRecipient`) — noting it here because the re-grade
+listed it as carried forward · P14 / `PLR0912`: the adversary's reference needed an extracted
+`_validate_comms_identities`; still a property to INVENT, still the design owner's · §R8.7 the
+C1-semantics doc corpse (one supersession line) · §R8.8 the `test_surreal_harness.py`
+escalation, still unverified by anyone.
+
+## G.9 B5 multiplicity RULED (`851fef3`) — folded, and it corrected a pin I had already written
+
+Verified in the tree, not taken on relay: `851fef3 docs(03b): B5 within-group multiplicity
+ruled — MEMBERSHIP, clause struck in place`, B5 item 2 struck and rewritten, §G row carrying
+the derivation and the consistency clause. **The contract's as-built membership reading
+stands**, so the two named pins are additions, not rewrites.
+
+**Three pins added:**
+
+| pin | what it kills |
+|---|---|
+| `test_a_seq_repeated_WITHIN_one_group_is_listed_ONCE` | `[s, s]` both already-acked listing `s` twice — the WB16 door, now closed in the RULED direction rather than guessed |
+| `test_each_group_lists_its_seqs_ASCENDING` | a build echoing REQUEST order; the fixture requests `973, 971, 972` out of order, so every membership pin still passes and only this one fails |
+| `test_the_header_count_derives_from_DISPLAYED_membership_not_raw_entries` | the consistency clause: two entries, ONE displayed seq, so a raw-entry count renders `acked 0 of 2` beside a group showing one seq |
+
+**And one pin the ruling INVALIDATED, which is the part worth flagging.** My existing
+`test_a_NON_ADJACENT_duplicate_seq_reports_in_BOTH_groups` anchored on `"acked 2 of 3"` — and
+**3 is a raw entry count.** Under the consistency clause a correct build renders
+`acked 2 of 2` (two distinct seqs displayed). Left alone, that pin would have reddened the
+ruled build: **a fourth C-DEF, created by a ruling that landed after the pin was written.**
+Fixed, with the reason recorded in place.
+
+The general lesson, and I would not have caught it by implementing only the two pins the relay
+named: **a ruling is not only new pins — it is a re-read of every pin already written.** I
+found it by reading the §G row in the tree rather than working from the relay summary, which is
+the same reason the relay-vs-tree discipline exists.
+
+Complementarity recorded so neither pin is later deleted as redundant: the P6 counts pin uses
+five DISTINCT seqs, where displayed membership and raw entry count coincide — it discriminates
+*which count*; the new consistency pin discriminates *which counting rule*. Only a duplicate
+batch can tell them apart.
+
+## G.10 Closing tails (fix wave 2, complete)
+
+```
+test_comms_tool.py               280F/557P  ->  283 failed, 557 passed   (840 collected)
+test_comms_promise_registry.py                   15 failed, 101 passed   (116 collected)
+test_message_ledger.py                          196 passed, 14 skipped   (210 collected)
+
+uv run ruff check .        All checks passed!
+./scripts/typecheck.sh     Found 108 errors in 2 files  (unchanged)
+```
+All three new B5 pins RED for the right reason (`AttributeError: … no attribute
+'_render_comms_ack'`). Passed counts unchanged; nothing previously green broke.
+
+**Fix wave 2 is complete: RG1 · RG2 · RG3 · the MP-D5 claim correction · the B5 fold.** Nothing
+is held on my side. The carried-forward items in §G.8 are unchanged and all sit outside my
+writable set or await a design ruling.
