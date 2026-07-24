@@ -126,14 +126,36 @@ restore). The contract-adversary's P2 fixture-perturbation confirms the fix wave
    convergence pin STAYS (it is the surface-layer claim, mutation-proven); the ledger legs are the layer
    beneath it, not a replacement. The freeze widens for row 8's legs ONLY; a tenth edit still stops.
 
-**PENDING, NOT AUTHORIZED — with the design sidecar, not the lead:** **D2** (S4.2's context-cell branch 3
-needs a `session` the ruled `_render_comms_drain(result, *, agent_name, limit)` signature does not carry —
-an internal inconsistency in the sidecar's own ruling, so the sidecar resolves it; branch 3 stays
-DELIBERATELY UNPINNED with the gap in the class docstring meanwhile) and **D3** (S3 part 2's ∀-ban is
-UNSATISFIABLE as literally written — `_has_literal_text` is RED on the correct build because
-`_PROMISE_FREE` carries the `" "` join separator; a whitespace-only SEPARATOR and a placeholder-only
-TEMPLATE are different things, so `_is_placeholder_only` was substituted, with a positive control pinning
-the `" "` discrimination).
+### D2 / D3 — RULED BY THE DESIGN SIDECAR 2026-07-24 (both were defects in its OWN rulings)
+- **D2 → READING A.** `_render_comms_drain` gains a **REQUIRED `session: str`** kwarg (house shape,
+  matching `_render_comms_send`). S4.2 had stated a signature that made its own branch 3 unreachable.
+  **Reading B REFUSED with reasons, and the reason binds the builder:** most fleet traffic rides the
+  session-default thread, so under B the subsystem's highest-volume render carries a ` (thread wave7)`
+  cell on EVERY row — teaching nothing, and **destroying the signal S5's teaching leans on** (a thread
+  label means "a deliberate conversation" ONLY if default-thread rows stay bare).
+  ⚠ **The kwarg is REQUIRED, never defaulted** — a defaulted branch-comparand lets any call site
+  silently make the branch unreachable again (the fixture-monoculture hazard, at the SIGNATURE layer).
+  **Required pin: the discriminating pair** — same fixture; entry on the default thread renders NO
+  thread cell, entry on a non-default thread renders one. The battery's `drain.thread` case stays valid
+  (hostile values ≠ `"wave7"`, so the cell renders and sanitisation is still exercised).
+  → **AMENDMENT 10** (mechanical: five committed drivers gain `session="wave7"`).
+- **D3 → CONFIRMED, with a LARGER concession than the escalation claimed.** The sidecar executed the
+  check before conceding: its prescribed `_has_literal_text` form was a false gate in **BOTH** directions
+  — RED on the correct build (`_PROMISE_FREE`'s `" "` separator) **AND BLIND TO THE VERY CLASS THE BOUND
+  BANS**, because `_has_literal_text("{msg}")` returns **True** (named-field characters read as literal
+  text), so the assert would have waved `"{msg}"` straight through even where satisfiable.
+  **A doubly-broken instrument, prescribed by a design doc, caught only by the contract author's
+  satisfiability receipt against a correct build.** `_is_placeholder_only` (≥1 format field, nothing but
+  whitespace outside the fields) is the ruled form: bans exactly the docstring's class, admits `" "` and
+  `"#{}"` with **no exemption list to rot**, and the `" "`-discrimination positive control pins it.
+
+### STANDING AUTHORIZATION — operator, 2026-07-24
+**Further amendments to committed contract files need NO individual ruling when ALL THREE hold:**
+(a) **required by a design ruling** from the sidecar, (b) **MECHANICAL** — preserves every existing
+rendered value and changes NO assertion, and (c) **MUTATION-PROVEN before landing.** Each is reported in
+the packet close-out, not round-tripped. **Anything that is a judgement call, a WEAKENING, or a newly
+found defect still goes to the operator individually** — the grant covers mechanical consequences of
+rulings, never the rulings themselves.
 
 ## Scope OUT
 - Everything packet 03 owns (schema, `messages.py`, concurrency, the relation-table flip).

@@ -135,12 +135,19 @@ re-open trigger.
    table above from a one-time analysis into a standing gate against future template additions
    that create overlap. (It does not replace #143's dynamic check — a marker could still match a
    sibling's INSTANTIATED render — but it kills the cheap textual half of the class.)
-2. **Placeholder-only ∀-ban:** `assert all(_has_literal_text(t) for t in _classified())`. The
-   existing value-carried-promise bound pin
-   (`TestSafeStrLiteralCoverageBound.test_KNOWN_BOUND_a_promise_carried_in_a_render_VALUE_is_not_inspected`)
-   asserts only `"{msg}" not in _classified()` while its docstring bans the whole placeholder-only
-   CLASS — a message promising a check the assertion does not perform (the P2 false-gate class,
-   found live in the committed contract; flagged as Residual 5). The ∀-form enforces the docstring.
+2. **Placeholder-only ∀-ban** — *(AMENDED 2026-07-24, D3: this item's original form,
+   `assert all(_has_literal_text(t) for t in _classified())`, was a FALSE GATE in BOTH
+   directions — executed against the committed correct build it goes RED on the `" "`
+   `render_join` separator (whitespace-only, no format field, nothing to smuggle) AND it is
+   blind to the exact target class (`_has_literal_text("{msg}")` is `True` — named-field chars
+   read as literal text). A C-DEF authored by this doc, caught by the contract author's
+   satisfiability receipt — the C-DEF law doing its job.)* The correct instrument, ruled: ban
+   `_is_placeholder_only(t)` — ≥1 format FIELD and nothing but whitespace outside the fields —
+   over every classified entry. It bans exactly the class the value-carried bound's docstring
+   bans (`"{msg}"`, `" {a} {b} "`), admits separators and sigil templates (`" "`, `"#{}"`) with
+   NO exemption list to rot, and the `" "`-discrimination positive control is pinned. The
+   existing bound pin asserts only `"{msg}" not in _classified()` while its docstring bans the
+   whole class (the P2 false-gate class, Residual 5) — the ∀-form enforces the docstring.
 
 **RULING, part 3 — the ordering question.** The bound must close (extend the scan to literal kwarg
 VALUES) BEFORE any placeholder-only template is classified — and the correct move in 03b is that
@@ -182,7 +189,7 @@ proof + hostile fixture + injection case where a caller-controlled field enters)
   send render → **a `send.thread` RenderCase is MANDATORY** in the injection battery (the
   committed battery has only `send.recipients`/`send.sender`).
 
-### S4.2 `drain` (`_render_comms_drain(result, *, agent_name, limit)`)
+### S4.2 `drain` (`_render_comms_drain(result, *, agent_name, limit, session)` — signature AMENDED 2026-07-24, D2)
 Composed top-to-bottom: header · rows · trailers · elision. All lines joined as `Rendered`.
 - **Header** (committed): stamping drain → `drained {shown} of {total} pending`; peek →
   `peeked {shown} of {total} pending — nothing stamped; re-run without peek=true to mark them
@@ -193,6 +200,21 @@ Composed top-to-bottom: header · rows · trailers · elision. All lines joined 
   else `thread != session` → ` (thread {thread})`; else empty. Body/sender/thread/refs all route
   through the shared sanitiser seam; hostile fixtures (newlines + row-shaped forgery + backtick
   runs) are mandatory per standing law and already committed as battery cases.
+  *(D2 amendment, 2026-07-24: branch 3 as originally ruled was UNREACHABLE — the comparand
+  `session` was carried by neither the signature this section itself stated nor either model; a
+  contradiction inside this doc, caught by the contract author, who correctly pinned branches
+  1–2 + singularity and left 3 unpinned with the gap written into the class docstring. RESOLVED
+  reading A: `_render_comms_drain` gains a REQUIRED `session: str` kwarg — the house shape
+  (`_render_comms_send` already takes one), and required rather than defaulted so no call site
+  can silently make the branch unreachable again (a defaulted branch-comparand is the fixture-
+  monoculture hazard at the signature layer). Suppression of the default-thread cell is
+  LOAD-BEARING, not cosmetic — most traffic rides the session-default thread, so rendering
+  ` (thread {session})` on every row is noise that also destroys the signal "a thread label
+  means a DELIBERATE conversation", which the S5 one-thread-one-debt teaching leans on.
+  Reading B is REFUSED on those grounds. Required pins: the discriminating pair (same fixture,
+  default-thread entry → NO thread cell; non-default → cell renders). The five committed driver
+  call-sites gain `session="wave7"` — a mechanical amendment for the lead to carry to the
+  operator.)*
 - **`ACK REQUIRED` trailer** (committed, registered — WITH A KEYING FIX): emitted IFF ≥1 SERVED
   row has `grade == "directive"` AND `acked_at is None`, and it lists ONLY those seqs. ⚠ **The
   committed proof fixtures are an acked_at monoculture (`acked_at=None` everywhere): a build
@@ -478,6 +500,23 @@ loses on three grounds:
    silent-None-projection law — `TYPE int` does not retro-fill), so packet 06's analysis treats
    `seq is None` as "pre-03b row" defensively. That line makes the bound honest on the READ side
    too, which neither the `int` nor the `option` choice changes.
+
+**D2 — context-cell branch 3: reading A. `_render_comms_drain` gains a REQUIRED `session: str`
+kwarg.** Full reasoning folded into S4.2 in place (the amendment note there is the ruling of
+record): the branch was unreachable as ruled — a contradiction inside this doc, the author's to
+catch and mine to own; suppression of the default-thread cell is load-bearing for signal density
+AND for the S5 teaching (a thread label must MEAN a deliberate conversation); reading B refused;
+required-not-defaulted so no call site can silently re-break the branch; five mechanical driver
+amendments (`session="wave7"`) go to the operator via the lead.
+
+**D3 — the S3 part 2 substitution CONFIRMED: `_is_placeholder_only`, no exemption list.** And
+the concession is LARGER than the escalation claimed, verified by execution 2026-07-24: my
+original `_has_literal_text` form was a false gate in BOTH directions — RED on the correct
+build's `" "` separator AND `_has_literal_text("{msg}") is True`, i.e. blind to the exact class
+the bound bans (named-field characters read as literal text). The author's satisfiability
+receipt caught a doubly-broken instrument this doc prescribed; S3 part 2 is amended in place.
+The C-DEF law (a contract ships with a satisfiability receipt) is what caught it — receipts over
+authority, including this authority's.
 
 **Store-reference routing rule (for the author's new probed SurrealQL fact — the lead lands
 it):** if the vendor documents the OPPOSITE of the probed behaviour → §6 (a new numbered
