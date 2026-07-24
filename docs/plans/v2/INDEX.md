@@ -919,3 +919,10 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   report (`14a987b`) — it false-nudged every packet-10 agent; a gate that refuses honest work is a
   gate that gets switched off. Receipts: `REPORT-{fable-design-pkt10,builder-10d,audit-10d-cold}.md`
   (to archive at close-out) + `docs/design/2026-07-24-floor-calibration.md`.
+- 2026-07-24 · **03b CONTRACT PHASE CERTIFIED — both waves SUFFICIENT (the recovered packet).**
+  Surface `57d8677`: 4 adversary passes, 52 wrong builds, 6 blockers→0, satisfiability 1209/0
+  post-lint, CL3's paragraph allowlist terminates the teaching regress. Telemetry `f6cb14a`:
+  5 rounds, ~60 builds, the signature-bound double + MP-A..I close the outcome×store×subject
+  matrix, one accepted bound with named trigger. Process held end-to-end: authors built NO
+  references; adversaries built from rulings contract-blind-until-frozen; every ambiguity ruled
+  same-day in-tree. NEXT = merged-build gate over the post-merge tree (incl. 10/10-d), then builder.
