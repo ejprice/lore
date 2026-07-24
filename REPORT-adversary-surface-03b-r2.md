@@ -1348,3 +1348,244 @@ proportion on the record: this is one pin or one ruling, not a wave.
 *Closing re-grade written 2026-07-24 against HEAD `d6fe51e`. Reference build
 `9f09ab226c04ff27b1e97d5ff6dc2735 server.py` / `bdbda576ee327e3f0c547dccf2fcbd22 config.py`. Every
 claim above is dated to that commit.*
+
+---
+---
+
+# FINAL VERDICT PASS (2026-07-24, fourth pass)
+
+**Graded at:** HEAD `f6d88b3` (`test(03b): surface closing wave — the WB45 allowlist pin +
+RG3/C6.1/RG5`). Delta: `test_comms_tool.py` (+169), `test_comms_promise_registry.py` (+16),
+`test_comms_wiring.py` (+23). Same scratch root, same battery, provenance re-asserted per run.
+Repo untouched except this report.
+
+## FINAL SUMMARY BLOCK
+
+- **VERDICT: CONTRACT INSUFFICIENT — one door, and I name the ONE pin that terminates it**
+  (§D5). Zero blockers, zero criticals. Everything else is certified.
+- **SATISFIABILITY: `1209 passed / 0 failed / 14 skipped`**, ruff clean, `typecheck.sh` 0 errors /
+  149 files. Frozen reference `36a6ca0d7ee04844809cae54f0436c82 server.py`.
+- **RG5 passes on my reference unchanged** — I have closed `message_ledger` in `aclose` since the
+  first reference build, so the new pin found it already true. Not a reference gap.
+- **WB45 DIES — 1 RED** (`test_the_comms_block_is_the_ONLY_paragraph_claiming_a_comms_DUTY`),
+  against its exact surviving text. **WB40 → 2 RED · WB40b → 3 RED.**
+- **THE DOOR THAT REMAINS — one finding, three keys, all measured:** the CL1 detector is a
+  **7-word deny list wearing an allowlist label**. Ordinary paraphrase walks through it:
+  **WB46** (a contradiction using no vocabulary word) · **WB47** (inflection — `acking`,
+  `threads`, `inboxes`, `seqs` all evade `(?<!\w)word(?!\w)`) · **WB48** (the same sentence folded
+  into an existing paragraph). Each passes **1209/1209**.
+- **Full regression: 52 builds, ZERO regressions**; 3 strengthened (WB24 12→13, WB28 1→2,
+  WB31b 9→10).
+- **RED honesty: 299F / 910P reproduced exactly, ZERO collection/import errors.**
+- **Final quantifier table: §D6 — 47 invariants, 46 ∀, 1 GUARDED, receipt attached.**
+- **I will not ask for a bigger word list.** §D5 gives the terminating pin and the ruling
+  alternative, and states in advance which verdict each earns.
+
+---
+
+## D1 — Satisfiability + the four-way adjudication
+
+The frozen reference went `3 failed / 1206 passed`. All three adjudicate as **reference gaps**,
+two of them created by rulings that landed after my reference:
+
+| pin | verdict |
+|---|---|
+| `test_the_comms_block_is_EXACTLY_the_ruled_sentences` | **reference gap by C6.1.** The residual I raised (the body-cap sentence forced last by tuple-assembly order) was **settled the way I recommended** — the ruled string now carries it at clause **4**, matching B9's numbering. My reference still had it last. |
+| `test_the_comms_block_is_the_ONLY_paragraph_claiming_a_comms_DUTY` | **cascade of the above** — the CL1 pin skips the paragraph EQUAL to `ruled`; a block that fails equality is then flagged as an outsider. Correct behaviour, not a second defect. |
+| `test_no_dead_safe_str_free_entries` | **reference gap by C6.2 / RG3.** The wave gave the refs remainder its OWN classified label `"+{} more"`; my reference still used the fleet family's display-cap line — the shape I had reached only because no classification existed. My workaround left the new entry dead. |
+
+**No pin defects.** Converging (cap sentence to clause 4; the refs remainder as a `safe_str` label
+inside the row cell):
+
+```
+$ uv run ruff check loremaster/loremaster/server.py loremaster/loremaster/config.py
+All checks passed!
+$ uv run pytest -n auto -q <the five graded files>
+1209 passed, 14 skipped in 16.22s
+$ ./scripts/typecheck.sh
+Success: no issues found in 149 source files ; typecheck: loremaster OK
+```
+
+**Both residuals I raised are properly closed, and the RG3 fix is better than my workaround** — a
+classified label in the drain row's own vocabulary rather than a neighbour's leftover forced onto
+its own line. The author's correction note is right that pointing a builder at the fleet template
+was documentation standing in for a missing classification.
+
+**RG5:** `test_comms_wiring.py`'s new `aclose` pin passes on my reference untouched — I added
+`await self.message_ledger.close()` in the original build. §R8.4/§C6.4 is **closed**.
+
+---
+
+## D2 — WB45 and its relocations
+
+| build | result |
+|---|---|
+| **WB45** — the exact text that survived the closing pass, re-served | **DIES, 1 RED** — `test_the_comms_block_is_the_ONLY_paragraph_claiming_a_comms_DUTY` |
+| **WB40** — a contradicting sentence appended INSIDE the ruled block | **DIES, 2 RED** |
+| **WB40b** — the contradiction in a SECOND verb-naming paragraph | **DIES, 3 RED** (equality + CL1 + the denylist) |
+
+CL1 does exactly what it was written for. The measured attack is dead.
+
+---
+
+## D3 — THE DOOR THAT REMAINS: one finding, three keys
+
+The CL1 pin's docstring says **"ALLOWLIST THE SAFE, one level up from where RG2 applied it"**. RG2
+genuinely is an allowlist — the ruled block is pinned by EQUALITY, and nothing can be added to,
+removed from, or reworded inside it. **CL1 is not.** Its mechanism is
+`_COMMS_DUTY_VOCABULARY` — seven words — matched whole-word, case-insensitively, over every other
+paragraph. That is an enumeration of the FORBIDDEN, which the repo's own six-defeats lesson names
+as the instrument shape that loses. Three keys, each passing **1209/1209** with **0** new failures:
+
+**WB46 — vocabulary-free.** No word from the list, nothing from the inversion denylist:
+
+> *"FLEET ETIQUETTE: the caps and duties described above are defaults you may relax when a task is
+> going well; teammates follow up out of band, so treat them as suggestions rather than
+> obligations."*
+
+**WB47 — inflection.** `(?<!\w)ack(?!\w)` does not match `acking`; nor `thread` → `threads`,
+`inbox` → `inboxes`, `seq` → `seqs`, `directive` → `directives`. And
+`_DEMONSTRATED_INVERSIONS`'s `"trailer is decorative"` is not a substring of `"trailers are
+decorative"`:
+
+> *"FLEET ETIQUETTE: inboxes are best-effort; acking is optional and the trailers are decorative;
+> threads may carry several questions at once, and the seqs a response lists are advisory rather
+> than binding."*
+
+**This one needs no adversary at all — it is ordinary English.** An author writing *"acking is
+optional"* rather than *"no ack"* evades by accident, which is precisely the honest-developer
+model the pin declares.
+
+**WB48 — no new paragraph.** The same claim folded into the existing `lore_comms` paragraph, which
+this packet already edits:
+
+> *"…fleet to see who else is active. The obligations below are defaults you may relax; teammates
+> follow up out of band."*
+
+WB48 also disposes of the cross-packet-coupling objection to the closure below: the contradiction
+does not need a new paragraph, or another packet's paragraph, to land.
+
+**P0 control:** all three are green on the correct build (1209/1209) and change the served text
+demonstrably; each was diffed against the reference's own 0-failure baseline, so "0 new failures"
+is absolute, not relative.
+
+---
+
+## D4 — Full regression sweep (52 builds, zero regressions)
+
+Every previously-graded build re-run against the final reference. Counts are new failures against
+a **0-failure** baseline.
+
+WB1 **6** · WB2a **6** · WB2b **14** · WB2c **3** · WB3 **3** · WB4 **1** · WB5 **2** · WB6 **2** ·
+WB7 **4** · WB8 **1** · WB9 **3** · WB10 **5** · WB11 **4** · WB12 **2** · WB13 **1** · WB15 **4** ·
+WB16b **1** · WB16r **4** · WB16s **1** · WB16t **2** · WB17 **1** · WB18 **4** · WB19 **2** ·
+WB20 **5** · WB21 **2** · WB22 **1** · WB23 **2** · WB24 **13** · WB25 **1** · WB26 **1** ·
+WB27 **1** · WB28 **2** · WB29 **1** · WB30 **2** · WB31b **10** · WB32 **3** · WB33 **8** ·
+WB34 **3** · WB35 **5** · WB37 **1** · WB38 **4** · WB39 **3** · WB40 **2** · WB40b **3** ·
+WB41 **1** · WB42 **1** · WB43 **7** · WB44 **2** · WB45 **1** · MP-B5c **1** · MP-FK1a **6** ·
+MP-FK1b **5** · MP-FK2a **6**.
+
+**Zero regressions. Three strengthened** (WB24 12→13, WB28 1→2 — RG3's own label now also
+reddens — WB31b 9→10). **Only WB46/WB47/WB48 survive, and they are one door.**
+
+---
+
+## D5 — The terminating fork (and my verdict under each)
+
+**I am not asking for more words.** A longer `_COMMS_DUTY_VOCABULARY` loses to the next synonym,
+and I would break it again next pass. That regress is the thing to stop, not to feed.
+
+**CL3 — the terminating pin (RECOMMENDED).** Pin `_INSTRUCTIONS` itself as an **allowlist of
+declared paragraphs**: a module-level tuple of the served paragraphs, with the ruled comms block as
+one member, and `assert _INSTRUCTIONS == "\n\n".join(_DECLARED_PARAGRAPHS)`. The safe set is the
+whole served document — small, enumerable, and already fully specified by the packets that own it.
+Then WB46/47/48 all die, no word list exists to be paraphrased around, and any packet adding a
+paragraph meets a deliberate decision at one pin. Keep the vocabulary detector and the inversion
+denylist as **regression gates** for the measured attacks — do not grow either.
+*Cost: one tuple + one assertion; every packet touching `_INSTRUCTIONS` updates it, which is the
+point.* **Verdict under CL3: SUFFICIENT.**
+
+**CL4 — rule it a KNOWN BOUND.** Under the repo's *"WHEN YOU CANNOT CLOSE A HOLE, PIN IT"* law: a
+pin asserting that prose OUTSIDE the ruled block is guarded by review rather than by a gate, with
+the named re-open trigger *"any packet that adds `_INSTRUCTIONS` prose bearing on comms duties"*
+(packet 04's `_comms_footer` pulls it), and a docstring correction so CL1 no longer claims to
+allowlist what it deny-lists. **Verdict under CL4: SUFFICIENT** — a bound met deliberately, with
+its rationale attached, is not the same object as an unknown hole. I record that in advance so this
+does not need a fifth pass.
+
+**What I will not sign:** the current state *as described*. Not because the door is large, but
+because a pin whose docstring says ALLOWLIST while its mechanism DENY-LISTS is the exact
+mislabelling that makes a future reader stop looking — and this repo has paid for that six times.
+Either mechanism (CL3) or label (CL4) must move.
+
+---
+
+## D6 — FINAL P1b QUANTIFIER TABLE (closed)
+
+47 invariants across the three verbs, the dispatcher, the skew block, the wiring and the teaching
+surface. **46 ∀ · 1 GUARDED.** Every ∀ row's receipt is a wrong build that DIES; the GUARDED row
+carries its surviving-door receipt.
+
+| group | invariants | class | receipt |
+|---|---|---|---|
+| **dispatcher** (1–8, 42) | recipient charset · broadcast scope · **session-scoped resolution** · retired reject · `set_status` closed set · pre-touch reject ordering · no status write · all-or-nothing · fail-loud on ledger failure | **∀ ×9** | WB11 4 · WB7 4 · WB8 1 · WB9 3 · WB10 5 · WB22 1 · (3-leg fixture) · (committed) · MP-B5c 1 |
+| **send render** (9–13) | shared cap · true remainder · broadcast count-form · ack teach · question teach | **∀ ×5** | WB25/26/29 1 each · WB27 1 · WB23 2 · WB19 2 |
+| **drain render** (14–28, 43–47) | config limit · own cap · per-action range text · whole-set totals · elision arithmetic · fenced bodies · `{context}` cell · argument comparand · `acked_at` keying · gate-and-list · runnable command · window scope · peek rule · re-serve keying · refs cap+count · skew for the draining agent · past-the-cap remainder · name-agnostic · versions not re-derived · magnitude ordering | **∀ ×20** | WB12 2 · WB13 1 · (parametrized) · WB15 4 · WB3 3 · MP-FK1a 6 / MP-FK1b 5 / WB24 13 / WB35 5 · WB20 5 · WB4 1 · WB5 2 · WB6 2 · WB6 · (elided fixture) · WB21 2 · WB20 · WB28 2 / WB37 1 · WB38 4 · WB41 1 · WB42 1 · WB43 7 · WB44 2 |
+| **skew block** (29–30) | drain serves BOTH halves · ONE implementation | **∀ ×2** | WB1 6 · WB39 3 · WB18 4 |
+| **ack render** (32–37) | a home per outcome · group-exact membership · duplicate across groups · receipt counts · multiplicity (MEMBERSHIP) · ascending · note gating | **∀ ×7** | (set-equality) · WB33 8 / WB34 3 · WB16b 1 · WB32 3 · WB16r 4 / WB16t 2 · WB16s 1 · WB17 1 |
+| **wiring** (38–39, +RG5) | each handler calls its render · `build_app_context` constructs the ledger · `aclose` closes it | **∀ ×3** | WB2a 6 / WB2b 14 / WB2c 3 · (introspection + control) · (new pin, green on my reference) |
+| **teaching** (40–41) | the tool schema teaches honestly · the ruled block is exactly the ruled sentences, and the only comms-duty paragraph | **∀ for the schema; ∀ for replacement and for addition inside the block; GUARDED for paraphrase outside it** | WB30 2 · WB31b 10 · WB40 2 · WB40b 3 · WB45 1 · **WB46 / WB47 / WB48 → 0 (§D3)** |
+
+---
+
+## D7 — Residuals carried forward, each with a verdict
+
+1. **C6.1 (unruled sentence order)** — **CLOSED**, settled at clause 4 as recommended.
+2. **RG3 (the refs template)** — **CLOSED**, with its own classified label; better than my workaround.
+3. **RG5 (`aclose`)** — **CLOSED**; green on my reference unchanged.
+4. **MP-D5's structural-pin-alone residual** — **CLOSED** (WB18 now 4 RED).
+5. **`ruff PLR0912` on `AppContext.comms` + `PLC0206` on the ack grouping** — **still real**: two
+   post-lint refactors a builder must invent, neither described. (P14.)
+6. **`_p03_entry` still defaults `acked_at`** — **acceptable, mitigated** (WB5 → 2 RED).
+7. **The drain elision proof marker is value-free** — **mitigated** (WB3 → 3 RED).
+8. **Surface pins rest on the message fake's honesty** — **unchanged** (RG4); the fake CAN fail (§7)
+   but only `test_message_ledger.py` re-checks it.
+9. **`docs/design/2026-07-12-pkt28-c1-semantics.md` doc corpse (8 hits)** — **still live**;
+   re-swept this pass, unchanged. One supersession line owed.
+10. **`test_surreal_harness.py` (struck adversary's escalation)** — **still unverified by me**,
+    outside the graded five. For the lead.
+
+---
+
+## FINAL VERDICT
+
+# CONTRACT INSUFFICIENT — one door, one pin, and a ruling that would also close it
+
+**What I could not break, having spent four passes trying:** 49 of 52 wrong builds die, every one
+to a named pin; all four closing items (CL1, RG3, C6.1, RG5) land and hold; the contract is
+satisfiable at `1209 passed / 0 failed` with ruff and mypy clean, post-lint, on a reference built
+from the rulings alone; the RED is honest at 299F/910P with zero collection errors; and the wave
+closed two residuals of mine with fixes better than the workarounds I had reached for. **The arc
+is 6 blockers → 1 critical → 1 major → one bounded door.** This is, by a distance, the strongest
+contract I have graded in this packet.
+
+**The door:** `_COMMS_DUTY_VOCABULARY` is a seven-word deny list under an "allowlist the safe"
+docstring, and ordinary paraphrase walks through it — vocabulary-free (WB46), inflected (WB47), or
+folded into a paragraph this packet already edits (WB48), each at 1209/1209. Feeding it more words
+loses to the next synonym.
+
+**One action closes it, and I have pre-committed my verdict to both:**
+- **CL3 — pin `_INSTRUCTIONS` as a declared paragraph allowlist** (one tuple, one assertion).
+  Terminates the regress; the vocabulary detector and the inversion denylist stay as regression
+  gates. **→ SUFFICIENT.**
+- **CL4 — rule the residual a KNOWN BOUND**, with the named re-open trigger (packet 04's
+  `_comms_footer`) and a docstring correction so CL1 stops claiming to allowlist what it
+  deny-lists. **→ SUFFICIENT.**
+
+Either way this needs no fifth adversary pass: **the lead's ruling is the certification.** I record
+INSUFFICIENT only because I hold a reproducible surviving build and it is not mine to declare out
+of scope — the proportion is one pin or one paragraph of prose, not a wave.
+
+*Final verdict pass written 2026-07-24 against HEAD `f6d88b3`. Reference build
+`36a6ca0d7ee04844809cae54f0436c82 server.py` / `bdbda576ee327e3f0c547dccf2fcbd22 config.py`. Every
+claim above is dated to that commit.*
