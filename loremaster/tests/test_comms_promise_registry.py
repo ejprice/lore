@@ -782,7 +782,19 @@ def _p03_message(
     )
 
 
-def _p03_entry(*, seq: int, grade: str = "signal", acked_at: Any = None) -> Any:
+def _p03_entry(*, seq: int, acked_at: Any, grade: str = "signal") -> Any:
+    """An ``InboxEntry`` for the drain-render drivers.
+
+    AUTHORIZED AMENDMENT 8 (operator 2026-07-24): ``acked_at`` carries NO DEFAULT.
+    That default WAS R3's root cause — every committed ACK REQUIRED proof leg took
+    it, making the fixtures an ``acked_at`` MONOCULTURE, so a build keying the
+    trailer on ``grade == 'directive'`` alone passed both legs with the defect
+    intact. Amendment 3 added the discriminating pin; this closes the door the pin
+    was needed for, per repo law (a fixture factory must not default a parameter the
+    code branches on) — and the 03b drain render branches on ``acked_at`` TWICE
+    (the ACK REQUIRED trailer and the ALREADY ACKED trailer). No default ⇒ the next
+    author to add a proof must CHOOSE, and the monoculture cannot re-form silently.
+    """
     from loremaster.messages import InboxEntry
 
     return InboxEntry(
@@ -1065,7 +1077,21 @@ _PROOF_LIST: list[PromiseProof] = [
     # --- fleet elision re-ask (§9.7 #12): remainder present vs none. ----------
     PromiseProof(
         literal="+{more} more — re-run with limit={next_limit}",
-        marker=f"{_EM_DASH} re-run with limit=5",
+        # AUTHORIZED AMENDMENT 7 (operator 2026-07-24) — the FULL rendered line.
+        # This marker was `"— re-run with limit=5"`, i.e. text SHARED verbatim with
+        # the drain elision template plus a value. Under 03b S4.2's ruled drain
+        # arithmetic (`next_limit = more`) the committed drain fixture
+        # (shown=2, total_pending=7) renders `+5 more unread — re-run with limit=5`,
+        # which CONTAINS that marker — so TestNoMarkerIsCrossSatisfiedByAnotherProof
+        # went RED on the CORRECT build and GREEN on a build that copied fleet's
+        # (dishonest) `shown + more` arithmetic. MEASURED both ways against a
+        # reference build: correct 2 failed / wrong 2 passed. The contract PENALISED
+        # the correct build and REWARDED the wrong one — a contract prescribing the
+        # bug (the PKT-28 C1 §5.1 class), invisible until _render_comms_drain existed.
+        # The class is now pinned STATICALLY by
+        # TestNoMarkerIsASubstringOfAnotherClassifiedTemplate's value-erased check,
+        # which needs no render and would have caught this at authoring time.
+        marker=f"+3 more {_EM_DASH} re-run with limit=5",
         render_emit=lambda: _render_fleet(
             rows=[_agent("a"), _agent("b")], total_active=5, limit=2
         ),
@@ -1089,10 +1115,10 @@ _PROOF_LIST: list[PromiseProof] = [
         "re-run without peek=true to mark them seen",
         marker="nothing stamped; re-run without peek=true to mark them seen",
         render_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=51)], total_pending=1, peek=True
+            entries=[_p03_entry(seq=51, acked_at=None)], total_pending=1, peek=True
         ),
         render_no_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=51)], total_pending=1, peek=False
+            entries=[_p03_entry(seq=51, acked_at=None)], total_pending=1, peek=False
         ),
     ),
     PromiseProof(
@@ -1102,10 +1128,14 @@ _PROOF_LIST: list[PromiseProof] = [
         # pending — N > cap, the fixture shape no comms contract had ever
         # written. NO-EMIT: the same rows with nothing elided.
         render_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=61), _p03_entry(seq=62)], total_pending=7, limit=2
+            entries=[_p03_entry(seq=61, acked_at=None), _p03_entry(seq=62, acked_at=None)],
+            total_pending=7,
+            limit=2,
         ),
         render_no_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=61), _p03_entry(seq=62)], total_pending=2, limit=2
+            entries=[_p03_entry(seq=61, acked_at=None), _p03_entry(seq=62, acked_at=None)],
+            total_pending=2,
+            limit=2,
         ),
     ),
     PromiseProof(
@@ -1115,10 +1145,10 @@ _PROOF_LIST: list[PromiseProof] = [
         # the trailer for EVERY served row (rather than for directives) passes
         # an empty-vs-nonempty discrimination and fails this one.
         render_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=71, grade="directive")], total_pending=1
+            entries=[_p03_entry(seq=71, grade="directive", acked_at=None)], total_pending=1
         ),
         render_no_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=71, grade="signal")], total_pending=1
+            entries=[_p03_entry(seq=71, grade="signal", acked_at=None)], total_pending=1
         ),
     ),
     PromiseProof(
@@ -1711,6 +1741,12 @@ def _string_templates(
     """Thin compatibility wrapper over :func:`_canonicalise` for the render-template
     scanner. Raises :class:`_UnclassifiableShape` on an unknown shape."""
     return list(_canonicalise(node, func, seen).templates)
+
+
+_FIXTURE_VALUE = re.compile(r"\d+")
+"""A rendered fixture VALUE inside a proof marker. Erasing these leaves the marker's
+literal PROSE — what :meth:`TestNoMarkerIsASubstringOfAnotherClassifiedTemplate.
+_value_erased_violations` compares against the classified templates (amendment 7)."""
 
 
 def _has_literal_text(template: str) -> bool:
@@ -2544,6 +2580,82 @@ class TestNoMarkerIsASubstringOfAnotherClassifiedTemplate:
         # 'ACK REQUIRED' alone is a PREFIX of the marker 'ACK REQUIRED: #71', never a
         # superstring of it, so no violation is owed.
         assert self._violations(_PROMISE_PROOFS, near_miss) == []
+
+    # -- AMENDMENT 7: the VALUE-ERASED form, which is what actually kills the class -
+
+    @staticmethod
+    def _value_erased_violations(proofs: dict[str, PromiseProof]) -> list[tuple[str, str]]:
+        """The same disjointness question asked of the marker's LITERAL SKELETON —
+        its fixture values erased — against every other template's skeleton.
+
+        The plain substring check above compares a marker (which carries INSTANTIATED
+        values) against templates (which carry ``{placeholders}``), so a marker made
+        ENTIRELY of shared literal text plus a value slips through: ``"— re-run with
+        limit=5"`` is not a substring of ``"+{more} more unread — re-run with
+        limit={next_limit}"`` — the ``5`` and the ``{next_limit}`` differ — yet the two
+        lines collide the instant both are RENDERED with aligned numbers.
+
+        Erasing digits from the marker and ``{fields}`` from the template compares what
+        is actually shared: the PROSE. A marker whose prose skeleton lives inside
+        another template is anchored to text it does not own, and only its fixture's
+        arithmetic is keeping it distinct — the arithmetic-alignment class, in string
+        form."""
+        violations: list[tuple[str, str]] = []
+        for literal, proof in proofs.items():
+            skeleton = _FIXTURE_VALUE.sub("", proof.marker)
+            if not skeleton.strip():
+                continue  # a purely numeric marker owns no prose to compare.
+            for template in sorted(_classified()):
+                if template != literal and skeleton in _FORMAT_FIELD.sub("", template):
+                    violations.append((proof.marker, template))
+        return violations
+
+    def test_no_markers_PROSE_lives_inside_another_classified_template(self) -> None:
+        """AUTHORIZED AMENDMENT 7 (operator 2026-07-24) — the permanent instrument
+        for the D1 defect, STATIC and render-free, so it fires at contract-authoring
+        time rather than after a builder implements the ruled behaviour."""
+        violations = self._value_erased_violations(_PROMISE_PROOFS)
+        assert not violations, (
+            "a proof's marker is nothing but text SHARED with another classified template "
+            "plus a fixture value — the two lines collide the moment both render with "
+            "aligned numbers, and until then the contract silently REWARDS whichever build "
+            "keeps them apart by accident. Promote the marker to the FULL rendered line:\n"
+            + "\n".join(
+                f"  marker {marker!r}\n    prose lives inside {template!r}"
+                for marker, template in violations
+            )
+        )
+
+    def test_the_gate_catches_THE_D1_DEFECT_ITSELF(self) -> None:
+        """SELF-ATTACK, and the D1 receipt preserved AS A PIN (the lead's ask).
+
+        Restore the pre-amendment-7 fleet marker — the exact text this contract
+        shipped with — and the gate must fire. MEASURED against a reference build of
+        03b S4.2 (2026-07-24): with that marker, the CORRECT drain arithmetic
+        (``next_limit = more``) left ``TestNoMarkerIsCrossSatisfiedByAnotherProof`` and
+        ``TestMarkerCrossSatisfactionBound`` at **2 failed**, while fleet's wrong
+        ``shown + more`` arithmetic left them at **2 passed**. This pin needs neither
+        render nor arithmetic to see it."""
+        fleet = _proof_literal_containing("+{more} more — re-run")
+        regressed = dict(_PROMISE_PROOFS)
+        regressed[fleet] = replace(_PROMISE_PROOFS[fleet], marker=f"{_EM_DASH} re-run with limit=5")
+        violations = self._value_erased_violations(regressed)
+        assert violations, (
+            "the value-erased gate no longer catches the D1 defect (a fleet marker made "
+            "entirely of text shared with the drain elision template). If the drain "
+            "template was reworded so the two no longer share prose, re-derive this pin; "
+            "do NOT weaken it"
+        )
+
+    def test_POSITIVE_CONTROL_the_value_erased_gate_is_not_blanket_rejection(self) -> None:
+        """Every OTHER shipped marker passes the value-erased check — so the red above
+        is discrimination. Without this, a gate that flagged all 26 markers would look
+        identical to one that flagged the one real defect."""
+        fleet = _proof_literal_containing("+{more} more — re-run")
+        others = {
+            literal: proof for literal, proof in _PROMISE_PROOFS.items() if literal != fleet
+        }
+        assert self._value_erased_violations(others) == []
 
 
 class TestNoClassifiedTemplateIsPlaceholderOnly:
