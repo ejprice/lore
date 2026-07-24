@@ -2084,7 +2084,16 @@ async def _ask(
         thread=thread,
         set_status="input_required",
     )
-    return result.message.seq
+    # AUTHORIZED AMENDMENT +6 (operator 2026-07-24), the ONLY change 03b makes to
+    # this closed, GREEN contract. ``ledger`` is deliberately ``Any`` (one helper
+    # serves BOTH the [fake] and [real] legs), so ``result`` is ``Any`` and mypy
+    # cannot see that ``Message.seq`` is declared ``int`` — the error is
+    # ``no-any-return``, not a real type doubt. ``cast`` is this file's existing
+    # idiom for exactly that erasure (``cast(Any, ledger)._query(...)`` etc.),
+    # and it keeps the declared ``-> int`` honest instead of widening it.
+    # ⚠ Design-doc Residual 8 says global mypy-zero is "structural… building S4's
+    # surface pays them". True for 34 of the 36; NOT for these two.
+    return cast(int, result.message.seq)
 
 
 async def _answer(
@@ -2104,7 +2113,9 @@ async def _answer(
         recipients=[_ref(to)],
         thread=thread,
     )
-    return result.message.seq
+    # AUTHORIZED AMENDMENT +6 — the sibling of ``_ask``'s cast; same cause
+    # (``ledger: Any``), same file-local idiom. See ``_ask`` for the reasoning.
+    return cast(int, result.message.seq)
 
 
 class TestTheWaitingStateIsDerived:
