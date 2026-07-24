@@ -518,6 +518,25 @@ receipt caught a doubly-broken instrument this doc prescribed; S3 part 2 is amen
 The C-DEF law (a contract ships with a satisfiability receipt) is what caught it — receipts over
 authority, including this authority's.
 
+**D10 + paired driver default — BOTH CLOSED, ruled as one (2026-07-24).** Reading A made
+`thread` a branched-on parameter; `_inbox_entry` defaulted it and `_p03_entry` hardcoded it with
+no parameter — the amendment-8 shape (`acked_at`, R3's root cause) one field over on the SAME
+factory. Ruled IN, both halves: `_inbox_entry.thread` and `_p03_entry.thread` become REQUIRED
+(~26 mechanical, value-preserving call-site edits), AND the render driver's defaulted `session`
+goes required (~20 sites) — because the context-cell branch has TWO comparands (`thread` vs
+`session`), and closing one side leaves the generator alive one layer down: a future pin routed
+through a session-defaulting driver tests one branch as silently as one routed through a
+thread-defaulting factory. Grounds: (1) the fixture-default law is UNCONDITIONAL and amendment 8
+set its precedent on this very factory — a factory with one field required-by-law and its
+neighbour defaulted teaches the next author the law is negotiable; (2) "currently covered by
+M1/M2/M3" is a DATED RECEIPT, not a standing property — the exposure is definitionally to the
+NEXT pin, the one moment nobody re-runs today's coverage analysis (this packet's own S1 exists
+because untested coverage premises hand holes an alibi); (3) the cost asymmetry: file open +
+author alive + standing authorization now, vs a fresh operator amendment cycle post-freeze.
+Mutation proofs as amendment 8's: `TypeError` proof + a both-values-expressible positive
+control, per factory and per driver. A defect GENERATOR is cheapest to kill while the file is
+open — amendment 8's own logic, affirmed and applied to its neighbour.
+
 **Store-reference routing rule (for the author's new probed SurrealQL fact — the lead lands
 it):** if the vendor documents the OPPOSITE of the probed behaviour → §6 (a new numbered
 falsehood, + a one-line pointer from the practical section it affects); if the vendor is SILENT
