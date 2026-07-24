@@ -228,3 +228,38 @@ builder brief:
   DEFINITION are untouched.
 - **Scratch copy** `/home/ejprice/scratch/ct-telemetry-fix` is a discardable `scratch_copy.sh` tree
   (not a git worktree). Discard when the wave closes.
+
+---
+
+## Follow-up wave (2026-07-24, after `86abf1e`) — the flagged 8th-edit residual, LANDED
+
+The lead authorized landing the `test_trace_rejects_undeclared_field` residual as seq-int
+collateral (same file, same root cause, same sharpen-not-weaken shape).
+
+⚠ **FILENAME CORRECTION, flagged loudly:** the authorization named
+`test_surreal_store.py::TestTraceRoundTrip::test_trace_rejects_undeclared_field`, but that pin does
+**not exist** in `test_surreal_store.py`. Ground-truthed: `TestTraceRoundTrip` and
+`test_trace_rejects_undeclared_field` live **only** in **`test_surreal_schema.py`** (class at
+:1297, method at :1365) — which is my own committed fix-wave file, not a sibling surface file. The
+"store" reference is a schema↔store transcription slip; the intent (fix the exact residual I
+flagged, which my original report placed in `test_surreal_schema.py`) is unambiguous, so I edited
+the file where the pin provably lives. The boundary's SPIRIT — do not touch the committed sibling
+surface files (`test_comms_*`) — is preserved: those are untouched.
+
+**The edit** (`test_surreal_schema.py::TestTraceRoundTrip::test_trace_rejects_undeclared_field`):
+both CREATEs now supply the newly-required `seq`, and the pin gained a POSITIVE CONTROL + an
+attribution assertion so it can no longer pass for a masked reason:
+- **Positive control:** the identical row WITHOUT the rogue field (seq present) is **ACCEPTED** —
+  proving the CREATE is well-formed, so the only remaining variable is the undeclared field.
+- **Rejection leg:** differs ONLY by adding `rogue_field`, and is asserted rejected **naming
+  `rogue_field`** (`"Found field 'rogue_field', but no such field exists for table 'trace'"`,
+  probed 2026-07-24) — a seq-miss would instead name `seq`/"Expected int", so the assertion proves
+  the rejection is attributable to the undeclared field, not a masked seq-coercion error.
+
+**Receipts (vs the correct reference build in the scratch copy):**
+- Amended pin **PASSES** (control accepted; rogue leg RED naming `rogue_field`).
+- **Attribution mutation** — drop the rogue field from the rejection leg (make it identical to the
+  control) → pin goes **RED (DID NOT RAISE)**, proving the raise is caused by the rogue field alone.
+- Full `test_surreal_schema.py` stays **0-failed** (83 passed) against the reference; `ruff` clean.
+- Provenance: `loremaster.__file__ = /home/ejprice/scratch/ct-telemetry-fix/loremaster/loremaster/__init__.py`.
+- Nothing uncovered that isn't seq-int collateral. Committed with an explicit path (this file only).

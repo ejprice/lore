@@ -1367,24 +1367,50 @@ class TestTraceRoundTrip:
     ) -> None:
         # Proves ``trace`` is a REAL SCHEMAFULL table with declared fields, not a
         # bare placeholder that accepts anything written at it.
+        #
+        # ⚠ AMENDED for delta row F (§S8 E3, seq-int collateral): ``seq`` is now a
+        # required ``TYPE int`` column, so a seq-less CREATE raises on the MISSING
+        # SEQ — which would mask the undeclared-field rejection this pin is named
+        # for (a pass-for-a-masked-reason, the false-gate class). So both writes
+        # below SUPPLY seq, and the rejection is proven attributable to the rogue
+        # field alone: the POSITIVE CONTROL (seq present, no rogue field) is
+        # ACCEPTED, and the rejection leg differs ONLY by adding the rogue field
+        # and is rejected NAMING it.
         connection, env = admin_db
         await run(connection, generate_ddl(dim=env.dim))
-        with pytest.raises(Exception):  # noqa: B017 - engine SCHEMAFULL rejection surface
+        clean_content: dict[str, Any] = {
+            "tool": _TRACE_TOOL,
+            "params_hash": _TRACE_PARAMS_HASH,
+            "hit_count": _TRACE_HIT_COUNT,
+            "latency_ms": _TRACE_LATENCY_MS,
+            "session": _TRACE_SESSION,
+            "seq": _TRACE_SEQ,
+        }
+        # POSITIVE CONTROL: the identical row WITHOUT the rogue field is accepted,
+        # so the CREATE is well-formed and the only remaining variable is the
+        # undeclared field. Without this, the rejection below could be attributable
+        # to a seq-less (malformed) CREATE and the pin would prove nothing.
+        await run(
+            connection,
+            "CREATE type::record('trace', $id) CONTENT $content",
+            {"id": "trace_clean", "content": clean_content},
+        )
+        with pytest.raises(Exception) as rejection:  # noqa: B017 - engine SCHEMAFULL rejection surface
             await run(
                 connection,
                 "CREATE type::record('trace', $id) CONTENT $content",
                 {
                     "id": "trace_rogue",
-                    "content": {
-                        "tool": _TRACE_TOOL,
-                        "params_hash": _TRACE_PARAMS_HASH,
-                        "hit_count": _TRACE_HIT_COUNT,
-                        "latency_ms": _TRACE_LATENCY_MS,
-                        "session": _TRACE_SESSION,
-                        "rogue_field": "not in the schema",
-                    },
+                    "content": {**clean_content, "rogue_field": "not in the schema"},
                 },
             )
+        # ...and rejected BECAUSE OF the undeclared field (named in the error), never
+        # a masked seq-coercion error: a seq-miss names ``seq``/"Expected int", this
+        # names the rogue field. That is the whole point of the amendment.
+        assert "rogue_field" in str(rejection.value), (
+            "the rejection must name the UNDECLARED field, proving it is attributable to the "
+            f"rogue field and not to a masked seq-mint error; got: {str(rejection.value)!r}"
+        )
 
 
 # --- P8b: ``finding`` ledger field-level + counter fixtures -------------------
