@@ -502,3 +502,54 @@ Execute as one engine, in this order:
 - **F6 — Churn tolerance:** inherit 10% with the named re-set decision point —
   *recommended* — vs measuring a tolerance before first arming (delays the packet for
   a number whose cost of being wrong is one cheap survey run).
+
+---
+
+## Addendum A (2026-07-24, same day — post lead-filed #176/#177 and #179)
+
+Written after the lead's independent verification pass; three amendments, each with
+its receipt. The §Recommendation numbering stands; R4/R5/R7 are sharpened below.
+
+**A1 — Armedness must be evaluated at the serving seam, never warmed by an unrelated
+tool call (#176's second-order fact; amends §5 and §7).** Re-derived at `7f23223`:
+`apply_cosine_floor_drift_check` has exactly ONE production caller —
+`AppContext._build_index_status` — and `_CosineFloorRuntimeState.disarmed_by_drift`
+defaults to `False`. So in any server process where `lore_index()` has never been
+called, the aggregate verdict is **armed against a possibly-drifted floor**: the
+disarm is a cache warmed by an unrelated tool call, and its unevaluated default is
+fail-OPEN. (This design's §1.1 measurement itself warmed that cache on the production
+process — the instrument arming the safety it was reading.) My own §7 as first
+committed inherited a milder copy of the defect ("in-process cached, refreshed on
+status reads and adoptions"). Amended design, binding on packet 11:
+- trigger evaluation is **event-driven at the indexer's own chokepoints** (boot, and
+  the post-sync/post-sweep chokepoints that already stamp
+  `META_LAST_SYNC_AT_KEY`/`META_LAST_SWEEP_AT_KEY`) plus at every adoption —
+  `lore_index` becomes a **pure read** of engine state, never the thing that computes
+  it;
+- the fail-safe default inverts: **unevaluated ⇒ disarmed** (state `unmeasured` /
+  `measuring` in the §7 table — under-claim until the engine has actually evaluated),
+  never armed-by-default;
+- F4's per-hit gate reads the same engine state at the same serving seam — one
+  evaluation, every consumer, no second cache (ONE IMPLEMENTATION).
+This does not change F4's recommendation; it strengthens its rationale and closes the
+dark-process hole on the aggregate too.
+
+**A2 — The survey script's write-surface, answered for #177 (re-derived at
+`7f23223`).** The script's own query surface is read-only by construction and
+documented as such (`survey()`'s docstring, S4b audit finding #2: `scroll` +
+`hybrid_search` only; it deliberately never calls `store.ensure_ready()`, which IS a
+schema-DDL write transaction). But it is not literally write-free at the wire: the
+lazy connect (`SurrealStore._ensure_connection` → `_txn.bootstrap_session`) transmits
+`DEFINE NAMESPACE IF NOT EXISTS` + `use()` + `DEFINE DATABASE IF NOT EXISTS` on first
+use. Against the existing production ns/db these no-op by the engine's IF-NOT-EXISTS
+semantics (`docs/reference/surrealdb-31-capabilities.md` — the #107 fact). The real
+residual hazard is a **mistyped coordinate**: a wrong namespace/database against the
+production endpoint would be silently MATERIALIZED as empty ns/db, not rejected. The
+per-instance runner (§Recommendation) retires the hardcoded production coordinate;
+until then, #177's entry-check hazard stands as filed.
+
+**A3 — The foreign-instance per-hit surface is now ledgered as finding #179** (filed
+2026-07-24 by this packet, scoped to what #176 does not cover: non-lore deployments
+serving lore-calibrated per-hit judgements with no validity claim on the host corpus).
+R6/R7 + F4 are its closure path; packet 11 resolves it alongside #83/#87/#161 — its
+resolution note should record that the constant's retirement, not any count, closed it.

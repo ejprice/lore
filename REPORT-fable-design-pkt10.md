@@ -72,6 +72,30 @@ brief-base v6 read
   `7f23223`) — not mine, not touched; noting so their presence isn't attributed to this
   packet.
 
+## UPDATE 2026-07-24 (post lead round-trip — #176/#177 answered, #179 filed)
+- **#179 filed by me** (lead-directed): the foreign-instance per-hit surface — non-lore
+  deployments serve per-hit weak-match judgements against lore's 0.50649 with no
+  validity claim on the host corpus. Scoped around #176 (lore's-own-instance drift-gate
+  gap) and #83 (aggregate leg); links both. Code-path claim only; no DI render read —
+  stated in the row.
+- **#176 second-order fact CHANGES the design (Addendum A1):** re-derived at `7f23223`
+  — `apply_cosine_floor_drift_check` has exactly one production caller
+  (`AppContext._build_index_status`) and `disarmed_by_drift` defaults False, so a
+  process that never serves `lore_index()` keeps the aggregate verdict armed against a
+  drifted floor (fail-OPEN default; my own §1.1 read warmed prod's cache). My committed
+  §7 inherited a milder copy ("refreshed on status reads"). Amended: event-driven
+  evaluation at indexer chokepoints + boot + adoptions; `lore_index` becomes a pure
+  read; unevaluated ⇒ disarmed. F4's recommendation unchanged, rationale strengthened.
+- **#177 answered (Addendum A2):** the survey's query surface is read-only BY
+  CONSTRUCTION and documented (S4b audit finding #2 in `survey()`'s docstring — never
+  calls `ensure_ready()`, which is a schema-DDL write txn; store calls are `scroll` +
+  `hybrid_search` only). Not literally write-free at the wire: lazy connect →
+  `_txn.bootstrap_session` transmits `DEFINE NAMESPACE IF NOT EXISTS` / `use()` /
+  `DEFINE DATABASE IF NOT EXISTS`. No-ops against the existing prod ns/db (#107
+  semantics); the live hazard is a MISTYPED coordinate silently materializing an empty
+  ns/db on the prod endpoint. Suggest #177's row gain that one line.
+
 ## Standing by
-Long-running sidecar per brief; follow-ups via SendMessage. Design doc + this report are
-committed on `pkt10-floor-calibration-design`; idle-between-questions is expected.
+Long-running sidecar per brief; follow-ups via SendMessage. Design doc (+ Addendum A)
+and this report are committed on `pkt10-floor-calibration-design`;
+idle-between-questions is expected.
