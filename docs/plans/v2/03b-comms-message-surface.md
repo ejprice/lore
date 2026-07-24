@@ -3,6 +3,21 @@ size ~0.3 wu (measured; FLOOR — see 03's SPLIT note) **→split at kickoff (si
 law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1/§15 · design source:
 ~/.claude/plans/one-of-claude-codes-nifty-garden.md · **DEPLOY: yes (BOTH containers)**
 
+## ⚠ TAKEOVER + CONTRACT-PHASE RESET (operator, 2026-07-24)
+The 03b contract phase run between `0223291` and `6bfe820` is **STRUCK** (finding #181): its
+contract authors built their own reference implementations, then wrote the tests, and no
+adversary re-graded either fix wave — nothing decided by that orchestrator retains authority.
+Test tree reset at commit `0941aab` (verified byte-equivalent to the trusted 03a-2 close);
+the struck corpus is preserved at tag `pkt03b-tainted-corpus` as raw material for a blind-diff
+completeness check ONLY; its reports carry struck-banners in `receipts/2026-07-24-packet03b/`.
+**What survives: direct operator rulings only** — the 2026-07-24 scope widening (03b traces
+EVERY tool call, not drains only: a drain-only ordinal is a numerator with no denominator),
+the R1→packet-05 deferral, and the committed-contract immutability law. Every section below
+recording struck-session substance (amendments 1–10, the adversary-wave rulings, the D-items,
+S-references) is HISTORY, not instruction. The fresh design authority is
+`03b-design-rulings-r2.md` (blind re-derivation) once adjudicated; the trusted baseline
+contract is the packet-03-era RED restored by the reset (149F/554P + 11F/85P).
+
 ## Why this packet exists
 Split from packet 03 at kickoff (operator-ruled 2026-07-19) on the contract author's
 measurement: the contract was written IN FULL and then sized — **296 pins, 0.6–0.8 wu

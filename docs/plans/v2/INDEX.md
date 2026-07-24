@@ -178,7 +178,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 03 | **comms STORE** — message/`to` slices, `DEFINE SEQUENCE`, `ENFORCED`, the relation-table policy flip + dirty-store migration pins; **#146 adjudication + 3.2.1 re-probes** | PKT-28 C2b | C | 0.20 | 02 | **DONE 2026-07-23** (df59f76; scoped 304/0, blast 432/0; cold-audit GO; #146 accept-with-trigger; TEST-ONLY, no deploy; 03a unblocked) |
 | 03a-1 | **comms ledger SEND + drain** — `messages.py` foundations + `AgentRefLike` home + `send` + drain/peek; ≥8-way send concurrency | — | C | 0.20 | 03 | **DONE 2026-07-23** (2d1f75d→42eeedc; cold-audit GO, [real] leg graded; 140 passed / 31 red=03a-2 stubs; #173 fix; TEST-ONLY, no deploy) |
 | 03a-2 | **comms ledger ACK + WAITING** — ack (4-way disambiguation), derived waiting state; 16-way ack concurrency (**closes 03a**; drain landed in 03a-1) | — | C | 0.15 | 03a-1 | **DONE 2026-07-23** (`853a95b`→`0223291`; cold-audit GO, [real] leg graded 31 pins / 0 silent skips; 180 passed / 12 skipped; 20/20 16-way ack concurrency; **closes 03a**; TEST-ONLY, no deploy) |
-| 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a ✅ | **NEXT — open + UNBLOCKED 2026-07-23** (task `b7f89c12`; contract READY, RED at 149/554). **Inherits 6 design-ruled items** (`03a-2-consume-path-design-rulings.md` delta table): both `message` indexes BEFORE its deploy (free window expires here), the deliveries-SELECT bound, 3 pin classes, the binding render law, the oracle-change rule. **Owns global mypy-zero** (36→0). Reads #175 before any edge write. |
+| 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a ✅ | **NEXT — RESET 2026-07-24** (task `b7f89c12`; the struck self-certified contract phase reverted at `0941aab`, #181, corpus tagged `pkt03b-tainted-corpus`; trusted RED restored at 149/554). **Inherits 6 design-ruled items** (`03a-2-consume-path-design-rulings.md` delta table): both `message` indexes BEFORE its deploy (free window expires here), the deliveries-SELECT bound, 3 pin classes, the binding render law, the oracle-change rule. **Owns global mypy-zero** (36→0). Reads #175 before any edge write. |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
 | 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121 #149) | PKT-28 C3 | C | 0.30 →split | 04 | open |
 | 06 | comms-protocol-drill (brief-base v3 + THE DRILL) | PKT-28 C4 | C | 0.25 | 05 | open |
@@ -883,3 +883,9 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   Receipts `docs/plans/v2/receipts/2026-07-23-packet03a2/` (six waves; the auditor's report carries
   an **archive-correction header** — its mypy distribution summed to 48 beside its own correct 36).
   **NEXT = 03b** (task `b7f89c12`, now unblocked) — it ships the surface AND deploys both containers.
+- 2026-07-24 · **03b CONTRACT PHASE STRUCK + RESET (operator; #181).** The prior orchestrator's
+  contract authors built their own reference builds then wrote the tests, self-certifying both waves;
+  both adversary verdicts (INSUFFICIENT) were never re-run after the fix waves. Reverted to the 03a-2
+  close at `0941aab` (verified 160F/1205P/12s trusted RED · mypy 36/0-prod · ruff clean); corpus tagged
+  `pkt03b-tainted-corpus`; reports struck-bannered. Re-run: blind design re-derivation → clean contract
+  phase (authors never build references; the adversary builds + re-grades every wave) → client acceptance.

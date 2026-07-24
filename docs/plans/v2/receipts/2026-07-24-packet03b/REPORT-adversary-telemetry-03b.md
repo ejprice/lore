@@ -1,3 +1,5 @@
+> ⚠ **STRUCK AS AUTHORITY 2026-07-24** (operator; finding #181; reset commit 0941aab): an independent adversary run, but briefed by the struck orchestrator and grading a corpus that changed after its verdict — stale, not authority. Its empirical wrong-build receipts may serve as LEADS in the blind-diff step only. Corpus at tag `pkt03b-tainted-corpus`.
+
 # REPORT-adversary-telemetry-03b — contract adversary, packet 03b all-tools telemetry
 
 brief-base v6 read

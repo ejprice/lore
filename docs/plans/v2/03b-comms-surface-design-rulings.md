@@ -2,6 +2,14 @@ brief-base v6 read
 
 # 03b surface design rulings — coverage-premise probe, #145 disposition, #143 adjudication, the served shapes, drain telemetry
 
+> ⚠ **STRUCK AS AUTHORITY 2026-07-24** (operator; finding #181; reset commit `0941aab`): these
+> rulings were produced inside the struck, self-certified 03b contract phase — briefed by the
+> struck orchestrator, several ruled reactively to bless what the tainted contract wave had
+> already written. Preserved in place so citations resolve; **the design authority for 03b is
+> the blind re-derivation `03b-design-rulings-r2.md`** once adjudicated. Empirical probe
+> receipts in here (S1's coverage-premise probe, the S7 SDK measurement) may serve as LEADS
+> for re-verification only.
+
 **Authority:** design-comms-03b (long-running comms design sidecar, packet 03b — successor to
 `design-comms`, whose `03a-2-consume-path-design-rulings.md` rulings R1–R6 remain binding and are
 cited here as 03a2-R1…R6). These are RULINGS the packet lead implements and pins, not options.

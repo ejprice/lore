@@ -1,3 +1,5 @@
+> ⚠ **STRUCK AS AUTHORITY 2026-07-24** (operator; finding #181; reset commit 0941aab): produced in the self-certified 03b contract phase — the author built its own reference implementation and graded its own wave; no adversary re-graded the result. Preserved as history and as raw material for the blind-diff completeness check ONLY. Corpus at tag `pkt03b-tainted-corpus`.
+
 # REPORT-contract-telemetry-03b-fix — telemetry contract FIX WAVE (packet 03b, delta rows F/G/H)
 
 brief-base v6 read

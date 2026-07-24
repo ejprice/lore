@@ -1,3 +1,5 @@
+> ⚠ **STRUCK AS AUTHORITY 2026-07-24** (operator; finding #181; reset commit 0941aab): produced in the self-certified 03b contract phase — the author built its own reference implementation and graded its own wave; no adversary re-graded the result. Preserved as history and as raw material for the blind-diff completeness check ONLY. Corpus at tag `pkt03b-tainted-corpus`.
+
 brief-base v6 read
 
 # REPORT — contract-surface-03b-2 (packet 03b, AMENDMENT 10: D2 → reading A)
