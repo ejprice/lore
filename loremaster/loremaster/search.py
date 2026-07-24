@@ -278,8 +278,32 @@ _ENRICHMENT_UNAVAILABLE = "⚠ enrichment unavailable"  # "⚠ enrichment unavai
 #
 # ADOPTED, never re-guessed: flipping either constant again requires a
 # fresh survey run's receipts, exactly as this one did.
+#
+# DISARMED 2026-07-24 (packet 10-d, docs/plans/v2/10-d-weak-match-disarm.md,
+# ruled by docs/design/2026-07-24-floor-calibration.md Addendum E1). The
+# floor above is UNCHANGED as a historical record (see the stamp below) —
+# but it is no longer SERVED, because the judgement it powers is
+# confident-wrong three source-verified ways: the per-hit flag consults no
+# drift state, so it compares live cosines against a floor measured in a
+# retired embedding space (#176); the constant was measured on lore's own
+# corpus and ships in the image to every foreign instance with no validity
+# claim there (#179); and it was calibrated on best-of-response cosines and
+# is applied to every INDIVIDUAL hit, a population those hits cannot belong
+# to (#180). DESIGN-LAW §1.3 prices this: under-claiming is nearly free,
+# ONE confident-wrong costs authority for the session.
+#
+# ``None`` here is the constant's own DESIGNED rollback state (see the
+# gates in ``_cosine_absence_verdict`` and ``SearchPipeline._format_result``
+# — both already read it), not a pre-measurement default. Note what does
+# NOT change: :data:`_COSINE_SUBSTRATE_ENABLED` stays ``True``, because a
+# raw magnitude with no judgement attached is claim-free and D1-gated.
+#
+# The re-arm is packet 11-ii, from the INSTANCE'S OWN measurement rather
+# than a baked-in constant — so the "fresh survey run's receipts" rule
+# above still governs any future serving value; it is not repealed here,
+# it is superseded by per-instance calibration.
 _COSINE_SUBSTRATE_ENABLED = True
-_COSINE_WEAK_MATCH_FLOOR: float | None = 0.50649
+_COSINE_WEAK_MATCH_FLOOR: float | None = None
 
 # --- finding #74 part 3: the floor's drift-detection stamp -----------------
 # The floor above is a MEASURED constant -- its validity is conditioned on
@@ -333,6 +357,13 @@ class CosineFloorMeasurement:
 # 214, well inside the 10% tolerance either way). Every SUBSEQUENT floor
 # change (a fresh survey re-run) re-stamps BOTH fields here from that run's
 # own ``lore_index()`` read -- never guessed, never left stale.
+#
+# Packet 10-d (2026-07-24): this stamp deliberately DISAGREES with the
+# serving constant now -- it records floor=0.50649 while
+# :data:`_COSINE_WEAK_MATCH_FLOOR` is ``None``. That is not staleness: the
+# disarm is not a survey re-run, so there is nothing to re-stamp, and this
+# snapshot is the historical record of WHAT 0.50649 WAS MEASURED AGAINST.
+# Packet 11-i reads it as provenance; 11-ii owns its retirement.
 _COSINE_WEAK_MATCH_FLOOR_STAMP: CosineFloorMeasurement | None = CosineFloorMeasurement(
     floor=0.50649,
     measured_file_count=214,
@@ -352,6 +383,20 @@ _COSINE_WEAK_MATCH_FLOOR_STAMP: CosineFloorMeasurement | None = CosineFloorMeasu
 # reshaped corpus (a new tier onboarded, a large doc dump indexed) that
 # SHOULD force a re-measure.
 _COSINE_FLOOR_DRIFT_FILE_COUNT_TOLERANCE: float = 0.10
+
+# Packet 10-d (2026-07-24): what the ``disabled`` state SAYS. Finding #4's
+# lesson is that disabled-BY-CONFIG and disarmed-PENDING-CALIBRATION are
+# different conditions and must not share a rendering — a null note renders
+# as "this surface was simply never turned on", which is a different (and,
+# today, false) fact about the instance. §C5 family (a) by construction:
+# the failure is admitted loudly, the findings that caused it are citable,
+# the packets that resolve it are named, and what STILL serves is stated so
+# a reader does not conclude the whole cosine surface went away.
+_COSINE_FLOOR_DISARMED_NOTE = (
+    "weak-match confidence surfaces disarmed pending per-instance calibration "
+    "(findings #83/#176/#179/#180; packets 11-i/11-ii) — per-hit similarity "
+    "substrate remains served."
+)
 
 @dataclass
 class _CosineFloorRuntimeState:
@@ -396,7 +441,11 @@ class CosineFloorDriftStatus:
             fingerprint, or ``None`` when disabled.
         current_embedding_schema_fingerprint: The fingerprint this check was
             run against.
-        note: A human-readable explanation, present iff ``state == "stale"``.
+        note: A human-readable explanation of a NON-serving state — the
+            drift reason when ``state == "stale"``, or
+            :data:`_COSINE_FLOOR_DISARMED_NOTE` when ``state == "disabled"``
+            (packet 10-d). ``None`` iff ``state == "measured"``, the one
+            state that needs no explanation because the surface is serving.
     """
 
     state: Literal["measured", "stale", "disabled"]
@@ -482,7 +531,7 @@ def apply_cosine_floor_drift_check(
             current_file_count=current_file_count,
             measured_embedding_schema_fingerprint=None,
             current_embedding_schema_fingerprint=current_embedding_schema_fingerprint,
-            note=None,
+            note=_COSINE_FLOOR_DISARMED_NOTE,
         )
     note = _cosine_floor_drift_note(
         stamp, current_file_count, current_embedding_schema_fingerprint
@@ -753,9 +802,12 @@ def _cosine_absence_verdict(
 ) -> SearchResult | None:
     """The item-12c aggregate absence verdict, or ``None`` when it does not apply.
 
-    Dark while :data:`_COSINE_WEAK_MATCH_FLOOR` is ``None`` (the disabled/
-    rollback state, not a pre-measurement default — the floor is measured
-    and set by default) OR while
+    Dark while :data:`_COSINE_WEAK_MATCH_FLOOR` is ``None`` — which, since
+    packet 10-d (2026-07-24), is the SHIPPED state on every instance: the
+    floor is measured but DISARMED from serving pending per-instance
+    calibration (#176/#179/#180; 11-ii arms it). This gate is therefore not
+    a dormant rollback lever today; it is the live production path — OR
+    while
     :attr:`_cosine_floor_runtime_state`\\ ``.disarmed_by_drift`` is ``True``
     (finding #74 part 3: the last ``lore_index()`` status read
     detected the floor's stamp had drifted beyond its bar — under-claim is
@@ -1328,9 +1380,13 @@ class SearchPipeline:
                 formatted = f"{formatted}\n" + "\n".join(enrichment_lines)
         if stale:
             formatted = f"{formatted}\n{STALE_WARNING}"
-        # item 12 (S4b): the cosine substrate/weak-flag machinery — both dark
-        # (no-op) until their own gate constant is measured on; see the
-        # constants' own docstrings for the exact gate semantics.
+        # item 12 (S4b): the cosine substrate/weak-flag machinery, each behind
+        # its OWN gate constant (see those constants for the exact semantics).
+        # As shipped since packet 10-d (2026-07-24) the two gates disagree
+        # deliberately: the SUBSTRATE is on (a claim-free magnitude), the
+        # weak-match FLAG is dark (its floor is disarmed pending per-instance
+        # calibration, #176/#179/#180) — so this block renders the number and
+        # never the judgement.
         if _COSINE_SUBSTRATE_ENABLED and candidate.vector_cosine is not None:
             formatted = f"{formatted}\n{_cosine_substrate_line(candidate.vector_cosine)}"
         if (

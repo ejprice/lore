@@ -168,10 +168,14 @@ _BIDI_ZERO_WIDTH_AND_SEPARATOR_CHARS = (
 # discriminating nonsense from real queries — §1.2) in favour of a PRE-FUSION
 # cosine substrate + gated absence verdict. ADOPTED 2026-07-06 (search.py's
 # own comment above ``_COSINE_SUBSTRATE_ENABLED`` carries the measured
-# receipts): production now ships LIT by default. This module's own tests
-# exercise BOTH the lit production default AND the explicitly-forced-dark
-# path via ``monkeypatch`` on the module's gate constants (never re-declared
-# here; the whole POINT is that the module owns them).
+# receipts). PARTLY DISARMED 2026-07-24 (packet 10-d): production ships the
+# SUBSTRATE lit and the weak-match FLOOR at ``None``, so the per-hit
+# judgement and the aggregate verdict are both dark pending per-instance
+# calibration (#176/#179/#180). Most classes below ``monkeypatch`` their own
+# floor to keep the LIT machinery under regression coverage for 11-ii; the
+# SHIPPED state is pinned — patch-free, which is the point — by
+# ``TestWeakMatchDisarmedAtTheProductionDefault``. The gate constants are
+# never re-declared here; the whole POINT is that the module owns them.
 _WEAK_MATCH_MARKER = "weak match"
 _ABSENCE_VERDICT_MARKER = "no confident match"
 
@@ -1637,16 +1641,21 @@ def _score_candidate(
 class TestCosineWeakMatchDark:
     """The dark code path still works when EXPLICITLY forced dark.
 
-    Pre-adoption, dark was the PRODUCTION DEFAULT (this class used to test
-    that with no monkeypatching at all). Post-adoption (2026-07-06 survey
-    re-run: D1 passes, D2 floor=0.5828, false-fire 4.0%, nonsense catch
-    100% — see the constants' own comment in search.py), the production
-    default is LIT, so these tests now explicitly monkeypatch back to the
-    dark gate values to keep the disable path under regression coverage (an
-    operator forcing ``_COSINE_SUBSTRATE_ENABLED=False`` /
-    ``_COSINE_WEAK_MATCH_FLOOR=None`` — e.g. a rollback — must still get
-    zero substrate line, zero per-hit flag, zero aggregate verdict,
-    regardless of how low a candidate's ``vector_cosine`` is).
+    These tests keep the EXPLICIT forcing under coverage: an operator (or a
+    packet) setting ``_COSINE_SUBSTRATE_ENABLED=False`` /
+    ``_COSINE_WEAK_MATCH_FLOOR=None`` must get zero substrate line, zero
+    per-hit flag and zero aggregate verdict, regardless of how low a
+    candidate's ``vector_cosine`` is.
+
+    History, because the monkeypatching here reads oddly without it: dark was
+    the production default pre-adoption (this class then patched nothing);
+    the 2026-07-06 survey re-run lit both gates, at which point the patches
+    were added; packet 10-d (2026-07-24) then darkened the FLOOR again on
+    every instance — so the floor patches below now re-assert what the module
+    already ships, while the ``_COSINE_SUBSTRATE_ENABLED=False`` patch still
+    forces a genuinely non-default state. What the SHIPPED constants do is
+    pinned patch-free by ``TestWeakMatchDisarmedAtTheProductionDefault``;
+    this class must never be read as evidence about them.
     """
 
     async def _pipeline(
@@ -2377,7 +2386,13 @@ class TestApplyCosineFloorDriftCheck:
 
         assert status.state == "disabled"
         assert status.floor is None
-        assert status.note is None
+        # Packet 10-d: the disabled branch stopped serving a null note —
+        # disabled-by-config and disarmed-pending-calibration are different
+        # conditions and must not share a rendering (finding #4). The note's
+        # CONTENT is pinned by
+        # TestWeakMatchDisarmedAtTheProductionDefault; here it only has to be
+        # the module's one string rather than an ad-hoc second copy.
+        assert status.note == search_module._COSINE_FLOOR_DISARMED_NOTE
         assert search_module._cosine_floor_runtime_state.disarmed_by_drift is False
 
     def test_recomputes_fresh_every_call_not_a_one_way_latch(

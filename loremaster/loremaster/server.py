@@ -1573,7 +1573,14 @@ class CosineFloorStatus(BaseModel):
     ``calibration``/``embedding_schema`` idiom. ``state == "stale"`` means the
     AGGREGATE absence verdict (``lore_search``'s "no confident match" notice)
     is currently DISARMED (served as if the floor were unset) — under-claim
-    is cheap, a confidently-wrong absence claim is not (finding #74). Unlike
+    is cheap, a confidently-wrong absence claim is not (finding #74).
+    ``state == "disabled"`` means the floor is not serving AT ALL, and since
+    packet 10-d (2026-07-24) that is the SHIPPED state on every instance: the
+    per-hit weak-match flag AND the aggregate verdict are both dark pending
+    per-instance calibration (#176/#179/#180 — 11-ii arms them), while the
+    per-hit similarity SUBSTRATE (``sim 0.62``) keeps serving. ``note``
+    carries that explanation rather than a null, so this state can never be
+    misread as "never turned on". Unlike
     :class:`CalibrationStatus`, this is constructed directly from the search
     module's own dataclass (no ``from_engine_status``-style resilience
     seam): there is no external engine boundary here, just an internal,
@@ -1591,7 +1598,13 @@ class CosineFloorStatus(BaseModel):
         measured_embedding_schema_fingerprint: The stamp's recorded
             fingerprint, or ``None`` when disabled.
         current_embedding_schema_fingerprint: The CURRENT fingerprint.
-        note: A human-readable explanation, present iff ``state == "stale"``.
+        note: A human-readable explanation of a NON-serving state — the drift
+            reason when ``state == "stale"``, or the packet-10-d disarm
+            explanation when ``state == "disabled"``. ``None`` iff
+            ``state == "measured"``, the one state that needs no explanation
+            because the surface is serving. (The model's own field DEFAULT is
+            ``None``: a bare :class:`IndexStatusSummary` constructed without
+            this section records "nothing checked", which is neither.)
     """
 
     model_config = ConfigDict(extra="forbid")

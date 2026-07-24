@@ -2792,6 +2792,11 @@ class TestCosineFloorStatusWiring:
             floor=0.5828, measured_file_count=2,
             measured_embedding_schema_fingerprint=fingerprint,
         )
+        # The floor is patched, not merely stamped: since packet 10-d the
+        # SHIPPED constant is None, which short-circuits to "disabled" before
+        # any stamp comparison runs. A stamp-only patch would leave this test
+        # asserting a state the drift machinery can no longer reach.
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", 0.5828)
         monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR_STAMP", stamp)
 
         status = await indexed_context.index()
@@ -2812,6 +2817,9 @@ class TestCosineFloorStatusWiring:
             floor=0.5828, measured_file_count=2000,  # wildly beyond the 10% tolerance
             measured_embedding_schema_fingerprint=fingerprint,
         )
+        # Packet 10-d: the shipped floor is None (short-circuits to
+        # "disabled"), so reaching the drift machinery requires arming it.
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", 0.5828)
         monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR_STAMP", stamp)
 
         status = await indexed_context.index()
@@ -2834,6 +2842,9 @@ class TestCosineFloorStatusWiring:
             floor=0.5828, measured_file_count=2,
             measured_embedding_schema_fingerprint="e" * 64,  # differs from the stamped "f"*64
         )
+        # Packet 10-d: the shipped floor is None (short-circuits to
+        # "disabled"), so reaching the drift machinery requires arming it.
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", 0.5828)
         monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR_STAMP", stamp)
 
         status = await indexed_context.index()
@@ -2853,7 +2864,11 @@ class TestCosineFloorStatusWiring:
 
         assert status.cosine_floor.state == "disabled"
         assert status.cosine_floor.floor is None
-        assert status.cosine_floor.note is None
+        # Packet 10-d: an unset floor no longer renders a null note — see
+        # test_production_default_serves_the_disarm_note_through_lore_index
+        # for the same assertion made against the SHIPPED constants (this one
+        # forces the state; that one observes it).
+        assert status.cosine_floor.note == search_module._COSINE_FLOOR_DISARMED_NOTE
 
     async def test_production_default_serves_the_disarm_note_through_lore_index(
         self, indexed_context: AppContext
