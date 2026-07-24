@@ -4,7 +4,7 @@ brief-base v6 read
 - state: done — design doc + Addenda A/B committed on `pkt10-floor-calibration-design`; operator's 2026-07-24 architecture ruling incorporated; standing by
 - deliverable: `docs/design/2026-07-24-floor-calibration.md` — R1–R8 + Addenda A–D; **Addendum D reworks staleness around the operator's two directives**: floor = bootstrap INTERVAL, N by measured noise curve, stability gates 11-ii, staleness ≡ fresh CI disjoint from adopted CI (the 10% churn tolerance is DELETED, not re-tuned; fingerprint leg survives as pure disarm)
 - ruling status: F1/F2/F4/F5/F6 DECIDED BY DELEGATION (doc §B6); **F3 RE-DISPOSED as a three-model CLIENT CONSULT** (doc Addendum C — operator's two challenges both landed; the operator-fork framing was my error, owned in C0)
-- decisions-needed: none pending — consult timing RULED (operator: "measure first" → after 11-i, doc C3); R2's publish spec + #180 measurement rider defined (doc C6); split executed (6938281, faithful to B7)
+- decisions-needed: none pending — Trust-Doctrine rulings DELEGATED to me and issued (Addendum E, binding on the lead): E1 disarm NOW via micro-packet 10-d; E2 consult+battery composed; E3 battery in 11-ii Exit; E4 cache-before-throttle; E5 GO stands with the determinism fallback
 - deviations: (1) survey script read end-to-end, NOT executed (its default coordinate is prod :18500 — brief forbids; doc §1.5, now moot for the durable path per the ruling); (2) nothing executed from the worktree → no provenance receipt exists or is claimed
 - receipt pointers: ruling verified at the store (memory `f464cfda…`, kind=decision, re-read before citing) → doc §B0; live measurement → §1.1; source receipts → §1.2–§1.4 + A1/A2; thrash/cost story → §B2; 11a/11b composition → §B3; DDL mechanism → §B4 (capabilities §1.1–1.3/§1.5 cited); CalibrationEngine verdict → §B5
 - findings: #179 filed by me (foreign-instance per-hit surface — the ruling closes it by construction, resolution rides packet 11); #176/#177 answered in Addendum A
@@ -212,7 +212,33 @@ brief-base v6 read
   the design doc are inside D2's preserved correction record. This report's UPDATE-5
   line carries an inline correction marker rather than a silent rewrite.
 
+## UPDATE 2026-07-24 (seventh round — Trust Doctrine rulings, Addendum E; delegated authority)
+- Law read with receipts before ruling: new CLAUDE.md section via lore_read
+  (stale:false, integrity_verified:true — my fork predates it; lore was the sanctioned
+  channel to main-tree content); 03b-design-rulings-r2.md §C5 in full (same channel;
+  the lead's path correction confirmed); DESIGN-LAW §1 from my tree.
+- **E1 (the big one): DISARM NOW.** Both confidence surfaces (per-hit flag + aggregate
+  verdict) dark immediately via the designed rollback lever (floor=None), micro-packet
+  10-d (~0.05 wu, deploy both), substrate stays. Trust arithmetic: three
+  source-verified confident-wrong channels serving today vs a reversible ~0.05 wu
+  disarm; §1.3 prices one confident-wrong at session authority. Also closes the edge
+  nobody named: a foreign corpus within ±10% of 214 files trips NEITHER leg today.
+- **E2:** consult and §C5 battery are different instruments (design elicitation vs
+  acceptance verification) — both kept, composed: shared fixtures, battery grades the
+  consult's chosen wording, a battery FAIL returns to the consult, never waived.
+- **E3:** 11-ii Exit gains the §C5-keyed battery over the three calibration surfaces
+  (exact text in E3; routing test last, CALL_AGAIN key, 3-run gate).
+- **E4:** cache PROMOTED (ruled response to measured cost — freshness bought with
+  build tokens), throttle DEMOTED to operator escalation with measured numbers; N rule
+  is an authorized no-op (spend past the stability gate buys no trust the serving can
+  feel); the gate's 98% bar stays the adversary-attackable rigor dial.
+- **E5:** GO stands; lead's determinism condition affirmed + given a designed fallback
+  (TEI bit-inexactness ⇒ within-CI rationale + the cache restores bit-exactness for
+  unchanged probes; a red pin selects the fallback, never stops the packet).
+- E6 names the three packet-file edits the lead executes (10-d new; 11-ii reframe +
+  battery; 11-i determinism-pin fallback sentence).
+
 ## Standing by
-Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A–D,
-D2 corrected) and this report are committed on `pkt10-floor-calibration-design`;
+Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A–E)
+and this report are committed on `pkt10-floor-calibration-design`;
 idle-between-questions is expected.

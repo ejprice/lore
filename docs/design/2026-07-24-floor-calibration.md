@@ -1031,6 +1031,13 @@ deferring to 11-ii keeps 11-i lean). Still inside the split's envelope and still
 gated behind 11-ii; if the 11-i builder's kickoff estimate crosses 0.30, the
 sub-split line is "pool+bootstrap+gate" vs "paired-decomposition+cost-capture".
 
+**D8a — Contingency-order note (superseded-in-part by Addendum E, ruling E4):** the
+D5 contingencies stand, but their ORDER is now ruled — the probe-embed cache is the
+ruled response to measured cost (build it, preserve freshness); the throttle is an
+ESCALATION to the operator with measured numbers, never a silently-adopted F6
+tunable, because it trades served-floor freshness for compute — a rigor-vs-speed
+trade on a serving surface, which the trust doctrine resolves toward rigor.
+
 **D8 — Pre-registered vs measured, so nothing is synthesised.** MEASURED at R2,
 never before: the N-noise curve; the adopted N; the CI widths; the per-run cost;
 the per-hit over-flag decomposition (C6f); per-tier separations. PRE-REGISTERED
@@ -1040,3 +1047,129 @@ interval; the ≥98% decision-agreement stability gate; disjoint-CI as the one
 adoption/upgrade/staleness test. Nothing in this addendum states a floor value, a
 noise magnitude, or a run cost — those numbers do not exist yet, and the first
 instrument that can produce them is the R2 run.
+
+---
+
+## Addendum E (2026-07-24, seventh round — RULINGS under the Trust Doctrine; delegated authority)
+
+**E0 — Authority and instruments.** The operator elevated THE CONSUMER LAW + THE TRUST
+DOCTRINE into repo CLAUDE.md (2026-07-24, "the fixed star") and delegated the ruling on
+what it changes here to this sidecar; per that delegation these are RULINGS, not
+recommendations — the lead executes them as given. Law read in full before ruling:
+the new CLAUDE.md section (via `lore_read`, `stale:false, integrity_verified:true` —
+this worktree's fork predates the change, so the indexed main tree was the sanctioned
+channel); `docs/plans/v2/03b-design-rulings-r2.md` §C5 complete (same channel — the
+file postdates this fork; note CLAUDE.md's shorthand "packet 03b rulings §C5" resolves
+to the **-r2** file); DESIGN-LAW §1 (this tree). The measured ancestor doing the work
+below is §1.3: *caveats ship WITH verdicts; under-claiming is nearly free; ONE
+confident-wrong costs authority for the session (authority→witness, ~doubles calls).*
+
+**E1 — RULED: the weak-match confidence surfaces go DARK NOW, not at 11-ii.** A new
+micro-packet (proposed name `10-d-weak-match-disarm`, ~0.05 wu, DEPLOY both, owned by
+the lead's packet files) ships immediately and independently of 11-i:
+- `_COSINE_WEAK_MATCH_FLOOR: float | None = None` — the DESIGNED rollback lever (its
+  own docstring names `None` "the disabled/rollback state"). This darkens BOTH the
+  per-hit weak flag and the aggregate absence verdict on every instance. The stamp
+  constant stays as a historical record with its comment block; the substrate
+  (`sim 0.62`) STAYS ON — claim-free, D1-gated, honest.
+- The `disabled` state's note stops being `null` (the #4 lesson — disabled-by-config
+  and disarmed-pending-calibration are different conditions): the drift check's
+  disabled branch serves a constant string in the shape *"weak-match confidence
+  surfaces disarmed pending per-instance calibration (findings #83/#176/#179/#180;
+  packets 11-i/11-ii) — per-hit similarity substrate remains served."* Failure
+  admitted loudly, named next move — §C5 family (a) by construction.
+- Test sweep per rename-sweep law: grep the test tree for pins certifying the old
+  serving (pins that monkeypatch their own floor stay valid); add the disarm pin
+  (floor `None` ⇒ no flag line, no verdict, substrate still renders, the disarm note
+  serves); `smoke_p8b` is render-shape-coupled — update in step.
+**Why, in trust terms:** the flag is confident-wrong three source-verified ways TODAY
+(#176 cross-space comparisons on lore's own instance — the fingerprint is retired;
+#179 an unmeasured constant on every foreign instance; #180 a best-of-response floor
+applied per-hit). §1.3 prices one confident-wrong at session authority; the disarm
+costs one beat of scrutiny on hits whose raw magnitude the substrate still shows. The
+aggregate is ALREADY dark on the only instance it was ever calibrated for, so the
+marginal loss is nil — and the flip also closes the edge nobody had named: a foreign
+corpus within ±10% of 214 files trips NEITHER drift leg and serves lore's floor with
+full confidence today. Weeks of that against a ~0.05 wu reversible disarm is not a
+close call. **No wording-law issue arises: the templates go dark unchanged; the F3
+consult still owns any future wording.** 11-ii then REVIVES the surfaces measured —
+the cutover's framing changes from "swap constants for engine state" to "arm the
+disarmed surfaces from the instance's own measurement," same work.
+
+**E2 — RULED: the F3 consult and the §C5 battery are BOTH kept, composed — neither
+replaces the other.** They answer different questions at different phases: the consult
+is design-choice ELICITATION (choose among W-A/W-B/W-C — no keyed answer exists for a
+preference); the battery is acceptance VERIFICATION of a built surface (keyed probes,
+3-run gate). Forcing the acceptance instrument to do design elicitation would be a
+different policy wearing a shared name — the routing-is-not-sharing inverse, not ONE
+IMPLEMENTATION. The composition IS ruled: (a) fixtures are shared where genuinely
+shared — the consult's live probes become battery fixture candidates; (b) the
+consult's chosen wording is then GRADED by the E3 battery (family (c),
+teaching-vs-behavior, is exactly "does the wording's claim match what the floor
+measurably describes"); (c) if the battery fails the chosen wording, that is a FAILED
+acceptance returned to the consult with receipts — never waived.
+
+**E3 — RULED: 11-ii's Exit gains a §C5-keyed consumer battery over the three
+calibration surfaces.** Exact text for the lead's 11-ii edit: *"Acceptance: a
+§C5-keyed consumer-agent battery over the per-hit weak flag, the aggregate absence
+verdict, and lore_index's calibration render — four probe families: (a)
+failure/staleness admission (the disarmed / measuring / insufficient_corpus states
+read as admitted conditions with a named next move); (b) count-consistency (the
+render's shift-vs-tolerance and per-tier counts agree with the served rows); (c)
+teaching-vs-behavior (the consult-chosen wording's claim matches what the floor
+measurably describes — fixtures: one below-floor and one above-floor probe); (d) the
+routing test asked LAST, keyed CALL_AGAIN, same fixtures, 3-run gate — a ROUTE_AROUND
+on an honestly-rendered surface is a FAILED acceptance to fix, never waived."* C5's
+cost discipline carries: the probes ride existing fixtures; if a probe is expensive to
+stage, the surface lacks an honest render of the condition being probed — itself a
+finding.
+
+**E4 — RULED: the cost-contingency ORDER re-biases; the N rule does not.** (Recorded
+inline at D8a.) The probe-embed cache is PROMOTED to the ruled response to measured
+cost — freshness is preserved by spending build tokens, which the operator
+pre-authorized. The throttle is DEMOTED to an operator escalation carrying the
+measured numbers — a throttle trades served-floor freshness for compute, a
+rigor-vs-speed trade on a serving surface, and the doctrine resolves those toward
+rigor; it may never be adopted silently, and if ever adopted its staleness window
+renders in lore_index (honest limits with exact levers, §1 idiom). **The N rule is an
+authorized no-op:** the stability gate already spends until the floor's wobble stops
+flipping decisions; N beyond the gate buys no trust the serving can feel — the
+doctrine directs spend toward trust returns, not spend as display. The rigor dial is
+the gate's pre-registered bar (≥98% decision-agreement), which stays
+adversary-attackable — the doctrine biases the adversary toward TIGHTENING it, never
+loosening. The exact-skip scheduler is also a no-op under the doctrine: the skip is
+exact; no freshness is traded. Secondary discovery, recorded: the cache is ALSO a
+determinism instrument — cached embeddings make repeat runs bit-identical for
+unchanged probes by construction (load-bearing for E5).
+
+**E5 — RULED: GO stands — with the lead's determinism condition AFFIRMED and given a
+designed fallback.** The determinism control is load-bearing for D3's exact-skip and
+is a must-prove pin in 11-i, as the lead conditioned. The honest risk it will meet:
+TEI inference nondeterminism (GPU batch-composition floating point) can break
+BIT-exactness at the embedder. Ruled in advance so a red pin is not a STOP: if
+bit-exactness fails, the exact-skip rationale falls back from "bit-identical" to
+"within-CI by construction" — an unchanged corpus's re-measurement differs only by
+instrument noise, which the disjoint-CI adoption test absorbs (no adoption, no flap,
+still no threshold) — and the E4-promoted cache RESTORES bit-exactness for unchanged
+probes by construction. The 11-i builder records which leg held in the run receipts.
+The doctrine's additions to the GO, in full: the E1 disarm ships first in wall-clock
+(no dependency edges — 10-d and 11-i are independent; every day the disarm waits
+serves confident-wrong output); the E3 battery is 11-ii acceptance; the E4 order
+binds the contingencies. Everything else in R1–R8 + A–D is an authorized no-op: the
+mechanisms (intervals, identity-keyed sampler, disjoint-CI, paired decomposition)
+were already rigor-first — the doctrine changes SEQUENCING, ACCEPTANCE, and the
+COST-TRADE ORDER, and nothing else. That "nothing else" is asserted, not assumed:
+each of D1–D8 was re-read against the doctrine's four operational clauses before this
+sentence was written.
+
+**E6 — Packet-file edits the lead executes (named precisely; my writable set excludes
+them):**
+1. NEW `docs/plans/v2/10-d-weak-match-disarm.md` per E1 (~0.05 wu, DEPLOY both,
+   independent of 11-i, ships first in wall-clock).
+2. `11-ii-floor-calibration-cutover.md` Mission/Scope IN: reframe "swap the serving
+   surface onto it" as "ARM the E1-disarmed surfaces from the instance's own
+   measurement"; Exit: add the E3 battery text verbatim; the C5-of-Addendum-C F3-gate
+   re-point stands as previously flagged.
+3. `11-i-floor-calibration-dark-machinery.md`: the determinism pin gains E5's
+   fallback sentence (a red pin selects the within-CI rationale + the cache; it does
+   not stop the packet).
