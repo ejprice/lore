@@ -1069,3 +1069,282 @@ multiplicity ruling. No blockers remain; nothing here needs a design re-open.
 *Re-grade written 2026-07-24 against HEAD `7668a84`. Reference build
 `94af2bd44bd4a8fe296128fd97b2c934 server.py` / `bdbda576ee327e3f0c547dccf2fcbd22 config.py`. Every
 claim above is dated to that commit.*
+
+---
+---
+
+# CLOSING RE-GRADE (2026-07-24, third pass)
+
+**Re-graded at:** HEAD `d6fe51e` (`test(03b): surface fix wave 2 complete — RG1/RG2/RG3 + the three
+B5 pins`), after `851fef3` (B5 multiplicity ruled MEMBERSHIP).
+**Delta graded:** `git diff 7668a84..HEAD` over `test_comms_tool.py` (+296) and
+`test_comms_promise_registry.py` (+15); the other three graded files unchanged (md5-verified).
+Same scratch root, same battery, provenance re-asserted on every run. Repo untouched except this
+report.
+
+## CLOSING SUMMARY BLOCK
+
+- **VERDICT: CONTRACT INSUFFICIENT — on ONE MAJOR pin, and the lead may reasonably rule it a
+  KNOWN BOUND instead** (§C6). Zero blockers, zero criticals. RG1, RG2, RG3 and the B5 ruling all
+  land and hold under attack.
+- **SATISFIABILITY: `1206 passed / 0 failed / 14 skipped`**, ruff clean, `typecheck.sh` 0 errors /
+  149 files. Frozen reference `9f09ab226c04ff27b1e97d5ff6dc2735 server.py`.
+- **RG1 (WB39) DIES — 3 RED**, and **MP-RG1's asymmetry claim is CONFIRMED**: the drain legs redden
+  while `test_CONTROL_the_heartbeat_names_it_too` stays green; WB1 (whole block) reddens **6**
+  across both skew classes.
+- **RG2 (WB40) DIES — 1 RED.** The second-paragraph escape (WB40b) also dies — 2 RED.
+- **The B5 MEMBERSHIP ruling holds in all four directions:** WB16r (occurrences + request order +
+  raw count) 4 RED · WB16s (unsorted) 1 · WB16t (raw count) 2 · WB16b (across-group collapse) 1.
+- **Four residual conditional shapes around RG1, all CAUGHT:** below-cap-only (WB41) 1 · hardcoded
+  brief name (WB42) 1 · head/acked swapped (WB43) 7 · ordered by name not magnitude (WB44) 2.
+- **Full regression: 41 builds, ZERO regressions**; 5 strengthened (WB2b 11→14, WB18 1→4, WB33 3→8,
+  WB38 1→4, WB31b 8→9).
+- **ONE NEW SURVIVOR — WB45 (MAJOR):** RG2's equality pin is scoped by a paragraph SELECTOR keyed on
+  `action=send|drain|ack`. A contradicting paragraph that names no verb, in wording off the
+  denylist, passes **1206/1206**. WB40 relocated by two newlines.
+- **RED honesty: 298F / 908P reproduced exactly, ZERO collection/import errors.**
+- **Final quantifier table: §C7 — 47 invariants, 1 GUARDED (WB45's), carrying its receipt.**
+
+---
+
+## C1 — Satisfiability, and the four-way adjudication of the 5 rows
+
+The frozen reference (unchanged from the second pass) went `5 failed / 1201 passed` against the
+new contract. All five adjudicate the same way:
+
+| pin | verdict |
+|---|---|
+| `test_a_seq_repeated_WITHIN_one_group_is_listed_ONCE` | **reference defect by RULING CHANGE.** My reference listed every occurrence — the pre-ruling shape. `851fef3` ruled MEMBERSHIP (my own recommendation), so the correct build now dedupes. |
+| `test_each_group_lists_its_seqs_ASCENDING` | same |
+| `test_the_header_count_derives_from_DISPLAYED_membership_not_raw_entries` | same |
+| `test_a_NON_ADJACENT_duplicate_seq_reports_in_BOTH_groups` | same (its anchor moved `"acked 2 of 3"` → `"acked 2 of 2"` — see below) |
+| `test_the_comms_block_is_EXACTLY_the_ruled_sentences` | **reference defect.** My comms teaching shared a paragraph with the pre-existing register/heartbeat sentence; RG2 requires ONE block equal to the ruled sentences. |
+
+**No pin defects.** Converging the reference (membership grouping + a split comms paragraph):
+
+```
+$ uv run ruff check loremaster/loremaster/server.py loremaster/loremaster/config.py
+All checks passed!
+$ uv run pytest -n auto -q <the five graded files>
+1206 passed, 14 skipped in 18.24s
+$ ./scripts/typecheck.sh
+Success: no issues found in 149 source files ; typecheck: loremaster OK
+```
+
+**Post-lint leg executed again:** the membership rewrite tripped `PLC0206` (dict iteration without
+`.items()`); the run above is post-fix.
+
+**Credit where it is due — the author caught a C-DEF I would have reported.** The duplicate pin's
+old anchor `"acked 2 of 3"` counted RAW ENTRIES; under the ruling the correct build renders
+`"acked 2 of 2"`. Left alone it would have reddened the ruled build — a fourth C-DEF *created by a
+ruling that landed after the pin*. Their docstring states the lesson exactly: *"A ruling is not
+only new pins; it is a re-read of every pin already written."* I verified it in the tree.
+
+**One residual the convergence exposed (§C5.1):** the equality pin builds its expected string as
+`" ".join((*_RULED_INSTRUCTION_CLAUSES, _RULED_BODY_CAP_SENTENCE))`, which fixes the body-cap
+sentence **last**. B9 numbers that clause **4**. A builder placing it in its ruled numeric position
+is reddened by an ordering nothing states. Self-teaching (the failure message prints the required
+string in full) but undocumented.
+
+---
+
+## C2 — RG1 / RG2 / B5: the named targets
+
+| target | build | result |
+|---|---|---|
+| **RG1** | **WB39** — subscribed-name half dropped at the drain | **DIES, 3 RED**: `TestDrainServesTheSUBSCRIBEDNAMEHalfOfTheSkewBlock::test_a_drain_names_the_subscribed_brief_the_agent_is_behind_on` · `…test_the_collapsed_remainder_renders_PAST_the_skew_names_cap` · `…test_the_two_verbs_serve_the_IDENTICAL_subscribed_line` |
+| **MP-RG1 leg 1** | WB39, asymmetry claim | **CONFIRMED** — `test_CONTROL_the_heartbeat_names_it_too` stays **GREEN** while the drain legs redden. The half-a-block signature is diagnostic, exactly as claimed |
+| **MP-RG1 leg 2** | **WB1** — whole block dropped | **6 RED** across BOTH classes (3 standing-brief + 3 subscribed-name) — both legs red, as claimed |
+| **RG2 / MP-RG2** | **WB40** — ruled sentences + a contradicting sentence | **DIES, 1 RED** (`test_the_comms_block_is_EXACTLY_the_ruled_sentences`) |
+| **RG2, my escape probe** | **WB40b** — the contradiction in a SECOND verb-naming paragraph | **DIES, 2 RED** — the one-paragraph clause does its job |
+| **B5 ruling** | **WB16r** — every occurrence, request order, raw count | **4 RED** (all three new pins + the duplicate pin) |
+| **B5 ruling** | **WB16s** — deduped but unsorted | **1 RED** (`test_each_group_lists_its_seqs_ASCENDING`) |
+| **B5 ruling** | **WB16t** — membership groups, raw entry count in the header | **2 RED** |
+| **B5 ruling, control** | **WB16b** — across-group collapse (the real R1 violation) | **1 RED** — the family still fires in the direction it always did |
+
+The B5 door is now closed in **all four** directions I could construct. §R8.3's escalation is
+discharged, and it was ruled the way I recommended.
+
+---
+
+## C3 — Residual conditional shapes around RG1 (the lead's probe list)
+
+| build | shape | result |
+|---|---|---|
+| **WB41** | serve the subscribed half only BELOW the cap (drop the collapsed `behind on {k} more briefs` remainder) | **1 RED** — `test_the_collapsed_remainder_renders_PAST_the_skew_names_cap` |
+| **WB42** | serve the subscribed half only for a HARDCODED brief name (`"wave9"`, the fixture's) | **1 RED** — the past-the-cap fixture uses several names, so it doubles as the name-monoculture discriminator |
+| **WB43** | the COSMETIC fix: right line shape, `head`/`acked` swapped | **7 RED** (2 architecture + 3 drain-subscribed + the drain leg's control + a registry proof) |
+| **WB44** | subscribed lines ordered by NAME, not skew magnitude descending | **2 RED** (`test_over_cap_subscribed_skews_collapse_ordered_by_magnitude` + the collapsed-remainder proof) |
+
+**All four conditional doors are shut.** The RG1 pins are not a single-fixture pass: the cap fixture
+is past-the-cap and multi-name, so it discriminates count, name and ordering at once.
+
+---
+
+## C4 — Full regression sweep (41 builds, zero regressions)
+
+Counts are new failures against a **0-failure** reference.
+
+| build | 2nd | 3rd | | build | 2nd | 3rd |
+|---|---|---|---|---|---|---|
+| WB1 skew no-op | 3 | **6** | | WB25 send never caps | 1 | **1** |
+| WB2a send no-op | 6 | **6** | | WB26 private cap | 1 | **1** |
+| WB2b drain no-op | 11 | **14** | | WB27 broadcast window count | 1 | **1** |
+| WB2c ack no-op | 3 | **3** | | WB28 refs uncapped | 1 | **1** |
+| WB3 elision `shown+more` | 3 | **3** | | WB29 capped variant dead | 1 | **1** |
+| WB4 hardcoded `"wave7"` | 1 | **1** | | WB30 inverted schema prose | 2 | **2** |
+| WB5 trailer grade-only | 2 | **2** | | WB31b inverted instructions | 8 | **9** |
+| WB6 trailer gate-vs-list | 2 | **2** | | WB32 ack counts swapped | 3 | **3** |
+| WB7 broadcast cross-session | 4 | **4** | | WB33 ack groups swapped | 3 | **8** |
+| WB8 recipient unscoped | 1 | **1** | | WB34 unknown↔not_addressed | 3 | **3** |
+| WB9 retired accepted | 3 | **3** | | WB35 indented row | 5 | **5** |
+| WB10 `set_status` open | 5 | **5** | | WB37 refs private cap | 1 | **1** |
+| WB11 no recipient charset | 4 | **4** | | WB38 skew for a bogus agent | 1 | **4** |
+| WB12 hardcoded drain limit | 2 | **2** | | MP-B5c swallowed failure | 1 | **1** |
+| WB13 fleet cap for drain | 1 | **1** | | MP-FK1a inline body | 6 | **6** |
+| WB15 header total = window | 4 | **4** | | MP-FK1b sanitised body | 5 | **5** |
+| WB17 note unconditional | 1 | **1** | | MP-FK2a fleet `more=total` | 6 | **6** |
+| WB18 private skew clone | 1 | **4** | | WB16b across-group collapse | 1 | **1** |
+| WB19 question by grade | 2 | **2** | | WB21 peek trailer | 2 | **2** |
+| WB20 re-serve by `stamped_seqs` | 5 | **5** | | WB22 late `set_status` | 1 | **1** |
+| WB23 no ack teach | 2 | **2** | | WB24 no row header | 12 | **12** |
+
+**Zero regressions. Five strengthened** — notably **WB18 (the D5 private clone) 1 → 4**: the new
+identical-subscribed-line pin now catches it too, so MP-D5 no longer rests on the structural pin
+alone. §R8.2's residual is thereby **closed**, and the author's withdrawn over-claim has become true
+for a reason that did not exist when it was withdrawn.
+
+---
+
+## C5 — The one new survivor
+
+### C5.1 — WB45 (MAJOR): the equality pin is scoped by a verb-name SELECTOR
+
+```
+$ REFBUILD/wb.sh WB45_contradiction_outside_the_block …
+WB45: a contradicting paragraph that names no action verb
+1206 passed, 14 skipped in 15.47s
+--- NEW failures caused by this mutation (EMPTY == the contract is BLIND):
+--- count: 0
+```
+
+Served, as a new `_INSTRUCTIONS` paragraph between the comms block and TOOL LOADING:
+
+> *"FLEET ETIQUETTE: inbox reads are best-effort and the seq lists in a response are advisory
+> rather than binding; teammates are expected to follow up out of band, so treat the caps and
+> duties above as defaults you may relax."*
+
+**Mechanism.** `_comms_paragraphs()` selects paragraphs *"that make a claim about the three new
+verbs — identified by naming one of them"*. This paragraph names none, so the equality pin never
+sees it; and its wording is deliberately off `_DEMONSTRATED_INVERSIONS`, so the denylist does not
+either. **It is WB40 relocated by two newlines.**
+
+**Why it still matters, stated fairly.** The paragraph boundary is a test-side construct. An LLM
+consumer reads `_INSTRUCTIONS` as ONE document; a sentence saying the duties above are "defaults
+you may relax" defeats the ruled teaching just as completely from the next paragraph as from
+inside it. And the shape is an honest-developer one: packet 04 (`_comms_footer`) and packet 05
+(await/story) both add to this block, and a general "fleet etiquette" paragraph is exactly what a
+later author writes.
+
+**Why I am not calling it a blocker.** The measured attack classes — replacement (WB31b) and
+addition-inside-the-block (WB40, WB40b) — are closed. What remains is a bound one level *outside*
+this packet's own surface, and closing it fully means deciding who owns `_INSTRUCTIONS` across
+packets. That is a scope call, not mine.
+
+**Two ways to close it, both cheap:**
+- **CL1 (the pin I would write):** invert the selector — assert that the comms block is the ONLY
+  paragraph of `_INSTRUCTIONS` mentioning the comms surface's duty vocabulary (`inbox`, `ack`,
+  `drain`, `seq`, `thread`, the cap). Allowlist-shaped: the safe set is one paragraph, the
+  forbidden set is unbounded — which is the repo's own instrument lesson, applied one level up
+  from where RG2 already applied it.
+- **CL2 (the ruling):** declare it a **KNOWN BOUND** under the repo's *"WHEN YOU CANNOT CLOSE A
+  HOLE, PIN IT"* law — a pin asserting the hole exists, carrying the named re-open trigger *"any
+  packet that adds a paragraph to `_INSTRUCTIONS` naming comms duties"* (packet 04 pulls it).
+
+---
+
+## C6 — Residuals, each with an individual verdict
+
+1. **The exact-block pin fixes an UNRULED sentence order** (body-cap last; B9 numbers it 4). §C1.
+   **VERDICT: minor, self-teaching, undocumented.** One docstring line, or reorder the tuple to
+   match B9's numbering.
+2. **RG3's refs-remainder shape is still forced and undescribed** — the only classified route is
+   `"+{more} more beyond the display cap ({cap})"` from the fleet family. §R8.1.
+   **VERDICT: unchanged, satisfiable, under-specified.** The fix wave added the fixture; it did not
+   name the template.
+3. **MP-D5's structural-pin-alone residual (§R8.2): CLOSED** — WB18 now reddens 4, including the
+   identical-subscribed-line pin.
+4. **`MessageLedger` is never closed in any `aclose` pin.** **VERDICT: still unpinned** (RG5).
+5. **`_p03_entry` still defaults `acked_at`** — **VERDICT: acceptable, mitigated** (WB5 → 2 RED).
+6. **The drain elision proof marker is still value-free** — **VERDICT: mitigated** (WB3 → 3 RED).
+7. **`ruff PLR0912` on `AppContext.comms`** — **VERDICT: still real**; my reference still needs the
+   extracted `_validate_comms_identities`, and now also a dict-comprehension for `PLC0206`. Two
+   post-lint refactors a builder must invent (P14).
+8. **`docs/design/2026-07-12-pkt28-c1-semantics.md` doc corpse (8 hits)** — **VERDICT: still live**;
+   re-swept, unchanged. One supersession line owed.
+9. **`test_surreal_harness.py` (struck adversary's escalation)** — **VERDICT: still unverified by
+   me**, outside the graded five. Carried forward for the lead.
+10. **Surface-contract pins still rest on the message fake's honesty** (RG4) — **VERDICT: unchanged**;
+    the fake CAN fail (§7) but only `test_message_ledger.py` re-checks it.
+
+---
+
+## C7 — FINAL P1b QUANTIFIER TABLE
+
+47 invariants classified across the three verbs, the dispatcher, the skew block and the teaching
+surface. Rows 1–43 as in §2/§R10 with the re-classifications below; **every ∀ row's receipt is a
+wrong build that DIES, every GUARDED row carries a surviving-door receipt.**
+
+| # | invariant | class | receipt |
+|---|---|---|---|
+| 29 | drain serves the shared skew block — **both halves** | **∀** | WB1 → 6 · WB39 → 3 · WB41 → 1 · WB42 → 1 · WB43 → 7 · WB44 → 2 · WB38 → 4 · MP-B5c → 1 |
+| 30 | the skew block is ONE implementation | **∀** | WB18 → 4 (structural pin + the identical-line pins) |
+| 33 | each seq lands in its OWN group's line | **∀** | WB33 → 8 · WB34 → 3 |
+| 35 | the receipt's counts come from the RESULT | **∀** | WB32 → 3 |
+| 37 | within-group duplicate MULTIPLICITY (ruled MEMBERSHIP) | **∀** | WB16r → 4 · WB16s → 1 · WB16t → 2 · WB16b → 1 |
+| 40 | the instructions teach the seven ruled clauses | **∀ for replacement AND for addition INSIDE the comms block; GUARDED for addition OUTSIDE it** | WB31b → 9 · WB40 → 1 · WB40b → 2 · **WB45 → 0 (the surviving door, §C5.1)** |
+| 41 | the tool schema teaches the params honestly | **∀** | WB30 → 2 |
+| 42 | a drain FAILS LOUD when the brief ledger is down | **∀** | MP-B5c → 1 |
+| 43 | the skew block is computed for the DRAINING agent | **∀** | WB38 → 4 |
+| **44** | the subscribed-name skew survives PAST the names cap | **∀** | WB41 → 1 |
+| **45** | the subscribed skew is name-agnostic | **∀** | WB42 → 1 |
+| **46** | the subscribed line's head/acked versions are not re-derived | **∀** | WB43 → 7 |
+| **47** | the subscribed lines order by skew magnitude | **∀** | WB44 → 2 |
+
+**Score: 47 classified · 46 ∀ · 1 GUARDED (row 40's outside-the-block half), with its door-build
+receipt.** From 15 GUARDED at the first pass, to 4, to 1.
+
+---
+
+## CLOSING VERDICT
+
+# CONTRACT INSUFFICIENT — on one MAJOR pin, and the lead may rule it a KNOWN BOUND instead
+
+**What I could not break, having tried hard:** every one of the 41 previously-graded wrong builds
+dies; all three fix-wave-2 targets (RG1, RG2, the B5 ruling) die; all four conditional shapes I
+invented around RG1 die; the contract is satisfiable at `1206 passed / 0 failed` with ruff and
+mypy clean, post-lint, on a reference built from the rulings; the RED is honest at 298F/908P with
+zero collection errors; and the fix wave closed a residual of its own (MP-D5) that I had recorded
+as open. **This is a strong contract, and the arc from six blockers to one bounded door is real.**
+
+**The one thing I did break:** `WB45` — the RG2 equality pin is scoped by a paragraph selector
+keyed on the verb names, so a contradiction placed in a paragraph that names no verb, in wording
+off the denylist, passes 1206/1206. That is WB40 relocated by two newlines, on the trust doctrine's
+own teaching axis.
+
+**The fork, which is the lead's to settle — not mine:**
+
+- **CL1 — write the pin** (§C5.1): assert the comms block is the ONLY `_INSTRUCTIONS` paragraph
+  mentioning the comms duty vocabulary. One test, allowlist-shaped, kills WB45. Then the surface
+  is SUFFICIENT with no residual door.
+- **CL2 — rule it a KNOWN BOUND**: pin the hole with the named re-open trigger *"any packet adding
+  an `_INSTRUCTIONS` paragraph that names comms duties"* (packet 04 pulls it). Then the surface is
+  SUFFICIENT with a deliberately-met bound, and nobody rediscovers it from a consumer-eval failure.
+
+**Either closes the certification.** I record INSUFFICIENT rather than waive it because I have a
+reproducible surviving build and my role forbids me deciding it is out of scope — but I want the
+proportion on the record: this is one pin or one ruling, not a wave.
+
+*Closing re-grade written 2026-07-24 against HEAD `d6fe51e`. Reference build
+`9f09ab226c04ff27b1e97d5ff6dc2735 server.py` / `bdbda576ee327e3f0c547dccf2fcbd22 config.py`. Every
+claim above is dated to that commit.*
