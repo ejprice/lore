@@ -1386,6 +1386,60 @@ class TestADispatchLandsARealRowInTheRealTraceTable:
             "a real row is missing its store-side ordinal mint"
         )
 
+    async def test_every_REAL_registered_tool_that_FAILS_lands_a_real_row(
+        self,
+        traced_server: tuple[Any, _TraceRecorder],
+        trace_store: SurrealStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """MP-I: the last cell — REAL tools × ERROR path × REAL store.
+
+        **THE DEFECT THIS EXISTS TO CATCH (adversary D9b), and why the binder does
+        not:** a LEGAL keyword carrying a WRONG-TYPED value, read out of
+        ``arguments.get("depth", 7)`` — so its static type is ``Any`` and
+        **mypy reports no issues**, while ``Signature.bind`` checks names and arity
+        and never types. Measured surviving at 490 passed / 0 failed with the type
+        gate clean. Only the ENGINE rejects it, and only on a path some pin actually
+        dispatches. The success path is covered by MP-H; this is its error twin.
+
+        Six lines, reusing MP-H's mechanism exactly — the registry loop, one real
+        store, the recorded set asserted EQUAL to the registry — with a RAISING
+        stub. It closes the NAME family in this cell too (D4 dies here as well).
+
+        ⚠ The stub raises ``ToolError``, deliberately: that is the shape the REAL
+        tool manager surfaces, and it is what ``_dispatch_ignoring_tool_failure``
+        suppresses. A ``RuntimeError`` stub escapes the dispatch and the probe fails
+        for its own reason — the adversary hit exactly that on its first run of this
+        prototype and disclosed it, which is the same "a pin is not a pin until it
+        has been run" lesson this wave has now paid for on both sides.
+        """
+        mcp, _double = traced_server
+
+        async def _canned_failure(name: str, arguments: dict[str, Any], **_kwargs: Any) -> None:
+            raise ToolError(f"canned failure for {name}")
+
+        monkeypatch.setattr(mcp._tool_manager, "call_tool", _canned_failure)
+        registry = sorted(_MINIMAL_ARGS)
+        assert registry, "the coverage registry is empty — this pin would be vacuous"
+        with _request_context(_app_context_double_over(trace_store)):
+            for tool_name in registry:
+                await _dispatch_ignoring_tool_failure(mcp, tool_name, _MINIMAL_ARGS[tool_name])
+
+        rows = await _trace_rows(trace_store)
+        landed = sorted(str(row["tool"]) for row in rows)
+        assert landed == registry, (
+            f"{len(rows)} of {len(registry)} FAILING dispatches landed a row in the REAL trace "
+            f"table.\n  missing: {sorted(set(registry) - set(landed))}\n"
+            f"A tool missing here means the real store REJECTED the emission's call on the ERROR "
+            f"path for that tool — a wrong-TYPED value (invisible to both `bind()` and mypy) or a "
+            f"failure-path-only bad keyword. The errored population is part of the denominator "
+            f"packet 06 reads, so losing it silently biases the curve toward healthy sessions."
+        )
+        assert all(row["ok"] is False for row in rows), (
+            f"a FAILING dispatch recorded ok True: "
+            f"{[row['tool'] for row in rows if row['ok'] is not False]}"
+        )
+
     async def test_the_declared_identity_reaches_the_real_row(
         self, probe_server: tuple[Any, _TraceRecorder], trace_store: SurrealStore
     ) -> None:

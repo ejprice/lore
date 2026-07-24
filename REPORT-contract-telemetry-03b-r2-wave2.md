@@ -535,3 +535,64 @@ the pins that grade production are RED, and the pins that grade the INSTRUMENTS 
 | M30 | remove the `bind()` call from `_TraceRecorder.record_trace` (a permissive double) | the binder's reject-unknown and reject-missing legs — and, on a build carrying any conditional bad kwarg (D4/D6/W33), the pins those defects live in stop reddening, which is the property M31 measures |
 | M31 | `_TraceRecorder` binds against a HARDCODED name list instead of `inspect.signature` | `…_every_parameter_the_REAL_signature_declares_is_ACCEPTED` the moment production's signature and the list disagree — i.e. at the next signature change, which is when a copy always fails |
 | M32 | bad kwarg only on the FAILURE path (**D4**) / only on a CANCELLED dispatch (**D6**) | 15 pins / 1 pin respectively, via the binder — no new cell-pin required, which is the point of §24 |
+
+---
+
+# FIX WAVE 4 (appended 2026-07-24, after the final confirmation pass — MP-I, the last cell)
+
+The confirmation pass verified the binder in its committed form and swept six shapes of its own
+invention. Five die. One survives: **D9b**.
+
+## §28 MP-I — the cell `bind()` structurally cannot cover
+
+**D9b, and why it is not an epsilon:** a LEGAL keyword carrying a WRONG-TYPED value, read out of
+`arguments.get("depth", 7)`. Its static type is `Any`, so **mypy reports no issues**, and
+`Signature.bind` checks names and arity and never types — so the binder, which closed the whole
+NAME family at a stroke, is structurally blind to it. Measured surviving at **490 passed / 0
+failed with the type gate clean**. Only the engine rejects it, and only on a path some pin actually
+dispatches: MP-H covers real tools on the SUCCESS path; the real-tool × ERROR × real-store cell had
+no dispatcher at all.
+
+The lead ruled the fork **CLOSE** (over pin-the-bound), and it is the right call at this price: six
+lines against a defect whose production outcome is the errored population vanishing from the
+denominator — biasing packet 06's decay curve toward healthy sessions, which is exactly the
+direction that would argue against forced drains.
+
+**Landed: `test_every_REAL_registered_tool_that_FAILS_lands_a_real_row`** — MP-H's loop with a
+RAISING stub. Same mechanism, same registry-equality assertion, `ok is False` on every row. It
+closes the NAME family in this cell too (D4 dies here as well as at the binder).
+
+**The stub raises `ToolError`, deliberately and with a receipt.** That is the shape the real tool
+manager surfaces and the one `_dispatch_ignoring_tool_failure` suppresses; a `RuntimeError` stub
+escapes the dispatch and the probe fails for its own reason. **The adversary hit exactly that on
+its first run of this prototype and disclosed it** — so this wave has now paid the same "a pin is
+not a pin until it has been run" lesson on both sides of the grading table, three times total (my
+`zip(strict=True)`, my `"hit_count" in str(error)`, its `RuntimeError` stub). Verified here: the
+pin's RED is the row-set assertion, reached AFTER the loop completes, which proves the suppression
+works.
+
+## §29 Fix-wave-4 tails (measured 2026-07-24)
+
+| gate | fix wave 3 | fix wave 4 | reading |
+|---|---|---|---|
+| `test_trace_telemetry.py` | 88F / 23P (111) | **89 failed / 23 passed (112 collected)** | +1 pin (MP-I), RED for the right reason: `0 of 16 FAILING dispatches landed a row in the REAL trace table` |
+| the SIX graded files | 93F / 632P | **94 failed / 632 passed** | 89 / 3 (E-S6) / 1 (FK-3a) / 1 (FK-3b) — my four RED groups, nothing else |
+| `uv run ruff check loremaster/` | clean | **clean** | |
+| `./scripts/typecheck.sh` | 108 / 2 files | **108 errors / 2 files** (`test_comms_tool.py` 102 · `test_comms_promise_registry.py` 6) | ZERO in any file I touch |
+
+## §30 The real-store cell table, now complete
+
+| | DOUBLE (binder-checked NAMES + arity) | REAL store (engine-checked TYPES + values) |
+|---|---|---|
+| **synthetic probe · success** | every seam pin | MP-A leg 1 |
+| **synthetic probe · error** | the raising pin | MP-A leg 2 |
+| **synthetic probe · cancel** | the cancellation pin | — (accepted: the cancelled write is proven against the double; the engine path is covered by the four other cells) |
+| **real tool · success** | MP-B (16) + R6 | **MP-H** (16, one store) |
+| **real tool · error** | the coverage battery (16) | **MP-I** (16, one store) ← was empty |
+
+Six grading rounds' worth of survivors — W11, W30, W33, D2, D4, D6, D9b — were all one defect
+wearing seven different cells of this table. It is complete now, and the two axes that made it
+complete are cheap: **the binder** holds every name/arity case by construction, and **two registry
+loops** (success + error) hold every type/value case against the real engine. Neither is a list
+anyone has to remember to extend.
+
