@@ -212,6 +212,43 @@ are in the tree the blind designer reads — and no gate checks prose):
   WITH the session or survives AS operator authority is the same fork from the other side.
 - FLAG-3 `7f23223`'s store-reference landing (B5 above) — trusted-doc status needs a ruling.
 
+## DIFF ADJUDICATION EXECUTED (2026-07-24 at `29708f5`) — summary
+
+Deliverable: `docs/plans/v2/receipts/2026-07-24-packet03b/DIFF-adjudication-03b.md`
+(verdict table §1 · headline contradiction + AC-20 ruling §2 · per-item detail §3 ·
+self-attack grade §4 · #182 map §5 · ranked fork list §6 · probe appendix §P).
+
+- **42 adjudicated rows + 2 credits: CONVERGENT 6 · BLIND-SILENT 22 · CONTRADICTION 5 ·
+  NOISE 9 · BLIND-NET-NEW 2** (the blind derivation found two doors the entire struck
+  apparatus never probed: `set_status` typo = silent false-NOT-waiting; retired-recipient
+  = undrainable-forever delivery).
+- **25 amendment candidates (AC-01…AC-25), 15 with fresh probe/grep receipts**; the rest
+  derive from trusted law/docs. No candidate cites struck material as justification.
+- **Headline contradiction (X1/AC-20):** the committed registry at the reset baseline
+  FIXES the render vocabulary (drain header/row/elision/empty, send receipt+broadcast,
+  ack templates — probed) and its no-dead-entries pins FORCE that wording into
+  `server.py`; the blind doc designed a fresh vocabulary contradicting it in ≥8 places
+  ("NO render pins exist" was false at the template layer). Ruled: committed wording
+  wins; blind's semantic rulings graft; ONE genuine trusted-source conflict goes to the
+  operator (FK-1: packet exit demands fenced bodies, committed row template renders
+  inline — recommend fence).
+- **Highest-priority missing pin: AC-07** (per-verb dispatcher-serves-render — nothing
+  the blind doc demands fails when a handler never calls its render; the #94 shape).
+- **Blind self-attack grade:** GOOD on its own architecture's doors (identity/eval/seam —
+  cluster D moot by architecture, correlator = SDK `uuid4().hex`, probed), WEAK on
+  committed-corpus interaction doors (its §0.F6 "amendment-free" claim is FALSE — two
+  committed pins RED, probed; its B10 row 1 re-authors pins that exist, probed).
+- **#182:** all five blockers now have named owners (FK-2 + FK-4 operator forks; four
+  contract-phase items).
+- **Fork batch for the operator: FK-1…FK-9 ranked** (fence · marker promotion · two
+  telemetry collateral amendments · ledger casts · eval spend/gate shape · skew-at-drain
+  · §14 carve-out · stale label · consent block).
+- One self-correction on the record: my earlier "27-item checklist" count was wrong —
+  the derived count is 34.
+- Note: my earlier FLAG-context ruling that register/heartbeat ANNOTATION is required is
+  VOID with the struck layer — the blind architecture satisfies identity-on-every-comms-
+  row by construction (declared-param harvest), adjudicated in DIFF §3.4.
+
 **[FLAGS RULED by the lead, 2026-07-24, after commit `a2e3847` — recorded here so the flags
 above read as closed, not dangling; the rulings of record live in the packet file:]**
 FLAG-1: covered by construction — the blind designer's brief transcribed the post-`0223291`
