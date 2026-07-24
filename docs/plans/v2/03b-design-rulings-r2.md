@@ -747,7 +747,7 @@ that lands a changed definition, §1.1 — #107's law):
 | `action` | **NEW `option<string>`** | The declared `action` param, when present — a drain row is `tool='lore_comms', action='drain'`; without this column the numerator (drains) is indistinguishable from heartbeats inside `lore_comms`'s tool count. |
 | `transport_session` | **NEW `option<string>`** | The transport correlator (T4): streamable-http's `mcp-session-id`. NONE on transports without one. |
 | `ordinal` | **NEW `option<int>`** | The global monotonic call ordinal (T3). `option` in the SCHEMA per §1.4's posture (a pre-extension row lacks it; production holds zero rows — probed, scout §3.1 — but `option` is the humble shape); the emission ALWAYS supplies it, pinned. |
-| `ok` | **NEW `option<bool>`** | Whether the tool call succeeded. A drain that ERRORED is not a drain the agent performed — counting it in the numerator corrupts the curve. Always supplied by the emission. |
+| `ok` | **NEW `option<bool>`** | **True iff the dispatch RETURNED a result; False on any raise, cancellation included** (ESC-1 ruling, §G — the schema comment carries this sentence verbatim so prose matches the T5 latch mechanism exactly). A drain that ERRORED or TIMED OUT is not a drain the agent performed — counting it in the `ok=true` numerator corrupts the curve. Always supplied by the emission; NONE only on rows from writers that did not supply it. |
 | `tool`, `params_hash`, `latency_ms`, `ts`, `token_cost`, `model` | unchanged | `ts` stays server-stamped (`DEFAULT time::now()`). |
 
 Plus: **`_define_sequence(TRACE_SEQUENCE_NAME)`** with `TRACE_SEQUENCE_NAME =
@@ -856,14 +856,27 @@ transport request object for streamable-http — read from installed
 
 ## T5. Emission shape and failure posture
 
-**RULING.** The override is:
+**RULING (shape CORRECTED per ESC-1, §G — the SUCCESS-LATCH form; the original
+`except Exception: ok = False` form recorded a CANCELLED dispatch as `ok=True`,
+contradicting T2's own column semantics):** the override is:
 ```
-start; ok = True
-try:    result = await super().call_tool(name, arguments)
-except Exception: ok = False; raise
-finally: latency = elapsed; try: await <record_trace(...)> except Exception: log loud
-return result
+start; ok = False
+try:
+    result = await super().call_tool(name, arguments)
+    ok = True                       # the latch: set ONLY when the dispatch RETURNED
+    return result
+finally:
+    latency = elapsed
+    try: await <record_trace(..., ok=ok, ...)> except Exception: log loud
 ```
+No `except` arm at all: `ok` is initialized False and latched True only after the try
+body completes — so ANY raise (a tool error, a `CancelledError`, anything) leaves
+`ok=False` in the finally-arm write, with nothing caught and nothing re-raised.
+**Allowlist the success state; never enumerate failure classes** (the six-defeats lesson
+applied to control flow — an `except Exception` flag is a failure-class name-list, and
+`CancelledError` was the door it missed). `ok`'s semantics, restated so prose matches
+mechanism exactly: **True iff the dispatch RETURNED a result; False on any raise,
+cancellation included** (T2's column comment carries this sentence verbatim).
 1. **The tool call's outcome ALWAYS wins.** A trace-write failure is logged server-side
    (structured `logger.exception`, naming the tool) and NEVER surfaces to the caller,
    never retries beyond the shared driver's own budget, never converts a successful tool
@@ -895,9 +908,11 @@ return result
    success) — so the T5 shape as specified DOES record cancelled dispatches, and that
    population (a struggling session's timed-out calls) is exactly the denominator packet
    06 most needs. The `finally` placement is therefore LOAD-BEARING, not style: REQUIRED
-   pin — a cancelled dispatch still writes its trace row — so a builder cannot
+   pin — a cancelled dispatch still writes its trace row **carrying `ok=False`** (the
+   ESC-1 latch leg — the previously-deferred assertion, now ruled) — so a builder cannot
    "simplify" `finally` into except+return arms and silently un-trace the cancelled
-   population. (A cancellation arriving DURING the trace write itself still wins and may
+   population, and cannot regress to the failure-class-flag shape that records a
+   cancelled call as a success. (A cancellation arriving DURING the trace write itself still wins and may
    lose that one row — that narrow residual is the accepted noise, correctly stated.)
 4. **The error leg still records** (`ok=False`, latency to the raise) — F5's probe leg 3
    proves the override observes raising tools; the trace write sits in `finally`.
@@ -1353,6 +1368,8 @@ adjudicated derivation checked out against trusted sources at my own read.
 | E-S5(c) (surface contract wave — the FK-6 pre-flight's larger finding) | **AMEND** — B4.1's keep-the-literal clause OVERRULED by the trust doctrine | B4.1 superseded in place | One-line derivation: B4.1's "under-claim is nearly free" (§1.3) predates the trust ruling; C5(c)/CLAUDE.md §TRUST grade teaching-vs-measured-behavior, and a skew line naming "heartbeat" served inside a DRAIN response teaches the wrong verb to the exact reader the doctrine protects — rigor wins the trade. **Mechanical replacement spec for the author:** in each heartbeat-naming skew literal, `"at their next heartbeat"` → `"at their next heartbeat or drain"` and `"at next heartbeat"` → `"at next heartbeat or drain"`; in the four registry DESCRIPTIONS, `"heartbeat skew surfacing"` → `"heartbeat/drain skew surfacing"` and `"heartbeat surfacing for ackers"` → `"heartbeat/drain surfacing for ackers"`. Strengthen-only (the amended prose is strictly MORE true — it names both verbs that measurably surface it), proofs/markers updated in step, mutation-proven; authorization rides the lead's relay of this ruling. Named re-open trigger: any packet 04/05 verb that also surfaces the skew block re-opens the wording (do not accrete a verb list past two — at a third verb, reword to name the mechanism generically). C-battery consequence: the C5(c) fixture rotation gains a skew-in-drain leg (the taught surfacing verbs match the serving verbs). |
 | E-S4 (question teach derives from `Message.question`) | **CONFIRM (A)** | no doc-body edit needed (B3's signature sketch was already wording-layer, superseded by §A-GRAFT) | One-line derivation: the repo's #104 derived-prose law — renders take TYPED applicability, never a re-derived flag; `result.message.question` IS the typed fact the ledger minted from `set_status`, reading it adds no parameter, breaks no committed driver, and cannot drift from B2.4/B2.5's semantics. Reading (B) would either default a branched-on param (AC-11 violation) or break two committed drivers for zero information. |
 | E-S8 (B14 "task-then-thread" = REPLACE) | **CONFIRM (a)** | B14 clarified in place (decision table + named consequence) | One-line derivation: the committed `_SAFE_STR_PROMISE_FREE` carries exactly two mutually-described VARIANTS of the one `{context}` slot — a both-render build needs a third literal the immutable set lacks and reddens the classification pin; the author's by-derivation resolution is exactly how a committed-vocabulary question should settle. The parenthesised ` (task {})` / ` (thread {})` shapes replace the superseded ` · thread x` sketch. |
+| ESC-1 (telemetry wave — `ok` on a CANCELLED dispatch) | **RULED: Reading B, via the SUCCESS-LATCH mechanism** | T5 pseudocode corrected in place · T2 `ok` row reworded · T5.3 pin gains the `ok=False` leg | The author found a real contradiction INSIDE the T-series: the `except Exception` flag was a failure-class name-list and `CancelledError` was the door it missed — the exact instrument-lesson shape, reproduced in control flow. Mechanism-exact ruling: `ok` initializes **False** and is latched **True** only after `super().call_tool` returns (no `except` arm at all; nothing caught, nothing re-raised; the AC-06-probed finally-arm write is untouched, so the cancellation row still lands). Semantics, verbatim into the schema comment: *True iff the dispatch RETURNED a result; False on any raise, cancellation included.* A third state is REFUSED: NONE already means "writer did not supply it" and packet 06 filters cancelled and errored identically (neither is a performed call); time-to-cancel is already in `latency_ms`. Pin group (now authorable mechanically): cancelled dispatch → row exists AND `ok is False`; mutation obligation — restore the `ok=True`-initial + `except Exception` flag shape → the cancelled-leg pin goes RED. Trust-doctrine ground: honest counts — a timed-out drain in the `ok=true` numerator is a false success in the very instrument 06 decides on. |
+| ESC-2 (telemetry wave — the emission's store-access channel) | **CONFIRM A** (request lifespan context) | no doc-body edit (T-series left the channel unnamed; A is now named here) | One-line derivation: A is forced by construction order (`FastMCP` is constructed before any `AppContext` exists; the process guard builds lazily on first session — injection at construction is impossible) AND it is the ONE channel every tool wrapper already rides (`context.request_context.lifespan_context`) — Reading B (reaching through the guard attribute) would be a second, private context-resolution path, the routing-not-sharing shape, coupled to guard internals and the eager-vs-lazy lifecycle split. A also degrades honestly at the no-request edge (absent context ⇒ skip trace, consistent with T4.2's transport handling). The author's harness already forces A; nothing changes. |
 
 *Post-amendment section map: §0 (F6 corrected) · A: B1–B11 + A-GRAFT + B12–B15 · B: T1–T8
 (+T2.1, T7.10–13) · C: C1–C5 (battery 15 tasks incl. the four trust probes) · D (graded:

@@ -131,3 +131,14 @@ third-verb re-open trigger) · **E-S4 CONFIRM (A)** (question teach keys on the 
 `Message.question` — #104 derived-prose law; no new render parameter) · **E-S8 CONFIRM
 (a)** (the `{context}` cell REPLACES: task over thread — derived from the committed
 two-variant `_SAFE_STR_PROMISE_FREE`; decision table + named consequence added to B14).
+
+**POSTSCRIPT 3 (telemetry-wave design confirms, same day):** two more §G rulings from
+`REPORT-contract-telemetry-03b-r2.md` §5 — **ESC-1 RULED Reading B via the
+SUCCESS-LATCH** (the author caught a real contradiction inside T5: the
+`except Exception` ok-flag was a failure-class name-list and `CancelledError` the door
+it missed; corrected to `ok=False` initial, latched True only on return, no except arm —
+cancelled rows land with `ok=False`, schema comment carries the semantics verbatim,
+third state refused, mutation obligation named) · **ESC-2 CONFIRM A** (the emission
+reads the store through the request lifespan context — forced by construction order and
+the one shared channel every tool wrapper rides; guard-attribute reach-through refused
+as a private second path).
