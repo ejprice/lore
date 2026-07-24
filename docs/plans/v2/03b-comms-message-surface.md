@@ -149,6 +149,47 @@ restore). The contract-adversary's P2 fixture-perturbation confirms the fix wave
   whitespace outside the fields) is the ruled form: bans exactly the docstring's class, admits `" "` and
   `"#{}"` with **no exemption list to rot**, and the `" "`-discrimination positive control pins it.
 
+### ADVERSARY WAVE — telemetry contract graded INSUFFICIENT (2026-07-24)
+**Eleven wrong builds survived the frozen telemetry contract at 41 passed / 0 failed.** Receipt:
+`REPORT-adversary-telemetry-03b.md` (`0921157`). Two findings changed rulings:
+- **WB9 — S7's self-attack table had an UNENFORCED row.** `caller = str(id(session))` passes EVERY
+  S7 pin (alnum, stable within a session, distinct while two sessions COEXIST) and collapses **400
+  sequential non-overlapping sessions into 17 distinct keys (383 collisions)** — CPython recycles
+  `id()`. **The pinned quantifier was "distinct while coexisting"; the needed property is "distinct
+  ∀ TIME."** A self-attack row promising a property of the MECHANISM while the pins bound only
+  BEHAVIOUR is the false-gate class, inside the design's own instrument.
+  → **RULED:** the caller key must derive from a source that **CANNOT RECYCLE** (fresh process
+  randomness / a monotonic mint) — never object identity, an address, or any recycled value. MP3's
+  two halves (uniqueness-across-lifetimes + no-retention-of-finished-sessions) **INTERLOCK**: a
+  retaining dict passes uniqueness but fails retention; weak retention forces recycling, so an
+  identity key then fails uniqueness. Either alone is escapable; the pair is not.
+- **E3 STANDS — but its ground 3 was "pure hope", and the adversary was right.** "The schema rejects
+  future mint-less writers" could never be self-enforcing, because **the schema is code a builder can
+  edit.** MEASURED incentive to undo the ruling: `seq int` (correct) → contract 41/41 + **7 committed
+  pins RED**; `seq option<int>` (wrong) → contract 41/41 + **2 RED**. → **FIX (in scope): a contract
+  pin asserting `seq` is `TYPE int` NOT `option<int>`, mutation-proven** — the flip becomes
+  1-RED-in-contract and the five-test incentive dies.
+
+### OPERATOR SCOPE GRANT 2026-07-24 — SEVEN amendments in FOUR suites OUTSIDE 03b
+`test_surreal_schema.py` · `test_surreal_store.py` · `test_surreal_fakes.py` · `test_mcp_server.py`.
+Strengthen-only, each mutation-proven.
+- **2 ordinary corpses** (old-world `hit_count TYPE int`; the exact 7-name `record_trace` signature).
+- **4 `TestTraceRoundTrip` pins** doing raw `CREATE trace` with no mint → amend to supply `seq`.
+  **These are writers omitting the mint — the class `seq int` exists to reject. THE GUARD WORKING IS
+  NOT THE GUARD FAILING.**
+- **The flagship #107 dirty-store migration pin — AMEND TO SHARPEN, NEVER TO WEAKEN.** It keeps
+  everything it asserts today (old-shaped row survives the new DDL, still readable) and GAINS the
+  §1.4 truth: the old row is UPDATE-poisoned (the accepted append-only-shielded bound with its named
+  trigger) and new writes must mint. **Why this beats `option<int>`, verbatim from the ruling:** *a
+  dirty-store migration pin that surfaces a dirty-store consequence LOUDLY is the pin doing its job.
+  The alternative would green that pin by making the schema SILENT — seq-less rows admissible
+  forever, from any writer — and the flagship invariant would be certifying a hole as health.*
+  ⚠ If it cannot be amended without weakening, the wave STOPS.
+- **MP9 RULED — nothing to build:** `trace.session` records **what the CALL DECLARED, never what the
+  server inferred** (populated iff the call carried the fleet session; NONE = the call declared
+  nothing). Deriving it for generic rows is REFUSED — it resurrects the S7-refused caller→identity
+  map through a column and makes one field an unmarked mixture of declared facts and guesses.
+
 ### STANDING AUTHORIZATION — operator, 2026-07-24
 **Further amendments to committed contract files need NO individual ruling when ALL THREE hold:**
 (a) **required by a design ruling** from the sidecar, (b) **MECHANICAL** — preserves every existing

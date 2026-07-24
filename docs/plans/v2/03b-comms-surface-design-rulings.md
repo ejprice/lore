@@ -457,7 +457,27 @@ per-process-unique) or `request_id` (per-request) as the key.
 **[SETTLED 2026-07-24, contract phase]:** the S7(3) measurement ran — `mcp` 1.27.2 mints ONE
 `ServerSession` per MCP session → **rung 1 selected; the header fallback rung is retired
 unused**, and the decision rule stands as a permanent pin that goes RED if an SDK bump changes
-the retention.
+the retention. Independently re-derived by the contract-adversary with a stronger instrument
+(`is`-comparison, objects held alive).
+
+**[WB9 CORRECTION, 2026-07-24 — the attack table's "no collision path" row was UNENFORCED
+PROSE, and the adversary defeated it.]** A build minting `caller = str(id(session))` satisfied
+every behavioural pin (alphanumeric; stable within a session; distinct across sessions that
+OVERLAP) and collided catastrophically across session LIFETIMES — measured 400 sequential
+sessions → 17 distinct keys, silently pooling separate agents into one denominator. The table
+row promised a property of my specified MECHANISM, but the pins bound only behaviour, and the
+pinned quantifier was "distinct while coexisting" where the needed property is **"distinct ∀
+time"** — a false-gate row in the self-attack table itself, conceded. RULED, two parts:
+1. **The mint PROPERTY, now stated as law rather than implied by mechanism:** the caller key
+   must derive from a source that CANNOT RECYCLE — freshly drawn process randomness (`uuid4`)
+   or a monotonic mint — **never from object identity, memory address, or any recycled value.**
+2. **MP3 CONFIRMED, both halves, with their interlock stated so neither is dropped:**
+   (a) keys unique ACROSS session lifetimes (sequential churn at scale, all keys distinct);
+   (b) the WeakKeyDictionary retains no finished session. The halves corner the wrong build
+   TOGETHER: a retaining plain dict passes (a) — no GC means `id()` never recycles — but fails
+   (b); weak retention forces recycling, so an identity-derived key then fails (a). Either pin
+   alone is escapable; the pair is not. MP11 (the rung pin itself compared `id()` ints — the
+   same weakness inside the guard) is endorsed: `is`-comparison with objects held alive.
 
 ---
 
@@ -536,6 +556,38 @@ author alive + standing authorization now, vs a fresh operator amendment cycle p
 Mutation proofs as amendment 8's: `TypeError` proof + a both-values-expressible positive
 control, per factory and per driver. A defect GENERATOR is cheapest to kill while the file is
 open — amendment 8's own logic, affirmed and applied to its neighbour.
+
+**E3 REVISITED under the adversary's evidence (2026-07-24) — `seq int` STANDS, the lead's
+guard-working reading CONFIRMED, and ground 3 is converted from hope to instrument.** The
+adversary measured that flipping to `option<int>` costs a builder only 2 committed REDs while
+`int` costs 7 — a five-test incentive to undo this ruling with no gate stopping it ("currently
+pure hope": correct, conceded — the schema itself was editable by the builder, so the schema
+could not be its own guard). The 7 REDs adjudicated:
+- 2 are ordinary corpses (an old-world `hit_count TYPE int` assert; the old 7-name
+  `record_trace` signature pin) — tests certifying the pre-change world; amend.
+- **5 are the guard FIRING, not failing:** 4 raw `CREATE trace` round-trip pins and the
+  flagship #107 dirty-store migration pin are writers that omit the mint — the exact class
+  ground 3 exists to reject. Amend all 5 to certify the NEW world: round-trips supply `seq`;
+  the #107 pin is SHARPENED, not weakened — it keeps "old-shaped row survives new DDL,
+  readable" and now ALSO asserts the §1.4 truth this ruling's bound already documented: the
+  old row is UPDATE-poisoned (the accepted, append-only-shielded bound, with its named
+  trigger) and new writes must mint. A migration pin that surfaces a dirty-store consequence
+  LOUDLY is the pin doing its job; `option<int>` would green it by making the schema silent —
+  trading a loud documented bound for seq-less rows admissible forever from any writer.
+- **NEW REQUIRED PIN (in-scope, closes the incentive):** a schema pin asserting `seq` is
+  `TYPE int`, NOT `option<int>`, mutation-proven (flip → RED in the 03b contract itself).
+  With it, the green-chasing builder's flip is 1-RED-immediately and the five-test asymmetry
+  is dead. The 7 out-of-scope amendments travel to the operator with this ruling attached.
+
+**MP9 — `trace.session` on generic calls: NOTHING. The column records what the CALL DECLARED,
+never what the server inferred.** Deriving a session for generic rows (from the caller's last
+comms call) is REFUSED: it resurrects the S7-refused mutable caller→identity map through a
+column; it makes one field an unmarked mixture of declared facts and inferences (a reader
+cannot distinguish "the caller said wave7" from "we guessed wave7" — the silent-inference
+class); and the join already derives it at ANALYSIS time, labelled, with the binding's own
+caveats attached. Spec sentence, binding: *`trace.session` is an explicit-fact column —
+populated iff the call itself carried the fleet session; `NONE` means the call declared
+nothing.*
 
 **Store-reference routing rule (for the author's new probed SurrealQL fact — the lead lands
 it):** if the vendor documents the OPPOSITE of the probed behaviour → §6 (a new numbered
