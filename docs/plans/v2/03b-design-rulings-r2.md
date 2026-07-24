@@ -7,8 +7,8 @@
 > original ruling numbers are unchanged; superseded wording is marked in place; the full
 > accept/adapt/contest record is **§G (amendment log)** at the end. Read §A-GRAFT before
 > B3–B5 — the committed promise-registry render vocabulary is IMMUTABLE and wins over the
-> blind wording (X1/AC-20). Fork-dependent elements carry **FK-n PENDING-OPERATOR**
-> markers (fork list: DIFF-adjudication §6).
+> blind wording (X1/AC-20). Fork-dependent elements carry **FK-n** markers — **ALL
+> RULED** as the adjudication recommends (packet file §OPERATOR GRANT (second), `1e3a249`; fork list: DIFF-adjudication §6).
 
 **Author:** design-blind-03b (Fable design author, deliberately blind to the struck 03b
 corpus — spawned 2026-07-24; amendments folded at the author's own hand after the
@@ -92,8 +92,8 @@ Each fact below was independently re-derived this session, not inherited:
   `TYPE int` for `hit_count` / `TYPE string` for `session` — T2 loosens both to
   `option<>`) and `test_surreal_fakes.py::test_record_trace_signature_matches_real_store`
   (asserts the exact 7-name parameter list — T8 adds four). Both fixes are
-  strengthen-only, mutation-proven committed amendments, batched as **FK-3
-  PENDING-OPERATOR**. The narrow claim ABOUT `test_surreal_store.py` stands (its pins
+  strengthen-only, mutation-proven committed amendments, batched as **FK-3 — RULED,
+  amendments AUTHORIZED** (packet file §OPERATOR GRANT (second), `1e3a249`). The narrow claim ABOUT `test_surreal_store.py` stands (its pins
   stay green because every new column is `option<>` — adjudicated as the cheaper design
   precisely for that reason). Erratum also filed in `REPORT-design-blind-03b.md`.
 - **F7 — production `:18500` has NO `message`/`to` tables** (scout §6.1). 03b's deploy is
@@ -237,7 +237,7 @@ from adjudication §2, ACCEPT except where marked):
 | blind element | disposition |
 |---|---|
 | B4.1 header `inbox: {total} unread ({directives} directive)…` | committed `drained/peeked {shown} of {total} pending` wins. The directive count is the packet-04 counts family (trusted Scope OUT) — DROPPED from 03b (`MessageDrainResult.directive_pending` stays at the ledger for 04). Noted tension, accepted: R6 clause 2's letter says counts SAY "unread"; the committed header says "pending". The mischief R6 targets is the unread/unactioned conflation, which "pending" beside an `acked_at`-keyed trailer does not commit, and the committed elision template already anchors "unread" — so immutability wins; the LOAD-BEARING half (the `{total}` value is `seen_at`-keyed and agrees with what drain serves) lands as a semantic pin on the committed slot. |
-| B4.2 row + `· sent {age} ago` + fenced body | committed `#{seq} [{grade}] {sender}→you{context}: {body}` (+refs variant) wins on shape; the age cell is DROPPED (§1.1 attention cost, accepted). **The `{body}` slot is FK-1 PENDING-OPERATOR** (fence vs inline — see B4 marker; recommendation FENCE, adjudication §2). |
+| B4.2 row + `· sent {age} ago` + fenced body | committed `#{seq} [{grade}] {sender}→you{context}: {body}` (+refs variant) wins on shape; the age cell is DROPPED (§1.1 attention cost, accepted). **The `{body}` slot is FK-1 — RULED: FENCE WINS** (the two row-template registry amendments are authorized, strengthen-only + mutation-proven — packet file §OPERATOR GRANT (second), `1e3a249`; see B4 marker). |
 | B4.2 `· acked {age} ago` re-serve marker | no committed counterpart; the R6 clause-3 need is real → lands as an ADDITIVE new template (trailer or row-suffix, contract author's choice), registered + proven per B8. |
 | B4.3 elision `drain again for the rest` | committed `+{more} more unread — re-run with limit={next_limit}` wins → the `{next_limit}` arithmetic is now ruled at **B15**. |
 | B4.1 empty `inbox empty — 0 unread` | committed `no unread messages` wins. |
@@ -290,8 +290,9 @@ refs-are-pointers) lives read-once in the instructions block (B9).
 templates win; the directive count and the `sent {age}` cell are DROPPED; the acked
 re-serve marker becomes an additive template). The semantic rulings below — seen_at
 keying, whole-set totals, window scoping, `acked_at`-keyed trailer, elision honesty,
-uniform body treatment — stand and graft. The BODY SLOT (fenced vs committed inline) is
-FK-1 PENDING-OPERATOR; recommendation FENCE (adjudication §2). The thread cell is
+uniform body treatment — stand and graft. The BODY SLOT is **FK-1 — RULED: FENCE**
+(packet file §OPERATOR GRANT (second), `1e3a249`); the fenced-body rendering below IS the ruled shape,
+and the two committed row-template registry amendments are authorized. The thread cell is
 superseded by ruling B14 (my B4.2 unconditional `· thread {thread}` contradicted both
 the committed `{context}` cell and my own B3.2 principle — AC-22 accepted). See §G.**
 
@@ -364,10 +365,10 @@ the committed `{context}` cell and my own B3.2 principle — AC-22 accepted). Se
      discriminating fixture per conjunct AND per role, gate vs list).
    - **AMENDED (B13/AC-21):** trailer renders on STAMPING drains only — see B13.
 5. **The brief-skew block** — drain renders the SAME skew lines heartbeat renders,
-   via the SAME extracted helper (see B4.1). **[FK-6 PENDING-OPERATOR — adjudication
-   recommends as ruled, with one pre-flight: verify the skew literals' registry
-   descriptions/predicates are action-agnostic before reuse; any that names "heartbeat"
-   gets its description edit in FK-3's authorized batch.]**
+   via the SAME extracted helper (see B4.1). **[FK-6 — RULED as specified here
+   (packet file §OPERATOR GRANT (second), `1e3a249`), with the adjudicator's pre-flight: verify the
+   skew literals' registry descriptions/predicates are action-agnostic before reuse; any
+   that names "heartbeat" gets its description edit in FK-3's authorized batch.]**
 
 **B4.1 — skew-at-drain (ruled, with the divergence recorded).** The comms-subsystem
 tool table (at `0223291`) lists a "brief-skew line" in the drain row; the shipped C2a
@@ -470,11 +471,10 @@ empty result rather than erroring).
    fence strictly wider than the embedded run; the forgery line appears ONLY inside a
    fence (no un-fenced occurrence anywhere in the render); the header count line is
    unaffected. Single-line-only fixtures are the documented way this class stays green.
-   **[FK-1 PENDING-OPERATOR: this clause's fence assertions presuppose the FENCE arm of
-   the body-slot fork. Under the inline arm they re-target: body sanitised through the
-   committed row template, forgery line collapsed to one visually-honest line, no fence
-   assertions. The packet exit's plain wording — "a hostile body staying inside its
-   fence" — is the reason the adjudication and this doc both recommend FENCE.]**
+   **[FK-1 — RULED: FENCE (packet file §OPERATOR GRANT (second), `1e3a249`). This clause's fence
+   assertions are the RULED shape; the inline re-targeting described in earlier drafts is
+   moot. The packet exit's plain wording — "a hostile body staying inside its fence" —
+   is what the ruling honors.]**
    **AMENDED (AC-11, ACCEPT — the second cluster-F miss):** the fresh contract's fixture
    drivers must not default a parameter the render branches on — the committed
    `_p03_entry` factory re-defaults `acked_at` and hardcodes `thread`, the exact
@@ -673,8 +673,9 @@ committed proof fixture (2 shown / 7 pending / limit 2 → both slots 5 — its 
 are pairwise distinct, so the slots' derivations are discriminable), with a docstring
 naming the fleet contrast (fleet re-serves its whole set; drain does not — the two
 elision families intentionally differ). Related: the fleet marker's substring collision
-with this template's correct instantiation is **FK-2 PENDING-OPERATOR** (AC-01 — a
-committed-marker promotion, not mine to rule).
+with this template's correct instantiation is **FK-2 — RULED: the one-line
+strengthen-only marker promotion is authorized** (packet file §OPERATOR GRANT (second), `1e3a249`;
+AC-01 — a committed-marker edit, executed in the contract phase's authorized batch).
 
 ---
 
@@ -709,7 +710,7 @@ site becomes the subclass. Derivation:
 
 ## T2. Schema delta (store reference §1.1/§1.4 govern; every clause cited)
 
-**⚠ [FK-3 PENDING-OPERATOR] Two committed pins go RED under this delta** (AC-16 — the
+**⚠ [FK-3 — RULED, amendments AUTHORIZED (packet file §OPERATOR GRANT (second), `1e3a249`)] Two committed pins go RED under this delta** (AC-16 — the
 §0.F6 correction): the `test_surreal_schema.py` field-def pin (asserts the OLD scalar
 types for `hit_count`/`session`) and the `test_surreal_fakes.py` exact-signature pin.
 Both amendments are strengthen-only (the pins gain the widened types + new columns /
@@ -968,7 +969,7 @@ UNCHANGED — the GROUP BY tool aggregate is column-additive-safe, and its commi
 `transport_session`, `ok`) and internal ordinal minting; `hit_count`/`session` become
 optional in the SIGNATURE (existing callers all pass them — compatible). F6's receipt:
 the committed `test_surreal_store.py` pins are per-key and stay green.
-**⚠ CORRECTED [FK-3 PENDING-OPERATOR]:** "no amendment is required" was FALSE as a
+**⚠ CORRECTED [FK-3 — RULED, amendments AUTHORIZED (packet file §OPERATOR GRANT (second), `1e3a249`)]:** "no amendment is required" was FALSE as a
 global claim (AC-16 / §0.F6 correction) — the `test_surreal_fakes.py` exact-signature
 parity pin and the `test_surreal_schema.py` field-def pin both need authorized
 strengthen-only amendments, batched as FK-3. Packet-06 reads
@@ -1015,6 +1016,10 @@ at `/home/ejprice/docker/mcp/.env`) — that:
 | 9 *(AC-24)* | "You drained with `peek=true` and saw three messages. Are they still unread, and what marks them seen?" | yes — still unread; a drain WITHOUT peek stamps them | R6/B9 (the peek tripwire B9 itself calls the only user-facing one) |
 | 10 *(AC-24)* | "Tell every teammate in your session the gate is red. Give the exact call." | `action=send` with `to` omitted/`[]` (the broadcast form), correct grade choice | B2.2/B9 |
 | 11 *(AC-24)* | "Your ack of seq 424 returned `unknown_message`. What happened and what do you do?" | no such message exists — re-check the seq against my own drain render (distinct from task 8's `not_addressed`) | B5 |
+| 12 *(TRUST-a)* | Shown an honest-empty drain (`no unread messages`) and a teaching reject (oversize body / unknown recipient with roster): "Did the tool fail, and did anything get lost or sent?" | no loss, nothing sent; the reject names the fix — the surface ADMITTED the condition rather than over-claiming | C5(a) / B2.6 |
+| 13 *(TRUST-b)* | Shown a drain header + its served rows + elision line: "Do the numbers agree — served, remaining, and the re-ask limit? Show the arithmetic." | `shown + more == total`; `next_limit == more` — count-consistency verified by the reader from the render alone | C5(b) / B15, R6 clause 2 semantic pin |
+| 14 *(TRUST-c)* | Shown the peek header's teach, then the follow-up stamping drain's result: "Did the tool do what the peek render said it would?" | yes — peeked rows were still unread and the stamping drain served them; teaching matched measured behaviour | C5(c) / B13, R6 |
+| 15 *(TRUST-d, the routing test — asked LAST, after tasks 1–14)* | "Based on everything you have seen: for your next fleet coordination need, do you CALL_AGAIN or ROUTE_AROUND (SendMessage / report files)? One keyed token + one reason." | `CALL_AGAIN` — the graded trust verdict; a ROUTE_AROUND on honestly-rendered surfaces is a FAILED acceptance (a render/teaching defect to fix), never a waived answer | C5(d) |
 
 ## C3. PASS/FAIL, cost, and cadence
 
@@ -1025,7 +1030,7 @@ at `/home/ejprice/docker/mcp/.env`) — that:
   script, §6 discipline: measurement pins are never silently "upgraded").
 - **Packet-exit extra:** ~~one receipt run each on the Opus and Fable population members
   (not gated per-change — cost control; the floor model gates).~~
-  **AMENDED (AC-24 gate shape, ACCEPT) [FK-5 PENDING-OPERATOR]:** at packet exit the
+  **AMENDED (AC-24 gate shape, ACCEPT) [FK-5 — RULED/approved (packet file §OPERATOR GRANT (second), `1e3a249`)]:** at packet exit the
   FULL population runs once (one Sonnet, one Opus, one Fable), and ANY keyed failure by
   ANY member is an ADJUDICATED FINDING, never a waived receipt — the operator named all
   three as the client, so "the floor passed" cannot clear a named client member's
@@ -1042,10 +1047,49 @@ at `/home/ejprice/docker/mcp/.env`) — that:
 
 ## C4. What this instrument does NOT claim
 
-It measures first-contact comprehensibility of the served surface on the pinned model
-population — not long-horizon protocol adherence (that is packet 06's drill + the decay
-curve this packet's telemetry feeds). A PASS here + the T-series telemetry + 06's drill
-are three instruments on three timescales; none substitutes for another.
+It measures first-contact comprehensibility AND first-contact trust of the served
+surface on the pinned model population — not long-horizon protocol adherence (that is
+packet 06's drill + the decay curve this packet's telemetry feeds). A PASS here + the
+T-series telemetry + 06's drill are three instruments on three timescales; none
+substitutes for another.
+
+## C5. The trust doctrine — TRUST is the acceptance criterion (operator, post-brief; ADDED)
+
+**Authority:** operator doctrine postdating this doc's first derivation — packet file
+§OPERATOR GRANT (second) (`1e3a249`) + lore memory `cd4c22c3` (kind=decision,
+authoritative). **The doctrine, load-bearing:** an agent that distrusts the MCP routes
+around it — back to SendMessage, report files, and re-transcribed briefs — and that tax
+lands on EVERY future session, silently. So the client-acceptance instrument grades
+TRUST, not just usability, and rigor-vs-speed trades in this instrument resolve toward
+rigor.
+
+**RULING — four keyed HONESTY-PROBE families, folded into the C2 battery (tasks 12–15),
+every key derived from this doc's own ruled shapes:**
+- **(a) Failure/staleness admission** (task 12): the surfaces shown at a failure moment
+  — the honest-empty drain, the teaching rejects (oversize body, unknown recipient with
+  roster), the all-or-nothing guarantee — must read to the consumer as ADMITTED
+  conditions with a named next move, never over-claims. Key: nothing lost/sent + the
+  taught fix (B2.6's reject inventory is the fixture source).
+- **(b) Count-consistency** (task 13): the reader must be able to VERIFY from the render
+  alone that the header's counts, the served rows, and the elision arithmetic agree
+  (B15; R6 clause 2's counts-agree-with-what-drain-serves pin is the server-side half —
+  this is its consumer-side mirror).
+- **(c) Teaching-vs-behavior** (task 14): what a render TEACHES must match what the tool
+  measurably then does — fixture: the peek teach followed by the actual stamping drain
+  (B13/R6). A second rotation may probe `set_status`'s taught semantics vs the status
+  row (B2.5) — rotate fixtures across runs, keys stay mechanical.
+- **(d) The routing test** (task 15, always LAST): the graded question *"CALL_AGAIN or
+  ROUTE_AROUND?"* with a keyed token. The key is `CALL_AGAIN` **because the shown
+  surfaces are honest by construction under this doc's rulings** — so a ROUTE_AROUND
+  verdict is evidence of a residual over-claim or teaching gap, treated as a FAILED
+  acceptance and adjudicated as a render/teaching defect (per C3's FAIL handling and the
+  FK-5 rule: never waived, for any named client member).
+
+**Cost discipline (unchanged from C3):** the four probes ride the same generated
+fixtures and the same 3-run floor-model gate — no new harness, ~4 added questions. The
+probes are cheap precisely because the honest surfaces they need are the ones the design
+already ships; if a probe is ever expensive to stage, that is itself a signal the
+surface lacks an honest rendering of the condition being probed.
 
 ---
 
@@ -1165,7 +1209,9 @@ lead can diff against the record cheaply.
 > committed inline row template — B4/B7/A-GRAFT), **FK-2** (fleet elision marker
 > promotion — B15), **FK-3** (the two committed telemetry-pin amendments — T2/T8),
 > **FK-4** (the two `test_message_ledger.py` mypy casts — AC-04, contract-phase
-> collateral, not a design item of this doc). All FK items are PENDING-OPERATOR.
+> collateral, not a design item of this doc). **ALL FK items are RULED as the
+> adjudication recommends** (packet file §OPERATOR GRANT (second), `1e3a249`) — the E-series
+> recommendations below were each ADOPTED; they are kept as the reasoning record.
 
 **E1. [SPEND → FK-5] The consumer-eval instrument (C).** New model-API spend: ~8 questions × 3
 runs per gate + two one-time receipts. Small but recurring, and instrument-creation is
@@ -1266,7 +1312,7 @@ adjudicated derivation checked out against trusted sources at my own read.
 | item | verdict | where folded | note |
 |---|---|---|---|
 | X1/AC-20 (committed vocabulary wins) | **ACCEPT** (compelled — operator immutability ruling) | §A-GRAFT + B3/B4/B5 markers | The blind wording is superseded; semantics graft. My report's "NO send/drain/ack render pins exist" was FALSE at the template layer — erratum filed in `REPORT-design-blind-03b.md`. |
-| FK-1 (fence vs inline body slot) | marked PENDING-OPERATOR | A-GRAFT · B4 marker · B7.3 | My B4/B7 fence rationale stands as the FENCE arm's case; the packet exit's plain wording is the trusted-source anchor. Recommendation unchanged: FENCE. |
+| FK-1 (fence vs inline body slot) | **RULED: FENCE** (packet file §OPERATOR GRANT (second), `1e3a249`) | A-GRAFT · B4 marker · B7.3 | The fenced shape is settled; the two row-template registry amendments are authorized, strengthen-only + mutation-proven. |
 | AC-06 (cancellation leg) | **ACCEPT** | T5.3 corrected in place | My concession under-claimed my own `finally` mechanism (probed §P6). `finally` placement is now load-bearing + pinned. |
 | AC-07 (per-verb dispatcher-serves-render) | **ACCEPT** | new ruling **B12** | The graded self-attack's largest miss — the no-op-fix door, now a REQUIRED pin class per verb. |
 | AC-09 (runnable taught command) | **ACCEPT** | B4.4 amendment | |
@@ -1283,9 +1329,14 @@ adjudicated derivation checked out against trusted sources at my own read.
 | AC-05 / AC-13 / AC-15 / AC-17 (telemetry contract disciplines) | **ACCEPT** by reference | T7 items 10–13 | Derivations: DIFF-adjudication §3. |
 | AC-01/FK-2 · AC-03 · AC-04/FK-4 · AC-08 · AC-14 · AC-18 · AC-19 | **ACCEPT** by reference — contract/builder-phase obligations, not design rulings | no doc-body edit; contract authors consume DIFF-adjudication §3 directly alongside this doc | AC-01/AC-04 ride the operator fork batch (FK-2/FK-4); AC-03 (reach-pin subset), AC-08 (constant-derived teaching pins), AC-14 (canonicaliser pre-derivation), AC-18 (harness-count collateral), AC-19 (prose-corpse sweep) bind the contract/builder briefs. |
 | §3.4 moot cluster + residual | **ACCEPT** | residual added as F.6 | Nothing silently dropped: the struck telemetry machinery is moot under this architecture; the one live residual is F.6. |
-| FK-6 (skew-at-drain pre-flight) · FK-7 · FK-8 · FK-9 | marked PENDING-OPERATOR | B4.5 marker · E-series mapping block | Recommendations unchanged from E3/E5/E2/E4-E9. |
+| FK-6 (skew-at-drain pre-flight) · FK-7 · FK-8 · FK-9 | **RULED as recommended** (packet file §OPERATOR GRANT (second), `1e3a249`) | B4.5 marker · E-series mapping block | FK-6: as ruled here + pre-flight; FK-7: the §14 telemetry-carve-out reading CONFIRMED; FK-8/FK-9: per the E-series recommendations, adopted. |
+
+| FK-1…FK-9 (the whole fork batch) | **RULED as the adjudication recommends** — operator granted the lead fork authority; packet file §OPERATOR GRANT (second), `1e3a249` | every FK marker updated in place (13 sites) | FK-1: FENCE (registry row-template amendments authorized) · FK-2: marker promotion authorized · FK-3: both collateral amendments authorized · FK-4: casts authorized · FK-5: approved with the full-population exit gate · FK-6: as ruled + pre-flight · FK-7: the §14 reading CONFIRMED · FK-8/FK-9: per recommendations. Nothing in this doc remains pending. |
+| TRUST DOCTRINE (operator, post-brief — packet file §grant + lore memory `cd4c22c3`) | **ACCEPT** (folded) | new **C5** + C2 tasks 12–15 + C4 wording | Trust is the acceptance criterion: honesty-probe families (failure-admission · count-consistency · teaching-vs-behavior · the routing test) grade whether a consumer would CALL_AGAIN; a ROUTE_AROUND on honestly-rendered surfaces is a failed acceptance, adjudicated never waived. Keys derive from this doc's own ruled shapes; same fixtures, same 3-run gate. |
 
 *Post-amendment section map: §0 (F6 corrected) · A: B1–B11 + A-GRAFT + B12–B15 · B: T1–T8
-(+T2.1, T7.10–13) · C (battery 11 tasks) · D (graded: strong on invented-design doors,
-weak on committed-corpus interaction — the adjudication's §4 verdict, accepted) · E (FK
-mapping) · F (6 residuals) · G (this log).*
+(+T2.1, T7.10–13) · C: C1–C5 (battery 15 tasks incl. the four trust probes) · D (graded:
+strong on invented-design doors, weak on committed-corpus interaction — the
+adjudication's §4 verdict, accepted) · E (FK mapping — all RULED) · F (6 residuals) ·
+G (this log). This doc is the settled spec for the 03b contract authors; the FK batch is
+ruled, nothing pending.*

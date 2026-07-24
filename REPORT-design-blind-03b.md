@@ -87,15 +87,15 @@ this report is the durable artifact that carried them:
    the miss; it is the structural cost of blindness the diff step exists to pay. The
    rulings doc's B3–B5 wording is superseded by §A-GRAFT (semantics graft onto committed
    templates); the one genuine conflict (fenced bodies vs the committed inline `{body}`
-   slot) is fork FK-1, PENDING-OPERATOR.
+   slot) is fork FK-1 — PENDING-OPERATOR at fold time; since RULED: FENCE (see POSTSCRIPT).
 2. **Doc §0.F6 / T8 "the T-series is amendment-free" — FALSE.** Derived from
    `test_surreal_store.py` alone; two committed pins in files outside that read set go
    RED under the T-series (probed, adjudication §P9):
    `test_surreal_schema.py::…test_trace_core_scalar_fields_are_defined` (old scalar
    types for `hit_count`/`session`) and
    `test_surreal_fakes.py::test_record_trace_signature_matches_real_store` (exact 7-name
-   list). Both fixes are strengthen-only, mutation-proven, batched as fork FK-3,
-   PENDING-OPERATOR. The narrow per-key claim about `test_surreal_store.py` itself
+   list). Both fixes are strengthen-only, mutation-proven, batched as fork FK-3 —
+   PENDING-OPERATOR at fold time; since RULED/authorized (see POSTSCRIPT). The narrow per-key claim about `test_surreal_store.py` itself
    stands.
 
 Lesson, stated for the next blind derivation: an "amendment-free" claim is a claim about
@@ -111,5 +111,14 @@ unconditional thread cell contradicted my own B3.2 principle (AC-22 → new ruli
 New rulings added at the adjudication's routing: B12 (per-verb dispatcher-serves-render
 pin class — the no-op-fix door my self-attack missed), B13 (peek renders no trailer),
 B14 ({context} cell), B15 (elision arithmetic), T2.1 (the 06-read trace index inside the
-free window). All fork-dependent elements carry FK-n PENDING-OPERATOR markers mapping to
+free window). All fork-dependent elements carry FK-n markers mapping to
 DIFF-adjudication §6.
+
+**POSTSCRIPT (same day, final pass):** the FK batch is now RULED as the adjudication
+recommends (operator granted the lead fork authority — packet file §OPERATOR GRANT
+(second), `1e3a249`); every FK marker in the rulings doc updated PENDING-OPERATOR →
+RULED (FK-1 = FENCE). The operator TRUST DOCTRINE (packet file §grant + lore memory
+`cd4c22c3`) is folded as new §C5 + battery tasks 12–15: four keyed honesty probes
+(failure-admission, count-consistency, teaching-vs-behavior, and the CALL_AGAIN /
+ROUTE_AROUND routing test, graded, never waived). The rulings doc is the settled
+contract-phase spec; §G carries the complete amendment record.
