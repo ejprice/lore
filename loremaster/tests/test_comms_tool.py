@@ -445,6 +445,24 @@ class TestCommsToolRegistration:
         for action in sorted(_COMMS_ACTIONS):
             assert action in description, f"the tool description must name {action!r}"
 
+    async def test_description_names_every_action_as_a_WHOLE_WORD(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MINOR m3 (adversary). ``test_description_names_every_action`` uses bare
+        substring membership, so ``ack`` passes VACUOUSLY — it is a substring of
+        ``brief_ack``, already in the shipped description. A build that describes
+        every OTHER action but never mentions ``send``/``drain``/``ack`` as their
+        own verbs slips through. Word boundaries make each a real check
+        (``\\back\\b`` matches ``'ack'`` but not the ``_ack`` inside ``brief_ack``,
+        because ``_`` is a word character)."""
+        tools = await _tools_by_name(monkeypatch)
+        description = tools["lore_comms"].description or ""
+        for action in sorted(_COMMS_ACTIONS):
+            assert re.search(rf"\b{re.escape(action)}\b", description), (
+                f"the tool description does not name {action!r} as a whole word — a substring "
+                f"match (e.g. 'ack' inside 'brief_ack') is a vacuous check"
+            )
+
     async def test_param_honesty__every_spec_param_is_in_the_tool_signature(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3827,6 +3845,30 @@ async def _render_drain_sender(value: str, _ctx: Any) -> str:
     )
 
 
+async def _render_drain_task_id(value: str, _ctx: Any) -> str:
+    """MINOR m2 (adversary). ``task_id`` is caller-controlled free text that enters
+    the row's context cell (``(task {task_id})``) — the battery was per-ACTION and
+    had no case for it. Defence-in-depth: the ``SafeLine`` seam makes an
+    unsanitised build awkward, but the completeness pin cannot see the gap."""
+    return AppContext._render_comms_drain(
+        _drain_result(entries=[_inbox_entry(task_id=value, thread="wave7")]),
+        agent_name="fixer-b",
+        limit=20,
+        session="wave7",
+    )
+
+
+async def _render_drain_refs(value: str, _ctx: Any) -> str:
+    """MINOR m2 (adversary). ``refs`` are caller-controlled free text entering the
+    row's refs variant (``({refs})``) — no committed injection case drove them."""
+    return AppContext._render_comms_drain(
+        _drain_result(entries=[_inbox_entry(refs=[value], thread="wave7")]),
+        agent_name="fixer-b",
+        limit=20,
+        session="wave7",
+    )
+
+
 async def _render_drain_thread(value: str, _ctx: Any) -> str:
     """AUTHORIZED AMENDMENT 10 (operator 2026-07-24; design ruling D2 → reading A, S8).
 
@@ -3886,6 +3928,8 @@ C1_RENDER_CASES: list[RenderCase] = [
     RenderCase("drain.body", _render_drain_body),
     RenderCase("drain.sender", _render_drain_sender),
     RenderCase("drain.thread", _render_drain_thread),
+    RenderCase("drain.task_id", _render_drain_task_id),  # m2 (03b) — see the driver's docstring
+    RenderCase("drain.refs", _render_drain_refs),  # m2 (03b) — see the driver's docstring
     RenderCase("ack.name", _render_ack_agent_name),
 ]
 
@@ -4192,6 +4236,104 @@ class TestBroadcastFanOut:
                 grade=_msg().MESSAGE_GRADE_SIGNAL,
             )
 
+    async def test_a_broadcast_receipt_names_the_true_fan_out_and_the_session(self) -> None:
+        """CRITICAL C4 (adversary W2b, W2c, W3). ``broadcast=True`` is a
+        parameter-value MONOCULTURE: not one committed call site sets it, so the
+        WHOLE broadcast receipt branch is untested (#96's law, on a boolean).
+
+        Driven through the REAL dispatcher so it catches all three at once: a
+        correct handler passes ``broadcast=True`` to the render, so W2b (count
+        hardcoded 1) and W2c (session slot fed the message's thread) fire here,
+        AND W3 (handler always passes ``broadcast=False``) fails because the named
+        receipt has no ``broadcast:`` clause. The broadcast carries an EXPLICIT
+        thread ``q:cap`` so it differs from the session — otherwise the default
+        thread equals the session and W2c cannot be seen."""
+        harness, message_ledger = self._fleet()
+        await self._populate(harness, message_ledger)  # 3 non-sender recipients in wave7
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                body="all hands",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+                thread="q:cap",
+            )
+        )
+        assert "broadcast: 3 agents in session wave7" in rendered, (
+            "the broadcast receipt did not name the true fan-out (3) and the caller's SESSION "
+            "(wave7) — W2b hardcodes the count to 1, W2c names the message's thread where the "
+            f"session belongs, and W3 never renders the broadcast variant at all: {rendered!r}"
+        )
+        receipt = _drain_line_containing(rendered, "broadcast:")
+        assert "q:cap" not in receipt, (
+            f"the broadcast receipt named the thread 'q:cap' where the session belongs (W2c): {receipt!r}"
+        )
+
+    async def test_the_question_teach_survives_a_BROADCAST(self) -> None:
+        """CRITICAL C5 (adversary W33). An agent that asks the WHOLE fleet still
+        carries thread debt and must still be told how it clears. The question
+        teach is emitted IFF ``message.question`` — orthogonal to broadcast — so a
+        build gating it on ``not broadcast`` silently drops it for the one sender
+        who most needs it."""
+        harness, message_ledger = self._fleet()
+        await self._populate(harness, message_ledger)
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                body="does anyone know the cap?",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+                thread="q:cap",
+                set_status="input_required",
+            )
+        )
+        assert "broadcast:" in rendered, (
+            "POSITIVE CONTROL FAILED: this send was not a broadcast, so the assertion below "
+            f"proves nothing about the broadcast branch: {rendered!r}"
+        )
+        assert "awaiting an answer on thread 'q:cap'" in rendered, (
+            "a BROADCAST question dropped its clearing-rule teach — a build gating the question "
+            f"line on 'not broadcast' fails exactly the sender who asked the fleet (W33): {rendered!r}"
+        )
+
+    async def test_a_broadcast_with_session_OMITTED_stays_in_the_callers_session(self) -> None:
+        """CRITICAL C9 (adversary W32). ``session`` is optional on every non-register
+        action and all 13 committed sends pass it — a value monoculture. Recipient
+        resolution is scoped to ``agent_row.session`` (the caller's REGISTERED
+        session), never the nullable ``session`` parameter; a build scoping the
+        roster by the parameter delivers a broadcast into every session when the
+        caller omits it."""
+        harness, message_ledger = self._fleet()
+        registry: FakeAgentRegistry = harness.agent_registry
+        for name, session in (("lead", "wave7"), ("fixer-b", "wave7"), ("outsider", "wave9")):
+            await registry.register(name, session=session, role="builder")
+            agent = await registry.get_agent(name, session=session)
+            message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            body="all hands",  # NOTE: session= deliberately OMITTED
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+        )
+        [message] = list(message_ledger.db.messages.values())
+        recipients = sorted(
+            message_ledger.db.agents[agent_id]
+            for (message_id, agent_id) in message_ledger.db.edges
+            if message_id == message.id
+        )
+        assert "outsider" not in recipients, (
+            "a broadcast with session= OMITTED crossed into wave9 — the roster was scoped by the "
+            f"nullable session parameter instead of the caller's registered session (W32): {recipients!r}"
+        )
+        assert recipients == ["fixer-b"], (
+            f"the broadcast should reach exactly the caller's own session: {recipients!r}"
+        )
+
 
 class TestUnregisteredRecipientIsTheEXISTINGTeachingError:
     """RULING 2: packet 03 builds its own scoped ``unregistered recipient =
@@ -4409,6 +4551,251 @@ class TestDrainAndAckAtTheDispatcher:
             f"the deliberate-thread row lost its cell through the dispatcher: {deliberate_row!r}"
         )
 
+    async def test_the_SEND_dispatcher_serves_the_SEND_RENDER(self) -> None:
+        """BLOCKER B1 (adversary W1) — THE NO-OP FIX, send half.
+
+        ``_render_comms_send`` can be built PERFECTLY and never called: a handler
+        returning a hardcoded ``render_line("no unread messages")`` passes every
+        render-shape pin in this file, because they all call the render DIRECTLY.
+        The drain has ``test_the_dispatcher_HANDS_THE_RENDER_A_SESSION_and_it_is_
+        the_right_one``; send had NO equivalent, and this is the #94 shape verbatim
+        (repo CLAUDE.md: "every pin tested a new method NOTHING REQUIRED THE CODE
+        TO CALL"). Only a pin that drives the REAL dispatcher and reads its output
+        can see the wire; this is that pin.
+
+        The send carries all three of S4.1's emitted lines at once — the receipt,
+        the directive ack-trailer (grade=directive) and the question teach
+        (set_status=input_required marks the message a question, ruling 9) — so the
+        no-op build fails on every one of them, and a build that wires the render
+        but drops the question/trailer forwarding fails on the specific line it
+        dropped."""
+        harness, _ = await self._ready()
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["fixer-b"],
+                body="answer me",
+                grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+                set_status="input_required",
+                thread="q:cap",
+            )
+        )
+        assert "sent #1 [directive] → fixer-b" in rendered, (
+            "the send dispatcher did not serve _render_comms_send's RECEIPT line — a handler "
+            f"that never calls the render (the no-op fix, W1) survives every other pin: {rendered!r}"
+        )
+        assert "recipients must ack: lore_comms action=ack seqs=[1]" in rendered, (
+            f"the directive ack-trailer never reached the dispatcher output: {rendered!r}"
+        )
+        assert "awaiting an answer on thread 'q:cap'" in rendered, (
+            "the question-teach line never reached the dispatcher output — either the render is "
+            f"unwired (W1) or set_status did not mark the message a question: {rendered!r}"
+        )
+
+    async def test_the_ACK_dispatcher_serves_the_ACK_RENDER(self) -> None:
+        """BLOCKER B2 (adversary W10) — THE NO-OP FIX, ack half.
+
+        Same class as B1: ``_render_comms_ack`` can be built perfectly and never
+        called. This drives the REAL ``action=ack`` dispatch and reads its output,
+        so a handler returning a hardcoded string fails. En route it also exercises
+        the counts (W11), the acked/already-acked distinction (W12) and the
+        not-addressed IDENTITY at the dispatcher (W15b — the handler must hand the
+        render the CALLER's name, not its session)."""
+        harness, message_ledger = await self._ready()
+        # A third agent so the not_addressed group is reachable through the real
+        # dispatcher: it acks a seq addressed to fixer-b, so it holds no edge.
+        registry: FakeAgentRegistry = harness.agent_registry
+        await registry.register("idle-c", session="wave7", role="builder")
+        idle_c = await registry.get_agent("idle-c", session="wave7")
+        message_ledger.register_agent(agent_id=idle_c.id, name=idle_c.name)
+
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            to=["fixer-b"],
+            body="ack me",
+            grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+        )
+        [message] = list(message_ledger.db.messages.values())
+
+        first = str(
+            await AppContext.comms(
+                harness, action="ack", agent="fixer-b", session="wave7", seqs=[message.seq]
+            )
+        )
+        assert f"acked 1 of 1: #{message.seq}" in first, (
+            "the ack dispatcher did not serve _render_comms_ack's acked line with the TRUE "
+            f"counts — the render is unwired (W10) or the counts are wrong (W11): {first!r}"
+        )
+
+        second = str(
+            await AppContext.comms(
+                harness, action="ack", agent="fixer-b", session="wave7", seqs=[message.seq, 999]
+            )
+        )
+        assert f"already acked: #{message.seq} — no new stamp" in second, (
+            "a re-ack of an already-discharged seq was not reported as ALREADY ACKED — W12 folds "
+            f"it into the acked group and re-reports a fresh stamp: {second!r}"
+        )
+        assert "acked 1 of" not in second, (
+            f"a re-ack fabricated a fresh 'acked' line for a seq that was already stamped: {second!r}"
+        )
+        assert "unknown message seq(s): #999" in second, (
+            f"the unknown-seq teach never reached the dispatcher output: {second!r}"
+        )
+
+        not_mine = str(
+            await AppContext.comms(
+                harness, action="ack", agent="idle-c", session="wave7", seqs=[message.seq]
+            )
+        )
+        assert "not addressed to you" in not_mine and "to idle-c" in not_mine, (
+            "the not-addressed line named something other than the CALLER — the handler passed "
+            f"the render its session, not its name (W15b): {not_mine!r}"
+        )
+
+    async def test_send_forwards_set_status_task_id_and_refs(self) -> None:
+        """CRITICAL C6 (adversary W28, W29). The send handler must forward the
+        caller's ``set_status``, ``task_id`` and ``refs`` to the ledger.
+
+        W29 is the sharper half: drop ``set_status`` and NO production message is
+        ever a question, so S4.1's whole question-teach line — this packet's
+        headline addition — is unreachable through the real path while its
+        render-level 2×2 proof stays green (the P5 fake-mutation receipt is exact:
+        breaking ``question`` in the fake reddens 16 tests, ALL in
+        test_message_ledger.py, NONE in this surface). W28 drops ``task_id``/``refs``
+        so the next drain row loses its task cell and its refs.
+        """
+        harness, message_ledger = await self._ready()
+        send_render = str(
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["fixer-b"],
+                body="the plan is ready",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+                thread="q:cap",
+                set_status="input_required",
+                task_id="T-9",
+                refs=["REPORT-x.md"],
+            )
+        )
+        assert "awaiting an answer on thread 'q:cap'" in send_render, (
+            "the send render carried no question line — set_status was dropped between the "
+            "dispatcher and the ledger, so no message becomes a question through the real path "
+            f"and the whole S4.1 question teach is dead code in production (W29): {send_render!r}"
+        )
+        drain_render = str(
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        )
+        row = _drain_line_containing(drain_render, "the plan is ready")
+        assert "(task T-9)" in row, (
+            f"the drained row lost its task anchor — task_id was dropped at the send (W28): {row!r}"
+        )
+        assert "REPORT-x.md" in row, (
+            f"the drained row lost its refs — refs were dropped at the send (W28): {row!r}"
+        )
+
+    async def test_drain_honours_an_EXPLICIT_limit_at_the_dispatcher(self) -> None:
+        """MAJOR M6 (adversary W9). ``limit`` is a declared ``drain`` param that no
+        committed pin exercises with a value that DIFFERS from the served count.
+
+        The harness config sets ``drain_limit=5``; three pending, ``limit=1`` must
+        serve ONE and leave TWO unread. A build ignoring the caller's ``limit`` and
+        always using config serves all three and leaves none."""
+        harness, message_ledger = await self._ready()
+        for index in range(3):
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["fixer-b"],
+                body=f"message {index}",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        rendered = str(
+            await AppContext.comms(
+                harness, action="drain", agent="fixer-b", session="wave7", limit=1
+            )
+        )
+        assert rendered.count("→you") == 1, (
+            f"an explicit limit=1 served more than one row — the caller's limit was ignored "
+            f"and the config window used instead (W9): {rendered!r}"
+        )
+        unread = sum(1 for edge in message_ledger.db.edges.values() if edge.seen_at is None)
+        assert unread == 2, (
+            f"limit=1 left {unread} unread (expected 2) — the drain window was not the caller's "
+            f"explicit limit (W9)"
+        )
+
+    async def test_ack_forwards_the_NOTE(self) -> None:
+        """MAJOR M8 (adversary W27). ``note=`` is accepted and stored on the edge
+        the CAS wins (S4.3: "recorded as deliberate, not forgotten"); storage is
+        asserted nowhere at the surface. A build dropping the note at the
+        dispatcher stores ``None`` and the deliberate record is silently lost."""
+        harness, message_ledger = await self._ready()
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            to=["fixer-b"],
+            body="do the thing",
+            grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+        )
+        [message] = list(message_ledger.db.messages.values())
+        await AppContext.comms(
+            harness,
+            action="ack",
+            agent="fixer-b",
+            session="wave7",
+            seqs=[message.seq],
+            note="done — see REPORT-x.md",
+        )
+        acked = [edge for edge in message_ledger.db.edges.values() if edge.acked_at is not None]
+        assert len(acked) == 1, f"fixture check: exactly one edge should be acked: {acked!r}"
+        assert acked[0].ack_note == "done — see REPORT-x.md", (
+            "the ack note never reached the winning delivery edge — the dispatcher dropped it "
+            f"on the floor (W27): {acked[0].ack_note!r}"
+        )
+
+    async def test_to_EMPTY_LIST_is_a_broadcast(self) -> None:
+        """MAJOR M1 (adversary W31). The served instructions teach ``to=[]`` as the
+        broadcast form (S5: "to=[] broadcasts to all non-retired"); ``to=[]``
+        appears in the whole contract ONLY inside a docstring. A build spelling the
+        broadcast test ``to is None`` treats an explicit empty list as "name every
+        recipient", finds none, and raises ``EmptyRecipientSetError`` — refusing the
+        exact call the instructions promise works."""
+        harness, message_ledger = await self._ready()
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            to=[],
+            body="all hands",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+        )
+        [message] = list(message_ledger.db.messages.values())
+        recipients = sorted(
+            message_ledger.db.agents[agent_id]
+            for (message_id, agent_id) in message_ledger.db.edges
+            if message_id == message.id
+        )
+        assert recipients == ["fixer-b"], (
+            "to=[] did not broadcast to the caller's session — a build treating [] as an "
+            f"explicit (empty) recipient list refuses the send S5 teaches as broadcast (W31): "
+            f"{recipients!r}"
+        )
+
     async def test_an_oversize_body_is_a_teaching_reject_at_the_surface(self) -> None:
         harness, message_ledger = await self._ready()
         with pytest.raises(Exception) as excinfo:  # noqa: B017 - MessageBodyError surface
@@ -4586,6 +4973,58 @@ class TestRenderCommsSendShape:
         )
         assert "more)" not in rendered, rendered
         assert all(name in rendered for name in names), rendered
+
+    async def test_the_send_receipt_names_the_MESSAGES_seq_and_grade(self) -> None:
+        """MAJOR M7 (adversary W22, W23). The receipt's ``{seq}`` and ``{grade}``
+        slots are unread by any committed pin. The seq matters twice over: the
+        directive trailer tells the recipients to ack THAT seq, so a wrong receipt
+        seq and a wrong trailer seq must both be caught. Seq 41 and grade
+        ``directive`` are chosen so neither can pass by accident (41 is not a
+        substring of any grade; ``directive`` is not a substring of the session)."""
+        rendered = str(
+            AppContext._render_comms_send(
+                _send_result(
+                    message=_message(seq=41, grade="directive", question=False, session="wave7")
+                ),
+                broadcast=False,
+                session="wave7",
+            )
+        )
+        receipt = _drain_line_containing(rendered, "sent #")
+        assert "sent #41 [directive]" in receipt, (
+            "the send receipt named the wrong seq or grade — W22 shows seq+1, W23 hardcodes the "
+            f"grade (here it renders the session): {receipt!r}"
+        )
+        trailer = _drain_line_containing(rendered, "recipients must ack")
+        assert "seqs=[41]" in trailer, (
+            f"the directive trailer told recipients to ack a seq that is not the message's: {trailer!r}"
+        )
+
+    async def test_the_capped_recipient_list_shows_the_FIRST_names(self) -> None:
+        """MINOR m1 (adversary W42). The cap pins count how MANY names show; none
+        checks WHICH. A build slicing the TAIL (``[-cap:]``) shows exactly the cap
+        count and passes them — but names the wrong recipients. cap+2 names, all
+        distinct: the first name must show and the last must not, tested by EXACT
+        membership in the comma-split list so a future rename cannot make one name
+        a substring of another and silently double-count."""
+        names = [f"agent-{index:02d}" for index in range(_COVERAGE_NAMES_CAP + 2)]
+        rendered = str(
+            AppContext._render_comms_send(
+                _send_result(message=_message(question=False), recipient_names=names),
+                broadcast=False,
+                session="wave7",
+            )
+        )
+        receipt = _drain_line_containing(rendered, "sent #")
+        recipients_field = receipt.split("→", 1)[1].split("(+")[0]
+        listed = {segment.strip() for segment in recipients_field.split(",")}
+        assert names[0] in listed, (
+            f"the first recipient is missing — a build slicing the TAIL of the list shows the "
+            f"LAST cap names instead of the first (W42): {receipt!r}"
+        )
+        assert names[-1] not in listed, (
+            f"the LAST (over-cap) recipient appears — the list was sliced from the tail (W42): {receipt!r}"
+        )
 
 
 class TestRenderCommsDrainShape:
@@ -5004,6 +5443,270 @@ class TestRenderCommsDrainShape:
             f"the context cell is SINGULAR — the task cell wins and stands alone: {row!r}"
         )
 
+    # -- S4.2's header, ordering, refs, row slots (adversary's unread numbers) -
+
+    async def test_the_header_names_the_TRUE_pending_total(self) -> None:
+        """CRITICAL C1 (adversary W4, W5). The header's ``{shown}``/``{total}`` are
+        read by no committed pin, so a build reporting ``drained 2 of 2`` while five
+        wait passes 1092/1092. The peek variant is worse: S4.2 lets a peek skip the
+        elision line BECAUSE its header already discloses ``shown of total`` — a
+        lying header removes the only disclosure a peek has. Two shown, seven
+        pending, on the stamping AND the peek header."""
+        entries = [_inbox_entry(seq=61, thread="wave7"), _inbox_entry(seq=62, thread="wave7")]
+        stamping = self._render(entries, total_pending=7, limit=2, session="wave7")
+        assert stamping.splitlines()[0] == "drained 2 of 7 pending", (
+            f"the stamping header did not name the TRUE pending total (7) — W4 reports the window "
+            f"size (2) as the total: {stamping.splitlines()[0]!r}"
+        )
+        peek = self._render(entries, total_pending=7, limit=2, peeked=True, session="wave7")
+        assert peek.splitlines()[0] == (
+            "peeked 2 of 7 pending — nothing stamped; re-run without peek=true to mark them seen"
+        ), (
+            f"the peek header did not name the TRUE pending total (7) — W5 lies the same way, and "
+            f"a peek's header is its ONLY disclosure of what it left behind: {peek.splitlines()[0]!r}"
+        )
+
+    async def test_an_unacked_SIGNAL_is_not_demanded(self) -> None:
+        """CRITICAL C2 (adversary W41). Amendment R3 closed the ``acked_at``
+        monoculture on the ACK REQUIRED trailer and left the GRADE monoculture
+        untouched — every committed ACK-REQUIRED fixture is directive-only or a
+        lone signal. One unacked signal AND one unacked directive in ONE drain: the
+        demand names the DIRECTIVE only. A grade-blind build (fires when ANY
+        directive is unacked, then lists every unacked row) lists the signal too."""
+        rendered = self._render(
+            [
+                _inbox_entry(seq=93, grade="signal", acked_at=None, thread="wave7"),
+                _inbox_entry(seq=71, grade="directive", acked_at=None, thread="wave7"),
+            ],
+            session="wave7",
+        )
+        line = _drain_line_containing(rendered, self._ACK_REQUIRED)
+        assert "71" in line, f"the unacked DIRECTIVE must be demanded (positive control): {line!r}"
+        assert "93" not in line, (
+            "an unacked SIGNAL was listed in the ACK REQUIRED demand — the trailer is grade-blind "
+            f"(W41): only unacked DIRECTIVES are owed an ack: {line!r}"
+        )
+
+    async def test_the_ACK_REQUIRED_command_is_RUNNABLE(self) -> None:
+        """CRITICAL C3 (adversary W6). The registry proof marker stops at
+        ``ACK REQUIRED: #71`` — one character before the part that has to be TRUE.
+        §9.7's litmus: "if the reader ran the taught command WITH ITS DEFAULTS,
+        would the promised thing happen?" With ``seqs=[]`` it acks nothing. The
+        taught command must name every demanded seq."""
+        rendered = self._render(
+            [
+                _inbox_entry(seq=71, grade="directive", acked_at=None, thread="wave7"),
+                _inbox_entry(seq=72, grade="directive", acked_at=None, thread="wave7"),
+            ],
+            session="wave7",
+        )
+        line = _drain_line_containing(rendered, self._ACK_REQUIRED)
+        taught = re.search(r"action=ack seqs=\[([^\]]*)\]", line)
+        assert taught is not None, (
+            f"the ACK REQUIRED trailer taught no runnable 'action=ack seqs=[...]' command: {line!r}"
+        )
+        taught_seqs = taught.group(1)
+        assert "71" in taught_seqs and "72" in taught_seqs, (
+            "the ACK REQUIRED command's seqs=[...] does not name every demanded seq — running it "
+            f"with its defaults acks nothing (W6 renders seqs=[]): {line!r}"
+        )
+
+    async def test_the_drain_serves_its_rows_in_LEDGER_order(self) -> None:
+        """MAJOR M2 (adversary W25). The committed pins locate rows by seq, never by
+        POSITION, so a build serving the ledger's oldest-first order in REVERSE
+        passes them all. #61 must render above #62."""
+        rendered = self._render(
+            [_inbox_entry(seq=61, thread="wave7"), _inbox_entry(seq=62, thread="wave7")],
+            session="wave7",
+        )
+        assert rendered.index("#61") < rendered.index("#62"), (
+            "the drain served its rows out of ledger order — the render reversed the oldest-first "
+            f"ordering the ledger guarantees (W25): {rendered!r}"
+        )
+
+    async def test_every_served_row_renders_ABOVE_the_first_trailer(self) -> None:
+        """MAJOR M3 (adversary W8). S4.2 rules the composition header · rows ·
+        trailers · elision. Block order is UNPINNED: a build rendering the ACK
+        REQUIRED demand and the elision ABOVE the messages passes every committed
+        pin, and an LLM reads the demand before the rows it is about."""
+        rendered = self._render(
+            [
+                _inbox_entry(seq=61, grade="directive", acked_at=None, thread="wave7"),
+                _inbox_entry(seq=62, grade="directive", acked_at=None, thread="wave7"),
+            ],
+            total_pending=7,
+            limit=2,
+            session="wave7",
+        )
+        last_row = max(rendered.index("#61"), rendered.index("#62"))
+        assert last_row < rendered.index(self._ACK_REQUIRED), (
+            f"a served row rendered BELOW the ACK REQUIRED trailer — S4.2's composition inverted "
+            f"(W8): {rendered!r}"
+        )
+        assert last_row < rendered.index("more unread"), (
+            f"a served row rendered BELOW the elision line — S4.2's composition inverted (W8): "
+            f"{rendered!r}"
+        )
+
+    async def test_a_row_with_REFS_renders_them(self) -> None:
+        """MAJOR M4 (adversary W7). The refs row variant is live only as a STATIC
+        literal in the promise registry; nothing RENDERS it. A build dropping refs
+        entirely (``if False:``) passes, and a caller's pointers vanish."""
+        rendered = self._render(
+            [_inbox_entry(seq=71, refs=["REPORT-x.md"], thread="wave7")],
+            session="wave7",
+        )
+        row = _drain_line_containing(rendered, "#71")
+        assert "REPORT-x.md" in row, (
+            f"a row carrying refs did not render them — the refs variant is dead code (W7): {row!r}"
+        )
+
+    async def test_the_row_names_the_GRADE_and_the_SENDER_in_the_right_slots(self) -> None:
+        """MAJOR M5 (adversary W24, W24b). The row's ``{grade}``/``{sender}`` slots
+        are read by no committed pin. Grade ``signal`` in the bracket slot and
+        sender ``lead`` in the arrow slot are not confusable, so a build feeding the
+        grade slot the sender (or the sender slot the thread/grade) is caught. A
+        SIGNAL grade is used deliberately so no ACK REQUIRED trailer also carries
+        the seq, keeping the row line uniquely locatable."""
+        rendered = self._render(
+            [_inbox_entry(seq=71, grade="signal", sender_name="lead", thread="wave7")],
+            session="wave7",
+        )
+        row = _drain_line_containing(rendered, "#71")
+        assert "[signal]" in row, (
+            f"the grade slot did not carry the grade — a build swapping grade and sender puts the "
+            f"sender name in the bracket (W24b): {row!r}"
+        )
+        assert "lead→you" in row, (
+            "the sender slot did not name the SENDER — W24 feeds it the thread, W24b feeds it the "
+            f"grade: {row!r}"
+        )
+
+
+class TestRenderCommsAckShape:
+    """S4.3 — the ack confirmation, which the committed contract left UNPINNED end
+    to end (adversary W10–W15b). Four group-lines in FIXED order (acked ·
+    already-acked · not-addressed · unknown), seqs within each group in REQUEST
+    order, the receipt's own counts, and the not-addressed identity — all driven
+    against the REAL ``_render_comms_ack`` here; the WIRING (that the handler calls
+    it at all) is pinned at the dispatcher by
+    ``TestDrainAndAckAtTheDispatcher::test_the_ACK_dispatcher_serves_the_ACK_RENDER``.
+    """
+
+    @staticmethod
+    def _entry(*, seq: int, outcome: str) -> Any:
+        return _msg().MessageAckEntry(
+            seq=seq,
+            outcome=outcome,
+            acked_at=datetime.now(UTC) if outcome in {"acked", "already_acked"} else None,
+        )
+
+    def test_the_four_groups_render_in_FIXED_order(self) -> None:
+        """W13. All four outcomes in ONE ack, input order deliberately NOT the
+        rendered order: the render must impose acked · already · not-addressed ·
+        unknown regardless. A build composing the lines in reverse fails here."""
+        rendered = str(
+            AppContext._render_comms_ack(
+                _ack_result(
+                    entries=[
+                        self._entry(seq=4, outcome="unknown_message"),
+                        self._entry(seq=3, outcome="not_addressed"),
+                        self._entry(seq=2, outcome="already_acked"),
+                        self._entry(seq=1, outcome="acked"),
+                    ]
+                ),
+                agent_name="fixer-b",
+            )
+        )
+        order = [
+            rendered.index("acked 1 of"),
+            rendered.index("already acked:"),
+            rendered.index("not addressed to you:"),
+            rendered.index("unknown message seq(s):"),
+        ]
+        assert order == sorted(order), (
+            "the ack groups did not render in the FIXED order acked · already-acked · "
+            f"not-addressed · unknown (S4.3) — the composition was scrambled (W13): {rendered!r}"
+        )
+
+    def test_seqs_within_a_group_stay_in_REQUEST_order(self) -> None:
+        """W14. The ledger result is per-seq request-ordered; the render groups
+        WITHOUT re-sorting. Two acked seqs supplied 9 then 3: the render must keep
+        ``#9, #3``. A build sorting each bucket renders ``#3, #9``."""
+        rendered = str(
+            AppContext._render_comms_ack(
+                _ack_result(
+                    entries=[
+                        self._entry(seq=9, outcome="acked"),
+                        self._entry(seq=3, outcome="acked"),
+                    ]
+                ),
+                agent_name="fixer-b",
+            )
+        )
+        line = _drain_line_containing(rendered, "acked 2 of")
+        assert line.index("#9") < line.index("#3"), (
+            f"the acked group re-sorted its seqs — S4.3 keeps REQUEST order (W14): {line!r}"
+        )
+
+    def test_the_receipt_counts_are_the_TRUE_counts(self) -> None:
+        """W11. ``acked {acked} of {requested}`` — acked is the count of freshly
+        stamped edges, requested is the number of seqs asked. One acked + one
+        already-acked ⇒ ``acked 1 of 2``. A build hardcoding ``0 of 0`` passes every
+        other pin (the group still lists its seq)."""
+        rendered = str(
+            AppContext._render_comms_ack(
+                _ack_result(
+                    entries=[
+                        self._entry(seq=1, outcome="acked"),
+                        self._entry(seq=2, outcome="already_acked"),
+                    ]
+                ),
+                agent_name="fixer-b",
+            )
+        )
+        line = _drain_line_containing(rendered, "acked ")
+        assert "acked 1 of 2:" in line, (
+            f"the acked receipt did not carry the TRUE counts (1 of 2) — W11 renders 0 of 0: {line!r}"
+        )
+
+    def test_already_acked_is_a_DISTINCT_group_from_acked(self) -> None:
+        """W12. A re-served already-acked seq must render on the ALREADY-ACKED line,
+        never folded into the acked line — folding reports a fresh stamp for a seq
+        the caller never actually stamped this call."""
+        rendered = str(
+            AppContext._render_comms_ack(
+                _ack_result(
+                    entries=[
+                        self._entry(seq=1, outcome="acked"),
+                        self._entry(seq=2, outcome="already_acked"),
+                    ]
+                ),
+                agent_name="fixer-b",
+            )
+        )
+        acked_line = _drain_line_containing(rendered, "acked 1 of 2:")
+        already_line = _drain_line_containing(rendered, "already acked:")
+        assert "#1" in acked_line and "#2" not in acked_line, (
+            f"the already-acked seq was folded into the acked group (W12): {acked_line!r}"
+        )
+        assert "#2" in already_line and "#1" not in already_line, already_line
+
+    def test_not_addressed_names_the_CALLER(self) -> None:
+        """W15. ``not addressed to you: ... no delivery to {name}`` names the caller
+        — the render's only use of ``agent_name``. A build hardcoding a name teaches
+        the wrong identity."""
+        rendered = str(
+            AppContext._render_comms_ack(
+                _ack_result(entries=[self._entry(seq=5, outcome="not_addressed")]),
+                agent_name="fixer-b",
+            )
+        )
+        line = _drain_line_containing(rendered, "not addressed to you:")
+        assert "to fixer-b" in line, (
+            f"the not-addressed line named an identity other than the CALLER (W15): {line!r}"
+        )
+
 
 class TestDrainThreadInjectionCaseIsNotVACUOUS:
     """AMENDMENT 10's companion — the premise the ruling ASSERTS, CHECKED.
@@ -5044,6 +5747,26 @@ class TestDrainThreadInjectionCaseIsNotVACUOUS:
         assert "(thread " not in rendered, (
             "POSITIVE CONTROL FAILED: a thread equal to the driver's session STILL drew a cell, "
             f"so this non-vacuity check cannot distinguish emitted from suppressed: {rendered!r}"
+        )
+
+
+class TestDrainTaskIdAndRefsInjectionCasesAreNotVACUOUS:
+    """MINOR m2's companion — the same non-vacuity guard the ``drain.thread`` case
+    needed, for the two fields this wave adds to the battery. A RenderCase whose
+    field never reaches the render is decoration that reports green forever."""
+
+    async def test_the_drain_task_id_case_reaches_the_context_cell(self) -> None:
+        rendered = await _render_drain_task_id("T-benign", None)
+        assert "(task T-benign)" in rendered, (
+            "the drain.task_id injection case renders no task cell — the value is discarded before "
+            f"it can be sanitised, so its battery cases are decoration: {rendered!r}"
+        )
+
+    async def test_the_drain_refs_case_reaches_the_row(self) -> None:
+        rendered = await _render_drain_refs("REPORT-benign.md", None)
+        assert "REPORT-benign.md" in rendered, (
+            "the drain.refs injection case never renders the ref — the value is discarded, so its "
+            f"battery cases are decoration: {rendered!r}"
         )
 
 
@@ -5208,6 +5931,56 @@ class TestTheServedInstructionsTeachCommsMechanismsThatEXIST:
         agent that does not know this waits for a state change its own sends can
         never produce."""
         assert "your own sends never clear" in _INSTRUCTIONS.lower(), _INSTRUCTIONS
+
+    def test_the_body_cap_is_DERIVED_from_the_constant(self) -> None:
+        """CRITICAL C7 (adversary W16). The COMMS paragraph teaches a body cap; a
+        build serving ``bodies cap at 20000 chars`` while the ledger rejects at
+        2000 passes 1092/1092. Repo #104: "prose describing behaviour must be
+        DERIVED from the behaviour, not re-stated beside it" — and the number is an
+        importable constant. The served integer is extracted and compared to
+        ``MESSAGE_BODY_MAX_CHARS``, so the two cannot drift."""
+        paragraph = self._comms_paragraph()
+        served = re.search(r"cap at (\d+) chars", paragraph)
+        assert served is not None, (
+            f"the COMMS paragraph states no 'cap at N chars' body-cap teach at all: {paragraph!r}"
+        )
+        assert int(served.group(1)) == _msg().MESSAGE_BODY_MAX_CHARS, (
+            f"the served body cap ({served.group(1)}) does not match the enforced cap "
+            f"({_msg().MESSAGE_BODY_MAX_CHARS}) — an agent is taught a limit the ledger does not "
+            f"honour (W16, #104's class)"
+        )
+
+    def test_the_grade_and_peek_and_broadcast_semantics_taught_are_the_ones_IMPLEMENTED(
+        self,
+    ) -> None:
+        """CRITICAL C8 (adversary W17, W18, W19). S5 rules this paragraph VERBATIM;
+        the committed pins check 2 substrings of ~7 claims, so five ruled claims
+        may be freely rewritten — and INVERTING peek, grade or broadcast semantics
+        passes 1092/1092. Each teaches an agent the OPPOSITE of the behaviour:
+        peek-inverted tells it a plain drain does not stamp (re-read forever);
+        grade-inverted tells it signals demand acks; broadcast-inverted tells it
+        ``to=[]`` sends to nobody. The ruled forms are asserted present and their
+        inversions absent, so a rewrite of any one goes RED."""
+        paragraph = self._comms_paragraph()
+        # peek (W17): a plain drain STAMPS; peek=true LOOKS.
+        assert "stamps what it serves as seen" in paragraph, (
+            f"the peek semantics were inverted — a plain drain must be taught to STAMP (W17): {paragraph!r}"
+        )
+        assert "peek=true looks without stamping" in paragraph, (
+            f"the peek clause no longer teaches that peek=true LOOKS without stamping (W17): {paragraph!r}"
+        )
+        # grade (W19): signal is fire-and-forget; directive demands an ack.
+        assert "grade=signal is fire-and-forget" in paragraph, (
+            f"the grade semantics were inverted — signal must be taught fire-and-forget (W19): {paragraph!r}"
+        )
+        assert "grade=directive demands an ack" in paragraph, (
+            f"the grade clause no longer teaches that a directive demands an ack (W19): {paragraph!r}"
+        )
+        # broadcast (W18): to=[] broadcasts to all non-retired.
+        assert "to=[] broadcasts to all non-retired" in paragraph, (
+            "the broadcast teach was inverted — S5 rules to=[] as the broadcast form, and M1 "
+            f"pins that the dispatcher agrees (W18): {paragraph!r}"
+        )
 
 
 class TestTheHarnessDoubleDoesNotHideAMissingProductionSurface:
