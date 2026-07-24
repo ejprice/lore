@@ -1,7 +1,18 @@
-# 03b design rulings — r2 (blind re-derivation)
+# 03b design rulings — r2 (blind re-derivation; AMENDED post-adjudication)
+
+> **AMENDED 2026-07-24 (same session, post-diff-adjudication).** The blind derivation
+> below was adjudicated against the struck record in
+> `docs/plans/v2/receipts/2026-07-24-packet03b/DIFF-adjudication-03b.md` (committed
+> `3455864`; every justification certified trusted-derived). Amendments are ADDITIVE:
+> original ruling numbers are unchanged; superseded wording is marked in place; the full
+> accept/adapt/contest record is **§G (amendment log)** at the end. Read §A-GRAFT before
+> B3–B5 — the committed promise-registry render vocabulary is IMMUTABLE and wins over the
+> blind wording (X1/AC-20). Fork-dependent elements carry **FK-n PENDING-OPERATOR**
+> markers (fork list: DIFF-adjudication §6).
 
 **Author:** design-blind-03b (Fable design author, deliberately blind to the struck 03b
-corpus — spawned 2026-07-24). Derived FRESH from trusted sources only; never read the
+corpus — spawned 2026-07-24; amendments folded at the author's own hand after the
+boundary update admitted the adjudication doc — the struck corpus itself remains unread). Derived FRESH from trusted sources only; never read the
 struck rulings doc, the struck receipts (except the permitted scout report), any
 `REPORT-*.md` at repo root, `INDEX.md` at HEAD, or any commit content after `0223291`.
 **Read at:** production working tree at `6bfe820` (production sources verified unmodified
@@ -73,7 +84,18 @@ Each fact below was independently re-derived this session, not inherited:
   written row (tool/params_hash/hit_count/latency_ms/session), server-side `ts`,
   optional-column behaviour, and append-only distinctness. None pins the statement text or
   the exact column set — so the T-series schema/signature extensions below are
-  **amendment-free** for the committed store contract.
+  ~~amendment-free~~ for the committed store contract.
+  **⚠ CORRECTED (AC-16, adjudication probe §P9): the "amendment-free" conclusion is
+  FALSE.** It was derived from `test_surreal_store.py` alone; two committed pins in files
+  OUTSIDE that read set go RED under T2/T8:
+  `test_surreal_schema.py::…test_trace_core_scalar_fields_are_defined` (asserts
+  `TYPE int` for `hit_count` / `TYPE string` for `session` — T2 loosens both to
+  `option<>`) and `test_surreal_fakes.py::test_record_trace_signature_matches_real_store`
+  (asserts the exact 7-name parameter list — T8 adds four). Both fixes are
+  strengthen-only, mutation-proven committed amendments, batched as **FK-3
+  PENDING-OPERATOR**. The narrow claim ABOUT `test_surreal_store.py` stands (its pins
+  stay green because every new column is `option<>` — adjudicated as the cheaper design
+  precisely for that reason). Erratum also filed in `REPORT-design-blind-03b.md`.
 - **F7 — production `:18500` has NO `message`/`to` tables** (scout §6.1). 03b's deploy is
   the first time the message DDL touches a live store.
 
@@ -198,7 +220,37 @@ blank body, oversize body (the "refs" teaching reject — pinned:
 `test_an_oversize_body_is_a_teaching_reject_at_the_surface`), empty recipients, unknown
 recipient, retired recipient (new), bad charset (new), bad set_status (new).
 
+## A-GRAFT — X1/AC-20 (binding): the committed render vocabulary WINS; B3–B5 contribute SEMANTICS
+
+**The blind derivation's largest corrected error (adjudication §2, probe §P1):** the
+committed, IMMUTABLE promise registry at the reset baseline already FIXES the
+send/drain/ack render vocabulary as classified/registered template literals, and the
+registry's own committed force (`test_registered_iff_proven` /
+`test_no_dead_registry_entries`) requires every registered literal to exist in
+`server.py` — the vocabulary is the render's obligatory wording, not advisory. The blind
+B3–B5 wording below is therefore **superseded wherever a committed template exists**; the
+rulings' SEMANTIC content (emit predicates, keying, scoping, ordering, honesty
+properties, teaching placement, derived-prose mechanisms, fixture demands) is what
+survives, **grafted onto the committed templates**. Per-template disposition (adopted
+from adjudication §2, ACCEPT except where marked):
+
+| blind element | disposition |
+|---|---|
+| B4.1 header `inbox: {total} unread ({directives} directive)…` | committed `drained/peeked {shown} of {total} pending` wins. The directive count is the packet-04 counts family (trusted Scope OUT) — DROPPED from 03b (`MessageDrainResult.directive_pending` stays at the ledger for 04). Noted tension, accepted: R6 clause 2's letter says counts SAY "unread"; the committed header says "pending". The mischief R6 targets is the unread/unactioned conflation, which "pending" beside an `acked_at`-keyed trailer does not commit, and the committed elision template already anchors "unread" — so immutability wins; the LOAD-BEARING half (the `{total}` value is `seen_at`-keyed and agrees with what drain serves) lands as a semantic pin on the committed slot. |
+| B4.2 row + `· sent {age} ago` + fenced body | committed `#{seq} [{grade}] {sender}→you{context}: {body}` (+refs variant) wins on shape; the age cell is DROPPED (§1.1 attention cost, accepted). **The `{body}` slot is FK-1 PENDING-OPERATOR** (fence vs inline — see B4 marker; recommendation FENCE, adjudication §2). |
+| B4.2 `· acked {age} ago` re-serve marker | no committed counterpart; the R6 clause-3 need is real → lands as an ADDITIVE new template (trailer or row-suffix, contract author's choice), registered + proven per B8. |
+| B4.3 elision `drain again for the rest` | committed `+{more} more unread — re-run with limit={next_limit}` wins → the `{next_limit}` arithmetic is now ruled at **B15**. |
+| B4.1 empty `inbox empty — 0 unread` | committed `no unread messages` wins. |
+| B4.1 peek suffix | covered by the committed PEEKED header template (which carries its own `re-run without peek=true` teach) — blind suffix dropped. |
+| B3.1 receipts | committed `sent #{seq} [{grade}] → {recipients}` (+cap variant) and `sent … → broadcast: {count} agents in session {session}` win. B3's semantic layer (deduped-sorted names, `_COVERAGE_NAMES_CAP` reuse, true-count remainder, count-form for broadcast) grafts onto the committed slots. |
+| B5 per-entry lines in request order | committed GROUP-shaped ack templates win (`already acked: {seqs} — no new stamp` · `not addressed to you: {seqs} — …` · the acked/unknown group forms). B5's derived-prose mechanism is KEPT as the semantic graft: ONE mapping keyed by the `AckOutcome` constants feeds the group templates, set-equality pinned; the request-order/duplicate semantics are re-expressed as MEMBERSHIP pins — every requested seq appears in exactly the group(s) its ledger entries name, and an R1 duplicate contributes to BOTH the acked and already-acked groups with the one stored stamp. |
+| B3.3 question teach · skew-at-drain reuse | no committed counterparts — blind wording free, registered per B8 (skew reuse is FK-6). |
+
 ## B3. Send confirmation render (NEW shape — no committed pin exists; contract phase pins it)
+
+**⚠ AMENDED — wording superseded by §A-GRAFT (committed templates win); the semantic
+rulings below (cap reuse, true counts, thread-cell suppression, the question teach, no
+body echo, §1.5 placements) stand and graft onto the committed literals. See §G.**
 
 **RULING.** `_render_comms_send(result, *, was_broadcast, session_scope, question,
 thread_differs)` renders, in order:
@@ -233,6 +285,15 @@ recovery/consequence move bound to THIS send; strategy (when to use directive, b
 refs-are-pointers) lives read-once in the instructions block (B9).
 
 ## B4. Drain render (NEW shape — contract phase pins it; the packet's central render)
+
+**⚠ AMENDED — wording superseded by §A-GRAFT (committed header/row/elision/empty/peek
+templates win; the directive count and the `sent {age}` cell are DROPPED; the acked
+re-serve marker becomes an additive template). The semantic rulings below — seen_at
+keying, whole-set totals, window scoping, `acked_at`-keyed trailer, elision honesty,
+uniform body treatment — stand and graft. The BODY SLOT (fenced vs committed inline) is
+FK-1 PENDING-OPERATOR; recommendation FENCE (adjudication §2). The thread cell is
+superseded by ruling B14 (my B4.2 unconditional `· thread {thread}` contradicted both
+the committed `{context}` cell and my own B3.2 principle — AC-22 accepted). See §G.**
 
 **RULING.** `_render_comms_drain(result, …)` renders, in order:
 
@@ -280,16 +341,33 @@ refs-are-pointers) lives read-once in the instructions block (B9).
      (ack-before-drain → served entry carries acked stamp → absent from trailer).
    - **Window-scoped, deliberately:** elided directives are NOT in the trailer — they
      were not served, their seqs would be unactionable context-free, and they surface in
-     the header's directive count + the next drain. Pin with an elided-directive fixture
-     (limit smaller than the directive count — the small-N law demands the fixture
-     exceed the cap).
+     ~~the header's directive count +~~ the next drain *(graft correction: the directive
+     count is dropped from 03b per §A-GRAFT — the elided directive's surfacing mechanism
+     in 03b is the elision line + the next drain; the counts family is packet 04)*. Pin
+     with an elided-directive fixture (limit smaller than the directive count — the
+     small-N law demands the fixture exceed the cap).
    - The taught command is the exact runnable call with the REAL seqs inlined — §1.5:
      recovery moves ride the response. The trailer text carries no enforcement claim
      ("required" states the protocol duty the instructions block teaches; the aging nag
      is packet 04's footer/fleet — promising it here before it exists would be a §9.7
      mechanism-promise lie).
+   - **AMENDED (AC-09, ACCEPT):** the committed proof marker stops at
+     `"ACK REQUIRED: #71"` — a build serving `seqs=[]` in the taught tail passes it while
+     teaching a command that discharges nothing. REQUIRED pin: split the trailer at
+     `action=ack ` and assert the taught list names EVERY demanded seq (the registry's
+     own §9.7 litmus, executed).
+   - **AMENDED (AC-10, ACCEPT — closes the graded self-attack's cluster-F miss):** the
+     committed proof pair discriminates grade-GATING only; a build that gates on
+     directives then LISTS every unacked entry (signals included) passes both legs.
+     REQUIRED fixture: one window holding an unacked signal AND an unacked directive →
+     the trailer names the directive only (a two-conjunct emit predicate needs one
+     discriminating fixture per conjunct AND per role, gate vs list).
+   - **AMENDED (B13/AC-21):** trailer renders on STAMPING drains only — see B13.
 5. **The brief-skew block** — drain renders the SAME skew lines heartbeat renders,
-   via the SAME extracted helper (see B4.1).
+   via the SAME extracted helper (see B4.1). **[FK-6 PENDING-OPERATOR — adjudication
+   recommends as ruled, with one pre-flight: verify the skew literals' registry
+   descriptions/predicates are action-agnostic before reuse; any that names "heartbeat"
+   gets its description edit in FK-3's authorized batch.]**
 
 **B4.1 — skew-at-drain (ruled, with the divergence recorded).** The comms-subsystem
 tool table (at `0223291`) lists a "brief-skew line" in the drain row; the shipped C2a
@@ -313,6 +391,15 @@ own reads fail first; a partial "messages without skew" fallback would be a sile
 degradation (DESIGN-LAW §1.4).
 
 ## B5. Ack confirmation render (NEW shape — contract phase pins it)
+
+**⚠ AMENDED — wording superseded by §A-GRAFT: the committed GROUP-shaped ack templates
+win over the per-entry request-order lines below. What survives as the semantic graft:
+the derived-prose mechanism (ONE mapping keyed by the `AckOutcome` constants, set-equality
+pinned — a fifth outcome is a RED, never silent prose), the R1 duplicate semantics
+re-expressed as MEMBERSHIP pins (every requested seq lands in exactly the group(s) its
+ledger entries name; a duplicate contributes to both the acked and already-acked groups
+with the ONE stored stamp), the stamp-honesty rule (stored, never fabricated), and the
+`note recorded` emit/no-emit rule. See §G.**
 
 **RULING.** `_render_comms_ack(result)` renders:
 
@@ -383,6 +470,20 @@ empty result rather than erroring).
    fence strictly wider than the embedded run; the forgery line appears ONLY inside a
    fence (no un-fenced occurrence anywhere in the render); the header count line is
    unaffected. Single-line-only fixtures are the documented way this class stays green.
+   **[FK-1 PENDING-OPERATOR: this clause's fence assertions presuppose the FENCE arm of
+   the body-slot fork. Under the inline arm they re-target: body sanitised through the
+   committed row template, forgery line collapsed to one visually-honest line, no fence
+   assertions. The packet exit's plain wording — "a hostile body staying inside its
+   fence" — is the reason the adjudication and this doc both recommend FENCE.]**
+   **AMENDED (AC-11, ACCEPT — the second cluster-F miss):** the fresh contract's fixture
+   drivers must not default a parameter the render branches on — the committed
+   `_p03_entry` factory re-defaults `acked_at` and hardcodes `thread`, the exact
+   monoculture-manufacturing shape the repo's fixture-default law forbids. Fresh drivers
+   make BOTH required at every call site; and because B3.2/B3.3 put `thread` into the
+   send render, the injection battery gains the `thread`-field RenderCase (battery
+   completeness is per-ACTION, so the per-FIELD case must be demanded explicitly), plus
+   `broadcast=True` and `question=True` render legs — if the render can branch on a
+   value, at least one pin uses a different value.
 4. The C1 injection battery (`TestC1RenderInjectionBattery` + `assert_actions_covered`)
    is completeness-pinned per ACTION — the three new actions must each register ≥1
    injection case or the battery's default-FAIL fires. (Verified: the battery's
@@ -423,6 +524,14 @@ empty result rather than erroring).
    `render_compose` of `Rendered` parts; bodies are `render_fenced`. A builder who finds
    they "need" `render_line("{lines}", …)` has hit the bound's trigger — STOP and close
    the bound first. This ruling discharges the packet's ⚠ check on the bound.
+   **AMENDED (AC-02, ACCEPT): the ban gains its INSTRUMENT** — a rule people must
+   remember is not a guard. The contract phase ships an ADDITIVE ∀-pin over
+   `_classified()` banning placeholder-only templates, in the `_is_placeholder_only`
+   form (≥1 format field AND nothing but whitespace outside the fields), with the
+   committed `" "` join-separator `_PROMISE_FREE` entry as its pinned positive control —
+   an "has literal text" formulation both rejects `" "` (honest) and accepts `"{msg}"`
+   (the exact miss). The committed bound pin (which checks only `"{msg}"` itself) stands
+   untouched; the new pin closes the any-OTHER-placeholder door. Owner of #182.3.
 5. **#143 adjudication (packet entry check, owed here):** the committed promise-proof
    pins do NOT deliver the sibling-branch marker property for the new templates — the
    cross-satisfaction meta-test is proof-vs-proof only, and its own KNOWN BOUND pin says
@@ -489,7 +598,7 @@ entry state measured in §0.F2.
 
 | row | disposition in 03b |
 |---|---|
-| 1 (R2 conjunct in `awaiting_answer`) | **Already in production** (`messages.py` deliveries SELECT + docstring, verified at `6bfe820`). 03b's contract phase lands the R2 pin (self-addressed-not-an-answer incl. the mixed-recipient leg) — the code precedes its pin here because 03a-2's builder shipped it; the pin is still owed. |
+| 1 (R2 conjunct in `awaiting_answer`) | **Already in production** (`messages.py` deliveries SELECT + docstring, verified at `6bfe820`). ~~the pin is still owed~~ **CORRECTED (AC-25, adjudication probe §P12): BOTH R2 self-addressed pins already EXIST at the reset baseline in `test_message_ledger.py` (`…SELF_ADDRESSED_message_on_the_question_thread_is_NOT_an_answer` + the mixed-recipient leg) — shipped during 03a-2. Do NOT re-author them in 03b; re-authoring duplicates committed pins and invites drift.** |
 | 2 (bounded deliveries SELECT) | **Open builder work.** `[real]`-leg proven; on engine rejection of traversal-WHERE the documented fallback is today's unbounded-indexed read — a performance fork only, never semantics; the builder's report says which shipped. |
 | 3 (two `message` indexes) | **Open, and the free window closes at THIS packet's deploy** (F2: absent; F7: production has no `message` table yet — the window argument holds exactly as R3 derived it). Own one-concern commit BEFORE deploy. `IF NOT EXISTS` per store reference §1.1 INDEX row. |
 | 4 (fake oracle gains R2's conjunct) | Contract-phase edit by the 03b contract author, adversary-graded — never a builder drive-by. (Working-tree state of `_message_fakes.py` was not read — struck session touched tests; the contract author verifies at their own read.) |
@@ -510,6 +619,62 @@ design sentence; shipped `agents.py::touch` auto-flips only idle→active — ve
 `await` is where any future change would be adjudicated. Pin exists at the touch layer;
 the drain-specific leg (drain by a parked agent leaves `input_required` intact) is one
 new parametrized case on the existing touch pins.
+
+## B12. Per-verb dispatcher-serves-render pins (AC-07, ACCEPT — a REQUIRED pin class)
+
+**RULING (added post-adjudication; closes the graded self-attack's largest missed
+door).** For EACH of send/drain/ack, the contract carries one pin that drives the REAL
+dispatcher (`AppContext.comms(action=…)`) end-to-end and asserts the verb's render output
+— the committed receipt line, the row + trailer, the ack group lines — reaches the
+RETURNED text. Derivation: the repo's own #94 law (*"every pin tested a new method
+nothing required the code to CALL"*): my original demands pinned render SHAPES (driven
+directly) and dispatcher SEMANTICS (driven at the ledger), and nothing failed when a
+handler never called its render — a handler returning any fixed string satisfied every
+one of them. This is the no-op-fix door, and it is closed per VERB, as a REQUIRED pin
+class, not a courtesy: the three pins double as the mutation proof for the
+handler→render wiring (delete a `_render_comms_*` call → its verb's pin goes RED).
+
+## B13. The peek-trailer rule: trailers render on STAMPING drains only (AC-21, ACCEPT)
+
+**RULING.** A `peek=True` drain NEVER renders the `ACK REQUIRED` trailer. Derivation
+(trusted 03a-2 R6): the one anomaly path R6 accepts is peek→ack — a trailer DEMANDING
+acks on a peek would manufacture that path at scale, converting the deliberate
+look-don't-consume affordance into an ack-farm; and the committed peeked header's own
+teach ("re-run without peek=true to mark them seen") frames peek as look-only. My
+original B4 gave peek variants for the header and elision but left the trailer unstated —
+a builder decision by default, which is exactly what a ruling exists to prevent. Pin: a
+peek over a window containing an unacked directive contains no `ACK REQUIRED` substring;
+positive control: the same window under a stamping drain renders the trailer.
+
+## B14. The drain row's `{context}` cell (AC-22, ACCEPT — corrects my own inconsistency)
+
+**RULING.** The committed row template's single `{context}` cell is ruled as follows:
+precedence **task-then-thread**; the thread half renders ONLY when `thread != session`
+(the same suppression principle my B3.2 ruled for the send render and my B4.2 then
+violated — most traffic rides the session-default thread, and an unconditional label
+destroys the "a thread label means a deliberate conversation" signal B9.5's
+one-thread-one-debt teaching leans on). Consequence at the signature layer: the drain
+render takes `session` as a REQUIRED parameter — the comparand must REACH the render; a
+defaulted comparand lets any call site silently kill the branch (the fixture-default law
+applied to signatures). Pins: the discriminating pair (ONE render: a default-thread row
+bare, a deliberate-thread row labelled) plus a literal-vs-argument leg (a driver passing
+a non-`wave7` session inverts which row draws the cell — killing the
+hardcoded-comparand build).
+
+## B15. Elision arithmetic: `next_limit == total_pending − shown == more` (AC-23, ACCEPT)
+
+**RULING.** The committed elision template `+{more} more unread — re-run with
+limit={next_limit}` is filled with the REMAINDER in both slots: `more = next_limit =
+total_pending − shown`. Derivation from trusted production semantics
+(`messages.py::drain`): a non-peek drain stamps exactly the served window and stamped
+rows never re-serve (the no-cursor law), so the honest re-ask is the remainder; a
+`shown + more` re-ask asks for rows that CANNOT re-serve. Pin the arithmetic on the
+committed proof fixture (2 shown / 7 pending / limit 2 → both slots 5 — its three values
+are pairwise distinct, so the slots' derivations are discriminable), with a docstring
+naming the fleet contrast (fleet re-serves its whole set; drain does not — the two
+elision families intentionally differ). Related: the fleet marker's substring collision
+with this template's correct instantiation is **FK-2 PENDING-OPERATOR** (AC-01 — a
+committed-marker promotion, not mine to rule).
 
 ---
 
@@ -544,6 +709,14 @@ site becomes the subclass. Derivation:
 
 ## T2. Schema delta (store reference §1.1/§1.4 govern; every clause cited)
 
+**⚠ [FK-3 PENDING-OPERATOR] Two committed pins go RED under this delta** (AC-16 — the
+§0.F6 correction): the `test_surreal_schema.py` field-def pin (asserts the OLD scalar
+types for `hit_count`/`session`) and the `test_surreal_fakes.py` exact-signature pin.
+Both amendments are strengthen-only (the pins gain the widened types + new columns /
+the new parameter list), mutation-proven, batched as FK-3. Everything else here is
+amendment-free — deliberately: all-`option<>` columns leave no required column whose
+removal would green a committed pin (adjudicated in this design's favor).
+
 **RULING.** `_TRACE_FIELD_SPECS` / `_trace_statements` change as follows — all field
 changes land via the existing `_define_field` (`DEFINE FIELD OVERWRITE`, the only clause
 that lands a changed definition, §1.1 — #107's law):
@@ -575,6 +748,23 @@ ExistingStore` shape, trace slice): apply OLD trace DDL → write a row through 
 `record_trace` shape → apply NEW DDL → assert a new-shape write lands, the old row
 survives and is still read by `trace_aggregates`. A virgin-DB fixture cannot see this
 packet's one schema-touching change; this pin is the instrument.
+
+**T2.1 — the 06-read index ships in the SAME free window (AC-12, ACCEPT — added
+post-adjudication).** My original delta shipped columns and NO index — the exact
+free-window omission R3 exists to prevent, one table over: a new index on a populated
+table BUILDS, blocking, at the first `ensure_ready` carrying it (store reference §1.5),
+and the trace table is empty until 03b deploys, then grows on EVERY tool call — an index
+added by packet 06 builds over weeks of all-tools rows at every store's next boot, while
+the same line shipped now is free, once, forever. RULING: `_plain_index(TRACE_TABLE,
+"trace_agent_ordinal", ("agent", "ordinal"))` lands in `_trace_statements`, `IF NOT
+EXISTS` (§1.1 INDEX row), in the same one-concern pre-deploy commit as the field delta.
+`(agent, ordinal)` serves 06's per-agent curve read (filter agent, order ordinal); a
+`transport_session` index is NOT shipped — 06's join design may not need it, and the
+free-window argument is weaker for a second index whose consumer is undesigned (named
+decision point: 06 rules it, paying the build cost knowingly if it wants it). Rider
+(adjudication): any schema pin asserting the index's fields must parse the `FIELDS`
+clause, never substring the whole statement — an index NAMED `trace_agent_ordinal`
+contains both substrings.
 
 ## T3. The ordinal — one global native sequence
 
@@ -678,10 +868,19 @@ return result
    re-open trigger: if deploy-smoke latency measurement shows the trace write adding
    >5% p50 to read tools, flip to a drained fire-and-forget queue — and the coverage pin
    then gains an explicit settle step, in the same commit.
-3. **Cancellation:** `CancelledError` (a `BaseException`) is not caught; a call cancelled
-   mid-flight may lose its row. Accepted, named: a cancelled turn is an aborted turn;
-   one denominator row is noise. (Catching cancellation to write telemetry would trade
-   protocol correctness for a row.)
+3. **Cancellation:** `CancelledError` (a `BaseException`) is not caught by the `except`
+   arm. ~~a call cancelled mid-flight may lose its row. Accepted.~~
+   **CORRECTED (AC-06, ACCEPT — adjudication probe §P6, three legs):** the concession
+   under-claimed this ruling's own mechanism. An awaited write in `finally` COMPLETES
+   when the surrounding task is cancelled (probed: `finally`-arm writes on CANCEL; an
+   except+success-arm placement loses the row on CANCEL; positive control writes once on
+   success) — so the T5 shape as specified DOES record cancelled dispatches, and that
+   population (a struggling session's timed-out calls) is exactly the denominator packet
+   06 most needs. The `finally` placement is therefore LOAD-BEARING, not style: REQUIRED
+   pin — a cancelled dispatch still writes its trace row — so a builder cannot
+   "simplify" `finally` into except+return arms and silently un-trace the cancelled
+   population. (A cancellation arriving DURING the trace write itself still wins and may
+   lose that one row — that narrow residual is the accepted noise, correctly stated.)
 4. **The error leg still records** (`ok=False`, latency to the raise) — F5's probe leg 3
    proves the override observes raising tools; the trace write sits in `finally`.
 5. **Recursion:** the emission is not a tool call — nothing recurses. `lore_index`'s own
@@ -739,6 +938,27 @@ attacks it:**
    a production receipt, and resolves the `lore_index` description residual (scout §6.2)
    by making the served claim TRUE rather than qualifying it.
 
+**T7 additions (post-adjudication, ACCEPT by reference — derivations in
+DIFF-adjudication §3):**
+10. **(AC-05)** Every read leg over the new `option<>` trace columns uses EXPLICIT
+    projections — `SELECT *` OMITS a NONE column (store reference §2), so a `SELECT *`
+    read of an unset column KeyErrors as harness failure, not finding. And no pin may
+    assume 1-based ordinals: `sequence::nextval` starts at 0.
+11. **(AC-13)** Every ∀-over-collection pin leads with an explicit non-emptiness guard
+    whose failure message says so — `all()`/`sorted()`/`len(set())` are trivially true of
+    empty collections, and "the call succeeded while the store was broken" is trivially
+    true of a build with no telemetry at all.
+12. **(AC-15)** Production-wiring introspection pins: `AppContext.__init__` accepts
+    `message_ledger` and `build_app_context` constructs one — with a positive control
+    over the already-wired `brief_ledger` sibling, so the introspection demonstrably sees
+    wiring. A `SimpleNamespace` harness double declares the dependency into existence and
+    the suite then passes with production unable to construct the surface (the
+    test-environment-is-a-fiction law).
+13. **(AC-17)** The identity legs (T7.5) drive a SYNTHETIC probe tool declaring
+    `agent`/`session`/`action` params — the KEY rule makes them tool-agnostic, so the
+    telemetry contract has NO dependency on the comms verbs landing first (kills the
+    cross-wave collateral-RED tail).
+
 ## T8. The read surface and `record_trace` compatibility
 
 **RULING.** `trace_aggregates` / `TraceSummary` / `IndexEngine._trace_summary` are
@@ -747,7 +967,11 @@ UNCHANGED — the GROUP BY tool aggregate is column-additive-safe, and its commi
 `record_trace` gains keyword-only optional params (`agent`, `action`,
 `transport_session`, `ok`) and internal ordinal minting; `hit_count`/`session` become
 optional in the SIGNATURE (existing callers all pass them — compatible). F6's receipt:
-the committed store pins are per-key, so no amendment is required. Packet-06 reads
+the committed `test_surreal_store.py` pins are per-key and stay green.
+**⚠ CORRECTED [FK-3 PENDING-OPERATOR]:** "no amendment is required" was FALSE as a
+global claim (AC-16 / §0.F6 correction) — the `test_surreal_fakes.py` exact-signature
+parity pin and the `test_surreal_schema.py` field-def pin both need authorized
+strengthen-only amendments, batched as FK-3. Packet-06 reads
 (per-agent drain curves) are 06's design work — 03b ships columns + rows, not curve
 queries (the packet's Scope OUT: do not pre-empt 06's decision).
 
@@ -788,6 +1012,9 @@ at `/home/ejprice/docker/mcp/.env`) — that:
 | 6 | "You asked two questions on one thread; one comprehensive reply arrived. State your debt and your next move for the unaddressed half." | thread discharged; re-ask (separate thread for separate debts) | R5/B9.5–6 |
 | 7 | "Send a must-act instruction to fixer-b about task T. Give the exact call." | `action=send`, `grade='directive'`, a `to=['fixer-b']`, body ≤ cap or a refs pointer | B9 |
 | 8 | "Your ack of seq 99 returned `not_addressed`. What happened and what do you do?" | the message was never delivered to me; do not retry blindly / verify seq from my own drain | B5 |
+| 9 *(AC-24)* | "You drained with `peek=true` and saw three messages. Are they still unread, and what marks them seen?" | yes — still unread; a drain WITHOUT peek stamps them | R6/B9 (the peek tripwire B9 itself calls the only user-facing one) |
+| 10 *(AC-24)* | "Tell every teammate in your session the gate is red. Give the exact call." | `action=send` with `to` omitted/`[]` (the broadcast form), correct grade choice | B2.2/B9 |
+| 11 *(AC-24)* | "Your ack of seq 424 returned `unknown_message`. What happened and what do you do?" | no such message exists — re-check the seq against my own drain render (distinct from task 8's `not_addressed`) | B5 |
 
 ## C3. PASS/FAIL, cost, and cadence
 
@@ -796,8 +1023,14 @@ at `/home/ejprice/docker/mcp/.env`) — that:
   one green run proves nothing). Model pin: the population's FLOOR model (the operator
   names Sonnet 5 first in the client population; pin the exact dated model id in the
   script, §6 discipline: measurement pins are never silently "upgraded").
-- **Packet-exit extra:** one receipt run each on the Opus and Fable population members
-  (not gated per-change — cost control; the floor model gates).
+- **Packet-exit extra:** ~~one receipt run each on the Opus and Fable population members
+  (not gated per-change — cost control; the floor model gates).~~
+  **AMENDED (AC-24 gate shape, ACCEPT) [FK-5 PENDING-OPERATOR]:** at packet exit the
+  FULL population runs once (one Sonnet, one Opus, one Fable), and ANY keyed failure by
+  ANY member is an ADJUDICATED FINDING, never a waived receipt — the operator named all
+  three as the client, so "the floor passed" cannot clear a named client member's
+  failure. My capability-monotonicity assumption (D14) is thereby demoted from
+  load-bearing to convenience. Per-change cadence stays floor-model-only (cost).
 - **Re-run trigger:** ANY change to a `_render_comms_*` template, the instructions
   block's comms clauses, or the `lore_comms` schema descriptions re-runs the floor-model
   gate (cheap: one script invocation, 8 questions × 3 runs).
@@ -925,12 +1158,21 @@ lead can diff against the record cheaply.
 
 # E. Escalations (forks + recommendations; operator or lead authority — never silently chosen)
 
-**E1. [SPEND] The consumer-eval instrument (C).** New model-API spend: ~8 questions × 3
+> **AMENDED: the operator fork batch is now the adjudication's consolidated list
+> (DIFF-adjudication §6, FK-1…FK-9).** Mapping onto the escalations below: E1+AC-24 →
+> **FK-5** · E2 → **FK-8** · E3 → **FK-6** · E5 → **FK-7** · E4/E6/E7/E8/E9 → **FK-9**
+> (consent batch). New forks NOT originating here: **FK-1** (fenced bodies vs the
+> committed inline row template — B4/B7/A-GRAFT), **FK-2** (fleet elision marker
+> promotion — B15), **FK-3** (the two committed telemetry-pin amendments — T2/T8),
+> **FK-4** (the two `test_message_ledger.py` mypy casts — AC-04, contract-phase
+> collateral, not a design item of this doc). All FK items are PENDING-OPERATOR.
+
+**E1. [SPEND → FK-5] The consumer-eval instrument (C).** New model-API spend: ~8 questions × 3
 runs per gate + two one-time receipts. Small but recurring, and instrument-creation is
 operator-visible territory. **Recommend:** approve as specced; the floor-model gate is
 the cheapest checkable form of "the client is satisfied" I could derive.
 
-**E2. [OPERATOR-AUTHORIZATION-REQUIRED, recommend deferring] The stale packet label in
+**E2. [OPERATOR-AUTHORIZATION-REQUIRED → FK-8, recommend deferring] The stale packet label in
 the committed contract.** `test_comms_tool.py`'s section banner (at `0223291`, above
 `TestNewActionSpecs`) says *"everything in this file … is packet 03a (the surface;
 deploys both)"* — under the three-way split those pins are packet 03b's. Comment-only,
@@ -938,7 +1180,7 @@ but it is served prose inside an immutable file teaching the wrong packet to the
 reader. Fix costs one authorized comment amendment; **recommend** bundling it with
 whatever authorized contract wave 03b's contract phase runs, not a standalone amendment.
 
-**E3. [FORK] Drain skew block (B4.1).** Ruled IN with the divergence recorded (the
+**E3. [FORK → FK-6] Drain skew block (B4.1).** Ruled IN with the divergence recorded (the
 shipped publish promise says "next heartbeat"; drain-skew makes it an under-claim). The
 alternative — drain stays skew-free until 04's footer — costs a mid-phase brief bump its
 highest-probability delivery point. **Recommend:** as ruled (skew at drain, shared
@@ -946,32 +1188,32 @@ helper). If the operator prefers the publish promise literally exhaustive, the l
 edit is a committed-registry amendment (strengthen-only test: it widens the promise) —
 priced at one authorized amendment + proof updates; NOT recommended.
 
-**E4. [FORK, recommend as ruled] `_MAX_DRAIN_LIMIT = 50` and
+**E4. [FORK → FK-9 consent batch, recommend as ruled] `_MAX_DRAIN_LIMIT = 50` and
 `DEFAULT_COMMS_DRAIN_LIMIT = 20` (B6).** Both are ruled defaults with mechanism
 (clamp+disclose, config-driven) independent of the values; the operator may re-tune the
 constants freely — the design only insists the MECHANISM not change.
 
-**E5. [INTERPRETATION FLAGGED] The telemetry failure-posture carve-out from DESIGN-LAW
+**E5. [INTERPRETATION FLAGGED → FK-7] The telemetry failure-posture carve-out from DESIGN-LAW
 §14 (T5.1).** I rule §14 governs durable lore data and telemetry-about-calls is not it;
 the carve-out is narrow (log-loud, pin-guarded, smoke-verified). Flagged because reading
 scope into a design law is the operator's to confirm. **Recommend:** confirm; the
 alternative (tool calls fail when the trace write fails) couples the entire served
 surface to an observability row.
 
-**E6. [FORK, recommend NO for 03b] The `fastmcp` standalone-package migration** (T1;
+**E6. [FORK → FK-9 consent batch, recommend NO for 03b] The `fastmcp` standalone-package migration** (T1;
 scout fork 3's second arm). It has a real middleware API; adopting it is a server-wide
 dependency swap. **Recommend:** file as its own ledger item with a named re-open trigger
 (the day a SECOND cross-cutting concern needs the dispatch seam — auth (packet 39) being
 the obvious candidate — the subclass stops being minimal and the migration gets priced).
 
-**E7. [FORK, recommend keep] `set_status` param name (B2.5).** The name promises a
+**E7. [FORK → FK-9 consent batch, recommend keep] `set_status` param name (B2.5).** The name promises a
 status write the mechanism doesn't perform; the committed spec pins the name. Renaming
 (e.g. `asks=`) would be a clearer surface but costs an authorized amendment to the
 committed spec pin + the design source's tool table. **Recommend:** keep the name, teach
 the semantics in the schema (as ruled); revisit only if the C-battery shows consumers
 misread it (that would be MEASURED confusion, the legitimate re-open trigger).
 
-**E8. [SCOPE CONFIRMATION] Drain's own unbounded pending read.** `MessageLedger.drain`
+**E8. [SCOPE CONFIRMATION → FK-9 consent batch] Drain's own unbounded pending read.** `MessageLedger.drain`
 fetches ALL unstamped edges to compute honest totals (then windows client-side). Bounded
 by unread volume (self-limiting: drains stamp), but an agent that never drains
 accumulates an unbounded read. This is 03a's shipped ledger internals — OUT of 03b's
@@ -980,7 +1222,7 @@ scope per the packet file — surfaced here per the everything-you-notice law.
 serves the WHERE), owner packet 05 (which touches drain for `since=` anyway). Not
 silently dropped: this paragraph is the surfacing.
 
-**E9. [LEDGER HYGIENE] #147.** T7.9's deploy smoke closes it with a production receipt;
+**E9. [LEDGER HYGIENE → FK-9 consent batch] #147.** T7.9's deploy smoke closes it with a production receipt;
 the lead transitions the finding at packet exit (the scout left it open, correctly).
 
 ---
@@ -1004,10 +1246,46 @@ the lead transitions the finding at packet exit (the scout left it open, correct
    >= 5` — under B4's fenced-body render, a BODY containing `#` inflates that count.
    The fixture's bodies (`message {i}`) contain no `#`, so it stays green as written —
    noted so the contract author does not "fix" it into weakness, and so nobody feeds it
-   hash-bearing bodies without re-reading it.
+   hash-bearing bodies without re-reading it. *(Holds under either FK-1 arm.)*
+6. *(added post-adjudication, carried from DIFF-adjudication §3.4)* Trace rows with
+   `agent` set but `session` AND `transport_session` both NONE pool same-named agents
+   across sessions in per-agent curve reads. Visible in the data, bounded; packet 06's
+   analysis notes own it.
 
 ---
 
-*Diff-readiness note: every ruling above is section-numbered (B1–B11, T1–T8, C1–C4,
-D1–D15, E1–E9, F1–F5) for citation; where a ruling restates committed-pin content it says
-so and cites the pin rather than claiming novelty.*
+# G. Amendment log (post-adjudication, 2026-07-24 — same session; adjudicator:
+DIFF-adjudication-03b at `3455864`)
+
+Boundary note: this log was folded by the blind author AFTER the lead admitted the
+adjudication doc (the certified trusted-derived interface to the struck record); the
+struck corpus itself remains unread by this author. Verdicts: **ACCEPT** (folded as
+derived) · **ADAPT** (folded with a stated modification) · none CONTESTED — every
+adjudicated derivation checked out against trusted sources at my own read.
+
+| item | verdict | where folded | note |
+|---|---|---|---|
+| X1/AC-20 (committed vocabulary wins) | **ACCEPT** (compelled — operator immutability ruling) | §A-GRAFT + B3/B4/B5 markers | The blind wording is superseded; semantics graft. My report's "NO send/drain/ack render pins exist" was FALSE at the template layer — erratum filed in `REPORT-design-blind-03b.md`. |
+| FK-1 (fence vs inline body slot) | marked PENDING-OPERATOR | A-GRAFT · B4 marker · B7.3 | My B4/B7 fence rationale stands as the FENCE arm's case; the packet exit's plain wording is the trusted-source anchor. Recommendation unchanged: FENCE. |
+| AC-06 (cancellation leg) | **ACCEPT** | T5.3 corrected in place | My concession under-claimed my own `finally` mechanism (probed §P6). `finally` placement is now load-bearing + pinned. |
+| AC-07 (per-verb dispatcher-serves-render) | **ACCEPT** | new ruling **B12** | The graded self-attack's largest miss — the no-op-fix door, now a REQUIRED pin class per verb. |
+| AC-09 (runnable taught command) | **ACCEPT** | B4.4 amendment | |
+| AC-10 (mixed-grade LISTING fixture) | **ACCEPT** | B4.4 amendment | Cluster-F miss #1. |
+| AC-11 (fixture-default law on fresh drivers; per-field RenderCase) | **ACCEPT** | B7.3 amendment | Cluster-F miss #2 (the thread comparand default). |
+| AC-02 (placeholder-only ban gains an instrument) | **ACCEPT** | B8.4 amendment | The ban was prose; the ∀-pin with the `" "` positive control is the instrument. |
+| AC-12 (06-read trace index in the free window) | **ACCEPT** | new **T2.1** | Symmetric to R3's window argument; `(agent, ordinal)`, `IF NOT EXISTS`; the `transport_session` index deliberately NOT shipped (named decision point: 06). Accepted at my hand as a T-section design item; lead may strike. |
+| AC-16 (§0.F6 "amendment-free" FALSE) | **ACCEPT** | §0.F6 + T2 + T8 corrected in place; **FK-3** | Two committed pins outside my read set go RED. Erratum filed. |
+| AC-21 (peek-trailer rule) | **ACCEPT** | new ruling **B13** | Stamping drains only; derivation from R6. |
+| AC-22 (`{context}` cell; thread suppression; `session` REQUIRED in the render signature) | **ACCEPT** | new ruling **B14** | Corrects my own B3.2-vs-B4.2 inconsistency. |
+| AC-23 (elision arithmetic) | **ACCEPT** | new ruling **B15** | `more == next_limit == total_pending − shown`; FK-2 (fleet marker promotion) referenced, not ruled here. |
+| AC-24 (battery additions + gate shape) | **ACCEPT** | C2 rows 9–11 + C3 amendment; **FK-5** | Monotonicity assumption demoted; full-population exit run, any keyed failure adjudicated. |
+| AC-25 (B10 row 1 "pin still owed" FALSE) | **ACCEPT** | B10 row 1 corrected in place | Both R2 pins exist at the reset baseline; do NOT re-author. |
+| AC-05 / AC-13 / AC-15 / AC-17 (telemetry contract disciplines) | **ACCEPT** by reference | T7 items 10–13 | Derivations: DIFF-adjudication §3. |
+| AC-01/FK-2 · AC-03 · AC-04/FK-4 · AC-08 · AC-14 · AC-18 · AC-19 | **ACCEPT** by reference — contract/builder-phase obligations, not design rulings | no doc-body edit; contract authors consume DIFF-adjudication §3 directly alongside this doc | AC-01/AC-04 ride the operator fork batch (FK-2/FK-4); AC-03 (reach-pin subset), AC-08 (constant-derived teaching pins), AC-14 (canonicaliser pre-derivation), AC-18 (harness-count collateral), AC-19 (prose-corpse sweep) bind the contract/builder briefs. |
+| §3.4 moot cluster + residual | **ACCEPT** | residual added as F.6 | Nothing silently dropped: the struck telemetry machinery is moot under this architecture; the one live residual is F.6. |
+| FK-6 (skew-at-drain pre-flight) · FK-7 · FK-8 · FK-9 | marked PENDING-OPERATOR | B4.5 marker · E-series mapping block | Recommendations unchanged from E3/E5/E2/E4-E9. |
+
+*Post-amendment section map: §0 (F6 corrected) · A: B1–B11 + A-GRAFT + B12–B15 · B: T1–T8
+(+T2.1, T7.10–13) · C (battery 11 tasks) · D (graded: strong on invented-design doors,
+weak on committed-corpus interaction — the adjudication's §4 verdict, accepted) · E (FK
+mapping) · F (6 residuals) · G (this log).*
