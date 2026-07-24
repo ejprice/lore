@@ -998,3 +998,162 @@ between this contract and SUFFICIENT.**
   times to be sufficient — **when a property can be violated through a conditional, the pin
   that closes it should be a RUNTIME INVARIANT over every dispatch a test makes, not a cell
   somebody remembered to dispatch into.**
+
+---
+
+# FINAL CONFIRMATION PASS (appended 2026-07-24, structural fix at HEAD `2b749bd`)
+
+> Measured 2026-07-24 at HEAD **`2b749bd`** (`test(03b): the structural fix — the seam double
+> binds against the real signature`), same frozen scratch reference, same patch scripts.
+> `loremaster.__file__ = /home/ejprice/scratch/adv-telemetry-03b-r2/loremaster/loremaster/__init__.py`.
+> Repo untouched except this report.
+
+## FINAL SUMMARY BLOCK
+
+- **VERDICT: CONTRACT INSUFFICIENT — by one shape, in the last cell, closable in ~6 lines that
+  are already written and proven.** I could not in honesty issue SUFFICIENT: I broke it again,
+  narrowly.
+- **All four expectations confirmed EXACTLY**, my prototype numbers reproduced by the committed
+  form: **D4 → 15 failed · D6 → 1 failed · W33 → 32 failed · D2 → 3 failed**, correct reference
+  **490 passed / 0 failed**.
+- **The binder controls meet the P0 standard in BOTH failure directions**: an INERT binder
+  (accepts everything) reddens 2 of them; a PARANOID binder (rejects everything) reddens 3;
+  the committed binder passes 4. A permissive double and an over-strict one are both visible.
+- **Last conditional-shape sweep (my own invention, 6 shapes): five die, ONE survives.**
+  **D9b** — a legal keyword carrying a WRONG-TYPED value, taken from `arguments.get(...)` (an
+  `Any`, so **mypy is clean**), keyed on the FAILURE path of a REAL tool — scores **490 passed /
+  0 failed**. `bind()` checks names and arity, never types; and (real tool × error × real store)
+  is still the one cell no pin dispatches into.
+- **MISSING PIN (one, prototyped, both legs proven): MP-I — MP-H's registry loop with a RAISING
+  stub.** ~6 lines reusing MP-H's own mechanism. Correct reference **1 passed**; **D9b 1 failed**;
+  **D4 1 failed** (so it also closes the name family in that cell, belt and braces).
+- **P0 disclosure: my own probe failed its control on the first run** — the raising stub raised
+  `RuntimeError`, which `_dispatch_ignoring_tool_failure` does not suppress (it suppresses
+  `ToolError`, which the real manager — the thing I stubbed — is what produces). Caught by
+  RUNNING it, fixed, then both legs measured. Recorded because it is the same lesson this
+  contract keeps paying for.
+- **A fork for the lead, not for me:** close it (MP-I, 6 lines) or ledger it as a PINNED KNOWN
+  BOUND with a re-open trigger (repo law: *when you cannot close a hole, pin it*). **My
+  recommendation: close it** — the pin is written, and a ruling costs more than the six lines.
+- RED tail at this HEAD: **94 failed / 631 passed** over the six graded files.
+
+## §FC-1 The four expectations, confirmed against the committed form
+
+| build | expected (my prototype) | measured at `2b749bd` |
+|---|---|---|
+| correct reference | 107 passed (telemetry file) | **490 passed / 0 failed** (four graded files), binder controls green |
+| **D4** — bad kwarg on the FAILURE path of a real tool | 15 failed | **15 failed** ✔ |
+| **D6** — bad kwarg on a CANCELLED dispatch | 1 failed | **1 failed** ✔ |
+| **W33** — prefix-keyed bad kwarg | 32 failed | **32 failed** ✔ |
+| **D2** — single-tool-name-keyed bad kwarg | 3 failed | **3 failed** ✔ |
+
+The committed binder behaves identically to the prototype: **the whole NAME/arity family is now
+closed ∀ cells**, by construction rather than by cell enumeration.
+
+## §FC-2 The binder controls, graded per P0 (an instrument gets a control of its own)
+
+| instrument mutation | the control's response |
+|---|---|
+| **BC1 — INERT binder** (`pass` instead of `bind`): the permissive failure mode, the one that makes pins PASS and is therefore invisible | **2 failed** — `…does_not_declare_is_REJECTED`, `…MISSING_required_argument_is_REJECTED` ✔ |
+| **BC2 — PARANOID binder** (raises on everything): the opposite failure mode, which a one-directional control would wave through | **3 failed** — `…legal_call_is_ACCEPTED`, `…every_parameter_the_REAL_signature_declares_is_ACCEPTED`, `…MISSING_required…` ✔ |
+| committed binder | **4 passed** ✔ |
+
+Both failure directions are visible, and the control's own subject (the binder) is isolated —
+it uses the name set that binds under BOTH the committed and the T8 signature, so it does not
+fail today for T8's reason. **This meets the §11 standard.**
+
+## §FC-3 The last conditional-shape sweep (six shapes of my own invention)
+
+| # | shape | result |
+|---|---|---|
+| D7 | legal NAME, illegal TYPE, **unconditional** (`ok="yes"`) | **23 failed** — MP-B, MP-A, MP-H ✔ |
+| D8 | illegal TYPE keyed on **CANCELLATION** (`ok="cancelled"`) | **1 failed** — the cancel pin's `ok is False` identity check catches it ✔ (my hypothesis was wrong; the pin is stronger than I expected) |
+| D14 | type-legal but DISHONEST value (`session=""`) keyed on the failure path of a real tool | **1 failed** — `…an_anonymous_row_stores_NONE_in_every_declared_column` ✔ |
+| D9 | illegal TYPE (`agent=123`) keyed on failure path × real tool, **annotated** | contract: **490 passed — survives**; **but mypy REJECTS it**: `Incompatible types in assignment (expression has type "int", target has type "str | None")` — the gate stack closes it |
+| **D9b** | the same, taken from `arguments.get("depth", 7)` — an **`Any`**, so **mypy: `Success: no issues found`** | **490 passed / 0 failed — SURVIVES the contract AND the type gate** |
+| D6/D4/W33/D2 | the name family | all die (§FC-1) |
+
+**Why D9b is the residual and not an epsilon:** the emission's values come from
+`arguments.get(...)`, which is `Any` by construction — so the type gate is structurally blind
+exactly where the emission gets its data, and the contract's real-store legs do not dispatch a
+real tool on the error path. Production effect: every ERRORED real-tool call is silently
+untraced (the engine rejects `option<string>` ← int; T5.1's swallow logs it), i.e. the errored
+population vanishes from the denominator packet 06 reads.
+
+**Why I nevertheless call the severity LOW:** the build must be keyed on `not ok and
+tool.startswith("lore_")` to dodge the fixtures. The honest-developer versions of the same
+mistake all die today — an unconditional wrong type dies to M9 and the identity legs, an
+unconditional empty string dies to `…stores_NONE…` (D14), and every name-level mistake dies to
+the binder ∀. Under the repo's own gate threat model (*"a clever attacker gets through" is not
+a defect; "an honest engineer's mistake goes unnoticed" is*), D9b is the former shape. That is
+the honest severity, and it is why the fork below is a fork and not an alarm.
+
+## §FC-4 MP-I — the pin that closes it, prototyped, both legs proven
+
+MP-H's own loop with a RAISING stub (the stub raises `ToolError`, the shape the real tool
+manager surfaces), asserting the recorded tool set EQUALS the registry and every row carries
+`ok is False`:
+
+```
+correct reference : 1 passed in 1.07s
+D9b               : 1 failed          (missing: all 15 lore_* tools)
+D4                : 1 failed          (so it closes the NAME family in this cell too)
+```
+
+**P0 disclosure on my own instrument.** First run: **1 failed on the CORRECT reference** — my
+stub raised `RuntimeError`, and `_dispatch_ignoring_tool_failure` suppresses only `ToolError`
+(produced by the very manager I had stubbed out), so the exception escaped the dispatch and the
+probe failed for its own reason. A probe that fails on a known-good build proves nothing; I
+diagnosed it, switched the stub to `ToolError`, and only then measured the two legs above.
+Recorded because "a pin is not a pin until it has been run" applies to the adversary's pins too.
+
+## §FC-5 FINAL QUANTIFIER TABLE (state at `2b749bd`)
+
+| # | invariant | ∀ or GUARDED | receipt |
+|---|---|---|---|
+| I1 | every dispatch of every registered tool writes exactly one row | **∀ (registry × {success, error})** | W11 15/16 · W1 39 · W8 17 · M4 |
+| I2a | the emission's kwarg NAMES/arity are ones the real store accepts | **∀ over every dispatch any pin makes** (the bound double) | D4 15F · D6 1F · W33 32F · D2 3F · BC1/BC2 control both directions |
+| I2b | …and their TYPES/VALUES are ones the real store accepts | **GUARDED by CELL** — real-store legs cover success ∀ tools + error/cancel on synthetic subjects | D7 23F · D8 1F · D14 1F · D9 killed by mypy · **D9b SURVIVES (490/0, mypy clean)** → **MP-I** |
+| I3 | `ok` True iff the dispatch RETURNED | **∀ {return, raise, cancel}** | W6 · W7 · M4 · D8 |
+| I4 | the tool's outcome is never altered by telemetry | **∀ {success, raise, store-broken, no-context}** | M19 · M20 |
+| I5 | a trace-write failure is LOUD and structured | **∀ over failure modes** | my reference's own first-pass RED |
+| I6 | identity is DECLARED, never guessed (synthetic AND real subjects) | **∀** | M7–M10 · W2a · W17 · W27 · R6 |
+| I7 | correlator = header else NONE | **∀ {header, none, no transport}** | W27 |
+| I8 | `params_hash` recipe ∀ arguments, no raw content | **∀ {non-empty, empty}** | W31 · W9 · M12 |
+| I9 | latency reflects real duration | **∀ {zero, seconds, constant, scaled}** | W16 · M18 · P2-const · p2b-halved |
+| I10 | the seam never fabricates a `hit_count` | **∀ over values** | W5 · W32 |
+| I11 | ordinal engine-minted, distinct, strictly increasing, gaps real | **∀, monotonicity leg alive** | M27 · W4 · M6 · M14 · W20 · 20/20 |
+| I12 | schema delta (types, guard kinds, sequence, index) | **∀ over columns** | W3a · W3b · W22 · W23 · W13 · M15b |
+| I13 | the delta migrates a DIRTY store | **∀ (4 legs)** | W22 |
+| I14 | signature + fake parity, no `ordinal` parameter | **∀ over the parameter list** | M14 |
+| I15 | no production prose teaches the retired plan | **∀ over every comment/string token of 3 modules**, control two-directional | M26 · GM1b · GM2b |
+| I16 | the two `message` hot-path indexes | **∀ {missing, UNIQUE, reversed, superset}** | W14b · W14 · W28 · W29 |
+| I17 | the ORACLE mirrors the real row shape | **∀ (3 directions, 3 pins)** | M25 · M25b |
+| I18 | the widened columns still REJECT a wrong TYPE | **∀ (rejection + legal-value control)** | M28b |
+| I19 | a REAL registered tool's call is accepted by the REAL store | **∀ over the registry, on SUCCESS** | W33 · D2 · D3 · D5 · D7 die |
+| I20 | …the same, on the ERROR path | **EMPTY CELL** | **D9b survives** → **MP-I** |
+
+**19 of 20 rows ∀. One row (I2b/I20) is guarded by cell, and MP-I closes it.**
+
+## §FC-6 Verdict
+
+**CONTRACT INSUFFICIENT — one missing pin, written and proven.**
+
+- **The pin that should exist:** `test_every_REAL_registered_tool_that_RAISES_lands_a_real_row`
+  — MP-H's registry loop with a raising stub (§FC-4).
+- **The defect it catches:** an emission whose call the real store rejects **on the error path
+  for real tools** — by NAME (D4) or by a mypy-invisible TYPE (D9b). Production effect: every
+  errored real-tool call silently untraced, the swallow logging it where no gate fails, and the
+  errored population — the one packet 06 must keep OUT of the numerator and IN the denominator —
+  quietly absent.
+- **Everything else certifies, and I say so plainly:** the structural fix does exactly what I
+  measured it would, its controls are two-directional, five of my six new shapes die, three
+  grading rounds' worth of pins hold under re-attack, satisfiability is 490/0 on my frozen
+  reference, and the RED tail is honest. This is a strong contract that has been hardened four
+  times against an adversary that was trying hard to break it, and the residual is the kind you
+  meet deliberately, not the kind that surprises you in production.
+- **The fork is the lead's:** land MP-I (~6 lines, receipts above) — my recommendation — or
+  ledger the residual as a PINNED KNOWN BOUND with its re-open trigger (*an emission value that
+  is neither a literal nor isinstance-guarded*), per the repo's when-you-cannot-close-a-hole
+  law. What I may not do is decide that for you, and what I could not do is call it SUFFICIENT
+  while a wrong build I built is still standing.
