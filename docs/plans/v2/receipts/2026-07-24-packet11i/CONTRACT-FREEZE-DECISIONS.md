@@ -1,4 +1,14 @@
-# Packet 11-i — contract-freeze decision package (DRAFT — awaiting blind review + sidecar follow-up 2)
+# Packet 11-i — contract-freeze decision package
+
+> ⚠ **SELF-CORRECTION (lead, 2026-07-24).** An earlier revision of this file wrote
+> `SearchPipeline._format_result` in §E. **That symbol does not exist** — the per-hit gate is
+> `SearchPipeline._to_result`; `_format_result` matches no `def` in `search.py`. Corrected
+> throughout, not laundered, because the propagation path is the lesson: the dead name originates
+> in packet 10-d's own comment block above `_COSINE_WEAK_MATCH_FLOOR`, travelled into the 10-d
+> **cold audit**, then into the design sidecar's report, then into this package — **four artifacts
+> deep, past a cold audit that specifically hunted this defect class.** Verified at source by the
+> lead after `design-blind-11i` flagged it (FA6). The in-tree comment is still wrong and is
+> raised as §D.9.
 
 **Status:** DRAFT, assembled by `lead-11i` 2026-07-24. Not yet ruled. Two inputs outstanding:
 `design-blind-11i`'s independent verdict, and the design sidecar's recommendations for
@@ -345,6 +355,102 @@ copy (B5)."* This is the deferral law's legitimate shape: named work, named owne
 
 ---
 
+## C-ter. The independent blind review — verdict, and the DIFF
+
+`design-blind-11i` (fresh Opus, both peer reports withheld and compliance affirmed unprompted)
+returned **SOUND-BUT-UNDER-SPECIFIED**, independently corroborating the author's self-assessment
+from a position that could not have inherited its frame. **25 named decisions**, six blocking a
+builder on day one, and **three amendments to RULED TEXT rather than unfilled blanks** — so the
+checklist must execute as a short design addendum plus a packet rewrite, NOT as a builder's Q&A.
+
+It explicitly declined to hedge toward NEEDS-REPAIR, on the grounds that each of the three
+ruled-text amendments is repaired by choosing between options the design *already contains*.
+
+### The diff, classified
+
+**In BOTH lists (corroborated — spend contract-freeze attention here first):** the D2 scrolled-payload
+falsehood (its FA2 / scout RAISED-1); R2's execution vehicle and the DEPLOY-vs-in-container collision
+(its C7/C9 / ESC-1); the ≥98% gate's unstated denominator (its §6 / ESC-3); k′ undefined (its §7.7 /
+ESC-8); the probe-manifest home (its §7.5 / ESC-4); the exact-skip's change datum (its §7.2 / ESC-10).
+
+**ONLY-IN-BLIND — the author's blind spots, and the highest-value output of the exercise:**
+- **FA1 — B3's "ONE shared embed wrapper (#169/11a already route every embed through it)" DOES NOT
+  EXIST.** Verified: at least three distinct embed paths (`Indexer._embed_records`, the batch path,
+  `memory/local.py`'s own embedder). `embedding.py` is a config→embedder *constructor*, not a call
+  wrapper. The wrapper is **future work in packets 11a/11b, both status `open`.** The sentence is
+  written in the present tense about unbuilt work — and it is the only place the design says where
+  D3's change-signal comes from.
+- **FA3 — D1's "bootstrap costs ZERO embeds … free at any N" is half true, and the false half is the
+  operative one.** Zero embeds: true. Free at any N: **false.** `choose_cosine_floor` is O(U·(U+A))
+  per invocation, so B≥1000 re-runs per N-point is **O(B·N²)** — and there is **no numpy, no scipy
+  anywhere in the dependency closure** (all four `pyproject.toml` files checked) and no bootstrap/CI
+  helper in tree. *A naive implementation of the ruled instruction does not finish on a corpus-scale
+  pool.*
+- **FA4 — B2's constant-cost guarantee is superseded and never retracted.** It rests explicitly on
+  "probe counts are fixed-N by design (R3 minimums)"; D0 retired those and D2 replaced R2's count
+  with the full pool. B2's claim was **the entire answer to the operator's "often stale ⇒ thrash"
+  concern**, and it now rests on a premise its own design deleted.
+- **FA5 — this packet's OWN entry check is false.** It asserts #83/#87/#161/#179 all `open`; the
+  ledger says **#83, #87 and #179 are `acknowledged`** (only #161 is open). A builder running the
+  check literally sees none of the three and cannot tell whether entry failed.
+- **C2 — the head-pointer key collides with D6.** B4 mints one head *per scope*; D6 generalises the
+  served unit to *(statistic, point, CI, scope)* and says a per-hit floor is "one more row". A head
+  keyed on `scope` alone collides the moment a second statistic exists — and the second statistic is
+  #180's likely fix. **Deciding this after the table ships is a migration.**
+- **C3 — §7's state set is specified against a model D3 DELETED.** `stale_remeasiring` means "leg
+  fired; run queued", and B6-F4 rules the per-hit flag live under *churn* staleness — but D0/D3 retire
+  the churn leg entirely and redefine staleness as a post-measurement verdict. Under D3 there is no
+  churn staleness, and (leg 1 aside) you cannot be stale before you have measured. **11-i writes this
+  field's domain**, so it reaches the schema.
+- **C4 — `insufficient_corpus` lost its predicate.** §7 defines it as "min samples unreachable"; D0
+  retired the minima and supplied no replacement trigger. The state survives; its definition does not.
+  (Note this CUTS AGAINST the sidecar's ESC-9 recommendation — see below.)
+- **C8 — THE PACKET WAS NEVER UPDATED FOR ADDENDUM D AT ALL.** It names the binding design as
+  "R1–R8 + Addenda A and B", describes step 2 in pre-D7 terms, and contains **no mention of** the
+  bootstrap interval, `B≥1000`, the N-noise curve, the ≥98% gate, hash-stable sampling, the paired
+  decomposition, per-run cost capture, or disjoint-CI — *none of the six deliverables D7 assigns to
+  11-i step 2*. The packet WAS maintained against Addenda C and E (F3's re-framing, E5's fallback
+  both landed) and **skipped D**. This is the structural explanation for the sizing miss.
+- **§7.3 — the single-flight lease has no expiry or crash-recovery semantics.** §5 forbids clock
+  constants ("quiescence over clocks; no invented cooldown"), but a lease with no expiry **deadlocks
+  permanently when its holder dies.** The blind reviewer calls this "a genuine hole, not a blank" —
+  nothing in R1–R8 or A–E addresses lease release. This is 11-i's own hot-row work.
+
+**ONLY-IN-SIDECAR — context advantages vs judged non-issues.** Its ESC-2 (bootstrap seed / leg
+attribution), ESC-6 (the 20k scroll cap) and ESC-5 (identifier sampling) do not appear in the blind
+list; all three are genuine and the first two are high-value, so these read as **context advantages**
+(it holds D2's correction history and E5's leg-recording rationale). No sidecar item is contradicted
+by the blind review. **One genuine conflict, and the blind reviewer is right:** the sidecar's ESC-9
+recommends keeping 30/15/30 as validity floors, citing D0's "as the N rule" qualifier; the blind
+review's C4 shows the design *also* retired the predicate that made `insufficient_corpus` meaningful.
+Both can be satisfied — adopt ESC-9's pin AND record that it is *restoring* a predicate D0 removed,
+rather than merely reading a qualifier. Stated so the operator rules on the real question.
+
+### S1 — the one finding that could still escalate the verdict [MEDIUM confidence, HIGH stakes]
+
+**The floor is a TAIL order statistic, and the nonparametric bootstrap is not consistent for extreme
+order statistics.** Receipt: the 2026-07-07 adoption recorded false-fire **1/56** — exactly ONE union
+sample sits below the chosen floor — so the floor is ≈ the 2nd-smallest order statistic, and its value
+is one real sample's own cosine. Bootstrapping that deep in the tail yields a lumpy, possibly
+**degenerate** interval.
+
+**Both pre-registered rules then fail SILENTLY:**
+- the ≥98% decision-agreement gate passes **trivially** at `ci_low == ci_high`, adopting the
+  **smallest N tried**;
+- disjoint-CI adoption fires on **any** movement, so D3's "hysteresis falls out free" **inverts into
+  maximal flapping.**
+
+Since one disjoint-CI test governs adoption, per-tier upgrade AND staleness (D6), a degenerate CI
+breaks the design's central innovation — which would need **replacing, not parameterising.**
+
+**This is now being measured before any contract is authored** (`probe-bootstrap-11i`): a synthetic
+dataset in the 2026-07-07 regime, bootstrapped through the REAL `choose_cosine_floor`, with a
+positive control and an N-ladder to find whether degeneracy resolves and at what N. Costs one
+function and no store access. **The verdict on this packet's shape — contract-freeze checklist vs
+design-repair fork — waits on that number.**
+
+---
+
 ## D. Raised items that are NOT 11-i's, and are not mine to bury
 
 Scope law: nothing may be declared out of scope without the operator. These were found while
@@ -390,7 +496,31 @@ mapping and are surfaced for a ruling, not folded in silently.
 8. **RAISED-9 — where D5's probe-embed cache lives is an unmade shared-object decision.** Because
    `AppContext.embedder` is the SAME object the live search path uses, a cache installed on it is
    shared with live query traffic. Deferred out of 11-i by D5's YAGNI clause, but placement should
-   be ruled before 11-ii builds it.
+   be ruled before 11-ii builds it. ⚠ The blind review sharpens this: E4 records the cache as ALSO
+   the determinism instrument backstopping E5 — but the cache is scheduled for **11-ii** while the
+   determinism pin it backstops is a **must-prove pin in 11-i**. The fallback leans on something
+   that will not exist yet.
+9. **The dead symbol `SearchPipeline._format_result` in `search.py`'s 10-d comment block.** The gate
+   is `_to_result`. One-line fix, but the propagation is the finding: 10-d's comment → the 10-d cold
+   audit → the design sidecar's report → this package, **four artifacts and one cold audit deep.**
+   Exactly the class `CLAUDE.md`'s rename-sweep section exists to catch, and evidence that prose
+   naming a symbol needs a mechanical guard rather than a reader's diligence.
+10. **`_surreal_fakes.py` deliberately does not model `id` on scroll rows**, and no production
+    `scroll` caller reads `row["id"]` today. D2's sampler will be the **first**. Extending a fake to
+    match a not-yet-written consumer is precisely where "the test environment is a fiction" starts —
+    and the recommended `point_id` fix (§D.2) routes straight through it.
+11. **`str(RecordID)` angle-bracket wrapping is undocumented in-tree.** The store reference says
+    `str(RecordID)` round-trips but never records that a uuid-shaped id stringifies as
+    `chunk:⟨3f1b2c4a-…⟩` — only `.id` / `_bare_id` strips it. Establishing that took a live probe.
+    Given the file is a **required first read** for every store change, the omission earns a line in
+    it — and it is a live landmine for the §D.2 fix.
+12. **10-d is MERGED BUT NOT DEPLOYED — production is still serving the confident-wrong surfaces.**
+    Confirmed independently: `lore_index()` at 2026-07-24T17:23Z still renders
+    `cosine_floor.floor = 0.50649`, `state = "stale"`. Addendum E5 ruled that *"every day the disarm
+    waits serves confident-wrong output"*, and E1 shipped precisely to stop that. The deploy was
+    intended to ride packet 03b's rather than force a second hazardous `lore-lore` recreate
+    (#165/#166). **Not 11-i's work — `DEPLOY: no` — but nobody appears to be holding it**, and it is
+    the one item on this page with a live cost accruing daily. Operator's call.
 
 ---
 
@@ -400,7 +530,7 @@ Enumerated so a conscientious builder does not "fix" something while in the neig
 the R6 constant retirement (11-ii); `lore_index` becoming a pure read (11-ii); R5's render changes
 (11-ii); **any existing served model's CLASS docstring** — measured by the 10-d cold audit to be
 rendered verbatim into `lore_index`'s `outputSchema`, so a "harmless docstring edit" IS a served
-byte; the E1 disarm note string (byte-frozen); **R-11ii — `_format_result`'s per-hit gate still has
+byte; the E1 disarm note string (byte-frozen); **R-11ii — `_to_result`'s per-hit gate still has
 no `disarmed_by_drift` term, so the disarm MASKS #176 rather than fixing it** (hands off in 11-i;
 11-ii inherits it); the 10-d audit's R3 residual (adjudication is 11-ii's). `smoke_p8b` is
 render-shape-coupled — a builder editing smoke here is a tell that the boundary slipped.
