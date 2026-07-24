@@ -752,6 +752,8 @@ Verdict, per surface:
      measurement. Mid-list hits of a well-answered query routinely sit below the
      best-of-response distribution; the implied calibration basis was never
      performed. Not a falsehood (the best hit is a hit) — an imprecision.
+     *(Ledgered as finding #180 by the lead, verified at source both ends; its
+     magnitude is deliberately unclaimed — measured in 11-i per C6's rider.)*
   2. *Provenance blend:* "real-query" pools 41 human-authored with 15
      corpus-synthesized probes; the phrase does not distinguish. Defensible today.
      Under R1's self-supervised redesign the answered union becomes (near-)wholly
@@ -782,12 +784,13 @@ precedent. Not the operator's ruling; not this sidecar's alone.
   standing D2 register constraint (hedged-advisory wording is ruled — hardening
   voids the adoption ruling — and survives this consult unless re-opened with the
   same three-model force).
-- **When:** RECOMMENDED — after 11-i lands, before 11-ii's serving swap. Rationale:
-  the consult should judge on R2's *measured* divergence, not hypotheticals; nothing
-  in 11-i needs the wording; 11-ii's entry check already gates on the disposition.
-  Running it NOW on C1's finding alone is the alternative; it buys earlier certainty
-  at the cost of judging blind on the one number that matters. **The timing choice
-  is the operator's legitimate slot (sequencing), and this is the recommendation.**
+- **When — RULED (operator, 2026-07-24):** after 11-i lands, before 11-ii's serving
+  swap. The operator's own words carry the rationale, not just the verdict: *"I have
+  no particular guidance on timing, other than we need to measure first."* The
+  consult judges on R2's measured divergence, published per **C6** — nothing in 11-i
+  needs the wording; 11-ii's entry check gates on the consult's recorded outcome.
+  (The now-retired alternative — consulting immediately on C1's finding alone —
+  would have judged blind on the one measurement that matters.)
 - **Recorded by:** a dated consult doc in `docs/design/` (house format), cited by
   11-ii's contract; outcome noted on #83's ruling trail.
 
@@ -813,3 +816,51 @@ set — flagged for the lead, exact lines):** `11-i…dark-machinery.md` Scope O
 Scope OUT + entry check ("F3 is the operator's fork" / "the operator approved the
 conditional default") should re-point at Addendum C: the gate becomes *"F3's
 client-consult outcome recorded (C3) — do not start the serving swap without it."*
+
+**C6 — What R2 must PUBLISH (the consult's evidence package, and #180's
+measurement). "We measured it" is not sufficient — the ruling makes R2's output the
+input to a decision, so this section is the handoff's content spec (11-i's Exit
+carries the handoff obligation; this defines its shape).**
+
+**The divergence is NOT a single scalar.** The wording claims quantify over "the
+range real answers measure" — a range comparison is a distribution-shape question,
+and a small floor delta can hide shape divergence (or a large one overstate it). R2
+publishes, from one dual-instrument run on one corpus snapshot:
+
+- **(a) The two floors with their selection receipts** — F_legacy and F_portable,
+  each with its `choose_cosine_floor` output (false-fire rate, catch rate, n) — plus
+  the two pre-registered acceptance legs: F_portable's false-fire measured against
+  the HUMAN-labeled union, and legacy-nonsense catch at F_portable. (Scalars — the
+  headline, not the evidence.)
+- **(b) Per-group response-best cosine DISTRIBUTIONS** — summary stats (n, mean,
+  median, p5, p25, p75, p95, min, max) for each group separately: human-prose,
+  human-implementation-vocabulary, synthesized-identifier, self-supervised-answered,
+  hold-out-absent, legacy-nonsense — AND the per-query jsonl rows themselves (small;
+  the informants can see actual values, the precedent's probe-grounded style).
+- **(c) Verbatim-anchor rates per group** — the predicate is anchor-gated; any
+  wording that mentions identifiers needs this visible.
+- **(d) Probe texts, side by side** — ten deterministically-chosen self-supervised
+  probe texts beside ten human questions. The consult is judging what "the corpus's
+  own self-descriptions" concretely ARE; the referent must be visible, not
+  paraphrased.
+- **(e) The adopted row's typed provenance fields, with real values** — so W-C's
+  derived clause can be judged as a rendered SHAPE against actual field content,
+  not as an idea.
+- **(f) The #180 rider — the per-hit distribution and the measured over-flag
+  decomposition.** Answering the lead's question at source: **yes, cheaply — it is
+  aggregation over data the instrument already captures AND persists.** Receipt
+  (worktree @ `7f23223`): `HitCapture.vector_cosine` is captured for EVERY hit,
+  `QueryCapture.hits` holds all k, and `_write_jsonl` persists each hit's
+  `vector_cosine` — so the per-hit cosine distribution and the over-flag rate
+  (fraction of SHOWN hits below the chosen floor on answered queries, decomposed
+  best-hit vs mid-list, and conditional on the response itself being answered)
+  are computable from the run's own jsonl with **zero extra embeds, zero extra
+  searches, no distortion of R2**. Two honest bounds, stated where the number will
+  sit: (i) this measures the SURVEY's query mix, not live traffic — packet 35's
+  live per-hit distributions remain the confirming instrument for served reality;
+  (ii) hold-out legs capture k′ > k hits — serving-relevant per-hit stats are
+  computed over the SHOWN-k slice only. This turns #180's fix choice (a second
+  per-hit-calibrated floor vs moving the per-hit surface onto a statistic the
+  existing floor legitimately describes) into a measured decision; **the number is
+  never synthesised in advance of the run** (the lead's instruction in 11-i's Exit
+  is exactly right, and nothing here contradicts it).

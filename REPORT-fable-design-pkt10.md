@@ -4,7 +4,7 @@ brief-base v6 read
 - state: done — design doc + Addenda A/B committed on `pkt10-floor-calibration-design`; operator's 2026-07-24 architecture ruling incorporated; standing by
 - deliverable: `docs/design/2026-07-24-floor-calibration.md` — §Recommendation R1–R8 (the WHAT) + Addendum B §B7 (the build order) + §B6 (fork dispositions)
 - ruling status: F1/F2/F4/F5/F6 DECIDED BY DELEGATION (doc §B6); **F3 RE-DISPOSED as a three-model CLIENT CONSULT** (doc Addendum C — operator's two challenges both landed; the operator-fork framing was my error, owned in C0)
-- decisions-needed: consult TIMING only (operator sequences: recommended after 11-i/R2, before 11-ii — doc C3); split already executed (operator-approved, lead commit 6938281, reviewed faithful to B7)
+- decisions-needed: none pending — consult timing RULED (operator: "measure first" → after 11-i, doc C3); R2's publish spec + #180 measurement rider defined (doc C6); split executed (6938281, faithful to B7)
 - deviations: (1) survey script read end-to-end, NOT executed (its default coordinate is prod :18500 — brief forbids; doc §1.5, now moot for the durable path per the ruling); (2) nothing executed from the worktree → no provenance receipt exists or is claimed
 - receipt pointers: ruling verified at the store (memory `f464cfda…`, kind=decision, re-read before citing) → doc §B0; live measurement → §1.1; source receipts → §1.2–§1.4 + A1/A2; thrash/cost story → §B2; 11a/11b composition → §B3; DDL mechanism → §B4 (capabilities §1.1–1.3/§1.5 cited); CalibrationEngine verdict → §B5
 - findings: #179 filed by me (foreign-instance per-hit surface — the ruling closes it by construction, resolution rides packet 11); #176/#177 answered in Addendum A
@@ -144,8 +144,28 @@ brief-base v6 read
 - Split review: 6938281 faithful to B7 (11-i = steps 1/2/5, 11-ii = steps 3/4/6;
   F3-gate correctly at 11-ii entry).
 
+## UPDATE 2026-07-24 (fourth round — timing ruled, C6 publish spec, #180 answered)
+- C3 records the timing ruling with the operator's verbatim rationale ("we need to
+  measure first"): consult runs after 11-i, before 11-ii.
+- **C6 defines what R2 must publish** — the divergence is NOT a single scalar (stated
+  plainly, as asked): two floors + selection receipts + acceptance legs (scalars);
+  per-group response-best distributions (six groups, summary stats + raw jsonl rows);
+  anchor rates; ten probe texts beside ten human questions; the adopted row's typed
+  fields with real values (for judging W-C as a rendered shape).
+- **#180 question answered YES with a source receipt:** `HitCapture.vector_cosine` ×
+  `QueryCapture.hits` (all k) × `_write_jsonl` already capture AND persist every hit's
+  cosine — the per-hit distribution + over-flag decomposition (best vs mid-list,
+  conditional on answered responses, shown-k slice) is pure aggregation: zero extra
+  embeds, zero extra searches, no distortion of R2. Bounds stated in C6(f): survey-mix
+  not live-mix (packet 35 confirms); hold-out k′ hits excluded from serving-relevant
+  stats. 11-i is indeed the cheapest place in the plan to capture it; the lead's
+  no-synthesis instruction in 11-i's Exit is right and uncontradicted.
+- C1 gap-1 now cross-references #180 (magnitude deliberately unclaimed until the run).
+
 ## Standing by
-Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A+B+C)
-and this report are committed on `pkt10-floor-calibration-design`;
-idle-between-questions is expected. Thrash/cost (§B2) is ready as the operator's next
-topic per the lead's note.
+Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A+B+C,
+C6 included) and this report are committed on `pkt10-floor-calibration-design`;
+idle-between-questions is expected. §B2 thrash/cost is loaded for the operator's next
+topic — and its own answer to "measure first" is already in the design: every adoption
+row records embeds + wall-clock, so B2's bound gets its first MEASURED values from
+R2's run itself, before any serving depends on them.
