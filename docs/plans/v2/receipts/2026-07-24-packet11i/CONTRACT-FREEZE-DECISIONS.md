@@ -185,8 +185,163 @@ becomes unauditable and W-C's judged rendered shape (C6e) unverifiable — the #
 Strong citation: C6e requires *"the adopted row's typed provenance fields, with real values"*,
 which is unproducible if the verb never adopts.
 
-### C7–C14 — PENDING (ESC-1 mechanics, 4, 5, 6, 7, 8, 10, 12)
-Awaiting the sidecar's follow-up 2, which is reading the scout's source facts first.
+### C7 — ESC-1 mechanics (the contract half; the vehicle half is §B, operator's) [batch RANK 1]
+> The R2 verb is `python -m loremaster.<floor_module>` (the `loremaster.index` precedent) — NOT an
+> MCP tool in 11-i; the module carries NO default store URL and REFUSES to run without an explicit
+> coordinate; its receipt prints `loremaster.__file__`, the store URL, and the run's own corpus
+> fingerprint, so a wrong-tree or wrong-corpus run is visibly wrong in the receipt itself.
+
+The wrong-corpus failure is **silent in the numbers** — a floor measured against the spike store is
+just as plausible-looking as the real one. The provenance-receipt clause is what converts it to
+detectable-by-reading.
+
+### C8 — ESC-6: exhaustive pool enumeration through a bounded `scroll` [batch RANK 2 — SILENT]
+> Pool enumeration is EXHAUSTIVE and PROVEN so per run: the runner reads the chunk-table count,
+> scrolls with a limit strictly greater than that count, and declares `measurement_failed` — never
+> a silent truncation — if the returned row count equals the limit or disagrees with the counted
+> total; fixed caps of the `IDENTIFIER_SCROLL_LIMIT = 20_000` kind are retired from the portable
+> runner.
+
+Why the inherited cap is nastier than it looks: uuid record-id order makes a truncated set a
+*quasi-uniform subsample*, so the floor stays plausible while "pool size" and the N-curve's "up to
+pool size" silently lie — and when the corpus crosses the cap between runs, WHICH 20k survive
+changes, so membership churns with zero edits. That yields **phantom drift, spurious disjoint-CI
+adoptions, and a broken determinism control, all attributed to the corpus.**
+
+### C9 — ESC-8: k′, the absent-leg statistic, and the empty absent leg [batch RANK 3]
+> k′ = 30 (a named, pre-registered module constant); the absent leg is the max cosine over the
+> first k (fused-rank order) of the NON-source hits from the k′ capture — mirroring the shown set
+> the verdict actually judges; an answered probe whose k′ hits all come from its source file
+> contributes NO absent sample (dropped AND counted — never a synthetic 0.0), and the ≥30
+> absent-leg minimum is evaluated AFTER such drops; serving-relevant per-hit statistics use the
+> shown-k slice (C6f bound ii).
+
+The dangerous branch is the empty leg: a synthetic `0.0` manufactures perfect-catch samples →
+**catch inflated → a floor licensed that the corpus does not support** — the precision-first
+asymmetry inverted at its source. Adversary-catchable only if the contract demands an
+all-source-hits fixture. Demand it.
+
+### C10 — ESC-10: the exact-skip's change-detection datum [batch RANK 4]
+> Each measurement row persists `corpus_content_digest` = `sha512_hex` over the ascending-id
+> concatenation of every chunk's (point_id ‖ content_hash), computed from the run's own exhaustive
+> scroll (the C8 walk — no extra read); 11-ii's exact-skip compares the current digest to the head
+> row's: equal ⇔ zero chunks added, removed, or edited ⇔ skip.
+
+11-i owns the row 11-ii will compare against. Absent it, 11-ii's scheduler falls back to counts —
+**§1.3's edit-blindness, the design's original sin, resurrected.** Tiebreak over B3's shared
+embed-wrapper counter: the digest derives from the store's ACTUAL state, where a counter can miss
+out-of-band writes and would need its own coverage proof.
+
+### C11 — ESC-4: the probe manifest's persistence home [batch RANK 5]
+> Each row persists its probe manifest in-row: an array of (point_id, probe_text_sha512) pairs over
+> the run's answered pool, written in the same row-write as the measurement, so the NEXT run
+> computes D4's surviving subset from the head row alone; on a determinism-control re-run the
+> surviving subset MUST equal the full pool and the paired floor MUST equal the full floor.
+
+That last clause is a free discrimination fixture and the contract should pin it. Cost if unpinned:
+run 1 succeeds without a manifest (there is no prior run to need one), so **the gap surfaces only at
+run 2, in 11-ii steady state, as a quietly-missing diagnostic** — D4's ruler-vs-measurand honesty
+simply never gets logged.
+
+### C12 — ESC-5: identifier-probe sampling under D2 [batch RANK 6]
+> Identifier-probe membership is hash-stable over DISTINCT identity strings: the pool is the first
+> 15 identities in ascending `sha512_hex(identity)` order (15 = the existing pre-registered count)
+> — a single insertion changes membership by AT MOST ONE (pinned with an insertion-perturbation
+> fixture) — and `every_nth` is retired from the portable runner entirely.
+
+D2's `point_id` key is chunk-scoped and cannot apply verbatim to identity strings (one identity ↔
+many point_ids), so this is gap-fill by analogy, labeled. Letting `every_nth` survive in this one
+group re-imports the exact sampler-discontinuity defect D2 was written to kill.
+
+### C13 — ESC-12: the self-retrieval match key [batch RANK 7 — SILENT]
+> Self-retrieval is matched on the HIT's point_id equalling the probe's source-chunk point_id —
+> `HitCapture` and the persisted per-hit jsonl gain a `point_id` field — and file-path-only
+> matching is NOT self-retrieval. The two scopes differ BY DESIGN: self-retrieval is CHUNK-scoped
+> (D2/R3 "its own chunk") while the hold-out exclusion is FILE-scoped (§3 "excluding the probe's
+> source file").
+
+If the search `Candidate` does not expose the row id, that is a search-surface gap to escalate,
+never to work around with path matching. Path matching would let a sibling chunk from the same file
+count as self-retrieval → drop-rate understated → the ≤20% `measurement_failed` gate silently
+weakened. Catchable with a two-chunks-one-file fixture; demand it.
+
+### C14 — ESC-7: "O(probes), never O(corpus)" vs the R2 full-pool embed [batch RANK 8 — cheapest]
+> Steady-state runs embed O(adopted-N) probes; the R2 lab-validation run ALONE embeds the full
+> derivable-text pool once to measure the N-noise curve, its embed count and wall-clock recorded in
+> the row, and the curve's ladder extends to pool size — the packet's O(probes) clause binds the
+> runner's steady state, not the one-time N-calibration.
+
+Neither document states this reconciling sentence. Without it a builder can honour the packet's
+literal wording, cap R2's pool, and **choose adopted N off a truncated curve** — the 11-ii entry
+condition judged on a broken instrument.
+
+---
+
+## C-bis. The design author's own soundness judgement (evidence, not verdict)
+
+Asked directly whether the design is sound-but-under-specified or structurally troubled, the
+sidecar answered **ARCHITECTURALLY SOUND, factual substrate UNEVENLY VERIFIED** — a verification
+sweep plus two doc corrections, not a design-repair fork — and volunteered that **it is a biased
+instrument on exactly this question because it wrote the design.** Recorded here as evidence to be
+weighed against the independent read, not as a finding.
+
+Its argument for "sound": every one of the ~22 defects now on the table has a LOCAL fix that leaves
+every load-bearing ruling standing. The interval-and-disjoint-CI staleness model, the identity-keyed
+sampler (the correction STRENGTHENS it), two-leg determinism with recorded attribution, the
+dark/cutover split, and the C6 handoff are contradicted by nothing found. The scout — functionally
+an independent adversarial reader of the design's factual claims — found two false facts and **zero
+architectural contradictions.**
+
+Its argument for "unevenly verified", which convicts the design PROCESS rather than the
+architecture: three failures share one shape — D2's bullet wrong twice, B5(c) naming a nonexistent
+instrument as reusable, and the sizing wrong twice in the same direction (0.20 → 0.25–0.30 →
+measured 0.42). *"The design asserts as verified-fact things derived from memory or partial reads,
+at amendment speed, across seven same-day rounds."* Its own diagnosis of the mechanism is worth
+preserving verbatim, because it is a reusable lesson:
+
+> the correction swapped the key but inherited the original's verification debt — its "(verified)"
+> parenthetical covered TWO claims with one tag (the `OMIT embedding` projection: verified, true;
+> "every input is present": never verified, false). **A correction made under challenge must be
+> re-derived in full at source, or it is the same error wearing a fix.**
+
+That is the two-populations-under-one-count defect class applied to a provenance tag, inside a
+document that cites that very law. Note also the structural contrast it draws: the design doc
+carries **no provenance discipline**, while `docs/reference/surrealdb-31-capabilities.md` tags every
+claim `[PROBED]`/`[CODE]`/`[INFERRED]` — and the difference in defect rate between the two documents
+is the argument for adopting the discipline.
+
+**Its recommendations to the operator:** (1) the contract-freeze checklist; (2) the two design-doc
+corrections applied with existing corrections preserved, not laundered; (3) a one-pass provenance
+sweep downgrading every unreceipted "verified" claim to stated-not-verified; (4) an independent read
+that is **architecture-only**, asking one question — *do any two rulings contradict each other or
+the packet's own constraints?* — rather than a fact re-sweep the scout has already done well.
+
+⚠ **Item (4) is already running** (`design-blind-11i`), commissioned before this self-assessment was
+written, though with a broader brief than architecture-only. Its verdict and the DIFF against the
+sidecar's fourteen silences are the outstanding input to this package.
+
+### The two design-doc corrections, as the sidecar drafted them
+
+**RAISED-1 — append to D2 (preserving the existing ⚠ block, not replacing it):**
+> ⚠ Second correction (scout-11i, confirmed at source 2026-07-24): `slug` is not a chunk column, so
+> `point_id(...)` cannot be recomputed from a scrolled row alone — membership is keyed on the row's
+> own `id`, which IS the stored point_id (`upsert` writes `id = record.point_id`), read never
+> re-derived. The uniformity argument is unchanged.
+
+**RAISED-5 — correct B5(c):** the DISCIPLINE is the reusable thing; the PIN must be BUILT. The
+sidecar recommends folding the pre-existing calibration retrofit into 11-i, on the grounds that the
+11-i contract is authoring the identical pin for its own eight states anyway — so one parametrized
+pin covering BOTH engines' state sets costs near-nothing marginal, kills the unpinned-sixth-state
+hole and the hand-copied `_CALIBRATION_STATES` tuple together, and is test-only (dark boundary
+untouched).
+
+**RAISED-8 — DEFER to 11-ii, with the decision point named now.** 11-i has no consumer for
+`start/stop/wait_until_settled` at all (its engine runs synchronously via the one-shot verb); the
+lifecycle's consumer is B7.3, which is 11-ii. Extracting in 11-i would build shared machinery ahead
+of its second caller inside an already-oversized packet. Recommended 11-ii packet-file line:
+*"B7.3's contract extracts the shared task-lifecycle helper (idempotent start / cancel+suppress /
+wait_until_settled / lock-guarded status) and re-homes CalibrationEngine onto it — escalate, never
+copy (B5)."* This is the deferral law's legitimate shape: named work, named owner, named trigger.
 
 ---
 
