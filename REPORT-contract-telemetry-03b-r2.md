@@ -27,9 +27,10 @@ brief-base v6 read
   `test_surreal_schema` rather than cloned · (D4) `test_surreal_store.py` needed NO amendment —
   verified, not assumed · (D5) three T7-unlisted pins added: production PROSE corpses (AC-19's
   sweep) turned into mechanical pins.
-- **Decisions needed (8):** ESC-1 `ok` on a CANCELLED dispatch (pin group DEFERRED — the ruled
-  mechanism contradicts T2's own column semantics) · ESC-2 the emission's store-access channel is
-  unnamed by the spec; my contract forces the request-lifespan channel · ESC-3 the brief's
+- **Decisions needed (8 as filed — ALL NOW SETTLED; see the header note and addendum §10a/§12):**
+  ESC-1 `ok` on a CANCELLED dispatch (**RULED `d0f84d0`: success latch, cancelled ⇒ `ok=False`;
+  pinned, no longer deferred**) · ESC-2 the emission's store-access channel is unnamed by the spec;
+  my contract forces the request-lifespan channel (**RULED: CONFIRM A**) · ESC-3 the brief's
   served≡limit/`hit_count` requirement contradicts T2 (no writer exists) · ESC-4 the brief's
   "seq typed int not option" pin is STRUCK-design vocabulary; under T2 `ordinal` IS `option<int>` ·
   ESC-5 the ORACLE (`_surreal_fakes.py`) is outside my writable set though T7.8 owns it here ·
@@ -328,3 +329,17 @@ claim). A law people must remember is not a guard.
 6. **The `lore_index` served description's traces claim** (scout §6.2) becomes true only once the
    emission ships; T7.9's deploy smoke is what makes it honest. Not pinned here — it is a served-text
    claim about a live store, and asserting it pre-build would pin a lie.
+
+---
+
+## §12 CLOSE-OUT — ratified and committed
+
+**RATIFIED by the lead and COMMITTED at `bb64324`, 2026-07-24**, together with the wave-2
+addendum (`REPORT-contract-telemetry-03b-r2-wave2.md`), which carries the ratification detail:
+the E-S6 file-home deviation ruled correct (no move), the ESC-1/ESC-2 rulings self-served out
+of commit `d0f84d0` and applied, and the adversary's outstanding duties. **Read that addendum's
+§10a before acting on §5's ESC-1/ESC-2 entries here** — those two entries are the escalations AS
+FILED, preserved as the reasoning record; both have since been RULED (ESC-1: Reading B via a
+success latch — `ok` starts False, latches True only on return, no `except` arm, cancelled rows
+carry `ok=False`, third state refused · ESC-2: CONFIRM channel A), and the pins in this
+contract reflect the rulings, not the open forks.

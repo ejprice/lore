@@ -207,3 +207,37 @@ This is the same class the main report's §6 D5 pins mechanically for production
 failure message that promises a check the assertion does not perform is a false gate.** It
 appeared inside a control written *by the author of those pins*, in the same session, and only
 running it caught it. Worth the adversary's attention as a pattern, not just as a fixed line.
+
+---
+
+## §12 CLOSE-OUT STATUS (appended 2026-07-24, after the lead's ratification)
+
+**Both waves of this contract are RATIFIED and COMMITTED at `bb64324`** ("test(03b): the
+telemetry RED contract wave — T-series, oracle parity, message indexes"), which carries all
+eight files: this addendum, the main report, `test_trace_telemetry.py` (new),
+`test_comms_schema.py`, `test_surreal_schema.py`, `test_surreal_fakes.py`, `_surreal_fakes.py`,
+`_surreal_harness.py`. Verified by the author against `git show --stat` with a clean working
+tree afterwards, so nothing in either wave lived only in the tree at hand-off.
+
+Lead rulings recorded at ratification:
+
+- **§9.1's file-home deviation is RATIFIED as ruled** — the E-S6 message-index pins stay in
+  `test_comms_schema.py`; the instruction naming `test_surreal_schema.py` rested on a premise
+  that file cannot satisfy (it cannot see the message DDL), and R3 already pointed at the home
+  chosen. **No move.** Recorded here so a future reader does not "correct" the home back.
+- **§9.3's shared-name probe** (SEQUENCE and INDEX both named `message_seq`) — pinning it rather
+  than remembering it is confirmed as the right call.
+- **§10a** (self-serving the `d0f84d0` ESC-1/ESC-2 rulings out of the tree rather than waiting
+  for a relay) goes into the packet close-out as the durable-pull-channel law working as
+  designed.
+- **§11's self-caught control defect** is flagged to the contract-adversary as a PATTERN, not
+  just a fixed line, at the author's request.
+- Lead independently re-ran and matched the six-suite tail (**69 failed / 618 passed**).
+
+**State at ratification: the contract is RED by design and owes nothing further.** The next
+instrument is the contract-adversary — its outstanding duties, as filed: the satisfiability
+receipt (0-failed against its own reference build, including the after-lint-cleanups leg), the
+19 named mutation-proof obligations (main report §3, M4 and M19 first — they are what prove the
+batteries load-bearing in combination), the oracle-change satisfiability across BOTH consumer
+suites (§8), and the three pins whose satisfiability the author judged least certain: the
+cancellation leg, the wire-handler leg, and the `INFO FOR …` introspection legs.
