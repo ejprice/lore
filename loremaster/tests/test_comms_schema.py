@@ -1720,6 +1720,144 @@ class TestMessageDdlOffline:
             f"expected a DEFINE INDEX on {_schema().TO_RELATION}.(out, seen_at) for the drain SELECT"
         )
 
+    # ----------------------------------------------------------------------- #
+    # The two ``message`` hot-path indexes — packet 03b (E-S6, lead-directed
+    # 2026-07-24). Design authority: ``03a-2-consume-path-design-rulings.md`` R3
+    # part (1), carried into ``03b-design-rulings-r2.md`` B10 row 3 as OPEN work.
+    #
+    # THE DEPLOY WINDOW, and why these two lines ship with 03b or cost forever: a
+    # NEW index on a POPULATED table BUILDS, blocking, at the first
+    # ``ensure_ready`` that carries it (store reference §1.5). Production carries
+    # ZERO ``message``/``to`` rows today — packets 03/03a-1/03a-2 are test-only, and
+    # this DDL is applied ONLY by ``MessageLedger.ensure_ready``, which nothing in
+    # the deployed server instantiates until 03b's dispatcher exists. So an index
+    # shipped WITH 03b builds over an empty table for free, exactly once; the same
+    # line shipped by any later packet builds over months of accumulated rows at
+    # every deployed store's next boot. **The cheap window closes at 03b's deploy,
+    # permanently.**
+    #
+    # The ``IF NOT EXISTS`` guard kind is NOT re-asserted here: R3 records that
+    # ``test_every_field_uses_the_overwrite_guard_and_every_object_uses_if_not_
+    # exists`` (below) already covers every object in this slice automatically,
+    # and ``_index_statements`` only matches statements carrying it. Two copies of
+    # one invariant is two copies to drift.
+    # ----------------------------------------------------------------------- #
+
+    def test_the_seq_index_is_defined_PLAIN_on_the_message_table(self) -> None:
+        """R3(1): ``message_seq`` over ``(seq)`` serves ``ack``'s seq resolution.
+
+        Without it, ``_resolve_message_ids``' ``WHERE seq IN $seqs`` table-scans
+        every message ever sent, on every ack. PLAIN, not UNIQUE: R3 records the
+        non-UNIQUE choice as a deliberate, strikeable divergence from the approved
+        design with a named re-open trigger, so a UNIQUE index here would be a
+        silent semantics change (it would reject a second row per seq rather than
+        merely failing to speed a read).
+
+        The ``FIELDS`` pattern is END-ANCHORED so it means "these fields EXACTLY":
+        measured in
+        ``test_the_index_field_patterns_discriminate_single_from_composite``, it
+        matches NEITHER ``FIELDS seq, thread`` nor ``FIELDS thread, seq`` — an
+        index whose fields are a superset serves a different query shape and must
+        not green this pin.
+        """
+        ddl = generate_message_ddl()
+        table = _schema().MESSAGE_TABLE
+        matches = _index_statements(ddl, table, fields_pattern=r"seq$")
+        assert matches, (
+            f"expected a DEFINE INDEX on {table}.(seq) — R3(1) names it "
+            f"`{table}_seq` and it must land BEFORE 03b's deploy, in its own "
+            f"one-concern commit, while the table is still empty."
+        )
+        assert len(matches) == 1, f"expected exactly one (seq) index, got {matches!r}"
+        assert f"DEFINE INDEX IF NOT EXISTS {table}_seq ON {table} " in matches[0].strip(), (
+            f"the index name is R3-ruled as `{table}_seq` (the name is what an "
+            f"`INFO FOR TABLE` introspection and any later ALTER/REMOVE keys on); "
+            f"served: {matches[0].strip()!r}"
+        )
+        assert "UNIQUE" not in matches[0], (
+            f"the (seq) index must be PLAIN, not UNIQUE — R3 rules the divergence "
+            f"deliberately; served: {matches[0].strip()!r}"
+        )
+
+    def test_the_sender_question_index_is_defined_SENDER_FIRST(self) -> None:
+        """R3(1): ``message_sender_question`` over ``(sender, question)``.
+
+        Serves the questions read (``WHERE question = true AND sender = $agent``),
+        which R4 requires to run FIRST. **Field ORDER is load-bearing:** sender is
+        the selective prefix (one agent's rows), while ``question`` is a boolean
+        that halves the table at best — so ``(question, sender)`` is a different,
+        far worse index for this query. The reversed-order leg below is the pin
+        that tells the two apart; an unordered "both columns are mentioned" check
+        would wave the bad one through.
+        """
+        ddl = generate_message_ddl()
+        table = _schema().MESSAGE_TABLE
+        matches = _index_statements(ddl, table, fields_pattern=r"sender,\s*question$")
+        assert matches, (
+            f"expected a DEFINE INDEX on {table}.(sender, question) for the "
+            f"questions read — R3(1) names it `{table}_sender_question`."
+        )
+        assert len(matches) == 1, f"expected exactly one (sender, question) index, got {matches!r}"
+        assert (
+            f"DEFINE INDEX IF NOT EXISTS {table}_sender_question ON {table} " in matches[0].strip()
+        ), f"the index name is R3-ruled as `{table}_sender_question`; served: {matches[0].strip()!r}"
+        assert "UNIQUE" not in matches[0], (
+            f"many messages share a (sender, question) pair; a UNIQUE index would "
+            f"reject the second one. Served: {matches[0].strip()!r}"
+        )
+        assert not _index_statements(ddl, table, fields_pattern=r"question,\s*sender$"), (
+            "the index is declared (question, sender) — the reversed prefix. Sender "
+            "is the SELECTIVE column; leading with a boolean makes the index nearly "
+            "useless for the questions read it exists to serve."
+        )
+
+    def test_the_index_field_patterns_discriminate_single_from_composite(self) -> None:
+        """THE CONTROL for the two pins above: their ``FIELDS`` patterns discriminate.
+
+        Both lean on an END-ANCHORED pattern to mean "these fields EXACTLY". A
+        pattern that matched any SUPERSET would let each pin be satisfied by a
+        neighbouring index — passing for a fixture reason rather than because the
+        index it names exists. Both directions of superset are checked, because
+        only one of them (the leading-prefix case) is intuitively excluded.
+
+        The fixtures are built HERE rather than read from the production DDL, so
+        this control keeps testing the INSTRUMENT even after the two indexes land
+        (a control that starts depending on the thing it certifies stops being a
+        control).
+
+        Measured while writing this: ``FIELDS\\s+seq$`` does NOT match
+        ``FIELDS thread, seq`` — ``re.search`` needs ``FIELDS`` + whitespace +
+        ``seq`` + end-of-line contiguously, and ``FIELDS`` occurs once. The first
+        draft of this control asserted the OPPOSITE as a "documented bound" of the
+        shared idiom; the assertion failed, and the false claim went with it.
+        """
+        table = _schema().MESSAGE_TABLE
+
+        def statement(name: str, fields: str) -> str:
+            return f"DEFINE INDEX IF NOT EXISTS {name} ON {table} FIELDS {fields};\n"
+
+        # POSITIVE: each pattern sees the exact clause it is written for.
+        assert _index_statements(statement("probe", "seq"), table, fields_pattern=r"seq$")
+        assert _index_statements(
+            statement("probe", "sender, question"), table, fields_pattern=r"sender,\s*question$"
+        )
+        # NEGATIVE, both superset directions: a wider index serves a different
+        # query shape and must never satisfy an exact-fields pin.
+        for fields in ("thread, seq", "seq, thread"):
+            assert not _index_statements(statement("wider", fields), table, fields_pattern=r"seq$"), (
+                f"`FIELDS {fields}` satisfied the exact single-column (seq) pattern; the "
+                f"(seq) pin could then be green with only a composite index present."
+            )
+        for fields in ("sender, question, thread", "thread, sender, question"):
+            assert not _index_statements(
+                statement("wider", fields), table, fields_pattern=r"sender,\s*question$"
+            ), f"`FIELDS {fields}` satisfied the exact (sender, question) pattern."
+        # NEGATIVE: the reversed composite, which the SENDER_FIRST pin's own final
+        # leg relies on being distinguishable.
+        assert not _index_statements(
+            statement("reversed", "question, sender"), table, fields_pattern=r"sender,\s*question$"
+        )
+
     def test_the_sequence_is_defined_IF_NOT_EXISTS(self) -> None:
         """Store reference §1.1's SEQUENCE row (settled by this packet's own
         probe 3 leg D): a BARE ``DEFINE SEQUENCE`` RAISES *"the sequence
@@ -1779,6 +1917,52 @@ class TestMessageSchemaLive:
         info = await run(connection, "INFO FOR DB")
         assert {_schema().MESSAGE_TABLE, _schema().TO_RELATION} <= set(info.get("tables", {}))
         assert _schema().MESSAGE_SEQUENCE_NAME in set(info.get("sequences", {}))
+
+    async def test_both_message_hot_path_indexes_actually_LAND_on_the_engine(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """E-S6 (packet 03b): the two R3(1) indexes exist ON THE ENGINE, not just
+        in the emitted string.
+
+        WHY a live leg and not only the offline pins: applying this slice sends a
+        MULTI-statement query, and the SDK inspects only the FIRST statement's
+        status (store reference §6.5) — so a later ``DEFINE INDEX`` the engine
+        REJECTS is swallowed, and the sibling apply pin above still passes because
+        its subject (the tables) was created by an earlier statement. Pinning the
+        source proves the recipe; only the running engine proves the cake.
+
+        Also the one place the (seq) INDEX and the ``message_seq`` SEQUENCE are
+        proven to coexist: R3 gives both objects the SAME name. Probed
+        2026-07-24 on 3.2.1 in both definition orders — accepted, coexisting, and
+        idempotent on re-apply — but a name shared across two object kinds is
+        exactly the kind of fact an engine upgrade can revoke, so it is pinned
+        rather than remembered.
+        """
+        connection, _env = admin_db
+        table = _schema().MESSAGE_TABLE
+        await run(connection, generate_agent_ddl())
+        await run(connection, generate_message_ddl())
+        info = await run(connection, f"INFO FOR TABLE {table}")
+        declared = set(info.get("indexes", {}))
+        # POSITIVE CONTROL: the introspection sees the edge indexes that already
+        # ship, so a missing name below is a real absence and not a blind read.
+        edge_info = await run(connection, f"INFO FOR TABLE {_schema().TO_RELATION}")
+        assert {f"{_schema().TO_RELATION}_in_out"} <= set(edge_info.get("indexes", {})), (
+            f"the index introspection cannot see the committed edge indexes "
+            f"({sorted(edge_info.get('indexes', {}))!r}) — it proves nothing below."
+        )
+        assert {f"{table}_seq", f"{table}_sender_question"} <= declared, (
+            f"the message hot-path indexes are missing from the LIVE table; declared: "
+            f"{sorted(declared)!r}. An index the engine rejected is silently swallowed by "
+            f"a multi-statement apply, so the offline string pins alone cannot see this."
+        )
+        # The sequence of the same name is a DIFFERENT object kind and must survive
+        # alongside the index (both orders probed; this is the pinned half).
+        db_info = await run(connection, "INFO FOR DB")
+        assert _schema().MESSAGE_SEQUENCE_NAME in set(db_info.get("sequences", {})), (
+            f"the `{_schema().MESSAGE_SEQUENCE_NAME}` SEQUENCE did not survive alongside the "
+            f"index of the same name — every message id and delivery edge depends on it."
+        )
 
     async def test_the_slice_is_idempotent(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture

@@ -923,6 +923,26 @@ class TestRecordTraceFake:
     """
 
     def test_record_trace_signature_matches_real_store(self) -> None:
+        # AMENDED for packet 03b's all-tools trace telemetry — authorized fork
+        # FK-3 (03b-design-rulings-r2.md T8 + DIFF-adjudication-03b.md AC-16;
+        # operator grant in 03b-comms-message-surface.md §OPERATOR GRANT (second),
+        # commit 1e3a249). STRENGTHEN-ONLY: the committed seven names are still
+        # asserted, in the same order and still keyword-only with matching
+        # defaults; four telemetry parameters are APPENDED.
+        #
+        # ``agent`` / ``action`` / ``transport_session`` / ``ok`` are the seam's
+        # declared-identity, verb, transport-correlator and outcome columns. They
+        # go at the END so the committed prefix stays readable as one unit; every
+        # parameter is keyword-only, so position carries no caller meaning.
+        #
+        # ``ordinal`` is deliberately ABSENT: the ordinal is minted SERVER-SIDE
+        # inside the trace write from the ``trace_seq`` native sequence (T3), so a
+        # build that accepts it as a parameter — i.e. mints it client-side, which
+        # races under concurrency — goes RED right here.
+        #
+        # MUTATION-PROOF OBLIGATION (adversary): add an ``ordinal`` parameter to
+        # the real ``record_trace`` and watch this pin go RED; drop any one of the
+        # four new names from the FAKE and watch it go RED on the parity leg.
         real_params = _params_excluding_self(SurrealStore.record_trace)
         fake_params = _params_excluding_self(FakeSurrealStore.record_trace)
         assert list(fake_params) == list(real_params) == [
@@ -933,6 +953,10 @@ class TestRecordTraceFake:
             "session",
             "token_cost",
             "model",
+            "agent",
+            "action",
+            "transport_session",
+            "ok",
         ]
         for name, real_param in real_params.items():
             fake_param = fake_params[name]

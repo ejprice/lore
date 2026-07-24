@@ -308,6 +308,10 @@ class FakeSurrealStore:
         # to simulate a downed connection regardless of which read method asks
         # next — see arm_connection_failure's own docstring for the contract.
         self._connection_failure_trips_remaining: int = 0
+        # The fake's trace-ordinal counter (packet 03b, ESC-5 / T3): 0-based, to
+        # mirror the engine's ``sequence::nextval`` under the default ``START 0``.
+        # See ``record_trace`` / ``_next_trace_ordinal``.
+        self._trace_ordinal: int = 0
 
     # -- ceilings the indexer reads (clause-5 single source of truth) -----
 
@@ -868,11 +872,15 @@ class FakeSurrealStore:
         *,
         tool: str,
         params_hash: str,
-        hit_count: int,
+        hit_count: int | None = None,
         latency_ms: float,
-        session: str,
+        session: str | None = None,
         token_cost: int | None = None,
         model: str | None = None,
+        agent: str | None = None,
+        action: str | None = None,
+        transport_session: str | None = None,
+        ok: bool | None = None,
     ) -> None:
         """Persist one observability trace row — signature-identical to
         :meth:`SurrealStore.record_trace` (pinned by ``test_surreal_fakes.py``'s
@@ -881,29 +889,65 @@ class FakeSurrealStore:
         Honours :meth:`arm_connection_failure` (a down connection RAISES
         :class:`SurrealConnectionError` BEFORE any row is appended — the injected
         append-failure the real store's transport can surface, never a silent
-        success), then appends the row. The two optional accounting columns are
-        stored ONLY when given, mirroring the real ``option`` column's
-        clean-NONE-on-omission (so an omitted column's ``.get(...)`` is ``None`` on
-        read-back). ``ts`` is stamped HERE — the fake's analogue of the schema's
-        server-side ``DEFAULT time::now()`` — so a read-back row always carries a
-        tz-aware datetime the async writer never supplied. Traces are append-only
-        EVENTS, never keyed/deduped, so two identical calls persist two distinct
-        rows.
+        success), then appends the row. Every optional column is stored ONLY when
+        given, mirroring the real ``option`` column's clean-NONE-on-omission (so an
+        omitted column's ``.get(...)`` is ``None`` on read-back). ``ts`` is stamped
+        HERE — the fake's analogue of the schema's server-side ``DEFAULT
+        time::now()`` — so a read-back row always carries a tz-aware datetime the
+        async writer never supplied. Traces are append-only EVENTS, never
+        keyed/deduped, so two identical calls persist two distinct rows.
+
+        **ORACLE CHANGE, packet 03b (ESC-5 grant + rulings T7.8/T8):** the
+        all-tools telemetry seam traces EVERY tool call, so ``hit_count`` and
+        ``session`` become OPTIONAL (a generic funnel can know neither: only a call
+        that DECLARES a fleet session has one, and a fabricated ``0`` hits would
+        make the served aggregate LIE) and four columns are added — ``agent`` /
+        ``action`` (declared identity and verb, recorded only when the call
+        declares them, never guessed), ``transport_session`` (the transport
+        CORRELATOR, never an identity), and ``ok`` (whether the tool call
+        succeeded).
+
+        ``ordinal`` is deliberately NOT a parameter: the real store mints it
+        SERVER-SIDE inside the trace write from the ``trace_seq`` native sequence
+        (T3), because a client-side mint races. The fake mints from a per-instance
+        counter — enough for a consumer to read ``row['ordinal']`` and see distinct,
+        increasing ints, while the CONCURRENCY property (8-way distinctness) is
+        deliberately provable only against the real engine. Gaps are legitimate in
+        both: the ordinal is an ORDERING KEY, never a count.
         """
         self._maybe_trip_connection_failure()
         row: dict[str, Any] = {
             "tool": tool,
             "params_hash": params_hash,
-            "hit_count": hit_count,
             "latency_ms": latency_ms,
-            "session": session,
+            "ordinal": self._next_trace_ordinal(),
             "ts": datetime.now(UTC),
         }
-        if token_cost is not None:
-            row["token_cost"] = token_cost
-        if model is not None:
-            row["model"] = model
+        for column, value in (
+            ("hit_count", hit_count),
+            ("session", session),
+            ("token_cost", token_cost),
+            ("model", model),
+            ("agent", agent),
+            ("action", action),
+            ("transport_session", transport_session),
+            ("ok", ok),
+        ):
+            if value is not None:
+                row[column] = value
         self.db.append_trace(row)
+
+    def _next_trace_ordinal(self) -> int:
+        """Mint the fake's trace ordinal from a per-instance counter.
+
+        The real ordinal comes from the engine's ``trace_seq`` sequence, which
+        starts at 0 under the default ``START 0`` (probed 2026-07-24, 3.2.1) — so
+        this mirrors 0-based numbering rather than inventing 1-based ids a
+        consumer could then depend on.
+        """
+        ordinal = self._trace_ordinal
+        self._trace_ordinal += 1
+        return ordinal
 
     def recorded_traces(self) -> list[dict[str, Any]]:
         """Every persisted trace row (test oracle — the fake's stand-in for the

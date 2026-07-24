@@ -1171,11 +1171,16 @@ class TestCommandDefaultsAndConstraints:
 
 # --- P8a: ``trace`` observability-row field-level fixtures --------------------
 #
-# The plan pins ``trace`` as lore's OBSERVABILITY row: six core columns capturing
-# one served tool invocation (``tool``/``params_hash``/``hit_count``/
-# ``latency_ms``/``session``/``ts``) plus the two audited optional accounting
-# columns (``token_cost``/``model``) already landed in P2. P8a promotes ``trace``
-# from that token_cost/model-ONLY table to the full six-core-field definition.
+# The plan pins ``trace`` as lore's OBSERVABILITY row: the columns capturing one
+# served tool invocation (``tool``/``params_hash``/``hit_count``/``latency_ms``/
+# ``session``/``ts``) plus the two audited optional accounting columns
+# (``token_cost``/``model``) already landed in P2. P8a promotes ``trace`` from
+# that token_cost/model-ONLY table to the full core-field definition; packet 03b
+# widens ``hit_count``/``session`` to ``option<>`` and adds five ``option<>``
+# enrichment columns for the all-tools telemetry seam (FK-3 — see the amendment
+# note on ``test_trace_core_scalar_fields_are_defined``), so any count of "core
+# columns" stated in prose here would be false again by the next wave: the
+# generator's own ``_TRACE_FIELD_SPECS`` is the list, and the pins below read it.
 # The fixtures below are realistic lore-domain values (a real tool name, a real
 # SHA-512 params digest, a real fleet session id), never convenience placeholders.
 _TRACE_TOOL = "lore_search"
@@ -1236,21 +1241,44 @@ async def _create_trace(
 
 
 class TestTraceTableFieldDefinitions:
-    """P8a: ``trace`` carries its six core observability fields plus the two
-    audited optional accounting columns — no longer the token_cost/model-ONLY
-    placeholder P2 landed (offline, string-level assertions on the generator's
-    own output — no server needed).
+    """P8a: ``trace`` carries its core observability fields plus the two audited
+    optional accounting columns — no longer the token_cost/model-ONLY placeholder
+    P2 landed (offline, string-level assertions on the generator's own output — no
+    server needed). Packet 03b's telemetry delta widens two of those core columns
+    and adds five ``option<>`` enrichment columns; see the amendment note below.
     """
 
     def test_trace_core_scalar_fields_are_defined(self) -> None:
+        # AMENDED for packet 03b's all-tools trace telemetry — authorized fork
+        # FK-3 (03b-design-rulings-r2.md T2/T8 + DIFF-adjudication-03b.md AC-16;
+        # operator grant in 03b-comms-message-surface.md §OPERATOR GRANT (second),
+        # commit 1e3a249). STRENGTHEN-ONLY: every column asserted before is still
+        # asserted, at the TYPE the design now rules.
+        #
+        # ``hit_count`` and ``session`` widen to ``option<>`` because the telemetry
+        # seam traces EVERY tool call, and a generic funnel can know neither: only
+        # a call that DECLARES a fleet session has one, and supplying ``0`` hits
+        # for a tool whose result count is unknowable would make the served
+        # ``trace_aggregates`` LIE. Absence must be representable, not faked.
+        #
+        # The five columns the same delta ADDS (agent / action /
+        # transport_session / ordinal / ok) are pinned — with their OVERWRITE
+        # guard kind, the ``trace_seq`` sequence and the ``(agent, ordinal)``
+        # index — in ``test_trace_telemetry.py::TestTheTraceSchemaDelta``. They
+        # are deliberately NOT restated here: two copies of one column list is
+        # two copies to drift.
+        #
+        # MUTATION-PROOF OBLIGATION (adversary): revert either widened spec in
+        # ``_TRACE_FIELD_SPECS`` to its old scalar type and watch this pin go RED
+        # on that column alone.
         ddl = generate_ddl(dim=NONDEFAULT_DIM)
         assert "TYPE string" in _field_statement(ddl, TRACE_TABLE, "tool")
         assert "TYPE string" in _field_statement(ddl, TRACE_TABLE, "params_hash")
-        assert "TYPE int" in _field_statement(ddl, TRACE_TABLE, "hit_count")
+        assert "TYPE option<int>" in _field_statement(ddl, TRACE_TABLE, "hit_count")
         # ``number`` (not ``int``): a fractional latency must survive — see the
         # ``_TRACE_LATENCY_MS`` fixture rationale.
         assert "TYPE number" in _field_statement(ddl, TRACE_TABLE, "latency_ms")
-        assert "TYPE string" in _field_statement(ddl, TRACE_TABLE, "session")
+        assert "TYPE option<string>" in _field_statement(ddl, TRACE_TABLE, "session")
 
     def test_trace_ts_is_a_server_defaulted_datetime(self) -> None:
         # The observability timestamp self-stamps via ``DEFAULT time::now()`` —
