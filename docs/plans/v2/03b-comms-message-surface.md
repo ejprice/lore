@@ -18,6 +18,28 @@ S-references) is HISTORY, not instruction. The fresh design authority is
 `03b-design-rulings-r2.md` (blind re-derivation) once adjudicated; the trusted baseline
 contract is the packet-03-era RED restored by the reset (149F/554P + 11F/85P).
 
+### Clean-phase leads from the struck record (re-derive, never inherit)
+The struck session's empirical findings are LEADS, not authority. The consolidated
+checklist (9 clusters, 27 items, one-line receipts) is the POST-SUPERSESSION ADDENDUM in
+design-comms-03b-r2's report (committed at root; archives to
+`receipts/2026-07-24-packet03b/` at close-out) — the diff-adjudication and the fresh
+adversary grade against it. **Five items are BLOCKERS (finding #182): the reset RESTORED
+measured-defective committed pins** — each must be independently re-derived, and fixed only
+under fresh operator authorization, BEFORE any builder is briefed:
+1. the drain/fleet elision marker that rewards the wrong drain arithmetic (struck receipt:
+   correct build → 2F, wrong arithmetic → 2P);
+2. the `ACK REQUIRED` emit/no-emit proofs' `acked_at` monoculture;
+3. the value-carried-bound pin asserting `"{msg}"`-only against a docstring banning the class;
+4. the promise-scan reach-set omitting the three new render helpers + no `send.thread`
+   injection case in the battery;
+5. the two `test_message_ledger.py` mypy errors (`_ask`/`_answer`) that building the surface
+   cannot pay.
+Also lead-ruled dispositions (operator may override): WB9/E3-class conclusions from the
+struck adversary wave are struck SUBSTANCE (recovery path = the hazard checklist at the
+diff step, from fresh probes); the two struck-session store-reference additions (`7f23223`)
+are re-probe-on-contact; `record_trace`'s production docstring is a known prose corpse
+(teaches fire-and-forget) — no derivation may read it as intent.
+
 ## Why this packet exists
 Split from packet 03 at kickoff (operator-ruled 2026-07-19) on the contract author's
 measurement: the contract was written IN FULL and then sized — **296 pins, 0.6–0.8 wu

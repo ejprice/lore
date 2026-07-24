@@ -2,6 +2,23 @@ brief-base v6 read
 
 # DESIGN-03b-recertification — the re-certification protocol for packet 03b's contract phase
 
+> ⚠ **SUPERSEDED AT THE CORPUS-DISPOSITION LAYER (operator directive + lead reset, 2026-07-24,
+> same day as authorship).** After this document was written, the operator directed that nothing
+> decided by the 03b orchestrator be trusted; the lead struck the ENTIRE 03b-session corpus —
+> including the pre-adversary corpus RC0 retained and the prior sidecar's S1–S8 rulings RC5
+> retained — and reset the test tree to the 03a-2 close (`0941aab`, verified 160F/1205P/12s;
+> struck corpus preserved at tag `pkt03b-tainted-corpus`; docs layer at `ee64c46`; reports
+> archived with struck-banners). **Consequently RC0, RC5 and RC7's RETENTION rulings are VOID,
+> and the RC2–RC4 protocol does not run as written** — the clean re-run is a blind fresh
+> derivation (`docs/plans/v2/03b-design-rulings-r2.md`), not a re-certification of this corpus.
+> The following remain LIVE as instrument designs / candidate inputs to the clean phase, adopted
+> by the lead: **RC2.3** (the four-way adjudication taxonomy) · **RC2.5** (the merged-build
+> all-suite satisfiability gate; the finding that no reference build ever co-satisfied both
+> waves binds the clean phase) · **RC2.1–RC2.2's blindness-enforcement mechanics** (freeze-hash
+> receipt, withheld-files brief, quarantine of the six struck scratch trees) · **RC4** (the
+> client-battery shape, as a candidate input). The body below is preserved unrewritten as the
+> record of the superseded ruling.
+
 **Authority:** design-comms-03b-r2 (Fable design sidecar, packet 03b — successor to
 design-comms-03b; delegated design authority per the 03a-2 precedent). These are RULINGS the
 lead implements; anything that is operator authority (scope, spend, weakening a committed
