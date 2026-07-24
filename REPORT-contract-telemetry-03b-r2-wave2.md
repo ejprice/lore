@@ -241,3 +241,139 @@ receipt (0-failed against its own reference build, including the after-lint-clea
 batteries load-bearing in combination), the oracle-change satisfiability across BOTH consumer
 suites (§8), and the three pins whose satisfiability the author judged least certain: the
 cancellation leg, the wire-handler leg, and the `INFO FOR …` introspection legs.
+
+---
+
+# FIX WAVE (appended 2026-07-24, after the adversary's INSUFFICIENT re-grade)
+
+Grading input: `REPORT-adversary-telemetry-03b-r2.md` (committed `a45f705`), read in full. Its
+prototypes were treated as INPUT, not authority — each is marked ADOPTED / ADAPTED / IMPROVED
+below with the reason. **The adversary's work found a blocker I could not have seen from inside
+my own instrument, and its four-way adjudication of every RED is the reason this wave is small
+and targeted rather than a rewrite.**
+
+## §13 The seven missing pin groups
+
+| MP | verdict | what landed | where |
+|---|---|---|---|
+| **MP-A** (blocker) | **IMPROVED — three legs, not one** | `TestADispatchLandsARealRowInTheRealTraceTable`: the seam dispatches through the production `FastMCP.call_tool` with a **REAL `SurrealStore`** behind the request's lifespan context, and the row is read back with an explicit projection. Legs: SUCCESS · **RAISING** · **declared-identity**. The prototype had the success leg only; the swallow hides a store rejection on the ERROR path identically (an `ok=False` row carrying a bad kwarg is invisible to a success-only leg), and the four enrichment kwargs are the NEW half of the store contract, so a rename/typo in any one of them must die here too. | `test_trace_telemetry.py` + `_app_context_double_over` |
+| **MP-B** | **ADOPTED + a control added** | `test_every_registered_tool_traces_when_it_SUCCEEDS`, parametrised over all 16 registry entries, tool manager stubbed so every dispatch RETURNS through the real override. **Added:** an assertion that the stub's text reached the caller — without it the pin could pass while the dispatch had not actually succeeded, which is the "passes for a neighbouring reason" shape. | `TestCoverageIsACheckedVariable` |
+| **MP-C** | **IMPROVED — the class, not the instance** | Dropping `strict=True` fixes the instance; it leaves the next inline predicate free to be wrong the same way. The predicate is now `_is_strictly_increasing()` with `TestTheMonotonicityPredicateItself` (5 discriminating cases + an "is it evaluable at all" regression guard). **An instrument with no control is exactly how this defect survived authorship.** | `test_trace_telemetry.py` |
+| **MP-D** | **ADOPTED + hardened** | `test_two_dispatches_of_different_durations_record_different_latencies`. **Hardened:** the floor is a FRACTION of the slow probe's own sleep (`_LATENCY_DIFFERENCE_FRACTION`), not an absolute millisecond figure, so retuning the fixture cannot silently weaken it. | `TestTheToolsOutcomeAlwaysWins` |
+| **MP-E** | **ADOPTED** | `test_a_zero_argument_call_still_records_the_full_digest` + a dedicated zero-argument probe. Asserts full 64-hex AND equality with the recipe's own value for `{}`. | `TestParamsHashIsTheRuledRecipeAndLeaksNothing` |
+| **MP-F** | **ADOPTED — three pins** | The four enrichment columns round-trip when given · are ABSENT (`.get(...) is None`) when omitted · successive calls mint distinct, increasing, **0-based** ordinals. My own ESC-5 oracle edit had no behavioural pins; the adversary's measured mutation (drop four columns + freeze the ordinal → 783 passed) is their discrimination receipt. | `test_surreal_fakes.py::TestRecordTraceFake` |
+| **MP-G** | **IMPROVED — a sweep, and it replaces the name-list** | `_telemetry_prose_offenders()` walks every COMMENT and STRING token of `surreal.py`, `surreal_schema.py`, `server.py`, keeps those mentioning a telemetry token, and flags any retired phrase — **so prose written LATER is covered without anyone extending a list.** The three hand-named docstring pins it subsumes are DELETED (net −3 +2, strictly stronger). Scoped by telemetry token on purpose: those modules legitimately say "left for a later phase" about other subsystems, and **a gate that reddens honest prose is a gate someone switches off** — the threat model is the honest author editing a trace docstring. Two-direction control: `test_the_sweep_itself_fires` proves it SEES a corpse and IGNORES both honest telemetry prose and retired phrasing about another subject. | `TestNoProductionProseStillTeachesTheRetiredPlan` |
+
+## §14 The four surviving wrong builds + the oracle mutation — each now has a named killer
+
+| survivor | what it shipped | the pin that kills it now |
+|---|---|---|
+| **W30** (extra kwarg → every production write raises, swallowed; `traces.total` 0 forever — **#147 reproduced by the packet closing #147**) | telemetry dead in production, green everywhere in test | **MP-A**, all three legs. The success leg dies on the `TypeError` the double used to absorb; the error and identity legs close the same hole on the failure path and on each enrichment kwarg individually |
+| **W11** (`if ok and not tool.startswith("probe_"): return` — every SUCCESSFUL real-tool call untraced; denominator becomes "calls that failed") | a garbage decay curve | **MP-B** — 15 of the 16 parametrisations RED (the synthetic probe is the 16th, exactly as the adversary predicted) |
+| **P2-const** (`latency_ms = 50.0`) | every row the same duration | **MP-D** — no constant can satisfy a DIFFERENCE |
+| **W31** (`params_hash = ""` on empty arguments) | four registered tools collapse into one digest bucket | **MP-E** |
+| **oracle mutation** (drop the four columns, freeze the ordinal) | every fake-backed consumer grading against a row the real store never writes | **MP-F**, all three pins |
+| *(bonus)* **W20** (per-process client-side mint) — passes the 8-way pin | plausible-looking ordinals that are not the engine's | already died to the gap/count pin; its **false comment is corrected** (R3) so the next reader is not told the 8-way pin catches it |
+
+## §15 §2's six guarded-not-∀ rows — each CLOSED
+
+| row | invariant | closed by |
+|---|---|---|
+| I1 | every dispatch of every registered tool traces | **MP-B** — the SUCCESS cell is now ∀ over the registry; the error cell was already ∀ |
+| I2 | the row actually LANDS in the real store | **MP-A** |
+| I8 | `params_hash` is the recipe ∀ arguments | **MP-E** (the guard was NON-EMPTY ARGUMENTS) |
+| I9 | latency reflects real duration | **MP-D** (the guard was ONE FIXTURE BRACKET) |
+| I15 | no production prose teaches the retired plan | **MP-G** (the guard was THREE NAMED DOCSTRINGS) |
+| I17 | the oracle mirrors the real row shape | **MP-F** (was UNPINNED) |
+
+Nothing is left justified-but-open: all six were real holes and all six are closed by construction
+rather than by argument.
+
+## §16 Residuals R1–R13, each adjudicated individually
+
+| id | verdict | action |
+|---|---|---|
+| **R1** | **VALID — fixed.** The `ok`-semantics pin could RED a correct build whose sentence was verbatim but wrapped across two `#` lines. A pin that reddens a correct build is a builder trap even when it cannot green a wrong one. | Window widened to span the comment block AND the tuple body; `#` stripped before normalising |
+| **R2** | **VALID as over-specification — KEPT deliberately, and now says why.** Parameter ORDER carries no semantics (all keyword-only), so a natural signature is RED cosmetically. It stays because the pin's subject is EXACT-SHAPE parity between two implementations: a set comparison would let the two drift into different orders and then into different NAMES via a one-sided rename. The message now tells a builder to reorder or escalate — **never to weaken it to a set comparison** | message amended |
+| **R3** | **VALID — FALSE COMMENT, fixed in both places.** The 8-way pin claimed it kills "an ordinal minted client-side"; measured, a per-process counter passes it. The latency pin claimed it kills "a constant"; measured, 50.0 passes it. Both are the false-gate class **inside my own comments** | both corrected, each naming the pin that DOES kill the build |
+| **R4** | **VALID — fixed.** `"row-shaped"` never occurred in `_HOSTILE_BODY`: a vacuous iteration inside a ∀-loop, reading as coverage | fragments hoisted to `_HOSTILE_FRAGMENTS`; each is asserted PRESENT IN THE INPUT before its absence from the row is asserted |
+| **R5** | **ACCEPTED — my four mis-stated obligations** (M6 over-claim · M4 over-claim, harmless · M13 under-claim · M19 half-wrong) | corrected in §17, with **M20** adopted as the missing proof |
+| **R6** | **VALID — pinned.** Nothing tied the harvest to a REAL tool's declared params | `test_a_real_tools_declared_identity_is_harvested_too` (drives `lore_comms`, values deliberately different from every identity leg) |
+| **R7** | **CLOSED rather than recorded.** "Not a regression" is how a silent loosening to `any` ships | `test_the_widened_columns_still_REJECT_a_wrong_typed_value` — `option<int>` widens the DOMAIN, not the TYPE; classified rejection + a legal-value positive control |
+| **R8** | **CONFIRMED, not mine.** mypy at my close: **108 errors in 2 files** (`test_comms_tool.py` 102, `test_comms_promise_registry.py` 6) — it has moved three times during this packet (39 → 92 → 126 → 108) as the surface wave commits. **ZERO in any file I touch**, zero from the adversary's reference | flagged to the lead |
+| **R9** | **VALID — fixed, and PINNED.** The oracle's docstring taught `ok` as "whether the tool call succeeded" — the exact reading ESC-1 corrected | oracle docstring rewritten with the ruled sentence verbatim; the `ok`-semantics pin now scans the ORACLE as well as the schema module, so the two cannot drift |
+| **R10** | **NOTED for the builder.** `record_trace`'s "a single awaitable insert" is accurate enough; the statement is now a `CREATE … object::extend(…)` with a store-side mint | no pin (MP-G's sweep covers the retired-plan vocabulary; this is not a corpse) |
+| **R11** | **AGREED.** MP-A is the unit-level analogue of the T7.9 deploy smoke and does **not** replace it: MP-A proves the seam+store agree on a throwaway DB; only the smoke proves it on the deployed artifact against `:18500` | remains a packet-exit obligation the lead owns |
+| **R12** | **AGREED** (cross-test-module import of `_field_statement` is the DRY choice; disclosed as D3) | no action |
+| **R13** | **NOTED — lead's, already handled.** The design authority moved mid-run under the adversary | no action |
+
+## §17 The obligation list, corrected and extended
+
+**Corrections to my wave-1 list** (adversary §4, all four accepted):
+
+- **M6** — over-claim. A seam-side mint reddens the seam-mint pin ONLY; the store's signature and mint are untouched, so FK-3b and the 8-way pin cannot see it. Those belong to M14/W20.
+- **M4** — over-claim, harmless. Coverage stays green for 15 of 16, not 16: `coverage[probe_trace_ok]` also reddens, because that entry is a SUCCEEDING tool.
+- **M13** — under-claim. Reverting a widened spec reddens **11** pins, not one column's: un-widened types also break live writes and all four migration legs.
+- **M19** — half-wrong. It proves ONE vacuous guard. **M20 (resolve the app context OUTSIDE the swallow) is the correct obligation for the second** (`…_no_reachable_app_context_still_serves_the_tool`), and it discriminates.
+
+**New obligations from this wave** (each stated as the mutation and its exact expected RED set):
+
+| # | mutation | must go RED |
+|---|---|---|
+| M21 | emission passes one extra keyword to `record_trace` (**W30**) | MP-A's three legs — and NOTHING else in the contract, which is precisely the point |
+| M22 | `if ok and not tool.startswith("probe_"): return` (**W11**) | MP-B, 15 of 16 parametrisations |
+| M23 | `latency_ms` = any constant inside the bracket | MP-D only (the bracket pin stays green — proving the two are not redundant) |
+| M24 | `params_hash = ""` for empty arguments (**W31**) | MP-E only |
+| M25 | drop any one of the fake's four enrichment columns / freeze its ordinal | the matching MP-F pin |
+| M26 | reintroduce any retired phrase into any trace-related comment or docstring in the three swept modules | the MP-G module leg for that module — **including a NEW docstring nobody listed**, which is the property the name-list lacked |
+| M27 | make `_is_strictly_increasing` return True unconditionally | `TestTheMonotonicityPredicateItself` (3 of 5 cases) — the control the original inline predicate never had |
+| M28 | widen `hit_count` to `option<any>` / drop the type | R7's pin (rejection leg) |
+| M29 | teach `ok` as "whether the tool call succeeded" in the oracle docstring | the `ok`-semantics pin's ORACLE surface |
+
+## §18 Fix-wave tails (measured 2026-07-24, after the adversary re-grade at `a45f705`)
+
+| gate | before the fix wave | after | reading |
+|---|---|---|---|
+| `test_trace_telemetry.py` | 64F / 12P (76) | **87 failed / 19 passed (106 collected)**, 0 collection errors | +30 pins: MP-A ×3 · MP-B ×16 + R6 ×1 · MP-D ×1 · MP-E ×1 · R7 ×1 · MP-C predicate control ×6 · MP-G sweep ×3 + control ×1, minus the 3 name-listed prose pins the sweep replaces |
+| the SIX graded files | 69F / 618P | **92 failed / 628 passed** | distribution 87 (telemetry) / 3 (E-S6) / 1 (FK-3a) / 1 (FK-3b) — exactly my four RED groups, nothing else |
+| oracle blast radius, re-run | 1994P (21 suites) | **1714 passed / 0 failed** (16 suites: every `FakeSurrealStore` consumer + `test_mcp_server` + `test_retry_seam`) | the MP-F pins + the oracle docstring fix broke nothing |
+| `uv run ruff check loremaster/` | clean | **clean** | |
+| `./scripts/typecheck.sh` | 92 / 2 files | **108 errors / 2 files** (`test_comms_tool.py` 102 · `test_comms_promise_registry.py` 6) | **ZERO in any file I touch** (R8 — the surface wave's, moving as it commits) |
+
+**The 19 green-today pins, each accounted for** (unchanged discipline: a pin that passes today is
+justified or it is decoration): 5 delta-is-additive params · 2 index-parser controls · the checked
+coverage variable · the synthetic-probe registration · the AC-15 wiring analogue · 2 vacuous-until-
+the-seam guards (M19/M20 are their proofs) · **6 monotonicity-predicate control cases** ·
+**the prose sweep's own two-direction control**. The last seven are new and are instrument
+controls — they SHOULD be green now; that is what makes the instruments trustworthy.
+
+**RED-reason histogram, re-verified after the fix** (no reason is an import, collection, fixture or
+mypy error): 58 × empty-recorder / 54 × `assert 0 == 1` (no seam) · 9 × `TypeError: record_trace()
+got an unexpected keyword argument 'agent'` · 5 × missing `DEFINE FIELD` · 3 × the MP-G sweep
+naming its offenders · 2 × `TracingFastMCP does not exist` · 2 × `assert None is not None` ·
+the sequence / index / migration / real-store legs.
+
+**Two defects I caught in my own fix wave by RUNNING it, recorded because the pattern is the
+finding:**
+1. The R7 pin first asserted `"hit_count" in str(error)` — the store's classifier deliberately
+   REDACTS the field detail into the server log, so that assertion was **unsatisfiable for every
+   build**: the same cannot-pass class as MP-C, written by the author who had just spent the wave
+   fixing MP-C. It now asserts the classified error CLASS (`field coercion`) with a legal-value
+   positive control.
+2. The MP-B stub needed its own "did the dispatch actually succeed" assertion, or the pin could
+   have passed while the tool never returned — the neighbouring-reason shape.
+   **Both were invisible to inspection and obvious on execution.** A pin is not a pin until it has
+   been run against something.
+
+## §19 What I did NOT change, and why
+
+- **The `_TraceRecorder` double stays** for every seam pin except MP-A. It is the right instrument
+  for WHAT the seam records (a real store cannot show you the kwargs it never received) and the
+  wrong one for WHETHER the store accepts it. MP-A adds the second instrument rather than replacing
+  the first; deleting the double would cost every identity/failure-posture leg its precision.
+- **The bracket latency pin stays** beside MP-D. It kills 0 and seconds (M18/W16 die on it alone);
+  MP-D kills constants. Neither subsumes the other, and M23 is the obligation that proves it.
+- **FK-3b's parameter-ORDER assertion stays** (R2) — with the reason now written into the pin, and
+  an explicit instruction not to weaken it to a set comparison.
+- **No pin was weakened anywhere in this wave.** The three deleted prose pins were replaced by a
+  strictly stronger ∀ sweep, which is the only deletion.

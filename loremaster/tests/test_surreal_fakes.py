@@ -943,6 +943,18 @@ class TestRecordTraceFake:
         # MUTATION-PROOF OBLIGATION (adversary): add an ``ordinal`` parameter to
         # the real ``record_trace`` and watch this pin go RED; drop any one of the
         # four new names from the FAKE and watch it go RED on the parity leg.
+        #
+        # ⚠ THIS PIN ASSERTS PARAMETER ORDER, and that IS deliberate (adversary
+        # residual R2, which correctly calls it over-specification on the
+        # semantics: every parameter is keyword-only, so order carries no meaning
+        # for any caller, and a natural "required-before-defaulted" signature is
+        # RED here for a cosmetic reason). It stays because the pin's subject is
+        # EXACT-SHAPE PARITY between two implementations of one signature: a
+        # `list(fake) == list(real)` comparison is what makes a divergence
+        # impossible to miss, and comparing sets would let the two drift into
+        # different orders and then into different NAMES via a rename on one side.
+        # A builder who hits this: reorder to match, or raise it — do not weaken it
+        # to a set comparison.
         real_params = _params_excluding_self(SurrealStore.record_trace)
         fake_params = _params_excluding_self(FakeSurrealStore.record_trace)
         assert list(fake_params) == list(real_params) == [
@@ -984,6 +996,69 @@ class TestRecordTraceFake:
         # ts is stamped (the fake's analogue of the schema's server-side default).
         assert isinstance(row["ts"], datetime)
         assert row["ts"].tzinfo is not None
+
+    # ----------------------------------------------------------------------- #
+    # The telemetry enrichment columns — packet 03b (MP-F, adversary-directed;
+    # the ORACLE change itself is the ESC-5 grant, T7.8/T8).
+    #
+    # WHY THESE EXIST: the signature-parity pin above proves the fake ACCEPTS the
+    # four new parameters, and nothing proved it STORES them. Measured by the
+    # adversary: dropping all four from the fake's row AND freezing its ordinal at
+    # 0 left `test_surreal_fakes.py` + `test_mcp_server.py` +
+    # `test_trace_telemetry.py` at 783 passed — the oracle could silently stop
+    # mirroring the real row shape, and every fake-backed consumer would be
+    # grading against a row the real store does not write. An oracle whose new
+    # behaviour cannot FAIL is not an oracle.
+    # ----------------------------------------------------------------------- #
+
+    async def test_record_trace_stores_the_four_enrichment_columns_when_given(
+        self, store: FakeSurrealStore
+    ) -> None:
+        await store.record_trace(
+            tool="lore_comms", params_hash="digest-enriched", latency_ms=2.5,
+            agent="auditor-q", action="drain",
+            transport_session="3f9c1d7a55b04e0f9d2c8e6b71a04c15", ok=True,
+        )
+        row = store.recorded_traces()[0]
+        assert row["agent"] == "auditor-q"
+        assert row["action"] == "drain", (
+            "without `action`, a drain row is indistinguishable from a heartbeat inside "
+            "lore_comms's tool count — the numerator collapses into the denominator"
+        )
+        assert row["transport_session"] == "3f9c1d7a55b04e0f9d2c8e6b71a04c15"
+        assert row["ok"] is True
+
+    async def test_record_trace_omits_the_enrichment_columns_when_not_given(
+        self, store: FakeSurrealStore
+    ) -> None:
+        # The real columns are ``option<>``: an unset one reads NONE, never a
+        # fabricated "" / 0 / False. A fake that stored defaults would teach every
+        # consumer that absence is representable as a value.
+        await store.record_trace(tool="lore_search", params_hash="digest-bare", latency_ms=1.0)
+        row = store.recorded_traces()[0]
+        for column in ("agent", "action", "transport_session", "ok", "hit_count", "session"):
+            assert row.get(column) is None, (
+                f"the fake fabricated {column}={row.get(column)!r} for a call that declared "
+                f"nothing; the real column stores NONE and an omitted key reads None"
+            )
+
+    async def test_record_trace_mints_distinct_increasing_zero_based_ordinals(
+        self, store: FakeSurrealStore
+    ) -> None:
+        # Mirrors the real store's server-side mint from ``trace_seq``, which is
+        # 0-BASED (``sequence::nextval`` under the default ``START 0``, probed on
+        # 3.2.1) — a fake minting from 1, or freezing at a constant, would teach a
+        # consumer numbering the engine never produces.
+        for index in range(3):
+            await store.record_trace(
+                tool="lore_search", params_hash=f"digest-{index}", latency_ms=1.0
+            )
+        ordinals = sorted(int(row["ordinal"]) for row in store.recorded_traces())
+        assert ordinals == [0, 1, 2], (
+            f"the fake minted {ordinals!r}; the mint must be distinct, increasing and 0-based to "
+            f"mirror the engine's sequence. A frozen ordinal makes every ordering consumer green "
+            f"against a row the real store would never write."
+        )
 
     async def test_record_trace_omitted_optionals_read_back_none(
         self, store: FakeSurrealStore

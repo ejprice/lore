@@ -904,8 +904,16 @@ class FakeSurrealStore:
         make the served aggregate LIE) and four columns are added — ``agent`` /
         ``action`` (declared identity and verb, recorded only when the call
         declares them, never guessed), ``transport_session`` (the transport
-        CORRELATOR, never an identity), and ``ok`` (whether the tool call
-        succeeded).
+        CORRELATOR, never an identity), and ``ok``.
+
+        ``ok`` semantics, VERBATIM per the ESC-1 ruling (`d0f84d0`) because a
+        boolean's meaning is not guessable from its name: **True iff the dispatch
+        RETURNED a result; False on any raise, cancellation included.** The seam
+        implements that as a SUCCESS LATCH (``ok`` starts False, set True only
+        after the tool returns, no ``except`` arm), and packet 06 filters cancelled
+        and errored calls identically — neither is a call the agent performed. The
+        earlier wording here ("whether the tool call succeeded") is the reading that
+        ruling exists to correct: it leaves a reader to guess about cancellation.
 
         ``ordinal`` is deliberately NOT a parameter: the real store mints it
         SERVER-SIDE inside the trace write from the ``trace_seq`` native sequence

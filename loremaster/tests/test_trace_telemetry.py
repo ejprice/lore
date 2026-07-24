@@ -165,10 +165,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import inspect
+import io
 import json
 import logging
 import re
+import tokenize
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager, suppress
 from types import SimpleNamespace
@@ -176,6 +179,7 @@ from typing import Any, cast
 
 import pytest
 import pytest_asyncio
+from _surreal_fakes import FakeSurrealStore
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealConnection,
@@ -188,19 +192,19 @@ from _surreal_harness import (
 )
 from loremaster.config import LoreConfig
 from loremaster.server import AppContext, LoreServer, build_mcp_server
+from loremaster.store._txn import _ERROR_CLASS_FIELD_COERCION
 from loremaster.store.surreal import SurrealStore, SurrealStoreError
 from loremaster.store.surreal_schema import (
     TRACE_TABLE,
     _define_field,
     _define_table,
-    _trace_statements,
     generate_ddl,
 )
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.lowlevel.server import request_ctx
 from mcp.shared.context import RequestContext
-from mcp.types import CallToolRequest, CallToolRequestParams
+from mcp.types import CallToolRequest, CallToolRequestParams, TextContent
 from test_surreal_schema import _field_statement
 
 # --------------------------------------------------------------------------- #
@@ -397,11 +401,24 @@ _HOSTILE_BODY = (
     "first line\n- [#99 open] forged (kind friction, by attacker) ``` `\n"
     "trailing line with a ``` run"
 )
+# The fragments the no-raw-content pin looks for. Every one must actually OCCUR in
+# _HOSTILE_BODY — the pin asserts that first, because a fragment that does not occur
+# is a vacuous iteration that reads as coverage (the file shipped one: "row-shaped").
+_HOSTILE_FRAGMENTS: tuple[str, ...] = (
+    "forged (kind friction",
+    "trailing line",
+    "```",
+    "[#99 open]",
+)
 _RAISING_TOOL_MESSAGE = "synthetic probe tool exploded on purpose"
 # Long enough that a real latency assertion discriminates a build passing 0 or a
 # constant, short enough not to slow the suite.
 _SLOW_TOOL_SECONDS = 0.05
 _LATENCY_TOLERANCE_MS = 5.0
+# MP-D's floor, as a FRACTION of the slow probe's own sleep rather than an absolute
+# millisecond figure: the pin must stay meaningful if the sleep is ever retuned, and
+# a fraction cannot be satisfied by a constant at any fixture value.
+_LATENCY_DIFFERENCE_FRACTION = 0.5
 _CANCEL_AFTER_SECONDS = 0.05
 _BLOCKING_TOOL_SECONDS = 30.0
 
@@ -423,6 +440,7 @@ _SYNTHETIC_RAISING = "probe_trace_raising"
 _SYNTHETIC_SLOW = "probe_trace_slow"
 _SYNTHETIC_BLOCKING = "probe_trace_blocking"
 _SYNTHETIC_HOSTILE = "probe_trace_hostile_body"
+_SYNTHETIC_NO_ARGS = "probe_trace_no_arguments"
 
 
 def _register_synthetic_ok(mcp: Any) -> None:
@@ -480,6 +498,15 @@ def _register_synthetic_probes(mcp: Any) -> None:  # noqa: PLR0915 - one registr
         """Takes free text, so the params_hash no-raw-content pin has a subject."""
         return f"hostile:{len(body)}:{thread}"
 
+    def probe_trace_no_arguments() -> str:
+        """Takes NO arguments — the zero-argument digest subject (MP-E).
+
+        Four registered tools (``lore_map`` / ``lore_index`` / ``lore_diff`` /
+        ``lore_dead_code``) are dispatched with ``{}``, so the empty-arguments case
+        is a REAL production shape, not an edge case.
+        """
+        return "no-arguments"
+
     for function, name in (
         (probe_trace_declaring, _SYNTHETIC_DECLARING),
         (probe_trace_partial_declaration, _SYNTHETIC_PARTIAL),
@@ -490,6 +517,7 @@ def _register_synthetic_probes(mcp: Any) -> None:  # noqa: PLR0915 - one registr
         (probe_trace_slow, _SYNTHETIC_SLOW),
         (probe_trace_blocking, _SYNTHETIC_BLOCKING),
         (probe_trace_hostile_body, _SYNTHETIC_HOSTILE),
+        (probe_trace_no_arguments, _SYNTHETIC_NO_ARGS),
     ):
         mcp.add_tool(
             function,
@@ -566,6 +594,18 @@ def _app_context_double(recorder: _TraceRecorder) -> Any:
     return SimpleNamespace(write_store=recorder)
 
 
+def _app_context_double_over(store: Any) -> Any:
+    """The same app-context shape, but over a REAL store (MP-A).
+
+    The ONLY difference from :func:`_app_context_double` is what sits behind
+    ``write_store``: a real :class:`SurrealStore` whose ``record_trace`` has a real
+    signature and a real engine behind it, so a keyword the store does not accept
+    RAISES instead of being swallowed by a ``**fields`` double. That difference is
+    the entire W30 hole.
+    """
+    return SimpleNamespace(write_store=store)
+
+
 @contextmanager
 def _request_context(
     app_context: Any,
@@ -630,6 +670,54 @@ async def _dispatch_ignoring_tool_failure(mcp: Any, name: str, arguments: dict[s
     """
     with suppress(ToolError):
         await mcp.call_tool(name, arguments)
+
+
+def _is_strictly_increasing(values: list[int]) -> bool:
+    """Whether ``values`` strictly increases — a helper WITH a control of its own.
+
+    Extracted for one reason, recorded so it is not "simplified" back: the inline
+    version of this predicate shipped as
+    ``all(later > earlier for earlier, later in zip(v, v[1:], strict=True))``,
+    which raises ``ValueError`` for EVERY non-empty list — ``v`` and ``v[1:]``
+    always differ in length, so ``strict=True`` is unsatisfiable by construction.
+    That pin could not pass for any build, correct or wrong: the monotonicity
+    property was pinned by NOTHING, and a builder implementing it correctly was
+    trapped against a contract it may not edit (the C-DEF class this repo
+    legislates for). It was invisible to its author because the pin was RED anyway,
+    for the right reason, on the missing production symbol.
+
+    So the predicate now lives in ONE place and
+    :class:`TestTheMonotonicityPredicateItself` proves it discriminates — an
+    instrument with no control is how this defect survived authorship.
+    """
+    return all(later > earlier for earlier, later in zip(values, values[1:]))
+
+
+class TestTheMonotonicityPredicateItself:
+    """The control for :func:`_is_strictly_increasing`.
+
+    A predicate that always returns True (or always raises) would make the ordinal
+    battery decoration. Both directions are checked, plus the shape that broke the
+    original: a non-empty list must be EVALUABLE at all.
+    """
+
+    @pytest.mark.parametrize(
+        ("values", "expected"),
+        [
+            ([0, 1, 2], True),
+            ([0], True),
+            ([0, 0, 1], False),
+            ([1, 0], False),
+            ([0, 2, 1], False),
+        ],
+    )
+    def test_the_predicate_discriminates(self, values: list[int], expected: bool) -> None:
+        assert _is_strictly_increasing(values) is expected
+
+    def test_the_predicate_is_evaluable_on_a_non_empty_list(self) -> None:
+        # The regression guard: the original inline form raised ValueError here
+        # rather than returning a verdict, so it could never pass.
+        assert _is_strictly_increasing([0, 1, 2]) is True
 
 
 def _expected_params_hash(arguments: dict[str, Any]) -> str:
@@ -895,6 +983,105 @@ class TestCoverageIsACheckedVariable:
             f"{tool_name!r} — the funnel must record the DISPATCHED name, not a constant."
         )
 
+    @pytest.mark.parametrize("tool_name", sorted(_MINIMAL_ARGS))
+    async def test_every_registered_tool_traces_when_it_SUCCEEDS(
+        self,
+        traced_server: tuple[Any, _TraceRecorder],
+        tool_name: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """MP-B: the SUCCESS cell of the coverage matrix, for EVERY registered tool.
+
+        **THE DEFECT THIS EXISTS TO CATCH (adversary W11):**
+        ``if ok and not tool.startswith("probe_"): return`` — a build that traces
+        every FAILING call and every synthetic probe, and silently drops every
+        SUCCESSFUL real-tool call. Measured: it scored identically to a correct
+        build against this contract before this pin existed, because the sibling
+        coverage battery dispatches all 15 built-ins against a minimal app-context
+        double, so they all take the ERROR leg, and the only success ever traced
+        was a synthetic probe. The denominator would then be "calls that failed" —
+        and the decay curve packet 06 decides on would be garbage.
+
+        The failed door-attempts are worth recording: keying the skip on the RESULT
+        SHAPE instead of the name dies (20 pins) because the synthetic probes return
+        the same ``(content, structured)`` tuple the real tools do. Only a
+        NAME-keyed skip reached the uncovered cell — which is the six-defeats lesson
+        again: the pin has to cover the CELL, not out-guess the shapes.
+
+        Mechanism: the tool manager is stubbed so every dispatch RETURNS through the
+        real production override. That is deliberately the narrowest possible
+        substitution — ``FastMCP.call_tool`` (the seam under test) and everything in
+        it still runs; only the tool BODY is replaced, because the bodies need a
+        full AppContext and this pin is about the funnel, not about the tools.
+        """
+        mcp, recorder = traced_server
+
+        async def _canned_success(
+            name: str, arguments: dict[str, Any], **_kwargs: Any
+        ) -> list[TextContent]:
+            return [TextContent(type="text", text=f"canned:{name}:{sorted(arguments)}")]
+
+        monkeypatch.setattr(mcp._tool_manager, "call_tool", _canned_success)
+        with _request_context(_app_context_double(recorder)):
+            result = await _dispatch(mcp, tool_name, _MINIMAL_ARGS[tool_name])
+        assert f"canned:{tool_name}" in _payload_text(result), (
+            "the stub did not reach the caller, so this dispatch did not SUCCEED and the pin is "
+            "not testing its own subject"
+        )
+        assert len(recorder.calls) == 1, (
+            f"a SUCCESSFUL dispatch of {tool_name} wrote {len(recorder.calls)} trace rows, "
+            f"expected exactly 1. Zero means the emission has a success-path hole for this tool — "
+            f"the sibling error-leg battery cannot see it, because against a minimal app context "
+            f"every built-in fails."
+        )
+        row = recorder.calls[0]
+        assert row["tool"] == tool_name
+        assert row["ok"] is True, (
+            f"a dispatch that RETURNED recorded ok={row.get('ok')!r}; the latch must be True only "
+            f"here, and it must be True here."
+        )
+
+    async def test_a_real_tools_declared_identity_is_harvested_too(
+        self, traced_server: tuple[Any, _TraceRecorder], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """R6: tie the KEY rule to a REAL tool, not only to synthetic probes.
+
+        Every identity leg drives a synthetic tool declaring ``agent``/``session``/
+        ``action`` — deliberately, so this contract does not wait on the comms verbs
+        (AC-17). But nothing then connected the rule to the params a REGISTERED tool
+        actually declares. ``lore_comms`` declares ``agent`` and ``action``, and the
+        coverage registry already dispatches it with both, so the tie costs one
+        assertion: a build whose harvest works only for synthetic probe signatures
+        fails here.
+
+        Values deliberately DIFFER from every identity leg's (``coverage-probe`` /
+        ``fleet`` vs ``auditor-q`` / ``drain``), so a build keyed on one value set
+        cannot satisfy both.
+        """
+        mcp, recorder = traced_server
+
+        async def _canned_success(
+            name: str, arguments: dict[str, Any], **_kwargs: Any
+        ) -> list[TextContent]:
+            return [TextContent(type="text", text=f"canned:{name}")]
+
+        monkeypatch.setattr(mcp._tool_manager, "call_tool", _canned_success)
+        arguments = _MINIMAL_ARGS["lore_comms"]
+        assert {"agent", "action"} <= set(arguments), (
+            "this pin's premise is that the lore_comms coverage fixture declares agent+action; "
+            "the fixture changed and the pin now proves nothing"
+        )
+        with _request_context(_app_context_double(recorder)):
+            await _dispatch(mcp, "lore_comms", arguments)
+        assert len(recorder.calls) == 1
+        row = recorder.calls[0]
+        assert row["agent"] == arguments["agent"], (
+            f"the harvest missed a REAL tool's declared agent ({arguments['agent']!r}); it records "
+            f"{row.get('agent')!r}. The rule is a PARAM-KEY rule — it must not depend on which "
+            f"tool declared the key."
+        )
+        assert row["action"] == arguments["action"]
+
     async def test_the_wire_handler_registered_at_construction_traces_too(
         self, traced_server: tuple[Any, _TraceRecorder]
     ) -> None:
@@ -925,6 +1112,101 @@ class TestCoverageIsACheckedVariable:
             "reachable only when a test calls the method directly, which production never does."
         )
         assert recorder.calls[0]["tool"] == _SYNTHETIC_OK
+
+
+# --------------------------------------------------------------------------- #
+# MP-A — the seam drives the REAL store (the W30 hole)
+# --------------------------------------------------------------------------- #
+class TestADispatchLandsARealRowInTheRealTraceTable:
+    """Every other seam pin points the emission at a DOUBLE. This one does not.
+
+    **THE DEFECT THIS EXISTS TO CATCH (adversary W30, the blocker):** an emission
+    that passes ONE keyword the real ``record_trace`` does not accept — an extra
+    kwarg, a renamed kwarg, a value the engine refuses. Measured: such a build
+    scores IDENTICALLY to a correct one against the rest of this contract
+    (1 failed / 451 passed on the adversary's reference), because
+    :class:`_TraceRecorder` accepts ``**fields`` and T5.1's ruled swallow turns the
+    real ``TypeError`` into a log line. In production **every trace write would
+    fail forever and ``traces.total`` would stay 0 — #147 reproduced by the packet
+    that exists to close #147.**
+
+    So the double is the right instrument for WHAT the seam records and the wrong
+    instrument for WHETHER the store accepts it. Both legs here dispatch through
+    the production ``FastMCP.call_tool`` with a REAL :class:`SurrealStore` behind
+    the request's lifespan context, and read the row back with an explicit
+    projection.
+
+    The success leg AND the error leg both run: the swallow hides a rejection on
+    either path, so a build whose kwargs are wrong only on the failure path (an
+    ``ok=False`` row carrying an extra field, say) is invisible to the success leg
+    alone.
+    """
+
+    async def test_a_successful_dispatch_lands_one_real_row(
+        self, probe_server: tuple[Any, _TraceRecorder], trace_store: SurrealStore
+    ) -> None:
+        mcp, _double = probe_server
+        with _request_context(_app_context_double_over(trace_store)):
+            result = await _dispatch(mcp, _SYNTHETIC_SILENT, {"marker": "end-to-end"})
+        assert "silent:end-to-end" in _payload_text(result)
+        rows = await _trace_rows(trace_store)
+        assert len(rows) == 1, (
+            f"the dispatch wrote {len(rows)} rows to the REAL trace table, expected 1. Zero means "
+            f"the store REJECTED the emission's call and T5.1's swallow hid it — the whole tool "
+            f"surface keeps working while telemetry is dead, which is #147's shape exactly. "
+            f"Check the server log the swallow writes: a `TypeError: record_trace() got an "
+            f"unexpected keyword argument …` here is a seam/store signature mismatch that NO "
+            f"double-backed pin in this file can see."
+        )
+        row = rows[0]
+        assert row["tool"] == _SYNTHETIC_SILENT
+        assert row["ok"] is True
+        assert isinstance(row["ordinal"], int) and not isinstance(row["ordinal"], bool), (
+            f"the real row carries ordinal={row['ordinal']!r} — the store-side mint did not run."
+        )
+        assert re.fullmatch(r"[0-9a-f]{64}", str(row["params_hash"]))
+
+    async def test_a_raising_dispatch_also_lands_one_real_row(
+        self, probe_server: tuple[Any, _TraceRecorder], trace_store: SurrealStore
+    ) -> None:
+        mcp, _double = probe_server
+        with _request_context(_app_context_double_over(trace_store)):
+            with pytest.raises(ToolError):
+                await _dispatch(mcp, _SYNTHETIC_RAISING, {})
+        rows = await _trace_rows(trace_store)
+        assert len(rows) == 1, (
+            "the ERROR leg wrote no row to the REAL store. The failure path's own kwargs must be "
+            "acceptable to the store too — a mismatch there is swallowed exactly like the success "
+            "path's, and errored calls are part of the denominator packet 06 reads."
+        )
+        assert rows[0]["ok"] is False
+        assert isinstance(rows[0]["ordinal"], int)
+
+    async def test_the_declared_identity_reaches_the_real_row(
+        self, probe_server: tuple[Any, _TraceRecorder], trace_store: SurrealStore
+    ) -> None:
+        # The enrichment columns are the NEW half of the store contract, so the
+        # end-to-end leg must carry them: a build whose declared-identity kwargs
+        # are individually wrong (a rename, a typo) is otherwise only ever checked
+        # against a double that accepts anything.
+        mcp, _double = probe_server
+        with _request_context(_app_context_double_over(trace_store)):
+            await _dispatch(
+                mcp,
+                _SYNTHETIC_DECLARING,
+                {"agent": _DECLARED_AGENT, "session": _DECLARED_SESSION, "action": _DECLARED_ACTION},
+            )
+        rows = await _trace_rows(trace_store)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["agent"] == _DECLARED_AGENT
+        assert row["session"] == _DECLARED_SESSION
+        assert row["action"] == _DECLARED_ACTION
+        assert row["transport_session"] == _TRANSPORT_SESSION_ID
+        assert row["hit_count"] is None, (
+            "the seam must leave hit_count unset even at the store: a fabricated 0 makes every "
+            "aggregate over the column lie."
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -980,8 +1262,18 @@ class TestTheToolsOutcomeAlwaysWins:
     async def test_the_recorded_latency_reflects_the_calls_real_duration(
         self, probe_server: tuple[Any, _TraceRecorder]
     ) -> None:
-        # Kills a build passing 0, a constant, or a value measured after the
+        # Kills a build reporting 0, or reporting SECONDS, or measuring after the
         # emission rather than around the tool call.
+        #
+        # ⚠ It does NOT kill a CONSTANT. This comment used to claim it did, and the
+        # claim was false: any constant inside the bracket (a literal 50.0 against
+        # a 50 ms fixture) passes — measured by the adversary, with the
+        # perturbation control proving the pin discriminates only at its own
+        # fixture value. A failure message or comment promising a check the
+        # assertion does not perform is a FALSE GATE, so the claim is corrected
+        # here rather than left to be inherited. The constant is killed by
+        # `test_two_dispatches_of_different_durations_record_different_latencies`,
+        # which is fixture-INDEPENDENT by construction.
         mcp, recorder = probe_server
         loop = asyncio.get_running_loop()
         started = loop.time()
@@ -997,6 +1289,41 @@ class TestTheToolsOutcomeAlwaysWins:
         )
         assert latency_ms <= elapsed_ms + _LATENCY_TOLERANCE_MS, (
             f"recorded latency {latency_ms}ms exceeds the whole dispatch's {elapsed_ms}ms."
+        )
+
+    async def test_two_dispatches_of_different_durations_record_different_latencies(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        """MP-D: a CONSTANT latency dies here, at any fixture value.
+
+        **THE DEFECT THIS EXISTS TO CATCH:** ``latency_ms = 50.0``. It survived the
+        bracket pin above — 50 sits inside `45 ≤ latency ≤ elapsed+5` — and shipped
+        a build where every row reports the same duration, so no percentile, no
+        slow-tool ranking and no "did the trace write add latency" measurement (T5's
+        own named re-open trigger) means anything.
+
+        This pin is fixture-INDEPENDENT by construction: it compares TWO dispatches
+        of DIFFERENT real durations in one request context and asserts the recorded
+        values differ by at least half the sleep. No single constant can satisfy a
+        DIFFERENCE, whatever the fixture value is — which is the property the
+        bracket could not have, since a bracket is a statement about one value.
+        """
+        mcp, recorder = probe_server
+        with _request_context(_app_context_double(recorder)):
+            await _dispatch(mcp, _SYNTHETIC_SILENT, {"marker": "fast"})
+            await _dispatch(mcp, _SYNTHETIC_SLOW, {})
+        assert len(recorder.calls) == 2, f"expected two traced dispatches, got {len(recorder.calls)}"
+        fast_ms, slow_ms = (float(row["latency_ms"]) for row in recorder.calls)
+        # CONTROL that the fixture pair really differs in duration: the slow probe
+        # sleeps and the fast one does not, so a failure here is the MEASUREMENT,
+        # not the fixture.
+        floor_ms = _SLOW_TOOL_SECONDS * 1000 * _LATENCY_DIFFERENCE_FRACTION
+        assert slow_ms - fast_ms >= floor_ms, (
+            f"the slow dispatch recorded {slow_ms}ms and the fast one {fast_ms}ms — a difference of "
+            f"{slow_ms - fast_ms}ms, under the {floor_ms}ms floor. A CONSTANT (or a value measured "
+            f"outside the tool call) cannot produce a difference; a real measurement cannot avoid "
+            f"one, since the slow probe sleeps {_SLOW_TOOL_SECONDS * 1000}ms and the fast probe "
+            f"returns immediately."
         )
 
     async def test_the_seam_never_mints_the_ordinal_itself(
@@ -1406,6 +1733,37 @@ class TestParamsHashIsTheRuledRecipeAndLeaksNothing:
             "per-call aggregate over params_hash splits."
         )
 
+    async def test_a_zero_argument_call_still_records_the_full_digest(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        """MP-E: the empty-arguments case is a REAL production shape, not an edge.
+
+        **THE DEFECT THIS EXISTS TO CATCH:** ``if not arguments: return ""``. Four
+        REGISTERED tools are dispatched with ``{}`` — ``lore_map``, ``lore_index``,
+        ``lore_diff``, ``lore_dead_code`` — so that build gives all four rows an
+        empty digest and collapses them into ONE bucket for every per-call
+        aggregate. It survived this contract: every other recipe leg passes a
+        non-empty dict, which is the guarded-not-∀ shape (guarded by NON-EMPTY
+        ARGUMENTS).
+
+        The digest of ``{}`` is a real 64-hex value — ``sha256(b"{}")`` — so
+        "there was nothing to hash" is not a defence.
+        """
+        mcp, recorder = probe_server
+        with _request_context(_app_context_double(recorder)):
+            await _dispatch(mcp, _SYNTHETIC_NO_ARGS, {})
+        assert len(recorder.calls) == 1
+        served = recorder.calls[0]["params_hash"]
+        assert re.fullmatch(r"[0-9a-f]{64}", str(served)), (
+            f"a zero-argument dispatch recorded params_hash={served!r}. The T6 recipe over an "
+            f"EMPTY dict is a full digest, not a sentinel: four registered tools take no "
+            f"arguments, and an empty digest collapses all of them into one bucket."
+        )
+        assert served == _expected_params_hash({}), (
+            "the zero-argument digest is not the recipe's own value for `{}` — a special case has "
+            "been introduced where the recipe needs none."
+        )
+
     async def test_no_raw_parameter_content_reaches_the_row(
         self, probe_server: tuple[Any, _TraceRecorder]
     ) -> None:
@@ -1421,7 +1779,18 @@ class TestParamsHashIsTheRuledRecipeAndLeaksNothing:
         assert len(recorder.calls) == 1
         row = recorder.calls[0]
         serialised = json.dumps(row, default=str)
-        for fragment in ("row-shaped", "forged (kind friction", "trailing line", "```"):
+        for fragment in _HOSTILE_FRAGMENTS:
+            # CONTROL FIRST (R4): a fragment that is not IN the hostile input cannot
+            # be absent-from-the-row for any interesting reason — it is a vacuous
+            # element inside a forall-loop, and this file shipped exactly one
+            # (`"row-shaped"`, which never occurred in _HOSTILE_BODY). Asserting
+            # presence in the INPUT before absence in the OUTPUT makes every
+            # iteration load-bearing.
+            assert fragment in _HOSTILE_BODY, (
+                f"{fragment!r} is not in the hostile body, so asserting its absence from the row "
+                f"proves nothing. Fix the fragment list or the fixture — a vacuous element in a "
+                f"forall-loop is decoration that reads as coverage."
+            )
             assert fragment not in serialised, (
                 f"the stored row carries raw parameter content ({fragment!r}). Bodies pass through "
                 f"the params_hash and NOWHERE else."
@@ -1531,18 +1900,28 @@ class TestTheTraceSchemaDelta:
         assert f"TYPE {type_expr}" in statement, f"trace.{column} changed: {statement!r}"
 
     def test_the_ok_columns_ruled_semantics_are_documented_where_it_is_DEFINED(self) -> None:
-        """ESC-1's ruling requires the semantics VERBATIM in the column's comment.
+        """ESC-1's ruling requires the semantics VERBATIM where the column is defined.
 
         Not bureaucracy: ``ok`` is a boolean whose meaning is not guessable from
         its name (does a cancelled call count? an errored one?), and packet 06
-        filters on it. This repo's own audited failure mode is prose that
-        describes behaviour drifting from the behaviour with no gate in between —
-        so the ruled sentence gets an instrument rather than a memo.
+        filters on it. This repo's own audited failure mode is prose that describes
+        behaviour drifting from the behaviour with no gate in between — so the ruled
+        sentence gets an instrument rather than a memo.
 
         Keyed on the distinctive CLAUSE rather than the whole sentence with its
-        markup, so a reflow or a different emphasis style does not go RED for a
-        cosmetic reason — while a build that documents ``ok`` as "whether the tool
-        succeeded" (the wording the latch mechanism exists to correct) does.
+        markup, so a reflow does not go RED for a cosmetic reason — while a build
+        that documents ``ok`` as "whether the tool call succeeded" (the wording the
+        latch mechanism exists to correct) does.
+
+        Two fixes over its first version, both from the adversary (R1/R9):
+        1. The window now spans the comment block AND the tuple body, and comment
+           markers are stripped before normalising — the first version failed a
+           reference build whose sentence was VERBATIM but wrapped across two ``#``
+           lines and placed inline beside the ``ok`` entry. A pin that reddens a
+           correct build is a builder trap even when it cannot green a wrong one.
+        2. The ORACLE is checked too. It defines the same column for every
+           fake-backed consumer, and it was teaching the retired reading — a
+           corpse that this pin, scanning only the schema module, could not see.
         """
         from loremaster.store import surreal_schema
 
@@ -1552,16 +1931,34 @@ class TestTheTraceSchemaDelta:
             None,
         )
         assert specs_line is not None, "could not locate the _TRACE_FIELD_SPECS assignment"
-        window = "\n".join(source_lines[max(0, specs_line - _COMMENT_WINDOW_LINES) : specs_line + 1])
-        normalised = " ".join(window.split())
-        assert _OK_SEMANTICS_CLAUSE in normalised, (
-            f"the ruled `ok` semantics are not documented where the column is defined. ESC-1 "
-            f"(d0f84d0) requires, verbatim: 'True iff the dispatch RETURNED a result; "
-            f"{_OK_SEMANTICS_CLAUSE}.' The mechanism is a SUCCESS LATCH — ok starts False and is "
-            f"latched True only on return — and a comment saying merely 'whether the call "
-            f"succeeded' leaves the next reader to guess about cancellation, which is exactly the "
-            f"population packet 06 needs."
+        end_line = next(
+            (
+                index
+                for index, line in enumerate(source_lines[specs_line:], start=specs_line)
+                if line.startswith(")")
+            ),
+            specs_line,
         )
+        window = "\n".join(source_lines[max(0, specs_line - _COMMENT_WINDOW_LINES) : end_line + 1])
+        # Strip comment markers before normalising: the ruled sentence wrapped over
+        # two `#` lines is the SAME sentence, and a pin that cannot see that is
+        # brittle rather than strict.
+        normalised = " ".join(window.replace("#", " ").split())
+        for surface, text in (
+            ("surreal_schema's trace field specs", normalised),
+            (
+                "the ORACLE FakeSurrealStore.record_trace docstring",
+                " ".join((inspect.getdoc(FakeSurrealStore.record_trace) or "").split()),
+            ),
+        ):
+            assert _OK_SEMANTICS_CLAUSE in text, (
+                f"{surface} does not document the ruled `ok` semantics. ESC-1 (d0f84d0) requires, "
+                f"verbatim: 'True iff the dispatch RETURNED a result; {_OK_SEMANTICS_CLAUSE}.' The "
+                f"mechanism is a SUCCESS LATCH — ok starts False and is latched True only on "
+                f"return — and prose saying merely 'whether the tool call succeeded' leaves the "
+                f"next reader to guess about cancellation, which is exactly the population packet "
+                f"06 needs. Every surface that DEFINES this column must teach the same reading."
+            )
 
     def test_the_trace_sequence_is_defined_once_with_no_batch_or_start_clause(self) -> None:
         statements = [line.strip() for line in generate_ddl(dim=_DIM).split(";\n")]
@@ -1909,18 +2306,30 @@ class TestTheOrdinalIsMintedByTheStore:
         ordinals = sorted(cast(int, row["ordinal"]) for row in await _trace_rows(trace_store))
         assert len(ordinals) == written, f"expected {written} rows, got {len(ordinals)}"
         assert len(set(ordinals)) == written, f"ordinals repeat: {ordinals!r}"
-        assert all(
-            later > earlier for earlier, later in zip(ordinals, ordinals[1:], strict=True)
-        ), f"ordinals are not strictly increasing: {ordinals!r}"
+        # Via the controlled predicate (see _is_strictly_increasing's docstring: the
+        # inline `strict=True` form this replaces could not pass for ANY build).
+        assert _is_strictly_increasing(ordinals), (
+            f"ordinals are not strictly increasing: {ordinals!r}"
+        )
 
     async def test_eight_concurrent_writes_mint_eight_distinct_ordinals(
         self, trace_store_factory: Any
     ) -> None:
         # The load-bearing mint pin, at the ruled degree. Separate stores on
         # separate CONNECTIONS: N coroutines on one socket do not contend the way
-        # N connections do. THE WRONG BUILD: an ordinal minted client-side, or by
-        # read-max-then-CREATE — single-threaded-correct, passes every sequential
-        # pin above, and collides here.
+        # N connections do.
+        #
+        # WHAT IT KILLS, stated accurately: a read-max-then-CREATE mint, and any
+        # mint whose numbers collide across CONCURRENT writers in ONE process.
+        # ⚠ It does NOT kill every client-side mint — this comment used to claim it
+        # did, and the adversary measured the counter-example: a PER-PROCESS
+        # client-side counter passes this pin (all 8 writers share one process, so
+        # its numbers are distinct) and is caught instead by
+        # `test_a_count_is_derived_from_ROWS_never_from_ordinal_arithmetic`, whose
+        # engine-burn control it cannot reproduce, and by
+        # `test_the_seam_never_mints_the_ordinal_itself`. Corrected here rather
+        # than left as an inherited over-claim: a comment promising a check the
+        # assertion does not perform is a false gate.
         writers = 8
         stores = [await trace_store_factory() for _ in range(writers)]
         await asyncio.gather(
@@ -2011,6 +2420,61 @@ class TestRecordTraceAtTheNewSignature:
         assert isinstance(row["ordinal"], int)
         assert row["tool"] == _SEAM_TOOL
 
+    async def test_the_widened_columns_still_REJECT_a_wrong_typed_value(
+        self, trace_store: SurrealStore
+    ) -> None:
+        """R7 CLOSED: `option<int>` widens the DOMAIN, it does not remove the TYPE.
+
+        The adversary recorded this as an unpinned property in BOTH worlds (no pin
+        ever asserted a type rejection for these columns), i.e. not a regression —
+        but "not a regression" is how a silent loosening to ``any`` or ``option<any>``
+        ships. `option<int>` must still refuse a string; the difference from `int` is
+        that NONE becomes representable, not that anything goes.
+
+        Driven through a raw CREATE rather than ``record_trace`` because the point is
+        the ENGINE's constraint, not the writer's typing: mypy already stops a
+        wrong-typed Python call, and mypy is not what production faces.
+        """
+        with pytest.raises(SurrealStoreError) as rejected:
+            await trace_store._query(
+                f"CREATE {TRACE_TABLE} CONTENT $content",
+                {
+                    "content": {
+                        "tool": _SEAM_TOOL,
+                        "params_hash": _SEAM_PARAMS_HASH,
+                        "latency_ms": _SEAM_LATENCY_MS,
+                        "hit_count": "not-an-int",
+                    }
+                },
+            )
+        # Classified as a FIELD COERCION rejection — not a connection fault, not a
+        # parse error. The store deliberately REDACTS the engine's field detail into
+        # the server log, so the class is what a test can honestly assert; the
+        # positive control below is what makes it discriminating.
+        # (This assertion first read `"hit_count" in str(...)`, which the redaction
+        # makes unsatisfiable for every build — the same cannot-pass class as MP-C,
+        # caught here by running it.)
+        assert _ERROR_CLASS_FIELD_COERCION in str(rejected.value), (
+            f"the engine rejected the write, but not as a {_ERROR_CLASS_FIELD_COERCION!r} — a probe "
+            f"that passes for the wrong reason (a parse error, a dropped connection) proves "
+            f"nothing. Served: {rejected.value}"
+        )
+        # POSITIVE CONTROL: the same shape with a legal value IS accepted, so the
+        # rejection above is about the TYPE and not about the statement.
+        await trace_store._query(
+            f"CREATE {TRACE_TABLE} CONTENT $content",
+            {
+                "content": {
+                    "tool": _SEAM_TOOL,
+                    "params_hash": _SEAM_PARAMS_HASH,
+                    "latency_ms": _SEAM_LATENCY_MS,
+                    "hit_count": 3,
+                }
+            },
+        )
+        rows = await _trace_rows(trace_store)
+        assert [row["hit_count"] for row in rows] == [3]
+
     async def test_the_ok_column_stores_a_real_boolean(self, trace_store: SurrealStore) -> None:
         # `option<bool>` and not a string/int flag: a build storing "True"/1
         # would make every `ok = false` filter in packet 06 silently empty.
@@ -2023,42 +2487,114 @@ class TestRecordTraceAtTheNewSignature:
 # --------------------------------------------------------------------------- #
 # T8 — the retired plan in production prose (AC-19's telemetry slice)
 # --------------------------------------------------------------------------- #
-class TestNoProductionProseStillTeachesTheRetiredPlan:
-    """The served/read prose must not teach a plan the design REFUSED.
+# The retired telemetry vocabulary: phrases that describe the plan T5.2 REFUSED
+# (fire-and-forget emission, a later serving-layer phase, no caller wiring it) or a
+# column count the delta falsifies. Each is a PHRASE, not a word, so an unrelated
+# sentence cannot trip it.
+_RETIRED_TELEMETRY_PROSE: tuple[str, ...] = (
+    "fire-and-forget",
+    "six core",
+    "no caller yet",
+    "later serving-layer phase",
+    "not yet wired",
+    "never wired",
+)
+# The tokens that make a piece of prose TELEMETRY prose. A comment or docstring
+# mentioning none of these is out of this sweep's scope — which is what keeps a
+# legitimate "left for a later phase" elsewhere in the same module from tripping it.
+_TELEMETRY_PROSE_TOKENS: tuple[str, ...] = ("trace", "tracing", "telemetry")
+# The modules whose telemetry prose is swept. Not a list of DOCSTRINGS (that is the
+# name-list shape this repo has watched lose six times) — a list of MODULES, every
+# comment and string in which is scanned.
+_SWEPT_PROSE_MODULES: tuple[str, ...] = (
+    "loremaster.store.surreal",
+    "loremaster.store.surreal_schema",
+    "loremaster.server",
+)
 
-    T5.2 rules AGAINST fire-and-forget emission (the coverage pin must be
-    deterministic — "the row exists when the call returns" — or the forall-tools
-    gate goes flaky and gets switched off, and a gate that cries wolf is a gate
-    nobody keeps). ``record_trace``'s committed docstring teaches exactly that
-    retired plan, and this repo's own audited failure pattern is defects clustering
-    in natural-language surfaces whose consistency with code NO GATE CHECKS. The
-    sweep pattern is BARE and anchor-free: prose mentions carry no structural
-    anchors.
+
+def _telemetry_prose_offenders(source: str) -> list[tuple[str, str]]:
+    """Every ``(retired phrase, prose excerpt)`` in ``source``'s telemetry prose.
+
+    Scans COMMENT and STRING tokens — so docstrings, module headers and inline
+    comments are all in scope — and considers only those mentioning a telemetry
+    token, because the same modules legitimately say things like "left for a later
+    phase" about unrelated subsystems. A gate that fires on honest prose is a gate
+    that gets switched off; a gate that only looks at three docstrings somebody
+    named by hand misses the fourth.
+    """
+    offenders: list[tuple[str, str]] = []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type not in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        prose = " ".join(token.string.replace("#", " ").split())
+        lowered = prose.lower()
+        if not any(marker in lowered for marker in _TELEMETRY_PROSE_TOKENS):
+            continue
+        offenders.extend(
+            (phrase, prose) for phrase in _RETIRED_TELEMETRY_PROSE if phrase in lowered
+        )
+    return offenders
+
+
+class TestNoProductionProseStillTeachesTheRetiredPlan:
+    """No telemetry prose in production may teach a plan the design REFUSED.
+
+    T5.2 rules AGAINST fire-and-forget emission (the coverage gate must be
+    deterministic — "the row exists when the call returns" — or it goes flaky and
+    gets switched off, and a gate that cries wolf is a gate nobody keeps). Several
+    production surfaces teach exactly that retired plan, plus a column count the
+    delta falsifies, and this repo's own audited failure pattern is defects
+    clustering in natural-language surfaces whose consistency with code NO GATE
+    CHECKS.
+
+    **This is a SWEEP, not a list of docstrings.** Its first version named three
+    docstrings by hand and the adversary found three MORE unguarded corpses — one of
+    them `TraceSummary`'s, which is the docstring of the model ``lore_index``
+    SERVES, i.e. the served-prose class this packet is supposed to be closing. A
+    name-list is the instrument shape this repo has watched lose six times; the
+    sweep covers every comment and string in the three modules, so prose written
+    LATER is covered without anyone remembering to extend a list.
+
+    Scoped by TELEMETRY TOKEN rather than by module, deliberately: the same modules
+    legitimately say "left for a later phase" about unrelated subsystems, and a gate
+    that reddens honest prose is a gate someone switches off — the threat model here
+    is the honest author who edits a trace docstring, not an adversary.
     """
 
-    def test_the_record_trace_docstring_no_longer_teaches_fire_and_forget(self) -> None:
-        docstring = inspect.getdoc(SurrealStore.record_trace) or ""
-        assert docstring, "record_trace lost its docstring"
-        assert "fire-and-forget" not in docstring.lower(), (
-            "record_trace's docstring still teaches the REFUSED fire-and-forget emission plan. "
-            "T5.2 rules the emission is AWAITED INLINE; a docstring promising otherwise teaches "
-            "the next reader to build the flaky version."
+    @pytest.mark.parametrize("module_name", _SWEPT_PROSE_MODULES)
+    def test_no_telemetry_prose_teaches_the_retired_plan(self, module_name: str) -> None:
+        module = importlib.import_module(module_name)
+        offenders = _telemetry_prose_offenders(inspect.getsource(module))
+        assert not offenders, (
+            f"{module_name} still teaches the retired telemetry plan in "
+            f"{len(offenders)} place(s):\n"
+            + "\n".join(f"  · {phrase!r} in: {prose[:160]}" for phrase, prose in offenders)
+            + "\n\nThe emission is AWAITED INLINE (T5.2), it IS wired (T1), and the row carries "
+            "eleven columns plus a server-stamped ts — every phrase above describes a plan the "
+            "design refused or a count the delta falsifies. Prose that describes behaviour must be "
+            "DERIVED from it or CHECKED against it; this is the check."
         )
 
-    def test_the_record_trace_docstring_no_longer_claims_six_core_fields(self) -> None:
-        # A count in prose is a claim about behaviour, and this one is now false:
-        # the row carries the six committed columns plus five enrichment columns.
-        docstring = inspect.getdoc(SurrealStore.record_trace) or ""
-        assert "six core" not in docstring.lower(), (
-            "record_trace's docstring still says 'six core fields'. Prose that describes "
-            "behaviour must be DERIVED from the behaviour, not re-stated beside it — a stale count "
-            "is the defect class this repo has now shipped ten instances of."
-        )
+    def test_the_sweep_itself_fires(self) -> None:
+        """THE CONTROL: the sweep must SEE a corpse, and must IGNORE honest prose.
 
-    def test_the_trace_statements_docstring_no_longer_claims_six_core_fields(self) -> None:
-        docstring = inspect.getdoc(_trace_statements) or ""
-        assert docstring, "_trace_statements lost its docstring"
-        assert "six core" not in docstring.lower(), (
-            "_trace_statements' docstring still says 'six core fields' while emitting eleven "
-            "columns plus a sequence and an index."
+        Without this, a sweep whose token filter or tokenizer walk silently matched
+        nothing would pass all three module legs forever and read as coverage. Both
+        directions, on samples built here.
+        """
+        corpse = '"""The trace row is written fire-and-forget by a later phase."""\n'
+        assert _telemetry_prose_offenders(corpse), (
+            "the sweep did not flag a docstring that both mentions the trace row AND teaches the "
+            "retired plan — it cannot see what it certifies"
+        )
+        # NEGATIVE: retired phrasing about a DIFFERENT subject is not this pin's
+        # business (the honest-prose direction — a false positive here is what gets
+        # a gate switched off).
+        assert not _telemetry_prose_offenders(
+            '# app-level retry/backoff is left for a later phase\n'
+        )
+        # NEGATIVE: honest telemetry prose passes.
+        assert not _telemetry_prose_offenders(
+            '"""Persist one trace row: awaited inline, ts stamped server-side."""\n'
         )
