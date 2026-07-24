@@ -211,3 +211,16 @@ are in the tree the blind designer reads — and no gate checks prose):
 - FLAG-2 Whether the operator-authorized amendment content (cluster A's fixes) is struck
   WITH the session or survives AS operator authority is the same fork from the other side.
 - FLAG-3 `7f23223`'s store-reference landing (B5 above) — trusted-doc status needs a ruling.
+
+**[FLAGS RULED by the lead, 2026-07-24, after commit `a2e3847` — recorded here so the flags
+above read as closed, not dangling; the rulings of record live in the packet file:]**
+FLAG-1: covered by construction — the blind designer's brief transcribed the post-`0223291`
+operator rulings verbatim (all-tools widening incl. rationale, R1→05 deferral, client
+directive, contract immutability); WB9/E3-class struck CONCLUSIONS deliberately excluded —
+this checklist's clusters D/G are the designed recovery at the diff step, with fresh probes.
+FLAG-2: conservative reading — struck measurements (operator-authorized amendment substance
+included) are LEADS requiring independent re-derivation; committed-pin fixes land only under
+FRESH operator authorization. Cluster A is now **finding #182** and a named BLOCKER list in
+the packet file: no builder briefed while any of the five is unadjudicated.
+FLAG-3: re-probe-on-contact, owned by the fresh adversary, recorded in the packet file.
+This checklist is the diff step's completeness grader, cited from the packet file.
