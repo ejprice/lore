@@ -2,7 +2,7 @@ brief-base v6 read
 
 ## SUMMARY BLOCK
 - state: done — design doc + Addenda A/B committed on `pkt10-floor-calibration-design`; operator's 2026-07-24 architecture ruling incorporated; standing by
-- deliverable: `docs/design/2026-07-24-floor-calibration.md` — §Recommendation R1–R8 (the WHAT) + Addendum B §B7 (the build order) + §B6 (fork dispositions)
+- deliverable: `docs/design/2026-07-24-floor-calibration.md` — R1–R8 + Addenda A–D; **Addendum D reworks staleness around the operator's two directives**: floor = bootstrap INTERVAL, N by measured noise curve, stability gates 11-ii, staleness ≡ fresh CI disjoint from adopted CI (the 10% churn tolerance is DELETED, not re-tuned; fingerprint leg survives as pure disarm)
 - ruling status: F1/F2/F4/F5/F6 DECIDED BY DELEGATION (doc §B6); **F3 RE-DISPOSED as a three-model CLIENT CONSULT** (doc Addendum C — operator's two challenges both landed; the operator-fork framing was my error, owned in C0)
 - decisions-needed: none pending — consult timing RULED (operator: "measure first" → after 11-i, doc C3); R2's publish spec + #180 measurement rider defined (doc C6); split executed (6938281, faithful to B7)
 - deviations: (1) survey script read end-to-end, NOT executed (its default coordinate is prod :18500 — brief forbids; doc §1.5, now moot for the durable path per the ruling); (2) nothing executed from the worktree → no provenance receipt exists or is claimed
@@ -162,10 +162,36 @@ brief-base v6 read
   no-synthesis instruction in 11-i's Exit is right and uncontradicted.
 - C1 gap-1 now cross-references #180 (magnitude deliberately unclaimed until the run).
 
+## UPDATE 2026-07-24 (fifth round — Addendum D: measured staleness, intervals, the mansion)
+- The lead's frontier reframe ADOPTED after attack, with three findings of my own:
+  (a-answer) no serving feedback loop exists — the capture pipeline consumes no floor
+  (verified at the data flow), so "the floor chasing its tail" cannot occur through
+  adoption; the REAL instability was the every-Nth sampler's insertion-brittleness
+  (one new identity phase-shifts the probe set wholesale) — replaced by hash-stable
+  sampling keyed on #170's sha512 (ONE IMPLEMENTATION, no second hash). Residual
+  co-movement under massive churn is handled by a paired decomposition (fixed-ruler
+  drift stat logged beside the full-pool stat).
+  (b-answer) interval-vs-interval (adopt iff DISJOINT) beats point-outside-CI — it
+  hedges the fresh run's own noise for free; no wider band needed because adoption
+  re-centers the interval and an adoption is a cheap write, so flapping requires
+  genuine oscillation the serving should track anyway.
+  (c-answer) #180 composes: the engine's unit generalizes to (statistic, point, CI,
+  scope); a per-hit floor is one more row with its own interval + staleness; R8's
+  per-tier bar is superseded by the SAME disjoint-CI test — one measured comparison
+  now governs adoption, per-tier upgrade, and staleness.
+- The exact-skip result kills the threshold outright: a zero-change sweep reproduces
+  the measurement bit-identically (determinism control), so "measure every changed
+  sweep, skip unchanged" needs NO tolerance — the 10% dies deleted, not re-tuned.
+- Cost honesty (constraint 2): B2's ≤1 run/sweep-cycle bound holds under the new
+  cadence; cold per-run cost = O(N) embeds + O(N) searches, MEASURED at R2 before
+  11-ii wires the loop; probe-embed cache and scheduler throttle are PRICED
+  CONTINGENCIES built only if the measured number demands them.
+- Sizing said plainly (D7): 11-i grows ~0.20 → ~0.25–0.30; sub-split line named if
+  kickoff crosses 0.30. D8 separates pre-registered rule-shapes (B≥1000, 90% CI,
+  ≥98% decision-agreement gate — adversary-attackable before 11-i codes them) from
+  numbers that only R2 can produce. Nothing synthesised.
+
 ## Standing by
-Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A+B+C,
-C6 included) and this report are committed on `pkt10-floor-calibration-design`;
-idle-between-questions is expected. §B2 thrash/cost is loaded for the operator's next
-topic — and its own answer to "measure first" is already in the design: every adoption
-row records embeds + wall-clock, so B2's bound gets its first MEASURED values from
-R2's run itself, before any serving depends on them.
+Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A–D)
+and this report are committed on `pkt10-floor-calibration-design`;
+idle-between-questions is expected.

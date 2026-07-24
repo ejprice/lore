@@ -864,3 +864,159 @@ publishes, from one dual-instrument run on one corpus snapshot:
   existing floor legitimately describes) into a measured decision; **the number is
   never synthesised in advance of the run** (the lead's instruction in 11-i's Exit
   is exactly right, and nothing here contradicts it).
+
+---
+
+## Addendum D (2026-07-24, fifth round — the cost unlock rebuilds the staleness model: measured intervals, not inherited thresholds)
+
+**D0 — The two directives, and what dies.** Operator, 2026-07-24: *(1)* build the
+mansion — self-supervision removed the human-labeling cap on N, so N is chosen by a
+MEASURED noise floor, the adopted floor becomes an INTERVAL, and interval-stability
+GATES the cutover; *(2)* **"what makes the floor stale has to be measured, not
+inherited."** Directive 2 convicts this design's own leg 2 out of its own mouth —
+§5 already conceded *"no churn threshold can bound floor error"* and inherited 10%
+anyway. Churn was a proxy wrong in both directions: additive doc dumps trip it while
+moving the floor ~nothing; #74's surgical edit moves the floor at ~0% churn and it
+never fires. Retired by this addendum: **the churn tolerance as the DEFINITION of
+stale** (and with it `_COSINE_FLOOR_DRIFT_FILE_COUNT_TOLERANCE`, into the R6
+retirement sweep); the fixed-N minimums as the N rule; R8's improvised p5↔p10
+separation bar (superseded in D6). Surviving unchanged: **leg 1 as a DISARM signal**
+(a fingerprint/vector-identity change is KNOWN-invalid, not measured-moved — a
+different signal class, per the lead's constraint, and the one leg that was always
+right); the B2 run-rate machinery (single-flight, coalescing, discard-requeue);
+the F6 review, narrowed to residual tuning (D5).
+
+**D1 — The floor becomes an interval (built first; D3 stands on it).** Each
+measurement bootstraps the ENTIRE selection procedure — resample the answered union
+AND the absent set jointly, re-run `choose_cosine_floor` (dominance rule, anchor
+carve-out and all) per resample, B≥1000 — and reports (floor_point, ci_low,
+ci_high, N, B, method). **Bootstrap costs ZERO embeds**: it is arithmetic over
+already-captured cosines, so interval-carrying is free at any N. The adopted row
+carries the interval; serving still fires on the point (a verdict needs one bar);
+whether the RENDER should say anything when a best-cosine lands inside the interval
+is a wording question and is added to the F3 consult's option space, not decided
+here. Today's 0.50649 — ONE probe's own cosine, an order statistic of n=41 with no
+interval — is the cardboard box this replaces.
+
+**D2 — N by measured noise, on a sampler that cannot jump.** Two parts:
+- *The sampler defect this round caught (the lead's question (a), traced to its real
+  mechanism):* porting `sample_identifier_queries`'s every-Nth rule to a churning
+  corpus is BRITTLE — one inserted identity shifts the every-Nth phase and can swap
+  out a large fraction of the probe set in one sweep, producing a floor jump that
+  reflects SAMPLING discontinuity, not distribution change. Replaced by
+  **hash-stable sampling**: a chunk joins the probe pool iff a stable content hash
+  (reuse #170's `embedding_text_sha512` — ONE IMPLEMENTATION, no second hash) falls
+  under the inclusion threshold. Membership is per-chunk and insertion-independent:
+  the pool churns only as members themselves are added/edited/removed, i.e. in
+  proportion to real corpus churn, never by phase shift.
+- *The N rule:* R2 embeds the full derivable-text pool once, then measures the
+  **N-noise curve** — bootstrap CI width of the floor as a function of N
+  (subsample at N = 50, 100, 200, 400, … up to pool size; arithmetic only, zero
+  additional embeds). Adopted N is the smallest where the interval passes the
+  **pre-registered stability gate: verdict decisions computed at ci_low vs ci_high
+  agree on ≥98% of the union's samples** — i.e. the floor's own wobble flips ≤2% of
+  known decisions. (Decision-agreement, not a width in cosine units, so the bar
+  carries no arbitrary physical constant; the 98% is a pre-registration of the same
+  standing as D2's 5%/60%, attackable before 11-i codes it — D8.) **Per directive
+  1, this gate PASSING in 11-i is an entry condition for 11-ii's serving swap**, not
+  a later review item.
+
+**D3 — Staleness is a measurement, and the threshold dies entirely.** The adopted
+model, replacing leg 2:
+- **Measure at every post-sweep where at least one chunk changed since the last
+  measurement; skip otherwise — and the skip is EXACT, not approximate.** Zero
+  corpus change ⇒ identical probe pool ⇒ identical captures (the determinism
+  control) ⇒ bit-identical floor. Skipping a no-change sweep is a correctness-
+  preserving optimization, so the scheduler needs NO threshold at all: the 10%
+  tolerance is not re-tuned, it is deleted.
+- **Adopt iff the fresh measurement's CI and the adopted CI are DISJOINT** —
+  interval-vs-interval, not point-outside-interval. This answers the lead's (b):
+  the fresh measurement has its own noise, and a fresh POINT outside the adopted CI
+  can be pure fresh-run noise; disjointness hedges both noises symmetrically, and
+  the fresh bootstrap is free (D1). No wider hysteresis band is needed, for a
+  structural reason: adoption RE-CENTERS the interval on the new measurement, so a
+  borderline value that adopts is comfortably interior on the next cycle —
+  sustained flapping requires the true floor to genuinely oscillate across a CI
+  width, which is real movement the serving SHOULD track; and an adoption is a
+  cheap store write, not a rebuild, so the cost of tracking is negligible.
+  Overlapping intervals ⇒ statistically indistinguishable ⇒ keep the adopted floor:
+  hysteresis falls out free, as the frontier framing predicted.
+- **Leg 1 unchanged and un-folded** (the lead's constraint 1, affirmed): a
+  vector-identity/fingerprint change disarms IMMEDIATELY — the old floor is
+  known-invalid in the new space, and no measured-movement test is meaningful
+  across spaces. Disarm on the event; re-measure queued for after the reconcile
+  settles; the F4/B6 per-hit dispositions carry over unchanged.
+- Stale ≡ "a fresh measurement lands disjoint from the adopted interval" ALSO
+  catches the #74 class churn was blind to: a surgical edit that moves answered
+  cosines moves the fresh measurement regardless of how many chunks changed.
+
+**D4 — The ruler-and-measurand question (the lead's (a)), answered at the
+mechanism.** *No feedback loop through serving exists*: the capture pipeline
+consumes raw cosines and the anchor predicate — the CURRENT floor is not an input
+to any capture, selection, or bootstrap step (verified against the survey's data
+flow, `capture_query` → `VerdictSample` → `choose_cosine_floor`), so adopting a
+floor cannot change the next measurement. The self-referential-looking part —
+corpus churn moves both the answer distribution and the probe set — is the
+definition TRACKING ITS REFERENT, not circularity: the floor's contract is "the
+range answers measure on this corpus, now." The genuine instability mechanism was
+the sampler discontinuity, fixed in D2. Residual honesty: under MASSIVE churn the
+ruler and the measurand co-move and the fresh-vs-adopted comparison conflates the
+two — so each run also logs a **paired decomposition** (the fresh floor recomputed
+on the SURVIVING-probe subset — a fixed ruler isolating distribution movement —
+beside the full-pool floor that adoption actually uses; arithmetic only). The
+paired stat is the clean drift diagnostic; the full stat is the honest new truth;
+divergence between them is itself a logged signal that the corpus reshaped rather
+than drifted.
+
+**D5 — Cost honesty under measure-every-sweep (the lead's constraint 2).** The B2
+bounds are UNCHANGED and still hold: runs launch only at post-sweep quiescence,
+single-flight with coalescing, discard-requeue on mid-run churn — so the steady-
+state rate on an actively-edited tree is **exactly one run per sweep cycle**
+(against the old model's one per 10%-churn; the increase is the point — staleness
+is now measured). What one run costs, cold: O(N) query embeds + O(N) k′-deep
+searches + arithmetic; **measured at R2 and recorded per row before 11-ii wires
+the loop — measure-first applied to this design's own mechanism.** Two PRICED
+CONTINGENCIES, built only if R2's measured cost demands them (YAGNI until the
+number exists): (i) a probe-embedding cache keyed on (probe-text sha, embedder
+fingerprint) — a probe whose source chunk did not change re-uses its query
+embedding, collapsing steady-state embed cost to O(changed probes) ∝ churn;
+(ii) a scheduler throttle (every-Kth sweep or accumulate-M-changed-chunks) as an
+F6-tunable residual — a COST knob, never a staleness definition. If measured cost
+exceeds what a sweep cycle absorbs even with (i), that is reported as a limit, not
+forced past.
+
+**D6 — Composition: #180 and per-tier ride the same machinery (the lead's (c)).**
+The engine's served unit generalizes to **(statistic, point, CI, scope)**: today
+one row — (response-best floor, point, CI, pooled). A future per-hit floor (#180's
+candidate fix (a)) is another statistic with its OWN interval and its OWN
+disjointness-staleness, measured from the same captures — no new machinery, one
+more row. R8's per-tier upgrade is RE-EXPRESSED in the same test and its
+improvised p5↔p10 bar is superseded: **a tier gets its own served floor iff the
+tier's floor CI is DISJOINT from the pooled floor's CI** (same instrument, same
+adoption test, pre-registered before any stratified run exists). One test now
+governs adoption, per-tier upgrade, and staleness — three rules collapsed into
+one measured comparison.
+
+**D7 — Reworked 11-i build steps (replacing the churn-threshold items) + sizing.**
+B7 step 2 becomes: hash-stable pool sampling (D2) · answered + hold-out legs
+(unchanged) · bootstrap interval machinery (D1) · N-noise curve + stability gate
+(D2) · paired decomposition logging (D4) · per-run cost capture (D5). B7 step 3
+(11-ii) becomes: exact-skip per-sweep scheduling + disjoint-CI adoption (D3)
+replacing the churn trigger; leg-1 disarm wiring unchanged; contingencies (i)/(ii)
+only as R2's measured cost directs. Persistence gains interval + N + bootstrap
+params + paired-stat fields (B4's OVERWRITE rule covers additive fields on the new
+table). **Sizing, said plainly: 11-i grows ~0.20 → ~0.25–0.30** (bootstrap +
+sampler + gate analysis are arithmetic-heavy but plumbing-light; the embed cache
+deferring to 11-ii keeps 11-i lean). Still inside the split's envelope and still
+gated behind 11-ii; if the 11-i builder's kickoff estimate crosses 0.30, the
+sub-split line is "pool+bootstrap+gate" vs "paired-decomposition+cost-capture".
+
+**D8 — Pre-registered vs measured, so nothing is synthesised.** MEASURED at R2,
+never before: the N-noise curve; the adopted N; the CI widths; the per-run cost;
+the per-hit over-flag decomposition (C6f); per-tier separations. PRE-REGISTERED
+rule-shapes (same standing as the 5%/60% bars — values proposed here, attackable
+by the contract-adversary BEFORE 11-i codes them): bootstrap B≥1000, central 90%
+interval; the ≥98% decision-agreement stability gate; disjoint-CI as the one
+adoption/upgrade/staleness test. Nothing in this addendum states a floor value, a
+noise magnitude, or a run cost — those numbers do not exist yet, and the first
+instrument that can produce them is the R2 run.
