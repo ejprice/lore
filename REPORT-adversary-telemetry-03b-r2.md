@@ -1157,3 +1157,162 @@ Recorded because "a pin is not a pin until it has been run" applies to the adver
   is neither a literal nor isinstance-guarded*), per the repo's when-you-cannot-close-a-hole
   law. What I may not do is decide that for you, and what I could not do is call it SUFFICIENT
   while a wrong build I built is still standing.
+
+---
+
+# FINAL VERDICT PASS (appended 2026-07-24, MP-I at HEAD `494465f`)
+
+> Measured 2026-07-24 at HEAD **`494465f`** (`test(03b): MP-I — the last cell; real failing tools
+> must land real rows`), same frozen scratch reference, same patch scripts.
+> `loremaster.__file__ = /home/ejprice/scratch/adv-telemetry-03b-r2/loremaster/loremaster/__init__.py`.
+> Repo untouched except this report.
+
+## FINAL SUMMARY BLOCK
+
+- **VERDICT: CONTRACT SUFFICIENT — with ONE named, receipt-backed BOUND (§FV-3), which is the
+  lead's to accept or overrule.** Every honest-developer-reachable shape I can invent dies.
+  Three deliberately-keyed shapes survive; by this repo's own written gate threat model those
+  are not defects, and I say so with their receipts in hand rather than by not looking.
+- **MP-I confirmed, exactly as prototyped:** **D9b → 1 failed** (MP-I alone) · **D4 → 16 failed**
+  (the binder's 15 coverage legs + MP-I). Satisfiability on my frozen reference:
+  **491 passed / 0 failed**, MP-I green. RED tail: **95 failed / 631 passed**.
+- **Last sweep (3 new shapes, all adversary-only): D15** wrong TYPE for `agent` on CANCELLED
+  dispatches · **D16** `latency_ms` as a string on CANCELLED dispatches · **D18** `params_hash`
+  truncated to 32 hex for real tools on the ERROR path. Each scores **491 passed / 0 failed**.
+  **Every unconditional counterpart dies** (D7 23F, D8 1F, D14 1F, W9/M12 on the digest).
+- **P0 disclosure, my SECOND self-caught instrument failure this session:** my type-aware-double
+  prototype (the hardening I was about to recommend) **fails its control on the CORRECT build** —
+  it reddens `test_every_parameter_the_REAL_signature_declares_is_ACCEPTED`, whose fixture feeds
+  type-agnostic sentinels. So the hardening is **not drop-in**; recommending it without that cost
+  attached would have been the exact over-claim I have spent four rounds finding in others.
+- **The bound, stated for the record:** value-level correctness of the emission's kwargs is
+  pinned ∀ cells the pins dispatch into — success and error, synthetic and real subjects, names
+  and arity everywhere via the bound double — and is **NOT** pinned for (a) the CANCELLED cell
+  against a real store, or (b) digest CONTENT on the error path. Re-open trigger named in §FV-3.
+
+## §FV-1 MP-I confirmed
+
+| build | prototype expectation | measured at `494465f` |
+|---|---|---|
+| **D9b** (mypy-clean wrong type, error × real tool) | 1 failed | **1 failed** — `test_every_REAL_registered_tool_that_FAILS_lands_a_real_row` ✔ |
+| **D4** (bad kwarg name, error × real tool) | 1 failed (my probe) | **16 failed** — the binder's 15 coverage parametrisations **plus** MP-I ✔ (belt and braces, as intended) |
+| correct reference | 491 passed | **491 passed / 0 failed** ✔ |
+| pristine production | — | **95 failed / 631 passed** |
+
+## §FV-2 The last sweep — three surviving shapes, all deliberately keyed
+
+| # | shape | score | production effect | its unconditional twin |
+|---|---|---|---|---|
+| **D15** | `agent = arguments.get("depth", 7)` (an `Any` → int) **only when the dispatch was CANCELLED** | **491 / 0** | cancelled rows rejected by the engine → the timed-out population silently lost | D7 (`ok="yes"` always) → **23 failed** |
+| **D16** | `latency_ms = str(...)` **only when CANCELLED** | **491 / 0** | same | D7 → **23 failed** |
+| **D18** | `params_hash` truncated to 32 hex for **real tools on the ERROR path** | **491 / 0** | rows LAND but carry a second digest vocabulary → per-call aggregation splits | W9 / M12 (any unconditional recipe change) → **2–4 failed** |
+
+**Why the cells exist:** no pin dispatches a CANCELLED call into a real store (the cancellation
+pin is double-backed, and the double checks names, not types), and MP-H/MP-I assert that the row
+LANDS with the right tool and `ok`, not that its digest is the recipe's value.
+
+**Why I do not call them defects.** Each requires a condition chosen *specifically to dodge the
+fixtures* — `if cancelled`, or `if not ok and tool.startswith("lore_")`. No honest
+implementation of this seam contains such a branch, and every unconditional version of the same
+mistake is already dead. This repo's gate threat model settles the category explicitly:
+
+> *"a clever attacker gets through" is **not** a defect; "an honest engineer's shell-out goes
+> unnoticed" **is**… a gate that refuses honest code is a gate that gets SWITCHED OFF.*
+
+Four rounds have driven this contract to the point where only gate-attacks survive. That is
+where a gate should stop, and continuing to chase cells now costs more in instrument risk
+(§FV-3) than the shapes cost in exposure.
+
+## §FV-3 The bound, its cost, and its re-open trigger
+
+**BOUND (pin it, do not silently inherit it):** the emission's kwarg **names and arity** are
+verified ∀ dispatches (the bound double); its **values/types** are verified only where a pin
+dispatches into a real store — success ∀ registry (MP-H), error ∀ registry (MP-I), success/error
+on synthetic subjects (MP-A). **Unverified: the CANCELLED cell against a real store, and digest
+CONTENT on the error path.**
+
+**The hardening I was going to recommend, and its measured cost.** A type-aware double
+(`bind()` + an annotation check) closes D15/D16/D9b — but **it is not drop-in**:
+
+```
+correct reference + type-aware double : 1 failed  <-- test_every_parameter_the_REAL_signature_declares_is_ACCEPTED
+D15 : 2 failed   D16 : 2 failed   D9b : 17 failed   D18 : 1 failed (types cannot see a truncated digest)
+```
+
+The single failure on the CORRECT build is that control's own fixture feeding type-agnostic
+sentinels to every declared parameter. So adopting the hardening means **editing a control** —
+the one class of edit this packet has most reason to be careful about — and it still leaves D18.
+**I therefore recommend NOT adopting it now**, and recording the bound instead.
+
+**Named re-open trigger** (the condition under which this trade changes): *the day the emission
+passes a value that is neither a literal nor `isinstance`-guarded* — i.e. any new `Any`-sourced
+kwarg — **or** the day a consumer reads `params_hash` for equality rather than for grouping.
+Either makes the unverified cell reachable by an honest mistake, and then the type-aware double
+(with its control fixture corrected) is the closure, plus one `_expected_params_hash` equality
+assertion inside MP-H/MP-I for the digest.
+
+## §FV-4 P0 — my own instruments, both failures disclosed
+
+1. **The MP-I prototype failed its control on the correct build** (previous section, §FC-4): my
+   raising stub raised `RuntimeError`, which `_dispatch_ignoring_tool_failure` does not suppress.
+   Fixed to `ToolError` before any leg was measured.
+2. **The type-aware-double prototype fails its control on the correct build** (§FV-3): it reddens
+   an existing binder control. **I found this by running the correct build FIRST** — had I run
+   only the wrong builds, I would have reported "2 failed on D15" as a clean kill and recommended
+   a hardening that breaks a green suite. Both failures are the same lesson the contract's author
+   recorded in §18 and I re-learned twice: *a pin is not a pin until it has been run, and the run
+   that matters most is the one against the build you believe is correct.*
+
+## §FV-5 THE CLOSED QUANTIFIER TABLE (final, at `494465f`)
+
+| # | invariant | ∀ or GUARDED | receipt |
+|---|---|---|---|
+| I1 | every dispatch of every registered tool writes exactly one row | **∀ (registry × {success, error})** | W11 15/16 · W1 39 · W8 17 · M4 |
+| I2a | the emission's kwarg NAMES/arity are ones the real store accepts | **∀ over every dispatch any pin makes** | D4 16F · D6 1F · W33 32F · D2 3F · BC1/BC2 both directions |
+| I2b | …and their VALUES/TYPES are accepted | **∀ over {success, error} × {synthetic, real}; BOUND on the cancelled cell + digest content** | D7 23F · D8 1F · D14 1F · D9 killed by mypy · D9b 1F (MP-I) · **D15/D16/D18 survive — §FV-3 bound** |
+| I3 | `ok` True iff the dispatch RETURNED | **∀ {return, raise, cancel}** | W6 · W7 · M4 · D8 |
+| I4 | the tool's outcome is never altered by telemetry | **∀ {success, raise, store-broken, no-context}** | M19 · M20 |
+| I5 | a trace-write failure is LOUD and structured | **∀ over failure modes** | my reference's own first-pass RED |
+| I6 | identity is DECLARED, never guessed (synthetic AND real subjects) | **∀** | M7–M10 · W2a · W17 · W27 · R6 |
+| I7 | correlator = header else NONE | **∀ {header, none, no transport}** | W27 |
+| I8 | `params_hash` recipe ∀ arguments, no raw content | **∀ {non-empty, empty}** (content on the error path: §FV-3 bound) | W31 · W9 · M12 |
+| I9 | latency reflects real duration | **∀ {zero, seconds, constant, scaled}** | W16 · M18 · P2-const · p2b-halved |
+| I10 | the seam never fabricates a `hit_count` | **∀ over values** | W5 · W32 |
+| I11 | ordinal engine-minted, distinct, strictly increasing, gaps real | **∀, monotonicity leg alive** | M27 · W4 · M6 · M14 · W20 · 20/20 concurrency |
+| I12 | schema delta (types, guard kinds, sequence, index) | **∀ over columns** | W3a · W3b · W22 · W23 · W13 · M15b |
+| I13 | the delta migrates a DIRTY store | **∀ (4 legs)** | W22 |
+| I14 | signature + fake parity, no `ordinal` parameter | **∀ over the parameter list** | M14 |
+| I15 | no production prose teaches the retired plan | **∀ over every comment/string token of 3 modules**; control two-directional | M26 · GM1b · GM2b |
+| I16 | the two `message` hot-path indexes | **∀ {missing, UNIQUE, reversed, superset}** | W14b · W14 · W28 · W29 |
+| I17 | the ORACLE mirrors the real row shape | **∀ (3 directions, 3 pins)** | M25 · M25b |
+| I18 | the widened columns still REJECT a wrong TYPE | **∀ (rejection + legal-value control)** | M28b |
+| I19 | a real registered tool's call is accepted by the real store, on SUCCESS | **∀ over the registry** | W33 · D2 · D3 · D5 · D7 |
+| I20 | …and on the ERROR path | **∀ over the registry** (MP-I) | **D9b 1F · D4 16F** |
+
+**20 invariants: 19 ∀, one (I2b) ∀-except-a-named-bound.**
+
+## §FV-6 FINAL VERDICT
+
+**CONTRACT SUFFICIENT**, with the §FV-3 bound recorded and its re-open trigger named.
+
+How hard I tried, so the verdict can be judged rather than trusted: **five grading rounds ·
+~60 wrong builds built and run against the real contract · every one restored from a
+byte-identical snapshot · two of my own instruments caught failing their controls and fixed
+before use**. The score sheet across the whole engagement: **four survivors and one surviving
+oracle mutation in round 1 · one survivor in round 2 (W33) · two in round 3 (D4/D6) · one in
+round 4 (D9b) · three adversary-only shapes in round 5**, every honest-reachable one of which is
+now dead, each to a named pin whose discrimination I measured rather than assumed.
+
+The telemetry contract is the strongest I have graded in this packet: coverage is a checked
+variable on both outcomes and both subjects, the store contract is verified end-to-end rather
+than through a permissive double, the prose gate is a token-scoped sweep with a two-directional
+control, the oracle has behavioural pins, and every instrument in it — the monotonicity
+predicate, the index-fields parser, the prose sweep, the binder — carries a control of its own
+that I have watched fire. **My certification of the packet-03b telemetry contract stands.**
+
+⚠ Two things that are NOT certified by this verdict, restated so nobody inherits them by
+silence: the **T7.9 deploy smoke** against `:18500` remains a packet-exit obligation (MP-A/H/I
+prove seam+store agree on a throwaway DB; only the smoke proves it on the deployed artifact),
+and the **`test_message_ledger.py` mypy pair** (RG-R3) is still an open disagreement between my
+measurement and the author's — one `./scripts/typecheck.sh` at the merge gate settles it, and
+03b owns global mypy-zero.
