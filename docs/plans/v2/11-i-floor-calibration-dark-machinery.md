@@ -37,7 +37,12 @@ R1–R8 + Addenda A and B.
   no verdict or per-hit gate change, no constant retirement. All of that is 11-ii. If a
   change here would alter a served byte, stop and escalate — the split exists to keep this
   half dark.
-- Verdict grammar/wording (ruled law; F3 is the operator's, still open at time of writing).
+- Verdict grammar/wording (ruled law — meaning NO UNILATERAL CHANGE, not "the operator
+  picks it"). F3 is a **CLIENT CONSULT**, not an operator fork: the models that consume the
+  tool decide what serves them (operator ruling of 2026-07-06, carried in
+  `docs/design/2026-07-06-weak-match-discrimination.md`; method in
+  `docs/design/2026-07-06-client-needs-consult.md`). Outcome recorded in the packet 10
+  design doc §C3. Nothing in this packet needs it.
 - Reranker/utility-predictor confidence layers (packet 28 territory).
 
 ## Entry check

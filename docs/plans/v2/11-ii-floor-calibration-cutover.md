@@ -31,17 +31,28 @@ ruling: `lore_recall("operator ruling cosine floor SurrealDB container")`. Desig
   #83 / #87 / #161 / #179.
 
 ## Scope OUT (surface to operator if encountered)
-- Verdict grammar/wording — **ruled law, and F3 is the operator's fork.** If R2's lab
-  validation (landed in 11-i) did NOT pass, the wording amendment goes BACK to the operator
-  before this packet touches a served string. Do not decide it here.
+- Verdict grammar/wording — **ruled law, meaning NO UNILATERAL CHANGE.** F3 is a **CLIENT
+  CONSULT**, not an operator fork: the models that consume the tool decide what serves them
+  (operator ruling 2026-07-06, in `docs/design/2026-07-06-weak-match-discrimination.md`;
+  method in `docs/design/2026-07-06-client-needs-consult.md`). **F3's client-consult outcome
+  must be recorded (design doc §C3) before this packet touches a served string.** Do not
+  decide it here, and do not route it to the operator — the operator sequences the consult,
+  it does not render its verdict.
 - Reranker/utility-predictor confidence layers (packet 28 territory).
 
 ## Entry check
 **FIRST READ: `docs/reference/surrealdb-31-capabilities.md`** (store-reading code; cite,
 never re-transcribe).
 - 11-i landed, its cold audit GO, and its measured floor + provenance on record.
-- **F3's disposition known** — either the operator approved the conditional default and R2
-  passed, or the amendment has been ruled. Do not start the serving swap without it.
+- **F3's client-consult outcome recorded** (design doc §C3). Do not start the serving swap
+  without it.
+- **#180 has a ruled fix.** The BASIS MISMATCH is independent of both the F3 wording consult
+  and the R1 probe redesign: the floor is calibrated on best-of-response cosines
+  (`max_cosine_of_response`) and served per-hit, so mid-list hits are judged against a
+  population they cannot belong to. It must be fixed under ANY wording or provenance
+  outcome. **A builder may NOT pick between the two candidate fixes** (calibrate a second
+  per-hit floor, vs. move the per-hit surface onto a statistic the existing floor describes)
+  — that is a design choice; it comes from the packet 10 designer or an operator ruling.
 - suite green at HEAD; spike-surreal up (**:18000 test store, never :18500**).
 
 ## Exit
