@@ -289,7 +289,7 @@ the scout's §5.1 derivation is adopted).
 
 1. **ONE seam, receiver-blind:** subclass `FastMCP`, override `call_tool` (two-line SDK body,
    measured: `get_context()` + `_tool_manager.call_tool` delegate), delegate to `super()` inside
-   a timed `try/finally`. One-line instantiation swap in `build_server` (`FastMCP(...)` →
+   a timed `try/finally`. One-line instantiation swap in `build_mcp_server` (`FastMCP(...)` →
    `TracingFastMCP(...)`). EVERY tool dispatch — current and future packets' — passes through by
    construction: coverage by seam, never by enumeration (the six-defeats frame). The installed
    `mcp` 1.27.2 has NO middleware API (scout, measured) — so hand-rolling this gap is the
@@ -391,7 +391,9 @@ without a per-caller key there is no per-agent denominator. Measured facts (scou
 my own SDK reads, 2026-07-24): `Context` exposes `client_id` / `request_id` / `session` (the
 `ServerSession` OBJECT — no plain id string); streamable-http carries an `mcp-session-id` header;
 lore instantiates `FastMCP` WITHOUT `stateless_http` (default `False` — verified in
-`build_server`), so the SDK retains ONE `ServerSession` per MCP session across its requests.
+`build_mcp_server`), so the SDK retains ONE `ServerSession` per MCP session across its requests.
+*(Both mentions in this doc originally said `build_server` — a wrong symbol, caught by the
+contract author 2026-07-24 and corrected in place; the prose-vs-code class, in this doc.)*
 
 **RULING — the key, the join, and their separation:**
 1. **`caller` is a TRANSPORT-SESSION key, not an agent key** — the two concepts are kept apart
@@ -429,6 +431,62 @@ lore instantiates `FastMCP` WITHOUT `stateless_http` (default `False` — verifi
 a server-side registry mapping keys to agents as a SECOND store surface (the join is already in
 the rows; a mutable map is a cache that can lie); using `client_id` (client-declared, not
 per-process-unique) or `request_id` (per-request) as the key.
+
+**[SETTLED 2026-07-24, contract phase]:** the S7(3) measurement ran — `mcp` 1.27.2 mints ONE
+`ServerSession` per MCP session → **rung 1 selected; the header fallback rung is retired
+unused**, and the decision rule stands as a permanent pin that goes RED if an SDK bump changes
+the retention.
+
+---
+
+## S8 — contract-phase escalation rulings (2026-07-24; E2/E3 routed here by the lead)
+
+**E2 — the unknown-annotation-key raise happens at the `_annotate_trace` CALL (reading A),
+CONFIRMING the author's pin. Zero pins re-authored.** The structural argument is decisive and is
+hereby made part of S6v2 item 3's meaning: **the guard must live OUTSIDE the seam's
+catch-log-serve envelope, or it swallows itself** — a merge-time raise (reading B) lands inside
+item 6's telemetry-error catch and degrades deny-by-default to a log line, a green gate over a
+dead mechanism. At the call site the raise surfaces as a TOOL-CALL failure — loud in every test
+that exercises the handler, atomic (no partial annotation), and it names the offending line. The
+threat model (stated per repo law): the HONEST DEVELOPER — e.g. a packet-04 author annotating
+`unread_count` without extending the closed key set — who enters through the one documented
+helper and is caught there. **The residual door, adjudicated rather than ignored:** code that
+bypasses the helper and mutates the ContextVar dict directly is deliberately-unusual code — per
+the gate-threat-model law it is LEDGERED as a bound, not paid for in false positives. The seam's
+fold MAY additionally verify keys ⊆ allowlist as a second belt; that check is allowed to be
+log-only precisely because it is the belt, not the guard. Re-open trigger: a second annotator
+module (packet 04's footer) lands — re-verify the helper is its entry point.
+
+**E3 — `seq int` (non-`option`) is UPHELD, overruling the lead's lean, with the bound the author
+recorded now strengthened.** The lead's §1.4/#107 concern is legitimate and was weighed; it
+loses on three grounds:
+1. **The empty-table premise is CODE-DERIVED, not fixture-derived:** `record_trace` has had ZERO
+   production callers in ANY shipped image, ever (scout §2, source + deployed artifact) — so no
+   lore deployment ANYWHERE can hold organic trace rows. This is not a virgin-fixture fiction;
+   it is archaeology over every writer that has ever existed.
+2. **Even on a hypothetical dirty store the failure is bounded, non-destructive, and
+   non-silent-at-write:** §1.4's poisoning bites only on UPDATE of an old row — and trace rows
+   are append-only BY DOCUMENTED DESIGN (`record_trace` docstring), with the author's named
+   re-open trigger ("the day anything UPDATEs a trace row, or any store is found carrying
+   pre-03b trace rows") covering exactly that day.
+3. **`int` buys a STANDING mechanical guard `option<>` cannot:** the schema rejects any FUTURE
+   writer that omits the mint — guarding the TABLE including write paths nobody has written yet
+   (the same argument the store reference makes for `ENFORCED`). A presence PIN guards only the
+   paths it drives; the schema guards them all. Instrument over hope.
+   **One strengthening, required:** the pin's docstring must also record that on a hypothetical
+   dirty store, READS of old rows serve `seq = None` regardless of the schema (§2's
+   silent-None-projection law — `TYPE int` does not retro-fill), so packet 06's analysis treats
+   `seq is None` as "pre-03b row" defensively. That line makes the bound honest on the READ side
+   too, which neither the `int` nor the `option` choice changes.
+
+**Store-reference routing rule (for the author's new probed SurrealQL fact — the lead lands
+it):** if the vendor documents the OPPOSITE of the probed behaviour → §6 (a new numbered
+falsehood, + a one-line pointer from the practical section it affects); if the vendor is SILENT
+→ the practical section (§2 DML / §5 concurrency / §7 syntax, wherever a user would look first)
+tagged `[PROBED 2026-07-24, 3.2.1]`, PLUS a line in §6.6's "claims for which WE are the only
+source" list. Either way it carries the engine version per §0's provenance-honesty note. A
+probed fact that stays only in a report is how #107 happened — landing it is part of the wave,
+not cleanup.
 
 ---
 

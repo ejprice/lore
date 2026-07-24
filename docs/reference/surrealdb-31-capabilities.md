@@ -280,9 +280,33 @@ The house rules for reading and writing rows. Each one was found the hard way.
   requires **`CREATE <table> CONTENT $content`** with `session` as a KEY *inside* the bound object.
   `SurrealStore.record_trace` is shaped this way on purpose. **This is the general rule: use
   `CONTENT` for any write whose columns may collide with a protected name.**
+  - **⚠ `CONTENT` composes with NEITHER `SET` NOR `MERGE` — both are PARSE ERRORS.**
+    [PROBED 2026-07-24, 3.2.1] So the moment you need "bind an object **AND** compute a column
+    store-side" (the usual case: a `sequence::nextval()` mint alongside a bound payload), the obvious
+    spellings are dead ends:
+
+    | shape | result |
+    |---|---|
+    | `CREATE t CONTENT $c SET seq = sequence::nextval("s")` | **PARSE ERROR** — `Unexpected token 'SET'` |
+    | `CREATE t CONTENT $c MERGE { seq: … }` | **PARSE ERROR** — `Unexpected token 'MERGE'` |
+    | `CREATE t CONTENT object::extend($c, { seq: sequence::nextval("s") })` | ✅ **the working shape** |
+    | `CREATE t CONTENT { tool: $c.tool, …, seq: … }` | works, but re-enumerates every column by hand |
+
+    **`object::extend($bound, {computed})` is the idiom** — it is the only one that keeps the bound
+    payload opaque (no hand-listing, so adding a column later cannot silently drop it) while letting
+    the engine mint. Also measured: **`sequence::nextval` starts at 0** under the default `START 0`,
+    so a sequence-backed column is 0-based — do not write a pin that assumes 1.
 - **A missing SELECT projection reads `None`, not a `KeyError`.** Projecting a column that does not
   exist yields `None` — so a typo'd projection degrades **silently** into a null, it does not blow
   up. Validate the shape you got.
+  - **⚠ BUT `SELECT *` BEHAVES THE OPPOSITE WAY: it OMITS a `NONE`-valued column ENTIRELY, so
+    `row["col"]` raises `KeyError`.** [PROBED 2026-07-24, 3.2.1] The sentence above is true of an
+    explicit **projection** and says nothing about `SELECT *` — and the two differ exactly where it
+    hurts. A column that is `option<>` and unset does not come back as `None` under `SELECT *`; **the
+    key is not there at all.** So the defensive shape depends on how you read: `row.get("col")` after
+    a `SELECT *`, `row["col"]` (may be `None`) after an explicit projection. Cost of learning this the
+    hard way: two pins in the 03b telemetry contract. **Corollary for any `option<>` column** — and
+    every enrichment column on `trace` is one — **a reader must not assume presence.**
 - **`str(RecordID)` round-trips.** The SDK's `RecordID` stringifies to `table:id` and parses back.
 - **CONTENT datetimes are Python datetimes.** tz-aware stdlib datetimes bind fine (cbor2 tag 0) —
   do not stringify them.
@@ -654,6 +678,13 @@ they are the ones an engine upgrade could silently invalidate, with nothing upst
    re-tokenisation, the `option<>` requirement.
 10. The SDK's **later-statement error swallowing** — undocumented, and the docs actively describe the
     opposite (§6.5).
+11. **`CONTENT` composes with neither `SET` nor `MERGE`** (both parse errors), leaving
+    `object::extend($bound, {computed})` as the only shape that mixes a bound payload with a
+    store-side mint (§2). [PROBED 2026-07-24, 3.2.1]
+12. **`SELECT *` OMITS a `NONE`-valued column entirely** → `KeyError`, which is the OPPOSITE of the
+    documented missing-**projection**-reads-`None` behaviour (§2). The vendor addresses neither, and
+    our own §2 sentence was silent about `SELECT *` for months. [PROBED 2026-07-24, 3.2.1]
+    ⚠ Load-bearing for every `option<>` column: **a reader must not assume presence.**
 
 ---
 
