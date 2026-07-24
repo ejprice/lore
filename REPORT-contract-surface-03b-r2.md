@@ -718,3 +718,34 @@ naming a missing render, `TypeError` naming an unaccepted kwarg — sampled and 
 **I cannot show them green, because I may not build the surface.** The B3 fix is proven both
 directions synthetically; the B4 fix is proven by collision analysis. Everything else is the
 adversary's to certify against its reference — that split is the point.
+
+---
+
+# APPENDIX B — B3.2 ruled (Reading A): contract stands as built
+
+*Appended 2026-07-24 by contract-surface-03b-r2, after the lead relayed the ruling. Verified
+in the tree, not taken on relay: `f537051 docs(03b): B3.2 ruled — Reading A, no thread cell on
+the send receipt; clause struck in place`, with B3 item 2 struck in place and the §G row
+carrying the derivation.*
+
+**Outcome: no pin changes owed.** The contract already implements Reading A — I never authored
+a send thread-cell template or a pin demanding one. The question teach derives from the typed
+`Message.question` (E-S4), and B3.3's additive teach template is the one place a thread reaches
+the send render. The classification pin reddening an additive-template build is now the RULED
+behaviour, so the adversary's Reading-B reference dying on it is the instrument working, not a
+contract defect.
+
+**One prose corpse retired, found by a bare sweep of my own files** (`grep -n "thread cell|
+thread-bearing|B3.2"`, 4 hits, each verdicted individually):
+
+| site | verdict |
+|---|---|
+| `_render_send_thread` docstring — *"B3.2/B3.3 put `thread` into the send render (the thread cell, and the question teach)"* and *"BOTH thread-bearing lines render"* | **CORPSE — retired.** False the moment B3.2 was struck. Rewritten to name the question teach as the ONLY thread-bearing line, with the retired sentence quoted so the change is met deliberately |
+| same docstring, the QUESTION fixture choice | **upgraded from incidental to LOAD-BEARING** — under Reading A a non-question fixture would drive this injection case against a render that never touches `thread`, so the hostile value would exercise nothing. Now stated as the reason |
+| `test_comms_tool.py:3770` — *"same-thread rows draw no thread cell"* | **not a corpse** — that is the DRAIN row's `{context}` cell (B14), which Reading A does not touch |
+| `TestTheDrainRowContextCell` (whole class) | **unaffected** — B14 governs the drain row; B3.2 governed the send receipt. What survives of B3.2 is the suppression PRINCIPLE, which B14 already applies |
+
+Gates after the edit (docstring-only, no assertion changed): `test_comms_tool.py`
+**275 failed, 556 passed**; `test_comms_promise_registry.py` **15 failed, 101 passed**;
+`test_message_ledger.py` **196 passed, 14 skipped**; `uv run ruff check .` → *All checks
+passed!* — identical to §F.1, as a prose-only edit must be.
