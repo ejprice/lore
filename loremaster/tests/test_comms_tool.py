@@ -3830,8 +3830,6 @@ async def _render_send_thread(value: str, _ctx: Any) -> str:
 async def _render_drain_body(value: str, _ctx: Any) -> str:
     return AppContext._render_comms_drain(
         _drain_result(entries=[_inbox_entry(body=value, thread="wave7")]),
-        agent_name="fixer-b",
-        limit=20,
         session="wave7",
     )
 
@@ -3839,8 +3837,6 @@ async def _render_drain_body(value: str, _ctx: Any) -> str:
 async def _render_drain_sender(value: str, _ctx: Any) -> str:
     return AppContext._render_comms_drain(
         _drain_result(entries=[_inbox_entry(sender_name=value, thread="wave7")]),
-        agent_name="fixer-b",
-        limit=20,
         session="wave7",
     )
 
@@ -3852,8 +3848,6 @@ async def _render_drain_task_id(value: str, _ctx: Any) -> str:
     unsanitised build awkward, but the completeness pin cannot see the gap."""
     return AppContext._render_comms_drain(
         _drain_result(entries=[_inbox_entry(task_id=value, thread="wave7")]),
-        agent_name="fixer-b",
-        limit=20,
         session="wave7",
     )
 
@@ -3863,8 +3857,6 @@ async def _render_drain_refs(value: str, _ctx: Any) -> str:
     row's refs variant (``({refs})``) — no committed injection case drove them."""
     return AppContext._render_comms_drain(
         _drain_result(entries=[_inbox_entry(refs=[value], thread="wave7")]),
-        agent_name="fixer-b",
-        limit=20,
         session="wave7",
     )
 
@@ -3883,8 +3875,6 @@ async def _render_drain_thread(value: str, _ctx: Any) -> str:
     reaches the render, so that cannot happen silently."""
     return AppContext._render_comms_drain(
         _drain_result(entries=[_inbox_entry(thread=value)]),
-        agent_name="fixer-b",
-        limit=20,
         session="wave7",
     )
 
@@ -5047,6 +5037,17 @@ class TestRenderCommsDrainShape:
     unreachable again (a defaulted branch-comparand is the fixture-monoculture
     hazard moved down to the SIGNATURE layer). Branch 3 is pinned below.
 
+    **AUTHORIZED AMENDMENT R5-OUTCOME-2 (design sidecar 2026-07-24): the ruled
+    signature is now ``_render_comms_drain(result, *, session)``.** The adversary's
+    R5/m4 flagged ``agent_name`` and ``limit`` as DEAD ruled params — ``agent_name``
+    never had a consumer (no drain template carries ``{name}``; the row is
+    ``{sender}→you`` with a literal second person — a recorded deliberate choice,
+    NOT to be re-added as a header/label) and ``limit`` was orphaned when the
+    elision was ruled fully result-derived (``more = total_pending − shown``;
+    ``next_limit == more``). Both are dropped. The dropped signature IS the pin:
+    every driver now calls ``_render_comms_drain(result, session=…)``, so a build
+    whose render still requires either param is a ``TypeError`` at the call sites.
+
     **Reading B — "drop branch 3; always render the thread cell when ``task_id``
     is None" — was REFUSED, and the reason BINDS A BUILDER**, so it is recorded in
     the instrument rather than only in the ruling: most fleet traffic rides the
@@ -5067,7 +5068,6 @@ class TestRenderCommsDrainShape:
         *,
         total_pending: int | None = None,
         peeked: bool = False,
-        limit: int = 20,
         session: str,
     ) -> str:
         """Drive the REAL drain render (AMENDMENT 10 added ``session``).
@@ -5079,12 +5079,19 @@ class TestRenderCommsDrainShape:
         The default cannot manufacture a value monoculture here because
         :meth:`test_the_SUPPRESSED_thread_is_the_SESSION_ARGUMENT_not_a_LITERAL`
         drives a DIFFERENT session and inverts which of two rows draws the cell;
-        a build hardcoding ``"wave7"`` fails there and only there."""
+        a build hardcoding ``"wave7"`` fails there and only there.
+
+        AUTHORIZED AMENDMENT R5-OUTCOME-2 (design sidecar 2026-07-24): the render's
+        ``agent_name`` and ``limit`` kwargs are DROPPED — the elision is fully
+        result-derived (``more = total_pending − len(entries)``; ``next_limit ==
+        more``; emit predicate ``total_pending > shown``), so the render never read
+        ``limit``, and no drain template carries ``{name}`` (the row is
+        ``{sender}→you`` with a literal second person). This driver no longer
+        forwards either; passing them to ``_render_comms_drain`` is now a
+        ``TypeError``."""
         return str(
             AppContext._render_comms_drain(
                 _drain_result(entries=entries, total_pending=total_pending, peeked=peeked),
-                agent_name="fixer-b",
-                limit=limit,
                 session=session,
             )
         )
@@ -5205,7 +5212,7 @@ class TestRenderCommsDrainShape:
         rendered = self._render(
             [
                 _inbox_entry(seq=61, thread="wave7"),
-                _inbox_entry(seq=62, thread="wave7")], total_pending=7, limit=2, session="wave7",
+                _inbox_entry(seq=62, thread="wave7")], total_pending=7, session="wave7",
             
         )
         line = _drain_line_containing(rendered, self._ELISION)
@@ -5221,7 +5228,6 @@ class TestRenderCommsDrainShape:
         rendered = self._render(
             [_inbox_entry(seq=61, thread="wave7"), _inbox_entry(seq=62, thread="wave7")],
             total_pending=2,
-            limit=2,
             session="wave7",
         )
         assert self._ELISION not in rendered, rendered
@@ -5250,14 +5256,14 @@ class TestRenderCommsDrainShape:
     async def test_a_PEEK_serves_no_elision_line(self) -> None:
         entries = [_inbox_entry(seq=61, thread="wave7"), _inbox_entry(seq=62, thread="wave7")]
         assert self._ELISION not in self._render(
-            entries, total_pending=7, limit=2, peeked=True, session="wave7"
+            entries, total_pending=7, peeked=True, session="wave7"
         ), (
             "a peek rendered the elision re-ask — its own header already discloses 'shown of "
             "total', and the re-ask would teach a re-run that stamps what the caller asked NOT "
             "to stamp"
         )
         assert self._ELISION in self._render(
-            entries, total_pending=7, limit=2, peeked=False, session="wave7"
+            entries, total_pending=7, peeked=False, session="wave7"
         ), "POSITIVE CONTROL FAILED"
 
     async def test_a_PEEK_still_serves_its_header_and_rows(self) -> None:
@@ -5453,12 +5459,12 @@ class TestRenderCommsDrainShape:
         lying header removes the only disclosure a peek has. Two shown, seven
         pending, on the stamping AND the peek header."""
         entries = [_inbox_entry(seq=61, thread="wave7"), _inbox_entry(seq=62, thread="wave7")]
-        stamping = self._render(entries, total_pending=7, limit=2, session="wave7")
+        stamping = self._render(entries, total_pending=7, session="wave7")
         assert stamping.splitlines()[0] == "drained 2 of 7 pending", (
             f"the stamping header did not name the TRUE pending total (7) — W4 reports the window "
             f"size (2) as the total: {stamping.splitlines()[0]!r}"
         )
-        peek = self._render(entries, total_pending=7, limit=2, peeked=True, session="wave7")
+        peek = self._render(entries, total_pending=7, peeked=True, session="wave7")
         assert peek.splitlines()[0] == (
             "peeked 2 of 7 pending — nothing stamped; re-run without peek=true to mark them seen"
         ), (
@@ -5535,7 +5541,6 @@ class TestRenderCommsDrainShape:
                 _inbox_entry(seq=62, grade="directive", acked_at=None, thread="wave7"),
             ],
             total_pending=7,
-            limit=2,
             session="wave7",
         )
         last_row = max(rendered.index("#61"), rendered.index("#62"))

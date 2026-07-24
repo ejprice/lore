@@ -278,3 +278,48 @@ bash refbuild/prove.sh                                                  # -> all
 **Scratch tree** `/home/ejprice/scratch/surface03bfix` is a disposable `scratch_copy.sh` copy (NOT a
 git worktree). It carries the reference build + `refbuild/{mutate,prove}.py|sh`. Operator: discard
 at will, or keep for the adversary's re-grade.
+
+---
+
+## §9 — AMENDMENT R5-OUTCOME-2 (design-sidecar ruling, 2026-07-24; landed after `44c42b7`)
+
+The R5/m4 escalation (§6.2) was ruled **OUTCOME 2: drop both dead params.**
+`_render_comms_drain(result, *, agent_name, limit, session)` → **`_render_comms_drain(result, *, session)`.**
+`_render_comms_ack` KEEPS `agent_name` (load-bearing in `…no delivery to {name}`) — untouched.
+
+**Why both are dead (design-ruled):** `limit` was orphaned when the elision was ruled fully
+result-derived (`more = total_pending − len(entries)`; `next_limit == more`; emit predicate
+`total_pending > shown`) — the render never read it. `agent_name` never had a consumer — no drain
+template carries `{name}`; the row is `{sender}→you` with a literal second person, now a recorded
+deliberate choice (NOT to be re-added as a header/label).
+
+**What changed (tests only — the production signature is the builder's, but the reference build and
+every DRIVER now match the ruling):**
+- `test_comms_tool.py`: the `TestRenderCommsDrainShape._render` helper (dropped its own dead `limit`
+  param too, + 7 callers de-`limit`'d), the 5 injection drivers (`_render_drain_body/sender/thread/
+  task_id/refs`), and the class docstring's ruled-signature prose.
+- `test_comms_promise_registry.py`: the `_render_drain` driver (dropped `limit` param + 2 callers)
+  and its ruled-signature prose.
+- `refbuild/server.py.reference` (scratch only): the render signature AND the `_comms_drain` handler
+  call — a CORRECT build of the ruled signature.
+
+**The dropped signature IS the pin (no new discriminating pin — lead-ruled).** Every driver now calls
+`_render_comms_drain(result, session=…)`; a build whose render still REQUIRES either param is a
+`TypeError` at the call sites. Mutation-proven both ways (2026-07-24, scratch):
+
+```
+re-require agent_name -> TypeError: _render_comms_drain() missing 1 required keyword-only argument: 'agent_name'   (RED at render pin AND dispatcher drain pin)
+re-require limit      -> TypeError: _render_comms_drain() missing 1 required keyword-only argument: 'limit'         (RED, same call sites)
+restore               -> 2 passed
+```
+
+**Receipts (2026-07-24):**
+- Satisfiability HELD: **1162 passed / 12 skipped / 0 failed** (reference build, R5 applied) — count
+  unchanged (params dropped mechanically, no pins removed).
+- Full 34-mutation suite **re-run post-R5: all still RED** at the intended pin (only the known W44
+  driver mis-map "survives", caught by the committed cap pins).
+- ruff clean; mypy HEAD **96** (87 `test_comms_tool.py` + 3 `test_comms_promise_registry.py` +
+  6 telemetry), scratch **6** — the structural/non-structural split is UNCHANGED by R5.
+- provenance: `loremaster.__file__ = /home/ejprice/scratch/surface03bfix/loremaster/loremaster/__init__.py`.
+- Committed with explicit paths (test files + this report only; the 4 concurrently-modified
+  `test_surreal_*`/`test_trace_telemetry.py` files are the sibling telemetry wave's and were NOT staged).

@@ -840,9 +840,7 @@ def _render_send(*, grade: str, question: bool) -> str:
     )
 
 
-def _render_drain(
-    *, entries: list[Any], total_pending: int, peek: bool = False, limit: int = 20
-) -> str:
+def _render_drain(*, entries: list[Any], total_pending: int, peek: bool = False) -> str:
     """Drive the REAL drain render.
 
     AUTHORIZED AMENDMENT 10 (operator 2026-07-24; design ruling D2 → reading A, S8):
@@ -852,7 +850,13 @@ def _render_drain(
     exactly what these proofs' markers already assume (none of them names one).
     The discrimination that the suppression is real, and keyed on this ARGUMENT
     rather than on the literal ``"wave7"``, lives in
-    ``TestRenderCommsDrainShape`` in ``test_comms_tool.py`` — not duplicated here."""
+    ``TestRenderCommsDrainShape`` in ``test_comms_tool.py`` — not duplicated here.
+
+    AUTHORIZED AMENDMENT R5-OUTCOME-2 (design sidecar 2026-07-24): the render's
+    ``agent_name``/``limit`` kwargs are DROPPED (both were dead — no drain template
+    carries ``{name}``, and the elision is fully result-derived), so this driver no
+    longer forwards them; the ruled signature is ``_render_comms_drain(result, *,
+    session)``."""
     from loremaster.messages import MessageDrainResult
 
     return str(
@@ -864,8 +868,6 @@ def _render_drain(
                 stamped_seqs=[] if peek else [entry.seq for entry in entries],
                 peeked=peek,
             ),
-            agent_name="fixer-b",
-            limit=limit,
             session="wave7",
         )
     )
@@ -1145,16 +1147,15 @@ _PROOF_LIST: list[PromiseProof] = [
     PromiseProof(
         literal="+{more} more unread — re-run with limit={next_limit}",
         marker="more unread — re-run with limit=",
-        # EMIT: the served window (2 rows) is bounded by limit=2 while 7 are
-        # pending — N > cap, the fixture shape no comms contract had ever
-        # written. NO-EMIT: the same rows with nothing elided.
+        # EMIT: the served window (2 rows) is short of the 7 pending, so the
+        # result-derived elision fires (more = total_pending − len(entries) = 5).
+        # NO-EMIT: the same rows with nothing elided (total_pending == shown).
         render_emit=lambda: _render_drain(
             entries=[
                 _p03_entry(seq=61, acked_at=None, thread="wave7"),
                 _p03_entry(seq=62, acked_at=None, thread="wave7"),
             ],
             total_pending=7,
-            limit=2,
         ),
         render_no_emit=lambda: _render_drain(
             entries=[
@@ -1162,7 +1163,6 @@ _PROOF_LIST: list[PromiseProof] = [
                 _p03_entry(seq=62, acked_at=None, thread="wave7"),
             ],
             total_pending=2,
-            limit=2,
         ),
     ),
     PromiseProof(
