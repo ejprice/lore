@@ -4318,6 +4318,73 @@ class TestDrainAndAckAtTheDispatcher:
                 harness, action=action, agent="fixer-b", session="wave7", **foreign
             )
 
+    async def test_the_dispatcher_HANDS_THE_RENDER_A_SESSION_and_it_is_the_right_one(
+        self,
+    ) -> None:
+        """AUTHORIZED AMENDMENT 10's WIRING leg (D2 -> reading A, S8).
+
+        Every other amendment-10 pin calls ``_render_comms_drain`` DIRECTLY and
+        hands it a session, so all of them stay green for a dispatcher that
+        forgets to forward one or forwards the wrong thing — and the dispatcher is
+        the only path production ever takes. That is this repo's #131 shape in
+        miniature: the fixture guarantees the one condition (a session is present
+        and correct) under which the wiring bug is invisible.
+
+        Two messages, ONE drain: the first rides the SESSION-DEFAULT thread (the
+        send omits ``thread``, which the ledger defaults to ``session`` — asserted
+        below as a fixture check, because if that default ever changed this pin
+        would silently stop testing branch 3), the second a deliberate thread. The
+        row-level discrimination must survive the whole real call path.
+
+        ⚠ KNOWN BOUND, stated so it is met deliberately: registration ties the
+        caller to ``session="wave7"``, so a dispatcher forwarding a HARDCODED
+        ``"wave7"`` (or ``agent_row.session``, which is equal here by
+        construction) is indistinguishable at this seam. The literal-vs-argument
+        discrimination is pinned one layer down, at the render, by
+        ``TestRenderCommsDrainShape::
+        test_the_SUPPRESSED_thread_is_the_SESSION_ARGUMENT_not_a_LITERAL``. The
+        two together are what cover the property; neither does alone."""
+        harness, message_ledger = await self._ready()
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            to=["fixer-b"],
+            body="on the default thread",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+        )
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            to=["fixer-b"],
+            body="on a deliberate thread",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+            thread="q:cap",
+        )
+        stored = {message.body: message for message in message_ledger.db.messages.values()}
+        assert stored["on the default thread"].thread == "wave7", (
+            "fixture check: a send that omits `thread` must land on the SESSION thread — "
+            "without that, the first row below is not on the default thread and this pin "
+            f"tests branch 2 twice instead of discriminating: {stored['on the default thread']!r}"
+        )
+
+        rendered = str(
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        )
+        default_row = _drain_line_containing(rendered, "on the default thread")
+        deliberate_row = _drain_line_containing(rendered, "on a deliberate thread")
+        assert "(thread " not in default_row, (
+            "through the REAL dispatcher, a row on the session-default thread drew a thread "
+            "cell — either the dispatcher never forwarded the caller's session or it forwarded "
+            f"a value that matches nothing: {default_row!r}"
+        )
+        assert "(thread q:cap)" in deliberate_row, (
+            f"the deliberate-thread row lost its cell through the dispatcher: {deliberate_row!r}"
+        )
+
     async def test_an_oversize_body_is_a_teaching_reject_at_the_surface(self) -> None:
         harness, message_ledger = await self._ready()
         with pytest.raises(Exception) as excinfo:  # noqa: B017 - MessageBodyError surface
