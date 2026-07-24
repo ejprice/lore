@@ -54,6 +54,7 @@ from loremaster.sanitise import FENCE_CHAR, MIN_FENCE_WIDTH, max_backtick_run
 from loremaster.server import AppContext, LoreServer, build_app_context
 from loresigil.testing import FakeEmbedder
 from render_injection_scaffold import _ROW_FORGE_PAYLOAD
+from test_comms_render_architecture import _SKEW_SURFACING_TEACH
 
 # --------------------------------------------------------------------------- #
 # Config / store fixture plumbing (local, deliberately not shared with
@@ -866,7 +867,7 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
         assert "first version" not in rendered
         assert (
             "skew (session wave7): 1 non-retired agents behind head v2 — 1 at v1; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
         assert "v0" not in rendered
 

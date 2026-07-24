@@ -214,18 +214,37 @@ class TestFirstVersionTailIsTypedNotNameDerived:
 # THE QUANTIFIER LAW (repo CLAUDE.md): pin the tail ∀ (is-standing, has-unbriefed)
 # and FORCE each fate with a fixture — never condition the invariant on the
 # debugged mode. The four combinations, each forced:
-#   (standing,     has_unbriefed) -> tail 1  "; surfaces at their next heartbeat"
+#   (standing,     has_unbriefed) -> tail 1  "; surfaces at their next heartbeat or drain"
 #   (standing,     no_unbriefed)  -> tail 1
-#   (non-standing, no_unbriefed)  -> tail 2  "; surfaces at their next heartbeat"
-#   (non-standing, has_unbriefed) -> tail 3  "; ackers see it at next heartbeat — ..."
+#   (non-standing, no_unbriefed)  -> tail 2  "; surfaces at their next heartbeat or drain"
+#   (non-standing, has_unbriefed) -> tail 3  "; ackers see it at next heartbeat or drain — ..."
 # ``auto_ack_at_register`` carries is-standing (coextensive with the standing
 # role — see the report's contract-decision on the flag naming); ``has_unbriefed``
 # is derived by the render from ``behind`` (an entry with acked_version=None).
 # =========================================================================== #
 
-_TAIL_SURFACES = "; surfaces at their next heartbeat"
+# ONE IMPLEMENTATION (repo CLAUDE.md §ONE IMPLEMENTATION) — the SINGLE test-side
+# home of the skew block's surfacing teach. Every assertion in this package that
+# pins the served wording imports these two names rather than re-typing the
+# sentence (`test_comms_tool`, `test_comms_promise_registry`, `test_comms_wiring`);
+# server.py carries the only other authoritative copies, and the promise registry
+# keys them byte-exactly, so a drift in EITHER direction goes RED.
+#
+# WORDING AUTHORITY: design ruling E-S5(c) (`docs/plans/v2/03b-design-rulings-r2.md`
+# §G, committed `aa25e79`) — the block is served by heartbeat AND, per FK-6, by
+# drain, so naming `heartbeat` alone taught the wrong verb to the agent consumer
+# the trust doctrine protects.
+# NAMED RE-OPEN TRIGGER (E-S5(c), verbatim intent): any packet 04/05 verb that also
+# surfaces this block re-opens the wording — do NOT accrete a verb list past two; at
+# a THIRD surfacing verb, reword to name the mechanism generically. Because every
+# test-side pin reads these two constants, discharging that trigger is a change to
+# TWO strings here plus server.py's four literals, not a fifty-site sweep.
+_SKEW_SURFACING_TEACH = "surfaces at their next heartbeat or drain"
+_SKEW_ACKER_TEACH = "ackers see it at next heartbeat or drain"
+
+_TAIL_SURFACES = f"; {_SKEW_SURFACING_TEACH}"
 _TAIL3_TEMPLATE = (
-    f"; ackers see it at next heartbeat {_EM_DASH} unbriefed agents only via brief_get name='{{name}}'"
+    f"; {_SKEW_ACKER_TEACH} {_EM_DASH} unbriefed agents only via brief_get name='{{name}}'"
 )
 
 _BEHIND_ACKER_ONLY = [
@@ -260,24 +279,24 @@ class TestSkewTailIsNameConditioned:
             name="project", version=2, behind=_BEHIND_WITH_UNBRIEFED, standing=True
         )
         assert rendered.endswith(_TAIL_SURFACES), rendered
-        assert "ackers see it at next heartbeat" not in rendered
+        assert _SKEW_ACKER_TEACH not in rendered
 
     def test_standing_without_unbriefed_uses_tail_1(self) -> None:
         rendered = self._render(name="project", version=2, behind=_BEHIND_ACKER_ONLY, standing=True)
         assert rendered.endswith(_TAIL_SURFACES), rendered
-        assert "ackers see it at next heartbeat" not in rendered
+        assert _SKEW_ACKER_TEACH not in rendered
 
     def test_nonstanding_without_unbriefed_uses_tail_2(self) -> None:
         rendered = self._render(name="wave9", version=2, behind=_BEHIND_ACKER_ONLY, standing=False)
         assert rendered.endswith(_TAIL_SURFACES), rendered
-        assert "ackers see it at next heartbeat" not in rendered
+        assert _SKEW_ACKER_TEACH not in rendered
 
     def test_nonstanding_with_unbriefed_uses_tail_3_naming_the_brief(self) -> None:
         rendered = self._render(
             name="wave9", version=2, behind=_BEHIND_WITH_UNBRIEFED, standing=False
         )
         assert rendered.endswith(_TAIL3_TEMPLATE.format(name="wave9")), rendered
-        assert "surfaces at their next heartbeat" not in rendered
+        assert _SKEW_SURFACING_TEACH not in rendered
 
     def test_DISCRIMINATOR_project_named_but_flag_false_with_unbriefed_uses_tail_3(self) -> None:
         """Name IS 'project' but the standing flag is FALSE and an unbriefed
@@ -289,7 +308,7 @@ class TestSkewTailIsNameConditioned:
             name="project", version=2, behind=_BEHIND_WITH_UNBRIEFED, standing=False
         )
         assert rendered.endswith(_TAIL3_TEMPLATE.format(name="project")), rendered
-        assert "surfaces at their next heartbeat" not in rendered, (
+        assert _SKEW_SURFACING_TEACH not in rendered, (
             "the skew tail re-derived standingness from the NAME 'project' instead "
             f"of the typed flag (#103/#104): {rendered!r}"
         )
@@ -466,7 +485,9 @@ class TestHeartbeatSurfacesSubscribedNameSkew:
         """The ninth's promise, proven where it is MADE (spec §TEST SKETCH):
         publish wave9 v2, then a prior acker's NEXT heartbeat (through the real
         tool) actually surfaces wave9 — the skew tail 'surfaces at their next
-        heartbeat' was a lie for non-'project' names until this ran."""
+        heartbeat or drain' was a lie for non-'project' names until this ran.
+        The heartbeat leg is the one driven here; the drain leg (FK-6) is pinned
+        with the drain surface."""
         harness, _registry, _ledger = _harness()
         await _register(harness, "acker")
         await _publish(harness, "acker", "wave9")  # acker subscribes at v1
@@ -474,8 +495,8 @@ class TestHeartbeatSurfacesSubscribedNameSkew:
         await _publish(harness, "lead", "wave9")  # head -> v2
         rendered = await _comms(harness, action="heartbeat", agent="acker", session="wave7")
         assert "wave9" in rendered and "v2 is head" in rendered, (
-            "publish promised the straggler would see wave9 at its next heartbeat, "
-            f"and the heartbeat did not deliver it (#103): {rendered!r}"
+            "publish promised the straggler would see wave9 at its next heartbeat "
+            f"or drain, and the heartbeat did not deliver it (#103): {rendered!r}"
         )
 
     def test_over_cap_subscribed_skews_collapse_ordered_by_magnitude(self) -> None:

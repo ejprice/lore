@@ -5056,12 +5056,16 @@ class AppContext:
             if auto_ack_at_register or not has_unbriefed:
                 # Tail 1 (standing) / tail 2 (non-standing, no unbriefed group):
                 # the notice truly surfaces universally at every agent's next
-                # heartbeat — every behind agent is a subscriber here.
+                # heartbeat or drain — every behind agent is a subscriber here.
+                # Both verbs are named because both serve the shared skew block
+                # (design ruling E-S5(c) under FK-6); at a THIRD surfacing verb,
+                # reword to name the mechanism generically — never accrete a
+                # verb list past two.
                 if session is not None:
                     lines.append(
                         render_line(
                             "skew (session {session}): {behind} non-retired agents behind "
-                            "head v{head} — {breakdown}; surfaces at their next heartbeat",
+                            "head v{head} — {breakdown}; surfaces at their next heartbeat or drain",
                             session=sanitise_line(session),
                             behind=len(behind),
                             head=result.brief.version,
@@ -5072,21 +5076,21 @@ class AppContext:
                     lines.append(
                         render_line(
                             "skew: {behind} non-retired agents behind head v{head} — "
-                            "{breakdown}; surfaces at their next heartbeat",
+                            "{breakdown}; surfaces at their next heartbeat or drain",
                             behind=len(behind),
                             head=result.brief.version,
                             breakdown=breakdown,
                         )
                     )
             # Tail 3 (non-standing, unbriefed group non-empty): the promise is
-            # HALF-true — ackers see it at heartbeat, but unbriefed non-'project'
-            # agents are never nagged and must brief_get by name (the §9.7
-            # mechanism-promise honesty for instance 9).
+            # HALF-true — ackers see it at heartbeat or drain, but unbriefed
+            # non-'project' agents are never nagged and must brief_get by name
+            # (the §9.7 mechanism-promise honesty for instance 9).
             elif session is not None:
                 lines.append(
                     render_line(
                         "skew (session {session}): {behind} non-retired agents behind "
-                        "head v{head} — {breakdown}; ackers see it at next heartbeat — "
+                        "head v{head} — {breakdown}; ackers see it at next heartbeat or drain — "
                         "unbriefed agents only via brief_get name='{name}'",
                         session=sanitise_line(session),
                         behind=len(behind),
@@ -5099,7 +5103,7 @@ class AppContext:
                 lines.append(
                     render_line(
                         "skew: {behind} non-retired agents behind head v{head} — "
-                        "{breakdown}; ackers see it at next heartbeat — unbriefed "
+                        "{breakdown}; ackers see it at next heartbeat or drain — unbriefed "
                         "agents only via brief_get name='{name}'",
                         behind=len(behind),
                         head=result.brief.version,

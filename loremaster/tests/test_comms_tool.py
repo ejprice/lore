@@ -82,6 +82,7 @@ from render_injection_scaffold import (
     RenderCase,
     assert_render_injection_safe,
 )
+from test_comms_render_architecture import _SKEW_ACKER_TEACH, _SKEW_SURFACING_TEACH
 from test_render_seam_pins import assert_actions_covered
 
 # --------------------------------------------------------------------------- #
@@ -300,7 +301,9 @@ def _extract_skew_group_counts(rendered: str) -> list[int]:
     around them. Fails loudly (not silently returns ``[]``) when no skew
     line is present, so a caller that expected one gets a clear signal
     rather than a vacuous empty-list pass."""
-    match = re.search(r"behind head v\d+ — (.+?); surfaces at their next heartbeat", rendered)
+    match = re.search(
+        rf"behind head v\d+ — (.+?); {re.escape(_SKEW_SURFACING_TEACH)}", rendered
+    )
     assert match, f"no skew breakdown line found in: {rendered!r}"
     return [int(part.split(" ", 1)[0]) for part in match.group(1).split(", ")]
 
@@ -1165,15 +1168,15 @@ class TestBriefPublishAction:
             )
         )
         # The skew TAIL is auto_ack_at_register-aware (pkt02): only the
-        # standing 'project' brief surfaces universally at heartbeat; a
+        # standing 'project' brief surfaces universally at heartbeat or drain; a
         # non-'project' brief with an unbriefed agent behind teaches the
         # brief_get path for those unbriefed agents instead.
         expected_tail = (
-            "surfaces at their next heartbeat"
+            _SKEW_SURFACING_TEACH
             if brief_name == "project"
             else (
-                "ackers see it at next heartbeat — unbriefed agents only via "
-                f"brief_get name='{brief_name}'"
+                _SKEW_ACKER_TEACH
+                + f" — unbriefed agents only via brief_get name='{brief_name}'"
             )
         )
         assert (
@@ -1261,7 +1264,7 @@ class TestBriefPublishAction:
         )
         assert (
             "skew (session wave7): 2 non-retired agents behind head v2 — 2 unbriefed; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
         assert _extract_skew_group_counts(rendered) == [2]
 
@@ -1285,7 +1288,7 @@ class TestBriefPublishAction:
         assert "v0" not in rendered
         assert (
             "skew: 2 non-retired agents behind head v1 — 2 unbriefed; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
 
     async def test_skew_line_is_session_scoped_when_session_is_explicit(self) -> None:
@@ -1311,7 +1314,7 @@ class TestBriefPublishAction:
         )
         assert (
             "skew (session wave7): 1 non-retired agents behind head v1 — 1 unbriefed; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
 
     async def test_first_publish_never_fabricates_v0(self) -> None:
@@ -1338,7 +1341,7 @@ class TestBriefPublishAction:
         assert "unbriefed" in rendered
         assert (
             "skew (session wave7): 2 non-retired agents behind head v1 — 2 unbriefed; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
         assert _extract_skew_group_counts(rendered) == [2]
 
@@ -1373,7 +1376,7 @@ class TestBriefPublishAction:
         assert "v0" not in rendered
         assert (
             "skew (session wave7): 4 non-retired agents behind head v2 — 3 at v1, 1 unbriefed; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
         assert _extract_skew_group_counts(rendered) == [3, 1]
 
@@ -1416,7 +1419,7 @@ class TestBriefPublishAction:
         assert "v0" not in rendered
         assert (
             "skew (session wave7): 4 non-retired agents behind head v4 — "
-            "1 at v3, 1 at v2, 1 at v1, 1 unbriefed; surfaces at their next heartbeat"
+            "1 at v3, 1 at v2, 1 at v1, 1 unbriefed; " + _SKEW_SURFACING_TEACH
         ) in rendered
         assert _extract_skew_group_counts(rendered) == [1, 1, 1, 1]
 
@@ -1448,7 +1451,7 @@ class TestBriefPublishAction:
         )
         assert (
             "skew (session wave7): 4 non-retired agents behind head v2 — 2 at v1, 2 unbriefed; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
         assert _extract_skew_group_counts(rendered) == [2, 2]
 
@@ -1675,7 +1678,8 @@ class TestTheFirstVersionLineTeachesAnAckMechanismThatACTUALLYEXISTS:
         )
         assert (
             "skew (session wave7): 1 non-retired agents behind head v2 — 1 unbriefed; "
-            "ackers see it at next heartbeat — unbriefed agents only via brief_get name='wave9'"
+            + _SKEW_ACKER_TEACH
+            + " — unbriefed agents only via brief_get name='wave9'"
         ) in rendered, (
             f"an agent that registered AFTER the wave9 publish is STILL unbriefed — which is "
             f"exactly what the v1 line's 'ack at register' clause denies: {rendered!r}"
@@ -2753,7 +2757,7 @@ class TestRenderCommsBriefPublish:
         )
         assert (
             "skew: 3 non-retired agents behind head v2 — 2 at v1, 1 unbriefed; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
         assert "(session" not in rendered
 
@@ -2772,7 +2776,7 @@ class TestRenderCommsBriefPublish:
         )
         assert (
             "skew (session wave7): 1 non-retired agents behind head v2 — 1 at v1; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
 
     def test_first_publish_never_names_a_fabricated_v0(self) -> None:
@@ -2796,7 +2800,7 @@ class TestRenderCommsBriefPublish:
         assert "v0" not in rendered
         assert (
             "skew: 2 non-retired agents behind head v1 — 2 unbriefed; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
 
     def test_groups_render_descending_regardless_of_input_order(self) -> None:
@@ -2819,7 +2823,7 @@ class TestRenderCommsBriefPublish:
         )
         assert (
             "skew: 3 non-retired agents behind head v5 — 1 at v3, 1 at v2, 1 at v1; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
 
     def test_breakdown_cap_boundary_exact_cap_names_every_group(self) -> None:
@@ -2837,7 +2841,7 @@ class TestRenderCommsBriefPublish:
         expected_breakdown = ", ".join(f"1 at v{v}" for v in range(cap, 0, -1))
         assert (
             f"skew: {cap} non-retired agents behind head v{cap + 1} — {expected_breakdown}; "
-            "surfaces at their next heartbeat"
+            + _SKEW_SURFACING_TEACH
         ) in rendered
         assert "at older versions" not in rendered
         assert _extract_skew_group_counts(rendered) == [1] * cap
@@ -2860,7 +2864,7 @@ class TestRenderCommsBriefPublish:
         shown = ", ".join(f"1 at v{v}" for v in range(cap + 1, 1, -1))
         assert (
             f"skew: {cap + 1} non-retired agents behind head v{cap + 2} — {shown}, "
-            "1 at older versions; surfaces at their next heartbeat"
+            "1 at older versions; " + _SKEW_SURFACING_TEACH
         ) in rendered
         counts = _extract_skew_group_counts(rendered)
         assert sum(counts) == cap + 1
@@ -2912,7 +2916,7 @@ class TestRenderCommsBriefPublish:
         named_str = ", ".join(f"1 at v{v}" for v in named_versions)
         assert (
             f"skew: {expected_behind} non-retired agents behind head v{head_version} — "
-            f"{named_str}, {tail_total} at older versions; surfaces at their next heartbeat"
+            f"{named_str}, {tail_total} at older versions; " + _SKEW_SURFACING_TEACH
         ) in rendered
 
         counts = _extract_skew_group_counts(rendered)
@@ -2934,8 +2938,8 @@ class TestRenderCommsBriefPublish:
         being empty (e.g. "always render a skew line once this is not the
         first version") is invisible to that test — it never fires for a
         first-version call — while serving the ugly ``skew: 0 non-retired
-        agents behind head v2 — ; surfaces at their next heartbeat`` (empty
-        breakdown, dangling em-dash) on every non-first publish where
+        agents behind head v2 — ; surfaces at their next heartbeat or drain``
+        (empty breakdown, dangling em-dash) on every non-first publish where
         nobody happens to be behind. This pin isolates the two conditions:
         ``first_version=False`` AND ``behind=[]``.
 

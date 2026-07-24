@@ -76,6 +76,13 @@ from loremaster.agents import Agent, AgentFleetWindow, AgentStatus
 from loremaster.briefs import Brief, BriefAckResult, BriefBehindEntry, BriefPublishResult
 from loremaster.server import AppContext
 
+# ONE IMPLEMENTATION: the skew block's surfacing teach has ONE test-side home
+# (``test_comms_render_architecture``) — importing it keeps these registry keys and
+# proof markers from becoming private copies of a sentence four suites assert on.
+# The keys stay an INDEPENDENT transcription of server.py's literals (production
+# cannot import a test constant), so drift in either direction still goes RED.
+from test_comms_render_architecture import _SKEW_ACKER_TEACH, _SKEW_SURFACING_TEACH
+
 _SERVER_PY = Path(inspect.getfile(AppContext)).resolve().parent / "server.py"
 
 _RENDER_VERB_NAMES: frozenset[str] = frozenset({"render_line", "render_join"})
@@ -139,36 +146,43 @@ _PROMISE_REGISTRY: dict[str, str] = {
     # ACTION-AGNOSTIC: the predicate now states the CONDITION (which is what
     # §9.7's litmus actually needs) and names the emitters as a set that FK-6
     # grew. Description-only: no literal, marker, proof or assertion changed.
-    # ⚠ NOT touched here: the literals' own "at their next heartbeat" wording.
-    # B4.1 ruled that a benign under-claim, but B4.1 predates the trust
-    # doctrine and C5(c) grades teaching-vs-behaviour — that is E-S5(c), open
-    # with the design owner.
+    # E-S5(c), AUTHORIZED (same grant): the literals' OWN wording now names both
+    # surfacing verbs — ``_SKEW_SURFACING_TEACH`` / ``_SKEW_ACKER_TEACH``, imported
+    # from their ONE home in ``test_comms_render_architecture``. B4.1 had ruled the
+    # heartbeat-only wording a benign under-claim; B4.1 predates the trust doctrine,
+    # and C5(c) grades teaching-vs-behaviour, so it was OVERRULED (rulings §G row
+    # E-S5(c), `aa25e79`).
+    # ⚠ NAMED RE-OPEN TRIGGER: a THIRD surfacing verb (any packet 04/05 action that
+    # also serves this block) re-opens the wording — do NOT accrete a verb list past
+    # two; reword to name the mechanism generically. These keys follow the shared
+    # constants, so that re-wording is TWO string edits plus server.py's four
+    # literals — never a fifty-site sweep.
     "skew (session {session}): {behind} non-retired agents behind head v{head} — "
-    "{breakdown}; surfaces at their next heartbeat": (
+    "{breakdown}; " + _SKEW_SURFACING_TEACH: (
         "brief-skew surfacing — tail 1/2, emitted by EVERY action that serves the shared skew "
         "block (heartbeat and, per FK-6, drain): emitted IFF standing OR the unbriefed group "
         "is empty (every behind agent then a subscriber); pinned in "
         "TestSkewTailIsNameConditioned (§9.7 #10, v8)"
     ),
     "skew: {behind} non-retired agents behind head v{head} — "
-    "{breakdown}; surfaces at their next heartbeat": (
+    "{breakdown}; " + _SKEW_SURFACING_TEACH: (
         "brief-skew surfacing — tail 1/2, unscoped variant; same emitter set and predicate as "
         "the scoped form above (§9.7 #10, v8)"
     ),
     "skew (session {session}): {behind} non-retired agents behind head v{head} — "
-    "{breakdown}; ackers see it at next heartbeat — unbriefed agents only via "
+    "{breakdown}; " + _SKEW_ACKER_TEACH + " — unbriefed agents only via "
     "brief_get name='{name}'": (
         "brief-skew surfacing for ackers + brief_get name= for unbriefed — tail 3, emitted by "
         "EVERY action that serves the shared skew block (heartbeat and, per FK-6, drain): "
         "emitted IFF non-standing AND the unbriefed group is non-empty (unbriefed non-project "
-        "agents are never nagged) (§9.7 #10, v8) [E-S5(a)]"
+        "agents are never nagged) (§9.7 #10, v8) [E-S5(a), E-S5(c)]"
     ),
     "skew: {behind} non-retired agents behind head v{head} — "
-    "{breakdown}; ackers see it at next heartbeat — unbriefed agents only via "
+    "{breakdown}; " + _SKEW_ACKER_TEACH + " — unbriefed agents only via "
     "brief_get name='{name}'": (
         "brief-skew surfacing for ackers + brief_get name= for unbriefed — tail 3, unscoped "
         "variant; same emitter set and predicate as the scoped form above (§9.7 #10, v8) "
-        "[E-S5(a)]"
+        "[E-S5(a), E-S5(c)]"
     ),
     "acked brief '{name}' v{version} — head is v{head}; "
     "catch up: lore_comms action=brief_get name='{name}'": (
@@ -1163,12 +1177,12 @@ _PROOF_LIST: list[PromiseProof] = [
     # --- brief_publish skew tails (§9.7 #10): four name-conditioned variants. --
     PromiseProof(
         literal="skew (session {session}): {behind} non-retired agents behind head v{head} — "
-        "{breakdown}; surfaces at their next heartbeat",
+        "{breakdown}; " + _SKEW_SURFACING_TEACH,
         # FULL rendered line (fix-wave item 3): the bare "skew (session wave7): 2
         # non-retired agents behind head v2" prefix is ALSO satisfied by the tail-3
         # scoped variant, so it could not distinguish tail 1 from tail 3.
         marker=f"skew (session wave7): 2 non-retired agents behind head v2 {_EM_DASH} "
-        "2 at v1; surfaces at their next heartbeat",
+        f"2 at v1; {_SKEW_SURFACING_TEACH}",
         render_emit=lambda: _render_publish(
             name="wave9",
             version=2,
@@ -1183,10 +1197,10 @@ _PROOF_LIST: list[PromiseProof] = [
     ),
     PromiseProof(
         literal="skew: {behind} non-retired agents behind head v{head} — "
-        "{breakdown}; surfaces at their next heartbeat",
+        "{breakdown}; " + _SKEW_SURFACING_TEACH,
         # FULL rendered line (fix-wave item 3) — same reason as the scoped tail 1.
         marker=f"skew: 2 non-retired agents behind head v2 {_EM_DASH} "
-        "2 at v1; surfaces at their next heartbeat",
+        f"2 at v1; {_SKEW_SURFACING_TEACH}",
         render_emit=lambda: _render_publish(
             name="wave9",
             version=2,
@@ -1201,13 +1215,13 @@ _PROOF_LIST: list[PromiseProof] = [
     ),
     PromiseProof(
         literal="skew (session {session}): {behind} non-retired agents behind head v{head} — "
-        "{breakdown}; ackers see it at next heartbeat — unbriefed agents only via "
+        "{breakdown}; " + _SKEW_ACKER_TEACH + " — unbriefed agents only via "
         "brief_get name='{name}'",
         # FULL rendered line (fix-wave item 3): the bare tail-3 clause is byte-identical
         # in the SCOPED and UNSCOPED variants, so it could not distinguish them. The
         # "skew (session wave7):" head is what makes this proof scoped-specific.
         marker=f"skew (session wave7): 2 non-retired agents behind head v2 {_EM_DASH} "
-        f"1 at v1, 1 unbriefed; ackers see it at next heartbeat {_EM_DASH} "
+        f"1 at v1, 1 unbriefed; {_SKEW_ACKER_TEACH} {_EM_DASH} "
         "unbriefed agents only via brief_get name='wave9'",
         render_emit=lambda: _render_publish(
             name="wave9",
@@ -1230,12 +1244,12 @@ _PROOF_LIST: list[PromiseProof] = [
     ),
     PromiseProof(
         literal="skew: {behind} non-retired agents behind head v{head} — "
-        "{breakdown}; ackers see it at next heartbeat — unbriefed agents only via "
+        "{breakdown}; " + _SKEW_ACKER_TEACH + " — unbriefed agents only via "
         "brief_get name='{name}'",
         # FULL rendered line (fix-wave item 3, extended to this fourth tail — same class
         # as the three named: the bare clause cannot distinguish unscoped from scoped).
         marker=f"skew: 2 non-retired agents behind head v2 {_EM_DASH} "
-        f"1 at v1, 1 unbriefed; ackers see it at next heartbeat {_EM_DASH} "
+        f"1 at v1, 1 unbriefed; {_SKEW_ACKER_TEACH} {_EM_DASH} "
         "unbriefed agents only via brief_get name='wave9'",
         render_emit=lambda: _render_publish(
             name="wave9",
