@@ -2,6 +2,19 @@ brief-base v6 read
 
 # REPORT-builder-10d — packet 10-d, weak-match DISARM
 
+> ⚠ **ARCHIVE-CORRECTION HEADER (added by the lead at close-out, 2026-07-24).** This report is
+> preserved as the wave's reasoning, but **two of its claims were disproved by the cold audit
+> (`REPORT-audit-10d-cold.md`, archived beside it) and are wrong as written:**
+> 1. **§Deviation 1 says the disarm made "two" sentences of the `CosineFloorStatus` docstring
+>    false. It is ONE.** Only the CLASS-level paragraph reaches the served `outputSchema`; the
+>    `Attributes:` block does not, and the second sentence cited lives in that unserved half.
+> 2. **§Tests says "4 corpse/stale sites repaired". Table A lists 5** — and 5 is correct
+>    (audit residual 9.4, derived from the diff). The table is right; the prose sentence is not.
+>
+> The packet's substantive work — the disarm, the pins, the mutation proofs, the sweep — was
+> independently verified and the audit's verdict was **GO**. Preserved per the archive-never-delete
+> rule; corrected here so a future reader is not misled by an address that resolves.
+
 ## SUMMARY BLOCK
 - `brief-base v6 read` · agent `builder-10d` · worktree `/home/ejprice/PycharmProjects/lore-pkt10`, branch `pkt10-floor-calibration-design`
 - **state: done-with-deviations** — disarm shipped, sweep complete (391 hits, 0 unruled), 3 commits: `1c33872` (RED pins) → `bdb7929` (disarm) → `1eef197` (smoke check 8)

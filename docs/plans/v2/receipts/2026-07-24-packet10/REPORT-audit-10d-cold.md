@@ -2,6 +2,23 @@ brief-base v6 read
 
 # REPORT-audit-10d-cold — independent cold audit, packet 10-d (weak-match DISARM)
 
+> ⚠ **ARCHIVE-CORRECTION HEADER (added by the lead at close-out, 2026-07-24).** This audit's
+> verdict (**GO**) and its findings were verified and acted on. **One MECHANISM description in it
+> is wrong**, corrected here because it would send the next reader to the wrong place:
+> - **§9.9 says the `TeammateIdle` hook resolves `${CLAUDE_PROJECT_DIR:-.}`. It does not** — the
+>   script derives its root from `BASH_SOURCE` (its own file location), which always lands in the
+>   MAIN checkout. **The diagnosed symptom was exactly right** (a worktree-assigned agent's
+>   committed report reads as missing) and the recommended fix shape was right; only the named
+>   cause was wrong. Verified at source before fixing. **FIXED in `14a987b`** — the gate now also
+>   walks `git worktree list`, pipe-tested on all branches with a before/after control.
+>
+> Also note §9.9/§9.10 were both numbered 9.9 in the original (an amend added the second); the
+> scratch copy item is the one describing `/home/ejprice/scratch-audit-10d`.
+>
+> Everything else stands, including the load-bearing residual **R-11ii** (the disarm MASKS #176,
+> it does not fix it) — carried into `docs/plans/v2/11-ii-floor-calibration-cutover.md`'s entry
+> check so it cannot be silently inherited.
+
 ## SUMMARY BLOCK
 - `brief-base v6 read` · agent `audit-10d-cold` · worktree `/home/ejprice/PycharmProjects/lore-pkt10`, branch `pkt10-floor-calibration-design`, HEAD `3b19f77` · audited 2026-07-24
 - **VERDICT: GO** — the disarm does what E1 ruled, on the artifact, traced at runtime with positive controls. No wrong build I could invent survives the pins. Gates re-run independently, all green with counts.
