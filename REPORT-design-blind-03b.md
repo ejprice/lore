@@ -122,3 +122,12 @@ RULED (FK-1 = FENCE). The operator TRUST DOCTRINE (packet file §grant + lore me
 (failure-admission, count-consistency, teaching-vs-behavior, and the CALL_AGAIN /
 ROUTE_AROUND routing test, graded, never waived). The rulings doc is the settled
 contract-phase spec; §G carries the complete amendment record.
+
+**POSTSCRIPT 2 (surface-contract-wave design confirms, same day):** three residual calls
+from `REPORT-contract-surface-03b-r2.md` ruled in §G — **E-S5(c) AMEND** (B4.1's
+keep-the-heartbeat-literal clause overruled by the trust doctrine; action-agnostic
+replacement wording specified mechanically, strengthen-only, proofs in step, with a
+third-verb re-open trigger) · **E-S4 CONFIRM (A)** (question teach keys on the typed
+`Message.question` — #104 derived-prose law; no new render parameter) · **E-S8 CONFIRM
+(a)** (the `{context}` cell REPLACES: task over thread — derived from the committed
+two-variant `_SAFE_STR_PROMISE_FREE`; decision table + named consequence added to B14).

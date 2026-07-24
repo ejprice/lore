@@ -378,10 +378,17 @@ Rationale from the consumer: drain is the high-frequency catch-up verb; the 4-mo
 consult behind the packet's own telemetry rationale says agents do only what is in the
 current instruction path — a mid-phase brief bump's delivery probability is maximised at
 the verb agents actually call. Cost: ~3 indexed point reads per drain (head + acked +
-subscribed skew) — bounded, and DESIGN-LAW §1.1 prices attention, not queries. The
-publish render's "next heartbeat" promise becomes an UNDER-claim, which is nearly free
-(DESIGN-LAW §1.3) — its literal is NOT edited (editing a registered literal + its proofs
-is a committed-contract amendment; refused as unnecessary). Mechanism: the skew-line
+subscribed skew) — bounded, and DESIGN-LAW §1.1 prices attention, not queries.
+~~The publish render's "next heartbeat" promise becomes an UNDER-claim, which is nearly
+free (DESIGN-LAW §1.3) — its literal is NOT edited (refused as unnecessary).~~
+**SUPERSEDED (E-S5(c) ruling, §G): the keep-the-literal clause PREDATES the trust
+doctrine and is overruled by it** — under C5(c) / repo CLAUDE.md §TRUST, teaching prose
+must match measured behavior for an LLM consumer learning the protocol from served text,
+and a skew line naming "heartbeat" as the surfacing mechanism, served inside a DRAIN
+response, teaches the wrong verb. The heartbeat-naming skew literals and their four
+registry descriptions are AMENDED to action-agnostic wording — exact replacement spec in
+§G row E-S5(c); strengthen-only (the amended prose is strictly more true), proofs
+updated in step, mutation-proven. Mechanism: the skew-line
 assembly is EXTRACTED from `_comms_heartbeat`/`_render_comms_heartbeat` into one shared
 helper both actions call — ONE implementation, proven by mutation (change the skew
 template → both actions' pins go red; a caller staying green is a private copy). Because
@@ -660,6 +667,16 @@ applied to signatures). Pins: the discriminating pair (ONE render: a default-thr
 bare, a deliberate-thread row labelled) plus a literal-vs-argument leg (a driver passing
 a non-`wave7` session inverts which row draws the cell — killing the
 hardcoded-comparand build).
+
+**B14 clarified (E-S8, confirmed §G): "precedence task-then-thread" means REPLACE, not
+order-both** — the committed `_SAFE_STR_PROMISE_FREE` carries exactly two mutually-
+described VARIANTS of the one `{context}` slot (` (task {})` / ` (thread {})`); a
+both-render build would need a third literal the committed set does not contain and
+goes RED on the classification pin. Cell decision table: `task_id` present →
+` (task {tid})`; else `thread != session` → ` (thread {t})`; else bare. Named
+consequence, accepted: a task-anchored message on a deliberate thread shows its task
+only — the thread remains recoverable from the message row (packet 05's history
+surface); the task anchor is the stronger coordination signal.
 
 ## B15. Elision arithmetic: `next_limit == total_pending − shown == more` (AC-23, ACCEPT)
 
@@ -1333,6 +1350,9 @@ adjudicated derivation checked out against trusted sources at my own read.
 
 | FK-1…FK-9 (the whole fork batch) | **RULED as the adjudication recommends** — operator granted the lead fork authority; packet file §OPERATOR GRANT (second), `1e3a249` | every FK marker updated in place (13 sites) | FK-1: FENCE (registry row-template amendments authorized) · FK-2: marker promotion authorized · FK-3: both collateral amendments authorized · FK-4: casts authorized · FK-5: approved with the full-population exit gate · FK-6: as ruled + pre-flight · FK-7: the §14 reading CONFIRMED · FK-8/FK-9: per recommendations. Nothing in this doc remains pending. |
 | TRUST DOCTRINE (operator, post-brief — packet file §grant + lore memory `cd4c22c3`) | **ACCEPT** (folded) | new **C5** + C2 tasks 12–15 + C4 wording | Trust is the acceptance criterion: honesty-probe families (failure-admission · count-consistency · teaching-vs-behavior · the routing test) grade whether a consumer would CALL_AGAIN; a ROUTE_AROUND on honestly-rendered surfaces is a failed acceptance, adjudicated never waived. Keys derive from this doc's own ruled shapes; same fixtures, same 3-run gate. |
+| E-S5(c) (surface contract wave — the FK-6 pre-flight's larger finding) | **AMEND** — B4.1's keep-the-literal clause OVERRULED by the trust doctrine | B4.1 superseded in place | One-line derivation: B4.1's "under-claim is nearly free" (§1.3) predates the trust ruling; C5(c)/CLAUDE.md §TRUST grade teaching-vs-measured-behavior, and a skew line naming "heartbeat" served inside a DRAIN response teaches the wrong verb to the exact reader the doctrine protects — rigor wins the trade. **Mechanical replacement spec for the author:** in each heartbeat-naming skew literal, `"at their next heartbeat"` → `"at their next heartbeat or drain"` and `"at next heartbeat"` → `"at next heartbeat or drain"`; in the four registry DESCRIPTIONS, `"heartbeat skew surfacing"` → `"heartbeat/drain skew surfacing"` and `"heartbeat surfacing for ackers"` → `"heartbeat/drain surfacing for ackers"`. Strengthen-only (the amended prose is strictly MORE true — it names both verbs that measurably surface it), proofs/markers updated in step, mutation-proven; authorization rides the lead's relay of this ruling. Named re-open trigger: any packet 04/05 verb that also surfaces the skew block re-opens the wording (do not accrete a verb list past two — at a third verb, reword to name the mechanism generically). C-battery consequence: the C5(c) fixture rotation gains a skew-in-drain leg (the taught surfacing verbs match the serving verbs). |
+| E-S4 (question teach derives from `Message.question`) | **CONFIRM (A)** | no doc-body edit needed (B3's signature sketch was already wording-layer, superseded by §A-GRAFT) | One-line derivation: the repo's #104 derived-prose law — renders take TYPED applicability, never a re-derived flag; `result.message.question` IS the typed fact the ledger minted from `set_status`, reading it adds no parameter, breaks no committed driver, and cannot drift from B2.4/B2.5's semantics. Reading (B) would either default a branched-on param (AC-11 violation) or break two committed drivers for zero information. |
+| E-S8 (B14 "task-then-thread" = REPLACE) | **CONFIRM (a)** | B14 clarified in place (decision table + named consequence) | One-line derivation: the committed `_SAFE_STR_PROMISE_FREE` carries exactly two mutually-described VARIANTS of the one `{context}` slot — a both-render build needs a third literal the immutable set lacks and reddens the classification pin; the author's by-derivation resolution is exactly how a committed-vocabulary question should settle. The parenthesised ` (task {})` / ` (thread {})` shapes replace the superseded ` · thread x` sketch. |
 
 *Post-amendment section map: §0 (F6 corrected) · A: B1–B11 + A-GRAFT + B12–B15 · B: T1–T8
 (+T2.1, T7.10–13) · C: C1–C5 (battery 15 tasks incl. the four trust probes) · D (graded:
