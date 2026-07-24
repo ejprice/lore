@@ -159,30 +159,32 @@ _PROMISE_REGISTRY: dict[str, str] = {
     # literals — never a fifty-site sweep.
     "skew (session {session}): {behind} non-retired agents behind head v{head} — "
     "{breakdown}; " + _SKEW_SURFACING_TEACH: (
-        "brief-skew surfacing — tail 1/2, emitted by EVERY action that serves the shared skew "
-        "block (heartbeat and, per FK-6, drain): emitted IFF standing OR the unbriefed group "
-        "is empty (every behind agent then a subscriber); pinned in "
-        "TestSkewTailIsNameConditioned (§9.7 #10, v8)"
+        "brief_publish's skew SUMMARY — tail 1/2. EMITTED BY brief_publish (measured: "
+        "_render_comms_brief_publish is its only emitting function); what it PROMISES is that "
+        "the behind agents will see the catch-up at their next heartbeat or drain (FK-6). "
+        "Emitted IFF standing OR the unbriefed group is empty (every behind agent then a "
+        "subscriber); pinned in TestSkewTailIsNameConditioned (§9.7 #10, v8)"
     ),
     "skew: {behind} non-retired agents behind head v{head} — "
     "{breakdown}; " + _SKEW_SURFACING_TEACH: (
-        "brief-skew surfacing — tail 1/2, unscoped variant; same emitter set and predicate as "
-        "the scoped form above (§9.7 #10, v8)"
+        "brief_publish's skew SUMMARY — tail 1/2, unscoped variant; same emitter and predicate "
+        "as the scoped form above (§9.7 #10, v8)"
     ),
     "skew (session {session}): {behind} non-retired agents behind head v{head} — "
     "{breakdown}; " + _SKEW_ACKER_TEACH + " — unbriefed agents only via "
     "brief_get name='{name}'": (
-        "brief-skew surfacing for ackers + brief_get name= for unbriefed — tail 3, emitted by "
-        "EVERY action that serves the shared skew block (heartbeat and, per FK-6, drain): "
-        "emitted IFF non-standing AND the unbriefed group is non-empty (unbriefed non-project "
-        "agents are never nagged) (§9.7 #10, v8) [E-S5(a), E-S5(c)]"
+        "brief_publish's skew SUMMARY for ackers + brief_get name= for unbriefed — tail 3. "
+        "EMITTED BY brief_publish; what it PROMISES is that ackers see the catch-up at their "
+        "next heartbeat or drain (FK-6), while unbriefed agents must fetch it by name. Emitted "
+        "IFF non-standing AND the unbriefed group is non-empty (unbriefed non-project agents "
+        "are never nagged) (§9.7 #10, v8) [E-S5(a) corrected in the fix wave, E-S5(c)]"
     ),
     "skew: {behind} non-retired agents behind head v{head} — "
     "{breakdown}; " + _SKEW_ACKER_TEACH + " — unbriefed agents only via "
     "brief_get name='{name}'": (
-        "brief-skew surfacing for ackers + brief_get name= for unbriefed — tail 3, unscoped "
-        "variant; same emitter set and predicate as the scoped form above (§9.7 #10, v8) "
-        "[E-S5(a), E-S5(c)]"
+        "brief_publish's skew SUMMARY for ackers + brief_get name= for unbriefed — tail 3, "
+        "unscoped variant; same emitter and predicate as the scoped form above (§9.7 #10, v8) "
+        "[E-S5(a) corrected in the fix wave, E-S5(c)]"
     ),
     "acked brief '{name}' v{version} — head is v{head}; "
     "catch up: lore_comms action=brief_get name='{name}'": (
@@ -996,14 +998,32 @@ def _render_send_03b(
     TYPED ``Message.question`` field the ledger already sets from
     ``set_status == 'input_required'`` (``messages.py::send``) — prose derived
     from typed state, never a name the render compares (#104 law), and the
-    reason ``_render_comms_send``'s committed signature needs no amendment."""
+    reason ``_render_comms_send``'s committed signature needs no amendment.
+
+    ⚠ FIX WAVE (adversary §3.B4, BLOCKER — this driver reddened a COMMITTED
+    marker on a CORRECT build). The seq was 41, which is exactly
+    ``_p03_message``'s default — so the committed proof marker
+    ``"recipients must ack: lore_comms action=ack seqs=[41]"`` was necessarily
+    co-emitted by this driver's ``grade="directive"`` EMIT leg, and
+    ``TestNoMarkerIsCrossSatisfiedByAnotherProof::test_no_marker_is_cross_satisfied``
+    plus ``TestMarkerCrossSatisfactionBound`` both went RED against a correct
+    reference. The ``grade="directive"`` choice is LOAD-BEARING and is kept (it
+    is what kills a grade-gating build — see MP-B33); the SEQ was the accidental
+    coupling, so it moves to 42.
+
+    Chosen over declaring a ``_MARKER_CO_EMISSION_EXEMPTIONS`` pair: an
+    exemption permanently blinds the meta-test to that marker pair, while a
+    distinct fixture value costs nothing and preserves every discrimination.
+    Exemptions are for co-emissions that are STRUCTURAL; this one was a fixture
+    collision.
+    """
     from loremaster.messages import MessageSendResult
 
     return str(
         AppContext._render_comms_send(
             MessageSendResult(
                 message=_p03b_message(
-                    seq=41,
+                    seq=42,
                     grade=grade,
                     body="the body",
                     thread=thread,
@@ -1329,7 +1349,23 @@ _PROOF_LIST: list[PromiseProof] = [
     ),
     PromiseProof(
         literal="+{more} more unread — re-run with limit={next_limit}",
-        marker="more unread — re-run with limit=",
+        # FIX WAVE (adversary §8 residual 2 / missing pin P12). The marker was
+        # `"more unread — re-run with limit="` — VALUE-FREE, in violation of
+        # B8.3's own full-line rule, so it could not tell the honest remainder
+        # arithmetic from the dishonest `shown + more` one. Promoted to the full
+        # rendered line under the emit fixture below (2 shown of 7 pending,
+        # limit 2 -> remainder 5 in BOTH slots, per B15/AC-23). The three values
+        # are pairwise distinct, so `more`, `shown` and `total` are each
+        # discriminable in the output.
+        # STRENGTHEN-ONLY: strictly longer, so every build the old marker
+        # rejected is still rejected. NOT a substring of the FK-2-promoted fleet
+        # marker `"+3 more — re-run with limit=5"` and vice versa — checked, the
+        # collision FK-2 exists to kill does not return through this promotion.
+        # MUTATION-PROOF OBLIGATION (adversary, MP-P12): drain's next_limit ->
+        # shown+more renders `limit=7` -> this proof's EMIT leg RED (previously
+        # it stayed green, which is why B15's two arithmetic pins were carrying
+        # this alone).
+        marker="+5 more unread — re-run with limit=5",
         # EMIT: the served window (2 rows) is bounded by limit=2 while 7 are
         # pending — N > cap, the fixture shape no comms contract had ever
         # written. NO-EMIT: the same rows with nothing elided.
@@ -2876,4 +2912,80 @@ class TestThePromiseScanReachesThe03bRenderHelpers:
         assert unnamed == sorted(self._NEW_HELPERS), (
             "an 03b render helper is now named in the COMMITTED reach pin — the gap this "
             f"addition covers has been closed there instead; reconcile the two: {unnamed!r}"
+        )
+
+
+# =========================================================================== #
+# FIX WAVE (adversary re-grade `bb8d106`) — the ONE-IMPLEMENTATION instrument
+# design ruling D5 demanded and the contract did not have.
+# =========================================================================== #
+
+
+class TestEveryPromiseLiteralHasExactlyONEEmittingFunction:
+    """D5 / adversary §3.B2 (BLOCKER) — *routing is not sharing*, made mechanical.
+
+    §B4.1 rules that the brief-skew assembly is EXTRACTED into ONE shared helper
+    that BOTH heartbeat and drain call, and D5 says the wrong build is a private
+    clone in the drain path: *"change the shared template constant → BOTH
+    actions' pins red; a green caller is a private copy."* The adversary built
+    exactly that clone (WB18: drain hand-rolls its own skew assembly, its own
+    ledger reads, its own ``render_line`` calls) and the entire contract stayed
+    **green — 0 new failures.** You cannot prove sharing by inspection; the
+    repo has paid for that lesson three times (#102).
+
+    THE PROPERTY, pinned without naming the helper: a served promise literal is
+    emitted from **exactly one function**. A private clone must duplicate the
+    ``render_line`` call into a second function to exist at all, so it lands
+    here — whatever the clone is named, and whatever the shared helper ends up
+    being called. Naming a helper would have been the enumerate-the-forbidden
+    mistake (CLAUDE.md's six-defeats table); this keys on the property instead.
+
+    NON-VACUITY / positive control: measured at the fix wave, **zero** of the
+    registry's literals had more than one emitting function, so this pin is
+    green on today's tree and goes RED on the first clone. The join separators
+    ARE multi-emitted (``", "`` appears in three functions) — which is why the
+    scope is ``_PROMISE_REGISTRY`` (promise-carrying lines) and not every
+    literal: duplicating trivia is cheap, duplicating POLICY is what this
+    forbids.
+
+    MUTATION-PROOF OBLIGATION (adversary, MP-D5): rebuild the drain's skew
+    assembly as a private clone (WB18) -> this pin goes RED naming both
+    functions. Its complement is MP-FK6 on the behavioural pin in
+    ``test_comms_tool.py::TestDrainServesTheSharedBriefSkewBlock``.
+    """
+
+    def test_no_promise_literal_is_emitted_from_two_functions(self) -> None:
+        emitters: dict[str, set[str]] = {}
+        for function_name, _line, text in _comms_render_literals():
+            emitters.setdefault(text, set()).add(function_name)
+        assert len(_PROMISE_REGISTRY) >= 20, (
+            f"NON-VACUITY: only {len(_PROMISE_REGISTRY)} registered promises — this ∀-pin "
+            f"would be ranging over almost nothing"
+        )
+        cloned = {
+            text: sorted(functions)
+            for text, functions in emitters.items()
+            if text in _PROMISE_REGISTRY and len(functions) > 1
+        }
+        assert not cloned, (
+            "a served PROMISE literal is emitted from more than one function — that is a "
+            "PRIVATE CLONE of a served policy, not a shared helper, and it passes every pin "
+            "that only checks the line is present. Extract the assembly and have both callers "
+            "call it (D5 / #102: routing is not sharing):\n"
+            + "\n".join(f"  {functions!r}: {text!r}" for text, functions in sorted(cloned.items()))
+        )
+
+    def test_positive_control_the_scan_CAN_see_a_two_function_literal(self) -> None:
+        """A probe needs a control: prove the detector fires, using the join
+        separator that legitimately IS multi-emitted. Without this, "no clones"
+        is indistinguishable from a scan that resolves every literal to one
+        function by construction."""
+        emitters: dict[str, set[str]] = {}
+        for function_name, _line, text in _comms_render_literals():
+            emitters.setdefault(text, set()).add(function_name)
+        multi = {text: fns for text, fns in emitters.items() if len(fns) > 1}
+        assert multi, (
+            "the scan resolved EVERY literal to exactly one function — it cannot distinguish "
+            "'no clones' from 'blind to clones'; re-derive this control before trusting the "
+            "pin above"
         )

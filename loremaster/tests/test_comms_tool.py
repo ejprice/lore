@@ -3810,14 +3810,24 @@ async def _render_ack_agent_name(value: str, _ctx: Any) -> str:
 
 async def _render_send_thread(value: str, _ctx: Any) -> str:
     """AC-11 / finding #182.5: ``send.thread`` had NO injection RenderCase in the
-    committed battery, and B3.2/B3.3 put ``thread`` into the send render for the
-    first time (the thread cell, and the question teach that names the thread).
-    Battery completeness is checked per ACTION, so a per-FIELD gap like this one
-    is invisible to ``assert_actions_covered`` and has to be demanded by name.
+    committed battery, and §B3.3's question teach puts ``thread`` into the send
+    render for the first time. Battery completeness is checked per ACTION, so a
+    per-FIELD gap like this one is invisible to ``assert_actions_covered`` and
+    has to be demanded by name.
 
-    The message is a QUESTION on a NON-default thread so BOTH thread-bearing
-    lines render — a fixture where the teach is absent would exercise only half
-    the surface it is here to cover.
+    ⚠ The message MUST be a QUESTION here, and that is now load-bearing rather
+    than incidental. **B3.2 item 2 is STRUCK — Reading A ruled** (`f537051`;
+    `03b-design-rulings-r2.md` §G row "B3.2 send thread cell"): the send receipt
+    carries NO thread cell, because the sender CHOSE the thread it passed and
+    echoing a caller's own input back is the same zero-signal class as B3.4's
+    no-body-echo. So the question teach is the ONLY line in the send render that
+    carries an agent-controlled thread — a non-question fixture would drive this
+    case against a render that never touches the field, and the hostile value
+    would be exercising nothing.
+
+    (This docstring previously said "BOTH thread-bearing lines render". That was
+    written under the pre-ruling reading and became false the moment B3.2 was
+    struck — retired here rather than left to rot beside the code it describes.)
     """
     return AppContext._render_comms_send(
         _send_result(message=_message(thread=value, question=True)),
@@ -5805,21 +5815,55 @@ class TestDrainBodiesAreFENCED:
         """The forgery is the drain's OWN row shape, so a build that lets it out
         of the fence hands another agent the ability to mint phantom
         deliveries."""
-        rendered = self._rendered()
-        lines = rendered.splitlines()
-        fences = [index for index, line in enumerate(lines) if line and set(line) == {"`"}]
-        assert len(fences) >= 2, rendered
-        outside = lines[: fences[0]] + lines[fences[-1] + 1 :]
+        outside = self._outside_the_fence(self._rendered())
         assert not any(line.strip().startswith("#999 [directive]") for line in outside), (
             f"a body-embedded row escaped its fence and reads as a delivered message: {outside!r}"
         )
 
+    @staticmethod
+    def _outside_the_fence(rendered: str) -> list[str]:
+        """The rendered lines that are NOT inside the fenced body.
+
+        ONE IMPLEMENTATION: ``test_the_forged_ROW_never_appears_outside_the_fence``
+        calls this too, rather than each pin re-deriving the fence boundaries —
+        the private copy is what let the two drift apart in the first place
+        (see the FIX-WAVE note on this class).
+        """
+        lines = rendered.splitlines()
+        fences = [index for index, line in enumerate(lines) if line and set(line) == {"`"}]
+        assert len(fences) >= 2, f"the body is not bounded by two fence lines: {rendered!r}"
+        return lines[: fences[0]] + lines[fences[-1] + 1 :]
+
     def test_the_header_count_is_UNAFFECTED_by_a_hostile_body(self) -> None:
         """The counts are the trust surface (§C5(b)): a body must never be able
-        to change what the header claims."""
+        to change what the header claims.
+
+        ⚠ FIX WAVE (adversary §3.B3, BLOCKER — this pin was an INVERTED GATE and
+        made the contract UNSATISFIABLE). It scanned the WHOLE render, fence
+        included, while its own failure message promised *"outside its fence"* —
+        and the fixture body deliberately carries a row-shaped line that the
+        sibling ``test_the_body_round_trips_BYTE_VERBATIM`` REQUIRES to survive
+        verbatim. So a correctly-fencing build always had >=2 matches:
+
+        | build | this pin, before the fix |
+        |---|---|
+        | correct (fenced, committed row template) | **RED** |
+        | body rendered INLINE + sanitised (what FK-1 forbids) | GREEN |
+        | body sanitised instead of fenced | GREEN |
+
+        It punished the build the operator RULED and rewarded the two builds
+        FK-1 forbids — the packet file's own amendment-7 class ("THE COMMITTED
+        CONTRACT REWARDED THE WRONG BUILD"), reproduced inside the recovery
+        wave, by the author of the pin that names that class. A failure message
+        that promises a check the assertion does not perform is a FALSE GATE
+        (CLAUDE.md, P2 2026-07-14); here the gap between message and assertion
+        was not merely a hole, it was a sign flip.
+        """
         rendered = self._rendered()
         assert "drained 1 of 1 pending" in rendered, rendered
-        rows = [line for line in rendered.splitlines() if re.match(r"^#\d+ \[", line)]
+        rows = [
+            line for line in self._outside_the_fence(rendered) if re.match(r"^#\d+ \[", line)
+        ]
         assert len(rows) == 1, (
             f"a hostile body forged extra ROW lines outside its fence: {rows!r}"
         )
@@ -5937,30 +5981,169 @@ class TestTheAckRenderAccountsForEveryRequestedSeq:
 # --------------------------------------------------------------------------- #
 
 
-def _assert_ordered(text: str, *fragments: str) -> None:
-    """Assert every fragment appears, IN ORDER.
+# --------------------------------------------------------------------------- #
+# FIX WAVE (adversary §3.B5, BLOCKER): the teaching instruments.
+#
+# ``_assert_ordered``'s docstring used to claim ordering was *"the cheapest
+# NON-INVERTIBLE strengthening available to a prose pin."* **Measured false.**
+# The adversary served two inverted tool-schema descriptions and an entirely
+# inverted instructions block — *"you never need to drain … A directive needs no
+# ack … Bodies may be any length (the 2000 char figure is advisory) … A
+# teammate's reply does not clear your question at all; your own self-note is
+# what discharges it"* — and got **11/11 and 9/9 clause pins GREEN**, whole
+# contract green. Every chosen fragment (`"not"`, `"one"`, `"without"`,
+# `"stamping"`, `"teammate"`, `"your own"`) occurs inside innocuous words or
+# inside sentences asserting the exact opposite. Even AC-08's "extract the
+# integer" strengthening survived *"the 2000 char figure is advisory"*.
+#
+# That is a FALSE GATE by this repo's own definition — a failure message
+# promising a check the assertion does not perform — inside the pins that guard
+# the read-once surface an LLM consumer learns the protocol from. So the
+# instrument is replaced, not patched around:
+#
+#   * ``_assert_teaches``   — PRIMARY. The ruled sentence must appear VERBATIM.
+#                             Non-invertible BY CONSTRUCTION: you cannot invert
+#                             a sentence and still contain it. B9 grants the
+#                             exact wording to the contract author, so the
+#                             contract states it once (the constants below) and
+#                             the builder copies it.
+#   * ``_assert_never_claims`` — SECONDARY. A denylist of the inversions the
+#                             adversary actually served. Enumerating the
+#                             FORBIDDEN is the losing shape (CLAUDE.md's
+#                             six-defeats table), which is exactly why this is
+#                             the second instrument and not the first: it pins
+#                             the demonstrated attack as a regression, it does
+#                             not define correctness.
+#   * ``_assert_ordered``   — KEPT, with an HONEST docstring and word-boundary
+#                             matching. It constrains SHAPE, never MEANING.
+# --------------------------------------------------------------------------- #
 
-    AC-08: a bare substring pin admits an INVERTED rewrite ("a peek DOES mark
-    them seen" contains both "peek" and "seen"). Ordering is the cheapest
-    non-invertible strengthening available to a prose pin — it constrains the
-    sentence's shape, not merely its vocabulary.
+
+def _assert_ordered(text: str, *fragments: str) -> None:
+    """Assert every fragment appears as a WHOLE WORD, in order.
+
+    ⚠ THIS IS NOT AN INVERTIBILITY CHECK, and its previous docstring's claim
+    that it was is the defect adversary §3.B5 measured. Ordering constrains the
+    SHAPE of a sentence; it says nothing about whether the sentence asserts the
+    thing or its negation. Use :func:`_assert_teaches` for meaning. This is kept
+    only for structural checks where the wording is deliberately not fixed.
+
+    Word-boundary matching is the one honest strengthening available here: it
+    stops `"not"` matching inside `"nothing"` and `"one"` inside `"phone"`,
+    which is how several of the inverted sentences slipped past.
     """
     cursor = 0
     for fragment in fragments:
-        index = text.find(fragment, cursor)
-        assert index >= 0, (
-            f"missing (or out of order) fragment {fragment!r} after offset {cursor} in:\n{text}"
+        match = re.compile(rf"(?<!\w){re.escape(fragment)}(?!\w)").search(text, cursor)
+        assert match is not None, (
+            f"missing (or out of order) whole-word fragment {fragment!r} after offset "
+            f"{cursor} in:\n{text}"
         )
-        cursor = index + len(fragment)
+        cursor = match.end()
+
+
+def _assert_teaches(text: str, *sentences: str) -> None:
+    """Assert each RULED sentence appears verbatim — the meaning pin.
+
+    Non-invertible by construction. The cost is that the contract fixes the
+    wording; B9 explicitly assigns that wording to the contract author, and a
+    served teaching surface whose MEANING no gate checks is the #104 class the
+    trust doctrine makes the acceptance criterion.
+    """
+    for sentence in sentences:
+        assert sentence in text, (
+            "the served surface does not carry the RULED teaching sentence verbatim. A "
+            "fragment-and-ordering pin cannot tell this sentence from its NEGATION (measured: "
+            "an entirely inverted instructions block passed 9/9 clause pins), so the contract "
+            f"pins the sentence itself.\n  required: {sentence!r}\n  served:\n{text}"
+        )
+
+
+def _assert_never_claims(text: str, *forbidden: str) -> None:
+    """Assert none of the demonstrated INVERSIONS is served (secondary gate).
+
+    Every phrase here was actually served by the adversary's wrong builds
+    (WB30 / WB31b) while the contract stayed green. This list defines no
+    correctness — :func:`_assert_teaches` does — it exists so the specific
+    attack cannot be re-served, and so a reader can see what was tried.
+    """
+    for phrase in forbidden:
+        assert phrase.casefold() not in text.casefold(), (
+            f"the served surface carries a claim that INVERTS its ruled teaching: {phrase!r}. "
+            f"This exact sentence was served by a wrong build that passed the whole contract "
+            f"before the fix wave.\n  served:\n{text}"
+        )
+
+
+# The RULED teaching sentences (B9 grants the wording to the contract author).
+# Stated ONCE here so the builder copies them and every pin derives from the
+# same source — a second hand-typed copy in a pin is how prose and behaviour
+# drift apart.
+_RULED_INSTRUCTION_CLAUSES: tuple[str, ...] = (
+    # 1 — the three verbs, each with a purpose.
+    "action=send delivers a durable message; action=drain reads your inbox and marks "
+    "what it serves; action=ack discharges a directive you were sent.",
+    # 2 — cadence.
+    "Drain at your own turn boundaries: after you claim work, before each major step, "
+    "and before you write your report.",
+    # 3 — the ack duty.
+    "grade='directive' is must-act traffic: ack exactly the seqs the ACK REQUIRED "
+    "trailer names.",
+    # 5 — one debt per thread.
+    "One thread carries ONE conversational debt: put separate questions on separate "
+    "q:<topic> threads.",
+    # 6 — the re-ask recovery.
+    "If a partial reply cleared your thread, re-ask the unaddressed question: a new "
+    "send with set_status='input_required' re-establishes the debt.",
+    # 7 — the clearing rule, both halves.
+    "A question clears only when a teammate's reply is delivered to you on that thread; "
+    "your own follow-ups and self-notes never clear it.",
+)
+
+# Clause 4 is pinned separately: its integer is DERIVED from the constant
+# (AC-08) as well as being sentence-pinned, because the cap is the one clause
+# whose value can change under the prose.
+_RULED_BODY_CAP_SENTENCE = (
+    "Message bodies are capped at {cap} characters and carry POINTERS: put the content in "
+    "a report or finding and name it in refs."
+)
+
+# Inversions the adversary actually SERVED while the contract stayed green.
+_DEMONSTRATED_INVERSIONS: tuple[str, ...] = (
+    "never need to drain",
+    "lore pushes messages to you",
+    "needs no ack",
+    "trailer is decorative",
+    # Phrase, not the bare word "advisory": a denylist that refuses honest
+    # prose is a denylist that gets switched off (CLAUDE.md — a false positive
+    # on legitimate wording is the insult that disables an instrument).
+    "figure is advisory",
+    "does not clear your question",
+    "self-note is what discharges",
+    "never bother to separate",
+    "never re-ask",
+    "peek DOES stamp",
+    "are never served twice",
+    "SET your status row",
+)
 
 
 class TestTheInstructionsBlockTeachesTheMessageSurface:
     """§B9's read-once half (DESIGN-LAW §1.5: strategy and invariants are read
     ONCE in the instructions; recovery moves ride each response).
 
+    ⚠ FIX WAVE (adversary §3.B5, BLOCKER). These pins previously asserted
+    FRAGMENTS in order, and an entirely inverted instructions block passed
+    **9/9 of them** — teaching that lore PUSHES messages, that a directive
+    needs no ack, that the body cap is advisory, and that a self-note (not a
+    teammate's reply) discharges a question. The instructions block is the
+    read-once surface an LLM consumer learns this protocol from; pinning its
+    VOCABULARY and calling that a teaching gate is the #104 class exactly.
+    Each clause is now pinned as its RULED SENTENCE (:func:`_assert_teaches`),
+    with the demonstrated inversions denylisted as a secondary regression gate.
+
     ADDITIVE by construction: ``test_mcp_server.py::TestServerInstructions``'s
-    committed substring pins are untouched and keep their force — this class
-    only demands that the seven ruled clauses ALSO appear.
+    committed substring pins are untouched and keep their force.
     """
 
     @staticmethod
@@ -5968,70 +6151,61 @@ class TestTheInstructionsBlockTeachesTheMessageSurface:
         return str(_server()._INSTRUCTIONS)
 
     @pytest.mark.parametrize("action", ["send", "drain", "ack"])
-    def test_clause_1_each_new_action_is_named_with_a_purpose(self, action: str) -> None:
+    def test_clause_1_each_new_action_is_named(self, action: str) -> None:
         assert f"action={action}" in self._instructions(), (
             f"the instructions never name action={action} — an agent that does not know the "
             f"verb exists cannot call it, and the whole subsystem is invisible (§B9.1)"
         )
 
-    def test_clause_2_the_drain_cadence_is_taught_as_turn_boundaries(self) -> None:
-        """The decay hypothesis this packet's telemetry exists to MEASURE says a
-        standing 'check your messages' obligation decays within a few tool
-        calls. The cadence must therefore be anchored to events an agent
-        actually notices, not to elapsed time."""
-        _assert_ordered(self._instructions(), "drain", "turn boundaries")
+    @pytest.mark.parametrize(
+        "clause", _RULED_INSTRUCTION_CLAUSES, ids=lambda c: c.split(" ")[0].strip(",.:")
+    )
+    def test_every_ruled_clause_is_taught_VERBATIM(self, clause: str) -> None:
+        """The six ruled sentences (clause 4 is pinned separately, below)."""
+        _assert_teaches(self._instructions(), clause)
 
-    def test_clause_3_the_directive_ack_duty_is_taught(self) -> None:
-        _assert_ordered(self._instructions(), "directive", "ack")
+    def test_clause_4_the_body_cap_sentence_carries_the_LIVE_constant(self) -> None:
+        """AC-08 kept AND repaired. Extracting the integer was right and
+        insufficient: ``re.findall`` found ``2000`` inside *"the 2000 char
+        figure is advisory"*, so the strengthening survived a sentence that
+        DISCLAIMED the cap it extracted. The sentence is now pinned whole, with
+        the constant interpolated — so the prose cannot drift from the value AND
+        cannot deny it."""
+        cap = _msg().MESSAGE_BODY_MAX_CHARS
+        _assert_teaches(self._instructions(), _RULED_BODY_CAP_SENTENCE.format(cap=cap))
 
-    def test_clause_4_the_body_cap_is_DERIVED_from_the_constant(self) -> None:
-        """AC-08 — the served integer is EXTRACTED and compared to the constant.
-        A substring pin on "2000 chars" passes a build whose cap has since
-        changed: prose rotting beside code, the exact #104 class."""
-        instructions = self._instructions()
-        caps = {int(value) for value in re.findall(r"(\d{3,6})[ -]?char", instructions)}
-        assert _msg().MESSAGE_BODY_MAX_CHARS in caps, (
-            f"the instructions teach char cap(s) {sorted(caps)!r} but the ledger enforces "
-            f"{_msg().MESSAGE_BODY_MAX_CHARS} — served prose contradicting typed state (§B9.4)"
-        )
-        assert "refs" in instructions, (
-            "the cap must be taught WITH its recovery move (bodies carry POINTERS; content "
-            "lives in reports/findings and is referenced in refs) — a cap with no way out is "
-            "the dead end DESIGN-LAW §2 forbids"
-        )
-
-    def test_clause_5_one_thread_carries_one_conversational_debt(self) -> None:
-        """03a-2 R5 instrument 3, verbatim obligation. Taught STATICALLY — the
-        send-time thread scan was REFUSED there and stays refused."""
-        _assert_ordered(self._instructions(), "thread", "one", "separate")
-        assert "q:" in self._instructions(), (
-            "the instructions must show the q:<topic> thread convention the teaching leans on"
-        )
-
-    def test_clause_6_the_re_ask_recovery_is_taught(self) -> None:
-        _assert_ordered(self._instructions(), "re-ask")
-
-    def test_clause_7_the_clearing_rule_names_BOTH_halves(self) -> None:
-        """R2's static half, and the ONLY place 03b teaches it besides the
-        sender-side render line (the per-ROW recipient marker is packet 05 by
-        operator ruling). Both halves are required: what DOES clear a question,
-        and that your own follow-ups do NOT."""
-        instructions = self._instructions()
-        _assert_ordered(instructions, "teammate", "your own")
-        assert "not clear" in instructions or "never clear" in instructions, (
-            "the instructions teach what clears a question but not what does NOT — a "
-            "self-note that appears to discharge a debt is false-NOT-waiting, the invisible "
-            "direction ruling 9 refuses (§B9.7)"
-        )
+    def test_no_clause_is_served_in_its_INVERTED_form(self) -> None:
+        """SECONDARY gate: every phrase here was served by a wrong build that
+        passed the whole contract before this wave. It defines no correctness —
+        the sentence pins above do — it stops the measured attack recurring."""
+        _assert_never_claims(self._instructions(), *_DEMONSTRATED_INVERSIONS)
 
 
 class TestTheCommsToolSchemaTeachesTheNewParams:
-    """§B9's tool-schema half. An MCP client reads the schema BEFORE it reads
-    any render, so a param whose description lies is a lie told first."""
+    """§B9's tool-schema half. An MCP client reads the schema BEFORE it reads any
+    render, so a param whose description lies is a lie told first.
+
+    ⚠ FIX WAVE (adversary §3.B5): two inverted descriptions passed 11/11 here —
+    including a ``set_status`` line saying it is *"another way to SET your status
+    row"* under a pin literally named ``..._REFUSES_the_status_write_its_name_
+    implies``, and a ``peek`` line saying *"a peek DOES stamp"* under a docstring
+    that named that very sentence as the enemy. Ruled sentences now, not
+    fragments.
+    """
 
     @staticmethod
     def _properties(tools: dict[str, Any]) -> dict[str, Any]:
         return dict((tools["lore_comms"].inputSchema or {}).get("properties", {}))
+
+    async def _description(self, param: str, monkeypatch: pytest.MonkeyPatch) -> str:
+        properties = self._properties(await _tools_by_name(monkeypatch))
+        assert param in properties, f"lore_comms does not expose {param!r} to an MCP client"
+        description = str(properties[param].get("description") or "")
+        assert description.strip(), (
+            f"{param!r} ships with no description — the client's first read of this surface "
+            f"teaches it nothing (§B9)"
+        )
+        return description
 
     @pytest.mark.parametrize(
         "param", ["to", "grade", "thread", "refs", "set_status", "seqs", "peek"]
@@ -6039,53 +6213,53 @@ class TestTheCommsToolSchemaTeachesTheNewParams:
     async def test_every_new_param_is_MCP_VISIBLE_and_described(
         self, param: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        properties = self._properties(await _tools_by_name(monkeypatch))
-        assert param in properties, f"lore_comms does not expose {param!r} to an MCP client"
-        assert (properties[param].get("description") or "").strip(), (
-            f"{param!r} ships with no description — the client's first read of this surface "
-            f"teaches it nothing (§B9)"
-        )
+        await self._description(param, monkeypatch)
 
-    async def test_the_set_status_description_REFUSES_the_status_write_its_name_implies(
+    async def test_set_status_teaches_that_it_does_NOT_write_the_status_row(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """§B2.5/E7: the NAME promises a status write the mechanism does not
-        perform, and the committed spec pins the name — so the SCHEMA carries
-        the correction. Without it, the one surface an agent reads first is the
-        one that misleads it."""
-        description = self._properties(await _tools_by_name(monkeypatch))["set_status"][
-            "description"
-        ]
-        assert "input_required" in description, description
-        _assert_ordered(description, "not", "status")
+        perform and the committed spec pins the name, so the SCHEMA carries the
+        correction — as a sentence, because the inverted form contains every
+        word a fragment pin looks for."""
+        description = await self._description("set_status", monkeypatch)
+        _assert_teaches(
+            description,
+            "marks this send as a question; it does NOT change your status row",
+        )
+        _assert_never_claims(description, *_DEMONSTRATED_INVERSIONS)
 
-    async def test_the_peek_description_carries_the_RE_SERVE_consequence(
+    async def test_peek_teaches_the_RE_SERVE_consequence(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """§B9: peek's re-serve behaviour is the R6 anomaly's ONLY user-facing
-        tripwire in 03b. ``_assert_ordered`` rather than loose substrings — "a
-        peek marks them seen" contains every word the naive pin would look
-        for."""
-        description = self._properties(await _tools_by_name(monkeypatch))["peek"]["description"]
-        _assert_ordered(description, "without", "stamping")
-        assert "unread" in description, description
+        """§B9: peek's re-serve behaviour is the R6 anomaly's only user-facing
+        tripwire in 03b."""
+        description = await self._description("peek", monkeypatch)
+        _assert_teaches(
+            description,
+            "read without stamping: what you peek stays unread and WILL be served again",
+        )
+        _assert_never_claims(description, *_DEMONSTRATED_INVERSIONS)
 
-    async def test_the_to_description_teaches_the_BROADCAST_form(
+    async def test_to_teaches_the_BROADCAST_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        description = await self._description("to", monkeypatch)
+        _assert_teaches(
+            description,
+            "omit it (or pass []) to broadcast to every non-retired teammate in your "
+            "session, excluding you",
+        )
+
+    async def test_grade_names_BOTH_grades_and_the_ack_duty(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        description = self._properties(await _tools_by_name(monkeypatch))["to"]["description"]
-        _assert_ordered(description, "omit", "broadcast", "session")
-
-    async def test_the_grade_description_names_BOTH_grades_and_the_ack_duty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        description = self._properties(await _tools_by_name(monkeypatch))["grade"]["description"]
+        description = await self._description("grade", monkeypatch)
         for grade in sorted(_msg().MESSAGE_GRADES):
             assert grade in description, (
                 f"the grade description omits the legal value {grade!r} — derived from "
                 f"MESSAGE_GRADES, never a hand-written pair (§B9/AC-08)"
             )
-        assert "ack" in description, description
+        _assert_teaches(description, "a 'directive' must be acked; a 'signal' need not be")
+        _assert_never_claims(description, *_DEMONSTRATED_INVERSIONS)
 
 
 # --------------------------------------------------------------------------- #
@@ -6191,3 +6365,498 @@ class TestTheValidationOrderWithTheNewSteps:
             "handler, or the oversize-body check moved before it (§B1 steps 7 vs 8)"
         )
         assert message_ledger.db.messages == {}, "the rejected send still wrote a row"
+
+
+# =========================================================================== #
+# FIX WAVE (adversary re-grade `bb8d106`) — the missing pin classes.
+# =========================================================================== #
+
+
+class _BrokenBriefLedger:
+    """A brief ledger whose every read raises a STORE fault.
+
+    Not an ``UnknownBriefError`` (the handler legitimately catches that and
+    renders "no project brief yet") — a transport-class failure, which is the
+    condition §B4.1 rules on.
+    """
+
+    class Fault(RuntimeError):
+        pass
+
+    async def get_head(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise self.Fault("the brief ledger is down")
+
+    async def acked_version(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise self.Fault("the brief ledger is down")
+
+    async def subscribed_name_skew(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise self.Fault("the brief ledger is down")
+
+
+async def _fleet_with_a_published_brief() -> tuple[Any, Any]:
+    """A fleet where ``fixer-b`` is BEHIND the standing brief.
+
+    ``brief_publish`` self-acks its publisher (#98), so publishing as ``lead``
+    leaves every other agent unacked — the state whose catch-up line the skew
+    block exists to surface.
+    """
+    harness, message_ledger = await _03b_fleet()
+    await AppContext.comms(
+        harness,
+        action="brief_publish",
+        agent="lead",
+        session="wave7",
+        name="project",
+        body="the standing brief",
+    )
+    return harness, message_ledger
+
+
+class TestDrainServesTheSharedBriefSkewBlock:
+    """§B4.1 / FK-6 — adversary §3.B1, THE WORST FINDING IN THE PACKET.
+
+    The wrong build: ``_comms_drain`` never assembles or passes the brief-skew
+    block. The adversary's WB1 built exactly that and the contract produced
+    **zero** new failures — FK-6 was pinned by NOTHING.
+
+    And it is not a latent gap, it is a LIVE LIE: production at HEAD already
+    serves *"…; surfaces at their next heartbeat or drain"*, and the E-S5(c)
+    amendment that put "or drain" there was justified as strengthen-only
+    because *"it names both verbs that measurably surface it."* **That
+    justification is false until this pin passes.** A builder who satisfied the
+    old contract perfectly shipped a served teach naming a verb that does not do
+    the thing — the C5(c) teaching-vs-behaviour failure the trust doctrine makes
+    the acceptance criterion.
+
+    The packet routes this to the deploy smoke; a smoke runs after the builder
+    is finished and is not what a builder is graded against. **A gate that fires
+    after the work is done is a discovery, not a guard.**
+
+    MUTATION-PROOF OBLIGATION (adversary, MP-FK6): change the SHARED skew
+    template in ``server.py`` -> BOTH this class's drain pin AND the existing
+    heartbeat skew pins go RED. A build where only one side reddens is a private
+    clone, and its complement is the ``TestEveryPromiseLiteralHasExactlyONE
+    EmittingFunction`` structural pin in ``test_comms_promise_registry.py``.
+    """
+
+    async def test_a_drain_serves_the_brief_skew_catch_up_line(self) -> None:
+        harness, _ = await _fleet_with_a_published_brief()
+        await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
+        rendered = str(
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        )
+        assert "you have not acked brief 'project'" in rendered, (
+            "a DRAIN by an agent behind the standing brief served no skew block. Production "
+            "teaches 'surfaces at their next heartbeat or drain'; this build makes that a "
+            "lie (§B4.1/FK-6, adversary §3.B1)"
+        )
+
+    async def test_the_SAME_agent_gets_the_SAME_line_from_heartbeat(self) -> None:
+        """The other half of the mutation proof: the two verbs must serve the
+        SAME line for the SAME state, so changing the shared template reddens
+        both. If only one moves, the drain path is a private clone."""
+        harness, _ = await _fleet_with_a_published_brief()
+        heartbeat = str(
+            await AppContext.comms(harness, action="heartbeat", agent="fixer-b", session="wave7")
+        )
+        await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
+        drain = str(
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        )
+        skew = "you have not acked brief 'project'"
+        assert skew in heartbeat, heartbeat
+        assert _line_containing(heartbeat, skew) == _line_containing(drain, skew), (
+            "heartbeat and drain served DIFFERENT skew lines for the same agent and the same "
+            "brief state — one of them is a private copy of the assembly, which is the D5 "
+            "wrong build (routing is not sharing)"
+        )
+
+    async def test_a_CURRENT_agent_gets_no_skew_block_from_drain(self) -> None:
+        """Emit/no-emit: the publisher self-acked, so it is at head and must see
+        no catch-up. Without this, 'drain always appends the line' passes."""
+        harness, _ = await _fleet_with_a_published_brief()
+        await _deliver(harness, to=["lead"], grade=_msg().MESSAGE_GRADE_SIGNAL, sender="fixer-b")
+        rendered = str(
+            await AppContext.comms(harness, action="drain", agent="lead", session="wave7")
+        )
+        assert "you have not acked brief 'project'" not in rendered, rendered
+
+    async def test_a_drain_FAILS_LOUD_when_the_brief_ledger_is_down(self) -> None:
+        """§B4.1's ruled store-failure posture (adversary missing pin P11): "no
+        special degradation" — the drain reads the brief ledger, so if that is
+        down the drain FAILS. A partial "messages without skew" fallback is a
+        SILENT DEGRADATION (DESIGN-LAW §1.4): the consumer would read a complete
+        looking inbox and never learn its standing instructions moved."""
+        harness, _ = await _03b_fleet()
+        await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
+        harness.brief_ledger = _BrokenBriefLedger()
+        with pytest.raises(_BrokenBriefLedger.Fault):
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+
+    async def test_positive_control_the_same_drain_SUCCEEDS_with_a_live_ledger(self) -> None:
+        harness, _ = await _03b_fleet()
+        await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
+        rendered = str(
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        )
+        assert "drained 1 of 1 pending" in rendered, rendered
+
+
+class TestAnExplicitRecipientResolvesInTheCALLERSSessionOnly:
+    """§B2.3, adversary §3.C1 (CRITICAL) — missing pin P7.
+
+    *"Each `to[]` name resolves via `AgentRegistry.get_agent(name, session=<the
+    caller's resolved session>)` — session-scoped, ALWAYS… an unscoped
+    resolution would make a cross-session delivery reachable through name
+    collision."* The contract's only two-session fixture was on the BROADCAST
+    path; the explicit-``to`` path was unpinned, and the adversary's WB8
+    (unscoped resolution) **delivered a message into another session and
+    reported success** while the whole contract stayed green.
+
+    The fixture is the discriminating one: the SAME name in two sessions, with
+    the caller's own copy RETIRED — so a bare-name lookup (which filters retired
+    rows) resolves to the OTHER session's row and silently succeeds, while the
+    session-scoped lookup finds the retired row and refuses.
+    """
+
+    _TWO_SESSIONS = (
+        ("lead", "wave7", "active"),
+        ("victim", "wave7", "retired"),
+        ("victim", "wave8", "active"),
+    )
+
+    async def test_a_send_never_crosses_into_another_sessions_row(self) -> None:
+        harness, message_ledger = await _03b_fleet(members=self._TWO_SESSIONS)
+        with pytest.raises(Exception) as excinfo:  # noqa: B017 - reject class is the builder's
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["victim"],
+                body="for my own session only",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        assert "victim" in str(excinfo.value), (
+            f"the raise did not name the recipient — this pin must not pass for an unrelated "
+            f"reason: {excinfo.value!r}"
+        )
+        assert message_ledger.db.messages == {}, (
+            "a message was written for a recipient resolved OUTSIDE the caller's session — a "
+            "cross-session delivery reachable by name collision, reported as success (§B2.3)"
+        )
+        assert message_ledger.db.edges == {}
+
+    async def test_positive_control_the_SAME_name_is_reachable_in_ITS_OWN_session(self) -> None:
+        """Without this, the pin above passes on a build that refuses every
+        `to=` send. The wave8 caller reaches its own wave8 `victim`."""
+        harness, message_ledger = await _03b_fleet(
+            members=(("boss", "wave8", "active"), ("victim", "wave8", "active"))
+        )
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="boss",
+            session="wave8",
+            to=["victim"],
+            body="in-session",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+        )
+        assert _recipients_of_last_message(message_ledger) == ["victim"]
+
+
+class TestTheSendReceiptCapsAndCountsHonestly:
+    """§B3.1 semantics grafted onto the committed receipt templates — adversary
+    missing pins P8 (CRITICAL) and P9 (CRITICAL).
+
+    Every committed and 03b send fixture used ONE or TWO recipients, i.e. below
+    ``_COVERAGE_NAMES_CAP``. Three wrong builds passed: one that never caps (an
+    unbounded name dump in a per-token-priced render), one with a PRIVATE cap of
+    3 (copy #2 of one policy — #102), and one where the committed capped
+    variant template ``sent … (+{more} more)`` is emitted by no fixture at all
+    (so ``test_no_dead_registry_entries`` is its only guard).
+
+    N is derived from the constant, never written as 7 — a cap change re-derives
+    the fixture instead of silently unbinding the branch.
+    """
+
+    @staticmethod
+    def _names(count: int) -> list[str]:
+        return [f"peer-{index:02d}" for index in range(count)]
+
+    async def _send_to(self, count: int) -> str:
+        members = (("lead", "wave7", "active"),) + tuple(
+            (name, "wave7", "active") for name in self._names(count)
+        )
+        harness, _ = await _03b_fleet(members=members)
+        return str(
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=self._names(count),
+                body="the body",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        )
+
+    async def test_an_over_cap_recipient_list_shows_the_cap_and_counts_the_REMAINDER(
+        self,
+    ) -> None:
+        over = _COVERAGE_NAMES_CAP + 2
+        rendered = await self._send_to(over)
+        shown = [name for name in self._names(over) if name in rendered]
+        assert len(shown) == _COVERAGE_NAMES_CAP, (
+            f"the send receipt listed {len(shown)} of {over} recipient names — either it "
+            f"never caps (an unbounded dump in a per-token-priced render) or it uses a "
+            f"PRIVATE cap instead of the shared _COVERAGE_NAMES_CAP (#102)"
+        )
+        assert f"(+{over - _COVERAGE_NAMES_CAP} more)" in rendered, (
+            f"the elided recipients were not COUNTED — the remainder is the true count minus "
+            f"what was shown, never a window-derived number: {rendered!r}"
+        )
+
+    async def test_an_UNDER_cap_list_names_everyone_and_shows_no_remainder(self) -> None:
+        """Emit/no-emit for the capped variant: without this, a build that
+        always appends "(+0 more)" passes the pin above."""
+        under = _COVERAGE_NAMES_CAP - 2
+        rendered = await self._send_to(under)
+        for name in self._names(under):
+            assert name in rendered, rendered
+        assert "more)" not in rendered, rendered
+
+    async def test_a_broadcast_receipt_counts_the_WHOLE_delivered_set(self) -> None:
+        """P9: a build deriving the broadcast count from a DISPLAY window
+        under-reports delivery — a served count that does not describe the set
+        its label claims, which is the trust doctrine's first clause."""
+        peers = self._names(_COVERAGE_NAMES_CAP + 2)
+        members = (("lead", "wave7", "active"),) + tuple(
+            (name, "wave7", "active") for name in peers
+        )
+        harness, message_ledger = await _03b_fleet(members=members)
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                body="all hands",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        )
+        assert len(_recipients_of_last_message(message_ledger)) == len(peers)
+        assert f"{len(peers)} agents" in rendered, (
+            f"the broadcast receipt did not count every agent it actually delivered to "
+            f"({len(peers)}): {rendered!r}"
+        )
+
+
+class TestTheDrainRefsCellIsCappedAndCounted:
+    """§B4.2's refs line — adversary missing pin P10 (CRITICAL).
+
+    Every refs fixture carried ONE ref, so an uncapped build was invisible. The
+    drain is the subsystem's highest-volume render and ``refs`` is uncapped at
+    the LEDGER (this report's own residual 3), so a thousand-entry list is
+    storable and would render in full.
+    """
+
+    def test_an_over_cap_refs_list_is_capped_and_counted(self) -> None:
+        over = _COVERAGE_NAMES_CAP + 3
+        refs = [f"docs/ref-{index:02d}.md" for index in range(over)]
+        rendered = _03b_drain(
+            entries=[
+                _03b_entry(
+                    seq=871,
+                    grade="signal",
+                    acked_at=None,
+                    thread="wave7",
+                    task_id=None,
+                    refs=refs,
+                )
+            ],
+            total_pending=1,
+            directive_pending=0,
+            peek=False,
+            limit=20,
+            session="wave7",
+        )
+        shown = [ref for ref in refs if ref in rendered]
+        assert len(shown) == _COVERAGE_NAMES_CAP, (
+            f"the drain row rendered {len(shown)} of {over} refs — refs are uncapped at the "
+            f"ledger, so an uncapped render is an unbounded dump in the highest-volume "
+            f"surface (§B4.2; the cap is the SHARED _COVERAGE_NAMES_CAP, never a private one)"
+        )
+        assert f"+{over - _COVERAGE_NAMES_CAP} more" in rendered, rendered
+
+
+class TestEachRequestedSeqLandsInTheLineItsOwnOutcomeNames:
+    """§B5 / §A-GRAFT's group templates — adversary §3.B6 (BLOCKER), missing
+    pins P5 and P6.
+
+    ``test_every_requested_seq_is_accounted_for_in_ONE_mixed_render`` asserted
+    ``str(seq) in rendered`` — **a bag of numbers, blind to which line each
+    landed on.** WB33 (every newly-acked seq listed under ``already acked:`` and
+    every already-acked seq under the ``acked {n} of {m}`` receipt) passed the
+    entire contract. The duplicate pin could not see it either, because 911
+    legitimately occupies both groups whichever way round they are.
+
+    That is the ONE pair a consumer acts on: "did my ack land, or was it
+    already done?" — and swapping it inverts the answer. The adversary's own
+    positive control (swapping ``unknown_message`` ↔ ``not_addressed``) IS
+    caught by the existing proofs, so the family fires; this pair specifically
+    was undefended.
+
+    Group-EXACT membership, four DISTINCT seqs, one render.
+    """
+
+    _BY_OUTCOME: dict[str, int] = {
+        "acked": 931,
+        "already_acked": 932,
+        "unknown_message": 933,
+        "not_addressed": 934,
+    }
+    # The committed group literals each outcome must land under (§A-GRAFT).
+    _GROUP_ANCHOR: dict[str, str] = {
+        "acked": "acked 1 of 4",
+        "already_acked": "already acked:",
+        "unknown_message": "unknown message seq(s):",
+        "not_addressed": "not addressed to you:",
+    }
+
+    def _rendered(self) -> str:
+        return _03b_ack(
+            outcomes=[(seq, outcome) for outcome, seq in self._BY_OUTCOME.items()], note=None
+        )
+
+    def test_the_fixture_covers_every_outcome_with_a_DISTINCT_seq(self) -> None:
+        """NON-VACUITY + discrimination guard: four outcomes, four different
+        seqs. A shared seq would make membership unfalsifiable."""
+        outcomes = get_args(_msg().AckOutcome)
+        assert set(outcomes) == set(self._BY_OUTCOME), sorted(
+            set(outcomes) ^ set(self._BY_OUTCOME)
+        )
+        assert len(set(self._BY_OUTCOME.values())) == len(self._BY_OUTCOME)
+
+    @pytest.mark.parametrize("outcome", sorted(_BY_OUTCOME))
+    def test_each_outcome_names_ONLY_its_own_seq_in_its_own_group_line(
+        self, outcome: str
+    ) -> None:
+        rendered = self._rendered()
+        line = _line_containing(rendered, self._GROUP_ANCHOR[outcome])
+        assert _seqs_named_in(line) == [self._BY_OUTCOME[outcome]], (
+            f"the {outcome!r} group line names the wrong seq(s). A build that SWAPS the "
+            f"acked and already-acked groups passes every 'is this number somewhere in the "
+            f"render' pin while telling the consumer the opposite of what happened — the one "
+            f"pair a consumer acts on (adversary §3.B6): {line!r}"
+        )
+
+    def test_the_receipt_COUNTS_come_from_the_RESULT_not_from_len_entries(self) -> None:
+        """P6. ``acked_count``, ``len(entries)`` and ``already_acked_count`` are
+        pairwise DISTINCT here (2 / 5 / 1), so a build substituting any one for
+        another is caught. Previously WB32 was caught only incidentally, by an
+        `"acked 2 of 3"` literal inside the duplicate pin."""
+        rendered = _03b_ack(
+            outcomes=[
+                (941, "acked"),
+                (942, "acked"),
+                (943, "already_acked"),
+                (944, "unknown_message"),
+                (945, "not_addressed"),
+            ],
+            note=None,
+        )
+        assert "acked 2 of 5" in rendered, (
+            f"the receipt header must report acked_count of len(entries) — 2 of 5 here, three "
+            f"pairwise-distinct numbers so no substitution survives: {rendered!r}"
+        )
+        assert _seqs_named_in(_line_containing(rendered, "already acked:")) == [943]
+
+
+class TestTheQuestionTeachReachesTheReaderThroughTheDispatcher:
+    """§B3.3 — adversary missing pin P15 (MAJOR).
+
+    Every drain/ack/send pin in this file rests on ``FakeMessageLedger``'s
+    honesty and re-checks none of it: the adversary mutated the fake's
+    ``question`` handling and only ``test_message_ledger.py`` reddened, so the
+    SURFACE contract never observed the field it teaches from. This closes the
+    loop end-to-end — ``set_status`` at the dispatcher, ``Message.question`` at
+    the ledger, the teach line in the SERVED text — so the fake's honesty is
+    load-bearing for this file too.
+    """
+
+    async def test_a_question_send_serves_the_clearing_rule_teach(self) -> None:
+        harness, _ = await _03b_fleet()
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["fixer-b"],
+                body="is the gate green?",
+                grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+                thread="q:gate",
+                set_status="input_required",
+            )
+        )
+        assert "question on thread q:gate" in rendered, (
+            "the accepted question produced no clearing-rule teach in the SERVED text. The "
+            "R1 per-row recipient marker is packet 05, which makes this the ONLY in-band "
+            "carrier of the clearing rule in 03b (§B3.3)"
+        )
+
+    async def test_a_NON_question_send_serves_no_teach(self) -> None:
+        harness, _ = await _03b_fleet()
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["fixer-b"],
+                body="fyi",
+                grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+                thread="q:gate",
+            )
+        )
+        assert "question on thread" not in rendered, rendered
+
+
+class TestARejectedRecipientCharsetNamesWHICHRecipient:
+    """§B2.1 — adversary missing pin P13 (MAJOR).
+
+    The existing pin sends TWO recipients and asserts the bad one is named. With
+    a realistic five-name list a build that echoes the whole list (or none of
+    it) is indistinguishable from one that names the offender. The consumer is
+    an LLM that must fix the call it just made: "one of these five is wrong" is
+    not an actionable denial.
+    """
+
+    async def test_only_the_offending_name_is_named(self) -> None:
+        harness, _ = await _03b_fleet(
+            members=(
+                ("lead", "wave7", "active"),
+                ("peer-a", "wave7", "active"),
+                ("peer-b", "wave7", "active"),
+                ("peer-c", "wave7", "active"),
+                ("peer-d", "wave7", "active"),
+            )
+        )
+        with pytest.raises(ValueError) as excinfo:
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["peer-a", "peer-b", "bad name!", "peer-c", "peer-d"],
+                body="x",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        text = str(excinfo.value)
+        assert "bad name!" in text, text
+        innocent = [name for name in ("peer-a", "peer-b", "peer-c", "peer-d") if name in text]
+        assert not innocent, (
+            f"the reject echoed recipients that were FINE ({innocent!r}) — the caller cannot "
+            f"tell which name to fix, which is the actionable-denial law (§B2.1)"
+        )

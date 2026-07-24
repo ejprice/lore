@@ -542,3 +542,179 @@ either**: that comment currently records the TRUE state of the tree (the literal
 untouched). Replacing it with a re-open trigger for an amendment that has not landed would
 leave the file asserting in prose that work was done which was not — the precise defect class
 this packet exists to kill. It lands with the amendment, in the same commit, not before it.
+
+---
+
+# FIX WAVE — response to the adversary re-grade (`bb8d106`)
+
+*Appended 2026-07-24 by contract-surface-03b-r2. The re-grade is rigorous and fair; where it
+and I disagreed I checked, and it was right every time. Its four-way adjudication cleared 50
+of 53 red-on-reference pins as its own reference's legitimate variance — that discipline is
+what makes the remaining 3 trustworthy.*
+
+## F.1 Fresh tails
+
+```
+test_comms_tool.py                 255F/554P  ->  275 failed, 556 passed   (831 collected)
+test_comms_promise_registry.py      15F/ 99P  ->   15 failed, 101 passed   (116 collected)
+test_message_ledger.py             196P/14s   ->  196 passed, 14 skipped   (210 collected)
+
+uv run ruff check .        All checks passed!
+./scripts/typecheck.sh     Found 108 errors in 2 files  (was 92; the delta is new forward
+                           references from this wave's pins — still only the two RED files)
+neighbours                 943 passed, 3 failed
+```
+The 3 neighbour failures are `test_comms_schema.py`'s message-index pins, committed by the
+telemetry sibling at `bb64324` — that is **my escalation E-S6 being picked up**, RED pending
+builder work. Not caused by this wave (`git diff` on that file is empty for me).
+
+**Passed counts went UP in both RED files (554→556, 99→101) and the ledger held at 196** — so
+no previously-green test broke. The 4 new passes are invariants by design, each with a stated
+control: the D5 clone pin + its positive control, the inversion denylist, and the ack-outcome
+fixture's discrimination guard.
+
+## F.2 The three PIN DEFECTS — the contract was UNSATISFIABLE
+
+**§3.B3 — the inverted header-count gate.** `test_the_header_count_is_UNAFFECTED_by_a_hostile_body`
+scanned the WHOLE render while its own message promised *"outside its fence"*, and its fixture
+body deliberately carries a row-shaped line the sibling pin REQUIRES to survive verbatim. It
+**reddened the FK-1 build the operator ruled and greened the two builds FK-1 forbids.** Fixed
+by computing `outside` exactly as the sibling does — extracted to a shared
+`_outside_the_fence` helper so the two cannot drift apart again (the private copy is what let
+them diverge).
+
+Neither this fix nor the next can be verified against this tree — the renders do not exist,
+which is the point of a RED contract — so I proved it at the level of my own helper, **both
+directions**, on a synthetic render of the exact shape a correct FK-1 build emits:
+
+```
+OLD (whole render): 2 rows -> assert ==1  FAILS   <- the inverted gate, reproduced
+NEW (outside only): 1 rows -> assert ==1  PASSES  <- the correct build now passes
+NEW on the INLINE build (what FK-1 forbids): FAILS at the fence-boundary guard -> REJECTED
+```
+So the sign flip is corrected **and** the pin still rejects the forbidden build.
+
+**§3.B4 — the question-teach proof reddened a committed marker.** `_render_send_03b` minted
+`seq=41`, which is `_p03_message`'s default, so a correct build necessarily co-emitted the
+committed marker `"recipients must ack: … seqs=[41]"`. Moved to `seq=42`. The
+`grade="directive"` choice on both legs is load-bearing (it is what kills a grade-gating
+build, MP-B33) and is kept. Verified no new collision: seq 42 appears in exactly one driver
+and in no marker.
+
+Chosen over declaring a `_MARKER_CO_EMISSION_EXEMPTIONS` pair deliberately — an exemption
+permanently blinds the meta-test to that pair, while a distinct fixture value costs nothing.
+**Exemptions are for STRUCTURAL co-emission; this was a fixture collision.**
+
+## F.3 The six BLOCKERS
+
+| § | fix |
+|---|---|
+| **3.B1** FK-6 pinned by nothing | `TestDrainServesTheSharedBriefSkewBlock` — five pins through the REAL dispatcher: drain serves the catch-up line for an agent behind head · heartbeat and drain serve the **identical** line for the same state (the sharing half) · a current agent gets none (emit/no-emit) · **P11**: brief ledger down ⇒ drain FAILS LOUD (§B4.1's ruled posture; a silent messages-without-skew fallback is the degradation DESIGN-LAW §1.4 refuses) · positive control that the same drain succeeds live |
+| **3.B2** D5 routing-is-not-sharing | `TestEveryPromiseLiteralHasExactlyONEEmittingFunction` — **a served promise literal is emitted from exactly ONE function.** A private clone must duplicate the `render_line` call to exist, so it lands here whatever it is named. **Name-free on purpose**: naming a helper is the enumerate-the-forbidden mistake (the six-defeats table); this keys on the property. Measured before writing it: **zero** registry literals have >1 emitter today, so it is green now and RED on the first clone. Scoped to `_PROMISE_REGISTRY` because the join separators legitimately ARE multi-emitted — duplicating trivia is cheap, duplicating POLICY is what this forbids. Carries a positive control proving the scan CAN see a two-function literal |
+| **3.B3 / 3.B4** | §F.2 |
+| **3.B5** invertible teaching | **The INSTRUMENT was replaced, not the pins patched.** `_assert_ordered` claimed to be "the cheapest non-invertible strengthening"; measured false — an entirely inverted instructions block passed 9/9 and two inverted schema descriptions passed 11/11. Now: `_assert_teaches` (PRIMARY — the ruled sentence verbatim, non-invertible by construction) · `_assert_never_claims` (SECONDARY — the 12 phrases the adversary actually served; explicitly *not* the definition of correctness, since enumerating the forbidden is the losing shape) · `_assert_ordered` KEPT with an honest docstring and word-boundary matching, for shape only. The ruled sentences live in `_RULED_INSTRUCTION_CLAUSES` / `_RULED_BODY_CAP_SENTENCE` — stated once so every pin derives from one source. **AC-08's integer extraction is kept AND repaired**: it survived *"the 2000 char figure is advisory"*, so the cap sentence is now pinned whole with the constant interpolated |
+| **3.B6** ack mapping | `TestEachRequestedSeqLandsInTheLineItsOwnOutcomeNames` — four DISTINCT seqs, one render, **group-exact** membership per outcome (`_seqs_named_in(<that group's line>) == [that seq]`). Plus **P6**: `acked_count` / `len(entries)` / `already_acked_count` pairwise distinct (2/5/1) |
+
+## F.4 CRITICAL + MAJOR missing pins
+
+**P7** `TestAnExplicitRecipientResolvesInTheCALLERSSessionOnly` — the adversary's own
+discriminating fixture (same name in two sessions, the caller's copy RETIRED so a bare-name
+lookup resolves to the *other* session and silently succeeds), plus the positive control that
+the name IS reachable in its own session. WB8 delivered across sessions and reported success.
+**P8/P9** `TestTheSendReceiptCapsAndCountsHonestly` — N derived from `_COVERAGE_NAMES_CAP`
+(never the literal 5): over-cap shows exactly the cap + the counted remainder; under-cap names
+everyone and shows no remainder (emit/no-emit for the committed capped variant); broadcast
+counts the WHOLE delivered set. **P10** `TestTheDrainRefsCellIsCappedAndCounted` — refs are
+uncapped at the ledger, so an uncapped render is an unbounded dump in the highest-volume
+surface. **P12** the drain elision proof's marker promoted from the value-free
+`"more unread — re-run with limit="` to the full line `"+5 more unread — re-run with limit=5"`;
+checked it is not a substring of the FK-2 fleet marker, and vice versa. **P13**
+`TestARejectedRecipientCharsetNamesWHICHRecipient` — five recipients, one bad; the innocent
+four must NOT be echoed (actionable denial). **P15** `TestTheQuestionTeachReachesTheReader
+ThroughTheDispatcher` — closes the fake-honesty loop end-to-end, so the surface contract
+observes the `question` field it teaches from.
+
+## F.5 A defect of MINE the adversary did not catch
+
+Writing the FK-6 pin, I scanned which functions actually emit the four `skew (session …)`
+literals. **They are emitted by `_render_comms_brief_publish`, not by heartbeat.** My E-S5(a)
+description edits had rewritten all four to say *"emitted by EVERY action that serves the
+shared skew block (heartbeat and, per FK-6, drain)"* — **wrong**: those lines are
+brief_publish's publisher-side SUMMARY, and what "heartbeat or drain" names is where the
+promise is REDEEMED, not who emits it. I had corrected an emitter claim into a different
+wrong emitter claim. All four now distinguish the two: *"EMITTED BY brief_publish … what it
+PROMISES is that the behind agents will see the catch-up at their next heartbeat or drain."*
+
+This is the same shape as A.4 and as the §102 law: a claim about a population, written without
+deriving the population. The derivation took one scan I could have run before writing the
+first version.
+
+## F.6 Claim corrections (§6)
+
+- **MP-FK2 arm 2 was VACUOUS** — for fleet, `shown + more ≡ total` by construction, so
+  "`next_limit → shown+more`" cannot redden anything. A receipt taken on arm 2 alone would
+  have been a false proof. **MP-FK2 now has ONE arm** (remainder → `total`, confirmed 6 RED);
+  the drain-side arithmetic is carried by MP-B15 and the new MP-P12.
+- **MP-B12's "and nothing else in the file" was an OVER-CLAIM.** Measured: send → 2 RED
+  (1 in-file), drain → 7 RED (6 in-file), ack → 3 RED (2 in-file). The mechanism is confirmed;
+  the exclusivity clause is withdrawn. It should have read *"that verb's pin is among the
+  reddened, and it is the only pin that names that verb's render"*.
+
+## F.7 Updated mutation-proof obligations for the re-grade
+
+| id | break | must go RED |
+|---|---|---|
+| MP-FK1a/b | inline body · `sanitise_line` the body | as before — **and** the header-count pin must now STAY red (it previously flipped green; that flip was the §3.B3 defect) |
+| MP-FK2 | fleet remainder → `total` | the fleet elision proof (arm 2 withdrawn as vacuous) |
+| MP-P12 | drain `next_limit` → `shown+more` | the drain elision proof's EMIT leg **and** both B15 arithmetic pins |
+| MP-B12 ×3 | delete each render call | that verb's render pin (exclusivity clause withdrawn) |
+| MP-B33 · MP-B42 · MP-B53 · MP-B14 · MP-B15 | as before | as before — all CONFIRMED at 8/9 |
+| **MP-FK6** | `_comms_drain` never assembles/passes the skew block (WB1) | `TestDrainServesTheSharedBriefSkewBlock` (≥3 legs) |
+| **MP-D5** | drain hand-rolls a private skew clone (WB18) | `TestEveryPromiseLiteralHasExactlyONEEmittingFunction`, naming both functions — **and** the identical-line pin |
+| **MP-B5c** | brief ledger raises during a drain | the fail-loud pin; a build that swallows it and serves messages-without-skew must go RED |
+| **MP-B6c** | swap the acked / already-acked groups (WB33) | all four group-exact pins |
+| **MP-B5d** | serve any inverted teaching sentence (WB30/WB31b) | the sentence pins first, the denylist second |
+
+## F.8 §8 residuals + §9 corpse — individual verdicts
+
+1. **`_p03_entry` defaults `acked_at`** — agreed with the adversary: acceptable, hazard closed
+   by the fresh no-default factories. **No action**, recorded so nobody "fixes" it by weakening.
+2. **Value-free elision marker** — **FIXED** (P12, above).
+3. **WB16 (ack render dedupes + re-sorts) survives** — **ESCALATED, not fixed.** B5.2 ruled
+   request order; §A-GRAFT re-expressed R1 as MEMBERSHIP and retired the ordering clause. Two
+   readings, different code. The adversary would pick (A) membership-only; so would I, and it
+   is what the contract implements. **This is a ruling, not mine to make** — pinning ordering
+   would contradict A-GRAFT, and pinning membership-only forecloses B5.2's letter.
+4. **B3.2 send thread cell** — **UNTOUCHED** per the lead's instruction; with the design owner.
+5. **`AppContext.comms` fails `ruff PLR0912` under the ruled validation order** —
+   **ESCALATED, not pinned.** The adversary is right that this is a real, unanticipated builder
+   cost. But "invent the extraction seam" is a **property to INVENT, not a spec to implement**
+   — CLAUDE.md routes that to the operator or an Opus author who attacks its own design, never
+   to a builder, and equally never to a contract author inventing it in a pin. Pinning a shape
+   I designed would be exactly the failure the roster law names. **Recommend**: the design
+   owner names the seam (or grants the `noqa` with a reason), then it becomes one cheap AST pin.
+6. **Drain reads the brief ledger ⇒ drain fails when briefs fail** — **FIXED** (P11).
+7. **`MessageLedger` is never closed** — **FLAGGED, outside my writable set.** The `aclose`
+   pins live in `test_comms_wiring.py` (`TestAcloseClosesBothNewConnections` area). Exact edit:
+   one pin mirroring `test_aclose_closes_the_agent_registry_connection` for
+   `message_ledger`. Real resource-leak hole; one line for whoever owns that file.
+8. **The cross-test `_SKEW_SURFACING_TEACH` import** — correct and load-bearing. **No action**;
+   the adversary's note is right that a future reader may misread it as a smell.
+9. **The struck adversary's `test_surreal_harness.py` escalation** — outside my writable set
+   and outside my graded five. **FLAGGED for the lead** to confirm it was fixed, not assumed.
+
+**§9 corpse — `docs/design/2026-07-12-pkt28-c1-semantics.md`, 8 live sites.** Real corpse: it
+is the doc a future reader consults for §9.4's tail wording and it now contradicts production.
+**Outside my writable set** (docs). Exact edit: one supersession line under its §9.4 pointing
+at ruling E-S5(c) and `03b-design-rulings-r2.md` §G — not a rewrite of the 8 sites, since the
+doc is a historical spec and rewriting it would erase what C1 actually shipped.
+`docs/plans/v2/02-comms-render-architecture.md:26` is historical (records #103's finding, does
+not prescribe) — a pointer would be cheap; flagged, not blocking.
+
+## F.9 What I could not verify, stated plainly
+
+The §F.2 fixes and every new pin are RED on this tree for the right reason (`AttributeError`
+naming a missing render, `TypeError` naming an unaccepted kwarg — sampled and pasted above).
+**I cannot show them green, because I may not build the surface.** The B3 fix is proven both
+directions synthetically; the B4 fix is proven by collision analysis. Everything else is the
+adversary's to certify against its reference — that split is the point.
