@@ -885,3 +885,25 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   Receipts `docs/plans/v2/receipts/2026-07-23-packet03a2/` (six waves; the auditor's report carries
   an **archive-correction header** — its mypy distribution summed to 48 beside its own correct 36).
   **NEXT = 03b** (task `b7f89c12`, now unblocked) — it ships the surface AND deploys both containers.
+- 2026-07-24 · **PACKET 10 DESIGN DONE + PACKET 10-d BUILT & AUDITED (not shipped).** Operator
+  ruled the architecture (floor in SurrealDB; container detects staleness, container fixes it,
+  new floor stored — no outside caller) and delegated the detail forks to the design sidecar.
+  Design `docs/design/2026-07-24-floor-calibration.md` (R1–R8 + Addenda A–E): staleness is now a
+  MEASURED quantity (fresh floor's CI disjoint from the adopted one's) — the inherited 10% churn
+  threshold is DELETED, not re-tuned; one disjointness test governs adoption, per-tier upgrade and
+  #180's per-hit floor. F1/F2/F4/F5/F6 decided-by-delegation; **F3 re-routed from an operator fork
+  to a CLIENT CONSULT** (the 2026-07-06 precedent already ruled weak-match signalling a client
+  question — the lead mis-routed it and the operator caught it); consult runs AFTER 11-i on R2's
+  measured divergence ("we need to measure first"). Under the new TRUST DOCTRINE the sidecar ruled
+  **DISARM NOW**: packet **10-d** darkens both confidence surfaces (`_COSINE_WEAK_MATCH_FLOOR =
+  None`) — built (`bdb7929`), cold-audited **GO** (`d5345ad`), **NOT merged, NOT deployed** (merge
+  operator-held pending 03b; deploy to RIDE 03b's rather than force a second hazardous lore-lore
+  recreate). Packet 11 SPLIT → **11-i** (dark machinery, no deploy) / **11-ii** (cutover + a §C5
+  consumer battery as ruled acceptance). ⚠ **The trap, carried into 11-ii:** the disarm MASKS #176,
+  it does not fix it — `_format_result` still has no `disarmed_by_drift` term, so arming the floor
+  re-opens it instantly. New findings: **#176** (per-hit no drift gate), **#179** (foreign-instance
+  constant), **#180** (best-of-response floor served per-hit — the basis mismatch), **#185**
+  (`scratch_copy.sh` does not git-isolate a copy made from a WORKTREE; Python provenance passes
+  while git commands hit the real worktree). #178 resolved as the lead's own duplicate of #179.
+  R3 (drift/stamp fields go dark with the floor) ADJUDICATED — accept, re-open trigger = 11-ii.
+  Receipts on branch `pkt10-floor-calibration-design`, unmerged.

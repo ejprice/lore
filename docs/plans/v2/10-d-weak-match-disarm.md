@@ -90,3 +90,31 @@ Smoke: a search on the deployed instance renders the substrate and **no** weak-m
 Findings #176 / #179 / #180 stay **OPEN** — this packet stops the bleeding, it does not fix
 the calibration. They resolve in 11-ii when honest per-instance measurement actually serves.
 Record in each row that the surface was disarmed here and by which commit.
+✅ **DONE by the lead 2026-07-24** (cold-audit Finding A caught this clause unexecuted and
+undisclosed): all three rows annotated + acknowledged. The wording deliberately separates
+**BUILT** from **SHIPPED** — production still serves the old behaviour until the merge and
+deploy land, so a bare "disarmed" annotation would have been its own false claim.
+
+## ADJUDICATED — R3, the served-information loss (lead ruling, operator-delegated 2026-07-24)
+The cold audit surfaced this as *unadjudicated by anyone*: with the floor `None`, `lore_index`
+can no longer surface `measured_file_count`, `measured_embedding_schema_fingerprint`, or any
+drift warning — the `measured` and `stale` states become unreachable in production.
+
+**RULING: ACCEPT the loss for the disarm window.** Reasoning, in trust-doctrine terms:
+- Those fields describe **a floor that is no longer served**. Rendering `measured_file_count:
+  214` and a fingerprint beside a dark surface would imply an ACTIVE calibration where none
+  exists — a subtler instance of the exact confident-wrong class this packet exists to kill.
+- A drift warning is **meaningless without a served floor**: stale relative to what? The
+  `stale` state's whole content is "the thing being served has rotted"; nothing is served.
+- DESIGN-LAW §1.3: under-claiming is nearly free; over-claiming costs session authority. This
+  is under-claiming.
+- **It is NOT silent** — §1.4's cardinal failure. The disarm note IS served, names the state,
+  and names the closure path (#83/#176/#179/#180 → packets 11-i/11-ii). An agent reading it
+  knows both where it stands and what changes it.
+
+**NAMED RE-OPEN TRIGGER (per the deferral law — a deferral without a decision point is a
+can-kick):** packet **11-ii** restores the full accounting surface, with a real per-instance
+measurement behind it, as already required by its Scope IN (*"honest states (measured /
+re-measuring / disarmed), file-count accounting fixed at source (#87)"*). If 11-ii is ever
+descoped, this ruling re-opens with it — the acceptance was always bounded by that restoration,
+never permanent.
