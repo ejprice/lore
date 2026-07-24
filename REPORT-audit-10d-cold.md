@@ -245,7 +245,20 @@ which finding **#176 names verbatim** as *"a message promising a check the code 
 
 **9.8 — Two dated `docs/design/` files describe the weak-match surface in the present tense** (`2026-07-06-weak-match-discrimination.md`, `2026-07-06-client-needs-consult.md`). The builder flagged this (Surfaced 7); I confirm it and add the sharper form: these are **indexed**, so a future agent retrieving a chunk from them gets present-tense prose about a dark surface, with no header travelling alongside the chunk to date it (brief-base §1's own warning). A one-line dated banner at the top of each would not survive chunk retrieval either — the honest fix is a dated clause *in the paragraph that makes the claim*. Operator's call; out of my writable set.
 
-**9.9 — Scratch copy left on disk:** `/home/ejprice/scratch-audit-10d` (a plain directory copy, **not** a git worktree, so #134 does not apply). Its 5 changed files currently hold `cbf61ac` content from the mypy-baseline run, and my probe file is parked at `/tmp/audit10d_probe.py.keep`. Safe to delete outright; I left it in case the lead wants to re-run anything. **The worktree under audit was never mutated.**
+**9.9 — The `TeammateIdle` gate cannot see a worktree-assigned agent (orchestration friction, not a 10-d defect).** At my idle boundary the hook fired:
+> *"idle-gate: REPORT-audit-10d-cold.md is not at the repo root."*
+
+It is — at the root of the worktree my brief assigned me. The hook resolves `${CLAUDE_PROJECT_DIR:-.}` to the **session's main checkout** (`/home/ejprice/PycharmProjects/lore`), while every packet agent in this phase works in `/home/ejprice/PycharmProjects/lore-pkt10`. Receipt:
+```
+$ ls -l /home/ejprice/PycharmProjects/lore-pkt10/REPORT-audit-10d-cold.md   # 32799 bytes
+$ git -C …/lore-pkt10 log --oneline -1 -- REPORT-audit-10d-cold.md          # d5345ad
+$ git -C …/lore-pkt10 ls-files --error-unmatch REPORT-audit-10d-cold.md     # tracked
+$ ls /home/ejprice/PycharmProjects/lore/REPORT-audit-10d-cold.md            # No such file
+```
+**I did not satisfy the gate**, deliberately: writing the report into the main checkout would violate this brief's explicit *"DO NOT TOUCH `/home/ejprice/PycharmProjects/lore` (main) — another agent works there."* The brief outranks the hook (brief-base precedence), and a gate that can only be satisfied by breaking the brief must be reported, not obeyed. **This will fire for every worktree-assigned agent in this phase**, and its one-shot semantics mean each one burns a nudge on a false positive — which is exactly how an instrument gets ignored (`CLAUDE.md`: *"a gate that refuses honest code is a gate that gets SWITCHED OFF"*). Fix shape, for the lead to rule: have the hook resolve the agent's actual repo root (`git rev-parse --show-toplevel` from the agent's cwd) rather than the session's project dir. Not filed as a lore friction row — it is a hooks defect, not a lore-tool weakness, and the board carries no row of mine.
+**Ledger note:** my brief named no ledger task id, so per brief-base §5 I touched the board not at all — the nudge's "transition your ledger item" clause has no referent for this agent.
+
+**9.10 — Scratch copy left on disk:** `/home/ejprice/scratch-audit-10d` (a plain directory copy, **not** a git worktree, so #134 does not apply). Its 5 changed files currently hold `cbf61ac` content from the mypy-baseline run, and my probe file is parked at `/tmp/audit10d_probe.py.keep`. Safe to delete outright; I left it in case the lead wants to re-run anything. **The worktree under audit was never mutated.**
 
 ---
 
