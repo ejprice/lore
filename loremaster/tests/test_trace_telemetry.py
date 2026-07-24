@@ -159,6 +159,49 @@ WHAT THIS FILE STILL DELIBERATELY DOES NOT PIN (see the report)
   adds a served-count writer (report ESC-3, AC-12's own note-for-future).
 * The T7.9 deploy smoke (a live-store before/after trace count) is a packet-EXIT
   obligation, not a pytest pin; it is named in the report, not simulated here.
+
+KNOWN BOUND — the emission's kwarg VALUES are not verified in two cells
+----------------------------------------------------------------------
+**This is a KNOWN, ACCEPTED BOUND (adversary report §FV-3; lead-ruled ACCEPTED at
+`f6cb14a`) — not an oversight, and not something to close casually. If you close
+it deliberately, delete this paragraph and say so in the same commit.**
+
+**The bound, exactly:** the emission's kwarg **names and arity** are verified for
+EVERY dispatch, by construction — :class:`_TraceRecorder` binds against
+``inspect.signature(SurrealStore.record_trace)``. Its **values and types** are
+verified only where a pin dispatches into a REAL store: success ∀ the registry
+(MP-H), error ∀ the registry (MP-I), and success/error on synthetic subjects
+(MP-A). **Unverified: (a) the CANCELLED cell against a real store, and (b) digest
+CONTENT on the error path** — MP-H/MP-I assert the row LANDS with the right ``tool``
+and ``ok``, not that its ``params_hash`` equals the recipe's value.
+
+**Why it is bounded rather than closed — the threat model, which is written down in
+this repo and is what makes the verdict mechanical:** the only shapes that survive
+in those cells carry a condition chosen specifically to dodge the fixtures
+(``if cancelled``, ``if not ok and tool.startswith("lore_")``). Measured, all three
+at 491 passed / 0 failed: a wrong-typed ``agent`` or a stringified ``latency_ms``
+ONLY on cancelled dispatches, and a digest truncated to 32 hex ONLY for real tools
+on the error path. **Every UNCONDITIONAL counterpart of each is already dead** (23,
+23, and 2–4 pins respectively). Per the repo's gate threat model — *"a clever
+attacker gets through" is not a defect; "an honest engineer's mistake goes
+unnoticed" is; and a gate that refuses honest code is a gate that gets switched
+OFF* — no honest implementation of this seam contains such a branch, so these are
+gate-attacks, not defects.
+
+**And the closure was PRICED, not hand-waved:** a type-aware double (``bind()`` plus
+an annotation check) closes two of the three, but it is **not drop-in** — it reddens
+``test_every_parameter_the_REAL_signature_declares_is_ACCEPTED`` on a CORRECT build,
+because that control feeds type-agnostic sentinels. Adopting it means editing a
+CONTROL, and it still leaves the digest shape. That cost is why the bound is
+recorded instead.
+
+**NAMED RE-OPEN TRIGGER (the condition under which this trade changes):** the day
+the emission passes a value that is neither a literal nor ``isinstance``-guarded —
+i.e. any new ``Any``-sourced kwarg — **or** the day a consumer reads ``params_hash``
+for EQUALITY rather than for grouping. Either makes the unverified cell reachable by
+an honest mistake. The closure at that point is the type-aware double (with its
+control fixture corrected first) plus one ``_expected_params_hash`` equality
+assertion inside MP-H/MP-I.
 """
 
 from __future__ import annotations

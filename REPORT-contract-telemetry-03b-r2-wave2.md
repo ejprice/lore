@@ -596,3 +596,37 @@ complete are cheap: **the binder** holds every name/arity case by construction, 
 loops** (success + error) hold every type/value case against the real engine. Neither is a list
 anyone has to remember to extend.
 
+
+---
+
+# §31 THE ACCEPTED BOUND IS PINNED (appended 2026-07-24 — the contract's last edit)
+
+Per the pin-the-miss law, the adversary's one accepted bound (its report **§FV-3**, lead-ruled
+ACCEPTED at **`f6cb14a`**) is now a **KNOWN BOUND paragraph in `test_trace_telemetry.py`'s module
+docstring** — docstring only, no assertion changed. It records: the bound EXACTLY (kwarg names +
+arity verified ∀ dispatches by the bound double; values/types verified only in the cells MP-A/MP-H/
+MP-I dispatch into — **unverified: the CANCELLED cell against a real store, and digest CONTENT on
+the error path**); the threat-model exclusion that makes the verdict mechanical rather than a
+judgement call (only fixture-dodging conditional shapes survive there — `if cancelled`,
+`if not ok and tool.startswith("lore_")` — and every unconditional counterpart is already dead at
+23/23/2–4 pins); the PRICED closure (a type-aware double is **not drop-in** — it reddens
+`test_every_parameter_the_REAL_signature_declares_is_ACCEPTED` on a CORRECT build, so adopting it
+means editing a CONTROL, and it still leaves the digest shape); and the **named re-open trigger**
+verbatim from §FV-3 — *any new `Any`-sourced kwarg that is neither a literal nor
+`isinstance`-guarded, or the day a consumer reads `params_hash` for EQUALITY rather than for
+grouping* — with its closure named (type-aware double, control fixture corrected first, plus an
+`_expected_params_hash` equality assertion inside MP-H/MP-I).
+
+**Why the paragraph and not just the report line:** an unpinned known limitation is
+indistinguishable from an unknown one — the next engineer either rediscovers it from an outage or
+"helpfully" closes it and silently re-opens a settled trade. The paragraph opens with the
+instruction that closing it deliberately means deleting the paragraph and saying so in the same
+commit, so the bound can be inherited only on purpose.
+
+**Tails after the docstring edit** (unchanged, as a docstring-only change must be): 
+`test_trace_telemetry.py` **89 failed / 23 passed** (112 collected) · ruff `loremaster/` clean ·
+mypy **zero in any file I touch**.
+⚠ One observation for the lead, not mine to fix: mypy moved 108 → **109 errors, now in THREE
+files** — the new error is in a COMMITTED `test_comms_wiring.py` (the surface wave's; 1 error),
+alongside `test_comms_tool.py` 102 and `test_comms_promise_registry.py` 6. 03b owns global
+mypy-zero at exit, so the third file is a new item on that count.
