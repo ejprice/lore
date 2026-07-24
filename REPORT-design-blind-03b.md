@@ -142,3 +142,12 @@ third state refused, mutation obligation named) · **ESC-2 CONFIRM A** (the emis
 reads the store through the request lifespan context — forced by construction order and
 the one shared channel every tool wrapper rides; guard-attribute reach-through refused
 as a private second path).
+
+**POSTSCRIPT 4 (surface-adversary find, same day):** the B3.2 send-thread-cell ambiguity
+ruled **Reading A** — NO thread cell on the send receipt; B3.2 struck in place (§G row
+"B3.2 send thread cell"). The committed receipt vocabulary carries no `{thread}` slot
+and none is warranted: echoing the caller's own chosen thread is the §1.1 zero-signal
+class (same as no-body-echo), and the question send — the one receipt where the thread
+is load-bearing — already carries `{thread}` in B3.3's additive teach. The suppression
+PRINCIPLE survives via B14 and B3.3. The ambiguity was my "stands and grafts" wording in
+the B3 marker; the doc now says STRUCK so no builder is reddened for obeying it.

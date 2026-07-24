@@ -249,8 +249,9 @@ from adjudication §2, ACCEPT except where marked):
 ## B3. Send confirmation render (NEW shape — no committed pin exists; contract phase pins it)
 
 **⚠ AMENDED — wording superseded by §A-GRAFT (committed templates win); the semantic
-rulings below (cap reuse, true counts, thread-cell suppression, the question teach, no
-body echo, §1.5 placements) stand and graft onto the committed literals. See §G.**
+rulings below (cap reuse, true counts, the question teach, no body echo, §1.5
+placements) stand and graft onto the committed literals. Item 2 (the send thread cell)
+is STRUCK outright — Reading A, adversary find, §G. See §G.**
 
 **RULING.** `_render_comms_send(result, *, was_broadcast, session_scope, question,
 thread_differs)` renders, in order:
@@ -264,10 +265,18 @@ thread_differs)` renders, in order:
    Broadcast: `sent #{seq} [{grade}] → {n} agents (broadcast, session {session})` —
    count-form, because a 30-name list is a dump (DESIGN-LAW §1.1/§1.2) and the exact
    membership is `fleet`'s job; `n = recipient_count`.
-2. **The thread cell**, only when `thread != session` (the non-default):
-   `· thread {thread}` appended to line 1. Rationale: the default thread IS the session
-   (`messages.py::send`); echoing it on every send is per-token noise with zero signal.
-   Both variants pinned (emit + no-emit).
+2. ~~**The thread cell**, only when `thread != session` (the non-default):
+   `· thread {thread}` appended to line 1. Both variants pinned (emit + no-emit).~~
+   **STRUCK (adversary find, §G row "B3.2 send thread cell" — Reading A ruled): the
+   send receipt carries NO thread cell.** The committed receipt templates have no
+   `{thread}` slot and no additive template is warranted: the sender CHOSE the thread it
+   passed — echoing a caller's own input back is per-token noise with zero signal, the
+   same §1.1 principle as B3.4's no-body-echo — and the one case where the thread is
+   load-bearing on the receipt (a QUESTION send: which thread carries your debt) is
+   already served by B3.3's question-teach line, whose additive template carries
+   `{thread}`. What SURVIVES of this item is the suppression PRINCIPLE ("the
+   session-default thread is noise"), which B14 applies to the drain row's `{context}`
+   cell and B3.3's teach inherits for its thread mention.
 3. **The question teach line**, only when `question` (i.e. `set_status='input_required'`
   was accepted):
    `question on thread {thread} — clears when a teammate's reply lands on this thread addressed to you; your own follow-ups do not clear it`
@@ -486,8 +495,9 @@ empty result rather than erroring).
    drivers must not default a parameter the render branches on — the committed
    `_p03_entry` factory re-defaults `acked_at` and hardcodes `thread`, the exact
    monoculture-manufacturing shape the repo's fixture-default law forbids. Fresh drivers
-   make BOTH required at every call site; and because B3.2/B3.3 put `thread` into the
-   send render, the injection battery gains the `thread`-field RenderCase (battery
+   make BOTH required at every call site; and because B3.3's question teach puts
+   `thread` into the send render (B3.2's thread cell is STRUCK — Reading A, §G), the
+   injection battery gains the `thread`-field RenderCase (battery
    completeness is per-ACTION, so the per-FIELD case must be demanded explicitly), plus
    `broadcast=True` and `question=True` render legs — if the render can branch on a
    value, at least one pin uses a different value.
@@ -1370,6 +1380,7 @@ adjudicated derivation checked out against trusted sources at my own read.
 | E-S8 (B14 "task-then-thread" = REPLACE) | **CONFIRM (a)** | B14 clarified in place (decision table + named consequence) | One-line derivation: the committed `_SAFE_STR_PROMISE_FREE` carries exactly two mutually-described VARIANTS of the one `{context}` slot — a both-render build needs a third literal the immutable set lacks and reddens the classification pin; the author's by-derivation resolution is exactly how a committed-vocabulary question should settle. The parenthesised ` (task {})` / ` (thread {})` shapes replace the superseded ` · thread x` sketch. |
 | ESC-1 (telemetry wave — `ok` on a CANCELLED dispatch) | **RULED: Reading B, via the SUCCESS-LATCH mechanism** | T5 pseudocode corrected in place · T2 `ok` row reworded · T5.3 pin gains the `ok=False` leg | The author found a real contradiction INSIDE the T-series: the `except Exception` flag was a failure-class name-list and `CancelledError` was the door it missed — the exact instrument-lesson shape, reproduced in control flow. Mechanism-exact ruling: `ok` initializes **False** and is latched **True** only after `super().call_tool` returns (no `except` arm at all; nothing caught, nothing re-raised; the AC-06-probed finally-arm write is untouched, so the cancellation row still lands). Semantics, verbatim into the schema comment: *True iff the dispatch RETURNED a result; False on any raise, cancellation included.* A third state is REFUSED: NONE already means "writer did not supply it" and packet 06 filters cancelled and errored identically (neither is a performed call); time-to-cancel is already in `latency_ms`. Pin group (now authorable mechanically): cancelled dispatch → row exists AND `ok is False`; mutation obligation — restore the `ok=True`-initial + `except Exception` flag shape → the cancelled-leg pin goes RED. Trust-doctrine ground: honest counts — a timed-out drain in the `ok=true` numerator is a false success in the very instrument 06 decides on. |
 | ESC-2 (telemetry wave — the emission's store-access channel) | **CONFIRM A** (request lifespan context) | no doc-body edit (T-series left the channel unnamed; A is now named here) | One-line derivation: A is forced by construction order (`FastMCP` is constructed before any `AppContext` exists; the process guard builds lazily on first session — injection at construction is impossible) AND it is the ONE channel every tool wrapper already rides (`context.request_context.lifespan_context`) — Reading B (reaching through the guard attribute) would be a second, private context-resolution path, the routing-not-sharing shape, coupled to guard internals and the eager-vs-lazy lifecycle split. A also degrades honestly at the no-request edge (absent context ⇒ skip trace, consistent with T4.2's transport handling). The author's harness already forces A; nothing changes. |
+| B3.2 send thread cell (surface-adversary find, INSUFFICIENT report `bb8d106`) | **RULED: Reading A — NO thread cell on the send receipt; B3.2 STRUCK in place** | B3 item 2 struck · B3 header marker + AC-11 cross-reference corrected | One-line derivation: the committed receipt templates carry no `{thread}` slot, and no additive template is warranted — the sender CHOSE the thread it passed, and echoing a caller's own input back is the same §1.1 zero-signal class as B3.4's no-body-echo; the one receipt where the thread is load-bearing (a QUESTION send) already carries `{thread}` in B3.3's additive teach template. The contract's Reading A stands as built; the adversary's Reading-B build reddening on the classification pin is the instrument working. What survives of B3.2 is the suppression PRINCIPLE, which B14 (drain `{context}` cell) and B3.3 already apply. The ambiguity itself was mine: "stands and grafts" in the B3 marker read as an additive-template mandate — the doc now says STRUCK so no future builder is reddened for obeying it. |
 
 *Post-amendment section map: §0 (F6 corrected) · A: B1–B11 + A-GRAFT + B12–B15 · B: T1–T8
 (+T2.1, T7.10–13) · C: C1–C5 (battery 15 tasks incl. the four trust probes) · D (graded:
