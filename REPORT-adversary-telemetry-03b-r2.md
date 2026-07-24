@@ -590,3 +590,242 @@ score, and one pin cannot be satisfied by any build. The seven items in §7 are 
 them; each has a written prototype and both control legs. Everything else in this contract is
 strong — 40 of 44 wrong builds die, several on exactly one pin, and the identity, schema,
 migration and E-S6 batteries are as discriminating as their docstrings claim.
+
+---
+---
+
+# RE-GRADE (appended 2026-07-24, after the telemetry fix wave at HEAD `285a414`)
+
+> Everything below was measured 2026-07-24 against lore HEAD **`285a414`** (`test(03b):
+> telemetry fix wave — MP-A..G landed, every survivor has a named killer`), engine
+> spike-surreal 3.2.1 on `ws://127.0.0.1:18000` (`:18500` never contacted), `mcp` 1.27.2.
+> Method: the SAME frozen scratch reference and the SAME wrong-build patch scripts as the
+> first grade; only the test tree was re-synced from HEAD.
+> **Provenance receipt:** `loremaster.__file__ = /home/ejprice/scratch/adv-telemetry-03b-r2/loremaster/loremaster/__init__.py`.
+> Repo untouched except this report.
+
+## RE-GRADE SUMMARY BLOCK
+
+- **VERDICT: CONTRACT INSUFFICIENT — narrowly, on ONE new hole of a family the wave closed
+  everywhere else.** Every one of my seven MP groups landed and every one of my four
+  survivors + the oracle mutation now DIES to the killer §14 names. The contract is
+  **satisfiable**: my frozen reference goes **485 passed / 0 failed** (four graded files) and
+  **720 passed / 0 failed** (six) — MP-C's unsatisfiability is genuinely fixed.
+- **The new survivor — W33, 485 passed / 0 failed, identical to a correct build.** MP-A drives
+  **synthetic** probes into a **real** store; MP-B drives **real** tools into the **double**.
+  Nothing drives a **real tool into a real store**, so `**({"request_id": "x"} if
+  tool.startswith("lore_") else {})` leaves telemetry dead in production and every gate green.
+  This is W30's outcome through the one cell the wave's own improvement did not cover — and my
+  MP-A prototype did not cover it either, so this is my miss as much as the author's.
+- **MISSING PIN (the only one): MP-H** — one MP-A leg dispatching a REAL registered tool
+  (tool manager stubbed exactly as MP-B does) into the REAL store. Prototype written, both
+  control legs proven: **1 passed** on the reference, **1 failed** on W33 with the production
+  `TypeError`.
+- **Residual (new): the MP-G control's negative leg cannot discriminate** — its non-telemetry
+  sample contains no retired phrase, so an UNSCOPED sweep returns `[]` for it too. Measured
+  both ways; one-word fix.
+- **Author-claim verification: 9 of 10 exact.** §14/§17's RED sets reproduce, including the
+  hard ones (M23 "MP-D only", M21 "and NOTHING else", M27 "3 of 5"). One over-claim: §14 says
+  the oracle mutation dies to "MP-F, all three pins" — measured **2 of 3**, and the third
+  *cannot* fire on that mutation (it asserts the opposite direction); I proved it separately
+  with M25b.
+- **RED honesty: 92 failed / 628 passed, distribution 87 / 3 / 1 / 1 — exactly as claimed**,
+  zero collection errors. Blast radius **2069 passed / 0 failed**. ruff clean. mypy **48
+  errors / 3 files**, zero telemetry — but see RG-R3 (`test_message_ledger.py`'s FK-4 pair).
+
+## §RG-1 Satisfiability — MP-C is fixed, and the sweep found my reference's own corpses
+
+```
+$ uv run pytest -n auto -q  test_trace_telemetry.py test_comms_schema.py test_surreal_schema.py test_surreal_fakes.py
+485 passed in 32.60s
+$ ... + test_surreal_store.py + test_surreal_harness.py
+720 passed in 46.45s
+$ uv run ruff check .          → All checks passed!
+```
+
+**Four-way adjudication of the only REDs on first contact** (3 failures, all MP-G):
+**REFERENCE DEFECT ×3** — the new sweep flagged, in my own reference, EXACTLY the three
+unguarded corpses I reported in §6.2 and never fixed (they were findings, not part of my blind
+build): `surreal_schema` module header (`six core`), `trace_aggregates` (`later serving-layer
+phase`), `TraceSummary` (`no caller yet`). Not a pin defect — an independent confirmation that
+the sweep sees precisely what a human sweep found, in three different token kinds (module
+comment, method docstring, model docstring). I removed the three corpses from the reference
+(re-snapshotted, md5s in §RG-6) and the run went 0-failed.
+
+## §RG-2 The four survivors + the oracle mutation, re-run — all DIE
+
+| survivor | before the wave | now | matches §14? |
+|---|---|---|---|
+| **W30** (extra kwarg → every real write raises) | 1F/451P (survived) | **3 failed** — `TestADispatchLandsARealRowInTheRealTraceTable::{test_a_successful_dispatch_lands_one_real_row, test_a_raising_dispatch_also_lands_one_real_row, test_the_declared_identity_reaches_the_real_row}` and **nothing else** | ✔ exactly (M21) |
+| **W11** (success-of-real-tools untraced) | 1F/451P (survived) | **16 failed** — 15 of the 16 MP-B parametrisations (`probe_trace_ok` is the 16th, green, exactly as predicted) **plus** R6's new `test_a_real_tools_declared_identity_is_harvested_too` | ✔ (the "15 of 16" claim is precise; the 16th failure is R6's pin, a bonus) |
+| **P2-const** (`latency_ms = 50.0`) | 1F/451P (survived) | **1 failed** — MP-D only; the bracket pin stays green | ✔ exactly (M23) |
+| **W31** (`params_hash=""` on empty args) | 1F/451P (survived) | **1 failed** — MP-E only | ✔ exactly (M24) |
+| **oracle mutation** (drop 4 columns + freeze ordinal) | 783P (survived) | **2 failed** — `test_record_trace_stores_the_four_enrichment_columns_when_given` + `test_record_trace_mints_distinct_increasing_zero_based_ordinals` | ⚠ §14 says "all three pins"; measured **2 of 3**. The third (`…omits_the_enrichment_columns_when_not_given`) asserts ABSENCE, which this mutation cannot violate. **I proved it separately (M25b):** make the fake store `""` instead of omitting → that pin plus `…omitted_optionals_read_back_none` go RED. All three ARE discriminating; the claim just names the wrong mutation for one of them. |
+
+**W30's improvement is empirically justified, not just argued.** My prototype had the success
+leg only; the author added the raising and identity legs. Receipt: **W30b** — pass the bad
+kwarg ONLY on the failure path — reddens **exactly one pin, the RAISING leg**, and nothing
+else. A success-only end-to-end pin would have missed that build entirely. (**W30c**, one
+enrichment kwarg misspelled at the store, dies 13-wide.)
+
+## §RG-3 The corrected/extended obligation list (§17), executed
+
+| # | mutation | claimed RED | measured | verdict |
+|---|---|---|---|---|
+| M20 (adopted) | resolve the app context OUTSIDE the swallow | the no-app-context guard | **1 failed**, that pin | ✔ |
+| M21 | extra kwarg to `record_trace` (W30) | MP-A's three legs and nothing else | **3 failed**, exactly those | ✔ |
+| M22 | name-keyed success skip (W11) | MP-B, 15 of 16 | **15 of 16** (+R6's pin) | ✔ |
+| M23 | constant latency in the bracket | MP-D only, bracket stays green | **1 failed**, MP-D | ✔ |
+| M24 | `params_hash=""` on empty args (W31) | MP-E only | **1 failed**, MP-E | ✔ |
+| M25 | drop the fake's four columns / freeze its ordinal | "the matching MP-F pin" | **2 failed** (see §RG-2); M25b covers the third | ✔ with the correction |
+| M26 | a retired phrase in a **brand-new docstring nobody listed** (I added `_trace_writer_note` to `surreal.py` saying "fire-and-forget") | the MP-G leg for that module | **1 failed** — `…teaches_the_retired_plan[loremaster.store.surreal]` | ✔ **this is the property the name-list could not have had** |
+| M27 | `_is_strictly_increasing` returns True unconditionally (scratch COPY of the contract) | the predicate control, 3 of 5 | **3 failed / 3 passed** — the three `False` cases | ✔ exactly; the real predicate passes 6/6 |
+| M28 | widen `hit_count` past its type | R7's rejection pin | `option<any>` is INVALID DDL on 3.2.1 → `ensure_ready` crashes and 65 tests fail, which proves nothing. **Re-ran as M28b** (`option<int \| string>`, valid): **3 failed** — R7's `test_the_widened_columns_still_REJECT_a_wrong_typed_value` + both type pins | ✔ via M28b (a note for the obligation list: name a VALID loosening, or the mutation tests the DDL parser instead of the pin) |
+| M29 | the ORACLE teaches `ok` as "whether the tool call succeeded" | the `ok`-semantics pin's oracle surface | **1 failed**, that pin | ✔ R9 closed and proven |
+| R1 (fix) | the ruled sentence VERBATIM but wrapped across two `#` lines **and** inline in the tuple body — the exact shape that RED'd my first reference | should now PASS | **16 passed** in `TestTheTraceSchemaDelta` | ✔ closed. And M29 shows it still reddens on wrong WORDING — the fix loosened PLACEMENT, not semantics. |
+
+## §RG-4 P2 — perturbing the wave's two new load-bearing fixtures
+
+**MP-D's fraction floor (`_LATENCY_DIFFERENCE_FRACTION = 0.5`)** — scratch COPY of the contract
+with `_SLOW_TOOL_SECONDS = 0.30`:
+
+| leg | build | result |
+|---|---|---|
+| control | correct reference @ perturbed 0.30 s | **6 passed** — the fraction tracks the fixture, so the perturbation is well-formed |
+| discrimination | constant-50 build @ perturbed 0.30 s | **2 failed** — both the bracket pin AND MP-D |
+| complementarity | **halved** latency (`* 500.0` — a scaling error) @ original fixture | **1 failed — the BRACKET pin only.** MP-D lets it through (difference 25 ms ≥ the 25 ms floor) |
+
+⇒ §19's "neither subsumes the other" is **measured true in both directions**: MP-D catches the
+constant the bracket admits; the bracket catches the scaling error MP-D admits. Keeping both is
+correct, and the fraction floor makes MP-D fixture-independent (unlike an absolute figure).
+
+**MP-B's stub-reached assertion** — scratch COPY with the stub returning `[]` (nothing reaches
+the caller): **16 failed**, every one on `"the stub did not reach the caller…"`, not on the row
+count. The assertion is load-bearing exactly as the author claims; without it the pin could
+pass while the dispatch never succeeded.
+
+## §RG-5 Grading the MP-G sweep and its control against the §11 standard
+
+**The sweep itself: STRONG.** It is token-scoped rather than name-listed, walks COMMENT and
+STRING tokens (so module headers, docstrings and inline comments are all in scope), and M26
+proves it covers prose written LATER by anyone. On my reference it found the three corpses a
+human sweep found, and only those.
+
+**Its control: half load-bearing.** Two mutations of the instrument, in scratch copies:
+
+| instrument mutation | control's response |
+|---|---|
+| **GM1** — token filter matches nothing (a BLIND sweep) | **`test_the_sweep_itself_fires` FAILS** ✔ the positive direction is real |
+| **GM2** — token filter removed entirely (an UNSCOPED sweep, i.e. one that would fire on honest non-telemetry prose) | **all four pins PASS** ✘ the negative direction does not discriminate |
+
+Why, with the receipt:
+
+```
+the control's OWN negative sample (contains NO retired phrase)
+   real sweep     -> []
+   unscoped sweep -> []                       <-- indistinguishable
+a DISCRIMINATING negative sample (retired phrase, non-telemetry subject)
+   real sweep     -> []
+   unscoped sweep -> [('later serving-layer phase', 'app-level retry/backoff is left for a later serving-layer phase')]
+```
+
+The control's sample is `"# app-level retry/backoff is left for a later phase"` — but the
+retired list contains `"later serving-layer phase"`, not `"later phase"`, so the sample is not
+an offender under EITHER sweep. What excludes it is the phrase list, not the scoping the
+control claims to certify. **One-word fix:** make the non-telemetry sample carry a real retired
+phrase (as above). Severity LOW — it cannot green a wrong build; it can only let a future
+loosening of the token scope pass unnoticed, which is precisely the "gate someone switches off"
+risk the author names.
+
+## §RG-6 The new hole: W33, and the pin that closes it (MP-H)
+
+```
+$ wrongbuild.sh w33_real_tools_only_bad_kwarg   # **({"request_id": "x"} if tool.startswith("lore_") else {})
+485 passed in 18.08s                            # identical to the correct build
+```
+
+**Why it survives — the cell table.** Coverage of "the seam's call is one the store ACCEPTS":
+
+| | dispatched against the DOUBLE | dispatched against a REAL store |
+|---|---|---|
+| **synthetic probe tool** | every seam pin | **MP-A** (3 legs) |
+| **real registered tool** | **MP-B** (16), R6 | **NOTHING** ← W33 lives here |
+
+**MP-H — `test_a_REAL_registered_tool_lands_a_real_row`.** One leg: stub the tool manager (the
+MP-B mechanism, so the tool body's dependencies are irrelevant), put a REAL `SurrealStore`
+behind the request's lifespan context (the MP-A mechanism), dispatch `lore_comms` with its own
+`_MINIMAL_ARGS` entry, read the row back with the explicit projection.
+
+```
+correct reference : 1 passed in 1.24s
+W33               : 1 failed — TypeError: record_trace() got an unexpected keyword argument 'request_id'
+```
+
+**Honesty about severity and about my own miss:** W33 is name-keyed, the same plausibility class
+as W11 — an honest builder is unlikely to write it. But the OUTCOME is the packet's worst one
+(telemetry dead in production, every gate green, #147 again), the cell is real, and the closure
+is one leg reusing two mechanisms the contract already has. It is also a miss I share: my MP-A
+prototype used a synthetic probe, and the author's improvement extended the LEGS while keeping
+the synthetic SUBJECT.
+
+**Reference md5s for this re-grade** (frozen reference + the three corpse fixes the sweep
+demanded — every wrong build was patched from and restored to these):
+
+```
+6221dde73eed4258b6715f30f03eb2a8  loremaster/loremaster/server.py
+273c5d19ec8cd1fa06be7441462ef1cc  loremaster/loremaster/store/surreal.py
+b3c7249d0a9ed6cb7f90f7c1392caf1c  loremaster/loremaster/store/surreal_schema.py
+b5744d64a7bc45abc389e2b8fd1029e4  loremaster/tests/_surreal_fakes.py   (HEAD oracle, unmodified)
+```
+
+## §RG-7 The UPDATED quantifier table (∀ vs guarded, after the fix wave)
+
+| # | invariant | ∀ or GUARDED | receipt |
+|---|---|---|---|
+| I1 | every dispatch of every registered tool writes exactly one row | **∀ over (registry × {success, error})** — MP-B closed the success cell | W11 dies 15/16 (M22); W8/M4/W1 die wide |
+| I2 | the emission's call is one the REAL store ACCEPTS | **GUARDED by SUBJECT** — real-store legs use synthetic probes only | **W33 SURVIVES (485/0)** → **MP-H**. W30 (all tools) and W30b (error path only) now die to MP-A |
+| I3 | `ok` True iff the dispatch RETURNED | **∀ over {return, raise, cancel}** | W6, W7, M4 |
+| I4 | the tool's outcome is never altered by telemetry | **∀ over {success, raise, store-broken, no-context}** | M19, M20 |
+| I5 | a trace-write failure is LOUD and structured | **∀ over failure modes** | my reference's own first-pass RED |
+| I6 | identity is DECLARED, never guessed — **including for a REAL tool** | **∀** (R6 tied the KEY rule to `lore_comms`) | M7, M8, M9, M10, W2a, W17, W27; R6's pin reddens under W11 |
+| I7 | correlator = the header, else NONE | **∀ over {header, no header, no transport}** | W27 |
+| I8 | `params_hash` is the recipe ∀ arguments, no raw content | **∀ over {non-empty, EMPTY}** — MP-E closed the empty cell | W31 dies (M24); W9, M12 |
+| I9 | latency reflects the call's real duration | **∀ over {zero, seconds, constant, scaled}** — MP-D + the bracket, proven complementary | W16, M18, P2-const, p2b-halved |
+| I10 | the seam never fabricates a `hit_count` | **∀ over values** | W5 (0), W32 (7) |
+| I11 | the ordinal is engine-minted, present, distinct, **strictly increasing**, gaps real | **∀, and the monotonicity leg is ALIVE** (MP-C: a controlled predicate) | M27 (3 of 5 control cases); W4, M6, M14, W20; 20/20 concurrency |
+| I12 | schema delta (types, guard kinds, sequence, index) | **∀ over columns** | W3a, W3b, W22, W23, W13, M15b |
+| I13 | the delta migrates a DIRTY store | **∀ (4 legs)** | W22 |
+| I14 | signature + fake parity, no `ordinal` parameter | **∀ over the parameter list** | M14 |
+| I15 | no production prose teaches the retired plan | **∀ over every comment/string token of three modules** — MP-G replaced the name-list | M26 (a NEW docstring); the sweep found my reference's 3 corpses. Control: positive leg proven (GM1), negative leg NOT discriminating (§RG-5) |
+| I16 | the two `message` hot-path indexes | **∀ over {missing, UNIQUE, reversed, superset}** | W14b, W14, W28, W29 |
+| I17 | the ORACLE mirrors the real row shape | **∀ over {stored-when-given, omitted-when-absent, ordinal}** — MP-F closed it | M25 (2 pins), M25b (the third) |
+| I18 | the widened columns still REJECT a wrong TYPE | **∀ (rejection + legal-value control)** | M28b |
+
+**Five of the six guarded rows from the first grade are now ∀** (I1, I8, I9, I15, I17), and I2
+moved from "guarded by the double" to "guarded by SUBJECT" — a much narrower door, closed by
+MP-H.
+
+## §RG-8 Residuals from the re-grade (individual verdicts)
+
+| id | residual | verdict |
+|---|---|---|
+| **RG-R1** | the MP-G control's negative leg passes for a fixture reason (§RG-5) | **VALID, LOW.** One-word fix. It cannot green a wrong build. |
+| **RG-R2** | §14's "MP-F, all three pins" for the oracle mutation | **over-claim; corrected.** 2 of 3 fire; the third is proven by M25b. All three ARE discriminating. |
+| **RG-R3** | mypy at `285a414` = **48 errors / 3 files**: `test_comms_tool.py` 43, `test_comms_promise_registry.py` 3, **`test_message_ledger.py` 2**. Zero telemetry, zero from my reference | **the 2 in `test_message_ledger.py` are FK-4** — the operator-AUTHORIZED cast fix (packet §OPERATOR AUTHORIZATION items 5+6) that the packet says "building the surface will NOT pay". Nobody has landed it. 03b owns global mypy-zero, so this is an open packet obligation, not surface-wave drift. **Flagged to the lead.** |
+| **RG-R4** | M28's stated mutation (`option<any>`) is INVALID DDL on 3.2.1 — it crashes `ensure_ready` and reddens 65 unrelated tests, so it tests the DDL parser rather than R7's pin | **obligation-list defect, LOW.** Substitute `option<int \| string>` (M28b), which is valid and reddens exactly R7 + the two type pins. |
+| **RG-R5** | the fix wave's own two self-caught defects (the R7 pin's unsatisfiable `"hit_count" in str(error)`; the MP-B stub needing a reached-assertion) are recorded in §18 | **confirmed by my runs** — the shipped R7 pin asserts the error CLASS with a legal-value control and fires (M28b); the stub assertion is load-bearing (§RG-4). The author's "a pin is not a pin until it has been run" note is borne out. |
+| **RG-R6** | first grade's R2 (parameter-ORDER parity) kept deliberately with the reason written in | **agreed** — exact-shape parity is a legitimate subject; the message now tells a builder to reorder or escalate. No action. |
+| **RG-R7** | first grade's R11 (T7.9 deploy smoke) | **still open and still correct** — MP-A/MP-H prove seam+store agree on a throwaway DB; only the smoke proves it against the deployed artifact on `:18500`. Packet-exit obligation. |
+
+## RE-GRADE VERDICT: **CONTRACT INSUFFICIENT**
+
+One missing pin: **MP-H** (`test_a_REAL_registered_tool_lands_a_real_row`) — the defect it
+catches is an emission the real store rejects for real tools only (**W33**, measured surviving
+at 485 passed / 0 failed), whose production effect is `traces.total` frozen at 0 with every
+gate green. Prototype and both control legs are in §RG-6; the closure is one leg composed from
+two mechanisms the contract already contains.
+
+Everything else in this wave holds up under attack: the four survivors and the oracle mutation
+all die to the killers §14 names, MP-C's unsatisfiability is genuinely fixed (the reference now
+goes 0-failed), the prose sweep does what a name-list could not (M26), the new fixtures survive
+perturbation with correct-build controls, and 9 of 10 author claims reproduce exactly.
