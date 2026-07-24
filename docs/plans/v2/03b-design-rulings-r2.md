@@ -420,11 +420,26 @@ with the ONE stored stamp), the stamp-honesty rule (stored, never fabricated), a
 
 **RULING.** `_render_comms_ack(result)` renders:
 
-1. Header: `ack: {n} requested — {acked} newly acked · {already} already acked` (from
-   `MessageAckResult` counts; rendered even for n=1 — uniform beats clever).
-2. One line per entry, **in request order** (the quantifier law the ledger already
-   enforces — the render must not re-sort or dedupe; R1 pins a repeated seq reporting its
-   own fate per occurrence with the SAME stamp):
+1. Header: `ack: {n} requested — {acked} newly acked · {already} already acked` (rendered
+   even for n=1 — uniform beats clever). *(A-GRAFT/WB16 note: IF the built render carries
+   this header at all — it is not a committed template — its numbers derive from
+   DISPLAYED group membership per item 2's consistency clause, not from raw
+   `MessageAckResult` entry counts, which diverge on duplicate batches.)*
+2. ~~One line per entry, **in request order** (… the render must not re-sort or
+   dedupe …)~~ **STRUCK (re-grade find WB16/§R8.3 — §G row "B5 within-group
+   multiplicity"): the render is MEMBERSHIP, not order/multiplicity.** Each group's
+   `{seqs}` slot lists the DISTINCT seqs whose ledger entries carry that outcome, in
+   **ascending seq order** (the one ordering convention every seq list in this surface
+   already uses — drain window, trailer — so the reader learns it once); a seq repeated
+   within one group renders ONCE. The quantifier law and per-occurrence accountability
+   live at the TYPED ledger result (`MessageAckResult.entries`, R1's committed pins —
+   untouched; the re-grade's WB16b control proves the across-group semantics are
+   pinned). Consistency clause (C5(b)): any count rendered beside the groups derives
+   from the DISPLAYED membership (distinct seqs per group), never from raw entry
+   counts — a header saying "2 already acked" beside a group showing one seq is the
+   count-vs-display mismatch the trust battery scores. The retired per-entry line
+   shapes below remain only as the outcome-prose vocabulary the committed group
+   templates carry:
    - `#{seq} acked`
    - `#{seq} already_acked (stamped {age} ago)` — the stored stamp aged, never
      fabricated; under R1's duplicate-in-batch case every occurrence shows one identical
@@ -1381,6 +1396,7 @@ adjudicated derivation checked out against trusted sources at my own read.
 | ESC-1 (telemetry wave — `ok` on a CANCELLED dispatch) | **RULED: Reading B, via the SUCCESS-LATCH mechanism** | T5 pseudocode corrected in place · T2 `ok` row reworded · T5.3 pin gains the `ok=False` leg | The author found a real contradiction INSIDE the T-series: the `except Exception` flag was a failure-class name-list and `CancelledError` was the door it missed — the exact instrument-lesson shape, reproduced in control flow. Mechanism-exact ruling: `ok` initializes **False** and is latched **True** only after `super().call_tool` returns (no `except` arm at all; nothing caught, nothing re-raised; the AC-06-probed finally-arm write is untouched, so the cancellation row still lands). Semantics, verbatim into the schema comment: *True iff the dispatch RETURNED a result; False on any raise, cancellation included.* A third state is REFUSED: NONE already means "writer did not supply it" and packet 06 filters cancelled and errored identically (neither is a performed call); time-to-cancel is already in `latency_ms`. Pin group (now authorable mechanically): cancelled dispatch → row exists AND `ok is False`; mutation obligation — restore the `ok=True`-initial + `except Exception` flag shape → the cancelled-leg pin goes RED. Trust-doctrine ground: honest counts — a timed-out drain in the `ok=true` numerator is a false success in the very instrument 06 decides on. |
 | ESC-2 (telemetry wave — the emission's store-access channel) | **CONFIRM A** (request lifespan context) | no doc-body edit (T-series left the channel unnamed; A is now named here) | One-line derivation: A is forced by construction order (`FastMCP` is constructed before any `AppContext` exists; the process guard builds lazily on first session — injection at construction is impossible) AND it is the ONE channel every tool wrapper already rides (`context.request_context.lifespan_context`) — Reading B (reaching through the guard attribute) would be a second, private context-resolution path, the routing-not-sharing shape, coupled to guard internals and the eager-vs-lazy lifecycle split. A also degrades honestly at the no-request edge (absent context ⇒ skip trace, consistent with T4.2's transport handling). The author's harness already forces A; nothing changes. |
 | B3.2 send thread cell (surface-adversary find, INSUFFICIENT report `bb8d106`) | **RULED: Reading A — NO thread cell on the send receipt; B3.2 STRUCK in place** | B3 item 2 struck · B3 header marker + AC-11 cross-reference corrected | One-line derivation: the committed receipt templates carry no `{thread}` slot, and no additive template is warranted — the sender CHOSE the thread it passed, and echoing a caller's own input back is the same §1.1 zero-signal class as B3.4's no-body-echo; the one receipt where the thread is load-bearing (a QUESTION send) already carries `{thread}` in B3.3's additive teach template. The contract's Reading A stands as built; the adversary's Reading-B build reddening on the classification pin is the instrument working. What survives of B3.2 is the suppression PRINCIPLE, which B14 (drain `{context}` cell) and B3.3 already apply. The ambiguity itself was mine: "stands and grafts" in the B3 marker read as an additive-template mandate — the doc now says STRUCK so no future builder is reddened for obeying it. |
+| B5 within-group multiplicity (surface re-grade find WB16/§R8.3) | **RULED: MEMBERSHIP — B5.2's order/no-dedupe clause STRUCK in place** | B5 item 2 struck + rewritten · B5 item 1 header note | One-line derivation: §A-GRAFT already retired the per-entry request-order render when the committed GROUP templates won; within-group multiplicity was that clause's unstruck residue, and R1's own honesty analysis ("you listed it twice" vs "acked earlier" need no different next action) makes a repeated seq inside one group §1.1 zero-signal — the same class as the B3.2 ruling. Ruled shape: each group lists DISTINCT seqs, ascending (the one seq-list ordering convention this surface already uses — drain window, trailer — learned once); per-occurrence accountability stays at the TYPED `MessageAckResult` (R1's committed pins untouched; the adversary's WB16b control proves across-group semantics are pinned — this was precisely and only the multiplicity question). Consistency clause added (C5(b)): any rendered count beside the groups derives from displayed membership, never raw entry counts — closing the count-vs-display mismatch a dedupe would otherwise open on duplicate batches. Pins the contract gains: `[s, s]`-both-already-acked → the group shows `s` ONCE; a within-group ascending-order leg if not already pinned. The contract's as-built membership reading stands. |
 
 *Post-amendment section map: §0 (F6 corrected) · A: B1–B11 + A-GRAFT + B12–B15 · B: T1–T8
 (+T2.1, T7.10–13) · C: C1–C5 (battery 15 tasks incl. the four trust probes) · D (graded:

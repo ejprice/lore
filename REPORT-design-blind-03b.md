@@ -151,3 +151,14 @@ class (same as no-body-echo), and the question send — the one receipt where th
 is load-bearing — already carries `{thread}` in B3.3's additive teach. The suppression
 PRINCIPLE survives via B14 and B3.3. The ambiguity was my "stands and grafts" wording in
 the B3 marker; the doc now says STRUCK so no builder is reddened for obeying it.
+
+**POSTSCRIPT 5 (surface re-grade find, same day):** B5 within-group duplicate
+multiplicity ruled **MEMBERSHIP** — B5.2's order/no-dedupe clause struck in place (§G
+row "B5 within-group multiplicity"). Each ack group lists DISTINCT seqs, ascending (the
+surface's one seq-list convention); per-occurrence accountability stays at the typed
+`MessageAckResult` (R1's committed pins untouched — WB16b is the control); a C5(b)
+consistency clause binds any rendered count to displayed membership, closing the
+count-vs-display mismatch a dedupe would otherwise open. The as-built contract's
+membership reading stands; it gains the `[s,s]`-renders-once pin and an ascending-order
+leg. Root cause mine again, same shape as B3.2: an A-GRAFT re-expression that retired a
+clause without striking its residue in the ruling body.
