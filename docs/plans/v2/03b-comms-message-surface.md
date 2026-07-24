@@ -18,6 +18,22 @@ S-references) is HISTORY, not instruction. The fresh design authority is
 `03b-design-rulings-r2.md` (blind re-derivation) once adjudicated; the trusted baseline
 contract is the packet-03-era RED restored by the reset (149F/554P + 11F/85P).
 
+### OPERATOR GRANT (second, 2026-07-24) + the lead's rulings under it
+The operator: all prior operator rulings from the struck session are RELITIGABLE by the
+lead; **the ONE fixed requirement is the CONSUMER LAW — the clients of 03b are Sonnet 5 /
+Opus / Fable agents, not humans.** The client battery is therefore the packet's ACCEPTANCE
+AUTHORITY: any conflict between a pinned shape and what the measured client needs resolves
+toward the client. Lead rulings under the grant, 2026-07-24:
+- **FK-1…FK-9 RULED as the adjudication recommends** (DIFF-adjudication-03b §6). The four
+  committed-pin amendment forks (FK-1 fence · FK-2 marker promotion · FK-3 telemetry
+  collateral pair · FK-4 ledger casts) land strengthen-only + mutation-proven +
+  adversary-confirmed — the immutability law's purpose preserved; authorization rests on
+  the operator's explicit grant. FK-5's eval spend is carried by the consumer law itself.
+- **All-tools trace widening RE-AFFIRMED on independent derivation** (scout
+  numerator/denominator + the blind doc's own derivation) — no longer resting on the
+  struck-session ruling. **R1→05 deferral RE-AFFIRMED** (priced, named decision point in
+  05). No struck-session operator ruling is overturned on the merits.
+
 ### Clean-phase leads from the struck record (re-derive, never inherit)
 The struck session's empirical findings are LEADS, not authority. The consolidated
 checklist (9 clusters, 27 items, one-line receipts) is the POST-SUPERSESSION ADDENDUM in
