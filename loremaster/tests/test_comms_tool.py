@@ -6195,6 +6195,92 @@ def _ruled_comms_block(cap: int) -> str:
     return " ".join(clauses)
 
 
+# --------------------------------------------------------------------------- #
+# CL3 (final verdict `6589d57`, RULED) — the TERMINATING pin: _INSTRUCTIONS is a
+# DECLARED-PARAGRAPH ALLOWLIST.
+#
+# CL1's ``_COMMS_DUTY_VOCABULARY`` was a seven-word DENY list wearing an
+# allowlist docstring, and paraphrase walked through it three ways:
+#   WB46 — a contradiction using no listed word at all;
+#   WB47 — inflection alone ("acking", "threads", "inboxes", "seqs" all evade
+#          the whole-word guard, which an honest author trips BY ACCIDENT);
+#   WB48 — no new paragraph at all: the claim folded into the EXISTING
+#          lore_comms paragraph, which this packet already edits.
+# WB48 is why a paragraph-IDENTITY allowlist (labels only) is not enough, and
+# why the safe set has to be the whole served document.
+#
+# A longer word list loses to the next synonym; that regress is the thing to
+# stop, not to feed. The safe set here is small, enumerable and already fully
+# specified by the packets that own it — so it is DECLARED, and the served
+# document must equal it exactly.
+#
+# ⚠ THE COST, STATED: this couples the comms contract to prose owned by other
+# packets — any packet legitimately editing _INSTRUCTIONS updates this tuple.
+# That is the point (a deliberate decision at one pin), and it is a real cost,
+# not a free win. The failure message is written to teach exactly that, because
+# an instrument whose reds look like someone else's bug is an instrument that
+# gets deleted.
+#
+# The comms member is DERIVED from _RULED_INSTRUCTION_CLAUSES via
+# _ruled_comms_block(), never re-typed here — the exact-block pin's own idiom,
+# one level up. Only the paragraphs this contract does NOT own are literal.
+_DECLARED_NON_COMMS_PARAGRAPHS: tuple[str, ...] = (
+    (
+        "IDENTITY: lore is this repo's code+docs+graph RAG, durable memory, and fleet ledgers "
+        "— cited, freshness-honest."
+    ),
+    (
+        "LADDER: lore_map (orient) -> lore_search (locate) -> lore_get_symbol / lore_read "
+        "(exact def/span) -> lore_impact (blast radius, authoritative for consumer/coverage — "
+        "corroborate only on a miss) -> lore_verify (claim check) -> write. Map defaults to "
+        "PRODUCTION; reach tests via tests=true, focus=, or lore_impact's covering-tests "
+        "view."
+    ),
+    (
+        "CITATIONS: search hits carry [SOURCE:file:line] (+ a short [S:...@hash6] token); "
+        "read spans carry [SOURCE:tier:path:start-end]; echo them — Key: pins a memory "
+        "correction."
+    ),
+    (
+        "FRESHNESS: a watcher indexes a save in seconds; wait_for_fresh=True races a fresh "
+        "edit. lore_index() is a cheap health read; reconcile=True forces a sweep. Impact / "
+        "dead_code verdicts reflect the INDEX. lore_diff (no since = list) diffs snapshots. "
+        "lore may be indexing a DIFFERENT tree than yours (a sibling worktree): lore_index() "
+        "names each watched root + its git branch — check it before trusting a result."
+    ),
+    (
+        "HONEST FAILURE: a miss teaches (nearest path/name), not a bare error; empty means a "
+        "genuine no-match. lore_dead_code / lore_impact verdicts are HEURISTIC, not proof. "
+        "Budgets elide with a named, counted notice."
+    ),
+    (
+        "MEMORY: lore_remember / lore_recall is this project's shared, durable notebook — "
+        "atomic facts, not digests. lore_findings (kind=friction) files gaps; lore_claim_task "
+        "/ lore_tasks coordinate fleet work — lore_tasks action=rollup is the one-call fleet "
+        "catch-up since a cursor. lore_comms coordinates a LIVE multi-agent fleet: "
+        "action=register before anything else, action=heartbeat to stay current and learn "
+        "brief skew, action=brief_get/brief_publish/brief_ack for standing instructions, "
+        "action=fleet to see who else is active."
+    ),
+    (
+        "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's tools first; "
+        "batch independent calls in one turn, not serial turns."
+    ),
+)
+
+# Where the ruled comms block sits in the served document: after MEMORY (which
+# introduces lore_comms) and before TOOL LOADING. Declared as an INDEX rather
+# than by splicing at a matched label, so a reordering is a RED here too.
+_COMMS_BLOCK_INDEX = 6
+
+
+def _declared_instructions(cap: int) -> str:
+    """The whole served _INSTRUCTIONS document, as this contract declares it."""
+    paragraphs = list(_DECLARED_NON_COMMS_PARAGRAPHS)
+    paragraphs.insert(_COMMS_BLOCK_INDEX, _ruled_comms_block(cap))
+    return "\n\n".join(paragraphs)
+
+
 # The comms DUTY VOCABULARY (CL1). A paragraph of _INSTRUCTIONS using any of
 # these whole words is making a claim about the message surface's duties, and
 # under CL1 exactly ONE paragraph is allowed to.
@@ -6356,15 +6442,25 @@ class TestTheInstructionsBlockTeachesTheMessageSurface:
         both add to this block, and a general "fleet etiquette" paragraph is
         exactly what a later author writes.
 
-        ALLOWLIST THE SAFE, one level up from where RG2 applied it: the forbidden
-        set (every sentence anyone might add anywhere) is unbounded; the safe set
-        is ONE paragraph. So this asserts the comms block is the only paragraph
-        of ``_INSTRUCTIONS`` that uses the duty vocabulary at all.
+        ⚠ **THIS IS A DENY LIST, AND ITS FIRST DOCSTRING CLAIMED TO BE AN
+        ALLOWLIST** (final verdict `6589d57`, the adversary's exact charge). It
+        allowlists ONE PARAGRAPH but recognises duty claims through a
+        SEVEN-WORD VOCABULARY — and the forbidden set of words is unbounded, so
+        paraphrase walks straight through: WB46 used none of the seven, WB47
+        used only inflections (``acking``, ``threads``, ``inboxes``, ``seqs``
+        all evade the whole-word guard — which an honest author trips BY
+        ACCIDENT, not by attack), and WB48 needed no new paragraph at all.
+        Calling that an allowlist is the false-gate class in a docstring: it
+        told a reader the door was shut when it was ajar.
 
-        RE-OPEN TRIGGER, named: a later packet that legitimately needs a second
-        comms-duty paragraph must either extend the ruled block or extend this
-        allowlist DELIBERATELY — which is the point. It cannot happen by
-        accident, and the pin is where the next author meets the decision.
+        **DEMOTED to a REGRESSION GATE.** The terminating pin is
+        ``test_the_served_INSTRUCTIONS_are_EXACTLY_the_declared_paragraphs``
+        below (CL3, RULED), which allowlists the whole served DOCUMENT — the
+        one safe set that is genuinely small, enumerable and specified. This
+        pin is kept because the three measured attacks it does catch should
+        stay caught and diagnosed by name; **it must not be GROWN.** A longer
+        word list loses to the next synonym, and feeding that regress is what
+        CL3 exists to stop.
         """
         ruled = _ruled_comms_block(_msg().MESSAGE_BODY_MAX_CHARS)
         offenders: dict[int, list[str]] = {}
@@ -6425,6 +6521,93 @@ class TestTheInstructionsBlockTeachesTheMessageSurface:
             for word in _COMMS_DUTY_VOCABULARY
             if re.search(rf"(?<!\w){word}(?!\w)", benign, re.IGNORECASE)
         ], "the duty vocabulary fires on unrelated instructions prose — it will be disabled"
+
+    def test_the_served_INSTRUCTIONS_are_EXACTLY_the_declared_paragraphs(self) -> None:
+        """CL3 (final verdict `6589d57`, RULED) — **the terminating pin.**
+
+        Every teaching gate before this one was scoped by a RECOGNISER: RG2 by
+        an ``action=<verb>`` selector, CL1 by a word list. Each closed the
+        attacks it was built from and lost to the next paraphrase, because in
+        every case the forbidden set was unbounded and the "safe set" was a way
+        of SPOTTING trouble rather than an enumeration of what is allowed.
+
+        This pin ends the regress by taking the safe set to be the whole served
+        document, which really is small and enumerable: seven paragraphs owned by
+        other packets, plus the ruled comms block. WB45 (a new paragraph), WB46
+        (vocabulary-free), WB47 (inflection) and WB48 (folded into the existing
+        ``lore_comms`` paragraph — the one a paragraph-identity allowlist could
+        never catch) all die on the same assertion, and no word list survives to
+        be paraphrased around.
+
+        **What a RED here means, in order of likelihood:**
+
+        1. the comms block is missing, wrong, or in the wrong position — this
+           contract's business, fix the render;
+        2. another packet legitimately edited ``_INSTRUCTIONS`` — then update
+           ``_DECLARED_NON_COMMS_PARAGRAPHS`` and move on. **That is not this
+           pin misfiring; it is the deliberate decision the pin exists to
+           force**, and packets 04 and 05 will both meet it;
+        3. something appended prose to the served teaching surface that nobody
+           declared — which is the whole point.
+
+        The comms member is DERIVED (``_ruled_comms_block``), so the sentences
+        are stated once in this file and nowhere twice.
+        """
+        self._assert_declared_document()
+
+    def test_CONTROL_the_declared_NON_comms_paragraphs_are_byte_exact(self) -> None:
+        """SPLIT THE DIAGNOSIS — and this control has already earned its keep.
+
+        The declaration above carries seven paragraphs of prose this contract
+        does NOT own, so the CL3 pin has two completely different failure
+        causes: (a) the comms block is missing or wrong — this packet's job; or
+        (b) the transcription of somebody else's paragraphs is off by a byte.
+        Without this control both look identical: one wall of diff, and a
+        builder with no way to tell whose bug it is.
+
+        It is not hypothetical. The first generation of that tuple **silently
+        ate one space per wrap point in all seven paragraphs** — Python's
+        implicit concatenation ignores whitespace BETWEEN string literals, so
+        ``"…ledgers" " — cited"`` and ``"…ledgers " "— cited"`` are not the
+        same string and the second is the one that looks right in source. The
+        error survived review and was caught only by running this comparison.
+        Had it shipped, CL3 would have been RED on a correct build for a reason
+        having nothing to do with comms — a fifth C-DEF, in the pin written to
+        terminate the regress.
+        """
+        declared = "\n\n".join(_DECLARED_NON_COMMS_PARAGRAPHS)
+        served_without_comms = "\n\n".join(
+            paragraph
+            for paragraph in self._instructions().split("\n\n")
+            if paragraph.strip() != _ruled_comms_block(_msg().MESSAGE_BODY_MAX_CHARS)
+        )
+        assert declared == served_without_comms, (
+            "the DECLARED non-comms paragraphs do not match the served ones byte-for-byte. "
+            "This is NOT the comms block's fault — either another packet edited "
+            "_INSTRUCTIONS (update _DECLARED_NON_COMMS_PARAGRAPHS; that is the deliberate "
+            "decision CL3 exists to force) or the transcription is off by a byte (check wrap "
+            "points: implicit concatenation drops whitespace placed BETWEEN literals)."
+        )
+
+    def _assert_declared_document(self) -> None:
+        expected = _declared_instructions(_msg().MESSAGE_BODY_MAX_CHARS)
+        served = self._instructions()
+        separator = "\n\n"
+        divergence = next(
+            (index for index, (a, b) in enumerate(zip(expected, served)) if a != b),
+            min(len(expected), len(served)),
+        )
+        assert served == expected, (
+            "the served _INSTRUCTIONS document is not EXACTLY the declared paragraphs. See "
+            "this test's docstring for the three things a red here means — in particular, if "
+            "another packet edited _INSTRUCTIONS on purpose, updating "
+            "_DECLARED_NON_COMMS_PARAGRAPHS IS the fix and is expected.\n"
+            f"  declared {len(expected.split(separator))} paragraphs, "
+            f"served {len(served.split(separator))}\n"
+            f"  first divergence at offset {divergence}:\n"
+            f"    declared: {expected[divergence : divergence + 90]!r}\n"
+            f"    served:   {served[divergence : divergence + 90]!r}"
+        )
 
 
 class TestTheCommsToolSchemaTeachesTheNewParams:

@@ -1019,3 +1019,97 @@ contract does not describe — still a property to INVENT, still the design owne
 true `[fake]`/`[real]` parity leg · §C6.8 the C1-semantics doc corpse (one supersession line) ·
 §C6.9 `test_surreal_harness.py`, still unverified by anyone · §C6.5/§C6.6 the two mitigated
 residuals (`_p03_entry`'s default, the value-free elision marker), both with dying wrong builds.
+
+---
+
+# FIX WAVE 4 — CL3, the terminating pin (`6589d57`)
+
+*Appended 2026-07-24 by contract-surface-03b-r2. The last edit.*
+
+## I.1 Fresh tails
+
+```
+test_comms_tool.py               283F/559P  ->  284 failed, 560 passed   (844 collected)
+test_comms_promise_registry.py                   15 failed, 101 passed   (117 collected)
+test_message_ledger.py                          196 passed, 14 skipped   (210 collected)
+test_comms_wiring.py                              1 failed, 28 passed    (RG5)
+
+uv run ruff check .        All checks passed!
+./scripts/typecheck.sh     Found 109 errors in 3 files  (unchanged)
+neighbours                 693 passed, 0 failed
+```
+
+## I.2 CL3 — why the safe set had to be the whole document
+
+`test_the_served_INSTRUCTIONS_are_EXACTLY_the_declared_paragraphs`: a module-level
+`_DECLARED_NON_COMMS_PARAGRAPHS` tuple, the ruled comms block **derived** from
+`_RULED_INSTRUCTION_CLAUSES` via `_ruled_comms_block()` and spliced at a declared index, and one
+equality assertion against the served document.
+
+My first instinct was a paragraph-IDENTITY allowlist (declare the labels — `IDENTITY`, `LADDER`,
+… — and assert the served label sequence matches). It is cheaper and it does not couple this
+contract to other packets' prose. **It also cannot kill WB48**, which folds the contradiction
+into the *existing* `lore_comms` paragraph and changes no label at all. That single receipt is
+what forces full-content equality, and it is why the adversary's shape is the right one and mine
+was not.
+
+Recorded plainly, because it is the thread running through every teaching gate this packet
+wrote: RG2 was scoped by an `action=<verb>` selector, CL1 by a seven-word vocabulary — **each was
+a way of RECOGNISING trouble, and every recogniser lost to the next paraphrase.** CL3 is the
+first one that enumerates what is ALLOWED. The regress stops because there is no longer a
+recogniser to walk around.
+
+**The cost, stated rather than buried:** this couples the comms contract to seven paragraphs
+owned by other packets, and packets 04 and 05 will both meet a RED here. The failure message is
+written for exactly that reader — cause (2) of three is *"another packet legitimately edited
+`_INSTRUCTIONS` — update the tuple; that is not this pin misfiring, it is the deliberate decision
+it exists to force."* An instrument whose reds look like someone else's bug gets deleted.
+
+## I.3 CL1's docstring — corrected, and the pin demoted
+
+CL1 now says what it is: **a DENY LIST that claimed to be an allowlist.** It allowlists one
+paragraph but recognises duty claims through seven words, and the forbidden set of words is
+unbounded — WB46 used none of them, WB47 used only inflections (`acking`, `threads`, `inboxes`,
+`seqs`, which an honest author trips **by accident**), WB48 needed no new paragraph. Calling that
+an allowlist was the false-gate class in a docstring: it told a reader the door was shut when it
+was ajar. Kept as a named regression gate beneath CL3, with **"it must not be GROWN"** in the
+docstring, because feeding that regress is precisely what CL3 exists to stop.
+
+## I.4 The control that caught a fifth C-DEF — mine, in this wave
+
+I generated `_DECLARED_NON_COMMS_PARAGRAPHS` programmatically rather than hand-transcribing it,
+specifically to avoid transcription error. **The generator introduced one anyway:** it placed the
+wrap-point space *between* adjacent string literals instead of inside one, and Python's implicit
+concatenation discards it — so all seven paragraphs lost one space per wrap point. In source it
+looks right. Review would not have caught it.
+
+Had it shipped, CL3 would have been **RED on a correct build**, for a reason with nothing to do
+with the comms surface — a fifth C-DEF, inside the pin written to terminate the regress.
+
+It was caught by running the comparison, and the comparison is now itself a pin:
+`test_CONTROL_the_declared_NON_comms_paragraphs_are_byte_exact`. It splits CL3's two failure
+causes — *the comms block is wrong* vs *the transcription is off by a byte* — which without it
+present identically as one wall of diff.
+
+**And a second defect in the same edit, caught the same way:** my anchor-based insertion absorbed
+CL3's body into the control function, leaving CL3 **docstring-only and passing vacuously**. It
+showed up as inverted polarity (CL3 green, control red) the moment I checked which of the pair
+was supposed to be RED. Repaired; verified CL3 is now RED reporting `declared 8 paragraphs,
+served 7` — the missing block, its only delta — and the control GREEN.
+
+Both are the same lesson, and it is the one I would carry forward from this whole packet: **the
+edit that lands an instrument needs its own control.** I verified every *contract* claim this
+way and nearly shipped two defects in the *mechanics* of writing them.
+
+## I.5 Obligations added
+
+| id | break | must go RED |
+|---|---|---|
+| **MP-CL3** | append, paraphrase, or fold ANY prose into `_INSTRUCTIONS` that the declaration does not carry (WB45/46/47/48) | `test_the_served_INSTRUCTIONS_are_EXACTLY_the_declared_paragraphs` |
+| **MP-CL3c** | perturb one byte of a declared non-comms paragraph | the control pin ONLY — never CL3 alone, or the diagnosis has not split |
+
+## I.6 Carried forward — unchanged, none of it mine to close
+
+P14 (`PLR0912` + `PLC0206`, still a property to INVENT) · RG4/P15's true `[fake]`/`[real]` parity
+leg · the C1-semantics doc corpse (one supersession line) · `test_surreal_harness.py`, still
+unverified by anyone · the two mitigated residuals, both with dying wrong builds.
