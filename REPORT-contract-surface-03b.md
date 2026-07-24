@@ -283,3 +283,178 @@ NO-WORKTREES directive is honoured). It holds the reference build + `mutation_ba
 `apply_refbuild.py`, currently at **871 passed / 0 failed**. It is the fastest way for the
 contract-adversary or the builder to re-run either receipt. **Lead: keep, archive the two scripts, or
 delete — your call.** Nothing in it is on any branch.
+
+---
+---
+
+# AMENDMENT WAVE — amendments 7, 8, 9 (authorized by the operator 2026-07-24, after the report above)
+
+*Everything above this line is the ORIGINAL contract wave and the record of WHY these three
+amendments exist. Nothing in it is superseded. This section is additive.*
+
+## SUMMARY BLOCK (amendment wave)
+
+- **State: done.** Three authorized amendments landed, plus one new finding (**D9**) that the
+  amendment wave's own reference build surfaced. Commits `dda6337` (7+8), `6376fdf` (9), `a69e279` (D9).
+- **Satisfiability re-proven: 1063 passed / 12 skipped / 0 failed** across all three files against the
+  reference build. Provenance: `loremaster.__file__ = /home/ejprice/scratch-03b-refbuild/loremaster/loremaster/__init__.py`.
+- **Harder leg (post-lint) PASSED:** with the reference build, `ruff check loremaster/` is clean and
+  `./scripts/typecheck.sh` reports **mypy-ZERO for the whole comms surface** — the only 6 remaining
+  errors are the sibling's `test_trace_telemetry.py` (D8, not mine).
+- **Mutation receipts: 5/5 for the amendments** (incl. both R5 axes and BOTH legs of R6) **and
+  17/17 for the original battery, re-run** — no regression from amendments 7/8.
+- **Amendment 7:** D1's fix landed AND the class is now a permanent, static, render-free pin; its
+  self-attack keeps the both-legs measurement alive **inside the contract**, as asked.
+- **Amendment 8:** `_p03_entry(seq=99)` is now a `TypeError`; both `acked_at` values stay expressible.
+- **Amendment 9:** R5's two faces are mutation-proven on ORTHOGONAL axes; R6 is proven on the `[fake]`
+  leg (oracle) AND the `[real]` leg (production `messages.py`).
+- **NEW — D9:** the `SimpleNamespace` harness hides two MISSING production dependencies
+  (`CommsConfig.drain_limit`, `AppContext.message_ledger`). 1060 tests passed without either. Pinned.
+- D2 and D3 left exactly as instructed, pending the sidecar.
+- Counts: promise_registry **14F/107P** · comms_tool **200F/556P** · message_ledger **186P/12s** ·
+  ruff **clean** · neighbours **330 passed** · mypy 46 mine (all forward refs) + 6 sibling's.
+
+## Amendment 7 — D1, and the class turned into an instrument
+
+Marker promoted to the FULL rendered line, exactly as specified:
+`f"{_EM_DASH} re-run with limit=5"` → `f"+3 more {_EM_DASH} re-run with limit=5"`.
+
+**The receipt survives as a pin, as you asked — and it turned out to generalise.** The reason D1 was
+invisible is that a marker carries INSTANTIATED values while templates carry `{placeholders}`, so a
+marker made entirely of *shared prose plus a value* is not a substring of the template it collides
+with. Erase the values from the marker and the fields from the template, and the collision is visible
+**statically, with no render and no arithmetic**:
+
+`TestNoMarkerIsASubstringOfAnotherClassifiedTemplate::test_no_markers_PROSE_lives_inside_another_classified_template`
+
+Measured over the shipped proof set before writing the assertion: **1 violation (exactly D1), 0 after
+the fix, no false positives across the other 25 proofs.** This pin would have caught D1 at
+contract-authoring time — before `_render_comms_drain` existed at all.
+
+Its self-attack, `test_the_gate_catches_THE_D1_DEFECT_ITSELF`, restores the pre-amendment marker and
+requires the gate to fire, with the both-legs measurement recorded in its docstring. A third test is
+the positive control that the gate is not blanket rejection.
+
+| leg | condition | result |
+|---|---|---|
+| A | committed marker + S4.2's CORRECT arithmetic | **2 failed** |
+| B | committed marker + fleet's `shown + more` | **2 passed** |
+| C | amendment-7 marker + CORRECT arithmetic | **0 failed** |
+
+Mutation proof (scratch, reference build): restoring the old marker →
+`test_no_markers_PROSE_lives_inside_another_classified_template` = **1F**. Restored → 877/0.
+
+## Amendment 8 — `_p03_entry`'s `acked_at` default, removed
+
+Signature is now `_p03_entry(*, seq, acked_at, grade="signal")`; six committed call sites state their
+choice explicitly (`acked_at=None`, semantics unchanged). The docstring records that this default WAS
+R3's root cause and that the 03b drain render branches on `acked_at` **twice**.
+
+Proof that the door is shut (scratch, provenance printed above):
+
+```
+PROVEN: _p03_entry(seq=99) -> TypeError: _p03_entry() missing 1 required keyword-only argument: 'acked_at'
+POSITIVE CONTROL: both acked_at values remain expressible
+```
+
+The positive control matters: a change that made `acked_at` *unusable* would also produce a TypeError.
+
+## Amendment 9 — the ledger legs for 03a-2 delta row 8
+
+Two new classes at the end of `test_message_ledger.py`; the `message_ledger` fixture is parametrized
+`["real", "fake"]`, so each pin lands on both legs automatically. **186 passed / 12 skipped** (was
+180/12) — 3 pins × 2 legs. Both rulings are zero-implementation, so all six were GREEN on arrival,
+which is precisely why the mutation proofs below are the whole evidence.
+
+`TestOneAnswerDischargesTheWholeThreadsDebt` carries R5's reasoning (why thread-granularity is the
+honest unit, and the error-direction argument that decides it) and cites — rather than duplicates —
+the existing two-thread independence pin. `TestAnAckedButNeverDrainedMessageIsServedOnceMoreThenConverges`
+carries R6's trade and its named re-open trigger, and records that three committed note-pins already
+require this behaviour *mechanically but by accident*.
+
+**Mutation battery (scratch reference build):**
+
+| mutation | applied to | pin that went RED | pin that must NOT move |
+|---|---|---|---|
+| per-question FIFO matching (the build R5 REFUSES) | oracle | R5 same-thread discharge `[fake]` = **1F** | R5 answer-between = **1P/0F** |
+| retroactive discharge (drop the `seq >` conjunct) | oracle | R5 answer-between `[fake]` = **1F** | R5 same-thread = **1P/0F** |
+| `ack` also stamps `seen_at` | oracle | R6 `[fake]` = **1F** | — |
+| `ack` also stamps `seen_at` | **production `messages.py`** | R6 `[real]` = **1F** | — |
+
+The R5 pair is the result worth reading: **each mutation kills exactly one pin and leaves its sibling
+green.** The two pins discriminate on two independent axes (granularity and ordering), so neither is
+carrying the other.
+
+Non-vacuity is built in: the same-thread pin asserts the two questions really read as waiting BEFORE
+the answer (otherwise a build that never reports waiting passes for the wrong reason), and the
+answer-between pin asserts the first debt really cleared before the re-ask.
+
+## D9 (NEW) — the harness double hides two missing production dependencies
+
+**Found by the amendment wave's own reference build, not by any test.** With the full S4/S5 surface
+implemented, `./scripts/typecheck.sh` reported four errors the suite could not see:
+
+```
+server.py: "AppContext" has no attribute "message_ledger"   (x3)
+server.py: "CommsConfig" has no attribute "drain_limit"
+```
+
+Verified read-only in the real tree: `CommsConfig` declares `stale_heartbeat_s` / `fleet_limit` /
+`brief_body_warn_chars` and **no `drain_limit`**; `AppContext.__init__` takes `agent_registry` and
+`brief_ledger` and **no `message_ledger`**, and `MessageLedger` is constructed nowhere in production.
+
+**The contract went 1060 passed / 0 failed with both missing.** `_harness` is a `SimpleNamespace`
+double carrying exactly the attributes `AppContext.comms` touches — a deliberate and correct testing
+strategy for dispatch logic, but it *declares* the production surface rather than checking it. Ask the
+repo's own question: what condition does the fixture guarantee, and does production guarantee the
+opposite? The double guarantees the dependency exists; production guarantees it does not. This is the
+THE-TEST-ENVIRONMENT-IS-A-FICTION class (#107/#131) in miniature — and 03b owns global mypy-zero, so
+it is 03b's to catch.
+
+The committed contract already leans on it:
+`TestDrainAndAckAtTheDispatcher::test_drain_defaults_to_the_configured_limit_not_a_hardcoded_one`
+states the drain window is `comms.drain_limit` config *"like `fleet_limit`, never a literal buried in
+the handler"* — a premise nothing checked.
+
+Pinned in `TestTheHarnessDoubleDoesNotHideAMissingProductionSurface` (three tests): the config field
+exists and carries a usable default; `AppContext.__init__` accepts `message_ledger`; and a **positive
+control** over the already-wired siblings (`fleet_limit`, `agent_registry`, `brief_ledger`) so the
+introspection is demonstrably able to see a wired dependency. **RED for the right reason today**
+(2 failed, 1 passed — the control).
+
+**Proven satisfiable:** adding the two wirings to the scratch reference build
+(`CommsConfig.drain_limit: PositiveInt = DEFAULT_COMMS_DRAIN_LIMIT`; a `message_ledger` parameter on
+`AppContext.__init__`) took the comms surface to **mypy-ZERO** and the suite to **1063 passed**.
+
+**For the builder brief:** 03b must wire `MessageLedger` into `AppContext`/`build_app_context` and add
+`drain_limit` to `CommsConfig` — neither is implied by any RED test today, and without them
+`lore_comms action=drain` raises `AttributeError` **in the artifact** while the suite stays green.
+
+## Gate results (real tree, after all three amendments + D9)
+
+| | original wave | amendment wave |
+|---|---|---|
+| `test_comms_promise_registry.py` | 14F / 104P | **14F / 107P** (+3 amendment-7 pins, all green) |
+| `test_comms_tool.py` | 198F / 555P | **200F / 556P** (+2 RED D9 pins, +1 green control) |
+| `test_message_ledger.py` | 180P / 12s | **186P / 12s** (+3 pins × 2 legs, all green) |
+| `ruff check .` | clean | **clean** |
+| mypy (mine) | 45 | **46** — all forward refs to the unbuilt surface |
+| neighbouring comms suites | 330P | **330P**, no regression |
+
+Scratch reference build: **1063 passed / 12 skipped / 0 failed**, ruff clean, comms surface mypy-zero.
+
+## Still pending / unchanged
+
+- **D2** (context-cell branch 3) — untouched, branch 3 still unpinned, gap still documented in
+  `TestRenderCommsDrainShape`'s class docstring. Awaiting the sidecar's ruling.
+- **D3** (`_is_placeholder_only`) — kept as-is pending confirmation, with its positive control.
+- **D5 is now amendment 8; D6 is now amendment 9; D1 is now amendment 7.** D4, D7, D8 unchanged.
+
+## Housekeeping (unchanged, plus one addition)
+
+`/home/ejprice/scratch-03b-refbuild` now holds the reference build **plus the two production wirings
+D9 names**, `apply_refbuild.py`, `mutation_battery.py` (17 cases) and `amendment_battery.py` (5
+cases), at **1063 passed / 0 failed** with the comms surface mypy-zero. It is the fastest way for the
+contract-adversary or the builder to re-run any receipt in this report, and its two wiring edits are a
+working demonstration of D9's fix. Still not a worktree, still on no branch. **Keep, archive the three
+scripts, or delete — your call.**
