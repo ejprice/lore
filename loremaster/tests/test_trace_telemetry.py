@@ -1182,6 +1182,77 @@ class TestADispatchLandsARealRowInTheRealTraceTable:
         assert rows[0]["ok"] is False
         assert isinstance(rows[0]["ordinal"], int)
 
+    async def test_every_REAL_registered_tool_lands_a_real_row(
+        self,
+        traced_server: tuple[Any, _TraceRecorder],
+        trace_store: SurrealStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """MP-H: the last cell of the 2×2 — REAL registered tools into the REAL store.
+
+        **THE DEFECT THIS EXISTS TO CATCH (adversary W33):** a bad kwarg supplied
+        only for real tools —
+        ``**({"request_id": "x"} if tool.startswith("lore_") else {})``. Measured at
+        485 passed / 0 failed, identical to a correct build, because the coverage of
+        "the seam's call is one the store ACCEPTS" had a hole:
+
+        | | against the DOUBLE | against a REAL store |
+        |---|---|---|
+        | synthetic probe | every seam pin | the three MP-A legs |
+        | real registered tool | MP-B + R6 | **nothing — W33 lived here** |
+
+        Production outcome is the packet's worst: every real tool's write raises,
+        T5.1's swallow logs it, ``traces.total`` stays 0 forever. #147 again.
+
+        **This closes the cell ∀ TOOLS, not for one.** The prototype dispatched a
+        single real tool (`lore_comms`); a build keyed on ONE name rather than the
+        `lore_` prefix would walk through that. Sweeping the whole registry against
+        ONE store costs a loop instead of 16 database mints — cheaper AND stronger
+        than parametrising, and it makes the recorded tool set a checked variable
+        again.
+
+        Both mechanisms are reused unchanged: the tool manager is stubbed (MP-B's,
+        so no tool body needs a full AppContext) and the request's lifespan context
+        carries a REAL ``SurrealStore`` (MP-A's, so a rejected kwarg RAISES instead
+        of being absorbed by a ``**fields`` double).
+        """
+        mcp, _double = traced_server
+
+        async def _canned_success(
+            name: str, arguments: dict[str, Any], **_kwargs: Any
+        ) -> list[TextContent]:
+            return [TextContent(type="text", text=f"canned:{name}")]
+
+        monkeypatch.setattr(mcp._tool_manager, "call_tool", _canned_success)
+        registry = sorted(_MINIMAL_ARGS)
+        assert registry, "the coverage registry is empty — this pin would be vacuous"
+        with _request_context(_app_context_double_over(trace_store)):
+            for tool_name in registry:
+                result = await _dispatch(mcp, tool_name, _MINIMAL_ARGS[tool_name])
+                assert f"canned:{tool_name}" in _payload_text(result), (
+                    f"the stub did not reach the caller for {tool_name}, so this dispatch did not "
+                    f"SUCCEED and the loop is not testing its own subject"
+                )
+
+        rows = await _trace_rows(trace_store)
+        landed = sorted(str(row["tool"]) for row in rows)
+        assert landed == registry, (
+            f"{len(rows)} of {len(registry)} dispatches landed a row in the REAL trace table.\n"
+            f"  missing: {sorted(set(registry) - set(landed))}\n"
+            f"  unexpected: {sorted(set(landed) - set(registry))}\n"
+            f"A tool missing here means the REAL store REJECTED the emission's call for THAT tool "
+            f"and T5.1's swallow hid it — the double-backed coverage battery cannot see it, and "
+            f"neither can the synthetic-probe real-store legs. Check the server log for a "
+            f"`TypeError: record_trace() got an unexpected keyword argument …`."
+        )
+        assert all(row["ok"] is True for row in rows), (
+            f"a stubbed-success dispatch recorded ok False: "
+            f"{[row['tool'] for row in rows if row['ok'] is not True]}"
+        )
+        assert all(isinstance(row["ordinal"], int) for row in rows), (
+            "a real row is missing its store-side ordinal mint"
+        )
+
     async def test_the_declared_identity_reaches_the_real_row(
         self, probe_server: tuple[Any, _TraceRecorder], trace_store: SurrealStore
     ) -> None:
@@ -2588,11 +2659,23 @@ class TestNoProductionProseStillTeachesTheRetiredPlan:
             "the sweep did not flag a docstring that both mentions the trace row AND teaches the "
             "retired plan — it cannot see what it certifies"
         )
-        # NEGATIVE: retired phrasing about a DIFFERENT subject is not this pin's
-        # business (the honest-prose direction — a false positive here is what gets
-        # a gate switched off).
+        # NEGATIVE, and it must be DISCRIMINATING: retired phrasing about a
+        # DIFFERENT subject is not this pin's business, because a gate that reddens
+        # honest prose is a gate someone switches off.
+        #
+        # ⚠ The sample carries a RETIRED PHRASE deliberately (adversary RG-R1): the
+        # first version said only "left for a later phase" — no retired phrase at
+        # all — so an UNSCOPED sweep (token filter removed) returned `[]` for it
+        # too, and this leg passed for both the correct instrument and a broken one.
+        # Measured by the adversary: with the phrase present, the unscoped sweep
+        # returns a hit and this assertion FAILS, which is what makes the scoping
+        # the thing the control actually proves.
         assert not _telemetry_prose_offenders(
-            '# app-level retry/backoff is left for a later phase\n'
+            "# app-level retry/backoff is left for a later serving-layer phase\n"
+        ), (
+            "the sweep flagged retired phrasing about a NON-telemetry subject. Its scope is "
+            "telemetry prose; firing on an honest sentence about another subsystem is how an "
+            "instrument earns a `# noqa` and stops guarding anything."
         )
         # NEGATIVE: honest telemetry prose passes.
         assert not _telemetry_prose_offenders(

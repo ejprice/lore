@@ -272,7 +272,7 @@ and targeted rather than a rewrite.**
 | **W11** (`if ok and not tool.startswith("probe_"): return` — every SUCCESSFUL real-tool call untraced; denominator becomes "calls that failed") | a garbage decay curve | **MP-B** — 15 of the 16 parametrisations RED (the synthetic probe is the 16th, exactly as the adversary predicted) |
 | **P2-const** (`latency_ms = 50.0`) | every row the same duration | **MP-D** — no constant can satisfy a DIFFERENCE |
 | **W31** (`params_hash = ""` on empty arguments) | four registered tools collapse into one digest bucket | **MP-E** |
-| **oracle mutation** (drop the four columns, freeze the ordinal) | every fake-backed consumer grading against a row the real store never writes | **MP-F**, all three pins |
+| **oracle mutation** (drop the four columns, freeze the ordinal) | every fake-backed consumer grading against a row the real store never writes | **MP-F — 2 of its 3 pins fire** (round-trip + 0-based ordinals). ⚠ CORRECTED (adversary RG-R2): "all three" was an over-claim — the third pin asserts the OPPOSITE direction (columns ABSENT when not given), which a mutation that DROPS them satisfies, so it cannot fire on this mutation. It is discriminating in its own direction and the adversary proved it separately as **M25b** (make the fake fabricate `""`/`0`/`False` for an unset column → that pin, and only that pin, reddens). Three pins, three directions, two of them relevant to this mutation |
 | *(bonus)* **W20** (per-process client-side mint) — passes the 8-way pin | plausible-looking ordinals that are not the engine's | already died to the gap/count pin; its **false comment is corrected** (R3) so the next reader is not told the 8-way pin catches it |
 
 ## §15 §2's six guarded-not-∀ rows — each CLOSED
@@ -327,7 +327,7 @@ rather than by argument.
 | M25 | drop any one of the fake's four enrichment columns / freeze its ordinal | the matching MP-F pin |
 | M26 | reintroduce any retired phrase into any trace-related comment or docstring in the three swept modules | the MP-G module leg for that module — **including a NEW docstring nobody listed**, which is the property the name-list lacked |
 | M27 | make `_is_strictly_increasing` return True unconditionally | `TestTheMonotonicityPredicateItself` (3 of 5 cases) — the control the original inline predicate never had |
-| M28 | widen `hit_count` to `option<any>` / drop the type | R7's pin (rejection leg) |
+| ~~M28~~ **M28b** | widen `hit_count` to **`option<int \| string>`** (⚠ CORRECTED, adversary RG-R4: the originally-stated `option<any>` is INVALID DDL on 3.2.1 — it crashes `ensure_ready` and reddens 65 unrelated tests, so it would have tested the DDL parser, not the pin. An obligation that cannot isolate its target is not an obligation) | R7's pin (rejection leg) + the two widened-type pins, and nothing else |
 | M29 | teach `ok` as "whether the tool call succeeded" in the oracle docstring | the `ok`-semantics pin's ORACLE surface |
 
 ## §18 Fix-wave tails (measured 2026-07-24, after the adversary re-grade at `a45f705`)
@@ -377,3 +377,78 @@ finding:**
   an explicit instruction not to weaken it to a set comparison.
 - **No pin was weakened anywhere in this wave.** The three deleted prose pins were replaced by a
   strictly stronger ∀ sweep, which is the only deletion.
+
+---
+
+# FIX WAVE 2 (appended 2026-07-24, after the re-grade at `20fc9f7` — INSUFFICIENT narrowly on W33)
+
+Four items, all landed. The re-grade confirmed every wave-1 fix (all seven MP groups landed, every
+survivor dies to its named killer, MP-C genuinely fixed, reference 485/0 and 720/0) and found ONE
+new hole.
+
+## §20 MP-H — the uncovered cell (W33)
+
+**The hole, stated as the matrix it is:** coverage of "the seam's call is one the store ACCEPTS"
+had four cells and three instruments. MP-A drives SYNTHETIC probes into a REAL store; MP-B drives
+REAL tools into the DOUBLE; nothing drove a REAL registered tool into a REAL store. **W33** —
+`**({"request_id": "x"} if tool.startswith("lore_") else {})` — lives in that cell and scored
+485 passed / 0 failed, identical to a correct build, while shipping the packet's worst outcome:
+every real tool's trace write raises, the ruled swallow logs it, `traces.total` stays 0. #147, a
+third time, by a different door.
+
+**Landed: `test_every_REAL_registered_tool_lands_a_real_row` — ADAPTED, and stronger than the
+prototype.** The prototype dispatched ONE real tool (`lore_comms`); a build keyed on a single
+tool NAME rather than the `lore_` prefix walks straight through that, and the whole lesson of this
+contract's own history is that a pin must cover the CELL, not out-guess the shapes. So the pin
+sweeps the **ENTIRE registry against ONE real store**: 16 dispatches, one database, and the
+recorded tool set asserted EQUAL to the registry — a checked variable again, with its
+non-emptiness guard. That is cheaper than 16 parametrised database mints and closes the cell ∀
+tools rather than for one.
+
+Both mechanisms are reused unchanged rather than reinvented: the tool-manager stub is MP-B's (so
+no tool body needs a full AppContext) and the real store behind the request's lifespan context is
+MP-A's. RED now for the right reason: `0 of 16 dispatches landed a row in the REAL trace table`.
+
+**On the shared miss:** the adversary noted this cell is one it missed too — its MP-A prototype
+used a synthetic subject, and my improvement extended the LEGS while keeping that SUBJECT. Worth
+recording as the pattern: *when you improve a prototype, check whether you improved along the axis
+that was actually thin.* I added legs (success/error/identity) and left the subject axis
+untouched, and the subject axis was where the hole was.
+
+## §21 The three corrections
+
+| item | verdict | action |
+|---|---|---|
+| **RG-R1** — the MP-G control's negative leg passed for a fixture reason: its sample contained NO retired phrase, so an UNSCOPED sweep returned `[]` for it too and the leg could not tell a correct instrument from a broken one | **VALID.** A control that cannot distinguish is the exact defect I spent wave 1 fixing in others' name — here in my own control, one level down | the negative sample now carries a retired phrase about a NON-telemetry subject (`"app-level retry/backoff is left for a later serving-layer phase"`), so an unscoped sweep FAILS this leg and scoping is what the control proves. Comment records the measurement |
+| **RG-R2** — §14 claimed the oracle mutation dies to "MP-F, all three pins" | **OVER-CLAIM.** 2 of 3 fire; the third asserts the OPPOSITE direction (columns ABSENT when unset), which a mutation that DROPS them satisfies | §14 corrected in place; **M25b** (make the fake fabricate `""`/`0`/`False`) recorded as that pin's own proof. Three pins, three directions |
+| **RG-R4** — M28's stated mutation `option<any>` | **INVALID DDL on 3.2.1** — crashes `ensure_ready` and reddens 65 unrelated tests, i.e. it would test the DDL parser rather than R7's pin. An obligation that cannot isolate its target is not an obligation | replaced by **M28b** (`option<int \| string>`), which reddens exactly R7 + the two widened-type pins |
+
+**RG-R3 (the `test_message_ledger.py` FK-4 pair) — no action, per the lead:** measured STALE, a
+transient mid-edit snapshot of the parallel surface wave; the live tree is clean there. My own
+close-out measurement agrees (see §22: zero errors in `test_message_ledger.py`). **RG-R5/R6/R7**
+need no action — R5 confirms my two self-caught defects, R6 agrees with keeping the parameter-order
+parity assertion, R7 keeps the T7.9 deploy smoke open as a packet-exit obligation that MP-A/MP-H do
+NOT replace (they prove seam+store agree on a throwaway DB; only the smoke proves it against the
+deployed artifact on `:18500`).
+
+## §22 Fix-wave-2 tails (measured 2026-07-24, at the fix-wave-2 tree)
+
+| gate | fix wave 1 | fix wave 2 | reading |
+|---|---|---|---|
+| `test_trace_telemetry.py` | 87F / 19P (106) | **88 failed / 19 passed (107 collected)**, 0 collection errors | +1 pin: MP-H. Green count UNCHANGED — the MP-G control fix stays green (it must: the correct instrument passes it) and MP-H is RED |
+| the SIX graded files | 92F / 628P | **93 failed / 628 passed** | 88 / 3 (E-S6) / 1 (FK-3a) / 1 (FK-3b) — exactly my four RED groups |
+| `uv run ruff check loremaster/` | clean | **clean** | |
+| `./scripts/typecheck.sh` | 108 / 2 files | **108 errors / 2 files** (`test_comms_tool.py` 102 · `test_comms_promise_registry.py` 6) | **ZERO in any file I touch**, and zero in `test_message_ledger.py` — corroborating the lead's stale-snapshot reading of RG-R3 |
+
+MP-H's RED reason, verified individually: `0 of 16 dispatches landed a row in the REAL trace
+table` (missing: all 16) — a missing production seam, not a fixture or harness fault. The MP-G
+control leg passes (`1 passed`), as a correct instrument must.
+
+## §23 The contract's own history, in one line, because it is the transferable part
+
+Three grading rounds found three holes of ONE shape: **the instrument covered the property and
+missed a CELL of the input space** — outcome (error vs success: W11), store (double vs real: W30),
+subject (synthetic vs real tool: W33). Each was closed by crossing two mechanisms the contract
+already had, never by inventing a third. **When a battery feels complete, enumerate its axes and
+look for the cell nobody dispatched into** — that question would have found all three at
+authorship, and it is cheaper to ask than any of the three fixes was to write.
