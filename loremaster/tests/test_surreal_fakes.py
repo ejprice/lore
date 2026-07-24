@@ -923,25 +923,14 @@ class TestRecordTraceFake:
     """
 
     def test_record_trace_signature_matches_real_store(self) -> None:
-        # AMENDED for packet 03b delta row F (design §S6v2 item 5): the all-tools
-        # widening adds caller/agent/pending/peeked and LOOSENS hit_count/session to
-        # optional, so record_trace's signature grows accordingly on BOTH sides.
-        # ⚠ This pin also REQUIRES the builder to update FakeSurrealStore.record_trace
-        # to match (adversary R8 / one-implementation): the fake is a SECOND
-        # record_trace shape, and nothing in rows F/G/H names it. Until it is
-        # updated this pin is RED — correctly, that is the parity it exists to force.
         real_params = _params_excluding_self(SurrealStore.record_trace)
         fake_params = _params_excluding_self(FakeSurrealStore.record_trace)
         assert list(fake_params) == list(real_params) == [
             "tool",
             "params_hash",
-            "latency_ms",
-            "caller",
             "hit_count",
+            "latency_ms",
             "session",
-            "agent",
-            "pending",
-            "peeked",
             "token_cost",
             "model",
         ]

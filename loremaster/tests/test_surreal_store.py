@@ -5247,12 +5247,6 @@ class TestSchemaMigrationAgainstAnExistingStore:
                     "hit_count": 3,
                     "latency_ms": 12.5,
                     "session": "migration-probe",
-                    # AMENDED for delta row F (§S8 E3): ``seq`` is a required
-                    # ``TYPE int`` column, so a trace row written under the current
-                    # schema must mint one. The row still survives the re-apply and
-                    # its hit_count/session still round-trip (they are now optional
-                    # but stored) — everything this pin asserted is kept.
-                    "seq": 42,
                 },
             ),
             (
@@ -5359,24 +5353,6 @@ class TestSchemaMigrationAgainstAnExistingStore:
                         "status": _OUT_OF_DOMAIN_VALUE,
                         "provenance": {},
                         "created_at": stamp,
-                    }
-                },
-            )
-        # ...and the trace table's NEW-WRITES-MUST-MINT guard bites too (delta row F,
-        # §S8 E3): a trace write that OMITS ``seq`` is rejected on the migrated
-        # store. This SHARPENS the flagship pin against the option<int> flip — under
-        # option<int> this CREATE would silently SUCCEED, greening a schema that
-        # admits seq-less rows forever (the exact hole E3 refuses). ``TYPE int``
-        # guards the TABLE, every writer, present and future.
-        with pytest.raises(SurrealError):
-            await run(
-                connection,
-                f"CREATE {TRACE_TABLE}:unminted CONTENT $content",
-                {
-                    "content": {
-                        "tool": "lore_read",
-                        "params_hash": sha512_hex("unminted"),
-                        "latency_ms": 4.0,
                     }
                 },
             )

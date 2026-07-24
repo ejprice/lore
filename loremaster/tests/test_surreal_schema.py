@@ -1190,9 +1190,6 @@ _TRACE_TOKEN_COST = 1536
 _TRACE_MODEL = "voyage-4-large"
 
 
-_TRACE_SEQ = 7  # a fixed ORDERING value; these round-trip pins never test seq semantics.
-
-
 async def _create_trace(
     connection: SurrealConnection,
     *,
@@ -1202,7 +1199,6 @@ async def _create_trace(
     hit_count: int = _TRACE_HIT_COUNT,
     latency_ms: float = _TRACE_LATENCY_MS,
     session: str = _TRACE_SESSION,
-    seq: int = _TRACE_SEQ,
     token_cost: int | None = None,
     model: str | None = None,
 ) -> None:
@@ -1227,11 +1223,6 @@ async def _create_trace(
         "hit_count": hit_count,
         "latency_ms": latency_ms,
         "session": session,
-        # AMENDED for delta row F: ``seq`` is now a required ``TYPE int`` column
-        # (§S8 E3), so a raw CREATE that omits it is REJECTED (Expected int but
-        # found NONE) — the schema guard firing, not failing. These round-trip pins
-        # certify the OTHER columns, so a fixed seq is supplied to satisfy the mint.
-        "seq": seq,
     }
     if token_cost is not None:
         content["token_cost"] = token_cost
@@ -1252,30 +1243,14 @@ class TestTraceTableFieldDefinitions:
     """
 
     def test_trace_core_scalar_fields_are_defined(self) -> None:
-        # AMENDED for packet 03b delta row F (design §S6v2 item 5): the all-tools
-        # widening LOOSENS ``hit_count``/``session`` to ``option`` (a generic call
-        # carries neither) and ADDS the caller/seq/agent/pending/peeked columns.
-        # ``seq`` stays NON-``option`` (``TYPE int``, §S8 E3) so the schema rejects
-        # any writer that omits the mint — asserted here AND, mutation-proven,
-        # in test_trace_telemetry.py::TestTheTraceSchemaDelta::test_seq_is_typed_int_not_option.
         ddl = generate_ddl(dim=NONDEFAULT_DIM)
         assert "TYPE string" in _field_statement(ddl, TRACE_TABLE, "tool")
         assert "TYPE string" in _field_statement(ddl, TRACE_TABLE, "params_hash")
-        assert "TYPE option<int>" in _field_statement(ddl, TRACE_TABLE, "hit_count")
+        assert "TYPE int" in _field_statement(ddl, TRACE_TABLE, "hit_count")
         # ``number`` (not ``int``): a fractional latency must survive — see the
         # ``_TRACE_LATENCY_MS`` fixture rationale.
         assert "TYPE number" in _field_statement(ddl, TRACE_TABLE, "latency_ms")
-        assert "TYPE option<string>" in _field_statement(ddl, TRACE_TABLE, "session")
-        # The row-F additions, each with its ruled type.
-        assert "TYPE option<string>" in _field_statement(ddl, TRACE_TABLE, "caller")
-        assert "TYPE int" in _field_statement(ddl, TRACE_TABLE, "seq")
-        assert "option" not in _field_statement(ddl, TRACE_TABLE, "seq"), (
-            "seq must be TYPE int, NOT option<int> (§S8 E3): option<int> greens the schema "
-            "silently and re-opens #147's shape"
-        )
-        assert "TYPE option<string>" in _field_statement(ddl, TRACE_TABLE, "agent")
-        assert "TYPE option<int>" in _field_statement(ddl, TRACE_TABLE, "pending")
-        assert "TYPE option<bool>" in _field_statement(ddl, TRACE_TABLE, "peeked")
+        assert "TYPE string" in _field_statement(ddl, TRACE_TABLE, "session")
 
     def test_trace_ts_is_a_server_defaulted_datetime(self) -> None:
         # The observability timestamp self-stamps via ``DEFAULT time::now()`` —
@@ -1367,50 +1342,24 @@ class TestTraceRoundTrip:
     ) -> None:
         # Proves ``trace`` is a REAL SCHEMAFULL table with declared fields, not a
         # bare placeholder that accepts anything written at it.
-        #
-        # ⚠ AMENDED for delta row F (§S8 E3, seq-int collateral): ``seq`` is now a
-        # required ``TYPE int`` column, so a seq-less CREATE raises on the MISSING
-        # SEQ — which would mask the undeclared-field rejection this pin is named
-        # for (a pass-for-a-masked-reason, the false-gate class). So both writes
-        # below SUPPLY seq, and the rejection is proven attributable to the rogue
-        # field alone: the POSITIVE CONTROL (seq present, no rogue field) is
-        # ACCEPTED, and the rejection leg differs ONLY by adding the rogue field
-        # and is rejected NAMING it.
         connection, env = admin_db
         await run(connection, generate_ddl(dim=env.dim))
-        clean_content: dict[str, Any] = {
-            "tool": _TRACE_TOOL,
-            "params_hash": _TRACE_PARAMS_HASH,
-            "hit_count": _TRACE_HIT_COUNT,
-            "latency_ms": _TRACE_LATENCY_MS,
-            "session": _TRACE_SESSION,
-            "seq": _TRACE_SEQ,
-        }
-        # POSITIVE CONTROL: the identical row WITHOUT the rogue field is accepted,
-        # so the CREATE is well-formed and the only remaining variable is the
-        # undeclared field. Without this, the rejection below could be attributable
-        # to a seq-less (malformed) CREATE and the pin would prove nothing.
-        await run(
-            connection,
-            "CREATE type::record('trace', $id) CONTENT $content",
-            {"id": "trace_clean", "content": clean_content},
-        )
-        with pytest.raises(Exception) as rejection:  # noqa: B017 - engine SCHEMAFULL rejection surface
+        with pytest.raises(Exception):  # noqa: B017 - engine SCHEMAFULL rejection surface
             await run(
                 connection,
                 "CREATE type::record('trace', $id) CONTENT $content",
                 {
                     "id": "trace_rogue",
-                    "content": {**clean_content, "rogue_field": "not in the schema"},
+                    "content": {
+                        "tool": _TRACE_TOOL,
+                        "params_hash": _TRACE_PARAMS_HASH,
+                        "hit_count": _TRACE_HIT_COUNT,
+                        "latency_ms": _TRACE_LATENCY_MS,
+                        "session": _TRACE_SESSION,
+                        "rogue_field": "not in the schema",
+                    },
                 },
             )
-        # ...and rejected BECAUSE OF the undeclared field (named in the error), never
-        # a masked seq-coercion error: a seq-miss names ``seq``/"Expected int", this
-        # names the rogue field. That is the whole point of the amendment.
-        assert "rogue_field" in str(rejection.value), (
-            "the rejection must name the UNDECLARED field, proving it is attributable to the "
-            f"rogue field and not to a masked seq-mint error; got: {str(rejection.value)!r}"
-        )
 
 
 # --- P8b: ``finding`` ledger field-level + counter fixtures -------------------

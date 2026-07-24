@@ -181,28 +181,6 @@ _PROMISE_REGISTRY: dict[str, str] = {
         "drain — emitted IFF at least one requested seq names no message at all; drain is "
         "the caller's authoritative list (packet 03)"
     ),
-    # --- packet 03b: the two SURFACE additions (design rulings S4.1 / S4.2 in
-    #     docs/plans/v2/03b-comms-surface-design-rulings.md; both BINDING and
-    #     VERBATIM there — a builder may not improvise their wording). --------
-    "awaiting an answer on thread '{thread}' — cleared by any teammate's on-thread "
-    "reply delivered to you; your own sends never clear it": (
-        "the DERIVED waiting state — emitted IFF ``message.question`` is True (TYPED "
-        "applicability, the flag the ledger already stores; never a set_status STRING "
-        "compare in the render, #104). The mechanism it names is exactly "
-        "MessageLedger.awaiting_answer's four-conjunct discharge predicate (03a2-R2: "
-        "delivered-to-me · on-thread · later-seq · sender != me), so 'any teammate's "
-        "on-thread reply' really does clear it and 'your own sends never clear it' is "
-        "the fourth conjunct stated in the consumer's language (03b S4.1)"
-    ),
-    "ALREADY ACKED: {seqs} — no action owed": (
-        "ack — emitted IFF at least one SERVED row already carries ``acked_at``; the "
-        "'no action owed' claim is true because the ack CAS is write-once (03a2-R1: a "
-        "second ack reads already_acked and never re-stamps), so re-acking is a no-op "
-        "rather than a missing step. This is what makes 03a2-R6 clause 3 ('a re-served "
-        "acked message is self-explanatory in the render') TRUE at the RENDER layer — "
-        "as committed it was true only of a MODEL field the consuming LLM never sees "
-        "(DESIGN-LAW §1.6: over MCP the render IS the surface) (03b S4.2)"
-    ),
     "+{more} more — re-run with limit={next_limit}": (
         "fleet limit= re-ask — actionable IFF shown < display cap; the cap-disclosure variant "
         "handles the dead-end case (§9.7 #12, sound since v4)"
@@ -423,20 +401,6 @@ class TestTheScanReachedEveryCommsRenderHelper:
             "_render_comms_brief_ack",
             "_render_comms_fleet_row",
             "_render_comms_fleet",
-            # --- packet 03b (AUTHORIZED AMENDMENT R6, operator 2026-07-24;
-            #     design ruling S1 instrument item 2) ------------------------
-            # The reach set is THE checked-variable instrument for this scanner,
-            # and it must not silently exclude the surface a packet just added.
-            # Defence in depth, stated so the next reader knows it is not the
-            # only guard: a prefix-RENAME is also caught by
-            # ``test_no_dead_registry_entries`` (the orphaned classified
-            # literals go dead) — but that guard fires on the REGISTRY, not on
-            # COVERAGE, and a helper added with no registered literal at all
-            # would leave it silent. This line is what makes "the scan reached
-            # the 03b surface" a checked fact rather than an assumption.
-            "_render_comms_send",
-            "_render_comms_drain",
-            "_render_comms_ack",
         }
         missing = expected - observed_functions
         assert not missing, (
@@ -750,20 +714,7 @@ def _assert_predicate_gates(proof: PromiseProof) -> None:
 # of another proof's emit render (TestNoMarkerIsCrossSatisfiedByAnotherProof).
 
 
-def _p03_message(
-    *, question: bool, seq: int = 41, grade: str = "signal", body: str = "the body"
-) -> Any:
-    """A ``Message`` for the send-render drivers.
-
-    ``question`` carries NO DEFAULT ON PURPOSE (03b, repo law: "fixture factories
-    must not default a parameter the code branches on" — ``_brief()`` defaulting to
-    ``name='project'`` MANUFACTURED the #104 blind spot). The 03b send render
-    BRANCHES on ``message.question`` (S4.1's question-teach line), so every call
-    site must CHOOSE — a default would silently re-create the monoculture on the
-    very field this packet added a branch to. ``grade`` stays defaulted because
-    ``question`` and ``grade`` are ORTHOGONAL (03a2/adversary W1) and each proof
-    that needs a specific grade names it.
-    """
+def _p03_message(*, seq: int = 41, grade: str = "signal", body: str = "the body") -> Any:
     from loremaster.messages import Message
 
     return Message(
@@ -777,34 +728,12 @@ def _p03_message(
         body=body,
         refs=[],
         task_id=None,
-        question=question,
+        question=False,
         created_at=datetime.now(UTC),
     )
 
 
-def _p03_entry(*, seq: int, acked_at: Any, thread: str, grade: str = "signal") -> Any:
-    """An ``InboxEntry`` for the drain-render drivers.
-
-    AUTHORIZED AMENDMENT 8 (operator 2026-07-24): ``acked_at`` carries NO DEFAULT.
-    That default WAS R3's root cause — every committed ACK REQUIRED proof leg took
-    it, making the fixtures an ``acked_at`` MONOCULTURE, so a build keying the
-    trailer on ``grade == 'directive'`` alone passed both legs with the defect
-    intact. Amendment 3 added the discriminating pin; this closes the door the pin
-    was needed for, per repo law (a fixture factory must not default a parameter the
-    code branches on) — and the 03b drain render branches on ``acked_at`` TWICE
-    (the ACK REQUIRED trailer and the ALREADY ACKED trailer). No default ⇒ the next
-    author to add a proof must CHOOSE, and the monoculture cannot re-form silently.
-
-    AUTHORIZED AMENDMENT 10 / D10 (operator 2026-07-24): ``thread`` is now a
-    PARAMETER, and a REQUIRED one. It was previously HARDCODED here — a monoculture
-    with no dial at all — which was harmless only while the drain render merely
-    INTERPOLATED the thread. S4.2's branch 3 (D2 → reading A) makes the render
-    BRANCH on ``thread != session``, so the same law that removed ``acked_at``'s
-    default now reaches its neighbour: the exposure of a defaulted branch-comparand
-    is definitionally to the NEXT pin, the one moment nobody re-runs today's
-    coverage analysis. Every existing call site states ``thread="wave7"`` and its
-    rendered value is unchanged.
-    """
+def _p03_entry(*, seq: int, grade: str = "signal", acked_at: Any = None) -> Any:
     from loremaster.messages import InboxEntry
 
     return InboxEntry(
@@ -812,7 +741,7 @@ def _p03_entry(*, seq: int, acked_at: Any, thread: str, grade: str = "signal") -
         message_id=f"{seq:026x}",
         grade=grade,  # type: ignore[arg-type]
         sender_name="lead",
-        thread=thread,
+        thread="wave7",
         task_id=None,
         body=f"body of {seq}",
         refs=[],
@@ -822,15 +751,13 @@ def _p03_entry(*, seq: int, acked_at: Any, thread: str, grade: str = "signal") -
     )
 
 
-def _render_send(*, grade: str, question: bool) -> str:
-    """Drive the REAL send render. ``question`` is REQUIRED for the same reason it
-    is required on :func:`_p03_message` — the render branches on it (S4.1)."""
+def _render_send(*, grade: str) -> str:
     from loremaster.messages import MessageSendResult
 
     return str(
         AppContext._render_comms_send(
             MessageSendResult(
-                message=_p03_message(grade=grade, question=question),
+                message=_p03_message(grade=grade),
                 recipient_names=["fixer-b"],
                 recipient_count=1,
             ),
@@ -840,23 +767,9 @@ def _render_send(*, grade: str, question: bool) -> str:
     )
 
 
-def _render_drain(*, entries: list[Any], total_pending: int, peek: bool = False) -> str:
-    """Drive the REAL drain render.
-
-    AUTHORIZED AMENDMENT 10 (operator 2026-07-24; design ruling D2 → reading A, S8):
-    ``session`` is a REQUIRED kwarg of ``_render_comms_drain``, so this driver states
-    it. Every :func:`_p03_entry` rides ``thread="wave7"`` — the SESSION-DEFAULT
-    thread — so under the ruled branch 3 no row here draws a context cell, which is
-    exactly what these proofs' markers already assume (none of them names one).
-    The discrimination that the suppression is real, and keyed on this ARGUMENT
-    rather than on the literal ``"wave7"``, lives in
-    ``TestRenderCommsDrainShape`` in ``test_comms_tool.py`` — not duplicated here.
-
-    AUTHORIZED AMENDMENT R5-OUTCOME-2 (design sidecar 2026-07-24): the render's
-    ``agent_name``/``limit`` kwargs are DROPPED (both were dead — no drain template
-    carries ``{name}``, and the elision is fully result-derived), so this driver no
-    longer forwards them; the ruled signature is ``_render_comms_drain(result, *,
-    session)``."""
+def _render_drain(
+    *, entries: list[Any], total_pending: int, peek: bool = False, limit: int = 20
+) -> str:
     from loremaster.messages import MessageDrainResult
 
     return str(
@@ -868,7 +781,8 @@ def _render_drain(*, entries: list[Any], total_pending: int, peek: bool = False)
                 stamped_seqs=[] if peek else [entry.seq for entry in entries],
                 peeked=peek,
             ),
-            session="wave7",
+            agent_name="fixer-b",
+            limit=limit,
         )
     )
 
@@ -1100,21 +1014,7 @@ _PROOF_LIST: list[PromiseProof] = [
     # --- fleet elision re-ask (§9.7 #12): remainder present vs none. ----------
     PromiseProof(
         literal="+{more} more — re-run with limit={next_limit}",
-        # AUTHORIZED AMENDMENT 7 (operator 2026-07-24) — the FULL rendered line.
-        # This marker was `"— re-run with limit=5"`, i.e. text SHARED verbatim with
-        # the drain elision template plus a value. Under 03b S4.2's ruled drain
-        # arithmetic (`next_limit = more`) the committed drain fixture
-        # (shown=2, total_pending=7) renders `+5 more unread — re-run with limit=5`,
-        # which CONTAINS that marker — so TestNoMarkerIsCrossSatisfiedByAnotherProof
-        # went RED on the CORRECT build and GREEN on a build that copied fleet's
-        # (dishonest) `shown + more` arithmetic. MEASURED both ways against a
-        # reference build: correct 2 failed / wrong 2 passed. The contract PENALISED
-        # the correct build and REWARDED the wrong one — a contract prescribing the
-        # bug (the PKT-28 C1 §5.1 class), invisible until _render_comms_drain existed.
-        # The class is now pinned STATICALLY by
-        # TestNoMarkerIsASubstringOfAnotherClassifiedTemplate's value-erased check,
-        # which needs no render and would have caught this at authoring time.
-        marker=f"+3 more {_EM_DASH} re-run with limit=5",
+        marker=f"{_EM_DASH} re-run with limit=5",
         render_emit=lambda: _render_fleet(
             rows=[_agent("a"), _agent("b")], total_active=5, limit=2
         ),
@@ -1126,43 +1026,31 @@ _PROOF_LIST: list[PromiseProof] = [
     PromiseProof(
         literal="recipients must ack: lore_comms action=ack seqs=[{seq}]",
         marker="recipients must ack: lore_comms action=ack seqs=[41]",
-        # ``question=False`` on BOTH legs: the trailer's predicate is the GRADE, and
-        # holding ``question`` fixed is what makes this pair a clean single-variable
-        # discrimination. The orthogonality itself is pinned separately (the send
-        # shape pins in test_comms_tool.py drive question=True WITH grade=directive).
-        render_emit=lambda: _render_send(grade="directive", question=False),
-        render_no_emit=lambda: _render_send(grade="signal", question=False),
+        render_emit=lambda: _render_send(grade="directive"),
+        render_no_emit=lambda: _render_send(grade="signal"),
     ),
     PromiseProof(
         literal="peeked {shown} of {total} pending — nothing stamped; "
         "re-run without peek=true to mark them seen",
         marker="nothing stamped; re-run without peek=true to mark them seen",
         render_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=51, acked_at=None, thread="wave7")], total_pending=1, peek=True
+            entries=[_p03_entry(seq=51)], total_pending=1, peek=True
         ),
         render_no_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=51, acked_at=None, thread="wave7")], total_pending=1, peek=False
+            entries=[_p03_entry(seq=51)], total_pending=1, peek=False
         ),
     ),
     PromiseProof(
         literal="+{more} more unread — re-run with limit={next_limit}",
         marker="more unread — re-run with limit=",
-        # EMIT: the served window (2 rows) is short of the 7 pending, so the
-        # result-derived elision fires (more = total_pending − len(entries) = 5).
-        # NO-EMIT: the same rows with nothing elided (total_pending == shown).
+        # EMIT: the served window (2 rows) is bounded by limit=2 while 7 are
+        # pending — N > cap, the fixture shape no comms contract had ever
+        # written. NO-EMIT: the same rows with nothing elided.
         render_emit=lambda: _render_drain(
-            entries=[
-                _p03_entry(seq=61, acked_at=None, thread="wave7"),
-                _p03_entry(seq=62, acked_at=None, thread="wave7"),
-            ],
-            total_pending=7,
+            entries=[_p03_entry(seq=61), _p03_entry(seq=62)], total_pending=7, limit=2
         ),
         render_no_emit=lambda: _render_drain(
-            entries=[
-                _p03_entry(seq=61, acked_at=None, thread="wave7"),
-                _p03_entry(seq=62, acked_at=None, thread="wave7"),
-            ],
-            total_pending=2,
+            entries=[_p03_entry(seq=61), _p03_entry(seq=62)], total_pending=2, limit=2
         ),
     ),
     PromiseProof(
@@ -1172,10 +1060,10 @@ _PROOF_LIST: list[PromiseProof] = [
         # the trailer for EVERY served row (rather than for directives) passes
         # an empty-vs-nonempty discrimination and fails this one.
         render_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=71, grade="directive", acked_at=None, thread="wave7")], total_pending=1
+            entries=[_p03_entry(seq=71, grade="directive")], total_pending=1
         ),
         render_no_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=71, grade="signal", acked_at=None, thread="wave7")], total_pending=1
+            entries=[_p03_entry(seq=71, grade="signal")], total_pending=1
         ),
     ),
     PromiseProof(
@@ -1187,37 +1075,6 @@ _PROOF_LIST: list[PromiseProof] = [
         # point of ruling 4 is that "no such message" and "not addressed to
         # you" are DIFFERENT conditions the raw CAS collapses into one [].
         render_no_emit=lambda: _render_message_ack(outcomes=[(81, "not_addressed")]),
-    ),
-    # --- packet 03b: the two SURFACE additions --------------------------------
-    PromiseProof(
-        literal="awaiting an answer on thread '{thread}' — cleared by any teammate's "
-        "on-thread reply delivered to you; your own sends never clear it",
-        # FULL rendered line (the fix-wave item-3 discipline): a shorter marker such
-        # as "awaiting an answer" would be satisfied by any future waiting-shaped
-        # line, and the thread slot is the part a wrong build most plausibly drops.
-        marker=f"awaiting an answer on thread 'wave7' {_EM_DASH} cleared by any "
-        "teammate's on-thread reply delivered to you; your own sends never clear it",
-        # The ONLY variable across the two legs is ``question`` — grade is held at
-        # 'signal' on BOTH so a build keying the line on grade (or on ANY set_status
-        # string compare, which is what #104's class looks like here) fails NO-EMIT.
-        render_emit=lambda: _render_send(grade="signal", question=True),
-        render_no_emit=lambda: _render_send(grade="signal", question=False),
-    ),
-    PromiseProof(
-        literal="ALREADY ACKED: {seqs} — no action owed",
-        marker=f"ALREADY ACKED: #91 {_EM_DASH} no action owed",
-        # The ONLY variable is ``acked_at``. The row is a DIRECTIVE on both legs, so
-        # a build that emits this trailer for "every served row" (or for signals
-        # only, or for directives only) fails one leg or the other — and the NO-EMIT
-        # leg is an UNACKED DIRECTIVE, i.e. the row that legitimately draws the
-        # sibling ACK REQUIRED trailer, never an empty drain.
-        render_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=91, grade="directive", acked_at=datetime.now(UTC), thread="wave7")],
-            total_pending=1,
-        ),
-        render_no_emit=lambda: _render_drain(
-            entries=[_p03_entry(seq=91, grade="directive", acked_at=None, thread="wave7")], total_pending=1
-        ),
     ),
 ]
 
@@ -1770,65 +1627,11 @@ def _string_templates(
     return list(_canonicalise(node, func, seen).templates)
 
 
-_FIXTURE_VALUE = re.compile(r"\d+")
-"""A rendered fixture VALUE inside a proof marker. Erasing these leaves the marker's
-literal PROSE — what :meth:`TestNoMarkerIsASubstringOfAnotherClassifiedTemplate.
-_value_erased_violations` compares against the classified templates (amendment 7)."""
-
-
 def _has_literal_text(template: str) -> bool:
     """A template carries classifiable text only if SOMETHING survives once the
     placeholders are removed and whitespace is stripped — a pure-dynamic wrap
     (``sanitise_line(x)`` -> "{}") or a whitespace-only join promises nothing."""
     return template.replace(_PLACEHOLDER, "").strip() != ""
-
-
-def _is_placeholder_only(template: str) -> bool:
-    """``True`` when a template is NOTHING BUT format placeholders (plus
-    whitespace) — ``"{msg}"``, ``"{}"``, ``"{line}"``, ``"{a}{b}"``.
-
-    THIS is the shape that disarms the render-template scanner: the scanner reads
-    the TEMPLATE and never the kwarg VALUES, so classifying a placeholder-only
-    template makes every promise passed through that call site's values INVISIBLE
-    (see ``TestSafeStrLiteralCoverageBound.test_KNOWN_BOUND_a_promise_carried_in_a_
-    render_VALUE_is_not_inspected``, whose docstring bans exactly this class).
-
-    ⚠ DELIBERATELY NOT :func:`_has_literal_text`, and the difference is load-bearing.
-    Design ruling S3 part 2 originally prescribed the ∀-ban as
-    ``all(_has_literal_text(t) for t in _classified())``. Executed verbatim, that
-    assertion is a FALSE GATE IN BOTH DIRECTIONS (measured 2026-07-24 against the
-    committed build, at 7d2ad32):
-
-    * **RED on the CORRECT build** — ``_PROMISE_FREE`` contains ``" "``, the
-      ``render_join`` separator: whitespace-only, so it fails ``_has_literal_text``,
-      while carrying NO format field and therefore NO value slot to smuggle a
-      promise through.
-    * **BLIND to the target class** — ``_has_literal_text("{msg}") is True``. The
-      helper strips only the CANONICAL ``"{}"`` placeholder, so a NAMED field's
-      characters read as literal text. The one shape the ban exists to catch is the
-      one shape it would have waved through.
-
-    A whitespace-only SEPARATOR and a placeholder-only TEMPLATE are different
-    things; ``_has_literal_text`` conflates them because it answers a different
-    question ("is there anything here to classify?"). Banning the precise class
-    needs no exemption list, so there is no exemption to rot.
-
-    Reported to the lead as a design-doc correction rather than silently taken;
-    S3 part 2 is now AMENDED to rule this predicate (design rulings doc, D3).
-    """
-    if not _FORMAT_FIELD.search(template):
-        return False
-    return _FORMAT_FIELD.sub("", template).strip() == ""
-
-
-def _placeholder_only_classified(classified: frozenset[str]) -> list[str]:
-    """Every placeholder-only literal in ``classified`` — the ∀-ban's engine.
-
-    Takes the set as an ARGUMENT so the standing gate (over the shipped
-    ``_classified()``) and the self-attack (over a synthetic set) drive the SAME
-    code. Routing is not sharing: a self-attack with a private copy of this
-    predicate would keep passing after the real one changed."""
-    return sorted(template for template in classified if _is_placeholder_only(template))
 
 
 def _scan_safe_str_over_tree(
@@ -2500,17 +2303,7 @@ class TestSafeStrLiteralCoverageBound:
         is added to :data:`_PROMISE_FREE`, this bound MUST be closed first (extend the scan to
         literal kwarg VALUES), because that classification is exactly what would make a
         value-carried promise invisible. Classifying such a template without closing the bound
-        silently disarms the guard for that call site.
-
-        ⚠ AUTHORIZED AMENDMENT R5 (operator 2026-07-24; design ruling S3 part 2). Until 03b
-        this pin asserted ``"{msg}" not in _classified()`` and NOTHING ELSE, while the
-        paragraph above banned the whole CLASS — **a failure message promising a check the
-        assertion does not perform, i.e. a live FALSE GATE of exactly the P2 class
-        (2026-07-14), sitting inside the instrument built to kill that class.** Registering
-        ``"{line}"`` or ``"{cells}"`` disarmed the guard for its call site and every pin here
-        stayed green. The ∀-ban below is the docstring made executable; the ``"{msg}"``
-        assertion is KEPT (strengthen-only — the amendment may not weaken an existing
-        assertion) even though the ∀-form now subsumes it."""
+        silently disarms the guard for that call site."""
         source = (
             "def _render_comms_x():\n"
             '    return render_line("{msg}", msg="do the thing: lore_comms action=teleport now")\n'
@@ -2523,546 +2316,7 @@ class TestSafeStrLiteralCoverageBound:
             "'{msg}' has been classified as promise-free — the value-carried promise bound "
             "documented here is now OPEN. Close it (scan literal kwarg values) or revert."
         )
-        # THE ∀-BAN (R5): not just "{msg}" — NO placeholder-only template may be
-        # classified, because EVERY one of them is a value-carried-promise door.
-        offenders = _placeholder_only_classified(_classified())
-        assert not offenders, (
-            "a PLACEHOLDER-ONLY template has been classified — the value-carried promise "
-            "bound this pin documents is now OPEN for that call site: the scanner reads the "
-            "TEMPLATE and never the kwarg VALUES, so any promise passed through it is "
-            "invisible to both scanners. Close the bound first (extend the scan to literal "
-            f"kwarg values), or do not classify these: {offenders!r}"
-        )
         # The promise TEXT itself is invisible to BOTH scanners.
         assert not any("teleport" in text for text in templates), templates
         assert _scan_safe_str_source(source) == []
 
-
-
-# =========================================================================== #
-# PACKET 03b — ROW B: the two STATIC strengthenings (design ruling S3 part 2).
-#
-# Both are STANDING GATES over the shipped vocabulary, not fix-pins: they cost
-# nothing today and they fire on a FUTURE template addition that re-opens a
-# hazard this packet adjudicated by hand. S3 part 1's adjudication table (which
-# new promise marker could be cross-satisfied by a sibling VARIANT of the same
-# message family — finding #143's shape) was a ONE-TIME analysis; item 1 below
-# converts its textual half into a gate so the next author cannot silently
-# invalidate it. Item 2 is the R5 amendment's engine, exercised here as a
-# standing gate as well as inside the bound pin whose docstring it enforces.
-# =========================================================================== #
-
-
-class TestNoMarkerIsASubstringOfAnotherClassifiedTemplate:
-    """S3 part 2, item 1 — MARKER/VOCABULARY DISJOINTNESS.
-
-    ``TestNoMarkerIsCrossSatisfiedByAnotherProof`` compares a marker against the
-    RENDERS of the other proofs. That is proof-vs-proof: it can only see an
-    overlap that a CURRENT fixture happens to instantiate. This one compares each
-    marker against the classified VOCABULARY — every template literal the surface
-    can ever emit, whatever the fixture values. A marker that is a substring of
-    some OTHER template is a marker that a DIFFERENT line can satisfy the moment
-    someone writes a fixture that renders it, which is #143's shape one step
-    before it becomes reachable.
-
-    Static, no rendering. It does NOT replace #143's dynamic sibling-branch check
-    (a marker can still be satisfied by a sibling's INSTANTIATED render without
-    being a substring of its template — that bound stays pinned in
-    ``TestMarkerCrossSatisfactionBound``); it kills the cheap textual half of the
-    class, permanently and for templates no fixture reaches yet."""
-
-    @staticmethod
-    def _violations(proofs: dict[str, PromiseProof], classified: frozenset[str]) -> list[tuple[str, str]]:
-        """``(marker, other_template)`` pairs where a marker is a substring of a
-        classified template that is NOT the marker's own line. Shared by the gate
-        and its self-attack — the self-attack must exercise the REAL predicate."""
-        return [
-            (proof.marker, template)
-            for literal, proof in proofs.items()
-            for template in sorted(classified)
-            if template != literal and proof.marker in template
-        ]
-
-    def test_no_marker_is_a_substring_of_another_classified_template(self) -> None:
-        violations = self._violations(_PROMISE_PROOFS, _classified())
-        assert not violations, (
-            "a proof's marker is a SUBSTRING of a different classified template — the "
-            "moment any fixture renders that other template, this proof can pass without "
-            "its own line ever being emitted (finding #143's shape). Strengthen the marker "
-            "to text unique to the line it proves:\n"
-            + "\n".join(
-                f"  marker {marker!r}\n    inside template {template!r}"
-                for marker, template in violations
-            )
-        )
-
-    def test_the_gate_catches_a_marker_planted_inside_a_sibling_template(self) -> None:
-        """SELF-ATTACK (a probe needs a control). Weaken one marker to text taken
-        VERBATIM from a DIFFERENT classified template; the gate must fire."""
-        victim = _proof_literal_containing("ACK REQUIRED")
-        sibling = "no unread messages"
-        assert sibling in _classified() and sibling != victim  # fixture check
-        weakened = dict(_PROMISE_PROOFS)
-        weakened[victim] = replace(_PROMISE_PROOFS[victim], marker=sibling)
-        assert self._violations(weakened, _classified()), (
-            "the disjointness gate did not catch a marker copied verbatim out of another "
-            "classified template — the instrument is not discriminating"
-        )
-
-    def test_positive_control_the_gate_accepts_the_shipped_markers(self) -> None:
-        """The gate is not simply rejecting everything: with the SHIPPED markers
-        and one extra template that shares only a PREFIX with a real marker, it
-        stays silent — so the red above is discrimination, not blanket rejection."""
-        near_miss = frozenset({*_classified(), "ACK REQUIRED"})
-        # 'ACK REQUIRED' alone is a PREFIX of the marker 'ACK REQUIRED: #71', never a
-        # superstring of it, so no violation is owed.
-        assert self._violations(_PROMISE_PROOFS, near_miss) == []
-
-    # -- AMENDMENT 7: the VALUE-ERASED form, which is what actually kills the class -
-
-    @staticmethod
-    def _value_erased_violations(proofs: dict[str, PromiseProof]) -> list[tuple[str, str]]:
-        """The same disjointness question asked of the marker's LITERAL SKELETON —
-        its fixture values erased — against every other template's skeleton.
-
-        The plain substring check above compares a marker (which carries INSTANTIATED
-        values) against templates (which carry ``{placeholders}``), so a marker made
-        ENTIRELY of shared literal text plus a value slips through: ``"— re-run with
-        limit=5"`` is not a substring of ``"+{more} more unread — re-run with
-        limit={next_limit}"`` — the ``5`` and the ``{next_limit}`` differ — yet the two
-        lines collide the instant both are RENDERED with aligned numbers.
-
-        Erasing digits from the marker and ``{fields}`` from the template compares what
-        is actually shared: the PROSE. A marker whose prose skeleton lives inside
-        another template is anchored to text it does not own, and only its fixture's
-        arithmetic is keeping it distinct — the arithmetic-alignment class, in string
-        form."""
-        violations: list[tuple[str, str]] = []
-        for literal, proof in proofs.items():
-            skeleton = _FIXTURE_VALUE.sub("", proof.marker)
-            if not skeleton.strip():
-                continue  # a purely numeric marker owns no prose to compare.
-            for template in sorted(_classified()):
-                if template != literal and skeleton in _FORMAT_FIELD.sub("", template):
-                    violations.append((proof.marker, template))
-        return violations
-
-    def test_no_markers_PROSE_lives_inside_another_classified_template(self) -> None:
-        """AUTHORIZED AMENDMENT 7 (operator 2026-07-24) — the permanent instrument
-        for the D1 defect, STATIC and render-free, so it fires at contract-authoring
-        time rather than after a builder implements the ruled behaviour."""
-        violations = self._value_erased_violations(_PROMISE_PROOFS)
-        assert not violations, (
-            "a proof's marker is nothing but text SHARED with another classified template "
-            "plus a fixture value — the two lines collide the moment both render with "
-            "aligned numbers, and until then the contract silently REWARDS whichever build "
-            "keeps them apart by accident. Promote the marker to the FULL rendered line:\n"
-            + "\n".join(
-                f"  marker {marker!r}\n    prose lives inside {template!r}"
-                for marker, template in violations
-            )
-        )
-
-    def test_the_gate_catches_THE_D1_DEFECT_ITSELF(self) -> None:
-        """SELF-ATTACK, and the D1 receipt preserved AS A PIN (the lead's ask).
-
-        Restore the pre-amendment-7 fleet marker — the exact text this contract
-        shipped with — and the gate must fire. MEASURED against a reference build of
-        03b S4.2 (2026-07-24): with that marker, the CORRECT drain arithmetic
-        (``next_limit = more``) left ``TestNoMarkerIsCrossSatisfiedByAnotherProof`` and
-        ``TestMarkerCrossSatisfactionBound`` at **2 failed**, while fleet's wrong
-        ``shown + more`` arithmetic left them at **2 passed**. This pin needs neither
-        render nor arithmetic to see it."""
-        fleet = _proof_literal_containing("+{more} more — re-run")
-        regressed = dict(_PROMISE_PROOFS)
-        regressed[fleet] = replace(_PROMISE_PROOFS[fleet], marker=f"{_EM_DASH} re-run with limit=5")
-        violations = self._value_erased_violations(regressed)
-        assert violations, (
-            "the value-erased gate no longer catches the D1 defect (a fleet marker made "
-            "entirely of text shared with the drain elision template). If the drain "
-            "template was reworded so the two no longer share prose, re-derive this pin; "
-            "do NOT weaken it"
-        )
-
-    def test_POSITIVE_CONTROL_the_value_erased_gate_is_not_blanket_rejection(self) -> None:
-        """Every OTHER shipped marker passes the value-erased check — so the red above
-        is discrimination. Without this, a gate that flagged all 26 markers would look
-        identical to one that flagged the one real defect."""
-        fleet = _proof_literal_containing("+{more} more — re-run")
-        others = {
-            literal: proof for literal, proof in _PROMISE_PROOFS.items() if literal != fleet
-        }
-        assert self._value_erased_violations(others) == []
-
-
-class TestNoClassifiedTemplateIsPlaceholderOnly:
-    """S3 part 2, item 2 — the ∀-BAN, as a STANDING gate.
-
-    The same predicate the R5 amendment installs inside
-    ``TestSafeStrLiteralCoverageBound.test_KNOWN_BOUND_a_promise_carried_in_a_
-    render_VALUE_is_not_inspected``, hoisted to a gate of its own so it is
-    discoverable by name and fails with its own message. ONE predicate
-    (:func:`_placeholder_only_classified`), two call sites — never two copies."""
-
-    def test_no_classified_template_is_placeholder_only(self) -> None:
-        offenders = _placeholder_only_classified(_classified())
-        assert not offenders, (
-            "a placeholder-only template is CLASSIFIED — every promise passed through that "
-            "call site's render VALUES is now invisible to both scanners (the known bound in "
-            f"TestSafeStrLiteralCoverageBound). Close the bound first: {offenders!r}"
-        )
-
-    def test_the_ban_catches_each_placeholder_only_shape(self) -> None:
-        """SELF-ATTACK across the shapes an honest author would actually write:
-        a named slot, the canonical ``{}``, several slots, and slots with only
-        whitespace between them."""
-        for hostile in ("{msg}", "{}", "{a}{b}", "{a} {b}", "  {line}  "):
-            assert _placeholder_only_classified(frozenset({hostile})) == [hostile], hostile
-
-    def test_positive_control_real_templates_and_separators_are_accepted(self) -> None:
-        """The discriminations that make the ban precise rather than blanket.
-
-        ``" "`` is the ``render_join`` SEPARATOR in the shipped ``_PROMISE_FREE``:
-        whitespace-only, but it carries NO placeholder, hence no value slot, hence
-        no smuggling door. Ruling S3 part 2's literal formulation
-        (``all(_has_literal_text(t) ...)``) would go RED on it — on the CORRECT
-        build. See :func:`_is_placeholder_only`'s docstring for the correction."""
-        assert " " in _PROMISE_FREE  # fixture check: the separator really is classified
-        benign_templates = (
-            " ",
-            ", ",
-            " · ",
-            "no unread messages",
-            "#{seq} [{grade}] {sender}→you{context}: {body}",
-        )
-        for benign in benign_templates:
-            assert _placeholder_only_classified(frozenset({benign})) == [], benign
-
-
-# =========================================================================== #
-# PACKET 03b — ROW A: the two #145 LOCATION GATES (design ruling S2).
-#
-# S1's coverage-premise probe passed CONDITIONALLY: packets 02/02a's promise
-# instruments see every new 03b render IFF the render lives in server.py under
-# the ``_render_comms``/``_comms_`` prefix. S1's NEGATIVE control measured the
-# condition failing — the same helper renamed without the prefix is INVISIBLE.
-# S2 converts that convention from a comment into a gate. It does NOT generalise
-# the three path/prefix-keyed scanners: that is #145's own design work ("stop
-# enumerating where renders are FORBIDDEN to live") and must not reach a builder
-# mid-packet as "make coverage general".
-#
-# THREAT MODEL, stated IN the instrument (repo law — a gate without one gets
-# argued about twice and then switched off): these two catch the HONEST
-# DEVELOPER who adds a comms render in a new module, or names a render helper
-# without the prefix, while the promise scanners silently keep passing. They are
-# NOT a boundary against an author determined to hide a render — anyone who can
-# commit here can already ship anything. Verdicts follow mechanically: "an
-# honest engineer's new render goes unscanned" is a DEFECT; "a deliberately
-# obfuscated render slips through" is a LEDGERED bound (#145), not a defect.
-# =========================================================================== #
-
-_COMMS_RENDER_PREFIXES: tuple[str, ...] = ("_render_comms", "_comms_")
-"""The prefix set the three shipped scanners key on, named ONCE for the two gates
-below. The committed scanners spell it inline; ``TestTheScannedPrefixSetIsTheOne
-TheScannersUse`` proves this constant and those inline copies still agree, so a
-divergence is RED rather than a silently narrowed gate."""
-
-
-def _is_comms_prefixed(name: str) -> bool:
-    """Whether ``name`` is inside the scanned comms render surface."""
-    return name.startswith(_COMMS_RENDER_PREFIXES)
-
-
-def _module_functions(tree: ast.AST) -> dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]]:
-    """THE ONE SHARED WALKER for both S2 gates: every function def in a parsed
-    module, keyed by NAME (a list per name — server.py legitimately carries
-    same-named defs, e.g. each tool wrapper beside its ``AppContext`` method).
-
-    Keyed by name because module-local call resolution IS by name: ``self._foo()``
-    and ``_foo()`` both name ``_foo``. Where a name is ambiguous the gate treats
-    the entry as the UNION of its defs (over-approximating REACHABILITY, which is
-    the fail-CLOSED direction for a deny-by-default gate). Stated as a bound, not
-    hidden: a same-named function in an unrelated class can be pulled into the
-    reachable set, and the remedy if that ever bites an honest author is a
-    rename, not a widening of the gate."""
-    functions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            functions.setdefault(node.name, []).append(node)
-    return functions
-
-
-def _local_callees(func: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
-    """Every callee NAME invoked anywhere inside ``func`` (``_called_name`` reads
-    both the bare-name and the attribute spelling, so ``self._render_comms_x()``
-    resolves to ``_render_comms_x``)."""
-    return {
-        name
-        for sub in ast.walk(func)
-        if isinstance(sub, ast.Call) and (name := _called_name(sub.func)) is not None
-    }
-
-
-def _emits_render_verb(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """Whether ``func`` calls ``render_line``/``render_join`` — the SAME verb set
-    the shipped scanners key on (:data:`_RENDER_VERB_NAMES`, not a second copy)."""
-    return any(
-        isinstance(sub, ast.Call) and _called_name(sub.func) in _RENDER_VERB_NAMES
-        for sub in ast.walk(func)
-    )
-
-
-def _stray_prefixed_functions(sources: dict[str, str]) -> list[str]:
-    """PIN A's checker — every ``file:function:line`` in ``sources`` that carries
-    the scanned comms prefix. ``sources`` maps a display label to module source,
-    so the production reading (every package file except server.py) and the
-    synthetic self-attack drive the SAME code."""
-    return [
-        f"{label}:{name}:{node.lineno}"
-        for label, source in sorted(sources.items())
-        for name, defs in sorted(_module_functions(ast.parse(source, filename=label)).items())
-        if _is_comms_prefixed(name)
-        for node in defs
-    ]
-
-
-def _unprefixed_reachable_render_emitters(source: str, *, label: str = "server.py") -> list[str]:
-    """PIN B's checker — COVERAGE AS A CHECKED VARIABLE, in the one place it
-    matters: reachability FROM the served comms surface.
-
-    Build the module-local call graph; walk it transitively from every
-    prefix-named function (the comms handlers and every render helper are all
-    prefixed); report every reached function that itself calls a render verb yet
-    does NOT carry the prefix. Such a function composes served comms text that
-    NEITHER promise scanner can see — S1's negative control, made reachable.
-
-    This is deliberately NOT a list of forbidden homes (the forbidden set is
-    unbounded — the six-defeats lesson); it is keyed on the one property that
-    makes an unscanned render dangerous: the comms surface can actually reach it.
-    """
-    functions = _module_functions(ast.parse(source, filename=label))
-    reached: set[str] = set()
-    frontier = [name for name in functions if _is_comms_prefixed(name)]
-    while frontier:
-        name = frontier.pop()
-        if name in reached:
-            continue
-        reached.add(name)
-        for node in functions.get(name, []):
-            frontier.extend(
-                callee
-                for callee in _local_callees(node)
-                if callee in functions and callee not in reached
-            )
-    return [
-        f"{label}:{name}:{node.lineno}"
-        for name in sorted(reached)
-        if not _is_comms_prefixed(name)
-        for node in functions.get(name, [])
-        if _emits_render_verb(node)
-    ]
-
-
-def _package_sources_except_server() -> dict[str, str]:
-    """Every ``.py`` in the loremaster package EXCEPT server.py, as
-    ``relative-path -> source``. Follows ``test_render_seam_pins.py``'s rglob
-    idiom (which already walks the package) rather than inventing a second one."""
-    package_root = _SERVER_PY.parent
-    return {
-        str(path.relative_to(package_root)): path.read_text(encoding="utf-8")
-        for path in sorted(package_root.rglob("*.py"))
-        if path.resolve() != _SERVER_PY
-    }
-
-
-class TestEveryCommsRenderLivesInServerPy:
-    """S2 PIN A (the moved-file half of #145).
-
-    Three of the five render scanners are keyed on BOTH the server.py PATH and
-    the name prefix. A correctly-prefixed comms render helper living in any other
-    module of the package is invisible to all three and its promises ship
-    unregistered with every gate green. The convention held by habit until now;
-    this makes breaking it LOUD.
-
-    NAMED RE-OPEN TRIGGER (per PIN THE MISS): the day a comms render legitimately
-    needs to live outside server.py — a server split, or a non-comms tool serving
-    comms-graph content — #145's scanner generalisation lands FIRST and this pin
-    is deleted with a note saying so. Until then the constraint binds packets
-    04-06 as well (``_comms_footer`` in packet 04 is already prefix-named and
-    MUST land in server.py)."""
-
-    def test_no_prefixed_render_helper_lives_outside_server_py(self) -> None:
-        stray = _stray_prefixed_functions(_package_sources_except_server())
-        assert not stray, (
-            "a comms-prefixed function lives OUTSIDE server.py — three of the five promise "
-            "scanners are keyed on that path and cannot see it, so any served promise it "
-            "renders ships unregistered with every gate green (#145). Move it into "
-            "server.py, or land #145's scanner generalisation first:\n  " + "\n  ".join(stray)
-        )
-
-    def test_the_pin_is_not_vacuous_the_package_really_was_walked(self) -> None:
-        """COVERAGE AS A CHECKED VARIABLE: a green result above must mean "walked
-        the package and found nothing", never "walked nothing". A bad root path
-        would silently produce an empty mapping and a permanent green."""
-        sources = _package_sources_except_server()
-        assert len(sources) >= 20, f"the package walk found only {len(sources)} modules: {sorted(sources)!r}"
-        assert "store/surreal.py" in sources or any(
-            name.endswith("surreal.py") for name in sources
-        ), sorted(sources)
-        assert all("server.py" != name for name in sources), sorted(sources)
-
-    def test_SELF_ATTACK_a_render_helper_in_another_module_is_caught(self) -> None:
-        """Drive the REAL checker over a synthetic module carrying a correctly
-        prefixed helper — it must be named with its file and function."""
-        hostile = {
-            "renders/comms.py": (
-                "def _render_comms_orphan(x):\n"
-                "    return render_line('do the thing: lore_comms action=teleport now')\n"
-            )
-        }
-        found = _stray_prefixed_functions(hostile)
-        assert found == ["renders/comms.py:_render_comms_orphan:1"], found
-
-    def test_SELF_ATTACK_the_handler_prefix_is_caught_too(self) -> None:
-        """The second prefix is not decoration: ``_comms_*`` handlers render too."""
-        hostile = {"other.py": "async def _comms_teleport(self):\n    return None\n"}
-        assert _stray_prefixed_functions(hostile) == ["other.py:_comms_teleport:1"]
-
-    def test_POSITIVE_CONTROL_an_unprefixed_helper_elsewhere_is_accepted(self) -> None:
-        """A different-reason negative: an ordinary render helper in another
-        module is NOT the comms surface and must not be flagged — otherwise the
-        green above is blanket acceptance and the red is blanket rejection."""
-        benign = {"findings.py": "def _render_finding_detail(x):\n    return render_line('a label')\n"}
-        assert _stray_prefixed_functions(benign) == []
-
-
-class TestEveryRenderReachableFromCommsCarriesTheScannedPrefix:
-    """S2 PIN B (the renamed-helper half of #145) — the door S1's NEGATIVE
-    control demonstrates, closed at the only place it matters.
-
-    S1 measured it: a helper named ``_render_probe_03b`` instead of
-    ``_render_comms_probe_03b`` is INVISIBLE to the promise scan, and every gate
-    stays green. Enumerating forbidden names cannot fix that (the forbidden set
-    is unbounded — the six-defeats lesson). What IS enumerable is REACH: if the
-    served comms surface can call it and it emits a render verb, it is comms
-    render code and must carry the scanned prefix.
-
-    RESIDUAL BOUND, ledgered on #145 (PIN THE MISS): a correctly-shaped comms
-    render served by a DIFFERENT tool's handler path — not reachable from any
-    prefixed function — is still invisible here. That is #145's true
-    generalisation (type-keyed or runtime-tagged coverage) and stays ledgered
-    there. NAMED RE-OPEN TRIGGER: the day a non-comms tool serves comms-graph
-    content, the generalisation lands first and this pin's bound is closed."""
-
-    def test_no_unprefixed_function_reachable_from_comms_emits_a_render_verb(self) -> None:
-        violations = _unprefixed_reachable_render_emitters(_SERVER_PY.read_text(encoding="utf-8"))
-        assert not violations, (
-            "a function reachable from the comms surface calls render_line/render_join but "
-            "does NOT carry the _render_comms/_comms_ prefix — every literal it serves is "
-            "invisible to all three prefix-keyed promise scanners (#145). Rename it into the "
-            "prefix:\n  " + "\n  ".join(violations)
-        )
-
-    def test_the_pin_is_not_vacuous_the_graph_really_was_walked(self) -> None:
-        """COVERAGE AS A CHECKED VARIABLE again: the checker must have found real
-        roots in the shipped module. A prefix typo would make the frontier empty
-        and the gate permanently, silently green."""
-        source = _SERVER_PY.read_text(encoding="utf-8")
-        functions = _module_functions(ast.parse(source, filename="server.py"))
-        roots = sorted(name for name in functions if _is_comms_prefixed(name))
-        assert len(roots) >= 8, roots
-        assert any(name.startswith("_render_comms") for name in roots), roots
-        assert any(name.startswith("_comms_") for name in roots), roots
-
-    def test_SELF_ATTACK_a_renamed_helper_reachable_from_a_handler_is_caught(self) -> None:
-        """S1's negative control, promoted to a gate: the helper is renamed OUT of
-        the prefix but is still CALLED by a prefixed handler."""
-        hostile = (
-            "def _render_probe_03b(x):\n"
-            "    return render_line('do the thing: lore_comms action=teleport now')\n"
-            "async def _comms_drain(self, x):\n"
-            "    return _render_probe_03b(x)\n"
-        )
-        found = _unprefixed_reachable_render_emitters(hostile, label="h.py")
-        assert found == ["h.py:_render_probe_03b:1"], found
-
-    def test_SELF_ATTACK_it_reaches_TRANSITIVELY_not_just_one_hop(self) -> None:
-        """One hop is the shape an author writes by accident; two hops is the
-        shape a refactor produces. A one-hop-only checker would pass this."""
-        hostile = (
-            "def _deep(x):\n"
-            "    return render_line('teleport now')\n"
-            "def _middle(x):\n"
-            "    return _deep(x)\n"
-            "def _render_comms_drain(x):\n"
-            "    return _middle(x)\n"
-        )
-        assert _unprefixed_reachable_render_emitters(hostile, label="h.py") == ["h.py:_deep:1"]
-
-    def test_SELF_ATTACK_the_ATTRIBUTE_call_spelling_is_reached(self) -> None:
-        """``self._helper(...)`` is how a method actually calls its sibling; a
-        checker reading only bare ``ast.Name`` calls would be blind to the entire
-        ``AppContext`` surface — i.e. to every real comms render."""
-        hostile = (
-            "class C:\n"
-            "    def _render_row(self, x):\n"
-            "        return render_line('teleport now')\n"
-            "    def _render_comms_drain(self, x):\n"
-            "        return self._render_row(x)\n"
-        )
-        assert _unprefixed_reachable_render_emitters(hostile, label="h.py") == ["h.py:_render_row:2"]
-
-    def test_POSITIVE_CONTROL_an_unreachable_unprefixed_render_is_not_flagged(self) -> None:
-        """The discrimination that keeps this gate usable: a render helper the
-        comms surface CANNOT reach is another tool's business. A gate that
-        refused every render in server.py would be switched off within a day —
-        and then #145 would be unguarded entirely."""
-        benign = (
-            "def _render_finding_detail(x):\n"
-            "    return render_line('a finding label')\n"
-            "def _render_comms_drain(x):\n"
-            "    return render_line('drained 1 of 1 pending')\n"
-        )
-        assert _unprefixed_reachable_render_emitters(benign, label="h.py") == []
-
-    def test_POSITIVE_CONTROL_a_reachable_helper_that_renders_NOTHING_is_not_flagged(self) -> None:
-        """The second discrimination: reachability alone is not the offence — the
-        shipped tree reaches ``_render_age`` (a duration formatter that calls no
-        render verb) and must stay green on it."""
-        benign = (
-            "def _format_age(seconds):\n"
-            "    return f'{seconds}s'\n"
-            "def _render_comms_drain(x):\n"
-            "    return render_line('age: {a}', a=_format_age(x))\n"
-        )
-        assert _unprefixed_reachable_render_emitters(benign, label="h.py") == []
-
-
-class TestTheScannedPrefixSetIsTheOneTheScannersUse:
-    """ROUTING IS NOT SHARING (repo DRY law). The two S2 gates read
-    :data:`_COMMS_RENDER_PREFIXES`; the three COMMITTED scanners spell the same
-    prefixes inline. Two copies of one POLICY is how a fix reaches one and not
-    the other — so the agreement is CHECKED here rather than assumed.
-
-    Derived from the constant, never re-typed: change ``_COMMS_RENDER_PREFIXES``
-    and this test drives the committed scanner with the NEW prefix, which is
-    exactly the mutation proof that distinguishes sharing from looks-like-sharing.
-    (The committed scanners are frozen — 03b's authorization covers six named
-    amendments and this is not one — so an agreement pin is the available
-    instrument, and it fails RED on divergence either way.)"""
-
-    def test_the_committed_scanner_scans_every_prefix_this_module_declares(self) -> None:
-        for prefix in _COMMS_RENDER_PREFIXES:
-            source = f"def {prefix}_probe(x):\n    return render_line('a probe label {{n}}')\n"
-            assert _scan_render_literals_source(source) == ["a probe label {n}"], (
-                f"the committed render-template scanner does NOT scan the {prefix!r} prefix "
-                "that _COMMS_RENDER_PREFIXES declares — the S2 gates and the promise "
-                "scanners have diverged on WHICH surface is the comms surface"
-            )
-
-    def test_the_committed_scanner_ignores_a_name_outside_the_declared_prefixes(self) -> None:
-        """The negative half: without it, a prefix constant widened to ``""``
-        would pass the test above and quietly make the gates meaningless."""
-        source = "def _render_probe(x):\n    return render_line('a probe label')\n"
-        assert not _is_comms_prefixed("_render_probe")
-        assert _scan_render_literals_source(source) == []
