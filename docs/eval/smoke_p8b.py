@@ -606,20 +606,68 @@ async def check_index_status_calibration(session: ClientSession) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Check 8 — packet 10-d: lore_index admits the weak-match disarm
+# ---------------------------------------------------------------------------
+# The packet's own deploy smoke, made mechanical: "lore_index renders the
+# disabled state WITH its note, not a null"
+# (docs/plans/v2/10-d-weak-match-disarm.md, Exit). Substrings only — the exact
+# note lives in loremaster.search._COSINE_FLOOR_DISARMED_NOTE and this script
+# talks to a DEPLOYED image over MCP, so re-importing it here would prove the
+# host's source, not the artifact's (#139). What is asserted is the SHAPE the
+# finding-#4 lesson demands: a disabled state that explains itself.
+COSINE_FLOOR_DISARMED_MARKERS = ("disarmed", "#176", "11-ii", "substrate remains served")
+
+
+async def check_index_status_cosine_floor_disarm(session: ClientSession) -> None:
+    """lore_index carries cosine_floor state=disabled WITH a self-explaining note."""
+    result = await call_tool(session, "lore_index", {})
+    payload = parse_json_result(result, "lore_index (cosine_floor)")
+    cosine_floor = payload.get("cosine_floor")
+    if not isinstance(cosine_floor, dict):
+        raise SmokeCheckFailed(
+            f"lore_index: expected a 'cosine_floor' section (a dict), got: {cosine_floor!r}"
+        )
+    state = cosine_floor.get("state")
+    if state != "disabled":
+        raise SmokeCheckFailed(
+            f"packet 10-d: lore_index cosine_floor.state is {state!r}, expected 'disabled' "
+            f"— the deployed image is still serving a weak-match judgement"
+        )
+    note = cosine_floor.get("note")
+    if not isinstance(note, str) or not note:
+        raise SmokeCheckFailed(
+            f"packet 10-d: cosine_floor.note is {note!r} — a disabled state must EXPLAIN "
+            f"itself (finding #4: disabled-by-config and disarmed-pending-calibration are "
+            f"different conditions and must not share a rendering)"
+        )
+    missing = [marker for marker in COSINE_FLOOR_DISARMED_MARKERS if marker not in note]
+    if missing:
+        raise SmokeCheckFailed(
+            f"packet 10-d: cosine_floor.note does not admit the condition — missing "
+            f"{missing}; got: {note!r}"
+        )
+    print(f"PASS: lore_index() admits the weak-match disarm -> state={state!r}, note={note!r}")
+
+
+# ---------------------------------------------------------------------------
 # Run modes
 # ---------------------------------------------------------------------------
 async def run_mechanics_check() -> None:
-    """--mechanics: connection + tools/list (no new-tool assertion) + checks 6-7 only.
+    """--mechanics: connection + tools/list (no new-tool assertion) + checks 6-8 only.
 
     The P8c calibration section (check 7) is a READ-ONLY ``lore_index_status`` probe
     with no finding-filing side effects, so it belongs in the mechanics path too —
     without it the default mode was silently weaker (a server missing the calibration
-    section passed mechanics), the gap flagged by REPORT-auditor-wiring-1 F2.
+    section passed mechanics), the gap flagged by REPORT-auditor-wiring-1 F2. The
+    packet-10-d disarm check (check 8) reads the SAME ``lore_index`` payload with the
+    same absence of side effects, and it is the check most worth running against a
+    half-deployed image, so it rides the mechanics path for the same reason.
     """
     async with connect(MCP_SERVER_URL) as session:
         await check_tools(session, mechanics=True)
         await check_legacy_index_status(session)
         await check_index_status_calibration(session)
+        await check_index_status_cosine_floor_disarm(session)
 
 
 async def run_full_smoke() -> None:
@@ -634,6 +682,7 @@ async def run_full_smoke() -> None:
         await check_findings(session)
         await check_legacy_index_status(session)
         await check_index_status_calibration(session)
+        await check_index_status_cosine_floor_disarm(session)
 
 
 def main() -> int:
