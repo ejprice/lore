@@ -69,7 +69,10 @@ from loremaster.server import (
     _COMMS_ACTIONS,
     _COMMS_TOOL_ANNOTATIONS,
     _COVERAGE_NAMES_CAP,
+    _FINDING_ACTIONS,
+    _INSTRUCTIONS,
     _MAX_FLEET_LIMIT,
+    _TASK_ACTIONS,
     AppContext,
     CommsActionSpec,
     LoreServer,
@@ -3639,6 +3642,7 @@ async def _render_fleet_session(value: str, _ctx: Any) -> str:
 
 def _message(
     *,
+    question: bool,
     seq: int = 1,
     grade: str = "signal",
     body: str = "the body",
@@ -3648,6 +3652,15 @@ def _message(
     task_id: str | None = None,
     refs: list[str] | None = None,
 ) -> Any:
+    """A ``Message`` for the send-render fixtures.
+
+    ``question`` carries NO DEFAULT ON PURPOSE (packet 03b). The 03b send render
+    BRANCHES on it — S4.1's question-teach line is emitted IFF ``message.question``
+    — and repo law is explicit that a fixture factory must not default a parameter
+    the code branches on: ``_brief()`` defaulting to ``name='project'``
+    MANUFACTURED the #104 blind spot, where every render fixture silently tested
+    the one value for which the served prose was true. No default ⇒ every call
+    site chooses ⇒ the monoculture cannot re-form silently on this field."""
     return _msg().Message(
         id=f"{seq:026x}",
         seq=seq,
@@ -3659,7 +3672,7 @@ def _message(
         body=body,
         refs=refs if refs is not None else [],
         task_id=task_id,
-        question=False,
+        question=question,
         created_at=datetime.now(UTC),
     )
 
@@ -3690,12 +3703,16 @@ def _inbox_entry(
     )
 
 
-def _send_result(
-    *, message: Any = None, recipient_names: list[str] | None = None
-) -> Any:
+def _send_result(*, message: Any, recipient_names: list[str] | None = None) -> Any:
+    """A ``MessageSendResult``. ``message`` is REQUIRED (03b): the old
+    ``message=None -> _message()`` default would have to pick a ``question`` value
+    on the caller's behalf, re-creating exactly the monoculture :func:`_message`'s
+    docstring explains. ``recipient_names`` keeps its default — the send render
+    does not BRANCH on a name, it interpolates it (the cap branch is driven
+    explicitly, and derived from ``_COVERAGE_NAMES_CAP``, by the cap pins)."""
     names = recipient_names if recipient_names is not None else ["fixer-b"]
     return _msg().MessageSendResult(
-        message=message if message is not None else _message(),
+        message=message,
         recipient_names=names,
         recipient_count=len(names),
     )
@@ -3732,13 +3749,39 @@ def _ack_result(*, entries: list[Any] | None = None) -> Any:
 
 async def _render_send_recipients(value: str, _ctx: Any) -> str:
     return AppContext._render_comms_send(
-        _send_result(recipient_names=[value]), broadcast=False, session="wave7"
+        _send_result(message=_message(question=False), recipient_names=[value]),
+        broadcast=False,
+        session="wave7",
     )
 
 
 async def _render_send_sender(value: str, _ctx: Any) -> str:
     return AppContext._render_comms_send(
-        _send_result(message=_message(sender_name=value)), broadcast=False, session="wave7"
+        _send_result(message=_message(sender_name=value, question=False)),
+        broadcast=False,
+        session="wave7",
+    )
+
+
+async def _render_send_thread(value: str, _ctx: Any) -> str:
+    """AUTHORIZED AMENDMENT R7 (operator 2026-07-24; design ruling S4.1).
+
+    ``thread`` is CALLER-SUPPLIED free text and, before 03b, the send render never
+    rendered it — so the committed battery carried only ``send.recipients`` /
+    ``send.sender``. S4.1's question-teach line puts ``'{thread}'`` into the send
+    render for the first time, which makes an injection case MANDATORY.
+
+    ⚠ ``question=True`` IS THE WHOLE CASE. The question line is the ONLY place the
+    send render emits ``thread``; with ``question=False`` this fixture renders a
+    receipt that never contains the value and the case passes VACUOUSLY — testing
+    nothing, exactly as ``brief_publish.session`` did with ``behind=[]`` until the
+    #96 adversary caught it. ``TestSendThreadInjectionCaseIsNotVACUOUS`` below
+    asserts the value really reaches the render, so this can never rot back into
+    decoration."""
+    return AppContext._render_comms_send(
+        _send_result(message=_message(thread=value, question=True)),
+        broadcast=False,
+        session="wave7",
     )
 
 
@@ -3795,6 +3838,7 @@ C1_RENDER_CASES: list[RenderCase] = [
     RenderCase("fleet.session", _render_fleet_session),
     RenderCase("send.recipients", _render_send_recipients),
     RenderCase("send.sender", _render_send_sender),
+    RenderCase("send.thread", _render_send_thread),  # R7 (03b) — see the driver's docstring
     RenderCase("drain.body", _render_drain_body),
     RenderCase("drain.sender", _render_drain_sender),
     RenderCase("drain.thread", _render_drain_thread),
@@ -4268,3 +4312,539 @@ class TestDrainAndAckAtTheDispatcher:
             )
         assert "refs" in str(excinfo.value)
         assert message_ledger.db.messages == {}
+
+
+# =========================================================================== #
+# PACKET 03b — THE SERVED SHAPES (design rulings S4.1 / S4.2 / S5 in
+# docs/plans/v2/03b-comms-surface-design-rulings.md, which are BINDING and
+# VERBATIM: a builder must not improvise any of them).
+#
+# The committed 03a contract pinned the send/drain/ack renders only through (a)
+# the promise-registry emit/no-emit proofs and (b) the hostile injection
+# battery. Neither can see SHAPE: which cell wins, what number the re-ask
+# carries, whether a peek nags. Those are this section's pins.
+# =========================================================================== #
+
+
+def _drain_line_containing(rendered: str, fragment: str) -> str:
+    """The ONE rendered line containing ``fragment``, or a loud failure.
+
+    Trailer assertions must be made against the TRAILER LINE, never against the
+    whole block: ``"82" not in rendered`` would also be satisfied by a build that
+    dropped the row itself, so a whole-block assertion cannot tell "the trailer
+    excluded the acked seq" from "the drain served nothing". Failing loudly on a
+    missing/duplicated line keeps a vacuous pass impossible."""
+    matches = [line for line in rendered.splitlines() if fragment in line]
+    assert len(matches) == 1, (
+        f"expected EXACTLY one line containing {fragment!r}, found {len(matches)}: {rendered!r}"
+    )
+    return matches[0]
+
+
+class TestSendThreadInjectionCaseIsNotVACUOUS:
+    """AUTHORIZED AMENDMENT R7's companion — the discrimination check the
+    ``brief_publish.session`` case needed and did not have until #96's adversary
+    wrote its docstring by hand.
+
+    A ``RenderCase`` whose field never reaches the render is DECORATION: it
+    drives the whole threat-char corpus through a string that is thrown away and
+    reports green forever. This pin asserts the value really is served, so
+    ``send.thread``'s battery coverage is a CHECKED fact."""
+
+    async def test_the_send_render_actually_emits_the_thread_value(self) -> None:
+        rendered = await _render_send_thread("q:cap-boundary", None)
+        assert "q:cap-boundary" in rendered, (
+            "the send.thread RenderCase never reaches the render — the injection battery is "
+            f"driving a value the output discards, i.e. testing nothing: {rendered!r}"
+        )
+
+    async def test_and_it_is_the_QUESTION_line_that_carries_it(self) -> None:
+        """Non-vacuity with the MECHANISM named: the thread must arrive via
+        S4.1's question line, not via some other incidental echo — otherwise the
+        case would keep passing after the question line was dropped."""
+        with_question = await _render_send_thread("q:cap-boundary", None)
+        without = AppContext._render_comms_send(
+            _send_result(message=_message(thread="q:cap-boundary", question=False)),
+            broadcast=False,
+            session="wave7",
+        )
+        assert "q:cap-boundary" not in str(without), (
+            "the send render emits the thread even when the message is NOT a question — the "
+            "R7 injection case is then not testing S4.1's line, and the question line's own "
+            f"emit/no-emit proof is weaker than it looks: {without!r}"
+        )
+        assert "q:cap-boundary" in with_question
+
+
+class TestRenderCommsSendShape:
+    """S4.1 — the send confirmation."""
+
+    _QUESTION_CLAUSE = "awaiting an answer on thread"
+    _DIRECTIVE_CLAUSE = "recipients must ack"
+
+    @pytest.mark.parametrize("question", [True, False])
+    @pytest.mark.parametrize("grade", ["signal", "directive"])
+    async def test_the_question_teach_and_the_ack_trailer_are_ORTHOGONAL(
+        self, question: bool, grade: str
+    ) -> None:
+        """THE ∀-PIN over the whole 2x2 product (the QUANTIFIER LAW: pin the
+        outcome property for EVERY input and FORCE each fate with a fixture).
+
+        ``question`` and ``grade`` are orthogonal by design — a signal can ask, a
+        directive need not (03a2 / adversary W1). The committed directive-trailer
+        proof holds ``question`` fixed and the new question-line proof holds
+        ``grade`` fixed, so each is a single-variable discrimination and NEITHER
+        can see a build that CORRELATES them. This can: a build emitting the
+        question line only for signals, or the ack trailer only for non-questions,
+        fails one of these four cells and only these four."""
+        rendered = str(
+            AppContext._render_comms_send(
+                _send_result(message=_message(grade=grade, question=question)),
+                broadcast=False,
+                session="wave7",
+            )
+        )
+        assert (self._QUESTION_CLAUSE in rendered) is question, (
+            f"the question-teach line must be emitted IFF message.question (S4.1: TYPED "
+            f"applicability, never a set_status string compare) — grade={grade!r} must not "
+            f"move it: {rendered!r}"
+        )
+        assert (self._DIRECTIVE_CLAUSE in rendered) is (grade == "directive"), (
+            f"the ack trailer must be emitted IFF grade == 'directive' — question={question!r} "
+            f"must not move it: {rendered!r}"
+        )
+
+    async def test_the_question_line_names_the_MESSAGES_thread_not_the_session(self) -> None:
+        """The value slot, discriminated. ``thread`` defaults TO the session at
+        send, so a fixture where they are equal cannot tell a build that
+        interpolates ``session`` from one that interpolates ``thread`` — the
+        arithmetic-alignment class, in string form. Here they DIFFER."""
+        rendered = str(
+            AppContext._render_comms_send(
+                _send_result(message=_message(thread="q:cap-boundary", question=True)),
+                broadcast=False,
+                session="wave7",
+            )
+        )
+        line = _drain_line_containing(rendered, self._QUESTION_CLAUSE)
+        assert "q:cap-boundary" in line, (
+            f"the question line must name the MESSAGE's thread — the debt is thread-scoped "
+            f"(03a2-R5: one thread carries one open question): {line!r}"
+        )
+        assert "wave7" not in line, (
+            f"the question line named the SESSION where the THREAD belongs — an agent told to "
+            f"watch the wrong thread is told to watch the wrong debt: {line!r}"
+        )
+
+    async def test_the_recipient_list_shares_ONE_display_cap_with_the_coverage_surface(
+        self,
+    ) -> None:
+        """S4.1: the recipient list is capped at the SHARED ``_COVERAGE_NAMES_CAP``
+        — ONE display-cap policy, not a second constant. Derived from the
+        constant, never hardcoded, so changing it re-derives this fixture instead
+        of silently unbinding the branch (the ``_P7A``/``_P7B`` discipline)."""
+        names = [f"agent-{index:02d}" for index in range(_COVERAGE_NAMES_CAP + 2)]
+        rendered = str(
+            AppContext._render_comms_send(
+                _send_result(message=_message(question=False), recipient_names=names),
+                broadcast=False,
+                session="wave7",
+            )
+        )
+        shown = [name for name in names if name in rendered]
+        assert len(shown) == _COVERAGE_NAMES_CAP, (
+            f"the send receipt showed {len(shown)} of {len(names)} recipients — the shared "
+            f"display cap is {_COVERAGE_NAMES_CAP}: {rendered!r}"
+        )
+        assert f"(+{len(names) - _COVERAGE_NAMES_CAP} more)" in rendered, (
+            f"the over-cap variant must carry the TRUE remainder "
+            f"({len(names) - _COVERAGE_NAMES_CAP}), not a window-relative one: {rendered!r}"
+        )
+
+    async def test_an_AT_CAP_recipient_list_does_not_claim_a_remainder(self) -> None:
+        """The boundary the over-cap pin cannot see (cap vs cap+1 — the fixture
+        scale no comms contract had written before #96). A build using ``>=``
+        where ``>`` belongs renders ``(+0 more)`` here and nowhere else."""
+        names = [f"agent-{index:02d}" for index in range(_COVERAGE_NAMES_CAP)]
+        rendered = str(
+            AppContext._render_comms_send(
+                _send_result(message=_message(question=False), recipient_names=names),
+                broadcast=False,
+                session="wave7",
+            )
+        )
+        assert "more)" not in rendered, rendered
+        assert all(name in rendered for name in names), rendered
+
+
+class TestRenderCommsDrainShape:
+    """S4.2 — the drain block: header, rows, trailers, elision.
+
+    ⚠ ESCALATION RECORDED IN THE INSTRUMENT (contract author, 2026-07-24; see
+    REPORT-contract-surface-03b.md §Escalations). S4.2 rules the context cell's
+    precedence as ``task_id present -> ' (task {task_id})'; else thread != session
+    -> ' (thread {thread})'; else empty``. The THIRD branch needs the SESSION, and
+    neither the ruled signature ``_render_comms_drain(result, *, agent_name,
+    limit)`` — which the COMMITTED drivers in this file and in
+    test_comms_promise_registry.py already pin by calling it — nor
+    ``MessageDrainResult``/``InboxEntry`` carries one. The two branches that ARE
+    determinable are pinned below, together with the SINGULARITY property; the
+    ``thread == session -> empty`` branch is UNPINNED pending an operator/design
+    ruling and MUST NOT be improvised by a builder."""
+
+    _ACK_REQUIRED = "ACK REQUIRED"
+    _ALREADY_ACKED = "ALREADY ACKED"
+    _ELISION = "more unread"
+
+    @staticmethod
+    def _render(
+        entries: list[Any],
+        *,
+        total_pending: int | None = None,
+        peeked: bool = False,
+        limit: int = 20,
+    ) -> str:
+        return str(
+            AppContext._render_comms_drain(
+                _drain_result(entries=entries, total_pending=total_pending, peeked=peeked),
+                agent_name="fixer-b",
+                limit=limit,
+            )
+        )
+
+    # -- AUTHORIZED AMENDMENT R3: the acked_at monoculture, closed -------------
+
+    async def test_an_ACKED_directive_row_draws_NO_ack_demand(self) -> None:
+        """AUTHORIZED AMENDMENT R3 (operator 2026-07-24) — THE LIVE FALSE GATE.
+
+        The committed emit/no-emit proof for ``ACK REQUIRED`` varies only the
+        GRADE and leaves ``acked_at=None`` on BOTH legs: an ``acked_at``
+        MONOCULTURE. A build keying the trailer on ``grade == 'directive'`` ALONE
+        — ignoring ``acked_at is None`` — passes both committed legs with the
+        defect fully intact, and then re-nags every directive the agent has
+        already discharged. That is 03a2-R6's render law clause 1 violated
+        ("ack-nudges key on ``acked_at``, NEVER on ``seen_at``; an acked directive
+        never re-nags"), enforced here on 03b's OWN surface rather than only on
+        packet 04's footer."""
+        rendered = self._render([_inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC))])
+        assert "#82" in rendered, f"fixture check: the acked directive row must still be SERVED: {rendered!r}"
+        assert self._ACK_REQUIRED not in rendered, (
+            "an ALREADY-ACKED directive drew an ACK REQUIRED demand — the trailer is keyed on "
+            f"grade alone, which is the exact build the committed proofs cannot see: {rendered!r}"
+        )
+
+    async def test_the_ack_demand_lists_ONLY_the_UNACKED_directives(self) -> None:
+        """THE DISCRIMINATING PIN. One acked directive and one unacked directive
+        in the SAME drain: the trailer must fire (so this is not the trivially
+        satisfiable "emit nothing" build) and must name the unacked seq ONLY.
+
+        A grade-only build lists both and fails here; an "emit nothing when any
+        row is acked" build fails the presence half. Seqs are 71 and 82 — two
+        digits, no shared substring — so neither assertion can pass by accident."""
+        rendered = self._render(
+            [
+                _inbox_entry(seq=71, grade="directive", acked_at=None),
+                _inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC)),
+            ]
+        )
+        line = _drain_line_containing(rendered, self._ACK_REQUIRED)
+        assert "71" in line, f"the UNACKED directive must be demanded: {line!r}"
+        assert "82" not in line, (
+            f"an already-acked directive appears in the ACK REQUIRED demand — the trailer is "
+            f"keyed on grade alone (R3): {line!r}"
+        )
+
+    async def test_POSITIVE_CONTROL_two_unacked_directives_are_BOTH_listed(self) -> None:
+        """The control the pin above needs: with nothing acked, the trailer really
+        can carry two seqs. Without it, a build that lists only the FIRST
+        directive would pass the discrimination for the wrong reason."""
+        rendered = self._render(
+            [
+                _inbox_entry(seq=71, grade="directive", acked_at=None),
+                _inbox_entry(seq=82, grade="directive", acked_at=None),
+            ]
+        )
+        line = _drain_line_containing(rendered, self._ACK_REQUIRED)
+        assert "71" in line and "82" in line, line
+
+    # -- S4.2's ALREADY ACKED trailer -----------------------------------------
+
+    async def test_an_acked_SIGNAL_row_also_draws_the_ALREADY_ACKED_trailer(self) -> None:
+        """The trailer's predicate is ``acked_at is not None``, NOT the grade.
+
+        The registry proof for this line uses a DIRECTIVE on both legs (so its
+        single variable is ``acked_at``); this pin supplies the other value of the
+        parameter the code could branch on — repo law: "if the code can branch on
+        a value, at least one pin must use a DIFFERENT value". A build that only
+        reports already-acked DIRECTIVES passes the proof and fails here."""
+        rendered = self._render([_inbox_entry(seq=93, grade="signal", acked_at=datetime.now(UTC))])
+        line = _drain_line_containing(rendered, self._ALREADY_ACKED)
+        assert "93" in line, line
+
+    async def test_the_two_trailers_partition_the_served_rows(self) -> None:
+        """Both trailers in ONE drain, each naming only its own seqs. This is the
+        render-layer statement of 03a2-R6 clause 3: a re-served acked message is
+        self-explanatory, which was TRUE only of a model field the LLM consumer
+        never sees until this line existed (DESIGN-LAW §1.6)."""
+        rendered = self._render(
+            [
+                _inbox_entry(seq=71, grade="directive", acked_at=None),
+                _inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC)),
+            ]
+        )
+        demanded = _drain_line_containing(rendered, self._ACK_REQUIRED)
+        settled = _drain_line_containing(rendered, self._ALREADY_ACKED)
+        assert "71" in demanded and "82" not in demanded, demanded
+        assert "82" in settled and "71" not in settled, settled
+
+    async def test_no_ALREADY_ACKED_trailer_when_nothing_is_acked(self) -> None:
+        rendered = self._render([_inbox_entry(seq=71, grade="directive", acked_at=None)])
+        assert self._ALREADY_ACKED not in rendered, rendered
+
+    # -- S4.2's elision arithmetic --------------------------------------------
+
+    async def test_the_elision_re_ask_is_the_REMAINDER_not_the_running_total(self) -> None:
+        """S4.2, pinned WITH THE CONTRAST NAMED: ``next_limit = more``, NOT
+        fleet's ``shown + more``.
+
+        Fleet's window re-serves from the top, so its honest re-ask is the running
+        total. A drain STAMPS what it serves, so stamped rows never come back and
+        the honest re-ask is the REMAINDER. A builder copying
+        ``_render_comms_fleet``'s arithmetic ships a re-ask that asks for rows the
+        caller has already read — and the fixture is chosen so the two answers
+        differ: 2 shown of 7 pending gives more=5 and shown+more=7."""
+        rendered = self._render(
+            [_inbox_entry(seq=61), _inbox_entry(seq=62)], total_pending=7, limit=2
+        )
+        line = _drain_line_containing(rendered, self._ELISION)
+        assert "+5" in line, f"the elided count must be total_pending - shown = 5: {line!r}"
+        assert "limit=5" in line, (
+            f"the re-ask must name the REMAINDER (5), not fleet's shown+more (7) — a drain "
+            f"stamps what it serves, so the elided rows are all that is left: {line!r}"
+        )
+        assert "limit=7" not in line, line
+        assert "limit=2" not in line, f"the re-ask must not merely echo the caller's limit: {line!r}"
+
+    async def test_no_elision_line_when_the_window_covered_everything(self) -> None:
+        rendered = self._render([_inbox_entry(seq=61), _inbox_entry(seq=62)], total_pending=2, limit=2)
+        assert self._ELISION not in rendered, rendered
+
+    # -- S4.2's peek rule (binding) -------------------------------------------
+
+    async def test_a_PEEK_serves_no_ack_demand(self) -> None:
+        """S4.2 (binding): trailers and the elision render on STAMPING drains
+        ONLY. A peek is look-don't-consume; an ack demand on a peek MANUFACTURES
+        the peek->ack anomaly 03a2-R6's render law exists to contain (the agent
+        acks what it never had served, and the row then re-serves)."""
+        entries = [_inbox_entry(seq=71, grade="directive", acked_at=None)]
+        assert self._ACK_REQUIRED not in self._render(entries, peeked=True)
+        assert self._ACK_REQUIRED in self._render(entries, peeked=False), (
+            "POSITIVE CONTROL FAILED: the trailer does not fire on the STAMPING drain either, "
+            "so the peek assertion above passes for the wrong reason"
+        )
+
+    async def test_a_PEEK_serves_no_ALREADY_ACKED_trailer(self) -> None:
+        entries = [_inbox_entry(seq=82, grade="directive", acked_at=datetime.now(UTC))]
+        assert self._ALREADY_ACKED not in self._render(entries, peeked=True)
+        assert self._ALREADY_ACKED in self._render(entries, peeked=False), "POSITIVE CONTROL FAILED"
+
+    async def test_a_PEEK_serves_no_elision_line(self) -> None:
+        entries = [_inbox_entry(seq=61), _inbox_entry(seq=62)]
+        assert self._ELISION not in self._render(entries, total_pending=7, limit=2, peeked=True), (
+            "a peek rendered the elision re-ask — its own header already discloses 'shown of "
+            "total', and the re-ask would teach a re-run that stamps what the caller asked NOT "
+            "to stamp"
+        )
+        assert self._ELISION in self._render(entries, total_pending=7, limit=2, peeked=False), (
+            "POSITIVE CONTROL FAILED"
+        )
+
+    async def test_a_PEEK_still_serves_its_header_and_rows(self) -> None:
+        """The discrimination that stops "a peek renders nothing" from passing the
+        three pins above: header + rows are exactly what a peek DOES serve."""
+        rendered = self._render([_inbox_entry(seq=71, grade="directive")], peeked=True)
+        assert "#71" in rendered, rendered
+        assert "nothing stamped" in rendered, rendered
+
+    # -- S4.2's context cell ---------------------------------------------------
+
+    async def test_the_context_cell_prefers_the_TASK_over_the_thread(self) -> None:
+        """S4.2: the cell is SINGULAR with ``task_id`` first. The fixture supplies
+        BOTH a task and a non-session thread — a fixture with only one of them
+        cannot see a build that renders both cells, or one that picks the wrong
+        winner."""
+        rendered = self._render([_inbox_entry(seq=71, task_id="T-9", thread="q:cap-boundary")])
+        row = _drain_line_containing(rendered, "#71")
+        assert "T-9" in row, f"the task cell must win when task_id is present: {row!r}"
+        assert "q:cap-boundary" not in row, (
+            f"the context cell is SINGULAR — a row carrying both cells doubles the row's "
+            f"vocabulary and is not the ruled shape: {row!r}"
+        )
+
+    async def test_the_context_cell_falls_back_to_the_THREAD(self) -> None:
+        rendered = self._render([_inbox_entry(seq=71, task_id=None, thread="q:cap-boundary")])
+        row = _drain_line_containing(rendered, "#71")
+        assert "q:cap-boundary" in row, row
+
+
+class TestTheDrainSurfaceConvergesOnAnAckedButUndrainedMessage:
+    """03a2-R6's convergence, at the SURFACE (inherited delta row 8).
+
+    ``seen_at`` and ``acked_at`` are independent write-once facts: seen = served
+    by a stamping drain, acked = actioned by the recipient, and neither implies
+    the other IN THE STORE (implications belong to renders). The consumer-visible
+    consequence — an acked-but-never-drained message is still counted pending and
+    IS served once more — was ruled coherent, transient, and in the safe
+    direction, **on the condition that the render explains itself**. This drives
+    the whole path through the REAL dispatcher and pins all four halves of that
+    condition: served, labelled, counted, converged.
+
+    ⚠ SCOPE NOTE (contract author): the LEDGER-level ``[fake]``/``[real]`` legs of
+    inherited delta row 8 belong in ``test_message_ledger.py``, which 03b's
+    authorization freezes except for two mypy fixes. Flagged to the lead."""
+
+    @staticmethod
+    async def _ready() -> tuple[Any, Any]:
+        registry = FakeAgentRegistry(db=FakeAgentDatabase())
+        message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
+        harness = _harness(agent_registry=registry, message_ledger=message_ledger)
+        for name in ("lead", "fixer-b"):
+            await registry.register(name, session="wave7", role="builder")
+            agent = await registry.get_agent(name, session="wave7")
+            message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+        return harness, message_ledger
+
+    async def test_an_acked_but_undrained_directive_is_served_labelled_counted_then_converges(
+        self,
+    ) -> None:
+        harness, message_ledger = await self._ready()
+        await AppContext.comms(
+            harness,
+            action="send",
+            agent="lead",
+            session="wave7",
+            to=["fixer-b"],
+            body="ack me without draining me",
+            grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+        )
+        [message] = list(message_ledger.db.messages.values())
+        # Ack from out-of-band seq knowledge — the ONLY path into the anomaly.
+        await AppContext.comms(
+            harness, action="ack", agent="fixer-b", session="wave7", seqs=[message.seq]
+        )
+        assert all(edge.seen_at is None for edge in message_ledger.db.edges.values()), (
+            "fixture check: ack must NOT stamp seen_at (03a2-R6) — without that the anomaly "
+            "this pin exists for is unreachable and the whole test is decoration"
+        )
+
+        first = str(await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7"))
+        assert f"#{message.seq}" in first, (
+            f"the acked-but-unseen message was NOT served — the queue count would then be "
+            f"lying about what a drain serves (03a2-R6 clause 2): {first!r}"
+        )
+        assert "of 1 pending" in first, (
+            f"the acked row must be COUNTED in total_pending — counts key on seen_at and must "
+            f"AGREE with what the drain then serves: {first!r}"
+        )
+        assert "ALREADY ACKED" in first, (
+            "the re-served acked row carries no render-layer explanation — 03a2-R6 clause 3 "
+            f"was true only of a model field the LLM consumer never sees: {first!r}"
+        )
+        assert "ACK REQUIRED" not in first, (
+            f"a message the agent has ALREADY acked was nagged for an ack: {first!r}"
+        )
+
+        second = str(await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7"))
+        assert f"#{message.seq}" not in second, (
+            f"the anomaly did not CONVERGE — the first drain must stamp seen_at, so the row "
+            f"is served exactly once more and never again: {second!r}"
+        )
+        assert "no unread messages" in second, second
+
+
+class TestTheServedInstructionsTeachCommsMechanismsThatEXIST:
+    """S5 — the instructions block, which is where an LLM consumer LEARNS the
+    comms contract (DESIGN-LAW §1.5: strategy -> read-once instructions).
+
+    Generalises ``TestTheFirstVersionLineTeachesAnAckMechanismThatACTUALLYEXISTS``
+    from one clause to a ∀-pin: prose describing behaviour must be DERIVED from
+    the behaviour, never re-stated beside it (#104). A retired or misspelled verb
+    in served teaching goes RED mechanically."""
+
+    @staticmethod
+    def _action_tokens(text: str) -> set[str]:
+        """Every ``action=<verb>`` token, including the ``a/b/c`` slash form the
+        block uses to teach a family in one breath."""
+        return {
+            verb
+            for group in re.findall(r"action=([a-z_]+(?:/[a-z_]+)*)", text)
+            for verb in group.split("/")
+        }
+
+    @staticmethod
+    def _comms_paragraph() -> str:
+        paragraphs = [
+            paragraph
+            for paragraph in _INSTRUCTIONS.split("\n\n")
+            if paragraph.startswith("COMMS:")
+        ]
+        assert len(paragraphs) == 1, (
+            "the served instructions must carry exactly ONE 'COMMS:' paragraph (S5) — the "
+            f"message verbs are taught nowhere else: {_INSTRUCTIONS!r}"
+        )
+        return paragraphs[0]
+
+    def test_every_served_action_token_names_an_action_that_EXISTS(self) -> None:
+        """THE ∀-PIN, over the WHOLE block and DERIVED from the dispatch tables —
+        never a hand-list of verbs, which would rot the moment a table changed."""
+        existing = set(_COMMS_ACTIONS) | set(_TASK_ACTIONS) | set(_FINDING_ACTIONS)
+        served = self._action_tokens(_INSTRUCTIONS)
+        assert served, "the instructions block teaches no action at all — the scan found nothing"
+        unknown = sorted(served - existing)
+        assert not unknown, (
+            "the served instructions teach an action=<verb> that NO dispatch table declares — "
+            "an agent following it gets a teaching error instead of the mechanism it was "
+            f"promised (#104's class, in the one text every agent reads): {unknown!r}"
+        )
+
+    def test_the_comms_paragraph_teaches_ONLY_comms_actions(self) -> None:
+        """The scoped half. The global pin above accepts any real verb anywhere,
+        so it cannot see ``lore_comms action=rollup`` — a real verb attributed to
+        the wrong tool. This paragraph names ONE tool, so its verbs must be that
+        tool's."""
+        paragraph = self._comms_paragraph()
+        tools = set(re.findall(r"lore_[a-z_]+", paragraph))
+        assert tools == {"lore_comms"}, (
+            "the COMMS paragraph names a tool other than lore_comms, so the scoping premise "
+            f"of this pin no longer holds — re-derive it before trusting it: {sorted(tools)!r}"
+        )
+        stray = sorted(self._action_tokens(paragraph) - set(_COMMS_ACTIONS))
+        assert not stray, (
+            f"the COMMS paragraph attributes a non-comms verb to lore_comms: {stray!r}"
+        )
+
+    def test_the_comms_paragraph_teaches_the_three_verbs_this_packet_ships(self) -> None:
+        """COVERAGE AS A CHECKED VARIABLE: the two pins above are both satisfied by
+        a paragraph that teaches NOTHING. 03b puts the message graph on the wire;
+        an agent that never learns ``send``/``drain``/``ack`` cannot use it."""
+        taught = self._action_tokens(self._comms_paragraph())
+        assert {"send", "drain", "ack"} <= taught, sorted(taught)
+
+    def test_the_thread_debt_rule_is_TAUGHT_not_merely_implemented(self) -> None:
+        """S5 + 03a2-R5. Thread-debt was ruled KEEP: one answer discharges a
+        THREAD's whole debt, and the partial-reply failure mode is recoverable
+        ONLY by an asker who knows the rule. The send-time thread scan was
+        REFUSED (a hot-path cost for a teaching job), so this static text is the
+        ONLY place the consumer can learn it — an unlearnable protocol is an
+        unfollowed one."""
+        assert "separate questions take separate threads" in _INSTRUCTIONS, (
+            "03a2-R5's one-thread-one-debt rule is not taught in the served instructions, and "
+            "the send-time thread scan that would otherwise catch it was REFUSED"
+        )
+
+    def test_the_self_answer_rule_is_TAUGHT_too(self) -> None:
+        """03a2-R2's fourth conjunct, in the consumer's language. With
+        ``sender != me`` there is NO self-service clearing of a question — an
+        agent that does not know this waits for a state change its own sends can
+        never produce."""
+        assert "your own sends never clear" in _INSTRUCTIONS.lower(), _INSTRUCTIONS
