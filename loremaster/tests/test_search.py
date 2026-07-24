@@ -168,10 +168,14 @@ _BIDI_ZERO_WIDTH_AND_SEPARATOR_CHARS = (
 # discriminating nonsense from real queries — §1.2) in favour of a PRE-FUSION
 # cosine substrate + gated absence verdict. ADOPTED 2026-07-06 (search.py's
 # own comment above ``_COSINE_SUBSTRATE_ENABLED`` carries the measured
-# receipts): production now ships LIT by default. This module's own tests
-# exercise BOTH the lit production default AND the explicitly-forced-dark
-# path via ``monkeypatch`` on the module's gate constants (never re-declared
-# here; the whole POINT is that the module owns them).
+# receipts). PARTLY DISARMED 2026-07-24 (packet 10-d): production ships the
+# SUBSTRATE lit and the weak-match FLOOR at ``None``, so the per-hit
+# judgement and the aggregate verdict are both dark pending per-instance
+# calibration (#176/#179/#180). Most classes below ``monkeypatch`` their own
+# floor to keep the LIT machinery under regression coverage for 11-ii; the
+# SHIPPED state is pinned — patch-free, which is the point — by
+# ``TestWeakMatchDisarmedAtTheProductionDefault``. The gate constants are
+# never re-declared here; the whole POINT is that the module owns them.
 _WEAK_MATCH_MARKER = "weak match"
 _ABSENCE_VERDICT_MARKER = "no confident match"
 
@@ -1637,16 +1641,21 @@ def _score_candidate(
 class TestCosineWeakMatchDark:
     """The dark code path still works when EXPLICITLY forced dark.
 
-    Pre-adoption, dark was the PRODUCTION DEFAULT (this class used to test
-    that with no monkeypatching at all). Post-adoption (2026-07-06 survey
-    re-run: D1 passes, D2 floor=0.5828, false-fire 4.0%, nonsense catch
-    100% — see the constants' own comment in search.py), the production
-    default is LIT, so these tests now explicitly monkeypatch back to the
-    dark gate values to keep the disable path under regression coverage (an
-    operator forcing ``_COSINE_SUBSTRATE_ENABLED=False`` /
-    ``_COSINE_WEAK_MATCH_FLOOR=None`` — e.g. a rollback — must still get
-    zero substrate line, zero per-hit flag, zero aggregate verdict,
-    regardless of how low a candidate's ``vector_cosine`` is).
+    These tests keep the EXPLICIT forcing under coverage: an operator (or a
+    packet) setting ``_COSINE_SUBSTRATE_ENABLED=False`` /
+    ``_COSINE_WEAK_MATCH_FLOOR=None`` must get zero substrate line, zero
+    per-hit flag and zero aggregate verdict, regardless of how low a
+    candidate's ``vector_cosine`` is.
+
+    History, because the monkeypatching here reads oddly without it: dark was
+    the production default pre-adoption (this class then patched nothing);
+    the 2026-07-06 survey re-run lit both gates, at which point the patches
+    were added; packet 10-d (2026-07-24) then darkened the FLOOR again on
+    every instance — so the floor patches below now re-assert what the module
+    already ships, while the ``_COSINE_SUBSTRATE_ENABLED=False`` patch still
+    forces a genuinely non-default state. What the SHIPPED constants do is
+    pinned patch-free by ``TestWeakMatchDisarmedAtTheProductionDefault``;
+    this class must never be read as evidence about them.
     """
 
     async def _pipeline(
@@ -2377,7 +2386,13 @@ class TestApplyCosineFloorDriftCheck:
 
         assert status.state == "disabled"
         assert status.floor is None
-        assert status.note is None
+        # Packet 10-d: the disabled branch stopped serving a null note —
+        # disabled-by-config and disarmed-pending-calibration are different
+        # conditions and must not share a rendering (finding #4). The note's
+        # CONTENT is pinned by
+        # TestWeakMatchDisarmedAtTheProductionDefault; here it only has to be
+        # the module's one string rather than an ad-hoc second copy.
+        assert status.note == search_module._COSINE_FLOOR_DISARMED_NOTE
         assert search_module._cosine_floor_runtime_state.disarmed_by_drift is False
 
     def test_recomputes_fresh_every_call_not_a_one_way_latch(
@@ -2486,6 +2501,153 @@ class TestCosineAbsenceVerdictDisarmedByDrift:
 
         notices = [r for r in results if r.kind == _NOTICE_KIND]
         assert any(_ABSENCE_VERDICT_MARKER in n.formatted for n in notices)
+
+
+class TestWeakMatchDisarmedAtTheProductionDefault:
+    """Packet 10-d (2026-07-24): the weak-match CONFIDENCE surfaces are dark at
+
+    the PRODUCTION DEFAULT — deliberately NO ``monkeypatch`` of
+    ``_COSINE_WEAK_MATCH_FLOOR`` anywhere in this class, because the shipped
+    value of that constant IS the thing under test. Every OTHER cosine class
+    in this file patches its own floor, so a flip of the production constant
+    is invisible to all of them; this class is the only pin that sees it.
+
+    Ruled by ``docs/design/2026-07-24-floor-calibration.md`` Addendum E1 and
+    executed by ``docs/plans/v2/10-d-weak-match-disarm.md``. The judgement was
+    confident-wrong three source-verified ways: it compares live cosines
+    against a floor measured in a retired embedding space (#176), ships an
+    unmeasured constant to every foreign instance (#179), and applies a
+    best-of-response floor to every individual hit (#180).
+
+    What must stay ON is pinned here just as hard as what goes dark: the
+    per-hit cosine SUBSTRATE line is claim-free and D1-gated, so darkening it
+    too would be over-correcting, and the stamp constant is 11-i's provenance.
+    """
+
+    async def _pipeline(
+        self, tmp_path: Path, embedder: FakeEmbedder, candidates: list[Candidate]
+    ) -> SearchPipeline:
+        indexed, server = await _index_single(tmp_path, embedder, files={})
+        store = _FixedCandidatesStore(dim=embedder.dim, db=indexed.db, candidates=candidates)
+        return _make_pipeline(indexed=indexed, embedder=embedder, server=server, store=store)
+
+    @pytest.fixture(autouse=True)
+    def _reset_drift_state(self) -> Any:
+        search_module._reset_cosine_floor_drift_state_for_tests()
+        yield
+        search_module._reset_cosine_floor_drift_state_for_tests()
+
+    def test_the_shipped_floor_is_none(self) -> None:
+        assert search_module._COSINE_WEAK_MATCH_FLOOR is None, (
+            "packet 10-d: the shipped floor is the DISARMED state (None) until "
+            "11-ii arms it from the instance's own measurement"
+        )
+
+    def test_the_measurement_stamp_survives_the_disarm(self) -> None:
+        # Scope IN, explicitly: the stamp is 11-i's provenance for what 0.50649
+        # was, and 11-ii owns its retirement. A build that "cleaned up" the
+        # stamp alongside the floor has destroyed the historical record.
+        stamp = search_module._COSINE_WEAK_MATCH_FLOOR_STAMP
+        assert stamp is not None
+        assert stamp.floor == 0.50649
+        assert stamp.measured_file_count == 214
+
+    async def test_no_per_hit_weak_flag_however_low_the_cosine(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        far_below_any_floor = _score_candidate("k1", 0.03, vector_cosine=0.05)
+        pipeline = await self._pipeline(tmp_path, embedder, [far_below_any_floor])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert _WEAK_MATCH_MARKER not in hits[0].formatted
+
+    async def test_the_substrate_line_still_renders(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # The disarm must not over-correct: a raw magnitude with no judgement
+        # attached is not a confident-wrong claim, and it is the ONLY thing
+        # left for a reader to weigh the hit by. Same fixture as the weak-flag
+        # pin above, so the two together discriminate "surface disarmed" from
+        # "cosine machinery removed".
+        far_below_any_floor = _score_candidate("k1", 0.03, vector_cosine=0.05)
+        pipeline = await self._pipeline(tmp_path, embedder, [far_below_any_floor])
+
+        results = await pipeline.search_code("anything", k=5)
+
+        hits = [r for r in results if r.kind == _HIT_KIND]
+        assert "sim 0.05" in hits[0].formatted
+
+    async def test_no_aggregate_absence_verdict_even_when_every_condition_holds(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # The exact fixture shape TestCosineAbsenceVerdictLit uses to PROVE the
+        # verdict fires (all hits weak, no verbatim identifier anchor) — with
+        # the shipped floor it must produce no claim at all.
+        weak_a = _score_candidate(
+            "k1", 0.03, vector_cosine=0.05, file_path="pkg/a.py",
+            identity="pkg.a.weak_fn", ident_text="weak_fn",
+        )
+        weak_b = _score_candidate(
+            "k2", 0.02, vector_cosine=0.04, file_path="pkg/b.py",
+            identity="pkg.b.other_fn", ident_text="other_fn",
+        )
+        pipeline = await self._pipeline(tmp_path, embedder, [weak_a, weak_b])
+
+        results = await pipeline.search_code("something unrelated", k=5)
+
+        notices = [r for r in results if r.kind == _NOTICE_KIND]
+        assert not any(_ABSENCE_VERDICT_MARKER in n.formatted for n in notices)
+
+    def test_the_disabled_state_serves_the_disarm_note_not_a_null(self) -> None:
+        # Finding #4's lesson: disabled-BY-CONFIG and disarmed-PENDING-
+        # CALIBRATION are different conditions and must not share a rendering.
+        # A null note renders as "this surface was simply never turned on",
+        # which is a different (and, today, false) fact about the instance.
+        status = search_module.apply_cosine_floor_drift_check(
+            current_file_count=214, current_embedding_schema_fingerprint="a" * 64
+        )
+
+        assert status.state == "disabled"
+        assert status.floor is None
+        assert status.note == search_module._COSINE_FLOOR_DISARMED_NOTE
+
+    def test_the_disarm_note_admits_the_condition_and_names_the_next_move(self) -> None:
+        # §C5 family (a) shape: the failure is admitted loudly, the findings
+        # that caused it are citable, the packets that resolve it are named,
+        # and what STILL serves is stated so a reader does not conclude the
+        # whole cosine surface went away. A bland "disabled" string passes
+        # every other pin in this class and fails this one.
+        note = search_module._COSINE_FLOOR_DISARMED_NOTE
+        assert "disarmed" in note
+        for citation in ("#83", "#176", "#179", "#180", "11-i", "11-ii"):
+            assert citation in note, f"the disarm note must cite {citation}"
+        assert "substrate remains served" in note
+
+    def test_the_disarm_note_is_not_the_drift_note(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Positive control for the pin above: with a REAL floor restored, the
+        # same function's stale branch must still serve its own re-measure
+        # note. Proves the disarm note landed on the disabled branch
+        # specifically, not on every branch (a build that returned the disarm
+        # string unconditionally would pass the disabled-state pin alone).
+        stamp = search_module.CosineFloorMeasurement(
+            floor=0.5828, measured_file_count=200,
+            measured_embedding_schema_fingerprint="a" * 64,
+        )
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR", 0.5828)
+        monkeypatch.setattr(search_module, "_COSINE_WEAK_MATCH_FLOOR_STAMP", stamp)
+
+        stale = search_module.apply_cosine_floor_drift_check(
+            current_file_count=999, current_embedding_schema_fingerprint="a" * 64
+        )
+
+        assert stale.state == "stale"
+        assert stale.note is not None
+        assert "re-measure needed" in stale.note
+        assert stale.note != search_module._COSINE_FLOOR_DISARMED_NOTE
 
 
 class TestRetiredFusedFloorIsGone:

@@ -186,8 +186,10 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 07a | store-error-honesty: RECOVERY + DEGRADATION (#164 reconnect-on-bounce, #128; #126/#127 adjudication) | — | L ∥ | 0.20 | 07 rec. (same seam) | open |
 | 08 | astroid-shadow (#24; containerfile roles → 37) | PKT-08 | L ∥ | 0.15 | — | open |
 | 09 | surface-residues (#15, #64, #80, #82, #84–#86, #88, #92, docs truth) | PKT-03 | L ∥ | 0.20 | — | open |
-| 10 | floor-calibration-design (#83, #87) | PKT-01 | L | 0.15 | — | open |
-| 11 | floor-calibration-build | PKT-02 | L | 0.25 | 10 ruled | open |
+| 10 | floor-calibration-design (#83, #87, #161, #179) | PKT-01 | L | 0.15 | — | **design DONE 2026-07-24; F3 → client consult** |
+| 10-d | **weak-match DISARM** (#176/#179/#180 — confidence surfaces dark NOW; trust doctrine, Addendum E1) | — | L | 0.05 | — (independent) | **open — ships FIRST** |
+| 11-i | floor-calibration: DARK MACHINERY (engine + store + in-container runner + R2 lab validation; serving untouched, no deploy) | PKT-02 | L | 0.20 | 10 ruled | open |
+| 11-ii | floor-calibration: CUTOVER (chokepoint wiring + serving swap + retirement sweep; resolves #83/#87/#161/#179) | PKT-02 | L | 0.15 | 11-i landed | open |
 | 11a | embedding-reconciliation CONTRACT (#171 FULLY-RULED design ⊃ #168/#169, adopts #170) | — | L | 0.20 | — (design ruled) | open |
 | 11b | embedding-reconciliation BUILD (reconciler + resolve extraction + #170 hash; `rebuild_all` retires, hard-cutover rename) | — | L | 0.25 →split if 11a measures over | 11a ruled | open |
 | 12 | detection-contract (#10, #11, #27; rides 11b's extracted resolve seam) | PKT-04 | L | 0.15 | 11b rec. | open |
@@ -889,3 +891,31 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   close at `0941aab` (verified 160F/1205P/12s trusted RED · mypy 36/0-prod · ruff clean); corpus tagged
   `pkt03b-tainted-corpus`; reports struck-bannered. Re-run: blind design re-derivation → clean contract
   phase (authors never build references; the adversary builds + re-grades every wave) → client acceptance.
+- 2026-07-24 · **PACKET 10 DESIGN DONE + PACKET 10-d BUILT, AUDITED & MERGED (not deployed).** Operator
+  ruled the architecture (floor in SurrealDB; container detects staleness, container fixes it,
+  new floor stored — no outside caller) and delegated the detail forks to the design sidecar.
+  Design `docs/design/2026-07-24-floor-calibration.md` (R1–R8 + Addenda A–E): staleness is now a
+  MEASURED quantity (fresh floor's CI disjoint from the adopted one's) — the inherited 10% churn
+  threshold is DELETED, not re-tuned; one disjointness test governs adoption, per-tier upgrade and
+  #180's per-hit floor. F1/F2/F4/F5/F6 decided-by-delegation; **F3 re-routed from an operator fork
+  to a CLIENT CONSULT** (the 2026-07-06 precedent already ruled weak-match signalling a client
+  question — the lead mis-routed it and the operator caught it); consult runs AFTER 11-i on R2's
+  measured divergence ("we need to measure first"). Under the new TRUST DOCTRINE the sidecar ruled
+  **DISARM NOW**: packet **10-d** darkens both confidence surfaces (`_COSINE_WEAK_MATCH_FLOOR =
+  None`) — built (`bdb7929`), cold-audited **GO** (`d5345ad`), **MERGED to this branch 2026-07-24
+  (operator-authorized, 03b agent concurring), STILL NOT DEPLOYED** — the running image continues to
+  serve the confident-wrong surfaces until a deploy ships. 10-d's deploy is intended to RIDE 03b's
+  rather than force a second hazardous lore-lore recreate (#165/#166). ⚠ `smoke_p8b` check 8 asserts
+  `cosine_floor.state == "disabled"` and is therefore **RED against the currently-deployed image BY
+  DESIGN** — it IS the deploy gate, not a defect. Packet 11 SPLIT → **11-i** (dark machinery, no deploy) / **11-ii** (cutover + a §C5
+  consumer battery as ruled acceptance). ⚠ **The trap, carried into 11-ii:** the disarm MASKS #176,
+  it does not fix it — `_format_result` still has no `disarmed_by_drift` term, so arming the floor
+  re-opens it instantly. New findings: **#176** (per-hit no drift gate), **#179** (foreign-instance
+  constant), **#180** (best-of-response floor served per-hit — the basis mismatch), **#185**
+  (`scratch_copy.sh` does not git-isolate a copy made from a WORKTREE; Python provenance passes
+  while git commands hit the real worktree). #178 resolved as the lead's own duplicate of #179.
+  R3 (drift/stamp fields go dark with the floor) ADJUDICATED — accept, re-open trigger = 11-ii.
+  Also fixed in passing: the `TeammateIdle` gate could not see a worktree-assigned agent's committed
+  report (`14a987b`) — it false-nudged every packet-10 agent; a gate that refuses honest work is a
+  gate that gets switched off. Receipts: `REPORT-{fable-design-pkt10,builder-10d,audit-10d-cold}.md`
+  (to archive at close-out) + `docs/design/2026-07-24-floor-calibration.md`.
