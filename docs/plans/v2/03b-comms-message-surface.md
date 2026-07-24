@@ -346,3 +346,8 @@ Full gates + cold REFUTE audit + **contract-adversary on the surface pin groups*
 §15) + deploy BOTH (rebuild + recreate, never restart) + live-wire smoke: a
 `send → drain → ack` round-trip on the real store including a broadcast to all non-retired
 agents and a hostile body staying inside its fence. INDEX row + Log + ledger rows done.
+**DEPLOY-GATE CONDITION (added 2026-07-24, `91ea5be`):** the smoke MUST verify drain serves
+the shared skew block — the E-S5(c) amended production wording ("next heartbeat or drain")
+OVER-claims until FK-6's drain-serves-skew build lands, and is safe only because 03b ships
+as one deploy (wording-es5c-03b report §6.3). A deploy without that receipt ships a lying
+teach on the trust doctrine's own axis.
