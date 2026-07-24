@@ -1,12 +1,13 @@
 brief-base v6 read
 
 ## SUMMARY BLOCK
-- state: done — design doc written, committed on `pkt10-floor-calibration-design`; standing by for follow-ups
-- deliverable: `docs/design/2026-07-24-floor-calibration.md` (house format; §Recommendation R1–R8; six forks)
-- deviations: (1) packet-10 entry check "confirm search_score_survey.py still runs against the deployed store" NOT executed — the script's own default coordinate is `ws://127.0.0.1:18500/rpc` (production), which this brief forbids; script read end-to-end instead, stated plainly in doc §1.5. (2) No `.venv` built; nothing executed from the worktree → no `loremaster.__file__` receipt exists or is claimed.
-- decisions-needed: operator ruling on forks F1–F6 (doc §Forks; F1/F2/F4 are the load-bearing three)
-- receipt pointers: live measurement → doc §1.1 (lore_index 2026-07-24, corpus 2935, stale on FINGERPRINT leg); source receipts → doc §1.2–§1.4 (symbols: `SearchPipeline._to_result`, `_cosine_absence_verdict`, `apply_cosine_floor_drift_check`, `Indexer.index_status`); prior-art bars → doc §1.5
-- out-of-scope surfaced: items S1–S4 below (S1 is finding-worthy; your call whether I file it)
+- state: done — design doc + Addenda A/B committed on `pkt10-floor-calibration-design`; operator's 2026-07-24 architecture ruling incorporated; standing by
+- deliverable: `docs/design/2026-07-24-floor-calibration.md` — §Recommendation R1–R8 (the WHAT) + Addendum B §B7 (the build order) + §B6 (fork dispositions)
+- ruling status: F1/F2/F4/F5/F6 DECIDED BY DELEGATION (doc §B6); **F3 (verdict wording) is the one surviving operator fork**, default = unchanged iff R2 lab validation passes
+- decisions-needed: F3; and packet-11 SPLIT confirmation at kickoff (§B8 — re-estimate crosses 0.30; recommended 11-i dark machinery / 11-ii cutover)
+- deviations: (1) survey script read end-to-end, NOT executed (its default coordinate is prod :18500 — brief forbids; doc §1.5, now moot for the durable path per the ruling); (2) nothing executed from the worktree → no provenance receipt exists or is claimed
+- receipt pointers: ruling verified at the store (memory `f464cfda…`, kind=decision, re-read before citing) → doc §B0; live measurement → §1.1; source receipts → §1.2–§1.4 + A1/A2; thrash/cost story → §B2; 11a/11b composition → §B3; DDL mechanism → §B4 (capabilities §1.1–1.3/§1.5 cited); CalibrationEngine verdict → §B5
+- findings: #179 filed by me (foreign-instance per-hit surface — the ruling closes it by construction, resolution rides packet 11); #176/#177 answered in Addendum A
 
 ## Provenance (what I measured vs read vs did not run)
 - MEASURED 2026-07-24: one `lore_index()` status read against the deployed lore-lore
@@ -95,7 +96,29 @@ brief-base v6 read
   semantics); the live hazard is a MISTYPED coordinate silently materializing an empty
   ns/db on the prod endpoint. Suggest #177's row gain that one line.
 
+## UPDATE 2026-07-24 (second round — operator architecture ruling incorporated, Addendum B)
+- Ruling verified against the durable store record (memory id `f464cfda…`, kind=decision;
+  found at rank 2 on a reworded recall — my first recall query missed it in top-3,
+  retried rather than trusting the inbox alone). Verbatim matches the lead's relay; the
+  record itself additionally notes #179 closes by construction and #177's durable-path
+  retirement — both honored in the addendum.
+- Addendum B delivers the remediation half: B1 execution home (AppContext async engine
+  task at A1's chokepoints; packet-30 dependency REJECTED with reasons — wave F,
+  loresage-coupled, calibration needs no LLM); B2 thrash/cost (constant-bounded per-run
+  cost — fixed-N probes, O(probes) not O(corpus); runs only at boot/post-sweep with
+  in-flight zero; coalescing single-flight; discard→requeue-to-next-sweep as the
+  clock-free debounce; ≤1 run per sweep cycle; no cost gate, citing the #171 §13
+  precedent); B3 composition with 11a/11b (change-class keying post-11b, the #168 false
+  invalidation dies; churn counted at the ONE shared embed wrapper; pre-11b raw
+  fingerprint accepted as a bounded interim); B4 DDL per capabilities §1.1–1.3/§1.5 +
+  hot rows via `_txn.retry_on_conflict` only; B5 CalibrationEngine = sibling engine,
+  shared seams reused (findings Protocol, construction seam, closed-state discipline),
+  wholesale reuse rejected AT SOURCE (token-ratio loop vs cosine survey); B6 fork
+  dispositions; B7 build order; B8 sizing → SPLIT recommendation.
+- Numbers law held: no corpus count pinned anywhere in Addendum B; cost claims are
+  structural (fixed-N) with the adoption row named as the authority.
+
 ## Standing by
-Long-running sidecar per brief; follow-ups via SendMessage. Design doc (+ Addendum A)
+Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A+B)
 and this report are committed on `pkt10-floor-calibration-design`;
 idle-between-questions is expected.

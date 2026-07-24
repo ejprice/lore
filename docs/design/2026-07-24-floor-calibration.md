@@ -446,6 +446,10 @@ kickoff, per its header.
 
 ## Recommendation
 
+> **2026-07-24, post-ruling:** R1–R8 stand as written; Addendum B §B7 carries the
+> consolidated build ORDER a packet-11 builder executes from, and Addendum B §B6 the
+> fork dispositions. Read R1–R8 for the WHAT, B7 for the sequence.
+
 Execute as one engine, in this order:
 
 - **R1 — Portable probe sets:** identifier sampling as-is; self-supervised answered
@@ -482,6 +486,11 @@ Execute as one engine, in this order:
   that tier's floor in a follow-up packet. Until then, pooled serves everything.
 
 ## Forks awaiting operator ruling
+
+> **2026-07-24, post-ruling ("let it decide the details"):** F1/F2/F4/F5/F6 are now
+> DECIDED BY DELEGATION — dispositions with rationale in Addendum B §B6. **F3 is the
+> one surviving operator fork** (verdict wording is ruled law). The list below is
+> preserved as the record of the original option space.
 
 - **F1 — Corpus model (Q5):** pooled-first + measured per-tier conditional (R8) —
   *recommended* — vs immediate per-tier serving (packet 11 splits) vs pooled-forever.
@@ -553,3 +562,133 @@ until then, #177's entry-check hazard stands as filed.
 serving lore-calibrated per-hit judgements with no validity claim on the host corpus).
 R6/R7 + F4 are its closure path; packet 11 resolves it alongside #83/#87/#161 — its
 resolution note should record that the constant's retirement, not any count, closed it.
+
+---
+
+## Addendum B (2026-07-24, later same day — the operator's architecture ruling: the remediation half)
+
+**B0 — The ruling, and what it changes here.** Operator, 2026-07-24, relayed by the
+packet lead and recorded durably in lore memory (id `f464cfda-f871-5149-8c95-4bbf443960a8`,
+kind=decision — re-read from the store before writing this addendum, not from the
+inbox): the floor is **store state in SurrealDB**; staleness ⇒ **recalculation**
+(disarm-and-wait is dead; frequent staleness on an active codebase is the NORMAL
+LOOP); the whole detect → re-measure → write loop runs **in-container** — no outside
+caller, no host toolchain, no operator-run script in the durable path (the #166
+architectural shape); the high-level design stands, details delegated. Points 1–2
+were already this design's R6/R4 (the 2026-07-07 binding spec required automatic
+re-measure); Addendum A1 already owns the DETECTION half. What this addendum adds:
+the in-container REMEDIATION mechanics, the thrash/cost story "often stale" demands,
+and the fork dispositions the delegation authorizes.
+
+**B1 — Execution home: an AppContext-owned async engine task. Packet 30 dependency
+REJECTED.** The loop runs in the server process each container already runs: trigger
+evaluation at A1's chokepoints (boot, post-sync, post-sweep, adoption); the
+re-measure itself is an asyncio background task owned by the app context — the
+CalibrationEngine boot-probe precedent, extended from boot-only to chokepoint-driven.
+Everything the runner needs is already in-process: the store handle, the query-embed
+seam the search path uses, the production predicate. Packet 30's enrichment worker
+was considered as the execution home and rejected: it is wave F, depends on packet
+29, and is loresage-coupled — calibration needs no LLM, and chaining packet 11 behind
+wave F buys nothing. No new dependency.
+
+**B2 — Thrash bounds and cost (the "often" failure mode, addressed head-on).**
+- *Per-run cost is CONSTANT-BOUNDED, not corpus-proportional.* Probe counts are
+  fixed-N by design (R3 minimums; per-tier stratified reporting allocates from the
+  same fixed budget) → order tens of query embeds + k′-deep searches + one write
+  txn, independent of corpus size. Contrast: the 11a/11b reconciler's re-embed costs
+  ARE corpus-proportional, and the operator ruled NO cost gate even there (#171 §13:
+  "reconciles run unattended") — a constant-cost loop needs none a fortiori. Each
+  adoption row records embeds + wall-clock; the row, not this paragraph, is the
+  authority on cost.
+- *Rate is structurally capped.* Chokepoint EVALUATIONS are cheap comparisons and run
+  every time; RUNS launch only at boot / post-sweep with in-flight zero. Single-flight
+  with coalescing: N triggers during a run set one re-run flag, never a queue of N. A
+  run whose end snapshot disagrees with its start snapshot is discarded and re-queued
+  to the NEXT post-sweep completion — a clock-free debounce that defers to the
+  system's own settling signal instead of burning discarded surveys in a tight loop.
+  Net bound: ≤1 run per sweep cycle per instance; in steady state, one run per
+  tolerance-crossing of churn.
+
+**B3 — Composition with 11a/11b (#168 → #171): the two loops must not fight.**
+- *Post-11b, leg 1 keys on the reconciler's CHANGE CLASS, not the raw fingerprint*:
+  vector-identity change → floor invalid, re-measure queued for after the reconcile
+  completes; chunk-boundary change → flows through leg 2 as ACTUAL re-embed counts;
+  additive chunker-map change (#168's `.xyz` case) → zero re-embeds → zero churn →
+  **no re-measure**. The #168 false-invalidation class dies for the floor exactly as
+  it dies for embeddings.
+- *The churn cursor counts chunk re-embed commits at the ONE shared embed wrapper*
+  (#169/11a already route every embed through it) — hook that seam, never a parallel
+  counter (ONE IMPLEMENTATION).
+- *Pre-11b interim:* packet 11 may ship keying leg 1 on the raw fingerprint; an
+  additive chunker change then over-fires exactly one constant-cost survey —
+  accepted, bounded, self-correcting when 11b lands. No hard dependency in either
+  direction; if 11a/11b land first, build the change-class keying directly.
+
+**B4 — Store schema + migration mechanism (required read honored:
+`docs/reference/surrealdb-31-capabilities.md`, esp. §1.1–§1.3, §1.5, §5 — cited,
+never re-transcribed).** A NEW table for floor calibration: `DEFINE TABLE IF NOT
+EXISTS` + every field `DEFINE FIELD OVERWRITE` per the §1.1 decision rule; `ALTER`
+is the documented trap (§1.3); any index rides `IF NOT EXISTS`, never `OVERWRITE`
+(§1.5). Rows are **append-only measurements** (each run writes a new row — history
+carries the F6 tuning data and takes no field-migration pressure) plus one minted
+head pointer per scope. The head mint and the single-flight lease are hot rows →
+`_txn.retry_on_conflict` is the ONE driver (DESIGN-LAW §5; #102/#120 receipts); a
+private retry loop of any shape is the defect those findings exist to remove.
+Multi-statement DDL rides the per-statement-checked `_txn` path, never bare
+`query()` (the statement[0]-only validation gotcha).
+
+**B5 — CalibrationEngine: sibling engine, shared seams; wholesale reuse REJECTED at
+source.** `calibration/engine.py`'s measurement loop is inseparable from token-ratio
+mechanics — its measurement compares token-weighted live totals against a SHIPPED
+baseline corpus, and its state set assumes a committed constant to scale. A cosine
+survey shares none of that mechanism; forcing it through the same loop would be
+routing-not-sharing. What IS shared, reused not cloned: (a) the findings seam
+Protocol (`has_open_drift_finding` / `report_drift_finding` — deduped filing; reuse
+as-is for `measurement_failed` rows); (b) the `from_engine_status` construction-seam
+pattern for the render model; (c) the closed-distinct-state discipline (#4's lesson)
+with the exact-set pin. If the build uncovers a further genuinely-shared policy
+(e.g. probe-task lifecycle), extract a helper both engines call — escalate, never
+copy (repo law).
+
+**B6 — Fork dispositions under "let it decide the details."**
+- **F1 — DECIDED:** pooled-first + pre-registered per-tier upgrade (R8).
+- **F2 — DECIDED:** proceed without #160; the design is #160-outcome-invariant (§2).
+- **F4 — DECIDED as specced:** the aggregate verdict is disarmed whenever state ≠
+  `measured` — including the whole remediation window (A1's unevaluated ⇒ disarmed
+  holds there: a running remediation is `measuring`/`stale_remeasuring`, both ≠
+  `measured`). The per-hit flag is DARK under vector-identity staleness (old-space
+  comparison is meaningless — §1.2's live receipt) and LIVE-on-the-old-floor under
+  churn staleness until adoption swaps it. The substrate never disarms.
+- **F5 — DECIDED:** hold-out absents + the config hook; re-opens only if R2's lab
+  validation fails its catch leg.
+- **F6 — DECIDED as the default:** churn tolerance 10% inherited, with the named
+  re-tune point (10 automatic adoptions or 3 months; operator reviews the
+  floor-delta-vs-churn history the rows accumulate).
+- **F3 — remains the ONE operator fork:** verdict wording is ruled law. Default:
+  wording unchanged iff R2's lab validation passes.
+
+**B7 — Consolidated build order for packet 11** (the sequence a builder executes;
+scope is R1–R8 + Addenda A/B, nothing new):
+1. **Engine + store:** floor-calibration engine module (B5 seams), schema per B4,
+   append-only rows + head mint via `retry_on_conflict`.
+2. **Portable runner, in-container (R1/R3):** fixed-N stratified probes, answered +
+   hold-out legs, identity-pinned predicate/bars/dominance rule.
+3. **Chokepoint wiring (A1 + B1/B2):** boot/post-sync/post-sweep/adoption
+   evaluation; single-flight, coalescing, discard-requeue; `lore_index` becomes a
+   pure read of engine state.
+4. **Serving cutover (R6/R7 + B6-F4):** constants retire; verdict + per-hit gates
+   read engine state at the serving seam; the §7 state table with its exact-set
+   distinctness pin; #87 render fixes (R5).
+5. **Lab validation on lore's instance (R2):** an in-container one-shot verb; the
+   legacy script survives only as a dev harness (#177: the durable path no longer
+   runs it at all — the script's own coordinate fix stays #177's).
+6. **Retirement sweep** per repo rename law; #83/#87/#161/#179 resolution notes
+   (the mechanism, never a count, is what closes each).
+
+**B8 — Packet 11 sizing re-check: SPLIT recommended.** The earlier "~0.25 wu fits"
+predates the now-explicit in-container remediation mechanics (engine-task lifecycle,
+single-flight/coalescing/discard-requeue, churn counting at the shared seam,
+head-mint concurrency). Honest re-estimate crosses the 0.30 line in packet 11's own
+header. Recommended split at kickoff: **11-i "dark machinery"** (B7 steps 1–2 + the
+R2 lab validation; serving untouched; independently landable and auditable) and
+**11-ii "cutover"** (B7 steps 3–4 + 6; deploy both + smoke).
