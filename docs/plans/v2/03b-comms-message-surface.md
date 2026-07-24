@@ -105,6 +105,36 @@ restore). The contract-adversary's P2 fixture-perturbation confirms the fix wave
    (`ledger: Any`). **Building the surface will not pay them.** They need this authorized fix, or
    03b misses the global mypy-zero it owns.
 
+### Amendments 7–9 — AUTHORIZED 2026-07-24 (found BY the contract wave, same standing terms)
+7. **D1 — THE COMMITTED CONTRACT REWARDED THE WRONG BUILD.** `_PROOF_LIST`'s fleet-elision marker
+   `"— re-run with limit=5"` is a value-bearing but **line-INCOMPLETE** marker. Under S4.2's ruled and
+   CORRECT drain arithmetic (`next_limit = more`), the drain fixture renders
+   `+5 more unread — re-run with limit=5` — **containing the fleet marker verbatim** — so the
+   cross-satisfaction pin fires. **MEASURED against a reference build:** correct arithmetic → **2 failed**;
+   fleet's `shown + more` (the dishonest re-ask) → **2 passed**. A builder implementing S4.2 correctly was
+   PUNISHED and one cloning fleet's arithmetic REWARDED. This is the "spec/contract prescribes the bug"
+   class (PKT-28 C1 §5.1) live in the committed contract, invisible only because `_render_comms_drain`
+   does not exist yet. **FIX = the ROOT CAUSE:** promote the marker to the full rendered line
+   (`+3 more — re-run with limit=5`). Renumbering the drain fixture was REJECTED — it conceals the weak
+   marker and the collision returns the next time two fixtures' arithmetic aligns.
+8. **D5 — the default that CAUSED R3.** `_p03_entry`'s `acked_at=None` default is what made the committed
+   proofs an `acked_at` monoculture. Amendment 3 added the discriminating pin; this removes the cause.
+   Four call sites gain `acked_at=None` explicitly. (Repo law already bans defaulting a branched-on
+   parameter — this is that law applied to the fixture that proved it.)
+9. **D6 — the `test_message_ledger.py` freeze is WIDENED** so 03b owns inherited 03a-2 delta row 8's
+   `[fake]`/`[real]` LEDGER legs for R5/R6, which were otherwise UNOWNED. The dispatcher-level R6
+   convergence pin STAYS (it is the surface-layer claim, mutation-proven); the ledger legs are the layer
+   beneath it, not a replacement. The freeze widens for row 8's legs ONLY; a tenth edit still stops.
+
+**PENDING, NOT AUTHORIZED — with the design sidecar, not the lead:** **D2** (S4.2's context-cell branch 3
+needs a `session` the ruled `_render_comms_drain(result, *, agent_name, limit)` signature does not carry —
+an internal inconsistency in the sidecar's own ruling, so the sidecar resolves it; branch 3 stays
+DELIBERATELY UNPINNED with the gap in the class docstring meanwhile) and **D3** (S3 part 2's ∀-ban is
+UNSATISFIABLE as literally written — `_has_literal_text` is RED on the correct build because
+`_PROMISE_FREE` carries the `" "` join separator; a whitespace-only SEPARATOR and a placeholder-only
+TEMPLATE are different things, so `_is_placeholder_only` was substituted, with a positive control pinning
+the `" "` discrimination).
+
 ## Scope OUT
 - Everything packet 03 owns (schema, `messages.py`, concurrency, the relation-table flip).
 - **R1 — drain-row `question=true` markers: DEFERRED TO PACKET 05 by operator ruling 2026-07-24**,
