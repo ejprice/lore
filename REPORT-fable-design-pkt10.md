@@ -168,7 +168,9 @@ brief-base v6 read
   (verified at the data flow), so "the floor chasing its tail" cannot occur through
   adoption; the REAL instability was the every-Nth sampler's insertion-brittleness
   (one new identity phase-shifts the probe set wholesale) — replaced by hash-stable
-  sampling keyed on #170's sha512 (ONE IMPLEMENTATION, no second hash). Residual
+  sampling [⚠ CORRECTED sixth round: first keyed on #170's sha512, a field that DOES
+  NOT EXIST — now keyed on the existing `records.point_id`; see the sixth UPDATE and
+  doc D2's correction record]. Residual
   co-movement under massive churn is handled by a paired decomposition (fixed-ruler
   drift stat logged beside the full-pool stat).
   (b-answer) interval-vs-interval (adopt iff DISJOINT) beats point-outside-CI — it
@@ -191,7 +193,26 @@ brief-base v6 read
   ≥98% decision-agreement gate — adversary-attackable before 11-i codes them) from
   numbers that only R2 can produce. Nothing synthesised.
 
+## UPDATE 2026-07-24 (sixth round — lead-caught correction: the #170 hash was a phantom)
+- Lead's catch confirmed by my own grep: `embedding_text_sha512` exists NOWHERE in the
+  tree — #170 is the OPEN finding that no such hash is persisted; the persisted form is
+  11b's deliverable. My D2 cited it as "ONE IMPLEMENTATION" while pointing at a phantom
+  — the exact defect class the law exists to stop, in the sentence invoking the law.
+- **Resolution: the dependency is DISSOLVED, not adopted — and the design improved.**
+  Pool membership now keys on the chunk's IDENTITY key (`records.point_id`, existing
+  uuid5; every input is in the scrolled payload — `scroll` is `SELECT * OMIT embedding`,
+  verified). An identity key is strictly BETTER than any content hash for membership:
+  insertion-independent AND edit-stable (an edited chunk stays in the pool while its
+  probe refreshes — the ruler tracks its referent; a content key would re-roll
+  membership on every edit). The lead's "same bytes as 11b" nuance dissolves — the
+  membership key is not a content key at all. Content-keyed remnants (D5 cache key,
+  D4 surviving-probe test) hash the PROBE TEXT in-hand via existing `records.sha512_hex`.
+- 11-i's dependency set is unchanged: "packet 10 ruled" only. No re-sequencing needed.
+- Doc swept from the grep: the only remaining `embedding_text_sha512`/`#170` mentions in
+  the design doc are inside D2's preserved correction record. This report's UPDATE-5
+  line carries an inline correction marker rather than a silent rewrite.
+
 ## Standing by
-Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A–D)
-and this report are committed on `pkt10-floor-calibration-design`;
+Long-running sidecar per brief; follow-ups via SendMessage. Design doc (Addenda A–D,
+D2 corrected) and this report are committed on `pkt10-floor-calibration-design`;
 idle-between-questions is expected.

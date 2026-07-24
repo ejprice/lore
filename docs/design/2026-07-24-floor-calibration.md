@@ -904,11 +904,29 @@ interval — is the cardboard box this replaces.
   corpus is BRITTLE — one inserted identity shifts the every-Nth phase and can swap
   out a large fraction of the probe set in one sweep, producing a floor jump that
   reflects SAMPLING discontinuity, not distribution change. Replaced by
-  **hash-stable sampling**: a chunk joins the probe pool iff a stable content hash
-  (reuse #170's `embedding_text_sha512` — ONE IMPLEMENTATION, no second hash) falls
-  under the inclusion threshold. Membership is per-chunk and insertion-independent:
-  the pool churns only as members themselves are added/edited/removed, i.e. in
-  proportion to real corpus churn, never by phase shift.
+  **hash-stable sampling keyed on the chunk's IDENTITY, not its content**: a chunk
+  joins the probe pool iff its deterministic key — `records.point_id`, the EXISTING
+  uuid5 over (slug, tier, file_path, chunk_type, identity, sub_ordinal,
+  key_version) — falls under the inclusion threshold. Every input is in the
+  scrolled payload (`SurrealStore.scroll` is `SELECT * OMIT embedding` — verified),
+  so membership is computed at measurement time by calling the existing function;
+  uuid5 is uniform, so sampling is unbiased. An identity key is strictly BETTER
+  here than any content hash: membership is insertion-independent AND survives
+  edits — an edited chunk STAYS in the pool while its probe text and embedding
+  refresh (the ruler tracking its referent), so the pool churns only on chunk
+  add/remove, never by phase shift and never by the re-rolled dice a content-keyed
+  membership would throw on every edit. The content-keyed pieces that remain
+  (the D5 cache key; D4's surviving-probe test) hash the PROBE TEXT in-hand via
+  the existing `records.sha512_hex` helper.
+  ⚠ *Correction, preserved rather than laundered (lead-caught, 2026-07-24):* this
+  bullet first shipped keying membership on *"#170's `embedding_text_sha512`"* —
+  **a store field that does not exist in the tree** (#170 is the OPEN finding that
+  no such hash is persisted; its persisted form is 11b's deliverable). As written
+  it would have made 11-i depend on 11b. The fix above DISSOLVES the dependency
+  rather than declaring it: 11-i still depends only on "packet 10 ruled," no bytes
+  need agree with 11b's future field because the membership key is not a content
+  key at all, and ONE IMPLEMENTATION is honored through the existing
+  `point_id`/`sha512_hex` functions instead of a phantom.
 - *The N rule:* R2 embeds the full derivable-text pool once, then measures the
   **N-noise curve** — bootstrap CI width of the floor as a function of N
   (subsample at N = 50, 100, 200, 400, … up to pool size; arithmetic only, zero
@@ -962,7 +980,8 @@ range answers measure on this corpus, now." The genuine instability mechanism wa
 the sampler discontinuity, fixed in D2. Residual honesty: under MASSIVE churn the
 ruler and the measurand co-move and the fresh-vs-adopted comparison conflates the
 two — so each run also logs a **paired decomposition** (the fresh floor recomputed
-on the SURVIVING-probe subset — a fixed ruler isolating distribution movement —
+on the SURVIVING-probe subset — same `point_id` present AND unchanged probe-text
+sha via `records.sha512_hex`, i.e. a fixed ruler isolating distribution movement —
 beside the full-pool floor that adoption actually uses; arithmetic only). The
 paired stat is the clean drift diagnostic; the full stat is the honest new truth;
 divergence between them is itself a logged signal that the corpus reshaped rather
@@ -977,9 +996,10 @@ is now measured). What one run costs, cold: O(N) query embeds + O(N) k′-deep
 searches + arithmetic; **measured at R2 and recorded per row before 11-ii wires
 the loop — measure-first applied to this design's own mechanism.** Two PRICED
 CONTINGENCIES, built only if R2's measured cost demands them (YAGNI until the
-number exists): (i) a probe-embedding cache keyed on (probe-text sha, embedder
-fingerprint) — a probe whose source chunk did not change re-uses its query
-embedding, collapsing steady-state embed cost to O(changed probes) ∝ churn;
+number exists): (i) a probe-embedding cache keyed on (probe-text sha via the existing
+`records.sha512_hex`, embedder fingerprint) — a probe whose source chunk did not
+change re-uses its query embedding, collapsing steady-state embed cost to
+O(changed probes) ∝ churn;
 (ii) a scheduler throttle (every-Kth sweep or accumulate-M-changed-chunks) as an
 F6-tunable residual — a COST knob, never a staleness definition. If measured cost
 exceeds what a sweep cycle absorbs even with (i), that is reported as a limit, not
