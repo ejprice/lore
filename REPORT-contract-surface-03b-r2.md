@@ -927,3 +927,95 @@ All three new B5 pins RED for the right reason (`AttributeError: … no attribut
 **Fix wave 2 is complete: RG1 · RG2 · RG3 · the MP-D5 claim correction · the B5 fold.** Nothing
 is held on my side. The carried-forward items in §G.8 are unchanged and all sit outside my
 writable set or await a design ruling.
+
+---
+
+# FIX WAVE 3 — the closing items (`c163b8d`, CL1 ruled)
+
+*Appended 2026-07-24 by contract-surface-03b-r2. Four items; writable set expanded to
+`test_comms_wiring.py` for RG5 only.*
+
+## H.1 Fresh tails
+
+```
+test_comms_tool.py               283F/557P  ->  283 failed, 559 passed   (842 collected)
+test_comms_promise_registry.py                   15 failed, 101 passed   (117 collected)
+test_message_ledger.py                          196 passed, 14 skipped   (210 collected)
+test_comms_wiring.py              29 passed  ->    1 failed, 28 passed   (RG5, newly RED)
+
+uv run ruff check .        All checks passed!
+./scripts/typecheck.sh     Found 109 errors in 3 files  (was 108/2 — the third file is
+                           test_comms_wiring.py's forward reference to ctx.message_ledger)
+neighbours                 693 passed, 0 failed
+```
+
+## H.2 CL1 (WB45) — the verb-less contradicting paragraph
+
+`test_the_comms_block_is_the_ONLY_paragraph_claiming_a_comms_DUTY`. RG2's equality pin is scoped
+by a selector keyed on `action=<verb>`, so a paragraph naming no verb is invisible to it, and a
+freshly-worded one is invisible to the denylist too — **WB40 relocated by two newlines**, 1206/1206
+green. ALLOWLIST THE SAFE one level up from RG2: the forbidden set (every sentence anyone might
+add anywhere) is unbounded; the safe set is ONE paragraph.
+
+**The vocabulary was MEASURED before adoption, not chosen:** of the 7 shipped `_INSTRUCTIONS`
+paragraphs, **zero** match any of `inbox · ack · drain · seq · thread · directive · unread` as
+whole words, while WB45's paragraph matches two (`inbox`, `seq`). Whole-word matching is
+load-bearing — a bare `"ack"` substring fires on `brief_ack` in the MEMORY paragraph and would
+have reddened the correct build. That is how this pin avoided being the fifth C-DEF.
+
+**It carries a positive control, and it needs one more than most.** The pin passes on today's
+tree for a trivial reason (no comms-duty paragraph exists yet); its non-vacuity currently rests
+on the sibling equality pin being RED, and a future reader could delete that sibling and leave
+this one passing blind. So the detector is proven directly against WB45's exact text, **plus the
+other direction** — the vocabulary must not fire on the server's unrelated teaching prose, or the
+instrument becomes a false positive on honest code and gets switched off.
+
+**Named re-open trigger** (in the docstring): a later packet needing a second comms-duty
+paragraph — 04's `_comms_footer` and 05's await/story both touch this block — must extend the
+ruled block or extend the allowlist *deliberately*. It cannot happen by accident, and the pin is
+where the next author meets the decision.
+
+## H.3 C6.1 — the invented sentence order
+
+Fixed by **reordering, not by documenting**: `_ruled_comms_block(cap)` splices clause 4 (the body
+cap) at B9's own index 3 instead of appending it last. The first exact-block pin fixed an order
+B9 does not state — **a contract inventing a requirement is the same class as prose inventing a
+behaviour, just quieter**, and a docstring line would have preserved the invention while
+apologising for it.
+
+## H.4 C6.2 / RG3 — the refs remainder gets its OWN route
+
+`"+{} more"` is now classified in `_SAFE_STR_PROMISE_FREE` as *"counted-remainder label for a
+capped IN-ROW list (the drain row's refs cell)"* — B8.1 registry growth, additive, promise-free.
+
+**This corrects my own fix-wave-2 decision.** I chose "name the fleet template in the docstring"
+over "classify a label", reasoning that a second near-identical template was the duplicate-policy
+defect. That was wrong on the facts: the fleet line renders as its own LINE while the fixture
+reads a value inside the row cell, so it was not the same policy wearing two names — it was
+another family's leftover, and I was using documentation to stand in for a missing
+classification. The docstring now points at the row's own route and says so.
+
+## H.5 RG5 (C6.4) — `test_aclose_closes_the_message_ledger_connection`
+
+Added to `test_comms_wiring.py::TestAppContextAcloseClosesCommsLedgers`, whose docstring already
+promised "BOTH new ledgers" — 03b adds a third and nothing reddened when a build left it open,
+because every dispatcher pin in the surface contract runs against a `SimpleNamespace` double that
+owns no connection at all. Written to the **same idiom as its two siblings** rather than a
+cleverer parametrized form: the three are read together, and the one that looks different is the
+one a future reader assumes is special. RED for the right reason: `AttributeError: 'AppContext'
+object has no attribute 'message_ledger'`.
+
+## H.6 Obligations added
+
+| id | break | must go RED |
+|---|---|---|
+| **MP-CL1** | append a duty-claiming paragraph naming no action verb (WB45) | `test_the_comms_block_is_the_ONLY_paragraph_claiming_a_comms_DUTY` |
+| **MP-RG5** | omit `message_ledger` from `AppContext.aclose` | `test_aclose_closes_the_message_ledger_connection` |
+
+## H.7 Still carried forward — none of it mine to close
+
+P14 / `PLR0912` + `PLC0206` (two post-lint refactors the adversary's reference needed and the
+contract does not describe — still a property to INVENT, still the design owner's) · RG4/P15's
+true `[fake]`/`[real]` parity leg · §C6.8 the C1-semantics doc corpse (one supersession line) ·
+§C6.9 `test_surreal_harness.py`, still unverified by anyone · §C6.5/§C6.6 the two mitigated
+residuals (`_p03_entry`'s default, the value-free elision marker), both with dying wrong builds.

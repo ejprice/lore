@@ -2123,6 +2123,22 @@ def _scan_safe_str_source_unclassifiable(source: str) -> list[str]:
 _SAFE_STR_PROMISE_FREE: dict[str, str] = {
     # --- packet 03: send / drain / ack -------------------------------------
     "#{}": "label (the seq sigil on a drain row and in an ack receipt list)",
+    # RG3 / C6.2 (closing re-grade §C6.2) — the refs-remainder gets its OWN
+    # classification route. Before this, the ONLY classified way to render the
+    # counted remainder TestTheDrainRefsCellIsCappedAndCounted demands was the
+    # fleet family's "+{more} more beyond the display cap ({cap})" line, which
+    # the adversary reached only while proving satisfiability and which nearly
+    # became a fourth C-DEF: every obvious route (a safe_str f-string, a
+    # render_join part, a fresh template, a " +" separator) is UNCLASSIFIED and
+    # dies with no hint that the answer lives in another render family.
+    # This is B8.1 registry GROWTH — additive, promise-free (a counted label
+    # promises no mechanism), and it keeps the drain row's own vocabulary in the
+    # drain row's own entries rather than borrowing a neighbour's leftover.
+    "+{} more": (
+        "counted-remainder label for a capped IN-ROW list (the drain row's refs cell) — a "
+        "count, not a promise; the re-ask it does NOT make is deliberate, since refs are "
+        "pointers the reader follows directly rather than re-fetching through a verb"
+    ),
     " (thread {})": "label (drain row context cell — the thread variant)",
     " (task {})": "label (drain row context cell — the task-anchored variant)",
     "{} (unbriefed)": "behind-entry acked-version label (unbriefed agent)",

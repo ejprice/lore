@@ -433,6 +433,29 @@ class TestAppContextAcloseClosesCommsLedgers:
             "afterwards is a leak"
         )
 
+    async def test_aclose_closes_the_message_ledger_connection(self, tmp_path: Path) -> None:
+        """RG5 / closing re-grade §C6.4 — packet 03b's THIRD comms ledger.
+
+        This class's docstring already states the posture ("BOTH new ledgers");
+        03b adds a third, and nothing reddened when a build left it open — the
+        surface contract cannot see it, because every dispatcher pin there runs
+        against a ``SimpleNamespace`` double that owns no connection at all.
+        A leaked SurrealDB socket per app context is the same defect the two
+        pins above exist to prevent, one ledger over.
+
+        Deliberately written to the SAME idiom as its two siblings rather than a
+        cleverer parametrized form: these three pins are read together, and the
+        one that looks different is the one a future reader assumes is special.
+        """
+        context = await _open_context(tmp_path=tmp_path)
+        ledger = context.message_ledger
+        assert ledger._connection is not None, "sanity: ensure_ready must have opened it"  # noqa: SLF001
+        await context.aclose()
+        assert ledger._connection is None, (  # noqa: SLF001 - the closure signal
+            "aclose() must close the message ledger's connection — a live socket "
+            "afterwards is a leak"
+        )
+
 
 class TestCommsReachesTheRealLedgersNotAFake:
     """``AppContext.comms(...)`` must write through the SAME ledger instances
