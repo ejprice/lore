@@ -189,7 +189,7 @@ proof + hostile fixture + injection case where a caller-controlled field enters)
   send render → **a `send.thread` RenderCase is MANDATORY** in the injection battery (the
   committed battery has only `send.recipients`/`send.sender`).
 
-### S4.2 `drain` (`_render_comms_drain(result, *, agent_name, limit, session)` — signature AMENDED 2026-07-24, D2)
+### S4.2 `drain` (`_render_comms_drain(result, *, session)` — signature AMENDED 2026-07-24 twice: D2 added `session`; R5/m4 DROPPED `agent_name` and `limit` as dead params — see S8)
 Composed top-to-bottom: header · rows · trailers · elision. All lines joined as `Rendered`.
 - **Header** (committed): stamping drain → `drained {shown} of {total} pending`; peek →
   `peeked {shown} of {total} pending — nothing stamped; re-run without peek=true to mark them
@@ -588,6 +588,27 @@ class); and the join already derives it at ANALYSIS time, labelled, with the bin
 caveats attached. Spec sentence, binding: *`trace.session` is an explicit-fact column —
 populated iff the call itself carried the fleet session; `NONE` means the call declared
 nothing.*
+
+**R5/m4 — `_render_comms_drain`'s `agent_name` and `limit` are GENUINELY VESTIGIAL: outcome 2,
+DROP BOTH (2026-07-24).** Verified against the classified vocabulary, not just reasoned: the
+only drain-family template consuming a limit-shaped slot is the elision — and this doc's own
+`next_limit == more == total_pending − len(entries)` ruling made it ENTIRELY result-derived
+(the LEDGER owns `limit`: it bounds the read and stamps; the render only reports what `result`
+returned — even the emit predicate, `total_pending > shown`, needs no `limit`). **`limit`'s
+death in the render is a CONSEQUENCE of the next_limit ruling** — the moment drain's re-ask
+stopped being fleet's `shown + more` (fleet re-serves its rows; drain's stamped rows never
+re-serve), the render's last use of the param died, and the adversary found the corpse this
+doc created but did not remove. `agent_name` never had a consumer: no drain-family template
+carries `{name}` — the row template is `{sender}→you` with a LITERAL second person, a
+deliberate design choice now stated so nobody "helpfully" re-adds a name echo (the reader IS
+the recipient; a name echo adds zero information). **CONTRAST, so the drop is not
+over-generalised: `_render_comms_ack` KEEPS `agent_name`** — it is load-bearing there
+(`not addressed to you: {seqs} — these messages carry no delivery to {name}`). Final
+signature: `_render_comms_drain(result, *, session)` — `result` carries everything the render
+reports; `session` is the one context input `result` does not carry (the D2 branch comparand).
+Dead ruled params are the prose-vs-behaviour class at the signature layer — a param nothing
+reads teaches the builder it matters; the dropped signature IS the pin (passing them is a
+`TypeError`). Driver amendments mechanical under standing authority.
 
 **Store-reference routing rule (for the author's new probed SurrealQL fact — the lead lands
 it):** if the vendor documents the OPPOSITE of the probed behaviour → §6 (a new numbered
