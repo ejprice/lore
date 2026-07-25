@@ -7,6 +7,11 @@ description = "Orchestration layer: MCP server backed by SurrealDB for the lore 
 dependencies = [
     "lorescribe",
     "loresigil",
+    # DIRECT, not inherited: the trace seam shields its emission with
+    # ``anyio.CancelScope(shield=True)``. anyio arrives transitively via mcp, but
+    # production code that IMPORTS a package declares it — a transitive pin is
+    # somebody else's promise to keep.
+    "anyio>=4.5",
     "mcp[cli]>=1.27",
     "watchdog>=6.0",
     "pydantic>=2.13",
