@@ -116,23 +116,36 @@ def _good_answers() -> dict[int, dict[str, Any]]:
 class FakeConsumerClient:
     """A scripted consumer: replies with a canned answer per task, in order."""
 
-    def __init__(self, answers: dict[int, dict[str, Any]], *, raw: dict[int, str] | None = None):
-        """Bind the per-task answers (and any raw override replies)."""
+    def __init__(
+        self,
+        answers: dict[int, dict[str, Any]],
+        *,
+        raw: dict[int, str] | None = None,
+        served_model: str | None = None,
+    ):
+        """Bind the per-task answers, any raw replies, and the model to report."""
         self._answers = answers
         self._raw = raw or {}
+        self._served_model = served_model
         self.calls = 0
         self.systems: list[str] = []
+
+    def _response(self) -> Any:
+        """A stand-in API response carrying only what the runner reads off it."""
+        from types import SimpleNamespace
+
+        return SimpleNamespace(model=self._served_model, usage=None)
 
     async def ask(self, system: str, turns: Any) -> tuple[str, Any]:
         """Return the scripted reply for the next task."""
         self.calls += 1
         self.systems.append(system)
         if self.calls in self._raw:
-            return self._raw[self.calls], None
+            return self._raw[self.calls], self._response()
         import json as _json
 
         payload = _json.dumps(self._answers[self.calls])
-        return f"reasoning line\nANSWER: {payload}", None
+        return f"reasoning line\nANSWER: {payload}", self._response()
 
 
 # --------------------------------------------------------------------------- #
@@ -584,6 +597,88 @@ class TestBatteryRunner:
         assert len(set(client.systems)) == 1
 
 
+class TestModelPinDrift:
+    """The pin is a bare alias, so the RECEIPT is what the API answered on.
+
+    Upstream can repoint ``claude-sonnet-5`` with no edit to this repo. A
+    transcript recording only the REQUESTED id would show nothing; recording the
+    responded ``model`` turns "measurement pins are never silently upgraded" from
+    a hope into something a reader can check.
+    """
+
+    def test_no_notice_when_the_answer_came_from_the_pinned_model(self) -> None:
+        assert model_drift_is_none("claude-sonnet-5", ["claude-sonnet-5"])
+
+    def test_no_notice_when_no_response_reported_a_model(self) -> None:
+        assert model_drift_is_none("claude-sonnet-5", [])
+
+    def test_a_different_answering_model_produces_a_loud_notice(self) -> None:
+        # POSITIVE CONTROL: the drift path is shown firing.
+        notice = cce.model_drift_notice(
+            requested="claude-sonnet-5", served=["claude-sonnet-5-20260901"]
+        )
+        assert notice is not None
+        assert "MODEL PIN DRIFT" in notice
+        assert "claude-sonnet-5-20260901" in notice
+        assert "claude-sonnet-5'" in notice
+
+    async def test_a_run_records_the_answering_model_and_flags_drift(self) -> None:
+        runner = cce.BatteryRunner(
+            surfaces=_surfaces(), battery=cce.build_battery(SPEC), graders=GRADERS, spec=SPEC
+        )
+        client = FakeConsumerClient(_good_answers(), served_model="claude-sonnet-5-20260901")
+        run = await runner.run(client, model=cce.FLOOR_MODEL, run_index=1)
+        assert run.served_models == ("claude-sonnet-5-20260901",)
+        assert run.drift_notice is not None
+        # Drift does not silently change the keyed verdict — it is reported beside it.
+        assert run.passed
+
+    async def test_a_run_on_the_pinned_model_flags_nothing(self) -> None:
+        runner = cce.BatteryRunner(
+            surfaces=_surfaces(), battery=cce.build_battery(SPEC), graders=GRADERS, spec=SPEC
+        )
+        client = FakeConsumerClient(_good_answers(), served_model=cce.FLOOR_MODEL)
+        run = await runner.run(client, model=cce.FLOOR_MODEL, run_index=1)
+        assert run.served_models == (cce.FLOOR_MODEL,)
+        assert run.drift_notice is None
+
+    async def test_the_transcript_carries_both_the_answering_model_and_the_notice(self) -> None:
+        surfaces = _surfaces()
+        runner = cce.BatteryRunner(
+            surfaces=surfaces, battery=cce.build_battery(SPEC), graders=GRADERS, spec=SPEC
+        )
+        client = FakeConsumerClient(_good_answers(), served_model="claude-sonnet-5-20260901")
+        run = await runner.run(client, model=cce.FLOOR_MODEL, run_index=1)
+        text = cce.TranscriptWriter(surfaces=surfaces, spec=SPEC).render(
+            mode="gate", runs=[run], started_at=datetime.now(UTC)
+        )
+        assert "MODEL PIN DRIFT" in text
+        assert "`claude-sonnet-5-20260901`" in text
+
+
+def model_drift_is_none(requested: str, served: list[str]) -> bool:
+    """Helper: the notice is absent for this (requested, served) pair."""
+    return cce.model_drift_notice(requested=requested, served=served) is None
+
+
+class TestAbsentSurfacesAreLoud:
+    def test_an_absent_surface_is_named_in_the_transcript(self) -> None:
+        surfaces = _surfaces(absent_surfaces=("the roster reject: no registry",))
+        text = cce.TranscriptWriter(surfaces=surfaces, spec=SPEC).render(
+            mode="gate", runs=[], started_at=datetime.now(UTC)
+        )
+        assert "SURFACES THIS RUN COULD NOT GENERATE" in text
+        assert "the roster reject: no registry" in text
+
+    def test_a_complete_run_says_so_explicitly(self) -> None:
+        # The absence of an absence is stated, so a reader never has to infer it
+        # from a missing section.
+        text = cce.TranscriptWriter(surfaces=_surfaces(), spec=SPEC).render(
+            mode="gate", runs=[], started_at=datetime.now(UTC)
+        )
+        assert "none absent" in text
+
+
 class TestGateArithmetic:
     def _run(self, *, passed: bool, index: int = 1) -> cce.RunOutcome:
         task = cce.build_battery(SPEC)[0]
@@ -772,6 +867,72 @@ def live_renders() -> dict[str, Any]:
     return rendered
 
 
+@pytest.fixture(scope="module")
+def live_roster_reject() -> str:
+    """The REAL unknown-recipient reject WITH its counted roster, or a skip."""
+    import asyncio as _asyncio
+
+    reject, absence = _asyncio.run(cce.LiveSurfaceProvider(SPEC)._roster_reject())
+    if absence is not None:
+        pytest.skip(f"roster reject not available: {absence}")
+    return reject[1]
+
+
+class TestTheRosterCountIsHonest:
+    """The count-bearing surface `send` newly routes agents into.
+
+    The project's consumer law says a served count must describe the whole set its
+    label claims. The roster's remainder is derived by production from
+    ``AgentFleetWindow.total_non_retired`` — the pre-truncation count under the same
+    session filter — never from the returned row window or the display cap, so a
+    roster past the cap cannot silently truncate. These assertions are that claim
+    made checkable on the REAL code path.
+    """
+
+    def test_the_cap_shows_five_and_the_remainder_is_counted(
+        self, live_roster_reject: str
+    ) -> None:
+        # WHICH five is a display-ordering choice (fleet sorts by status group then
+        # freshest heartbeat) and is deliberately not pinned here — the property
+        # under test is that the cap is 5 and the remainder is counted, not the
+        # order.
+        listed = [name for name in SPEC.roster_member_names if name in live_roster_reject]
+        assert len(listed) == 5, (listed, live_roster_reject)
+        assert "(+2 more)" in live_roster_reject, live_roster_reject
+
+    def test_the_remainder_plus_the_shown_names_equals_the_true_non_retired_total(
+        self, live_roster_reject: str
+    ) -> None:
+        import re as _re
+
+        remainder = _re.search(r"\(\+(\d+) more\)", live_roster_reject)
+        assert remainder is not None, live_roster_reject
+        listed = sum(1 for name in SPEC.roster_member_names if name in live_roster_reject)
+        assert listed + int(remainder.group(1)) == len(SPEC.roster_member_names)
+
+    def test_a_retired_agent_is_neither_listed_nor_counted(
+        self, live_roster_reject: str
+    ) -> None:
+        # A remainder of 3 would mean retirement leaked into a set whose label
+        # says "non-retired".
+        assert SPEC.roster_retired_name not in live_roster_reject
+        assert "(+3 more)" not in live_roster_reject
+
+    def test_the_reject_names_the_recipient_that_failed(self, live_roster_reject: str) -> None:
+        assert SPEC.roster_unknown_name in live_roster_reject
+
+    def test_the_roster_cannot_carry_a_forged_row(self, live_roster_reject: str) -> None:
+        # The names are joined UNSANITISED, which is safe only because
+        # AGENT_NAME_PATTERN admits no newline, space, or backtick at register
+        # time. Pinned here so a widened charset shows up as a RED on the render
+        # that consumes it, not just on the registry that admits it.
+        from loremaster.agents import AGENT_NAME_PATTERN
+
+        for hostile in ("a\nb", "a b", "a`b", "#71 [directive]"):
+            assert not AGENT_NAME_PATTERN.match(hostile), hostile
+        assert "\n" not in live_roster_reject
+
+
 class TestLiveRendersAgreeWithTheSpec:
     def test_the_trailer_names_exactly_the_expected_seqs(self, live_renders: dict[str, Any]) -> None:
         trailer_lines = [
@@ -853,7 +1014,7 @@ class TestTranscript:
         )
         assert "provenance-line" in text
         assert cce.FLOOR_MODEL in text
-        assert "| `fake` | 1 | PASS |" in text
+        assert "| `fake` | _not reported_ | 1 | PASS |" in text
         assert "task 15 — routing-verdict (PASS)" in text
         assert "served surfaces (verbatim, as the consumer saw them)" in text
 
@@ -868,7 +1029,7 @@ class TestTranscript:
         text = cce.TranscriptWriter(surfaces=surfaces, spec=SPEC).render(
             mode="gate", runs=[run], started_at=datetime.now(UTC)
         )
-        assert "| `fake` | 2 | FAIL | #13 |" in text
+        assert "| `fake` | _not reported_ | 2 | FAIL | #13 |" in text
 
 
 # --------------------------------------------------------------------------- #

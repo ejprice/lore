@@ -172,6 +172,19 @@ class FixtureSpec:
     # -- the peek pair ---------------------------------------------------------
     peek_seqs: tuple[int, ...] = (81, 82, 83)
 
+    # -- the roster probe (an unknown recipient's teaching reject) -------------
+    # SEVEN non-retired agents plus ONE retired: the cap shows 5, so the counted
+    # remainder must read 2 — and 7 / 5 / 2 are pairwise distinct, so a build
+    # deriving the remainder from the WINDOW (rows shown) rather than the true
+    # non-retired total is discriminable. The retired member must not be counted:
+    # a remainder of 3 would mean retirement leaked into a set whose label says
+    # "non-retired".
+    roster_member_names: tuple[str, ...] = (
+        "lead", "auditor-a", "fixer-c", "idle-d", "scribe-e", "prober-f", "runner-g",
+    )
+    roster_retired_name: str = "retired-h"
+    roster_unknown_name: str = "fixer-z"
+
     # -- the ack render --------------------------------------------------------
     ack_acked_seq: int = 71
     ack_already_seq: int = 73
@@ -286,6 +299,14 @@ class ServedSurfaces:
     ack: str
     rejects: tuple[tuple[str, str], ...]
     provenance: tuple[str, ...]
+    absent_surfaces: tuple[str, ...] = ()
+    """Surfaces this run could NOT generate, each with its reason.
+
+    Recorded so an absent fixture is LOUD — printed to stderr and carried in the
+    transcript header. A surface that quietly disappears turns a coverage gap into
+    a clean-looking transcript, which is the same lie class this instrument exists
+    to catch on the surface it grades.
+    """
 
 
 class SurfaceProvider(Protocol):
@@ -860,6 +881,91 @@ class LiveSurfaceProvider:
                 )
         return tuple(rejects)
 
+    def _agent_row(self, *, name: str, status: str) -> dict[str, Any]:
+        """One raw ``agent`` store row, shaped as the registry's mapper reads it."""
+        stamp = datetime.now(UTC) - timedelta(minutes=len(name))
+        return {
+            "id": f"agent:{name}",
+            "name": name,
+            "session": self._spec.session,
+            "role": "builder",
+            "model": None,
+            "status": status,
+            "spawned_by": None,
+            "task_id": None,
+            "checkpoint": None,
+            "last_note": None,
+            "registered_at": stamp,
+            "heartbeat_at": stamp,
+        }
+
+    async def _roster_reject(self) -> tuple[tuple[str, str], str | None]:
+        """The unknown-recipient teaching reject — WITH its counted roster.
+
+        This is the count-bearing served surface on `send`'s new path, so it is
+        generated rather than described.  Both halves are production code: the bare
+        ``UnknownAgentError`` comes from the REAL ``AgentRegistry.get_agent`` (its
+        resolve finds no row and raises), and the roster prose + the counted
+        remainder come from the REAL ``AppContext._comms_enrich_unknown_agent``
+        running over a REAL ``AgentFleetWindow`` that the REAL ``fleet()`` built.
+
+        The only stand-in is the STORE: each registry's ``_query`` is replaced with
+        a canned result, exactly as the render fixtures replace the ledger with real
+        value objects.  Everything above that seam — row mapping, retired
+        partitioning, the sort, the pre-truncation total, the cap, the remainder
+        arithmetic, and the served wording — is the code production runs.  Nothing
+        is transcribed, and no connection is opened.
+
+        Returns:
+            ``((label, text), None)`` on success, or ``(("", ""), reason)`` when the
+            probe could not be built — the caller records the reason LOUDLY rather
+            than dropping the surface silently.
+        """
+        spec = self._spec
+        try:
+            from loremaster.agents import AgentRegistry, UnknownAgentError
+        except Exception as exc:  # noqa: BLE001 - reported, never silently dropped
+            return ("", ""), f"cannot import loremaster.agents ({exc!r})"
+
+        def _registry(rows: list[dict[str, Any]]) -> Any:
+            registry = AgentRegistry(
+                url="ws://127.0.0.1:1/rpc",
+                namespace="unused-no-connection-is-opened",
+                database="unused",
+                user="unused",
+                password="unused",
+            )
+
+            async def _canned(_statement: str, _params: dict[str, Any] | None = None) -> Any:
+                return rows
+
+            registry._query = _canned  # type: ignore[method-assign]  # the store IS the stand-in
+            return registry
+
+        enrich = getattr(self._server_module().AppContext, "_comms_enrich_unknown_agent", None)
+        if enrich is None:
+            return ("", ""), "AppContext._comms_enrich_unknown_agent no longer exists"
+        roster_rows = [
+            self._agent_row(name=name, status="active") for name in spec.roster_member_names
+        ]
+        roster_rows.append(self._agent_row(name=spec.roster_retired_name, status="retired"))
+        try:
+            await _registry([]).get_agent(spec.roster_unknown_name, session=spec.session)
+        except UnknownAgentError as error:
+            enriched = await enrich(
+                SimpleNamespace(agent_registry=_registry(roster_rows)),
+                error,
+                session=spec.session,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never silently dropped
+            return ("", ""), f"the unknown-name resolve raised {exc!r}, not UnknownAgentError"
+        else:
+            return ("", ""), "resolving an unregistered name did NOT raise UnknownAgentError"
+        return (
+            f"a send to an unregistered recipient ({spec.roster_unknown_name})",
+            str(enriched),
+        ), None
+
     async def surfaces(self) -> ServedSurfaces:
         """Assemble every served surface, or fail loud."""
         teaching = await self._teaching()
@@ -872,13 +978,21 @@ class LiveSurfaceProvider:
             f"loremaster.messages: {messages_module.__file__}",
             f"config: {CONFIG_PATH}",
         )
+        rejects = list(await self._rejects())
+        absent: list[str] = []
+        roster_reject, roster_absence = await self._roster_reject()
+        if roster_absence is None:
+            rejects.append(roster_reject)
+        else:
+            absent.append(f"the unknown-recipient roster reject: {roster_absence}")
         return ServedSurfaces(
             instructions=teaching["instructions"],
             tool_description=teaching["tool_description"],
             tool_schema=teaching["tool_schema"],
             ack=self._ack(),
-            rejects=await self._rejects(),
+            rejects=tuple(rejects),
             provenance=provenance,
+            absent_surfaces=tuple(absent),
             **sends,
             **drains,
         )
@@ -1845,6 +1959,31 @@ class TaskOutcome:
     result: GradeResult
 
 
+def model_drift_notice(*, requested: str, served: Sequence[str]) -> str | None:
+    """A loud notice when the model that ANSWERED is not the model we pinned.
+
+    §C3's purpose is that a measurement pin is never silently upgraded.  A bare
+    alias (the only form the named population is published under — see
+    :data:`FLOOR_MODEL`) defeats that from UPSTREAM: the alias can be repointed
+    with no edit to this file, and a transcript pinning only the REQUESTED id
+    would not show it.  So every run records the ``model`` field the API reports
+    on each response, and any value other than the requested one is surfaced —
+    turning "no silent upgrade" from a hope into a receipt.
+
+    Returns:
+        The notice text, or ``None`` when every response came back on the
+        requested model (or when no response reported one at all).
+    """
+    unexpected = sorted({name for name in served if name and name != requested})
+    if not unexpected:
+        return None
+    return (
+        f"⚠ MODEL PIN DRIFT: requested {requested!r}, but the API answered on "
+        f"{unexpected} — the pinned alias has been repointed upstream. This run did "
+        f"NOT measure the pinned model; re-pin deliberately before treating it as a gate."
+    )
+
+
 @dataclass
 class RunOutcome:
     """One full battery run against one model."""
@@ -1853,6 +1992,13 @@ class RunOutcome:
     run_index: int
     outcomes: list[TaskOutcome]
     usage: Usage
+    served_models: tuple[str, ...] = ()
+    """The distinct ``model`` values the API reported, in first-seen order."""
+
+    @property
+    def drift_notice(self) -> str | None:
+        """The pin-drift notice for this run, or ``None``."""
+        return model_drift_notice(requested=self.model, served=self.served_models)
 
     @property
     def mandatory_failures(self) -> list[TaskOutcome]:
@@ -1895,10 +2041,14 @@ class BatteryRunner:
         turns: list[dict[str, Any]] = []
         usage = Usage()
         outcomes: list[TaskOutcome] = []
+        served_models: list[str] = []
         for task in self._battery:
             turns.append({"role": "user", "content": task.rendered_prompt()})
             reply, response = await client.ask(system, turns)
             usage.add(response)
+            served = getattr(response, "model", None)
+            if isinstance(served, str) and served not in served_models:
+                served_models.append(served)
             turns.append({"role": "assistant", "content": reply})
             try:
                 parsed: dict[str, Any] | None = AnswerParser.parse(reply)
@@ -1910,7 +2060,13 @@ class BatteryRunner:
             assert parsed is not None
             result = self._grader(task.grader_name)(parsed)
             outcomes.append(TaskOutcome(task, reply, parsed, result))
-        return RunOutcome(model=model, run_index=run_index, outcomes=outcomes, usage=usage)
+        return RunOutcome(
+            model=model,
+            run_index=run_index,
+            outcomes=outcomes,
+            usage=usage,
+            served_models=tuple(served_models),
+        )
 
 
 def gate_passed(runs: Sequence[RunOutcome], *, required: int = GATE_CONSECUTIVE_RUNS) -> bool:
@@ -1949,13 +2105,29 @@ class TranscriptWriter:
             "",
         ]
         lines.extend(f"- {item}" for item in self._surfaces.provenance)
-        lines.extend(["", "## verdicts", "", "| model | run | passed | mandatory failures | est. USD |",
-                      "|---|---|---|---|---|"])
+        if self._surfaces.absent_surfaces:
+            lines.extend(["", "### ⚠ SURFACES THIS RUN COULD NOT GENERATE", ""])
+            lines.extend(f"- {item}" for item in self._surfaces.absent_surfaces)
+        else:
+            lines.extend(["", "_every specified surface was generated; none absent._"])
+        drift = [notice for notice in (run.drift_notice for run in runs) if notice]
+        if drift:
+            lines.extend(["", "### ⚠ MODEL PIN DRIFT", ""])
+            lines.extend(f"- {notice}" for notice in drift)
+        lines.extend([
+            "",
+            "## verdicts",
+            "",
+            "| requested model | answered by | run | passed | mandatory failures | est. USD |",
+            "|---|---|---|---|---|---|",
+        ])
         for run in runs:
             failures = ", ".join(f"#{item.task.number}" for item in run.mandatory_failures) or "-"
+            answered = ", ".join(f"`{name}`" for name in run.served_models) or "_not reported_"
             lines.append(
-                f"| `{run.model}` | {run.run_index} | {'PASS' if run.passed else 'FAIL'} | "
-                f"{failures} | ${run.usage.usd(run.model):.4f} |"
+                f"| `{run.model}` | {answered} | {run.run_index} | "
+                f"{'PASS' if run.passed else 'FAIL'} | {failures} | "
+                f"${run.usage.usd(run.model):.4f} |"
             )
         total_usd = sum(run.usage.usd(run.model) for run in runs)
         lines.extend(["", f"**total estimated cost: ${total_usd:.4f}**", ""])
@@ -2065,6 +2237,8 @@ async def _amain(argv: Sequence[str] | None = None) -> int:
     surfaces = await provider.surfaces()
     battery = build_battery()
     graders = Graders()
+    for absence in surfaces.absent_surfaces:
+        print(f"⚠ ABSENT SURFACE — {absence}", file=sys.stderr)
 
     if args.dry_run:
         _print_dry_run(surfaces, battery)
@@ -2086,6 +2260,8 @@ async def _amain(argv: Sequence[str] | None = None) -> int:
         client = AnthropicConsumerClient(model)
         run = await runner.run(client, model=model, run_index=run_index)
         runs.append(run)
+        if run.drift_notice:
+            print(f"  {run.drift_notice}", file=sys.stderr)
         for item in run.mandatory_failures:
             print(
                 f"  FAIL task {item.task.number} ({item.task.slug}): {item.result.detail}",
