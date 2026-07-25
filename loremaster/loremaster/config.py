@@ -459,7 +459,7 @@ DEFAULT_COMMS_DRAIN_LIMIT: int = 20
 
 # The telemetry aggregate WINDOW, in days (DD-1.b). The `trace` table grows by one
 # row per served tool call forever, and the per-tool aggregate is read on EVERY
-# status call — so the read is windowed rather thana full-table scan, and this is the ONE
+# status call — so the read is windowed rather than a full-table scan, and this is the ONE
 # value that drives both the query's cutoff and the prose that describes it to a
 # consumer. 14 days covers any plausible "what has this instance been doing"
 # question while keeping the scan proportional to recent traffic instead of to

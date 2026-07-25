@@ -212,7 +212,7 @@ from loremaster.tasks import TaskSpec as _TaskSpec
 if TYPE_CHECKING:
     from loresigil.base import Embedder
 
-    from loremaster.agents import Agent, AgentFleetWindow, AgentRegistry, FleetRoster
+    from loremaster.agents import Agent, AgentFleetWindow, AgentRegistry
     from loremaster.briefs import (
         Brief,
         BriefAckResult,
@@ -5020,13 +5020,20 @@ class AppContext:
           exact failure this subsystem exists to remove.
         """
         session_scope = agent_row.session
-        roster = await self.agent_registry.roster(session=session_scope)
         recipients: list[_AgentRefLike]
         if to:
+            # ⚠ The roster read stays INSIDE the broadcast branch. Hoisting it
+            # made the explicit-recipient path pay a row-unlimited membership
+            # scan it never reads, so cost scaled with SESSION SIZE rather than
+            # with len(to) — a win at ten recipients and a loss at one, and one
+            # is the common shape. Naming every bad recipient at once (the
+            # property that matters) never depended on the roster: it only needs
+            # the loop to COLLECT failures instead of raising at the first.
             recipients = await AppContext._comms_resolve_recipients(
-                self, to, roster=roster, session_scope=session_scope
+                self, to, session_scope=session_scope
             )
         else:
+            roster = await self.agent_registry.roster(session=session_scope)
             recipients = [member for member in roster.members if member.id != agent_row.id]
             if not recipients:
                 # An HONEST admission, not a blame. The caller broadcast exactly
@@ -5058,27 +5065,29 @@ class AppContext:
         )
 
     async def _comms_resolve_recipients(
-        self, to: list[str], *, roster: FleetRoster, session_scope: str
+        self, to: list[str], *, session_scope: str
     ) -> list[_AgentRefLike]:
         """Resolve EVERY explicit recipient name, naming EVERY bad one at once.
 
-        Two properties, and the first is why this is not a loop over
-        ``get_agent``:
+        **THE PROPERTY: a caller with two typos is rejected ONCE, naming both.**
+        Raising on the FIRST bad name makes a three-recipient send a three-round
+        correction game, and it strands the ledger's own "name every unresolvable
+        recipient in one query" guarantee behind a surface that can never reach
+        it. The store reference refuses exactly this shape when it rejects
+        ``ENFORCED`` as a REPLACEMENT for an app-level check: one bad endpoint
+        per attempt does not name the rest.
 
-        1. **A caller with two typos is rejected ONCE, naming both.** Raising on
-           the FIRST bad name makes a three-recipient send a three-round
-           correction game, and it strands the ledger's own
-           "name every unresolvable recipient in one query" guarantee behind a
-           surface that can never reach it. The store reference refuses exactly
-           this shape when it rejects ``ENFORCED`` as a REPLACEMENT for an
-           app-level check: one bad endpoint per attempt does not name the rest.
-        2. **The happy path costs ONE store read, not N.** The session's
-           row-unlimited membership — already read for the broadcast branch —
-           resolves every live name locally; only names it does NOT contain cost
-           an individual probe, and those are precisely the ones that must be
-           CLASSIFIED (retired is a different teaching from unknown, and a
-           roster read alone cannot tell them apart because it excludes retired
-           rows).
+        **COST, stated as it actually is: one indexed point read PER RECIPIENT,
+        plus one roster-shaped read on the FAILURE path (the unknown-name
+        enrichment).** So it scales with ``len(to)`` — not with session size.
+
+        ⚠ An earlier shape resolved names against the session's full membership
+        instead, which cost two queries (one of them row-unlimited) REGARDLESS
+        of how many recipients were named: a win at ten, a loss at one, and one
+        is the common shape. It also carried a docstring claiming "ONE store
+        read, not N" while doing two. Collecting failures never depended on that
+        read — it only needs the loop below to accumulate instead of raising —
+        so the property was kept and the cost was not.
 
         Resolution is SESSION-SCOPED throughout: an unscoped lookup would make a
         cross-session delivery reachable by name collision.
@@ -5090,22 +5099,22 @@ class AppContext:
             ValueError: One or more names resolve to a RETIRED row. Retirement is
                 terminal, so such a delivery could never be drained.
         """
-        resolved: dict[str, _AgentRefLike] = {member.name: member for member in roster.members}
+        resolved: dict[str, _AgentRefLike] = {}
         unknown: list[str] = []
         retired: list[str] = []
+        # ``dict.fromkeys`` de-duplicates while preserving order, so a repeated
+        # recipient costs one read rather than two.
         for name in dict.fromkeys(to):
-            if name in resolved:
-                continue
             try:
                 row = await self.agent_registry.get_agent(name, session=session_scope)
             except _UnknownAgentError:
+                # COLLECT, never raise here — this loop is the whole reason the
+                # caller learns about all of its typos in one reject.
                 unknown.append(name)
                 continue
             if row.status == _AGENT_STATUS_RETIRED:
                 retired.append(name)
             else:
-                # Registered between the roster read and this probe. Accept it:
-                # the roster is a snapshot, not a lock.
                 resolved[name] = row
         if unknown:
             names = ", ".join(repr(name) for name in unknown)

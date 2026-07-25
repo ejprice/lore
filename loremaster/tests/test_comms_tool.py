@@ -5870,6 +5870,103 @@ class TestNoAwaitedWorkHappensAfterTheDrainStamps:
         )
 
 
+class TestTheSendsRecipientReadCostScalesWithLenToNotSessionSize:
+    """WAVE 3 / blind D6 — the cost claim, made mechanical.
+
+    An earlier shape resolved explicit recipients against the session's full
+    membership, which cost a row-unlimited ``roster()`` read REGARDLESS of how
+    many names were given: a win at ten recipients and a loss at one, and one is
+    the common shape. Its docstring said "ONE store read, not N" while doing two.
+
+    Prose describing a cost is exactly the class this packet has fixed three
+    times, so it gets an instrument rather than a memo: the counters below make
+    the docstring's claim FALSIFIABLE. The property that matters — naming every
+    bad recipient at once — is pinned by the sibling class and is unaffected;
+    only the arithmetic is under test here.
+    """
+
+    @staticmethod
+    def _install_counters(registry: Any) -> dict[str, int]:
+        counts = {"roster": 0, "get_agent": 0}
+        original_roster = registry.roster
+        original_get_agent = registry.get_agent
+
+        async def _counting_roster(*args: Any, **kwargs: Any) -> Any:
+            counts["roster"] += 1
+            return await original_roster(*args, **kwargs)
+
+        async def _counting_get_agent(*args: Any, **kwargs: Any) -> Any:
+            counts["get_agent"] += 1
+            return await original_get_agent(*args, **kwargs)
+
+        registry.roster = _counting_roster
+        registry.get_agent = _counting_get_agent
+        return counts
+
+    async def _send_cost(self, *, to: list[str] | None, members: int) -> dict[str, int]:
+        fleet = (("lead", "wave7", "active"),) + tuple(
+            (f"peer-{index:02d}", "wave7", "active") for index in range(members)
+        )
+        harness, _ = await _03b_fleet(members=fleet)
+        counts = self._install_counters(harness.agent_registry)
+        kwargs: dict[str, Any] = {"body": "x", "grade": _msg().MESSAGE_GRADE_SIGNAL}
+        if to is not None:
+            kwargs["to"] = to
+        await AppContext.comms(
+            harness, action="send", agent="lead", session="wave7", **kwargs
+        )
+        return counts
+
+    async def test_an_explicit_send_reads_NO_roster(self) -> None:
+        """THE REGRESSION, pinned: a one-recipient send in a large session must
+        not pull the whole membership. ``roster()`` is row-UNLIMITED by design,
+        so paying it here makes the cost scale with the session rather than with
+        the request."""
+        counts = await self._send_cost(to=["peer-00"], members=40)
+        assert counts["roster"] == 0, (
+            "an explicit-recipient send read the session ROSTER — a row-unlimited membership "
+            "scan it never uses. Cost then scales with SESSION SIZE, not len(to), and the "
+            "common shape (one recipient) pays the most for it"
+        )
+        assert counts["get_agent"] == 1, (
+            f"expected exactly one point read for one recipient, got {counts['get_agent']}"
+        )
+
+    async def test_the_cost_scales_with_len_TO_not_with_the_session(self) -> None:
+        """Two axes moved independently: the session grows 10x and the read count
+        does NOT; the recipient list grows and it DOES. Either alone is
+        satisfied by a build that reads a constant."""
+        small_session = await self._send_cost(to=["peer-00"], members=4)
+        large_session = await self._send_cost(to=["peer-00"], members=40)
+        assert small_session == large_session, (
+            f"the read cost moved with SESSION SIZE: {small_session} vs {large_session}"
+        )
+        three = await self._send_cost(to=["peer-00", "peer-01", "peer-02"], members=40)
+        assert three["get_agent"] == 3, (
+            f"three recipients cost {three['get_agent']} point reads — the cost must track "
+            f"len(to), which is what makes it honest to say so in the docstring"
+        )
+        assert three["roster"] == 0
+
+    async def test_a_repeated_recipient_costs_ONE_read(self) -> None:
+        """De-duplication before the loop, pinned: a caller naming the same
+        teammate twice must not pay twice."""
+        counts = await self._send_cost(to=["peer-00", "peer-00"], members=4)
+        assert counts["get_agent"] == 1, counts
+
+    async def test_CONTROL_a_BROADCAST_still_reads_the_roster_exactly_once(self) -> None:
+        """The control. Without it, "no roster read" is satisfied by a build that
+        broke the broadcast path — which genuinely NEEDS the row-unlimited
+        membership, and must read it once rather than per recipient."""
+        counts = await self._send_cost(to=None, members=6)
+        assert counts["roster"] == 1, (
+            f"a broadcast must read the roster exactly once, got {counts['roster']}"
+        )
+        assert counts["get_agent"] == 0, (
+            "a broadcast resolved recipients one-by-one — the roster IS the recipient set"
+        )
+
+
 class TestEveryBadRecipientIsNamedInONEReject:
     """FIX WAVE — blind-audit D3. A caller with two typos was rejected TWICE.
 
