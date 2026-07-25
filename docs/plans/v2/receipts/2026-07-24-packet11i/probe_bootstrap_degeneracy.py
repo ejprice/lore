@@ -135,10 +135,13 @@ TIMING_REPLICATES: int = 40
 #: statistic at a FIXED RATE (~1.8% of the union) gets ~1, 2, 4, 8, 16, 32
 #: samples below it — the range over which "does degeneracy resolve?" is
 #: decidable at a cost this box can pay.
-N_LADDER: tuple[int, ...] = (56, 112, 224, 448, 896, 1792, 3584)
+N_LADDER: tuple[int, ...] = (56, 112, 224, 448, 896, 1792)
 
-#: N values at which the flapping rate (§4) is measured.
-FLAPPING_LADDER: tuple[int, ...] = (56, 224, 896)
+#: N values at which the flapping rate (§4) is measured. Capped at 448 rather
+#: than following ``N_LADDER``: the pair legs cost ``2 * pairs * B`` selection
+#: runs each, so a 896 rung is ~4x the whole rest of this script. 56 -> 224 ->
+#: 448 already spans the range over which the flapping rate is decidable.
+FLAPPING_LADDER: tuple[int, ...] = (56, 224, 448)
 
 #: N values at which the DETECTION POWER of the disjoint-CI test (§7) is
 #: measured — the dual of flapping, and the question that decides whether the

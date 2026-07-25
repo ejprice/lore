@@ -61,9 +61,175 @@ regime: tail-order-statistic (recorded 2026-07-07 regime)
 ====================================================================================================
 Leg A (LEGACY instrument shape): the absent arm is the FIXED 15-query nonsense set
 (search_score_survey.NONSENSE_QUERIES is a fixed 15-tuple); only the union grows.
-    ... rung N=56 done (10:45:01)
-    ... rung N=112 done (10:45:01)
-    ... rung N=224 done (10:45:03)
-    ... rung N=448 done (10:45:12)
-    ... rung N=896 done (10:45:43)
-    ... rung N=1792 done (10:47:47)
+    ... rung N=56 done (11:44:26)
+    ... rung N=112 done (11:44:27)
+    ... rung N=224 done (11:44:29)
+    ... rung N=448 done (11:44:37)
+    ... rung N=896 done (11:45:09)
+    ... rung N=1792 done (11:47:13)
+
+LEG A — absent arm FIXED at 15
+     N  |absent|      floor   rank      ff   catch     ci_low    ci_high     width  distinct   modal%  degen    agree  gate
+    56        15   0.518029      4  0.0179   1.000   0.489419   0.541116  0.051697         7   42.9%     no  94.64%  FAIL
+   112        15   0.510510      2  0.0089   1.000   0.510510   0.529576  0.019066         8   63.0%     no  98.21%  PASS
+   224        15   0.502503      2  0.0045   1.000   0.502503   0.509919  0.007416        10   64.8%     no  98.66%  PASS
+   448        15   0.495457      3  0.0045   1.000   0.472530   0.505591  0.033061         9   46.4%     no  99.11%  PASS
+   896        15   0.490894      5  0.0011   1.000   0.490894   0.493170  0.002275         8   64.7%     no  99.78%  PASS
+  1792        15   0.484338     11  0.0033   1.000   0.466349   0.488163  0.021815        13   38.6%     no  99.61%  PASS
+
+Leg B (PORTABLE design shape, Addendum D1/D2): the absent/hold-out arm scales with the
+pool, keeping the recorded 56:15 ratio, so BOTH arms are resampled at the ladder's N.
+    ... rung N=56 done (11:47:13)
+    ... rung N=112 done (11:47:14)
+    ... rung N=224 done (11:47:16)
+    ... rung N=448 done (11:47:25)
+    ... rung N=896 done (11:47:57)
+    ... rung N=1792 done (11:50:04)
+
+LEG B — absent arm SCALES with the pool
+     N  |absent|      floor   rank      ff   catch     ci_low    ci_high     width  distinct   modal%  degen    agree  gate
+    56        15   0.495004      3  0.0179   1.000   0.486834   0.506899  0.020065         7   47.1%     no  94.64%  FAIL
+   112        30   0.510664      1  0.0000   1.000   0.510664   0.542003  0.031339         7   63.8%     no  97.32%  FAIL
+   224        60   0.515249      9  0.0357   0.967   0.495490   0.539450  0.043960        17   35.3%     no  94.64%  FAIL
+   448       120   0.502770      4  0.0045   1.000   0.502770   0.515872  0.013102         8   62.8%     no  99.33%  PASS
+   896       240   0.519252     38  0.0324   0.988   0.513878   0.530741  0.016863        23   28.3%     no  96.76%  FAIL
+  1792       480   0.530831    111  0.0435   0.992   0.521435   0.536251  0.014817        32   27.3%     no  97.43%  FAIL
+
+====================================================================================================
+§3  SILENT FAILURE (a) — does D2's >=98% decision-agreement gate pass TRIVIALLY?
+====================================================================================================
+D2 adopts the SMALLEST N whose interval passes the gate. If the gate passes trivially
+at the smallest N tried, the N-curve is not a stability measurement at all.
+
+    leg A (absent fixed 15): at the SMALLEST N tried (56) the gate FAILS at 94.64% -- non-trivially
+      -> D2 would adopt N=112 (the first rung that passes)
+      -> rungs whose interval is a single point: none
+
+    leg B (absent scales): at the SMALLEST N tried (56) the gate FAILS at 94.64% -- non-trivially
+      -> D2 would adopt N=448 (the first rung that passes)
+      -> rungs whose interval is a single point: none
+
+====================================================================================================
+§4  SILENT FAILURE (b) — the flapping rate of D3's disjoint-CI adoption
+====================================================================================================
+Two INDEPENDENT measurements drawn from the SAME generator: the true floor has NOT
+moved. D3 adopts iff the two CIs are DISJOINT. Anything far above 0 is adoption-on-
+noise, i.e. the inverse of the design's 'hysteresis falls out free'.
+(parallelised over 32 worker processes; every pair is independently seeded,
+ so the result is identical to a serial run)
+    ... flapping N=56 done (11:50:06)
+    ... flapping N=224 done (11:50:36)
+    ... flapping N=448 done (11:52:29)
+
+                                        regime   pairs  disjoint   flap rate   point moved  mean |dfloor|
+                      tail regime, leg A, N=56     200         0        0.0%        100.0%       0.014879
+                     tail regime, leg A, N=224     200         9        4.5%        100.0%       0.013840
+                     tail regime, leg A, N=448     200        19        9.5%        100.0%       0.014490
+           POSITIVE CONTROL (bulk floor), N=56     200         4        2.0%        100.0%       0.013391
+
+====================================================================================================
+§4b  THE DUAL — can D3's disjoint-CI test detect a REAL move?
+====================================================================================================
+A false-positive rate is meaningless without a detection rate: a test that NEVER
+fires has a perfect flapping rate and detects nothing. Same instrument, same pairs,
+but the SECOND corpus is drawn from a regime translated by a known cosine SHIFT
+(both arms, so false-fire/catch are preserved and the TRUE floor moves by exactly
+that much). shift=0.000 is §4's flapping row; every other row is D3's POWER.
+    ... power ladder N=56 done (11:52:46)
+    ... power ladder N=224 done (11:55:38)
+
+     N   true floor shift   pairs  CIs disjoint   D3 ADOPTS  mean |dfloor|  note
+    56              0.000     200             3        1.5%       0.014700  <- the null: FALSE-adoption rate
+    56              0.010     200             3        1.5%       0.016758  <- DETECTION rate for a real move
+    56              0.020     200            10        5.0%       0.023052  <- DETECTION rate for a real move
+    56              0.050     200           104       52.0%       0.051403  <- DETECTION rate for a real move
+    56              0.100     200           192       96.0%       0.100133  <- DETECTION rate for a real move
+    56              0.200     200           200      100.0%       0.201117  <- DETECTION rate for a real move
+   224              0.000     200            15        7.5%       0.014302  <- the null: FALSE-adoption rate
+   224              0.010     200            35       17.5%       0.017366  <- DETECTION rate for a real move
+   224              0.020     200            67       33.5%       0.023316  <- DETECTION rate for a real move
+   224              0.050     200           178       89.0%       0.050015  <- DETECTION rate for a real move
+   224              0.100     200           200      100.0%       0.100080  <- DETECTION rate for a real move
+   224              0.200     200           200      100.0%       0.201033  <- DETECTION rate for a real move
+
+    SANITY CHECK on the shift plumbing: mean |dfloor| must track the shift column.
+    (A previous revision of this script omitted `shift=shift` at the call site, so
+     every row silently re-measured the null. The check below is why that is now
+     visible rather than plausible-looking.)
+
+====================================================================================================
+§5  COST — is 'free at any N' (Addendum D1) true?
+====================================================================================================
+Single-threaded seconds per bootstrap replicate (resample both arms + one real
+choose_cosine_floor call), timed over 40 replicates per rung.
+
+     N  |absent|   ms/replicate   s @ B=1000   leg
+    56        15          0.164         0.16     A
+   112        15          0.570         0.57     A
+   224        15          2.090         2.09     A
+   448        15          8.043         8.04     A
+   896        15         37.173        37.17     A
+  1792        15        118.348       118.35     A
+    56        15          0.164         0.16     B
+   112        30          0.578         0.58     B
+   224        60          2.046         2.05     B
+   448       120          7.996         8.00     B
+   896       240         30.690        30.69     B
+  1792       480        128.608       128.61     B
+
+    empirical growth exponent (log-log least squares): leg A = 1.928, leg B = 1.921
+    Addendum D1 claims the bootstrap is 'free at any N' because it costs ZERO embeds.
+    Zero embeds is TRUE. 'Free at any N' is a claim about COST, and cost is the table
+    above: choose_cosine_floor is O(U*(U+A)) per call, times B calls per measurement.
+
+    numpy/scipy availability (re-verified in THIS run, nothing inherited):
+    import numpy  -> ABSENT (ModuleNotFoundError: No module named 'numpy')
+    import scipy  -> ABSENT (ModuleNotFoundError: No module named 'scipy')
+    loremaster/pyproject.toml    -> no numpy/scipy mention
+    lorescribe/pyproject.toml    -> no numpy/scipy mention
+    loresigil/pyproject.toml     -> no numpy/scipy mention
+    pyproject.toml               -> no numpy/scipy mention
+    uv.lock                      -> numpy: absent
+    uv.lock                      -> scipy: absent
+
+====================================================================================================
+§6  SENSITIVITY — is the verdict an artifact of an unrecorded parameter?
+====================================================================================================
+Every DECLARED synthesis parameter, varied. A regime that came back DEGENERATE where
+the headline did not (or vice versa) would mean the headline rests on one arbitrary
+choice. The 'accept' column says which regime predicate each row landed under: the
+RECORDED one (false-fire exactly 1/56, catch 15/15) where reachable, else 'usable'
+(catch >= the 60% adoption bar AND >=1 union sample below the floor) — several
+variations cannot reach 100% catch by construction, and demanding it would silently
+exclude exactly the variations this leg exists to test.
+
+                                              regime    accept      floor   rank      ff   catch     ci_low    ci_high     width  distinct   modal%  degen
+   tail-order-statistic (recorded 2026-07-07 regime)  recorded   0.535146      4  0.0179   1.000   0.478266   0.540737  0.062471         7   48.1%     no
+                      narrow union spread (sd 0.030)  recorded   0.540613      3  0.0179   1.000   0.515755   0.553524  0.037769         8   47.7%     no
+                        wide union spread (sd 0.070)  recorded   0.475617      2  0.0179   1.000   0.465790   0.509090  0.043300         6   45.8%     no
+            no anchors at all (anchor_fraction 0.00)  recorded   0.527393      2  0.0179   1.000   0.470869   0.530720  0.059851         8   57.7%     no
+      half the union anchored (anchor_fraction 0.50)  recorded   0.508663      3  0.0179   1.000   0.487548   0.525166  0.037618         7   56.2%     no
+     anchors on the HIGH-cosine samples (correlated)  recorded   0.508553      2  0.0179   1.000   0.462839   0.535646  0.072806         8   61.3%     no
+absent arm ANCHORED too (absent_anchor_fraction 0.20  recorded   0.512177      2  0.0179   1.000   0.458237   0.542001  0.083764         9   59.1%     no
+         absent arm closer to the union (mean 0.500)  recorded   0.544016      3  0.0179   1.000   0.524788   0.545540  0.020752         7   60.4%     no
+     heavier union lower tail (mean 0.620, sd 0.060)  recorded   0.534281      4  0.0179   1.000   0.494035   0.555198  0.061163         8   46.3%     no
+        UNIFORM cosines, not Gaussian (shape varied)  recorded   0.537938      3  0.0179   1.000   0.527831   0.545948  0.018117         8   46.0%     no
+
+====================================================================================================
+MEASURED SUMMARY (the verdict is argued in REPORT-probe-bootstrap-11i.md)
+====================================================================================================
+    headline N=56 CI degenerate: False
+    leg A (absent fixed 15)  — degenerate rungs: none
+    leg B (absent scales)    — degenerate rungs: none
+    smallest NON-degenerate N: leg A = 56, leg B = 56
+    controls: median=clean, bulk-floor=clean, constant=DEGENERATE (expected)
+    headline N=56 CI width: 0.080268 cosine units on a floor of 0.529054 (15.2% of the floor); 7 distinct resampled values
+    D2 stability gate at N=56: 94.64% -> FAIL
+    D3 flapping rate at N=56 (nothing moved): 0.0%
+    D3 adoption rate at N=56, true floor moved +0.000: 1.5%
+    D3 adoption rate at N=56, true floor moved +0.010: 1.5%
+    D3 adoption rate at N=56, true floor moved +0.020: 5.0%
+    D3 adoption rate at N=56, true floor moved +0.050: 52.0%
+    D3 adoption rate at N=56, true floor moved +0.100: 96.0%
+    D3 adoption rate at N=56, true floor moved +0.200: 100.0%
+    total wall clock: 674.1s
