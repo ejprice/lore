@@ -133,7 +133,65 @@ judged only on whether it works — on k8s.
 
 **Process residual, raised not buried:** no instrument in this repo distinguishes *operator-ruled* from
 *design-author-asserted* once a claim has been restated once. Both render as "ruled law" in prose. That
-is a live defect class — this is its second instance in one packet.
+is a live defect class — this is its second instance in one packet. Filed as **#200**.
+
+### 0.5 MEASURED — the worktree/index architecture, and the dependency question
+
+All measured 2026-07-25 by `lead-11i-b` against `localhost/lore:latest`, every probe `--rm`, under the
+operator's authorization to add packages and change the base OS if needed. **Recorded here so packets
+17/23/19 inherit measurements instead of re-deriving them — this section is theirs as much as 11-i's.**
+
+**Image baseline:** Debian 13 (trixie) · git **2.47.3** · Python 3.14.5 · uv 0.11.28 present.
+
+**M1 — #134 IS A MOUNT-TOPOLOGY PROBLEM, NOT A GIT-VERSION PROBLEM.** With the uid mapping the real
+deployment uses (`--userns=keep-id --user 1000:1000`) and the PARENT directory mounted at its
+*identical absolute path* (`-v /home/ejprice/PycharmProjects:/home/ejprice/PycharmProjects:ro`),
+container git 2.47.3 resolves **both** trees:
+```
+worktree branch: pkt11i-floor-calibration-dark      worktree HEAD: 2a2de41
+main checkout:   feat/surreal-unification
+```
+The deployment's current `-v …/lore:/workspace:ro` mounts a DIFFERENT path, which is exactly why the
+absolute gitdir fails. **No OS change, no git bump, no `--relative-paths` required.** (For the record:
+trixie's git candidate is `1:2.47.3-0+deb13u1`; `worktree.useRelativePaths` needs ≥2.48, so that route
+*would* have cost a base change — and is unnecessary.)
+
+**M2 — `dubious ownership` is the fourth silent cause, reproduced independently, and it is the k8s
+DEFAULT.** The same probe run *without* uid mapping returns
+`fatal: detected dubious ownership in repository at '…'` for the worktree AND the main checkout — git's
+`safe.directory` protection on a uid mismatch. ⚠ **This failed for a DIFFERENT reason than the one under
+test**: reported as-is it would have "proved" path-identical mounts do not work and pushed toward an
+unnecessary base-OS change. A probe needs a control. Under k8s (`runAsUser`, `fsGroup`, arbitrary UIDs
+on OpenShift) uid mismatch is the normal case, so `safe.directory` must be handled EXPLICITLY — this is
+one of the four causes collapsing into `capture_git_identity`'s silent `(None, None)` (**#197**).
+
+**M3 — lore can create AND read its own worktrees entirely in-container**, on the shipped git:
+```
+created worktree branch: featureA
+gitdir file contents:    gitdir: /tmp/lore-managed/main/.git/worktrees/wt-featureA
+worktree list:           2      (resolved again from a fresh git invocation)
+```
+The gitdir stays absolute — which **stops mattering once lore owns both sides of the path.**
+
+**⇒ THE ARCHITECTURE THIS IMPLIES (lead's reading of M1–M3, for design attack, not a ruling):** a
+canonical **lore-owned worktree root**, with worktrees created by lore inside it. Then absolute gitdirs
+always resolve, and the same topology holds on a dev host and on a k8s PVC — in k8s it is *easier*,
+since there is no host checkout to mirror and we choose the path outright. The failure mode exists only
+when worktrees are created somewhere else and mounted somewhere different, which is the situation today.
+This is the operator's "all lore-managed worktrees in one directory", measured and found sufficient.
+
+**M4 — numpy and scipy install in ~1 second** (`Prepared 2 packages in 794ms, Installed 2 packages in
+196ms` → numpy 2.5.1, scipy 1.18.0), and `scipy.stats.bootstrap` has the needed shape:
+`data, statistic, n_resamples, batch, vectorized, paired` — a **statistic callable** (how
+`choose_cosine_floor` plugs in), plus `vectorized` and the `paired` mode the flapping measurement needs.
+**F9's affordability crisis dissolves for a one-second dependency.**
+
+⚠ **NOT VERIFIED, and it must not be assumed:** scipy's percentile-method interval may not use the
+**nearest-rank** convention the ruled selection rule does (scipy offers percentile/basic/BCa;
+interpolation convention is exactly the drift **#198** is about). So: scipy for the resampling and
+vectorization, and the interval convention **verified against ours, never inherited**. The byte-exact
+equality control is the instrument. This is the packages rule cutting both ways in one decision — use
+the package for what it does, hand-roll only the proven gap, gated by an oracle.
 
 **Provenance of the inputs.** Three agents, deliberately structured so no list grades itself:
 - `REPORT-scout-11i.md` — Opus discovery scout; source-verified seam map + measured sizing.
