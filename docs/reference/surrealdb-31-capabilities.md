@@ -702,6 +702,8 @@ Small, sharp, and each one cost somebody an hour. All [PROBED 2026-07-12] unless
 | Max of a datetime column under GROUP BY | `time::max()` | `math::max` / `array::max` — accept it, **return garbage silently** |
 | RELATE an endpoint you just created | `LET $m = (CREATE ONLY t …).id;` then `RELATE $m->e->$x` | `RELATE $m.id->e->$x` — **PARSE ERROR** (*"Unexpected token `.`, expected a relation arrow"*). Bind the id INTO the `LET`; you cannot reach through a field at the arrow. |
 | RELATE endpoint values | bound **`RecordID`** objects | a bare **`str`** — `"Cannot execute RELATE statement where property 'in' is: 'message:m_real'"` |
+| `ORDER BY` a column under an **EXPLICIT projection** [PROBED 2026-07-25, 3.2.1] | project the ordered column too: `SELECT a, b, ts FROM t ORDER BY ts` | `SELECT a, b FROM t ORDER BY ts` — **PARSE ERROR**: *"Missing order idiom `ts` in statement selection"*, with a second span pointing at the projection (*"Idiom missing here"*). `SELECT *` never hits it — so the rule that `option<>` columns want an explicit projection is exactly what walks you into this. |
+| Bind a value against a **`session`** column [PROBED 2026-07-25, 3.2.1] | name the bind anything else: `WHERE session = $comms_session` | `WHERE session = $session` — ***"'session' is a protected variable and cannot be set"*, on a BARE SELECT.** §2 documents the write-side (`SET session = $session`); **the protection is wider than that — the BIND NAME ITSELF is refused**, whatever the statement. The column name is fine; only the `$session` parameter is reserved. |
 
 ---
 
