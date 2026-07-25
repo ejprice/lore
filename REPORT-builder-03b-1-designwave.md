@@ -8,10 +8,12 @@ brief-base v6 read
   cold-R4). Designs were IMPLEMENTED, not re-derived; no ruling was second-guessed.
 - **verdict:** every load-bearing pin is mutation-proven. **Two mutations did not discriminate on
   first attempt and exposed two MISSING pins I then wrote** — §4 is the record.
-- **gates (measured 2026-07-25 at `326846d`):** full suite **6581 passed, 0 failed, 17 skipped,
-  3 xfailed** · `./scripts/typecheck.sh` **0 errors, all three members, 149 source files** ·
-  `uv run ruff check .` **All checks passed** · skill suite **117 passed** · 20-consecutive
-  concurrency **20/20, 14 passed each, TOTAL_RUNS_WITH_FAILURES=0**
+- **gates — RE-RUN under finding #192, with before/after TREE FINGERPRINTS (§3.1):** full suite
+  **6581 passed, 0 failed, 17 skipped, 3 xfailed** · `./scripts/typecheck.sh` **0 errors, all three
+  members, 149 source files** · `uv run ruff check .` **All checks passed** · skill suite
+  **117 passed** · 20-consecutive concurrency **20/20, 14 passed each,
+  TOTAL_RUNS_WITH_FAILURES=0**. Fingerprints IDENTICAL before and after every run — these counts
+  describe a tree that provably did not move under them.
 - **deviations:** G1 an ORACLE change (`_message_fakes.py`) — required by DD-3.c's "mirror `body`
   exactly", done by CALLING the production validator rather than cloning it · G2 the DD-3.d
   descriptions + cold-R4 landed inside `ad8153b` instead of their own commit, because
@@ -116,6 +118,34 @@ looks identical.
 Regenerating it: apply `generate_ddl(dim=…)` to a throwaway DB and run the aggregate statement with
 `EXPLAIN` appended, with and without the `WHERE ts > $cutoff` conjunct. The statements are in
 `SurrealStore.trace_aggregates`; nothing depends on a `/tmp` path surviving.
+
+### 3.1 — The tree these numbers describe (finding #192)
+
+A suite count is a claim about a TREE, and in a shared tree with four live agents an unfingerprinted
+count is unfalsifiable. My first pass at these gates had exactly that defect — the numbers were
+right, but nothing proved the tree was still. Re-run with a fingerprint captured immediately BEFORE
+and immediately AFTER each run:
+
+```
+BEFORE   HEAD=0a0b38d  STATUS_LINES=0  TRACKED_TREE_MD5=801e9cb9c8cf7c4376f35ca575136594
+AFTER    HEAD=0a0b38d  STATUS_LINES=0  TRACKED_TREE_MD5=801e9cb9c8cf7c4376f35ca575136594
+```
+
+**Diff: EMPTY, across a 5m36s full-suite run and again across the ~2.5-minute 20-run concurrency
+block.** Per-file MD5s of the ten files this wave touched are also identical at both ends (captured
+in the run log); they are the diagnosis half — WHICH file moved — while the tracked-tree hash is
+the detection half, and only it is complete.
+
+**One refinement I would fold into #192, learned from writing the capture:** a list of
+"likely-to-move files" is a NAME LIST, and the forbidden set is unbounded — a sibling editing a
+file nobody predicted is invisible to it. So the capture takes `git ls-files -s | md5sum` over the
+whole tracked tree alongside the per-file hashes. Detection on the closed set, diagnosis with the
+list — the same shape as allowlist-the-safe.
+
+⚠ **Honest bound, because a fingerprint that over-claims is worse than none:** `git ls-files -s`
+covers TRACKED files only, so a new UNTRACKED file is caught by `STATUS_LINES` rather than the hash,
+and a sibling commit landing mid-run moves HEAD rather than either. All three lines are load-bearing
+and none alone is sufficient.
 
 ---
 
@@ -222,5 +252,7 @@ altered.
 
 ---
 
-*Measured 2026-07-25 at commits `1a6010f`..`326846d` on branch `feat/surreal-unification`. Every
-number above was produced by the command shown beside it, in this session, on this tree.*
+*Measured 2026-07-25 at commits `1a6010f`..`326846d` on branch `feat/surreal-unification`; the
+gates re-run at `0a0b38d` under finding #192 with the fingerprints in §3.1. Every number above was
+produced by the command shown beside it, in this session, on a tree proven not to have moved under
+it.*
