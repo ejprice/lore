@@ -4,10 +4,16 @@ brief-base v6 read
 
 ## SUMMARY BLOCK
 
-- **state:** done-with-deviations; both lead follow-ups closed (§F′).
+- **state:** DONE. All four forks ruled, both follow-ups closed, and the lead's drift
+  ruling implemented (§F′.1).
 - **deliverable:** `scripts/comms_consumer_eval.py` (the committed acceptance instrument,
   spec `docs/plans/v2/03b-design-rulings-r2.md` §C1–C5) + `scripts/test_comms_consumer_eval.py`
-  (**149 tests, `149 passed in 0.72s`**, ruff clean). Commits `0f662c8`, `35ee643`, `a1795b9`.
+  (**156 tests, `156 passed in 0.72s`; 306 across `scripts/`**, ruff clean, `--dry-run`
+  exit 0 with all 19 surfaces generated from production code). Commits `0f662c8`,
+  `35ee643`, `a1795b9`, `e165141`.
+- **gate semantics (RULED):** a run answered by a model other than the pin is **not a
+  gating run** and does not count toward the three — exit **3** (gate never valid),
+  distinct from exit **1** (the surface failed). §F′.1.
 - **roster verdict (lead follow-up 2): HONEST — no trust defect, nothing to file.** The
   remainder derives from `total_non_retired` (pre-truncation, same session filter), never
   from the 200-row window or the 5-name cap, and `send` passes the caller's RESOLVED session
@@ -237,12 +243,44 @@ produces the notice; the pinned model produces none; a response reporting no mod
 produces none; and a run-level test proves the notice reaches both the `RunOutcome` and the
 transcript.
 
-**One judgement call for you, stated rather than taken:** drift is reported **beside** the
-keyed verdict, not folded into it — a drifted run can still print PASS, with the notice
-attached. Rationale: the gate's verdict is about the SURFACE, and silently converting a
-model-supply event into a surface failure would misattribute it. Making drift hard-fail the
-gate is a one-line change (`gate_passed` also requiring `not run.drift_notice`) — say the
-word if you want it.
+**RULED by the lead (2026-07-25), and the answer was a third option neither of us had
+stated.** Drift must NOT be a surface FAIL (my reasoning accepted: a red gate that blames
+the render for an upstream alias repoint is a false gate, and false gates get switched
+off) — **but "PASS with a notice" was also wrong**, because §C3 defines the gate as 100% of
+the mandatory keys *on the pinned consumer model*, and a run some other model answered has
+not met that definition. It is not a failed run; **it is not a gating run at all.**
+
+Implemented (`e165141`). `gate_passed() -> bool` is replaced by
+`evaluate_gate() -> GateVerdict`, which separates three outcomes that used to be one:
+
+| exit | meaning |
+|---|---|
+| 0 | the gate was satisfied |
+| 1 | the **SURFACE** failed — a VALID run missed a mandatory key (the real verdict, kept unpolluted) |
+| 2 | no `ANTHROPIC_API_KEY` |
+| 3 | the gate was **never valid** — too few runs answered by the pinned model |
+
+- A drifted run **does not count** toward the required three; the tally, and a
+  plain-language reason per refused run (*"run 2 was answered by X, not the pinned
+  'claude-sonnet-5' — NOT counted toward the gate"*), appear in the transcript's own gate
+  section, on stderr, and in the final line. The verdict table gained a
+  **"counted toward gate"** cell.
+- A drifted run does **not reset** the streak either — it says nothing about the surface in
+  either direction, so it neither extends nor breaks it (pinned: four runs with one drifted
+  still yield three valid ones).
+- A drifted run that FAILED is **not blamed on the surface** — it is excluded, and the gate
+  reads invalid (exit 3) rather than red (exit 1).
+
+**The positive control the ruling demanded, plus its own control:** three GREEN runs with
+one drifted must NOT satisfy the gate (`counted == 2`, `surface_failed` False, exit 3), and
+the same three without drift MUST — otherwise the first assertion would be satisfied by a
+gate that never passes anything.
+
+The rationale, recorded in the code so the next reader inherits it: the hazard was never a
+drifted run failing loudly, it was a drifted run **passing quietly** and being cited later
+as *"the battery passed on the pinned floor model"* — a false sentence nothing downstream
+could catch. The "answered by" column makes drift **visible**; refusing to count it makes
+that citation **impossible**.
 
 ### F′.2 — THE ROSTER VERDICT: **honest. No trust defect. Nothing to file.**
 
@@ -338,7 +376,14 @@ uv run --with anthropic python scripts/comms_consumer_eval.py --mode population 
   --out docs/plans/v2/receipts/<date>-packet03b/consumer-eval-population.md
 ```
 
-Exit status is 0 on PASS, 1 on FAIL, 2 on a missing key. The transcript carries the
-verdict table, per-task observed-vs-expected evidence, the raw replies, per-run usage and
-estimated cost, the fixture provenance, and the full served surfaces verbatim — committable
-under `docs/plans/v2/receipts/` as §C3 requires.
+**Exit codes are three-way on purpose** (§F′.1) — a caller must be able to tell WHY:
+**0** the gate was satisfied · **1** the SURFACE failed (a valid run missed a mandatory
+key — the verdict this instrument exists to produce) · **2** no `ANTHROPIC_API_KEY` ·
+**3** the gate was never valid (too few runs answered by the pinned model). Treat 3 as
+"re-run", not "the render is broken".
+
+The transcript carries the gate verdict with its counted-vs-required tally and a reason per
+refused run, the verdict table (requested model · answered by · keys · counted toward gate ·
+failures · cost), per-task observed-vs-expected evidence, the raw replies, per-run usage and
+estimated cost, the fixture provenance, any absent surfaces, and the full served surfaces
+verbatim — committable under `docs/plans/v2/receipts/` as §C3 requires.
