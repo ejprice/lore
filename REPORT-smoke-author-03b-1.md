@@ -19,10 +19,18 @@ brief-base v6 read
   incl. the exact wrong build (heartbeat surfaces it, drain does not) · `TestSkewBlockServed`.
 - **Receipt 5 — first production `trace` rows (#147):** written · the store reader validated
   LIVE against `:18000` · 13 controls · `TestAssertTraceRows` / `TestAssertOrdinals`.
-- **DECISIONS NEEDED (3):** §D1 the deployed image currently FAILS the packet-10-d gate —
+- **CROSS-WAVE RECEIPT — I closed one of the cold audit's open decisions.** Its §SUMMARY
+  decision (c) asks someone to *"confirm `SELECT count() FROM trace` is 0 on production before
+  the deploy builds the new `(agent, ordinal)` index (I am forbidden `:18500`)"*. **Measured
+  read-only 2026-07-25: `trace` count = 0, and the `message` table does not exist at all.** The
+  free-index-window argument holds for BOTH the trace index and inherited row 1's `message`
+  indexes. Detail + the exact queries: §3.4.
+- **DECISIONS NEEDED (4):** §D1 the deployed image currently FAILS the packet-10-d gate —
   a smoke run dies before reaching 03b's gates · §D2 two engine gotchas belong in
   `docs/reference/surrealdb-31-capabilities.md` (not my writable set) · §D3 gate 5 needs
-  `SURREAL_USER`/`SURREAL_PASS` exported in your deploy shell.
+  `SURREAL_USER`/`SURREAL_PASS` exported in your deploy shell · §D4 the smoke does NOT
+  exercise the drain ELISION path, which is exactly where the cold audit's C1/C2 live — I can
+  add a live receipt for it, but only once their fix shape is ruled.
 - **DEVIATIONS (3):** §V1 added `lore_comms` to the expected tool surface · §V2 corrected a
   false module-docstring claim · §V3 refactored `parse_finding_detail` onto the new shared
   fence seam (regression-pinned).
@@ -301,17 +309,30 @@ explicit projection of an unset `option<>` returns `None` with the key **present
 reference §2, verified rather than assumed); and the un-minted-ordinal control fires. The
 credential guard also fired for real on the first attempt, before I set the test-store creds.
 
-### 3.4 — Production, read-only
+### 3.4 — Production, read-only (and the cold audit's decision (c), answered)
+
+Five `SELECT`s against `ws://127.0.0.1:18500/rpc`, namespace/database `lore`/`lore`, no writes:
 
 ```
-brief rows : project v1..v6 (head v6), plus kappa/omega/pkt02smoke/wave7/wave9
-trace count: 0          ← #147, live on the deployed artifact
-message    : table 'message' does not exist   ← the free index window is still open
-agent count: 20 across 8 sessions (prior smokes already litter e.g. session 'pkt02smoke')
+SELECT name, version, created_by FROM brief ORDER BY name, version
+  → project v1..v6 (head v6), plus kappa v1-2, omega v1-2, pkt02smoke v1-2, wave7 v1, wave9 v1
+SELECT count() AS n FROM trace GROUP ALL      → [{'n': 0}]
+SELECT count() AS n FROM message GROUP ALL    → ERROR NotFoundError: The table 'message' does not exist
+SELECT count() AS n FROM agent GROUP ALL      → [{'n': 20}]
+SELECT session, count() AS n FROM agent GROUP BY session
+  → 8 sessions; prior smokes already litter e.g. 'pkt02smoke' (2 agents, brief pkt02smoke v1-2)
 ```
 
-`trace = 0` is the number gate 5 exists to move. `message` not existing confirms production
-carries zero message rows, so the inherited-row-1 index window has not closed.
+Three things follow, all measured rather than assumed:
+
+1. **`trace` = 0.** This is #147, live on the deployed artifact, and the number gate 5 exists to
+   move. It also **closes the cold audit's open decision (c)** — that report is forbidden
+   `:18500` and asked for exactly this confirmation before the deploy builds the new
+   `(agent, ordinal)` index. The index build is free.
+2. **The `message` table does not exist**, so production carries zero message rows and inherited
+   03a-2 row 1's free window for the two `message` indexes **has not closed**.
+3. **`project` head is v6**, and `_comms_register` auto-acks the standing brief at head — which
+   is why gate 4 publishes its own throwaway brief rather than leaning on `project` (§1.4).
 
 ### 3.5 — Gates
 
@@ -410,6 +431,26 @@ you or the store-reference owner made it than have me widen a reference I cannot
 a skip — a skipped gate is not a passed gate. Export them (they live in the same env file the
 `lore-surreal` quadlet uses) before the full run, or gate 5 stops the smoke.
 
+### D4 — The smoke does not exercise the drain ELISION path, where C1/C2 live
+
+`REPORT-coldaudit-03b-1.md`'s two ranked defects — **C1 (HIGH)**, the `peek`-path elision re-ask
+leaving rows unreachable, and **C2 (MEDIUM)**, the same re-ask being unclamped — both live in
+`_render_comms_drain`'s `+{more} more unread — re-run with limit={next_limit}` line. **My gates
+never reach it:** every smoke window is 1-of-1, so no elision renders and the deploy gate would
+be silent about the packet's highest-ranked defect.
+
+I did NOT add an elision leg unilaterally, and the reason is the point: **C2's fix shape is an
+unruled decision** (whether the re-ask clamps to `_MAX_DRAIN_LIMIT`, mirroring `fleet`, is
+decision (a) the cold audit owes you). A deploy gate pinning an unruled shape is worse than one
+that pins nothing — it would either ratify a shape you have not chosen, or go red on the correct
+fix. So this is a fork, written down rather than silently resolved.
+
+**The offer, ready to go once you rule C1/C2:** send 3 messages, drain with `limit=2`, assert the
+served window is 2, the elision names the honest remainder in BOTH slots, and the same window
+under `peek=true` renders the peek variant and NO `ACK REQUIRED` trailer (B13). That is ~25 lines
+and gives the C1/C2 fix a live-artifact receipt instead of a source-only one. The parser already
+returns the elision as a typed `(more, next_limit)` pair, so only the assertions are missing.
+
 ---
 
 ## 6. RESIDUALS — individually adjudicated
@@ -429,6 +470,8 @@ a skip — a skipped gate is not a passed gate. Export them (they live in the sa
 | R11 | Module docstring corrected — it claimed the script "lives OUTSIDE the lore repo (a scratchpad script, not a repo artifact)" (deviation V2). | **Disclosed.** False since the day it was committed under `docs/eval/`; exactly the served-prose-contradicting-reality class. |
 | R12 | `parse_finding_detail` refactored onto the new shared fence seam (deviation V3). | **Disclosed, regression-pinned.** ONE fence policy rather than two clones. Behaviour is preserved except that a 1–2 backtick "fence" no longer counts — `render_fenced` never emits below 3, so no real render is affected. `TestFindingDetailStillParses` covers good input, a hostile body with row- and trailer-shaped lines, and two malformed shapes. |
 | R13 | Scratch probes lived in `/tmp` (`capture_renders.py`, `probe_reader_18000.py`, `probe_prod_ro.py`) and are not durable. | **Disclosed.** Their OUTPUT is transcribed in §3.1/§3.3/§3.4 rather than cited by path, per the no-`/tmp`-citations law. The render capture is re-derivable in ~40 lines from the fixtures in the test file; say so if you want it committed under `docs/plans/v2/receipts/`. |
+| R14 | The cold audit's **C3** says `_trace_params_hash`'s docstring falsely claims the digest is the only thing crossing from arguments into the row. | **Noted, and my gate 5 depends on the TRUE state.** `agent`/`session`/`action` values ARE written verbatim — that is what the session-scoped read and the exact-multiset assertion rest on. If C3 is ever "fixed" by removing those columns rather than by fixing the prose, gate 5 goes red immediately, which is the right direction. |
+| R15 | My fixtures were captured at `1d3a33f`; the branch moved to `f5258bf` under me while I worked. | **Re-derived, not inherited.** `git diff 1d3a33f f5258bf -- loremaster/loremaster/server.py` is a **single `noqa` removal**, no template touched, and I re-ran the capture at current HEAD and got byte-identical output. |
 
 ---
 
