@@ -565,6 +565,21 @@ _MESSAGE_GRADE_ALLOWED = ", ".join(f"'{grade}'" for grade in _MESSAGE_GRADES)
 # law — 03a must import, never re-declare, 2000).
 MESSAGE_BODY_MAX_CHARS = 2000
 
+# The POINTER-class length bound (DD-3.a), applied to EACH ``refs`` entry, to
+# ``thread`` and to ``task_id``. ONE constant for one class of field: all three
+# are pointers/labels, and three separate constants would be three things to
+# drift. Derivation of 256: the longest legitimate house pointer is a receipts
+# path plus a section cite (~80-100 chars), so 256 is that with headroom — and it
+# refuses content-smuggling outright, because a 2000-char "ref" is a BODY wearing
+# a pointer's name. Without it the body cap is theatre: five unbounded refs per
+# row void the render arithmetic the cap exists to protect.
+MESSAGE_POINTER_MAX_CHARS = 256
+# The ``refs`` COUNT bound (DD-3.b). The drain render already caps the DISPLAY at
+# five with a counted remainder; this bounds STORAGE. 20 admits any real pointer
+# batch and refuses a thousand-entry list. Both constants are strikeable; the
+# mechanism — bounded pointers, REJECT never truncate — is the ruling.
+MESSAGE_REFS_MAX_COUNT = 20
+
 # The ``message`` node table's fields as ``(name, type_expr, constraint)`` triples
 # — the single source of truth :func:`_message_statements` emits one ``DEFINE
 # FIELD`` per, mirroring :data:`_AGENT_FIELD_SPECS`. ``seq`` is the native-sequence
@@ -585,12 +600,41 @@ MESSAGE_BODY_MAX_CHARS = 2000
 _MESSAGE_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("seq", "int", ""),
     ("session", _CHUNK_STRING_TYPE, ""),
-    ("thread", _CHUNK_STRING_TYPE, ""),
+    # REQUIRED and non-``option`` — a load-bearing dependency, not a default.
+    # ``awaiting_answer``'s bounded deliveries read is a semantics-identical
+    # SUPERSET only because every message HAS a thread: a stored NONE would be
+    # silently dropped by the ``IN`` clause and the asker would read "waiting"
+    # forever. Flipping this to ``option<string>`` is a silent semantic change,
+    # which is why a schema pin holds it (DD-2.b).
+    ("thread", _CHUNK_STRING_TYPE, f"ASSERT string::len($value) <= {MESSAGE_POINTER_MAX_CHARS}"),
     ("sender", f"record<{AGENT_TABLE}>", ""),
     ("grade", _CHUNK_STRING_TYPE, f"ASSERT $value IN [{_MESSAGE_GRADE_ALLOWED}]"),
     ("body", _CHUNK_STRING_TYPE, f"ASSERT string::len($value) <= {MESSAGE_BODY_MAX_CHARS}"),
-    ("refs", "array<string>", "DEFAULT []"),
-    ("task_id", "option<string>", ""),
+    (
+        "refs",
+        "array<string>",
+        f"DEFAULT [] ASSERT array::len($value) <= {MESSAGE_REFS_MAX_COUNT}",
+    ),
+    # ⚠ THE ELEMENT ROW, and it is why the pair exists. ``TYPE array<T>``
+    # IMPLICITLY DEFINES ``<field>.*``, so this is ALWAYS a re-definition — the
+    # store reference's §1.1 OVERWRITE-for-fields rule applies to it with no
+    # exception, and ``_define_field`` supplies exactly that (a bare definition
+    # raises "The field 'refs.*' already exists"). The element path is what buys
+    # the per-entry ERROR: a rejection names ``refs.*`` and the offending value,
+    # where a whole-array closure assert dumps the entire array instead.
+    (
+        "refs[*]",
+        _CHUNK_STRING_TYPE,
+        f"ASSERT string::len($value) <= {MESSAGE_POINTER_MAX_CHARS}",
+    ),
+    # ⚠ BARE asserts on the two pointer labels — NO ``$value = NONE OR`` guard.
+    # An ``option<>`` field's ASSERT is NOT evaluated when the value is absent, so
+    # the guard is pure cruft that would teach the next author it is required.
+    # ``thread`` takes the same bound but NO charset: it is a topic LABEL, not an
+    # identity, it is a bound param at every site, and the surface's own taught
+    # ``q:<topic>`` form contains a ``:`` the identity charset forbids — applying
+    # that charset would reject this packet's own teaching.
+    ("task_id", "option<string>", f"ASSERT string::len($value) <= {MESSAGE_POINTER_MAX_CHARS}"),
     ("question", "bool", "DEFAULT false"),
     ("created_at", "datetime", ""),
 )
@@ -608,7 +652,10 @@ _TO_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("created_at", "datetime", ""),
     ("seen_at", "option<datetime>", ""),
     ("acked_at", "option<datetime>", ""),
-    ("ack_note", "option<string>", ""),
+    # ``note`` is message-grade PROSE recorded on the edges an ack actually won —
+    # not a pointer — so it takes the BODY constant, not the pointer one, at both
+    # layers exactly as ``body`` does. Bare assert: NONE is not evaluated.
+    ("ack_note", "option<string>", f"ASSERT string::len($value) <= {MESSAGE_BODY_MAX_CHARS}"),
 )
 
 # The ``to`` UNIQUE(in, out) index — one delivery edge per (message, recipient)
@@ -1014,6 +1061,14 @@ def _trace_statements() -> list[str]:
             TRACE_TABLE, f"{TRACE_TABLE}_agent_ordinal", TRACE_AGENT_ORDINAL_INDEX_FIELDS
         )
     )
+    # The ``ts`` index, shipped in the SAME free window and for the same reason
+    # one column over: the trace table is empty exactly once — now — and after
+    # this deploy it grows on EVERY tool call, so an index added later BUILDS,
+    # blocking, at every store's next boot. Unlike the deliberately-withheld
+    # ``transport_session`` index, BOTH its consumers are named and designed: the
+    # windowed aggregate read below it, and the eventual retention sweep a later
+    # packet lands once it has read the curve these rows exist to produce.
+    statements.append(_plain_index(TRACE_TABLE, f"{TRACE_TABLE}_ts", (TRACE_TS_FIELD,)))
     return statements
 
 
