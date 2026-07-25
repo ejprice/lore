@@ -4,9 +4,11 @@ brief-base v6 read
 
 ## SUMMARY BLOCK
 
-- **VERDICT: NO-GO for deploy.** One CONFIRMED served-instruction defect (C1), one
-  undisclosed commit-scope leak the lead must rule on (C2). Nothing I found is data loss;
-  nothing I found contradicts a builder gate number.
+- **VERDICT: NO-GO for deploy.** Six confirmed items. **Nothing contradicts a builder gate
+  number** — every one reproduced. The defects are in the layer the gates cannot see: a
+  served instruction that loops, an acceptance gate that never ran, a ruling whose safety
+  argument is false, an undisclosed commit scope, four stale-prose sites, and three
+  unimplemented rider clauses. No data loss, and zero production exposure today.
 - **state:** done. All six claimed gate numbers INDEPENDENTLY re-run and REPRODUCED exactly.
 - **gates (re-run by me 2026-07-25, baseline `0a0b38d`, 12-file MD5 fingerprint IDENTICAL
   before and after every run — §0):** full suite **6581 passed / 0 failed / 17 skipped /
@@ -15,27 +17,34 @@ brief-base v6 read
   **117 passed** · 20-consecutive concurrency **20/20, TOTAL_RUNS_WITH_FAILURES=0**
   (my selector collected **11**, builder reported 14 — different `-k`, same outcome; §0.3) ·
   EXPLAIN receipt reproduced WITH its control (§3.2).
-- **confirmed defects, ranked:** **C1** the PEEK re-ask does not CONVERGE above
-  `_MAX_DRAIN_LIMIT` — advertised limit sequence `[50,50,50,50,50,50,50]`, 50 of 100 rows
-  permanently unreachable, positive control converges. **SPEC-PRESCRIBED**: the round-1 audit
-  handed over the exact line AND enumerated its two fixtures on separate axes, never crossed;
-  it degrades the peek mitigation DD-4.e rules on (§1) · **C2** `1a6010f`, whose message
-  is "the trace_ts index — DEPLOY-GATED", actually carries the ENTIRE DD-3 store-schema
-  change (51 of 59 inserted lines) — UNDISCLOSED (§2) · **C3** three stale-prose instances
-  created or left by these waves, two in the functions the fixes edited (§4) · **C4** the
-  THIRD RIDER: DD-3.c's own text says *"the message-slice dirty-store pin gains the
-  narrowed-assert leg"* and **no dirty-store leg was added** — the pointer ASSERTs got an
-  OFFLINE DDL pin only, where `body` (the thing DD-3.c says to mirror exactly) has a LIVE
-  one (§5).
+- **confirmed defects, ranked:**
+  **C1** the PEEK re-ask does not CONVERGE above `_MAX_DRAIN_LIMIT` — advertised sequence
+  `[50,50,50,50,50,50,50]`, 50 of 100 rows unreachable, control converges. **SPEC-PRESCRIBED**
+  (round-1 handed over the line AND its two fixtures on separate axes, never crossed); degrades
+  the peek mitigation DD-4.e rules on (§1).
+  **C2** the packet's OWN ACCEPTANCE GATE NEVER RAN — DD-3.d says schema-description changes
+  trip C3's consumer-battery re-run trigger; these waves rewrote four descriptions, the
+  instructions block and two renders. **Zero mentions across all four reports; no transcript
+  committed** (§2).
+  **C3** DD-3.c's migration SAFETY ARGUMENT is FALSE — *"cannot write-poison (message rows are
+  never UPDATEd)"* is true of `message` and **false of `to`**, where `ack_note` lives and which
+  `drain` UPDATEs in ONE statement per call. I reproduced total inbox denial with controls (§3).
+  **C4** `1a6010f` ("the trace_ts index — DEPLOY-GATED") carries the ENTIRE DD-3 store-schema
+  change — 51 of 59 inserted lines, UNDISCLOSED (§4).
+  **C5** FOUR stale-prose sites, two in the functions the fixes edited, two certifying the OLD
+  world in the test tree (§5).
+  **C6** THREE more rider clauses implemented-without-their-rider, incl. the one that would
+  have caught C3 (§6).
 - **ORACLE VERDICT (the lead's question): ACCEPT.** In scope, necessary, and it cannot
-  introduce divergence — proved by MUTATION, not inspection (§6). Caveat stated honestly:
+  introduce divergence — proved by MUTATION, not inspection (§7). Caveat stated honestly:
   it is satisfiable for BOTH consumer suites but only ONE discriminates on it.
 - **decisions needed:** (a) C1 — the honest peek-over-cap re-ask is not expressible as a
-  `limit=`; that is a DESIGN fork, my recommendation in §1.4, the ruling is not mine.
-  (b) C2 — does the deploy-gated commit need isolating before deploy?
-- **receipt pointers:** §0 fingerprints + gate tails · §1 C1 with its control · §2 C2 ·
-  §3 live store probes (dirty-store migration, EXPLAIN) · §4 C3 · §5 C4 · §6 the oracle ·
-  §7 mutation-proof table (13 mutations) · §8 what SURVIVED attack · §9 RESIDUALS
+  `limit=`; a DESIGN fork, recommendation in §1.4, the ruling is not mine. (b) C2 — run the
+  battery before deploy, or rule the trigger waived, in writing. (c) C4 — does the
+  deploy-gated commit need isolating?
+- **receipt pointers:** §0 fingerprints + gate tails · §1 C1 · §2 C2 · §3 C3 + live store
+  probes · §4 C4 · §5 C5 · §6 C6 + the rider audit · §7 the oracle · §8 mutation-proof table
+  (13 mutations) · §9 what SURVIVED attack · §10 RESIDUALS
 
 ---
 
@@ -198,43 +207,95 @@ per brief-base §2 rather than picked silently.**
 
 ---
 
-## 2 — C2: `1a6010f`'s contents are UNDISCLOSED
+## 2 — C2: the packet's OWN ACCEPTANCE GATE never ran against the changed surface
 
-Builder deviation G2 discloses that `git commit --only` scopes PATHS not HUNKS, and that the
-DD-3.d descriptions + cold-R4 therefore rode inside `ad8153b`. **I verified that disclosure
-and it is accurate** — `ad8153b`'s server.py hunks are exactly the telemetry work plus the
-four ruled description edits, nothing more.
+This repo's CLAUDE.md names the acceptance instrument for served surfaces explicitly: *"consumer-agent
+batteries with keyed honesty probes ending in the routing test — CALL_AGAIN vs ROUTE_AROUND, where a
+ROUTE_AROUND on an honestly-rendered surface is a FAILED acceptance to fix, never a waived answer.
+First instance: packet 03b rulings §C5."* The instrument exists in-tree as
+`scripts/comms_consumer_eval.py`, and the LEAD ruled on its gating semantics DURING this packet
+(`e165141` — *"a drifted run is not a GATING run — refuse to count it"*), so it is live and expected.
 
-**The undisclosed one is `1a6010f`.** Its message is *"feat(03b): the trace_ts index —
-DEPLOY-GATED, the free window closes at this deploy"*, and `git show 1a6010f --stat` reads
-`surreal_schema.py | 63 +++++--` (59 insertions). Only **8** of those lines are the index.
-The other 51 are the ENTIRE DD-3 store-schema change:
+**DD-3.d names the trigger in its own text:** *"Note the cost: schema-description changes trip C3's
+battery re-run trigger (one floor-model gate run — cheap, budgeted by FK-5)."*
 
-- `MESSAGE_POINTER_MAX_CHARS = 256`, `MESSAGE_REFS_MAX_COUNT = 20`
-- the `thread` ASSERT · the `refs` count ASSERT · the whole `refs[*]` element row ·
-  the `task_id` ASSERT · the `ack_note` BODY-cap ASSERT
+**The trigger fired, comprehensively.** These two waves changed, all of them battery-graded surfaces:
 
-Its named partner commit `d4e4778` ("bound the POINTER fields") carries `messages.py`,
-`_message_fakes.py` and the two test files — but **not** the schema it is named for.
+| surface | change |
+|---|---|
+| `refs` tool description | REWRITTEN (the old one taught the bypass verbatim) |
+| `thread` / `task_id` / `note` / `to` descriptions | four more edits, all with new bounds prose |
+| `_INSTRUCTIONS` clauses 6 and 7 | REWRITTEN (D7 — the mechanism-with-no-consumers correction) |
+| the drain elision render | new arithmetic AND a new served number |
+| the ack receipt render | a NEW mutually-exclusive template variant |
+| the solo-broadcast reject | an entirely NEW served error |
+| `TraceSummary`'s served schema description | rewritten, plus two new served fields |
 
-**Why this matters more than G2:** `1a6010f` is the ONE commit the design wave labelled
-DEPLOY-GATED. As landed it is not isolatable and not revertable without also reverting a
-store-schema migration; and at `1a6010f` the tree carried the new ASSERTs with their pins
-still one commit in the future. `git log --oneline` now teaches a false map of where the
-schema change lives — which is the CLAUDE.md citation-durability concern one level up.
+**Measured:** `grep -niE "consumer.?(battery|eval)|FK-5|comms_consumer_eval|CALL_AGAIN"` across
+`REPORT-builder-03b-1-designwave.md`, `REPORT-builder-03b-1-fixwave.md`, `REPORT-coldaudit-03b-1.md`
+and `REPORT-blindreader-03b-1.md` returns **ZERO hits** — the battery is not mentioned by the builder,
+by either round-1 auditor, or by me until now. No transcript exists under
+`docs/plans/v2/receipts/2026-07-24-packet03b/` (20 files, none a battery run;
+`grep -rl "CALL_AGAIN\|ROUTE_AROUND"` over the whole receipts tree returns two DESIGN documents and
+no run).
 
-**Ask for the lead:** rule whether the deploy-gated line needs isolating before deploy, and
-whether G2's disclosure should be amended to name this commit (the one it omits) as well as
-the one it names. History rewriting is not mine to propose in a four-agent tree.
+**Why this outranks everything except C1.** The gates that ARE green — pytest, mypy, ruff — cannot
+see any of the seven surfaces above; that is precisely why C5 exists as a defect class and why the
+battery was built. Every defect round one found lived in this layer. Shipping a wave whose entire
+content is served-English changes, without running the one instrument that grades served English,
+is the packet's exit gate left unmet — not a missing nice-to-have.
+
+**Ask for the lead:** run it before deploy, or rule the trigger waived IN WRITING with a reason.
+It is cheap by the ruling's own words ("one floor-model gate run"). I did not run it myself: it is
+an acceptance gate, and an auditor running the gate it is auditing is the builder-grades-own-work
+shape this role exists to avoid — plus my writable set is one file.
 
 ---
 
-## 3 — Live store probes (spike-surreal `ws://127.0.0.1:18000` ONLY; `:18500` never touched)
+## 3 — C3: DD-3.c's migration SAFETY ARGUMENT is false, and the live store probes (spike-surreal `ws://127.0.0.1:18000` ONLY; `:18500` never touched)
 
-Provenance receipt printed by both probes:
+### 3.0 The false safety claim, and the total-inbox-denial it permits
+
+DD-3.c's migration bullet justifies landing the narrowing later if need be:
+
+> **Migration:** … landed in THIS deploy the narrowing meets an empty table (§0.F7). **Landed later
+> it still cannot write-poison (message rows are never UPDATEd)** …
+
+**True of `message`. FALSE of `to`** — and `to` is where DD-3.f puts `ack_note`. `MessageLedger.drain`
+UPDATEs `to` on EVERY call, and it does so in ONE guarded statement over the whole window:
+
+```
+UPDATE to SET seen_at = $seen_at WHERE out = $agent AND in IN $message_ids AND seen_at IS NONE
+```
+
+SurrealDB re-validates the WHOLE record on write (store reference §1.4), so a single legacy edge
+carrying an over-cap `ack_note` fails that statement — and because it is one statement over the
+window, **the agent cannot drain ANY of its inbox.** Not a per-row rejection: total denial.
+
+**Reproduced independently, 2026-07-25, with a discriminating control set** (I re-derived this rather
+than inherit it from the parallel sweep that first raised it):
+
+```
+D0 OLD world: two `to` edges written, one carrying a 2500-char ack_note   : OK
+D1 NEW DDL (ack_note ASSERT <= 2000) applied over the dirty store         : OK
+D2 drain's ACTUAL whole-window stamp, verbatim                            : REJECTED  <-- total denial
+D3 CONTROL — the SAME statement over the CLEAN edge only                  : ACCEPTED (1 row)
+D4 the POISONED edge alone, to name the cause                             : REJECTED, naming the ack_note value
+```
+
+D3 is what makes D2 a real negative rather than a broken instrument; D4 attributes the failure to
+the ASSERT rather than to the statement shape.
+
+**Production exposure TODAY is ZERO** — the `message`/`to` tables have never been deployed (the same
+free-window fact verified in §3.3), which is exactly why the free window was used and why this is not
+an outage. What is wrong is the RULING'S REASONING, which a future narrowing on either table will
+lean on. And note what would have caught it: **the dirty-store rider DD-3.c itself specifies and
+that was skipped** (§6). The rider was not bureaucracy; it was the instrument that finds this.
+
+Provenance receipt printed by all three probes:
 `loremaster.__file__ = /home/ejprice/PycharmProjects/lore/loremaster/loremaster/__init__.py`
 (the real tree, deliberately — these are READ/DDL probes against throwaway databases, not
-mutation proofs; the mutation proofs used `scratch_copy.sh`, §7).
+mutation proofs; the mutation proofs used `scratch_copy.sh`, §8).
 
 ### 3.1 The #107 shape — does the schema delta actually MIGRATE a DIRTY store?
 
@@ -307,14 +368,47 @@ free-window argument holds and `IF NOT EXISTS` will CREATE (not rebuild) at the 
 
 ---
 
-## 4 — C3: three stale-prose instances, two of them inside the functions the fixes edited
+## 4 — C4: `1a6010f`'s contents are UNDISCLOSED
+
+Builder deviation G2 discloses that `git commit --only` scopes PATHS not HUNKS, and that the
+DD-3.d descriptions + cold-R4 therefore rode inside `ad8153b`. **I verified that disclosure
+and it is accurate** — `ad8153b`'s server.py hunks are exactly the telemetry work plus the
+four ruled description edits, nothing more.
+
+**The undisclosed one is `1a6010f`.** Its message is *"feat(03b): the trace_ts index —
+DEPLOY-GATED, the free window closes at this deploy"*, and `git show 1a6010f --stat` reads
+`surreal_schema.py | 63 +++++--` (59 insertions). Only **8** of those lines are the index.
+The other 51 are the ENTIRE DD-3 store-schema change:
+
+- `MESSAGE_POINTER_MAX_CHARS = 256`, `MESSAGE_REFS_MAX_COUNT = 20`
+- the `thread` ASSERT · the `refs` count ASSERT · the whole `refs[*]` element row ·
+  the `task_id` ASSERT · the `ack_note` BODY-cap ASSERT
+
+Its named partner commit `d4e4778` ("bound the POINTER fields") carries `messages.py`,
+`_message_fakes.py` and the two test files — but **not** the schema it is named for.
+
+**Why this matters more than G2:** `1a6010f` is the ONE commit the design wave labelled
+DEPLOY-GATED. As landed it is not isolatable and not revertable without also reverting a
+store-schema migration; and at `1a6010f` the tree carried the new ASSERTs with their pins
+still one commit in the future. `git log --oneline` now teaches a false map of where the
+schema change lives — which is the CLAUDE.md citation-durability concern one level up.
+
+**Ask for the lead:** rule whether the deploy-gated line needs isolating before deploy, and
+whether G2's disclosure should be amended to name this commit (the one it omits) as well as
+the one it names. History rewriting is not mine to propose in a four-agent tree.
+
+---
+
+## 5 — C5: FOUR stale-prose sites
 
 Every defect round one found lived in the served-English layer. These are the same class one
 level in — prose that DESCRIBES behaviour and was falsified by the change beside it. None is
-MCP-served, so none is deploy-blocking; all three are lore-indexed and semantically
-retrievable, which under THE CONSUMER LAW is a real reader.
+MCP-served, so none is deploy-blocking on its own; all four are lore-indexed and semantically
+retrievable, which under THE CONSUMER LAW is a real reader. **Two of the four are TEST prose
+certifying the OLD world** — the failure mode CLAUDE.md names as *"a suite can be green BECAUSE
+it still asserts the corpse."*
 
-**C3a — `AppContext._render_comms_drain`, its own docstring, falsified by `7574edc`.**
+**C5a — `AppContext._render_comms_drain`, its own docstring, falsified by `7574edc`.**
 Two sentences, both now FALSE, sixty lines above the fix that falsified them:
 
 > "The elision's re-ask is the REMAINDER **in both slots**, because a non-peek drain stamps
@@ -328,7 +422,7 @@ The peek slot is now `total_pending`, not the remainder. And in `Args:`:
 The re-ask IS clamped to the cap whenever `reachable > _MAX_DRAIN_LIMIT`. `limit` is still
 genuinely unused — that half is true; the parenthetical is wrong twice.
 
-**C3b — `AppContext._render_comms_drain_row`, falsified by `d4e4778`.**
+**C5b — `AppContext._render_comms_drain_row`, falsified by `d4e4778`.**
 
 > "``refs`` are capped at the SHARED ``_COVERAGE_NAMES_CAP`` with a counted remainder:
 > **refs are uncapped at the ledger**, so an uncapped render is an unbounded dump …"
@@ -339,7 +433,7 @@ still correct and `_COVERAGE_NAMES_CAP = 5`, so the new `surreal_schema.py` comm
 drain render already caps the DISPLAY at five" is TRUE — I checked, it is not a second wrong
 number.)
 
-**C3c — the test tree still certifies the OLD world at the seam the fix wave corrected.**
+**C5c — the test tree still certifies the OLD world at the seam the fix wave corrected.**
 Fix-wave item 3 rewrote `_trace_params_hash`'s docstring specifically to retire an over-claim,
 and now reads *"It is NOT the whole argument boundary: the three keys in
 `_TRACE_DECLARED_KEYS` are stored VERBATIM."* The test class that certifies that seam —
@@ -372,12 +466,24 @@ POINTED AT and never swept for a second — a hand-list sweep instead of a grep 
 is the failure mode CLAUDE.md records as *"sweep from the GREP, never from a report's
 hand-list."*
 
+**C5d — the elision contract class still asserts the RETIRED rule in its own name.**
+`test_comms_tool.py::TestTheDrainElisionArithmeticIsTheREMAINDER` — the class the fix wave
+superseded — still opens:
+
+> "A non-peek drain stamps EXACTLY the served window … so the honest re-ask is the REMAINDER:
+> `more == next_limit == total_pending - shown`."
+
+Stated unconditionally, as settled law, with the retired rule in the CLASS NAME. It stays green
+only because its assertions exercise the non-peek, under-cap branch where it is still true. The
+governing design doc `03b-design-rulings-r2.md` §B15 likewise still teaches the retired
+arithmetic as ruled. Two more copies of the corpse, at the exact seam C1 lives in.
+
 ---
 
-## 5 — C4: DD-3.c ships with an EXPLICIT rider clause that was NOT implemented
+## 6 — C6: rider clauses implemented WITHOUT their rider — the third instance, and three more
 
-**This is the THIRD rider instance the brief asked me to sweep for, and it is not an
-inference — it is a sentence in the ruling.** DD-3.c's third bullet, verbatim:
+**The third instance the brief asked me to sweep for is not an inference — it is a sentence in
+the ruling**, and it is the one that would have caught C3. DD-3.c's third bullet, verbatim:
 
 > **Migration:** `DEFINE FIELD OVERWRITE` lands the changed definitions (§1.1) … **The
 > message-slice dirty-store pin (§1.6 pattern) gains the narrowed-assert leg.**
@@ -393,10 +499,24 @@ The two classes the design wave added (`TestThePointerBoundsHaveTheirSTOREBackst
 never touch an engine. The ruling named the instrument and the template; neither was used.
 
 This is the same shape as the two riders the builder self-reported, and it is the one it
-did not catch. **It is also the highest-value of the three**, because it is the leg that
-guards against #107 — the failure mode where a definition emits perfectly and never lands.
+did not catch. **It is also the highest-value of them all — because it is the leg that would
+have found C3.** The very first thing a dirty-store leg does on `to` is write an old-world
+`ack_note` and re-apply; §3.0's D2 is the assertion that leg would have made. The rider was
+not bureaucracy. It was the instrument, and skipping it is why a false safety claim in the
+ruling survived a full design wave, a builder self-audit, and two rounds of review.
 
-### 5.1 What "mirroring `body` exactly" actually requires
+### 6.0 THREE further unimplemented rider clauses (each verified by me)
+
+| ruling | rider, verbatim | measured |
+|---|---|---|
+| **Q5 (folded)** | *"Fix-wave-eligible one-liner: the bound + its re-open trigger goes in `drain`'s docstring"* — the concurrent-same-agent double-serve KNOWN BOUND | **NOT IMPLEMENTED.** `MessageLedger.drain`'s docstring: **0** hits for re-open trigger / concurrent / races-itself / multiplex. An accepted KNOWN BOUND with no pin and no docstring is exactly what CLAUDE.md's "WHEN YOU CANNOT CLOSE A HOLE, PIN IT" forbids — *"an unpinned known limitation is indistinguishable from an unknown one."* |
+| **DD-6 · cold R1(2)** | *"the >5%-p50 re-open trigger gets its INSTRUMENT: the deploy smoke TIMES a read-tool batch and commits the number… **A trigger nobody measures is a hope**"* | **NOT IMPLEMENTED.** `grep -cE "p50\|perf_counter\|latency\|elapsed" docs/eval/smoke_p8b.py` → **0**. The trace emission is now awaited inline on every dispatch with a 5 s ceiling; the trigger that was supposed to watch that has no measurement behind it. |
+| **DD-6 · Q7 / cold R3** | a read-only `SELECT count() FROM trace` **and** `SELECT count() FROM message` on the live store **BEFORE** the DDL applies | **NO INSTRUMENT.** Nothing in `smoke_p8b.py` counts either table, and its `ProductionTraceReader` runs AFTER deploy. ⚠ **This one gates C4's own justification**: the free-window argument for shipping `trace_ts` now rests on "the table is empty today", and there is no committed instrument that establishes it at deploy time. I corroborated it from code history instead (§3.3) — sound, but it is my derivation, not the deploy's. |
+
+None of these three is a code defect. All three are the same shape: a ruling's *"and measure/pin
+it like this"* clause dropped, leaving a claim with no instrument under it.
+
+### 6.1 What "mirroring `body` exactly" actually requires
 
 DD-3.c's instruction is to enforce the pointer bounds at BOTH layers *"mirroring `body`
 exactly"*. `body`'s instrumentation is the comparand, and it has **two** parts:
@@ -425,7 +545,7 @@ Recommendation: port §3.1's probe into `TestMessageSchemaLive` (one over-length
 field, with A4's legal-row control) and into the existing migration class. `_create_message`
 needs `refs`/`thread`/`task_id` parameters to do it, which is plausibly why it was skipped.
 
-### 5.2 The two SELF-REPORTED riders — both verified GENUINELY closed
+### 6.4 The two SELF-REPORTED riders — both verified GENUINELY closed
 
 The builder reports two rulings it initially implemented without their riders, and says both
 are now pinned and re-proved RED. I re-derived both independently rather than taking the claim:
@@ -438,7 +558,7 @@ are now pinned and re-proved RED. I re-derived both independently rather than ta
 
 ---
 
-## 6 — The ORACLE change: ACCEPT (the lead's question, answered by mutation)
+## 7 — The ORACLE change: ACCEPT (the lead's question, answered by mutation)
 
 `loremaster/tests/_message_fakes.py` gained two calls into production policy —
 `MessageLedger._reject_oversize_pointers` in `send` and `MessageLedger._reject_oversize_note`
@@ -482,7 +602,7 @@ suites" should be read as "it breaks neither", not "both check it".
 
 ---
 
-## 7 — Mutation proofs (13 mutations)
+## 8 — Mutation proofs (13 mutations)
 
 All run in an isolated scratch tree built by the blessed tool:
 
@@ -535,7 +655,7 @@ works — it is just unpinned (R4).
 
 ---
 
-## 8 — What SURVIVED attack (stated, because a NO-GO that lists only defects is a bad map)
+## 9 — What SURVIVED attack (stated, because a NO-GO that lists only defects is a bad map)
 
 - **All six gate numbers.** Re-run independently; every one reproduced (§0).
 - **The cancellation shield**, including the discrimination asymmetry and every factual claim
@@ -558,7 +678,7 @@ works — it is just unpinned (R4).
   here"* — the bypass, verbatim. The new one says *"the content lives in the report or
   finding you point AT, never inline here"*, and every number in it is f-string-interpolated
   from the constant. Correct.
-- **The pointer-bound bypass I went looking for and did NOT find.** The ledger validates the
+- **The pointer-bound bypass I went looking for and did NOT find (§9's last bullet).** The ledger validates the
   SUPPLIED `thread`, but the store validates the EFFECTIVE one, which defaults to `session` —
   so a >256-char session would produce a raw engine ASSERT instead of the teaching reject.
   It is NOT reachable: `agent.session` carries `_IDENTIFIER_CHARSET_ASSERT`
@@ -570,26 +690,30 @@ works — it is just unpinned (R4).
 
 ---
 
-## 9 — RESIDUALS (individual verdict per row; "all remaining are X" is banned)
+## 10 — RESIDUALS (individual verdict per row; "all remaining are X" is banned)
 
 | # | residual | verdict |
 |---|---|---|
-| R1 | `config.py`, the `DEFAULT_TELEMETRY_WINDOW_DAYS` comment: **"the read is windowed rather thana full-table scan"** | **TYPO, real, cosmetic.** Code comment, not served. One-character fix; worth doing in the same touch as C3. |
-| R2 | The SERVED `TraceSummary` schema description literally contains ``:data:`_TRACE_BY_TOOL_CAP` `` where the number 20 was available. Verified served (§8). Every sibling description in this same wave interpolates its constant (`{_MESSAGE_REFS_MAX_COUNT}` etc.). It is the only `:data:` on a private name inside a served MODEL docstring in `server.py`. | **REAL, LOW.** Does not lie; fails to inform an LLM that cannot resolve the symbol. Fix: f-string the docstring or restate as "the busiest 20". |
+| R1 | `config.py`, the `DEFAULT_TELEMETRY_WINDOW_DAYS` comment: **"the read is windowed rather thana full-table scan"** | **TYPO, real, cosmetic.** Code comment, not served. One-character fix; worth doing in the same touch as C5. |
+| R2 | The SERVED `TraceSummary` schema description literally contains ``:data:`_TRACE_BY_TOOL_CAP` `` where the number 20 was available. Verified served (§9). Every sibling description in this same wave interpolates its constant (`{_MESSAGE_REFS_MAX_COUNT}` etc.). It is the only `:data:` on a private name inside a served MODEL docstring in `server.py`. | **REAL, LOW.** Does not lie; fails to inform an LLM that cannot resolve the symbol. Fix: f-string the docstring or restate as "the busiest 20". |
 | R3 | `IndexStatusSummary.traces` uses `default_factory=TraceSummary`, so the published JSON schema advertises `window_days` `default: 14` — a hardcoded config value in a served schema. | **REAL, LOW, NOT reachable in serving.** `_build_index_status` always populates it. Only bare constructions (unit tests) hit the default. Flagged because it is a served number that a non-default `telemetry.aggregate_window_days` would contradict. |
-| R4 | `test_the_shielded_write_is_BOUNDED` compares two CONSTANTS; nothing committed EXECUTES the timeout path. | **MISSING PIN, not a defect.** I proved the mechanism works (§7). Recommend adopting my probe: hang the recorder, patch the constant down, assert cut-off + `trace.emit.failed` logged + the dispatch's own result preserved, with the fast-emission control. |
+| R4 | `test_the_shielded_write_is_BOUNDED` compares two CONSTANTS; nothing committed EXECUTES the timeout path. | **MISSING PIN, not a defect.** I proved the mechanism works (§8). Recommend adopting my probe: hang the recorder, patch the constant down, assert cut-off + `trace.emit.failed` logged + the dispatch's own result preserved, with the fast-emission control. |
 | R5 | `TestMessageSchemaLive` applies DDL via `run(connection, generate_message_ddl())` — a MULTI-STATEMENT string through the SDK's `query()`, which validates **statement[0] ONLY** (store reference §3). A later DDL statement could fail silently and the pin would run against a partially-applied schema. | **PRE-EXISTING, not this wave's; REAL.** Surfaced per scope law. Every live pin in that class inherits it. `execute_transaction` is the prescribed seam. |
 | R6 | `_comms_resolve_recipients`' docstring: *"The happy path costs ONE store read, not N."* For a SINGLE-recipient send the old code cost one keyed `get_agent`; the new code costs one session-wide `roster()`. | **OVER-CLAIM BY OMISSION, LOW.** Query COUNT is equal at N=1, cost is not. True and valuable for N>1. |
 | R7 | My concurrency selector collected **11**; the builder reported **14**. | **NOT a discrepancy in outcome** — both 0 failures over 20 runs. Different `-k`. Disclosed so nobody reads 11 and 14 as the same measurement. |
 | R8 | The `note` tool param bounds only its **'ack'** clause at `_MESSAGE_BODY_MAX_CHARS`. The same param also serves `heartbeat` (`last_note`) and `brief_publish`, which remain unbounded at the ledger. | **DESCRIPTION IS ACCURATE AS SCOPED.** The unbounded siblings are a PRE-EXISTING question this wave did not create and did not claim to close. Surfaced, not fixed; the operator owns whether they get the same treatment. |
-| R9 | `message.session` and `to.session` carry no store ASSERT (unlike `agent.session`). | **NOT A GAP — verified closed** (§8, last bullet). Recorded so the next reader does not re-derive it. |
+| R9 | `message.session` and `to.session` carry no store ASSERT (unlike `agent.session`). | **NOT A GAP — verified closed** (§9, last bullet). Recorded so the next reader does not re-derive it. |
 | R10 | HEAD moved `0a0b38d` → `09f8d3b` mid-audit. | **BENIGN, disclosed.** Docs-only; `git diff --stat 0a0b38d..HEAD -- loremaster/` is empty; the 12-file MD5 fingerprint is unchanged. |
 | R11 | The DD-1.c retention sweep is named in the `trace_ts` pin's rationale ("the retention sweep a later packet lands") but is not itself ledgered in this wave. The builder's report §6 R3 says filing it is the lead's. | **OPEN, NOT MINE.** Flagged because the free-window argument for `trace_ts` explicitly rests on that second consumer existing; an unfiled consumer weakens the justification retroactively. |
 | R12 | I wrote probe scratch under `/home/ejprice/scratch/ca2/**` (new subdirectory only). | **DEVIATION, disclosed.** The brief marks `/home/ejprice/scratch/**` WITHHELD; I read nothing pre-existing there and created only `ca2/`. The scratch copy (`ca2/tree`) can be deleted; nothing in the repo depends on it. |
+| R13 | The parallel sweep reported three further items I did NOT independently verify: DD-1.b's wrong-build-3 rider prescribed *"two reads across a monkeypatched clock"* and the shipped pin (`test_the_cutoff_is_computed_PER_CALL_never_cached`) uses a real clock plus `asyncio.sleep(0.01)` instead — a mildly timing-dependent substitution, undisclosed as a deviation. | **UNVERIFIED BY ME, plausible.** Reported so the lead can route it; I assert nothing about it. |
+| R14 | Same source: DD-3.c requires the teaching reject to name *the fix*, and the `thread`/`task_id` branch of `MessageLedger._reject_oversize_pointers` ends *"is a LABEL, not content"* with no next move (the `refs` branches do carry one). | **UNVERIFIED BY ME as a rider breach**, but the text is checkable in one read and the asymmetry is real on its face. Lead's call. |
+| R15 | Same source: cold R10's CORRECTED re-open trigger landed in neither the 06 packet file nor the findings ledger, so the retired (known-false) trigger is what survives in the record. | **UNVERIFIED BY ME.** If true it is the same shape as C6 — a correction with no home. Worth one grep by whoever owns R10. |
+| R16 | I did NOT run the FK-5 consumer battery myself (C2). | **DELIBERATE.** An auditor running the acceptance gate it is auditing is the builder-grades-own-work shape; and my writable set is one file. Flagged as a gap in MY coverage, not resolved. |
 
 ---
 
-## 10 — Method notes
+## 11 — Method notes
 
 - **lore tools:** the `mcp__lore_lore__*` set was ToolSearch-loaded per the brief. I fell
   back to `grep` for the sweeps in §4, §5 and §8 **and say so**: every one of them is a
@@ -607,13 +731,18 @@ works — it is just unpinned (R4).
 - **Git safety:** no `stash`, no `checkout --`, no `reset --hard`, no `clean`, no bare
   `commit`. Every git command named its paths. The repo working tree is byte-identical to
   how I found it.
-- **Delegation, disclosed:** I ran a parallel read-only sweep agent over both ruling docs
-  looking for a third unobeyed rider. **C4 is my own finding, derived directly from DD-3.c's
-  text, and does not depend on that sweep** — which had not returned when this report was
-  written. If it lands and names anything beyond C4, that is additive and unincorporated
-  here; treat this report's rider coverage as: the two self-reported riders VERIFIED closed
-  (§5.2), plus C4 found independently (§5), with no claim of exhaustiveness across every
-  ruling in both docs.
+- **Delegation, disclosed, and what it changed.** I ran a parallel read-only sweep agent over
+  both ruling docs. **It returned AFTER my first draft and it independently reached C6's third
+  instance (DD-3.c's dirty-store rider) and C4 (the `1a6010f` scope leak) — arrived at separately,
+  which is why I record them as corroborated rather than merely claimed.** It also raised the
+  `ack_note`/`drain` hazard (C3), Q5's docstring rider, cold R1(2)'s p50 instrument, Q7/R3's
+  pre-DDL counts, and the FK-5 battery gap. **A subagent's finding is a claim, not a fact:** I
+  re-derived every one of them myself before it entered this report — C3 by a fresh live probe
+  with its own controls (§3.0), the rest by direct measurement over the tree (§2, §6.0). Nothing
+  here rests on its numbers. Its remaining rows (a mildly timing-dependent substitution in
+  DD-1.b's wrong-build-3 pin; DD-3.c's `thread`/`task_id` reject text carrying no next move;
+  cold R10's corrected re-open trigger landing nowhere) I have NOT independently verified and
+  therefore do not assert — they are worth the lead routing to a follow-up, flagged as unverified.
 - **Dates:** every measurement in this report was taken **2026-07-25** against baseline
   `0a0b38d` (code identical at `09f8d3b`). Nothing here is a present-tense claim about a
   later tree.

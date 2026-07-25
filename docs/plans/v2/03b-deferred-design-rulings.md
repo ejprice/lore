@@ -267,10 +267,32 @@ mechanism (bounded pointers, reject-never-truncate) is the ruling.
   (`refs` + `refs[*]` rows), and `thread`/`task_id` take bare `string::len` ASSERTs —
   NONE is probed-exempt, so no NONE-guard is needed.
 - **Migration:** `DEFINE FIELD OVERWRITE` lands the changed definitions (§1.1); landed
-  in THIS deploy the narrowing meets an empty table (§0.F7). Landed later it still
-  cannot write-poison (message rows are never UPDATEd) — but the window costs nothing
+  in THIS deploy the narrowing meets an empty table (§0.F7). ~~Landed later it still
+  cannot write-poison (message rows are never UPDATEd)~~ — but the window costs nothing
   to use. The message-slice dirty-store pin (§1.6 pattern) gains the narrowed-assert
   leg.
+  > ⚠ **CORRECTION (lead, 2026-07-25) — THE STRUCK CLAUSE ABOVE IS FALSE, AND IT IS THE
+  > MOST DANGEROUS SENTENCE IN THIS DOCUMENT.** *"Cannot write-poison (message rows are
+  > never UPDATEd)"* is true of **`message`** and **FALSE of `to`**, where DD-3.f puts
+  > `ack_note`. `MessageLedger.drain` UPDATEs `to` on EVERY call, and does so in ONE
+  > guarded statement over the whole window
+  > (`UPDATE to SET seen_at = … WHERE out = $agent AND in IN $message_ids AND seen_at IS NONE`).
+  > SurrealDB re-validates the WHOLE record on write (store reference §1.4), so **a single
+  > legacy edge carrying an over-cap `ack_note` fails that statement — and because it is one
+  > statement over the window, the agent cannot drain ANY of its inbox. Total denial, not a
+  > per-row rejection.**
+  > **REPRODUCED** on spike-surreal `:18000` with a discriminating control set
+  > (`REPORT-coldaudit-03b-2.md` §3.0): old-world edge accepted → new DDL applies OK → the
+  > real whole-window stamp REJECTED → **control**: the same statement over the clean edge
+  > alone ACCEPTED → the poisoned edge alone REJECTED naming `ack_note`. The control is what
+  > makes the rejection a real negative rather than a broken probe.
+  > **Production exposure at the 03b deploy is ZERO** — `message`/`to` have never been
+  > deployed, which is exactly why the free window was used. What was wrong is the REASONING,
+  > which any future narrowing on either table would have leaned on. **Any later narrowing of
+  > a `to` field must treat existing edges as write-poisoning and plan a migration.**
+  > **And note what would have caught it: the dirty-store rider THIS BULLET ITSELF SPECIFIES,
+  > which was skipped.** The rider was not bureaucracy — it was the instrument. Skipping it is
+  > why a false safety claim survived a design wave, a builder self-audit and two review rounds.
 
 ### DD-3.d — RULING (recommended): the description prose teaches the BOUNDED pattern
 
