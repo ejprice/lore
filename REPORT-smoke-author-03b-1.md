@@ -4,8 +4,8 @@ brief-base v6 read
 
 ## SUMMARY BLOCK
 
-- **State:** done-with-deviations. Commit `a389a97`; gates ruff-clean, mypy-strict-clean,
-  108/108 offline controls passing.
+- **State:** done-with-deviations. Commits `a389a97` (gates 1–5) + `bdb8ea4` (gate 6, the
+  ruled elision receipt); ruff-clean, mypy-strict-clean, **132/132 offline controls passing**.
 - **Verdict:** all five receipts are WRITTEN and DRY-VALIDATED end-to-end against a scripted
   MCP session + the real render helpers + the TEST store. None can be run for real until you
   deploy (the running image is the 2026-07-19 build; `send`/`drain`/`ack` do not exist on it).
@@ -19,18 +19,25 @@ brief-base v6 read
   incl. the exact wrong build (heartbeat surfaces it, drain does not) · `TestSkewBlockServed`.
 - **Receipt 5 — first production `trace` rows (#147):** written · the store reader validated
   LIVE against `:18000` · 13 controls · `TestAssertTraceRows` / `TestAssertOrdinals`.
+- **Receipt 6 — the elision re-ask is OBEYABLE (added on the lead's ruling, `bdb8ea4`):**
+  written · dry-validated (all 62 calls) · **controls are REAL EXECUTED pre-fix output** ·
+  §7. Fixture is 54 pending against a cap of 50 — the first in this repo above the cap.
+- **⚠ THE BUILDER'S FIX WAVE IS UNCOMMITTED IN THE SHARED TREE** — 304 lines of
+  `loremaster/loremaster/server.py` plus `pyproject.toml`, `uv.lock` and three test files, all
+  `M` and unstaged as of my last commit. Against the repo's own "the working tree is never the
+  ONLY copy of finished work" law. I touched none of it (every commit of mine names its paths
+  explicitly), but you are one careless `git checkout --` away from losing the wave. §7.4.
 - **CROSS-WAVE RECEIPT — I closed one of the cold audit's open decisions.** Its §SUMMARY
   decision (c) asks someone to *"confirm `SELECT count() FROM trace` is 0 on production before
   the deploy builds the new `(agent, ordinal)` index (I am forbidden `:18500`)"*. **Measured
   read-only 2026-07-25: `trace` count = 0, and the `message` table does not exist at all.** The
   free-index-window argument holds for BOTH the trace index and inherited row 1's `message`
   indexes. Detail + the exact queries: §3.4.
-- **DECISIONS NEEDED (4):** §D1 the deployed image currently FAILS the packet-10-d gate —
-  a smoke run dies before reaching 03b's gates · §D2 two engine gotchas belong in
-  `docs/reference/surrealdb-31-capabilities.md` (not my writable set) · §D3 gate 5 needs
-  `SURREAL_USER`/`SURREAL_PASS` exported in your deploy shell · §D4 the smoke does NOT
-  exercise the drain ELISION path, which is exactly where the cold audit's C1/C2 live — I can
-  add a live receipt for it, but only once their fix shape is ruled.
+- **DECISIONS — all four now ANSWERED.** §D1 the deployed image FAILS the packet-10-d gate
+  (acknowledged by the lead; a STOP if still red post-deploy) · §D2 both engine gotchas landed
+  in the store reference at `f331dc2`, re-probed independently by the lead · §D3 store
+  credentials go in the deploy shell · §D4 RULED → **gate 6 built and shipped, §7**.
+  **Nothing is outstanding from me.**
 - **DEVIATIONS (3):** §V1 added `lore_comms` to the expected tool surface · §V2 corrected a
   false module-docstring claim · §V3 refactored `parse_finding_detail` onto the new shared
   fence seam (regression-pinned).
@@ -431,7 +438,7 @@ you or the store-reference owner made it than have me widen a reference I cannot
 a skip — a skipped gate is not a passed gate. Export them (they live in the same env file the
 `lore-surreal` quadlet uses) before the full run, or gate 5 stops the smoke.
 
-### D4 — The smoke does not exercise the drain ELISION path, where C1/C2 live
+### D4 — RULED by the lead; **gate 6 is built and shipped** (`bdb8ea4`, detail in §7). The original fork, kept for the record:
 
 `REPORT-coldaudit-03b-1.md`'s two ranked defects — **C1 (HIGH)**, the `peek`-path elision re-ask
 leaving rows unreachable, and **C2 (MEDIUM)**, the same re-ask being unclamped — both live in
@@ -487,6 +494,107 @@ question for exactly the file I cared about, and the reconcile-then-trust protoc
 cost more than reading the spans I needed. The lore tools WERE loaded (one `ToolSearch` call, as
 briefed). No friction row filed: this was a deliberate fallback into two of the three sanctioned
 cases, not a tool gap.
+
+---
+
+## 7. Gate 6 — the elision re-ask, added on the lead's D4 ruling (`bdb8ea4`)
+
+Ruled shape, and what gate 6 asserts as a PROPERTY derived from each render's own numbers
+(`ruled_next_limit`), never compared against a literal:
+
+```
+next_limit = min(total_pending if peeked else remainder, cap)
+```
+
+### 7.1 — The fixture EXCEEDS the cap, and the walk costs one set of sends
+
+**54 pending against a cap of 50.** That is the point: the largest `total_pending` anywhere in
+the test tree is 10, so no existing fixture can tell a clamped build from an unclamped one.
+
+The small-N legs run FIRST, while only 7 are pending — **because a peek stamps nothing, those 7
+are still pending afterwards and become part of the above-cap fixture.** So the whole gate costs
+ONE set of 54 sends rather than two, and eight drains:
+
+| leg | call | asserts |
+|---|---|---|
+| small-N peek | `peek limit=3` over 7 | re-ask is **7**, not the 4-row remainder |
+| small-N round-trip | `peek limit=7` | serves all 7 — the peeked window re-served, every elided row reached |
+| cap derivation | `peek limit=54` | serves exactly **50** → the deployed cap is DERIVED from the wire; and `total` is still 54, proving the three peeks stamped nothing |
+| peek above cap | `peek limit=3` over 54 | re-ask is **50** (clamped), not the 51-row remainder |
+| peek round-trip | `peek limit=50` | superset of the peeked window, 50 rows |
+| stamping above cap | `drain limit=3` | re-ask is **50** (clamped), not 51 |
+| stamping round-trip | `drain limit=50` | 50 rows, **disjoint** from the stamped window |
+| tail | `drain limit=1` | the last row, disjoint |
+| roll-up | — | following ONLY the advertised limits reached **all 54, each exactly once** |
+
+The cap is not trusted from my mirrored constant: the derivation leg asks for a deliberately
+above-cap window and reads back how many rows the artifact actually served, failing with a
+message that names `MAX_DRAIN_LIMIT` as stale if the two disagree.
+
+### 7.2 — The controls are REAL EXECUTED pre-fix output, not guesses
+
+I ran the **pre-fix `_render_comms_drain`** — HEAD's committed `server.py` at `f331dc2` —
+inside a copy made with `./scripts/scratch_copy.sh`, whose provenance guard asserted
+`loremaster.__file__` resolved **inside the copy** before anything ran
+(`/home/ejprice/scratch-smoke03b-prefix/loremaster/loremaster/__init__.py`, printed as a
+receipt). What it actually emitted:
+
+| leg | pre-fix (BROKEN) | ruled (correct) |
+|---|---|---|
+| peek, T=54, shown=3 | `+51 more unread — re-run with limit=51` | `limit=50` |
+| stamping, T=54, shown=3 | `+51 more unread — re-run with limit=51` | `limit=50` |
+| stamping, T=51, shown=44 | `+7 more unread — re-run with limit=7` | `limit=7` — **agree** |
+| peek, T=7, shown=3 | `+4 more unread — re-run with limit=4` | `limit=7` |
+
+Those four lines ARE the offline controls. Three fire; the fourth is shipped as a control too,
+because the fix must not have moved the already-correct case.
+
+**The leg that matters most is the small-N peek: `4` is UNDER the cap, so no clamp check can
+see it.** Only knowing that a peek stamps nothing catches it — and the round-trip receipt shows
+the consequence rather than the number: obeying `4` re-reads 3 rows the caller had already seen
+and leaves the last 3 permanently unreachable to an agent that does exactly what it was told.
+
+### 7.3 — The fix has ALREADY LANDED in the working tree
+
+Re-running my capture against the live tree (not HEAD) returns the ruled values, and the code
+now reads `min(reachable, _MAX_DRAIN_LIMIT)` with `reachable = total_pending if peeked else
+remainder` — your ruled shape exactly. So gate 6 is **green against the current build and RED
+against HEAD's committed one**, which is the correct direction and is what its controls
+demonstrate.
+
+### 7.4 — ⚠ The fix wave is UNCOMMITTED
+
+`git status` at the time of my last commit:
+
+```
+ M loremaster/loremaster/server.py        (304 lines changed vs HEAD)
+ M loremaster/pyproject.toml
+ M loremaster/tests/test_comms_promise_registry.py
+ M loremaster/tests/test_comms_tool.py
+ M loremaster/tests/test_trace_telemetry.py
+ M uv.lock
+```
+
+This is the repo's own "COMMIT AT NATURAL BOUNDARIES — the working tree is never the ONLY copy
+of finished work" law, live. I touched none of it: every commit I made names its paths
+explicitly (`git add docs/eval/... REPORT-...`), never `-A` and never `-a`, and I ran no
+`stash`/`checkout --`/`reset`/`clean` (#189). I also mutated **nothing** in the shared tree for
+the pre-fix capture — that is what the scratch copy was for. **Raising it because a wave this
+size existing only in a working tree is exactly the near-miss the law was written after**, and
+because I am not the only agent in here.
+
+### 7.5 — ⚠ Scratch copy LEFT ON DISK — operator decision
+
+`/home/ejprice/scratch-smoke03b-prefix` (**136 MB**) is the provenance-asserted copy the §7.2
+pre-fix capture ran in. It is a full `scratch_copy.sh` copy of the repo at HEAD with
+`loremaster/loremaster/server.py` overwritten by HEAD's committed version.
+
+**I tried to delete it and the sandbox refused the `rm -rf`.** I am not routing around that
+denial, so it is still there. It is inert (nothing runs from it, and it is outside the repo, so
+no gate or index sees it), but it is 136 MB of debris with my name on it. **Remove it with
+`rm -rf /home/ejprice/scratch-smoke03b-prefix` when convenient**, or tell me and I will ask for
+the permission explicitly. Its only content of value is the four pre-fix render lines in §7.2,
+which are transcribed there and shipped as test fixtures — nothing is lost by deleting it.
 
 ---
 
