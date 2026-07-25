@@ -50,10 +50,12 @@ from smoke_p8b import (  # noqa: E402
     assert_broadcast_delivery,
     assert_broadcast_receipt,
     assert_directive_window,
+    assert_elision_reask,
     assert_fleet_session_shape,
     assert_hostile_body_is_fenced,
     assert_hostile_fixture_discriminates,
     assert_ordinals,
+    assert_reask_round_trip,
     assert_skew_block_served,
     assert_trace_rows,
     fenced_blocks,
@@ -846,6 +848,283 @@ class TestProductionAccessIsReadOnly:
 
 
 # ==========================================================================
+# Gate 6 — the elision re-ask is OBEYABLE (cold audit C1 / C2)
+# ==========================================================================
+# ⚠ THE BROKEN FIXTURES BELOW ARE REAL, EXECUTED OUTPUT — not guesses at what a
+# wrong build would print. They were produced on 2026-07-25 by running the
+# PRE-FIX `_render_comms_drain` (commit f331dc2's committed server.py) inside a
+# scratch copy made with ./scripts/scratch_copy.sh, whose provenance guard
+# asserted `loremaster.__file__` resolved INSIDE the copy before anything ran.
+# So each control below is the defect the cold audit found, verbatim.
+#
+#   leg                                pre-fix (BROKEN)   ruled (correct)
+#   peek,     T=54, shown=3            limit=51           limit=50
+#   stamping, T=54, shown=3            limit=51           limit=50
+#   stamping, T=51, shown=44           limit=7            limit=7   (agree)
+#   peek,     T=7,  shown=3            limit=4            limit=7
+CAP = smoke_p8b.MAX_DRAIN_LIMIT
+
+
+def drain_text(
+    *, seqs: list[int], total: int, peeked: bool, next_limit: int | None = None
+) -> str:
+    """A drain render in the artifact's real shape, for a chosen window.
+
+    ``next_limit`` defaults to the RULED value derived from the window, so a
+    caller building a CORRECT transcript never restates the formula; the broken
+    controls pass a wrong value explicitly.
+    """
+    if not seqs:
+        return DRAIN_EMPTY
+    header = (
+        f"peeked {len(seqs)} of {total} pending — nothing stamped; "
+        "re-run without peek=true to mark them seen"
+        if peeked
+        else f"drained {len(seqs)} of {total} pending"
+    )
+    lines = [header]
+    for seq in seqs:
+        lines += [f"#{seq} [signal] smoke-sender→you", "```", f"elision fixture {seq}", "```"]
+    more = total - len(seqs)
+    if more > 0:
+        if next_limit is None:
+            next_limit = smoke_p8b.ruled_next_limit(
+                total_pending=total, shown=len(seqs), peeked=peeked, cap=CAP
+            )
+        lines.append(f"+{more} more unread — re-run with limit={next_limit}")
+    return "\n".join(lines)
+
+
+def drain_with_elision(
+    *, seqs: list[int], total: int, peeked: bool, more: int, next_limit: int
+) -> smoke_p8b.DrainRender:
+    """A parsed drain render whose elision line is stated EXPLICITLY.
+
+    Controls need to build renders that LIE — a wrong ``next_limit``, or a
+    ``more`` count that disagrees with the header — so neither value is derived
+    here.
+    """
+    text = drain_text(seqs=seqs, total=total, peeked=peeked, next_limit=next_limit)
+    honest_more = total - len(seqs)
+    if more != honest_more:
+        text = text.replace(f"+{honest_more} more unread", f"+{more} more unread")
+    return parse_drain_render(text)
+
+
+class TestRuledNextLimit:
+    """The formula itself, at the boundaries that separate the wrong builds."""
+
+    @pytest.mark.parametrize(
+        ("total", "shown", "peeked", "expected"),
+        [
+            (54, 3, True, 50),  # peek above cap  -> clamped, NOT the 51 remainder
+            (54, 3, False, 50),  # stamping above cap -> clamped, NOT 51
+            (51, 44, False, 7),  # stamping below cap -> the plain remainder
+            (7, 3, True, 7),  # peek below cap -> the WHOLE pending set, NOT 4
+        ],
+    )
+    def test_the_ruled_shape(self, total: int, shown: int, peeked: bool, expected: int) -> None:
+        assert (
+            smoke_p8b.ruled_next_limit(
+                total_pending=total, shown=shown, peeked=peeked, cap=CAP
+            )
+            == expected
+        )
+
+    def test_peek_and_stamping_diverge_below_the_cap(self) -> None:
+        """The two paths must NOT share a formula: that is defect C1 exactly."""
+        peek = smoke_p8b.ruled_next_limit(total_pending=7, shown=3, peeked=True, cap=CAP)
+        stamping = smoke_p8b.ruled_next_limit(total_pending=7, shown=3, peeked=False, cap=CAP)
+        assert (peek, stamping) == (7, 4)
+
+
+class TestAssertElisionReask:
+    def test_the_ruled_peek_reask_passes(self) -> None:
+        good = drain_with_elision(
+            seqs=[1, 2, 3], total=54, peeked=True, more=51, next_limit=50
+        )
+        assert assert_elision_reask(good, cap=CAP, leg="control") == 50
+
+    def test_the_ruled_stamping_reask_passes(self) -> None:
+        good = drain_with_elision(
+            seqs=list(range(4, 48)), total=51, peeked=False, more=7, next_limit=7
+        )
+        assert assert_elision_reask(good, cap=CAP, leg="control") == 7
+
+    def test_the_PRE_FIX_above_cap_reask_is_caught_as_the_CLAMP_defect(self) -> None:
+        """Executed pre-fix output: `+51 more unread — re-run with limit=51`."""
+        broken = drain_with_elision(
+            seqs=[1, 2, 3], total=54, peeked=True, more=51, next_limit=51
+        )
+        message = failure_of(assert_elision_reask, broken, cap=CAP, leg="control")
+        assert "names a limit ABOVE the action's own cap of 50" in message
+        assert "silently clamps" in message
+
+    def test_the_PRE_FIX_stamping_above_cap_reask_is_caught(self) -> None:
+        broken = drain_with_elision(
+            seqs=[1, 2, 3], total=54, peeked=False, more=51, next_limit=51
+        )
+        assert "ABOVE the action's own cap" in failure_of(
+            assert_elision_reask, broken, cap=CAP, leg="control"
+        )
+
+    def test_the_PRE_FIX_small_N_peek_reask_is_caught_as_the_PEEK_defect(self) -> None:
+        """Executed pre-fix output: `+4 more unread — re-run with limit=4`.
+
+        This one is UNDER the cap, so no clamp check can see it — only knowing
+        that a peek stamps nothing catches it."""
+        broken = drain_with_elision(seqs=[48, 49, 50], total=7, peeked=True, more=4, next_limit=4)
+        message = failure_of(assert_elision_reask, broken, cap=CAP, leg="control")
+        assert "this is the PEEK shape" in message
+        assert "leaves the tail unreachable" in message
+
+    def test_the_case_where_pre_fix_and_ruled_AGREE_still_passes(self) -> None:
+        """Executed pre-fix output for a below-cap STAMPING drain is `limit=7`,
+        identical to the ruled value. The fix must not have moved it."""
+        unchanged = drain_with_elision(
+            seqs=list(range(4, 48)), total=51, peeked=False, more=7, next_limit=7
+        )
+        assert assert_elision_reask(unchanged, cap=CAP, leg="control") == 7
+
+    def test_an_elided_window_with_no_elision_line_is_caught(self) -> None:
+        silent = parse_drain_render(
+            "drained 3 of 54 pending\n#1 [signal] s→you\n```\nb\n```"
+        )
+        assert "an elision line is owed" in failure_of(
+            assert_elision_reask, silent, cap=CAP, leg="control"
+        )
+
+    def test_a_count_disagreeing_with_the_header_is_caught(self) -> None:
+        lying = drain_with_elision(seqs=[1, 2, 3], total=54, peeked=True, more=9, next_limit=50)
+        assert "disagrees with itself" in failure_of(
+            assert_elision_reask, lying, cap=CAP, leg="control"
+        )
+
+
+class TestAssertReaskRoundTrip:
+    """The receipt a string comparison cannot give: obey it, then count rows."""
+
+    PEEK_FIRST = drain_with_elision(
+        seqs=[48, 49, 50], total=7, peeked=True, more=4, next_limit=7
+    )
+    STAMP_FIRST = drain_with_elision(
+        seqs=[1, 2, 3], total=54, peeked=False, more=51, next_limit=50
+    )
+
+    def test_obeying_a_ruled_peek_reask_reaches_every_row(self) -> None:
+        second = parse_drain_render(
+            "\n".join(
+                ["peeked 7 of 7 pending — nothing stamped; re-run without peek=true to mark them seen"]
+                + [
+                    line
+                    for seq in range(48, 55)
+                    for line in (f"#{seq} [signal] s→you", "```", f"b{seq}", "```")
+                ]
+            )
+        )
+        assert_reask_round_trip(first=self.PEEK_FIRST, second=second, cap=CAP, leg="control")
+
+    def test_the_PRE_FIX_peek_reask_STRANDS_rows_and_is_caught(self) -> None:
+        """Obeying the pre-fix advertisement of 4 serves 4 of 7: the caller
+        re-reads 3 rows it had already seen and NEVER sees the last 3."""
+        second = parse_drain_render(
+            "\n".join(
+                ["peeked 4 of 7 pending — nothing stamped; re-run without peek=true to mark them seen"]
+                + [
+                    line
+                    for seq in range(48, 52)
+                    for line in (f"#{seq} [signal] s→you", "```", f"b{seq}", "```")
+                ]
+            )
+        )
+        message = failure_of(
+            assert_reask_round_trip,
+            first=self.PEEK_FIRST,
+            second=second,
+            cap=CAP,
+            leg="control",
+        )
+        assert "3 row(s) are STRANDED" in message
+        assert "never sees them" in message
+
+    def test_a_peek_reask_that_drops_the_window_it_showed_is_caught(self) -> None:
+        second = parse_drain_render(
+            "\n".join(
+                ["peeked 7 of 7 pending — nothing stamped; re-run without peek=true to mark them seen"]
+                + [
+                    line
+                    for seq in range(51, 58)
+                    for line in (f"#{seq} [signal] s→you", "```", f"b{seq}", "```")
+                ]
+            )
+        )
+        assert "did not come back" in failure_of(
+            assert_reask_round_trip, first=self.PEEK_FIRST, second=second, cap=CAP, leg="control"
+        )
+
+    def test_a_stamping_reask_that_re_serves_stamped_rows_is_caught(self) -> None:
+        """The wrong build: a stamping drain whose re-ask windows from the oldest
+        again, so the caller burns its window on rows it has already read."""
+        second = parse_drain_render(
+            "\n".join(
+                ["drained 50 of 51 pending"]
+                + [
+                    line
+                    for seq in range(1, 51)
+                    for line in (f"#{seq} [signal] s→you", "```", f"b{seq}", "```")
+                ]
+                + ["+1 more unread — re-run with limit=1"]
+            )
+        )
+        message = failure_of(
+            assert_reask_round_trip,
+            first=self.STAMP_FIRST,
+            second=second,
+            cap=CAP,
+            leg="control",
+        )
+        assert "RE-SERVED seq(s) [1, 2, 3]" in message
+
+    def test_a_stamping_reask_that_underserves_is_caught(self) -> None:
+        second = parse_drain_render(
+            "\n".join(
+                ["drained 10 of 51 pending"]
+                + [
+                    line
+                    for seq in range(4, 14)
+                    for line in (f"#{seq} [signal] s→you", "```", f"b{seq}", "```")
+                ]
+                + ["+41 more unread — re-run with limit=41"]
+            )
+        )
+        assert "served 10 row(s), expected 50" in failure_of(
+            assert_reask_round_trip,
+            first=self.STAMP_FIRST,
+            second=second,
+            cap=CAP,
+            leg="control",
+        )
+
+    def test_an_empty_second_drain_proves_nothing_and_is_caught(self) -> None:
+        assert "trivially true of an empty result" in failure_of(
+            assert_reask_round_trip,
+            first=self.STAMP_FIRST,
+            second=parse_drain_render("no unread messages"),
+            cap=CAP,
+            leg="control",
+        )
+
+    def test_the_fixture_exceeds_the_cap(self) -> None:
+        """The reason this defect shipped green: the largest total_pending in the
+        whole test tree is 10 against a cap of 50, so no existing fixture can
+        tell a clamped build from an unclamped one."""
+        assert smoke_p8b.ELISION_TOTAL > smoke_p8b.MAX_DRAIN_LIMIT
+        assert (
+            smoke_p8b.ELISION_TOTAL - smoke_p8b.ELISION_WINDOW > smoke_p8b.MAX_DRAIN_LIMIT
+        ), "the STAMPING clamp needs the remainder itself to exceed the cap"
+
+
+# ==========================================================================
 # DRY-RUN — the whole gate flow, against a scripted MCP session
 # ==========================================================================
 # The five gates cannot be run for real without a deployed build, but their
@@ -926,6 +1205,92 @@ def scripted_fleet(script: list[tuple[str, str]]) -> tuple[smoke_p8b.SmokeFleet,
     """A :class:`SmokeFleet` wired to a scripted session, with this run's id."""
     session = ScriptedSession(script)
     return smoke_p8b.SmokeFleet(session, run_id=RUN_ID), session  # type: ignore[arg-type]
+
+
+def elision_script(*, small_peek_next_limit: int | None = None) -> list[tuple[str, str]]:
+    """Gate 6's whole transcript, built from the RULED behaviour of a real store.
+
+    Seqs 1..7 are sent first and only PEEKED (so they stay pending), then 8..54
+    are sent, so the small-N legs and the above-cap legs share ONE set of sends.
+    ``small_peek_next_limit`` lets a control inject the PRE-FIX advertisement.
+    """
+    total = smoke_p8b.ELISION_TOTAL
+    small = smoke_p8b.ELISION_SMALL_TOTAL
+    window = smoke_p8b.ELISION_WINDOW
+    all_seqs = list(range(1, total + 1))
+    script: list[tuple[str, str]] = [
+        ("send", f"sent #{seq} [signal] → smoke-charlie") for seq in all_seqs[:small]
+    ]
+    script += [
+        # small-N peek, then obeying its re-ask (7, not the pre-fix 4)
+        ("drain", drain_text(seqs=all_seqs[:window], total=small, peeked=True,
+                             next_limit=small_peek_next_limit)),
+        ("drain", drain_text(seqs=all_seqs[:small], total=small, peeked=True)),
+    ]
+    script += [("send", f"sent #{seq} [signal] → smoke-charlie") for seq in all_seqs[small:]]
+    script += [
+        # cap derivation: ask above the cap, get exactly the cap back
+        ("drain", drain_text(seqs=all_seqs[:CAP], total=total, peeked=True)),
+        # peek above the cap, then obeying its re-ask
+        ("drain", drain_text(seqs=all_seqs[:window], total=total, peeked=True)),
+        ("drain", drain_text(seqs=all_seqs[:CAP], total=total, peeked=True)),
+        # the stamping walk: 3, then 50, then the last 1 — every seq exactly once
+        ("drain", drain_text(seqs=all_seqs[:window], total=total, peeked=False)),
+        ("drain", drain_text(seqs=all_seqs[window : window + CAP], total=total - window,
+                             peeked=False)),
+        ("drain", drain_text(seqs=all_seqs[window + CAP :], total=total - window - CAP,
+                             peeked=False)),
+    ]
+    return script
+
+
+class TestGateSixFlowDryRun:
+    """Gate 6's wire flow — 54 sends and 8 drains is too much wiring to leave unrun."""
+
+    async def test_the_full_elision_walk(self) -> None:
+        fleet, session = scripted_fleet(elision_script())
+        await smoke_p8b.check_drain_elision_reask(fleet)
+        assert session.exhausted
+        sends = [args for _, args in session.calls if args["action"] == "send"]
+        drains = [args for _, args in session.calls if args["action"] == "drain"]
+        assert len(sends) == smoke_p8b.ELISION_TOTAL
+        assert all(args["to"] == ["smoke-charlie"] for args in sends)
+        assert all(args["grade"] == "signal" for args in sends)
+        # The limits it asks for are the ones it was ADVERTISED, never invented.
+        assert [args.get("limit") for args in drains] == [3, 7, 54, 3, 50, 3, 50, 1]
+        assert [bool(args.get("peek")) for args in drains] == [
+            True, True, True, True, True, False, False, False
+        ]
+
+    async def test_the_PRE_FIX_peek_advertisement_fails_the_gate(self) -> None:
+        """The C1 defect, end to end: the real pre-fix build advertises 4 where
+        7 are reachable, and the gate must refuse it."""
+        fleet, _ = scripted_fleet(elision_script(small_peek_next_limit=4))
+        message = await await_failure(smoke_p8b.check_drain_elision_reask(fleet))
+        assert "this is the PEEK shape" in message
+
+    async def test_a_row_never_reached_by_the_advertised_walk_is_caught(self) -> None:
+        """The roll-up, controlled: the last drain serves a row that was never
+        sent, so every per-leg check still passes (disjoint, right count) and
+        only the end-to-end reachability tally can see that seq 54 was lost."""
+        script = elision_script()
+        script[-1] = ("drain", drain_text(seqs=[9001], total=1, peeked=False))
+        fleet, _ = scripted_fleet(script)
+        message = await await_failure(smoke_p8b.check_drain_elision_reask(fleet))
+        assert "Never served: [54]" in message
+        assert "reach every message exactly once" in message
+
+    async def test_a_dirty_recipient_inbox_stops_the_gate(self) -> None:
+        """The fixture-validity guard: the arithmetic rests on the recipient
+        starting empty and every send landing."""
+        script = elision_script()
+        script[smoke_p8b.ELISION_SMALL_TOTAL] = (
+            "drain",
+            drain_text(seqs=[1, 2, 3], total=smoke_p8b.ELISION_SMALL_TOTAL + 2, peeked=True),
+        )
+        fleet, _ = scripted_fleet(script)
+        message = await await_failure(smoke_p8b.check_drain_elision_reask(fleet))
+        assert "did not start with an empty inbox" in message
 
 
 class TestGateFlowDryRun:

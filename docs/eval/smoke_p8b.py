@@ -52,8 +52,9 @@ TWO RUN MODES:
   then packet 03b's five named deploy gates (see below). Run this AFTER the
   redeploy.
 
-PACKET 03b DEPLOY GATES (added 2026-07-25). Five named receipts, all on the LIVE
-production store through the real MCP wire:
+PACKET 03b DEPLOY GATES (added 2026-07-25). Six receipts, all on the LIVE
+production store through the real MCP wire — the packet's five named ones plus
+the elision round-trip the cold audit's C1/C2 made necessary:
 
 1. ``send -> drain -> ack`` round-trip, each step's served render asserted.
 2. A hostile body (newlines + a row-shaped forgery line + backtick runs) stays
@@ -65,6 +66,11 @@ production store through the real MCP wire:
    teach on the trust doctrine's own axis.
 5. The first real ``trace`` rows on production, carrying the declared identity +
    ordinal columns -- this closes finding #147 with a production receipt.
+6. The drain elision's advertised re-ask is OBEYABLE: fed back through a real
+   drain it reaches every row it counted that the cap permits, with no overlap
+   against rows already stamped. This is a ROUND-TRIP receipt, not a string
+   compare, and its fixture deliberately EXCEEDS the drain cap -- the reason the
+   defect it guards shipped green is that no fixture in the test tree ever did.
 
 PRODUCTION SAFETY. ``ws://127.0.0.1:18500`` (``lore-surreal``) is PRODUCTION;
 ``ws://127.0.0.1:18000`` (``spike-surreal``) is the TEST store and is never touched
@@ -1722,6 +1728,318 @@ async def check_drain_serves_skew(fleet: SmokeFleet) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Gate 6 — the drain elision's re-ask is OBEYABLE (cold audit C1 / C2)
+# ---------------------------------------------------------------------------
+# ``_MAX_DRAIN_LIMIT``, mirrored rather than imported (see the FENCE_CHAR note).
+# It is not TRUSTED, either: :func:`check_drain_elision_reask` DERIVES the
+# deployed cap from the wire — it asks for a deliberately above-cap window and
+# reads back how many rows the artifact actually served — and fails naming this
+# constant if the two disagree.
+MAX_DRAIN_LIMIT = 50
+
+# The fixture MUST exceed the cap. That is the whole reason this defect shipped
+# green: the largest ``total_pending`` anywhere in the test tree is 10 against a
+# cap of 50, so no existing fixture can tell a clamped build from an unclamped
+# one. Small-N monoculture, the fourth instance this repo has paid for.
+ELISION_TOTAL = MAX_DRAIN_LIMIT + 4
+ELISION_SMALL_TOTAL = 7
+ELISION_WINDOW = 3
+ELISION_BODY_PREFIX = "packet-03b deploy-gate smoke: elision fixture"
+
+
+def ruled_next_limit(*, total_pending: int, shown: int, peeked: bool, cap: int) -> int:
+    """The ruled re-ask: ``min(total_pending if peeked else remainder, cap)``.
+
+    Two independent corrections live in this one expression, and a build can get
+    either half wrong on its own:
+
+    * **Which rows are reachable.** A STAMPING drain consumed its window and
+      stamped rows never re-serve, so its honest re-ask is the REMAINDER. A PEEK
+      stamps nothing, so the next drain re-reads the pending set from its OLDEST
+      row — asking for the remainder there re-serves the head the caller just
+      read AND strands the tail. The honest peek re-ask is the WHOLE pending set.
+    * **The clamp.** Either value is then bounded by the action's own ceiling. A
+      re-ask naming a limit the dispatcher silently overrides is a served
+      instruction the system does not honour.
+    """
+    reachable = total_pending if peeked else total_pending - shown
+    return min(reachable, cap)
+
+
+def assert_elision_reask(drained: DrainRender, *, cap: int, leg: str) -> int:
+    """Assert the elision line's count is honest and its re-ask is OBEYABLE.
+
+    The expectation is DERIVED from the render's own reported numbers through
+    :func:`ruled_next_limit` — never compared against a literal — so this asserts
+    the PROPERTY rather than one fixture's arithmetic.
+
+    Raises:
+        SmokeCheckFailed: There is no elision line where one is owed, the elided
+            count disagrees with the render's own header, or the re-ask names a
+            limit that cannot be obeyed. A wrong value is DIAGNOSED, not merely
+            reported: the two known defect shapes are named on sight.
+
+    Returns:
+        The advertised ``next_limit``, for the caller to feed straight back.
+    """
+    remainder = drained.total - drained.shown
+    if drained.elision is None:
+        raise SmokeCheckFailed(
+            f"{leg}: {drained.shown} of {drained.total} were served, so {remainder} row(s) were "
+            f"elided and an elision line is owed — the render carries none, which makes the cap "
+            f"a silent dead end"
+        )
+    more, next_limit = drained.elision
+    if more != remainder:
+        raise SmokeCheckFailed(
+            f"{leg}: the elision counts {more} more but the header says {drained.shown} of "
+            f"{drained.total} were served, i.e. {remainder} remain — the render disagrees with "
+            f"itself, and a reader can check that arithmetic"
+        )
+    expected = ruled_next_limit(
+        total_pending=drained.total, shown=drained.shown, peeked=drained.peeked, cap=cap
+    )
+    if next_limit != expected:
+        if next_limit > cap:
+            diagnosis = (
+                f"it names a limit ABOVE the action's own cap of {cap}, which the dispatcher "
+                f"silently clamps — a served instruction the system does not honour"
+            )
+        elif drained.peeked and next_limit == remainder:
+            diagnosis = (
+                "this is the PEEK shape: a peek stamps nothing, so the next drain re-reads from "
+                "the OLDEST row — obeying a remainder-sized re-ask re-serves rows already read "
+                "and leaves the tail unreachable"
+            )
+        else:
+            diagnosis = "it matches neither the remainder nor the pending set under the cap"
+        raise SmokeCheckFailed(
+            f"{leg}: the re-ask names limit={next_limit}, expected {expected} "
+            f"(peeked={drained.peeked}, shown={drained.shown}, total={drained.total}, cap={cap}) "
+            f"— {diagnosis}"
+        )
+    return next_limit
+
+
+def assert_reask_round_trip(
+    *, first: DrainRender, second: DrainRender, cap: int, leg: str
+) -> None:
+    """Assert that OBEYING the advertised re-ask actually gets the caller the rows.
+
+    This is the receipt that a string comparison cannot give: the advertised
+    number is fed back through a real drain and the rows that come out are
+    checked against the rows that went in. What "correct" means differs by path,
+    because the two paths have opposite stamping semantics:
+
+    * **peek** stamped nothing, so the re-ask MUST re-serve the window it already
+      showed — a superset — and must reach every further row the cap permits.
+      Rows past the cap are unreachable by peeking at all; that is the cap, not a
+      defect, so the expectation is ``min(total, cap)`` and not ``total``.
+    * **a stamping drain** consumed its window, so the re-ask must serve rows
+      DISJOINT from the ones already stamped, and as many as the cap permits.
+
+    Raises:
+        SmokeCheckFailed: The re-ask stranded rows, re-served stamped ones, or
+            returned nothing at all.
+    """
+    first_seqs = {row.seq for row in first.rows}
+    second_seqs = {row.seq for row in second.rows}
+    if not second_seqs:
+        raise SmokeCheckFailed(
+            f"{leg}: obeying the advertised re-ask served NO rows — every comparison below is "
+            f"trivially true of an empty result, so this is where it stops"
+        )
+    if first.peeked:
+        expected_count = min(first.total, cap)
+        vanished = sorted(first_seqs - second_seqs)
+        if vanished:
+            raise SmokeCheckFailed(
+                f"{leg}: a peek stamps nothing, so the re-ask must re-serve from the OLDEST row, "
+                f"but seq(s) {vanished} from the peeked window did not come back: {second_seqs}"
+            )
+        if len(second_seqs) != expected_count:
+            stranded = expected_count - len(second_seqs)
+            raise SmokeCheckFailed(
+                f"{leg}: obeying the re-ask reached {len(second_seqs)} row(s) of the "
+                f"{expected_count} the cap permits — {stranded} row(s) are STRANDED: an agent "
+                f"that does exactly what the surface told it to do never sees them"
+            )
+        return
+    overlap = sorted(first_seqs & second_seqs)
+    if overlap:
+        raise SmokeCheckFailed(
+            f"{leg}: the re-ask RE-SERVED seq(s) {overlap} that the previous drain already "
+            f"stamped — a stamping drain's rows never come back, so this window is wasted on "
+            f"rows the caller has read"
+        )
+    expected_count = min(first.total - first.shown, cap)
+    if len(second_seqs) != expected_count:
+        raise SmokeCheckFailed(
+            f"{leg}: obeying the re-ask served {len(second_seqs)} row(s), expected "
+            f"{expected_count} (the elided remainder under the cap of {cap})"
+        )
+
+
+async def check_drain_elision_reask(fleet: SmokeFleet) -> None:
+    """The elision's advertised re-ask, fed back through real drains (C1 + C2).
+
+    The property, not the literal: **a drain's advertised ``next_limit``, fed
+    back through a real drain, must serve every row the elision line counted
+    that the cap permits, with no overlap against rows already stamped.**
+
+    Ordering note: this runs AFTER gate 3, and reuses ``smoke-charlie`` (whose
+    inbox gate 3 emptied) rather than registering a sixth agent — which would
+    have broken gate 3's membership arithmetic if the two ever swapped order.
+    The dependency is not left implicit: the first window asserts the recipient's
+    pending total EXACTLY, so a dirty inbox or a lost send is a loud failure
+    here rather than a confusing one three legs later.
+
+    The small-N legs run FIRST, while only a handful are pending, precisely
+    because a peek stamps nothing: those rows are still pending afterwards and
+    become part of the above-cap fixture, so the whole gate costs ONE set of
+    sends rather than two.
+    """
+    sent_seqs: list[int] = []
+
+    async def send_batch(count: int) -> None:
+        """Send ``count`` signals to the elision recipient, recording their seqs."""
+        for index in range(count):
+            rendered = await fleet.comms(
+                agent=SMOKE_SENDER,
+                action="send",
+                to=[SMOKE_CHARLIE],
+                body=f"{ELISION_BODY_PREFIX} {len(sent_seqs) + 1}",
+                grade=GRADE_SIGNAL,
+            )
+            sent_seqs.append(parse_send_receipt(rendered).seq)
+            del index
+
+    await send_batch(ELISION_SMALL_TOTAL)
+    print(f"PASS: sent {ELISION_SMALL_TOTAL} messages to {SMOKE_CHARLIE!r} (small-N peek legs)")
+
+    small_peek_text = await fleet.comms(
+        agent=SMOKE_CHARLIE, action="drain", peek=True, limit=ELISION_WINDOW
+    )
+    small_peek = parse_drain_render(small_peek_text)
+    if small_peek.total != ELISION_SMALL_TOTAL or not small_peek.peeked:
+        raise SmokeCheckFailed(
+            f"elision (small-N): expected a PEEK over exactly {ELISION_SMALL_TOTAL} pending — "
+            f"got peeked={small_peek.peeked}, total={small_peek.total}. Either a send was lost "
+            f"or {SMOKE_CHARLIE!r} did not start with an empty inbox, and this gate's arithmetic "
+            f"rests on both."
+        )
+    small_reask = assert_elision_reask(small_peek, cap=MAX_DRAIN_LIMIT, leg="elision (small-N peek)")
+    print(
+        f"PASS: peek {small_peek.shown} of {small_peek.total} -> re-ask limit={small_reask} "
+        f"(the REMAINDER, {small_peek.total - small_peek.shown}, would strand the tail)"
+    )
+
+    small_again = parse_drain_render(
+        await fleet.comms(agent=SMOKE_CHARLIE, action="drain", peek=True, limit=small_reask)
+    )
+    assert_reask_round_trip(
+        first=small_peek,
+        second=small_again,
+        cap=MAX_DRAIN_LIMIT,
+        leg="elision (small-N peek round-trip)",
+    )
+    print(
+        f"PASS: obeying it served all {small_again.shown} pending row(s) — the peeked window "
+        f"re-served and every elided row reached"
+    )
+
+    await send_batch(ELISION_TOTAL - ELISION_SMALL_TOTAL)
+    print(f"PASS: sent {ELISION_TOTAL} messages total — the fixture now EXCEEDS the drain cap")
+
+    over_cap = parse_drain_render(
+        await fleet.comms(agent=SMOKE_CHARLIE, action="drain", peek=True, limit=ELISION_TOTAL)
+    )
+    if over_cap.total != ELISION_TOTAL:
+        raise SmokeCheckFailed(
+            f"elision (cap derivation): {over_cap.total} pending, expected {ELISION_TOTAL} — the "
+            f"peeks above must have STAMPED rows they promised not to touch"
+        )
+    if over_cap.shown != MAX_DRAIN_LIMIT:
+        raise SmokeCheckFailed(
+            f"elision (cap derivation): asking for {ELISION_TOTAL} served {over_cap.shown} rows, "
+            f"so the DEPLOYED cap is {over_cap.shown}, not the {MAX_DRAIN_LIMIT} this script "
+            f"mirrors — update MAX_DRAIN_LIMIT (and check _MAX_DRAIN_LIMIT in server.py)"
+        )
+    print(
+        f"PASS: an above-cap ask served {over_cap.shown} of {over_cap.total} — the deployed cap "
+        f"is {MAX_DRAIN_LIMIT}, DERIVED from the wire, and the peeks stamped nothing"
+    )
+
+    peek_text = await fleet.comms(
+        agent=SMOKE_CHARLIE, action="drain", peek=True, limit=ELISION_WINDOW
+    )
+    peeked = parse_drain_render(peek_text)
+    peek_reask = assert_elision_reask(peeked, cap=MAX_DRAIN_LIMIT, leg="elision (peek, above cap)")
+    peeked_again = parse_drain_render(
+        await fleet.comms(agent=SMOKE_CHARLIE, action="drain", peek=True, limit=peek_reask)
+    )
+    assert_reask_round_trip(
+        first=peeked,
+        second=peeked_again,
+        cap=MAX_DRAIN_LIMIT,
+        leg="elision (peek round-trip, above cap)",
+    )
+    print(
+        f"PASS: peek {peeked.shown} of {peeked.total} -> re-ask limit={peek_reask} (clamped to "
+        f"the cap, not the {peeked.total - peeked.shown}-row remainder); obeying it served "
+        f"{peeked_again.shown}"
+    )
+
+    stamping = parse_drain_render(
+        await fleet.comms(agent=SMOKE_CHARLIE, action="drain", limit=ELISION_WINDOW)
+    )
+    if stamping.peeked:
+        raise SmokeCheckFailed("elision (stamping): a drain without peek=true reports peeked")
+    stamping_reask = assert_elision_reask(
+        stamping, cap=MAX_DRAIN_LIMIT, leg="elision (stamping, above cap)"
+    )
+    served: list[int] = [row.seq for row in stamping.rows]
+
+    second = parse_drain_render(
+        await fleet.comms(agent=SMOKE_CHARLIE, action="drain", limit=stamping_reask)
+    )
+    assert_reask_round_trip(
+        first=stamping, second=second, cap=MAX_DRAIN_LIMIT, leg="elision (stamping round-trip)"
+    )
+    served.extend(row.seq for row in second.rows)
+    second_reask = assert_elision_reask(
+        second, cap=MAX_DRAIN_LIMIT, leg="elision (stamping, below cap)"
+    )
+    print(
+        f"PASS: drain {stamping.shown} of {stamping.total} -> re-ask limit={stamping_reask}; "
+        f"obeying it served {second.shown} row(s), DISJOINT from the stamped window, "
+        f"then advertised limit={second_reask}"
+    )
+
+    tail = parse_drain_render(
+        await fleet.comms(agent=SMOKE_CHARLIE, action="drain", limit=second_reask)
+    )
+    assert_reask_round_trip(
+        first=second, second=tail, cap=MAX_DRAIN_LIMIT, leg="elision (stamping tail)"
+    )
+    served.extend(row.seq for row in tail.rows)
+
+    if sorted(served) != sorted(sent_seqs):
+        missing = sorted(set(sent_seqs) - set(served))
+        duplicated = sorted({seq for seq in served if served.count(seq) > 1})
+        raise SmokeCheckFailed(
+            f"elision (reachability): following the advertised re-asks served {len(served)} row(s) "
+            f"of the {len(sent_seqs)} sent. Never served: {missing}. Served more than once: "
+            f"{duplicated}. An agent that does exactly what the surface tells it to do must reach "
+            f"every message exactly once."
+        )
+    print(
+        f"PASS: following ONLY the advertised re-asks reached all {len(sent_seqs)} messages, "
+        f"each exactly once, in 3 stamping drains — the re-ask is obeyable end to end"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Gate 5 — the first real trace rows on production (#147)
 # ---------------------------------------------------------------------------
 class ProductionTraceReader:
@@ -2054,6 +2372,9 @@ async def run_packet_03b_gates(session: ClientSession) -> None:
     await check_comms_round_trip(fleet)
     await check_broadcast_reaches_non_retired(fleet)
     await check_drain_serves_skew(fleet)
+    # AFTER gate 3 (it reuses the agent gate 3 registered and emptied) and BEFORE
+    # gate 5 (its calls must fall inside the trace-delta window being measured).
+    await check_drain_elision_reask(fleet)
     await check_production_traces(session, fleet, total_before=total_before)
 
 
@@ -2104,10 +2425,11 @@ def main() -> int:
         description=(
             "Deploy-gate smoke against the live lore MCP server "
             f"({MCP_SERVER_URL}). Default mode runs the full assertion set "
-            "(post-redeploy): the P8b exit checks plus packet 03b's five named "
+            "(post-redeploy): the P8b exit checks plus packet 03b's six deploy "
             "gates (send/drain/ack round-trip, hostile body fenced, broadcast to "
             "all non-retired, drain serves the shared skew block, first real "
-            "trace rows on production). --mechanics validates only the "
+            "trace rows on production, and an obeyable elision re-ask). "
+            "--mechanics validates only the "
             "connection + tools/list + the read-only lore_index calls, and "
             "writes nothing (safe pre-redeploy)."
         ),
