@@ -544,9 +544,16 @@ class MessageLedger:
             recipients: The externally-resolved recipient identities; an empty set
                 is a teaching error, never a broadcast (the dispatcher resolves
                 rosters).
-            thread: The conversation thread — defaults to ``session``.
-            task_id: The task this message concerns, or ``None``.
-            refs: The message's pointer list, or ``None`` (⇒ ``[]``).
+            thread: The conversation thread — defaults to ``session``. A pointer
+                LABEL: bounded at :data:`MESSAGE_POINTER_MAX_CHARS`, and
+                deliberately NOT charset-validated (the taught ``q:<topic>`` form
+                contains a ``:`` the identity charset forbids).
+            task_id: The task this message concerns, or ``None``. Same pointer
+                bound as ``thread``.
+            refs: The message's pointer list, or ``None`` (⇒ ``[]``). BOUNDED:
+                at most :data:`MESSAGE_REFS_MAX_COUNT` entries, each at most
+                :data:`MESSAGE_POINTER_MAX_CHARS` chars — refs carry ADDRESSES,
+                and an unbounded one is a body wearing a pointer's name.
             set_status: When ``'input_required'``, marks this message as the
                 question whose thread the derived waiting state reads (ruling 9);
                 any other value is an ordinary status touch (not a question).
@@ -557,6 +564,10 @@ class MessageLedger:
         Raises:
             IllegalMessageGradeError: ``grade`` is outside :data:`MESSAGE_GRADES`.
             MessageBodyError: ``body`` is blank or over the length cap.
+            MessagePointerError: A ``refs`` entry, ``thread`` or ``task_id`` is
+                over :data:`MESSAGE_POINTER_MAX_CHARS`, or ``refs`` carries more
+                than :data:`MESSAGE_REFS_MAX_COUNT` entries. REJECTED, never
+                truncated — a shortened pointer is a broken one.
             EmptyRecipientSetError: ``recipients`` is empty.
             UnknownRecipientError: A recipient id names no registered agent.
             SurrealConnectionError: A transport fault.

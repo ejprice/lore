@@ -2211,6 +2211,76 @@ class TestMessageSchemaLive:
         with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
             await _create_message(connection, session="wave7", seq=6, body="z" * 2001)
 
+    # --- WAVE 3 / C4: the LIVE leg DD-3.c's rider named ----------------------
+    #
+    # DD-3.c says enforce the pointer bounds "mirroring ``body`` EXACTLY", and
+    # ``body``'s instrumentation has TWO parts: an offline DDL pin and the LIVE
+    # behavioural pin directly above. The design wave shipped only the offline
+    # half. That is not a live defect — the behaviour is correct today — it is a
+    # missing INSTRUMENT, and the gap it leaves is precisely the one the
+    # OVERWRITE clause exists to close: **pinning the emitted statement proves
+    # the RECIPE; only a live write proves the CAKE.** An emission pin cannot see
+    # a definition that emits perfectly and never lands on the engine.
+
+    async def test_an_oversize_REF_ENTRY_is_rejected_by_the_store_backstop(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, _env = admin_db
+        await run(connection, generate_message_ddl())
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_message(
+                connection,
+                session="wave7",
+                seq=20,
+                refs=["r" * (_schema().MESSAGE_POINTER_MAX_CHARS + 1)],
+            )
+
+    async def test_an_over_COUNT_refs_list_is_rejected_by_the_store_backstop(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, _env = admin_db
+        await run(connection, generate_message_ddl())
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_message(
+                connection,
+                session="wave7",
+                seq=21,
+                refs=[f"r{index}" for index in range(_schema().MESSAGE_REFS_MAX_COUNT + 1)],
+            )
+
+    @pytest.mark.parametrize("field_name", ["thread", "task_id"])
+    async def test_an_oversize_pointer_LABEL_is_rejected_by_the_store_backstop(
+        self,
+        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+        field_name: str,
+    ) -> None:
+        connection, _env = admin_db
+        await run(connection, generate_message_ddl())
+        oversize = "t" * (_schema().MESSAGE_POINTER_MAX_CHARS + 1)
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_message(
+                connection, session="wave7", seq=22, **{field_name: oversize}
+            )
+
+    async def test_POSITIVE_CONTROL_a_legal_pointer_row_IS_accepted(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """Without this, every reject leg above is satisfied by a schema that
+        refuses EVERYTHING — and the omitted-``task_id`` half additionally proves
+        the bare (unguarded) ASSERT on an ``option<>`` field is not evaluated
+        when the value is absent, i.e. that the missing NONE-guard is CORRECT
+        rather than lucky."""
+        connection, _env = admin_db
+        await run(connection, generate_message_ddl())
+        message_id = await _create_message(
+            connection,
+            session="wave7",
+            seq=23,
+            refs=["docs/plans/v2/INDEX.md", "r" * _schema().MESSAGE_POINTER_MAX_CHARS],
+            thread="q:gate-status",
+        )
+        assert message_id
+
 
 async def _create_message(
     connection: SurrealConnection,
@@ -2220,6 +2290,9 @@ async def _create_message(
     grade: str = "signal",
     body: str = "a body",
     sender_id: str | None = None,
+    refs: list[str] | None = None,
+    thread: str | None = None,
+    task_id: str | None = None,
 ) -> str:
     """CREATE one ``message`` row and return its bare record id.
 
@@ -2236,12 +2309,12 @@ async def _create_message(
             "content": {
                 "seq": seq,
                 "session": session,
-                "thread": session,
+                "thread": thread if thread is not None else session,
                 "sender": RecordID(AGENT_TABLE, resolved_sender),
                 "grade": grade,
                 "body": body,
-                "refs": [],
-                "task_id": None,
+                "refs": refs if refs is not None else [],
+                "task_id": task_id,
                 "created_at": datetime.now(UTC),
             },
         },
@@ -2468,6 +2541,246 @@ class TestEnforcedIsLiveOnTheDeliveryEdge:
         )
         rows = await run(connection, f"SELECT count() FROM {_schema().TO_RELATION} GROUP ALL")
         assert _one(rows)["count"] == 1
+
+
+class TestThePointerBoundsMigrateADIRTYStore:
+    """WAVE 3 / C4 — the §1.6 dirty-store leg DD-3.c's rider named explicitly:
+    *"the message-slice dirty-store pin gains the narrowed-assert leg."*
+
+    **A virgin-DB fixture cannot see this by construction**, and that is the
+    whole point of the shape: on a fresh database the field does not exist, so
+    any clause creates it WITH the bound and every test passes while no
+    long-lived store ever gains it. The narrowing has to be applied to a store
+    that ALREADY carries the old, unbounded definition — which is the only
+    configuration where a silent no-op is distinguishable from a migration.
+
+    Shape, exactly §1.6's: apply the OLD (unbounded) DDL -> write a row under it
+    -> apply the NEW DDL -> assert the bound is LIVE **and** the old row
+    survived. The BASELINE leg is what stops "the bound is live" from being true
+    because it was always live.
+    """
+
+    @staticmethod
+    def _old_message_ddl() -> str:
+        """The message node as it stood BEFORE the pointer bounds — same fields,
+        no ASSERTs on refs/thread/task_id."""
+        table = _schema().MESSAGE_TABLE
+        return (
+            f"DEFINE TABLE IF NOT EXISTS {table} SCHEMAFULL;\n"
+            f"DEFINE FIELD OVERWRITE seq ON {table} TYPE int;\n"
+            f"DEFINE FIELD OVERWRITE session ON {table} TYPE string;\n"
+            f"DEFINE FIELD OVERWRITE thread ON {table} TYPE string;\n"
+            f"DEFINE FIELD OVERWRITE sender ON {table} TYPE record<{AGENT_TABLE}>;\n"
+            f"DEFINE FIELD OVERWRITE grade ON {table} TYPE string;\n"
+            f"DEFINE FIELD OVERWRITE body ON {table} TYPE string;\n"
+            f"DEFINE FIELD OVERWRITE refs ON {table} TYPE array<string> DEFAULT [];\n"
+            f"DEFINE FIELD OVERWRITE task_id ON {table} TYPE option<string>;\n"
+            f"DEFINE FIELD OVERWRITE question ON {table} TYPE bool DEFAULT false;\n"
+            f"DEFINE FIELD OVERWRITE created_at ON {table} TYPE datetime;\n"
+        )
+
+    async def _dirty_old_world(self, connection: SurrealConnection) -> str:
+        """Old DDL + one row that the NEW bounds would refuse."""
+        await run(connection, generate_agent_ddl())
+        await run(connection, self._old_message_ddl())
+        await _create_agent(
+            connection,
+            agent_id=_agent_record_id("wave7", "lead"),
+            name="lead",
+            session="wave7",
+        )
+        return await _create_message(
+            connection,
+            session="wave7",
+            seq=90,
+            refs=["r" * (_schema().MESSAGE_POINTER_MAX_CHARS + 5)],
+        )
+
+    async def test_BASELINE_the_old_world_really_accepts_an_oversize_pointer(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """Without this, "the bound is live after migrating" could be true
+        because it was ALWAYS live — and the migration itself untested."""
+        connection, _env = admin_db
+        message_id = await self._dirty_old_world(connection)
+        assert message_id, "the OLD definition was supposed to accept an oversize ref"
+
+    async def test_the_bound_is_LIVE_after_applying_the_new_ddl_to_a_dirty_store(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """THE #107 SHAPE. A definition that emits perfectly and never LANDS is
+        invisible to every offline pin — this is the leg that would catch it."""
+        connection, _env = admin_db
+        await self._dirty_old_world(connection)
+        await run(connection, generate_message_ddl())
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await _create_message(
+                connection,
+                session="wave7",
+                seq=91,
+                refs=["r" * (_schema().MESSAGE_POINTER_MAX_CHARS + 1)],
+            )
+
+    async def test_the_row_written_under_the_OLD_definition_SURVIVES(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """A narrowing converges the SCHEMA and never the DATA: the pre-existing
+        row is left INTACT and readable, never rewritten and never dropped. (It
+        is write-poisoned — any future UPDATE of it is refused — which is the
+        accepted §1.4 consequence, and harmless here because message rows are
+        never UPDATEd after create.)"""
+        connection, _env = admin_db
+        message_id = await self._dirty_old_world(connection)
+        await run(connection, generate_message_ddl())
+        rows = await run(
+            connection,
+            f"SELECT seq, refs FROM type::record('{_schema().MESSAGE_TABLE}', $id)",
+            {"id": message_id},
+        )
+        surviving = _one(rows)
+        assert surviving["seq"] == 90, "the pre-existing row did not survive the narrowing"
+        assert len(surviving["refs"][0]) > _schema().MESSAGE_POINTER_MAX_CHARS, (
+            "the surviving row's over-length ref was REWRITTEN — a narrowing must converge "
+            "the schema without touching the data"
+        )
+
+    async def test_the_migration_is_idempotent_on_an_already_migrated_store(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """``ensure_ready`` re-applies this DDL on EVERY boot, so a second apply
+        must be a clean no-op — the element row is the one that would raise here
+        if it ever lost its ``OVERWRITE``."""
+        connection, _env = admin_db
+        await self._dirty_old_world(connection)
+        await run(connection, generate_message_ddl())
+        await run(connection, generate_message_ddl())
+        message_id = await _create_message(
+            connection, session="wave7", seq=92, refs=["docs/plans/v2/INDEX.md"]
+        )
+        assert message_id
+
+
+class TestTheAckNoteNarrowingAgainstADIRTYDeliveryEdge:
+    """WAVE 3 — the `to` HALF of the same rider, and the half that can actually
+    hurt.
+
+    DD-3.c's migration bullet said a later narrowing *"cannot write-poison
+    (message rows are never UPDATEd)"*. **That is true of `message` and FALSE of
+    `to`**, where DD-3.f puts `ack_note` — and the clause was STRUCK on
+    2026-07-25 after the round-2 cold audit reproduced the consequence.
+
+    Why `to` is different, and why it is worse than a per-row rejection:
+    ``MessageLedger.drain`` UPDATEs `to` on EVERY call, in ONE guarded statement
+    over the whole window. SurrealDB re-validates the WHOLE record on write, so a
+    single legacy edge carrying an over-cap ``ack_note`` fails that statement —
+    and because it is one statement over the window, **the agent cannot drain ANY
+    of its inbox.** Total denial.
+
+    Production exposure at this deploy is ZERO (`message`/`to` have never been
+    deployed — that is the free window this wave used). This pin is not for
+    today; it is so that the next narrowing of a `to` field meets the mechanism
+    DELIBERATELY instead of rediscovering it from an outage. The sibling class
+    above covers `message`, where the original reasoning happened to hold;
+    shipping the instrument only for the table that cannot hurt us would repeat
+    the exact rider-skipping this correction is about.
+    """
+
+    @staticmethod
+    def _old_to_ddl() -> str:
+        """The delivery edge as it stood BEFORE `ack_note` was bounded."""
+        relation = _schema().TO_RELATION
+        return (
+            f"DEFINE TABLE OVERWRITE {relation} TYPE RELATION "
+            f"IN {_schema().MESSAGE_TABLE} OUT {AGENT_TABLE} ENFORCED SCHEMAFULL;\n"
+            f"DEFINE FIELD OVERWRITE session ON {relation} TYPE string;\n"
+            f"DEFINE FIELD OVERWRITE created_at ON {relation} TYPE datetime;\n"
+            f"DEFINE FIELD OVERWRITE seen_at ON {relation} TYPE option<datetime>;\n"
+            f"DEFINE FIELD OVERWRITE acked_at ON {relation} TYPE option<datetime>;\n"
+            f"DEFINE FIELD OVERWRITE ack_note ON {relation} TYPE option<string>;\n"
+        )
+
+    async def _dirty_edges(self, connection: SurrealConnection) -> str:
+        """One POISONED edge (over-cap ack_note) and one CLEAN edge, both written
+        under the OLD definition. Returns the recipient agent id."""
+        await run(connection, generate_agent_ddl())
+        await run(connection, f"DEFINE TABLE IF NOT EXISTS {_schema().MESSAGE_TABLE} SCHEMALESS")
+        await run(connection, self._old_to_ddl())
+        agent_id = _agent_record_id("wave7", "fixer-b")
+        await _create_agent(connection, agent_id=agent_id, name="fixer-b", session="wave7")
+        for index, note in enumerate(
+            ["a legal note", "n" * (_schema().MESSAGE_BODY_MAX_CHARS + 1)]
+        ):
+            message_id = uuid.uuid4().hex
+            await run(
+                connection,
+                f"CREATE type::record('{_schema().MESSAGE_TABLE}', $id) CONTENT $content",
+                {"id": message_id, "content": {"body": f"m{index}"}},
+            )
+            await run(
+                connection,
+                f"RELATE $message->{_schema().TO_RELATION}->$agent SET "
+                f"session = 'wave7', created_at = $now, ack_note = $note",
+                {
+                    "message": RecordID(_schema().MESSAGE_TABLE, message_id),
+                    "agent": RecordID(AGENT_TABLE, agent_id),
+                    "now": datetime.now(UTC),
+                    "note": note,
+                },
+            )
+        return agent_id
+
+    async def test_BASELINE_the_old_definition_really_accepts_an_oversize_note(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, _env = admin_db
+        agent_id = await self._dirty_edges(connection)
+        rows = await run(
+            connection, f"SELECT count() FROM {_schema().TO_RELATION} GROUP ALL"
+        )
+        assert _one(rows)["count"] == 2, "the OLD definition was supposed to accept both edges"
+        assert agent_id
+
+    async def test_a_WHOLE_WINDOW_stamp_is_DENIED_by_ONE_legacy_edge(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """THE MECHANISM, reproduced: not a per-row rejection — TOTAL DENIAL.
+
+        The drain's real shape is one guarded UPDATE over the whole window, and
+        the engine re-validates the WHOLE record on write, so the poisoned edge
+        takes the clean one down with it.
+        """
+        connection, _env = admin_db
+        agent_id = await self._dirty_edges(connection)
+        await run(connection, generate_message_ddl())
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await run(
+                connection,
+                f"UPDATE {_schema().TO_RELATION} SET seen_at = $now "
+                f"WHERE out = $agent AND seen_at IS NONE",
+                {"now": datetime.now(UTC), "agent": RecordID(AGENT_TABLE, agent_id)},
+            )
+
+    async def test_CONTROL_the_same_stamp_over_the_CLEAN_edge_alone_is_ACCEPTED(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """The discriminating control — without it the rejection above could be
+        the statement, the schema, or the fixture rather than the poisoned edge.
+        Same statement, same post-migration schema, scoped to the clean edge."""
+        connection, _env = admin_db
+        agent_id = await self._dirty_edges(connection)
+        await run(connection, generate_message_ddl())
+        clean = await run(
+            connection,
+            f"SELECT id FROM {_schema().TO_RELATION} WHERE out = $agent "
+            f"AND ack_note = 'a legal note'",
+            {"agent": RecordID(AGENT_TABLE, agent_id)},
+        )
+        assert clean, "fixture check: the clean edge must exist"
+        await run(
+            connection,
+            f"UPDATE {_schema().TO_RELATION} SET seen_at = $now WHERE id = $edge",
+            {"now": datetime.now(UTC), "edge": _one(clean)["id"]},
+        )
 
 
 class TestRelationFlipAgainstAnExistingStore:
