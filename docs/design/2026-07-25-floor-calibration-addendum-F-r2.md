@@ -325,8 +325,8 @@ consumer's pins move.
 | 9 | C11 manifest bound | **STANDS** |
 | 10 | C13 bar re-registration point | **STANDS** |
 | 11 | F9 bootstrap implementation | **VOID → replaced by R3** (scipy-first investigation; numpy evaluator + surviving equality control; re-measure; `--max-embeds` survives) |
-| 12 | F10 §B riders | **VOID → replaced by R4 + this row:** interim = case-D path-identical mount + fail-loud-on-null + LORE_VERSION belt-and-braces; end-state = git ≥2.48 in the image + one-directory layout + real runtime git identity as primary receipt. The R2-run vehicle uses the INTERIM (it runs before the layout/bump land). |
-| 13 | Lease = Q2 Option A | **VOID → replaced by R2** (TTL + heartbeat + fence, store-clock authority, `StoreLease` shared primitive) |
+| 12 | F10 §B riders | **VOID → replaced by R4 + this row:** interim = case-D path-identical mount + fail-loud-on-null + LORE_VERSION belt-and-braces; end-state = one-directory layout + real runtime git identity as primary receipt. The R2-run vehicle uses the INTERIM. ⚠ *Row corrected post-commit (R10.5): the original text also named "git ≥2.48 in the image" as end-state — §R8 voided that to optional hygiene, and this row had not been updated; the stale clause is removed here rather than left to propagate.* |
+| 13 | Lease = Q2 Option A | **VOID → replaced by R2, whose ALGORITHM is in turn replaced by R10** (library leader election + a SurrealDB lock adapter; R2's requirements analysis stands and is R10's evaluation instrument) |
 
 **New decisions this revision adds for the operator:** (14) adopt numpy(+scipy iff it fits) via uv
 — [design-cited §0.4: pre-authorized in principle; the specific adoption should still be recorded]
@@ -523,6 +523,152 @@ primitive from parts is the pattern this section exists to stop). **(20)** `choo
 role: production path vs test oracle — recommend ORACLE (R9.3, a self-revision). **(21)** BCa:
 available in-library, NOT recommended (would amend D8's pre-registration); recorded for foreign-
 corpus contingency. **R9.5's** split note rides decision 1's re-surfacing.
+
+---
+
+## R10 — §R2's ALGORITHM replaced (appended same day): `kubernetes.leaderelection` + a SurrealDB lock adapter
+
+**The correction, owned:** §R2 specified a correct requirement set and then hand-rolled the
+algorithm that satisfies it — the file's THIRD instance of a hand-roll one level below a
+correction (F9→R9's sweep; R3→R9's evaluator; now R2's lease). The operator's #201 rule applied by
+the lead: a library does this, and **its clock model is better than the one we designed.**
+
+### R10.1 — My own installed-source read (ephemeral `uv run --no-sync --with kubernetes`, pkg 36.0.3 — corroborating and extending the lead's measurements)
+
+**[source-verified: installed source, this sitting]:**
+- `LeaderElectionRecord(holder_identity, lease_duration, acquire_time, renew_time)` — **four
+  fields, NO transitions/epoch counter.** The lead's investigation item is answered: the record is
+  NOT sufficient for fencing; the fence lives in the ADAPTER (R10.2).
+- The algorithm is **183 LOC, zero kubernetes-client imports** (regex `V1|client\.|ApiClient|
+  CoreV1` → False — reproducing the lead's result independently). The expiry test is verbatim as
+  the lead quoted: **observer-relative** — each candidate times `lease_duration` on its OWN clock
+  from when IT last saw the record CHANGE. My §R2 store-clock-authority requirement was a correct
+  answer to a question this algorithm never asks; it dissolves, and with it the one live-probe
+  verification R2.2 still owed (the SurrealQL duration-arithmetic spelling). *Conceded exactly as
+  the lead framed it: the library encodes a solution shape we did not have to invent.*
+- **The lock surface consumes STATUS BOOLEANS**: `get(name, namespace) → (status, record)` ·
+  `create(…, record) → status` · `update(name, record) → status`. This matters for the four-way
+  CAS ambiguity (R10.2): a False from ANY cause converges to a fresh `get` on the next
+  `retry_period` tick — the get-first loop structurally absorbs the ambiguity.
+- **`release` is ABSENT** (client-go has it; this port does not) — graceful shutdown otherwise
+  waits out `lease_duration` on every rolling update.
+- **`run()` blocks and has NO stop mechanism**: `renew_loop` returns only on renewal failure;
+  `onstarted_leading` is spawned by the library **in its own daemon thread**; `onstopped_leading`
+  runs in the election thread after the loop exits. Cancellation must come from outside the
+  algorithm (R10.3).
+
+### R10.2 — The SurrealDB lock adapter (the right-sized bespoke residue), with the CAS ambiguity as a NAMED design point
+
+One class, six members (`create/get/update/identity/name/namespace`), sized like the in-tree
+`ConfigMapLock` precedent (~129 LOC, lead-measured). Store mechanics, citing
+`docs/reference/surrealdb-31-capabilities.md` section-exactly:
+
+- **Row:** one lease record row (deterministic id — this lease is deployment-global, F6's axes do
+  not apply) carrying the four `LeaderElectionRecord` fields **plus two adapter-owned counters**:
+  `revision` (bumped on EVERY successful write — the optimistic-concurrency token `update` needs,
+  playing the role k8s `resourceVersion` plays for `ConfigMapLock`) and **`fence_epoch`** (bumped
+  ONLY on holder change — §R2's fencing token, preserved). Both minted store-side in the same
+  UPDATE (counter-mint discipline, capabilities §5).
+- **`get`:** read the row; return (status, record); remember `(revision, fence_epoch)` as the
+  observed state. **`create`:** create-if-absent (a `CREATE` on an existing id errors → status
+  False — capabilities §2's id semantics). **`update`:** the CAS —
+  `UPDATE … WHERE revision = $observed_revision SET …, revision += 1[, fence_epoch += 1 iff
+  holder changes]` through `_txn.retry_on_conflict` with `_txn.is_retryable_conflict_error`
+  classification (F8-C6's discipline applies verbatim to this seam).
+- **⚠ The four-way-ambiguous CAS return, designed around rather than hoped past** [design-cited
+  capabilities §6.6 item 7]: an empty CAS result does not say WHICH of its causes fired
+  (lost race / row absent / stale observation / a swallowed-statement class). The adapter's
+  contract makes the ambiguity harmless by construction: empty ⇒ status False, **never retried,
+  never diagnosed in-line** — the algorithm's own next-tick `get` re-observes ground truth and
+  takes the create-or-update branch that actually applies. Disambiguation is structural
+  (get-first loop), not inferential. *Scope-law note: §6.6 item 7's pointer into §5 does not
+  resolve in THIS tree — the four-way enumeration is not written in §5 here. Raised as a doc gap
+  (main-tree drift or a dangling pointer); the design above does not depend on the enumeration,
+  only on the ambiguity's existence.*
+- **Fencing, carried over from §R2 unchanged:** every end-of-run commit (measurement row +
+  head mint/adoption) is guarded `WHERE fence_epoch = $mine` in the same transaction; a lapsed or
+  superseded holder's commit fails loudly and is discarded as a lost race. `LeaderElectionRecord`
+  cannot carry this (R10.1) — the adapter and the engine share it via the store row, which is
+  where the fenced writes live anyway.
+- **Optional adapter extra, priced not assumed:** a `release_if_held` (CAS holder→NONE on
+  graceful shutdown) OUTSIDE the library's surface, compensating for the port's missing
+  `release` — shortens rolling-update handoff from `lease_duration` to immediate. Small, does not
+  fight the algorithm (the next `get` simply sees an empty holder). Recommend including it.
+
+### R10.3 — The two caveats, priced as demanded
+
+1. **Sync/threading vs asyncio.** `run()` blocks with `time.sleep` throughout. Design: the
+   election runs in ONE dedicated thread owning a PRIVATE event loop and a PRIVATE store
+   connection (its own `_txn` session — never the serving loop's, never the serving connection),
+   so **"never on the serving path" holds by construction**: no serving-path frame can ever touch
+   the lease because the lease machinery lives in a different thread and connection entirely.
+   Bridge to R5's `MaintenanceLoop`: `onstarted_leading` (already a daemon thread, measured) sets
+   an `asyncio.Event` on the main loop via `call_soon_threadsafe` with an immutable
+   `(fence_epoch, …)` snapshot; `onstopped_leading` clears it; the engine's runner gates on the
+   Event and fences its commits. **Shutdown discipline (the library has no stop):** a cooperative
+   poison in the ADAPTER — a stop flag that makes `update`/`create` return False — ends
+   `renew_loop` within `renew_deadline` and fires `onstopped_leading`; plus `release_if_held` on
+   the way out; the thread is daemon so process exit is never blocked. This shutdown shape is
+   bespoke, small, and named — it is adapter-layer, not a fork of the algorithm.
+2. **Dependency weight, measured:** `kubernetes` 36.0.3 = **21 packages** into the ephemeral env
+   (4.4 MiB wheel + requests/urllib3/google-auth/websocket-client/pyyaml/…), for one 183-LOC
+   pure module. On a k8s target the client is plausibly wanted anyway; on podman it is inert
+   image weight. **Vendoring the module is rejected by name** — a vendored copy is copy #2 with
+   the upstream's maintenance discarded, the exact thing the packages rule exists to prevent. The
+   trade goes to the operator as decision (22); my recommendation is to take the dependency.
+
+### R10.4 — What survives §R2 VERBATIM (stated where true, per the lead's instruction)
+
+The requirements analysis — TTL semantics, heartbeat, fencing-as-complement, cross-process
+single-flight, never-on-the-serving-path, the CAS defined-empty-result discipline, and the N>1
+safety analysis that killed both clock-free legs — **stands untouched, and it is precisely what
+made the library evaluable in minutes**: every R2.2 requirement maps onto a `Config` parameter, a
+lock member, or the adapter's two counters. R2.2's pins carry with re-aimed targets: expiry-seize,
+live-holder-not-stolen, renewal-loss-aborts, and the zombie-fenced-write-rejected fixture now
+exercise the adapter + library composition (≥8-way, 20 consecutive — unchanged law). What dies of
+§R2: the bespoke acquire/renew/reclaim ALGORITHM and the store-clock-authority requirement (a
+solved problem under observer-relative timing). `sherlock`'s rejection is endorsed on the lead's
+measured ground: no fencing surface is a correctness omission, not a convenience gap.
+
+### R10.5 — Decisions reconciled
+
+**(13)** re-dispositioned: the lease = `kubernetes.leaderelection` + the R10.2 SurrealDB adapter;
+R2's tunables map onto `Config(lease_duration=60s, renew_deadline, retry_period)` — recommended
+defaults 60s / 20s / 5s, declared config. **(12)** stale clause corrected in the table above
+(the git-≥2.48 end-state claim died with §R8; the row now says so rather than silently agreeing
+with itself). **NEW (22):** adopt the `kubernetes` dependency for `leaderelection` (recommended;
+vendoring rejected by name; weight priced in R10.3). **NEW (23):** the adapter's
+`release_if_held` extra (recommended).
+
+### R10.6 — The third-instance sweep (the lead's item 6): asked of every remaining primitive
+
+- **The heartbeat scheduler** — dissolved INTO the library (`renew_loop` is the heartbeat); no
+  longer ours at all.
+- **`StoreLease`** — dissolved into R10.2's adapter; R5's layer-1 is now "the adapter + the
+  library", and R5's layer-2 (`MaintenanceLoop`) SHRINKS: leadership callbacks come from the
+  library, leaving the Event bridge, the off-loop arithmetic executor (F12.4's home), coalescing,
+  and `wait_until_settled`/status — thin glue over asyncio.
+- **`_txn.retry_on_conflict` — named as the pattern's third instance, and deliberately NOT
+  churned** [my judgement, argued]: CLAUDE.md's own everyday-examples list says
+  *"retries/backoff → `tenacity`, not a hand-written loop."* The seam predates that being applied
+  here, and it now carries what tenacity does not ship: the domain classification seam, the
+  attempt-floor/deadline composition, per-statement rollback verdicts, eleven mutation-proven
+  consumers, and a runtime guard keyed on `retry_on_conflict.__code__` frames that would need
+  redesign under tenacity's own frame shapes. Migrating a proven, guarded, measured seam
+  mid-packet buys zero behaviour for real risk. **Disposition: raised durably (finding filed this
+  sitting), with the named re-open trigger — the next time `_txn`'s retry POLICY needs a
+  behavioural change, the tenacity migration is evaluated FIRST, before that change is
+  hand-written.** Not folded into 11-i.
+- **`MaintenanceLoop` itself** — the question was asked: candidates read were asyncio primitives
+  (stdlib — which IS the library for task lifecycle), `anyio` task groups (structured concurrency,
+  not lifecycle policy), `apscheduler` (cron-shaped scheduling; our triggers are event-driven
+  chokepoints). Verdict: the residue after R10 is ~thin glue over `asyncio.Event`/`Task` — stdlib
+  is the package; no fourth instance found HERE. A null result, stated as such.
+- **Everything else re-checked:** coalescing flag (a store field — trivia) · the hash-stable
+  sampler (`hashlib`/`uuid` — stdlib) · the findings-dedupe seam (domain, reused via the
+  Protocol) · the settled-index gate (domain). No further instances found; the sweep's method —
+  "what library does this?" asked BEFORE specifying — is now the standing question this file
+  models three times.
 
 *— end of revision. The operator rules; Addendum F @ `e109e91` remains the record of what was
 designed under the false constraints, and this file is what replaces it.*
