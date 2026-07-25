@@ -4,10 +4,17 @@ brief-base v6 read
 
 ## SUMMARY BLOCK
 
-- **state:** done-with-deviations.
+- **state:** done-with-deviations; both lead follow-ups closed (§F′).
 - **deliverable:** `scripts/comms_consumer_eval.py` (the committed acceptance instrument,
   spec `docs/plans/v2/03b-design-rulings-r2.md` §C1–C5) + `scripts/test_comms_consumer_eval.py`
-  (136 tests, `136 passed in 0.73s`, ruff clean). Committed at `0f662c8` and `35ee643`.
+  (**149 tests, `149 passed in 0.72s`**, ruff clean). Commits `0f662c8`, `35ee643`, `a1795b9`.
+- **roster verdict (lead follow-up 2): HONEST — no trust defect, nothing to file.** The
+  remainder derives from `total_non_retired` (pre-truncation, same session filter), never
+  from the 200-row window or the 5-name cap, and `send` passes the caller's RESOLVED session
+  into the enrichment. Fixture was cheap → added as a non-gating surface. Full trace: §F′.2.
+- **model-pin drift (lead follow-up 1): shipped.** Every run records the model each response
+  reports; a mismatch is loud on stderr + in the transcript. One judgement call stated for
+  you in §F′.1 (drift reports beside the verdict rather than failing the gate).
 - **wired vs awaiting:** everything is wired — the render helpers LANDED during this run, so
   the seam generates every fixture from real production code today. `--dry-run` exits 0 and
   prints the served surfaces + battery with provenance (measured 2026-07-25 at `35ee643`).
@@ -25,8 +32,9 @@ brief-base v6 read
   unknown-recipient reject or authorize a live-registry fixture; (c) confirm the
   `uv run --with anthropic` invocation vs. a dedicated eval venv. Body §D.
 - **receipt pointers:** §A (the 15 tasks + graders + controls) · §B (the render seam) · §C
-  (fixture discrimination) · §D (deviations/forks) · §E (the live call) · §F (RESIDUALS,
-  one verdict per row).
+  (fixture discrimination) · §D (deviations/forks, all four RULED by the lead) · §E (the
+  live call) · §F′ (the two lead follow-ups) · §F (RESIDUALS, one verdict per row) · §G
+  (how to run the gate).
 
 ---
 
@@ -209,12 +217,104 @@ The script reports per-run and total estimated USD in the transcript and on the 
 rates are the skill's standard table (Sonnet 5's introductory discount deliberately NOT
 applied — an over-stated cost never surprises anyone).
 
+## F′. LEAD FOLLOW-UPS (added after the ruling; commit `a1795b9`)
+
+### F′.1 — D1 hardening: the pin is now a RECEIPT, not a hope
+
+Implemented as asked. Every run records the `model` field each API **response**
+reports (not just the requested id). Surfaces:
+
+- `RunOutcome.served_models` — the distinct answering models, first-seen order.
+- `model_drift_notice(requested=, served=)` — returns a loud
+  `⚠ MODEL PIN DRIFT: requested 'claude-sonnet-5', but the API answered on [...] — the
+  pinned alias has been repointed upstream. This run did NOT measure the pinned model;
+  re-pin deliberately before treating it as a gate.`
+- Printed to **stderr** during the run, carried in a dedicated **transcript section**, and
+  the verdict table gained an **"answered by"** column so every row shows both ids.
+
+Positive control pinned (`TestModelPinDrift`): a mocked response whose `model` differs
+produces the notice; the pinned model produces none; a response reporting no model at all
+produces none; and a run-level test proves the notice reaches both the `RunOutcome` and the
+transcript.
+
+**One judgement call for you, stated rather than taken:** drift is reported **beside** the
+keyed verdict, not folded into it — a drifted run can still print PASS, with the notice
+attached. Rationale: the gate's verdict is about the SURFACE, and silently converting a
+model-supply event into a surface failure would misattribute it. Making drift hard-fail the
+gate is a one-line change (`gate_passed` also requiring `not run.drift_notice`) — say the
+word if you want it.
+
+### F′.2 — THE ROSTER VERDICT: **honest. No trust defect. Nothing to file.**
+
+Read: `AppContext._comms_enrich_unknown_agent`, `AgentRegistry.fleet`, and the new
+`AppContext._comms_send` path that routes into them.
+
+**The arithmetic, traced.** `fleet(session=…, limit=200)` issues `SELECT * FROM agent`
+under the session filter (**no SQL LIMIT**), partitions retired from non-retired, sets
+`total = len(non_retired)` — the **pre-truncation** count — and only then truncates
+`rows = non_retired[:limit]`. The enrichment takes `shown = names[:5]`
+(`_COVERAGE_NAMES_CAP`) and computes `remainder = window.total_non_retired - len(shown)`.
+**The remainder derives from the TRUE total, never from the row window or the display
+cap** — so with 300 non-retired agents the render reads `…5 names… (+295 more)`, not
+`(+195 more)`. The 200-row window cannot leak into the count. The label
+("non-retired agents") describes exactly the set the count covers, and retired rows are
+partitioned out before the total is taken.
+
+**Session scope is correct on the new path** — this was the specific thing worth checking,
+since `send` is new. `_comms_send` resolves recipients against `agent_row.session` (the
+caller's RESOLVED session, per B2.3) and passes **that same `session_scope`** into the
+enrichment, so the roster describes exactly the addressable recipient set. It does not
+inherit the dispatcher's raw (possibly `None`) `session` param, which would have taught a
+fleet-wide roster of agents the caller cannot address.
+
+**Edge cases checked, all closed:** an empty roster renders `none` with no remainder (the
+`0 - 0` case); `shown` cannot be empty while the total is positive (the window is
+`[:200]`); and the names are joined **unsanitised**, which is safe only because
+`AGENT_NAME_PATTERN = ^[a-z0-9][a-z0-9_-]{0,63}$` admits no newline, space, or backtick at
+register time. That last one was implicit — I pinned it explicitly
+(`test_the_roster_cannot_carry_a_forged_row`), so a widened charset goes RED on the render
+that CONSUMES names, not only on the registry that admits them.
+
+**The fixture was cheap, so it is in** — as a non-gating served surface:
+
+```
+agent 'fixer-z' is not registered — every comms call requires a prior 'register';
+non-retired agents: lead, idle-d, fixer-c, runner-g, prober-f (+2 more)
+```
+
+Both halves are production code and **nothing is transcribed**: the bare
+`UnknownAgentError` comes from the REAL `AgentRegistry.get_agent` (its resolve finds no row
+and raises), and the roster prose + remainder come from the REAL enrichment over a REAL
+`AgentFleetWindow` built by the REAL `fleet()`. The only stand-in is the **store** — each
+registry's `_query` is replaced with a canned result — which is the same posture the render
+fixtures already take toward the ledger. **No connection is opened**, so the instrument
+stays store-free and `--dry-run` keeps working with SurrealDB down.
+
+Fixture discrimination: **7 non-retired + 1 retired** → 5 shown, `(+2 more)`. 7 / 5 / 2 are
+pairwise distinct, so a build deriving the remainder from the row window rather than the
+true total is discriminable; a `(+3 more)` would mean retirement leaked into a set whose
+label says non-retired. *Which* five are shown is deliberately NOT pinned — that is
+`fleet()`'s status-then-freshest-heartbeat ordering, a display choice, not the count claim
+under test.
+
+**Loud absence, as directed:** `ServedSurfaces.absent_surfaces` records any surface that
+could not be generated; absences print to stderr (`⚠ ABSENT SURFACE — …`) and get their own
+transcript section, and a complete run explicitly states *"every specified surface was
+generated; none absent."* — so a reader never has to infer completeness from a missing
+section.
+
+Battery impact: none of the 15 tasks key on this surface (it is non-gating, as ruled). It
+does strengthen task 12 slightly, since "the calls the tool REJECTED" now includes a
+fourth, count-bearing reject.
+
+**Instrument state after both follow-ups: 149 tests pass, ruff clean, `--dry-run` exits 0.**
+
 ## F. RESIDUALS — one verdict per row (no wholesale classification)
 
 | # | observation | verdict |
 |---|---|---|
 | 1 | The self-note receipt renders `sent #204 [signal] → fixer-b` with NO thread cell (B3.2 struck), so a reader cannot tell from the RECEIPT which thread a self-note rode. | **Not a defect — by design.** Task 5's prompt states the thread; the clearing RULE comes from the question teach line, which is what §C2.5 tests. Recorded because it makes the teach line load-bearing rather than decorative. |
-| 2 | `_render_comms_send` shipped an additive `recipients must ack: lore_comms action=ack seqs=[201]` line on directive sends (not in my read of B3). | **Observation for the lead.** Consistent with §1.5 (recovery moves ride the response); it adds a second place a consumer sees the ack verb. No grader keys on it. Flagging so the contract author confirms it is registered/proven per B8. |
+| 2 | `_render_comms_send` shipped an additive `recipients must ack: lore_comms action=ack seqs=[201]` line on directive sends (not in my read of B3). | **ANSWERED by the lead — no defect.** It is contract-required, registered and proven: `loremaster/tests/test_comms_promise_registry.py`'s `_PROOF_LIST` entry with its non-cross-satisfied marker. Row closed. |
 | 3 | The acked re-serve shipped as a TRAILER line (`re-served after ack: #73 — informational; …`) rather than a row suffix. | **Fine.** §A-GRAFT left the shape to the contract author. Task 4's prompt names the seq, so it does not depend on the placement. |
 | 4 | The ack render's header reads `acked 1 of 4: #71` while FIVE entries were requested (the duplicate pair). | **Consistent with §B5's consistency clause** (counts derive from DISPLAYED membership, not raw entry counts). Not graded by any task. Recorded so nobody later reads it as an arithmetic bug. |
 | 5 | `send_broadcast`'s receipt says `3 agents in session wave7` — count-form, no names. | **Correct per B3.1.** Task 10 keys on the CALL, not on the receipt, so the count-form is not a grading dependency. |
