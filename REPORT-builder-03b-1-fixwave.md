@@ -7,14 +7,15 @@ brief-base v6 read
 - **state:** done-with-deviations. All nine authorized items landed, plus the D3 ordering pin.
 - **verdict:** every fix is mutation-proven. **Two of my own pins did NOT discriminate on first
   attempt and were repaired before landing** — §4 is the honest record of that.
-- **gates (measured 2026-07-25 at `7574edc`):** `uv run ruff check .` **All checks passed** ·
-  `./scripts/typecheck.sh` **0 errors, all three members, 149 source files** · skill suite
-  **117 passed** · 20-consecutive concurrency **20/20, 14 passed each,
-  TOTAL_RUNS_WITH_FAILURES=0** · full suite **1 failed, 6550 passed, 17 skipped, 3 xfailed**
-- ⚠ **the 1 failure is NOT mine and is not fixable by me** — `test_retired_symbols.py` fails on
-  `docs/eval/smoke_p8b.py`, a sibling agent's committed file outside my writable set. Provenance
-  established, not assumed (§2). **The suite does not reach 0 failed until the smoke author renames
-  one constant.**
+- **gates (final tree `c2234bc`, measured 2026-07-25):** `uv run ruff check .` **All checks
+  passed** · `./scripts/typecheck.sh` **0 errors, all three members, 149 source files** · skill
+  suite **117 passed** · 20-consecutive concurrency **20/20, 14 passed each,
+  TOTAL_RUNS_WITH_FAILURES=0** · full suite **6551 passed, 0 failed, 17 skipped, 3 xfailed**
+- ⚠ **RESOLVED SINCE THE BODY WAS WRITTEN.** At `7574edc` the suite read *1 failed / 6550 passed*,
+  and that 1 was NOT mine: `test_retired_symbols.py` firing on a sibling's
+  `docs/eval/smoke_p8b.py` (§2 — provenance established, not assumed). The smoke author has since
+  landed the rename as `582fd92`, and the suite now reads **0 failed**. §2 is kept as the record of
+  how it was diagnosed and why widening the allowlist would have been the wrong fix.
 - **deviations:** F1 could not achieve one-concern commits across the nine items (contiguous pin
   insertion; splitting yields RED intermediates) · F2 declared `anyio` in
   `loremaster/pyproject.toml`, a file outside my original writable set · F3 decided `seqs=[]`
@@ -151,8 +152,11 @@ Success: no issues found in 149 source files     typecheck: loremaster OK
 $ cd skills/lore-deploy/scripts && uv run python -m pytest -q . ../tests
 117 passed in 14.28s
 
-$ uv run pytest -n auto -q
-1 failed, 6550 passed, 17 skipped, 3 xfailed, 1 warning in 190.66s   (§2 — the 1 is not mine)
+$ uv run pytest -n auto -q          # final tree c2234bc, after the sibling's 582fd92
+6551 passed, 17 skipped, 3 xfailed, 1 warning in 334.84s
+
+# at 7574edc, before the sibling landed their rename:
+1 failed, 6550 passed, 17 skipped, 3 xfailed, 1 warning in 190.66s   (§2 — the 1 was not mine)
 ```
 
 **20-consecutive concurrency, re-run because the seam changed** (send mint + ack CAS + trace
@@ -268,8 +272,8 @@ readings, and the pick:
 | id | residual | verdict |
 |---|---|---|
 | **R1** | The `FakeMessageLedger` oracle's `EmptyRecipientSetError` prose differs from production's. Production: *"an empty recipient set … is a caller error, not a broadcast"*. The fake: *"no other non-retired agent is registered in session 'X'"*. | **OPEN — LEAD/CONTRACT-AUTHOR.** No surface pin can see production's wording, because every surface test rides the fake. That is precisely how blind-D4 passed certification, and the same blind spot covers every other divergent error string. An oracle change is a contract-author + adversary edit, never a builder drive-by — surfaced, not touched. |
-| **R2** | The committed `TestACancelledDispatchStillRecordsItsRow` is non-discriminating: it uses a non-suspending recorder and edge-triggered `asyncio` cancellation. | **LEFT AS IS, FLAGGED.** It is not wrong — it pins the asyncio shape and passes — but it proves less than its name implies. My anyio pin now covers the production mechanism. Amending the committed pin was not in the authorized list. |
-| **R3** | `test_retired_symbols.py` RED from `docs/eval/smoke_p8b.py` (§2). | **NOT MINE, ROUTED TO THE LEAD.** One rename in the sibling's file. Do not widen the allowlist. |
+| **R2** | The committed `TestACancelledDispatchStillRecordsItsRow` is non-discriminating: it uses a non-suspending recorder and edge-triggered `asyncio` cancellation. | **PINNED AS A KNOWN BOUND (`c2234bc`), lead-authorized.** Docstring only — no assertion added, removed or changed. It states what the pin covers (the asyncio shape, genuinely), what it provably does not (a suspending emission under a level-triggered anyio scope — production, since `record_trace` is a network round-trip), the MEASURED receipt (it stays GREEN with the shield removed while the discriminating pin goes RED, re-verified at this tree), the four-cell table, a pointer to the discriminating pin, and a re-open trigger. It also says outright NOT to repoint it at the suspending recorder: the asyncio shape is worth keeping pinned on its own. An unpinned known limitation is indistinguishable from an unknown one. |
+| **R3** | `test_retired_symbols.py` RED from `docs/eval/smoke_p8b.py` (§2). | **CLOSED by the smoke author (`582fd92`), not by me.** Routed to the lead, who forbade widening the allowlist; the sibling renamed the regex. Suite now 0 failed. Kept as a row because the DIAGNOSIS is the reusable part: a true positive of a deliberately anchor-free guard, not noise to suppress. |
 | **R4** | A sibling committed `bdb8ea4 test(03b): gate 6 — the drain elision's re-ask is OBEYABLE` — a deploy gate for the same item-1 defect. | **PROBABLY COMPLEMENTARY, WORTH THE LEAD'S EYE.** Their live smoke and my unit round-trip pins attack the same defect from different layers, which is defence in depth rather than duplication — but two agents converging on one finding is a coordination fact, not a coincidence to ignore. |
 | **R5** | Item 9 fixed the SERVED half of blind-D6. Retention, the unbounded `trace` growth, and the full-scan `GROUP BY` on a hot read are untouched. | **DELIBERATE — the lead ledgered them.** Recorded so the boundary between what this wave fixed and what it did not is explicit. |
 | **R6** | Blind D8 (`refs`/`thread`/`task_id` bypass the body cap) and D11 (`drain` is at-most-once with no recovery verb). | **NOT IN SCOPE — the lead ledgered both.** Neither is touched here. Naming them so a reader of this report does not assume the wave covered every finding in the blind report. |
