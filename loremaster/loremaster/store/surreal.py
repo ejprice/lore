@@ -88,6 +88,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -837,35 +838,57 @@ class SurrealStore:
             {"content": content},
         )
 
-    async def trace_aggregates(self) -> list[dict[str, Any]]:
-        """Return per-tool call counts + each tool's latest trace timestamp.
+    async def trace_aggregates(self, *, window_days: int) -> list[dict[str, Any]]:
+        """Per-tool call counts + latest trace instant, over a BOUNDED WINDOW.
 
-        ONE bounded ``GROUP BY`` aggregate over the whole ``trace`` table:
-        ``count()`` per group is the call count,
-        ``time::max(ts)`` per group is that tool's most recent trace instant.
-        Live-verified against the project's pinned SurrealDB (3.1.5): ``count()``
-        + ``time::max()`` combine correctly under ``GROUP BY`` for a ``datetime``
+        ``count()`` per group is the call count, ``time::max(ts)`` per group is
+        that tool's most recent trace instant. Live-verified: ``count()`` +
+        ``time::max()`` combine correctly under ``GROUP BY`` for a ``datetime``
         column, whereas ``math::max()``/``array::max()`` do NOT (they silently
-        return ``-inf``/``[None, ...]`` on a datetime field) — ``time::max`` is
-        the only correct choice here.
+        return garbage on a datetime field) — ``time::max`` is the only correct
+        choice here.
+
+        THE WINDOW IS THE POINT, and it is a SCAN bound, not a display one. This
+        read runs on every status call, and the ``trace`` table grows by one row
+        per served tool call forever. Unwindowed it is a full scan whose cost
+        rises with the table's whole lifetime; ``WHERE ts > $cutoff`` rides the
+        ``trace_ts`` index, so the work is proportional to IN-WINDOW traffic
+        regardless of how old the table is. It also bounds CARDINALITY for free:
+        the group key is the DISPATCHED tool name, which a caller controls, so a
+        client spamming one typo would otherwise add a group forever — inside a
+        window, junk names AGE OUT. Nothing is deleted to achieve that: an
+        unknown-name dispatch is real traffic and a client-confusion signal worth
+        keeping. The serve is bounded, the record is not falsified.
+
+        ⚠ The cutoff is computed PER CALL, deliberately. A cutoff cached at
+        construction goes stale and silently re-admits the unbounded scan.
+
+        Args:
+            window_days: How many days back to aggregate. Passed in rather than
+                read here so the ONE configured value drives both this query and
+                the prose that describes it to a consumer — a window the caller
+                names and a window the render claims cannot then drift apart.
 
         Returns:
-            One row per distinct ``tool`` that has EVER traced, each
+            One row per distinct ``tool`` that traced INSIDE THE WINDOW, each
             ``{"tool": str, "calls": int, "latest": datetime}`` (``latest`` is a
             tz-aware :class:`datetime.datetime`, the same native-object idiom
-            :meth:`record_trace` writes); ``[]`` for an empty trace table
-            (nothing recorded yet) — never an error. Row order is NOT
-            guaranteed; the caller sorts if it needs determinism.
+            :meth:`record_trace` writes); ``[]`` when nothing traced in the
+            window — never an error. Row order is NOT guaranteed; the caller
+            sorts if it needs determinism.
 
         Raises:
             SurrealConnectionError: The server is unreachable or the socket died.
             SurrealStoreError: The engine rejected the read (a domain fault).
         """
+        cutoff = datetime.now(UTC) - timedelta(days=window_days)
         return self._as_rows(
             await self._query(
                 f"SELECT {TRACE_TOOL_FIELD} AS tool, count() AS calls, "
                 f"time::max({TRACE_TS_FIELD}) AS latest "
-                f"FROM {TRACE_TABLE} GROUP BY {TRACE_TOOL_FIELD}"
+                f"FROM {TRACE_TABLE} WHERE {TRACE_TS_FIELD} > $cutoff "
+                f"GROUP BY {TRACE_TOOL_FIELD}",
+                {"cutoff": cutoff},
             )
         )
 

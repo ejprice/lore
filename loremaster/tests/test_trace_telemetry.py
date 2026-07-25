@@ -217,6 +217,7 @@ import re
 import tokenize
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager, suppress
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -234,12 +235,13 @@ from _surreal_harness import (
     run,
     unique_database,
 )
-from loremaster.config import LoreConfig
-from loremaster.server import AppContext, LoreServer, build_mcp_server
+from loremaster.config import DEFAULT_TELEMETRY_WINDOW_DAYS, LoreConfig
+from loremaster.server import AppContext, LoreServer, TraceSummary, build_mcp_server
 from loremaster.store._txn import _ERROR_CLASS_FIELD_COERCION
 from loremaster.store.surreal import SurrealStore, SurrealStoreError
 from loremaster.store.surreal_schema import (
     TRACE_TABLE,
+    TRACE_TS_FIELD,
     _define_field,
     _define_table,
     generate_ddl,
@@ -282,6 +284,10 @@ _TRACE_UNCHANGED_COLUMNS: dict[str, str] = {
 # T3: ONE global native sequence. No BATCH/START clause (a changed one never
 # migrates onto an existing store — #146), and ``IF NOT EXISTS`` because a bare
 # DEFINE SEQUENCE raises on the re-apply ``ensure_ready`` performs every boot.
+# DD-1.b: the aggregate read is WINDOWED, and the window is a REQUIRED argument.
+# Derived from the production default rather than written as 14, so a re-tune
+# re-derives every consumer instead of silently unbinding these reads.
+_TELEMETRY_WINDOW_DAYS = DEFAULT_TELEMETRY_WINDOW_DAYS
 _TRACE_SEQUENCE_NAME = "trace_seq"
 _TRACE_SEQUENCE_STATEMENT = f"DEFINE SEQUENCE IF NOT EXISTS {_TRACE_SEQUENCE_NAME}"
 # T2.1: the 06-read index, shipped inside the free window (the trace table is
@@ -928,12 +934,31 @@ class TestTheMonotonicityPredicateItself:
 
 
 def _returning(rows: list[dict[str, Any]]) -> Any:
-    """An async callable returning ``rows`` — the ``trace_aggregates`` stand-in."""
+    """An async ``trace_aggregates`` stand-in that DEMANDS the window kwarg.
 
-    async def _call() -> list[dict[str, Any]]:
+    It accepts ``window_days`` as KEYWORD-ONLY and asserts it was supplied,
+    mirroring the real signature: a caller that dropped the window would
+    otherwise read an unbounded scan against this double and pass.
+    """
+
+    async def _call(*, window_days: int) -> list[dict[str, Any]]:
+        assert window_days > 0, "the aggregate read must carry a positive window"
         return rows
 
     return _call
+
+
+def _aggregate_context(rows: list[dict[str, Any]], *, window_days: int) -> Any:
+    """An ``AppContext``-shaped double for the windowed per-tool aggregate."""
+    return cast(
+        Any,
+        SimpleNamespace(
+            write_store=SimpleNamespace(trace_aggregates=_returning(rows)),
+            _config=SimpleNamespace(
+                telemetry=SimpleNamespace(aggregate_window_days=window_days)
+            ),
+        ),
+    )
 
 
 def _expected_params_hash(arguments: dict[str, Any]) -> str:
@@ -1967,6 +1992,132 @@ class TestTheEmissionSurvivesANYIOsLevelTriggeredCancellation:
         )
 
 
+class TestTheHotAggregateReadIsWINDOWEDAtTheQueryNotJustTheRender:
+    """DD-1.b. The per-tool aggregate runs on EVERY status call over a table that
+    grows by one row per served tool call, forever. Unwindowed it is a full scan
+    whose cost rises with the table's whole lifetime.
+
+    THE WRONG BUILD THE DESIGN NAMES FIRST, and it is the one no assertion about
+    NUMBERS can see: window the RENDER but not the QUERY. At small N every served
+    figure is identical, so only the QUERY TEXT and the EXPLAIN plan discriminate.
+
+    EXPLAIN RECEIPT (spike-surreal `ws://127.0.0.1:18000`, 3.2.1, throwaway DB —
+    `:18500` never touched), with the pre-change shape as its CONTROL:
+
+        WINDOWED    -> Aggregate / IndexScan{index: trace_ts, access: ">d'…'"}
+        UNWINDOWED  -> Aggregate / TableScan{table: trace}
+
+    The control is what makes it a receipt rather than a claim: the SAME probe
+    shows the scan the window removes.
+    """
+
+    @staticmethod
+    def _statements(store: Any) -> list[str]:
+        """Every statement the store issues, captured at its own query seam."""
+        seen: list[str] = []
+        original = store._query
+
+        async def _spy(statement: str, params: dict[str, Any] | None = None) -> Any:
+            seen.append(statement)
+            return await original(statement, params)
+
+        store._query = _spy
+        return seen
+
+    async def test_the_aggregate_query_carries_the_ts_window_conjunct(
+        self, trace_store: SurrealStore
+    ) -> None:
+        seen = self._statements(trace_store)
+        await trace_store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
+        assert seen, "the spy observed no statement — it is detached from the query seam"
+        aggregate = [text for text in seen if "GROUP BY" in text]
+        assert len(aggregate) == 1, f"expected ONE aggregate statement, got {aggregate!r}"
+        assert "WHERE ts >" in aggregate[0], (
+            f"the aggregate query carries no `WHERE ts >` conjunct, so the SCAN is unbounded "
+            f"however the numbers are rendered — the wrong build DD-1.b names first, and it is "
+            f"invisible to every assertion about the served values: {aggregate[0]!r}"
+        )
+        assert "$cutoff" in aggregate[0], (
+            "the cutoff is not a BOUND PARAM — an interpolated datetime is both an injection "
+            "surface and a value no plan can reuse"
+        )
+
+    async def test_an_OUT_OF_WINDOW_row_is_excluded_from_the_served_numbers(
+        self, trace_store: SurrealStore
+    ) -> None:
+        """The second wrong build: window the QUERY but keep counting everything,
+        or window nothing and claim you did. One in-window row and one row well
+        outside it — a build with no window reports 2."""
+        await _record_trace(trace_store)
+        stale = datetime.now(UTC) - timedelta(days=_TELEMETRY_WINDOW_DAYS + 30)
+        await trace_store._query(
+            f"CREATE {TRACE_TABLE} CONTENT $content",
+            {
+                "content": {
+                    "tool": _SEAM_TOOL,
+                    "params_hash": _SEAM_PARAMS_HASH,
+                    "latency_ms": _SEAM_LATENCY_MS,
+                    "ts": stale,
+                }
+            },
+        )
+        rows = await _trace_rows(trace_store)
+        assert len(rows) == 2, f"fixture check: both rows must EXIST, got {len(rows)}"
+        aggregates = await trace_store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
+        for_tool = [row for row in aggregates if row.get("tool") == _SEAM_TOOL]
+        assert len(for_tool) == 1, f"expected one group for {_SEAM_TOOL}: {aggregates!r}"
+        assert for_tool[0]["calls"] == 1, (
+            f"the aggregate counted {for_tool[0]['calls']} calls where only ONE is inside the "
+            f"{_TELEMETRY_WINDOW_DAYS}-day window — the row exists (asserted above), so this is "
+            f"the window not being applied, not a missing row"
+        )
+
+    async def test_the_cutoff_is_computed_PER_CALL_never_cached(
+        self, trace_store: SurrealStore
+    ) -> None:
+        """The third wrong build: compute the cutoff once and cache it. A stale
+        cutoff silently widens back toward the unbounded scan, and every number
+        stays plausible. Two reads, and their cutoffs must DIFFER."""
+        cutoffs: list[Any] = []
+        original = trace_store._query
+
+        async def _spy(statement: str, params: dict[str, Any] | None = None) -> Any:
+            if params and "cutoff" in params:
+                cutoffs.append(params["cutoff"])
+            return await original(statement, params)
+
+        trace_store._query = _spy  # type: ignore[method-assign]
+        await trace_store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
+        await asyncio.sleep(0.01)
+        await trace_store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
+        assert len(cutoffs) == 2, (
+            f"the spy captured {len(cutoffs)} cutoffs — it is not observing the bound param"
+        )
+        assert cutoffs[0] != cutoffs[1], (
+            "both reads used the SAME cutoff, so it is computed once and cached. A cached "
+            "cutoff ages: the window silently widens back toward a full scan while every "
+            "served number stays plausible"
+        )
+
+    async def test_the_window_the_numbers_are_computed_over_is_SERVED(self) -> None:
+        """Derived prose, made mechanical: the served summary carries the window
+        itself, so a consumer never has to guess whether a count is windowed or
+        lifetime — and the description cannot drift from the value."""
+        from loremaster.server import AppContext
+
+        rows = [{"tool": _SEAM_TOOL, "calls": 3, "latest": None}]
+        summary = await AppContext._trace_summary(
+            _aggregate_context(rows, window_days=_TELEMETRY_WINDOW_DAYS)
+        )
+        assert summary.window_days == _TELEMETRY_WINDOW_DAYS
+        served = " ".join((TraceSummary.__doc__ or "").split())
+        assert "WINDOWED" in served, (
+            "the served model's own docstring does not say its numbers are windowed — a "
+            "consumer reading them as lifetime totals draws the wrong conclusion from a quiet "
+            "week, which is the served-prose class this repo keeps paying for"
+        )
+
+
 class TestTheServedPerToolAggregateIsCappedAndCounted:
     """FIX WAVE — blind-audit D6 (the served half; retention is ledgered).
 
@@ -1991,10 +2142,12 @@ class TestTheServedPerToolAggregateIsCappedAndCounted:
             {"tool": f"probe_tool_{index:03d}", "calls": index + 1, "latest": None}
             for index in range(over)
         ]
-        context = cast(
-            Any, SimpleNamespace(write_store=SimpleNamespace(trace_aggregates=_returning(rows)))
-        )
+        context = _aggregate_context(rows, window_days=_TELEMETRY_WINDOW_DAYS)
         summary = await AppContext._trace_summary(context)
+        assert summary.window_days == _TELEMETRY_WINDOW_DAYS, (
+            "the served summary does not carry the window its numbers were computed over — a "
+            "consumer would read windowed counts as lifetime totals"
+        )
         assert len(summary.by_tool) == _TRACE_BY_TOOL_CAP, (
             f"the served per-tool list carried {len(summary.by_tool)} of {over} entries — an "
             f"uncapped list whose keys a CALLER controls grows every future status response"
@@ -2024,9 +2177,7 @@ class TestTheServedPerToolAggregateIsCappedAndCounted:
             {"tool": f"probe_tool_{index:03d}", "calls": index + 1, "latest": None}
             for index in range(under)
         ]
-        context = cast(
-            Any, SimpleNamespace(write_store=SimpleNamespace(trace_aggregates=_returning(rows)))
-        )
+        context = _aggregate_context(rows, window_days=_TELEMETRY_WINDOW_DAYS)
         summary = await AppContext._trace_summary(context)
         assert len(summary.by_tool) == under
         assert summary.tools_elided == 0, (
@@ -2534,6 +2685,41 @@ class TestTheTraceSchemaDelta:
             "and a UNIQUE index would reject the second."
         )
 
+    def test_the_ts_index_ships_in_the_SAME_free_window(self) -> None:
+        """DD-1.a — the one DEPLOY-GATED line in the design wave.
+
+        The trace table is empty exactly once: production holds zero rows today
+        (independently read on the live store before this deploy), and after it
+        the table grows on EVERY served tool call. An index added later BUILDS,
+        blocking, at every store's next boot. Unlike the deliberately-withheld
+        ``transport_session`` index, BOTH consumers are named and designed — the
+        windowed aggregate read that ships with it, and the retention sweep a
+        later packet lands once it has read the curve these rows exist to
+        produce — so the free-window argument is whole rather than speculative.
+
+        It carries no behavioural pin BY DESIGN (an index changes plan, not
+        result), which is exactly why it needs a structural one: without this,
+        deleting the line is invisible until someone measures a boot.
+
+        Rider, obeyed: parse the FIELDS clause, never substring the statement —
+        an index NAMED ``trace_ts`` contains ``ts`` as a substring, so a
+        substring assertion would pass over ANY fields list.
+        """
+        ddl = generate_ddl(dim=_DIM)
+        assert _index_fields(ddl, f"{TRACE_TABLE}_ts") == (TRACE_TS_FIELD,), (
+            f"the ts index must be FIELDS {TRACE_TS_FIELD} exactly — it is what makes the "
+            f"windowed aggregate a range IndexScan instead of a full TableScan"
+        )
+        statement = _index_statement(ddl, f"{TRACE_TABLE}_ts")
+        assert statement.startswith(f"DEFINE INDEX IF NOT EXISTS {TRACE_TABLE}_ts "), (
+            f"the index must be `IF NOT EXISTS` — an INDEX OVERWRITE re-validates and rebuilds "
+            f"a populated index and can raise at boot. Served: {statement!r}"
+        )
+        assert "UNIQUE" not in statement, (
+            "the ts index must be PLAIN: many trace rows legitimately share a timestamp, and a "
+            "UNIQUE index would reject the second one"
+        )
+
     def test_no_transport_session_index_is_shipped(self) -> None:
         # A deliberate NON-shipment with a named decision point: packet 06's join
         # design may not need it, and the free-window argument is weaker for an
@@ -2788,7 +2974,7 @@ class TestTheTraceDeltaMigratesADirtyStore:
         await store.ensure_ready()
         try:
             await _record_trace(store)
-            aggregates = await store.trace_aggregates()
+            aggregates = await store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
             for_tool = [row for row in aggregates if row.get("tool") == _SEAM_TOOL]
             assert len(for_tool) == 1, f"expected one aggregate group for {_SEAM_TOOL}, got {aggregates!r}"
             assert for_tool[0]["calls"] == 2, (
@@ -2903,7 +3089,7 @@ class TestTheOrdinalIsMintedByTheStore:
             f"no gap was created ({ordinals!r}), so this pin cannot discriminate row-counting from "
             f"ordinal arithmetic — the burn did not take."
         )
-        aggregates = await trace_store.trace_aggregates()
+        aggregates = await trace_store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
         for_tool = [row for row in aggregates if row.get("tool") == _SEAM_TOOL]
         assert len(for_tool) == 1
         assert for_tool[0]["calls"] == len(rows), (

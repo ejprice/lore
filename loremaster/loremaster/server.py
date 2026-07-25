@@ -84,6 +84,9 @@ from loremaster.config import (
     DEFAULT_COMMS_DRAIN_LIMIT as DEFAULT_COMMS_DRAIN_LIMIT,  # noqa: PLC0414
 )
 from loremaster.config import (
+    DEFAULT_TELEMETRY_WINDOW_DAYS as DEFAULT_TELEMETRY_WINDOW_DAYS,  # noqa: PLC0414
+)
+from loremaster.config import (
     WATCH_LIVE,
     WATCH_STATIC,
     LoreConfig,
@@ -156,6 +159,12 @@ from loremaster.messages import (
 )
 from loremaster.messages import (
     MESSAGE_GRADES as _MESSAGE_GRADES,
+)
+from loremaster.messages import (
+    MESSAGE_POINTER_MAX_CHARS as _MESSAGE_POINTER_MAX_CHARS,
+)
+from loremaster.messages import (
+    MESSAGE_REFS_MAX_COUNT as _MESSAGE_REFS_MAX_COUNT,
 )
 from loremaster.messages import (
     AckOutcome as _AckOutcome,
@@ -1766,26 +1775,37 @@ class ToolTraceCount(BaseModel):
 
 
 class TraceSummary(BaseModel):
-    """The ``trace`` table's aggregate, as surfaced by ``lore_index``.
+    """The ``trace`` table's aggregate over a BOUNDED WINDOW, as surfaced by
+    ``lore_index``.
 
-    ``total``/``by_tool``/``latest_at`` are ``0``/``[]``/``None`` only when
-    nothing has ever been traced — a fresh store. Every served tool call writes
-    one row through :class:`TracingFastMCP`, so a long-lived deployment whose
-    numbers stay flat is a SIGNAL (the emission is broken), not the expected
-    reading.
+    ⚠ EVERY NUMBER HERE IS WINDOWED, NOT ALL-TIME. The read is
+    ``WHERE ts > now - window`` (the configured
+    ``telemetry.aggregate_window_days``), because the table grows by one row per
+    served tool call forever and this aggregate runs on every status call. A
+    consumer reading these as lifetime totals would draw the wrong conclusion
+    from a quiet week, so :attr:`window_days` travels WITH them and every served
+    description of them is DERIVED from it rather than restated beside it.
+
+    ``total``/``by_tool``/``latest_at`` are ``0``/``[]``/``None`` when nothing
+    traced IN THE WINDOW. Every served tool call writes one row through
+    :class:`TracingFastMCP`, so a live deployment whose numbers stay flat is a
+    SIGNAL (the emission is broken), not the expected reading.
 
     Attributes:
-        total: The total trace-row count across EVERY tool — including any the
-            display cap elided, so it is NOT the sum of ``by_tool``'s ``calls``
-            whenever ``tools_elided`` is non-zero.
-        by_tool: Per-tool call counts for the busiest
+        total: Calls across EVERY tool in the window — including any the display
+            cap elided, so it is NOT the sum of ``by_tool``'s ``calls`` whenever
+            ``tools_elided`` is non-zero.
+        by_tool: In-window call counts for the busiest
             :data:`_TRACE_BY_TOOL_CAP` tools, sorted by tool name for a
             deterministic render.
         tools_elided: How many DISTINCT tools the cap left out. Non-zero is the
             disclosure that makes ``total`` and ``by_tool`` consistent rather
             than contradictory.
-        latest_at: The ISO-8601 timestamp of the single most recent trace row
-            across every tool, or ``None`` when the table is empty.
+        window_days: The window every other field is computed over. Served so a
+            reader never has to guess it, and so the numbers and their
+            description can never disagree.
+        latest_at: The ISO-8601 timestamp of the most recent in-window trace row
+            across every tool, or ``None`` when nothing traced in the window.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1793,6 +1813,7 @@ class TraceSummary(BaseModel):
     total: int = 0
     by_tool: list[ToolTraceCount] = Field(default_factory=list)
     tools_elided: int = 0
+    window_days: int = DEFAULT_TELEMETRY_WINDOW_DAYS
     latest_at: str | None = None
 
 
@@ -4111,11 +4132,17 @@ class AppContext:
         return self._age_status_from_iso(snapshots[0].created_at)
 
     async def _trace_summary(self) -> TraceSummary:
-        """The store's ``trace`` table aggregate, sorted by tool name for a
-        deterministic render (the store itself makes no ordering promise)."""
-        rows = await self.write_store.trace_aggregates()
+        """The store's WINDOWED ``trace`` aggregate, sorted by tool name for a
+        deterministic render (the store itself makes no ordering promise).
+
+        The window is read from config ONCE here and then travels two ways — into
+        the query's cutoff and onto the served model — so the numbers a consumer
+        reads and the window they were computed over cannot drift apart.
+        """
+        window_days = int(self._config.telemetry.aggregate_window_days)
+        rows = await self.write_store.trace_aggregates(window_days=window_days)
         if not rows:
-            return TraceSummary()
+            return TraceSummary(window_days=window_days)
         counts = [ToolTraceCount(tool=row["tool"], calls=row["calls"]) for row in rows]
         # CAPPED AND COUNTED. The group key is the DISPATCHED tool name, and an
         # unknown name still reaches the seam (the dispatch fails INSIDE the
@@ -4136,6 +4163,7 @@ class AppContext:
             total=total,
             by_tool=by_tool,
             tools_elided=len(counts) - len(by_tool),
+            window_days=window_days,
             latest_at=latest_at,
         )
 
@@ -8488,9 +8516,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str | None,
             Field(
                 description=(
-                    "For 'register': the fleet task id (lore_tasks) this agent is "
-                    "currently working — optional, mutable on re-register. For "
-                    "'send': the task this message concerns."
+                    f"For 'register': the fleet task id (lore_tasks) this agent is "
+                    f"currently working — optional, mutable on re-register. For "
+                    f"'send': the task this message concerns (a LABEL, at most "
+                    f"{_MESSAGE_POINTER_MAX_CHARS} characters)."
                 )
             ),
         ] = None,
@@ -8501,8 +8530,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                     "For 'heartbeat': a free-text note recorded as the agent's "
                     "last_note (visible on 'fleet'). For 'brief_publish': an "
                     "optional free-text publish note recorded on the brief version. "
-                    "For 'ack': a note recorded on exactly the edges this call's "
-                    "stamp actually won."
+                    f"For 'ack': a short prose note recorded on exactly the edges this "
+                    f"call's stamp actually won (at most {_MESSAGE_BODY_MAX_CHARS} "
+                    f"characters — it is prose, so it takes the body's cap, not a "
+                    f"pointer's)."
                 )
             ),
         ] = None,
@@ -8567,7 +8598,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                     "For 'send': the recipient agent names — omit it (or pass []) to "
                     "broadcast to every non-retired teammate in your session, excluding "
                     "you. Every name is resolved in YOUR session only, and a rejected "
-                    "send writes nothing at all."
+                    "send writes no message and no delivery — all-or-nothing."
                 )
             ),
         ] = None,
@@ -8585,9 +8616,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str | None,
             Field(
                 description=(
-                    "For 'send': the conversation thread (defaults to your session). "
-                    "Use 'q:<topic>' for a question — one thread carries ONE "
-                    "conversational debt, so separate questions take separate threads."
+                    f"For 'send': the conversation thread (defaults to your session), at "
+                    f"most {_MESSAGE_POINTER_MAX_CHARS} characters. Use 'q:<topic>' for a "
+                    f"question — one thread carries ONE conversational debt, so separate "
+                    f"questions take separate threads. A thread is a LABEL, not content."
                 )
             ),
         ] = None,
@@ -8595,9 +8627,12 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             list[str] | None,
             Field(
                 description=(
-                    "For 'send': POINTERS this message references (report paths, "
-                    "finding ids, task ids). Bodies are capped; the content lives in "
-                    "what you name here."
+                    f"For 'send': POINTERS this message references — report paths, "
+                    f"finding ids, task ids. At most {_MESSAGE_REFS_MAX_COUNT}, each at "
+                    f"most {_MESSAGE_POINTER_MAX_CHARS} characters. Bodies carry PROSE and "
+                    f"refs carry ADDRESSES: the content lives in the report or finding you "
+                    f"point AT, never inline here. Over either bound is refused, never "
+                    f"truncated — a shortened pointer is a broken one."
                 )
             ),
         ] = None,
