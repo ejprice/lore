@@ -5622,6 +5622,100 @@ class TestTheAdvertisedReAskIsACTUALLYReachable:
             f"row: the honest peek re-ask is the whole pending set, never the remainder"
         )
 
+    _CONSUME_TEACH = "re-run without peek=true to consume this window"
+
+    async def test_a_PEEK_ABOVE_THE_CAP_teaches_an_escape_that_CONVERGES(self) -> None:
+        """WAVE 3 — the CROSSED cell, and the reason it shipped broken.
+
+        The two legs above exercise ``peek=True`` and ``total_pending > cap`` on
+        SEPARATE axes and never together. In the conjunction the arithmetic
+        re-ask is a FIXED POINT: a peek stamps nothing, so the next peek re-reads
+        from the oldest row, and ``min(total_pending, cap)`` advertises the limit
+        the caller just used. Measured on the shipped build at 100 pending: the
+        advertised sequence was ``[50, 50, 50, 50, 50, 50, 50]`` and 50 rows were
+        UNREACHABLE at any limit. A served instruction that LOOPS is the trust
+        failure this packet exists to prevent, and the consumer is an agent that
+        will obey it.
+
+        So this pins CONVERGENCE, not a sentence: **obeying the served
+        instruction reaches every counted row within K rounds.** Following the
+        text is what a consumer does; asserting the text would let the next
+        rewording pass while the loop returns.
+
+        MUTATION-PROOF OBLIGATION: restore the single arithmetic branch (drop the
+        cap-escape sentence) -> RED here, and the two sibling legs stay GREEN —
+        that asymmetry IS the uncovered cell.
+        """
+        cap = int(_server()._MAX_DRAIN_LIMIT)
+        pending = cap * 2
+        harness, ledger = await _03b_fleet()
+        await self._fill(harness, pending)
+        every_seq = {int(row.seq) for row in ledger.db.messages.values()}
+        assert len(every_seq) == pending, "fixture check: every message must exist"
+        assert pending > cap, "fixture check: the pending set must EXCEED the cap"
+
+        seen: set[int] = set()
+        rounds = 0
+        peek = True
+        limit: int | None = None
+        # K is a BOUND, not a target: the taught escape converges in a few moves
+        # (consume a window, peek the next), while a fixed point never converges
+        # at ANY K. A generous K therefore still fails the defect and keeps the
+        # pin honest about what "converges" means.
+        max_rounds = 8
+        while seen != every_seq and rounds < max_rounds:
+            rounds += 1
+            kwargs: dict[str, Any] = {}
+            if peek:
+                kwargs["peek"] = True
+            if limit is not None:
+                kwargs["limit"] = limit
+            rendered = str(
+                await AppContext.comms(
+                    harness, action="drain", agent="fixer-b", session="wave7", **kwargs
+                )
+            )
+            seen.update(self._row_seqs(rendered))
+            if "more unread" not in rendered:
+                break
+            # OBEY THE SERVED INSTRUCTION, literally — that IS the subject under
+            # test. Following the text is what a consumer does; asserting the
+            # text would let a rewording pass while the loop returns.
+            advertised = re.search(r"re-run with limit=(\d+)", rendered)
+            if advertised is not None:
+                limit = int(advertised.group(1))
+            if self._CONSUME_TEACH in rendered:
+                # "…re-run without peek=true to consume this window, then peek
+                # again" — do exactly that, both halves.
+                peek = False
+            else:
+                peek = True
+
+        assert seen == every_seq, (
+            f"a consumer OBEYING the served instruction saw {len(seen)} of {pending} rows in "
+            f"{rounds} rounds; {len(every_seq - seen)} are UNREACHABLE. Above the cap a peek "
+            f"re-ask that advertises `limit={cap}` is a FIXED POINT — the caller is told to "
+            f"repeat what it just did, forever. The escape must be a different SENTENCE, "
+            f"because the arithmetic cannot express one"
+        )
+
+    async def test_CONTROL_a_STAMPING_drain_above_the_cap_already_converged(self) -> None:
+        """The control that localises the finding to the PEEK branch: same
+        pending count, same cap, stamping — this always converged, so the leg
+        above is about peek and not about the cap."""
+        cap = int(_server()._MAX_DRAIN_LIMIT)
+        pending = cap * 2
+        harness, ledger = await _03b_fleet()
+        await self._fill(harness, pending)
+        every_seq = {int(row.seq) for row in ledger.db.messages.values()}
+        seen: set[int] = set()
+        for _round in range(6):
+            rendered = await self._drain(harness, limit=cap, peek=False)
+            seen.update(self._row_seqs(rendered))
+            if "more unread" not in rendered:
+                break
+        assert seen == every_seq, f"the stamping drain did not converge: {len(seen)}/{pending}"
+
     async def test_the_re_ask_NEVER_advertises_a_limit_the_dispatcher_overrides(self) -> None:
         """The cap half. ``_MAX_DRAIN_LIMIT`` is DERIVED, never written as 50 —
         a re-tune must re-derive the fixture, not silently unbind the branch."""

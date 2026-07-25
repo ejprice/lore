@@ -195,6 +195,10 @@ from loremaster.search import (
 )
 from loremaster.store._txn import SurrealConnectionError
 from loremaster.store.candidate import Candidate
+
+# The bound on every caller-controlled string the trace seam writes. Imported,
+# never re-declared: the store ASSERT and the writer's truncation must agree.
+from loremaster.store.surreal_schema import TRACE_IDENTITY_MAX_CHARS
 from loremaster.store_read import StoreFileSpan
 from loremaster.symbols import (
     VERIFY_REBUILD_CAVEAT,
@@ -5942,10 +5946,26 @@ class AppContext:
         Every count keys on ``seen_at`` and describes the WHOLE pending set, not
         the served window, and it must AGREE with what this very drain serves:
         ``shown + more == total`` is arithmetic the reader can verify from the
-        render alone. The elision's re-ask is the REMAINDER in both slots,
-        because a non-peek drain stamps exactly the served window and stamped
-        rows never re-serve — a ``shown + more`` re-ask would name rows that
-        CANNOT come back.
+        render alone.
+
+        THE ELISION'S RE-ASK HAS THREE CASES, and they are three because two of
+        them cannot be expressed as the third:
+
+        * a STAMPING drain consumed its window and stamped rows never re-serve,
+          so its honest re-ask is the REMAINDER — a ``shown + more`` re-ask would
+          name rows that cannot come back;
+        * a PEEK stamps nothing, so the next drain re-reads from the OLDEST row
+          and the honest re-ask is the WHOLE pending set — the value the stamping
+          branch must not use;
+        * either value is CLAMPED to ``_MAX_DRAIN_LIMIT``, because a re-ask
+          naming a limit the dispatcher silently overrides is a served
+          instruction the system does not honour.
+
+        The third case collides with the second: above the cap, a clamped peek
+        re-ask advertises the limit the caller just used, and obeying it loops
+        forever while the tail stays unreachable. That cell therefore renders a
+        DIFFERENT SENTENCE naming the escape that exists (consume the window,
+        then peek again) rather than an arithmetic that cannot express one.
 
         BODIES ARE ALWAYS FENCED, verbatim, with a fence sized past any embedded
         backtick run. Uniformly: no inline-if-single-line variant, because two
@@ -5959,9 +5979,11 @@ class AppContext:
             agent_name: The draining agent; unused by the current templates and
                 named so the signature does not have to change when a later
                 packet's row addresses the reader directly.
-            limit: The served window's cap; unused by the arithmetic (the honest
-                re-ask is the remainder, never the cap) and named for the same
-                reason.
+            limit: The served window's cap. Genuinely unused — the re-ask is
+                derived from the pending counts and the ACTION's own ceiling, not
+                from what this call happened to ask for — and named so the
+                signature need not change when a later packet's render consumes
+                it.
             session: The comparand the ``{context}`` cell's thread half is
                 suppressed against — most traffic rides the session-default
                 thread, and an unconditional label would destroy the "a thread
@@ -6009,13 +6031,39 @@ class AppContext:
             #    ``_MAX_FLEET_LIMIT``'s own comment states, and which the sibling
             #    ``_render_comms_fleet`` obeys at this same line.
             reachable = result.total_pending if result.peeked else remainder
-            lines.append(
-                render_line(
-                    "+{more} more unread — re-run with limit={next_limit}",
-                    more=remainder,
-                    next_limit=min(reachable, _MAX_DRAIN_LIMIT),
+            # 3. AND WHEN THE TWO CANNOT BOTH BE HONOURED, SAY A DIFFERENT
+            #    SENTENCE. Above the cap the peek re-ask is a FIXED POINT: a peek
+            #    stamps nothing, so the next peek re-reads from the oldest row,
+            #    and `min(total_pending, cap)` advertises the SAME limit the
+            #    caller just used. Measured at 100 pending: the advertised
+            #    sequence is [50, 50, 50, …] and 50 rows are unreachable through
+            #    the served instruction at ANY limit. A served instruction that
+            #    LOOPS is worse than one that under-delivers, and the consumer
+            #    here is an agent that will obey it. So this cell gets the escape
+            #    that actually exists — consume the window, then peek again —
+            #    rather than an arithmetic that cannot express the answer.
+            #
+            #    Duplicated-call form, not a ternary: the AST template-literal
+            #    pin requires args[0] to be an ast.Constant, and a ternary
+            #    selecting between two literal templates is an ast.IfExp. The
+            #    sibling fleet render carries the same shape for the same reason.
+            if result.peeked and reachable > _MAX_DRAIN_LIMIT:
+                lines.append(
+                    render_line(
+                        "+{more} more unread — a peek cannot reach past limit={cap}; "
+                        "re-run without peek=true to consume this window, then peek again",
+                        more=remainder,
+                        cap=_MAX_DRAIN_LIMIT,
+                    )
                 )
-            )
+            else:
+                lines.append(
+                    render_line(
+                        "+{more} more unread — re-run with limit={next_limit}",
+                        more=remainder,
+                        next_limit=min(reachable, _MAX_DRAIN_LIMIT),
+                    )
+                )
         re_served = [entry.seq for entry in result.entries if entry.acked_at is not None]
         if re_served:
             lines.append(
@@ -6059,8 +6107,12 @@ class AppContext:
         signal and the thread stays recoverable from the message row.
 
         ``refs`` are capped at the SHARED ``_COVERAGE_NAMES_CAP`` with a counted
-        remainder: refs are uncapped at the ledger, so an uncapped render is an
-        unbounded dump in the subsystem's highest-volume surface.
+        remainder. The LEDGER now bounds them too (count and per-entry length),
+        so this is no longer the only thing standing between a caller and an
+        unbounded dump — it is the DISPLAY half of the same policy: even twenty
+        legal pointers are more than a drain row should spend a reader's
+        attention on, and the counted remainder is what keeps the cap from being
+        a silent truncation.
         """
         if entry.task_id is not None:
             context = safe_str(f" (task {sanitise_line(entry.task_id)})")
@@ -7599,7 +7651,7 @@ class TracingFastMCP(FastMCP):
             logger.warning("trace.emit.no_write_store", extra={"tool": tool})
             return
         declared = {
-            key: value
+            key: _bounded_trace_identity(value)
             for key, value in ((key, arguments.get(key)) for key in _TRACE_DECLARED_KEYS)
             if isinstance(value, str)
         }
@@ -7609,15 +7661,40 @@ class TracingFastMCP(FastMCP):
             headers.get(_TRACE_TRANSPORT_SESSION_HEADER) if headers is not None else None
         )
         await store.record_trace(
-            tool=tool,
+            tool=_bounded_trace_identity(tool),
             params_hash=_trace_params_hash(arguments),
             latency_ms=latency_ms,
             agent=declared.get("agent"),
             session=declared.get("session"),
             action=declared.get("action"),
-            transport_session=transport_session,
+            transport_session=(
+                None if transport_session is None else _bounded_trace_identity(transport_session)
+            ),
             ok=ok,
         )
+
+
+def _bounded_trace_identity(value: str) -> str:
+    """Bound a CALLER-CONTROLLED string on the trace write path.
+
+    Four strings reach a trace row verbatim and none of them is ours: the
+    dispatched ``tool`` name and the three declared-identity arguments. An
+    UNKNOWN tool name reaches here too — the dispatch fails INSIDE the funnel and
+    the write sits in a ``finally``, so the row is written before the failure
+    surfaces. Unbounded, one client calling a 100 KB "tool" writes a full-size
+    row per call, and on a quiet instance that name ranks straight into the
+    served per-tool aggregate. The read side gained a window and a display cap;
+    this is the write side of the same policy.
+
+    ⚠ TRUNCATES where a message pointer would be REJECTED, and the asymmetry is
+    deliberate. A pointer is refused because only the caller can supply the real
+    one, and a shortened address is a broken address. A trace row is telemetry
+    ABOUT a call: refusing it would let a caller suppress its own measurement,
+    and a lost row corrupts the denominator the decay curve is read from. A
+    truncated group key is still a usable group key; an absent row is not. The
+    store ASSERT stays as the backstop for any writer that skips this.
+    """
+    return value[:TRACE_IDENTITY_MAX_CHARS]
 
 
 def _trace_write_store(app_context: AppContext) -> SurrealStore:
