@@ -23,6 +23,37 @@ that is the SUBSYSTEM'S acceptance gate. After this packet, the manual mitigatio
   **#148 then proved that caution correct: on the ONE claim cheaply testable, the
   unanimous introspective answer was FALSE.** Packet 03a ships drain telemetry so this
   drill produces the actual decay curve; decide here, on it.
+- **⚠ OPEN THIS PACKET WITH A JOIN-QUALITY RECEIPT — BEFORE trusting any per-agent rate
+  (03b DD-5.b, 2026-07-25).** The telemetry 03b shipped answers the DECAY QUESTION, but it
+  does NOT hand you a clean per-agent curve, and the gap is a DELIBERATE REFUSAL, not an
+  oversight. **`trace.agent` is populated by exactly 1 of 15 tools** (`lore_comms` — it is the
+  only tool that takes an `agent` param): the per-agent NUMERATOR is complete, but the
+  per-agent DENOMINATOR exists only through the transport-session join, which likely degrades
+  one-to-many because agents share an MCP connection. **First action here: ONE SELECT
+  measuring agents-per-transport-session during the drill.** If it is ~1:1 the per-agent rate
+  is trustworthy; if not, fall back to the two instruments that survive ANY join quality —
+  drain GAPS (wall-clock + fleet-ordinal) and the register-then-never-drains population (total
+  decay, exact, per agent). Decay shows up as gaps growing or drains stopping, **both visible
+  either way**; what a bad join costs you is rate PRECISION, not the phenomenon.
+  🚫 **DO NOT "fix" this by widening identity.** Three side doors are RULED SHUT and re-opening
+  one silently is the failure mode this clause exists to prevent: sticky per-session attribution
+  (refused by ruling MP9 — `trace.session` records what the CALL DECLARED, never what the server
+  inferred, and one field must not become an unmarked mixture of facts and guesses); an `agent=`
+  param on every tool (**a sometimes-filled identity is WORSE than none — it measures DILIGENCE,
+  not decay, and the decaying population is precisely the one that stops filling it**); and
+  `_meta` plumbing (absent in practice). Design + full reasoning:
+  `docs/plans/v2/03b-deferred-design-rulings.md` DD-5.
+- **TRACE RETENTION IS RULED AT THIS PACKET'S CLOSE-OUT, NOT BEFORE (03b DD-1.c).** The `trace`
+  table grows one row per tool call and nothing deletes one. That is DELIBERATE until the curve
+  is read: **the rows ARE this packet's instrument, and a retention sweep that runs before 06
+  reads them destroys the measurement it exists to serve** (measure-then-tune). 03b shipped the
+  bounds that make waiting safe — a `trace_ts` index in the schema free window and a windowed
+  aggregate read. Rule retention here (recommendation: 90d), as a bounded DELETE on the reconcile
+  tick, **never in boot**. ⚠ Escalation trigger if this packet slips: >1M `trace` rows.
+- **THE LOSS-RATE READ (03b DD-4.d).** `ok=false` drain trace rows are the upper bound on
+  messages lost to drain's at-most-once semantics. Read it here. **Re-open trigger for a lease /
+  at-least-once redesign: >0.5% of drains, or ANY confirmed lost directive.** Below that, 05's
+  seen-row `since=` (DD-4.c) is the ruled recovery path.
 - **THE MECHANISM #148 MEASURED, which makes "load-bearing" buildable rather than hoped
   for:** an agent can ARM ITS OWN WATCHER as step 1 of its spawn brief, and that
   notification **DELIVERS MID-CHAIN — it is NOT gated on `stop_reason=end_turn`**

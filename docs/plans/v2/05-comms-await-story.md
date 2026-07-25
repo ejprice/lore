@@ -38,6 +38,34 @@ rollup extension, CLI, and the idle-gate hook rework.
   ⚠ **If 05 also declines it, that is a THIRD deferral of a known hole and it goes to the
   operator as a fork, not into another doc.** Design source: `03b-comms-surface-design-rulings.md`
   §Residuals item 1.
+- **INHERITED FROM 03b's DEFERRED-DESIGN RULINGS (2026-07-25) — TWO MORE NAMED DECISION POINTS.**
+  Full designs: `docs/plans/v2/03b-deferred-design-rulings.md` (DD-2, DD-4); provenance: the
+  contract-blind audit's D7/D11 (`receipts/2026-07-24-packet03b/`… see the 03b close-out).
+  1. **DD-2.a — SERVE THE CONVERSATIONAL-DEBT STATE, OR ADJUDICATE IT FOR REMOVAL.** 03b's
+     served instructions were found teaching a debt state machine with **zero production
+     consumers**: `MessageLedger.awaiting_answer` and `WaitingOnAnswer` are called by nothing
+     in `server.py`, and `set_status` deliberately does not touch the status row. 03b fixed the
+     LIE (the prose now teaches only what is served); **05 owns the MECHANISM.** It is fully
+     designed so 05 implements rather than invents: a `waiting:` line on drain + heartbeat
+     through ONE shared helper (the B4.1 skew precedent — sharing PROVEN BY MUTATION, not
+     inspection), emitted iff `awaiting_answer` is non-None, prose DERIVED from the typed
+     `WaitingOnAnswer`; `await`'s timeout render is the natural first consumer; **fleet gets no
+     per-row cell** (it is an N×2-query N+1). ⚠ The wrong build to stop: wiring "waiting" to the
+     STORED `input_required` status — that conflates two vocabularies; kill it with a
+     discriminating pair. **This clause WIDENS 05's R1 duty: use the mechanism, or adjudicate
+     the WHOLE thing for removal (method + model + the `(sender, question)` index 03b already
+     built for it). A third deferral is an operator fork, not another doc line.**
+  2. **DD-4.c — `since=` MUST SERVE ALREADY-SEEN ROWS.** `drain` is at-most-once: it stamps
+     `seen_at` BEFORE the render reaches the caller, and only unstamped rows are ever served
+     again, so any failure between the stamp and the caller receiving bytes (transport drop,
+     cancellation) loses those messages **with no recovery verb in the tool set**. 03b
+     deliberately did NOT reshape drain (the reshape buys only the in-process leg, which is a
+     code-defect leg, not the operational one) and instead pinned the loss window shut. **The
+     rows are stamped, not destroyed — "permanent loss" is a property of the VERB SET, and
+     05's `since=` is exactly the verb that closes it, but ONLY if it serves seen rows.** A
+     `since=` that serves only unseen rows leaves the hole fully open. ⚠ **If 05 declines this
+     requirement, D11 returns to the operator as a fork.** Exposure is MEASURED meanwhile:
+     `ok=false` drain trace rows are the loss-rate upper bound 06 reads (DD-4.d).
 
 ## Scope OUT
 - Protocol/brief-base/drill (packet 06). C5 (checkpoint/respawn) stays deferred, no ruling.
