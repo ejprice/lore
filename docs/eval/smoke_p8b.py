@@ -916,7 +916,7 @@ _ACK_REQUIRED_PATTERN = re.compile(
 _ACK_HEADER_PATTERN = re.compile(
     r"^acked (?P<acked>\d+) of (?P<requested>\d+): (?P<seqs>.*)$"
 )
-_BRIEF_PUBLISH_PATTERN = re.compile(
+_PUBLISH_RECEIPT_PATTERN = re.compile(
     r"^brief '(?P<name>[^']*)' v(?P<version>\d+) published by (?P<publisher>.+?)(?: — .*)?$"
 )
 _FLEET_SESSION_HEADER_PATTERN = re.compile(
@@ -1662,7 +1662,7 @@ async def check_drain_serves_skew(fleet: SmokeFleet) -> None:
     publish_v1 = await fleet.comms(
         agent=SMOKE_SENDER, action="brief_publish", name=fleet.brief_name, body=BRIEF_BODY_V1
     )
-    first = _BRIEF_PUBLISH_PATTERN.match(publish_v1.split("\n")[0])
+    first = _PUBLISH_RECEIPT_PATTERN.match(publish_v1.split("\n")[0])
     if first is None:
         raise SmokeCheckFailed(f"brief_publish (v1): unexpected render: {publish_v1!r}")
     acked_version = int(first.group("version"))
@@ -1674,7 +1674,7 @@ async def check_drain_serves_skew(fleet: SmokeFleet) -> None:
     publish_v2 = await fleet.comms(
         agent=SMOKE_SENDER, action="brief_publish", name=fleet.brief_name, body=BRIEF_BODY_V2
     )
-    second = _BRIEF_PUBLISH_PATTERN.match(publish_v2.split("\n")[0])
+    second = _PUBLISH_RECEIPT_PATTERN.match(publish_v2.split("\n")[0])
     if second is None:
         raise SmokeCheckFailed(f"brief_publish (v2): unexpected render: {publish_v2!r}")
     head_version = int(second.group("version"))

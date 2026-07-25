@@ -41,9 +41,14 @@ brief-base v6 read
 - **DEVIATIONS (3):** §V1 added `lore_comms` to the expected tool surface · §V2 corrected a
   false module-docstring claim · §V3 refactored `parse_finding_detail` onto the new shared
   fence seam (regression-pinned).
+- **FULL SUITE GREEN after my fix — measured by me, not inherited:** `uv run pytest -n auto -q
+  --tb=short -p no:randomly` → **6551 passed, 17 skipped, 3 xfailed, 0 failed** in 191.66s,
+  exit 0. That reconciles exactly with the builder's `1 failed, 6550 passed`: the 1 was mine
+  (§8) and 6550 + 1 = 6551, so nothing else moved.
 - **Receipt pointers:** §1 (what the gates assert) · §2 (two engine defects found pre-deploy)
   · §3 (validation receipts, with output) · §4 (production-safety design) · §5 (decisions) ·
-  §6 (residuals, individually adjudicated).
+  §6 (residuals, individually adjudicated) · §7 (gate 6) · §8 (the retired-prefix defect I
+  shipped, and the two sweeps it prompted) · §9 (what remains at deploy).
 
 ---
 
@@ -476,6 +481,8 @@ returns the elision as a typed `(more, next_limit)` pair, so only the assertions
 | R10 | I added `lore_comms` to `PRE_EXISTING_TOOL_NAMES` (deviation V1). | **Disclosed strengthening.** It has been on the wire since packet 02 but was in NEITHER set, so the exact-surface pin could not see it vanish. Verified live: 11/11 pre-existing present, 15 tools total. |
 | R11 | Module docstring corrected — it claimed the script "lives OUTSIDE the lore repo (a scratchpad script, not a repo artifact)" (deviation V2). | **Disclosed.** False since the day it was committed under `docs/eval/`; exactly the served-prose-contradicting-reality class. |
 | R12 | `parse_finding_detail` refactored onto the new shared fence seam (deviation V3). | **Disclosed, regression-pinned.** ONE fence policy rather than two clones. Behaviour is preserved except that a 1–2 backtick "fence" no longer counts — `render_fenced` never emits below 3, so no real render is affected. `TestFindingDetailStillParses` covers good input, a hostile body with row- and trailer-shaped lines, and two malformed shapes. |
+| R16 | My `a389a97` shipped `_BRIEF_PUBLISH_PATTERN`, whose name carries finding #108's retired prefix, redding the full suite. | **MY DEFECT, fixed by rename** (`_PUBLISH_RECEIPT_PATTERN`, 3 sites); allowlist NOT widened. Full write-up + the two extra sweeps it prompted: §8. |
+| R17 | `test_retired_symbols.py` scans `docs/` for `.py` AND `.md` — so a wave REPORT carrying a retired name is green at the repo root and reds the suite the moment it is archived under `docs/plans/v2/receipts/`. | **REAL, general, and not mine alone.** Mine is clean (checked). Worth a line in the close-out ritual: sweep reports against `_RETIRED_SYMBOLS` before `git mv`-ing them. |
 | R13 | Scratch probes lived in `/tmp` (`capture_renders.py`, `probe_reader_18000.py`, `probe_prod_ro.py`) and are not durable. | **Disclosed.** Their OUTPUT is transcribed in §3.1/§3.3/§3.4 rather than cited by path, per the no-`/tmp`-citations law. The render capture is re-derivable in ~40 lines from the fixtures in the test file; say so if you want it committed under `docs/plans/v2/receipts/`. |
 | R14 | The cold audit's **C3** says `_trace_params_hash`'s docstring falsely claims the digest is the only thing crossing from arguments into the row. | **Noted, and my gate 5 depends on the TRUE state.** `agent`/`session`/`action` values ARE written verbatim — that is what the session-scoped read and the exact-multiset assertion rest on. If C3 is ever "fixed" by removing those columns rather than by fixing the prose, gate 5 goes red immediately, which is the right direction. |
 | R15 | My fixtures were captured at `1d3a33f`; the branch moved to `f5258bf` under me while I worked. | **Re-derived, not inherited.** `git diff 1d3a33f f5258bf -- loremaster/loremaster/server.py` is a **single `noqa` removal**, no template touched, and I re-ran the capture at current HEAD and got byte-identical output. |
@@ -598,7 +605,44 @@ which are transcribed there and shipped as test fixtures — nothing is lost by 
 
 ---
 
-## 8. Sequencing — what remains
+## 8. A defect of MINE that redded the suite — the retired-prefix hit
+
+**I shipped a corpse name in `a389a97` and it broke the full-suite gate.** Recording it here
+rather than quietly fixing it, because the interesting part is not the typo.
+
+`_BRIEF_PUBLISH_PATTERN` — my regex for parsing a `brief_publish` receipt — contains
+`_BRIEF_PUBLISH_`, the **retired prefix** from finding #108: the deleted hand-rolled mint
+constants (`_BRIEF_PUBLISH_MAX_ATTEMPTS`, `_BRIEF_PUBLISH_BACKOFF_SECONDS`, and the four-slot
+deterministic jitter table) whose lockstep jitter WAS the defect #108 fixed.
+`test_retired_symbols.py` matched it at three sites in `docs/eval/smoke_p8b.py`.
+
+**It is a TRUE POSITIVE and the guard was right.** The scan is deliberately bare, anchor-free
+and prefix-based precisely because a prose or identifier mention of a retired name carries no
+structural anchor — which is exactly how it saw a name I had no idea was a corpse. Fixed by
+renaming to `_PUBLISH_RECEIPT_PATTERN` at all three sites. **The allowlist was NOT widened**:
+exempting my file would have traded a one-line rename for a permanently weaker instrument,
+blinding the guard to the very class it exists to catch.
+
+Two things I did beyond the reported fix, both because "sweep from the GREP, never from a
+report's hand-list" is standing law:
+
+1. **Swept both my files against ALL FIVE retired symbols**, not the one that was reported, by
+   importing `_RETIRED_SYMBOLS` from the guard itself and matching its own way. Result: clean.
+2. **Checked my REPORT too** — and this one is a hazard nobody had flagged. The scan covers
+   `.py` AND `.md` under `docs/`, and every wave report archives INTO
+   `docs/plans/v2/receipts/…` at close-out. So a report carrying a retired name is green today
+   and reds the suite the moment it is archived. Mine is clean; the trap is general and worth
+   knowing before the next close-out.
+
+**The generalisable bit:** I did not know a repo-wide corpse-name scan reached `docs/` at all.
+Anyone adding a file under `docs/` is inside it. I enumerated the tests that walk outside
+`loremaster/` to check whether anything else reaches my writable set — `test_retired_symbols.py`
+is the only one (the others resolve `_REPO_ROOT` only to read a specific named file:
+`Containerfile`, `shellout.py`, `DESIGN-LAW.md`).
+
+---
+
+## 9. Sequencing — what remains
 
 The gates are written and validated as far as anything can be without a deployed build. When you
 deploy:
