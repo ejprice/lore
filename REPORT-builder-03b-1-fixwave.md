@@ -20,12 +20,14 @@ brief-base v6 read
   insertion; splitting yields RED intermediates) · F2 declared `anyio` in
   `loremaster/pyproject.toml`, a file outside my original writable set · F3 decided `seqs=[]`
   should NOT reject, with the alternative written down
-- **decisions needed (three, none blocking my work):** (a) the sibling's retired-symbol RED ·
-  (b) the ORACLE's `EmptyRecipientSetError` prose diverges from production's, so no surface pin can
-  see production's wording — an oracle change is not a builder's · (c) a sibling is building a
-  deploy gate for the same item 1 defect
-- **receipt pointers:** §1 items · §2 the RED that is not mine · §3 gate tails · §4 mutation proofs,
-  including the two that failed first · §5 deviations · §6 residuals
+- **decisions needed: NONE OUTSTANDING.** All three raised in this wave are ruled and closed —
+  (a) the sibling's retired-symbol RED: routed by the lead, fixed by the smoke author at `582fd92`,
+  allowlist deliberately NOT widened · (b) the ORACLE/production error-prose divergence: filed as
+  **#190**, owner packet 05, with the fix specified as a PARITY INSTRUMENT rather than a one-string
+  edit · (c) the converging deploy gate: lead ruled BOTH are kept, unit pins and live smoke being
+  complementary. R1/R2/R3 below record them as history, not as open asks.
+- **receipt pointers:** §1 items · §2 the RED that was not mine (kept for the diagnosis) · §3 gate
+  tails · §4 mutation proofs, including the two that failed first · §5 deviations · §6 residuals
 
 ---
 
@@ -271,10 +273,10 @@ readings, and the pick:
 
 | id | residual | verdict |
 |---|---|---|
-| **R1** | The `FakeMessageLedger` oracle's `EmptyRecipientSetError` prose differs from production's. Production: *"an empty recipient set … is a caller error, not a broadcast"*. The fake: *"no other non-retired agent is registered in session 'X'"*. | **OPEN — LEAD/CONTRACT-AUTHOR.** No surface pin can see production's wording, because every surface test rides the fake. That is precisely how blind-D4 passed certification, and the same blind spot covers every other divergent error string. An oracle change is a contract-author + adversary edit, never a builder drive-by — surfaced, not touched. |
+| **R1** | The `FakeMessageLedger` oracle's `EmptyRecipientSetError` prose differs from production's. Production: *"an empty recipient set … is a caller error, not a broadcast"*. The fake: *"no other non-retired agent is registered in session 'X'"*. | **FILED AS #190** (owner packet 05), with the fix scoped as a PARITY INSTRUMENT — every oracle error must render production's prose — rather than a one-string edit, because a fix without an invariant leaves the NEXT divergence just as silent. Verdict when raised: **LEAD/CONTRACT-AUTHOR.** No surface pin can see production's wording, because every surface test rides the fake. That is precisely how blind-D4 passed certification, and the same blind spot covers every other divergent error string. An oracle change is a contract-author + adversary edit, never a builder drive-by — surfaced, not touched. |
 | **R2** | The committed `TestACancelledDispatchStillRecordsItsRow` is non-discriminating: it uses a non-suspending recorder and edge-triggered `asyncio` cancellation. | **PINNED AS A KNOWN BOUND (`c2234bc`), lead-authorized.** Docstring only — no assertion added, removed or changed. It states what the pin covers (the asyncio shape, genuinely), what it provably does not (a suspending emission under a level-triggered anyio scope — production, since `record_trace` is a network round-trip), the MEASURED receipt (it stays GREEN with the shield removed while the discriminating pin goes RED, re-verified at this tree), the four-cell table, a pointer to the discriminating pin, and a re-open trigger. It also says outright NOT to repoint it at the suspending recorder: the asyncio shape is worth keeping pinned on its own. An unpinned known limitation is indistinguishable from an unknown one. |
 | **R3** | `test_retired_symbols.py` RED from `docs/eval/smoke_p8b.py` (§2). | **CLOSED by the smoke author (`582fd92`), not by me.** Routed to the lead, who forbade widening the allowlist; the sibling renamed the regex. Suite now 0 failed. Kept as a row because the DIAGNOSIS is the reusable part: a true positive of a deliberately anchor-free guard, not noise to suppress. |
-| **R4** | A sibling committed `bdb8ea4 test(03b): gate 6 — the drain elision's re-ask is OBEYABLE` — a deploy gate for the same item-1 defect. | **PROBABLY COMPLEMENTARY, WORTH THE LEAD'S EYE.** Their live smoke and my unit round-trip pins attack the same defect from different layers, which is defence in depth rather than duplication — but two agents converging on one finding is a coordination fact, not a coincidence to ignore. |
+| **R4** | A sibling committed `bdb8ea4 test(03b): gate 6 — the drain elision's re-ask is OBEYABLE` — a deploy gate for the same item-1 defect. | **RULED: BOTH KEPT** (lead, 2026-07-25) — the live smoke proves it end-to-end over the real wire, these unit pins run on every commit, and a served instruction that loses messages earns belt and braces. Verdict when raised: **PROBABLY COMPLEMENTARY, WORTH THE LEAD'S EYE.** Their live smoke and my unit round-trip pins attack the same defect from different layers, which is defence in depth rather than duplication — but two agents converging on one finding is a coordination fact, not a coincidence to ignore. |
 | **R5** | Item 9 fixed the SERVED half of blind-D6. Retention, the unbounded `trace` growth, and the full-scan `GROUP BY` on a hot read are untouched. | **DELIBERATE — the lead ledgered them.** Recorded so the boundary between what this wave fixed and what it did not is explicit. |
 | **R6** | Blind D8 (`refs`/`thread`/`task_id` bypass the body cap) and D11 (`drain` is at-most-once with no recovery verb). | **NOT IN SCOPE — the lead ledgered both.** Neither is touched here. Naming them so a reader of this report does not assume the wave covered every finding in the blind report. |
 | **R7** | Cold-audit R3: the `_trace_statements` comment asserts the production `trace` table is "empty exactly once — now", which the auditor could not verify (`:18500` forbidden). | **STILL UNVERIFIED, and it is a DEPLOY-STEP check.** One `SELECT count() FROM trace` on production before applying the DDL: if it is non-zero the new `(agent, ordinal)` index BUILDS, blocking, at boot. I cannot run it and did not. |
