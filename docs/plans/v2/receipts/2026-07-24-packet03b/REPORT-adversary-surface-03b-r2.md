@@ -1,6 +1,15 @@
 brief-base v6 read
 
-# REPORT-adversary-surface-03b-r2 — contract adversary, packet 03b SERVED SURFACE (re-grade)
+> **⚠ ARCHIVAL CORRECTION HEADER (lead, 2026-07-25 — gate residual R5).** This report's
+> FINAL VERDICT section, below, reads **CONTRACT INSUFFICIENT**. **That verdict is
+> SUPERSEDED and is NOT the state of the contract.** It was answered by the surface fix
+> waves and the contract was **CERTIFIED SUFFICIENT** at `57d8677`
+> (*"SURFACE CONTRACT CERTIFIED — CL3 lands the terminating paragraph allowlist"*); the
+> certification is recorded in the INDEX Log entry of 2026-07-24 and re-confirmed by the
+> merged-build gate (`REPORT-merged-gate-03b.md`, VERDICT **GO**). A reader retrieving a
+> span of this report in isolation would otherwise read INSUFFICIENT as current — the
+> exact hazard the merged-build gate filed as residual R5. The report's *findings* remain
+> valid as the record of what the adversary found; only its headline verdict is stale.
 
 **Graded at:** repo `feat/surreal-unification` HEAD `03b93d3`, working tree clean, 2026-07-24.
 **Graded set:** `git diff 0223291..HEAD` over `test_comms_tool.py` · `test_comms_promise_registry.py` ·
