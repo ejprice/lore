@@ -710,6 +710,23 @@ TRACE_OK_FIELD = "ok"
 # burns a number) — the ordinal is an ORDERING key, never a count.
 TRACE_SEQUENCE_NAME = "trace_seq"
 
+# The bound on every CALLER-CONTROLLED string on the trace write path (wave 3 /
+# blind D4). ``tool`` is the raw dispatched name and the three declared-identity
+# columns are raw argument values — all four reach the row verbatim, and the
+# write sits in a ``finally``, so an UNKNOWN tool name persists too (the dispatch
+# fails INSIDE the funnel, after the row is written). Without a bound, one client
+# calling a 100 KB "tool name" writes a full-size row per call, and on a quiet
+# instance that name ranks inside the served per-tool aggregate.
+#
+# ⚠ The POLICY differs from the message pointers deliberately, and the difference
+# is the point: a message pointer is REJECTED because only the caller can supply
+# the real one. A trace row is telemetry ABOUT a call — refusing it would let a
+# caller suppress its own measurement, and losing the row corrupts the denominator
+# packet 06 reads. So the writer TRUNCATES to this bound and the row still lands;
+# a truncated group key is still a usable group key, an absent row is not. The
+# store ASSERT is the backstop for any writer that skips the truncation.
+TRACE_IDENTITY_MAX_CHARS = 256
+
 # The packet-06 read index (T2.1): filter ``agent``, order by ``ordinal``.
 # PLAIN, never UNIQUE — two rows legitimately share an agent.
 TRACE_AGENT_ORDINAL_INDEX_FIELDS = (TRACE_AGENT_FIELD, TRACE_ORDINAL_FIELD)
@@ -739,17 +756,37 @@ TRACE_AGENT_ORDINAL_INDEX_FIELDS = (TRACE_AGENT_FIELD, TRACE_ORDINAL_FIELD)
 # what ``CancelledError`` walks straight past, and a timed-out drain counted as a
 # performed one corrupts the very numerator 06 decides on.
 _TRACE_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
-    (TRACE_TOOL_FIELD, _CHUNK_STRING_TYPE, ""),
+    (
+        TRACE_TOOL_FIELD,
+        _CHUNK_STRING_TYPE,
+        f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}",
+    ),
     (TRACE_PARAMS_HASH_FIELD, _CHUNK_STRING_TYPE, ""),
     (TRACE_HIT_COUNT_FIELD, "option<int>", ""),
     (TRACE_LATENCY_MS_FIELD, "number", ""),
-    (TRACE_SESSION_FIELD, "option<string>", ""),
+    (
+        TRACE_SESSION_FIELD,
+        "option<string>",
+        f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}",
+    ),
     (TRACE_TS_FIELD, "datetime", "DEFAULT time::now()"),
     (TRACE_TOKEN_COST_FIELD, "option<int>", ""),
     (TRACE_MODEL_FIELD, "option<string>", ""),
-    (TRACE_AGENT_FIELD, "option<string>", ""),
-    (TRACE_ACTION_FIELD, "option<string>", ""),
-    (TRACE_TRANSPORT_SESSION_FIELD, "option<string>", ""),
+    (
+        TRACE_AGENT_FIELD,
+        "option<string>",
+        f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}",
+    ),
+    (
+        TRACE_ACTION_FIELD,
+        "option<string>",
+        f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}",
+    ),
+    (
+        TRACE_TRANSPORT_SESSION_FIELD,
+        "option<string>",
+        f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}",
+    ),
     (TRACE_ORDINAL_FIELD, "option<int>", ""),
     (TRACE_OK_FIELD, "option<bool>", ""),
 )

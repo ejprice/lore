@@ -240,6 +240,7 @@ from loremaster.server import AppContext, LoreServer, TraceSummary, build_mcp_se
 from loremaster.store._txn import _ERROR_CLASS_FIELD_COERCION
 from loremaster.store.surreal import SurrealStore, SurrealStoreError
 from loremaster.store.surreal_schema import (
+    TRACE_IDENTITY_MAX_CHARS,
     TRACE_TABLE,
     TRACE_TS_FIELD,
     _define_field,
@@ -2118,6 +2119,116 @@ class TestTheHotAggregateReadIsWINDOWEDAtTheQueryNotJustTheRender:
         )
 
 
+class TestTheCallerCONTROLLEDStringsOnTheWritePathAreBounded:
+    """WAVE 3 / blind D4 — the write side of the bound the read side already had.
+
+    Four strings reach a trace row VERBATIM and none of them is ours: the
+    dispatched ``tool`` name and the three declared-identity arguments. The
+    unknown-tool case is reachable and the diff's own comment says so — the
+    dispatch fails INSIDE the funnel and the write sits in a ``finally``, so the
+    row is written before the failure surfaces.
+
+    The design wave bounded message pointers with the argument that *"a 2000-char
+    'ref' is a BODY wearing a pointer's name — without it the body cap is
+    theatre"*. The same argument applies here and the same wave left this side
+    open: the window and the display cap bound the served CARDINALITY and nothing
+    else, so on a quiet instance a 100 KB tool name ranks inside the top 20 and is
+    served straight into the next consumer's status response.
+
+    ⚠ The POLICY differs from the message pointers on purpose — TRUNCATE, not
+    REJECT — and the pins below pin that difference rather than assuming it: a
+    refused trace row would let a caller SUPPRESS ITS OWN MEASUREMENT and would
+    lose a denominator row. A truncated group key is still a usable group key.
+    """
+
+    async def test_an_oversize_TOOL_name_is_truncated_and_the_row_STILL_LANDS(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        mcp, recorder = probe_server
+        oversize = "t" * (TRACE_IDENTITY_MAX_CHARS + 500)
+        with suppress(Exception):
+            await _dispatch_ignoring_tool_failure(mcp, oversize, {})
+        with _request_context(_app_context_double(recorder)):
+            with suppress(Exception):
+                await _dispatch_ignoring_tool_failure(mcp, oversize, {})
+        assert len(recorder.calls) == 1, (
+            "an UNKNOWN tool name wrote no trace row. The dispatch fails inside the funnel and "
+            "the write is in `finally`, so the row must still land — losing it would let a "
+            "caller suppress its own measurement, and errored calls are part of the denominator"
+        )
+        served = recorder.calls[0]["tool"]
+        assert len(served) == TRACE_IDENTITY_MAX_CHARS, (
+            f"the tool name was stored at {len(served)} chars, not bounded to "
+            f"{TRACE_IDENTITY_MAX_CHARS} — one client calling a 100 KB 'tool' writes a "
+            f"full-size row per call, forever"
+        )
+        assert served == oversize[:TRACE_IDENTITY_MAX_CHARS], (
+            "the bound is not a plain prefix, so two different names could collapse "
+            "unpredictably rather than deterministically"
+        )
+
+    async def test_oversize_DECLARED_identities_are_truncated(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        mcp, recorder = probe_server
+        oversize = "a" * (TRACE_IDENTITY_MAX_CHARS + 500)
+        with _request_context(_app_context_double(recorder)):
+            await _dispatch(
+                mcp,
+                _SYNTHETIC_DECLARING,
+                {"agent": oversize, "session": oversize, "action": oversize},
+            )
+        assert len(recorder.calls) == 1
+        row = recorder.calls[0]
+        for key in ("agent", "session", "action"):
+            assert len(str(row[key])) == TRACE_IDENTITY_MAX_CHARS, (
+                f"declared {key!r} was stored unbounded at {len(str(row[key]))} chars — these "
+                f"are RAW ARGUMENT VALUES and the diff stores them plaintext by design"
+            )
+
+    async def test_POSITIVE_CONTROL_a_normal_name_is_stored_UNCHANGED(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        """Without this, a build that truncated everything to one character — or
+        mangled every value — satisfies both legs above."""
+        mcp, recorder = probe_server
+        with _request_context(_app_context_double(recorder)):
+            await _dispatch(
+                mcp,
+                _SYNTHETIC_DECLARING,
+                {"agent": _DECLARED_AGENT, "session": _DECLARED_SESSION, "action": _DECLARED_ACTION},
+            )
+        assert len(recorder.calls) == 1
+        row = recorder.calls[0]
+        assert row["tool"] == _SYNTHETIC_DECLARING
+        assert row["agent"] == _DECLARED_AGENT
+        assert row["session"] == _DECLARED_SESSION
+        assert row["action"] == _DECLARED_ACTION
+
+    @pytest.mark.parametrize(
+        "column", ["tool", "session", "agent", "action", "transport_session"]
+    )
+    def test_each_caller_controlled_column_carries_its_STORE_backstop(self, column: str) -> None:
+        """The writer truncates; the ASSERT is what stops a writer that does not.
+        Pins the EMITTED statement, per the house idiom."""
+        statement = _field_statement(generate_ddl(dim=_DIM), TRACE_TABLE, column)
+        assert f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}" in statement, (
+            f"trace.{column} has no store-level bound, so any writer that skips the "
+            f"truncation stores an unbounded caller-controlled string: {statement!r}"
+        )
+
+    def test_CONTROL_a_NON_caller_controlled_column_carries_NO_such_bound(self) -> None:
+        """The scope is caller-controlled STRINGS. ``params_hash`` is ours — a
+        fixed-width digest — so bounding it would be cargo-culting the rule
+        rather than applying it, and this pin says which columns are in scope by
+        showing one that is not."""
+        statement = _field_statement(generate_ddl(dim=_DIM), TRACE_TABLE, "params_hash")
+        assert "ASSERT" not in statement, (
+            f"params_hash gained a bound it does not need — it is a 64-char digest this code "
+            f"computes, not a caller-supplied string: {statement!r}"
+        )
+
+
 class TestTheServedPerToolAggregateIsCappedAndCounted:
     """FIX WAVE — blind-audit D6 (the served half; retention is ledgered).
 
@@ -2354,11 +2465,22 @@ class TestIdentityIsDeclaredNeverGuessed:
 # T6 — params_hash
 # --------------------------------------------------------------------------- #
 class TestParamsHashIsTheRuledRecipeAndLeaksNothing:
-    """T6: one deterministic digest over the RAW arguments; no content stored.
+    """T6: one deterministic digest over the RAW arguments.
 
-    The digest is the ONLY thing that crosses from arguments into the row, so it
-    is also the whole privacy boundary: bodies, briefs, and queries pass through
-    the hash and nowhere else.
+    ⚠ WAVE 3 — THIS DOCSTRING CERTIFIED THE OLD WORLD. It used to say the digest
+    was *"the ONLY thing that crosses from arguments into the row … the whole
+    privacy boundary"*. That is FALSE and was already false when it was written:
+    ``_TRACE_DECLARED_KEYS`` (``agent``/``session``/``action``) are stored
+    PLAINTEXT, by design, because an identity that is hashed is an identity
+    packet 06 cannot group by. The production docstring was corrected in the fix
+    wave and this copy was not — the exact "tests written before a semantic
+    change certify the OLD world" shape, in a class named ``…LeaksNothing``,
+    retrievable by an agent asking whether the trace row leaks arguments.
+
+    WHAT THE PINS BELOW ACTUALLY ASSERT, which is true and worth keeping: FREE
+    TEXT — bodies, briefs, queries, notes — reaches the row ONLY as this digest.
+    The no-raw-content leg checks hostile BODY fragments specifically, with a
+    present-in-input control, and that is the boundary that matters.
     """
 
     async def test_the_recipe_is_sha256_over_sorted_json(
