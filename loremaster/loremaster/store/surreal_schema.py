@@ -1245,7 +1245,8 @@ def _message_statements() -> list[str]:
     per :data:`_MESSAGE_FIELD_SPECS` entry (the closed ``grade`` domain, the
     length-bound ``body`` backstop, the ``record<agent>`` ``sender``, the
     ruling-9 ``question`` bool); the native ``DEFINE SEQUENCE`` backing
-    ``message.seq`` (:func:`_define_sequence`); then the ``to`` relation edge —
+    ``message.seq`` (:func:`_define_sequence`); the two R3(1) hot-path indexes
+    over ``(seq)`` and ``(sender, question)``; then the ``to`` relation edge —
     ``DEFINE TABLE OVERWRITE to TYPE RELATION IN message OUT agent ENFORCED
     SCHEMAFULL`` (:func:`_define_relation_table` with ``enforced=True``; ``in``/
     ``out`` auto-defined, never hand-declared) — its edge-local CAS fields
@@ -1266,6 +1267,25 @@ def _message_statements() -> list[str]:
         for name, type_expr, constraint in _MESSAGE_FIELD_SPECS
     ]
     statements.append(_define_sequence(MESSAGE_SEQUENCE_NAME))
+    # The two R3(1) hot-path indexes, shipped INSIDE the free window (03a-2 delta
+    # row 1): production carries ZERO ``message`` rows until packet 03b deploys,
+    # so these builds are free exactly once and the window closes at that deploy.
+    # ``IF NOT EXISTS`` per store reference §1.1's INDEX row (an INDEX OVERWRITE
+    # re-builds over every row and can hard-fail ``ensure_ready`` at boot).
+    #   · (seq) serves ``ack``'s ``WHERE seq IN $seqs`` resolution. PLAIN, not
+    #     UNIQUE — a deliberate, strikeable divergence from the approved design
+    #     (a UNIQUE index would REJECT a second row per seq rather than merely
+    #     failing to speed a read); re-open trigger: the day anything depends on
+    #     seq being unique rather than merely monotonic.
+    #   · (sender, question) serves ``awaiting_answer``'s questions read. The
+    #     ORDER is load-bearing: ``sender`` is the selective prefix, while
+    #     ``question`` is a boolean that halves the table at best.
+    statements.append(_plain_index(MESSAGE_TABLE, f"{MESSAGE_TABLE}_seq", ("seq",)))
+    statements.append(
+        _plain_index(
+            MESSAGE_TABLE, f"{MESSAGE_TABLE}_sender_question", ("sender", "question")
+        )
+    )
     statements.append(
         _define_relation_table(TO_RELATION, MESSAGE_TABLE, AGENT_TABLE, enforced=True)
     )
