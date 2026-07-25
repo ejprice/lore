@@ -8,9 +8,10 @@ brief-base v6 read
   addition I made on my own judgement (§5 W1) after a correction landed mid-wave.
 - **verdict:** all five mutation proofs discriminate. **One mutation silently did not RUN** (a bad
   anchor) and I nearly reported its green as a proof — §4.1.
-- **gates (final tree, HEAD `daad8ec` STABLE across the whole run):** full suite **6605 passed,
-  0 failed, 17 skipped, 3 xfailed** · typecheck **0, all three members, 149 files** · ruff **All
-  checks passed** · skill **117 passed** · concurrency **20/20, TOTAL_RUNS_WITH_FAILURES=0**
+- **gates (final, after the D6/D7 addendum — HEAD `c9a5b2e`, fingerprint diff EMPTY):** full suite
+  **6609 passed, 0 failed, 17 skipped, 3 xfailed** · typecheck **0, all three members, 149 files** ·
+  ruff **All checks passed** · skill **117 passed** · concurrency **20/20,
+  TOTAL_RUNS_WITH_FAILURES=0**
 - ⚠ **A sibling commit landed DURING my first gate run** (`daad8ec`) — reported and interpreted
   rather than hidden (§3.1), and the gates were re-run afterwards. It also changed what I had to
   build (§5 W1).
@@ -18,7 +19,7 @@ brief-base v6 read
   mid-wave correction moved the danger there · W2 the trace write path TRUNCATES where message
   pointers REJECT — a policy divergence, with both readings written down
 - **decisions needed:** none blocking. One judgement (W1) is stated so it can be reversed cheaply.
-- **receipt pointers:** §1 the five items · §2 what I did NOT do · §3 gates + the mid-run commit ·
+- **receipt pointers:** §1 the six items · §2 what I did NOT do · §3 gates + the mid-run commit ·
   §4 mutation proofs incl. the one that did not run · §5 deviations · §6 residuals ·
   §7 the queued helper and the bug its own control found
 
@@ -99,6 +100,31 @@ now returns only the corrected production copy and four unrelated uses of the or
 `TRACE_IDENTITY_MAX_CHARS = 256` on `tool` / `agent` / `session` / `action` / `transport_session`,
 at BOTH layers: the writer truncates, the store ASSERT backstops. See §5 W2 for the policy
 divergence and why.
+
+### Item 6 (D6 + D7) — the addendum: a real cost regression, and a false claim on top of it
+
+**The regression was mine**, from the design wave: hoisting `roster()` above `if to:` made the
+explicit-recipient path pay a row-UNLIMITED membership scan it never reads, so cost scaled with
+SESSION SIZE rather than with the request. A one-recipient send in a 200-agent session went from
+one point read to two queries, one pulling every row. And the docstring beside it claimed "ONE
+store read, not N" while doing two.
+
+**The fix needed no threshold policy, which is why it is not a design question.** Naming every bad
+recipient in one reject — the D3 property, and the thing not to trade away — never depended on the
+roster at all: it only needs the loop to COLLECT failures instead of raising at the first. So the
+loop keeps collecting and the roster read moves back inside the broadcast branch. The cheap fix and
+the honest fix turned out to be the same fix.
+
+The third read on the failure path disappears with it: the explicit path no longer holds a roster
+to reuse, and costs N point reads plus one enrichment read only when a name is actually bad.
+
+**And because a cost claim in prose is precisely what went wrong here, the new claim is PINNED, not
+asserted.** Counters on `roster`/`get_agent` prove: an explicit send reads no roster; the count
+moves with `len(to)` and NOT with a 10× larger session (either axis alone is satisfied by a build
+returning a constant); a repeated recipient costs one read; and — the control — a broadcast still
+reads the roster exactly once, without which "no roster read" is satisfied by a broken broadcast.
+
+D7's `thana` typo was also mine, from a scripted replacement in the design wave.
 
 ### Item 5 (C2) — NO ACTION, as ruled
 
@@ -243,6 +269,36 @@ law's premise does not hold here. Stated rather than assumed; reversible in one 
 | **R4** | `TestParamsHashIsTheRuledRecipeAndLeaksNothing`'s NAME still says "LeaksNothing" while three columns are stored plaintext. | **DOCSTRING CORRECTED, NAME LEFT.** Renaming a committed contract class is a wider edit than this wave authorised, and the docstring now states the truth in the first line a reader sees. Flagged so it is a deliberate leftover, not an oversight. |
 | **R5** | The round-2 residuals and D6's cost-claim docstring. | **OUT OF SCOPE, ledgered by the lead.** Named so this report cannot be read as "all round-2 findings closed". |
 | **R6** | Six rider clauses have now been implemented without their "and pin it like this" half across three waves. | **THE PATTERN, not a residual — and it is mine.** Three were mine and self-caught, one was caught by the round-2 audit, and this wave's C4 is the one that cost something: a false safety claim survived a design wave, a self-audit and two review rounds because the instrument naming it was never built. **A ruling's rider is part of the ruling.** |
+
+---
+
+### 3.2 — The helper fired on its FIRST live use, on exactly the case it was built for
+
+The addendum's gate run came back with a NON-empty fingerprint diff:
+
+```
+< STATUS_LINES=3                                    > STATUS_LINES=6
+                                                    >    M docs/eval/smoke_p8b.py
+                                                    >    M docs/eval/test_smoke_p8b.py
+                                                    >   ?? docs/eval/deploy-receipt-pre-ddl.json
+< TRACKED_TREE_MD5=b67e5aec…                        > TRACKED_TREE_MD5=fb030933…
+  HEAD=864f342 (unchanged)
+```
+
+**Tracked hash changed with HEAD UNCHANGED — the one combination the helper's own `--help` names as
+the spoiling shape.** A sibling was editing tracked files mid-run, uncommitted. Under the weaker
+first-draft detector (index blobs only) this would have been INVISIBLE: uncommitted edits do not
+move `git ls-files -s`.
+
+Diagnosed rather than assumed: the changed files are under `docs/eval/`, which is not in
+`testpaths` — confirmed by collection, zero `docs/eval` entries — so nothing that ran was affected.
+But "not affected" is a conclusion, not a receipt, so I re-ran. The sibling committed in the
+meantime (`c9a5b2e`, `docs/eval` only), and the final run's diff is EMPTY with my three files
+byte-identical at both ends.
+
+**This is the argument for the instrument, made by the instrument, on its first outing:** the run
+was in fact fine, and without the fingerprint I would have had no way to say so — only a number and
+a hope.
 
 ---
 
