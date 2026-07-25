@@ -354,5 +354,40 @@ tunables, recommended defaults · (18) the R5 extraction plan (lease in 11-i-a; 
    its findings are reproduced above with the exact commands implied; re-derivation is one
    `git init` away).
 
+---
+
+## R8 — CROSSING NOTE (appended same day): §0.5 @ `bd81906` landed while R4 was being written — reconciled here rather than left to mislead
+
+The lead's own measurements (`CONTRACT-FREEZE-DECISIONS.md` §0.5, M1–M4) crossed this revision in
+flight. Reconciliation, preserved not laundered:
+
+1. **R4.3's measurement STANDS; its conclusion INVERTS in direction.** M1/M3 show #134 is a
+   mount-topology problem: with the parent mounted at its identical absolute path (or a lore-owned
+   worktree root where lore controls both sides), git **2.47.3 resolves both trees — no bump, no
+   `--relative-paths` needed.** My measured v1+`extensions.relativeworktrees` poisoning therefore
+   flips from "the bump is mandatory for the relative route" to **an argument AGAINST the relative
+   route existing at all**: the moment any host adopts `--relative-paths` on this repo, the shipped
+   2.47.3 refuses the repo wholesale. Two independent measurements, same verdict from opposite
+   sides: **retire the relative-paths route; R4.3's "bump MANDATORY" is void with it** (the bump
+   reverts to optional hygiene). R6's decision (15) is re-dispositioned accordingly.
+2. **R4.4's relocation pricing SHRINKS:** M1's parent-mount needs no relocation on the dev host.
+   Residual worth one line: mounting all of `~/PycharmProjects:ro` exposes sibling projects to the
+   container — M3's lore-owned root avoids that and is the cleaner end-state; the layout inventory
+   (R4.4) still applies to *that* migration, at smaller scope.
+3. **M3's architecture, attacked as invited** [my judgement]: it holds. Two residuals to name in
+   whatever packet builds it: (a) **`safe.directory` must be explicit image/config state** — M2
+   shows uid-mismatch is the k8s DEFAULT, so the four-causes sentinel (#197) needs the
+   distinguishing fix regardless of topology; (b) on k8s, a lore-owned root on a PVC puts git's
+   file-based locking under whatever access mode the PVC has — single-writer (RWO) is fine;
+   **RWX multi-pod git mutation is a flagged unknown**, which R5's leader election conveniently
+   bounds (only the lease holder mutates worktrees).
+4. **M4 corroborates R3 clause-for-clause** — scipy installs in ~1 s, `scipy.stats.bootstrap` has
+   the statistic-callable/`paired`/`vectorized` shape, and the lead's ⚠ (interval convention must
+   be verified against nearest-rank, never inherited — #198's drift class) is the same instrument
+   R3.2 names: the byte-exact equality control. Convergent from independent seats; R3 stands
+   unchanged.
+5. **R4.5 (index-side: overlay routing via packets 17/23; the N× embedding-cost warning) is
+   untouched by §0.5 and stands.**
+
 *— end of revision. The operator rules; Addendum F @ `e109e91` remains the record of what was
 designed under the false constraints, and this file is what replaces it.*
