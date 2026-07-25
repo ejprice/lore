@@ -4493,7 +4493,7 @@ class AppContext:
     #      forgotten-wrap defect class P8d catalogued).
     #   5. dispatch to the action's handler.
 
-    async def comms(  # noqa: PLR0912 - the ruled two-tier validation ladder (§B1)
+    async def comms(
         self,
         *,
         action: str,
