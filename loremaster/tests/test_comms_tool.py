@@ -5515,6 +5515,323 @@ class TestTheDrainElisionArithmeticIsTheREMAINDER:
         )
 
 
+class TestTheAdvertisedReAskIsACTUALLYReachable:
+    """FIX WAVE — cold-audit C1/C2 == blind-audit D2, the BLOCKING pair.
+
+    The elision line's COUNT was always honest. Its INSTRUCTION was not, in two
+    independent ways, and neither was reachable by any fixture that existed:
+
+    * on a PEEK, nothing is stamped, so the next drain re-reads the pending set
+      from its OLDEST row — asking for the remainder re-serves the head the
+      caller just read and STRANDS the tail. Measured on the shipped build:
+      peek 20 of 60 advertised ``limit=40``; obeying it left 20 of the 60
+      unreachable at the advertised limit.
+    * past ``_MAX_DRAIN_LIMIT`` the advertised value is one the dispatcher
+      SILENTLY OVERRIDES: 260 pending, drain 20 → "re-run with limit=240", which
+      actually serves 50.
+
+    WHY EVERY GATE WAS GREEN: the largest ``total_pending`` fixture ANYWHERE in
+    the test tree was 10, against a cap of 50, and no fixture combined
+    ``peek=True`` with a remainder. Small-N monoculture, the class this repo has
+    now paid for a fifth time.
+
+    So this pins the PROPERTY, not the literal — *a drain's advertised
+    ``next_limit``, fed back through the REAL dispatcher, must serve every row
+    the elision line counted* — because a string compare against today's
+    arithmetic would have to be re-derived by hand the next time the rule moves,
+    and a hand-derived expectation is how the wrong arithmetic got rewarded in
+    the first place.
+
+    MUTATION-PROOF OBLIGATION: revert ``next_limit`` to the bare remainder ->
+    the peek leg goes RED; drop the ``min(..., _MAX_DRAIN_LIMIT)`` clamp -> the
+    cap leg goes RED. Each leg dies to its OWN half of the fix.
+    """
+
+    @staticmethod
+    def _elision(rendered: str) -> tuple[int, int]:
+        """The ``(more, next_limit)`` the render actually advertised."""
+        match = re.search(r"\+(\d+) more unread — re-run with limit=(\d+)", rendered)
+        assert match is not None, f"no elision line in: {rendered!r}"
+        return int(match.group(1)), int(match.group(2))
+
+    @staticmethod
+    def _row_seqs(rendered: str) -> list[int]:
+        return [
+            int(str(re.match(r"^#(\d+) \[", line).group(1)))  # type: ignore[union-attr]
+            for line in rendered.splitlines()
+            if re.match(r"^#\d+ \[", line)
+        ]
+
+    @staticmethod
+    async def _fill(harness: Any, count: int) -> None:
+        for index in range(count):
+            await _deliver(
+                harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL, body=f"m{index}"
+            )
+
+    @staticmethod
+    async def _drain(harness: Any, *, limit: int, peek: bool) -> str:
+        kwargs: dict[str, Any] = {"limit": limit}
+        if peek:
+            kwargs["peek"] = True
+        return str(
+            await AppContext.comms(
+                harness, action="drain", agent="fixer-b", session="wave7", **kwargs
+            )
+        )
+
+    async def test_a_STAMPING_drains_re_ask_serves_every_row_it_counted(self) -> None:
+        """The branch that was already correct — kept as the CONTROL, so a build
+        that "fixes" the peek branch by breaking this one cannot pass."""
+        harness, ledger = await _03b_fleet()
+        await self._fill(harness, 30)
+        first = await self._drain(harness, limit=10, peek=False)
+        more, next_limit = self._elision(first)
+        assert more == 20, first
+        second = await self._drain(harness, limit=next_limit, peek=False)
+        first_seqs, second_seqs = self._row_seqs(first), self._row_seqs(second)
+        assert len(second_seqs) == more, (
+            f"the re-ask advertised limit={next_limit} to reach {more} counted rows and served "
+            f"{len(second_seqs)}: {second!r}"
+        )
+        assert not set(first_seqs) & set(second_seqs), (
+            "a stamping drain re-served rows it had already consumed"
+        )
+        assert len(ledger.db.messages) == 30
+
+    async def test_a_PEEK_re_ask_reaches_every_row_it_counted(self) -> None:
+        """THE DEFECT. A peek stamps nothing, so the counted rows are only
+        reachable if the re-ask covers the WHOLE pending set. Under the shipped
+        arithmetic the second peek serves the same head again and the tail is
+        unreachable at the advertised limit."""
+        harness, ledger = await _03b_fleet()
+        await self._fill(harness, 30)
+        first = await self._drain(harness, limit=10, peek=True)
+        more, next_limit = self._elision(first)
+        assert more == 20, first
+        every_seq = {int(row.seq) for row in ledger.db.messages.values()}
+        unseen = every_seq - set(self._row_seqs(first))
+        assert len(unseen) == more, "fixture check: the counted rows ARE the unseen ones"
+        second = await self._drain(harness, limit=next_limit, peek=True)
+        assert unseen <= set(self._row_seqs(second)), (
+            f"the peek re-ask advertised limit={next_limit}, and obeying it left "
+            f"{sorted(unseen - set(self._row_seqs(second)))} of the {more} counted rows "
+            f"UNREACHABLE. A peek stamps nothing, so the next drain re-reads from the oldest "
+            f"row: the honest peek re-ask is the whole pending set, never the remainder"
+        )
+
+    async def test_the_re_ask_NEVER_advertises_a_limit_the_dispatcher_overrides(self) -> None:
+        """The cap half. ``_MAX_DRAIN_LIMIT`` is DERIVED, never written as 50 —
+        a re-tune must re-derive the fixture, not silently unbind the branch."""
+        cap = int(_server()._MAX_DRAIN_LIMIT)
+        harness, _ = await _03b_fleet()
+        await self._fill(harness, cap + 20)
+        first = await self._drain(harness, limit=10, peek=False)
+        more, next_limit = self._elision(first)
+        # NON-VACUITY: the remainder must EXCEED the cap or this leg proves nothing.
+        assert more > cap, (
+            f"fixture is vacuous: remainder {more} does not exceed the cap {cap}, so a clamped "
+            f"and an unclamped build render the same number"
+        )
+        assert next_limit <= cap, (
+            f"the render advertised limit={next_limit}, above the action's own cap {cap} — the "
+            f"dispatcher silently clamps it, so the served instruction is one the system does "
+            f"not honour (the sibling fleet render clamps at this same line)"
+        )
+        second = await self._drain(harness, limit=next_limit, peek=False)
+        assert len(self._row_seqs(second)) == next_limit, (
+            f"obeying the advertised limit={next_limit} served "
+            f"{len(self._row_seqs(second))} rows"
+        )
+
+
+class TestASkewFailureNeverCONSUMESTheInbox:
+    """FIX WAVE — the ordering pin the cold audit recommended for deviation D3.
+
+    ``_comms_drain`` reads the brief-skew block BEFORE calling the ledger's
+    drain. That order is not cosmetic and it was UNPINNED: reversed, a drain
+    STAMPS its window and then raises inside the skew read, so messages are
+    consumed that no caller ever received — permanent loss, in the subsystem
+    whose whole purpose is removing it.
+
+    Pinned by its CONSEQUENCE rather than by statement order: an ordering
+    assertion would need a statement spy, while "a failed drain left the inbox
+    unread" is the property that actually matters and it holds however the code
+    is arranged.
+    """
+
+    async def test_a_failing_skew_read_leaves_every_row_UNSTAMPED(self) -> None:
+        harness, ledger = await _03b_fleet()
+        await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
+        harness.brief_ledger = _BrokenBriefLedger()
+        with pytest.raises(_BrokenBriefLedger.Fault):
+            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        assert all(edge.seen_at is None for edge in ledger.db.edges.values()), (
+            "the drain STAMPED its window and then failed in the skew read — those messages "
+            "are consumed and no caller ever saw them, which is exactly the permanent loss "
+            "this subsystem exists to remove"
+        )
+
+    async def test_positive_control_a_HEALTHY_drain_does_stamp(self) -> None:
+        """Without this, the pin above passes on a build whose drain never
+        stamps at all."""
+        harness, ledger = await _03b_fleet()
+        await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
+        await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        assert all(edge.seen_at is not None for edge in ledger.db.edges.values())
+
+
+class TestEveryBadRecipientIsNamedInONEReject:
+    """FIX WAVE — blind-audit D3. A caller with two typos was rejected TWICE.
+
+    The dispatcher resolved recipients in a loop and raised on the FIRST
+    failure, which also stranded ``MessageLedger._reject_unknown_recipients``'s
+    own "name EVERY unregistered recipient in one query" guarantee behind a
+    surface that could never reach it. The store reference refuses exactly this
+    shape when it rejects ``ENFORCED`` as a REPLACEMENT for the app-level check:
+    one bad endpoint per attempt does not name the rest.
+    """
+
+    async def test_two_unknown_recipients_are_BOTH_named(self) -> None:
+        harness, ledger = await _03b_fleet()
+        with pytest.raises((UnknownAgentError, _msg().UnknownRecipientError)) as excinfo:
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["fixer-b", "typo-one", "typo-two"],
+                body="who are you",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        text = str(excinfo.value)
+        for name in ("typo-one", "typo-two"):
+            assert name in text, (
+                f"the reject named only some of the bad recipients ({name!r} missing) — a "
+                f"caller fixing them one at a time is rejected once per typo: {text!r}"
+            )
+        assert ledger.db.messages == {}
+
+    async def test_two_retired_recipients_are_BOTH_named(self) -> None:
+        harness, ledger = await _03b_fleet(
+            members=(
+                ("lead", "wave7", "active"),
+                ("gone-a", "wave7", "retired"),
+                ("gone-b", "wave7", "retired"),
+            )
+        )
+        with pytest.raises(ValueError) as excinfo:
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                to=["gone-a", "gone-b"],
+                body="are you there",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        text = str(excinfo.value)
+        assert "gone-a" in text and "gone-b" in text, text
+        assert ledger.db.messages == {}
+
+
+class TestASoloBroadcastADMITSTheConditionInsteadOfBlamingTheCaller:
+    """FIX WAVE — blind-audit D4. The first agent in a session, broadcasting
+    exactly as the tool schema instructs, was told its well-formed call was "a
+    caller error, not a broadcast" — prose that asserts the opposite of what
+    happened and teaches a fix that does not exist. First-boot path.
+    """
+
+    @staticmethod
+    async def _solo_broadcast() -> str:
+        harness, _ = await _03b_fleet(members=(("lead", "wave7", "active"),))
+        with pytest.raises(_msg().EmptyRecipientSetError) as excinfo:
+            await AppContext.comms(
+                harness,
+                action="send",
+                agent="lead",
+                session="wave7",
+                body="anybody out there",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+            )
+        return str(excinfo.value)
+
+    async def test_the_reject_names_the_real_condition_and_a_real_next_move(self) -> None:
+        """⚠ THE DISCRIMINATOR IS ``action=fleet``, AND THAT IS NOT AN ACCIDENT.
+
+        A first draft of this pin asserted only *"names the session"*, *"does not
+        say caller error"* and *"says register"* — and it stayed GREEN when the
+        dispatcher-side reject was deleted, because control then falls through to
+        the LEDGER's own empty-recipient error, and the ``FakeMessageLedger``
+        oracle's fallback prose ("no other non-retired agent is registered in
+        session 'wave7'") already satisfies all three. The pin could not tell the
+        fix from its absence.
+
+        So it now keys on a recovery move only the SURFACE can know — the fleet
+        verb — plus the two admissions the dispatcher makes and no ledger can:
+        that NOTHING was sent, and that the call itself was well-formed.
+
+        ⚠ RESIDUAL, surfaced not fixed (oracle changes are not a builder's):
+        the fake's fallback prose and PRODUCTION's differ. Production says the
+        empty set "is a caller error, not a broadcast"; the fake does not. No
+        surface pin can see production's wording, which is exactly how this
+        defect passed certification.
+        """
+        text = await self._solo_broadcast()
+        assert "wave7" in text, f"the reject does not name the session it looked in: {text!r}"
+        assert "caller error" not in text.casefold(), (
+            f"the reject blames the caller for a well-formed broadcast — the schema tells the "
+            f"caller to omit `to` for exactly this call: {text!r}"
+        )
+        assert "nothing was sent" in text.casefold(), (
+            f"the reject does not ADMIT the outcome; a caller cannot tell a refused broadcast "
+            f"from a partially-delivered one: {text!r}"
+        )
+        assert "well-formed" in text.casefold(), (
+            f"the reject does not say the call was well-formed, so the caller is left looking "
+            f"for a mistake it did not make: {text!r}"
+        )
+        assert "action=fleet" in text, (
+            f"the reject teaches no runnable next move. THIS is the discriminating assertion: "
+            f"the fleet verb is a recovery only the SURFACE knows about, so a build that fell "
+            f"back to the ledger's own empty-recipient error cannot satisfy it: {text!r}"
+        )
+
+
+class TestTheAckReceiptNeverEndsInADanglingSeparator:
+    """FIX WAVE — blind-audit D5. ``acked 0 of 0: `` (and every zero-acked call)
+    ended a served line with a colon and nothing after it, which is the shape a
+    consumer reads as a TRUNCATED response rather than as an honest zero."""
+
+    @pytest.mark.parametrize(
+        "outcomes",
+        [
+            [],
+            [(1001, "already_acked")],
+            [(1002, "unknown_message")],
+            [(1003, "not_addressed")],
+            [(1004, "acked")],
+        ],
+        ids=["empty", "already", "unknown", "not-addressed", "acked"],
+    )
+    def test_no_rendered_line_ends_in_a_dangling_separator(
+        self, outcomes: list[tuple[int, str]]
+    ) -> None:
+        rendered = _03b_ack(outcomes=outcomes, note=None)
+        offenders = [line for line in rendered.splitlines() if line.rstrip() != line.rstrip(":")]
+        assert not offenders, (
+            f"a served line ends in a separator with nothing behind it — an LLM consumer reads "
+            f"that as truncation: {offenders!r}"
+        )
+        assert rendered.strip(), "the ack render served nothing at all"
+
+    def test_the_zero_case_still_reports_its_counts(self) -> None:
+        """The dangling colon is removed by dropping the empty LIST, never by
+        dropping the COUNT — "nothing was newly acked" is what the caller needs."""
+        assert "acked 0 of 0" in _03b_ack(outcomes=[], note=None)
+        assert "acked 0 of 1" in _03b_ack(outcomes=[(1001, "already_acked")], note=None)
+
+
 class TestTheDrainHeaderCountsTheWHOLEPendingSet:
     """§B4.1 / 03a-2 R6 clause 2 (BINDING): the header's counts key on
     ``seen_at``, say "unread"/"pending" about the WHOLE pending set, and must
@@ -6163,11 +6480,31 @@ _RULED_INSTRUCTION_CLAUSES: tuple[str, ...] = (
     "One thread carries ONE conversational debt: put separate questions on separate "
     "q:<topic> threads.",
     # 6 — the re-ask recovery.
-    "If a partial reply cleared your thread, re-ask the unaddressed question: a new "
-    "send with set_status='input_required' re-establishes the debt.",
-    # 7 — the clearing rule, both halves.
-    "A question clears only when a teammate's reply is delivered to you on that thread; "
-    "your own follow-ups and self-notes never clear it.",
+    #
+    # ⚠ FIX WAVE (blind-audit D7, lead-authorized). Clauses 6 and 7 previously
+    # taught a "conversational debt" the agent could neither query nor be told
+    # about: ``MessageLedger.awaiting_answer`` / ``WaitingOnAnswer`` have ZERO
+    # production consumers, and ``set_status`` deliberately does not touch the
+    # status row, so nothing reports that state to the agent, its lead, or a
+    # teammate. "cleared your thread" and "re-establishes the debt" named a
+    # mechanism that never runs — the packet-28-C1 class verbatim, in the
+    # read-once surface an LLM learns this protocol from.
+    #
+    # The RULE is unchanged and still true (it is what the derivation implements
+    # and what the send-time question line teaches); what is corrected is the
+    # implied ability to OBSERVE it. The block now admits that lore does not
+    # report the state back yet and tells the agent to track it itself — an
+    # admitted limitation with a real next move, which is what the trust
+    # doctrine asks a served surface to do instead of over-claiming.
+    #
+    # STRENGTHEN-ONLY: both clauses are still pinned VERBATIM, and the block is
+    # still pinned by EQUALITY. No assertion was weakened; the SENTENCE changed.
+    "If a reply left part of your question unanswered, re-ask it: a new send with "
+    "set_status='input_required' marks the new question.",
+    # 7 — the clearing rule, both halves, plus what the surface does NOT do.
+    "A question is answered only by a teammate's reply delivered to you on that thread "
+    "— your own follow-ups and self-notes never count; lore does not report that state "
+    "back to you yet, so track it yourself.",
 )
 
 # Clause 4 is pinned separately: its integer is DERIVED from the constant

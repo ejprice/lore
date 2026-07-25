@@ -56,6 +56,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Protocol, cast, get_args
 from uuid import uuid4
 
+import anyio
 from lorescribe.javascript import JavascriptChunker
 from lorescribe.markdown import MarkdownChunker
 from lorescribe.python_ast import PythonAstChunker
@@ -160,6 +161,9 @@ from loremaster.messages import (
     AckOutcome as _AckOutcome,
 )
 from loremaster.messages import (
+    EmptyRecipientSetError as _EmptyRecipientSetError,
+)
+from loremaster.messages import (
     InboxEntry,
     MessageAckResult,
     MessageDrainResult,
@@ -195,7 +199,7 @@ from loremaster.tasks import TaskSpec as _TaskSpec
 if TYPE_CHECKING:
     from loresigil.base import Embedder
 
-    from loremaster.agents import Agent, AgentFleetWindow, AgentRegistry
+    from loremaster.agents import Agent, AgentFleetWindow, AgentRegistry, FleetRoster
     from loremaster.briefs import (
         Brief,
         BriefAckResult,
@@ -1199,6 +1203,14 @@ _SKEW_BREAKDOWN_CAP = 3
 # ``behind on {k} more briefs`` line, so an agent behind on many briefs never
 # gets unbounded heartbeat spam (#103). The spec DECLARES this value.
 _HEARTBEAT_SKEW_NAMES_CAP = 3
+# The display cap on ``TraceSummary.by_tool``, the per-tool aggregate
+# ``lore_index`` serves. The group key is the DISPATCHED tool name, which is
+# CALLER-SUPPLIED — an unknown name still reaches the trace seam — so without a
+# cap a client repeatedly calling one typo grows every future status response
+# forever. Capped AND counted (``tools_elided``): a silent truncation would read
+# as "that is all the tools", which is the served-number dishonesty the
+# disclosure exists to prevent.
+_TRACE_BY_TOOL_CAP = 20
 # design doc §4: the enforceable clamp behind ``fleet``'s ``limit=`` re-ask —
 # a counted elision's re-ask value is always honest AND clamped to this
 # ceiling (DESIGN-LAW §1.2), never an unbounded "ask for everything".
@@ -1481,11 +1493,11 @@ _INSTRUCTIONS = (
     f"bodies are capped at {_MESSAGE_BODY_MAX_CHARS} characters and carry "
     "POINTERS: put the content in a report or finding and name it in refs. One "
     "thread carries ONE conversational debt: put separate questions on separate "
-    "q:<topic> threads. If a partial reply cleared your thread, re-ask the "
-    "unaddressed question: a new send with set_status='input_required' "
-    "re-establishes the debt. A question clears only when a teammate's reply is "
-    "delivered to you on that thread; your own follow-ups and self-notes never "
-    "clear it.\n"
+    "q:<topic> threads. If a reply left part of your question unanswered, "
+    "re-ask it: a new send with set_status='input_required' marks the new "
+    "question. A question is answered only by a teammate's reply delivered to "
+    "you on that thread — your own follow-ups and self-notes never count; lore "
+    "does not report that state back to you yet, so track it yourself.\n"
     "\n"
     "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's "
     "tools first; batch independent calls in one turn, not serial turns."
@@ -1763,10 +1775,15 @@ class TraceSummary(BaseModel):
     reading.
 
     Attributes:
-        total: The total trace-row count across every tool (the sum of
-            ``by_tool``'s ``calls``).
-        by_tool: Per-tool call counts, sorted by tool name for a deterministic
-            render.
+        total: The total trace-row count across EVERY tool — including any the
+            display cap elided, so it is NOT the sum of ``by_tool``'s ``calls``
+            whenever ``tools_elided`` is non-zero.
+        by_tool: Per-tool call counts for the busiest
+            :data:`_TRACE_BY_TOOL_CAP` tools, sorted by tool name for a
+            deterministic render.
+        tools_elided: How many DISTINCT tools the cap left out. Non-zero is the
+            disclosure that makes ``total`` and ``by_tool`` consistent rather
+            than contradictory.
         latest_at: The ISO-8601 timestamp of the single most recent trace row
             across every tool, or ``None`` when the table is empty.
     """
@@ -1775,6 +1792,7 @@ class TraceSummary(BaseModel):
 
     total: int = 0
     by_tool: list[ToolTraceCount] = Field(default_factory=list)
+    tools_elided: int = 0
     latest_at: str | None = None
 
 
@@ -4098,14 +4116,28 @@ class AppContext:
         rows = await self.write_store.trace_aggregates()
         if not rows:
             return TraceSummary()
-        by_tool = sorted(
-            (ToolTraceCount(tool=row["tool"], calls=row["calls"]) for row in rows),
-            key=lambda item: item.tool,
-        )
-        total = sum(item.calls for item in by_tool)
+        counts = [ToolTraceCount(tool=row["tool"], calls=row["calls"]) for row in rows]
+        # CAPPED AND COUNTED. The group key is the DISPATCHED tool name, and an
+        # unknown name still reaches the seam (the dispatch fails INSIDE the
+        # funnel, so the row is written before the failure surfaces) — so a
+        # client repeatedly calling a typo would otherwise grow every future
+        # status response, permanently and without bound. Selected by CALLS
+        # descending so the cap keeps the signal rather than the alphabet, then
+        # re-sorted by name for a deterministic render.
+        ranked = sorted(counts, key=lambda item: (-item.calls, item.tool))
+        by_tool = sorted(ranked[:_TRACE_BY_TOOL_CAP], key=lambda item: item.tool)
+        # ``total`` stays the TRUE total over every tool, elided ones included —
+        # a count that silently shrank to match a display window is the served-
+        # number dishonesty the cap disclosure exists to prevent.
+        total = sum(item.calls for item in counts)
         latest_values = [row["latest"] for row in rows if row.get("latest") is not None]
         latest_at = max(latest_values).isoformat() if latest_values else None
-        return TraceSummary(total=total, by_tool=by_tool, latest_at=latest_at)
+        return TraceSummary(
+            total=total,
+            by_tool=by_tool,
+            tools_elided=len(counts) - len(by_tool),
+            latest_at=latest_at,
+        )
 
     async def dead_code(
         self,
@@ -4956,25 +4988,28 @@ class AppContext:
           exact failure this subsystem exists to remove.
         """
         session_scope = agent_row.session
-        recipients: list[_AgentRefLike] = []
+        roster = await self.agent_registry.roster(session=session_scope)
+        recipients: list[_AgentRefLike]
         if to:
-            for name in to:
-                try:
-                    recipient = await self.agent_registry.get_agent(name, session=session_scope)
-                except _UnknownAgentError as error:
-                    raise await AppContext._comms_enrich_unknown_agent(
-                        self, error, session=session_scope
-                    ) from error
-                if recipient.status == _AGENT_STATUS_RETIRED:
-                    raise ValueError(
-                        f"recipient {name!r} is retired — retirement is TERMINAL, so a message "
-                        f"delivered to it could never be drained; a respawn registers a FRESH "
-                        f"name, so send to that name instead"
-                    )
-                recipients.append(recipient)
+            recipients = await AppContext._comms_resolve_recipients(
+                self, to, roster=roster, session_scope=session_scope
+            )
         else:
-            roster = await self.agent_registry.roster(session=session_scope)
             recipients = [member for member in roster.members if member.id != agent_row.id]
+            if not recipients:
+                # An HONEST admission, not a blame. The caller broadcast exactly
+                # as the tool schema instructs; there is simply nobody else here
+                # yet. This is the first-agent-in-a-session path, so the prose
+                # has to name the real condition and a real next move — telling a
+                # well-formed call it is "a caller error" teaches a fix that does
+                # not exist.
+                raise _EmptyRecipientSetError(
+                    f"you are the only non-retired agent in session {session_scope!r}, so a "
+                    f"broadcast has nobody to deliver to — nothing was sent, and the call "
+                    f"itself was well-formed. Wait for a teammate to register (lore_comms "
+                    f"action=fleet shows who is here), or name recipients with to=[...] once "
+                    f"one exists"
+                )
         result = await self.message_ledger.send(
             sender=agent_row,
             session=session_scope,
@@ -4989,6 +5024,75 @@ class AppContext:
         return AppContext._render_comms_send(
             result, broadcast=not to, session=session_scope
         )
+
+    async def _comms_resolve_recipients(
+        self, to: list[str], *, roster: FleetRoster, session_scope: str
+    ) -> list[_AgentRefLike]:
+        """Resolve EVERY explicit recipient name, naming EVERY bad one at once.
+
+        Two properties, and the first is why this is not a loop over
+        ``get_agent``:
+
+        1. **A caller with two typos is rejected ONCE, naming both.** Raising on
+           the FIRST bad name makes a three-recipient send a three-round
+           correction game, and it strands the ledger's own
+           "name every unresolvable recipient in one query" guarantee behind a
+           surface that can never reach it. The store reference refuses exactly
+           this shape when it rejects ``ENFORCED`` as a REPLACEMENT for an
+           app-level check: one bad endpoint per attempt does not name the rest.
+        2. **The happy path costs ONE store read, not N.** The session's
+           row-unlimited membership — already read for the broadcast branch —
+           resolves every live name locally; only names it does NOT contain cost
+           an individual probe, and those are precisely the ones that must be
+           CLASSIFIED (retired is a different teaching from unknown, and a
+           roster read alone cannot tell them apart because it excludes retired
+           rows).
+
+        Resolution is SESSION-SCOPED throughout: an unscoped lookup would make a
+        cross-session delivery reachable by name collision.
+
+        Raises:
+            loremaster.agents.UnknownAgentError: One or more names resolve to no
+                row at all — enriched with the live roster through the EXISTING
+                enrichment seam, never a second roster-error implementation.
+            ValueError: One or more names resolve to a RETIRED row. Retirement is
+                terminal, so such a delivery could never be drained.
+        """
+        resolved: dict[str, _AgentRefLike] = {member.name: member for member in roster.members}
+        unknown: list[str] = []
+        retired: list[str] = []
+        for name in dict.fromkeys(to):
+            if name in resolved:
+                continue
+            try:
+                row = await self.agent_registry.get_agent(name, session=session_scope)
+            except _UnknownAgentError:
+                unknown.append(name)
+                continue
+            if row.status == _AGENT_STATUS_RETIRED:
+                retired.append(name)
+            else:
+                # Registered between the roster read and this probe. Accept it:
+                # the roster is a snapshot, not a lock.
+                resolved[name] = row
+        if unknown:
+            names = ", ".join(repr(name) for name in unknown)
+            raise await AppContext._comms_enrich_unknown_agent(
+                self,
+                _UnknownAgentError(
+                    f"recipient(s) {names} are not registered in session {session_scope!r} — "
+                    f"every agent must 'register' before it can be sent to"
+                ),
+                session=session_scope,
+            )
+        if retired:
+            names = ", ".join(repr(name) for name in retired)
+            raise ValueError(
+                f"recipient(s) {names} are retired — retirement is TERMINAL, so a message "
+                f"delivered to them could never be drained; a respawn registers a FRESH name, "
+                f"so send to that name instead"
+            )
+        return [resolved[name] for name in to]
 
     async def _comms_drain(
         self,
@@ -5862,11 +5966,26 @@ class AppContext:
             lines.append(render_fenced(entry.body))
         remainder = result.total_pending - shown
         if remainder > 0:
+            # THE RE-ASK MUST BE OBEYABLE. Two independent corrections, and both
+            # are needed — the count was always honest, the INSTRUCTION was not.
+            #
+            # 1. A PEEK stamps nothing, so the next drain re-reads the pending set
+            #    from its OLDEST row: asking for the remainder there re-serves the
+            #    head the caller just read AND strands the tail. The honest peek
+            #    re-ask is the WHOLE pending set. A STAMPING drain consumed its
+            #    window and stamped rows never re-serve, so its honest re-ask IS
+            #    the remainder — the value the peek branch must not use.
+            # 2. Either value is then CLAMPED to the action's own ceiling. A
+            #    re-ask naming a limit the dispatcher silently overrides is a
+            #    served instruction the system does not honour — the exact rule
+            #    ``_MAX_FLEET_LIMIT``'s own comment states, and which the sibling
+            #    ``_render_comms_fleet`` obeys at this same line.
+            reachable = result.total_pending if result.peeked else remainder
             lines.append(
                 render_line(
                     "+{more} more unread — re-run with limit={next_limit}",
                     more=remainder,
-                    next_limit=remainder,
+                    next_limit=min(reachable, _MAX_DRAIN_LIMIT),
                 )
             )
         re_served = [entry.seq for entry in result.entries if entry.acked_at is not None]
@@ -5980,14 +6099,29 @@ class AppContext:
             if entry.seq not in group:
                 group.append(entry.seq)
         acked = sorted(by_outcome[_ACK_OUTCOME_ACKED])
-        lines: list[Rendered] = [
-            render_line(
-                "acked {acked} of {requested}: {seqs}",
-                acked=len(acked),
-                requested=len(requested),
-                seqs=render_join(", ", [safe_str(f"#{seq}") for seq in acked]),
+        lines: list[Rendered] = []
+        if acked:
+            lines.append(
+                render_line(
+                    "acked {acked} of {requested}: {seqs}",
+                    acked=len(acked),
+                    requested=len(requested),
+                    seqs=render_join(", ", [safe_str(f"#{seq}") for seq in acked]),
+                )
             )
-        ]
+        else:
+            # NO trailing "``: ``" when the list behind it is empty. A served line
+            # that ends in a colon and nothing reads as TRUNCATION to the consumer
+            # this surface is written for — it is the shape of a response that got
+            # cut off, not of an honest zero. The count still renders, because
+            # "nothing was newly acked" is exactly what the caller needs to know.
+            lines.append(
+                render_line(
+                    "acked {acked} of {requested}",
+                    acked=len(acked),
+                    requested=len(requested),
+                )
+            )
         already = sorted(by_outcome[_ACK_OUTCOME_ALREADY_ACKED])
         if already:
             lines.append(
@@ -7318,6 +7452,14 @@ class _ProcessLifespanGuard:
 _TRACE_DECLARED_KEYS: tuple[str, ...] = ("agent", "session", "action")
 _TRACE_TRANSPORT_SESSION_HEADER = "mcp-session-id"
 
+# The wall-clock ceiling on ONE trace write. It bounds the SHIELDED emission, so
+# a cancelled request cannot be held open by its own telemetry — and because the
+# shield runs on every call, it is also the hard cap on what the emission can add
+# to any served call's latency. Set comfortably above the shared retry driver's
+# own conflict deadline (a healthy-but-contended write must not be cut short and
+# silently lost) and far below anything a caller would experience as a hang.
+_TRACE_EMIT_TIMEOUT_SECONDS = 5.0
+
 
 class TracingFastMCP(FastMCP):
     """A ``FastMCP`` whose ``call_tool`` records ONE trace row per dispatch.
@@ -7345,10 +7487,21 @@ class TracingFastMCP(FastMCP):
     ``except Exception`` flag would be a failure-class NAME-LIST, and
     ``CancelledError`` (a ``BaseException``) is the door it misses; a timed-out
     drain counted as a performed one would corrupt the very numerator this
-    instrument exists to produce. The write sits in ``finally``, which is
-    LOAD-BEARING and not style: an awaited write there COMPLETES when the
-    surrounding task is cancelled, so the struggling-session population is
-    recorded rather than silently dropped.
+    instrument exists to produce.
+
+    THE CANCELLATION LEG, stated as the mechanism actually behaves rather than as
+    a hope: the write sits in ``finally`` AND is SHIELDED, and it needs both. MCP
+    cancels a request through an **anyio cancel scope**
+    (``RequestResponder.cancel`` → ``self._cancel_scope.cancel()``), and anyio
+    scopes are **level-triggered** — once cancelled, EVERY subsequent await
+    inside the scope raises immediately, and a ``finally`` block is NOT exempt.
+    So an unshielded await here would write NO row for exactly the population
+    ``ok=False`` exists to measure, would raise a ``BaseException`` the
+    ``except Exception`` below never logs, and would REPLACE whatever exception
+    the tool was already unwinding. ``anyio.CancelScope(shield=True)`` is what
+    makes the ``finally`` true; :data:`_TRACE_EMIT_TIMEOUT_SECONDS` bounds it, so
+    a shielded write can never hang a request that is already going away — and
+    that same bound caps what the emission can add to ANY call's latency.
     """
 
     async def call_tool(
@@ -7364,9 +7517,17 @@ class TracingFastMCP(FastMCP):
         finally:
             latency_ms = (time.perf_counter() - started) * 1000
             try:
-                await self._record_tool_trace(
-                    tool=name, arguments=arguments, latency_ms=latency_ms, ok=ok
-                )
+                # SHIELDED + BOUNDED — see the class docstring's cancellation
+                # leg. The shield is what makes the `finally` placement true
+                # under anyio's level-triggered cancellation; the deadline is
+                # what stops the shield from holding a dying request open.
+                with (
+                    anyio.CancelScope(shield=True),
+                    anyio.fail_after(_TRACE_EMIT_TIMEOUT_SECONDS),
+                ):
+                    await self._record_tool_trace(
+                        tool=name, arguments=arguments, latency_ms=latency_ms, ok=ok
+                    )
             except Exception:
                 # LOUD where it can be — the server log — and invisible to the
                 # caller. A silent failure plus a flatlined traces section is a
@@ -7392,13 +7553,22 @@ class TracingFastMCP(FastMCP):
         try:
             request_context = request_ctx.get()
         except LookupError:
-            # No request context (an in-process call, or a transport that never
-            # set one): there is no store to write through, and telemetry is
-            # never a gate on the served surface.
+            # An in-process call, or a transport that never set a request
+            # context: there is no store to write through. DEBUG, not WARNING —
+            # this is a real and expected shape (nothing is broken), but a
+            # silent return would be unobservable, and an absence nobody can see
+            # is how a dead emission survives every green gate.
+            logger.debug("trace.emit.no_request_context", extra={"tool": tool})
             return
-        app_context = getattr(request_context, "lifespan_context", None)
-        store = getattr(app_context, "write_store", None)
-        if store is None:
+        app_context = request_context.lifespan_context
+        try:
+            store = _trace_write_store(cast(AppContext, app_context))
+        except AttributeError:
+            # The context carries no write store. Unlike the branch above this
+            # is NOT an expected shape, so it is LOUD: it means the emission has
+            # been un-wired, and every trace would otherwise vanish with every
+            # gate still green.
+            logger.warning("trace.emit.no_write_store", extra={"tool": tool})
             return
         declared = {
             key: value
@@ -7422,15 +7592,37 @@ class TracingFastMCP(FastMCP):
         )
 
 
+def _trace_write_store(app_context: AppContext) -> SurrealStore:
+    """The store the trace emission writes through.
+
+    A TYPED accessor rather than a string-keyed ``getattr``, and that is the
+    whole point: renaming :attr:`AppContext.write_store` must be a mypy ERROR
+    here, not a silent end of all telemetry with every test still green (the
+    tests drive the seam, not the attribute name — #131's exact shape). The
+    parameter is annotated, so mypy resolves the attribute against the REAL
+    class; at runtime the lookup stays duck-typed, so a harness double carrying
+    the same attribute works and one carrying NEITHER raises ``AttributeError``
+    for its caller to report rather than swallow.
+    """
+    return app_context.write_store
+
+
 def _trace_params_hash(arguments: dict[str, Any]) -> str:
     """The trace row's parameter digest — the ONE recipe, named once.
 
     ``sha256`` over ``json.dumps(arguments, sort_keys=True, default=str)``, full
     lowercase hex. ``sort_keys`` makes two dicts differing only in insertion
     order describe the SAME call; ``default=str`` keeps an unserialisable value
-    from taking the dispatch down. The digest is the ONLY thing that crosses
-    from arguments into the row, so it is also the whole privacy boundary:
-    bodies, briefs and queries pass through it and nowhere else. An EMPTY
+    from taking the dispatch down.
+
+    WHAT THIS DIGEST IS AND IS NOT A BOUNDARY FOR, precisely — because an
+    over-claim here would be read as licence to store more: free text (bodies,
+    briefs, queries, notes) reaches the row ONLY as this digest and nowhere else.
+    It is NOT the whole argument boundary: the three keys in
+    :data:`_TRACE_DECLARED_KEYS` are stored VERBATIM, by design, because an
+    identity that is hashed is an identity packet 06 cannot group by. Anything
+    added to that tuple is stored plaintext too — which is the trade to weigh
+    before adding one. An EMPTY
     argument dict digests to a real value, never a sentinel — four registered
     tools take no arguments, and an empty digest would collapse all of them into
     one bucket for every per-call aggregate.

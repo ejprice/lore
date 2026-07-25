@@ -315,6 +315,13 @@ _PROMISE_FREE: dict[str, str] = {
     ),
     "no unread messages": "status report (empty inbox)",
     "acked {acked} of {requested}: {seqs}": "status report (ack receipt)",
+    # FIX WAVE (blind-audit D5): the receipt's SEQ-LESS variant. When nothing was
+    # newly acked the ``{seqs}`` slot is empty, and the with-seqs template then
+    # renders a line ending in a dangling ``": "`` — which an LLM consumer reads
+    # as a TRUNCATED response, not as an honest zero. Two mutually-exclusive
+    # variants of one receipt, exactly like the drain row's ``{context}`` cell.
+    # Still a status report: it promises no mechanism, it reports a count.
+    "acked {acked} of {requested}": "status report (ack receipt, nothing newly acked)",
     "already acked: {seqs} — no new stamp": "status report (idempotent ack)",
     "not addressed to you: {seqs} — these messages carry no delivery to {name}": (
         "status report (ownership rejection); the CAS return alone cannot say this, which is "

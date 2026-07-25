@@ -220,6 +220,7 @@ from contextlib import contextmanager, suppress
 from types import SimpleNamespace
 from typing import Any, cast
 
+import anyio
 import pytest
 import pytest_asyncio
 from _surreal_fakes import FakeSurrealStore
@@ -753,6 +754,36 @@ class TestTheDoubleBindsAgainstTheRealSignature:
         )
 
 
+class _SuspendingTraceRecorder(_TraceRecorder):
+    """A recorder that SUSPENDS before recording — the real store's own shape.
+
+    ⚠ THIS CLASS EXISTS BECAUSE ITS ABSENCE MADE A PIN UNFALSIFIABLE, and the
+    mechanism is worth stating once so nobody "simplifies" it away.
+
+    A cancel scope cancels a TASK; the cancellation is delivered at the task's
+    next SUSPENSION POINT. :class:`_TraceRecorder` binds a signature and appends
+    to a list — it never awaits anything — so a dispatch cancelled anywhere
+    still completes its emission, shielded or not. Measured, all four cells:
+
+    | emission suspends | shielded | row |
+    |---|---|---|
+    | no  | no  | WRITTEN |   <- the blind cell: no shield needed, so no pin can see one missing
+    | no  | yes | WRITTEN |
+    | yes | no  | **LOST** |  <- production's shape
+    | yes | yes | WRITTEN |
+
+    ``SurrealStore.record_trace`` is a network round-trip and therefore ALWAYS
+    suspends, so only the bottom two rows describe production. A cancellation
+    pin driven by the non-suspending double asserts a property that holds for
+    reasons that do not exist at runtime.
+    """
+
+    async def record_trace(self, **fields: Any) -> None:
+        """Suspend once, then record exactly as the base recorder does."""
+        await asyncio.sleep(0)
+        await super().record_trace(**fields)
+
+
 class _TransportRequest:
     """A transport request exposing only ``headers`` — the correlator's source.
 
@@ -894,6 +925,15 @@ class TestTheMonotonicityPredicateItself:
         # The regression guard: the original inline form raised ValueError here
         # rather than returning a verdict, so it could never pass.
         assert _is_strictly_increasing([0, 1, 2]) is True
+
+
+def _returning(rows: list[dict[str, Any]]) -> Any:
+    """An async callable returning ``rows`` — the ``trace_aggregates`` stand-in."""
+
+    async def _call() -> list[dict[str, Any]]:
+        return rows
+
+    return _call
 
 
 def _expected_params_hash(arguments: dict[str, Any]) -> str:
@@ -1796,6 +1836,154 @@ class TestACancelledDispatchStillRecordsItsRow:
             f"True here means the flag is being CLEARED by a failure-class name-list "
             f"(`except Exception`) that CancelledError walks straight past, and a timed-out drain "
             f"then counts as one the agent performed."
+        )
+
+
+class TestTheEmissionSurvivesANYIOsLevelTriggeredCancellation:
+    """FIX WAVE — blind-audit D1, the BLOCKING half of the pair.
+
+    The sibling class above cancels through ``asyncio.Task.cancel``, which is
+    EDGE-triggered: the ``CancelledError`` is delivered once, at the await it
+    interrupts, and a later await inside ``finally`` runs normally. That is why
+    it passed against an UNSHIELDED emission — and it is not the mechanism
+    production uses.
+
+    **MCP cancels through an anyio cancel scope** (``RequestResponder.cancel``
+    -> ``self._cancel_scope.cancel()``), and anyio scopes are LEVEL-triggered:
+    once cancelled, EVERY subsequent await inside the scope raises immediately,
+    and a ``finally`` block is not exempt. Under that mechanism an unshielded
+    emission writes NO row for exactly the population ``ok=False`` exists to
+    measure; the ``CancelledError`` is a ``BaseException`` the seam's
+    ``except Exception`` never logs; and it REPLACES whatever exception the tool
+    was already unwinding. The class docstring claimed the opposite as its
+    load-bearing justification.
+
+    So this drives the REAL production mechanism, not a convenient one.
+
+    MUTATION-PROOF OBLIGATION: remove ``anyio.CancelScope(shield=True)`` from
+    the emission -> the cancelled leg goes RED (no row) while the sibling
+    asyncio-cancel pin stays GREEN. That asymmetry IS the finding.
+    """
+
+    async def test_a_scope_cancelled_dispatch_STILL_writes_its_row(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        mcp, _plain = probe_server
+        recorder = _SuspendingTraceRecorder()
+        with _request_context(_app_context_double(recorder)):
+            # ``move_on_after`` is a real anyio cancel scope with a deadline —
+            # the same construct MCP cancels a request with, and it swallows the
+            # cancellation at its own boundary so the assertions below can run.
+            with anyio.move_on_after(_CANCEL_AFTER_SECONDS):
+                await _dispatch(mcp, _SYNTHETIC_BLOCKING, {})
+        assert len(recorder.calls) == 1, (
+            "a dispatch cancelled through an ANYIO cancel scope wrote no trace row. anyio "
+            "scopes are level-triggered, so the `finally`'s own await raises too — the "
+            "emission must be SHIELDED, or the timed-out population (precisely what ok=False "
+            "measures) is silently absent and nothing logs it."
+        )
+        assert recorder.calls[0]["tool"] == _SYNTHETIC_BLOCKING
+        assert recorder.calls[0]["ok"] is False, (
+            f"the scope-cancelled dispatch recorded ok={recorder.calls[0].get('ok')!r}; the "
+            f"success latch must leave it False."
+        )
+
+    async def test_positive_control_the_SAME_scope_uncancelled_records_ok_true(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        """Without this, a build that always wrote ``ok=False`` — or a probe that
+        never actually cancelled — would satisfy the leg above."""
+        mcp, _plain = probe_server
+        recorder = _SuspendingTraceRecorder()
+        with _request_context(_app_context_double(recorder)):
+            with anyio.move_on_after(_BLOCKING_TOOL_SECONDS):
+                result = await _dispatch(mcp, _SYNTHETIC_SILENT, {"marker": "uncancelled"})
+        assert "silent:uncancelled" in _payload_text(result)
+        assert len(recorder.calls) == 1
+        assert recorder.calls[0]["ok"] is True
+
+    async def test_the_shielded_write_is_BOUNDED(self) -> None:
+        """The shield must not be able to hold a dying request open forever. The
+        bound is a named constant, DERIVED here rather than written as a literal,
+        and it must sit above the store's own conflict-retry deadline (a healthy
+        but contended write must not be cut short and silently lost)."""
+        from loremaster.server import _TRACE_EMIT_TIMEOUT_SECONDS
+        from loremaster.store._txn import _TXN_CONFLICT_DEFAULT_DEADLINE_SECONDS
+
+        assert _TRACE_EMIT_TIMEOUT_SECONDS > _TXN_CONFLICT_DEFAULT_DEADLINE_SECONDS, (
+            "the emission's timeout is at or below the shared retry driver's own deadline, so "
+            "a contended-but-healthy trace write is cut short and lost"
+        )
+        assert _TRACE_EMIT_TIMEOUT_SECONDS <= 30, (
+            "an unbounded-in-practice shield defeats the point: a cancelled request would be "
+            "held open by its own telemetry"
+        )
+
+
+class TestTheServedPerToolAggregateIsCappedAndCounted:
+    """FIX WAVE — blind-audit D6 (the served half; retention is ledgered).
+
+    ``TraceSummary.by_tool`` is returned as STRUCTURED OUTPUT with no display
+    cap, and its group key is the DISPATCHED tool name — which is
+    caller-supplied. An unknown name still reaches the seam (the dispatch fails
+    INSIDE the funnel, so the row is written before the failure surfaces), so a
+    client repeatedly calling one typo permanently grows every future
+    ``lore_index`` response. It was the one list in this packet's blast radius
+    with no cap.
+
+    Capped AND counted: a silent truncation would read as "that is all the
+    tools", and ``total`` deliberately stays the TRUE total, so the disclosure
+    is what keeps the two numbers consistent rather than contradictory.
+    """
+
+    async def test_an_over_cap_aggregate_is_capped_and_the_remainder_COUNTED(self) -> None:
+        from loremaster.server import _TRACE_BY_TOOL_CAP, AppContext
+
+        over = _TRACE_BY_TOOL_CAP + 7
+        rows = [
+            {"tool": f"probe_tool_{index:03d}", "calls": index + 1, "latest": None}
+            for index in range(over)
+        ]
+        context = cast(
+            Any, SimpleNamespace(write_store=SimpleNamespace(trace_aggregates=_returning(rows)))
+        )
+        summary = await AppContext._trace_summary(context)
+        assert len(summary.by_tool) == _TRACE_BY_TOOL_CAP, (
+            f"the served per-tool list carried {len(summary.by_tool)} of {over} entries — an "
+            f"uncapped list whose keys a CALLER controls grows every future status response"
+        )
+        assert summary.tools_elided == over - _TRACE_BY_TOOL_CAP, (
+            "the cap did not DISCLOSE its remainder; a silent truncation reads as 'that is all "
+            "the tools'"
+        )
+        assert summary.total == sum(int(cast(int, row["calls"])) for row in rows), (
+            "the total shrank to match the display window — it must stay the TRUE total across "
+            "every tool, which is what tools_elided exists to reconcile"
+        )
+        assert summary.by_tool == sorted(summary.by_tool, key=lambda item: item.tool), (
+            "the served slice is not name-sorted, so the render is not deterministic"
+        )
+        busiest = {f"probe_tool_{index:03d}" for index in range(over - _TRACE_BY_TOOL_CAP, over)}
+        assert {item.tool for item in summary.by_tool} == busiest, (
+            "the cap kept the ALPHABET rather than the SIGNAL — selection is by call count, or "
+            "a busy tool vanishes behind an idle one whose name sorts earlier"
+        )
+
+    async def test_positive_control_an_UNDER_cap_aggregate_elides_nothing(self) -> None:
+        from loremaster.server import _TRACE_BY_TOOL_CAP, AppContext
+
+        under = _TRACE_BY_TOOL_CAP - 2
+        rows = [
+            {"tool": f"probe_tool_{index:03d}", "calls": index + 1, "latest": None}
+            for index in range(under)
+        ]
+        context = cast(
+            Any, SimpleNamespace(write_store=SimpleNamespace(trace_aggregates=_returning(rows)))
+        )
+        summary = await AppContext._trace_summary(context)
+        assert len(summary.by_tool) == under
+        assert summary.tools_elided == 0, (
+            "an under-cap aggregate disclosed a remainder it does not have"
         )
 
 
