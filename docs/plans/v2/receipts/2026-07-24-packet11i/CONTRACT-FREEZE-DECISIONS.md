@@ -63,6 +63,33 @@ about, before the authorized §B vehicle is used. If provenance does read null, 
 stands; what changes is that the verb must FAIL LOUD on absent provenance rather than write a row
 with an empty field.
 
+**ANSWERED 2026-07-25 by the C1–C14 adversary pass** (`REPORT-adversary-c1c14-11i.md` @ `6c18bfb`
+§1, with three controls): **#134 DOES reach a baked-image run** — the failure belongs to the
+MOUNTED TREE, not to how the code got in, so baking does not escape it. `git -C /workspace
+rev-parse HEAD` → `fatal: not a git repository: …/worktrees/lore-pkt11i` → `capture_git_identity`
+→ silent `(None, None)`. **FOUR** distinct causes collapse into that one sentinel, one (`dubious
+ownership`) named by neither #134 nor #131. Mechanism independently verified by the lead: the
+worktree's `.git` is a 70-byte FILE naming `/home/ejprice/PycharmProjects/lore/.git/worktrees/lore-pkt11i`,
+outside any `/workspace` mount; the main checkout's `.git` is a directory (control). **And C7's
+receipt clause is INERT** — `loremaster.__file__` is `/app/loremaster/loremaster/__init__.py` for
+every image ever built, so the clause called *"what converts a wrong-tree run to detectable"* has
+zero discriminating power in the authorized vehicle. Rider proposals: Addendum F §F10 — the
+operator's to rule, per §0's own "riders on an operator ruling are the operator's".
+
+### 0.3 Where §D's raised items now live — addresses, so they stop being rediscovered
+
+Three of §D's items (restated at Addendum F §F12) were filed as findings on 2026-07-25. Each had
+been independently re-raised by multiple reports with no address to point at — the exact cost the
+archive/citation law exists to prevent:
+
+| item | finding | note |
+|---|---|---|
+| `capture_git_identity`'s silent `(None, None)` | **#197** | #131's shape, still live; four causes, one sentinel. Needs an owner; NOT 11-i's. |
+| `weighted_percentile` hand-rolled twice, 11-i adds a third consumer | **#198** | ONE IMPLEMENTATION — escalate before copy #3, not after. |
+| `scripts/` has no `testpaths` entry (§D.1 / RAISED-4) | **#199** | **Third independent report asking** — the scout, the adversary and the probe each found it separately. 11-i's port re-homes these tests by construction, so the live window is the interim; accepting that window is a legitimate answer, but it is the operator's. |
+
+The remaining §D items keep their §D numbering as their address; §D.12 is ruled in §0 above.
+
 **Provenance of the inputs.** Three agents, deliberately structured so no list grades itself:
 - `REPORT-scout-11i.md` — Opus discovery scout; source-verified seam map + measured sizing.
 - `REPORT-fable-design-11i.md` — the Fable design sidecar (authored most of the design under
