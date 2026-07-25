@@ -19,7 +19,8 @@ brief-base v6 read
   pointers REJECT — a policy divergence, with both readings written down
 - **decisions needed:** none blocking. One judgement (W1) is stated so it can be reversed cheaply.
 - **receipt pointers:** §1 the five items · §2 what I did NOT do · §3 gates + the mid-run commit ·
-  §4 mutation proofs incl. the one that did not run · §5 deviations · §6 residuals
+  §4 mutation proofs incl. the one that did not run · §5 deviations · §6 residuals ·
+  §7 the queued helper and the bug its own control found
 
 ---
 
@@ -242,6 +243,45 @@ law's premise does not hold here. Stated rather than assumed; reversible in one 
 | **R4** | `TestParamsHashIsTheRuledRecipeAndLeaksNothing`'s NAME still says "LeaksNothing" while three columns are stored plaintext. | **DOCSTRING CORRECTED, NAME LEFT.** Renaming a committed contract class is a wider edit than this wave authorised, and the docstring now states the truth in the first line a reader sees. Flagged so it is a deliberate leftover, not an oversight. |
 | **R5** | The round-2 residuals and D6's cost-claim docstring. | **OUT OF SCOPE, ledgered by the lead.** Named so this report cannot be read as "all round-2 findings closed". |
 | **R6** | Six rider clauses have now been implemented without their "and pin it like this" half across three waves. | **THE PATTERN, not a residual — and it is mine.** Three were mine and self-caught, one was caught by the round-2 audit, and this wave's C4 is the one that cost something: a false safety claim survived a design wave, a self-audit and two review rounds because the instrument naming it was never built. **A ruling's rider is part of the ruling.** |
+
+---
+
+## 7 — The queued helper (`scripts/tree_fingerprint.sh`), and the bug its own control found
+
+Landed at `1a58ab4` after this wave's gates were green, per ledger task `4382e8fe`. Three lines
+(HEAD · status count + listing · a whole-tracked-tree hash) plus optional per-file diagnosis
+hashes, `--help` stating the bounds, and `scripts/test_tree_fingerprint.py` — 9 tests, every
+mutating one in a THROWAWAY git repo.
+
+**⚠ THE DETECTOR WAS WRONG ON ITS FIRST DRAFT, AND ITS OWN POSITIVE CONTROL CAUGHT IT.**
+`git ls-files -s` reports the INDEX blob for each tracked file — so an UNCOMMITTED edit to a
+tracked file did NOT move it. That is precisely the one shape the helper documents as the
+receipt-spoiling case. The test asserting "a tracked-file edit moves the tree hash" went RED
+immediately; the hash is now `{ git ls-files -s; git diff; }`, which together determine the
+working-tree content of every tracked file.
+
+**This has a consequence for the receipts I have already reported, and I am not going to leave it
+implied.** Every fingerprint in this report and the two before it used the WEAKER detector. What
+that means, precisely:
+
+- The design-wave runs had `STATUS_LINES=0` at both ends — no modified tracked files existed at
+  all — so nothing could have hidden in the gap. Those receipts stand.
+- This wave's final run had `STATUS_LINES=7`, all seven being my own in-flight files, and all seven
+  are inside the ten named per-file hashes, which were identical at both ends. So that receipt
+  stands too — **but by the overlap of my name list with the changed set, not by construction.**
+  A sibling editing an already-modified tracked file outside those ten would have been invisible.
+- Nothing observed suggests that happened, and the sibling activity that DID occur was a docs-only
+  commit visible in HEAD (§3.1).
+
+The honest summary: the receipts hold, and they held for a narrower reason than I gave at the time.
+The helper is what makes the next one hold by construction.
+
+**Why the mutating tests use a throwaway repo, recorded because it is the reusable part:** proving
+"a tracked edit moves the hash" by editing a tracked file in THIS checkout would spoil every
+concurrent fingerprint — an agent running gates during that test sees the tree hash change with
+HEAD unchanged, the exact spoiling shape. The instrument would manufacture its own failure mode,
+intermittently and only under concurrency. Same lesson as `scratch_copy.sh`: an instrument that
+mutates the tree it is measuring is not isolated, and nothing tells you.
 
 ---
 
