@@ -55,6 +55,7 @@ from loremaster.messages import (
     MessageBodyError,
     MessageDrainResult,
     MessageGrade,
+    MessageLedger,
     MessageSendResult,
     UnknownRecipientError,
     WaitingOnAnswer,
@@ -196,6 +197,16 @@ class FakeMessageLedger:
                 f"messages carry POINTERS: put the content in a report or finding and "
                 f"reference it in refs"
             )
+        # ⚠ CALLS the production validator rather than cloning its rules. The
+        # body/grade checks above are historical CLONES, and that pattern is
+        # exactly how this oracle's `EmptyRecipientSetError` prose drifted away
+        # from production's (finding #190) — a divergence no surface pin can see,
+        # because every surface pin rides the fake. Routing the NEW policy through
+        # the real staticmethod makes that class impossible here: there is one
+        # implementation, and the fake cannot disagree with it about what is legal.
+        MessageLedger._reject_oversize_pointers(
+            thread=thread, task_id=task_id, refs=list(refs) if refs is not None else []
+        )
         if not recipients:
             raise EmptyRecipientSetError(
                 "a send needs at least one recipient — no other non-retired agent is "
@@ -317,6 +328,9 @@ class FakeMessageLedger:
         self, *, agent_id: str, seqs: Sequence[int], note: str | None = None
     ) -> MessageAckResult:
         await asyncio.sleep(0)
+        # Same discipline as the pointer bounds in ``send``: CALL the policy, do
+        # not clone it (see the note there and finding #190).
+        MessageLedger._reject_oversize_note(note)
         by_seq = {message.seq: message for message in self.db.messages.values()}
         entries: list[MessageAckEntry] = []
         now = _utc_now()

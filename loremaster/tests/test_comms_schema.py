@@ -1905,6 +1905,139 @@ class TestMessageDdlOffline:
                 assert "IF NOT EXISTS" in statement, statement
 
 
+class TestThePointerBoundsHaveTheirSTOREBackstop:
+    """DD-3.c — enforce at BOTH layers, mirroring ``body`` exactly.
+
+    THE WRONG BUILD THIS EXISTS FOR, named by the design's own adversary: a
+    LEDGER-ONLY build. Every teaching reject passes, every surface pin passes,
+    and any future writer that does not go through ``MessageLedger.send`` lands
+    an unbounded row silently. ``body`` has carried a store ASSERT since packet
+    03 for precisely that reason; the pointer class gets the same treatment or it
+    does not have the same guarantee.
+
+    Pins the EMITTED statement, never ``INFO FOR TABLE``'s echo — the engine
+    NORMALISES what it echoes (``option<string>`` comes back as
+    ``none | string``, a closure's ``|$r|`` as ``|$r: any|``), so an echo-diffing
+    pin mismatches against a correct build. House idiom: assert what we send.
+    """
+
+    @staticmethod
+    def _field(ddl: str, table: str, name: str) -> str:
+        prefix = f"DEFINE FIELD OVERWRITE {name} ON {table} "
+        matches = [text.strip() for text in ddl.split(";\n") if text.strip().startswith(prefix)]
+        assert len(matches) == 1, (
+            f"expected exactly ONE definition of {table}.{name}, got {matches!r}"
+        )
+        return matches[0]
+
+    def test_refs_carries_its_COUNT_assert(self) -> None:
+        statement = self._field(generate_message_ddl(), _schema().MESSAGE_TABLE, "refs")
+        assert (
+            f"ASSERT array::len($value) <= {_schema().MESSAGE_REFS_MAX_COUNT}" in statement
+        ), (
+            f"refs has no store-level COUNT backstop, so a writer that bypasses the ledger "
+            f"stores a thousand-entry list silently: {statement!r}"
+        )
+        assert "DEFAULT []" in statement, (
+            f"the composed `DEFAULT [] ASSERT …` clause lost its DEFAULT — a ref-less send "
+            f"must still be able to omit the field: {statement!r}"
+        )
+
+    def test_the_ELEMENT_row_carries_the_per_entry_assert_AND_overwrite(self) -> None:
+        """⚠ THE ELEMENT ROW MUST BE ``OVERWRITE``, and that is not style.
+
+        ``DEFINE FIELD … TYPE array<T>`` IMPLICITLY DEFINES ``<field>.*``, so the
+        element definition is ALWAYS a re-definition — a bare one raises *"The
+        field 'refs.*' already exists"* and takes the whole DDL apply down. The
+        house ``_define_field`` emits ``OVERWRITE`` for every field, which is
+        what makes this work; this pin is what stops someone "tidying" the
+        element row onto a different emitter.
+        """
+        statement = self._field(generate_message_ddl(), _schema().MESSAGE_TABLE, "refs[*]")
+        assert (
+            f"ASSERT string::len($value) <= {_schema().MESSAGE_POINTER_MAX_CHARS}" in statement
+        ), (
+            f"refs entries have no store-level LENGTH backstop — the per-entry bound is what "
+            f"stops a 100KB payload riding one 'pointer': {statement!r}"
+        )
+        assert statement.startswith("DEFINE FIELD OVERWRITE refs[*] "), (
+            f"the element row is not OVERWRITE. `TYPE array<T>` implicitly defines `<field>.*`, "
+            f"so this is always a RE-definition and a bare DEFINE raises 'The field refs.* "
+            f"already exists', failing the entire apply: {statement!r}"
+        )
+
+    @pytest.mark.parametrize("field_name", ["thread", "task_id"])
+    def test_the_pointer_LABELS_carry_bare_length_asserts(self, field_name: str) -> None:
+        """⚠ BARE — no ``$value = NONE OR`` guard. An ``option<>`` field's ASSERT
+        is NOT evaluated when the value is absent (probed), so the guard is cruft
+        that teaches the next author it is required. Pinned in both directions:
+        the bound is present AND the guard is absent."""
+        statement = self._field(generate_message_ddl(), _schema().MESSAGE_TABLE, field_name)
+        assert (
+            f"ASSERT string::len($value) <= {_schema().MESSAGE_POINTER_MAX_CHARS}" in statement
+        ), f"{field_name} has no store-level pointer bound: {statement!r}"
+        assert "NONE OR" not in statement, (
+            f"{field_name} carries a NONE-guard the engine does not need — an option<> field's "
+            f"ASSERT is not evaluated on an absent value, and the guard teaches the next author "
+            f"a rule that does not exist: {statement!r}"
+        )
+
+    def test_the_ack_note_carries_the_BODY_cap_not_the_pointer_cap(self) -> None:
+        """DD-3.f. A note is message-grade PROSE, so it takes the BODY constant —
+        and the two constants must be DIFFERENT for this pin to have force."""
+        assert _schema().MESSAGE_BODY_MAX_CHARS != _schema().MESSAGE_POINTER_MAX_CHARS, (
+            "the body and pointer caps are equal, so this pin cannot tell which one the note "
+            "took — re-derive it before trusting it"
+        )
+        statement = self._field(generate_message_ddl(), _schema().TO_RELATION, "ack_note")
+        assert (
+            f"ASSERT string::len($value) <= {_schema().MESSAGE_BODY_MAX_CHARS}" in statement
+        ), f"the ack note has no store-level bound, or took the wrong one: {statement!r}"
+
+
+class TestThreadIsREQUIREDAndNonOptional:
+    """DD-2.b — the SILENT dependency of ``awaiting_answer``'s bounded read.
+
+    That read was narrowed to ``WHERE … in.thread IN $threads AND in.seq > $min``
+    and documented as a semantics-identical SUPERSET. It is one **only because
+    every message HAS a thread**: SurrealQL's ``IN`` does not match a stored NONE,
+    so an ``option<string>`` thread would make answers on a thread-less message
+    invisible to the derivation, and the asker would read "waiting" forever.
+
+    That is the SAFE direction of error, which is exactly why it needs a pin
+    rather than a comment — nothing would ever fail loudly, the superset claim
+    would quietly become false, and the only symptom is an agent that never stops
+    waiting. Mutation: flip the spec entry to ``option<string>`` -> RED here.
+    """
+
+    def test_the_thread_spec_is_a_required_string(self) -> None:
+        specs = dict(
+            (name, type_expr) for name, type_expr, _constraint in _schema()._MESSAGE_FIELD_SPECS
+        )
+        assert "thread" in specs, "the message slice no longer declares `thread` at all"
+        assert specs["thread"] == "string", (
+            f"message.thread is declared {specs['thread']!r}. `awaiting_answer`'s bounded "
+            f"deliveries read is a semantics-identical superset ONLY while every message has a "
+            f"thread — an option<> thread is silently dropped by the IN clause and the asker "
+            f"waits forever, with nothing failing loudly to say so (DD-2.b)"
+        )
+
+    def test_the_EMITTED_ddl_declares_thread_non_optional(self) -> None:
+        """Belt and braces at the layer that actually ships: the spec tuple is
+        the source, the emitted statement is what the engine sees."""
+        statements = [line.strip() for line in generate_message_ddl().split(";\n")]
+        thread = [
+            text
+            for text in statements
+            if text.startswith(f"DEFINE FIELD OVERWRITE thread ON {_schema().MESSAGE_TABLE} ")
+        ]
+        assert len(thread) == 1, f"expected exactly one thread field statement: {thread!r}"
+        assert " TYPE string" in thread[0], thread[0]
+        assert "option" not in thread[0], (
+            f"the emitted thread definition is optional: {thread[0]!r}"
+        )
+
+
 class TestMessageSchemaLive:
     """Live behavioural pins against the real engine (spike-surreal :18000)."""
 
