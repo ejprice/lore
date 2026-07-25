@@ -90,6 +90,51 @@ archive/citation law exists to prevent:
 
 The remaining §D items keep their §D numbering as their address; §D.12 is ruled in §0 above.
 
+### 0.4 ⚠ CORRECTION — the "no clock constants" prohibition is NOT an operator ruling, and k8s is a target
+
+**Operator, 2026-07-25, verbatim intent:** *"I don't know who made the anti-wall clock ruling but it
+wasn't the operator. I don't care how it works, only that it works. And that it works on k8s."*
+
+**Traced to source.** The design's §5 says: *"**Quiescence over clocks:** the trigger defers while the
+index is unsettled and dedupes while a run is queued/running. **No invented cooldown constant**; a
+continuously-churning corpus renders `stale_remeasuring` honestly until it settles. (A clock-based
+cooldown is a guessed constant with a failure mode; quiescence is a measured condition.)"*
+
+That is a design author's rationale about **the TRIGGER's debounce** — when to SCHEDULE a
+re-measurement. **It says nothing about lease expiry, and it is not an operator ruling.**
+
+**How it became one.** §5 (trigger scope) → the blind review restated it as *"§5 forbids clock
+constants"* (§7.3, unscoped) → this package carried that forward at §C-ter → the sidecar's Q2
+**rejected TTL expiry "on §5's own grounds"** and designed a clock-free lease to satisfy it →
+Addendum F's lease recommendation inherited it. **Four artifacts, and a rationale about one mechanism
+became a prohibition governing a different one.** Same propagation shape as the dead
+`SearchPipeline._format_result` symbol corrected at the head of this file — and the same lesson: a
+restatement acquires authority the original never claimed.
+
+**What is actually ruled:** nothing about clocks. §5's quiescence preference stands **for the trigger**,
+where it was written and where its argument applies. **The lease is unconstrained on mechanism** and is
+judged only on whether it works — on k8s.
+
+**Consequences, and they are not cosmetic:**
+1. **TTL + heartbeat renewal is back on the table as the mainstream answer**, and the burden of proof
+   inverts: a clock-free lease must now justify itself, not the reverse.
+2. **Option B (in-process single-flight) is DEAD.** k8s means multiple pods and rolling updates;
+   single-flight must be cross-process or it is not single-flight.
+3. **Option A's "boot reclamation" is UNSAFE on k8s, not merely contorted.** Under a rolling update the
+   new pod boots *while the old pod is still serving* — boot-reclamation would let an incoming pod
+   steal a live holder's lease. The design's clock-free condition fails on the target platform.
+4. **The sidecar's epoch-FENCING survives and should be kept.** Fencing and TTL are complements, not
+   alternatives: TTL bounds how long a dead holder blocks progress; the fencing token stops a slow or
+   resurrected holder corrupting state after its lease lapsed. That pairing is the standard distributed
+   answer and is what k8s's own `coordination.k8s.io/Lease` does (`leaseDurationSeconds` + renewal).
+5. **k8s reaches past the lease.** N replicas each running a self-maintenance loop is a leader-election
+   problem — which makes the lease MORE central to the architecture, not a detail of one engine. This
+   is now an input to the maintenance-loop extraction, not just to 11-i.
+
+**Process residual, raised not buried:** no instrument in this repo distinguishes *operator-ruled* from
+*design-author-asserted* once a claim has been restated once. Both render as "ruled law" in prose. That
+is a live defect class — this is its second instance in one packet.
+
 **Provenance of the inputs.** Three agents, deliberately structured so no list grades itself:
 - `REPORT-scout-11i.md` — Opus discovery scout; source-verified seam map + measured sizing.
 - `REPORT-fable-design-11i.md` — the Fable design sidecar (authored most of the design under
