@@ -1,0 +1,69 @@
+probe_bootstrap_degeneracy.py — packet 11-i, blind-review residual S1
+Measured 2026-07-25. Pure local statistics: no store, no embedder, no network.
+
+PROVENANCE OF THE CODE UNDER TEST (which tree am I measuring?):
+    search_score_survey.__file__ = /home/ejprice/PycharmProjects/lore-pkt11i/scripts/search_score_survey.py
+    loremaster.search.__file__   = /home/ejprice/PycharmProjects/lore-pkt11i/loremaster/loremaster/search.py
+    repo root                    = /home/ejprice/PycharmProjects/lore-pkt11i
+    choose_cosine_floor          = search_score_survey.choose_cosine_floor
+    verdict predicate            = loremaster.search._cosine_absence_predicate
+    imported bars                = D2_MAX_FALSE_FIRE_RATE=0.05 D2_MIN_NONSENSE_CATCH_RATE=0.6
+    pre-registered               = B=1000 CI=[p5, p95] stability_gate>=98%
+    python                       = 3.14.6, cpus=64
+
+====================================================================================================
+§0  CONTROLS FIRST — a negative result is worthless until the instrument is shown firing
+====================================================================================================
+
+Positive control 1 — the same resampler and the same CI code, over a BULK statistic
+(the union's median cosine), on the VERY SAME synthetic corpus as the headline run.
+    POSITIVE CONTROL 1 — union MEDIAN cosine: point=0.604534  ci=[0.589420, 0.621304]  width=0.031884  [non-degenerate]
+      distinct resampled values=92  modal=0.604534 @ 4.8% of replicates  point reproduced in 4.8%  sd=0.009489  range=[0.580624, 0.639767]
+      top resampled values: 0.60453x48  0.60634x47  0.60781x43  0.60227x39  0.60276x39  0.59747x38  0.60941x37  0.60877x36
+    -> control PASSES: the harness resolves a non-degenerate interval when one exists.
+
+Positive control 2 — the REAL choose_cosine_floor, same N=56, but the dominance rule
+selects a floor in the union's BULK (absent arm overlaps the union; ceiling relaxed to
+50%, DECLARED). Only the statistic's DEPTH changes.
+    selected floor rank in union = 43 / 56  (false-fire 0.446, catch 0.800)
+    POSITIVE CONTROL 2 — choose_cosine_floor, BULK floor: point=0.620900  ci=[0.584559, 0.638416]  width=0.053857  [non-degenerate]
+      distinct resampled values=16  modal=0.633522 @ 27.2% of replicates  point reproduced in 19.7%  sd=0.021548  range=[0.574811, 0.650130]
+      top resampled values: 0.63352x272  0.58456x213  0.62090x197  0.63842x91  0.58696x71  0.62141x65  0.63850x30  0.58747x15
+    D2 stability gate here: agreement 62.50% (21/56 decisions flip) -> FAIL
+    -> control PASSES: the SELECTION PROCEDURE is not intrinsically degenerate.
+
+Differently-broken control — a CONSTANT union. Also degenerate, for a DIFFERENT and
+nameable reason, and the instrument must be able to tell the two apart:
+    DIFFERENTLY-BROKEN CONTROL — constant union: point=0.600000  ci=[0.600000, 0.600000]  width=0.000000  [DEGENERATE]
+      distinct resampled values=1  modal=0.600000 @ 100.0% of replicates  point reproduced in 100.0%  sd=0.000000  range=[0.600000, 0.600000]
+      top resampled values: 0.60000x1000
+    distinct OBSERVED union cosines: constant-control=1  vs  headline-corpus=56
+    -> separable: the constant control has ONE candidate floor in existence (zero-
+       variance data). The headline corpus has N distinct candidates and collapses
+       anyway — that collapse is the SELECTION RULE reaching into the tail, not an
+       absence of data. Different named causes, distinguishable by this column.
+
+====================================================================================================
+§1  HEADLINE — the recorded 2026-07-07 regime at N=56
+====================================================================================================
+regime: tail-order-statistic (recorded 2026-07-07 regime)
+    provenance: n and rates RECORDED; distribution shape DECLARED (varied in §6)
+    synthesis parameters: union~N(0.6, 0.045)  absent~N(0.44, 0.035)  anchor_fraction=0.25 absent_anchor_fraction=0.0 mode=random
+    regime match (rejection-sampled to the RECORDED values): false-fire 1/56  catch 100%  (2 draws to land in regime)
+    adopted floor = 0.529054, which is order statistic #2 of 56 union cosines (3.57% of the way up) -- the S1 objection, measured
+    HEADLINE — choose_cosine_floor bootstrap, N=56: point=0.529054  ci=[0.474091, 0.554359]  width=0.080268  [non-degenerate]
+      distinct resampled values=7  modal=0.529054 @ 56.7% of replicates  point reproduced in 56.7%  sd=0.020930  range=[0.474091, 0.565296]
+      top resampled values: 0.52905x567  0.54733x215  0.47409x95  0.55436x86  0.55545x26  0.55802x10  0.56530x1
+    D2 stability gate: agreement 94.64% (3/56 decisions flip) -> FAIL
+
+====================================================================================================
+§2  THE N LADDER — does degeneracy resolve, and at what N?
+====================================================================================================
+Leg A (LEGACY instrument shape): the absent arm is the FIXED 15-query nonsense set
+(search_score_survey.NONSENSE_QUERIES is a fixed 15-tuple); only the union grows.
+    ... rung N=56 done (10:45:01)
+    ... rung N=112 done (10:45:01)
+    ... rung N=224 done (10:45:03)
+    ... rung N=448 done (10:45:12)
+    ... rung N=896 done (10:45:43)
+    ... rung N=1792 done (10:47:47)
