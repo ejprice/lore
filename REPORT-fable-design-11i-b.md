@@ -268,6 +268,65 @@ So the lead's inference stands: **the shapes were known to differ at measurement
 
 ---
 
+## Follow-up 2 (2026-07-25, from `lead-11i-b`) — COMMISSION: design Addendum F drafted and committed
+
+**Deliverable:** `docs/design/2026-07-25-floor-calibration-addendum-F.md`, committed as `e109e91`
+(one commit, the addendum alone — the probe agent's in-flight `probe-bootstrap-output.txt`
+modifications were deliberately left unstaged). DRAFT-banner'd: not ruled; superseded by whatever
+the operator rules.
+
+**Inputs read in full this sitting:** `REPORT-probe-bootstrap-11i.md` @ `803c191` (all 463 lines;
+its §4b was still `(filling from the re-run)` at authoring — honored per the lead's instruction:
+§6.3's flap numbers are treated as provisional in the addendum, and F2 is designed to be robust to
+their revision) · `REPORT-adversary-c1c14-11i.md` @ `6c18bfb` (all 1014 lines, incl. §9's
+post-probe addendum).
+
+**Commission compliance, itemized:** all ten commissioned items covered (F1–F10); every item marked
+FILLS-A-BLANK or AMENDS-RULED-TEXT under a stated conservative marking policy; §0-touching items
+flagged at the TOP (F0): F10 amends the operator's own §B rider set, the §A hold condition is
+recorded as RESOLVED by the probe, §C is being executed not amended. Amendment ledger consolidated
+in F11; five scope-law raises in F12; thirteen consolidated decisions-needed close the file.
+
+**Per-item verdict table (C1–C14), as commissioned** — full dispositions in the addendum's F8:
+
+| item | verdict | one-line disposition |
+|---|---|---|
+| C1 | ACCEPT | per-(scope,leg,N) seed · explicit generator · no-module-random pin · fixture N≥200 · mutation-proven control |
+| C2 | ACCEPT-MODIFIED | folded into F3; which-pool per adversary; which-SAMPLES is an operator fork (STOP honored) |
+| C3 | ACCEPT | validity floors restored (F4.2); 30–49 no-rung boundary ruled (F4.3) |
+| C4 | ACCEPT-MODIFIED | all-larger-rungs-pass + probes-not-samples + persisted triples; §9.2's narrowest-interval tiebreak replaced by F2's calibrated bound; no-rung ⇒ `measured_not_adopted`, not `measurement_failed` |
+| C5 | ACCEPT | six named artefacts + regenerating script; R2 dir renamed `<run-date>-11i-r2` |
+| C6 | ACCEPT | classify via `_txn.is_retryable_conflict_error`; mutation-proven; driver-set registration in the same change |
+| C7 | ACCEPT-MODIFIED | LORE_VERSION + image digest; `loremaster.__file__` demoted to namespace check; all three coordinates explicit; git half rides F10 (operator's) |
+| C8 | ACCEPT-MODIFIED | count-mismatch ⇒ settled-index discard-requeue; narrowed projection = decision-needed (store read inside DEPLOY: no) |
+| C9 | ACCEPT | exactly-k non-source or drop; anchor RECOMPUTED on non-source hits; drops split by cause; concentrated fixture demanded |
+| C10 | ACCEPT | skip predicate = digest AND fingerprint AND bars AND instrument version AND k′ |
+| C11 | ACCEPT-MODIFIED | full-pool manifest + changed-corpus mutation fixture; proposed 1 MB/row bound, side-table decision at R2 review |
+| C12 | ACCEPT | DISTINCT-dedup second fixture; adversary's second-order negative measurement recorded |
+| C13 | ACCEPT-MODIFIED | dead escalation branch deleted (`Candidate.key` IS the point_id); both-keys delta published; ≤20% bar re-registration = named decision point at R2 review |
+| C14 | ACCEPT-MODIFIED → F9 | design fork: E2 sort-sweep + byte-equality pin (primary); E3 affordability receipt; `--max-embeds` no-default; numpy deferred |
+
+No item REJECTED — the five demonstrated wrong builds survived my attempts to dismiss them, and the
+rest are cheap words against measured hazards. The two places I override the adversary's words
+(C4's outcome state; C4's tiebreak) are argued in F5/F1 respectively, not silently swapped.
+
+**Post-S1 re-evaluation the commission demanded (F7):** two no-regret pins KEPT with strengthened/
+reframed grounds; **one component DROPPED explicitly** — my Q1.1 "≥K samples below the floor"
+adoption gate, whose premise the probe refuted (the recorded healthy regime sits at depth ≈2; a
+K-gate would have blocked the 0.50649 adoption itself). Depth becomes telemetry, not a gate.
+
+**Consumer-reasoning flags this sitting:** F5's projection constraint cites the consult's §2.1
+verbatim rather than my reasoning; the one consumer-adjacent judgement I made (the two-degeneracy
+split's serving consequence) is grounded in the Trust Doctrine's confident-wrong pricing and marked
+[my judgement] in the addendum.
+
+**Deviation, disclosed:** the commission authorizes committing the addendum; brief-base §2's
+no-git-mutation rule is overridden by the spawn-brief hierarchy for exactly that one commit. This
+report's FU2 append remains uncommitted (the lead has been committing report updates; flagged, not
+assumed).
+
+---
+
 ## Standing by
 
 Follow-ups via SendMessage; answers appended above, stamped. — `fable-design-11i-b`, 2026-07-25
