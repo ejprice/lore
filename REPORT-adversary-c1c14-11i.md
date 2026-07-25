@@ -47,7 +47,10 @@ carries no SILENT tag and I measured it flipping an adoption decision — both m
 expensive direction. **Nine findings are mine alone after the peer diff (§5).**
 
 **Receipt pointers:** #134 §1 · per-item attacks §2 · ranking grade §3 · what the fourteen do NOT
-cover §4 · peer diff §5 · escalations §6 · commands, raw output + control ledger §7 · verdict §8.
+cover §4 · peer diff §5 · escalations §6 · commands, raw output + control ledger §7 · verdict §8 ·
+**§9 ADDENDUM — `probe-bootstrap-11i`'s output landed after §1–8 were committed: S1's degeneracy does
+NOT occur (so C2(a) is LATENT, not live), and my C4 finding is independently CORROBORATED and
+hardens — C4's rule adopts N=112, whose interval is 8× wider than a rung that also passes.**
 
 **Tool honesty (base §4):** lore's index watches the MAIN checkout, not this worktree (#125), so every
 code-structure answer here is grep/Read against the worktree — a sanctioned fallback, said out loud;
@@ -940,6 +943,71 @@ close the door the last debugging session came through — the empty absent leg,
 applied to prose instead of tests, and it is why five wrong builds walked straight through.
 
 Three items should not be ruled at all until something else happens: **C14** (escalate the bootstrap's
-implementation as a design fork), **C4/C2** (they depend on whether the interval degenerates — S1's
-measurement), and **the fifteenth item that does not exist yet** (the lease). The other eleven can be
-ruled as soon as the missing words are folded in.
+implementation as a design fork), **C4/C2** (see the §9 addendum — S1's measurement partly landed
+while I was writing), and **the fifteenth item that does not exist yet** (the lease). The other eleven
+can be ruled as soon as the missing words are folded in.
+
+---
+
+## 9. ADDENDUM, 2026-07-25 (written after §1–§8 were committed at `a0032eb`)
+
+While committing, `probe-bootstrap-11i` landed its **raw output artifact** at
+`docs/plans/v2/receipts/2026-07-24-packet11i/probe-bootstrap-output.txt` (untracked at my read time;
+its narrative report still carried a *"DRAFT IN PROGRESS — do not act on this file"* banner, so **I
+read the output artifact and not the prose**, and Leg B was still running). Two of its numbers bear
+directly on verdicts above, and it would be dishonest to leave my §2.2/§2.4 reading stale by a
+few minutes.
+
+**9.1 — S1's feared degeneracy does NOT occur in the 2026-07-07 regime.** Its headline: at N=56,
+`point=0.529054 ci=[0.474091, 0.554359] width=0.080268 [non-degenerate]`, with its own positive and
+differently-broken (constant-union) controls passing. **This is good news for the design and it does
+not change my C2 verdict**: my §2.2(a) wrong build is a door the sentence leaves open, not a
+prediction that something walks through it. A collapsed interval is still reachable by other routes
+(a tiny or foreign corpus, an all-anchored tail) and C2's sentence still returns PASS on it at the
+smallest rung. **But the finding is now correctly characterised as LATENT rather than live, and the
+lead should rank it accordingly.** §2.2(b) — the denominator ambiguity exceeding its own budget — is
+untouched by S1 and remains the live half of C2.
+
+**9.2 — my C4 non-monotonicity finding is CORROBORATED by an independent instrument, and more
+sharply than by my own probe.** S1's Leg A ladder (absent arm fixed at 15, union scaling), read from
+its output file:
+
+```
+     N     floor      ci_low    ci_high     width   agree    gate
+    56   0.518029   0.489419   0.541116  0.051697  94.64%   FAIL
+   112   0.510510   0.510510   0.529576  0.019066  98.21%   PASS   <- first passing rung
+   224   0.502503   0.502503   0.509919  0.007416  98.66%   PASS
+   448   0.495457   0.472530   0.505591  0.033061  99.11%   PASS
+   896   0.490894   0.490894   0.493170  0.002275  99.78%   PASS
+  1792   0.484338   0.466349   0.488163  0.021815  99.61%   PASS   <- agreement DROPS
+  3584   0.506332   0.480816   0.506499  0.025683  99.14%   PASS   <- and DROPS again
+```
+
+Three things I could only demonstrate synthetically are here on the real regime:
+
+1. **`agree` is non-monotone in N** — 99.78 → 99.61 → 99.14. My §2.4 measurement (0.9613 at N=100 vs
+   0.9500 at N=200) was on synthetic captures with a different denominator; this is a second,
+   independent instrument showing the same lurch. C4's rule leans on a monotonicity nobody has.
+2. **`width` is violently non-monotone** — 0.0517 → 0.0191 → 0.0074 → **0.0331** → 0.0023 → 0.0218 →
+   0.0257. The interval WIDENS by 4.5× from N=224 to N=448 and again from N=896 to N=1792.
+3. **The consequence is now concrete, not hypothetical.** C4's "smallest ladder value whose nested
+   subsample passes" adopts **N=112**, whose interval width is **0.019066** — more than **8×** the
+   width at N=896 (`0.002275`), three rungs up, which also passes. The adopted floor's interval is the
+   thing 11-ii's disjoint-CI adoption test compares against; adopting the widest passing interval
+   maximises the chance of overlapping everything forever, i.e. **never adopting again**.
+
+So §2.4's verdict stands and hardens: **C4 as written adopts a demonstrably worse rung than the ladder
+contains**, on the real regime, measured by an instrument that is not mine. Its "MISSING WORDS" ("…the
+smallest ladder value such that it AND every larger evaluated rung passes") is necessary but **no
+longer sufficient** — every larger rung here also passes, so that clause alone still selects N=112.
+Add: *"…and among the qualifying rungs, the adopted N is the one whose interval is NARROWEST, with the
+full ladder's (N, width, agreement) triples persisted in the row so the choice is auditable."*
+
+**9.3 — the ranking, re-graded.** §3 ranked C4 UNDER-RANKED on my synthetic evidence. With 9.2 it is
+the **second-most expensive item on the page after C14**: it is silent, it sets 11-ii's entry
+condition, and it picks the interval that governs every future adoption decision.
+
+**9.4 — one thing I did NOT verify.** I have not re-derived S1's numbers; I read its committed output
+artifact. Per this repo's own law about inherited numbers, the lead should treat 9.2's table as
+*S1's measurement, corroborating mine* — two instruments agreeing on a direction — not as a number I
+produced. Everything in §1–§8 is mine and was produced this session.
