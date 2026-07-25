@@ -274,9 +274,10 @@ class ServedSurfaces:
     tool_schema: str
     send_directive: str
     send_broadcast: str
-    send_question: str
+    send_question_a: str
     send_self_note: str
-    send_second_question: str
+    send_question_b1: str
+    send_question_b2: str
     drain_main: str
     drain_empty: str
     drain_peek: str
@@ -493,7 +494,15 @@ class LiveSurfaceProvider:
 
     # -- the served renders ---------------------------------------------------
     def _sends(self) -> dict[str, str]:
-        """The five send confirmations (explicit / broadcast / question / self-note / re-ask)."""
+        """The six send confirmations the battery's two question stories need.
+
+        The stories ride SEPARATE threads on purpose.  Story A (task 5) is a
+        question plus the sender's own follow-up, and NO reply ever lands — so
+        "are you still waiting" has exactly one defensible answer.  Story B (task 6)
+        is two questions on one thread plus a reply that addresses one of them.
+        Sharing a thread between them would make task 5 ambiguous (a reply DID land
+        on that thread) and the failure would be a fixture artefact, not a finding.
+        """
         render = self._render_helper("_render_comms_send")
         spec = self._spec
         directive = self._send_result(
@@ -522,13 +531,13 @@ class LiveSurfaceProvider:
             ),
             recipient_names=["auditor-a", "fixer-c", "idle-d"],
         )
-        question = self._send_result(
+        question_a = self._send_result(
             message=self._message(
                 seq=203,
                 grade="signal",
-                body="two things: which cap wins, and do we ship the clamp?",
+                body="how do we split the token budget across the two waves?",
                 sender_name=spec.agent_name,
-                thread=spec.question_thread,
+                thread=spec.self_note_thread,
                 question=True,
                 task_id=None,
                 refs=[],
@@ -539,7 +548,7 @@ class LiveSurfaceProvider:
             message=self._message(
                 seq=204,
                 grade="signal",
-                body="note to self: chase the budget split answer after the gate",
+                body="note to self: chase the budget-split answer after the gate",
                 sender_name=spec.agent_name,
                 thread=spec.self_note_thread,
                 question=False,
@@ -548,11 +557,24 @@ class LiveSurfaceProvider:
             ),
             recipient_names=[spec.agent_name],
         )
-        second_question = self._send_result(
+        question_b1 = self._send_result(
             message=self._message(
                 seq=205,
                 grade="signal",
-                body="follow-up on the same thread: and the clamp?",
+                body="which cap wins for a drain?",
+                sender_name=spec.agent_name,
+                thread=spec.question_thread,
+                question=True,
+                task_id=None,
+                refs=[],
+            ),
+            recipient_names=["lead"],
+        )
+        question_b2 = self._send_result(
+            message=self._message(
+                seq=206,
+                grade="signal",
+                body="second question on this thread: and do we ship the clamp?",
                 sender_name=spec.agent_name,
                 thread=spec.question_thread,
                 question=True,
@@ -564,11 +586,10 @@ class LiveSurfaceProvider:
         return {
             "send_directive": str(render(directive, broadcast=False, session=spec.session)),
             "send_broadcast": str(render(broadcast, broadcast=True, session=spec.session)),
-            "send_question": str(render(question, broadcast=False, session=spec.session)),
+            "send_question_a": str(render(question_a, broadcast=False, session=spec.session)),
             "send_self_note": str(render(self_note, broadcast=False, session=spec.session)),
-            "send_second_question": str(
-                render(second_question, broadcast=False, session=spec.session)
-            ),
+            "send_question_b1": str(render(question_b1, broadcast=False, session=spec.session)),
+            "send_question_b2": str(render(question_b2, broadcast=False, session=spec.session)),
         }
 
     def _main_drain_entries(self) -> list[Any]:
@@ -596,7 +617,7 @@ class LiveSurfaceProvider:
                 sender_name=spec.lead_name,
                 thread=spec.session,
                 task_id=spec.task_id,
-                refs=["finding #182", "task P03B-7"],
+                refs=["finding #182"],
                 acked_at=None,
             ),
             self._inbox_entry(
@@ -910,10 +931,26 @@ class ConsumerPrompt:
             ("the server instructions block", surfaces.instructions),
             ("what came back when you sent a directive", surfaces.send_directive),
             ("what came back when you sent to your whole session", surfaces.send_broadcast),
-            ("what came back when you asked a question", surfaces.send_question),
-            ("what came back when you sent a second question on that same thread",
-             surfaces.send_second_question),
-            ("what came back when you sent yourself a reminder", surfaces.send_self_note),
+            (
+                f"what came back when you asked about the budget split (thread "
+                f"{self._spec.self_note_thread})",
+                surfaces.send_question_a,
+            ),
+            (
+                f"what came back when you then sent YOURSELF a reminder on thread "
+                f"{self._spec.self_note_thread}",
+                surfaces.send_self_note,
+            ),
+            (
+                f"what came back when you asked your first question on thread "
+                f"{self._spec.question_thread}",
+                surfaces.send_question_b1,
+            ),
+            (
+                f"what came back when you asked a second question on thread "
+                f"{self._spec.question_thread}",
+                surfaces.send_question_b2,
+            ),
             ("your drain, a moment ago", surfaces.drain_main),
             ("a later drain, after a teammate replied", surfaces.drain_reply),
             ("your ack of the seqs you had collected", surfaces.ack),
@@ -1503,7 +1540,6 @@ def build_battery(spec: FixtureSpec = SPEC) -> tuple[BatteryTask, ...]:
     task 15 is the routing test and must see the whole session, so it can only be
     asked once everything else has been answered (§C2 / §C5(d)).
     """
-    trailer = ", ".join(str(seq) for seq in spec.trailer_seqs)
     tasks: list[BatteryTask] = [
         BatteryTask(
             number=1,
@@ -1542,8 +1578,8 @@ def build_battery(spec: FixtureSpec = SPEC) -> tuple[BatteryTask, ...]:
             number=4,
             slug="no-reack",
             prompt=(
-                f"One message in that drain shows an acked stamp. Do you ack it again? "
-                f"(The seqs you must ack are separately shown as {trailer}.)"
+                f"In that same drain, message #{spec.directive_acked} is shown as already "
+                f"acked. Do you ack it again?"
             ),
             answer_keys=("ack_again",),
             grader_name="no_reack",
@@ -1553,8 +1589,9 @@ def build_battery(spec: FixtureSpec = SPEC) -> tuple[BatteryTask, ...]:
             number=5,
             slug="self-note-does-not-clear",
             prompt=(
-                "You asked a question, and then you sent yourself a reminder. Are you "
-                "still waiting on an answer?"
+                f"On thread {spec.self_note_thread} you asked a question, and you then "
+                f"sent yourself a reminder on that same thread. Are you still waiting on "
+                f"an answer?"
             ),
             answer_keys=("still_waiting",),
             grader_name="self_note_does_not_clear",
@@ -1649,10 +1686,11 @@ def build_battery(spec: FixtureSpec = SPEC) -> tuple[BatteryTask, ...]:
             number=13,
             slug="counts-agree",
             prompt=(
-                "From your drain render alone: how many messages did it serve (`shown`), "
-                "how many are still unread (`more`), how many were pending in total "
-                "(`total`), and what limit does the render tell you to re-run with "
-                "(`next_limit`)? Show the arithmetic in your reasoning line."
+                "From the render of your drain from a moment ago, and from nothing else: "
+                "how many messages did it serve (`shown`), how many are still unread "
+                "(`more`), how many were pending in total (`total`), and what limit does "
+                "the render tell you to re-run with (`next_limit`)? Show the arithmetic in "
+                "your reasoning line."
             ),
             answer_keys=("shown", "more", "total", "next_limit"),
             grader_name="counts_agree",

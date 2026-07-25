@@ -54,9 +54,10 @@ def _surfaces(**overrides: Any) -> cce.ServedSurfaces:
         "tool_schema": "- action (required): ACTION-DESC",
         "send_directive": "SEND-DIRECTIVE",
         "send_broadcast": "SEND-BROADCAST",
-        "send_question": "SEND-QUESTION",
+        "send_question_a": "SEND-QUESTION-A",
         "send_self_note": "SEND-SELF-NOTE",
-        "send_second_question": "SEND-SECOND-QUESTION",
+        "send_question_b1": "SEND-QUESTION-B1",
+        "send_question_b2": "SEND-QUESTION-B2",
         "drain_main": "DRAIN-MAIN",
         "drain_empty": "DRAIN-EMPTY",
         "drain_peek": "DRAIN-PEEK",
@@ -511,9 +512,10 @@ class TestConsumerPrompt:
             surfaces.tool_schema,
             surfaces.send_directive,
             surfaces.send_broadcast,
-            surfaces.send_question,
+            surfaces.send_question_a,
             surfaces.send_self_note,
-            surfaces.send_second_question,
+            surfaces.send_question_b1,
+            surfaces.send_question_b2,
             surfaces.drain_main,
             surfaces.drain_empty,
             surfaces.drain_peek,
@@ -724,6 +726,116 @@ class TestRenderSeamFailsLoud:
             "_render_comms_drain",
             "_render_comms_ack",
         }
+
+
+# --------------------------------------------------------------------------- #
+# 9b. The generated fixtures agree with what the graders expect
+#
+# SKIPPED (never failed) until the packet-03b renders exist — the brief's rule is
+# that this file must not require them.  Once they DO exist these run for free and
+# catch the expensive failure mode: a fixture spec and a real render that disagree,
+# which would burn three live gate runs before anyone noticed the eval was wrong
+# about its own fixtures rather than the surface being wrong.
+# --------------------------------------------------------------------------- #
+def _fenced_state(lines: list[str]) -> list[tuple[str, bool]]:
+    """Pair each line with whether it sits INSIDE a fence."""
+    import re as _re
+
+    out: list[tuple[str, bool]] = []
+    marker: str | None = None
+    for line in lines:
+        stripped = line.strip()
+        is_fence = bool(_re.fullmatch(r"`{3,}", stripped))
+        if marker is None and is_fence:
+            marker = stripped
+            out.append((line, True))
+            continue
+        if marker is not None and stripped == marker:
+            marker = None
+            out.append((line, True))
+            continue
+        out.append((line, marker is not None))
+    return out
+
+
+@pytest.fixture(scope="module")
+def live_renders() -> dict[str, Any]:
+    """The REAL renders, or a skip when the build has not landed."""
+    provider = cce.LiveSurfaceProvider(SPEC)
+    try:
+        rendered: dict[str, Any] = {}
+        rendered.update(provider._sends())
+        rendered.update(provider._drains())
+        rendered["ack"] = provider._ack()
+    except cce.RenderSeamUnavailable as exc:
+        pytest.skip(f"packet-03b renders not available: {exc}")
+    return rendered
+
+
+class TestLiveRendersAgreeWithTheSpec:
+    def test_the_trailer_names_exactly_the_expected_seqs(self, live_renders: dict[str, Any]) -> None:
+        trailer_lines = [
+            line for line in live_renders["drain_main"].splitlines() if "ACK REQUIRED" in line
+        ]
+        assert len(trailer_lines) == 1, live_renders["drain_main"]
+        import re as _re
+
+        seqs = {int(token) for token in _re.findall(r"\d+", trailer_lines[0])}
+        # The taught tail carries the same seqs as the demanded list, so the seq
+        # numbers are the only integers on the line.
+        assert seqs == set(SPEC.trailer_seqs), trailer_lines[0]
+
+    def test_the_elision_slots_carry_the_remainder(self, live_renders: dict[str, Any]) -> None:
+        text = live_renders["drain_main"]
+        assert f"+{SPEC.more} more" in text
+        assert f"limit={SPEC.next_limit}" in text
+
+    def test_the_header_carries_shown_and_total(self, live_renders: dict[str, Any]) -> None:
+        header = live_renders["drain_main"].splitlines()[0]
+        assert str(SPEC.shown) in header and str(SPEC.total_pending) in header, header
+
+    def test_the_forged_row_never_appears_outside_a_fence(
+        self, live_renders: dict[str, Any]
+    ) -> None:
+        # The consumer-side half of §B7.3: task 3 is only answerable if the forgery
+        # is visibly content. If it ever leaks unfenced, the eval would be grading
+        # a genuinely ambiguous render.
+        needle = f"#{SPEC.forged_seq} [directive]"
+        pairs = _fenced_state(live_renders["drain_main"].splitlines())
+        hits = [(line, inside) for line, inside in pairs if needle in line]
+        assert hits, "the hostile fixture's forged row is not in the render at all"
+        assert all(inside for _, inside in hits), hits
+
+    def test_the_peek_render_has_no_trailer_and_the_stamping_one_does(
+        self, live_renders: dict[str, Any]
+    ) -> None:
+        # §B13 with its positive control: the same window, both ways.
+        assert "ACK REQUIRED" not in live_renders["drain_peek"]
+        assert "ACK REQUIRED" in live_renders["drain_after_peek"]
+
+    def test_the_acked_row_is_marked_and_kept_out_of_the_trailer(
+        self, live_renders: dict[str, Any]
+    ) -> None:
+        text = live_renders["drain_main"]
+        trailer = [line for line in text.splitlines() if "ACK REQUIRED" in line][0]
+        assert str(SPEC.directive_acked) not in trailer
+        assert str(SPEC.signal_unacked) not in trailer
+
+    def test_the_question_teach_names_the_thread_and_the_self_note_does_not(
+        self, live_renders: dict[str, Any]
+    ) -> None:
+        assert SPEC.self_note_thread in live_renders["send_question_a"]
+        assert "question on thread" not in live_renders["send_self_note"]
+
+    def test_the_ack_render_names_every_outcome_seq(self, live_renders: dict[str, Any]) -> None:
+        text = live_renders["ack"]
+        for seq in (SPEC.ack_acked_seq, SPEC.ack_already_seq, SPEC.ack_unknown_seq,
+                    SPEC.ack_not_addressed_seq):
+            assert str(seq) in text, (seq, text)
+
+    def test_the_empty_drain_is_honest_not_an_error(self, live_renders: dict[str, Any]) -> None:
+        text = live_renders["drain_empty"].lower()
+        assert "error" not in text and "fail" not in text, text
 
 
 # --------------------------------------------------------------------------- #
