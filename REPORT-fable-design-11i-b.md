@@ -454,6 +454,64 @@ as before.
 
 ---
 
+## Follow-up 5 (2026-07-25, from `lead-11i-b`) — §R2's algorithm replaced; §R10 appended and committed; finding #202 filed
+
+**Deliverable:** §R10 appended to F-r2 (append, per the R8/R9 one-durable-file precedent),
+committed `13a4dc2`, plus in-place corrections to §R6 rows 12 (the stale git-≥2.48 clause, marked
+as a post-commit correction rather than silently fixed) and 13 (points at R10). Read first:
+`STATE-2026-07-25.md` §2/§3 @ `e105c8d`, so R10 slots into the state doc's decision frame.
+
+**The correction, owned in-file:** §R2 specified correct requirements and then hand-rolled the
+algorithm — the file's third one-level-down instance (F9→R9, R3→R9, R2→R10), labelled as such.
+
+**My own installed-source read (ephemeral `--with kubernetes`, pkg 36.0.3) — corroborating the
+lead and answering both named investigation items:**
+- `LeaderElectionRecord(holder_identity, lease_duration, acquire_time, renew_time)` — **no
+  epoch/transitions field ⇒ fencing is NOT in the record; it lives in the adapter** (a `revision`
+  CAS counter playing resourceVersion's role + the §R2 `fence_epoch` bumped on holder change,
+  both minted store-side).
+- 183 LOC, zero k8s-client imports (regex reproduced False); observer-relative expiry verbatim —
+  **my store-clock-authority requirement dissolves** (a correct answer to a question the library
+  never asks), and with it the SurrealQL duration-arithmetic probe R2.2 still owed.
+- **Two facts the lead's brief did not carry, found by reading the source:** `release` is ABSENT
+  from this port (→ adapter-level `release_if_held` extra, priced, recommended — else every
+  rolling update waits out `lease_duration`), and `run()`/`renew_loop` have NO stop mechanism
+  (→ cooperative adapter-level poison ends the loop within `renew_deadline`; `onstarted_leading`
+  is spawned by the library in a daemon thread — measured, and it shapes the R5 bridge).
+- The lock surface consumes **status booleans** with a get-first loop — which is what lets the
+  capabilities doc's four-way-ambiguous CAS return be absorbed STRUCTURALLY (empty ⇒ False ⇒
+  next-tick re-`get`), never diagnosed inferentially. Named design point handled; plus a
+  scope-law raise: §6.6 item 7's pointer into §5 does not resolve in this tree — the four-way
+  enumeration is missing from §5 here (doc gap or main-tree drift; the design depends only on the
+  ambiguity existing).
+- **Caveats priced as demanded:** sync/threading → dedicated election thread with a PRIVATE event
+  loop and PRIVATE store connection, so never-on-the-serving-path holds by construction; Event
+  bridge to R5 via `call_soon_threadsafe` with an immutable fence snapshot. Dependency weight →
+  21 packages for one 183-LOC module, measured; vendoring rejected BY NAME (copy #2); the trade
+  is decision (22), recommendation: take it.
+
+**What survives §R2 verbatim, stated where true:** the entire requirements analysis — TTL,
+heartbeat, fencing-as-complement, cross-process single-flight, never-on-the-serving-path, the CAS
+discipline, and the N>1 analysis that killed both clock-free legs — and it is exactly what made
+the library evaluable in minutes. R2.2's four discriminating fixtures carry with re-aimed targets.
+`sherlock`'s rejection endorsed on the lead's measured ground (no fencing = correctness omission).
+
+**The third-instance sweep (item 6):** heartbeat scheduler — dissolved INTO the library ·
+`StoreLease` — dissolved into the adapter · **`_txn.retry_on_conflict` — named as the genuine
+third instance** (CLAUDE.md's own tenacity example) **and deliberately NOT churned**: proven,
+guarded, eleven mutation-proven consumers, and the runtime guard is keyed on its `__code__`
+frames; **filed as finding #202** with the named re-open trigger (next behavioural change to the
+retry policy evaluates tenacity FIRST) · `MaintenanceLoop` residue — the question was asked
+(asyncio/anyio/apscheduler read as candidates): stdlib IS the library; null result, stated as
+such. R5's layer-2 shrinks accordingly (leadership callbacks now come from the library).
+
+**Decisions:** (13) re-dispositioned onto the library+adapter with `Config(60s/20s/5s)` declared
+defaults; (12)'s stale clause corrected in place with a visible marker; NEW (22) the `kubernetes`
+dependency, (23) `release_if_held`. Report append uncommitted, the lead's as before;
+`/tmp/le_probe.py` joins the inert scratch.
+
+---
+
 ## Standing by
 
 Follow-ups via SendMessage; answers appended above, stamped. — `fable-design-11i-b`, 2026-07-25
