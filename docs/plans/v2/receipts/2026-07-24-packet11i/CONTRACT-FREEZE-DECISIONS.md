@@ -10,11 +10,58 @@
 > lead after `design-blind-11i` flagged it (FA6). The in-tree comment is still wrong and is
 > raised as §D.9.
 
-**Status:** DRAFT, assembled by `lead-11i` 2026-07-24. Not yet ruled. Two inputs outstanding:
-`design-blind-11i`'s independent verdict, and the design sidecar's recommendations for
-ESC-1/4/5/6/7/8/10/12. This file is the durable address the 11-i contract cites; it exists as a
-tracked path rather than a chat message precisely because of ESC-13's own finding (a decision
-recorded at an unrecoverable address is a promise already broken — #152/#153/#154).
+**Status:** ~~DRAFT~~ **PARTLY RULED 2026-07-25** — see §0. Both inputs that were outstanding in the
+draft have landed (`design-blind-11i`'s verdict is folded into §C-ter; the sidecar's eight
+remaining recommendations are C7–C14). This file is the durable address the 11-i contract cites; it
+exists as a tracked path rather than a chat message precisely because of ESC-13's own finding (a
+decision recorded at an unrecoverable address is a promise already broken — #152/#153/#154).
+
+---
+
+## 0. OPERATOR RULINGS — 2026-07-25
+
+Ruled by the operator on 2026-07-25, on the session resuming this packet after a system crash.
+Recorded here rather than in the session transcript per this package's own C5/ESC-13 finding.
+
+| ref | ruling | binding effect |
+|---|---|---|
+| **§A sizing** | **SPLIT at the store/runner seam.** 11-i-a = store + engine skeleton (~0.13); 11-i-b = runner + R2 (~0.29). D7's literal line and keep-whole are both REJECTED. | The packet doc and INDEX row are rewritten into two packets — **but not until S1 lands** (below), because a DEGENERATE verdict forks to design repair and moots the slice. |
+| **§B ESC-1 vehicle** | **Ephemeral container built from the worktree image, run against `:18500`.** Not a deploy — `lore-lore` is untouched. | Authorized WITH the §B riders, which are now binding contract items, not suggestions: (1) runs only AFTER the cold audit, never before; (2) the verb REFUSES to run without an explicit store coordinate — no default of any kind (Addendum A2's mistyped-coordinate hazard); (3) the DDL is reviewed against `docs/reference/surrealdb-31-capabilities.md` §1.1 as a named audit item. **Plus the #134 rider below.** |
+| **§C C1–C14** | **A fresh contract-adversary attacks the fourteen recommendations BEFORE the operator rules them.** | Wholesale ratification is rejected: the sidecar and the lead are otherwise the only graders of their own list, which is the exact structural fault the adversary role exists to fix. The operator rules after the adversary reports. |
+| **§D.12 10-d deploy** | **LEAVE IT undeployed; the accruing cost is noted and accepted.** | Deploy rides packet 03b's, as originally intended, rather than forcing a second hazardous `lore-lore` recreate (#165/#166). No new task; this row is the record. |
+
+### 0.1 The §D.12 cost, re-measured rather than inherited
+
+Confirmed by the resuming lead's own `lore_index()` call on 2026-07-25: production still renders
+`cosine_floor.floor = 0.50649`, `state = "stale"`. Packet 10-d's disarm is merged and NOT serving.
+Addendum E5's line — *"every day the disarm waits serves confident-wrong output"* — is live and the
+operator has accepted it as a known, dated cost against the recreate hazard. **Evidence the hazard
+is real and not theoretical:** a `lore-lore` recreate FAILED on this host on 2026-07-25 at 09:13
+(`FileNotFoundError: source directory for tier 'surrealdb-docs' does not exist:
+/home/ejprice/docker/mcp/lore-corpora/surrealdb-docs` — an eager-startup build failure that exited
+the application); a subsequent recreate at 09:13:34 succeeded. **Re-open trigger:** packet 03b's
+build phase reaching its deploy, or any independent `lore-lore` recreate — whichever comes first
+carries 10-d with it.
+
+### 0.2 The #134 rider on §B — RAISED, UNVERIFIED, and it is not a blocker yet
+
+The §B table below was assembled without reference to **#134**, which `CLAUDE.md` records as: *lore
+CANNOT BE DEPLOYED against a worktree — `.git` is a FILE naming an absolute host gitdir OUTSIDE the
+`/workspace` mount, so git fails inside the container and the honesty line reads null for the exact
+topology it is named after.*
+
+R2's entire deliverable is a **receipt whose value is its provenance** (probe strategy, corpus,
+embedder+prompt fingerprint, date — packet Exit). A run whose git provenance silently reads null is
+a defective receipt of exactly the #131 shape, and #131 went invisible for months precisely because
+nothing rendered the field.
+
+**What is NOT established:** how far #134 reaches into a run from a BAKED image (code COPYed in, no
+`/workspace` git dependency at runtime) as opposed to the mounted-worktree topology #134 was
+measured against. These may be different failure surfaces. **This is assigned as a verification
+item on the C7 adversary pass** (§C7 is ESC-1's mechanics half) — it must be measured, not reasoned
+about, before the authorized §B vehicle is used. If provenance does read null, the vehicle still
+stands; what changes is that the verb must FAIL LOUD on absent provenance rather than write a row
+with an empty field.
 
 **Provenance of the inputs.** Three agents, deliberately structured so no list grades itself:
 - `REPORT-scout-11i.md` — Opus discovery scout; source-verified seam map + measured sizing.
