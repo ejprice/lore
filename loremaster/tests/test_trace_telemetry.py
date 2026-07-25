@@ -1814,6 +1814,53 @@ class TestACancelledDispatchStillRecordsItsRow:
     async def test_cancelling_a_dispatch_mid_flight_still_writes_the_trace_row(
         self, probe_server: tuple[Any, _TraceRecorder]
     ) -> None:
+        """⚠ KNOWN BOUND (blind-audit D1, measured 2026-07-25 at `7574edc`) — this
+        pin is NARROW, not false, and a reader who trusts it broadly is the reason
+        D1 shipped.
+
+        WHAT IT COVERS: the ``asyncio.Task.cancel`` shape. asyncio cancellation is
+        EDGE-triggered — the ``CancelledError`` is delivered once, at the await it
+        interrupts — so a later await inside ``finally`` runs normally, and this
+        pin genuinely proves the write is not placed in an ``except``/success arm.
+
+        WHAT IT PROVABLY DOES NOT COVER, and this is the half that cost a defect:
+        an emission that SUSPENDS, under a LEVEL-triggered anyio cancel scope,
+        which is what MCP actually cancels a request with. Two independent
+        reasons it cannot see that world:
+
+        1. It cancels the wrong way. anyio scopes re-raise at EVERY subsequent
+           await inside the scope; ``Task.cancel`` does not.
+        2. :class:`_TraceRecorder` never awaits — it binds a signature and appends
+           to a list. A cancellation is only delivered at a task's next SUSPENSION
+           POINT, so a non-suspending emission completes whether it is shielded or
+           not. ``SurrealStore.record_trace`` is a network round-trip and ALWAYS
+           suspends, so production is the one shape this double cannot model.
+
+        MEASURED RECEIPT, not inferred: with
+        ``anyio.CancelScope(shield=True)`` REMOVED from ``TracingFastMCP.call_tool``
+        — i.e. against the exact build blind-D1 describes, where a cancelled call
+        writes NO row — this pin stays **GREEN**. The four cells:
+
+        | emission suspends | shielded | row |
+        |---|---|---|
+        | no  | no  | WRITTEN  <- this pin lives here |
+        | no  | yes | WRITTEN |
+        | yes | no  | **LOST**  <- production's shape |
+        | yes | yes | WRITTEN |
+
+        THE DISCRIMINATING PIN is
+        :meth:`TestTheEmissionSurvivesANYIOsLevelTriggeredCancellation.
+        test_a_scope_cancelled_dispatch_STILL_writes_its_row`, which drives a real
+        anyio cancel scope through :class:`_SuspendingTraceRecorder`. Removing the
+        shield turns THAT one RED while leaving this one green — and that
+        asymmetry is the finding, not a flake.
+
+        RE-OPEN TRIGGER: if :class:`_TraceRecorder` ever gains a suspension point,
+        or the emission's placement changes, re-derive this bound — it may then
+        cover more than it does today, and a stale KNOWN BOUND is its own defect.
+        Do not "fix" this pin by pointing it at the suspending recorder: the
+        asyncio-cancel shape is worth keeping pinned on its own.
+        """
         mcp, recorder = probe_server
         with _request_context(_app_context_double(recorder)):
             # The task inherits the current context (including request_ctx) at
