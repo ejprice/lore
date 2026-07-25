@@ -261,14 +261,11 @@ mechanism (bounded pointers, reject-never-truncate) is the ruling.
   content in a report/finding and point at it"). Policy lives at the ledger, not the
   dispatcher — a dispatcher-only check leaves every non-tool caller unbounded (ONE
   IMPLEMENTATION).
-- **Store ASSERT backstop**, exactly as `body` carries one: `refs` gains
-  `ASSERT array::len($value) <= 20` at minimum; the per-entry length ASSERT syntax
-  (array closure/`array::all` on 3.2.1) must be **verified against
-  `lore_search(tier="surrealql-tests", …)` first, live-probed on `:18000` last** (the
-  repo's engine-question order — do NOT trust vendor prose for this). If no clean
-  per-entry ASSERT exists, the store carries count-only and the schema comment SAYS the
-  asymmetry out loud (an honest asymmetry beats a wrong ASSERT). `thread`/`task_id`
-  gain `string::len` ASSERTs (`task_id`'s must admit NONE).
+- **Store ASSERT backstop**, exactly as `body` carries one: `refs` gains a count ASSERT
+  and a per-entry length ASSERT. **The syntax question is SETTLED — see DD-3.g** (probed
+  2026-07-25 on 3.2.1 with controls): the ship shape is the element-path pair
+  (`refs` + `refs[*]` rows), and `thread`/`task_id` take bare `string::len` ASSERTs —
+  NONE is probed-exempt, so no NONE-guard is needed.
 - **Migration:** `DEFINE FIELD OVERWRITE` lands the changed definitions (§1.1); landed
   in THIS deploy the narrowing meets an empty table (§0.F7). Landed later it still
   cannot write-poison (message rows are never UPDATEd) — but the window costs nothing
@@ -301,6 +298,55 @@ thread in a LIVE clause**).
 surface later), not a pointer — so it takes the BODY constant, both layers, same
 pattern. Unbounded now is the same bypass one packet later, discovered by 05's render
 instead of designed here.
+
+### DD-3.g — the per-entry ASSERT syntax, SETTLED (probed 2026-07-25, spike-surreal 3.2.1, throwaway DB — appended post-acceptance at the lead's direction)
+
+The DD-3.c verify-first caveat is discharged. Ruled order followed: **rung 1** (store
+reference) — no direct answer, but §1.7's `chunk_hashes[*]` note + the house
+`_define_field(SNAPSHOT_ENTRY_TABLE, "chunk_hashes[*].identity", …)` precedent supplied
+the element-path lead; **rung 2** (`lore_search(tier="surrealql-tests")`) — element-path
+TYPE coercion is spec-verified (`idiom/define_field_dot_star*.surql`) and `.all(|$x| …)`
+closures are spec-verified (`functions/rand.surql`), but **no spec covers ASSERT in
+element position or a closure inside an ASSERT** — the exact conjunction; **rung 3**
+skipped with reasons (vendor prose could only re-supply the rung-2 lead and would need
+the probe anyway — the open question was a parse/enforce conjunction only the engine
+settles); **rung 4** — live probe, throwaway DB `probe_refs_*` on `ws://127.0.0.1:18000`,
+`:18500` never touched, with the full control battery (legal ACCEPTED · over-length
+REJECTED by the ASSERT — error text carries `must conform to`, so it is the ASSERT
+firing, not a parse error · wrong-TYPE entry REJECTED for a DIFFERENT reason — a coerce
+error naming the element index — proving assert-vs-coerce are distinguishable and the
+probe cannot pass on parse noise).
+
+**The verified DDL the builder writes — Shape A (element-path), recommended.** Two rows
+in `_MESSAGE_FIELD_SPECS`, both emitted through the existing `_define_field`
+(`OVERWRITE` — probed in exactly that clause):
+
+```
+("refs",    "array<string>", f"DEFAULT [] ASSERT array::len($value) <= {MESSAGE_REFS_MAX_COUNT}"),
+("refs[*]", "string",        f"ASSERT string::len($value) <= {MESSAGE_POINTER_MAX_CHARS}"),
+```
+
+Probed behaviour, all six legs: the composed `DEFAULT [] ASSERT …` constraint parses and
+BOTH clauses work (empty-omitted send stores `[]`); a legal list is accepted; an
+over-count list rejects on the `refs` assert; an over-length ENTRY rejects on the
+element assert with the error naming the element field and the offending VALUE —
+`Found 'toolong-entry' for field ` + "`refs.*`" + ` … must conform to:
+string::len($value) <= 8` — which is why Shape A beats the also-working Shape B (a
+whole-array closure assert: `ASSERT array::len($value) <= N AND $value.all(|$r|
+string::len($r) <= M)` — verified working, but its rejection dumps the entire array and
+truncates the closure text; keep it as the known-good fallback, not the ship shape).
+
+**Two riders the builder must know:**
+1. **`thread`/`task_id` length ASSERTs need NO NONE-guard:** probed — an `option<string>`
+   field's ASSERT is NOT evaluated on an omitted/NONE value (the omitted-`task_id` leg
+   was ACCEPTED against a bare `string::len($value) <= N` assert; the over-length leg
+   still rejected). So the DD-3.c sketch's `$value = NONE OR …` guard is unnecessary —
+   write the bare assert on both fields.
+2. **The engine NORMALISES the stored closure** (`|$r|` → `|$r: any|` in the error/INFO
+   text). Any pin comparing `INFO FOR TABLE` output against the emitted DDL string will
+   mismatch on Shape B; Shape A avoids closures entirely, but the warning stands for any
+   future closure-bearing assert — pin the EMITTED statement (the house schema-pin
+   idiom), never the engine's normalised echo.
 
 ### Adversary on my own design
 
