@@ -29,8 +29,10 @@ import-path typo. See ``REPORT-c1-contract-surface.md`` for the RED tail.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import re
+import textwrap
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast, get_args
@@ -5679,6 +5681,99 @@ class TestASkewFailureNeverCONSUMESTheInbox:
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
         await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
         assert all(edge.seen_at is not None for edge in ledger.db.edges.values())
+
+
+class TestNoAwaitedWorkHappensAfterTheDrainStamps:
+    """DD-4.b — the LOSS WINDOW, pinned as a property rather than an ordering.
+
+    ``MessageLedger.drain`` stamps ``seen_at`` BEFORE the render is assembled and
+    returned, and only unstamped rows are ever served again. So every instant
+    between the stamp and the caller receiving the bytes is a window in which a
+    failure destroys those messages permanently. The window cannot be closed in
+    this packet (reshaping drain costs an oracle + ledger change and buys only
+    the rarest leg), so the ruling is: keep it MINIMAL, and pin the minimum.
+
+    The sibling class above pins the ordering by its consequence — a failed skew
+    read leaves the inbox unstamped. This WIDENS that to the property a future
+    refactor would violate without touching the skew read at all: **no awaited
+    work after ``ledger.drain()`` returns.** A brief re-read, a second store
+    call, an await slipped into the render path — each grows the window back, and
+    each would pass every existing pin.
+
+    Structural, because a behavioural pin cannot see it: the defect is not a
+    wrong VALUE, it is an await in the wrong PLACE.
+
+    MUTATION-PROOF OBLIGATION: insert any ``await`` after the ``drain(...)`` call
+    in ``_comms_drain`` -> RED here, and nothing else in this file moves.
+    """
+
+    @staticmethod
+    def _drain_body() -> ast.AsyncFunctionDef:
+        source = textwrap.dedent(inspect.getsource(_server().AppContext._comms_drain))
+        node = ast.parse(source).body[0]
+        assert isinstance(node, ast.AsyncFunctionDef), "the handler is not an async def"
+        return node
+
+    def test_the_ledger_drain_is_the_LAST_await_in_the_handler(self) -> None:
+        body = self._drain_body()
+        awaits = [
+            node
+            for node in ast.walk(body)
+            if isinstance(node, ast.Await | ast.AsyncFor | ast.AsyncWith)
+        ]
+        assert awaits, (
+            "NON-VACUITY: the handler contains no await at all, so this ∀-pin would range over "
+            "nothing — it cannot be reading the real handler"
+        )
+
+        def _is_ledger_drain(node: ast.AST) -> bool:
+            if not isinstance(node, ast.Await) or not isinstance(node.value, ast.Call):
+                return False
+            func = node.value.func
+            return isinstance(func, ast.Attribute) and func.attr == "drain"
+
+        drains = [node for node in awaits if _is_ledger_drain(node)]
+        assert len(drains) == 1, (
+            f"expected exactly ONE awaited ledger drain in the handler, found {len(drains)} — "
+            f"re-derive this pin before trusting it"
+        )
+        stamp_line = drains[0].lineno
+        after = [node for node in awaits if node.lineno > stamp_line]
+        assert not after, (
+            f"there is awaited work AFTER the drain stamps: {[node.lineno for node in after]} "
+            f"(the drain is at line {stamp_line} of the handler). Every await between the stamp "
+            f"and the return widens the window in which a failure destroys messages "
+            f"PERMANENTLY — they are marked seen and will never be served again. Keep the "
+            f"post-stamp stretch synchronous (DD-4.b)"
+        )
+
+    def test_the_skew_read_precedes_the_drain(self) -> None:
+        """The other half of the minimal window: the skew block's own store reads
+        must happen BEFORE the stamp, not after it."""
+        body = self._drain_body()
+        awaits = [node for node in ast.walk(body) if isinstance(node, ast.Await)]
+        skew = [
+            node.lineno
+            for node in awaits
+            if isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and "skew" in node.value.func.attr
+        ]
+        drain = [
+            node.lineno
+            for node in awaits
+            if isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr == "drain"
+        ]
+        assert skew and drain, (
+            f"NON-VACUITY: expected BOTH a skew read and a drain call; saw skew={skew!r} "
+            f"drain={drain!r}"
+        )
+        assert max(skew) < min(drain), (
+            "the skew read is issued AFTER the drain stamps — a failure in it then destroys a "
+            "window of messages that were marked seen and never delivered"
+        )
 
 
 class TestEveryBadRecipientIsNamedInONEReject:
