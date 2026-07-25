@@ -1078,11 +1078,29 @@ class MessageLedger:
         )
         if not question_rows:
             return None
+        # R3's BOUNDING conjuncts. The deliveries read is narrowed to exactly the
+        # rows that could possibly answer one of THIS agent's outstanding
+        # questions: on one of their threads, and newer than the OLDEST of them.
+        # It is a semantics-identical SUPERSET of what the Python filter below
+        # then matches per question (that filter is unchanged, and it is what
+        # keeps the two in agreement) — so the bound can only ever remove rows
+        # the loop would have rejected anyway. Without it the read is every
+        # delivery edge this agent has EVER received, which grows without bound
+        # while the answer set does not.
+        question_threads = sorted(
+            {str(row.get("thread") or "") for row in question_rows}
+        )
+        oldest_question_seq = min(int(row["seq"]) for row in question_rows)
         delivered_rows = self._as_rows(
             await self._query(
                 f"SELECT in.thread AS thread, in.seq AS seq FROM {TO_RELATION} "
-                f"WHERE out = $agent AND in.sender != $agent",
-                {"agent": agent_rec},
+                f"WHERE out = $agent AND in.sender != $agent "
+                f"AND in.thread IN $threads AND in.seq > $min_seq",
+                {
+                    "agent": agent_rec,
+                    "threads": question_threads,
+                    "min_seq": oldest_question_seq,
+                },
             )
         )
         delivered = [
