@@ -1,0 +1,786 @@
+"""Unit tests for the deterministic core of ``scripts/comms_consumer_eval.py``.
+
+Scope, and why it is drawn here: the eval's live half (a real Anthropic
+conversation, the real ``_render_comms_*`` helpers) is exercised by running the
+instrument.  Everything BELOW that — answer parsing, every grader, the gate
+arithmetic, the battery's shape, transcript emission, the render seam's
+fail-loud contract, and the fixture spec's discriminating values — is pure and is
+pinned here, network-free and **without requiring the packet-03b renders to
+exist**.  The renders are mocked; the seam that reaches the real ones is pinned by
+asserting it REFUSES to proceed when they are absent or have drifted.
+
+⚠ POSITIVE CONTROLS ARE THE POINT.  Every grader is tested twice: once with an
+answer it must accept, and once with a plausible WRONG answer it must reject.  A
+grader nobody has watched fire is indistinguishable from a grader that accepts
+everything — and this instrument's whole job is to catch things, so an instrument
+that cannot itself be caught failing is worthless (repo ``CLAUDE.md``: a probe
+needs a control).
+
+Run: ``uv run pytest scripts/test_comms_consumer_eval.py -q``
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from datetime import UTC, datetime
+from typing import Any
+
+import pytest
+
+# The instrument lives beside this test file in ``scripts/`` (not an installed
+# package), so make that directory importable before importing it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import comms_consumer_eval as cce  # noqa: E402  (path insert must precede the import)
+
+SPEC = cce.SPEC
+GRADERS = cce.Graders(SPEC)
+
+
+# --------------------------------------------------------------------------- #
+# helpers
+# --------------------------------------------------------------------------- #
+def _surfaces(**overrides: Any) -> cce.ServedSurfaces:
+    """A fully-populated ``ServedSurfaces`` whose text is obviously synthetic.
+
+    Nothing here pretends to be a render — these are unit-test stand-ins for the
+    STRINGS the live provider generates, used to drive the prompt assembler, the
+    runner, and the transcript writer without touching production code.
+    """
+    base = {
+        "instructions": "INSTRUCTIONS-BLOCK",
+        "tool_description": "TOOL-DESCRIPTION",
+        "tool_schema": "- action (required): ACTION-DESC",
+        "send_directive": "SEND-DIRECTIVE",
+        "send_broadcast": "SEND-BROADCAST",
+        "send_question": "SEND-QUESTION",
+        "send_self_note": "SEND-SELF-NOTE",
+        "send_second_question": "SEND-SECOND-QUESTION",
+        "drain_main": "DRAIN-MAIN",
+        "drain_empty": "DRAIN-EMPTY",
+        "drain_peek": "DRAIN-PEEK",
+        "drain_after_peek": "DRAIN-AFTER-PEEK",
+        "drain_reply": "DRAIN-REPLY",
+        "ack": "ACK-RENDER",
+        "rejects": (("an oversize body", "REJECT-OVERSIZE"),),
+        "provenance": ("provenance-line",),
+    }
+    base.update(overrides)
+    return cce.ServedSurfaces(**base)  # type: ignore[arg-type]
+
+
+def _good_answers() -> dict[int, dict[str, Any]]:
+    """One correct answer per task, derived from the SAME spec the graders use."""
+    trailer = list(SPEC.trailer_seqs)
+    return {
+        1: {"seqs": trailer, "call": f"lore_comms action=ack seqs={trailer}"},
+        2: {"remaining": SPEC.more, "call": f"lore_comms action=drain limit={SPEC.next_limit}"},
+        3: {"delivered_seqs": list(SPEC.served_seqs)},
+        4: {"ack_again": False},
+        5: {"still_waiting": True},
+        6: {
+            "thread_discharged": True,
+            "next_move_call": (
+                "lore_comms action=send to=['lead'] grade='signal' "
+                "thread='q:clamp' set_status='input_required' body='and the clamp?'"
+            ),
+        },
+        7: {"call": "lore_comms action=send to=['fixer-b'] grade='directive' body='do it'"},
+        8: {"meaning": "NEVER_DELIVERED_TO_ME", "retry_blindly": False},
+        9: {"still_unread": True, "call": "lore_comms action=drain limit=3"},
+        10: {"call": "lore_comms action=send grade='signal' body='the gate is red'"},
+        11: {"meaning": "NO_SUCH_MESSAGE_EXISTS", "retry_blindly": False},
+        12: {
+            "tool_failed": False,
+            "anything_lost": False,
+            "anything_sent": False,
+            "fix_for_oversize": cce.OVERSIZE_FIX_TOKENS[0],
+        },
+        13: {
+            "shown": SPEC.shown,
+            "more": SPEC.more,
+            "total": SPEC.total_pending,
+            "next_limit": SPEC.next_limit,
+        },
+        14: {
+            "matched_teaching": True,
+            "peeked_rows_were_still_unread": True,
+            "stamping_drain_served_them": True,
+        },
+        15: {"verdict": "CALL_AGAIN", "reason": "the counts and the teaching held up"},
+    }
+
+
+class FakeConsumerClient:
+    """A scripted consumer: replies with a canned answer per task, in order."""
+
+    def __init__(self, answers: dict[int, dict[str, Any]], *, raw: dict[int, str] | None = None):
+        """Bind the per-task answers (and any raw override replies)."""
+        self._answers = answers
+        self._raw = raw or {}
+        self.calls = 0
+        self.systems: list[str] = []
+
+    async def ask(self, system: str, turns: Any) -> tuple[str, Any]:
+        """Return the scripted reply for the next task."""
+        self.calls += 1
+        self.systems.append(system)
+        if self.calls in self._raw:
+            return self._raw[self.calls], None
+        import json as _json
+
+        payload = _json.dumps(self._answers[self.calls])
+        return f"reasoning line\nANSWER: {payload}", None
+
+
+# --------------------------------------------------------------------------- #
+# 1. Measurement pins
+# --------------------------------------------------------------------------- #
+class TestPins:
+    def test_the_floor_model_is_a_literal_pin(self) -> None:
+        assert cce.FLOOR_MODEL == "claude-sonnet-5"
+
+    def test_the_population_is_the_three_named_members_floor_first(self) -> None:
+        assert cce.POPULATION_MODELS == (
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-fable-5",
+        )
+        assert cce.POPULATION_MODELS[0] == cce.FLOOR_MODEL
+
+    def test_the_gate_is_three_consecutive_runs(self) -> None:
+        assert cce.GATE_CONSECUTIVE_RUNS == 3
+
+    def test_every_population_member_is_priced(self) -> None:
+        # A run that cannot price itself reports $0.00 and reads as free.
+        assert set(cce.POPULATION_MODELS) <= set(cce.PRICING_USD_PER_MTOK)
+
+
+# --------------------------------------------------------------------------- #
+# 2. Fixture discrimination — "what WRONG build would this still pass?"
+# --------------------------------------------------------------------------- #
+class TestFixtureSpecDiscriminates:
+    def test_the_elision_values_are_pairwise_distinct(self) -> None:
+        # 4 shown / 9 pending / 5 remaining, request limit 4: a build filling
+        # {next_limit} with shown, total, shown+more, or the request limit is
+        # distinguishable from the correct remainder.
+        values = {SPEC.shown, SPEC.total_pending, SPEC.more, SPEC.shown + SPEC.more}
+        assert SPEC.next_limit == SPEC.more
+        assert SPEC.shown + SPEC.more == SPEC.total_pending
+        assert SPEC.more not in {SPEC.shown, SPEC.total_pending, SPEC.drain_limit}
+        assert len(values) >= 3
+
+    def test_the_trailer_set_has_more_than_one_member(self) -> None:
+        # A one-element seq set cannot tell "serves the trailer" from "serves the
+        # first unacked directive it finds".
+        assert len(SPEC.trailer_seqs) >= 2
+
+    def test_the_trailer_set_differs_from_all_unacked_and_all_directives(self) -> None:
+        # Two conjuncts (grade == directive AND acked_at is None) need one
+        # discriminating fixture per conjunct.
+        assert set(SPEC.trailer_seqs) != set(SPEC.unacked_seqs)
+        assert set(SPEC.trailer_seqs) != set(SPEC.directive_seqs)
+        assert set(SPEC.trailer_seqs) < set(SPEC.served_seqs)
+
+    def test_the_hostile_body_carries_all_three_threats(self) -> None:
+        body = SPEC.hostile_body
+        assert "\n" in body, "a single-line hostile body is the documented blind spot"
+        assert f"#{SPEC.forged_seq} [directive]" in body, "no row-shaped forgery"
+        assert "`````" in body, "no backtick run for the fence to out-size"
+
+    def test_the_forged_seq_collides_with_nothing_the_battery_keys_on(self) -> None:
+        # Task 3 fails if the consumer counts the forged row; tasks 8/11 key on
+        # their own seqs. Sharing a number would make a failure ambiguous.
+        assert SPEC.forged_seq not in set(SPEC.served_seqs)
+        assert SPEC.forged_seq not in {SPEC.ack_unknown_seq, SPEC.ack_not_addressed_seq}
+
+    def test_the_ack_seqs_named_by_the_spec_are_used(self) -> None:
+        assert SPEC.ack_unknown_seq == 424
+        assert SPEC.ack_not_addressed_seq == 99
+
+    def test_the_context_cell_variants_are_all_exercised(self) -> None:
+        # task cell, thread cell, and bare — a monoculture on any one of them
+        # would leave a render branch untested.
+        assert SPEC.task_id
+        assert SPEC.deliberate_thread != SPEC.session
+
+
+# --------------------------------------------------------------------------- #
+# 3. Answer parsing
+# --------------------------------------------------------------------------- #
+class TestAnswerParser:
+    def test_plain_answer_line(self) -> None:
+        assert cce.AnswerParser.parse('x\nANSWER: {"a": 1}') == {"a": 1}
+
+    def test_the_last_answer_wins(self) -> None:
+        text = 'ANSWER: {"a": 1}\nsecond thoughts\nANSWER: {"a": 2}'
+        assert cce.AnswerParser.parse(text) == {"a": 2}
+
+    def test_trailing_prose_and_fences_are_tolerated(self) -> None:
+        text = 'ANSWER: {"a": [1, 2]}\n```\nhope that helps'
+        assert cce.AnswerParser.parse(text) == {"a": [1, 2]}
+
+    def test_nested_objects_and_braces_in_strings(self) -> None:
+        text = 'ANSWER: {"call": "lore_comms action=ack seqs=[1]", "n": {"k": "}"}}'
+        assert cce.AnswerParser.parse(text)["n"] == {"k": "}"}
+
+    def test_missing_marker_is_an_error(self) -> None:
+        with pytest.raises(cce.AnswerFormatError):
+            cce.AnswerParser.parse("no marker here")
+
+    def test_unbalanced_object_is_an_error(self) -> None:
+        with pytest.raises(cce.AnswerFormatError):
+            cce.AnswerParser.parse('ANSWER: {"a": 1')
+
+    def test_a_non_object_payload_is_an_error(self) -> None:
+        with pytest.raises(cce.AnswerFormatError):
+            cce.AnswerParser.parse("ANSWER: [1, 2]")
+
+    def test_escaped_quotes_do_not_end_the_object_early(self) -> None:
+        # A rendered call or a quoted body excerpt inside the answer must not
+        # truncate the payload — an early cut would silently drop later keys.
+        text = 'ANSWER: {"call": "say \\"hi\\" then }", "seqs": [71]}'
+        parsed = cce.AnswerParser.parse(text)
+        assert parsed["seqs"] == [71]
+        assert parsed["call"] == 'say "hi" then }'
+
+    def test_a_trailing_backslash_before_the_closing_quote_is_handled(self) -> None:
+        parsed = cce.AnswerParser.parse('ANSWER: {"a": "back\\\\", "b": 2}')
+        assert parsed == {"a": "back\\", "b": 2}
+
+
+# --------------------------------------------------------------------------- #
+# 4. Tool-call parsing
+# --------------------------------------------------------------------------- #
+class TestToolCall:
+    def test_parses_action_and_seq_list(self) -> None:
+        call = cce.ToolCall.parse("lore_comms action=ack seqs=[71, 74] note='done'")
+        assert call is not None
+        assert call.action == "ack"
+        assert call.ints("seqs") == {71, 74}
+        assert call.raw("note") == "'done'"
+
+    def test_parses_quoted_recipient_list(self) -> None:
+        call = cce.ToolCall.parse("lore_comms action=send to=['fixer-b', 'lead']")
+        assert call is not None
+        assert call.names("to") == ["fixer-b", "lead"]
+
+    def test_parses_json_ish_colon_form(self) -> None:
+        call = cce.ToolCall.parse('lore_comms {"action": "drain", "limit": 5}')
+        assert call is not None
+        assert call.action == "drain"
+        assert call.raw("limit") == "5"
+
+    def test_empty_recipient_list_is_recognised(self) -> None:
+        call = cce.ToolCall.parse("lore_comms action=send to=[] grade='signal'")
+        assert call is not None
+        assert call.is_empty_list("to") is True
+
+    def test_absent_call_is_none(self) -> None:
+        assert cce.ToolCall.parse("I would send a message") is None
+
+    def test_peek_flag_truthiness(self) -> None:
+        assert cce.ToolCall.parse("lore_comms action=drain peek=true").flag_is_true("peek")  # type: ignore[union-attr]
+        assert not cce.ToolCall.parse("lore_comms action=drain peek=false").flag_is_true("peek")  # type: ignore[union-attr]
+
+
+class TestCoercions:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [(True, True), ("yes", True), ("NO", False), (False, False), ("maybe", None), (3, None)],
+    )
+    def test_bool_coercion(self, value: Any, expected: bool | None) -> None:
+        assert cce.coerce_bool(value) is expected
+
+    def test_int_coercion_rejects_bools(self) -> None:
+        assert cce.coerce_int(True) is None
+        assert cce.coerce_int("5 messages") == 5
+
+    def test_int_set_coercion(self) -> None:
+        assert cce.coerce_int_set("#71 and #74") == {71, 74}
+        assert cce.coerce_int_set([71, "74"]) == {71, 74}
+        assert cce.coerce_int_set("none") is None
+
+
+# --------------------------------------------------------------------------- #
+# 5. Graders — each one accepted on a good answer AND caught firing on a bad one
+# --------------------------------------------------------------------------- #
+class TestGradersAcceptCorrectAnswers:
+    @pytest.mark.parametrize("number", sorted(_good_answers()))
+    def test_every_task_grader_passes_its_correct_answer(self, number: int) -> None:
+        battery = {task.number: task for task in cce.build_battery(SPEC)}
+        grader = getattr(GRADERS, battery[number].grader_name)
+        result = grader(_good_answers()[number])
+        assert result.passed, f"task {number}: {result.detail}"
+
+
+class TestGraderPositiveControls:
+    """Each grader shown FIRING on a plausible wrong answer (the control)."""
+
+    def test_task1_rejects_all_unacked_instead_of_the_trailer_set(self) -> None:
+        # The wrong build this catches: a trailer keyed on `seen_at` / on
+        # "unacked" without the grade conjunct.
+        bad = {"seqs": list(SPEC.unacked_seqs),
+               "call": f"lore_comms action=ack seqs={list(SPEC.unacked_seqs)}"}
+        assert not GRADERS.ack_the_trailer(bad).passed
+
+    def test_task1_rejects_a_right_set_with_no_runnable_call(self) -> None:
+        bad = {"seqs": list(SPEC.trailer_seqs), "call": "I would ack them"}
+        assert not GRADERS.ack_the_trailer(bad).passed
+
+    def test_task1_rejects_a_call_whose_seqs_disagree_with_the_answer(self) -> None:
+        bad = {"seqs": list(SPEC.trailer_seqs), "call": "lore_comms action=ack seqs=[]"}
+        assert not GRADERS.ack_the_trailer(bad).passed
+
+    def test_task2_rejects_the_shown_plus_more_re_ask(self) -> None:
+        bad = {"remaining": SPEC.total_pending, "call": "lore_comms action=drain"}
+        assert not GRADERS.elision_remainder(bad).passed
+
+    def test_task2_rejects_an_invented_cursor(self) -> None:
+        bad = {"remaining": SPEC.more, "call": "lore_comms action=drain since=74"}
+        assert not GRADERS.elision_remainder(bad).passed
+
+    def test_task3_rejects_counting_the_forged_row(self) -> None:
+        bad = {"delivered_seqs": list(SPEC.served_seqs) + [SPEC.forged_seq]}
+        assert not GRADERS.delivered_only(bad).passed
+
+    def test_task3_rejects_a_short_list(self) -> None:
+        bad = {"delivered_seqs": list(SPEC.served_seqs)[:2]}
+        assert not GRADERS.delivered_only(bad).passed
+
+    def test_task4_rejects_a_re_ack(self) -> None:
+        assert not GRADERS.no_reack({"ack_again": True}).passed
+
+    def test_task5_rejects_a_self_cleared_question(self) -> None:
+        assert not GRADERS.self_note_does_not_clear({"still_waiting": False}).passed
+
+    def test_task6_rejects_a_re_ask_without_set_status(self) -> None:
+        bad = {"thread_discharged": True,
+               "next_move_call": "lore_comms action=send to=['lead'] grade='signal'"}
+        assert not GRADERS.reask_the_unaddressed_half(bad).passed
+
+    def test_task6_rejects_believing_the_thread_still_holds_the_debt(self) -> None:
+        bad = {"thread_discharged": False,
+               "next_move_call": "lore_comms action=send set_status='input_required'"}
+        assert not GRADERS.reask_the_unaddressed_half(bad).passed
+
+    def test_task7_rejects_a_signal_where_a_directive_was_required(self) -> None:
+        bad = {"call": "lore_comms action=send to=['fixer-b'] grade='signal' body='do it'"}
+        assert not GRADERS.directive_send_call(bad).passed
+
+    def test_task7_rejects_a_directive_sent_to_nobody(self) -> None:
+        bad = {"call": "lore_comms action=send grade='directive' body='do it'"}
+        assert not GRADERS.directive_send_call(bad).passed
+
+    def test_task8_rejects_the_task11_token(self) -> None:
+        # The shared token set is what forces the two rejects apart.
+        bad = {"meaning": "NO_SUCH_MESSAGE_EXISTS", "retry_blindly": False}
+        assert not GRADERS.not_addressed(bad).passed
+
+    def test_task8_rejects_a_blind_retry(self) -> None:
+        bad = {"meaning": "NEVER_DELIVERED_TO_ME", "retry_blindly": True}
+        assert not GRADERS.not_addressed(bad).passed
+
+    def test_task11_rejects_the_task8_token(self) -> None:
+        bad = {"meaning": "NEVER_DELIVERED_TO_ME", "retry_blindly": False}
+        assert not GRADERS.unknown_message(bad).passed
+
+    def test_task11_rejects_an_off_vocabulary_token(self) -> None:
+        bad = {"meaning": "SOMETHING_ELSE", "retry_blindly": False}
+        assert not GRADERS.unknown_message(bad).passed
+
+    def test_task9_rejects_believing_a_peek_stamped(self) -> None:
+        bad = {"still_unread": False, "call": "lore_comms action=drain"}
+        assert not GRADERS.peek_leaves_unread(bad).passed
+
+    def test_task9_rejects_a_stamping_call_that_still_peeks(self) -> None:
+        bad = {"still_unread": True, "call": "lore_comms action=drain peek=true"}
+        assert not GRADERS.peek_leaves_unread(bad).passed
+
+    def test_task10_rejects_an_enumerated_recipient_list(self) -> None:
+        bad = {"call": "lore_comms action=send to=['auditor-a','fixer-c'] grade='signal'"}
+        assert not GRADERS.broadcast_call(bad).passed
+
+    def test_task10_rejects_an_off_vocabulary_grade(self) -> None:
+        bad = {"call": "lore_comms action=send grade='urgent' body='red'"}
+        assert not GRADERS.broadcast_call(bad).passed
+
+    def test_task12_rejects_reading_a_reject_as_loss(self) -> None:
+        bad = dict(_good_answers()[12], anything_lost=True)
+        assert not GRADERS.rejects_admit(bad).passed
+
+    def test_task12_rejects_believing_a_rejected_send_was_delivered(self) -> None:
+        bad = dict(_good_answers()[12], anything_sent=True)
+        assert not GRADERS.rejects_admit(bad).passed
+
+    def test_task12_rejects_the_wrong_taught_fix(self) -> None:
+        bad = dict(_good_answers()[12], fix_for_oversize=cce.OVERSIZE_FIX_TOKENS[2])
+        assert not GRADERS.rejects_admit(bad).passed
+
+    def test_task13_rejects_a_next_limit_of_shown_plus_more(self) -> None:
+        bad = dict(_good_answers()[13], next_limit=SPEC.total_pending)
+        assert not GRADERS.counts_agree(bad).passed
+
+    def test_task13_rejects_arithmetic_that_does_not_close(self) -> None:
+        bad = dict(_good_answers()[13], more=SPEC.more + 1)
+        assert not GRADERS.counts_agree(bad).passed
+
+    def test_task14_rejects_a_teaching_mismatch(self) -> None:
+        bad = dict(_good_answers()[14], peeked_rows_were_still_unread=False)
+        assert not GRADERS.teaching_matched(bad).passed
+
+    def test_task15_rejects_route_around(self) -> None:
+        bad = {"verdict": "ROUTE_AROUND", "reason": "the counts did not add up"}
+        result = GRADERS.routing_verdict(bad)
+        assert not result.passed
+        assert "FAILED acceptance" in result.detail
+
+    def test_task15_rejects_a_verdict_with_no_reason(self) -> None:
+        assert not GRADERS.routing_verdict({"verdict": "CALL_AGAIN", "reason": "  "}).passed
+
+    def test_task15_rejects_an_off_vocabulary_verdict(self) -> None:
+        assert not GRADERS.routing_verdict({"verdict": "MAYBE", "reason": "unsure"}).passed
+
+
+class TestGradersRejectMissingKeys:
+    @pytest.mark.parametrize("number", sorted(_good_answers()))
+    def test_dropping_any_required_key_fails(self, number: int) -> None:
+        battery = {task.number: task for task in cce.build_battery(SPEC)}
+        task = battery[number]
+        grader = getattr(GRADERS, task.grader_name)
+        for key in task.answer_keys:
+            answer = dict(_good_answers()[number])
+            answer.pop(key)
+            result = grader(answer)
+            assert not result.passed, f"task {number} passed without {key!r}"
+
+
+# --------------------------------------------------------------------------- #
+# 6. The battery's shape
+# --------------------------------------------------------------------------- #
+class TestBattery:
+    def test_all_fifteen_tasks_present_and_numbered(self) -> None:
+        battery = cce.build_battery(SPEC)
+        assert [task.number for task in battery] == list(range(1, 16))
+
+    def test_the_routing_test_is_asked_last(self) -> None:
+        # §C2/§C5(d): task 15 takes the whole session as context, so it can only
+        # be asked once every other answer exists.
+        battery = cce.build_battery(SPEC)
+        assert battery[-1].number == 15
+        assert battery[-1].grader_name == "routing_verdict"
+
+    def test_every_task_is_mandatory(self) -> None:
+        assert all(task.mandatory for task in cce.build_battery(SPEC))
+
+    def test_slugs_are_unique(self) -> None:
+        slugs = [task.slug for task in cce.build_battery(SPEC)]
+        assert len(set(slugs)) == len(slugs)
+
+    def test_every_grader_name_resolves(self) -> None:
+        for task in cce.build_battery(SPEC):
+            assert callable(getattr(GRADERS, task.grader_name, None)), task.grader_name
+
+    def test_the_rendered_prompt_names_the_answer_keys(self) -> None:
+        for task in cce.build_battery(SPEC):
+            rendered = task.rendered_prompt()
+            for key in task.answer_keys:
+                assert f"`{key}`" in rendered
+
+    def test_the_four_trust_probes_are_tasks_twelve_to_fifteen(self) -> None:
+        battery = {task.number: task for task in cce.build_battery(SPEC)}
+        assert [battery[n].grader_name for n in (12, 13, 14, 15)] == [
+            "rejects_admit",
+            "counts_agree",
+            "teaching_matched",
+            "routing_verdict",
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# 7. The consumer prompt — served surfaces only
+# --------------------------------------------------------------------------- #
+class TestConsumerPrompt:
+    def test_every_served_surface_reaches_the_prompt(self) -> None:
+        surfaces = _surfaces()
+        text = cce.ConsumerPrompt(surfaces, SPEC).system_text()
+        for value in (
+            surfaces.instructions,
+            surfaces.tool_description,
+            surfaces.tool_schema,
+            surfaces.send_directive,
+            surfaces.send_broadcast,
+            surfaces.send_question,
+            surfaces.send_self_note,
+            surfaces.send_second_question,
+            surfaces.drain_main,
+            surfaces.drain_empty,
+            surfaces.drain_peek,
+            surfaces.drain_after_peek,
+            surfaces.drain_reply,
+            surfaces.ack,
+            surfaces.rejects[0][1],
+        ):
+            assert value in text
+
+    def test_the_prompt_leaks_no_spec(self) -> None:
+        # §C1.2: a consumer that can see the spec is not measuring the render.
+        text = cce.ConsumerPrompt(_surfaces(), SPEC).system_text()
+        for leak in ("03b-design-rulings", "PASS criterion", "§C", "ruling", "acceptance"):
+            assert leak not in text
+
+    def test_the_prompt_is_stable_across_assemblies(self) -> None:
+        # A byte-stable prefix is what makes the cached system block cache.
+        surfaces = _surfaces()
+        first = cce.ConsumerPrompt(surfaces, SPEC).system_text()
+        second = cce.ConsumerPrompt(surfaces, SPEC).system_text()
+        assert first == second
+
+
+# --------------------------------------------------------------------------- #
+# 8. The runner and the gate
+# --------------------------------------------------------------------------- #
+class TestBatteryRunner:
+    async def _run(self, client: FakeConsumerClient) -> cce.RunOutcome:
+        runner = cce.BatteryRunner(
+            surfaces=_surfaces(), battery=cce.build_battery(SPEC), graders=GRADERS, spec=SPEC
+        )
+        return await runner.run(client, model="fake-model", run_index=1)
+
+    async def test_a_fully_correct_consumer_passes_every_task(self) -> None:
+        run = await self._run(FakeConsumerClient(_good_answers()))
+        assert run.passed, [item.result.detail for item in run.mandatory_failures]
+        assert len(run.outcomes) == 15
+
+    async def test_one_wrong_answer_fails_the_run(self) -> None:
+        answers = _good_answers()
+        answers[3] = {"delivered_seqs": list(SPEC.served_seqs) + [SPEC.forged_seq]}
+        run = await self._run(FakeConsumerClient(answers))
+        assert not run.passed
+        assert [item.task.number for item in run.mandatory_failures] == [3]
+
+    async def test_a_route_around_verdict_fails_the_run(self) -> None:
+        answers = _good_answers()
+        answers[15] = {"verdict": "ROUTE_AROUND", "reason": "I do not trust the counts"}
+        run = await self._run(FakeConsumerClient(answers))
+        assert not run.passed
+        assert [item.task.number for item in run.mandatory_failures] == [15]
+
+    async def test_an_unreadable_answer_is_a_failure_not_a_skip(self) -> None:
+        client = FakeConsumerClient(_good_answers(), raw={7: "I would just send a message."})
+        run = await self._run(client)
+        assert not run.passed
+        failure = run.mandatory_failures[0]
+        assert failure.task.number == 7
+        assert "unreadable answer" in failure.result.detail
+        assert len(run.outcomes) == 15, "an unreadable answer must not truncate the run"
+
+    async def test_the_system_prompt_is_identical_on_every_turn(self) -> None:
+        client = FakeConsumerClient(_good_answers())
+        await self._run(client)
+        assert len(set(client.systems)) == 1
+
+
+class TestGateArithmetic:
+    def _run(self, *, passed: bool, index: int = 1) -> cce.RunOutcome:
+        task = cce.build_battery(SPEC)[0]
+        result = cce.GradeResult(passed, "synthetic")
+        return cce.RunOutcome(
+            model="fake",
+            run_index=index,
+            outcomes=[cce.TaskOutcome(task, "raw", {}, result)],
+            usage=cce.Usage(),
+        )
+
+    def test_three_clean_runs_pass(self) -> None:
+        runs = [self._run(passed=True, index=i) for i in (1, 2, 3)]
+        assert cce.gate_passed(runs)
+
+    def test_one_green_run_does_not_pass_the_gate(self) -> None:
+        # §C3: one green run proves nothing about a stochastic instrument.
+        assert not cce.gate_passed([self._run(passed=True)])
+
+    def test_two_green_and_one_red_fails(self) -> None:
+        runs = [self._run(passed=True, index=1), self._run(passed=False, index=2),
+                self._run(passed=True, index=3)]
+        assert not cce.gate_passed(runs)
+
+    def test_a_red_run_in_any_position_fails(self) -> None:
+        for red in range(3):
+            runs = [self._run(passed=(i != red), index=i + 1) for i in range(3)]
+            assert not cce.gate_passed(runs)
+
+
+class TestUsageAndCost:
+    def test_cost_uses_the_pinned_rates_and_cache_multipliers(self) -> None:
+        usage = cce.Usage(
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_creation_input_tokens=1_000_000,
+            cache_read_input_tokens=1_000_000,
+        )
+        input_rate, output_rate = cce.PRICING_USD_PER_MTOK["claude-sonnet-5"]
+        expected = (
+            input_rate
+            + input_rate * cce.CACHE_WRITE_MULTIPLIER
+            + input_rate * cce.CACHE_READ_MULTIPLIER
+            + output_rate
+        )
+        assert usage.usd("claude-sonnet-5") == pytest.approx(expected)
+
+    def test_usage_accumulates_across_responses(self) -> None:
+        usage = cce.Usage()
+
+        class _Response:
+            usage = type("U", (), {"input_tokens": 10, "output_tokens": 3,
+                                   "cache_creation_input_tokens": 0,
+                                   "cache_read_input_tokens": 7})()
+
+        usage.add(_Response())
+        usage.add(_Response())
+        assert usage.as_dict() == {
+            "input_tokens": 20,
+            "output_tokens": 6,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 14,
+        }
+
+
+# --------------------------------------------------------------------------- #
+# 9. The render seam fails LOUD (it never falls back to a transcribed render)
+# --------------------------------------------------------------------------- #
+class TestRenderSeamFailsLoud:
+    def test_a_missing_helper_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class _EmptyAppContext:
+            pass
+
+        monkeypatch.setattr(
+            cce.LiveSurfaceProvider,
+            "_server_module",
+            staticmethod(lambda: type("M", (), {"AppContext": _EmptyAppContext})),
+        )
+        with pytest.raises(cce.RenderSeamUnavailable) as excinfo:
+            cce.LiveSurfaceProvider._render_helper("_render_comms_drain")
+        assert "_render_comms_drain" in str(excinfo.value)
+
+    def test_a_helper_that_does_not_accept_our_kwargs_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Drifted:
+            @staticmethod
+            def _render_comms_drain(result: Any, *, agent_name: str, limit: int) -> str:
+                return ""
+
+        monkeypatch.setattr(
+            cce.LiveSurfaceProvider,
+            "_server_module",
+            staticmethod(lambda: type("M", (), {"AppContext": _Drifted})),
+        )
+        with pytest.raises(cce.RenderSeamUnavailable) as excinfo:
+            cce.LiveSurfaceProvider._render_helper("_render_comms_drain")
+        assert "session" in str(excinfo.value)
+
+    def test_a_new_required_kwarg_we_do_not_pass_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Grown:
+            @staticmethod
+            def _render_comms_drain(
+                result: Any, *, agent_name: str, limit: int, session: str, skew: str
+            ) -> str:
+                return ""
+
+        monkeypatch.setattr(
+            cce.LiveSurfaceProvider,
+            "_server_module",
+            staticmethod(lambda: type("M", (), {"AppContext": _Grown})),
+        )
+        with pytest.raises(cce.RenderSeamUnavailable) as excinfo:
+            cce.LiveSurfaceProvider._render_helper("_render_comms_drain")
+        assert "skew" in str(excinfo.value)
+
+    def test_a_new_OPTIONAL_kwarg_is_tolerated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Strictness has a bound: an added kwarg WITH a default cannot silently
+        # change what the seam renders, so it is not drift.
+        class _Grown:
+            @staticmethod
+            def _render_comms_drain(
+                result: Any, *, agent_name: str, limit: int, session: str, skew: str = ""
+            ) -> str:
+                return "ok"
+
+        monkeypatch.setattr(
+            cce.LiveSurfaceProvider,
+            "_server_module",
+            staticmethod(lambda: type("M", (), {"AppContext": _Grown})),
+        )
+        helper = cce.LiveSurfaceProvider._render_helper("_render_comms_drain")
+        assert helper(None, agent_name="a", limit=1, session="s") == "ok"
+
+    def test_expected_kwargs_cover_all_three_helpers(self) -> None:
+        assert set(cce.LiveSurfaceProvider._EXPECTED_KWARGS) == {
+            "_render_comms_send",
+            "_render_comms_drain",
+            "_render_comms_ack",
+        }
+
+
+# --------------------------------------------------------------------------- #
+# 10. Transcript emission
+# --------------------------------------------------------------------------- #
+class TestTranscript:
+    async def test_the_transcript_carries_provenance_verdicts_and_surfaces(self) -> None:
+        surfaces = _surfaces()
+        runner = cce.BatteryRunner(
+            surfaces=surfaces, battery=cce.build_battery(SPEC), graders=GRADERS, spec=SPEC
+        )
+        run = await runner.run(FakeConsumerClient(_good_answers()), model="fake", run_index=1)
+        text = cce.TranscriptWriter(surfaces=surfaces, spec=SPEC).render(
+            mode="gate", runs=[run], started_at=datetime.now(UTC)
+        )
+        assert "provenance-line" in text
+        assert cce.FLOOR_MODEL in text
+        assert "| `fake` | 1 | PASS |" in text
+        assert "task 15 — routing-verdict (PASS)" in text
+        assert "served surfaces (verbatim, as the consumer saw them)" in text
+
+    async def test_a_failing_run_is_named_in_the_verdict_table(self) -> None:
+        surfaces = _surfaces()
+        answers = _good_answers()
+        answers[13] = dict(answers[13], next_limit=999)
+        runner = cce.BatteryRunner(
+            surfaces=surfaces, battery=cce.build_battery(SPEC), graders=GRADERS, spec=SPEC
+        )
+        run = await runner.run(FakeConsumerClient(answers), model="fake", run_index=2)
+        text = cce.TranscriptWriter(surfaces=surfaces, spec=SPEC).render(
+            mode="gate", runs=[run], started_at=datetime.now(UTC)
+        )
+        assert "| `fake` | 2 | FAIL | #13 |" in text
+
+
+# --------------------------------------------------------------------------- #
+# 11. CLI wiring
+# --------------------------------------------------------------------------- #
+class TestCli:
+    def test_default_mode_is_the_gate_on_the_floor_model(self) -> None:
+        args = cce._parse_args([])
+        assert args.mode == "gate"
+        assert args.model == cce.FLOOR_MODEL
+        assert args.runs == cce.GATE_CONSECUTIVE_RUNS
+
+    def test_dry_run_is_available(self) -> None:
+        assert cce._parse_args(["--dry-run"]).dry_run is True
+
+    def test_gate_mode_plans_three_runs_on_the_floor_model(self) -> None:
+        plan = cce.build_plan(mode="gate", model="ignored", runs=cce.GATE_CONSECUTIVE_RUNS)
+        assert plan == [(cce.FLOOR_MODEL, 1), (cce.FLOOR_MODEL, 2), (cce.FLOOR_MODEL, 3)]
+
+    def test_population_mode_plans_one_run_per_named_member(self) -> None:
+        plan = cce.build_plan(mode="population", model="ignored", runs=99)
+        assert plan == [(member, 1) for member in cce.POPULATION_MODELS]
+
+    def test_single_mode_honours_the_named_model(self) -> None:
+        assert cce.build_plan(mode="single", model="claude-opus-5", runs=3) == [
+            ("claude-opus-5", 1)
+        ]
