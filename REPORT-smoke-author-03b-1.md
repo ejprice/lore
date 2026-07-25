@@ -41,10 +41,13 @@ brief-base v6 read
 - **DEVIATIONS (3):** §V1 added `lore_comms` to the expected tool surface · §V2 corrected a
   false module-docstring claim · §V3 refactored `parse_finding_detail` onto the new shared
   fence seam (regression-pinned).
-- **FULL SUITE GREEN after my fix — measured by me, not inherited:** `uv run pytest -n auto -q
-  --tb=short -p no:randomly` → **6551 passed, 17 skipped, 3 xfailed, 0 failed** in 191.66s,
-  exit 0. That reconciles exactly with the builder's `1 failed, 6550 passed`: the 1 was mine
-  (§8) and 6550 + 1 = 6551, so nothing else moved.
+- **FULL SUITE GREEN after my fix — measured by me, TWICE, and the second one is the sound
+  receipt:** `uv run pytest -n auto -q --tb=short -p no:randomly` → **6551 passed, 17 skipped,
+  3 xfailed, 0 failed**, exit 0, on a CLEAN tree at `c2234bc` **whose fingerprint was identical
+  before and after the run** (same HEAD, same MD5s, clean `git status` both ends). It also
+  reconciles exactly with the builder's `1 failed, 6550 passed`: the 1 was mine (§8), and
+  6550 + 1 = 6551, so nothing else moved. **Why twice: my first run graded a MOVING tree** —
+  see §8.1, which is the more useful finding of the two.
 - **Receipt pointers:** §1 (what the gates assert) · §2 (two engine defects found pre-deploy)
   · §3 (validation receipts, with output) · §4 (production-safety design) · §5 (decisions) ·
   §6 (residuals, individually adjudicated) · §7 (gate 6) · §8 (the retired-prefix defect I
@@ -639,6 +642,42 @@ Anyone adding a file under `docs/` is inside it. I enumerated the tests that wal
 `loremaster/` to check whether anything else reaches my writable set — `test_retired_symbols.py`
 is the only one (the others resolve `_REPO_ROOT` only to read a specific named file:
 `Containerfile`, `shellout.py`, `DESIGN-LAW.md`).
+
+### 8.1 — My first green run graded a MOVING TREE, and I nearly reported it
+
+Worth more than the rename itself, because it would have shipped an unsound receipt into a
+deploy decision.
+
+My first post-rename full-suite run returned `6551 passed … 0 failed` and I was about to report
+it. Then a builder commit appeared between two of mine, so I checked the timestamps instead of
+trusting the number:
+
+```
+suite run finished          11:28:43
+test_trace_telemetry.py     11:28:37   ← modified SIX SECONDS before the run ended
+```
+
+The file was edited **while my run was in flight**. In all likelihood pytest had already
+collected and executed it, so the tally was probably right — but *probably* is not a receipt,
+and "I ran the tests" is a claim about a TREE. If I cannot name the tree, I have not tested
+anything.
+
+So I re-ran, and made the tree itself checkable rather than assumed: `git status` + `HEAD` +
+MD5s of the three files most likely to move, captured BEFORE and AFTER, and diffed.
+
+```
+6551 passed, 17 skipped, 3 xfailed, 1 warning in 327.16s   EXIT=0
+tree fingerprint: IDENTICAL — same HEAD (c2234bc), same MD5s, clean before and after
+```
+
+Same number, now with provenance. **The generalisable bit: in a shared tree with a live
+builder, a full-suite count is only a receipt if you can show the tree held still across it.**
+A before/after fingerprint costs two `md5sum` calls and converts "the suite was green" into "the
+suite was green ON THIS TREE" — which is the claim a deploy decision actually needs. Recommend
+it for any gate run any agent makes in this tree while more than one of us is in it.
+
+(Incidentally, the builder's wave is now COMMITTED and the tree is clean, so the §7.4 exposure
+I flagged earlier has resolved itself.)
 
 ---
 
