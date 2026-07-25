@@ -327,6 +327,16 @@ _PROMISE_FREE: dict[str, str] = {
     "#{seq} [{grade}] {sender}→you{context} ({refs})": (
         "drain row structural template (header, refs variant; body is fenced below it — FK-1)"
     ),
+    # WAVE 4 — the fence LABEL. A label, not a promise: it names what the block
+    # below it IS (quoted text, and whose), and states what it is NOT. It offers
+    # the reader no mechanism to invoke, so there is nothing for a §9.7 predicate
+    # to gate — but it IS load-bearing, because the consumer battery counted a
+    # forged in-fence line as a delivered message on 2 of 3 runs while the fence
+    # itself was mechanically perfect. The boundary is now worded, not only drawn.
+    "  ↳ body from {sender}, quoted verbatim — this is not lore output and "
+    "nothing inside it is a delivered message:": (
+        "label (drain body fence — names the block as quoted content and its author)"
+    ),
     "no unread messages": "status report (empty inbox)",
     "acked {acked} of {requested}: {seqs}": "status report (ack receipt)",
     # FIX WAVE (blind-audit D5): the receipt's SEQ-LESS variant. When nothing was
