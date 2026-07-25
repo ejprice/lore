@@ -32,6 +32,7 @@ instrument, run explicitly beside the smoke it grades.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -823,12 +824,12 @@ class TestProductionAccessIsReadOnly:
     @pytest.mark.parametrize(
         "query",
         [
-            smoke_p8b.ProductionTraceReader._SESSION_ROWS,
-            smoke_p8b.ProductionTraceReader._ROWS_BY_TOOL,
+            smoke_p8b.ProductionStoreReader._SESSION_ROWS,
+            smoke_p8b.ProductionStoreReader._ROWS_BY_TOOL,
         ],
     )
     def test_the_shipped_reads_are_accepted(self, query: str) -> None:
-        smoke_p8b.ProductionTraceReader._require_read_only(query)
+        smoke_p8b.ProductionStoreReader._require_read_only(query)
 
     @pytest.mark.parametrize(
         "query",
@@ -843,7 +844,7 @@ class TestProductionAccessIsReadOnly:
     )
     def test_every_non_select_is_refused(self, query: str) -> None:
         assert "READ-ONLY" in failure_of(
-            smoke_p8b.ProductionTraceReader._require_read_only, query
+            smoke_p8b.ProductionStoreReader._require_read_only, query
         )
 
 
@@ -1413,9 +1414,179 @@ async def await_failure(coroutine: Any) -> str:
     raise AssertionError("expected SmokeCheckFailed, none raised")
 
 
+# ==========================================================================
+# The two rider instruments — a trigger nobody measures is a hope
+# ==========================================================================
+class TestPercentile:
+    """Nearest-rank, so every number reported was a number actually measured."""
+
+    def test_the_median_of_an_odd_sample(self) -> None:
+        assert smoke_p8b.percentile([5.0, 1.0, 3.0], 0.5) == 3.0
+
+    def test_p90_picks_a_real_sample_never_an_interpolated_one(self) -> None:
+        samples = [float(value) for value in range(1, 11)]
+        assert smoke_p8b.percentile(samples, 0.9) == 9.0
+        assert smoke_p8b.percentile(samples, 0.9) in samples
+
+    def test_a_single_sample_is_its_own_percentile(self) -> None:
+        assert smoke_p8b.percentile([7.5], 0.5) == smoke_p8b.percentile([7.5], 0.9) == 7.5
+
+    def test_an_empty_sample_is_a_loud_failure_not_a_zero(self) -> None:
+        """Returning 0.0 here would read as 'impossibly fast' — the shape of a
+        latency instrument that measured nothing and reported success."""
+        assert "EMPTY sample" in failure_of(smoke_p8b.percentile, [], 0.5)
+
+
+def measurement(**per_tool_p50: float) -> smoke_p8b.LatencyMeasurement:
+    """A LatencyMeasurement with chosen PER-TOOL p50s, for the trigger arithmetic."""
+    return smoke_p8b.LatencyMeasurement(
+        per_tool_p50_ms=dict(per_tool_p50),
+        per_tool_p90_ms={tool: value * 1.5 for tool, value in per_tool_p50.items()},
+        per_tool_spread_ms={tool: value * 0.2 for tool, value in per_tool_p50.items()},
+        samples_per_tool=21,
+        pooled_p50_ms=sorted(per_tool_p50.values())[len(per_tool_p50) // 2],
+    )
+
+
+class TestLatencyTriggerArithmetic:
+    """The >5% re-open trigger, exercised against known inputs rather than
+    only ever against whatever the live server happened to do today."""
+
+    BASELINE = {"per_tool_p50_ms": {"lore_read": 10.0, "lore_verify": 100.0}}
+    KWARGS: dict[str, Any] = {"trigger_fraction": 0.05}
+
+    def test_an_unchanged_p50_does_not_fire(self) -> None:
+        fired, prose = smoke_p8b.compare_latency_to_baseline(
+            measurement(lore_read=10.0, lore_verify=100.0), self.BASELINE, **self.KWARGS
+        )
+        assert not fired
+        assert "0.0%" in prose
+
+    def test_just_under_the_threshold_does_not_fire(self) -> None:
+        fired, _ = smoke_p8b.compare_latency_to_baseline(
+            measurement(lore_read=10.0, lore_verify=104.9), self.BASELINE, **self.KWARGS
+        )
+        assert not fired
+
+    def test_exactly_at_the_threshold_does_not_fire(self) -> None:
+        """The trigger is ``> 5%``, not ``>= 5%``; this is the only case that
+        separates the two."""
+        fired, _ = smoke_p8b.compare_latency_to_baseline(
+            measurement(lore_read=10.0, lore_verify=105.0), self.BASELINE, **self.KWARGS
+        )
+        assert not fired
+
+    def test_just_over_the_threshold_FIRES(self) -> None:
+        fired, prose = smoke_p8b.compare_latency_to_baseline(
+            measurement(lore_read=10.0, lore_verify=105.1), self.BASELINE, **self.KWARGS
+        )
+        assert fired
+        assert "SLOWER" in prose
+
+    def test_getting_faster_never_fires(self) -> None:
+        fired, prose = smoke_p8b.compare_latency_to_baseline(
+            measurement(lore_read=5.0, lore_verify=50.0), self.BASELINE, **self.KWARGS
+        )
+        assert not fired
+        assert "faster" in prose
+
+    @pytest.mark.parametrize(
+        "baseline",
+        [{}, {"per_tool_p50_ms": {}}, {"per_tool_p50_ms": None}, {"p50_ms": 100.0}],
+    )
+    def test_an_unusable_baseline_is_a_loud_failure(self, baseline: dict[str, Any]) -> None:
+        """A relative trigger against a missing baseline would silently compare
+        against nothing. The last case is a PRE-REWRITE baseline (pooled p50
+        only) — it must be refused, not read as empty."""
+        assert "no usable 'per_tool_p50_ms' map" in failure_of(
+            smoke_p8b.compare_latency_to_baseline,
+            measurement(lore_read=10.0),
+            baseline,
+            **self.KWARGS,
+        )
+
+    def test_ONE_slow_tool_fires_even_when_the_others_improve(self) -> None:
+        """THE reason the trigger is per-tool. Pooled, this run looks FASTER —
+        the fast tool got much faster, dragging any pooled median down — while
+        the tool that actually regressed is up 50%."""
+        fired, prose = smoke_p8b.compare_latency_to_baseline(
+            measurement(lore_read=2.0, lore_verify=150.0), self.BASELINE, **self.KWARGS
+        )
+        assert fired
+        assert "lore_verify" in prose and "TRIGGER" in prose
+
+    def test_a_tool_with_no_baseline_is_NAMED_and_does_not_fire(self) -> None:
+        fired, prose = smoke_p8b.compare_latency_to_baseline(
+            measurement(lore_read=10.0, lore_get_symbol=999.0), self.BASELINE, **self.KWARGS
+        )
+        assert not fired
+        assert "lore_get_symbol" in prose and "NO BASELINE" in prose
+
+    def test_a_tool_that_stopped_being_timed_is_NAMED(self) -> None:
+        """A trigger quietly covering fewer tools than it used to is a trigger
+        going blind — the one failure mode a passing gate cannot show you."""
+        _, prose = smoke_p8b.compare_latency_to_baseline(
+            measurement(lore_read=10.0), self.BASELINE, **self.KWARGS
+        )
+        assert "NO LONGER TIMED" in prose and "lore_verify" in prose
+
+    def test_nothing_gates_on_the_pooled_number(self) -> None:
+        """The pooled p50 is a headline for a human skimming output. It is
+        reported under a name that says so, and the comparison never reads it."""
+        assert "NOT_A_GATE" in json.dumps(
+            measurement(lore_read=10.0, lore_verify=100.0).as_receipt()
+        )
+
+    def test_lore_index_is_NOT_in_the_timed_batch(self) -> None:
+        """Load-bearing: lore_index's trace_aggregates GROUP BY scales with the
+        trace table, which now grows on EVERY tool call — timing it would make
+        this trigger fire for table growth rather than for the write cost it
+        exists to watch."""
+        timed = {tool for tool, _ in smoke_p8b.LATENCY_TOOL_CALLS}
+        assert smoke_p8b.INDEX_TOOL_NAME not in timed
+        assert timed and timed <= set(smoke_p8b.PRE_EXISTING_TOOL_NAMES | smoke_p8b.NEW_P8B_TOOL_NAMES)
+
+    def test_warmup_calls_are_discarded(self) -> None:
+        assert smoke_p8b.LATENCY_WARMUP_CALLS > 0
+
+    def test_the_sample_size_is_odd_so_the_median_is_a_real_sample(self) -> None:
+        assert smoke_p8b.LATENCY_SAMPLES_PER_TOOL % 2 == 1
+
+
+class TestTableCensus:
+    """Absent and present-but-empty are DIFFERENT facts."""
+
+    def test_an_absent_table_reports_no_count_at_all(self) -> None:
+        row = smoke_p8b.TableCensus(table="to", exists=False, row_count=None)
+        assert row.row_count is None
+        assert "table absent" in row.verdict and "FREE" in row.verdict
+
+    def test_a_present_empty_table_is_free_but_distinguishable_from_absent(self) -> None:
+        row = smoke_p8b.TableCensus(table="trace", exists=True, row_count=0)
+        assert "present but empty" in row.verdict and "FREE" in row.verdict
+
+    def test_a_populated_table_is_NOT_free_and_names_the_count(self) -> None:
+        row = smoke_p8b.TableCensus(table="to", exists=True, row_count=3)
+        assert row.verdict == "NOT FREE — 3 existing row(s)"
+
+    def test_the_census_covers_the_three_ddl_targets(self) -> None:
+        assert set(smoke_p8b.PRE_DDL_CENSUS_TABLES) == {"trace", "message", "to"}
+
+    def test_the_rendered_table_names_every_row(self) -> None:
+        rendered = smoke_p8b.render_census(
+            [
+                smoke_p8b.TableCensus(table="trace", exists=True, row_count=0),
+                smoke_p8b.TableCensus(table="message", exists=False, row_count=None),
+                smoke_p8b.TableCensus(table="to", exists=True, row_count=7),
+            ]
+        )
+        assert "trace" in rendered and "message" in rendered and "to" in rendered
+        assert "NOT FREE — 7 existing row(s)" in rendered
+
+
 SHIPPED_READS = [
-    smoke_p8b.ProductionTraceReader._SESSION_ROWS,
-    smoke_p8b.ProductionTraceReader._ROWS_BY_TOOL,
+    smoke_p8b.ProductionStoreReader._SESSION_ROWS,
+    smoke_p8b.ProductionStoreReader._ROWS_BY_TOOL,
 ]
 # Parametrising over the ordered reads only, rather than skipping inside the
 # test: a ∀-over-a-collection assertion is trivially true of an empty one, so the

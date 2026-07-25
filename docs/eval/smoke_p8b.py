@@ -80,7 +80,7 @@ dogfood finding row this script has filed every run since P8b (resolved as a smo
 artifact, a duplicate of #1). Everything the 03b gates create is self-identifying:
 every agent, message and brief lives in a per-run session named
 ``smoke03b-<run id>``, so a run can never collide with, reuse, or reap another
-session's rows. :class:`ProductionTraceReader` is the only direct store access and
+session's rows. :class:`ProductionStoreReader` is the only direct store access and
 it refuses to issue anything but a bare ``SELECT``.
 
 The direct production read needs root credentials in the environment
@@ -97,15 +97,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
 import sys
+import time
 import traceback
 import uuid
 from collections import Counter
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from mcp import ClientSession
@@ -2039,16 +2043,376 @@ async def check_drain_elision_reask(fleet: SmokeFleet) -> None:
     )
 
 
+# ===========================================================================
+# THE TWO RIDER INSTRUMENTS — a trigger nobody measures is a hope
+# ===========================================================================
+# Both are rulings whose "and measure it like this" rider was never built.
+# Neither is bookkeeping: the first watches a cost this packet newly imposes on
+# EVERY served call, and the second establishes the fact a schema decision was
+# justified by.
+
+# --------------------------------------------------------------------------
+# Rider 1 — the pre-DDL production census (DD-6 / Q7 / cold-R3)
+# --------------------------------------------------------------------------
+# ⚠ WHY THIS CANNOT BE A STEP IN THE POST-DEPLOY RUN. ``ensure_ready`` applies
+# the DDL at container BOOT, so by the time the MCP server answers, the schema
+# has already changed and "the table was empty BEFORE the DDL" is no longer
+# observable. This is therefore its own mode, talking ONLY to the store, so it
+# runs while the old container is still up or entirely stopped.
+PRE_DDL_CENSUS_TABLES = ("trace", "message", "to")
+PRE_DDL_RECEIPT_PATH = Path(__file__).with_name("deploy-receipt-pre-ddl.json")
+
+
+class TableCensus(NamedTuple):
+    """One table's existence + row count at census time.
+
+    ``row_count`` is ``None`` iff the table does not exist — deliberately NOT
+    ``0``, because "absent" and "present and empty" are different facts and a
+    schema change cares which one it is meeting.
+
+    The field is ``row_count`` and not ``count`` because a ``NamedTuple`` field
+    named ``count`` SHADOWS ``tuple.count`` — mypy catches it, but only because
+    the base class already defines that name.
+    """
+
+    table: str
+    exists: bool
+    row_count: int | None
+
+    @property
+    def verdict(self) -> str:
+        """What this row means for a schema change landing on it."""
+        if not self.exists:
+            return "FREE (table absent — every ASSERT/index on it is free by construction)"
+        if self.row_count == 0:
+            return "FREE (present but empty — no row can meet a narrowing ASSERT)"
+        return f"NOT FREE — {self.row_count} existing row(s)"
+
+
+def render_census(rows: Sequence[TableCensus]) -> str:
+    """The census as the table the deploy ritual records."""
+    lines = [f"{'table':<10} {'exists':<8} {'count':<8} verdict"]
+    for row in rows:
+        counted = "-" if row.row_count is None else str(row.row_count)
+        lines.append(f"{row.table:<10} {str(row.exists):<8} {counted:<8} {row.verdict}")
+    return "\n".join(lines)
+
+
+async def check_pre_ddl_census(*, receipt_path: Path | None = PRE_DDL_RECEIPT_PATH) -> None:
+    """Count the DDL's targets on the LIVE store BEFORE the schema applies.
+
+    This is the instrument behind a decision that was otherwise resting on a
+    derivation: shipping the trace index inside the "free window" is justified
+    ENTIRELY by "the table is empty today", and until now nothing established
+    that AT DEPLOY TIME — it had been corroborated from code history instead,
+    which is evidence about the repo, not about the store.
+
+    ``to`` is censused alongside ``trace`` and ``message`` for a sharper reason
+    than symmetry. ``MessageLedger.drain`` stamps the whole served window in ONE
+    guarded statement, and this engine re-validates the WHOLE record on write —
+    so a single legacy edge carrying an over-cap ``ack_note`` fails that
+    statement and the agent cannot drain ANY of its inbox. Not a loud failure on
+    one row: total denial of the verb. That is worth a query rather than an
+    assumption.
+
+    Reports; never blocks. A non-zero count is a fact the deploy wants to know,
+    and what to do about it is the operator's call, not this script's.
+    """
+    reader = ProductionStoreReader()
+    rows = await reader.census(PRE_DDL_CENSUS_TABLES)
+    print(f"\n-- pre-DDL production census ({PRODUCTION_SURREAL_URL}, READ-ONLY) --")
+    print(render_census(rows))
+    occupied = [row for row in rows if row.exists and row.row_count]
+    if occupied:
+        print(
+            "\nNOTE: "
+            + ", ".join(f"{row.table} holds {row.row_count} row(s)" for row in occupied)
+            + " — a narrowing ASSERT on one of these meets existing data. That is a fact "
+            "for the operator to price, not a failure of this script."
+        )
+    else:
+        print("\nEvery DDL target is absent or empty — the free window is intact.")
+    if receipt_path is not None:
+        receipt = {
+            "measured_at": datetime.now(UTC).isoformat(),
+            "store": PRODUCTION_SURREAL_URL,
+            "namespace": PRODUCTION_SURREAL_NAMESPACE,
+            "database": PRODUCTION_SURREAL_DATABASE,
+            "tables": [
+                {"table": row.table, "exists": row.exists, "row_count": row.row_count}
+                for row in rows
+            ],
+        }
+        receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+        print(f"\nreceipt written: {receipt_path}  (commit it — that is the point of the mode)")
+
+
+# --------------------------------------------------------------------------
+# Rider 2 — the read-tool p50 latency baseline (DD-6 / cold-R1(2))
+# --------------------------------------------------------------------------
+# The ruling: the >5%-p50 re-open trigger gets its INSTRUMENT, because a trigger
+# nobody measures is a hope. It is LIVE now rather than theoretical — this packet
+# makes every tool dispatch await a trace write inline, so every served call
+# newly pays a store round-trip.
+#
+# ⚠ ``lore_index`` IS DELIBERATELY NOT IN THIS BATCH, and that is load-bearing.
+# Its ``trace_aggregates`` GROUP BY scales with the trace table, and the trace
+# table now grows on EVERY tool call — so including it would make this trigger
+# fire within weeks for table growth rather than for the write cost it exists to
+# watch. The batch is read tools whose cost does NOT scale with telemetry volume.
+LATENCY_TOOL_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
+    (
+        "lore_read",
+        {"tier": READ_TIER, "path": READ_PATH, "line_start": 1, "line_end": 20},
+    ),
+    ("lore_get_symbol", {"qualified_name": VERIFY_TRUE_QUALIFIED_NAME}),
+    (
+        "lore_verify",
+        {
+            "qualified_name": VERIFY_TRUE_QUALIFIED_NAME,
+            "expected_file_path": VERIFY_TRUE_FILE_PATH,
+        },
+    ),
+)
+LATENCY_WARMUP_CALLS = 3
+LATENCY_SAMPLES_PER_TOOL = 21
+LATENCY_TRIGGER_FRACTION = 0.05
+LATENCY_BASELINE_PATH = Path(__file__).with_name("deploy-baseline-latency.json")
+
+
+@dataclass(frozen=True)
+class LatencyMeasurement:
+    """One run's read-tool round-trip latency, PER TOOL.
+
+    ⚠ PER TOOL, and never pooled — the design mistake this class was rewritten to
+    fix. MEASURED on the deployed image 2026-07-25: ``lore_read`` p50 10.6ms,
+    ``lore_get_symbol`` 110.1ms, ``lore_verify`` 121.3ms. A median pooled across
+    populations that differ by 10x is not a latency, it is an artefact of how
+    many samples each tool contributed — and this pooled median sits ON the
+    boundary between the 10ms cluster and the 110ms cluster, so a trivial shift
+    in relative ordering could swing it by an order of magnitude while nothing
+    actually changed. A >5% trigger on that number would fire on noise and be
+    switched off within two deploys.
+
+    ``pooled_p50_ms`` is retained as a single headline figure for a human
+    skimming the output. NOTHING GATES ON IT.
+    """
+
+    per_tool_p50_ms: dict[str, float]
+    per_tool_p90_ms: dict[str, float]
+    per_tool_spread_ms: dict[str, float]
+    samples_per_tool: int
+    pooled_p50_ms: float
+
+    def as_receipt(self) -> dict[str, Any]:
+        """The committed JSON shape."""
+        return {
+            "measured_at": datetime.now(UTC).isoformat(),
+            "per_tool_p50_ms": {
+                tool: round(value, 3) for tool, value in sorted(self.per_tool_p50_ms.items())
+            },
+            "per_tool_p90_ms": {
+                tool: round(value, 3) for tool, value in sorted(self.per_tool_p90_ms.items())
+            },
+            "per_tool_spread_ms": {
+                tool: round(value, 3) for tool, value in sorted(self.per_tool_spread_ms.items())
+            },
+            "samples_per_tool": self.samples_per_tool,
+            "warmup_calls_discarded_per_tool": LATENCY_WARMUP_CALLS,
+            "pooled_p50_ms_NOT_A_GATE": round(self.pooled_p50_ms, 3),
+        }
+
+
+def percentile(values: Sequence[float], fraction: float) -> float:
+    """The nearest-rank percentile of ``values`` (0.5 → median).
+
+    Nearest-rank rather than an interpolating variant so the returned number is
+    always a value that was actually MEASURED, never one synthesised between two
+    samples — a latency budget argued from a number nothing ever observed is a
+    harder thing to reason about than one that really happened.
+
+    Raises:
+        SmokeCheckFailed: ``values`` is empty — a percentile of nothing is not 0,
+            it is undefined, and returning 0 would read as "impossibly fast".
+    """
+    if not values:
+        raise SmokeCheckFailed("percentile of an EMPTY sample — no calls were timed")
+    ordered = sorted(values)
+    rank = max(1, math.ceil(fraction * len(ordered)))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def compare_latency_to_baseline(
+    measured: LatencyMeasurement, baseline: dict[str, Any], *, trigger_fraction: float
+) -> tuple[bool, str]:
+    """Compare each tool's p50 against the committed baseline; return (fired, prose).
+
+    PER TOOL: the trigger fires if ANY timed tool's p50 rises past the threshold.
+    Each tool is its own stable population, where the pool of all of them is not
+    (see :class:`LatencyMeasurement`).
+
+    A tool present now but ABSENT from the baseline is reported and does NOT
+    fire — it has no baseline to have risen from, and silently treating "new"
+    as "unchanged" would let a slow new tool in unremarked. A tool in the
+    baseline but no longer timed is likewise named, because a trigger quietly
+    covering fewer tools than it used to is a trigger going blind.
+
+    Pure, so the arithmetic is exercised offline against known inputs instead of
+    only ever running against whatever the live server did today.
+
+    Raises:
+        SmokeCheckFailed: The baseline carries no usable per-tool p50 map.
+    """
+    baseline_p50s = baseline.get("per_tool_p50_ms")
+    if not isinstance(baseline_p50s, dict) or not baseline_p50s:
+        raise SmokeCheckFailed(
+            f"the committed latency baseline has no usable 'per_tool_p50_ms' map (got "
+            f"{baseline_p50s!r}) — a per-tool trigger cannot be evaluated against it. A "
+            f"baseline written before the per-tool rewrite needs re-establishing with "
+            f"--rebaseline."
+        )
+    fired = False
+    notes: list[str] = []
+    for tool in sorted(measured.per_tool_p50_ms):
+        now = measured.per_tool_p50_ms[tool]
+        was = baseline_p50s.get(tool)
+        if not isinstance(was, (int, float)) or was <= 0:
+            notes.append(f"{tool} {now:.1f}ms (NO BASELINE — new or unusable, not gated)")
+            continue
+        delta = (now - was) / was
+        if delta > trigger_fraction:
+            fired = True
+        direction = "SLOWER" if delta >= 0 else "faster"
+        flag = "  <-- TRIGGER" if delta > trigger_fraction else ""
+        notes.append(
+            f"{tool} {now:.1f}ms vs {was:.1f}ms ({abs(delta) * 100:.1f}% {direction}){flag}"
+        )
+    dropped = sorted(set(baseline_p50s) - set(measured.per_tool_p50_ms))
+    if dropped:
+        notes.append(f"NO LONGER TIMED (the trigger now covers less than it did): {dropped}")
+    return fired, "; ".join(notes) + f" [trigger at +{trigger_fraction * 100:.0f}%]"
+
+
+async def measure_read_tool_latency(
+    session: ClientSession,
+    *,
+    samples_per_tool: int = LATENCY_SAMPLES_PER_TOOL,
+    warmup: int = LATENCY_WARMUP_CALLS,
+) -> LatencyMeasurement:
+    """Time a batch of READ-tool round trips and return the run's percentiles.
+
+    Timed client-side, so the number is what a consumer actually waits for:
+    transport, dispatch, the tool's own work, and — new in this packet — the
+    awaited trace write.
+
+    The first ``warmup`` calls per tool are DISCARDED. A cold first call measures
+    connection and cache warm-up, not steady-state cost, and folding it into a
+    median that a >5% trigger is compared against would make the trigger a
+    function of how recently the container restarted.
+    """
+    per_tool: dict[str, list[float]] = {}
+    for tool, arguments in LATENCY_TOOL_CALLS:
+        for _ in range(warmup):
+            require_no_tool_error(await call_tool(session, tool, arguments), f"{tool} (warmup)")
+        samples: list[float] = []
+        for _ in range(samples_per_tool):
+            started = time.perf_counter()
+            result = await call_tool(session, tool, arguments)
+            samples.append((time.perf_counter() - started) * 1000)
+            require_no_tool_error(result, f"{tool} (timed)")
+        per_tool[tool] = samples
+    every_sample = [value for samples in per_tool.values() for value in samples]
+    return LatencyMeasurement(
+        per_tool_p50_ms={tool: percentile(samples, 0.5) for tool, samples in per_tool.items()},
+        per_tool_p90_ms={tool: percentile(samples, 0.9) for tool, samples in per_tool.items()},
+        per_tool_spread_ms={
+            tool: percentile(samples, 0.75) - percentile(samples, 0.25)
+            for tool, samples in per_tool.items()
+        },
+        samples_per_tool=samples_per_tool,
+        pooled_p50_ms=percentile(every_sample, 0.5),
+    )
+
+
+async def check_read_tool_latency(
+    session: ClientSession, *, baseline_path: Path = LATENCY_BASELINE_PATH, rebaseline: bool = False
+) -> None:
+    """Measure read-tool p50 and either ESTABLISH or CHECK the committed baseline.
+
+    First run (no committed baseline): this run's number becomes the baseline and
+    is written for committing. A relative trigger is meaningless without a first
+    measurement, so establishing it IS the deliverable, not a fallback.
+
+    Later runs: the p50 is compared and the >5% trigger evaluated. The trigger
+    firing is NOT "the build is broken" — it is the named re-open trigger on an
+    accepted trade (awaited inline vs a drained fire-and-forget queue), and it
+    says so, so nobody mistakes it for a regression to bisect.
+    """
+    measured = await measure_read_tool_latency(session)
+    per_tool = ", ".join(
+        f"{tool} p50 {value:.1f}ms (IQR {measured.per_tool_spread_ms[tool]:.1f})"
+        for tool, value in sorted(measured.per_tool_p50_ms.items())
+    )
+    print(
+        f"PASS: read-tool latency, {measured.samples_per_tool} timed calls per tool -> {per_tool}"
+    )
+    receipt = measured.as_receipt()
+    if rebaseline or not baseline_path.exists():
+        baseline_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+        verb = "REBASELINED" if rebaseline else "ESTABLISHED"
+        print(
+            f"PASS: latency baseline {verb} at {baseline_path} — commit it. Until a SECOND "
+            f"run exists, the run-to-run variance of this measurement is UNKNOWN, so the "
+            f"{LATENCY_TRIGGER_FRACTION * 100:.0f}% trigger below is armed but its "
+            f"noise-robustness is unmeasured (named decision point: use the next deploy's "
+            f"number to characterise variance before trusting the threshold)."
+        )
+        return
+    baseline = json.loads(baseline_path.read_text())
+    fired, prose = compare_latency_to_baseline(
+        measured, baseline, trigger_fraction=LATENCY_TRIGGER_FRACTION
+    )
+    if fired:
+        # ⚠ REPORTED LOUDLY, DELIBERATELY NOT A FAILURE — and this is backed by
+        # measurement, not by a preference for green. Two runs of the SAME
+        # UNCHANGED image, taken minutes apart on 2026-07-25 before the 03b
+        # deploy, moved lore_read +7.4% and lore_get_symbol +5.4% with nothing
+        # changed at all. The ruled 5% threshold is therefore BELOW this box's
+        # measured run-to-run noise floor, so failing on it would cry wolf on
+        # the first deploy — and a gate that cries wolf is a gate switched off,
+        # which is how the trigger would end up unmeasured again.
+        #
+        # The ruling asked for an INSTRUMENT ("a trigger nobody measures is a
+        # hope"), and a loud visible number satisfies it; a false red does not.
+        # Re-arming is one line — raise instead of print — the moment the
+        # threshold is re-ruled against the noise. That decision is the
+        # operator's, not this script's.
+        print(
+            f"\n*** p50 RE-OPEN TRIGGER FIRED ***\n"
+            f"  {prose}\n"
+            f"  This is NOT a broken build and NOT a regression to bisect. It is the named "
+            f"trigger on the ruled trade that the trace write is AWAITED inline; the ruling's "
+            f"own remedy is to flip to a drained fire-and-forget queue, with the coverage pin "
+            f"gaining an explicit settle step in the same commit.\n"
+            f"  ⚠ BEFORE ACTING ON IT: measured run-to-run noise on an UNCHANGED image was up "
+            f"to 7.4% on this box, i.e. ABOVE this {LATENCY_TRIGGER_FRACTION * 100:.0f}% "
+            f"threshold. Re-run and see whether it fires twice before treating it as signal.\n"
+            f"  Baseline: {baseline_path} — --rebaseline only once the trade is re-decided.\n"
+        )
+        return
+    print(f"PASS: p50 re-open trigger NOT fired — {prose}")
+
+
 # ---------------------------------------------------------------------------
 # Gate 5 — the first real trace rows on production (#147)
 # ---------------------------------------------------------------------------
-class ProductionTraceReader:
-    """READ-ONLY reader over the production ``trace`` table.
+class ProductionStoreReader:
+    """READ-ONLY reader over the production store — traces, and the pre-DDL census.
 
     Production access is read-only except for the rows the smoke's own tool calls
     create by being called, and that rule is ENFORCED here rather than trusted:
-    :meth:`_read` refuses any statement that is not a single bare ``SELECT``, so
-    a later edit cannot quietly turn this class into a writer.
+    :meth:`_read` refuses any statement that is not a single bare ``SELECT`` or
+    ``INFO``, so a later edit cannot quietly turn this class into a writer.
 
     Every read uses an EXPLICIT projection, never ``SELECT *``: on this engine a
     ``SELECT *`` OMITS a ``NONE``-valued column entirely, so an unset ``option<>``
@@ -2078,6 +2442,8 @@ class ProductionTraceReader:
         "FROM trace WHERE session = $comms_session ORDER BY ts, ordinal"
     )
     _ROWS_BY_TOOL = "SELECT agent, session, action FROM trace WHERE tool = $tool"
+    _DB_INFO = "INFO FOR DB"
+    _COUNT_ROWS = "SELECT count() AS n FROM type::table($table_name) GROUP ALL"
 
     def __init__(
         self,
@@ -2090,11 +2456,20 @@ class ProductionTraceReader:
         self._namespace = namespace
         self._database = database
 
+    # The ONLY two statement kinds this class may issue. An ALLOWLIST, not a
+    # list of forbidden verbs: the forbidden set is unbounded and the safe set is
+    # two words long, so the guard enumerates the safe one.
+    _READ_ONLY_PREFIXES = ("SELECT ", "INFO ")
+
     @staticmethod
     def _require_read_only(query: str) -> None:
-        """Raise unless ``query`` is exactly one bare ``SELECT`` statement."""
+        """Raise unless ``query`` is exactly one bare ``SELECT`` or ``INFO`` statement."""
         stripped = query.strip()
-        if not stripped.upper().startswith("SELECT ") or ";" in stripped:
+        allowed = any(
+            stripped.upper().startswith(prefix)
+            for prefix in ProductionStoreReader._READ_ONLY_PREFIXES
+        )
+        if not allowed or ";" in stripped:
             raise SmokeCheckFailed(
                 f"production store access is READ-ONLY: refusing to issue {query!r}"
             )
@@ -2137,6 +2512,57 @@ class ProductionTraceReader:
     async def rows_for_tool(self, tool: str) -> list[dict[str, Any]]:
         """Every trace row for ``tool``, projecting only the declared-identity columns."""
         return await self._read(self._ROWS_BY_TOOL, {"tool": tool})
+
+    async def census(self, tables: Sequence[str]) -> list[TableCensus]:
+        """Existence + row count for each of ``tables``, in one connection.
+
+        Existence is answered from ``INFO FOR DB`` — the database's own
+        catalogue — and NEVER by catching a not-found error off a ``SELECT``.
+        The difference matters: an error-based check cannot distinguish "the
+        table is absent" from "the table is there and the read failed", and
+        those two have opposite consequences for a schema change.
+
+        The count binds the table name through ``type::table($name)`` rather
+        than interpolating it. That is not only injection hygiene: one of the
+        tables this is used for is literally named ``to``, and binding keeps a
+        name that may collide with a keyword away from the parser entirely.
+        """
+        self._require_read_only(self._DB_INFO)
+        user, password = self._credentials()
+        results: list[TableCensus] = []
+        async with AsyncSurreal(self._url) as connection:
+            await connection.signin({"username": user, "password": password})
+            await connection.use(self._namespace, self._database)
+            info: Any = await connection.query(self._DB_INFO)
+            # Validate the shape rather than indexing into whatever came back:
+            # on this engine a projection that does not resolve degrades SILENTLY
+            # to a null, so an unchecked read of a changed INFO shape would
+            # report "no tables" — which here reads as "absent", the exact wrong
+            # answer for a schema decision (store reference §2).
+            if not isinstance(info, dict) or not isinstance(info.get("tables"), dict):
+                raise SmokeCheckFailed(
+                    f"INFO FOR DB did not return a 'tables' mapping (got {type(info).__name__}: "
+                    f"{info!r}) — refusing to read that as 'no tables exist'"
+                )
+            known = set(info["tables"])
+            for table in tables:
+                if table not in known:
+                    results.append(TableCensus(table=table, exists=False, row_count=None))
+                    continue
+                self._require_read_only(self._COUNT_ROWS)
+                counted: Any = await connection.query(self._COUNT_ROWS, {"table_name": table})
+                rows = [row for row in counted or [] if isinstance(row, dict)]
+                # GROUP ALL over an empty table returns NO rows, not a zero row.
+                count = 0
+                if rows:
+                    raw = rows[0].get("n")
+                    if not isinstance(raw, int) or isinstance(raw, bool):
+                        raise SmokeCheckFailed(
+                            f"count() for {table!r} returned {raw!r}, expected an int"
+                        )
+                    count = raw
+                results.append(TableCensus(table=table, exists=True, row_count=count))
+        return results
 
 
 async def read_trace_total(session: ClientSession, *, check_name: str) -> int:
@@ -2335,7 +2761,7 @@ async def check_production_traces(
         + (f"; {delta - own_calls} from other clients)" if delta > own_calls else ")")
     )
 
-    reader = ProductionTraceReader()
+    reader = ProductionStoreReader()
     session_rows = await reader.rows_for_session(fleet.session_name)
     assert_trace_rows(
         session_rows,
@@ -2399,7 +2825,18 @@ async def run_mechanics_check() -> None:
         await check_index_status_cosine_floor_disarm(session)
 
 
-async def run_full_smoke() -> None:
+async def run_pre_ddl_census() -> None:
+    """--pre-ddl: the read-only production census, BEFORE the schema applies.
+
+    Talks ONLY to the store, never to the MCP server, so it runs whether the old
+    container is up, being rebuilt, or stopped — which is the whole point: after
+    the new container boots, ``ensure_ready`` has already applied the DDL and
+    "the table was empty beforehand" is no longer an observable fact.
+    """
+    await check_pre_ddl_census()
+
+
+async def run_full_smoke(*, rebaseline: bool = False) -> None:
     """Default: the full exit assertion run (post-redeploy), P8b then packet 03b.
 
     The 03b gates run LAST and inside their own per-run comms session, so the
@@ -2416,6 +2853,10 @@ async def run_full_smoke() -> None:
         await check_legacy_index_status(session)
         await check_index_status_calibration(session)
         await check_index_status_cosine_floor_disarm(session)
+        # The latency batch runs BEFORE the 03b gates so its ~72 calls fall
+        # OUTSIDE the trace-delta window gate 5 measures, and so the timing is
+        # taken before this run's own writes are in the store.
+        await check_read_tool_latency(session, rebaseline=rebaseline)
         await run_packet_03b_gates(session)
 
 
@@ -2445,13 +2886,37 @@ def main() -> int:
         action="store_true",
         help="Run only the connection/tools-list mechanics check (no new-tool assertions).",
     )
+    parser.add_argument(
+        "--pre-ddl",
+        action="store_true",
+        help=(
+            "RUN THIS BEFORE THE DEPLOY. Read-only census of the DDL's targets "
+            "(trace/message/to) on the live production store, written to "
+            f"{PRE_DDL_RECEIPT_PATH.name} for committing. Talks only to the store, so it "
+            "works with the container up, down, or mid-rebuild — after the new container "
+            "boots, ensure_ready has already applied the DDL and the pre-state is gone."
+        ),
+    )
+    parser.add_argument(
+        "--rebaseline",
+        action="store_true",
+        help=(
+            "Overwrite the committed read-tool latency baseline with this run's number. "
+            "Only after the p50 re-open trigger has been deliberately re-decided — a "
+            "silent rebaseline turns the trigger off."
+        ),
+    )
     args = parser.parse_args()
 
     try:
-        if args.mechanics:
+        if args.mechanics and args.pre_ddl:
+            raise SmokeCheckFailed("--mechanics and --pre-ddl are separate modes; pick one")
+        if args.pre_ddl:
+            asyncio.run(run_pre_ddl_census())
+        elif args.mechanics:
             asyncio.run(run_mechanics_check())
         else:
-            asyncio.run(run_full_smoke())
+            asyncio.run(run_full_smoke(rebaseline=args.rebaseline))
     except Exception as exc:  # noqa: BLE001 - top-level: surface EVERYTHING, loudly
         print(f"\nFAIL: {exc}", file=sys.stderr)
         traceback.print_exc()
