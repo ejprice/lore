@@ -389,5 +389,140 @@ flight. Reconciliation, preserved not laundered:
 5. **R4.5 (index-side: overlay routing via packets 17/23; the N× embedding-cost warning) is
    untouched by §0.5 and stands.**
 
+---
+
+## R9 — §R3 CORRECTED (appended same day, finding #201): the "numpy candidate-rate evaluator" was itself a hand-roll one level down
+
+**The correction, owned:** §R3.2 concluded "the vectorized evaluator is still needed — a numpy
+implementation." That wrote bespoke code for a library primitive: **`choose_cosine_floor`'s
+candidate sweep IS an ROC sweep** [design-cited #201], and `sklearn.metrics.roc_curve` computes it
+vectorised. §R3's decisive FACT stands (the cost lives in the statistic, not the shell — #201
+confirms it as the root-cause chain); §R3's REMEDY is superseded by this section. Same failure
+shape as the [clocks] chain: reasoning correctly up to the last step, then hand-rolling where a
+package existed — this file's second instance, recorded as such.
+
+### R9.1 — The investigation, MEASURED this sitting (not expected): the library path is exactly equal
+
+Run in an ephemeral `uv run --no-sync --with scikit-learn --with scipy` overlay on this worktree
+(repo env + libraries; `uv.lock` untouched; probe at `/tmp/roc_probe.py`, findings reproduced here
+because a `/tmp` path is not a citable address). Environment: **sklearn 1.9.0 · numpy 2.5.1 ·
+scipy 1.18.0** (numpy/scipy match the container's M4-measured versions; the container's sklearn
+version is whatever the lead's probe installed — unmeasured by me, and the equality pin re-proves
+the result wherever it runs, which is its job).
+
+**[source-verified: ephemeral-env probe, ground truth = the REAL `choose_cosine_floor` imported
+from `scripts/search_score_survey.py`]:**
+
+1. **20/20 randomized trials: the roc_curve-derived selection equals `choose_cosine_floor`
+   EXACTLY** — floor, false-fire rate, catch rate — on fixtures with duplicated cosine values,
+   anchored samples on both arms, and dominance tie-breaks exercised.
+2. **The reconciliation is an INDEX MAPPING, not arithmetic:** feed `roc_curve` the NEGATED
+   cosines of the non-anchored samples (labels: absent=1), `drop_intermediate=False`; the returned
+   arrays' +∞-prepended row makes **index j the strict-`<` counts for the j-th ascending
+   candidate** (the strict-vs-`>=` boundary the lead measured as 96/96-wrong under the naive
+   mapping is exactly one index of shift); rescale each arm's rate by (non-anchored n / full n) to
+   restore the design's full-set denominators; restrict candidates to distinct UNION cosines; the
+   dominance ordering is then three masked-array operations.
+3. **Differently-broken control:** the naive un-shifted mapping differs at **44 of 75 candidates**
+   on the same fixture — the probe can see the convention defect it exists to catch, so the 20/20
+   agreement is not vacuous. Candidate-set check: 75 thresholds = 75 distinct fed cosines
+   (corroborating the lead's 97-threshold measurement; `drop_intermediate=True` collapses it and
+   is pinned FALSE).
+4. **API facts read from the installed signatures, per the rule:** `roc_curve(y_true, y_score,
+   pos_label, sample_weight, drop_intermediate)` · `scipy.stats.bootstrap(…, paired, …, method,
+   bootstrap_result, rng, random_state)` — **both `rng` AND `random_state` exist in 1.18.0** (a
+   transition-period dual; pin ONE — recommend `rng` — and record the dual as a #198-class drift
+   hazard) · `np.percentile(…, method="inverted_cdf")` on 1..10 at p5 returns **1** (nearest-rank
+   confirmed, matching #201's independent measurement) · `np.quantile` has a `weights` kwarg
+   (both `weighted_percentile` copies are deletable, per #201).
+
+**Consequence that makes everything else transfer:** because the library path is proven
+**value-identical**, every probe measurement (§4b, the ladders, the flap tables) and every design
+conclusion built on them (F1, F2, F3, F5, R2.5) carries over **unchanged**. Equality is what makes
+the swap free.
+
+### R9.2 — The §R3 re-check the lead asked for: the other one-level-down hand-rolls
+
+- **Seeding:** C1's discipline maps onto the library: ONE `numpy.random.Generator`, seeded
+  per-(scope,leg,N), passed as `bootstrap(..., rng=…)` — no bespoke seed plumbing beyond the seed
+  derivation itself (domain). The replay control, the N≥200 fixture rule, and the
+  no-module-level-randomness pin survive (now covering `random.*` and `numpy.random.*` module
+  functions).
+- **Paired draws:** `paired=` exists (read from the signature). The fit of our structured unit
+  (paired two-leg probes + unpaired identifier arm) to its data model is the ONE remaining
+  investigation for the contract author — with the index-array idiom (bootstrap over probe
+  indices, statistic gathers the legs) as the documented in-library fallback shape. I read the
+  signature, not the full paired semantics: said so rather than asserted.
+- **The interval:** if `scipy.stats.bootstrap` is the shell, its `method="percentile"`
+  interpolation convention is reconciled against ours the clean way: take
+  `bootstrap_result.bootstrap_distribution` and apply `np.percentile(…, method="inverted_cdf")` —
+  library resampling + the named nearest-rank convention, zero hand-rolled percentile code. #198's
+  caveat is thereby a PARAMETER, exactly as #201 says.
+- **BCa, noted not recommended:** in-library, built for skewed statistics (the S1 class) — but
+  adopting it would AMEND D8's pre-registered "central 90% percentile", and the percentile method
+  is measured non-degenerate here. Recorded as available if S1-class concerns recur on foreign
+  corpora; a design change needing its own ruling, not a default.
+- **The sensitivity floor (R2.5) and the N-ladder gate:** shifted pseudo-pairs and flip-counts are
+  boolean/array glue over the same primitives — no new machinery.
+
+### R9.3 — `choose_cosine_floor`'s role: I revise my own R3.2 containment pin [my judgement, flagged as a self-revision]
+
+R3.2 kept the real `choose_cosine_floor` computing every ADOPTED floor, with the library path
+confined to resamples. Under #201 ("the double loop should not exist") and the measured exact
+equality, the cleaner architecture is: **the roc-derived path is the ONE production
+implementation; `choose_cosine_floor` is retained as the executable SPEC and test ORACLE** — the
+equality pin re-derives byte-agreement over randomized inputs on every suite run, and the
+identity-pinned imports (predicate, bars) stay production-shared. One production implementation +
+one test oracle is the stronger ONE-IMPLEMENTATION story; the R3.2 shape (spec on the hot path,
+twin in the bootstrap) kept two production paths alive. Both options are before the operator
+(decision 20); my recommendation is oracle-in-tests.
+
+### R9.4 — The hand-roll sweep of the port (the lead's item 4): what carries, what dissolves
+
+Against the scout's §1.1 symbol map, the ~988-LOC survey splits three ways:
+
+- **DISSOLVES into library calls** (delete at port, oracle-pinned where semantics matter): the
+  candidate sweep's production role (R9.1/R9.3) · the bootstrap loop that was never yet written ·
+  `token_survey.percentile` + both `weighted_percentile` copies (#201 items 3–4) · the
+  `GroupCosineSummary` percentile/mean/median arithmetic (np one-liners; the dataclass SHAPE
+  stays for C6(b)'s report) · `every_nth` (already D2-retired).
+- **CARRIES as domain code** (#201's "genuinely ours" residue, plus I/O): the identity-pinned
+  imports (`_cosine_absence_predicate`, `_has_verbatim_identifier_anchor`, `_query_tokens`) · the
+  bars · anchor masking as INPUT to the sweep · probe-text derivation rules · hold-out source-file
+  exclusion · the capture pipeline (store/embedder I/O) · the hash-stable sampler (stdlib
+  `hashlib`/`uuid` ARE the library) · `parse_eval_questions` · jsonl/report writers ·
+  `VerdictSample`/`HitCapture` shapes.
+- **Coarse quantum [my judgement]:** roughly the arithmetic third of the "pure core" dissolves;
+  the domain two-thirds carries. The 50 re-homed tests re-target accordingly: the dominance suite
+  becomes the ORACLE suite; arithmetic-helper tests retire with their helpers; the three
+  `is`-identity pins carry verbatim.
+
+### R9.5 — What this does to the §A split (the lead's item 5, answered plainly)
+
+**The split LINE survives; the sizing figure attached to it is superseded; the character line for
+11-i-b was always slightly wrong.** Re-derived against the scout's item table: the RUNTIME crisis
+collapses entirely, but 11-i-b's BUILD cost was never mostly arithmetic — it was deliverables:
+domain probes (0.06), the R2 verb + C6 evidence package (0.06), the determinism/equality pin suite
+(~0.05 with the new oracle+convention pins), gate/ladder logic (~0.03), plus the port's
+test-re-homing. Items that shrink: bootstrap 0.05→~0.02, N-curve 0.04→~0.03, paired decomposition
+0.02→~0.01, port 0.04→~0.03; new cost: library adoption + convention pins ~+0.02. **Net: ~0.29 →
+~0.24 ± 0.03** — a real reduction, not a collapse to glue. Recommendation: keep the ruled seam,
+re-state b's character as *"domain probes + library-backed statistics + the pin suite + R2"*, and
+re-surface the revised number to the operator rather than honouring the 0.29 mechanically. (11-i-a
+is untouched by #201.)
+
+### R9.6 — Decisions updated
+
+Decision **11** (R3) is superseded by **R9**: the statistical core re-derives on
+sklearn/scipy/numpy; the byte-exact equality control is the settling instrument for every
+convention seam (boundary mapping, interval method, rng); `--max-embeds` and the affordability
+receipt survive as before. **New: (19)** adopt scikit-learn as the third package (recommended —
+the sweep is its primitive, measured exactly equal; the numpy-`searchsorted` assembly exists as
+the two-package fallback if the operator declines, gated by the same pin — but assembling the
+primitive from parts is the pattern this section exists to stop). **(20)** `choose_cosine_floor`'s
+role: production path vs test oracle — recommend ORACLE (R9.3, a self-revision). **(21)** BCa:
+available in-library, NOT recommended (would amend D8's pre-registration); recorded for foreign-
+corpus contingency. **R9.5's** split note rides decision 1's re-surfacing.
+
 *— end of revision. The operator rules; Addendum F @ `e109e91` remains the record of what was
 designed under the false constraints, and this file is what replaces it.*
