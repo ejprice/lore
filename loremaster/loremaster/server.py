@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import importlib.metadata
 import inspect
 import json
@@ -47,11 +48,12 @@ import logging
 import math
 import os
 import re
+import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Any, Protocol, cast
+from typing import TYPE_CHECKING, Annotated, Any, Protocol, cast, get_args
 from uuid import uuid4
 
 from lorescribe.javascript import JavascriptChunker
@@ -63,14 +65,29 @@ from lorescribe.stylesheet import StylesheetChunker
 from lorescribe.text import TextChunker
 from lorescribe.xml_generic import XmlChunker
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.types import ToolAnnotations
+from mcp.server.lowlevel.server import request_ctx
+from mcp.types import ContentBlock, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from loremaster.agent_ref import AgentRefLike as _AgentRefLike
 from loremaster.agents import AGENT_NAME_PATTERN
+from loremaster.agents import STATUS_RETIRED as _AGENT_STATUS_RETIRED
 from loremaster.agents import UnknownAgentError as _UnknownAgentError
 from loremaster.briefs import BRIEF_NAME_PROJECT, STANDING_BRIEF
 from loremaster.briefs import UnknownBriefError as _UnknownBriefError
-from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, load_config
+
+# Re-exported deliberately (never re-declared): the drain window's default is
+# ONE value, owned by the config module, and every surface that names it reads
+# it from there — a second literal here is the copy that goes stale.
+from loremaster.config import (
+    DEFAULT_COMMS_DRAIN_LIMIT as DEFAULT_COMMS_DRAIN_LIMIT,  # noqa: PLC0414
+)
+from loremaster.config import (
+    WATCH_LIVE,
+    WATCH_STATIC,
+    LoreConfig,
+    load_config,
+)
 from loremaster.diff import SnapshotNotFoundError
 from loremaster.extension import (
     DEFAULT_KEY_VERSION,
@@ -123,6 +140,31 @@ from loremaster.memory.backend import (
     IMPORTANCE_DEFAULTS_BY_KIND,
     MemorySource,
     TrustLevel,
+)
+
+# PKT-03b: the message ledger the three new ``lore_comms`` verbs ride, plus the
+# vocabulary its surface teaches from (the body cap the instructions block
+# interpolates, the two grades the tool schema derives, and the ack-outcome
+# constants the ack render's ONE outcome mapping is keyed on — prose derived
+# from typed state, never a name a render compares).
+from loremaster.messages import (
+    MESSAGE_BODY_MAX_CHARS as _MESSAGE_BODY_MAX_CHARS,
+)
+from loremaster.messages import (
+    MESSAGE_GRADE_DIRECTIVE as _MESSAGE_GRADE_DIRECTIVE,
+)
+from loremaster.messages import (
+    MESSAGE_GRADES as _MESSAGE_GRADES,
+)
+from loremaster.messages import (
+    AckOutcome as _AckOutcome,
+)
+from loremaster.messages import (
+    InboxEntry,
+    MessageAckResult,
+    MessageDrainResult,
+    MessageLedger,
+    MessageSendResult,
 )
 from loremaster.render import render_compose, render_fenced, render_join, render_line
 from loremaster.sanitise import safe_str, sanitise_line
@@ -1094,15 +1136,52 @@ _BATCH_ITEMS_MAX = 50
 # always be told apart from a real task id.
 _TASK_ID_SHAPE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
-# The ``lore_comms`` actions (PKT-28 C1, design doc §SCOPE/§8) — exactly six
-# in C1; send/drain/ack/await/story are C2/C3 growth points (design doc
-# §FORWARD-COMPAT) that widen ``_COMMS_ACTIONS`` deliberately in a later phase.
+# The ``lore_comms`` actions (PKT-28 C1, design doc §SCOPE/§8) — the six C1
+# verbs plus packet 03b's three message-surface verbs; await/story remain
+# growth points (design doc §FORWARD-COMPAT) that widen ``_COMMS_ACTIONS``
+# deliberately in a later packet.
 _COMMS_ACTION_REGISTER = "register"
 _COMMS_ACTION_HEARTBEAT = "heartbeat"
 _COMMS_ACTION_BRIEF_GET = "brief_get"
 _COMMS_ACTION_BRIEF_PUBLISH = "brief_publish"
 _COMMS_ACTION_BRIEF_ACK = "brief_ack"
 _COMMS_ACTION_FLEET = "fleet"
+_COMMS_ACTION_SEND = "send"
+_COMMS_ACTION_DRAIN = "drain"
+_COMMS_ACTION_ACK = "ack"
+
+# §B2.4: ``set_status``'s CLOSED vocabulary at the surface. The ledger is
+# VALUE-KEYED (``question = set_status == 'input_required'``) and treats every
+# other string as an ordinary no-op — so a typo asks NO question SILENTLY: the
+# sender believes a debt is registered and none is, which is the invisible
+# false-NOT-waiting direction ruling 9 refuses. The dispatcher converts that
+# silent miss into a teaching reject; the ledger keeps its value-keyed
+# semantics unchanged. The legal set is a CONSTANT the teaching message derives
+# from, so a second legal value cannot be added without the prose following.
+_COMMS_SET_STATUS_INPUT_REQUIRED = "input_required"
+_COMMS_LEGAL_SET_STATUS_VALUES: tuple[str, ...] = (_COMMS_SET_STATUS_INPUT_REQUIRED,)
+
+# §B5.2: the ack render's outcome groups, in served order. ONE mapping keyed on
+# the LEDGER's own ``AckOutcome`` values — prose derived from typed state, never
+# a name a render compares — and its coverage is CHECKED below rather than
+# assumed, so a fifth outcome added to the ledger is a loud import-time failure
+# instead of a seq that silently vanishes from a served receipt.
+_ACK_OUTCOME_ACKED = "acked"
+_ACK_OUTCOME_ALREADY_ACKED = "already_acked"
+_ACK_OUTCOME_UNKNOWN_MESSAGE = "unknown_message"
+_ACK_OUTCOME_NOT_ADDRESSED = "not_addressed"
+_ACK_OUTCOME_ORDER: tuple[str, ...] = (
+    _ACK_OUTCOME_ACKED,
+    _ACK_OUTCOME_ALREADY_ACKED,
+    _ACK_OUTCOME_UNKNOWN_MESSAGE,
+    _ACK_OUTCOME_NOT_ADDRESSED,
+)
+if set(_ACK_OUTCOME_ORDER) != set(get_args(_AckOutcome)):  # pragma: no cover - import guard
+    raise RuntimeError(
+        f"the ack render's outcome groups {sorted(_ACK_OUTCOME_ORDER)} no longer cover the "
+        f"ledger's AckOutcome {sorted(get_args(_AckOutcome))} — an outcome with no rendered "
+        f"home is a requested seq that vanishes from its own receipt"
+    )
 
 # design doc §4: render list caps inside teaching/coverage lines (§5.3, §7) —
 # the capped+counted active-agent roster an enriched ``UnknownAgentError``
@@ -1124,6 +1203,13 @@ _HEARTBEAT_SKEW_NAMES_CAP = 3
 # a counted elision's re-ask value is always honest AND clamped to this
 # ceiling (DESIGN-LAW §1.2), never an unbounded "ask for everything".
 _MAX_FLEET_LIMIT = 200
+# §B6.3: ``drain``'s OWN cap, deliberately distinct from fleet's. A drain entry
+# costs a header line plus a >=3-line fence, so 50 entries with the 2000-char
+# body cap bounds the worst-case render at a size a consumer can still use —
+# while never making the cap a dead end (the elision line's honest count is the
+# re-ask). Ruled default, strikeable; the CONSTANT is the tunable, the
+# clamp-and-disclose MECHANISM is not.
+_MAX_DRAIN_LIMIT = 50
 
 # design doc §6: fleet row ordering — parked (``input_required``) agents
 # first (the actionable signal), then active, then idle; ties break by
@@ -1379,6 +1465,27 @@ _INSTRUCTIONS = (
     "anything else, action=heartbeat to stay current and learn brief skew, "
     "action=brief_get/brief_publish/brief_ack for standing instructions, "
     "action=fleet to see who else is active.\n"
+    "\n"
+    # Packet 03b §B9's read-once half (DESIGN-LAW §1.5: strategy and invariants
+    # are read ONCE here; recovery moves ride each response). The seven ruled
+    # clauses in B9's own numbering — clause 4 interpolates the LIVE body cap so
+    # the prose cannot drift from the constant it describes. This block is pinned
+    # by EQUALITY, and it is the ONLY paragraph permitted to make a claim about
+    # the message surface's duties: serving every ruled sentence AND a
+    # contradicting one passes an inclusion check, so inclusion is not the gate.
+    "action=send delivers a durable message; action=drain reads your inbox and "
+    "marks what it serves; action=ack discharges a directive you were sent. "
+    "Drain at your own turn boundaries: after you claim work, before each major "
+    "step, and before you write your report. grade='directive' is must-act "
+    "traffic: ack exactly the seqs the ACK REQUIRED trailer names. Message "
+    f"bodies are capped at {_MESSAGE_BODY_MAX_CHARS} characters and carry "
+    "POINTERS: put the content in a report or finding and name it in refs. One "
+    "thread carries ONE conversational debt: put separate questions on separate "
+    "q:<topic> threads. If a partial reply cleared your thread, re-ask the "
+    "unaddressed question: a new send with set_status='input_required' "
+    "re-establishes the debt. A question clears only when a teammate's reply is "
+    "delivered to you on that thread; your own follow-ups and self-notes never "
+    "clear it.\n"
     "\n"
     "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's "
     "tools first; batch independent calls in one turn, not serial turns."
@@ -1647,13 +1754,13 @@ class ToolTraceCount(BaseModel):
 
 
 class TraceSummary(BaseModel):
-    """The ``trace`` table's aggregate, as surfaced by ``lore_index`` (P8d Wave 3).
+    """The ``trace`` table's aggregate, as surfaced by ``lore_index``.
 
-    ``total``/``by_tool``/``latest_at`` are ``0``/``[]``/``None`` when nothing has
-    ever been traced — which is EVERY boot today, since no caller yet wires the
-    per-invocation :meth:`~loremaster.store.surreal.SurrealStore.record_trace`
-    emission (that wiring is a later phase per its own docstring; this section
-    only reads whatever rows already exist).
+    ``total``/``by_tool``/``latest_at`` are ``0``/``[]``/``None`` only when
+    nothing has ever been traced — a fresh store. Every served tool call writes
+    one row through :class:`TracingFastMCP`, so a long-lived deployment whose
+    numbers stay flat is a SIGNAL (the emission is broken), not the expected
+    reading.
 
     Attributes:
         total: The total trace-row count across every tool (the sum of
@@ -1886,6 +1993,7 @@ class AppContext:
         task_ledger: TaskLedger,
         agent_registry: AgentRegistry,
         brief_ledger: BriefLedger,
+        message_ledger: MessageLedger,
         calibration_engine: CalibrationEngine | None = None,
     ) -> None:
         self._server = server
@@ -1925,6 +2033,12 @@ class AppContext:
         # eagerly at build_app_context time — see that function).
         self.agent_registry = agent_registry
         self.brief_ledger = brief_ledger
+        # PKT-03b wire-up: the durable message ledger the send/drain/ack verbs
+        # ride — a THIRD comms ledger alongside agent_registry/brief_ledger, same
+        # posture (a settable public attribute owning its OWN SurrealDB
+        # connection, constructed + ensure_ready()'d eagerly at
+        # build_app_context time and closed in the same ordered unwind).
+        self.message_ledger = message_ledger
         # P8c wire-up: the boot token-calibration engine (voyage->claude budget
         # scaling). The budget path reads its ``served_constant`` (falling back to
         # the committed ``TOKEN_BUDGET_CALIBRATION`` when absent), ``index_status``
@@ -4379,7 +4493,7 @@ class AppContext:
     #      forgotten-wrap defect class P8d catalogued).
     #   5. dispatch to the action's handler.
 
-    async def comms(
+    async def comms(  # noqa: PLR0912 - the ruled two-tier validation ladder (§B1)
         self,
         *,
         action: str,
@@ -4395,10 +4509,18 @@ class AppContext:
         body: str | None = None,
         version: int | None = None,
         limit: int | None = None,
+        to: list[str] | None = None,
+        grade: str | None = None,
+        thread: str | None = None,
+        refs: list[str] | None = None,
+        set_status: str | None = None,
+        seqs: list[int] | None = None,
+        peek: bool | None = None,
     ) -> Rendered:
         """Dispatch a ``lore_comms`` action (register/heartbeat/brief_get/
 
-        brief_publish/brief_ack/fleet) through :data:`_COMMS_ACTIONS`.
+        brief_publish/brief_ack/fleet/send/drain/ack) through
+        :data:`_COMMS_ACTIONS`.
 
         The acting ``agent`` IS the author of anything it publishes (#100):
         ``brief_publish`` records ``Brief.created_by`` as the acting agent's
@@ -4424,11 +4546,7 @@ class AppContext:
                 f"unknown comms action {action!r}; valid actions are {list(_COMMS_ACTIONS)}"
             )
 
-        AppContext._validate_comms_charset(agent, "agent name")
-        if session is not None:
-            AppContext._validate_comms_charset(session, "session")
-        if name is not None:
-            AppContext._validate_comms_charset(name, "brief name")
+        AppContext._validate_comms_identities(agent, session=session, name=name, to=to)
 
         values: dict[str, Any] = {
             "session": session,
@@ -4442,6 +4560,13 @@ class AppContext:
             "body": body,
             "version": version,
             "limit": limit,
+            "to": to,
+            "grade": grade,
+            "thread": thread,
+            "refs": refs,
+            "set_status": set_status,
+            "seqs": seqs,
+            "peek": peek,
         }
         allowed = spec.params | spec.required
         for param_name, value in values.items():
@@ -4461,12 +4586,24 @@ class AppContext:
         # the raise; that is a side effect a rejected call must never have
         # (pinned by ``test_comms_tool.py::TestFleetLimitBounds::
         # test_a_rejected_limit_never_touches_the_callers_row``). Below 1 teaches
-        # the valid range; above the display cap is legal here — it clamps inside
-        # the fleet handler, it never raises.
+        # the valid range; above the action's own cap is legal here — it clamps
+        # inside the handler, it never raises. §B6.2: the range text is DERIVED
+        # from the ACTION's ``limit_cap``, never from a hardcoded fleet ceiling.
         if limit is not None and limit < _MIN_COUNT:
+            cap = spec.limit_cap if spec.limit_cap is not None else _MAX_FLEET_LIMIT
             raise ValueError(
                 f"limit={limit} is out of range for action={action!r} — the valid range is "
-                f"{_MIN_COUNT}..{_MAX_FLEET_LIMIT}; a limit above {_MAX_FLEET_LIMIT} clamps to it"
+                f"{_MIN_COUNT}..{cap}; a limit above {cap} clamps to it"
+            )
+        # §B2.4: the closed ``set_status`` vocabulary — a SHAPE reject, so it
+        # fires before the touch, and it NAMES the one legal value (a reject that
+        # only says "invalid" leaves an LLM caller guessing at the exact string).
+        if set_status is not None and set_status not in _COMMS_LEGAL_SET_STATUS_VALUES:
+            legal = ", ".join(repr(value) for value in _COMMS_LEGAL_SET_STATUS_VALUES)
+            raise ValueError(
+                f"set_status={set_status!r} is not a legal value for action={action!r} — "
+                f"the only legal value is {legal}; it MARKS this send as a question the "
+                f"derived waiting state reads, and it does not change your status row"
             )
 
         agent_row: Agent | None = None
@@ -4495,7 +4632,44 @@ class AppContext:
             body=body,
             version=version,
             limit=limit,
+            to=to,
+            grade=grade,
+            thread=thread,
+            refs=refs,
+            set_status=set_status,
+            seqs=seqs,
+            peek=peek,
         )
+
+    @staticmethod
+    def _validate_comms_identities(
+        agent: str, *, session: str | None, name: str | None, to: list[str] | None
+    ) -> None:
+        """Charset-validate EVERY identity a call carries, BEFORE any store touch.
+
+        §B1 step 2, extended by §B2.1: a recipient IS an agent name — the fourth
+        member of the identity class :meth:`_validate_comms_charset`'s own
+        docstring says shares ONE charset because all of them are inlined into
+        live ``WHERE`` clauses. Admitting ``to[]`` unvalidated now means finding
+        the gap in a later packet, on a surface that by then writes edges.
+
+        Extracted rather than inlined so the dispatcher's branch count stays
+        under the lint ceiling AND so the identity policy has ONE home: a second
+        call site that validated its own names would be a private copy of this
+        rule wearing the shared surface's name.
+
+        Raises:
+            ValueError: Any identity violates ``AGENT_NAME_PATTERN``. The reject
+                names ONLY the offending value — echoing the whole list back
+                leaves the caller unable to tell which name to fix.
+        """
+        AppContext._validate_comms_charset(agent, "agent name")
+        if session is not None:
+            AppContext._validate_comms_charset(session, "session")
+        if name is not None:
+            AppContext._validate_comms_charset(name, "brief name")
+        for recipient in to or ():
+            AppContext._validate_comms_charset(recipient, "recipient name")
 
     @staticmethod
     def _validate_comms_charset(value: str, label: str) -> None:
@@ -4745,6 +4919,164 @@ class AppContext:
             status_counts=roster.status_counts,
         )
 
+    async def _comms_send(
+        self,
+        *,
+        agent_row: Agent,
+        to: list[str] | None,
+        body: str,
+        grade: str,
+        thread: str | None,
+        task_id: str | None,
+        refs: list[str] | None,
+        set_status: str | None,
+        **_ignored: Any,
+    ) -> Rendered:
+        """send — resolve the recipient set, then ONE atomic all-or-nothing write.
+
+        Recipient resolution is SESSION-SCOPED, always, against the CALLER's own
+        resolved session (§B2.3): delivery targeting is session-bound by id
+        construction, so an unscoped resolution would make a cross-session
+        delivery reachable through a name collision. An omitted ``to`` (or an
+        empty one) broadcasts to every NON-RETIRED agent in that session except
+        the sender — resolved through the row-UNLIMITED ``roster()``, never the
+        display-capped ``fleet()`` window, which would silently drop every
+        recipient past the limit.
+
+        Both resolution failures are TEACHING rejects, and both leave the store
+        untouched (the ledger's own all-or-nothing write is the second layer,
+        ``ENFORCED`` the third — none redundant):
+
+        * an unknown name routes through the EXISTING
+          :meth:`_comms_enrich_unknown_agent`, so there is ONE roster-error
+          implementation rather than a second, roster-less copy;
+        * a RETIRED recipient is refused, because retirement is terminal and a
+          message delivered to a retired agent is undrainable FOREVER —
+          manufactured permanent loss wearing a delivery receipt, which is the
+          exact failure this subsystem exists to remove.
+        """
+        session_scope = agent_row.session
+        recipients: list[_AgentRefLike] = []
+        if to:
+            for name in to:
+                try:
+                    recipient = await self.agent_registry.get_agent(name, session=session_scope)
+                except _UnknownAgentError as error:
+                    raise await AppContext._comms_enrich_unknown_agent(
+                        self, error, session=session_scope
+                    ) from error
+                if recipient.status == _AGENT_STATUS_RETIRED:
+                    raise ValueError(
+                        f"recipient {name!r} is retired — retirement is TERMINAL, so a message "
+                        f"delivered to it could never be drained; a respawn registers a FRESH "
+                        f"name, so send to that name instead"
+                    )
+                recipients.append(recipient)
+        else:
+            roster = await self.agent_registry.roster(session=session_scope)
+            recipients = [member for member in roster.members if member.id != agent_row.id]
+        result = await self.message_ledger.send(
+            sender=agent_row,
+            session=session_scope,
+            body=body,
+            grade=grade,
+            recipients=recipients,
+            thread=thread,
+            task_id=task_id,
+            refs=refs,
+            set_status=set_status,
+        )
+        return AppContext._render_comms_send(
+            result, broadcast=not to, session=session_scope
+        )
+
+    async def _comms_drain(
+        self,
+        *,
+        agent_row: Agent,
+        limit: int | None,
+        peek: bool | None,
+        **_ignored: Any,
+    ) -> Rendered:
+        """drain — serve this agent's inbox window, then the SHARED brief-skew block.
+
+        The window is CONFIG-driven (``comms.drain_limit``, like ``fleet_limit``)
+        and clamped to the action's own ``_MAX_DRAIN_LIMIT``, mirroring fleet's
+        clamp-and-disclose precedent: the clamp discloses through the elision
+        line's honest count rather than raising, so a cap is never a dead end.
+
+        The skew block is read FIRST and through the SAME helper heartbeat uses
+        (§B4.1/FK-6): drain is the high-frequency catch-up verb, and the served
+        publish teach names both verbs, so a drain that served no skew would make
+        that teaching false. Store-failure posture is deliberate: there is NO
+        degraded "messages without skew" fallback — a consumer would read a
+        complete-looking inbox and never learn its standing instructions moved,
+        which is precisely the silent degradation DESIGN-LAW §1.4 refuses. Reading
+        it BEFORE the drain also means a skew failure cannot strand an already
+        STAMPED window whose render never reached the caller.
+        """
+        skew_lines = await AppContext._comms_brief_skew_lines(self, agent_row=agent_row)
+        display_limit = min(
+            limit if limit is not None else self.config.comms.drain_limit, _MAX_DRAIN_LIMIT
+        )
+        result = await self.message_ledger.drain(
+            agent_id=agent_row.id, limit=display_limit, peek=bool(peek)
+        )
+        inbox = AppContext._render_comms_drain(
+            result,
+            agent_name=agent_row.name,
+            limit=display_limit,
+            session=agent_row.session,
+        )
+        return render_compose(inbox, *skew_lines)
+
+    async def _comms_ack(
+        self, *, agent_row: Agent, seqs: list[int], note: str | None, **_ignored: Any
+    ) -> Rendered:
+        """ack — write-once CAS over the caller's OWN delivery edges.
+
+        Every requested seq's own fate comes back typed (the ledger disambiguates
+        the four-way-ambiguous raw CAS return); the render accounts for all of
+        them. Acking another agent's edge leaves that edge untouched and reports
+        ``not_addressed`` — the ledger's guarantee, not this handler's.
+        """
+        result = await self.message_ledger.ack(agent_id=agent_row.id, seqs=seqs, note=note)
+        return AppContext._render_comms_ack(result, agent_name=agent_row.name, note=note)
+
+    async def _comms_brief_skew_lines(self, *, agent_row: Agent) -> list[Rendered]:
+        """Read the brief-skew state and render it — the ONE assembly both
+        ``heartbeat`` and ``drain`` ride (§B4.1/FK-6, D5).
+
+        The standing brief's skew is surfaced UNIVERSALLY (every agent is a
+        subscriber, §5.3); non-standing brief skew is surfaced only for names
+        this agent actually SUBSCRIBED to — the §9.2 v8 subscribed-name skew
+        (#103), excluding the standing brief handled above.
+
+        Both the READS and the RENDER live here rather than being duplicated per
+        verb: a caller that routed to a shared render while hand-rolling its own
+        ledger reads would be a private copy wearing the shared name, and it
+        would pass every pin that merely checks the line is present.
+        """
+        head_version: int | None
+        acked_version: int | None
+        try:
+            head = await self.brief_ledger.get_head(STANDING_BRIEF)
+            head_version = head.version
+            acked_version = await self.brief_ledger.acked_version(
+                agent_id=agent_row.id, name=STANDING_BRIEF
+            )
+        except _UnknownBriefError:
+            head_version = None
+            acked_version = None
+        subscribed_skew = await self.brief_ledger.subscribed_name_skew(
+            agent_id=agent_row.id, exclude=STANDING_BRIEF
+        )
+        return AppContext._render_comms_skew_lines(
+            project_head_version=head_version,
+            project_acked_version=acked_version,
+            subscribed_skew=subscribed_skew,
+        )
+
     # -- lore_comms render helpers — every path -> Rendered, assembled ONLY
     # via loremaster.render's verbs (render-safety ruling §C1-C5-AUTHORING).
 
@@ -4829,13 +5161,45 @@ class AppContext:
         agent behind on many briefs never gets unbounded heartbeat spam. The
         'project' skew line's LABEL and grammar stay byte-stable (§9.2).
         """
-        lines: list[Rendered] = [
+        return render_compose(
             render_line(
                 "heartbeat {name} — status {status}",
                 name=sanitise_line(agent.name),
                 status=sanitise_line(agent.status),
-            )
-        ]
+            ),
+            *AppContext._render_comms_skew_lines(
+                project_head_version=project_head_version,
+                project_acked_version=project_acked_version,
+                subscribed_skew=subscribed_skew,
+            ),
+        )
+
+    @staticmethod
+    def _render_comms_skew_lines(
+        *,
+        project_head_version: int | None,
+        project_acked_version: int | None,
+        subscribed_skew: Sequence[tuple[str, int, int]],
+    ) -> list[Rendered]:
+        """The brief-skew block, as a list of already-``Rendered`` lines.
+
+        THE ONE implementation of this assembly (§B4.1/FK-6, D5): ``heartbeat``
+        and ``drain`` both compose these lines, so changing a template here moves
+        BOTH verbs' output — a caller that stayed green would be a private copy
+        wearing the shared name. Empty when the agent is at head everywhere,
+        which is why it returns a LIST rather than a ``Rendered``: an empty
+        composite would emit a stray blank line into every current agent's
+        response.
+
+        The subscribed skew (``(name, head, acked)`` tuples, arbitrary store
+        order) is rendered skew-magnitude DESCENDING (name ascending on ties),
+        the ``_HEARTBEAT_SKEW_NAMES_CAP`` largest as individual per-name notices,
+        and the remainder collapsed into ONE counted line (names capped at
+        ``_COVERAGE_NAMES_CAP`` with a ``(+{j} more)`` suffix) so an agent behind
+        on many briefs never gets an unbounded dump. The 'project' skew line's
+        LABEL and grammar stay byte-stable (§9.2).
+        """
+        lines: list[Rendered] = []
         if project_head_version is not None and project_acked_version != project_head_version:
             if project_acked_version is None:
                 lines.append(
@@ -4889,7 +5253,7 @@ class AppContext:
                         names=render_join(", ", shown),
                     )
                 )
-        return render_compose(*lines)
+        return lines
 
     @staticmethod
     def _render_comms_behind_entry(entry: BriefBehindEntry) -> SafeLine:
@@ -5358,6 +5722,308 @@ class AppContext:
             lines.append(render_line("+{count} retired", count=retired_count))
         return render_compose(*lines)
 
+    # -- packet 03b: the message surface's three renders ---------------------
+
+    @staticmethod
+    def _render_comms_send(
+        result: MessageSendResult, *, broadcast: bool, session: str
+    ) -> Rendered:
+        """send's receipt (§B3): what landed, the ack duty, the clearing rule.
+
+        An EXPLICIT send names its recipients — deduped and sorted by the ledger,
+        capped at the SHARED ``_COVERAGE_NAMES_CAP`` with a counted remainder
+        derived from the TRUE ``recipient_count``, never from the display window.
+        A BROADCAST renders a COUNT instead: a thirty-name list is a dump in a
+        per-token-priced render, and the exact membership is ``fleet``'s job.
+
+        No body echo — the sender knows what it sent; the drain is the read
+        surface. And no thread cell: the sender CHOSE the thread it passed, so
+        echoing its own input back carries zero signal. The ONE receipt where the
+        thread IS load-bearing is a QUESTION send, and the clearing-rule teach
+        below carries it — that teach is the ONLY in-band carrier of the clearing
+        rule in this packet (the per-row recipient marker is a later packet), so
+        it is mandatory rather than decorative.
+
+        ``grade`` renders from the TYPED ``Message.grade`` and the question teach
+        from the TYPED ``Message.question`` — never a name this render compares.
+        """
+        message = result.message
+        lines: list[Rendered] = []
+        if broadcast:
+            lines.append(
+                render_line(
+                    "sent #{seq} [{grade}] → broadcast: {count} agents in session {session}",
+                    seq=message.seq,
+                    grade=sanitise_line(message.grade),
+                    count=result.recipient_count,
+                    session=sanitise_line(session),
+                )
+            )
+        else:
+            shown = [sanitise_line(name) for name in result.recipient_names[:_COVERAGE_NAMES_CAP]]
+            remainder = result.recipient_count - len(shown)
+            if remainder > 0:
+                lines.append(
+                    render_line(
+                        "sent #{seq} [{grade}] → {recipients} (+{more} more)",
+                        seq=message.seq,
+                        grade=sanitise_line(message.grade),
+                        recipients=render_join(", ", shown),
+                        more=remainder,
+                    )
+                )
+            else:
+                lines.append(
+                    render_line(
+                        "sent #{seq} [{grade}] → {recipients}",
+                        seq=message.seq,
+                        grade=sanitise_line(message.grade),
+                        recipients=render_join(", ", shown),
+                    )
+                )
+        if message.grade == _MESSAGE_GRADE_DIRECTIVE:
+            lines.append(
+                render_line(
+                    "recipients must ack: lore_comms action=ack seqs=[{seq}]", seq=message.seq
+                )
+            )
+        if message.question:
+            lines.append(
+                render_line(
+                    "question on thread {thread} — clears when a teammate's reply lands on "
+                    "this thread addressed to you; your own follow-ups do not clear it",
+                    thread=sanitise_line(message.thread),
+                )
+            )
+        return render_compose(*lines)
+
+    @staticmethod
+    def _render_comms_drain(
+        result: MessageDrainResult, *, agent_name: str, limit: int, session: str
+    ) -> Rendered:
+        """drain's render (§B4): header, rows, elision, then the ack demand.
+
+        ``session`` is REQUIRED, never defaulted: it is the ``{context}`` cell's
+        thread comparand, and a defaulted comparand lets any call site silently
+        kill the branch — the fixture-default law applied at the signature layer.
+
+        Every count keys on ``seen_at`` and describes the WHOLE pending set, not
+        the served window, and it must AGREE with what this very drain serves:
+        ``shown + more == total`` is arithmetic the reader can verify from the
+        render alone. The elision's re-ask is the REMAINDER in both slots,
+        because a non-peek drain stamps exactly the served window and stamped
+        rows never re-serve — a ``shown + more`` re-ask would name rows that
+        CANNOT come back.
+
+        BODIES ARE ALWAYS FENCED, verbatim, with a fence sized past any embedded
+        backtick run. Uniformly: no inline-if-single-line variant, because two
+        shapes double the render surface and the single-line path is exactly
+        where this repo's hostile-render defects have stayed green. A body is
+        stored free text written by ANOTHER agent, and this is the one render in
+        the subsystem where that text lands inside a consumer's context.
+
+        Args:
+            result: The ledger's drain outcome — window plus whole-set counts.
+            agent_name: The draining agent; unused by the current templates and
+                named so the signature does not have to change when a later
+                packet's row addresses the reader directly.
+            limit: The served window's cap; unused by the arithmetic (the honest
+                re-ask is the remainder, never the cap) and named for the same
+                reason.
+            session: The comparand the ``{context}`` cell's thread half is
+                suppressed against — most traffic rides the session-default
+                thread, and an unconditional label would destroy the "a thread
+                label means a DELIBERATE conversation" signal.
+        """
+        del agent_name, limit
+        if not result.entries:
+            return render_line("no unread messages")
+        shown = len(result.entries)
+        lines: list[Rendered] = []
+        if result.peeked:
+            lines.append(
+                render_line(
+                    "peeked {shown} of {total} pending — nothing stamped; "
+                    "re-run without peek=true to mark them seen",
+                    shown=shown,
+                    total=result.total_pending,
+                )
+            )
+        else:
+            lines.append(
+                render_line(
+                    "drained {shown} of {total} pending",
+                    shown=shown,
+                    total=result.total_pending,
+                )
+            )
+        for entry in result.entries:
+            lines.append(AppContext._render_comms_drain_row(entry, session=session))
+            lines.append(render_fenced(entry.body))
+        remainder = result.total_pending - shown
+        if remainder > 0:
+            lines.append(
+                render_line(
+                    "+{more} more unread — re-run with limit={next_limit}",
+                    more=remainder,
+                    next_limit=remainder,
+                )
+            )
+        re_served = [entry.seq for entry in result.entries if entry.acked_at is not None]
+        if re_served:
+            lines.append(
+                render_line(
+                    "re-served after ack: {seqs} — informational; these carry your ack "
+                    "stamp and need no new one",
+                    seqs=render_join(", ", [safe_str(f"#{seq}") for seq in re_served]),
+                )
+            )
+        # The trailer keys on ``acked_at``, NEVER ``seen_at``: an acked directive
+        # re-served after a peek-ack must never re-nag. It is WINDOW-scoped —
+        # an elided directive's seq would be unactionable without its context, and
+        # the elision line plus the next drain are how it surfaces. And it renders
+        # on STAMPING drains only: a trailer DEMANDING acks on a peek would turn a
+        # deliberate look-don't-consume affordance into an ack farm, contradicting
+        # the peeked header's own "re-run without peek=true" teach.
+        demanded = [
+            entry.seq
+            for entry in result.entries
+            if entry.grade == _MESSAGE_GRADE_DIRECTIVE and entry.acked_at is None
+        ]
+        if demanded and not result.peeked:
+            lines.append(
+                render_line(
+                    "ACK REQUIRED: {seqs} — lore_comms action=ack seqs=[{seqs_csv}]",
+                    seqs=render_join(" ", [safe_str(f"#{seq}") for seq in demanded]),
+                    seqs_csv=render_join(", ", [safe_str(f"{seq}") for seq in demanded]),
+                )
+            )
+        return render_compose(*lines)
+
+    @staticmethod
+    def _render_comms_drain_row(entry: InboxEntry, *, session: str) -> Rendered:
+        """ONE drain row's HEADER line — the body is fenced beneath it by the caller.
+
+        The single ``{context}`` cell is a CHOICE, never a concatenation: the
+        classified vocabulary carries exactly two mutually-described variants of
+        one slot, so a build rendering both would need a third literal that does
+        not exist. Precedence is task-then-thread — a task-anchored message shows
+        its task only, because the task anchor is the stronger coordination
+        signal and the thread stays recoverable from the message row.
+
+        ``refs`` are capped at the SHARED ``_COVERAGE_NAMES_CAP`` with a counted
+        remainder: refs are uncapped at the ledger, so an uncapped render is an
+        unbounded dump in the subsystem's highest-volume surface.
+        """
+        if entry.task_id is not None:
+            context = safe_str(f" (task {sanitise_line(entry.task_id)})")
+        elif entry.thread != session:
+            context = safe_str(f" (thread {sanitise_line(entry.thread)})")
+        else:
+            context = safe_str("")
+        if not entry.refs:
+            return render_line(
+                "#{seq} [{grade}] {sender}→you{context}",
+                seq=entry.seq,
+                grade=sanitise_line(entry.grade),
+                sender=sanitise_line(entry.sender_name),
+                context=context,
+            )
+        shown = [safe_str(ref) for ref in entry.refs[:_COVERAGE_NAMES_CAP]]
+        over = len(entry.refs) - len(shown)
+        if over > 0:
+            shown.append(safe_str(f"+{over} more"))
+        return render_line(
+            "#{seq} [{grade}] {sender}→you{context} ({refs})",
+            seq=entry.seq,
+            grade=sanitise_line(entry.grade),
+            sender=sanitise_line(entry.sender_name),
+            context=context,
+            refs=render_join(", ", shown),
+        )
+
+    @staticmethod
+    def _render_comms_ack(
+        result: MessageAckResult, *, agent_name: str, note: str | None
+    ) -> Rendered:
+        """ack's receipt (§B5): every requested seq, in the group its fate names.
+
+        MEMBERSHIP, not multiplicity: each group lists the DISTINCT seqs whose
+        ledger entries carry that outcome, ASCENDING — the one seq-list ordering
+        convention this surface already uses, so the reader learns it once. A seq
+        repeated inside ONE group renders once ("you listed it twice" and "acked
+        earlier" require no different next action); per-occurrence accountability
+        stays where it is real, on the typed ``MessageAckResult``. A seq that
+        legitimately occupies TWO groups (R1's duplicate-in-batch case) appears in
+        both, carrying the ONE stored stamp.
+
+        Every count beside the groups derives from DISPLAYED membership, never
+        from raw entry counts: a header saying "2 requested" beside a group
+        showing one seq is exactly the count-vs-display mismatch a dedupe would
+        otherwise open.
+
+        The outcome groups are driven by ONE mapping keyed on the ledger's own
+        ``AckOutcome`` values (:data:`_ACK_OUTCOME_ORDER`, coverage-checked at
+        import): a fifth outcome is a LOUD failure here, never silent
+        fallthrough prose.
+        """
+        by_outcome: dict[str, list[int]] = {outcome: [] for outcome in _ACK_OUTCOME_ORDER}
+        requested: set[int] = set()
+        for entry in result.entries:
+            requested.add(entry.seq)
+            group = by_outcome.get(entry.outcome)
+            if group is None:
+                raise RuntimeError(
+                    f"ack outcome {entry.outcome!r} has no rendered home — the ledger's "
+                    f"AckOutcome grew and this render's mapping did not"
+                )
+            if entry.seq not in group:
+                group.append(entry.seq)
+        acked = sorted(by_outcome[_ACK_OUTCOME_ACKED])
+        lines: list[Rendered] = [
+            render_line(
+                "acked {acked} of {requested}: {seqs}",
+                acked=len(acked),
+                requested=len(requested),
+                seqs=render_join(", ", [safe_str(f"#{seq}") for seq in acked]),
+            )
+        ]
+        already = sorted(by_outcome[_ACK_OUTCOME_ALREADY_ACKED])
+        if already:
+            lines.append(
+                render_line(
+                    "already acked: {seqs} — no new stamp",
+                    seqs=render_join(", ", [safe_str(f"#{seq}") for seq in already]),
+                )
+            )
+        unknown = sorted(by_outcome[_ACK_OUTCOME_UNKNOWN_MESSAGE])
+        if unknown:
+            lines.append(
+                render_line(
+                    "unknown message seq(s): {seqs} — no such message; "
+                    "lore_comms action=drain lists what is addressed to you",
+                    seqs=render_join(", ", [safe_str(f"#{seq}") for seq in unknown]),
+                )
+            )
+        not_addressed = sorted(by_outcome[_ACK_OUTCOME_NOT_ADDRESSED])
+        if not_addressed:
+            lines.append(
+                render_line(
+                    "not addressed to you: {seqs} — these messages carry no delivery to {name}",
+                    seqs=render_join(", ", [safe_str(f"#{seq}") for seq in not_addressed]),
+                    name=sanitise_line(agent_name),
+                )
+            )
+        # The guard covers the NOTE, not merely its presence: the ledger writes
+        # ``ack_note`` ONLY on the edges its CAS actually won, so a note on a
+        # batch that won nothing was recorded NOWHERE — and saying nothing there
+        # would imply that it had been.
+        if note is not None and acked:
+            lines.append(
+                render_line("note recorded on the {acked} newly acked message(s)", acked=len(acked))
+            )
+        return render_compose(*lines)
+
     async def aclose(self) -> None:
         """Stop background tasks, run extension shutdown hooks, close clients.
 
@@ -5414,9 +6080,11 @@ class AppContext:
         await self.memory_backend.close()
         await self.task_ledger.close()
         await self.finding_ledger.close()
-        # PKT-28 C1: the two comms ledgers each own their OWN connection too.
+        # PKT-28 C1 + PKT-03b: the three comms ledgers each own their OWN
+        # connection too.
         await self.agent_registry.close()
         await self.brief_ledger.close()
+        await self.message_ledger.close()
 
 
 @dataclass(frozen=True)
@@ -5436,6 +6104,12 @@ class CommsActionSpec:
     params: frozenset[str]
     required: frozenset[str] = frozenset()
     requires_registration: bool = True
+    # §B6.2: the action's OWN ``limit`` ceiling, or None for an action that takes
+    # no ``limit``. The dispatcher's below-one teaching message derives its range
+    # text from THIS rather than from a hardcoded ``_MAX_FLEET_LIMIT`` — served
+    # prose that names another action's cap contradicts the typed state it
+    # describes, which is exactly the class the derived-prose law exists to kill.
+    limit_cap: int | None = None
 
 
 # The introspectable dispatch table AppContext.comms() dispatches through and
@@ -5471,6 +6145,25 @@ _COMMS_ACTIONS: dict[str, CommsActionSpec] = {
     _COMMS_ACTION_FLEET: CommsActionSpec(
         AppContext._comms_fleet,
         params=frozenset({"limit"}),
+        limit_cap=_MAX_FLEET_LIMIT,
+    ),
+    _COMMS_ACTION_SEND: CommsActionSpec(
+        AppContext._comms_send,
+        params=frozenset({"to", "body", "grade", "thread", "task_id", "refs", "set_status"}),
+        # ``grade`` is REQUIRED: a defaulted grade is a silent policy decision —
+        # every message would become a signal (never ack-tracked) or every one a
+        # directive (ack-nagging on trivia).
+        required=frozenset({"body", "grade"}),
+    ),
+    _COMMS_ACTION_DRAIN: CommsActionSpec(
+        AppContext._comms_drain,
+        params=frozenset({"limit", "peek"}),
+        limit_cap=_MAX_DRAIN_LIMIT,
+    ),
+    _COMMS_ACTION_ACK: CommsActionSpec(
+        AppContext._comms_ack,
+        params=frozenset({"seqs", "note"}),
+        required=frozenset({"seqs"}),
     ),
 }
 
@@ -5953,6 +6646,19 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         )
         await brief_ledger.ensure_ready()
         write_stack_readied.append(brief_ledger)
+        # PKT-03b: the message ledger — the third comms ledger over the same
+        # unified database, constructed EAGERLY exactly like its two siblings.
+        # ``ensure_ready`` is what applies the message/to slice's DDL, which is
+        # why nothing in the deployed server carried it until this packet.
+        message_ledger = MessageLedger(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+        )
+        await message_ledger.ensure_ready()
+        write_stack_readied.append(message_ledger)
         # Replay the durable ledger into the backend ONCE at boot (FP-06): the
         # first boot re-embeds the seeded rows, a second over an in-sync store is a
         # pure no-op (zero document embeds — the divergence guard). Inside the ready
@@ -6088,6 +6794,7 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         task_ledger=task_ledger,
         agent_registry=agent_registry,
         brief_ledger=brief_ledger,
+        message_ledger=message_ledger,
         calibration_engine=calibration_engine,
     )
 
@@ -6600,6 +7307,138 @@ class _ProcessLifespanGuard:
             await client.close()
 
 
+# The declared-identity keys the trace seam harvests, and the transport header
+# it correlates on. A KEY rule, deliberately — never a tool-name rule: no tool
+# enumeration exists to go stale, so any current or FUTURE tool that declares
+# ``agent=`` is captured and one that declares none is honestly NONE. The
+# heterogeneous ledger-actor params (``owner``/``actor``/``created_by``) are NOT
+# harvested: they name ledger actors, not comms-registered agents, and mixing
+# two identity vocabularies in one column is the same dishonesty as overloading
+# ``session`` with a transport id.
+_TRACE_DECLARED_KEYS: tuple[str, ...] = ("agent", "session", "action")
+_TRACE_TRANSPORT_SESSION_HEADER = "mcp-session-id"
+
+
+class TracingFastMCP(FastMCP):
+    """A ``FastMCP`` whose ``call_tool`` records ONE trace row per dispatch.
+
+    THE SEAM, and why it is here rather than in ~20 tool wrappers: ``mcp``
+    exposes no middleware or hook API, and the standalone ``fastmcp`` package
+    that does is a server-wide dependency swap far beyond this change. So the
+    package demonstrably does not do the job and the gap is hand-rolled at its
+    MINIMUM — one method, delegating to ``super()``. ``_setup_handlers``
+    registers the BOUND ``self.call_tool`` with the lowlevel server, so
+    overriding the method puts the emission on the WIRE path by construction:
+    every tool — built-in, extension-registered, and any registered later —
+    passes through this one funnel. Per-tool emission would be ~20 forgettable
+    obligations, invisible for any tool nobody remembered to wrap.
+
+    THE FAILURE POSTURE, ruled: the tool call's outcome ALWAYS wins. A
+    trace-write failure is logged loudly server-side and NEVER surfaces to the
+    caller, because failing a served call to save its telemetry would couple the
+    entire tool surface to an observability row. That is a NARROW carve-out from
+    the write-paths-fail-loud law, which governs durable lore DATA where silent
+    loss is data loss; a trace row is telemetry ABOUT a call.
+
+    THE ``ok`` LATCH: ``ok`` starts False and is latched True only after
+    ``super().call_tool`` RETURNS — there is no ``except`` arm at all. An
+    ``except Exception`` flag would be a failure-class NAME-LIST, and
+    ``CancelledError`` (a ``BaseException``) is the door it misses; a timed-out
+    drain counted as a performed one would corrupt the very numerator this
+    instrument exists to produce. The write sits in ``finally``, which is
+    LOAD-BEARING and not style: an awaited write there COMPLETES when the
+    surrounding task is cancelled, so the struggling-session population is
+    recorded rather than silently dropped.
+    """
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any]
+    ) -> Sequence[ContentBlock] | dict[str, Any]:
+        """Dispatch ``name`` through ``super()``, then record exactly one trace row."""
+        started = time.perf_counter()
+        ok = False
+        try:
+            result = await super().call_tool(name, arguments)
+            ok = True
+            return result
+        finally:
+            latency_ms = (time.perf_counter() - started) * 1000
+            try:
+                await self._record_tool_trace(
+                    tool=name, arguments=arguments, latency_ms=latency_ms, ok=ok
+                )
+            except Exception:
+                # LOUD where it can be — the server log — and invisible to the
+                # caller. A silent failure plus a flatlined traces section is a
+                # dead instrument with nothing to diagnose from.
+                logger.exception("trace.emit.failed", extra={"tool": name})
+
+    async def _record_tool_trace(
+        self, *, tool: str, arguments: dict[str, Any], latency_ms: float, ok: bool
+    ) -> None:
+        """Write ONE trace row for a dispatch, or do nothing if no store is reachable.
+
+        Identity is DECLARED or absent — never inferred. There is no
+        session-sticky attribution and no "probably the same agent as the last
+        call": a guessed identity in a measurement instrument poisons the curve
+        it exists to produce, invisibly, and no aggregate can later tell a guess
+        from a declaration. A value is recorded only if it IS a ``str``, so a
+        future tool's unrelated integer parameter cannot mint an identity.
+
+        The ``ordinal`` is NOT passed: it is minted server-side inside the write
+        from the shared native sequence. The transport correlator is MEASURED,
+        never declared, and is a CORRELATOR rather than an identity.
+        """
+        try:
+            request_context = request_ctx.get()
+        except LookupError:
+            # No request context (an in-process call, or a transport that never
+            # set one): there is no store to write through, and telemetry is
+            # never a gate on the served surface.
+            return
+        app_context = getattr(request_context, "lifespan_context", None)
+        store = getattr(app_context, "write_store", None)
+        if store is None:
+            return
+        declared = {
+            key: value
+            for key, value in ((key, arguments.get(key)) for key in _TRACE_DECLARED_KEYS)
+            if isinstance(value, str)
+        }
+        request = getattr(request_context, "request", None)
+        headers = getattr(request, "headers", None)
+        transport_session = (
+            headers.get(_TRACE_TRANSPORT_SESSION_HEADER) if headers is not None else None
+        )
+        await store.record_trace(
+            tool=tool,
+            params_hash=_trace_params_hash(arguments),
+            latency_ms=latency_ms,
+            agent=declared.get("agent"),
+            session=declared.get("session"),
+            action=declared.get("action"),
+            transport_session=transport_session,
+            ok=ok,
+        )
+
+
+def _trace_params_hash(arguments: dict[str, Any]) -> str:
+    """The trace row's parameter digest — the ONE recipe, named once.
+
+    ``sha256`` over ``json.dumps(arguments, sort_keys=True, default=str)``, full
+    lowercase hex. ``sort_keys`` makes two dicts differing only in insertion
+    order describe the SAME call; ``default=str`` keeps an unserialisable value
+    from taking the dispatch down. The digest is the ONLY thing that crosses
+    from arguments into the row, so it is also the whole privacy boundary:
+    bodies, briefs and queries pass through it and nowhere else. An EMPTY
+    argument dict digests to a real value, never a sentinel — four registered
+    tools take no arguments, and an empty digest would collapse all of them into
+    one bucket for every per-call aggregate.
+    """
+    payload = json.dumps(arguments, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def build_mcp_server(server: LoreServer) -> Any:
     """Construct the FastMCP server: lifespan + the built-in tools + extension tools.
 
@@ -6679,7 +7518,11 @@ def build_mcp_server(server: LoreServer) -> Any:
         finally:
             await guard.release()
 
-    mcp: FastMCP = FastMCP(
+    # The ONE construction site, and it MUST be the tracing subclass: a plain
+    # FastMCP here traces nothing while every emission pin driven directly
+    # against the subclass still passes, and the served trace count stays 0
+    # forever with every gate green.
+    mcp: FastMCP = TracingFastMCP(
         name=f"lore-{config.project.slug}",
         instructions=_INSTRUCTIONS,
         lifespan=_lifespan,
@@ -7379,7 +8222,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "fenced body + coverage, 'brief_publish' a new version (race-safe max+1 "
             "mint), 'brief_ack' a specific version (legal even if not head — the "
             "ledger records what you actually read), or 'fleet' to list the "
-            "registered fleet (optionally session-scoped). Every agent MUST "
+            "registered fleet (optionally session-scoped). The durable message "
+            "surface is 'send' (deliver to named teammates, or broadcast to your "
+            "whole session), 'drain' (read your inbox and mark what it serves) and "
+            "'ack' (discharge the directives your drain named). Every agent MUST "
             "'register' before any other action; every action re-touches the "
             "caller's heartbeat. Returns a rendered summary, never a raw store dump."
         ),
@@ -7395,7 +8241,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                     "register required), 'heartbeat' (status/note touch), "
                     "'brief_get' (read a standing instruction), 'brief_publish' "
                     "(mint a new version), 'brief_ack' (record you read a version), "
-                    "or 'fleet' (list registered agents)."
+                    "'fleet' (list registered agents), 'send' (deliver a durable "
+                    "message), 'drain' (read your inbox) or 'ack' (discharge a "
+                    "directive you were sent)."
                 )
             ),
         ],
@@ -7449,7 +8297,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             Field(
                 description=(
                     "For 'register': the fleet task id (lore_tasks) this agent is "
-                    "currently working. Optional, mutable on re-register."
+                    "currently working — optional, mutable on re-register. For "
+                    "'send': the task this message concerns."
                 )
             ),
         ] = None,
@@ -7459,7 +8308,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 description=(
                     "For 'heartbeat': a free-text note recorded as the agent's "
                     "last_note (visible on 'fleet'). For 'brief_publish': an "
-                    "optional free-text publish note recorded on the brief version."
+                    "optional free-text publish note recorded on the brief version. "
+                    "For 'ack': a note recorded on exactly the edges this call's "
+                    "stamp actually won."
                 )
             ),
         ] = None,
@@ -7488,8 +8339,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str | None,
             Field(
                 description=(
-                    "For 'brief_publish' ONLY: the new version's full text, stored "
-                    "and served verbatim (fenced) — REQUIRED, non-blank."
+                    "For 'brief_publish': the new version's full text, stored and "
+                    "served verbatim (fenced) — REQUIRED, non-blank. For 'send': the "
+                    "message body — REQUIRED, non-blank, capped at "
+                    f"{_MESSAGE_BODY_MAX_CHARS} characters (over-cap is REJECTED, never "
+                    "truncated — put the content in a report and name it in refs)."
                 )
             ),
         ] = None,
@@ -7507,8 +8361,83 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             Field(
                 ge=_MIN_COUNT,
                 description=(
-                    f"For 'fleet' ONLY: the max rows to render (default "
-                    f"comms.fleet_limit, min {_MIN_COUNT}, clamped to {_MAX_FLEET_LIMIT})."
+                    f"For 'fleet' and 'drain': the max rows to render (defaults from "
+                    f"config — comms.fleet_limit / comms.drain_limit; min {_MIN_COUNT}); "
+                    f"a limit above the action's cap CLAMPS rather than raising "
+                    f"(fleet {_MAX_FLEET_LIMIT}, drain {_MAX_DRAIN_LIMIT})."
+                )
+            ),
+        ] = None,
+        to: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "For 'send': the recipient agent names — omit it (or pass []) to "
+                    "broadcast to every non-retired teammate in your session, excluding "
+                    "you. Every name is resolved in YOUR session only, and a rejected "
+                    "send writes nothing at all."
+                )
+            ),
+        ] = None,
+        grade: Annotated[
+            str | None,
+            Field(
+                description=(
+                    f"For 'send': REQUIRED, one of {sorted(_MESSAGE_GRADES)} — "
+                    f"a 'directive' must be acked; a 'signal' need not be, so the "
+                    f"choice is what decides whether the recipient owes you an ack."
+                )
+            ),
+        ] = None,
+        thread: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'send': the conversation thread (defaults to your session). "
+                    "Use 'q:<topic>' for a question — one thread carries ONE "
+                    "conversational debt, so separate questions take separate threads."
+                )
+            ),
+        ] = None,
+        refs: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "For 'send': POINTERS this message references (report paths, "
+                    "finding ids, task ids). Bodies are capped; the content lives in "
+                    "what you name here."
+                )
+            ),
+        ] = None,
+        set_status: Annotated[
+            str | None,
+            Field(
+                description=(
+                    f"For 'send': pass "
+                    f"{_COMMS_SET_STATUS_INPUT_REQUIRED!r} to ask a question — it "
+                    f"marks this send as a question; it does NOT change your status "
+                    f"row. Any other value is refused rather than silently ignored, "
+                    f"because a typo would register no debt at all."
+                )
+            ),
+        ] = None,
+        seqs: Annotated[
+            list[int] | None,
+            Field(
+                description=(
+                    "For 'ack': REQUIRED — the message seqs to discharge, exactly as "
+                    "the ACK REQUIRED trailer of your own drain names them. Every "
+                    "requested seq is reported back with its own outcome."
+                )
+            ),
+        ] = None,
+        peek: Annotated[
+            bool | None,
+            Field(
+                description=(
+                    "For 'drain': read without stamping: what you peek stays unread "
+                    "and WILL be served again by your next drain. Omit it to mark the "
+                    "served rows seen."
                 )
             ),
         ] = None,
@@ -7527,6 +8456,13 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             body=body,
             version=version,
             limit=limit,
+            to=to,
+            grade=grade,
+            thread=thread,
+            refs=refs,
+            set_status=set_status,
+            seqs=seqs,
+            peek=peek,
         )
 
     @mcp.tool(

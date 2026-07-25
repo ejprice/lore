@@ -451,6 +451,11 @@ class SearchConfig(_StrictModel):
 DEFAULT_COMMS_STALE_HEARTBEAT_S: int = 600
 DEFAULT_COMMS_FLEET_LIMIT: int = 20
 DEFAULT_COMMS_BRIEF_WARN_CHARS: int = 4000
+# Packet 03b (§B6.1): the default ``action=drain`` window, the approved design's
+# own drain-row value. The CONSTANT is the tunable — every derived surface (the
+# tool schema's ``limit`` description, the dispatcher's default) reads it, so a
+# re-tune is one edit here and never a number written twice.
+DEFAULT_COMMS_DRAIN_LIMIT: int = 20
 
 
 class CommsConfig(_StrictModel):
@@ -470,11 +475,16 @@ class CommsConfig(_StrictModel):
         brief_body_warn_chars: The body length, in characters, past which
             ``action=brief_publish`` appends a size-warning line (design doc
             §5.2) — a warning only, never a rejection.
+        drain_limit: The default number of inbox rows ``action=drain`` serves
+            before a counted elision notice (packet 03b §B6.1). Like
+            ``fleet_limit`` it is CONFIG, never a literal buried in the handler,
+            and it is clamped by the action's own ``limit_cap``.
     """
 
     stale_heartbeat_s: PositiveInt = DEFAULT_COMMS_STALE_HEARTBEAT_S
     fleet_limit: PositiveInt = DEFAULT_COMMS_FLEET_LIMIT
     brief_body_warn_chars: PositiveInt = DEFAULT_COMMS_BRIEF_WARN_CHARS
+    drain_limit: PositiveInt = DEFAULT_COMMS_DRAIN_LIMIT
 
 
 # The default model the token-calibration yardstick probes run against.
