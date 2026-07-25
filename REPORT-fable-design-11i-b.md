@@ -327,6 +327,77 @@ assumed).
 
 ---
 
+## Follow-up 3 (2026-07-25, from `lead-11i-b`) — three false constraints; Addendum F-r2 drafted and committed
+
+**Deliverable:** `docs/design/2026-07-25-floor-calibration-addendum-F-r2.md`, committed `105f09d`
++ `4cfb23e` (see deviation below). Supersedes-not-edits Addendum F @ `e109e91`; DRAFT banner;
+operator rules.
+
+**Inputs this sitting:** `CONTRACT-FREEZE-DECISIONS.md` §0.4 @ `2a2de41` and §0.5 @ `bd81906` ·
+the probe's FINAL report @ `f66b980` (§4b landed — the detection-power table is new and material) ·
+two host-side measurements of my own (git 2.55.0, scratch repo in `/tmp/wt-probe`): the
+`--relative-paths` flow writes relative gitdirs BOTH directions **and silently bumps the main repo
+to `core.repositoryformatversion=1` + `extensions.relativeworktrees=true`** — the real version gate
+nobody had named.
+
+**The six asked-for deliverables, where they landed:**
+1. **Sweep** → F-r2 §R1: full section table. Beyond the lead's three finds, four more constraint
+   touches found: F8-C1's pasteable words were library-bound (principle survives, restated
+   numpy-neutral) · F8-C7's git half was F10's (re-homed) · F11's D1-falsity entry re-scoped to
+   the pure-Python path (re-measure before citing) · F12.1 sharpened toward `numpy.percentile`
+   iff equivalence verifies. Null results stated for F1/F3/F4/F5/F6/F7 and eleven of fourteen F8
+   items — and one preservation made explicit: **§5's quiescence stands for the TRIGGER** (D3,
+   settled-index gate, `invalidated_remeasuring` untouched; only the lease gets clocks).
+2. **Lease redesign** → §R2: TTL + heartbeat + fencing on a `StoreLease` primitive with
+   **store-clock authority** (every expiry comparison engine-side — N pods, one clock), k8s-Lease
+   semantics without the k8s API (works under podman too), three discriminating fixtures + the
+   standing ≥8-way/20-consecutive laws. Independent judgement on the lead's four bullets: all four
+   AGREE — and one finding beyond them: **both** of my clock-free reclamation legs were unsafe at
+   N>1, and leg (b) was WORSE than boot-reclaim (a process-local liveness inference elevated to a
+   global claim → steady-state mutual theft, not just a rolling-update edge).
+3. **F9 redone** → §R3: scipy-first with the decisive F9 fact preserved (the COST lives in the
+   STATISTIC, not the shell — scipy calling pure-Python `choose_cosine_floor` is the same O(B·N²)),
+   numpy candidate-rate evaluator gated by the surviving byte-exact equality control (achievable:
+   counting+selection, no float accumulation), adopted floors always computed by the real
+   `choose_cosine_floor`, crisis numbers explicitly not carried (re-measure), `--max-embeds`
+   survives (its driver was TEI cost, not CPU).
+4. **Worktree determination attacked** → §R4 + §R8: my measurement initially concluded "image git
+   bump MANDATORY for the relative route" — then the lead's §0.5 crossed in flight with M1/M3
+   (mount-topology fix; no bump needed). §R8 reconciles: **my measurement stands, its conclusion
+   inverts** — the v1+extension poisoning now argues AGAINST the relative route existing at all
+   (it would brick the shipped 2.47.3 repo-wide); two independent measurements retire that route
+   from opposite sides. M3's lore-owned-root architecture endorsed with two named residuals
+   (`safe.directory` as explicit image state — k8s uid-mismatch is the default; RWX-PVC git
+   locking, bounded by R5's leader election). R4.5 stands: the index side routes through packets
+   17/23's existing overlay design, and the N×-embedding-cost warning holds.
+5. **Maintenance-loop extraction** → §R5: `StoreLease` in 11-i-a (shared primitive, first consumer
+   the R2 verb) · leader-elected `MaintenanceLoop` helper in 11-ii at B7.3 (RAISED-8's deferral,
+   upgraded in content, unchanged in timing — 11-i has no loop consumer) · CalibrationEngine
+   re-homes in the same packet · index watcher re-home as its own later packet. Interface
+   specifiable now; no new packet needed for 11-i's path.
+6. **The thirteen decisions** → §R6: **10 STAND** (one extended: F2 gains the measured
+   sensitivity-floor field from the final §4b — and the K1 fallback trigger did NOT fire),
+   **3 VOID-and-replaced** (F9→R3, F10→R4/R6.12′, lease→R2), **5 NEW** (numpy adoption record ·
+   git-bump disposition — re-ruled optional by §R8 · worktree-layout inventory · lease tunables ·
+   the R5 plan).
+
+**Deviations, disclosed:** (1) the commission said ONE commit; there are two (`105f09d` +
+`4cfb23e`) because §0.5 landed between my R4 being written and committed — leaving the committed
+file asserting "bump MANDATORY" against the lead's own measurements would have been the exact
+propagation class §0.4 documents, so the reconciliation went into the durable file as a labeled
+crossing note, not just this report. (2) `/tmp/wt-probe` (my scratch git probe) could not be
+removed — the sandbox denied the `rm`; it is inert, uncited as an address, and its findings are
+reproduced in §R4.1/§R8 with the commands re-derivable in one `git init`. (3) This report's
+FU3 append is uncommitted, as before — the lead's to commit.
+
+**Not softened, per the explicit instruction:** F1, F3–F7, and eleven of fourteen F8 adjudications
+survive verbatim — the adversary's measured wrong builds are constraint-independent and remain
+exactly as found. My own Q2 (both options) is superseded by §R2 and says so here rather than
+quietly: the fencing reframe survives; the clock-free machinery was designed to satisfy a
+prohibition that never existed.
+
+---
+
 ## Standing by
 
 Follow-ups via SendMessage; answers appended above, stamped. — `fable-design-11i-b`, 2026-07-25
