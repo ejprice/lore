@@ -679,34 +679,138 @@ class TestAbsentSurfacesAreLoud:
         assert "none absent" in text
 
 
+def _synthetic_run(*, passed: bool, index: int = 1, served: str = "fake") -> cce.RunOutcome:
+    """A RunOutcome with one task's verdict and a chosen answering model."""
+    task = cce.build_battery(SPEC)[0]
+    result = cce.GradeResult(passed, "synthetic")
+    return cce.RunOutcome(
+        model="fake",
+        run_index=index,
+        outcomes=[cce.TaskOutcome(task, "raw", {}, result)],
+        usage=cce.Usage(),
+        served_models=(served,),
+    )
+
+
 class TestGateArithmetic:
     def _run(self, *, passed: bool, index: int = 1) -> cce.RunOutcome:
-        task = cce.build_battery(SPEC)[0]
-        result = cce.GradeResult(passed, "synthetic")
-        return cce.RunOutcome(
-            model="fake",
-            run_index=index,
-            outcomes=[cce.TaskOutcome(task, "raw", {}, result)],
-            usage=cce.Usage(),
-        )
+        return _synthetic_run(passed=passed, index=index)
 
     def test_three_clean_runs_pass(self) -> None:
         runs = [self._run(passed=True, index=i) for i in (1, 2, 3)]
-        assert cce.gate_passed(runs)
+        verdict = cce.evaluate_gate(runs)
+        assert verdict.satisfied
+        assert verdict.counted == 3
+        assert verdict.exit_code == cce.EXIT_OK
 
     def test_one_green_run_does_not_pass_the_gate(self) -> None:
         # §C3: one green run proves nothing about a stochastic instrument.
-        assert not cce.gate_passed([self._run(passed=True)])
+        verdict = cce.evaluate_gate([self._run(passed=True)])
+        assert not verdict.satisfied
+        # Not a surface failure — the surface was never measured enough times.
+        assert not verdict.surface_failed
+        assert verdict.exit_code == cce.EXIT_GATE_INVALID
 
-    def test_two_green_and_one_red_fails(self) -> None:
+    def test_two_green_and_one_red_is_a_SURFACE_failure(self) -> None:
         runs = [self._run(passed=True, index=1), self._run(passed=False, index=2),
                 self._run(passed=True, index=3)]
-        assert not cce.gate_passed(runs)
+        verdict = cce.evaluate_gate(runs)
+        assert not verdict.satisfied
+        assert verdict.surface_failed
+        assert verdict.exit_code == cce.EXIT_SURFACE_FAIL
 
     def test_a_red_run_in_any_position_fails(self) -> None:
         for red in range(3):
             runs = [self._run(passed=(i != red), index=i + 1) for i in range(3)]
-            assert not cce.gate_passed(runs)
+            assert not cce.evaluate_gate(runs).satisfied
+
+
+class TestADriftedRunIsNotAGatingRun:
+    """The lead's ruling, made mechanical (2026-07-25).
+
+    §C3 defines the gate as the mandatory keys ON THE PINNED CONSUMER MODEL. A run
+    answered by some other model has not met that definition — it is neither a pass
+    nor a failure, it is not a gating run. The hazard being closed is a drifted run
+    passing quietly and later being cited as "the battery passed on the pinned floor
+    model"; the "answered by" column makes drift visible, refusing to COUNT it makes
+    that citation impossible.
+    """
+
+    def _run(self, *, passed: bool, index: int, served: str) -> cce.RunOutcome:
+        return _synthetic_run(passed=passed, index=index, served=served)
+
+    def test_three_green_runs_one_of_them_drifted_do_NOT_satisfy_the_gate(self) -> None:
+        # THE POSITIVE CONTROL for the whole ruling.
+        runs = [
+            self._run(passed=True, index=1, served="fake"),
+            self._run(passed=True, index=2, served="fake-but-repointed"),
+            self._run(passed=True, index=3, served="fake"),
+        ]
+        verdict = cce.evaluate_gate(runs)
+        assert not verdict.satisfied
+        assert verdict.counted == 2, "the drifted run must not count toward the three"
+        assert not verdict.surface_failed, "drift is not a surface failure"
+        assert verdict.exit_code == cce.EXIT_GATE_INVALID
+        assert any("NOT counted toward the gate" in reason for reason in verdict.reasons)
+
+    def test_three_green_undrifted_runs_DO_satisfy_the_gate(self) -> None:
+        # The control's control: the same shape, minus the drift, must pass — or
+        # the test above would be satisfied by a gate that never passes anything.
+        runs = [self._run(passed=True, index=i, served="fake") for i in (1, 2, 3)]
+        assert cce.evaluate_gate(runs).satisfied
+
+    def test_the_refusal_reason_names_the_run_and_both_models(self) -> None:
+        runs = [self._run(passed=True, index=2, served="fake-but-repointed")]
+        reason = cce.evaluate_gate(runs, required=1).reasons[0]
+        assert "run 2" in reason
+        assert "fake-but-repointed" in reason
+        assert "'fake'" in reason
+
+    def test_a_drifted_run_does_not_reset_the_others(self) -> None:
+        # A drifted run says nothing about the surface in EITHER direction, so it
+        # neither extends nor breaks the streak — four runs with one drifted still
+        # give three valid ones.
+        runs = [
+            self._run(passed=True, index=1, served="fake"),
+            self._run(passed=True, index=2, served="fake-but-repointed"),
+            self._run(passed=True, index=3, served="fake"),
+            self._run(passed=True, index=4, served="fake"),
+        ]
+        verdict = cce.evaluate_gate(runs)
+        assert verdict.satisfied
+        assert verdict.counted == 3
+
+    def test_a_drifted_FAILING_run_is_not_blamed_on_the_surface(self) -> None:
+        # We cannot attribute a failure to the surface when a different model
+        # answered — so it is excluded, and the gate is invalid rather than red.
+        runs = [
+            self._run(passed=True, index=1, served="fake"),
+            self._run(passed=True, index=2, served="fake"),
+            self._run(passed=False, index=3, served="fake-but-repointed"),
+        ]
+        verdict = cce.evaluate_gate(runs)
+        assert not verdict.satisfied
+        assert not verdict.surface_failed
+        assert verdict.exit_code == cce.EXIT_GATE_INVALID
+
+    def test_the_exit_codes_are_three_distinct_values(self) -> None:
+        assert len({cce.EXIT_OK, cce.EXIT_SURFACE_FAIL, cce.EXIT_NO_KEY,
+                    cce.EXIT_GATE_INVALID}) == 4
+
+    def test_the_transcript_states_the_gate_verdict_and_why(self) -> None:
+        runs = [
+            _synthetic_run(passed=True, index=1, served="fake"),
+            _synthetic_run(passed=True, index=2, served="fake-but-repointed"),
+            _synthetic_run(passed=True, index=3, served="fake"),
+        ]
+        verdict = cce.evaluate_gate(runs)
+        text = cce.TranscriptWriter(surfaces=_surfaces(), spec=SPEC).render(
+            mode="gate", runs=runs, started_at=datetime.now(UTC), verdict=verdict
+        )
+        assert "GATE NOT SATISFIED" in text
+        assert "only 2/3 runs were valid gating runs" in text
+        assert "NOT counted toward the gate" in text
+        assert "| no — model drift |" in text
 
 
 class TestUsageAndCost:
@@ -1014,7 +1118,7 @@ class TestTranscript:
         )
         assert "provenance-line" in text
         assert cce.FLOOR_MODEL in text
-        assert "| `fake` | _not reported_ | 1 | PASS |" in text
+        assert "| `fake` | _not reported_ | 1 | PASS | yes |" in text
         assert "task 15 — routing-verdict (PASS)" in text
         assert "served surfaces (verbatim, as the consumer saw them)" in text
 
@@ -1029,7 +1133,7 @@ class TestTranscript:
         text = cce.TranscriptWriter(surfaces=surfaces, spec=SPEC).render(
             mode="gate", runs=[run], started_at=datetime.now(UTC)
         )
-        assert "| `fake` | _not reported_ | 2 | FAIL | #13 |" in text
+        assert "| `fake` | _not reported_ | 2 | FAIL | yes | #13 |" in text
 
 
 # --------------------------------------------------------------------------- #

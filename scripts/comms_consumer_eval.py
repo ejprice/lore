@@ -42,6 +42,19 @@ GATE SHAPE (§C3): 100% of the battery's mandatory keys, on the pinned floor mod
 packet exit the FULL population runs once and ANY keyed failure by ANY member is an
 adjudicated finding, never a waived receipt (FK-5).
 
+**A run the API answered on a DIFFERENT model is not a failed run — it is not a
+gating run at all**, and it does not count toward the required three (lead ruling,
+2026-07-25).  §C3 defines the gate as the mandatory keys *on the pinned consumer
+model*; a run some other model answered has not met that definition.  The hazard is
+not a drifted run failing loudly, it is a drifted run passing quietly and being cited
+later as *"the battery passed on the pinned floor model"* — a false sentence nothing
+downstream could catch.  Hence three distinct exit codes, so a caller can tell WHY:
+
+    0  the gate was satisfied
+    1  the SURFACE failed — a valid run missed a mandatory key (the real verdict)
+    2  no ANTHROPIC_API_KEY
+    3  the gate was never valid — too few runs answered by the pinned model
+
 WHAT THIS DOES NOT CLAIM (§C4): first-contact comprehensibility and first-contact TRUST
 on the pinned population — not long-horizon protocol adherence (packet 06's drill) and
 not the decay curve (this packet's T-series telemetry).
@@ -2069,14 +2082,97 @@ class BatteryRunner:
         )
 
 
-def gate_passed(runs: Sequence[RunOutcome], *, required: int = GATE_CONSECUTIVE_RUNS) -> bool:
-    """§C3: the gate needs ``required`` runs and every one of them clean.
+#: Exit codes — a caller must be able to tell WHY, not just that something failed.
+EXIT_OK = 0
+EXIT_SURFACE_FAIL = 1
+EXIT_NO_KEY = 2
+EXIT_GATE_INVALID = 3
 
-    Not "the last N were clean" — the instrument runs exactly the gate's runs, so a
-    single red run is a red gate.  One green run has never proved anything about a
-    stochastic instrument in this repo.
+
+@dataclass(frozen=True)
+class GateVerdict:
+    """Whether §C3's gate was satisfied, and — when not — plainly why."""
+
+    satisfied: bool
+    counted: int
+    required: int
+    surface_failed: bool
+    reasons: tuple[str, ...]
+
+    @property
+    def exit_code(self) -> int:
+        """0 satisfied · 1 the SURFACE failed · 3 the gate was never valid."""
+        if self.satisfied:
+            return EXIT_OK
+        return EXIT_SURFACE_FAIL if self.surface_failed else EXIT_GATE_INVALID
+
+    @property
+    def headline(self) -> str:
+        """The one-line verdict a reader (or a log grep) sees."""
+        if self.satisfied:
+            return f"PASS — {self.counted}/{self.required} valid runs, all keys green"
+        if self.surface_failed:
+            return f"FAIL — the SURFACE failed on {self.counted} valid run(s)"
+        return (
+            f"GATE NOT SATISFIED — only {self.counted}/{self.required} runs were valid "
+            f"gating runs (no surface failure was measured)"
+        )
+
+
+def evaluate_gate(
+    runs: Sequence[RunOutcome], *, required: int = GATE_CONSECUTIVE_RUNS
+) -> GateVerdict:
+    """§C3's gate: ``required`` clean runs **answered by the pinned model**.
+
+    Three verdicts, deliberately distinct — conflating them is how an instrument
+    starts lying about what it measured:
+
+    * **satisfied** — enough VALID runs, every one of them clean.
+    * **surface FAIL** — a valid run failed a mandatory key. This is the verdict the
+      instrument exists to produce, and it stays unpolluted by anything else.
+    * **gate never valid** — not enough valid runs. A run the API answered on a
+      model other than the one requested **does not count toward the required
+      runs**: §C3 defines the gate as 100% of the mandatory keys *on the pinned
+      consumer model*, so a run some other model answered has not met that
+      definition. It is not a failed run; it is not a gating run.
+
+    Why refusing to count is the mechanism and the "answered by" column is not:
+    the hazard is never a drifted run failing loudly — it is a drifted run passing
+    quietly and being cited afterwards as *"the battery passed on the pinned floor
+    model"*. That sentence would be false and nothing downstream could tell. The
+    column makes drift visible; refusing to count it makes that citation impossible.
+
+    A drifted run does not RESET the count either — it tells you nothing about the
+    surface in any direction, so it neither extends nor breaks the streak.
     """
-    return len(runs) >= required and all(run.passed for run in runs)
+    countable: list[RunOutcome] = []
+    reasons: list[str] = []
+    for run in runs:
+        if run.drift_notice is not None:
+            answered = ", ".join(run.served_models) or "an unreported model"
+            reasons.append(
+                f"run {run.run_index} was answered by {answered}, not the pinned "
+                f"{run.model!r} — NOT counted toward the gate"
+            )
+            continue
+        countable.append(run)
+    for run in countable:
+        if not run.passed:
+            failures = ", ".join(f"#{item.task.number}" for item in run.mandatory_failures)
+            reasons.append(f"run {run.run_index} FAILED on the surface: {failures}")
+    surface_failed = any(not run.passed for run in countable)
+    if len(countable) < required:
+        reasons.append(
+            f"only {len(countable)} of the required {required} runs were valid gating "
+            f"runs — the pinned model must ANSWER, not merely be requested"
+        )
+    return GateVerdict(
+        satisfied=len(countable) >= required and not surface_failed,
+        counted=len(countable),
+        required=required,
+        surface_failed=surface_failed,
+        reasons=tuple(reasons),
+    )
 
 
 class TranscriptWriter:
@@ -2087,7 +2183,14 @@ class TranscriptWriter:
         self._surfaces = surfaces
         self._spec = spec
 
-    def render(self, *, mode: str, runs: Sequence[RunOutcome], started_at: datetime) -> str:
+    def render(
+        self,
+        *,
+        mode: str,
+        runs: Sequence[RunOutcome],
+        started_at: datetime,
+        verdict: GateVerdict | None = None,
+    ) -> str:
         """The full markdown transcript."""
         lines: list[str] = [
             "# packet 03b — client-acceptance battery transcript",
@@ -2118,19 +2221,35 @@ class TranscriptWriter:
             "",
             "## verdicts",
             "",
-            "| requested model | answered by | run | passed | mandatory failures | est. USD |",
-            "|---|---|---|---|---|---|",
+            "| requested model | answered by | run | keys | counted toward gate | "
+            "mandatory failures | est. USD |",
+            "|---|---|---|---|---|---|---|",
         ])
         for run in runs:
             failures = ", ".join(f"#{item.task.number}" for item in run.mandatory_failures) or "-"
             answered = ", ".join(f"`{name}`" for name in run.served_models) or "_not reported_"
+            counted = "no — model drift" if run.drift_notice else "yes"
             lines.append(
                 f"| `{run.model}` | {answered} | {run.run_index} | "
-                f"{'PASS' if run.passed else 'FAIL'} | {failures} | "
+                f"{'PASS' if run.passed else 'FAIL'} | {counted} | {failures} | "
                 f"${run.usage.usd(run.model):.4f} |"
             )
         total_usd = sum(run.usage.usd(run.model) for run in runs)
         lines.extend(["", f"**total estimated cost: ${total_usd:.4f}**", ""])
+        if verdict is not None:
+            lines.extend([
+                "## gate verdict",
+                "",
+                f"**{verdict.headline}** (exit {verdict.exit_code})",
+                "",
+                f"- valid gating runs counted: {verdict.counted} of {verdict.required} required",
+                "",
+            ])
+            if verdict.reasons:
+                lines.append("Why:")
+                lines.append("")
+                lines.extend(f"- {reason}" for reason in verdict.reasons)
+                lines.append("")
         for run in runs:
             lines.extend([
                 f"## run: `{run.model}` #{run.run_index}",
@@ -2242,14 +2361,14 @@ async def _amain(argv: Sequence[str] | None = None) -> int:
 
     if args.dry_run:
         _print_dry_run(surfaces, battery)
-        return 0
+        return EXIT_OK
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print(
             "ANTHROPIC_API_KEY is unset; export it from /home/ejprice/docker/mcp/.env",
             file=sys.stderr,
         )
-        return 2
+        return EXIT_NO_KEY
 
     plan = build_plan(mode=args.mode, model=args.model, runs=args.runs)
     runner = BatteryRunner(surfaces=surfaces, battery=battery, graders=graders)
@@ -2268,8 +2387,13 @@ async def _amain(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
+    # In gate mode the bar is the ruled one (3 valid runs). In the other modes each
+    # planned run is itself the measurement, so every one of them must be valid.
+    required = args.runs if args.mode == "gate" else len(plan)
+    verdict = evaluate_gate(runs, required=required)
+
     transcript = TranscriptWriter(surfaces=surfaces).render(
-        mode=args.mode, runs=runs, started_at=started_at
+        mode=args.mode, runs=runs, started_at=started_at, verdict=verdict
     )
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -2279,12 +2403,10 @@ async def _amain(argv: Sequence[str] | None = None) -> int:
         print(transcript)
 
     total_usd = sum(run.usage.usd(run.model) for run in runs)
-    if args.mode == "gate":
-        verdict = gate_passed(runs, required=args.runs)
-    else:
-        verdict = all(run.passed for run in runs)
-    print(f"{'PASS' if verdict else 'FAIL'} — {len(runs)} run(s), est. ${total_usd:.4f}")
-    return 0 if verdict else 1
+    for reason in verdict.reasons:
+        print(f"  {reason}", file=sys.stderr)
+    print(f"{verdict.headline} — {len(runs)} run(s), est. ${total_usd:.4f}")
+    return verdict.exit_code
 
 
 def main(argv: Sequence[str] | None = None) -> int:
