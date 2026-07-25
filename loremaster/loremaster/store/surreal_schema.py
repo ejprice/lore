@@ -113,7 +113,7 @@ ANSWERS_TO_RELATION = "answers_to"
 # placeholder has graduated to a real field-level slice —
 # ``snapshot``/``snapshot_entry``/``command`` in P5-C1b (see
 # ``_snapshot_statements`` / ``_snapshot_entry_statements`` /
-# ``_command_statements``), ``trace`` in P8a (six core + two accounting columns,
+# ``_command_statements``), ``trace`` in P8a and packet 03b (its full column set,
 # ``_trace_statements``), ``meta`` in P3 (the ``SurrealManifest`` port), and
 # ``finding`` in P8b — the FINDING ledger row (``_finding_statements``, its
 # ``finding_counter`` sibling, and :mod:`loremaster.findings`), moved forward from
@@ -622,18 +622,19 @@ _TO_IN_OUT_INDEX_FIELDS = ("in", "out")
 # drain SELECT table-scans every delivery edge in the store on every comms call.
 _TO_DRAIN_INDEX_FIELDS = ("out", "seen_at")
 
-# --- P8a ``trace`` table (lore's per-tool-invocation OBSERVABILITY row) --------
+# --- ``trace`` table (lore's per-tool-invocation OBSERVABILITY row) -----------
 #
-# ``trace`` is the row the mcp role writes async on every served tool call: six
-# core columns capturing one invocation, plus the two audited optional accounting
-# columns (:data:`TRACE_TOKEN_COST_FIELD` / :data:`TRACE_MODEL_FIELD`) landed in
-# P2. The field NAMES are public constants (not bare literals) so the store's
-# ``record_trace`` CONTENT keys and this DDL read from ONE source of truth and can
-# never drift — the same discipline :data:`CHUNK_COLUMNS` keeps for ``chunk``.
+# ``trace`` is the row the ONE tracing seam writes on EVERY served tool call
+# (packet 03b T1: a ``FastMCP`` subclass overriding ``call_tool``). The field
+# NAMES are public constants (not bare literals) so the store's ``record_trace``
+# CONTENT keys and this DDL read from ONE source of truth and can never drift —
+# the same discipline :data:`CHUNK_COLUMNS` keeps for ``chunk``.
 #
-# Aggregates over these rows surface in a LATER phase (P8d); P8a defines only the
-# table + its write path. The table carries no HNSW/FULLTEXT index — a trace is an
-# append-only observability event, never retrieved semantically.
+# The table carries no HNSW/FULLTEXT index — a trace is an append-only
+# observability event, never retrieved semantically — but it DOES carry the
+# ``(agent, ordinal)`` plain index packet 06's per-agent decay curve reads
+# (T2.1: an index on a POPULATED table BUILDS, blocking, at the first
+# ``ensure_ready`` carrying it, and this table is empty exactly once — now).
 TRACE_TOOL_FIELD = "tool"
 TRACE_PARAMS_HASH_FIELD = "params_hash"
 TRACE_HIT_COUNT_FIELD = "hit_count"
@@ -642,24 +643,68 @@ TRACE_SESSION_FIELD = "session"
 TRACE_TS_FIELD = "ts"
 TRACE_TOKEN_COST_FIELD = "token_cost"
 TRACE_MODEL_FIELD = "model"
+# Packet 03b's enrichment columns (T2). Every one is ``option<>``: the generic
+# seam cannot know a value for every tool, and the store reference's §1.4 rule
+# for a NEW field on a possibly-populated table is ``option<>`` (a required one
+# poisons every existing row and a DEFAULT does not rescue it).
+TRACE_AGENT_FIELD = "agent"
+TRACE_ACTION_FIELD = "action"
+TRACE_TRANSPORT_SESSION_FIELD = "transport_session"
+TRACE_ORDINAL_FIELD = "ordinal"
+TRACE_OK_FIELD = "ok"
+
+# The native sequence backing :data:`TRACE_ORDINAL_FIELD` (T3). ONE GLOBAL
+# sequence, not one per agent: per-agent order is derivable by filtering, while
+# the global INTERLEAVING — which a per-agent counter destroys — is exactly what
+# "drains against surrounding tool calls" needs. It rides the SHARED
+# :func:`_define_sequence` emitter rather than a hand-rolled counter row, which
+# would be a THIRD mint policy competing with ``finding_counter``/
+# ``brief_counter`` (#102's clone defect). GAPS ARE REAL (an aborted transaction
+# burns a number) — the ordinal is an ORDERING key, never a count.
+TRACE_SEQUENCE_NAME = "trace_seq"
+
+# The packet-06 read index (T2.1): filter ``agent``, order by ``ordinal``.
+# PLAIN, never UNIQUE — two rows legitimately share an agent.
+TRACE_AGENT_ORDINAL_INDEX_FIELDS = (TRACE_AGENT_FIELD, TRACE_ORDINAL_FIELD)
 
 # The ``trace`` table's fields as ``(name, type_expr, constraint)`` triples — the
 # single source of truth :func:`_trace_statements` emits one ``DEFINE FIELD`` per,
 # mirroring :data:`_TASK_FIELD_SPECS`. ``latency_ms`` is ``number`` (not ``int``)
 # so a sub-millisecond fractional latency survives intact; ``ts`` self-stamps via
 # ``DEFAULT time::now()`` — the SAME idiom ``snapshot.created_at`` /
-# ``command.created_at`` use — so the async writer never computes the ingestion
-# instant itself; ``token_cost`` / ``model`` stay ``option`` so a writer may omit
-# them and store NONE cleanly.
+# ``command.created_at`` use — so the writer never computes the ingestion instant
+# itself; ``token_cost`` / ``model`` stay ``option`` so a writer may omit them and
+# store NONE cleanly.
+#
+# ``hit_count`` and ``session`` are ``option<>`` (packet 03b T2, WIDENED from
+# ``int``/``string``): the all-tools seam cannot know a hit count for an
+# arbitrary tool — supplying ``0`` would make ``trace_aggregates`` LIE rather
+# than admit an absence — and only a call that DECLARES a fleet session has one.
+# ``agent``/``action``/``transport_session`` record what the CALL DECLARED, never
+# what the server inferred (MP9): a guessed identity in a measurement instrument
+# poisons the curve it exists to produce, invisibly.
+#
+# ``ok`` semantics, VERBATIM per the ESC-1 ruling because a boolean's meaning is
+# not guessable from its name and packet 06 filters on it: True iff the dispatch
+# RETURNED a result; False on any raise, cancellation included. The mechanism is
+# a SUCCESS LATCH (``ok`` starts False and is latched True only after the
+# dispatch returns), never an ``except``-arm flag — a failure-class name-list is
+# what ``CancelledError`` walks straight past, and a timed-out drain counted as a
+# performed one corrupts the very numerator 06 decides on.
 _TRACE_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     (TRACE_TOOL_FIELD, _CHUNK_STRING_TYPE, ""),
     (TRACE_PARAMS_HASH_FIELD, _CHUNK_STRING_TYPE, ""),
-    (TRACE_HIT_COUNT_FIELD, "int", ""),
+    (TRACE_HIT_COUNT_FIELD, "option<int>", ""),
     (TRACE_LATENCY_MS_FIELD, "number", ""),
-    (TRACE_SESSION_FIELD, _CHUNK_STRING_TYPE, ""),
+    (TRACE_SESSION_FIELD, "option<string>", ""),
     (TRACE_TS_FIELD, "datetime", "DEFAULT time::now()"),
     (TRACE_TOKEN_COST_FIELD, "option<int>", ""),
     (TRACE_MODEL_FIELD, "option<string>", ""),
+    (TRACE_AGENT_FIELD, "option<string>", ""),
+    (TRACE_ACTION_FIELD, "option<string>", ""),
+    (TRACE_TRANSPORT_SESSION_FIELD, "option<string>", ""),
+    (TRACE_ORDINAL_FIELD, "option<int>", ""),
+    (TRACE_OK_FIELD, "option<bool>", ""),
 )
 
 # ---------------------------------------------------------------------------
@@ -946,23 +991,29 @@ def _memory_statements(dim: int, analyzer_name: str) -> list[str]:
 
 
 def _trace_statements() -> list[str]:
-    """The ``trace`` observability table: the six core fields + two optional columns.
+    """The ``trace`` observability table: its columns, its sequence, its index.
 
-    Emits, in order: the SCHEMAFULL table, then one ``DEFINE FIELD`` per
-    :data:`_TRACE_FIELD_SPECS` entry — the six core columns capturing one served
-    tool invocation (``tool`` / ``params_hash`` / ``hit_count`` / ``latency_ms`` /
-    ``session`` / ``ts``, ``ts`` carrying the ``DEFAULT time::now()`` self-stamp)
-    plus the two audited optional accounting columns (``token_cost`` / ``model``,
-    Spectron concept-coverage). Mirrors :func:`_task_statements`. UNLIKE ``chunk`` /
-    ``memory`` the table carries no HNSW/FULLTEXT index — a trace is an append-only
-    observability event, never retrieved semantically; aggregates over these rows
-    are a LATER phase (P8d).
+    Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
+    :data:`_TRACE_FIELD_SPECS` entry (``ts`` carrying the ``DEFAULT time::now()``
+    self-stamp, so the writer never computes the ingestion instant itself); the
+    ``DEFINE SEQUENCE IF NOT EXISTS trace_seq`` backing the ordinal
+    (:func:`_define_sequence` — the SHARED emitter, never a hand-rolled counter
+    row); and the plain ``(agent, ordinal)`` index packet 06's per-agent curve
+    reads. Mirrors :func:`_task_statements`. UNLIKE ``chunk`` / ``memory`` the
+    table carries no HNSW/FULLTEXT index — a trace is an append-only
+    observability event, never retrieved semantically.
     """
     statements: list[str] = [_define_table(TRACE_TABLE)]
     statements += [
         _define_field(TRACE_TABLE, name, type_expr, constraint=constraint)
         for name, type_expr, constraint in _TRACE_FIELD_SPECS
     ]
+    statements.append(_define_sequence(TRACE_SEQUENCE_NAME))
+    statements.append(
+        _plain_index(
+            TRACE_TABLE, f"{TRACE_TABLE}_agent_ordinal", TRACE_AGENT_ORDINAL_INDEX_FIELDS
+        )
+    )
     return statements
 
 

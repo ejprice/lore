@@ -128,14 +128,20 @@ from loremaster.store.surreal_schema import (
     CHUNK_TABLE,
     DEFAULT_ANALYZER_NAME,
     FILE_TEXT_TABLE,
+    TRACE_ACTION_FIELD,
+    TRACE_AGENT_FIELD,
     TRACE_HIT_COUNT_FIELD,
     TRACE_LATENCY_MS_FIELD,
     TRACE_MODEL_FIELD,
+    TRACE_OK_FIELD,
+    TRACE_ORDINAL_FIELD,
     TRACE_PARAMS_HASH_FIELD,
+    TRACE_SEQUENCE_NAME,
     TRACE_SESSION_FIELD,
     TRACE_TABLE,
     TRACE_TOKEN_COST_FIELD,
     TRACE_TOOL_FIELD,
+    TRACE_TRANSPORT_SESSION_FIELD,
     TRACE_TS_FIELD,
     generate_ddl,
 )
@@ -735,20 +741,27 @@ class SurrealStore:
         *,
         tool: str,
         params_hash: str,
-        hit_count: int,
+        hit_count: int | None = None,
         latency_ms: float,
-        session: str,
+        session: str | None = None,
         token_cost: int | None = None,
         model: str | None = None,
+        agent: str | None = None,
+        action: str | None = None,
+        transport_session: str | None = None,
+        ok: bool | None = None,
     ) -> None:
-        """Persist one observability trace row — the mcp role's async write path.
+        """Persist one observability trace row — the tracing seam's write path.
 
         The ``trace`` table is lore's per-tool-invocation OBSERVABILITY row (see
-        ``surreal_schema._TRACE_FIELD_SPECS``): the six core fields describe one
-        served request, and the two optional accounting columns
-        (``token_cost``/``model``) ride alongside when supplied. ``ts`` is stamped
-        SERVER-SIDE by the schema's ``DEFAULT time::now()`` — this method never
-        computes or sends it — so a caller need only describe the invocation.
+        ``surreal_schema._TRACE_FIELD_SPECS``). ``ts`` is stamped SERVER-SIDE by
+        the schema's ``DEFAULT time::now()`` — this method never computes or
+        sends it — and ``ordinal`` is minted SERVER-SIDE from the ``trace_seq``
+        native sequence INSIDE this write, so no caller can supply one: a
+        client-side mint would be a third competing mint policy and would race
+        under concurrent dispatch. GAPS in the ordinal are REAL and benign (an
+        aborted transaction burns a number); it orders rows, it never counts
+        them.
 
         A single awaitable insert through the store's self-healing,
         error-classifying :meth:`_query` seam: a transport failure self-heals and
@@ -759,20 +772,39 @@ class SurrealStore:
         rather than ``SET session = $session`` because ``session`` is a SurrealDB
         PROTECTED variable name: a top-level ``$session`` bound param is rejected
         outright ("'session' is a protected variable and cannot be set"), while
-        ``session`` as a CONTENT object KEY is legal. Each call appends a DISTINCT
-        row — a trace is an append-only event, never keyed/deduped. The async
-        fire-and-forget EMISSION that schedules these writes, and the aggregates
-        over the rows, are a later serving-layer phase (P8d).
+        ``session`` as a CONTENT object KEY is legal. The store-side mint rides
+        ``object::extend($content, {...})`` — the ONE shape that composes a bound
+        payload with a computed column, since ``CONTENT`` composes with neither
+        ``SET`` nor ``MERGE`` (both are parse errors, store reference §2) — which
+        also keeps the payload opaque, so adding a column later cannot silently
+        drop it. Each call appends a DISTINCT row: a trace is an append-only
+        event, never keyed/deduped.
+
+        Every enrichment column is OPTIONAL and omitted-means-NONE, because the
+        generic seam cannot know a value for every tool: a fabricated ``0``
+        ``hit_count`` would make :meth:`trace_aggregates` lie rather than admit an
+        absence, and ``agent``/``session``/``action`` record what the CALL
+        DECLARED, never what the server inferred.
 
         Args:
             tool: The tool name that was served (e.g. ``"lore_search"``).
             params_hash: A stable digest of the call's parameters.
-            hit_count: How many results the call returned.
+            hit_count: How many results the call returned, when knowable;
+                omitted stores NONE (never a fabricated zero).
             latency_ms: The call's wall-clock latency in milliseconds; fractional
                 is preserved (the column is ``number``, not ``int``).
-            session: The fleet/session identity that issued the call.
+            session: The fleet session the call DECLARED, or None.
             token_cost: Optional per-call token accounting; omitted stores NONE.
             model: Optional model that produced the call; omitted stores NONE.
+            agent: The calling agent the call DECLARED, or None — never guessed.
+            action: The ``action`` the call DECLARED, or None; it is what
+                distinguishes a drain from a heartbeat inside one tool's count.
+            transport_session: The transport CORRELATOR (streamable-http's
+                ``mcp-session-id``), never an identity — nothing maps it to an
+                agent; a later packet joins it by observed co-occurrence.
+            ok: True iff the dispatch RETURNED a result; False on any raise,
+                cancellation included. NONE only from a writer that supplied
+                none.
 
         Raises:
             SurrealConnectionError: The server is unreachable or the socket died.
@@ -782,24 +814,34 @@ class SurrealStore:
         content: dict[str, Any] = {
             TRACE_TOOL_FIELD: tool,
             TRACE_PARAMS_HASH_FIELD: params_hash,
-            TRACE_HIT_COUNT_FIELD: hit_count,
             TRACE_LATENCY_MS_FIELD: latency_ms,
-            TRACE_SESSION_FIELD: session,
         }
-        # Omit the optional accounting columns when unset so the ``option`` fields
-        # store NONE cleanly (a caller that skips accounting never poisons the row).
-        if token_cost is not None:
-            content[TRACE_TOKEN_COST_FIELD] = token_cost
-        if model is not None:
-            content[TRACE_MODEL_FIELD] = model
-        await self._query(f"CREATE {TRACE_TABLE} CONTENT $content", {"content": content})
+        # Omit every optional column when unset so the ``option`` fields store
+        # NONE cleanly (a caller that skips one never poisons the row with a
+        # fabricated value that an aggregate would then read as real).
+        for field_name, value in (
+            (TRACE_HIT_COUNT_FIELD, hit_count),
+            (TRACE_SESSION_FIELD, session),
+            (TRACE_TOKEN_COST_FIELD, token_cost),
+            (TRACE_MODEL_FIELD, model),
+            (TRACE_AGENT_FIELD, agent),
+            (TRACE_ACTION_FIELD, action),
+            (TRACE_TRANSPORT_SESSION_FIELD, transport_session),
+            (TRACE_OK_FIELD, ok),
+        ):
+            if value is not None:
+                content[field_name] = value
+        await self._query(
+            f"CREATE {TRACE_TABLE} CONTENT object::extend($content, "
+            f'{{ {TRACE_ORDINAL_FIELD}: sequence::nextval("{TRACE_SEQUENCE_NAME}") }})',
+            {"content": content},
+        )
 
     async def trace_aggregates(self) -> list[dict[str, Any]]:
         """Return per-tool call counts + each tool's latest trace timestamp.
 
-        ONE bounded ``GROUP BY`` aggregate over the whole ``trace`` table (P8d
-        Wave 3 — the "later serving-layer phase" the :meth:`record_trace`
-        docstring flagged): ``count()`` per group is the call count,
+        ONE bounded ``GROUP BY`` aggregate over the whole ``trace`` table:
+        ``count()`` per group is the call count,
         ``time::max(ts)`` per group is that tool's most recent trace instant.
         Live-verified against the project's pinned SurrealDB (3.1.5): ``count()``
         + ``time::max()`` combine correctly under ``GROUP BY`` for a ``datetime``
