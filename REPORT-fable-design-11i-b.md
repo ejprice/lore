@@ -398,6 +398,62 @@ prohibition that never existed.
 
 ---
 
+## Follow-up 4 (2026-07-25, from `lead-11i-b`) — §R3's hand-roll corrected; §R9 appended to F-r2 and committed
+
+**Deliverable:** §R9 appended to `docs/design/2026-07-25-floor-calibration-addendum-F-r2.md`
+(my call: append, not a new file — R8 set the one-durable-file precedent), committed `2b8d3fa`.
+Finding #201 read in full via `lore_findings` before answering.
+
+**The correction, owned in the file:** §R3.2's "numpy candidate-rate evaluator" was bespoke code
+for a library primitive one level down — the same failure shape as the [clocks] chain, and F-r2's
+second recorded instance of it.
+
+**The investigation was MEASURED, not asserted (the lead's explicit demand):** ephemeral
+`uv run --no-sync --with scikit-learn --with scipy` overlay (repo `uv.lock` untouched; sklearn
+1.9.0 / numpy 2.5.1 / scipy 1.18.0 — numpy/scipy matching the container's M4):
+- **20/20 randomized trials: the roc_curve path equals the REAL `choose_cosine_floor` EXACTLY**
+  (floor, false-fire, catch), on fixtures with duplicate cosines, anchors on both arms, and
+  tie-breaks exercised. The boundary convention is an INDEX MAPPING (the +∞-prepended row gives
+  strict-`<` counts at index j for the j-th ascending candidate), not arithmetic.
+- **Differently-broken control:** the naive `>=` mapping fails at 44/75 candidates — the probe can
+  see the defect class the lead measured (96/96), so 20/20 is not vacuous.
+- **Installed-API reads:** `scipy.stats.bootstrap` carries BOTH `rng` and `random_state` (pin
+  `rng`; the dual is a #198-class drift hazard) · `np.percentile(method="inverted_cdf")` IS
+  nearest-rank (p5 of 1..10 → 1, matching #201) · `np.quantile` takes `weights` ·
+  `drop_intermediate=False` pinned (candidate set = 75/75 distinct fed cosines).
+- **The transfer theorem stated:** value-identical ⇒ every probe measurement and every F1/F2/F3/F5
+  design conclusion carries over unchanged. Equality is what makes the swap free.
+
+**The lead's five asks:** (1) re-derived on `roc_curve`, measured — §R9.1; (2) boundary convention
+settled + `drop_intermediate=False` pinned, equality control as the instrument — §R9.1–9.2;
+(3) §R3 re-checked: seeding→`rng=Generator`, paired→signature read + index-array fallback (honest
+bound: signature read, not full paired semantics), interval→`bootstrap_distribution` +
+`inverted_cdf` (no percentile hand-roll anywhere), BCa noted-not-recommended (would amend D8's
+pre-registration) — §R9.2; (4) the port sweep: the arithmetic third of the pure core DISSOLVES
+(sweep, bootstrap, three percentile implementations, group-summary arithmetic), the domain
+two-thirds CARRIES (identity-pinned predicate/bars, probe derivation, hold-out logic, captures,
+sampler, reporters); the 50 tests re-target with the dominance suite becoming the ORACLE suite —
+§R9.4; (5) **the split: the LINE survives, the 0.29 figure is superseded (~0.24±0.03), and b's
+character line was always slightly wrong** — its build cost was deliverables, not arithmetic;
+re-surface the number, keep the seam — §R9.5.
+
+**One self-revision flagged prominently:** R3.2's containment pin (real `choose_cosine_floor`
+computes every adopted floor) is re-disposed — under #201 and measured equality, the stronger
+architecture is roc-path-as-production + `choose_cosine_floor` as executable spec/test ORACLE.
+Decision (20), operator's; my recommendation is the oracle.
+
+**Not softened:** §R2's lease, §R5's extraction plan, the eleven surviving F8 adjudications, and
+§R3's decisive fact (cost lives in the statistic, not the shell — #201 confirms it) all stand
+untouched. Decisions updated: 11 superseded by R9; (19) sklearn adoption (recommended; the
+numpy-`searchsorted` assembly named as the two-package fallback but flagged as parts-assembly of
+the primitive); (20) oracle role; (21) BCa contingency.
+
+**Residue:** `/tmp/roc_probe.py` joins `/tmp/wt-probe` as inert, uncited scratch (sandbox denies
+`rm`); its substance is reproduced in §R9.1. This report's FU4 append is uncommitted, the lead's
+as before.
+
+---
+
 ## Standing by
 
 Follow-ups via SendMessage; answers appended above, stamped. — `fable-design-11i-b`, 2026-07-25
