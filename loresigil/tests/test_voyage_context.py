@@ -576,7 +576,14 @@ class TestVoyageContextFailureIsolation:
         # Strict growth and decorrelation are pinned where they belong, against the
         # shared policy itself, in loresigil/tests/test_backoff.py.
         assert len(recorded_delays) == 1
-        assert 0.0 <= recorded_delays[0] <= BACKOFF_BASE_S
+        # STRICTLY inside the window (cold audit R4). ``<= BACKOFF_BASE_S`` admitted the
+        # pre-#207 build, which returns EXACTLY that value — so reverting the whole fix
+        # left this pin green. ``uniform(0, w)`` draws from ``[0, w)``; hitting ``w``
+        # needs a float rounding edge at p ~ 2**-53, so this is discriminating, not flaky.
+        assert 0.0 <= recorded_delays[0] < BACKOFF_BASE_S, (
+            f"the backoff was exactly {recorded_delays[0]} == the attempt-0 window "
+            f"({BACKOFF_BASE_S}) — a DETERMINISTIC ladder, not a draw (#207)."
+        )
         # (c) the injected seam means this test no longer pays a real sleep.
         assert elapsed < FAKE_SLEEP_WALL_BUDGET_S
 

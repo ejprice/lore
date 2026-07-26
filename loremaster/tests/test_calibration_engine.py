@@ -531,7 +531,14 @@ class TestEndpointLifecycle:
         # and the cap are pinned deterministically, on the window rather than on a
         # sampled value, in ``test_backoff_doubles_and_caps`` below.
         assert len(engine_delays) == 1
-        assert 0.0 <= engine_delays[0] <= ce.BACKOFF_START_S
+        # STRICTLY inside the window (cold audit R4). ``<= BACKOFF_START_S`` admitted the
+        # pre-#207 build, which returns EXACTLY that value, so reverting the whole fix left
+        # this pin green. ``uniform(0, w)`` draws from ``[0, w)``; reaching ``w`` needs a
+        # float rounding edge at p ~ 2**-53 — discriminating, not flaky.
+        assert 0.0 <= engine_delays[0] < ce.BACKOFF_START_S, (
+            f"the backoff was exactly {engine_delays[0]} == the attempt-0 window "
+            f"({ce.BACKOFF_START_S}) — a DETERMINISTIC ladder, not a draw (#207)."
+        )
         assert engine.served_constant == pytest.approx(_COMMITTED)
         await engine.stop()
 
@@ -633,6 +640,16 @@ class TestEndpointLifecycle:
             assert 0.0 <= delay <= window, (
                 f"a backoff of {delay}s fell outside its window [0, {window}]"
             )
+        # ...and STRICTLY inside it, which is what makes the per-delay leg discriminate
+        # (cold audit R4). The window-SEQUENCE leg above was already sound; this per-delay
+        # leg admitted the pre-#207 build, which returns exactly each window in turn.
+        assert all(
+            d < w for d, w in zip(engine_delays, expected_windows, strict=True)
+        ), (
+            f"every backoff landed exactly ON its window ceiling "
+            f"(delays={engine_delays}, windows={expected_windows}) — that is a "
+            f"DETERMINISTIC ladder, not a draw. Undoing #207 must fail this test."
+        )
         await engine.stop()
 
     async def test_terminal_4xx_stops_retrying_and_names_the_cause(
@@ -705,7 +722,14 @@ class TestEndpointLifecycle:
         # delay is drawn from attempt 0's window since #207 (see the note in
         # ``test_recovers_after_transient_outage``).
         assert len(engine_delays) == 1
-        assert 0.0 <= engine_delays[0] <= ce.BACKOFF_START_S
+        # STRICTLY inside the window (cold audit R4). ``<= BACKOFF_START_S`` admitted the
+        # pre-#207 build, which returns EXACTLY that value, so reverting the whole fix left
+        # this pin green. ``uniform(0, w)`` draws from ``[0, w)``; reaching ``w`` needs a
+        # float rounding edge at p ~ 2**-53 — discriminating, not flaky.
+        assert 0.0 <= engine_delays[0] < ce.BACKOFF_START_S, (
+            f"the backoff was exactly {engine_delays[0]} == the attempt-0 window "
+            f"({ce.BACKOFF_START_S}) — a DETERMINISTIC ladder, not a draw (#207)."
+        )
         assert engine.served_constant == pytest.approx(_COMMITTED)
         await engine.stop()
 

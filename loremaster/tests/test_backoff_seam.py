@@ -61,6 +61,7 @@ from pydantic import SecretStr
 
 from loremaster import server
 from loresigil import backoff as backoff_module
+from loresigil import resilient as resilient_module
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS_DIR = _REPO_ROOT / "scripts"
@@ -603,6 +604,150 @@ async def test_EVERY_declared_site_draws_from_the_mutated_policy(
         f"the mutated policies recorded only {total_draws} draws "
         f"({len(mutation.draws)} exponential + {len(mutation.additive_draws)} additive) "
         f"for {len(_DECLARED_SITES)} declared sites — the instrument is under-counting"
+    )
+
+
+_JITTER_DRAWS = 64
+_JITTER_MIN_DISTINCT = 60
+
+
+async def _real_policy_draws_per_site(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[float]]:
+    """Drive every declared site ``_JITTER_DRAWS`` times against the REAL policy.
+
+    No mutation, no sentinel: each site's own binding of the real shared policy is
+    exercised and the delays it actually sleeps are collected. Entry points are the
+    cheapest real ones per site (the policy binding itself, not the whole HTTP/probe
+    flow) so 64 draws x 8 sites stays fast.
+    """
+    draws: dict[str, list[float]] = {}
+
+    # 1. loresigil.resilient.compute_backoff_delay
+    draws["loresigil.resilient.compute_backoff_delay"] = [
+        resilient_module.compute_backoff_delay(0) for _ in range(_JITTER_DRAWS)
+    ]
+
+    # 2 + 6. counting — exponential branch (retry_after=None) and additive branch.
+    exponential: list[float] = []
+    additive: list[float] = []
+
+    async def rec_exp(delay: float) -> None:
+        exponential.append(delay)
+
+    async def rec_add(delay: float) -> None:
+        additive.append(delay)
+
+    client = httpx.AsyncClient()
+    for sink, retry_after in ((rec_exp, None), (rec_add, "7")):
+        counter = counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client, sleep=sink)
+        for _ in range(_JITTER_DRAWS):
+            await counter._sleep_backoff(0, retry_after)
+    await client.aclose()
+    draws["loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff"] = exponential
+    draws[
+        "loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff.retry_after"
+    ] = additive
+
+    # 3. calibration engine
+    draws["loremaster.calibration.engine.CalibrationEngine._probe_loop"] = [
+        _drive_calibration_engine(0) for _ in range(_JITTER_DRAWS)
+    ]
+
+    # 4. scout — its own named seam, so no poll-interval sleeps are mixed in.
+    scout_draws: list[float] = []
+
+    async def rec_scout(delay: float) -> None:
+        scout_draws.append(delay)
+
+    async def never_connect() -> Any:  # pragma: no cover - _backoff never connects
+        raise ConnectionResetError("unused")
+
+    async def scout_handler(_row: dict[str, Any]) -> None:  # pragma: no cover - unused
+        return None
+
+    subscriber = CommandSubscriber(
+        connect=never_connect,
+        handler=scout_handler,
+        poll_interval_s=0.01,
+        sleep=rec_scout,
+        backoff_base_s=_SCOUT_BASE_S,
+        max_backoff_s=_SCOUT_CAP_S,
+    )
+    for _ in range(_JITTER_DRAWS):
+        await subscriber._backoff(0)
+    draws["loremaster.scout.CommandSubscriber._backoff"] = scout_draws
+
+    # 5 + 7. token_survey — exponential and additive branches.
+    survey_exp: list[float] = []
+    survey_add: list[float] = []
+    monkeypatch.setattr(ts.time, "sleep", survey_exp.append)
+    for _ in range(_JITTER_DRAWS):
+        ts.ClaudeTokenCounter._sleep_backoff(0, None)
+    monkeypatch.setattr(ts.time, "sleep", survey_add.append)
+    for _ in range(_JITTER_DRAWS):
+        ts.ClaudeTokenCounter._sleep_backoff(0, "7")
+    draws["token_survey.ClaudeTokenCounter._sleep_backoff"] = survey_exp
+    draws["token_survey.ClaudeTokenCounter._sleep_backoff.retry_after"] = survey_add
+
+    # 8. the eager-startup lease.
+    eager: list[float] = []
+    for _ in range(_JITTER_DRAWS):
+        eager.extend(await _drive_eager_lease(monkeypatch))
+    draws["loremaster.server._EagerStartupLifespan._acquire_eager_lease_with_retry"] = eager
+
+    return draws
+
+
+async def test_reverting_the_shared_policy_reddens_EVERY_site(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE ACCEPTANCE CRITERION from cold-audit R4: undoing #207 must fail HERE, per site.
+
+    The sentinel-mutation instrument above proves each site ROUTES to the shared policy.
+    It does not prove the policy still JITTERS — under the sentinel, every site returns a
+    constant by construction. So an auditor reverted ``loresigil/backoff.py`` to the exact
+    pre-#207 build and measured: **only 4 tests reddened, all inside the policy's own unit
+    file.** Every site-level pin stayed green, several while their failure messages promised
+    otherwise. A false gate, five times over, by this repo's own definition.
+
+    This test closes that flank centrally rather than by patching each pin's bound: it
+    drives every declared site against the REAL policy and requires the delays each one
+    actually sleeps to be DRAWN. A deterministic revert yields 1 distinct value per site
+    and fails here immediately.
+
+    Thresholds are borrowed from the policy's own derived pin (64 draws, >= 60 distinct)
+    rather than re-invented, and they close two wrong builds at once: a deterministic
+    ladder scores 1, and a QUANTISED slot table — this repo's #102/#108 shape — cannot
+    exceed its slot count (16 at worst). A weaker 8/>=6 bar, which is what the D2 pin
+    first shipped with, admits a 16-slot table ~70% of the time.
+
+    Coverage is checked, not assumed: the observed site set must EQUAL
+    :data:`_DECLARED_SITES`, so a new site cannot be added without being jitter-proven.
+    """
+    draws = await _real_policy_draws_per_site(monkeypatch)
+
+    assert set(draws) == set(_DECLARED_SITES), (
+        f"this instrument does not cover every declared site — "
+        f"missing={sorted(set(_DECLARED_SITES) - set(draws))}, "
+        f"undeclared={sorted(set(draws) - set(_DECLARED_SITES))}"
+    )
+
+    undiscriminating: list[str] = []
+    for site, values in sorted(draws.items()):
+        assert len(values) == _JITTER_DRAWS, (
+            f"{site}: expected {_JITTER_DRAWS} draws, got {len(values)} — the driver is "
+            f"not exercising the site once per iteration"
+        )
+        if len(set(values)) < _JITTER_MIN_DISTINCT:
+            undiscriminating.append(f"{site}: {len(set(values))} distinct of {len(values)}")
+
+    assert not undiscriminating, (
+        "these sites did NOT produce drawn delays against the real shared policy:\n  "
+        + "\n  ".join(undiscriminating)
+        + "\n\n1 distinct = a DETERMINISTIC ladder (#207 undone). <= 16 distinct = a "
+        "QUANTISED slot table (#102/#108). Either way the site's clients wake in "
+        "lockstep. This is the acceptance criterion for cold-audit R4: a revert of "
+        "loresigil/backoff.py to its pre-#207 behaviour must fail THIS test, not only "
+        "the policy's own unit file."
     )
 
 

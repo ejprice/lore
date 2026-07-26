@@ -184,19 +184,28 @@ class TestRetryContract:
         # Measured — a private-copy mutation (`await self._sleep(capped)`) left this test
         # GREEN until these lines were added, so the bound alone certified the pre-D2 world
         # exactly as the `== [7.0]` it replaced did. Repeat draws are the discriminator.
+        #
+        # 64 draws / >= 60 distinct, NOT the 8 / >= 6 this first shipped with (cold audit
+        # R4's residual): 8/6 excludes a deterministic build but tolerates a QUANTISED
+        # one — a 16-slot jitter table passes it roughly 70% of the time, and a 16-slot
+        # table is this repo's OWN historical defect shape (#102/#108). The 64/60 numbers
+        # are borrowed from test_backoff.py::test_simultaneous_clients_draw_distinct_delays,
+        # where they are derived: continuous draws collide only on float equality, so 64
+        # yields 64; a 16-slot table cannot exceed 16.
         draws: list[float] = []
 
         async def record(delay: float) -> None:
             draws.append(delay)
 
-        for _ in range(8):
+        for _ in range(64):
             probe = counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client, sleep=record)
             await probe._sleep_backoff(0, "7")
         assert all(7.0 <= d <= 7.0 + backoff.ADDITIVE_JITTER_WIDTH_S for d in draws)
-        assert len(set(draws)) >= 6, (
-            f"8 Retry-After sleeps produced only {len(set(draws))} distinct values "
-            f"({sorted(set(draws))}) — the path is NOT jittered, so every client handed the "
-            f"same Retry-After still wakes in lockstep (#207 D2)."
+        assert len(set(draws)) >= 60, (
+            f"64 Retry-After sleeps produced only {len(set(draws))} distinct values — the "
+            f"path is either NOT jittered (1 distinct: every client handed the same "
+            f"Retry-After wakes in lockstep) or QUANTISED into slots (<=16 for this repo's "
+            f"own #102/#108 shape, where the pigeonhole re-collides racers). #207 D2."
         )
         await counter.aclose()
 

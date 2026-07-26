@@ -181,12 +181,29 @@ class TestRetriesOn5xxAndTransport:
         embedder, delays = _make_resilient(request_fn)
         await embedder.embed_texts([SENTENCE])
         assert len(delays) == 3
-        for attempt, delay in enumerate(delays):
-            window = min(BACKOFF_BASE_S * (2**attempt), BACKOFF_CAP_S)
+        windows = [min(BACKOFF_BASE_S * (2**attempt), BACKOFF_CAP_S) for attempt in range(3)]
+        for attempt, (delay, window) in enumerate(zip(delays, windows, strict=True)):
             assert 0.0 <= delay <= window, (
                 f"backoff {attempt} ({delay}) fell outside its window [0, {window}] — "
                 f"the delay is not being drawn from the attempt's exponential window"
             )
+        # STRICTLY inside the window, which is what makes this pin DISCRIMINATE.
+        #
+        # Cold audit R4: the bound above admits the pre-#207 build, because a
+        # deterministic ladder returns EXACTLY ``window`` every time — so a full revert
+        # of the shared policy left this pin green while its own message promised "the
+        # delay is not being drawn". The same defect this wave already fixed once in the
+        # D2 pin, missed here because the fix was applied from a hand-list instead of a
+        # grep (repo law: sweep FROM the grep).
+        #
+        # ``uniform(0, w)`` draws from ``[0, w)``: reaching exactly ``w`` needs a float
+        # rounding edge at p ~ 2**-53 per draw, so requiring all three to be strictly
+        # inside is not a flaky assertion — it is ~1e-16 across the three.
+        assert all(d < w for d, w in zip(delays, windows, strict=True)), (
+            f"every backoff landed exactly ON its window ceiling (delays={delays}, "
+            f"windows={windows}) — that is a DETERMINISTIC ladder, not a draw. Undoing "
+            f"#207 must fail this test."
+        )
 
 
 class TestPermanentFailureYieldsNone:
