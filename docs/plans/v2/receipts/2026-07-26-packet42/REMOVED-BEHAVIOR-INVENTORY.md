@@ -161,6 +161,13 @@ gate over ungated ground means **verifying the gate actually RUNS there**, per t
 that a guard nobody runs is a hope with a filename. Both of that packet's instruments sat
 outside `testpaths` and were victims of the class they instrument; do not repeat it.
 
+**SIZE OVERRUN PRE-APPROVED (operator, 2026-07-26).** R6 takes packet 42 past its stated 0.20 wu,
+because gating `skills/` means bringing ungated ground under a gate for the first time. The
+operator approved this explicitly — *"Include skills/ — consider that approved"*. **No agent
+should re-raise the size question, and no agent should trim R6's scope to fit the original
+estimate.** The INDEX row's size figure is stale, not a budget: correct it at close-out rather
+than sizing the work to it.
+
 **R7 — `scripts/comms_consumer_eval.py::_amain`. RULED: MIGRATE** to the shared resolver, and
 delete its allowlist entry. The author's argument is accepted: migrating costs ~3 lines, less
 than maintaining the note explaining the exemption — and it keeps every allowlist entry a real
