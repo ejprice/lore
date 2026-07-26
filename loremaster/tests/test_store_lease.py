@@ -85,8 +85,11 @@ from kubernetes.client.rest import ApiException
 from kubernetes.leaderelection import electionconfig, leaderelection
 from kubernetes.leaderelection.leaderelection import LeaderElection
 from kubernetes.leaderelection.leaderelectionrecord import LeaderElectionRecord
+from loremaster.store._txn import SurrealStoreError
 from loremaster.store.lease import (
     LEASE_DURATION_SECONDS,
+    LEASE_LOCK_NAME,
+    LEASE_LOCK_NAMESPACE,
     LEASE_RENEW_DEADLINE_SECONDS,
     LEASE_RETRY_PERIOD_SECONDS,
     LockAbsent,
@@ -119,6 +122,61 @@ FAST_RETRY_PERIOD_SECONDS = 1
 
 _HOT_ROW_RACERS = 8
 _HOT_ROW_SCALE = (16, 32)
+
+
+
+
+class _RoundTrips:
+    """Counts a live connection's SDK round-trips, and can fire a hook between them.
+
+    ⚠ IT PATCHES ``query_raw`` **ONLY**, and that is a MEASURED correction rather
+    than a simplification: the SDK's ``query()`` is a thin wrapper that CALLS
+    ``query_raw()`` and then checks ``result[0]``
+    (``surrealdb.connections.async_ws.AsyncWsSurrealConnection.query``, read
+    2026-07-26). Patching both counts every single-statement call TWICE, which
+    is how the first version of this helper reported "2 round-trips" for a CAS
+    that issues exactly one. ``query_raw`` is the one true wire boundary and it
+    sees the transactional path as well.
+
+    ⚠ WHY INTERCEPT AT THE CONNECTION rather than at the ledger's own methods:
+    every statement in this package must ride ``_txn`` (pinned separately), so
+    the connection is the one place every round-trip must pass. It makes no
+    assumption about how the ledger imports, names, or composes its helpers.
+    """
+
+    def __init__(self) -> None:
+        self.round_trips = 0
+        self.hook_fired = False
+
+    def install(
+        self,
+        connection: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        before_call_number: int | None = None,
+        hook: Any = None,
+    ) -> None:
+        """Wrap ``connection``'s wire entry point.
+
+        Args:
+            before_call_number: 1-based index of the round-trip to fire ``hook``
+                immediately BEFORE. ``None`` disables the hook entirely.
+        """
+        original_query_raw = connection.query_raw
+
+        async def counted(*args: Any, **kwargs: Any) -> Any:
+            if (
+                hook is not None
+                and before_call_number is not None
+                and self.round_trips + 1 == before_call_number
+                and not self.hook_fired
+            ):
+                self.hook_fired = True
+                await hook()
+            self.round_trips += 1
+            return await original_query_raw(*args, **kwargs)
+
+        monkeypatch.setattr(connection, "query_raw", counted)
 
 
 # =============================================================================
@@ -454,6 +512,32 @@ class TestTheLeaseSeamIsAConventionalLedger:
 
         assert _construct(SurrealLeaseStore) is not None
 
+    def test_the_seam_is_discovered_as_a_SOCKET_OWNER_too(self) -> None:
+        """⚠ A SECOND inherited enumeration, and it is invisible until the seam is
+        BUILT — which is exactly why it is pinned here rather than discovered by
+        a builder.
+
+        ``test_retry_seam.py`` has a separate scan for classes whose
+        ``_ensure_connection`` CONSTRUCTS a socket, and it parametrises the
+        "N concurrent first-callers open exactly ONE socket" pin over them.
+        Against the stub those two node ids do not even COLLECT (the stub
+        constructs nothing), so the seam silently gains two pins the moment the
+        builder writes the double-checked-locking connect — measured: the same
+        file collects 559 ids against the stub and 561 against a correct build.
+
+        A pin that appears out of nowhere is the benign direction of the B1
+        class; naming it here means the builder MEETS the obligation
+        (double-checked lock, one socket per owner) instead of tripping over it.
+        """
+        from test_retry_seam import _discover_socket_owners  # noqa: PLC0415
+
+        assert "SurrealLeaseStore" in {name for _, name in _discover_socket_owners()}, (
+            "SurrealLeaseStore is not in the socket-owner enumeration — its "
+            "`_ensure_connection` must construct its own connection under a "
+            "double-checked lock, like every other owner in the package"
+        )
+
+
 
 class TestTheLeaseRowLifecycle:
     """create → read → CAS → release, against the live engine."""
@@ -579,20 +663,30 @@ class TestTheLeaseRowLifecycle:
         assert seized.fence_epoch == created.fence_epoch + 1
         assert seized.revision == created.revision + 1
 
-    async def test_both_counters_are_minted_STORE_SIDE_in_one_update(
+    async def test_only_ONE_racer_can_win_a_CAS_against_one_observed_revision(
         self, lease_store: SurrealLeaseStore
     ) -> None:
-        """A client-computed ``revision + 1`` re-introduces the lost-update the
-        CAS exists to prevent. Proven by CONTENTION, not by reading the SQL:
-        N racers each doing one successful write must leave the revision at
-        exactly N — a client-side increment loses writes here and nowhere else.
+        """⚠ RENAMED AND RE-JUSTIFIED — this pin was a FALSE GATE (adversary F1a).
+
+        Its old name and docstring promised *"the counters are minted STORE-SIDE
+        in one update … proven by CONTENTION"*, and the build it named — both
+        counters computed CLIENT-SIDE from a separate read — PASSES it, here and
+        at 8/16/32-way. Worse, the causal claim was itself false: the
+        ``WHERE revision = $observed_revision`` predicate is what serialises, so
+        a client-computed increment cannot lose an update while the CAS is
+        present, and the genuinely dangerous build (drop the ``WHERE``) is caught
+        by ``test_a_STALE_CAS_returns_None_and_changes_nothing``. A failure
+        message that promises a check the assertion does not perform is exactly
+        the shape this repo treats as a defect.
+
+        What it ACTUALLY proves, which is real and worth keeping: a CAS admits
+        exactly ONE winner per observed revision. The store-side claim is now
+        pinned where it can discriminate — ``test_a_CAS_is_ONE_round_trip``.
         """
         created = await lease_store.create_if_absent(
             holder_identity="pod-a", lease_duration="15", acquire_time="t0", renew_time="t0"
         )
         assert created is not None
-        # Serial writes, all observing the SAME stale revision except the first:
-        # exactly one may succeed, so the revision advances by exactly one.
         outcomes = await asyncio.gather(
             *(
                 lease_store.compare_and_set(
@@ -613,6 +707,80 @@ class TestTheLeaseRowLifecycle:
         )
         current = await lease_store.read()
         assert current is not None and current.revision == created.revision + 1
+
+    async def test_a_CAS_is_ONE_round_trip(
+        self, lease_store: SurrealLeaseStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ M12 — the store-side claim, pinned where it can actually fail.
+
+        A build that computes ``revision + 1`` and the conditional
+        ``fence_epoch`` bump CLIENT-SIDE must first READ the row, so it issues
+        TWO round-trips; a build that mints both in the UPDATE issues one. The
+        counters' VALUES are indistinguishable between the two (that is why the
+        contention pin above could never see it), so the round-trip count is the
+        only thing that discriminates — and it is also the property that matters,
+        because a read-then-write pair is a second window the CAS does not cover.
+        """
+        created = await lease_store.create_if_absent(
+            holder_identity="pod-a", lease_duration="15", acquire_time="t0", renew_time="t0"
+        )
+        assert created is not None
+
+        trips = _RoundTrips()
+        connection = await lease_store._ensure_connection()
+        trips.install(connection, monkeypatch)
+
+        await lease_store.compare_and_set(
+            observed_revision=created.revision,
+            holder_identity="pod-b",
+            lease_duration="15",
+            acquire_time="t1",
+            renew_time="t1",
+        )
+        assert trips.round_trips == 1, (
+            f"a CAS issued {trips.round_trips} round-trips; both counters must be minted "
+            f"STORE-SIDE in the same UPDATE, never read-then-computed by the client"
+        )
+
+    async def test_create_if_absent_RAISES_on_a_non_duplicate_rejection(
+        self, lease_env: SurrealEnv
+    ) -> None:
+        """⚠ M10 — ONLY a duplicate is a lost race.
+
+        A build reporting EVERY rejection as ``None`` passed the whole contract
+        (adversary W26), and the symptom is the worst kind: a pod whose write is
+        refused for any other reason silently "never leads" — indistinguishable
+        from a pod that legitimately lost the race, forever, with nothing logged
+        and nothing red.
+
+        ⚠ THE FORCING LEVER IS A NARROWED ASSERT, not a dropped table, and the
+        first attempt at this pin got that wrong: ``REMOVE TABLE lease`` does not
+        make the write fail at all — SurrealDB AUTO-CREATES an undeclared table
+        on first write (store reference §5), so the create SUCCEEDS and the pin
+        passed on a build that swallows everything. A narrowed ASSERT rejects the
+        write while leaving the row genuinely absent, which is the state that
+        distinguishes "refused" from "lost the race".
+        """
+        store = await _new_store(lease_env)
+        admin = await connect_admin(lease_env)
+        try:
+            await admin.query(
+                "DEFINE FIELD OVERWRITE holder_identity ON lease "
+                "TYPE option<string> ASSERT $value = NONE OR string::len($value) < 2"
+            )
+            with pytest.raises(SurrealStoreError):
+                await store.create_if_absent(
+                    holder_identity="pod-a",
+                    lease_duration="15",
+                    acquire_time="t0",
+                    renew_time="t0",
+                )
+            # …and the row really is ABSENT, so "we lost the race" was never a
+            # legitimate reading of this failure.
+            assert await store.read() is None
+        finally:
+            await admin.close()
+            await store.close()
 
 
 class TestReleaseIfHeld:
@@ -972,6 +1140,168 @@ class TestTheAdapterUnderTheRealAlgorithm:
         observation = await lease_store.read()
         assert observation is not None
         assert lock.fence_epoch == observation.fence_epoch
+
+
+class TestTheAdapterOwnedVerbs:
+    """The three members that are OURS, not the library's — and every one of them
+    survived the first contract untouched.
+    """
+
+    async def test_the_adapters_update_CASes_on_the_revision_IT_observed(
+        self, lease_env: SurrealEnv
+    ) -> None:
+        """⚠ M7 — the adapter's CAS token, which W18 deleted at 143 / 0.
+
+        An adapter that RE-READS the row inside ``update`` (instead of using the
+        revision it captured at ``get``) can never lose its CAS, which is the
+        optimistic-concurrency token gone: the window between the algorithm's
+        ``get`` and its ``update`` re-opens, and two candidates can both write.
+
+        Forced by moving the row from a SECOND connection between the lock's
+        ``get`` and its ``update`` — the exact interleaving the token exists for.
+        """
+        loop = asyncio.get_running_loop()
+        holder_store = await _new_store(lease_env)
+        interloper = await _new_store(lease_env)
+        try:
+            lock = _lock(holder_store, "pod-a", loop)
+            election = _election(lock)
+            assert await asyncio.to_thread(election.try_acquire_or_renew) is True
+
+            # The lock OBSERVES the row …
+            status, record = await asyncio.to_thread(lock.get, lock.name, lock.namespace)
+            assert status is True
+
+            # … then somebody else moves it.
+            current = await interloper.read()
+            assert current is not None
+            moved = await interloper.compare_and_set(
+                observed_revision=current.revision,
+                holder_identity="pod-b",
+                lease_duration="15",
+                acquire_time="t9",
+                renew_time="t9",
+            )
+            assert moved is not None
+
+            # The lock's write must now FAIL on the revision it observed.
+            assert (
+                await asyncio.to_thread(lock.update, lock.name, lock.namespace, record) is False
+            ), (
+                "the adapter's update succeeded against a revision that had already "
+                "moved — its CAS can never fail, so the token is decorative and the "
+                "get/update window is unguarded"
+            )
+            after = await interloper.read()
+            assert after is not None and after.holder_identity == "pod-b"
+        finally:
+            await holder_store.close()
+            await interloper.close()
+
+    async def test_the_adapters_release_if_held_ACTUALLY_releases(
+        self, lease_store: SurrealLeaseStore
+    ) -> None:
+        """⚠ M8 — decision 23's whole point, and a build returning ``False``
+        unconditionally passed at 143 / 0 (W29).
+
+        The STORE-level ``release_if_held`` was pinned four ways; the ADAPTER
+        verb — the one a shutdown path actually calls — was pinned by nothing.
+        The symptom of the no-op is invisible in tests and costs a full
+        ``lease_duration`` of stalled maintenance on every rolling update, which
+        is precisely the "does not work well on k8s" decision 23 exists to fix.
+        """
+        lock = _lock(lease_store, "pod-a", asyncio.get_running_loop())
+        assert await asyncio.to_thread(_election(lock).try_acquire_or_renew) is True
+        assert await asyncio.to_thread(lock.release_if_held) is True
+        observation = await lease_store.read()
+        assert observation is not None and observation.holder_identity is None
+
+    async def test_the_adapters_fence_epoch_tracks_a_RENEW_and_a_SEIZE(
+        self, lease_env: SurrealEnv
+    ) -> None:
+        """Adversary residual 7: ``fence_epoch`` was pinned only after ``create``,
+        so a build that stopped updating it after the first write passed — and
+        the engine's fenced commit reads it on EVERY run, so a stale value means
+        every later commit is fenced against an epoch nobody holds.
+        """
+        loop = asyncio.get_running_loop()
+        holder_store = await _new_store(lease_env)
+        challenger_store = await _new_store(lease_env)
+        try:
+            holder = _lock(holder_store, "pod-a", loop)
+            holder_election = _election(holder)
+            assert await asyncio.to_thread(holder_election.try_acquire_or_renew) is True
+            first = holder.fence_epoch
+
+            # A renew must NOT move it …
+            assert await asyncio.to_thread(holder_election.try_acquire_or_renew) is True
+            assert holder.fence_epoch == first
+
+            # … and a SEIZE by another identity must move ITS lock's view.
+            observation = await challenger_store.read()
+            assert observation is not None
+            challenger = _lock(challenger_store, "pod-b", loop)
+            assert (
+                await asyncio.to_thread(challenger.update, challenger.name, challenger.namespace,
+                                        LeaderElectionRecord("pod-b", "15", "t", "t"))
+                in (True, False)
+            )
+            seized = await challenger_store.read()
+            assert seized is not None
+            if seized.holder_identity == "pod-b":
+                assert challenger.fence_epoch == seized.fence_epoch
+        finally:
+            await holder_store.close()
+            await challenger_store.close()
+
+    def test_the_lock_coordinates_are_pinned_values(self) -> None:
+        """Adversary residual 4: both constants are in the interface freeze 11-ii
+        cites, and neither was pinned. They are identity labels the algorithm
+        passes straight back to the lock, so a silent change is invisible until
+        two deployments disagree about which lease they are contending for."""
+        assert (LEASE_LOCK_NAME, LEASE_LOCK_NAMESPACE) == ("lore-maintenance", "lore")
+
+
+class TestTheLibraryEntryPointWeDependOn:
+    """⚠ E3's remaining half. The ruling names ``try_acquire_or_renew`` as the
+    entry point (``run()`` blocks forever with no stop mechanism, which is
+    incompatible with R2.2's *"never blocked on"*), and records that this
+    borders on #209's private-internals class — the method is public but is not
+    the documented entry point.
+
+    A real bound gets the treatment this repo gives real bounds: the surface it
+    rests on is DERIVED and pinned, so a library upgrade that reshapes it goes
+    RED here instead of as a bare ``AttributeError`` inside a live test.
+
+    **Named re-open trigger (E3): the day ``kubernetes`` ships a non-blocking
+    public entry point, drive that instead and DELETE this class.**
+    """
+
+    def test_try_acquire_or_renew_exists_and_takes_no_arguments(self) -> None:
+        import inspect  # noqa: PLC0415
+
+        method = LeaderElection.try_acquire_or_renew
+        parameters = [
+            name for name in inspect.signature(method).parameters if name != "self"
+        ]
+        assert parameters == [], (
+            f"LeaderElection.try_acquire_or_renew now takes {parameters} — the "
+            f"contract drives it argument-free on every tick"
+        )
+
+    def test_the_algorithms_OWN_tick_calls_it(self) -> None:
+        """Derived from the installed source, so "it is the tick" is measured
+        rather than assumed: if the algorithm stops routing through it, driving
+        it no longer exercises the real election path."""
+        module_file = leaderelection.__file__
+        assert module_file is not None
+        tree = ast.parse(pathlib.Path(module_file).read_text(encoding="utf-8"))
+        callers = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and node.attr == "try_acquire_or_renew"
+        }
+        assert "try_acquire_or_renew" in callers
 
 
 class TestTheRecordTheAdapterReturnsIsPure:

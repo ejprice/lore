@@ -72,6 +72,8 @@ RETIRED_STATE_NAME = "stale_remeasuring"
 
 _PACKAGE_ROOT = Path(surreal_schema.__file__).resolve().parents[1]
 _TESTS_ROOT = Path(__file__).resolve().parent
+# <repo>/loremaster/loremaster/store/surreal_schema.py -> parents[3] is <repo>
+_REPO_ROOT = Path(surreal_schema.__file__).resolve().parents[3]
 
 
 def _statements(ddl: str) -> list[str]:
@@ -164,11 +166,44 @@ class TestTheDdlDecisionRuleIsEnforcedMechanically:
 
     def test_the_generators_emit_something_for_every_planned_table(self) -> None:
         """CONTROL: a generator returning "" would make every clause pin above
-        VACUOUSLY green — the signature failure of a mechanical gate."""
-        floor = generate_floor_calibration_ddl()
-        assert FLOOR_MEASUREMENT_TABLE in floor
-        assert FLOOR_HEAD_TABLE in floor
-        assert LEASE_TABLE in generate_lease_ddl()
+        VACUOUSLY green — the signature failure of a mechanical gate.
+
+        ⚠ IT DEMANDS FIELDS, NOT JUST TABLE NAMES (adversary F1c). Checking that
+        three table names appear as substrings is satisfied by a slice emitting
+        three ``DEFINE TABLE``s and ZERO ``DEFINE FIELD``s — and then
+        ``test_every_field_definition_is_OVERWRITE`` is itself vacuously green,
+        which is the control failing at the one job it has.
+        """
+        for table in (FLOOR_MEASUREMENT_TABLE, FLOOR_HEAD_TABLE, LEASE_TABLE):
+            fields = [
+                statement
+                for statement in _both_slices()
+                if _DEFINE_FIELD.match(statement) and f" ON {table} " in f"{statement} "
+            ]
+            assert fields, f"the slice for {table!r} emits no DEFINE FIELD at all"
+
+    def test_the_new_slices_ROUTE_THROUGH_the_shared_ddl_emitters(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ONE IMPLEMENTATION, proven by MUTATION (adversary residual 8).
+
+        The clause pins enforce today's POLICY, but nothing required the new
+        slices to CALL ``_define_field``/``_define_table`` — so a future change
+        to the shared emitter would silently not reach them. Perturb the shared
+        emitter; the emitted DDL must move.
+        """
+        original = surreal_schema._define_field
+        monkeypatch.setattr(
+            surreal_schema,
+            "_define_field",
+            lambda *args, **kwargs: f"{original(*args, **kwargs)} COMMENT 'mutation-probe'",
+        )
+        assert "mutation-probe" in generate_floor_calibration_ddl(), (
+            "the floor slice does not route through surreal_schema._define_field"
+        )
+        assert "mutation-probe" in generate_lease_ddl(), (
+            "the lease slice does not route through surreal_schema._define_field"
+        )
 
 
 class TestTheClosedDomainsAreDerivedIntoTheDdl:
@@ -217,9 +252,54 @@ class TestTheClosedDomainsAreDerivedIntoTheDdl:
 class TestTheRetiredStateNameIsGoneFromTheTree:
     """Repo rename law. F4.1 renamed ``stale_remeasuring`` to
     ``invalidated_remeasuring``; the sweep uses a BARE, anchor-free pattern
-    because prose mentions carry no structural anchor, and three of four
-    audited green-at-gate defects lived in exactly such surfaces.
+    because prose mentions carry no structural anchor, and three of four audited
+    green-at-gate defects lived in exactly such surfaces.
+
+    ⚠ **O4 — THE SWEEP'S OWN REACH WAS THE BLIND SPOT.** Until 2026-07-26 the
+    scan globbed ``*.py`` only, so it could not see FOUR LIVE design-doc lines
+    that still teach the retired name — including §7's state TABLE, which is the
+    design of record 11-ii implements its served state projection from. An
+    instrument that carries the very blind spot it exists to police is worse
+    than no instrument, because its green is read as coverage.
+
+    **The choice this fix wave made, stated rather than implied:** WIDEN the
+    reach to the live design + plan-of-record docs, and carry the four known
+    lines in a NAMED, DATED QUARANTINE with the edit each needs. That is the
+    repo's PIN-THE-MISS pattern rather than a scope statement: the sweep is
+    GREEN today, goes RED the moment a FIFTH live doc acquires the corpse, and
+    goes RED AGAIN the day one of the four is fixed (its quarantine entry stops
+    matching and must be deleted). A bound that is pinned is a bound the next
+    engineer meets deliberately, and one that cannot be silently "fixed" either.
+
+    **The two exclusions are reasoned, not convenient:**
+    - ``docs/plans/v2/receipts/`` — ARCHIVE LAW. Those files are byte-faithful
+      evidence of runs that happened; editing one is falsification, not a
+      refactor, so they can never be swept.
+    - ``2026-07-25-floor-calibration-addendum-F.md`` — the AMENDING doc. F4.1
+      lives there; a rename doc must name what it retires or it cannot say what
+      it did.
     """
+
+    #: The live docs the sweep reaches. Receipts are excluded by archive law.
+    SWEPT_DOC_GLOBS = ("docs/design/*.md", "docs/plans/v2/*.md", "docs/reference/*.md")
+
+    #: Docs that legitimately name the corpse, with the reason.
+    ALLOWED_DOCS = {
+        "2026-07-25-floor-calibration-addendum-F.md": "the amending doc — F4.1 names what it retires",
+    }
+
+    #: ⚠ QUARANTINE — known-stale LIVE lines, dated 2026-07-26, found by the
+    #: contract adversary. Each is (path, the exact edit owed). They are OUTSIDE
+    #: this agent's writable set (docs belong to the lead), so they are pinned
+    #: rather than fixed, and the pin below goes RED when one is repaired.
+    KNOWN_STALE_DOC_LINES = {
+        "docs/design/2026-07-24-floor-calibration.md": (
+            "3 lines (≈336, ≈418, ≈659) teach the retired name as CURRENT behaviour; "
+            "≈418 is §7's state TABLE row, which 11-ii reads to build its served "
+            "state projection. Owed edit: rename to `invalidated_remeasuring` and "
+            "re-predicate to F4.1's 'known-invalid', not 'ageing'."
+        ),
+    }
 
     @staticmethod
     def _hits(root: Path) -> list[str]:
@@ -231,6 +311,20 @@ class TestTheRetiredStateNameIsGoneFromTheTree:
                 if RETIRED_STATE_NAME in line:
                     found.append(f"{path}:{number}: {line.strip()}")
         return found
+
+    @classmethod
+    def _doc_hits(cls) -> dict[str, list[str]]:
+        """Every LIVE doc line carrying the corpse, keyed by repo-relative path."""
+        by_path: dict[str, list[str]] = {}
+        for glob in cls.SWEPT_DOC_GLOBS:
+            for path in sorted(_REPO_ROOT.glob(glob)):
+                if path.name in cls.ALLOWED_DOCS:
+                    continue
+                relative = path.relative_to(_REPO_ROOT).as_posix()
+                for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                    if RETIRED_STATE_NAME in line:
+                        by_path.setdefault(relative, []).append(f"{relative}:{number}: {line.strip()}")
+        return by_path
 
     def test_no_production_module_mentions_the_retired_name(self) -> None:
         assert not self._hits(_PACKAGE_ROOT), self._hits(_PACKAGE_ROOT)
@@ -246,6 +340,42 @@ class TestTheRetiredStateNameIsGoneFromTheTree:
             hit for hit in self._hits(_TESTS_ROOT) if Path(hit.split(":")[0]).name not in allowed
         ]
         assert not residual, residual
+
+    def test_the_doc_sweep_can_actually_see_a_hit(self) -> None:
+        """CONTROL. A widened sweep that matched nothing would make the two pins
+        below silently green — and this sweep's whole finding was that a scan
+        can be blind to the surface that matters."""
+        assert self._doc_hits(), (
+            "the widened doc sweep found NOTHING — either every quarantined line "
+            "was fixed (delete the quarantine) or the globs are broken"
+        )
+
+    def test_no_UNQUARANTINED_live_doc_teaches_the_retired_name(self) -> None:
+        """The pin that fires on a FIFTH instance."""
+        unquarantined = {
+            path: hits
+            for path, hits in self._doc_hits().items()
+            if path not in self.KNOWN_STALE_DOC_LINES
+        }
+        assert not unquarantined, (
+            f"live design/plan docs teach the RETIRED state name and are not "
+            f"quarantined: {unquarantined}. Rename to 'invalidated_remeasuring' "
+            f"(F4.1) or add a dated quarantine entry with the edit owed."
+        )
+
+    def test_every_QUARANTINED_doc_is_still_stale(self) -> None:
+        """⚠ THE HALF THAT MAKES A QUARANTINE A PIN RATHER THAN A SHRUG.
+
+        If a quarantined file no longer carries the corpse, somebody FIXED it —
+        good — and the entry is now a lie about the tree. Delete it. A quarantine
+        nobody prunes is how a bound gets silently inherited forever.
+        """
+        hits = self._doc_hits()
+        repaired = [path for path in self.KNOWN_STALE_DOC_LINES if path not in hits]
+        assert not repaired, (
+            f"quarantined doc(s) no longer carry the retired name: {repaired}. "
+            f"They were fixed — delete their KNOWN_STALE_DOC_LINES entries."
+        )
 
 
 class TestTheSchemaAppliesToTheLiveEngine:
@@ -406,6 +536,99 @@ class TestTheSchemaMigratesAnEXISTINGStore:
             f"SELECT state FROM type::record('{FLOOR_MEASUREMENT_TABLE}', 'legacy')",
         )
         assert rows and rows[0]["state"] == "measured"
+
+
+    async def test_the_LEASE_slice_migrates_a_NARROWED_field_on_an_existing_store(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """⚠ M14 — the lease slice had NO live migration leg at all.
+
+        The clause pins give the rule ∀ reach over both slices (they caught a
+        lease slice emitting ``DEFINE FIELD IF NOT EXISTS``), but a clause pin
+        reads TEXT; only a dirty store proves the text does what it claims. And
+        the lease row is the one row a long-lived deployment NEVER recreates —
+        every fixture in this repo mints a virgin database, which is structurally
+        why #107 passed 1040 tests and a cold audit.
+
+        ``holder_identity`` is the field under test on purpose: decision 23
+        requires it to accept NONE, so a narrowing that forbade NONE would break
+        ``release_if_held`` on exactly the stores that already have a lease row.
+        """
+        connection, _ = admin_db
+        await run(connection, generate_lease_ddl())
+
+        # Stand in for an OLDER deployed schema: a REQUIRED holder column.
+        await run(
+            connection,
+            f"DEFINE FIELD OVERWRITE holder_identity ON {LEASE_TABLE} TYPE string",
+        )
+        await run(
+            connection,
+            f"UPSERT type::record('{LEASE_TABLE}', '{LEASE_SINGLETON_ID}') "
+            f"CONTENT {{ holder_identity: 'pod-legacy', revision: 0, fence_epoch: 0 }}",
+        )
+        with pytest.raises(Exception):  # noqa: B017 - the narrow schema is really in force
+            await run(
+                connection,
+                f"UPDATE type::record('{LEASE_TABLE}', '{LEASE_SINGLETON_ID}') "
+                f"SET holder_identity = NONE",
+            )
+
+        await run(connection, generate_lease_ddl())  # what ensure_ready does at boot
+
+        # The widened definition LANDED …
+        await run(
+            connection,
+            f"UPDATE type::record('{LEASE_TABLE}', '{LEASE_SINGLETON_ID}') "
+            f"SET holder_identity = NONE",
+        )
+        # … and the pre-existing row survived rather than being recreated.
+        rows = await run(
+            connection,
+            f"SELECT revision, fence_epoch FROM "
+            f"type::record('{LEASE_TABLE}', '{LEASE_SINGLETON_ID}')",
+        )
+        assert rows and rows[0]["revision"] == 0
+
+    async def test_the_FLOOR_HEAD_slice_migrates_a_NARROWED_field_on_an_existing_store(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """⚠ M14, second table. The head row is the OTHER row a live deployment
+        never recreates — it is the adopted pointer, minted once per identity and
+        UPSERTed forever after."""
+        connection, _ = admin_db
+        await run(connection, generate_floor_calibration_ddl())
+
+        narrowed_scope = "'pooled'"
+        await run(
+            connection,
+            f"DEFINE FIELD OVERWRITE scope ON {FLOOR_HEAD_TABLE} "
+            f"TYPE string ASSERT $value IN [{narrowed_scope}]",
+        )
+        await run(
+            connection,
+            f"CREATE type::record('{FLOOR_HEAD_TABLE}', 'legacy_head') "
+            f"CONTENT {{ scope: 'pooled' }}",
+        )
+        with pytest.raises(Exception):  # noqa: B017
+            await run(
+                connection,
+                f"CREATE type::record('{FLOOR_HEAD_TABLE}', 'blocked_head') "
+                f"CONTENT {{ scope: 'tier:lore' }}",
+            )
+
+        await run(connection, generate_floor_calibration_ddl())
+
+        await run(
+            connection,
+            f"CREATE type::record('{FLOOR_HEAD_TABLE}', 'now_allowed_head') "
+            f"CONTENT {{ scope: 'tier:lore' }}",
+        )
+        rows = await run(
+            connection,
+            f"SELECT scope FROM type::record('{FLOOR_HEAD_TABLE}', 'legacy_head')",
+        )
+        assert rows and rows[0]["scope"] == "pooled"
 
 
 class TestNoMultiStatementDdlRidesABareQuery:

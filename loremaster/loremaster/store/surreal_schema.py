@@ -1787,7 +1787,10 @@ LEASE_TABLE = "lease"
 LEASE_SINGLETON_ID = "singleton"
 
 # The CLOSED, exactly-pinned engine state set (§7 + F4.1's rename). Every value
-# distinct; ``stale_remeasuring`` is RETIRED and must appear nowhere.
+# distinct, and the name F4.1 retired must appear nowhere in production — the
+# retired literal itself is NOT written here, because the corpse sweep in
+# ``test_floor_calibration_schema.py`` scans production source with a bare,
+# anchor-free pattern and a comment naming the corpse makes that pin RED.
 FLOOR_STATES: tuple[str, ...] = ()
 
 # The CLOSED, exactly-pinned non-adoption cause enum (F5). The two degeneracies

@@ -149,11 +149,16 @@ class SurrealLeaseStore:
         raise NotImplementedError("packet 11-i-a: SurrealLeaseStore._drop_connection")
 
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
-        """STUB. Delegates to ``store._txn.run_query`` — the ONE shared attempt body."""
+        """STUB. Delegates to ``store._txn.run_query`` — the ONE shared attempt body.
+
+        ⚠ FROZEN VALUES (lead ruling O2): ``label="lease.query.rejected"`` and
+        ``noun="lease query"``. ``test_retry_seam.py`` compares observed events
+        and nouns against two hand-written dicts as exact sets.
+        """
         raise NotImplementedError("packet 11-i-a: SurrealLeaseStore._query")
 
     async def close(self) -> None:
-        """STUB. Close the live connection (if any)."""
+        """STUB. Close the live connection (if any); tolerant of never-connected."""
         raise NotImplementedError("packet 11-i-a: SurrealLeaseStore.close")
 
     async def ensure_ready(self) -> None:
@@ -178,6 +183,13 @@ class SurrealLeaseStore:
             The new observation, or ``None`` when the row already existed —
             a LOST RACE with a defined meaning, which is NEVER retried (the
             ``scout.CommandSubscriber._mark`` defined-empty-result discipline).
+
+        Raises:
+            SurrealStoreError: ANY other rejection. ⚠ Only a DUPLICATE-id
+                rejection is a lost race. A build that reports every failure as
+                one passed the whole contract at 143/0 (adversary W26) — and a
+                run that silently "never leads" because its table is missing is
+                indistinguishable from a run that legitimately lost.
         """
         raise NotImplementedError("packet 11-i-a: SurrealLeaseStore.create_if_absent")
 
@@ -269,18 +281,36 @@ class SurrealLeaderLock:
         raise NotImplementedError("packet 11-i-a: SurrealLeaderLock.create")
 
     def update(self, name: str, namespace: str, updated_record: Any) -> bool:
-        """STUB. The CAS against the revision observed by the last :meth:`get`."""
+        """STUB. The CAS against the revision observed by the last :meth:`get`.
+
+        ⚠ It must CAS on the revision THIS lock observed at its last
+        :meth:`get`, never on a freshly re-read one. An adapter that re-reads
+        can never lose its CAS, which deletes the optimistic-concurrency token
+        entirely and re-opens the two-leaders window between get and update —
+        and it passed the whole contract at 143/0 (adversary W18).
+        """
         raise NotImplementedError("packet 11-i-a: SurrealLeaderLock.update")
 
     # -- the adapter-owned extras (NOT part of the library's surface) -------
 
     @property
     def fence_epoch(self) -> int | None:
-        """STUB. The fence epoch observed at the last successful write, or ``None``."""
+        """STUB. The fence epoch observed at the last successful write, or ``None``.
+
+        Updated after EVERY successful write — the first create, each renewal,
+        and a seize — not only the first (adversary residual 7). The engine's
+        fenced commit reads this on every run.
+        """
         raise NotImplementedError("packet 11-i-a: SurrealLeaderLock.fence_epoch")
 
     def release_if_held(self) -> bool:
-        """STUB. Ruled decision 23's graceful handoff, from the election thread."""
+        """STUB. Ruled decision 23's graceful handoff, from the election thread.
+
+        ⚠ It must ACTUALLY release. A build returning ``False`` unconditionally
+        passed the entire contract at 143/0 (adversary W29) while making
+        decision 23 a no-op — and the symptom is invisible in tests and costs a
+        full ``lease_duration`` of stalled maintenance on every rolling update.
+        """
         raise NotImplementedError("packet 11-i-a: SurrealLeaderLock.release_if_held")
 
     def stop(self) -> None:

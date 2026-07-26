@@ -33,7 +33,9 @@ asserted ABSENT here, with a bare pattern, and swept across the tree in
 
 from __future__ import annotations
 
+import orjson
 import pytest
+from loremaster.floor_calibration import domain as floor_domain
 from loremaster.floor_calibration.domain import (
     FLOOR_HEAD_ALWAYS_SERIALISED_AXES,
     FLOOR_HEAD_DEFAULTED_AXES,
@@ -41,6 +43,7 @@ from loremaster.floor_calibration.domain import (
     MIN_ANSWERED_PROBES,
     MIN_IDENTIFIER_PROBES,
     corpus_content_digest,
+    corpus_meets_validity_floors,
     head_identity,
 )
 from loremaster.index.records import sha512_hex
@@ -85,21 +88,24 @@ EXPECTED_DEFAULTED_AXES = {"query_shape": "any"}
 POOLED = {"scope": "pooled", "statistic": "cosine_floor"}
 
 
-def _reference_head_preimage(serialised: dict[str, str]) -> str:
-    """THE FROZEN READING of F6's "sorted ``(axis_name, value)`` pairs joined by
-    ``\\x00``": flatten each pair in order and join every element with ``\\x00``.
+def _reference_head_preimage(serialised: dict[str, str]) -> bytes:
+    """THE pre-image, under operator ruling O1: ``orjson.dumps`` with
+    ``OPT_SORT_KEYS``.
 
-    Three lines, in the test, on purpose — a golden digest with no visible
+    One line, in the test, on purpose — a golden digest with no visible
     derivation is a number nobody can check, and F6 records that changing this
     encoding after the table ships is a record-identity MIGRATION, not a
-    refactor. (The alternative reading — an intra-pair separator distinct from
-    the inter-pair one — is escalated in the contract report; it produces a
-    different frozen id and must be settled before the table ships.)
+    refactor.
+
+    ⚠ WHY THIS REPLACED A HAND-ROLLED ``\x00`` JOIN, because the reasoning is
+    the point and not the diff: the bespoke encoding needed a NUL-refusal guard,
+    a distinctness matrix built to defeat separator-naive joins, AND an
+    escalation to rule which of two readings mints the identity. JSON admits one
+    reading. The ambiguity was manufactured by the hand-roll (adversary P-PKG
+    rows 8/9 — the two identity encodings had no package row at all, in the
+    packet whose governing law is packages-over-hand-rolling).
     """
-    flattened: list[str] = []
-    for name, value in sorted(serialised.items()):
-        flattened.extend((name, value))
-    return "\x00".join(flattened)
+    return orjson.dumps(serialised, option=orjson.OPT_SORT_KEYS)
 
 
 class TestTheStateSetIsClosedAndExact:
@@ -129,7 +135,13 @@ class TestTheStateSetIsClosedAndExact:
         )
 
     def test_the_states_are_a_tuple_not_a_mutable_set(self) -> None:
-        """A closed domain that a caller can mutate at runtime is not closed."""
+        """A closed domain that a caller can mutate at runtime is not closed.
+
+        The non-emptiness clause is the SIXTH such guard, added after the
+        adversary found this pin green over ``()`` — `isinstance((), tuple)` is
+        true, so it certified nothing about the stub state.
+        """
+        assert FLOOR_STATES, "FLOOR_STATES is empty — this pin would be vacuous"
         assert isinstance(FLOOR_STATES, tuple)
 
 
@@ -201,10 +213,11 @@ class TestHeadIdentityIsAFrozenFunctionOfItsAxes:
         ``_reference_head_preimage`` to match its own encoding still has to
         explain a changed literal, which is the migration this pin exists to
         make visible."""
+        assert _reference_head_preimage(POOLED) == b'{"scope":"pooled","statistic":"cosine_floor"}'
         expected = sha512_hex(_reference_head_preimage(POOLED))
         assert expected == (
-            "c52fce03d1fb6186eb0953bb8c7892e49dde62a39f43988d7de07995052882b9"
-            "0ab917367531c271d9644375cea7ed51e671ef0c94d21a984d2da80edaf148cf"
+            "115284fbe56ca65fa8547f3e611bb446dcd388b80bdbb3d752a76b719e1d8555"
+            "12e86b73b11b186279ed25d0a1007d84c9fb88f0b328552b66863f893521a2d8"
         ), "the in-test reference encoding drifted from the frozen id"
         assert head_identity(POOLED) == expected
 
@@ -260,6 +273,13 @@ class TestHeadIdentityIsAFrozenFunctionOfItsAxes:
             {"scope": "", "statistic": "cosine_floor"},
             {"scope": "pooled", "statistic": ""},
             {"scope": "pooled ", "statistic": "cosine_floor"},
+            # ⚠ THE FORGERY ROW, kept after O1 retired the NUL-refusal guard.
+            # Under the bespoke `\x00` join this value could splice a second
+            # axis into the pre-image and a REFUSAL was the guard; under JSON,
+            # NUL is escaped (`\u0000` — probed) so the forgery is impossible by
+            # construction. The PROPERTY is what we depend on, so it stays
+            # pinned here rather than dying with the encoding that needed it.
+            {"scope": "pooled\x00statistic\x00forged", "statistic": "x"},
         ]
         identities = [head_identity(axes) for axes in mappings]
         assert len(set(identities)) == len(mappings), (
@@ -284,14 +304,6 @@ class TestHeadIdentityIsAFrozenFunctionOfItsAxes:
         head nothing can ever resolve again, silently."""
         with pytest.raises(ValueError):
             head_identity({**POOLED, "embedder": "voyage-4-nano"})
-
-    def test_a_value_carrying_the_PREIMAGE_SEPARATOR_is_REFUSED(self) -> None:
-        """A hostile fixture, and the reason the guard is a refusal rather than
-        an escape: a value able to contain the separator can splice a forged
-        axis into the pre-image. Refusing is checkable; escaping is one more
-        encoding nobody pins."""
-        with pytest.raises(ValueError):
-            head_identity({"scope": "pooled\x00statistic\x00forged", "statistic": "x"})
 
     def test_a_NON_STRING_axis_value_is_REFUSED(self) -> None:
         """``str()``-coercing a value would make ``1`` and ``"1"`` the same head."""
@@ -360,6 +372,29 @@ class TestCorpusContentDigest:
             [self._row("a", "bc")]
         )
 
+    def test_RELOCATION_alone_changes_the_digest(self) -> None:
+        """⚠ M2 — THE DOOR THE ADVERSARY WALKED THROUGH (W5), measured.
+
+        Two corpora with IDENTICAL content hashes and DIFFERENT ``point_id``s:
+        a renamed symbol, or a moved file. C10's contract is *"equal ⇔ zero
+        chunks added, removed, or edited ⇔ skip"*, so membership churn with
+        unchanged content MUST move the digest — otherwise 11-ii's exact-skip
+        skips a re-measure on a corpus that moved, and every other digest pin
+        in this class stays green because each of them varies ``content_hash``
+        and NONE of them varies ``point_id`` alone.
+
+        A build that reads ``point_id`` and discards it produced a byte-identical
+        digest across this fixture (`4e712e37…` before and after); the reference
+        build did not (`ea57143a…` → `73ddebb9…`).
+        """
+        before = [self._row("pkg/old.py::Thing.method", "h1"), self._row("pkg/b.py::X", "h2")]
+        after = [self._row("pkg/new.py::Thing.method", "h1"), self._row("pkg/c.py::X", "h2")]
+        assert [row["content_hash"] for row in before] == [row["content_hash"] for row in after], (
+            "the fixture must hold every content hash FIXED — otherwise a "
+            "content-only digest would pass it and it would prove nothing"
+        )
+        assert corpus_content_digest(before) != corpus_content_digest(after)
+
     def test_a_row_missing_a_required_field_RAISES(self) -> None:
         """Never a silent empty-string substitution: that would make a corpus
         with an unset ``content_hash`` digest-identical to one without the row."""
@@ -384,3 +419,78 @@ class TestTheValidityFloorsArePreRegistered:
         that happen to be equal make a build reading the wrong one indetectable.
         """
         assert MIN_IDENTIFIER_PROBES != MIN_ANSWERED_PROBES
+
+
+class TestTheValidityFloorsAreACTUALLYCONSUMED:
+    """⚠ M13 — before this class the three floors were pinned as VALUES that
+    NOTHING READ (`grep MIN_` matched only the two assertions above), so a build
+    could hard-code 30/15/30 at a call site, or read the wrong one of the three,
+    with every pin green. The lead's E4 ruling asserted these were "already
+    pinned"; that clause was withdrawn, and this class is what makes it true.
+
+    Boundaries are cap−1 / cap / cap+1 on EACH axis independently, which is also
+    what catches an off-by-one in the comparison operator.
+    """
+
+    @staticmethod
+    def _call(*, answered: int, identifier: int, absent: int) -> bool:
+        return corpus_meets_validity_floors(
+            answered_probes=answered, identifier_probes=identifier, absent_samples=absent
+        )
+
+    def test_a_corpus_exactly_AT_every_floor_is_sufficient(self) -> None:
+        """AT the floor, not above it: F4.2 says "≥", and a ">" reads identically
+        in prose while rejecting a corpus the design accepts."""
+        assert self._call(
+            answered=MIN_ANSWERED_PROBES,
+            identifier=MIN_IDENTIFIER_PROBES,
+            absent=MIN_ABSENT_SAMPLES,
+        )
+
+    def test_a_corpus_ABOVE_every_floor_is_sufficient(self) -> None:
+        assert self._call(
+            answered=MIN_ANSWERED_PROBES + 1,
+            identifier=MIN_IDENTIFIER_PROBES + 1,
+            absent=MIN_ABSENT_SAMPLES + 1,
+        )
+
+    def test_ONE_short_answered_probe_is_insufficient(self) -> None:
+        assert not self._call(
+            answered=MIN_ANSWERED_PROBES - 1,
+            identifier=MIN_IDENTIFIER_PROBES,
+            absent=MIN_ABSENT_SAMPLES,
+        )
+
+    def test_ONE_short_identifier_probe_is_insufficient(self) -> None:
+        """The axis a build reading the WRONG constant gets wrong: 15 is the odd
+        one out, so a build that used ``MIN_ANSWERED_PROBES`` everywhere passes
+        the other two legs and fails only here."""
+        assert not self._call(
+            answered=MIN_ANSWERED_PROBES,
+            identifier=MIN_IDENTIFIER_PROBES - 1,
+            absent=MIN_ABSENT_SAMPLES,
+        )
+
+    def test_ONE_short_absent_sample_is_insufficient(self) -> None:
+        assert not self._call(
+            answered=MIN_ANSWERED_PROBES,
+            identifier=MIN_IDENTIFIER_PROBES,
+            absent=MIN_ABSENT_SAMPLES - 1,
+        )
+
+    def test_the_predicate_READS_the_constants_rather_than_re_typing_them(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PROVE SHARING BY MUTATION — the only test that distinguishes reading
+        the constant from hard-coding its current value. Raise the answered floor
+        and a corpus that was sufficient must stop being sufficient.
+        """
+        monkeypatch.setattr(floor_domain, "MIN_ANSWERED_PROBES", MIN_ANSWERED_PROBES + 50)
+        assert not self._call(
+            answered=MIN_ANSWERED_PROBES,
+            identifier=MIN_IDENTIFIER_PROBES,
+            absent=MIN_ABSENT_SAMPLES,
+        ), (
+            "raising MIN_ANSWERED_PROBES changed no verdict — the predicate "
+            "hard-codes the floor instead of reading it"
+        )

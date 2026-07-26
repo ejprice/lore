@@ -61,12 +61,14 @@ from loremaster.floor_calibration.store import (
     FloorCalibrationStore,
     LeaseFence,
 )
+from loremaster.store._txn import SurrealStoreError
 from loremaster.store.surreal import (
     CALIBRATION_POOL_COLUMNS,
     CalibrationPoolCountMismatchError,
     CalibrationPoolTruncatedError,
     SurrealStore,
 )
+from test_floor_calibration_domain import EXPECTED_FLOOR_STATES
 
 POOLED: Mapping[str, str] = {"scope": "pooled", "statistic": "cosine_floor"}
 TIER_SCOPED: Mapping[str, str] = {"scope": "tier:lore", "statistic": "cosine_floor"}
@@ -81,6 +83,7 @@ def _measurement(
     state: str = "measured",
     floor: float = 0.5,
     non_adoption_cause: str | None = None,
+    note: str | None = None,
     corpus_content_digest_value: str = "0" * 128,
     adopted_n: int = 200,
 ) -> dict[str, Any]:
@@ -90,8 +93,13 @@ def _measurement(
     every pin that cares passes its own value explicitly. Repo law — a fixture
     factory must not default a parameter the code BRANCHES on, because that is
     exactly how a render suite came to test only the one value for which its
-    prose was true. ``non_adoption_cause`` has NO default value that is ever
-    silently correct: ``None`` is meaningful (adopted) and each caller says so.
+    prose was true.
+
+    ``non_adoption_cause`` and ``note`` default to ``None``, and that default is
+    CORRECT rather than convenient: F5's typed cause appears ONLY on
+    ``measured_not_adopted``, and §7 makes ``note`` mandatory ONLY when the state
+    is not ``measured`` — so ``None`` is the one legal value for the default
+    state, and every call that departs from it says so.
     """
     return {
         "floor": floor,
@@ -99,6 +107,7 @@ def _measurement(
         "ci_high": floor + 0.01,
         "state": state,
         "non_adoption_cause": non_adoption_cause,
+        "note": note,
         "adopted_n": adopted_n,
         "instrument_version": "11-i-a-contract",
         "corpus_content_digest": corpus_content_digest_value,
@@ -180,6 +189,76 @@ async def _seed_chunks(store: SurrealStore, count: int, *, dim: int, tier: str =
     await store.upsert(records)
 
 
+
+
+class _RoundTrips:
+    """Counts a live connection's SDK round-trips, and can fire a hook between them.
+
+    ⚠ IT PATCHES ``query_raw`` **ONLY**, and that is a MEASURED correction rather
+    than a simplification: the SDK's ``query()`` is a thin wrapper that CALLS
+    ``query_raw()`` and then checks ``result[0]``
+    (``surrealdb.connections.async_ws.AsyncWsSurrealConnection.query``, read
+    2026-07-26). Patching both counts every single-statement call TWICE, which
+    is how the first version of this helper reported "2 round-trips" for a CAS
+    that issues exactly one. ``query_raw`` is the one true wire boundary and it
+    sees the transactional path as well.
+
+    ⚠ WHY INTERCEPT AT THE CONNECTION rather than at the ledger's own methods:
+    every statement in this package must ride ``_txn`` (pinned separately), so
+    the connection is the one place every round-trip must pass. It makes no
+    assumption about how the ledger imports, names, or composes its helpers.
+    """
+
+    def __init__(self) -> None:
+        self.round_trips = 0
+        self.hook_fired = False
+
+    def install(
+        self,
+        connection: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        before_call_number: int | None = None,
+        hook: Any = None,
+    ) -> None:
+        """Wrap ``connection``'s wire entry point.
+
+        Args:
+            before_call_number: 1-based index of the round-trip to fire ``hook``
+                immediately BEFORE. ``None`` disables the hook entirely.
+        """
+        original_query_raw = connection.query_raw
+
+        async def counted(*args: Any, **kwargs: Any) -> Any:
+            if (
+                hook is not None
+                and before_call_number is not None
+                and self.round_trips + 1 == before_call_number
+                and not self.hook_fired
+            ):
+                self.hook_fired = True
+                await hook()
+            self.round_trips += 1
+            return await original_query_raw(*args, **kwargs)
+
+        monkeypatch.setattr(connection, "query_raw", counted)
+
+
+async def _lease_store(env: SurrealEnv) -> Any:
+    """A ready lease store on the same database (its own connection)."""
+    from loremaster.store.lease import SurrealLeaseStore  # noqa: PLC0415
+
+    store = SurrealLeaseStore(
+        url=env.url,
+        namespace=env.namespace,
+        database=env.database,
+        user=env.user,
+        password=env.password,
+    )
+    await store.ensure_ready()
+    return store
+
+
 # =============================================================================
 # 1. THE SEAM ITSELF.
 # =============================================================================
@@ -204,11 +283,53 @@ class TestTheLedgerIsAConventionalSeam:
 
         assert _construct(FloorCalibrationStore) is not None
 
+    def test_the_seam_is_discovered_as_a_SOCKET_OWNER_too(self) -> None:
+        """⚠ A SECOND inherited enumeration, and it is invisible until the seam is
+        BUILT — which is exactly why it is pinned here rather than discovered by
+        a builder.
+
+        ``test_retry_seam.py`` has a separate scan for classes whose
+        ``_ensure_connection`` CONSTRUCTS a socket, and it parametrises the
+        "N concurrent first-callers open exactly ONE socket" pin over them.
+        Against the stub those two node ids do not even COLLECT (the stub
+        constructs nothing), so the seam silently gains two pins the moment the
+        builder writes the double-checked-locking connect — measured: the same
+        file collects 559 ids against the stub and 561 against a correct build.
+
+        A pin that appears out of nowhere is the benign direction of the B1
+        class; naming it here means the builder MEETS the obligation
+        (double-checked lock, one socket per owner) instead of tripping over it.
+        """
+        from test_retry_seam import _discover_socket_owners  # noqa: PLC0415
+
+        assert "FloorCalibrationStore" in {name for _, name in _discover_socket_owners()}, (
+            "FloorCalibrationStore is not in the socket-owner enumeration — its "
+            "`_ensure_connection` must construct its own connection under a "
+            "double-checked lock, like every other owner in the package"
+        )
+
     async def test_ensure_ready_twice_does_not_raise(
         self, floor_store: FloorCalibrationStore
     ) -> None:
         await floor_store.ensure_ready()
         await floor_store.ensure_ready()
+
+    async def test_close_tolerates_a_NEVER_CONNECTED_ledger(
+        self, floor_env: SurrealEnv
+    ) -> None:
+        """Promised in the stub's docstring and pinned by nothing (adversary
+        residual 9). A build that raised here would surface only as teardown
+        noise attributed to whichever test happened to run last — the hardest
+        kind of failure to attribute."""
+        store = FloorCalibrationStore(
+            url=floor_env.url,
+            namespace=floor_env.namespace,
+            database=floor_env.database,
+            user=floor_env.user,
+            password=floor_env.password,
+        )
+        await store.close()  # never connected — must not raise
+        await store.close()  # and twice
 
 
 class TestNoPrivateRetryPolicyLivesInThisPackage:
@@ -305,6 +426,41 @@ class TestRowsAreAppendOnly:
         assert len(history) == 2
         assert {round(float(row["floor"]), 2) for row in history} == {0.40, 0.55}
 
+    async def test_history_honours_a_limit_BELOW_the_row_count(
+        self, floor_store: FloorCalibrationStore
+    ) -> None:
+        """⚠ M6 — PARAMETER-VALUE MONOCULTURE, measured. EVERY other
+        ``measurement_history`` call in this contract passes a ``limit`` GREATER
+        than the row count (``limit=10`` over ≤2 rows; ``limit=expected+10``), so
+        a build that IGNORES ``limit`` entirely passed at 143 / 0. The code
+        branches on ``limit``; at least one pin must use a value that
+        discriminates.
+        """
+        for index in range(4):
+            await floor_store.record_measurement(
+                axes=POOLED,
+                measurement=_measurement(state="measured", floor=0.40 + index / 100),
+                adopt=True,
+            )
+        assert len(await floor_store.measurement_history(POOLED, limit=2)) == 2
+
+    async def test_history_is_NEWEST_FIRST(
+        self, floor_store: FloorCalibrationStore
+    ) -> None:
+        """⚠ M6, second half. The order was unpinned, so an ASCENDING build
+        passed — and combined with a working ``limit`` that hands 11-i-b's F6
+        tuning read the OLDEST rows while calling them the latest history.
+        """
+        for index in range(3):
+            await floor_store.record_measurement(
+                axes=POOLED,
+                measurement=_measurement(state="measured", floor=0.40 + index / 100),
+                adopt=True,
+            )
+        floors = [round(float(row["floor"]), 2) for row in
+                  await floor_store.measurement_history(POOLED, limit=3)]
+        assert floors == [0.42, 0.41, 0.40], f"history is not newest-first: {floors}"
+
     async def test_history_is_scoped_to_its_OWN_head(
         self, floor_store: FloorCalibrationStore
     ) -> None:
@@ -318,6 +474,62 @@ class TestRowsAreAppendOnly:
         )
         assert len(await floor_store.measurement_history(POOLED, limit=10)) == 1
         assert len(await floor_store.measurement_history(TIER_SCOPED, limit=10)) == 1
+
+
+class TestTheRowPersistsTheFieldsTheDesignNAMES:
+    """⚠ M9 — a payload key that reaches no column is silently dropped, and the
+    lead's E4 ruling asserted ``adopted_n`` was "already pinned". It was not:
+    it appeared only as a fixture kwarg, so a build that strips it before the
+    write passed the whole contract at 143 / 0.
+
+    F4.3 is explicit that the row records the **ACTUAL** adopted subsample size,
+    never a nominal rung — which is exactly the number a dropped column loses.
+    """
+
+    async def test_adopted_n_round_trips(self, floor_store: FloorCalibrationStore) -> None:
+        await floor_store.record_measurement(
+            axes=POOLED,
+            measurement=_measurement(state="measured", adopted_n=137),
+            adopt=True,
+        )
+        row = (await floor_store.measurement_history(POOLED, limit=1))[0]
+        assert int(row["adopted_n"]) == 137, (
+            "adopted_n did not survive the write — F4.3's 'the ACTUAL adopted "
+            "subsample, never a nominal rung' is unrecoverable once dropped"
+        )
+
+    async def test_adopted_n_is_NOT_snapped_to_a_ladder_rung(
+        self, floor_store: FloorCalibrationStore
+    ) -> None:
+        """The discriminating value: 137 is not a member of ``[50,100,200,400…]``.
+        A build that normalised it to the nearest rung would pass a fixture using
+        200 and lose exactly the fact F4.3 exists to preserve."""
+        await floor_store.record_measurement(
+            axes=POOLED,
+            measurement=_measurement(state="measured", adopted_n=137),
+            adopt=True,
+        )
+        row = (await floor_store.measurement_history(POOLED, limit=1))[0]
+        assert int(row["adopted_n"]) not in (50, 100, 200, 400)
+
+    async def test_the_note_round_trips_for_a_non_measured_state(
+        self, floor_store: FloorCalibrationStore
+    ) -> None:
+        """E5: ``note`` is a DISTINCT field from ``non_adoption_cause`` — free
+        text following §7's rule, where the cause is F5's typed enum."""
+        await floor_store.record_measurement(
+            axes=POOLED,
+            measurement=_measurement(
+                state="measured_not_adopted",
+                non_adoption_cause="catch_bar_unmet",
+                note="catch 0.41 below the 0.60 bar at N=200",
+            ),
+            adopt=False,
+        )
+        row = (await floor_store.measurement_history(POOLED, limit=1))[0]
+        assert row["note"] == "catch 0.41 below the 0.60 bar at N=200"
+        assert row["non_adoption_cause"] == "catch_bar_unmet"
+        assert row["note"] != row["non_adoption_cause"]
 
 
 class TestTheAdoptedHead:
@@ -361,6 +573,7 @@ class TestTheAdoptedHead:
                 state="measured_not_adopted",
                 floor=0.90,
                 non_adoption_cause="catch_bar_unmet",
+                note="catch bar unmet at the evaluated rung",
             ),
             adopt=False,
         )
@@ -375,12 +588,72 @@ class TestTheAdoptedHead:
         receipt = await floor_store.record_measurement(
             axes=POOLED,
             measurement=_measurement(
-                state="measured_not_adopted", non_adoption_cause="head_retained_overlap"
+                state="measured_not_adopted",
+                non_adoption_cause="head_retained_overlap",
+                note="fresh measurement not distinguishable from the adopted head",
             ),
             adopt=False,
         )
         assert receipt.adopted is False
         assert receipt.head_revision is None
+
+    async def test_the_head_revision_does_NOT_move_across_a_REFUSED_measurement(
+        self, floor_store: FloorCalibrationStore
+    ) -> None:
+        """⚠ M3 — THE ARITHMETIC PIN THAT WAS FOOLED BY ITS OWN FIXTURE (W25).
+
+        ``test_each_adoption_advances_the_head_revision_by_exactly_one`` runs
+        THREE CONSECUTIVE ADOPTIONS, so "+1 per adoption" and "+1 per
+        measurement" are the same number — the arithmetic-alignment class this
+        repo has now hit five times. And the non-adopted-head pin checks
+        ``measurement_id`` and the history length, never ``revision``. So a build
+        whose head revision advances on EVERY measurement passed the whole
+        contract at 143 / 0.
+
+        ADOPT → REFUSE → ADOPT must move the revision by exactly ONE, and the
+        refusal must sit BETWEEN the two adoptions: that is the only ordering in
+        which the two readings differ.
+        """
+        first = await floor_store.record_measurement(
+            axes=POOLED, measurement=_measurement(state="measured", floor=0.40), adopt=True
+        )
+        await floor_store.record_measurement(
+            axes=POOLED,
+            measurement=_measurement(
+                state="measured_not_adopted",
+                floor=0.91,
+                non_adoption_cause="catch_bar_unmet",
+                note="refused between two adoptions — the head must not move",
+            ),
+            adopt=False,
+        )
+        second = await floor_store.record_measurement(
+            axes=POOLED, measurement=_measurement(state="measured", floor=0.41), adopt=True
+        )
+        assert first.head_revision is not None and second.head_revision is not None
+        assert second.head_revision == first.head_revision + 1, (
+            f"the head revision moved by {second.head_revision - first.head_revision} across "
+            f"adopt→refuse→adopt; it counts MEASUREMENTS, not ADOPTIONS"
+        )
+        head = await floor_store.read_adopted_head(POOLED)
+        assert head is not None and head.revision == second.head_revision
+
+    async def test_a_LONE_refused_measurement_leaves_the_head_UNMEASURED(
+        self, floor_store: FloorCalibrationStore
+    ) -> None:
+        """M3's companion (the adversary's P2D perturbation): with no prior
+        adoption there is no head to "retain", so a build that mints one anyway
+        serves a floor that was never adopted at all."""
+        await floor_store.record_measurement(
+            axes=POOLED,
+            measurement=_measurement(
+                state="measured_not_adopted",
+                non_adoption_cause="stability_gate_unmet",
+                note="no qualifying rung",
+            ),
+            adopt=False,
+        )
+        assert await floor_store.read_adopted_head(POOLED) is None
 
     async def test_each_adoption_advances_the_head_revision_by_exactly_one(
         self, floor_store: FloorCalibrationStore
@@ -449,7 +722,9 @@ class TestTheStateAndCauseDomainIsValidatedBeforeAnyIo:
             await floor_store.record_measurement(
                 axes=POOLED,
                 measurement=_measurement(
-                    state="measured_not_adopted", non_adoption_cause="floor_looked_wrong"
+                    state="measured_not_adopted",
+                    non_adoption_cause="floor_looked_wrong",
+                    note="an unknown cause must be refused whatever the note says",
                 ),
                 adopt=False,
             )
@@ -463,7 +738,9 @@ class TestTheStateAndCauseDomainIsValidatedBeforeAnyIo:
         with pytest.raises(ValueError):
             await floor_store.record_measurement(
                 axes=POOLED,
-                measurement=_measurement(state="measured_not_adopted", non_adoption_cause=None),
+                measurement=_measurement(
+                    state="measured_not_adopted", non_adoption_cause=None, note="no cause given"
+                ),
                 adopt=False,
             )
 
@@ -481,6 +758,41 @@ class TestTheStateAndCauseDomainIsValidatedBeforeAnyIo:
                 ),
                 adopt=True,
             )
+
+    @pytest.mark.parametrize(
+        "state", [state for state in EXPECTED_FLOOR_STATES if state != "measured"]
+    )
+    async def test_EVERY_non_measured_state_REQUIRES_a_note(
+        self, floor_store: FloorCalibrationStore, state: str
+    ) -> None:
+        """⚠ E5's five owed pins, written ∀ over the state set rather than as a
+        hand-list — so a state ADDED to the closed domain inherits the rule
+        instead of quietly escaping it.
+
+        ``note`` is FREE TEXT and is NOT ``non_adoption_cause``: §7 makes the
+        note mandatory unless the state is ``measured``, while F5's typed cause
+        appears only on ``measured_not_adopted``. Conflating them would force a
+        bogus enum value onto every in-progress row — the same projection the
+        two-degeneracy split exists to forbid.
+        """
+        cause = "catch_bar_unmet" if state == "measured_not_adopted" else None
+        with pytest.raises(ValueError):
+            await floor_store.record_measurement(
+                axes=POOLED,
+                measurement=_measurement(state=state, non_adoption_cause=cause, note=None),
+                adopt=False,
+            )
+
+    async def test_a_measured_row_needs_NO_note(
+        self, floor_store: FloorCalibrationStore
+    ) -> None:
+        """The other side of §7's rule, and the reason the pin above is not just
+        "every row needs a note": a build demanding one everywhere would reject
+        the ONE state the engine spends its life in."""
+        receipt = await floor_store.record_measurement(
+            axes=POOLED, measurement=_measurement(state="measured", note=None), adopt=True
+        )
+        assert receipt.adopted is True
 
     async def test_a_refused_row_LANDS_NOTHING(
         self, floor_store: FloorCalibrationStore
@@ -506,11 +818,12 @@ class TestTheFencedCommit:
     lost race — never retried, never silently swallowed, and never confused with
     the retry driver's own exhaustion.
 
-    ⚠ The property is pinned ∀: EVERY fate is forced by a fixture (fence held /
-    fence moved / no fence at all), and the "nothing landed" leg checks BOTH the
-    history and the head, because a build that appended the row and refused only
-    the head advance would pass a raise-only pin while corrupting the record
-    11-ii's exact-skip compares against.
+    ⚠ The property is pinned ∀: EVERY fate is forced by a fixture (no fence /
+    fence held / fence moved / no lease ROW / no lease TABLE / a rollback under
+    an intact fence / a fence that moves MID-COMMIT), and every "nothing landed"
+    leg checks BOTH the history and the head, because a build that appended the
+    row and refused only the head advance would pass a raise-only pin while
+    corrupting the record 11-ii's exact-skip compares against.
     """
 
     async def test_an_UNFENCED_commit_lands(
@@ -525,16 +838,7 @@ class TestTheFencedCommit:
     async def test_a_commit_under_the_HELD_fence_lands(
         self, floor_env: SurrealEnv, floor_store: FloorCalibrationStore
     ) -> None:
-        from loremaster.store.lease import SurrealLeaseStore  # noqa: PLC0415
-
-        lease = SurrealLeaseStore(
-            url=floor_env.url,
-            namespace=floor_env.namespace,
-            database=floor_env.database,
-            user=floor_env.user,
-            password=floor_env.password,
-        )
-        await lease.ensure_ready()
+        lease = await _lease_store(floor_env)
         try:
             observation = await lease.create_if_absent(
                 holder_identity="pod-a", lease_duration="15", acquire_time="t", renew_time="t"
@@ -555,16 +859,7 @@ class TestTheFencedCommit:
     async def test_a_commit_under_a_MOVED_fence_is_refused_and_lands_NOTHING(
         self, floor_env: SurrealEnv, floor_store: FloorCalibrationStore
     ) -> None:
-        from loremaster.store.lease import SurrealLeaseStore  # noqa: PLC0415
-
-        lease = SurrealLeaseStore(
-            url=floor_env.url,
-            namespace=floor_env.namespace,
-            database=floor_env.database,
-            user=floor_env.user,
-            password=floor_env.password,
-        )
-        await lease.ensure_ready()
+        lease = await _lease_store(floor_env)
         try:
             observation = await lease.create_if_absent(
                 holder_identity="pod-a", lease_duration="15", acquire_time="t", renew_time="t"
@@ -594,35 +889,295 @@ class TestTheFencedCommit:
         finally:
             await lease.close()
 
-    async def test_a_commit_with_NO_lease_row_at_all_is_refused_when_fenced(
-        self, floor_store: FloorCalibrationStore
+    async def test_a_commit_with_NO_lease_ROW_is_refused_when_fenced(
+        self, floor_env: SurrealEnv, floor_store: FloorCalibrationStore
     ) -> None:
-        """A fence naming an epoch nothing holds must not be treated as "no
-        fence to check". Silently succeeding here is how a fenced build degrades
-        into an unfenced one without any diff."""
-        with pytest.raises(FenceLostError):
+        """⚠ B2's FIXTURE DEFECT, fixed under ruling (b): the lease TABLE exists,
+        the lease ROW does not — which is what the pin's own name claims.
+
+        As written, this fixture gave the ledger no lease TABLE at all, and on
+        SurrealDB 3.2.1 a read from an undeclared table RAISES
+        (``NotFoundError: The table 'lease' does not exist``) rather than
+        returning ``[]``. So E2's own rider — *"if the confirming read fails,
+        re-raise the original untouched"* — CONTRADICTED this pin, and the only
+        build that satisfied both had ``FloorCalibrationStore.ensure_ready()``
+        silently emitting the LEASE slice: an undisclosed cross-slice coupling
+        no pin required and nobody would have found later. The table-absence
+        case is a real third fate and now has its own pin, below.
+
+        A fence naming an epoch nothing holds must not be treated as "no fence
+        to check": silently succeeding is how a fenced build degrades into an
+        unfenced one with no diff.
+        """
+        lease = await _lease_store(floor_env)  # creates the TABLE, not the ROW
+        try:
+            assert await lease.read() is None
+            with pytest.raises(FenceLostError):
+                await floor_store.record_measurement(
+                    axes=POOLED,
+                    measurement=_measurement(state="measured"),
+                    adopt=True,
+                    fence=LeaseFence(holder_identity="pod-a", fence_epoch=7),
+                )
+            assert await floor_store.measurement_history(POOLED, limit=10) == []
+            assert await floor_store.read_adopted_head(POOLED) is None
+        finally:
+            await lease.close()
+
+    async def test_a_commit_whose_CONFIRMING_READ_CANNOT_COMPLETE_re_raises_untouched(
+        self, floor_env: SurrealEnv, floor_store: FloorCalibrationStore
+    ) -> None:
+        """⚠ M5 — E2's THIRD FATE, and the rider that had no instrument.
+
+        E2 rules that a lost fence is classified from STORE STATE (never from
+        engine message text — #118 and #111 are the receipts). Its rider is the
+        half that gets dropped: *"if the confirming read itself fails, re-raise
+        the original error untouched — never report ``FenceLostError`` on the
+        strength of a read it could not complete."* A classifier whose
+        evidence-gathering step can fail silently is the same defect one level
+        up.
+
+        Forced by REMOVING the lease table after both slices are ready, so the
+        confirming read raises rather than returning a row. The requirement is
+        the DIRECTION: whatever surfaces, it must not be ``FenceLostError``, and
+        it must not be swallowed.
+        """
+        lease = await _lease_store(floor_env)
+        await lease.close()
+        admin = await connect_admin(floor_env)
+        try:
+            await admin.query("REMOVE TABLE IF EXISTS lease")
+        finally:
+            await admin.close()
+
+        with pytest.raises(Exception) as caught:  # noqa: B017 - the TYPE is the assertion
             await floor_store.record_measurement(
                 axes=POOLED,
                 measurement=_measurement(state="measured"),
                 adopt=True,
                 fence=LeaseFence(holder_identity="pod-a", fence_epoch=7),
             )
+        assert not isinstance(caught.value, FenceLostError), (
+            "a fenced commit whose confirming read CANNOT COMPLETE reported "
+            "FenceLostError anyway — the classifier drew a conclusion from "
+            "evidence it never obtained (E2's rider)"
+        )
+        assert await floor_store.measurement_history(POOLED, limit=10) == []
 
-    async def test_a_NON_fence_failure_keeps_its_OWN_type(
-        self, floor_store: FloorCalibrationStore
+    @pytest.mark.parametrize(
+        "payload,why",  # ASCII-only ids — see the note on the poison parametrise below
+        [
+            (
+                {"not_a_declared_column": "x"},
+                "undeclared-top-level-key"  # SCHEMAFULL tables RAISE — store ref section 1.7,
+            ),
+            (
+                # ⚠ ``ci_low`` on purpose, NOT ``adopted_n``: the first version
+                # of this leg poisoned ``adopted_n``, which M9 also asserts
+                # round-trips — so a build that STRIPS payload keys reddened both
+                # pins and a mutation proof's declared set had to name two
+                # unrelated failures. Poisoning a column nothing else pins keeps
+                # the two diagnoses independent.
+                {"ci_low": "not-a-float"},
+                "wrong-typed-float"  # a field-coercion rejection,
+            ),
+        ],
+    )
+    async def test_a_STORE_rejection_under_an_INTACT_fence_keeps_its_OWN_type(
+        self,
+        floor_env: SurrealEnv,
+        floor_store: FloorCalibrationStore,
+        payload: dict[str, Any],
+        why: str,
     ) -> None:
-        """The other direction, and the reason ``FenceLostError`` must be
-        established from STORE STATE rather than from an engine message: a
-        domain rejection under an INTACT fence must surface as itself, or every
-        real defect on this path gets reported as a benign lost race.
+        """⚠ M4 — THE PIN THAT NAMED THE DEFECT AND NEVER REACHED THE CODE.
+
+        The previous version of this pin passed ``state="nearly_measured"``,
+        which the ledger's own validator refuses BEFORE ANY I/O — so the fence
+        classifier was never entered, and a build translating EVERY rollback into
+        ``FenceLostError`` passed at 143 / 0 (adversary W31). Its docstring
+        promised a check over the classifier; the assertion never got there. That
+        is a false gate in the exact shape this repo instruments.
+
+        Both cases here reach the STORE with the fence INTACT, and two levers
+        rather than one on purpose: a build that silently strips unknown keys
+        (itself a defect — it would drop caller data) still fails the coercion
+        leg.
         """
-        with pytest.raises(ValueError):
-            await floor_store.record_measurement(
-                axes=POOLED,
-                measurement=_measurement(state="nearly_measured"),
-                adopt=True,
-                fence=None,
+        lease = await _lease_store(floor_env)
+        try:
+            observation = await lease.create_if_absent(
+                holder_identity="pod-a", lease_duration="15", acquire_time="t", renew_time="t"
             )
+            assert observation is not None
+            fence = LeaseFence(holder_identity="pod-a", fence_epoch=observation.fence_epoch)
+            measurement = {**_measurement(state="measured"), **payload}
+
+            with pytest.raises(SurrealStoreError) as caught:
+                await floor_store.record_measurement(
+                    axes=POOLED, measurement=measurement, adopt=True, fence=fence
+                )
+            assert not isinstance(caught.value, FenceLostError), (
+                f"a rollback caused by {why}, with the fence INTACT, was reported as a "
+                f"benign lost race — every real defect on this path is now invisible"
+            )
+            # …and the fence really was intact throughout, so the verdict above
+            # cannot be excused by a concurrent seize.
+            after = await lease.read()
+            assert after is not None and after.fence_epoch == observation.fence_epoch
+        finally:
+            await lease.close()
+
+    async def test_a_fence_that_moves_MID_COMMIT_refuses_and_lands_NOTHING(
+        self, floor_env: SurrealEnv, floor_store: FloorCalibrationStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """⚠ M1 — THE FENCE MUST BE ATOMIC, NOT A PRE-CHECK (adversary W2).
+
+        R10.2 rules the guard is ``WHERE fence_epoch = $mine`` INSIDE the commit
+        transaction. A read-then-write pre-check satisfies every outcome pin in
+        this class — because those fixtures move the fence BEFORE the call — and
+        it is exactly the race a fencing token exists to close: a lapsed holder
+        reads the lease, sees its own epoch, and commits after another pod has
+        already seized.
+
+        **THE DISCRIMINATION, because the mechanism IS the pin.** A hook is armed
+        to fire between the ledger's first and second store round-trips. Before
+        seizing, it asks an INDEPENDENT connection one question: *has the
+        measurement row landed yet?*
+
+        * **Atomic build** — round-trip 1 IS the commit, so the row already
+          exists when the hook looks. The commit completed while the fence was
+          genuinely held, so landing is CORRECT and this pin says so.
+        * **TOCTOU build** — round-trip 1 is the guard READ, so no row exists
+          yet; the hook then seizes, and the unfenced write lands under a fence
+          that has already moved. REFUSED.
+        * **Read-then-fenced-transaction build** — the same window exists, but
+          its transaction re-evaluates the guard and refuses, so it passes on
+          the ``FenceLostError`` branch.
+
+        The pin therefore admits every correct shape and no incorrect one, and
+        asserts nothing about how the ledger is written.
+        """
+        lease = await _lease_store(floor_env)
+        seizer = await _lease_store(floor_env)
+        observer = await _new_floor_store(floor_env)
+        try:
+            observation = await lease.create_if_absent(
+                holder_identity="pod-a", lease_duration="15", acquire_time="t", renew_time="t"
+            )
+            assert observation is not None
+            fence = LeaseFence(holder_identity="pod-a", fence_epoch=observation.fence_epoch)
+
+            row_existed_at_hook = False
+
+            async def seize() -> None:
+                nonlocal row_existed_at_hook
+                row_existed_at_hook = bool(
+                    await observer.measurement_history(POOLED, limit=1)
+                )
+                current = await seizer.read()
+                assert current is not None
+                await seizer.compare_and_set(
+                    observed_revision=current.revision,
+                    holder_identity="pod-b",
+                    lease_duration="15",
+                    acquire_time="t2",
+                    renew_time="t2",
+                )
+
+            trips = _RoundTrips()
+            connection = await floor_store._ensure_connection()
+            trips.install(connection, monkeypatch, before_call_number=2, hook=seize)
+
+            try:
+                await floor_store.record_measurement(
+                    axes=POOLED, measurement=_measurement(state="measured"), adopt=True,
+                    fence=fence,
+                )
+                landed = True
+            except FenceLostError:
+                landed = False
+
+            history = await observer.measurement_history(POOLED, limit=10)
+            if not trips.hook_fired or row_existed_at_hook:
+                # No window existed (the commit was already durable when the
+                # fence moved), so the row is entitled to be there.
+                assert landed and len(history) == 1
+            else:
+                assert not landed, (
+                    "the fence moved BEFORE the ledger's write round-trip and the "
+                    "commit LANDED ANYWAY — the guard is a TOCTOU pre-check, not "
+                    "R10.2's in-transaction `WHERE fence_epoch = $mine`"
+                )
+                assert history == []
+                assert await observer.read_adopted_head(POOLED) is None
+        finally:
+            await lease.close()
+            await seizer.close()
+            await observer.close()
+
+    @pytest.mark.parametrize(
+        "poison,which",  # ⚠ ASCII-ONLY ids: pytest ASCII-ESCAPES a non-ASCII
+        # character in a parametrised id, so a node id typed from THIS source is
+        # unmatchable and every mutation proof over it reports a spurious
+        # two-way mismatch (measured — `§` became `\xa7`).
+        [
+            (
+                "DEFINE FIELD OVERWRITE instrument_version ON floor_measurement "
+                "TYPE option<string> ASSERT $value = NONE OR string::len($value) < 2",
+                "the MEASUREMENT write",
+            ),
+            (
+                "DEFINE FIELD OVERWRITE revision ON floor_head "
+                "TYPE int DEFAULT 0 ASSERT $value < 1",
+                "the HEAD advance",
+            ),
+        ],
+    )
+    async def test_an_adopting_commit_is_ATOMIC(
+        self,
+        floor_env: SurrealEnv,
+        floor_store: FloorCalibrationStore,
+        poison: str,
+        which: str,
+    ) -> None:
+        """⚠ M11 — two transactions leave an ORPHAN on a crash (adversary W23b,
+        which passed at 143 / 0).
+
+        Pinned as ATOMICITY UNDER FAILURE rather than as a round-trip count,
+        because a count cannot tell a legitimate trailing READ from a second
+        WRITE — and both legs are needed because the two halves can be issued in
+        either order: poisoning only the measurement lets a head-FIRST split
+        build through, and poisoning only the head lets a measurement-first one
+        through. With both, no split survives:
+
+        * ONE transaction — whichever half is poisoned, the whole thing rolls
+          back and NOTHING lands.
+        * head-first split — the head advances, then the poisoned measurement
+          fails, and a head now points at a measurement id that does not exist.
+        * measurement-first split — the row lands with no head that references
+          it: an orphan in the append-only history 11-ii's exact-skip reads.
+        """
+        admin = await connect_admin(floor_env)
+        try:
+            await admin.query(poison)
+        finally:
+            await admin.close()
+
+        with pytest.raises(SurrealStoreError):
+            await floor_store.record_measurement(
+                axes=POOLED, measurement=_measurement(state="measured"), adopt=True
+            )
+
+        assert await floor_store.measurement_history(POOLED, limit=10) == [], (
+            f"a commit whose {which} was rejected left a measurement row behind — "
+            f"the CREATE and the head advance are not one transaction"
+        )
+        assert await floor_store.read_adopted_head(POOLED) is None, (
+            f"a commit whose {which} was rejected left an adopted head behind — "
+            f"the head now points at a measurement that does not exist"
+        )
 
 
 # =============================================================================

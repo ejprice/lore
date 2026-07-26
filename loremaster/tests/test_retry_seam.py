@@ -5898,10 +5898,18 @@ _SEAM_REJECTION_EVENTS = {
     "BriefLedger": "brief.query.rejected",
     "DiffEngine": "diff.query.rejected",
     "FindingLedger": "finding.query.rejected",
+    # Packet 11-i-a's two new seams. AUTHORISED by the lead's O2 ruling with the
+    # values named, because these two dicts are HAND-WRITTEN and one pin does a
+    # raw KeyError-ing lookup: no production code can turn those three node ids
+    # green. A builder trapped there has two instincts and both are catastrophic
+    # (invent a bespoke seam so the classes fall OUT of the AST enumeration —
+    # finding #120 verbatim — or call the reds "pre-existing" and ship).
+    "FloorCalibrationStore": "floor_calibration.query.rejected",
     "LocalMemoryBackend": "memory.query.rejected",
     "MessageLedger": "message.query.rejected",
     "SnapshotStamper": "snapshot.query.rejected",
     "SurrealCodeGraph": "graph.query.rejected",
+    "SurrealLeaseStore": "lease.query.rejected",
     "SurrealManifest": "manifest.query.rejected",
     "SurrealStore": "store.query.rejected",
     "TaskLedger": "task.query.rejected",
@@ -5919,10 +5927,12 @@ _SEAM_REJECTION_NOUNS = {
     "BriefLedger": "brief query",
     "DiffEngine": "query",
     "FindingLedger": "finding query",
+    "FloorCalibrationStore": "floor calibration query",
     "LocalMemoryBackend": "memory query",
     "MessageLedger": "message query",
     "SnapshotStamper": "query",
     "SurrealCodeGraph": "query",
+    "SurrealLeaseStore": "lease query",
     "SurrealManifest": "query",
     "SurrealStore": "query",
     "TaskLedger": "task query",

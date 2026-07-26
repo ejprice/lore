@@ -112,11 +112,24 @@ class FloorCalibrationStore:
         raise NotImplementedError("packet 11-i-a: FloorCalibrationStore._drop_connection")
 
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
-        """STUB. Delegates to ``store._txn.run_query`` — the ONE shared attempt body."""
+        """STUB. Delegates to ``store._txn.run_query`` — the ONE shared attempt body.
+
+        ⚠ ``label`` and ``noun`` are FROZEN VALUES, not free choices:
+        ``label="floor_calibration.query.rejected"`` and
+        ``noun="floor calibration query"``. ``test_retry_seam.py`` compares the
+        OBSERVED events and nouns against two HAND-WRITTEN dicts as exact sets,
+        and the lead has authorised exactly these entries (ruling O2). A
+        different spelling reddens three node ids no production change can fix.
+        """
         raise NotImplementedError("packet 11-i-a: FloorCalibrationStore._query")
 
     async def close(self) -> None:
-        """STUB. Close the live connection (if any); tolerant of never-connected."""
+        """STUB. Close the live connection (if any).
+
+        Tolerant of a NEVER-CONNECTED ledger — pinned, because it is promised in
+        prose and a build that raised would surface only as fixture-teardown
+        noise attributed to whatever test happened to run last.
+        """
         raise NotImplementedError("packet 11-i-a: FloorCalibrationStore.close")
 
     async def ensure_ready(self) -> None:
@@ -138,6 +151,24 @@ class FloorCalibrationStore:
         ``revision``. THE HEAD IS A HOT ROW — every adopting run on every pod
         contends on it, and the ONE driver is ``_txn.retry_on_conflict``.
 
+        ⚠ **THE FENCE GUARD LIVES INSIDE THAT TRANSACTION** (R10.2's
+        ``WHERE fence_epoch = $mine``), never as a read-then-write pre-check. A
+        TOCTOU pre-check is exactly the race a fencing token exists to close: a
+        lapsed holder reads the lease, sees its own epoch, and commits after
+        another pod has already seized. Measured — a pre-check build passed the
+        entire contract at 143/0 before this was pinned (adversary W2).
+
+        ⚠ **AND THE ROW CARRIES ``note``, WHICH IS NOT ``non_adoption_cause``**
+        (lead ruling E5). ``note`` is FREE TEXT and follows §7's rule: mandatory
+        unless the state is ``measured``. ``non_adoption_cause`` is F5's typed
+        enum and appears ONLY on ``measured_not_adopted`` — a ``measuring`` row
+        has not concluded, so fabricating a non-adoption cause for it is the
+        same projection the two-degeneracy split exists to forbid.
+        ⚠ Carried to 11-ii: ``note`` is STORED FREE TEXT. The day anything
+        RENDERS it, it routes through the shared sanitiser seam and its tests
+        carry a hostile fixture (newlines + a row-shaped forgery line + backtick
+        runs). Nothing renders it in 11-i, which is why this is easy to lose.
+
         Args:
             axes: The head's axis mapping (see
                 :func:`~loremaster.floor_calibration.domain.head_identity`).
@@ -154,9 +185,10 @@ class FloorCalibrationStore:
 
         Raises:
             FenceLostError: ``fence`` was supplied and no longer holds.
-            ValueError: The row's state/cause fields violate the F4/F5 domain
-                (an unknown state, an unknown cause, a non-``measured`` state
-                with no cause, or an adopted row carrying one).
+            ValueError: The row's state/cause/note fields violate the F4/F5/§7
+                domain (an unknown state, an unknown cause, a
+                ``measured_not_adopted`` row with no cause, an adopted row
+                carrying one, or a non-``measured`` row with no ``note``).
         """
         raise NotImplementedError("packet 11-i-a: FloorCalibrationStore.record_measurement")
 
