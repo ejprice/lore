@@ -154,6 +154,90 @@ def _shannon_entropy_bits(text: str) -> float:
     return -sum((n / length) * math.log2(n / length) for n in counts.values())
 
 
+# The scan window for finding the maximal blob around a candidate run. It
+# deliberately INCLUDES the base64-distinctive ``+`` and ``=`` even though a real
+# path never contains them — because the blob is what gets INTERROGATED, and a
+# window that excluded them could never observe them.
+#
+# ⚠ That is not hypothetical: the first version of this constant excluded ``+``
+# and ``=``, which made the "blob contains no ``+``/``=``" test below DEAD CODE —
+# it could never fire, because the scan had already stopped at those characters.
+# An encoded credential containing a ``+`` simply had its blob truncated to the
+# slash-delimited tail, which then looked exactly like an absolute path. A check
+# whose window excludes what it checks for is the same defect class this whole
+# wave has been finding; it is recorded here so the coupling is not quietly
+# re-broken.
+_PATH_BLOB_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-~+="
+)
+
+
+def _is_absolute_path_component(text: str, start: int, end: int) -> bool:
+    """Is the run at ``text[start:end]`` a component of an ABSOLUTE filesystem path?
+
+    NARROW BY NECESSITY (cold-audit R1). The first version of this guard asked only
+    whether the run was ADJACENT to a ``/`` — and standard base64's alphabet
+    INCLUDES ``/``, so every base64 credential containing one split into
+    slash-adjacent fragments and was exempted wholesale. Measured against the
+    shipped guard: **200 of 200** random base64 secrets containing a ``/`` survived
+    scrubbing intact. A backstop weakened to cure false positives is worse than the
+    bug it cured, so the exemption is now the narrowest thing that still covers
+    every false-positive class it exists for.
+
+    Two conditions, both required:
+
+    1. The maximal path-like blob containing the run **starts with ``/``** — i.e.
+       it is an ABSOLUTE path. Every false positive this guard exists for
+       (UUID workspace dirs, container overlay ids, nix store hashes, traceback
+       ``File "…"`` lines) is an absolute path; a credential in running prose is
+       not, and neither is one in a URL query.
+    2. The blob contains **no ``+`` or ``=``** — see :data:`_PATH_BLOB_CHARS`.
+       Padded base64 always ends in ``=``, so this alone disqualifies most encoded
+       credentials even when one begins with a slash.
+
+    **The residual bound, measured rather than asserted** (see the module's tests):
+    a base64 credential that BEGINS a blob with ``/`` and happens to contain
+    neither ``+`` nor ``=`` is still exempt. That is a small fraction of encoded
+    secrets, it is pinned as a known bound, and the real defence for it is the
+    ``SecretStr`` TYPE at the boundary (#211 Half A) — which stops the value
+    reaching a log line at all.
+
+    Args:
+        text: The full string being scrubbed.
+        start: Start offset of the candidate run.
+        end: End offset (exclusive) of the candidate run.
+
+    Returns:
+        ``True`` when the run is part of an absolute filesystem path.
+    """
+    blob_start = start
+    while blob_start > 0 and text[blob_start - 1] in _PATH_BLOB_CHARS:
+        blob_start -= 1
+    blob_end = end
+    while blob_end < len(text) and text[blob_end] in _PATH_BLOB_CHARS:
+        blob_end += 1
+    blob = text[blob_start:blob_end]
+    if not blob.startswith(_PATH_SEPARATOR):
+        return False
+    if "+" in blob or "=" in blob:
+        return False
+    # 3. The run must not be the FIRST component of the blob — a real hashy path
+    # component always sits under at least one directory (``/tmp/ci/<uuid>``,
+    # ``/nix/store/<hash>``), whereas a base64 credential that merely happens to
+    # begin with ``/`` has its high-entropy run immediately after that slash.
+    if _PATH_SEPARATOR not in blob[1 : start - blob_start]:
+        return False
+    # 4. The run must not be MIXED CASE. Every hashy path component this exemption
+    # exists for is single-case — a UUID, a git SHA, a container overlay id and a
+    # nix store hash are all lowercase — whereas standard base64 mixes cases by
+    # construction. This is the last condition that separates a real path
+    # component from an encoded credential that survived (1)-(3), and it errs the
+    # SAFE way: a mixed-case hashy directory would be redacted again, which is a
+    # false positive, not a leak.
+    run = text[start:end]
+    return not (any(c.isupper() for c in run) and any(c.islower() for c in run))
+
+
 def _is_safe_high_entropy_run(text: str, start: int, end: int) -> bool:
     """Is the high-entropy run at ``text[start:end]`` a known-safe non-secret?
 
@@ -196,9 +280,7 @@ def _is_safe_high_entropy_run(text: str, start: int, end: int) -> bool:
     Returns:
         ``True`` when the run must be left intact.
     """
-    before = text[start - 1] if start > 0 else ""
-    after = text[end] if end < len(text) else ""
-    if _PATH_SEPARATOR in (before, after):
+    if _is_absolute_path_component(text, start, end):
         return True
     return _UUID_RE.fullmatch(text[start:end]) is not None
 

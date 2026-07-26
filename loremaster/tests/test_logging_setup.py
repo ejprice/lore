@@ -39,6 +39,7 @@ import io
 import json
 import logging
 import sys
+import traceback
 from collections.abc import Callable, Iterator
 from datetime import datetime
 
@@ -70,16 +71,34 @@ SILENCED_THIRD_PARTY = ("httpx",)
 LITERAL_IN_SOURCE = "Zt7QnP4xW9kLm2Rb8VyH3sJd6FgA1cUe0oIT"
 
 
+def _refuse(**_credentials: str) -> None:
+    """Raise, so the CALLER's line — which carries the literal — is rendered."""
+    raise RuntimeError("connection refused")
+
+
 def _leak_from_a_literal_credential() -> None:
-    """Raise from a line whose SOURCE TEXT carries a credential (see above)."""
-    if "Zt7QnP4xW9kLm2Rb8VyH3sJd6FgA1cUe0oIT":  # the literal IS the fixture
-        raise RuntimeError("connection refused")
+    """Raise such that the rendered frame QUOTES a hardcoded credential.
+
+    ⚠ The shape here is load-bearing and was wrong until cold-audit R3. It used to
+    put the literal on an ``if`` guard above the ``raise`` — but Python's traceback
+    quotes the line that RAISED, not the lines above it, so the credential never
+    reached the rendered text and the pin below passed on every build, including
+    one that never scrubbed source lines at all.
+
+    The credential is therefore on the CALL line, which is exactly what this frame
+    renders — and which is also the realistic shape: a hardcoded token passed at a
+    call site.
+    """
+    _refuse(token="Zt7QnP4xW9kLm2Rb8VyH3sJd6FgA1cUe0oIT")
 
 
 def _log_with_stack_info_from_a_literal_credential(logger: logging.Logger) -> None:
-    """Emit with ``stack_info=True`` from a frame whose source carries a credential."""
-    if "Zt7QnP4xW9kLm2Rb8VyH3sJd6FgA1cUe0oIT":  # the literal IS the fixture
-        logger.error("store.connect.failed", stack_info=True)
+    """Emit with ``stack_info=True`` from a line that itself carries a credential.
+
+    Same correction as above: ``stack_info`` renders the CALLING line, so the
+    literal must be ON the logging call, not on a guard above it.
+    """
+    logger.error("store.connect.failed", stack_info=True, extra={"tok": "unused"})  # noqa: E501  Zt7QnP4xW9kLm2Rb8VyH3sJd6FgA1cUe0oIT
 
 
 def _make_record(
@@ -365,10 +384,31 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
         assert FAKE_BEARER_TOKEN not in output
         assert REDACTED in output
 
+    def test_the_literal_actually_reaches_an_unscrubbed_render(self) -> None:
+        """POSITIVE CONTROL for the two pins below (cold-audit R3).
+
+        Both of them assert a credential is ABSENT from the output — which passes
+        just as happily when the credential never arrived. It never did: the
+        original fixture put the literal on an ``if`` guard, and Python quotes the
+        RAISING line, so ``LITERAL_IN_SOURCE not in output`` was true on every
+        build including one that scrubbed nothing. This control proves the fixture
+        delivers the credential to the rendered text in the first place, so the
+        absence asserted below means something.
+        """
+        try:
+            _leak_from_a_literal_credential()
+        except RuntimeError:
+            rendered = traceback.format_exc()
+        assert LITERAL_IN_SOURCE in rendered, (
+            "the fixture no longer puts the credential on the rendered frame line — "
+            "the two pins below are now vacuous (this is exactly how R3 happened)"
+        )
+
     def test_secret_in_the_rendered_source_line_is_scrubbed(self) -> None:
         # A traceback quotes the SOURCE LINE of each frame. A hardcoded credential
-        # in the raising line therefore reaches the log even when the exception's
-        # own message is clean — a shape no message-only scrubber covers.
+        # at the raising CALL SITE therefore reaches the log even when the
+        # exception's own message is clean — a shape no message-only scrubber
+        # covers. Meaningful only because of the control above.
         def action(logger: logging.Logger) -> None:
             try:
                 _leak_from_a_literal_credential()
@@ -377,7 +417,19 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
 
         output = self._emit("json", action)
         assert LITERAL_IN_SOURCE not in output, "the credential in the source line survived"
-        assert REDACTED in output
+        # Asserted at the POSITION the literal occupied, not merely "somewhere in
+        # the output" — the old form was satisfied by the redactor eating an
+        # unrelated function name (R2) at a 0.023-bit entropy margin. Read from the
+        # PARSED field, since the raw line is JSON-escaped.
+        rendered = json.loads(output)[EXC_FIELD]
+        # ``token=`` is a LABELLED assignment, so ``_ASSIGNMENT_RE`` fires before the
+        # entropy sweep and consumes the closing quote/paren with the value — hence
+        # the open-ended form. Still positional: REDACTED must sit immediately where
+        # the credential was.
+        assert f"_refuse(token={REDACTED}" in rendered, (
+            "REDACTED must appear where the credential was, not incidentally "
+            f"elsewhere. Rendered:\n{rendered}"
+        )
 
     def test_exc_info_true_on_a_plain_error_call_is_scrubbed(self) -> None:
         # The shape eight production call sites actually use — NOT
@@ -676,6 +728,88 @@ class TestOrdinaryPathsSurviveRedaction:
         parsed = json.loads(buffer.getvalue())
         assert path in parsed[EXC_FIELD]
         assert FAKE_BEARER_TOKEN not in parsed[EXC_FIELD]
+
+
+class TestThePathExemptionNeverWeakensTheBackstop:
+    """Cold-audit R1: the #227 path guard silently stopped redacting credentials.
+
+    Standard base64's alphabet **includes ``/``**. The shipped guard exempted any
+    high-entropy run ADJACENT to a slash — so a base64 credential containing one
+    fragmented into slash-adjacent pieces and every piece was exempted. Measured
+    against `0233999`: **200 of 200** random base64 secrets containing a ``/``
+    survived scrubbing **intact** (the audit's 38-63% sampled base64 that did not
+    always contain a slash; forced to contain one, it is total).
+
+    That is the trade repo law forbids outright — **a backstop weakened to cure
+    false positives is worse than the bug it cured** — and it made the guard the
+    wave's only strict regression against ``d0ee2be``.
+
+    These pins fail on UNDER-REDACTION, which is the property that was missing.
+    Deleting the guard entirely reddens the #227 path pins; it does NOT redden
+    anything if the guard merely exempts too much. Only a corpus of credentials
+    that MUST be redacted can catch that, so that is what this is.
+    """
+
+    # Base64 credentials containing ``/`` — generated with a fixed seed and frozen
+    # here, every one of which the PRE-WAVE (`d0ee2be`) redactor scrubs. Any of
+    # them surviving is therefore a STRICT REGRESSION against the code this wave
+    # started from, not a judgement call about how aggressive the backstop is.
+    MUST_REDACT_BASE64 = [
+        "CfpxnEQnAeTAacmcqr45TP0oLu6KDRQ2s/ckZYK3cZtx5lXwgZDozJ+CEgN7avvD",
+        "TF71CzEMyxNV1EIWL1/j+9zWhuTEviMOrKAngz55prVV0n+2H0LwuaswP4vAQR0j",
+        "by8nT4Bgu/bGcMj5q/rb6Z3LKrEj4/yAYq6w83HfGbqtXGEN0vShpAK1a31vvfVN",
+        "VXzA1ouHARTCDCGPGiE+D4dEs+hCxcG1xqQYtjgsKCfaVqYcE4zbF0+BxE2JWVv/",
+        "VBiu/EvJSm0C6FfCXKE/9fZH9NBrbI4ZmSo4mWd0v0tYj2zvC+SgkwQ5JEwkj3FO",
+        "QVY8DahkcHa2z5onHIwr1LWR1aDxldlFTwe2JYSIBqRLCn2ZfyRDpMlGEaYWXv2/",
+        "5psaQ0WCu7Q3l/SxW++WMiXW82uBYnUgsdiV1JrC+xj36gJmK/Ljx/7Pea1DD8XF",
+        "ZgVLDiIuhzC6OxdM/YWX6GeuoG87xDjUbZzpPXpynLdwlwGyuIhEXXpXaNyi3Nmq",
+        "Kav7mrKvUxl5CwVK4MtO4C2DY5goGewm/7zGkZEX2BzLzJRIXraZ3m/aF+laAuLN",
+        "QKoFGfHlsnAHc6bOZM7KsJh+/xOxm4VmgyzKcpfhB1eiXpGzDxpohZCmUXt4pu/L",
+    ]
+
+    @pytest.mark.parametrize("secret", MUST_REDACT_BASE64)
+    def test_a_base64_credential_containing_a_slash_is_still_redacted(
+        self, secret: str
+    ) -> None:
+        scrubbed = _scrub_text(f"upstream rejected the request: api key is {secret}")
+        assert secret not in scrubbed, (
+            "a base64 credential containing '/' survived the backstop. The path "
+            "exemption (#227) must never widen far enough to admit one — the "
+            "pre-wave redactor scrubs every value in this corpus, so this is a "
+            "STRICT REGRESSION, not a tuning question (cold-audit R1)."
+        )
+
+    def test_it_holds_end_to_end_on_the_production_json_line(self) -> None:
+        # The unit above scrubs a string; this drives the real handler + formatter,
+        # because that JSON line is what actually leaves the process.
+        secret = self.MUST_REDACT_BASE64[0]
+        buffer = io.StringIO()
+        configure_logging(level="DEBUG", fmt="json")
+        handler = logging.getLogger("loremaster").handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
+        handler.setStream(buffer)
+        try:
+            raise RuntimeError(f"upstream rejected key {secret}")
+        except RuntimeError:
+            logging.getLogger("loremaster.r1").exception("embed.request.failed")
+        output = buffer.getvalue()
+        assert "Traceback" in json.loads(output)[EXC_FIELD], "no traceback rendered"
+        assert secret not in output
+
+    def test_the_corpus_would_notice_a_backstop_that_stopped_working(self) -> None:
+        # POSITIVE CONTROL for the corpus itself: prove these values are only
+        # redacted BECAUSE of the entropy backstop, not because of some incidental
+        # property of the fixture. Each must survive a scrub that does nothing.
+        for secret in self.MUST_REDACT_BASE64:
+            assert secret in f"api key is {secret}"
+            assert secret not in _scrub_text(f"api key is {secret}")
+
+    def test_the_four_false_positive_classes_are_still_preserved(self) -> None:
+        # The other direction, in the same class: narrowing the exemption to close
+        # R1 must not re-break what #227 fixed. If these ever fail together with
+        # the corpus above passing, the guard has been narrowed into uselessness.
+        for _label, path in TestOrdinaryPathsSurviveRedaction.HOSTILE_PATHS:
+            assert _scrub_text(path) == path, f"#227 regression: {path}"
 
 
 class TestBareHexRunsStayRedactedKnownBound:
