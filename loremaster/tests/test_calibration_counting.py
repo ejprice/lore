@@ -56,7 +56,11 @@ class TestConstantsParity:
 class TestRequestShapeParity:
     async def test_wire_shape_is_byte_identical_to_survey_counter(self) -> None:
         text = "def add(a, b):\n    return a + b  # dense\n"
-        api_key = "sk-parity-fixture"
+        # ONE key value, handed to BOTH counters — the parity this test exists to
+        # check is the WIRE SHAPE for an identical credential. Both constructors
+        # take ``SecretStr`` since #211 widened them; the sync side was missed when
+        # ``token_survey.ClaudeTokenCounter`` was widened (cold-audit Defect B).
+        api_key = SecretStr("sk-parity-fixture")
         model = "claude-sonnet-5"
 
         sync_recorded: list[httpx.Request] = []
@@ -72,7 +76,7 @@ class TestRequestShapeParity:
             transport=_recording_transport(async_recorded, httpx.Response(200, json={"input_tokens": 11}))
         )
         async_counter = counting.AsyncClaudeTokenCounter(
-            SecretStr(api_key), model=model, client=async_client
+            api_key, model=model, client=async_client
         )
         await async_counter.count(text)
         await async_counter.aclose()
