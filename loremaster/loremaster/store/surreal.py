@@ -88,6 +88,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any
@@ -1653,3 +1654,81 @@ class SurrealStore:
         if _TABLE_SEPARATOR in text:
             return text.split(_TABLE_SEPARATOR, 1)[1]
         return text
+
+    # =========================================================================
+    # ⚠ PACKET 11-i-a STUB — the C8 narrowed calibration-pool projection.
+    #
+    # WRITTEN BY THE CONTRACT AUTHOR (`contract-11ia-1`), NOT BY A BUILDER.
+    # RULED DECISION 8 authorises this as an 11-i-a addition: a new UNSERVED
+    # read alters no served byte, so it is inside `DEPLOY: no` on intent.
+    # =========================================================================
+
+    async def enumerate_calibration_pool(self) -> CalibrationPool:
+        """STUB (packet 11-i-a). The EXHAUSTIVE, PROVEN chunk enumeration (C8).
+
+        Reads the live chunk count, scrolls with a limit STRICTLY GREATER than
+        that count, and refuses to hand back a silently truncated set. The
+        fixed ``IDENTIFIER_SCROLL_LIMIT``-class cap is retired from this path:
+        uuid record-id order makes a truncated set a quasi-uniform subsample,
+        so the floor stays plausible while "pool size" silently lies — and when
+        the corpus crosses the cap between runs, WHICH rows survive changes, so
+        membership churns with zero edits (phantom drift, spurious adoptions,
+        and a broken determinism control, all blamed on the corpus).
+
+        The projection is NARROWED and EXPLICIT — :data:`CALIBRATION_POOL_COLUMNS`,
+        never ``SELECT *``. Two reasons, both measured: the heavy ``embedding``
+        must not cross the wire for every row in the corpus, and store
+        reference §2 records that ``SELECT *`` OMITS a ``NONE``-valued column
+        entirely (so an ``option<>`` column raises ``KeyError`` instead of
+        reading ``None``).
+
+        Returns:
+            The pool: its rows in ASCENDING record-id order (the C10 digest's
+            walk), the counted total, and the limit actually issued.
+
+        Raises:
+            CalibrationPoolTruncatedError: The scroll returned exactly ``limit``
+                rows — a real truncation. This is ``measurement_failed``
+                territory (F8-C8).
+            CalibrationPoolCountMismatchError: The returned count disagreed
+                with the counted total without hitting the limit — the corpus
+                moved under the walk. This is a DISCARD-REQUEUE through the
+                settled-index gate, NOT ``measurement_failed`` (F8-C8's
+                modification), and the two must never be one type.
+        """
+        raise NotImplementedError("packet 11-i-a: SurrealStore.enumerate_calibration_pool")
+
+
+# =============================================================================
+# ⚠ PACKET 11-i-a STUB SURFACE (continued) — the calibration pool's types.
+# =============================================================================
+
+# The NARROWED projection the calibration pool reads: the digest inputs
+# (``point_id`` + ``content_hash``), the stratification/hold-out/self-retrieval
+# keys, and the probe-derivable text. ``embedding`` is deliberately absent, and
+# so is every ``option<>`` column (store reference §2's ``SELECT *`` trap cuts
+# the other way for an explicit projection: a missing column reads ``None``
+# silently, so the pool declares exactly what it needs). 11-i-b extends THIS
+# constant rather than issuing a second read.
+CALIBRATION_POOL_COLUMNS: tuple[str, ...] = ()
+
+
+class CalibrationPoolError(SurrealStoreError):
+    """Base for the C8 enumeration's typed refusals."""
+
+
+class CalibrationPoolTruncatedError(CalibrationPoolError):
+    """The scroll came back exactly at its limit — a real, provable truncation."""
+
+
+class CalibrationPoolCountMismatchError(CalibrationPoolError):
+    """Returned rows disagreed with the counted total — the corpus moved mid-walk."""
+
+
+@dataclass(frozen=True)
+class CalibrationPool:
+    """One exhaustive, proven walk of the chunk table."""
+
+    rows: tuple[dict[str, Any], ...]
+    counted_total: int
+    limit: int

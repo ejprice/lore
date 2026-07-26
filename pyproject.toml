@@ -103,6 +103,22 @@ disallow_any_unimported = false
 module = ["astroid", "astroid.*"]
 follow_untyped_imports = true
 
+# ``kubernetes`` (adopted for ``leaderelection`` — ruled decision 22) ships no
+# ``py.typed`` marker, so under ``disallow_any_unimported`` every symbol it
+# hands us is a blocking ``no-any-unimported`` error. Same shape, and the same
+# containment discipline, as the astroid boundary above: the library's objects
+# are confined to ``loremaster.store.lease`` — the SurrealDB lock adapter —
+# and to that module's contract, both of which reduce them to typed values
+# (``LeaseObservation``, ``LockAbsent``, plain ``bool`` statuses) before
+# anything else in the package sees them.
+[[tool.mypy.overrides]]
+module = ["kubernetes", "kubernetes.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["loremaster.store.lease", "tests.test_store_lease", "test_store_lease"]
+disallow_any_unimported = false
+
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true

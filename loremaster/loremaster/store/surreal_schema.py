@@ -1746,3 +1746,74 @@ def generate_graph_ddl() -> str:
     statements += _refers_statements()
     statements += _answers_to_statements()
     return ";\n".join(statements) + ";\n"
+
+
+# =============================================================================
+# ⚠ PACKET 11-i-a STUB SURFACE — floor calibration + the leader-election lease.
+#
+# WRITTEN BY THE CONTRACT AUTHOR (`contract-11ia-1`), NOT BY A BUILDER. Every
+# ``NotImplementedError`` below is a hole the 11-i-a builder fills; the NAMES,
+# SIGNATURES and closed-domain tuples are the FROZEN interface 11-i-b cites.
+# The closed tuples ship EMPTY on purpose: an exact-set pin compares against an
+# explicit expected literal, so an empty tuple is RED (the honest contract
+# state) while an import-time raise would be a COLLECTION error that proves
+# nothing about behaviour.
+#
+# Design of record: `docs/design/2026-07-24-floor-calibration.md` §7 + Addendum
+# B (B4 schema/migration) · `docs/design/2026-07-25-floor-calibration-addendum-F.md`
+# F4/F5/F6 · `docs/design/2026-07-25-floor-calibration-addendum-F-r2.md` R10.2 ·
+# `docs/plans/v2/receipts/2026-07-24-packet11i/RULINGS-2026-07-25.md`.
+#
+# DDL DECISION RULE (store reference §1.1, NON-NEGOTIABLE): plain TABLE →
+# ``IF NOT EXISTS``; FIELD → ``OVERWRITE``; INDEX → ``IF NOT EXISTS``; ``ALTER``
+# is a trap, not the migration verb (§1.3). None of these tables is a RELATION
+# and none carries a SEQUENCE, so the two inversions the packet's entry check
+# warns about (§1.1's RELATION row, #146's SEQUENCE residual) do not apply —
+# and if either is ever added, §1 is re-read FIRST.
+# =============================================================================
+
+# The append-only measurement table: one row per completed calibration run per
+# head. History is the F6 tuning record and takes no field-migration pressure.
+FLOOR_MEASUREMENT_TABLE = "floor_measurement"
+
+# The head pointer table: ONE row per :func:`head_identity` value, carrying the
+# adopted measurement link and the monotonic ``revision`` every adopting run
+# contends on. THE HOT ROW (B4) — ``_txn.retry_on_conflict`` is the ONE driver.
+FLOOR_HEAD_TABLE = "floor_head"
+
+# The single leader-election lease row (R10.2). Deployment-global: F6's axes do
+# not apply, so the id is a fixed singleton.
+LEASE_TABLE = "lease"
+LEASE_SINGLETON_ID = "singleton"
+
+# The CLOSED, exactly-pinned engine state set (§7 + F4.1's rename). Every value
+# distinct; ``stale_remeasuring`` is RETIRED and must appear nowhere.
+FLOOR_STATES: tuple[str, ...] = ()
+
+# The CLOSED, exactly-pinned non-adoption cause enum (F5). The two degeneracies
+# — ``substrate_indiscriminate`` (a CORPUS property) and ``interval_degenerate``
+# (an INSTRUMENT property) — are DISTINCT VALUES BY RULING: collapsing them
+# would let an instrument artifact be served as a confident corpus claim.
+FLOOR_NON_ADOPTION_CAUSES: tuple[str, ...] = ()
+
+
+def generate_floor_calibration_ddl() -> str:
+    """STUB (packet 11-i-a). The ``floor_measurement`` + ``floor_head`` slice.
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string, in the same shape
+        every other ``generate_*_ddl`` returns, ready to wrap in ONE
+        ``BEGIN … COMMIT`` and run through ``execute_transaction`` (NEVER a bare
+        multi-statement ``query()`` — store reference §3 validates statement[0]
+        only).
+    """
+    raise NotImplementedError("packet 11-i-a: generate_floor_calibration_ddl")
+
+
+def generate_lease_ddl() -> str:
+    """STUB (packet 11-i-a). The single ``lease`` row's slice (R10.2).
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string.
+    """
+    raise NotImplementedError("packet 11-i-a: generate_lease_ddl")
