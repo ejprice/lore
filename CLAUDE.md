@@ -266,6 +266,15 @@ hope."*
   ASSERT was invisible because the ledger's teaching reject fires first.
 - **Corollary for whoever writes the ruling:** put the rider in the same sentence or the same
   bullet as the requirement. A rider in a later paragraph is a rider that gets dropped.
+- **AND THE ASKABLE FORM OF THE DD-3.c MISS ITSELF** (design-sidecar-03b-1, post-mortem on its own
+  ruling): *"does this safety claim still hold on every table/type/branch this ruling TOUCHES, or
+  only the one I DERIVED it on?"* Its diagnosis: it wrote *"cannot write-poison"* as a claim about
+  the table it had analysed (`message`, never UPDATEd) while a neighbouring clause had just moved
+  the bound onto a table with a DIFFERENT write pattern (`to`, batch-UPDATEd by drain) — and the
+  rider that would have caught the mismatch sat two clauses away from the claim it guarded. **This
+  is THE QUANTIFIER LAW wearing migration clothes**: a safety property derived over one member of
+  the set the ruling governs, then stated over the whole set. Same failure as conditioning an
+  invariant on the one input you happened to test.
 
 ## FILING A RULE DOES NOT INSTALL IT (packet 03b, 2026-07-26 — the sharpest instance yet)
 This file already says a diagnosis is not an instrument. Packet 03b produced the cleanest possible
