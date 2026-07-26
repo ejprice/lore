@@ -188,7 +188,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 09 | surface-residues (#15, #64, #80, #82, #84–#86, #88, #92, docs truth) | PKT-03 | L ∥ | 0.20 | — | open |
 | 10 | floor-calibration-design (#83, #87, #161, #179) | PKT-01 | L | 0.15 | — | **design DONE 2026-07-24; F3 → client consult** |
 | 10-d | **weak-match DISARM** (#176/#179/#180 — confidence surfaces dark NOW; trust doctrine, Addendum E1) | — | L | 0.05 | — (independent) | **open — ships FIRST** |
-| 11-i | floor-calibration: DARK MACHINERY (engine + store + in-container runner + R2 lab validation; serving untouched, no deploy) | PKT-02 | L | 0.20 | 10 ruled | open |
+| 11-i | floor-calibration: DARK MACHINERY (engine + store + in-container runner + R2 lab validation; serving untouched, no deploy) | PKT-02 | L | 0.20 → split 11-i-a ~0.15 / 11-i-b ~0.24 | 10 ruled | **DESIGN RULED 2026-07-26** (23 decisions: RULINGS-2026-07-25.md; Addendum F-r2 §R1–R10; S1 measured NOT DEGENERATE) — **BUILD not started** |
 | 11-ii | floor-calibration: CUTOVER (chokepoint wiring + serving swap + retirement sweep; resolves #83/#87/#161/#179) | PKT-02 | L | 0.15 | 11-i landed | open |
 | 42 | **PREVENT THE LEAK, DELETE THE SANITIZER** — `SecretStr` everywhere + allowlist the 13 `.get_secret_value()` unwraps, then DELETE the entropy catch-all. Kills audit R2 (12.4% of function names erased from tracebacks), #227 and both its accepted bounds. | — | L | 0.20 | — (independent) | **open — SHIPS NEXT (operator, 2026-07-26)** |
 | 11a | embedding-reconciliation CONTRACT (#171 FULLY-RULED design ⊃ #168/#169, adopts #170) | — | L | 0.20 | — (design ruled) | open |
@@ -944,3 +944,21 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   APPLIED, only this one asked whether a real LLM was still fooled. Cost $1.50. NEW LAW: the rider is
   part of the ruling (6 instances); filing a rule does not install it (#194 recurred 3× incl. inside
   its own instrument). NEXT = 04.
+- 2026-07-26 · **11-i DESIGN RULED + SECURITY FIX WAVE MERGED** (`c192cb4`, ff to main). 11-i: S1
+  measured **NOT DEGENERATE** with the mechanism derived (modal mass capped at ≈63.5% by
+  `(1−1/N)^N→1/e`; measured 25.8–64.8%) · client consult, 3 blind informants, unanimous **refuse the
+  served CI** · all 23 decisions ruled (RULINGS-2026-07-25.md) after the operator declined a queue —
+  20 derived from standing directives, 3 genuine lead calls. Fix wave **#210/#207/#211** shipped
+  through 2 cold audits: charset `fullmatch` + AST class instrument · 5 unjittered backoffs onto one
+  full-jitter policy · `SecretStr` end-to-end + traceback render AND scrub (8 `exc_info` sites had
+  been logging NOTHING). **THE GRADING CAUGHT 5 DEFECTS NO BUILDER GATE COULD SEE**, incl. a 100%
+  breakage live at the tip that three gates missed *simultaneously* (`scripts/` outside `testpaths`,
+  mypy never analysing it, and the covering test monkeypatching the broken function away), and a
+  redactor false-positive found only because an auditor ran from a UUID-bearing path. **Post-merge
+  1 failed / 7065 passed — failure set IDENTICAL to the pre-merge baseline taken from main**; the
+  109 mypy errors resolved with 03b's implementation. **The #210 class instrument caught a CLONE of
+  its own defect ON MERGE** (`c192cb4`) — first live catch, not a pin. NEW LAW: #229 (a range is not
+  stronger than an equality — 4 hollow pins, 3 agents, 1 lead ruling) · #224/#225/#228 (a count, a
+  negative search, a `pgrep -f` watcher — all claims whose scope is implicit in the instrument that
+  produced it; one watcher had waited on ITSELF for 13.5h). NEXT = **42** (operator: prevent the leak,
+  delete the sanitizer — 12.4% of function names are hidden from logs today).
