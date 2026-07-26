@@ -69,6 +69,31 @@ from smoke_p8b import (  # noqa: E402
     unfenced_lines,
 )
 
+
+def body_label(sender: str) -> str:
+    """The REQUIRED quoted-body label production renders between header and fence."""
+    return smoke_p8b._DRAIN_BODY_LABEL_TEMPLATE.format(sender=sender)
+
+
+def drain_entry(seq: int, *, grade: str = "signal", sender: str = "smoke-sender",
+                body: str = "b", fence: str = "```", context: str = "") -> list[str]:
+    """ONE drain entry's real line shape: header, LABEL, fenced body.
+
+    Every fixture in this file builds entries through here, so the label cannot
+    be forgotten in one fixture and asserted in another — and a change to the
+    real shape is ONE edit, not sixteen. (Sixteen is the measured count of
+    hand-built entries this file carried before the label landed; every one of
+    them certified the pre-label world.)
+    """
+    return [
+        f"#{seq} [{grade}] {sender}\u2192you{context}",
+        body_label(sender),
+        fence,
+        body,
+        fence,
+    ]
+
+
 # --------------------------------------------------------------------------
 # Captured good renders (provenance in the module docstring)
 # --------------------------------------------------------------------------
@@ -94,24 +119,24 @@ FLEET_HEADER = (
 FLEET_RENDER = f"{FLEET_HEADER}\nsmoke-sender · active\n+1 retired"
 
 DRAIN_DIRECTIVE = "\n".join(
-    (
-        "drained 1 of 1 pending",
-        "#41 [directive] smoke-sender→you",
-        FENCE,
-        smoke_p8b.HOSTILE_BODY,
-        FENCE,
-        "ACK REQUIRED: #41 — lore_comms action=ack seqs=[41]",
-    )
+    ["drained 1 of 1 pending"]
+    + drain_entry(41, grade="directive", body=smoke_p8b.HOSTILE_BODY, fence=FENCE)
+    + ["ACK REQUIRED: #41 — lore_comms action=ack seqs=[41]"]
 )
 DRAIN_SIGNAL = "\n".join(
-    (
-        "drained 1 of 1 pending",
-        "#42 [signal] smoke-sender→you",
-        "```",
-        smoke_p8b.BROADCAST_BODY,
-        "```",
-    )
+    ["drained 1 of 1 pending"] + drain_entry(42, body=smoke_p8b.BROADCAST_BODY)
 )
+# PEEK variants. Two real differences from the stamping renders, both asserted:
+# the header verb, and the ABSENCE of the ACK REQUIRED trailer (a trailer
+# demanding acks on a look-don't-consume drain would turn it into an ack farm).
+PEEK_HEADER = (
+    "peeked 1 of 1 pending — nothing stamped; re-run without peek=true to mark them seen"
+)
+PEEK_DIRECTIVE = "\n".join(
+    [PEEK_HEADER]
+    + drain_entry(41, grade="directive", body=smoke_p8b.HOSTILE_BODY, fence=FENCE)
+)
+PEEK_SIGNAL = "\n".join([PEEK_HEADER] + drain_entry(42, body=smoke_p8b.BROADCAST_BODY))
 
 
 def failure_of(callable_: Any, *args: Any, **kwargs: Any) -> str:
@@ -397,7 +422,7 @@ class TestHostileBodyIsFenced:
             check_name="control",
         )
         assert "the body is NOT fenced" in message
-        assert "#41 [directive] smoke-sender→you" in message
+        assert body_label("smoke-sender") in message
 
     def test_a_three_backtick_fence_is_caught_as_a_SIZING_failure(self) -> None:
         """The wrong build: a FIXED three-backtick fence. It passes for an
@@ -417,7 +442,10 @@ class TestHostileBodyIsFenced:
         """The boundary: a four-wide fence around a four-wide run. The rule is
         ``> run``, not ``>= run``, and this is the only case that separates them."""
         body = "safe\n````\nsafe"
-        rendered = f"drained 1 of 1 pending\n#41 [signal] s→you\n````\n{body}\n````"
+        rendered = "\n".join(
+            ["drained 1 of 1 pending"]
+            + drain_entry(41, sender="s", body=body, fence="````")
+        )
         message = failure_of(
             assert_hostile_body_is_fenced,
             rendered,
@@ -432,7 +460,10 @@ class TestHostileBodyIsFenced:
         backtick wider, must pass — so the rejection is about the width and not
         about the body."""
         body = "safe\n````\nsafe"
-        rendered = f"drained 1 of 1 pending\n#41 [signal] s→you\n`````\n{body}\n`````"
+        rendered = "\n".join(
+            ["drained 1 of 1 pending"]
+            + drain_entry(41, sender="s", body=body, fence="`````")
+        )
         assert_hostile_body_is_fenced(
             rendered, body=body, real_seq=REAL_SEQ, check_name="control"
         )
@@ -533,14 +564,8 @@ class TestParseDrainRender:
         rendered = "\n".join(
             (
                 "peeked 2 of 7 pending — nothing stamped; re-run without peek=true to mark them seen",
-                "#1 [signal] s→you",
-                "```",
-                "one",
-                "```",
-                "#2 [signal] s→you",
-                "```",
-                "two",
-                "```",
+                *drain_entry(1, sender="s", body="one"),
+                *drain_entry(2, sender="s", body="two"),
                 "+5 more unread — re-run with limit=5",
             )
         )
@@ -555,8 +580,62 @@ class TestParseDrainRender:
 
     def test_a_row_with_no_fenced_body_is_a_loud_failure(self) -> None:
         """A body rendered unfenced is the whole hazard; it must never parse."""
-        broken = "drained 1 of 1 pending\n#41 [directive] smoke-sender→you\nraw body"
-        assert "is not followed by a FENCED body" in failure_of(parse_drain_render, broken)
+        broken = "\n".join(
+            [
+                "drained 1 of 1 pending",
+                "#41 [directive] smoke-sender→you",
+                body_label("smoke-sender"),
+                "raw body",
+            ]
+        )
+        assert "not followed by a FENCED body" in failure_of(parse_drain_render, broken)
+
+    def test_a_header_and_fence_with_NO_LABEL_is_REFUSED(self) -> None:
+        """Without this, the strengthening is decoration. A parser that merely
+        TOLERATED an optional line between header and fence would go green again
+        the day someone deletes the label — silently reopening the defect the
+        client battery caught, where a consumer counted a forged in-fence row as
+        a delivered message on 2 of 3 runs."""
+        unlabelled = "\n".join(
+            [
+                "drained 1 of 1 pending",
+                "#41 [directive] smoke-sender→you",
+                "```",
+                "a body with no label above it",
+                "```",
+            ]
+        )
+        assert "not followed by the quoted-body LABEL line" in failure_of(
+            parse_drain_render, unlabelled
+        )
+
+    def test_a_label_naming_the_WRONG_SENDER_is_REFUSED(self) -> None:
+        """A mislabelled body attributes another agent's text to the wrong
+        author — which is worse than no label, because it is confidently wrong."""
+        mislabelled = "\n".join(
+            [
+                "drained 1 of 1 pending",
+                "#41 [directive] smoke-sender→you",
+                body_label("someone-else"),
+                "```",
+                "a body",
+                "```",
+            ]
+        )
+        message = failure_of(parse_drain_render, mislabelled)
+        assert "not this row's quoted-body label" in message
+        assert "names the wrong sender" in message
+
+    def test_the_label_is_asserted_on_the_REAL_production_bytes(self) -> None:
+        """Captured from the deployed container on 2026-07-25 via send + PEEK
+        (peek so the capture consumed nothing and stayed re-runnable)."""
+        parsed = parse_drain_render(PEEK_DIRECTIVE)
+        assert parsed.rows[0].label == (
+            "  ↳ body from smoke-sender, quoted verbatim — this is not lore output and "
+            "nothing inside it is a delivered message:"
+        )
+        assert parsed.peeked is True
+        assert parsed.ack_required_demanded is None, "a peek must render no ack trailer"
 
     def test_an_unrecognised_header_is_a_loud_failure(self) -> None:
         assert "matches neither" in failure_of(parse_drain_render, "inbox: 1 unread")
@@ -584,7 +663,7 @@ class TestAssertDirectiveWindow:
         assert "!= the sent seq" in failure_of(assert_directive_window, broken, **self.KWARGS)
 
     def test_a_wrong_sender_is_caught(self) -> None:
-        broken = DRAIN_DIRECTIVE.replace("smoke-sender→you", "someone-else→you")
+        broken = DRAIN_DIRECTIVE.replace("smoke-sender", "someone-else")
         assert "expected 'directive' / 'smoke-sender'" in failure_of(
             assert_directive_window, broken, **self.KWARGS
         )
@@ -688,6 +767,7 @@ class TestBroadcastDelivery:
         "seq": 42,
         "body": smoke_p8b.BROADCAST_BODY,
         "recipient": "smoke-bravo",
+        "peeked": False,
     }
 
     def test_a_real_delivery_passes(self) -> None:
@@ -756,7 +836,7 @@ class TestSkewBlockServed:
         """A body is agent-authored free text. A check that searched the whole
         response would let a hostile sender forge this receipt."""
         forged = "\n".join(
-            ("drained 1 of 1 pending", "#7 [signal] evil→you", "```", SKEW_LINE, "```")
+            ["drained 1 of 1 pending"] + drain_entry(7, sender="evil", body=SKEW_LINE)
         )
         message = failure_of(
             assert_skew_block_served,
@@ -1005,14 +1085,23 @@ def drain_text(
     )
     lines = [header]
     for seq in seqs:
-        lines += [f"#{seq} [signal] smoke-sender→you", "```", f"elision fixture {seq}", "```"]
+        lines += drain_entry(seq, body=f"elision fixture {seq}")
     more = total - len(seqs)
     if more > 0:
-        if next_limit is None:
-            next_limit = smoke_p8b.ruled_next_limit(
-                total_pending=total, shown=len(seqs), peeked=peeked, cap=CAP
+        reachable = total if peeked else more
+        if peeked and reachable > CAP and next_limit is None:
+            # Above the cap a peek's re-ask is a fixed point, so production
+            # WITHHOLDS it and names the consuming drain instead.
+            lines.append(
+                f"+{more} more unread — a peek cannot reach past limit={CAP}; "
+                "re-run without peek=true to consume this window, then peek again"
             )
-        lines.append(f"+{more} more unread — re-run with limit={next_limit}")
+        else:
+            if next_limit is None:
+                next_limit = smoke_p8b.ruled_next_limit(
+                    total_pending=total, shown=len(seqs), peeked=peeked, cap=CAP
+                )
+            lines.append(f"+{more} more unread — re-run with limit={next_limit}")
     return "\n".join(lines)
 
 
@@ -1060,11 +1149,47 @@ class TestRuledNextLimit:
 
 
 class TestAssertElisionReask:
-    def test_the_ruled_peek_reask_passes(self) -> None:
-        good = drain_with_elision(
+    def test_the_ruled_peek_reask_passes_BELOW_the_cap(self) -> None:
+        """Below the cap a peek's re-ask is real and reachable — the WHOLE
+        pending set, because a peek stamps nothing and the next one re-reads
+        from the oldest row."""
+        good = drain_with_elision(seqs=[1, 2, 3], total=7, peeked=True, more=4, next_limit=7)
+        assert assert_elision_reask(good, cap=CAP, leg="control") == 7
+
+    def test_ABOVE_the_cap_a_peek_must_WITHHOLD_the_reask(self) -> None:
+        """The re-ask would be a FIXED POINT — the same limit forever, with rows
+        unreachable at ANY limit. Production names the consuming drain instead,
+        and this asserts it returns None: nothing to feed back, not a skip."""
+        withheld = parse_drain_render(drain_text(seqs=[1, 2, 3], total=54, peeked=True))
+        assert assert_elision_reask(withheld, cap=CAP, leg="control") is None
+        assert withheld.peek_fixed_point == (51, CAP)
+
+    def test_the_LOOPING_reask_above_the_cap_is_REFUSED(self) -> None:
+        """The wrong build: advertise min(total, cap)=50 above the cap. An
+        obedient agent re-peeks at 50, sees the same 50 rows, and is told 50
+        again — forever."""
+        looping = drain_with_elision(
             seqs=[1, 2, 3], total=54, peeked=True, more=51, next_limit=50
         )
-        assert assert_elision_reask(good, cap=CAP, leg="control") == 50
+        message = failure_of(assert_elision_reask, looping, cap=CAP, leg="control")
+        assert "FIXED POINT" in message
+        assert "name the consuming drain" in message
+
+    def test_WITHHOLDING_a_reask_that_WAS_available_is_REFUSED(self) -> None:
+        """The mirror wrong build: emit the escape sentence below the cap, where
+        a real re-ask existed and would have worked."""
+        rendered = "\n".join(
+            ["peeked 3 of 7 pending — nothing stamped; re-run without peek=true to mark them seen"]
+            + drain_entry(1, sender="s")
+            + [
+                f"+4 more unread — a peek cannot reach past limit={CAP}; "
+                "re-run without peek=true to consume this window, then peek again"
+            ]
+        )
+        message = failure_of(
+            assert_elision_reask, parse_drain_render(rendered), cap=CAP, leg="control"
+        )
+        assert "WITHIN the cap" in message and "withheld" in message
 
     def test_the_ruled_stamping_reask_passes(self) -> None:
         good = drain_with_elision(
@@ -1072,14 +1197,16 @@ class TestAssertElisionReask:
         )
         assert assert_elision_reask(good, cap=CAP, leg="control") == 7
 
-    def test_the_PRE_FIX_above_cap_reask_is_caught_as_the_CLAMP_defect(self) -> None:
-        """Executed pre-fix output: `+51 more unread — re-run with limit=51`."""
+    def test_the_PRE_FIX_above_cap_peek_reask_is_caught(self) -> None:
+        """Executed pre-fix output: `+51 more unread — re-run with limit=51`.
+        It is doubly wrong above the cap — over the ceiling AND a fixed point —
+        and the fixed-point diagnosis is the one that fires first because it is
+        the one that names what the render should have said instead."""
         broken = drain_with_elision(
             seqs=[1, 2, 3], total=54, peeked=True, more=51, next_limit=51
         )
         message = failure_of(assert_elision_reask, broken, cap=CAP, leg="control")
-        assert "names a limit ABOVE the action's own cap of 50" in message
-        assert "silently clamps" in message
+        assert "FIXED POINT" in message
 
     def test_the_PRE_FIX_stamping_above_cap_reask_is_caught(self) -> None:
         broken = drain_with_elision(
@@ -1109,16 +1236,29 @@ class TestAssertElisionReask:
 
     def test_an_elided_window_with_no_elision_line_is_caught(self) -> None:
         silent = parse_drain_render(
-            "drained 3 of 54 pending\n#1 [signal] s→you\n```\nb\n```"
+            "\n".join(["drained 3 of 54 pending"] + drain_entry(1, sender="s"))
         )
         assert "an elision line is owed" in failure_of(
             assert_elision_reask, silent, cap=CAP, leg="control"
         )
 
     def test_a_count_disagreeing_with_the_header_is_caught(self) -> None:
-        lying = drain_with_elision(seqs=[1, 2, 3], total=54, peeked=True, more=9, next_limit=50)
+        lying = drain_with_elision(seqs=[1, 2, 3], total=7, peeked=True, more=9, next_limit=7)
         assert "disagrees with itself" in failure_of(
             assert_elision_reask, lying, cap=CAP, leg="control"
+        )
+
+    def test_a_fixed_point_line_counting_wrong_is_caught(self) -> None:
+        rendered = "\n".join(
+            ["peeked 3 of 54 pending — nothing stamped; re-run without peek=true to mark them seen"]
+            + drain_entry(1, sender="s")
+            + [
+                f"+9 more unread — a peek cannot reach past limit={CAP}; "
+                "re-run without peek=true to consume this window, then peek again"
+            ]
+        )
+        assert "counts 9 more, but 51 remain" in failure_of(
+            assert_elision_reask, parse_drain_render(rendered), cap=CAP, leg="control"
         )
 
 
@@ -1139,7 +1279,7 @@ class TestAssertReaskRoundTrip:
                 + [
                     line
                     for seq in range(48, 55)
-                    for line in (f"#{seq} [signal] s→you", "```", f"b{seq}", "```")
+                    for line in drain_entry(seq, sender="s", body=f"b{seq}")
                 ]
             )
         )
@@ -1154,7 +1294,7 @@ class TestAssertReaskRoundTrip:
                 + [
                     line
                     for seq in range(48, 52)
-                    for line in (f"#{seq} [signal] s→you", "```", f"b{seq}", "```")
+                    for line in drain_entry(seq, sender="s", body=f"b{seq}")
                 ]
             )
         )
@@ -1175,7 +1315,7 @@ class TestAssertReaskRoundTrip:
                 + [
                     line
                     for seq in range(51, 58)
-                    for line in (f"#{seq} [signal] s→you", "```", f"b{seq}", "```")
+                    for line in drain_entry(seq, sender="s", body=f"b{seq}")
                 ]
             )
         )
@@ -1192,7 +1332,7 @@ class TestAssertReaskRoundTrip:
                 + [
                     line
                     for seq in range(1, 51)
-                    for line in (f"#{seq} [signal] s→you", "```", f"b{seq}", "```")
+                    for line in drain_entry(seq, sender="s", body=f"b{seq}")
                 ]
                 + ["+1 more unread — re-run with limit=1"]
             )
@@ -1213,7 +1353,7 @@ class TestAssertReaskRoundTrip:
                 + [
                     line
                     for seq in range(4, 14)
-                    for line in (f"#{seq} [signal] s→you", "```", f"b{seq}", "```")
+                    for line in drain_entry(seq, sender="s", body=f"b{seq}")
                 ]
                 + ["+41 more unread — re-run with limit=41"]
             )
@@ -1290,6 +1430,7 @@ ROUND_TRIP_SCRIPT = [
     ("register", ANY_RENDER),
     ("register", ANY_RENDER),
     ("send", SEND_DIRECTIVE),
+    ("drain", PEEK_DIRECTIVE),  # PEEK first — assertions before anything is consumed
     ("drain", DRAIN_DIRECTIVE),
     ("ack", ACK_ONE),
     ("drain", DRAIN_EMPTY),
@@ -1301,8 +1442,13 @@ BROADCAST_SCRIPT = [
     ("heartbeat", ANY_RENDER),
     ("fleet", FLEET_RENDER),
     ("send", SEND_BROADCAST),
+    # per recipient: PEEK (the membership assertion) then STAMP (leaves the
+    # inbox empty for the gates that follow)
+    ("drain", PEEK_SIGNAL),
     ("drain", DRAIN_SIGNAL),
+    ("drain", PEEK_SIGNAL),
     ("drain", DRAIN_SIGNAL),
+    ("drain", PEEK_SIGNAL),
     ("drain", DRAIN_SIGNAL),
 ]
 PUBLISH_V1 = (
@@ -1352,9 +1498,9 @@ def elision_script(*, small_peek_next_limit: int | None = None) -> list[tuple[st
     script += [
         # cap derivation: ask above the cap, get exactly the cap back
         ("drain", drain_text(seqs=all_seqs[:CAP], total=total, peeked=True)),
-        # peek above the cap, then obeying its re-ask
+        # peek above the cap — the re-ask is WITHHELD, so there is nothing to
+        # obey and no round-trip call follows it
         ("drain", drain_text(seqs=all_seqs[:window], total=total, peeked=True)),
-        ("drain", drain_text(seqs=all_seqs[:CAP], total=total, peeked=True)),
         # the stamping walk: 3, then 50, then the last 1 — every seq exactly once
         ("drain", drain_text(seqs=all_seqs[:window], total=total, peeked=False)),
         ("drain", drain_text(seqs=all_seqs[window : window + CAP], total=total - window,
@@ -1378,9 +1524,9 @@ class TestGateSixFlowDryRun:
         assert all(args["to"] == ["smoke-charlie"] for args in sends)
         assert all(args["grade"] == "signal" for args in sends)
         # The limits it asks for are the ones it was ADVERTISED, never invented.
-        assert [args.get("limit") for args in drains] == [3, 7, 54, 3, 50, 3, 50, 1]
+        assert [args.get("limit") for args in drains] == [3, 7, 54, 3, 3, 50, 1]
         assert [bool(args.get("peek")) for args in drains] == [
-            True, True, True, True, True, False, False, False
+            True, True, True, True, False, False, False
         ]
 
     async def test_the_PRE_FIX_peek_advertisement_fails_the_gate(self) -> None:
@@ -1431,10 +1577,21 @@ class TestGateFlowDryRun:
             "smoke-sender",
             "smoke-alpha",
             "smoke-sender",
-            "smoke-alpha",
-            "smoke-alpha",
-            "smoke-alpha",
+            "smoke-alpha",  # peek
+            "smoke-alpha",  # stamping drain
+            "smoke-alpha",  # ack
+            "smoke-alpha",  # re-drain
         ]
+
+    async def test_every_content_assertion_runs_on_a_PEEK_before_anything_stamps(self) -> None:
+        """THE at-most-once lesson, pinned. `drain` is at-most-once with no
+        recovery verb, so a check that stamps and THEN raises destroys the bytes
+        needed to diagnose it. The FIRST drain this gate issues must be a peek."""
+        fleet, session = scripted_fleet(ROUND_TRIP_SCRIPT)
+        await smoke_p8b.check_comms_round_trip(fleet)
+        drains = [args for _, args in session.calls if args["action"] == "drain"]
+        assert bool(drains[0].get("peek")) is True, "the first drain must not consume"
+        assert bool(drains[1].get("peek")) is False, "the second drain is the stamping receipt"
 
     async def test_every_call_declares_the_runs_session(self) -> None:
         """The gate-5 read is session-scoped, which only works because EVERY call
