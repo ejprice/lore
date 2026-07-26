@@ -143,6 +143,24 @@ pending-traffic nudge footer, and the dangling-edge hardening.
   uses bound parameters. Fix the prose toward the measured truth (served prose is DERIVED
   from behaviour, never re-stated beside it — repo law); it deploys with this packet.
 
+## ⚠ OPERATOR RULING 2026-07-26 — NO CONSUMERS, NO BACK-COMPAT OBLIGATION
+**Verbatim: *"None of the comms package is in use. Change whatever."*** The comms surface has **no
+live consumers**, so nothing in this packet owes a migration path, a deprecation shim, a preserved
+signature, or a preserved failure mode. Consequences, stated so no agent re-litigates them:
+- The **`briefed` behaviour change is ACCEPTED** — a publish with an unknown `agent_id` rolling the
+  whole transaction back (rather than writing the brief and dangling its ack) needs no transition
+  plan. It is simply the new behaviour.
+- **`BriefLedger.publish(agent_id: str | None)` may be RETYPED OR RESHAPED OUTRIGHT** — required
+  instead of optional, a validated type instead of a bare `str`, a different call shape. Pick the
+  RIGHT design; do not preserve the current one out of caution.
+- The same latitude covers every comms verb this packet touches.
+⚠ **This grants latitude, NOT licence to skip law.** The removed-behaviour inventory still applies
+to any delete/replace (repo CLAUDE.md: each removed branch/guard/side-effect adjudicated —
+preserved-with-pin / dropped-deliberately / old-bug-not-re-pinned / spec-silent→escalate). "No
+consumers" means you need not PRESERVE a behaviour; it does not mean you need not NOTICE dropping
+one. And it says nothing about the code-graph edges (`refers`/`answers_to`), which ARE in use by
+every index run.
+
 ## Scope OUT
 - await/story/rollup/hooks (packet 05); protocol + drill (06).
 - **Pre-existing dangling-edge CLEANUP — operator-ruled OUT 2026-07-26, filed as #236.**
