@@ -50,9 +50,56 @@
   main suite could not see the last of them: **`scripts/` is not a `typecheck.sh` member and
   its tests are outside `testpaths`**, so mypy AND pytest were both blind to it. 4 tests
   were RED there. Fixed, and the ∀ pin now scans `scripts/` (which then found 3 more).
+- **⭐ READ §0 FIRST** — the mutation proof that came back green, and the two dead legs it
+  found inside my own fix. Lead-directed placement; it is the wave's transferable finding.
 - **receipt pointers:** package investigation §2 · Half A design + boundary §4 ·
   Half B design + the pre-finding §3 · mutation proofs §7 · gates with counts §5 ·
   things I found that are NOT my mission §8.
+
+---
+
+## 0. THE ONE THING TO CARRY OUT OF THIS WAVE — a mutation proof that came back GREEN
+
+Placed first at the lead's direction (2026-07-25), because it is an argument for a
+*practice*, not a fact about this fix. Full receipts in §7.1.
+
+**I mutated my own fix, declared 8 tests that should go RED, and ALL 8 STAYED GREEN.**
+
+Deleting the scrub from `scrubbed_exception_text` — the function whose entire job is
+redacting the traceback — changed **nothing observable**. Not because the redaction was
+sound, but because **no test reached that code**: every test drove the logger through
+`configure_logging`, where the *filter* scrubs `exc_text` first, so the formatters' own
+scrub was pure belt-and-braces and entirely untested. M2 then showed the mirror image —
+the filter's render leg was equally invisible.
+
+**Two legs of a security fix, both dead to the suite, both with a passing test file above
+them.** A one-way mutation proof — "I broke it, something went red, restored" — would have
+returned a GREEN receipt for both. The only thing that caught it was **diffing the declared
+set BOTH ways** and asking about the direction nobody instinctively checks: *which tests
+that I declared RED stayed GREEN?*
+
+Three pins now cover both legs directly (the formatters exercised WITHOUT the filter; the
+filter exercised under a plain `logging.Formatter` — the finding's own scenario, and the
+configuration that emitted the secret in full). M1b re-run: exactly the two declared, nothing
+else.
+
+**The generalisation, which is why this belongs at the top:** *a guard whose presence reads
+as coverage is worse than no guard.* The mutation proof is the only instrument that
+distinguishes "this code is correct" from "this code is never executed" — and the
+both-ways diff is the only version of it that can. The same class was caught independently
+in the sibling #207 wave the same day (a substring scan that survived a gutted function
+body, because the import line it keyed on was untouched). **Two of two waves using the
+discipline found a vacuous pin in their own work on the first try.**
+
+**And it generalises past mutation proofs.** The same shape appeared twice more in this wave
+once I knew to look for it:
+- the SERVED log field name had no pin at all — 34 assertions indexed `parsed[EXC_FIELD]`
+  and so *followed the constant wherever it pointed* (§3.4, M7);
+- the ∀ secret-type pin did not reach `scripts/`, a directory **neither standing gate
+  covers** — extending it found three more bare-`str` secrets on the first run (§9, M8).
+
+Each is the same question in a different costume: **what would this instrument still pass
+if the thing it guards were absent?**
 
 ---
 
@@ -246,7 +293,7 @@ nothing else — confirming the other 34 were blind to it.
 
 ---
 
-## 4. Half A — `SecretStr`, with an honest boundary
+## 4. Half A — `SecretStr`, complete (the boundary was named, then closed)
 
 ### 4.1 What it covers, completely
 
@@ -556,10 +603,14 @@ Everything below is outside my mission. I fixed none of it.
    `scripts/token_survey.py::load_api_key` are two copies of *each other*, and neither is
    `resolve_secret`. `counting.py`'s docstring says "Mirrors `token_survey.load_api_key`"
    — the "reference pattern in a doc" antipattern #102 exists to kill.
-   *Partly addressed:* `counting.load_api_key` now returns `SecretStr` (§4.3), so it is no
-   longer a bare-`str` resolver. **The DUPLICATION is untouched** — that is a design
-   decision (which of the three resolvers survives, and where it lives) and belongs to you,
-   not to a builder quietly writing copy #4.
+   *Partly addressed:* all three now return `SecretStr` (§4.3, §9), so none is a bare-`str`
+   resolver. **The DUPLICATION is untouched.**
+   **LEAD RULING (2026-07-25): correctly raised, and NOT this wave's to fix.**
+   `config.resolve_secret` lives in `loremaster`; `loresigil/factory._resolve_api_key` is in
+   a **separate package that cannot import loremaster**. Consolidation is therefore not a
+   refactor but a decision about where a shared secret-resolution seam LIVES across a
+   package boundary — an architecture call with an owner, not an append to a security fix.
+   Filed as its own finding, with loresigil's bare-`str` embedder keys riding along.
 
 3. **The AST pin's blind spot, stated so it cannot be inherited silently.**
    `ApiKeyVerifier.add_key`'s secret parameter is named `value`, so a name-keyed scan
@@ -581,11 +632,19 @@ Everything below is outside my mission. I fixed none of it.
    check is TOCTOU; only a post-commit `git show --name-only` is sound. **Recommend:** one
    worktree per builder, or `git commit -o -- <paths>` as standing law for shared trees.
 
-6. **I could not use `scripts/mutation_proof.py`.** It exists only in the MAIN checkout,
-   untracked, from another session. I deliberately did **not** write a second one (that is
-   copy #2 of a policy), and instead followed its discipline by hand — declared expected-RED
-   node ids from `--collect-only` before each run, diffed both ways. **Recommend:** land
-   that helper so the next agent is not in this position.
+6. **I could not use `scripts/mutation_proof.py` — and my first account of WHY was wrong.**
+   ⚠ **CORRECTION (lead, 2026-07-25):** I reported it as *"untracked, from another session"*,
+   having seen it only as a `??` entry in the main checkout's `git status` at session start.
+   **It is TRACKED on `main`, at `bdb61c7`** — it simply landed after this branch forked at
+   `d0ee2be`, so it is genuinely absent HERE but is not untracked anywhere. I inferred its
+   provenance from one `git status` line instead of asking git where it lived; my sibling made
+   the identical inference. The correct question was `git log --all -- scripts/mutation_proof.py`,
+   which I never ran. Filed against myself because it is the same shape as the
+   `test_anchored_pattern_seam.py` misattribution: **inferring provenance from an artifact's
+   surface rather than establishing it, twice in one wave.**
+   The decision it drove was still right: I deliberately did **not** write a second helper
+   (that is copy #2 of a policy) and followed its discipline by hand instead — expected-RED
+   node ids declared before each run, both-ways diff, md5 landing-and-restore checks.
 
 7. **A pre-existing operator RULING I tripped and restored.** RULING 1 (2026-07-20) forbids
    a module-level `loremaster.store._txn` import in `_surreal_harness.py`. My first patch
