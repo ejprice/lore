@@ -202,10 +202,28 @@ FINDING_ACK_ACTOR = "p8b-lead"
 # helpers verbatim, so a shape drift there fails this script loudly).
 # --------------------------------------------------------------------------
 _REPORT_RENDER_PATTERN = re.compile(r"^reported finding #(\d+) \(id (\S+), status open\)$")
+# ⚠ ANCHORED ON THE STRUCTURAL DELIMITERS, NOT ON FIELD SHAPE. The first version
+# required `\S+` for id/kind/area/category/created_by, which quietly assumed every
+# one of those is a single whitespace-free token. `area` IS FREE TEXT and two live
+# production findings prove it — #144's area is
+# "docs/reference/surrealdb-31-capabilities.md + finding #124" and #145's names two
+# test files. The RENDER was correct both times; the PARSER was wrong, and it
+# blocked a deploy by dying on a legal value.
+#
+# So the shape is asserted through the nine literal anchors the render actually
+# guarantees — `- [#`, the number, the status, `] `, ` (id `, `, kind `, `, area `,
+# `, category `, `, by `, and the trailing `)$` — with non-greedy fills between
+# them. The subject fill is GREEDY on purpose: the trailer is at the END, so
+# binding to the LAST ` (id ` is what makes a subject containing that substring
+# parse correctly rather than truncating.
+#
+# `status` keeps `\w+` deliberately, and it is the only field that does: it is a
+# closed vocabulary (open/acknowledged/resolved/wontfix), not free text. Loosening
+# it too would trade real discrimination for nothing.
 _FINDING_ROW_PATTERN = re.compile(
-    r"^- \[#(?P<number>\d+) (?P<status>\w+)\] (?P<subject>.*?) "
-    r"\(id (?P<id>\S+), kind (?P<kind>\S+), area (?P<area>\S+), "
-    r"category (?P<category>\S+), by (?P<created_by>\S+)\)$"
+    r"^- \[#(?P<number>\d+) (?P<status>\w+)\] (?P<subject>.*) "
+    r"\(id (?P<id>.+?), kind (?P<kind>.+?), area (?P<area>.+?), "
+    r"category (?P<category>.+?), by (?P<created_by>.+?)\)$"
 )
 _TRANSITION_RENDER_TEMPLATE = "finding #{number} transitioned to {status} by {actor}"
 _SNAPSHOT_ROW_ID_PATTERN = re.compile(r"^- (\S+) ")

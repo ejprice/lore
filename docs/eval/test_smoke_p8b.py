@@ -63,6 +63,7 @@ from smoke_p8b import (  # noqa: E402
     max_backtick_run,
     parse_drain_render,
     parse_finding_detail,
+    parse_finding_rows,
     parse_send_receipt,
     split_render_segments,
     unfenced_lines,
@@ -163,6 +164,125 @@ class TestFenceScanning:
     )
     def test_max_backtick_run(self, text: str, expected: int) -> None:
         assert max_backtick_run(text) == expected
+
+
+# --------------------------------------------------------------------------
+# The finding-row parser — REAL production rows, both directions
+# --------------------------------------------------------------------------
+# ⚠ THESE ARE REAL ROWS, fetched from the deployed server on 2026-07-25 via
+# `lore_findings action=query status=open`. They are not invented: the bug this
+# guards against was a parser that assumed `area` is a single whitespace-free
+# token, and no invented fixture had ever carried a multi-word one. It blocked a
+# deploy. Two live findings break the old pattern, not the one that was reported
+# — the run simply stopped at the first.
+REAL_FINDING_ROWS = [
+    # #144 — the reported blocker: `area` is a path PLUS a cross-reference.
+    "- [#144 open] #124 is MISDIAGNOSED: the engine does not silently lose committed rows — "
+    'those "successes" were retryable conflicts hidden by query()\'s statement[0]-only '
+    "validation (id aaea7c010c724f2ebcde8a06aa99ad03, kind friction, area "
+    "docs/reference/surrealdb-31-capabilities.md + finding #124, category correctness, "
+    "by lead-pkt03)",
+    # #145 — the SECOND one, which the report did not name: `area` is two paths.
+    "- [#145 open] Three of the five comms render scanners are keyed on a hardcoded server.py "
+    "path AND a function-name prefix — a correctly-shaped render in any other module, or with "
+    "any other name, is policed by nothing (id 313026cee8de47abb941cc71aeab5a02, kind friction, "
+    "area tests/test_comms_promise_registry.py + tests/test_comms_render_architecture.py, "
+    "category capability_gap, by lead-pkt03)",
+    # #163 — subject ENDS in a parenthesised clause, the case a greedy subject
+    # fill must bind past to reach the real trailer.
+    "- [#163 open] PACKET: serve retrieved chunks as an ORDERED, SECTION-AWARE, CHRONOLOGICAL "
+    "THREAD — and graph reports to findings/commits/symbols. Subsumes #160 (a chunk arrives "
+    "without its header) (id 1b063b350f2f4326bf9373e877ec94ed, kind friction, area "
+    "lore_search-thread-and-doc-graph, category capability_gap, by lead-151-152)",
+    # #210 — subject carries quotes and a literal backslash-n.
+    '- [#210 open] PROVEN: comms identity validator uses re.match on a $-anchored pattern, so '
+    '"scout\\n" passes the "safe charset" guard and mints a DISTINCT identity — one-word fix '
+    "(fullmatch) (id 56eb1b766afd41a1b2bb0f9e180c8dc1, kind friction, area comms, category "
+    "security, by lead-11i-b)",
+    # #157 — em-dash, digits, an arrow, and a bracketed count in the subject.
+    "- [#157 open] #152 legacy tail: 51 dangling report names + 116 line-number citations in "
+    "the test tree — recurrence is closed by law, the legacy debt is not (id "
+    "969c53e101d24a3ea3c003c1f22279c7, kind friction, area "
+    "loremaster-citation-hygiene-legacy, category documentation, by lead-151-152)",
+]
+
+MALFORMED_FINDING_ROWS = {
+    "no '- [#' prefix": "[#7 open] s (id abc, kind friction, area a, category c, by lead)",
+    "no closing ']'": "- [#7 open s (id abc, kind friction, area a, category c, by lead)",
+    "no ' (id '": "- [#7 open] s (abc, kind friction, area a, category c, by lead)",
+    "no ', kind '": "- [#7 open] s (id abc, area a, category c, by lead)",
+    "no ', area '": "- [#7 open] s (id abc, kind friction, category c, by lead)",
+    "no ', category '": "- [#7 open] s (id abc, kind friction, area a, by lead)",
+    "no ', by '": "- [#7 open] s (id abc, kind friction, area a, category c)",
+    "no trailing ')'": "- [#7 open] s (id abc, kind friction, area a, category c, by lead",
+    "fields out of order": "- [#7 open] s (id abc, area a, kind friction, category c, by lead)",
+    "non-numeric number": "- [#xx open] s (id abc, kind friction, area a, category c, by lead)",
+    "a pagination trailer": "(showing 20 of 46 — raise limit for more)",
+    "bare prose": "no findings match",
+    "empty trailer fields": "- [#7 open] s (id , kind , area , category , by )",
+    "junk after the ')'": "- [#7 open] s (id a, kind k, area a, category c, by lead) junk",
+}
+
+
+class TestFindingRowParser:
+    """Both directions, or the fix is decoration.
+
+    A parser that dies on a legal value is a gate that gets switched off — this
+    one blocked a deploy. But a parser loosened into accepting anything has
+    DELETED the check while leaving it green, which is worse than the bug. So
+    the real rows must parse AND every malformed shape must still be refused.
+    """
+
+    @pytest.mark.parametrize("row", REAL_FINDING_ROWS, ids=lambda row: row[3:7])
+    def test_every_real_production_row_parses(self, row: str) -> None:
+        assert parse_finding_rows(row)
+
+    def test_the_multi_word_area_is_parsed_WHOLE_not_truncated(self) -> None:
+        """Accepting the row is not enough — the free-text field must come back
+        intact, or the parser is 'passing' by discarding the value."""
+        parsed = parse_finding_rows(REAL_FINDING_ROWS[0])[0]
+        assert parsed["area"] == "docs/reference/surrealdb-31-capabilities.md + finding #124"
+        assert parsed["number"] == "144"
+        assert parsed["category"] == "correctness"
+        assert parsed["created_by"] == "lead-pkt03"
+
+    def test_a_subject_ending_in_parentheses_keeps_them(self) -> None:
+        parsed = parse_finding_rows(REAL_FINDING_ROWS[2])[0]
+        assert parsed["subject"].endswith("(a chunk arrives without its header)")
+        assert parsed["id"] == "1b063b350f2f4326bf9373e877ec94ed"
+
+    def test_all_the_real_rows_parse_in_ONE_call(self) -> None:
+        assert len(parse_finding_rows("\n".join(REAL_FINDING_ROWS))) == len(REAL_FINDING_ROWS)
+
+    @pytest.mark.parametrize(
+        "row", list(MALFORMED_FINDING_ROWS.values()), ids=list(MALFORMED_FINDING_ROWS)
+    )
+    def test_every_malformed_shape_is_still_REFUSED(self, row: str) -> None:
+        assert "does not match the expected render shape" in failure_of(parse_finding_rows, row)
+
+    def test_an_EMPTY_render_yields_no_rows_rather_than_raising(self) -> None:
+        """An empty render is not a malformed ROW — it contains none. A store
+        with no open findings is legal, so raising here would be wrong; the
+        caller's own "my finding is not in the returned set" assertion is what
+        catches an anomalous empty result, with a far better message."""
+        assert parse_finding_rows("") == []
+
+    def test_a_BLANK_LINE_INSIDE_a_render_IS_refused(self) -> None:
+        """The distinction the case above turns on: a blank line between rows
+        reaches the row parser and must be refused, where an empty render
+        never reaches it at all."""
+        two_rows = "\n\n".join(REAL_FINDING_ROWS[:2])
+        assert "does not match the expected render shape" in failure_of(
+            parse_finding_rows, two_rows
+        )
+
+    def test_status_stays_tight_because_it_is_a_closed_vocabulary(self) -> None:
+        """The one field that keeps a shape assertion: statuses are an enum, not
+        free text, so loosening it would trade discrimination for nothing."""
+        assert "does not match" in failure_of(
+            parse_finding_rows,
+            "- [#7 not a status] s (id a, kind k, area a, category c, by lead)",
+        )
 
 
 class TestFindingDetailStillParses:
