@@ -38,6 +38,21 @@ report_name="REPORT-${teammate_name}.md"
 # Ground truth says the agent delivered: allow the idle.
 [ -f "${repo_root}/${report_name}" ] && exit 0
 
+# ARCHIVED counts as delivered. The #152 archiving law requires `git mv`-ing reports OUT of
+# the repo root into docs/plans/v2/receipts/<date>-<packet>/ as the close-out ritual — so a
+# root-only check and that law CONTRADICT EACH OTHER BY CONSTRUCTION: every packet, the agent
+# that did it right gets nudged, and only AFTER doing it right.
+#
+# The cheap half of that is noise. The expensive half is that a root-only check cannot tell
+# "never wrote a report" from "wrote it and archived it correctly" — both present as an absent
+# file at root — so for the whole post-archive window this gate reports GREEN for exactly the
+# failure it exists to catch. Found by builder-03b-1 at packet 03b's close-out, when the gate
+# fired on it moments after its twelve reports were archived (#149).
+#
+# `compgen -G` yields non-zero on no match, so this is a pure widening: nothing that passed
+# before can start failing.
+compgen -G "${repo_root}/docs/plans/v2/receipts/*/${report_name}" >/dev/null 2>&1 && exit 0
+
 # The agent may have been assigned a linked WORKTREE (see the WORKTREES note above), where
 # its report is committed at that tree's root. Check every registered worktree before
 # concluding the report is missing. Best-effort BY DESIGN: if git is absent (#131 — the

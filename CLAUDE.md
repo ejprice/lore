@@ -290,6 +290,27 @@ the helper's failure code was thrown away.
   is read as coverage. Both of this packet's new instruments sat outside `testpaths` until
   2026-07-26 — the guards for #192 and #196, ungated, victims of the class they instrument.
 
+### THE LEVER: write laws as QUESTIONS, not as PROPERTIES (builder-03b-1, 2026-07-26)
+The counter-example that explains WHY some rules install themselves and most do not. This packet's
+most productive move — *"what WRONG build would still pass this?"*, which found a cancellation pin
+that could not fail — **was not invented here. It is already law above** (FIXTURES MUST
+DISCRIMINATE, four prior instances). The builder read it and asked it, unprompted, about its own
+work. Meanwhile #194, filed as a property to preserve, recurred three times in one session.
+
+**The difference is the grammar, not the subject matter:**
+- *"Fixtures must discriminate"* is a STATE. Nobody can check a state about work they have not
+  finished; it is remembered, or it is not.
+- *"What wrong build would still pass this?"* is a QUESTION. It runs in your head, on demand,
+  against anything, and it returns an answer you can act on.
+
+So when you write a law here, **phrase it as something an agent can ASK ITSELF mid-task.** Both
+2026-07-26 laws pass that test by luck rather than design, and they are stated in askable form
+above: *"did I implement the clause before the 'and pin it like this' phrase and not after?"* and
+*"if step N silently no-opped, would step N+1 still print something that reads as success?"* A law
+that cannot be turned into such a question is a law that will need an instrument instead — and if
+you cannot build the instrument either, you have a hope, so say so plainly rather than filing it as
+a rule.
+
 ## ONE IMPLEMENTATION — a pattern to clone is a defect to clone (#102, operator 2026-07-13)
 The operator's question, on reading a design-law line: *"Can this just be written as a helper
 method or decorator? DRY principle."* It was the root cause, one level above the code.
