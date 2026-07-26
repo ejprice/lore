@@ -29,13 +29,13 @@
      protect. Your ruling. §6.1.
   2. **Should three builders share one worktree at all?** If they must, `git commit -o --
      <paths>` and a post-commit `git show --name-only` audit need to be standing law —
-     `git add <paths>` provably does not scope a commit. §8.5.
+     `git add <paths>` provably does not scope a commit. §8 item 5.
   3. **The new JSON key is `"exc"`.** `"exc_info"` is python-json-logger's convention and
      may matter to a Mezmo parser someone else writes. One-line change. §3.4.
   4. **Three hand-rolled secret resolvers now exist** (`config.resolve_secret`,
      `loresigil/factory._resolve_api_key`, `calibration/counting.load_api_key` ≡
      `scripts/token_survey.load_api_key`). Which survives, and where does it live? A design
-     decision, not a builder's. §8.1–8.2.
+     decision, not a builder's. §8 items 1–2.
 - **commits:** `f65e062` (Half A) · `a68cfe7` (Half B) · `f30e455` (this report) · plus the
   bound-closing commit named in §4.3.
 - **⚠ CORRECTION, and it is against my own earlier claim in this very file.** An earlier
@@ -371,7 +371,7 @@ still had capacity, so I closed the bound rather than kicking it to a fresh cont
   place a repr of `self._headers` could ever have leaked them.
 - `CalibrationEngine.__init__(api_key: SecretStr)`, carried through to its counter factory.
 - `counting.load_api_key() -> SecretStr` (the third hand-rolled resolver — still flagged
-  as a duplicate in §8.2, but no longer a bare-`str` one).
+  as a duplicate in §8 item 2, but no longer a bare-`str` one).
 - The deferred unwrap at `server.py`'s `CalibrationEngine(...)` construction is **deleted**.
 - `DEFERRED_BARE_STR_SECRETS` and `TestDeferredApiKeyBound` are **deleted**, per the
   instruction the pin itself carried. Saying so here is the other half of that instruction.
@@ -386,7 +386,7 @@ it is the minimal possible edit.
 
 **Half A now covers every secret in `loremaster/`: zero bare-`str` credentials, ∀-pinned.**
 
-**Still outside this wave, and outside loremaster** (flagged, not touched — §8.1):
+**Still outside this wave, and outside loremaster** (flagged, not touched — §8 item 1):
 `loresigil` has its own hand-rolled secret resolver and its embedder API keys are bare
 `str` end to end.
 
@@ -415,7 +415,7 @@ over the residual errors returns **0**.
 ⚠ **mypy did NOT catch everything, and that is worth carrying forward.** It is blind
 through `dict[str, Any]`: `test_retry_seam.py::_CTOR_VALUES` feeds constructors from an
 untyped mapping, so the type gate was at zero delta while **119 tests in that file were
-broken at runtime**. Only the full suite found it. See §8.4.
+broken at runtime**. Only the full suite found it. See §8 item 4.
 
 ### 5.2 `uv run ruff check .` — clean
 
@@ -448,7 +448,7 @@ disturbed.** Passing count rose 6138 → 6222 → 6223.
 one.** The first full run showed **515 failed** — 119 new in `test_retry_seam.py` (the
 `_CTOR_VALUES` breakage above), 1 in `test_surreal_harness.py` (I had violated operator
 RULING 1 by adding a module-level `store._txn` import to the harness; its own pin caught
-me — §8.6), and 1 in `test_calibration_engine.py` which was `fix-207-jitter`'s, not mine.
+me — §8 item 6), and 1 in `test_calibration_engine.py` which was `fix-207-jitter`'s, not mine.
 The first two are fixed; the third resolved itself when they committed.
 
 ---
