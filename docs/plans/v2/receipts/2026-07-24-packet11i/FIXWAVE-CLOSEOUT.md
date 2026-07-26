@@ -63,6 +63,33 @@ a silent one is not. Provenance recorded at `7251c77`.
 
 ---
 
+## 3b. LEDGER HYGIENE OWED AT MERGE — deliberately not done early
+
+Flagged by `coldaudit-fixwave-2`. **These are deferred to the post-merge docs step ON PURPOSE:** a
+finding resolved against an unmerged branch reads, to anyone querying the ledger from main, as a
+defect that is gone from production when it is not. Resolution follows the merge, not the fix.
+
+| finding | state | action at merge |
+|---|---|---|
+| **#210** charset guard | fixed + audit GO | resolve, cite `c32800d` |
+| **#204** loresigil zero jitter | fixed by the #207 wave | resolve, cite `f65e062` (⚠ the mixed commit — see §3) |
+| **#207** five unjittered backoffs | fixed + audit GO, hardened at `eeba286` | resolve, cite both |
+| **#227** redactor path mangling | ⚠ **LEAVE OPEN** — the fix is the audit's R1 blocker (it weakened the secret backstop 38–63%). Its body still says "awaiting GO", which is stale either way. | update body; resolve only after R1's remediation passes |
+| **#199** `scripts/` ungated | **count stale AGAIN** | see below |
+
+⚠ **#199's number has now moved three times, and the mechanism is worth more than the number.**
+Filed as ~50 (a per-FILE count generalised to a directory — the lead's error). Corrected to **150**
+by re-derivation. **Now 153**, because this wave added three pins to `scripts/`. Re-derived by the
+lead 2026-07-26: `uv run pytest --collect-only -q scripts/` → `153 tests collected`.
+
+That is exactly why **#224** requires a count to carry the command that produced it: a bare "150"
+was stale within a day of being corrected, and nothing about the figure signals that it is a
+snapshot of a moving quantity. The durable claim is *"`scripts/` is excluded from `testpaths`, so
+none of its tests run in any gate"* — the count is a measurement, not a fact, and it belongs with
+its command or not at all.
+
+---
+
 ## 4. Merge preconditions — do not start without these
 
 1. **A fresh cold audit on a frozen tree.** The existing one (`coldaudit-fixwave`) graded the wave
