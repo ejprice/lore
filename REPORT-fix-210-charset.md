@@ -8,7 +8,13 @@
   individual verdict per hit.
 - **Commits (branch `pkt11i-floor-calibration-dark`):** `c32800d` (fix + pins),
   `8b1343e` (class instrument), `5e99409` (allowlist exemption upgraded from ARGUED to
-  PROBED — §Decision 3). All **path-scoped** — see deviation 1 and §Commit hygiene.
+  PROBED — §Decision 3), `7379b48` (**R5** — two unfailable assertions replaced with the
+  property they claimed; §R5). All **path-scoped**, each verified post-commit with
+  `git show --name-only` — see deviation 1 and §Commit hygiene.
+- **R5 CLOSED.** One of the two lines was mine (`c32800d`), one inherited (`7917eaf`) —
+  `git blame` receipts in §R5. The replacement is proved able to fail, and **the removed
+  assertion is proved to have PASSED the same wrong build**. Sweep found **6 more instances,
+  none mine, all flagged not touched**, each with an individual verdict.
 - **DEVIATION 1 — ⚠ TWO SIBLING BUILDERS SHARE THIS WORKTREE.** Detected independently
   mid-run (the tree was CLEAN at `31d9e58` when I started; by 22:10 **21 tracked files I
   never touched were modified and 3 untracked files appeared**), then confirmed and named
@@ -345,6 +351,96 @@ loremaster/tests/test_anchored_pattern_seam.py
 ```
 
 ---
+
+## R5 — two unfailable assertions, fixed (`7379b48`); six more found, none mine
+
+**The defect, verified:** `assert not isinstance(exc_info.value, AgentRegistryError)` sat
+inside `pytest.raises(ValueError)`. `AgentRegistryError.__mro__` is
+`[AgentRegistryError, RuntimeError, Exception, BaseException, object]` —
+`issubclass(AgentRegistryError, ValueError)` is **False** — so `pytest.raises` had already
+excluded it and **the assertion could not fail**. One of the two called itself *"THE class
+invariant, and the load-bearing half of this pin"*, which makes it a false gate rather than
+mere redundancy.
+
+**Attribution (`git blame`, since only one is mine):** line 599 → `c32800d`, **mine**;
+line 542 → `7917eaf`, **pre-existing and inherited**. Both fixed.
+
+**The sharper half, from the audit's §7:** the property those lines reached for — *"the store
+is never reached for a malformed identity"*, the invariant `c32800d`'s own commit message
+says #210 violated — **was tested by nothing**. A build that queried the store and *then*
+raised the same `ValueError` passed. An exception TYPE cannot express "before any store
+touch"; only an observation of the registry can.
+
+**Fix:** `_RecordingAgentRegistry`, a subclass of the existing `FakeAgentRegistry`
+(extension, not a fork), records every public call; the pin becomes `registry.calls == []`.
+
+### Proof the replacement CAN fail — the point, since the old one could not
+
+Wrong build, in a `scratch_copy.sh` copy (provenance asserted; siblings never saw a mutated
+`server.py`): `await self.agent_registry.ensure_ready()` inserted **before** charset
+validation — *"queries the store, THEN raises the same ValueError"* verbatim.
+
+* Expected-RED **declared from `--collect-only` before mutating**: 3 of 13 ids.
+* Mutation landing evidenced: `md5sum -c` → did-not-match, plus the changed line at 4428.
+* Control leg: unmutated scratch `13 passed`.
+
+```
+DECLARED RED 3 | ACTUAL RED 3
+[A] declared RED that stayed GREEN: 0    [B] unexpected reds: 0    [C] declared GREEN that reddened: 0
+VERDICT: BOTH-WAYS CLEAN — the new pin CAN fail, and fails on exactly the build it targets
+
+E   AssertionError: the charset guard reached the store before rejecting: ['ensure_ready']
+```
+
+**And the decisive control** — the REMOVED assertion, run verbatim against that same wrong
+build: **it PASSED**, while `calls == ['ensure_ready']`. That is the difference between a
+hollow gate and a redundant one, demonstrated rather than argued.
+
+Restored byte-exact (`md5sum -c` → OK, `13 passed`); the real worktree's `server.py` is
+identical to `HEAD` throughout.
+
+### Controls so the fix is not hollow in its own turn
+* **Reach is a CHECKED variable**: `RECORDED_METHODS` is asserted to BE `FakeAgentRegistry`'s
+  public surface, and every declared name asserted to have a real override — so a method added
+  later cannot silently escape observation (`CLAUDE.md`'s instrument lesson: six gates defeated
+  by name lists).
+* **A positive control proves the recorder OBSERVES a touch** on a legal register. Without it,
+  an inert spy recording nothing would satisfy every `calls == []` vacuously — R5's own failure
+  mode, one level down.
+
+### The sweep — from the grep, not the lead's two line numbers
+
+Bare grep for the shape (44 raw hits), then an **AST analyzer** pairing every
+`assert not isinstance(<var>.value, Y)` with its enclosing `pytest.raises(X)` and resolving
+both classes in the test module's own namespace, to answer the only question that matters:
+**is `Y` catchable by `X`?** If not, the assertion is unfailable.
+
+```
+TOTAL isinstance-on-raises assertions: 41
+  CAN fail (Y is a subclass of X): 27
+  UNRESOLVED (dynamic/parametrized X): 9   <- triaged by hand below
+  UNFAILABLE:                          5   (+1 found in the hand triage)
+```
+
+**Six more, every one with an individual verdict — all OUTSIDE my writable set, so FLAGGED, not touched:**
+
+| file:line | shape | verdict |
+|---|---|---|
+| `test_store_read.py:534` (`test_connection_error_is_not_a_store_read_error`) | `raises(SurrealConnectionError)` vs `isinstance(…, StoreReadError)` | **WORST of the six — a real gap.** The isinstance line is the test's ONLY assertion beyond the raises, and `grep issubclass` over that file returns **nothing**, so the taxonomy claim its comment makes is genuinely unpinned. Fix is one word: `assert not issubclass(SurrealConnectionError, StoreReadError)` — class-level, and RED if anyone reparents the hierarchy. |
+| `test_store_read.py:561` | same, manifest-down variant | same verdict, same one-word fix. |
+| `test_retry_seam.py:4454` | `raises(SurrealConnectionError)` vs `isinstance(…, TxnContentionExhaustedError)` (siblings, disjoint) | Line is hollow; **test is not** — the enclosing `raises(SurrealConnectionError)` is itself the real gate. Belt-and-braces documentation. Low. |
+| `test_retry_seam.py:5710` | same | same — a preceding marker assertion also discriminates. Low. |
+| `test_surreal_harness.py:413` | `raises(QueryError)` vs `isinstance(…, TxnContentionExhaustedError)` | same — the test also asserts the message and `statement_calls == 1`. Low. |
+| `test_task_ledger.py:2034` | `raises(ValueError)` vs `isinstance(…, IllegalTransitionError)` (a `RuntimeError` — **my exact shape**) | Found only in the hand triage, not by the analyzer (it could not resolve the name statically). Line is hollow; **test is not** — the next assertion pins the exact message verbatim. Medium. |
+
+The nine UNRESOLVED were triaged by hand: `raises(expected)` / `raises(expected_type)` /
+`raises(BaseException)` are dynamic or universal and can fail; `TerminalCountError` **is** a
+`RuntimeError`, so `test_calibration_counting.py:258` **can** fail. Only `test_task_ledger.py:2034`
+was a genuine hit.
+
+**Mine were the only two where the hollow line was BOTH described as load-bearing AND standing
+in for a property nothing else tested.** That is why they were the ones worth replacing rather
+than deleting.
 
 ## Decision 3, answered — the allowlist stays in-test, and one entry needed upgrading
 
