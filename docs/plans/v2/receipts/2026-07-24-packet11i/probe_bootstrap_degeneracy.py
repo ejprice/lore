@@ -2,6 +2,29 @@
 """Packet 11-i / S1 — is the nonparametric bootstrap over ``choose_cosine_floor``
 degenerate in the measured 2026-07-07 regime?
 
+.. note::
+
+   **VERDICT STANDS · NOT A TEMPLATE (header added 2026-07-26, lead-11ia).**
+   S1's NOT-DEGENERATE verdict is unaffected by this note and remains load-bearing.
+
+   But ``ProcedureBootstrap``'s docstring below says it resamples the union and the
+   absent arm **JOINTLY**, while ``one_replicate`` resamples the two arms
+   **INDEPENDENTLY**. That is **CORRECT for the instrument measured here** — this
+   probe's absent arm is a fixed nonsense-query set, genuinely unpaired with the
+   union, and Addendum D1's "jointly" means "within the same replicate".
+
+   It is **NOT correct as a template** for the portable hold-out instrument, whose
+   absent arm *is* the answered probes (one probe yields two observations, so the
+   unit is PAIRED). Copying this resampling shape into that instrument reproduces
+   a defect this file never had.
+
+   The portable instrument's ruled shape — two index samples with ``paired=False``,
+   and the reason an outcome pin on the CI endpoints cannot detect the wrong build
+   — is in
+   ``docs/plans/v2/receipts/2026-07-26-packet11i-build/RULINGS-2026-07-26-bootstrap.md``
+   §R-A, with the measurements in ``REPORT-probe-bootstrap-paired.md`` §A in that
+   same directory.
+
 Why this exists
 ---------------
 ``docs/design/2026-07-24-floor-calibration.md`` Addendum D makes a nonparametric
