@@ -175,7 +175,8 @@ below; one fork inside the first axis is genuinely the operator's.
 
 ## F4 — The two damaged states, re-predicated · **AMENDS-RULED-TEXT**
 
-**Ruled text amended** [design-cited]: §7's state rows for `stale_remeasuring` (*"leg fired; run
+**Ruled text amended** [design-cited] — this section RETIRES `stale_remeasuring` and replaces it
+with `invalidated_remeasuring`: §7's state rows for `stale_remeasuring` (*"leg fired; run
 queued/in flight"*) and `insufficient_corpus` (*"min samples unreachable"*); B6-F4's *"LIVE-on-the-
 old-floor under churn staleness"* disposition; read with D0's retirement sentence (*"the fixed-N
 minimums as the N rule"*) and blind review C3/C4, which identified both damages.
@@ -430,7 +431,7 @@ discipline; the design doc itself is outside this author's writable set — the 
 | D1 *"interval-carrying is free at any N"* | FALSE, measured — corrected by F9 (zero-embeds half stands) |
 | D2 ladder *"up to pool size"* | conditional per F9.2 |
 | B2 constant-cost claim | superseded (blind FA4); ledgered |
-| §7 `stale_remeasuring` row + B6-F4 churn clause | re-predicated/renamed by F4 |
+| §7 `stale_remeasuring` row + B6-F4 churn clause | re-predicated and RETIRED/renamed by F4 to `invalidated_remeasuring` |
 | §7 `insufficient_corpus` row ↔ D0 retirement | predicate restored by F4 |
 | B4 *"one minted head pointer per scope"* | re-keyed by F6 |
 | §0 §B riders | additions proposed by F10 (operator's) |

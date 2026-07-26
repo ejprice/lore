@@ -24,6 +24,19 @@ dev = [
     "pytest-xdist",
     "types-defusedxml",
     "types-PyYAML",
+    # Markdown BLOCK segmentation for the retirement-marker sweep
+    # (test_floor_calibration_schema.py). The sweep must tell a line that TEACHES
+    # a retired name from one that MARKS it as retired, and the marker legitimately
+    # sits on a neighbouring line — so the unit is the markdown block, not the line.
+    #
+    # DECLARED, not inherited: it already resolved transitively via ``rich``, and a
+    # transitive pin is somebody else's promise to keep. It is dev-only because
+    # nothing shipped imports it.
+    #
+    # Adopted to DELETE a hand-rolled block splitter, per packages-over-hand-rolling:
+    # its author probed ``MarkdownIt.parse()`` token ``.map`` spans against all six
+    # real hit sites and measured identical boundaries before recommending it.
+    "markdown-it-py>=4.2",
 ]
 
 # ---------------------------------------------------------------------------
