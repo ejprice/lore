@@ -976,3 +976,9 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   search + batched BASE-SERVED impact/tests behind the numbered caveat; Fable concurs) vs Sonnet
   "inventory only, rest inherits the v2 disposition". Packet 17/23 docs untouched — the ruling
   lands there.
+- 2026-07-26 · **BRANCH/DIFF CONSULT FORK RULED** (same day): operator ruled v1 = **graph over
+  the delta** (Opus Option 1 — changed-symbol inventory in the registration render, delta-scoped
+  search, batched BASE-served impact/tests behind the NUMBER-bearing caveat). Recorded as a ruled
+  constraint block in packet 17's doc; unanimous consult positions (no textual re-serve · no
+  `lore_diff` ref mode (#232) · ref-vs-ref never + re-open trigger · the three-identity trust
+  riders) adopted there as constraints-to-cite. Packet 23 inherits via packet 17's spec.

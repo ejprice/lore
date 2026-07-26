@@ -84,3 +84,9 @@ tests cover them. "Branch support" therefore enters the design not as a new bran
 engine but as delta-scoped graph serving on the overlay packet 17 already designs —
 plus one explicit non-goal (ref-vs-ref, with a named re-open trigger) and one recorded
 no-go (no git-ref mode on `lore_diff`, #232).
+
+## RULING (operator, 2026-07-26, same day)
+
+The operator ruled the fork: **Opus Option 1 — graph over the delta.** Recorded as a ruled
+constraint block in `docs/plans/v2/17-worktree-overlay-design.md` (§ "Branch/diff-awareness
+— ruled 2026-07-26"), which packet 17's design doc and packet 23's build inherit.

@@ -23,6 +23,38 @@ this is load-bearing for wave O, not a convenience.
   stay base-served with an EXPLICIT caveat when the target is in the changed set — scoped
   delta-derivation (changed files + direct importers) is the designed-for v2, not v1.
 
+## Branch/diff-awareness — ruled 2026-07-26 (the consult; receipts:
+## docs/plans/v2/receipts/2026-07-26-branch-diff-consult/SYNTHESIS.md)
+The operator asked whether branches belong in the design ("don't agents want to compare
+their work vs the branch?"). Three independent model positions (Sonnet 5 · Opus 5 · Fable);
+the operator RULED the v1-scope fork; the remaining bullets are the consult's UNANIMOUS
+positions, presented alongside the ruling and adopted here as constraints-to-cite (reversing
+one is an operator question, not a design call).
+- **RULED: v1 serves GRAPH-OVER-THE-DELTA.** The changed-symbol inventory rides the overlay
+  REGISTRATION render; search is scopable to the changed set (a filter over the overlay
+  tier); batched BASE-SERVED `lore_impact`/covering-tests fan out over the changed set
+  behind the EXPLICIT caveat above — and the caveat carries a NUMBER ("N files in your
+  changed set are not graph-analysed"), pinned by a test that fails on a numberless caveat.
+  This batches the base-served-with-caveat clause; it is NOT the v2 delta-derivation,
+  which stays v2.
+- **No textual-diff re-serve, ever.** git IS the diff engine (the overlay already shells
+  `git diff --name-only` for its input); all three consumers said they would route around
+  a re-serve — a DESIGN-LAW §1 trust debit for zero gain.
+- **No git-ref mode on `lore_diff`.** Two identity spaces (snapshot ids vs refs) under one
+  verb is the confident-wrong §1 forbids, and the hazard is PRIMED — the snapshot listing
+  already renders git_branch@git_ref (#232, filed from this consult; the design doc
+  dispositions #232's render-teaching question).
+- **Ref-vs-ref for refs checked out nowhere: NEVER in this design.** Re-open trigger
+  (deferral law): a wave needing STRUCTURAL comparison of two sibling worktrees' deltas,
+  or Odoo onboarding demanding it.
+- **Trust riders on every delta render, in the same breath (rider law):** all THREE
+  identities — worktree path, branch + HEAD sha, AND merge-base sha (two of three lies by
+  omission after a rebase — this is open question 4's consumer face); committed-vs-
+  uncommitted PER FILE; enumeration age rendered (house STALE-notice convention); REFUSE
+  loudly when git/merge-base fails or the root is not a checkout (#131's class — an empty
+  changed set and a failed enumeration must be indistinguishable to no one); hostile
+  fixtures on interpolated branch/path (already a packet 23 invariant).
+
 ## Open design questions (the doc answers each with receipts; operator rules the forks)
 1. Registration surface: lore-deploy verb (worktree slug) vs `lore_index` alternate-root
    vs a session-scoped view registration on the existing surface (#125 filed all three as
