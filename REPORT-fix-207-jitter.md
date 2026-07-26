@@ -11,11 +11,30 @@ brief-base v6 read
 - Added a named seam `CalibrationEngine._backoff_delay` (prod change beyond the leaf edit) so the invariant can DRIVE that site. §4.
 - `Retry-After` paths left un-jittered deliberately — unruled parameter, escalated as R2. §6.
 
-**decisions-needed:**
-- **D1 — commit hygiene:** the #207 fix now lives inside a #211-labelled commit. Split, amend, or document-and-accept? Recommend document-and-accept. §1.
-- **D2 (R2)** — jitter `Retry-After`? Needs a ruled jitter width. Recommend yes, `W = 1.0s`. §6.
-- **D3 (R3)** — `server.py` eager-lease backoff is a constant, un-jittered; changing it moves boot timing 8s→30s. Recommend jitter-only. §6.
-- **D4 (R4)** — `_txn_conflict_backoff_seconds` is now the LAST hand-rolled full-jitter copy. Consolidate in a follow-up? §6.
+**decisions-needed: ALL FOUR RULED by the lead 2026-07-25. Recorded here; three imply follow-up
+work that is NOT in this commit.**
+- **D1 — commit hygiene → DOCUMENT-AND-ACCEPT.** `f65e062` (59 files, 1865 insertions) holds
+  both #207 and #211 under one name and will not be split: the branch is local, and a
+  `reset --soft` re-stage of interleaved work from three agents risks losing more than it
+  clarifies. Same ruling as the sibling's — *"a disclosed mixed commit is recoverable; a silent
+  one is the thing that makes an audit read the wrong change."* The lead is committing this
+  report so the provenance sits at a tracked address, and the cold-audit brief names it. §1.
+- **D2 (R2) — jitter `Retry-After` → APPROVED, ADDITIVE ONLY, `W = 1.0s`. NOT YET
+  IMPLEMENTED.** Constraint from the ruling: `retry_after + uniform(0, W)`, **never below the
+  server's stated value** — jittering downward violates the server's instruction and is a worse
+  bug than the herd. The existing KNOWN BOUND pin is to be retained but **retargeted at the
+  WIDTH rather than the existence** of the jitter. §6.
+- **D3 (R3) — eager-lease boot sleep → DO NOT MOVE BOOT TIMING. NOT YET IMPLEMENTED.** If
+  decorrelation can be had *without* changing the ladder shape — keep the constant, add a small
+  additive jitter — do that; decorrelation does not require an exponential ladder. If it cannot,
+  leave it and keep the pin, with a **named measurement** as the decision point: *what is the
+  health-check budget, and how much boot headroom exists?* Measure-then-tune, not a can-kick. §6.
+- **D4 (R4) — `_txn_conflict_backoff_seconds` → DEFER TO ITS OWN WAVE. OWNER NEEDED.** Recorded
+  not as a fresh idea but as **#202's own re-open trigger FIRING**: #202's recorded trigger is
+  *"the next behavioural change to the retry policy evaluates tenacity FIRST"*, and consolidating
+  `_txn`'s jitter into the shared policy IS that change. That wave must carry the mutation proofs
+  its eleven guarded consumers demand and re-verify the runtime guard's `__code__`-frame
+  coverage. It is much cheaper now that the shared policy exists. §6.
 
 **receipt pointers:** not-mine failures §0 · commit situation §1 · tenacity comparison §2 ·
 population + RED §3 · sharing proof §4 · mutation proofs §5 · raised findings §6 · old-world
@@ -34,6 +53,27 @@ adjudications §7 · gates + testpaths receipt §8 · known bound §10.
   at any point; every `git add` named explicit paths (§1).
 
 ---
+
+## 0a. THE BOTH-WAYS MUTATION DIFF CAUGHT A DEFECT IN MY OWN PIN — within one wave of adopting it
+
+Surfaced here at the lead's direction as the strongest available argument for the practice.
+Full detail in §5.
+
+`CLAUDE.md` adopted (2026-07-26) the rule that a mutation proof must **declare its expected-RED
+node ids before the run** (from `--collect-only`) and **diff both ways** — unexpected reds, *and
+declared reds that stayed GREEN*. I applied it to three mutations. On the very first run it
+caught a defect **in my own instrument**:
+
+> `test_the_shared_policy_is_backed_by_tenacity_not_a_hand_roll` was DECLARED RED and **STAYED
+> GREEN**. Mutation A had replaced `jittered_backoff_delay`'s entire body with the deterministic
+> `min(base_s * 2**attempt, cap_s)` — but the module still *imported* `wait_random_exponential`,
+> and my pin was a **substring scan over the file text**. A pin keyed on a TOKEN rather than the
+> BEHAVIOUR, passing over a build it existed to reject.
+
+Rewritten to walk the AST of `jittered_backoff_delay` and assert it **CALLS** the strategy;
+re-ran the identical mutation, it goes RED. Two of six declarations for that mutation were wrong
+on the first pass — **one my mistake, one a genuine instrument defect**. A one-way check would
+have reported "all declared reds fired" and shipped the hollow pin.
 
 ## 0. OUT-OF-BASELINE, NOT-MINE FAILURES (lead-ruled — for the cold audit)
 
@@ -258,10 +298,27 @@ instruments catch the same regression.
   implementation of the policy `loresigil/backoff.py` now owns, which is the shape ONE
   IMPLEMENTATION forbids. Its allowlist entry carries a **named re-open trigger**: the day
   either jitter formula changes.
-- **R5 — `scripts/mutation_proof.py` is untracked, so worktree sessions cannot use it.** It
-  exists only in `/home/ejprice/PycharmProjects/lore/scripts/` as an untracked file. `CLAUDE.md`
-  now cites it as the instrument for mutation proofs; an untracked instrument is unreachable
-  from any worktree and unrecoverable by construction. Recommend: commit it.
+- **R5 — ~~`scripts/mutation_proof.py` is untracked~~ — WRONG, CORRECTED 2026-07-25.**
+  **It IS tracked**, added by `cad340f` on `feat/surreal-unification`. It is simply absent from
+  *this* branch (`pkt11i-floor-calibration-dark`, branched before it), so it was unavailable to
+  me — the conclusion held, the stated reason did not. No action needed; the recommendation to
+  commit it was moot.
+
+  **How I got it wrong is the part worth keeping, and it is not the mechanism the lead
+  proposed.** I never ran `git ls-files`. I ran `ls -la` on both paths (present in the main
+  checkout, absent here) and combined that with the **session-start `git status` snapshot in my
+  system context**, which showed `?? scripts/mutation_proof.py`. That snapshot was *accurate
+  when taken* and went stale when `cad340f` landed mid-session. **I reported a stale
+  observation in the present tense** — precisely what `brief-base` v6 §1 forbids: *"date and
+  scope your claims WHERE YOU MAKE THEM… write 'measured <date> at `<sha>`', never
+  'currently'."* In a tree three agents were committing to, a session-start snapshot has a
+  shelf life of minutes. Re-derive before asserting; that law applies to my own context, not
+  just to inherited numbers.
+
+  The lead's generalisation is still true and worth recording even though it is not what
+  happened here: **`git ls-files` is branch-scoped**, so in a worktree it answers "is this on
+  MY branch", not "is this in the repo". The repo-wide question is `git log --all --
+  <path>` — which from this worktree does find `cad340f`.
 - **R6 — one prose surface my change INVALIDATED, fixed in place.**
   `test_voyage_context.py`'s `FAKE_SLEEP_WALL_BUDGET_S` comment argued *"the smallest REAL
   backoff delay is `compute_backoff_delay(0) == 1s`, so finishing under 0.5s cannot have slept
