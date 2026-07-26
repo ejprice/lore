@@ -1,5 +1,10 @@
 # The #210 / #207 / #211 security fix wave — close-out and merge preconditions
 
+> ⚠ **SUPERSEDED SYMBOLS (dated record):** this file mentions `_BRIEF_PUBLISH_`, a retired
+> prefix — the four private mint-retry constants briefs.py once hand-rolled, DELETED by
+> finding #108; the shared `_txn.retry_on_conflict` driver owns that policy now. The prose
+> below is preserved as the record of its date; do not update it — this banner is the warning.
+
 > ✅ **MERGED 2026-07-26 at `c192cb4`** (fast-forwarded to `feat/surreal-unification`; worktree
 > removed). This file was written as a merge instruction sheet — it is kept because the preconditions
 > below were followed and the reasoning is the record of why. **Outcome, measured:**
