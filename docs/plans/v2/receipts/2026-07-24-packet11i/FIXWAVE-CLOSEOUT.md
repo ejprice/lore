@@ -1,5 +1,26 @@
 # The #210 / #207 / #211 security fix wave — close-out and merge preconditions
 
+> ✅ **MERGED 2026-07-26 at `c192cb4`** (fast-forwarded to `feat/surreal-unification`; worktree
+> removed). This file was written as a merge instruction sheet — it is kept because the preconditions
+> below were followed and the reasoning is the record of why. **Outcome, measured:**
+> - pre-merge baseline from main @ `2f32a3b`: **1 failed / 6936 passed**
+> - post-merge @ `c192cb4`: **1 failed / 7065 passed** — **failure set IDENTICAL**, +129 passing
+> - the single failure is main's own (03b archived reports naming `_BRIEF_PUBLISH_` without a
+>   SUPERSEDED banner) — pre-existing, unrelated, still open
+> - the 109 mypy errors §2 predicted would resolve **did resolve**; `ruff` clean, `scripts/` 329 passed
+> - `git merge-tree` predicted **zero conflicts** and there were zero
+>
+> **§2's warning proved exactly right and is the reusable part:** the 394-failure baseline WAS an
+> artifact of the branch point, and the post-merge diff was only readable because the baseline was
+> captured from main *minutes* before merging. ⚠ **One thing §2 did not warn about, learned the hard
+> way:** `git archive | tar -x` OVERLAYS a scratch copy — it never deletes — so the first "main"
+> baseline was contaminated by our own added files and had to be re-taken with them excluded. It was
+> caught only because an unexpected `ImportError` named one of ours.
+>
+> **§3b's deferred ledger hygiene is DONE:** #204/#207/#210/#211/#227 resolved with fix citations.
+> **New since:** **#231** (this wave's own gate allowlists by pattern NAME, so it cannot exempt one
+> site without blinding all) and **packet 42** (SHIPS NEXT — prevent the leak, delete the sanitizer).
+
 Assembled by `lead-11i-b`, 2026-07-26. **This is the merge instruction sheet.** Packet 11-i's
 design state lives in `STATE-2026-07-25.md`; this file covers only the fix wave that ran on top of
 it, and the things a merge must not discover for itself.
