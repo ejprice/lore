@@ -38,11 +38,18 @@ brief-base v7 read
 > and the record should show it:
 > **RULING 1** — port the weighted site with the guard → done, final (§10.1).
 > **RULING 2** — port site 4, the deploy smoke → done (§10.2), then **REVERSED on measurement**
-> (§11), then **superseded by RULING 3** (§12): the seam moved out of `scripts/` into the
-> installed package `loremaster/loremaster/stats.py`, which removed the failure the reversal was
-> avoiding, so site 4 is ported after all — with no `sys.path` hack.
-> **FINAL: all four sites route to one installed seam.** 7 mutation proofs held (the last two
-> re-established at the new placement); findings **#237** and **#238** filed.
+> (§11). RULING 3 (§12) then moved the seam out of `scripts/` into the installed package
+> `loremaster/loremaster/stats.py`, which **did** remove the failure the reversal was avoiding —
+> measured, leg [D].
+> ~~**FINAL: all four sites route to one installed seam.**~~ ⚠ **CORRECTED BY `lead-11ia` ON
+> ARCHIVE — this sentence and "site 4 is ported after all" are FALSE about the shipped tree.**
+> Site 4 was ported a second time and then **reverted again**; `docs/eval/smoke_p8b.py` ships
+> **byte-identical to `HEAD`** (md5 `9d1c2d20d53f327adde3ce45497c9c12`, still `import math`).
+> **THREE of four sites route to the seam**; the smoke keeps its own copy as a pinned known
+> bound. See the header at the top of this file for why the revert was kept even though the
+> measurement cleared the port. 7 mutation proofs held (the last two re-established at the new
+> placement), but §12.3's reach of **13** was measured on the ported tree and is not a fact about
+> what shipped; findings **#237** and **#238** filed.
 > §1–§9 are the pre-ruling record, preserved verbatim — every "escalated / not ported / not
 > edited" statement below was true then and is **not** a current-state claim.
 > Corrections: §11.6 and §12.
@@ -892,3 +899,97 @@ No git write command of any kind. The §11 revert used `git show` (read) plus a 
 section's move used `cp`/`rm` on working files only. Nothing staged, committed, stashed, or
 checked out. All mutation proofs restored byte-exact by md5. Every green claim carries a
 passed-COUNT.
+
+---
+
+## 13. Correction + final receipts — 2026-07-26, at `ea7406e`
+
+**Why this section exists:** §12 was written under RULING 3, which said *"`smoke_p8b.py` keeps the
+port and drops the `sys.path.insert` entirely."* A subsequent lead directive said the opposite —
+*"`docs/eval/smoke_p8b.py` stays exactly as you restored it … Do **not** re-port the smoke; that
+question is closed."* **Two directives, one file, opposite outcomes.** I did not pick silently: I
+took the conservative state (smoke back at HEAD, byte-identical, acquiring no new imports), because
+that is the more reversible of the two and matches the later directive, and escalated the conflict.
+
+**The conflict is now settled by the commit itself.** `ea7406e` contains
+`loremaster/loremaster/stats.py`, `loremaster/tests/test_stats.py`, and the two `scripts/` consumer
+changes — and **does not contain `docs/eval/smoke_p8b.py` at all**, because it never changed. The
+committed smoke is the original hand-roll. So the shipped state is *three of four sites share the
+installed seam; the fourth is a pinned known bound* — which is what `test_stats.py`'s committed
+docstrings already say.
+
+**⚠ THE CORRECTION, and it matters because this report is now an archived artifact:** §12.1's table
+row for `smoke_p8b` (*"ported again … no `sys.path` insert"*), §12.2's framing of the detached-path
+matrix as validating a shipped port, and §12.3's proof-6 figures (13 reds, including reach into the
+smoke's own suite) all describe a build that **was not shipped**. They were true when measured and
+are false as a description of `ea7406e`. Anyone retrieving a span of §12 should read this section
+with it. §12's other conclusions — seam placement, the two consumer rewires, the mypy result, and
+the reasoning for why `scripts/` was the wrong home — are unaffected and shipped.
+
+### 13.1 Mutation proofs re-established at the SHIPPED state
+
+Proofs 6 and 7 graded the ported build. Re-run against what actually shipped; declared from
+`--collect-only` before each run, exit captured with `echo $?` on its own statement.
+
+| # | mutation | declared | result |
+|---|---|---|---|
+| 8 | `loremaster/loremaster/stats.py`: `QUANTILE_METHOD` → `"linear"` | **9** | `9 failed, 216 passed` · **HELD** · restored `0f298b16…` |
+| 9 | `docs/eval/smoke_p8b.py`: rank rule `ceil` → `floor` | 4 | `4 failed, 221 passed` · **HELD** · restored `9d1c2d20…` (= the HEAD blob md5) |
+
+**Proof 8 reddens every consumer of the seam** — `token_survey.percentile`,
+`token_survey.weighted_percentile`, `summarize`, `survey_txn.summarise`, and the four weighted pins
+— which is the only test that separates sharing from looks-like-sharing.
+
+**One pin's expected verdict FLIPPED with the shipped design, and I declared the flip in advance
+rather than discovering it.** `test_does_not_drift_from_the_shared_seam` stayed GREEN under proof 6
+(smoke was ported, so smoke and seam moved together and could not separate) and goes RED under
+proof 8 (smoke is independent, so a seam change separates them and the drift pin fires). Same test,
+opposite verdict, for a structural reason — recorded so a future reader comparing the two proofs
+does not read it as flakiness. It is also the pin doing exactly the job the known bound needs:
+under the shipped design it is a genuine drift detector, and proof 9 confirms it also fires when
+the *copy* moves rather than the seam.
+
+### 13.2 Gates at the shipped state
+
+| gate | result |
+|---|---|
+| `ruff check` — my 5 files | **All checks passed!** |
+| `./scripts/typecheck.sh` | **Success** — lorescribe 27, loresigil 34, **loremaster 162**, 0 errors |
+| `mypy loremaster/loremaster/stats.py` | **Success: no issues found in 1 source file** |
+| `pytest` scoped (seam pins + smoke suite + both consumer suites) | **338 passed** |
+| `pytest -n auto -q` (full) | **7124 passed**, 135 failed, 17 skipped, 3 xfailed, 41 errors, 202s |
+
+**The #188 mypy gap is closed for this code and the claim is derived, not asserted:** the loremaster
+member went **160 → 162 source files** (`stats.py` + `test_stats.py`), and the seam checks clean
+individually. In §5 I had to flag that my files got no gate mypy coverage at all; that flag is
+discharged.
+
+**All 135 failures are `contract-11ia-1`'s committed contract-first phase** (`d6c0dd4`), verified
+mechanically: **zero** FAILED/ERROR node ids under `scripts/`, `docs/eval/`, or `test_stats`. By
+file — `test_retry_seam.py` 60 · `test_floor_calibration_store.py` 38 ·
+`test_floor_calibration_domain.py` 30 · `test_store_lease.py` 27 ·
+`test_floor_calibration_schema.py` 20 · `test_surreal_harness.py` 1.
+
+### 13.3 The move was an import change and nothing more
+
+The lead asked me to stop and report if it turned out to be more than that. It did not: no circular
+import, no dependency inversion, no new dependency edge that did not already exist. `numpy` was
+already declared in `loremaster/pyproject.toml`, and `scripts/` already imported `loremaster` in
+several files, so the direction was established. The only friction was three `I001` import-ordering
+errors from ruff, fixed by hand.
+
+### 13.4 Findings
+
+**#237** (percentile suites are convention-insensitive) and **#238** (`docs/eval/` outside
+`testpaths`) both stand. **#238's framing is now correct again**: it argues the `docs/eval/` gap as
+the reason a fourth copy is allowed to live, and under the shipped design that is exactly the
+situation — the flag I raised in §12.6 (that RULING 3 had made that argument stale) is withdrawn,
+because the port it referred to was not shipped. #238's named re-open trigger — the day
+`docs/eval/` gains a `testpaths` entry — remains the condition under which consolidating the fourth
+copy should be reconsidered.
+
+### 13.5 Standing constraints
+
+No git write command of any kind was run at any point in this task. The two smoke restorations used
+`git show` (read) plus a file copy; all nine mutation proofs restored byte-exact by md5. Every green
+claim carries a passed-COUNT.
