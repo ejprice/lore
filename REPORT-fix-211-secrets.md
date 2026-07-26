@@ -45,6 +45,11 @@
   `test_backoff_seam.py`, `token_survey.py`, `uv.lock` and their tests). See §6.1 for how
   and for why my verification did not catch it. My Half B commit `a68cfe7` IS clean —
   verified by `git show --name-only`: exactly two files, both mine.
+- **THE LOOSE END IS CLOSED, and closing it found a standing gate hole — §9.** The
+  `'str' object has no attribute 'get_secret_value'` deviations you flagged were real. The
+  main suite could not see the last of them: **`scripts/` is not a `typecheck.sh` member and
+  its tests are outside `testpaths`**, so mypy AND pytest were both blind to it. 4 tests
+  were RED there. Fixed, and the ∀ pin now scans `scripts/` (which then found 3 more).
 - **receipt pointers:** package investigation §2 · Half A design + boundary §4 ·
   Half B design + the pre-finding §3 · mutation proofs §7 · gates with counts §5 ·
   things I found that are NOT my mission §8.
@@ -225,10 +230,19 @@ record with no exception must gain no field.
 lore now emits no field at all. mypy found this edge, not I. Pinned by
 `test_exc_info_true_with_no_live_exception_emits_nothing`.
 
-The JSON key is **`"exc"`**, exported as `logging_setup.EXC_FIELD` (tests import it rather
-than re-hardcoding). The alternative reading is `"exc_info"`, which is
-`python-json-logger`'s convention and might matter for a Mezmo parser someone else writes.
-I picked `"exc"`; say the word and it is a one-line change.
+The JSON key is **`"exc_info"`**, exported as `logging_setup.EXC_FIELD`. I first shipped it
+as `"exc"`; the lead ruled `"exc_info"` (2026-07-25) on the grounds that a served field
+name is a consumer surface and matching python-json-logger's convention costs nothing now
+versus teaching agents a lore-specific spelling of a standard field. Renamed.
+
+⚠ **The rename exposed a gap in my own pins, which is worth more than the rename.** Every
+assertion indexed `parsed[EXC_FIELD]` — so they all *follow the constant wherever it
+points*, and changing its VALUE would have changed the served surface with all 34 tests
+still green. The served name had no pin at all. `test_the_wire_field_name_is_exactly_exc_info`
+now asserts the **literal** string on a real emitted record, and additionally that the old
+spelling is absent so a stale consumer fails loudly instead of silently reading nothing.
+Mutation-proven (M7): reverting the constant to `"exc"` turns exactly that one test RED and
+nothing else — confirming the other 34 were blind to it.
 
 ---
 
@@ -452,8 +466,15 @@ before either noticed.
 
 `test_calibration_engine.py::TestEndpointLifecycle::test_backoff_doubles_and_caps` appeared
 as a NEW failure in my first full run (their jitter change vs an old "doubles and caps"
-assertion) and resolved when they landed their fix. `test_backoff_seam.py` and
-`test_anchored_pattern_seam.py` are theirs.
+assertion) and resolved when they landed their fix. `test_backoff_seam.py` is
+`fix-207-jitter`'s.
+
+⚠ **CORRECTION to my own earlier inventory, from the lead:**
+`loremaster/tests/test_anchored_pattern_seam.py` is **NOT** `fix-207-jitter`'s — it belongs
+to **`fix-210-charset`**, a THIRD agent in this tree (#210, the `$`-anchored `re.match`
+defect), which also touches `agents.py` and possibly `server.py`. I had inferred its owner
+from arrival time rather than establishing it, and inferred wrong. The tree held **three**
+builders, not two. Wherever this report says "a second agent", read "two siblings".
 
 **Your call:** should three builders be sharing one worktree at all?
 
@@ -474,6 +495,8 @@ a `cp -a` content backup, proving byte-exactness by md5**.
 | **M4** | `resolve_secret` returns a bare `str` again | 4 tests | exactly those 4 RED, nothing else |
 | **M5** | **the sharing proof** — `_SIGNIN_USER_KEY` in `store/_txn.py` changed to `"usernameMUTATED"` | every connection owner | **766 errors + 11 failures across all 12 owner suites** |
 | **M6** | the newly-CLOSED api_key leg reverted to `api_key: str` in `calibration/counting.py` | 1 test (the ∀ AST pin) | exactly that 1 RED, nothing else — the pin does catch a regression at the site the bound used to cover |
+| **M7** | the SERVED field name reverted `"exc_info"` → `"exc"` | 1 test (the new wire-name pin) | exactly that 1 RED — **confirming the other 34 tests are blind to the served name**, which is why the pin had to exist |
+| **M8** | one `api_key: SecretStr` reverted to `str` in `scripts/token_survey.py` | 1 test (the ∀ pin's NEW `scripts/` reach) | exactly that 1 RED — the extended reach is real, not a scan silently covering nothing |
 
 Every mutation restored byte-exact (md5 verified); `git status` on all three mutated files
 is clean, and the gates were re-run afterwards at the same numbers.
@@ -568,3 +591,57 @@ Everything below is outside my mission. I fixed none of it.
    a module-level `loremaster.store._txn` import in `_surreal_harness.py`. My first patch
    added one; `test_surreal_harness.py`'s own pin caught it and I moved the import
    in-function. Noting it because the pin worked exactly as designed and is worth keeping.
+
+---
+
+## 9. The loose end, and the standing gate hole it uncovered
+
+The lead flagged mid-migration `'str' object has no attribute 'get_secret_value'`
+deviations as mine and not in `BASELINE-RED.md`. They were real. Two populations, and the
+second is the one worth keeping.
+
+### 9.1 Inside the main suite — already closed, now proven
+
+The `test_retry_seam.py` breakage (119 tests, via the untyped `_CTOR_VALUES` mapping) and
+the 6 `test_scout.py` instances were fixed before my first commit. **Proven, not asserted:**
+a full run with tracebacks (`-n auto -q --tb=line`, 286.58s) contains **zero occurrences of
+`get_secret_value`**, at 394 failed / 6223 passed with the failure set identical to the
+enumerated baseline. My earlier `--tb=no` run could not have shown this — `--tb=no` strips
+the reason text, so grepping it for an error string would have been a green result I could
+not attribute. Re-ran with tracebacks specifically to be able to make this claim.
+
+### 9.2 Outside it — `scripts/` is invisible to BOTH standing gates
+
+`scripts/typecheck.sh` runs `MEMBERS=(lorescribe loresigil loremaster)`. **`scripts/` is not
+a member**, so mypy has never seen it. Its tests also live outside `testpaths` and run only
+under the `cd scripts && uv run python -m pytest` idiom. So a directory that constructs
+loremaster's stores was checked by neither gate — and my migration duly shipped four
+defects into it:
+
+| site | defect | visible to |
+|---|---|---|
+| `survey_txn_contention_102.py` | `PASSWORD = "spikeroot"` bare `str` → would die at `signin_credentials`; **plus its own hand-rolled signin payload** | nothing |
+| `snapshot_gc.py` ×3 helpers | annotations claimed `password: str` while `main()` passed a `SecretStr` — a LYING annotation that worked by accident | nothing |
+| `scripts/test_snapshot_gc.py` | faked `resolve_secret` with `lambda: f"dummy-{name}"` — **4 tests RED** | only the `cd scripts` idiom |
+| `scripts/test_calibration_baseline.py` | faked `load_api_key` with `lambda: "dummy-key"` | only the `cd scripts` idiom |
+
+**A fake that returns a different TYPE than production tests a seam production does not
+have.** Both fakes now return `SecretStr`, as the real resolvers do.
+
+### 9.3 The instrument, which is the part that lasts
+
+The ∀ AST pin now scans `scripts/` as well as the package — *conditionally*, because in the
+deployed image `loremaster` lives in site-packages with no `scripts/` beside it and the scan
+must simply cover less rather than fail. **On its first run it found three more bare-`str`
+`api_key` sites** (`calibration_baseline.py`, `token_survey.py` ×2, the latter being a third
+independent copy of the Anthropic key resolver). That is the evidence a *rule* — "remember
+`scripts/` exists" — would not have produced. Mutation-proven (M8).
+
+### 9.4 Flagged for you, not fixed
+
+**`scripts/` belongs in `MEMBERS` in `scripts/typecheck.sh`.** I did not make that change:
+it alters the canonical gate runner, it would surface pre-existing errors in files no one on
+this wave owns (`survey_txn_contention_102.py` alone has 9 under a one-off `mypy` run), and
+it affects all three agents in this tree. Your call. The same question applies to whether
+`scripts/`'s tests should join `testpaths` — CLAUDE.md already notes the skills tree has the
+same shape, and *"a guard nobody runs is a hope with a filename"*.
