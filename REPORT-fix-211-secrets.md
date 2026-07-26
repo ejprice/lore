@@ -722,3 +722,526 @@ this wave owns (`survey_txn_contention_102.py` alone has 9 under a one-off `mypy
 it affects all three agents in this tree. Your call. The same question applies to whether
 `scripts/`'s tests should join `testpaths` — CLAUDE.md already notes the skills tree has the
 same shape, and *"a guard nobody runs is a hope with a filename"*.
+
+---
+
+## 10. COLD-AUDIT RESPONSE (NO-GO, 2026-07-26) — fixes made, NOT COMMITTED
+
+**Freeze honoured: nothing is committed. All edits below sit uncommitted in the working
+tree awaiting explicit GO.**
+
+⚠ **One ambiguity in the freeze instruction, flagged rather than resolved silently.** The
+message said both *"until then, edit nothing"* and *"Fix it … ship the pin … Report when
+ready; do not commit."* Those admit two readings. I took the second — working-tree edits,
+zero commits — because the freeze's stated harm was **HEAD moving under the auditor**, which
+only committing causes, and offered to revert if the other was meant.
+
+**RULED (lead, 2026-07-26): that reading was correct, the ambiguity was the brief's, and
+nothing is to be reverted.** Recorded because the *general* point outlives this wave: when a
+brief admits two readings that produce different work, the cost of writing both down is one
+paragraph, and the cost of picking silently is a wave's work in the wrong state.
+
+### 10.1 DEFECT A — fixed, and the enumeration the finding actually asked for
+
+The single line: `scripts/search_score_survey.py::_make_store` now reads
+`user=resolve_secret(DEFAULT_SURREAL_USER_ENV).get_secret_value()`.
+
+**But the finding was "you had a five-member set and updated four", so here is every
+`resolve_secret` INVOCATION in the repo, individually verdicted.** Bare anchor-free grep
+over `loremaster/`, `lorescribe/`, `loresigil/`, `scripts/`.
+
+⚠ **POSITIVE CONTROL FIRST** (finding #225): run against a site I knew existed —
+`index/cli.py` — before trusting the sweep's shape. It returned that site's 3 lines, so the
+pattern demonstrably matches. A short result would otherwise be evidence about my pattern,
+not about the corpus.
+
+| # | file:line | what it feeds | verdict |
+|---|---|---|---|
+| 1 | `config.py::load_config` (the eager fail-fast read) | discarded — presence check only | ✅ correct |
+| 2 | `scout.py::Scout.build` (user) | `.get_secret_value()` → `user: str` | ✅ correct |
+| 3 | `scout.py::Scout.build` (password) | `password: SecretStr` | ✅ correct |
+| 4 | `auth.py::build_api_key_verifier` | `dict[str, SecretStr]` | ✅ correct |
+| 5 | `index/cli.py::_run` (user) | `.get_secret_value()` | ✅ correct |
+| 6 | `index/cli.py::_run` (password) | `password: SecretStr` | ✅ correct |
+| 7 | `server.py::build_app_context` (user) | `.get_secret_value()` | ✅ correct |
+| 8 | `server.py::build_app_context` (password) | `password: SecretStr` | ✅ correct |
+| 9 | `server.py` (anthropic) | `CalibrationEngine(api_key: SecretStr)` | ✅ correct |
+| 10 | `scripts/snapshot_gc.py::run_gc` (user) | `.get_secret_value()` | ✅ correct |
+| 11 | `scripts/snapshot_gc.py::run_gc` (password) | `password: SecretStr` | ✅ correct |
+| 12 | **`scripts/search_score_survey.py::_make_store` (user)** | `user: str` — **NO unwrap** | ❌ **DEFECT A — fixed** |
+| 13 | `scripts/search_score_survey.py::_make_store` (password) | `password: SecretStr` | ✅ correct |
+| 14 | `scripts/test_snapshot_gc.py` (monkeypatch) | returns `SecretStr` | ✅ correct |
+| 15–19 | `loremaster/tests/test_config.py` ×4, `test_secret_typing.py` ×5 | assertions on the seam itself | ✅ correct |
+
+**5 username sites. I had done 4. That is exactly the audit's count, independently
+re-derived.** No other site is wrong.
+
+**BOTH #225 CONTROLS RUN, both directions** (the lead's positive-dual amendment):
+
+- **Under-match (the negative half):** could a name-keyed pattern MISS a call? Checked for
+  aliased imports (`resolve_secret as …`), any other symbol whose name contains
+  `resolve_secret`, and dynamic/module-qualified reach (`getattr`, `config.resolve_secret`).
+  **All empty** — only the direct name is ever used, so a name-keyed pattern cannot miss one.
+- **Population (the positive half):** 23 invocation hits, each checked to be genuinely
+  `loremaster.config.resolve_secret` and not a same-named sibling. A match is evidence a
+  pattern matched, **not** evidence it matched what I meant.
+
+**THE INSTRUMENT THAT ACTUALLY PROVES IT — a live signin against the TEST store (:18000,
+never :18500), with the auditor's two-leg control:**
+
+```
+CONTROL:  user=str 'root'         -> SIGNIN OK
+          user=SecretStr('root')  -> BufferError: ('no encoder for type ', SecretStr)
+REAL:     _make_store() creds     -> SIGNIN OK
+          store._user type = str        store._password type = SecretStr
+VERDICT:  control discriminates = True ; real factory signs in = True
+```
+
+The control leg proves the probe can *see* the defect; the real leg proves the shipped
+factory no longer has it. **A green test suite proves neither** — which is the auditor's
+point, and mine below.
+
+**And a stronger instrument than the grep, which I ran because the grep only finds what I
+thought to look for:** `uv run mypy scripts` — the gate nobody points at that directory.
+It reports **exactly one** error of this class, `search_score_survey.py:691`, and now
+reports **27 errors, identical to the `d0ee2be` pre-wave baseline** (was 28 with Defect A).
+Zero delta restored, measured on a `git archive` of the pre-wave commit.
+
+### 10.2 The pin that would have caught it
+
+`scripts/test_search_score_survey.py::TestTheRealStoreFactoryBuildsSdkEncodableCredentials`
+— 3 tests that call the **real** `_make_store()` instead of monkeypatching it away, and
+assert the property the SDK actually imposes: every value in the signin payload must be a
+plain `str`, because a `SecretStr` raises `BufferError: no encoder for type SecretStr` at
+connect.
+
+It is safe without a server, and the first test **verifies that rather than assuming it**:
+`SurrealStore.__init__` opens no socket. That matters because this module's
+`DEFAULT_SURREAL_URL` is **PRODUCTION lore-surreal (:18500)** — "constructing does not
+connect" is a safety property the test depends on, not a detail (audit §8.1 raises the
+production-URL issue separately; I have not touched it).
+
+Third test is a **positive control**: the encodability assertion is a negative ("nothing
+wrong"), which passes just as happily when the check itself is broken — so a deliberately
+wrong payload (`SecretStr` username, the defect's exact shape) is asserted to be *caught*.
+
+⚠ **My earlier `cd scripts && pytest -q .` → 150 passed did NOT clear Defect A, and citing
+it was the error the auditor's finding is about.** The one test near `_make_store` does
+`monkeypatch.setattr(sss, "_make_store", lambda: store)` — **it replaces the broken function
+with a working stub.** A covering test that substitutes the thing it covers cannot fail on
+it at any pass count, so quoting the pass count as evidence was circular. The live signin
+above is the instrument; the new pin below is its permanent form.
+
+**MUTATION-PROVEN (M9):** reverting the one-line fix reddens
+`test_the_signin_payload_is_entirely_sdk_encodable` and nothing else. Declared from
+`--collect-only` before mutating, diffed both ways, md5-verified landing and byte-exact
+restore.
+
+⚠ **M9's first run had a broken comparison and I am recording it rather than only the clean
+re-run.** My declared set was **over-broad** (I declared all 3 tests when only 1 should
+redden), and the diff compared rootdir-relative ids from `--collect-only` against
+cwd-relative ids from `FAILED` lines, so *every* declared test appeared to "stay GREEN" —
+a false vacuous-proof alarm. The correct reading was visible in the raw output the whole
+time. Re-run with basename-normalised ids and a correctly narrow declared set: clean.
+**The lesson is that the both-ways diff is only as good as the id normalisation under it** —
+a path-prefix mismatch makes every proof look vacuous, which is the failure direction that
+at least errs loud rather than silent.
+
+### 10.3 DEFECT B — fixed, and the false claim recorded as false
+
+`loremaster/tests/test_calibration_counting.py::TestRequestShapeParity` now builds ONE
+`SecretStr` key and hands it to BOTH counters. Was: the async side wrapped, the sync side
+left a bare `str` after `0b851a3` widened `token_survey.ClaudeTokenCounter.__init__`.
+
+**MUTATION-PROVEN (M10):** reverting the fixture to a bare `str` reddens exactly that test.
+
+**THE FALSE CLAIM, stated as false rather than quietly corrected.** `0b851a3`'s commit
+message says:
+
+> *"Full suite with tracebacks: 394 failed / 6223 passed, failure set identical to the
+> enumerated baseline"*
+
+**That was not true of the commit it was attached to.** The number was measured BEFORE the
+`token_survey.py` edit in that same commit, and I did not re-run after it. The audit
+measured 395 at `0b851a3` and is right. A commit message asserting green is a receipt, and
+this one certified a state that never existed — the same class this session has spent all
+day filing findings about, committed by the agent filing them. It cannot be fixed by
+amending (the tree is frozen and the commit is graded); it is recorded here instead, and
+the report is the durable artifact.
+
+### 10.4 DEFECT C — the PIN claim does not hold; the COUNT I cannot refute, and here is why
+
+The audit lists as a NO-GO reason: *"`2bc28cf` shipped a pin asserting `EXC_FIELD ==
+"exc_info"` while production said `"exc"`."*
+
+**Three TEXT receipts say that specific claim is wrong** — all pure `git` reads, immune to
+any tree-identity problem:
+
+1. `git show 2bc28cf:loremaster/tests/test_logging_setup.py | grep -c
+   test_the_wire_field_name_is_exactly_exc_info` → **0**. The pin is not in that commit.
+2. `git log -S` names **`20ea39a`** as its introducer — the *same* commit that changed the
+   constant. **The rename and its pin shipped atomically.**
+3. `git show 2bc28cf:loremaster/loremaster/logging_setup.py` → `EXC_FIELD = "exc"`,
+   self-consistent with the tests present there.
+
+**⚠ AND NOW THE PART THAT MATTERS MORE, WHICH IS AGAINST ME.** I tried to strengthen this
+with a frozen full-suite run and **my "frozen" snapshot was poisoned in exactly the way I
+was about to accuse the audit of.** Measured, not inferred:
+
+```
+$ cd /tmp/c2bc && uv run --no-sync python -c "import loremaster; print(loremaster.__file__)"
+/home/ejprice/PycharmProjects/lore-pkt11i/loremaster/loremaster/__init__.py   # <- THE LIVE WORKTREE
+```
+
+I built the snapshot with `git archive <sha> | tar -x` and **symlinked the live `.venv`**
+into it. The venv's editable `.pth` names an absolute path back to the real checkout, so
+`import loremaster` resolved home — **#140's poison mode #1, verbatim, in the tree whose
+CLAUDE.md documents it.** That run reported `304 failed, 6118 passed, 65 errors` and is
+**worthless as a measurement of `2bc28cf`**; the 65 `ImportError`s are the symptom.
+
+**So I RETRACT the positive control I was about to publish** ("the whole of
+`test_logging_setup.py` at frozen `2bc28cf` is 34 passed"). It ran the TIP's production code
+under the archive's test file. It proves nothing, and had I not checked provenance I would
+have shipped it as a receipt — while criticising the same error.
+
+**What survives, precisely:**
+- The three text receipts above: the **pin did not exist at `2bc28cf`**. That stands.
+- **I cannot and do not dispute the audit's 395 count.** Its report states it used
+  `scratch_copy.sh` and printed `loremaster.__file__ = /home/ejprice/scratch-coldaudit-base/…`
+  — i.e. **it did the provenance step correctly and I did not.** On this axis its numbers are
+  more trustworthy than mine.
+
+**RESOLVED (lead, 2026-07-26): independently re-derived and CONFIRMED.** The lead ran the
+same three `git show` / `git log -S` reads and reached the same result — *"a test that does
+not exist cannot be red"* — and has put the receipts to the auditor rather than overruling
+it, on the grounds that it graded this work and deserves the same standard. **The audit's
+Defect C row does not hold.** Defects A and B were, and are, real.
+
+**The open question that goes with it** — not a claim, a request: if the pin did
+not exist at `2bc28cf`, then the **395th failure there is not the wire-name pin**, and the
+audit's attribution table has an unexplained row. The audit has a correctly-provisioned
+scratch copy and can settle it in one run; I would need to `uv sync --all-packages` a proper
+copy to do it honestly, and I am not going to publish another poisoned number instead.
+
+**Note also which of MY earlier numbers this does and does not touch, because the
+distinction is load-bearing and self-verifying:**
+- **mypy-on-archive measurements are VALID.** mypy analyses the source paths it is handed;
+  it does not import through the venv's `.pth`. The receipt is in the output itself — the
+  `d0ee2be` archive reports *"checked 150 source files"* against my tree's *"151"*, the
+  difference being `test_secret_typing.py`, which exists only in my tree. That file-count
+  delta **proves** mypy read the archive's file set. Every "zero mypy delta" claim in §5.1
+  and §10.1 stands.
+- **pytest-on-archive measurements are INVALID.** That is only ever the one run above,
+  which is now retracted rather than used.
+
+**None of this touches Defects A or B**, which are real, mine, and fixed.
+
+### 10.5 The asymmetry question — RECOMMENDATION ONLY, no unilateral change
+
+*"Is the username/password asymmetry itself the defect?"* **Yes, and I would remove it —
+but not the way it might look.**
+
+The evidence is that the rule was got wrong at **1 of 5 sites, by the author of the
+migration, inside the wave whose entire subject was that migration**. A rule with that error
+rate under maximum attention will not survive contributors with less context.
+
+But the root cause is narrower than "the asymmetry": **`resolve_secret` is being used to
+read a value that is not a secret.** `SurrealConfig.user_env` names an env var holding a
+public default; reading it with a function called `resolve_secret` and immediately calling
+`.get_secret_value()` is the leaky-seam smell — the unwrap exists only to undo a wrapping
+that should never have happened.
+
+**Three options, with the one I would pick:**
+
+| option | shape | cost | verdict |
+|---|---|---|---|
+| **(a)** keep asymmetry, fix the one site | what I did | 1 line | ❌ leaves a 1-in-5 rule in place |
+| **(b)** make `user` a `SecretStr` too | uniform: nothing is ever unwrapped by a caller | 13 ctor params + ~141 test sites (≈26 literals; the rest are fixture-fed) | ❌ dilutes the signal until "everything is a secret" means nothing is — and a username IS logged in other systems |
+| **(c)** split the resolver by INTENT | `resolve_secret() -> SecretStr` and a sibling `resolve_required_env() -> str`, both over ONE shared read-and-fail-loud policy | ~5 call sites + one small function | ✅ **recommended** |
+
+Under (c) the call sites become, with no `.get_secret_value()` anywhere:
+
+```python
+surreal_user = resolve_required_env(config.surreal.user_env)
+surreal_password = resolve_secret(config.surreal.password_env)
+```
+
+The asymmetry stops being an invisible unwrapping rule callers must remember and becomes a
+**visible naming difference at the point of use**. A caller who reaches for the wrong one
+gets a mypy error at the `user: str` parameter — in typed trees. And the fail-loud-on-unset
+policy stays ONE implementation, with two thin typed wrappers over it, so this does not
+recreate #102.
+
+**Its honest limit:** in `scripts/`, mypy does not run, so (c) would not have caught Defect A
+there either — only the new runtime pin (§10.2) and putting `scripts/` in `MEMBERS` do that.
+(c) is worth doing for the *next* engineer, not as a claimed fix for this class.
+
+**I have not implemented (c).**
+
+**RULED (lead, 2026-07-26): correct recommendation, NOT this wave — filed as its own
+finding, with the honest limit attached.** The reason is my own analysis turned back on
+itself: *in `scripts/` mypy does not run, so (c) would not have caught Defect A either.* It
+is a **prevention improvement, not a fix**, and this wave already carries a NO-GO and an
+incoming re-audit — folding in a cross-cutting API change would mean the re-audit grades a
+moving design, which is the exact mechanism that produced this NO-GO. The same ruling covers
+`scripts/`-in-`MEMBERS`: right, and the lead's to sequence, not mine to land mid-wave.
+
+### 10.5b ⚠ THE COUNT FINDING — the lead is right, and here is the mechanism
+
+The lead measured Defect A and Defect B **live at HEAD `8538303`** and found both. I
+measured them fixed. **Both measurements are correct, of different trees**, and the reason
+is structural:
+
+**The freeze forbids me to commit, so my verified state has no SHA — and a reviewer can
+only verify SHAs.** My fixes exist solely as uncommitted working-tree edits. The lead's
+`grep` quoted `scripts/search_score_survey.py:691`; my working tree has that line at **696**,
+because my fix added a five-line comment above it. That line-number delta is the receipt:
+
+```
+$ git show 8538303:scripts/search_score_survey.py | grep -n "user=resolve_secret"
+691:        user=resolve_secret(DEFAULT_SURREAL_USER_ENV),                    # HEAD — broken
+$ grep -n "user=resolve_secret" scripts/search_score_survey.py
+696:        user=resolve_secret(DEFAULT_SURREAL_USER_ENV).get_secret_value(), # working tree — fixed
+```
+
+**But the process finding stands unreduced and it is mine:** I reported *"394 / failure set
+identical to baseline"* against an auditor's SHA-anchored **395** without saying which tree
+mine came from. A count with no named tree is not comparable to one that has a SHA, and
+presenting it as though it were is the defect — not a wrong number, an **unattributable**
+one. That is the third false-green receipt of this wave, after `0b851a3`'s commit message
+and the `2bc28cf`/`exc_info` pin.
+
+**The rule I am adopting, stated so it binds me:** *never report a count without the command
+that produced it AND the tree it ran against.* Where a freeze denies me a SHA, the tree is
+named by `HEAD + sha256(git diff HEAD)`, and I say explicitly that it is uncommitted. "394"
+is a rumour; the form in §10.6 is a measurement.
+
+**Diagnosis worth keeping, because the lead named it more precisely than I could:** my CODE
+work has been rigorous and my COUNTS have not. A count is the one claim that *reads* as
+verified while being the cheapest thing to produce without verifying — there is no compile
+step, no test, nothing that fails when it is stale. Every instrument I built this wave
+(mutation proofs, positive controls, ∀ pins) was aimed at code. None was aimed at my own
+numbers.
+
+### 10.6 Gates after the fixes (nothing committed)
+
+| gate | result | vs baseline |
+|---|---|---|
+| `./scripts/typecheck.sh` | **109 errors in 3 files** | **zero delta** (all packet-03b contract RED) |
+| `uv run mypy scripts` (the UNGATED dir) | **27 errors in 4 files** | **zero delta** vs the `d0ee2be` pre-wave archive — was 28 with Defect A |
+| `uv run ruff check .` | **All checks passed** | — |
+| full suite | ⏳ **RE-DERIVING — deliberately left blank rather than carried forward.** The earlier "394 / 6224" was measured on this tree but reported without naming it (§10.5b), which is the finding. It is not repeated here until re-run; the number and its command go in §10.6b. |
+| `cd scripts && uv run python -m pytest -q .` | **153 passed** | 150 + the 3 new Defect-A pins |
+
+**Working tree — exactly three files, all uncommitted:**
+`scripts/search_score_survey.py` (Defect A) · `loremaster/tests/test_calibration_counting.py`
+(Defect B) · `scripts/test_search_score_survey.py` (+75 lines, the new pin).
+
+### 10.7 Still open — all three RULED as not-this-wave
+- **`scripts/` in `typecheck.sh`'s `MEMBERS`.** Both defects lived in that hole; mypy
+  diagnoses Defect A exactly and was simply never pointed at the file. **Ruled: right, and
+  the lead's to sequence** — a canonical-gate-runner change mid-wave would move the ground
+  under an incoming re-audit.
+- **The asymmetry (§10.5)** — **ruled: correct, its own wave.** Filed with the
+  recommendation AND its honest limit.
+- **`search_score_survey.py` hard-codes `ws://127.0.0.1:18500/rpc` = PRODUCTION lore-surreal**
+  (audit §8.1). Pre-existing, untouched, raised under scope law. My new pin **asserts** that
+  construction opens no socket rather than assuming it, so the pin is safe — but the
+  underlying default is still a live production URL sitting in a survey script, and that is
+  a hazard independent of this wave.
+
+### 10.8 GO CONDITION and what lands when it is given
+**No commits until explicit GO** (lead, 2026-07-26). GO is gated on the auditor's answer to
+the tree-identity question: if its harness read a mixed tree, its `0b851a3` numbers and its
+attribution table may need re-deriving, and these fixes will be graded against them.
+
+**On GO:** three one-concern commits — Defect A's fix, Defect B's fix, the new pin — and
+then **the full-suite numbers RE-DERIVED at the final commit**, reported with the command
+that produced them and the SHA they ran against. The number in §10.6b describes an
+uncommitted tree and is explicitly NOT the number that will describe what lands; per §10.5b
+that distinction is the whole finding, so it is not going to be blurred here of all places.
+
+---
+
+## 11. DEFECT D — traceback paths mangled (audit rev 2). Fixed, NOT COMMITTED.
+
+### 11.1 Reproduced, and the blast radius is WIDER than reported
+
+The audit and the lead both reported the UUID case. Measured against the working tree,
+**four distinct classes are affected, not one:**
+
+| case | before fix | after fix |
+|---|---|---|
+| `/home/ejprice/PycharmProjects/lore-pkt11i/…/surreal.py` | intact | intact |
+| `/tmp/ci/090685cb-2064-498d-8479-e141e4fd4ea5/…` (UUID workspace) | **`***REDACTED***`** | intact |
+| `/var/lib/containers/storage/overlay/<64-hex>/merged/app.py` (podman/docker layer) | **`***REDACTED***`** | intact |
+| `/nix/store/<32-char hash>-python3-3.14.6/lib/x.py` | **`***REDACTED***`** | intact |
+| `/tmp/pytest-of-…/pytest-31/…` | intact | intact |
+| `Authorization: Bearer sk-deadbeef…` | redacted | **redacted** |
+| bare 40-char token · hyphenated `sk-…` token | redacted | **redacted** |
+
+### 11.2 ⚠ PROVENANCE — this defect PRE-DATES the wave, and that changes where the fix goes
+
+The audit attributes Defect D to `a68cfe7`. **Measured, it is older:**
+
+- `_TOKEN_RE` and the entropy threshold are **byte-identical at `d0ee2be`** (pre-wave) and in
+  my tree — `git diff d0ee2be -- logging_setup.py` shows no change to `_scrub_text`,
+  `_TOKEN_RE`, `_maybe_redact_token` or the entropy helper.
+- The false positive **reproduces at `d0ee2be`**, through the pre-existing `extra=` surface:
+  `_scrub_text('/tmp/claude-1000/<uuid>/x.py')` → `/tmp/claude-1000/***REDACTED***/x.py`.
+
+**What `a68cfe7` did was route the traceback surface through it** — and a traceback is the
+densest source of absolute paths in the system, so a latent false positive became a loud one.
+**Still mine to fix**: my change is what made it live and harmful, and Half B's whole purpose
+was making exception diagnosis possible. But the fix belongs in the SHARED `_scrub_text`,
+where it protects `msg`/`args`/`extra` too — not in the traceback path, which would have left
+the older surfaces broken.
+
+**And the audit's framing is right about the thing that matters most:** this is
+CLAUDE.md's "THE TEST ENVIRONMENT IS A FICTION", third instance this session. Every pin
+passed because this checkout sits at a path with no high-entropy component. The fixture
+guaranteed the one condition under which the bug is invisible.
+
+### 11.3 The fix — an allowlist of the safe, with its threat model stated IN the instrument
+
+`_is_safe_high_entropy_run(text, start, end)` exempts a matched run when it is:
+1. **a filesystem path component** — adjacent to a `/`; this is what closes all four classes;
+2. **a canonical RFC-4122 UUID**, anywhere — a correlation/trace id, not a credential.
+
+Everything else is redacted exactly as before. The forbidden set (what a credential can look
+like) is unbounded; the safe set is small, enumerable, and written down — per CLAUDE.md's
+instrument lesson.
+
+**Package investigation, cited** — the lead's instruction, and it paid:
+`detect_secrets.filters.heuristic.is_potential_uuid` (detect-secrets 1.5.0, read at
+`…/detect_secrets/filters/heuristic.py`) exists for exactly this sub-problem, and
+`_get_uuid_regex()` uses `[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`. I
+**verified lore's UUID pattern against it** rather than inventing one. I did **not** adopt the
+package: the earlier survey established it is a detector, not a redactor, costs **4.80 ms per
+7-line traceback**, and flags `Traceback`, `File`, `line`, `ValueError` as high-entropy
+secrets — it would make this defect worse. Also read
+`base64_high_entropy_string.py`, whose regex `([\'"])([charset]+)(\1)` only considers
+**quoted** strings — a context constraint for source scanning that does not transfer to log
+lines. **Side 2 confirmed again: the package does not do the job; the missing piece is one
+predicate, and a UUID's format is a spec (RFC 4122), not a duplicated policy.**
+
+The threat model is written into the function's docstring, not this report, because that is
+where the next reader will meet it: this filter catches the **honest** developer or dependency
+that lets a credential reach a log line, **not** an author deliberately smuggling one out.
+Under that model the exemptions are cheap. The **known bound they buy**, stated deliberately:
+a secret in a URL *path segment*, or one that is itself a canonical UUID, is not caught by
+this backstop — the labelled patterns still catch either when labelled, and the real defence
+is the `SecretStr` TYPE at the boundary (Half A), which stops the value reaching a log at all.
+
+### 11.4 The pin — environment-independent BY CONSTRUCTION
+
+`TestOrdinaryPathsSurviveRedaction`, 10 tests. **Every path is constructed, never taken from
+the running checkout** — that is the whole point, since rendering the real `__file__` would
+pass here and fail on a CI runner. Parameterised over the four measured hostile shapes.
+
+Three properties, because the first alone admits a wrong build:
+1. each hostile path survives **verbatim** through the real filter;
+2. **in the same traceback line**, a real secret is still redacted — the discriminator;
+3. **a positive control on the guard itself**: ONE identical 64-hex token, asserted to survive
+   *inside* a path and be redacted *outside* one. A build that simply disabled the entropy
+   sweep passes (1) and (2)'s first half and fails this.
+
+Plus an end-to-end leg through the configured logger + `JsonFormatter`.
+
+**MUTATION PROOFS, ids declared from `--collect-only` before mutating, diffed both ways:**
+- **M11** (remove the guard): all **10** declared RED, nothing else. Restored byte-exact.
+- **M12** (the WRONG fix — make the guard always return `True`, a blanket stand-down): 5
+  declared RED **+ 1 I under-declared** (`test_secret_in_a_log_call_never_reaches_any_record`,
+  correctly red because the wrong fix leaks there too). **6 tests reject the plausible-but-
+  wrong build.** The both-ways diff caught my own incomplete declaration — second time it has
+  done so this wave.
+
+### 11.5 Raised, NOT fixed — pre-existing false positives outside this defect's class
+
+Found while building the battery; all **pre-date the wave** and all are outside "paths in
+tracebacks". Not folded in, per scope law:
+
+| value | still redacted | why it matters |
+|---|---|---|
+| a bare git SHA in prose (`commit 8538303a1b…`) | **yes** | lore stamps git provenance (#131 exists because that provenance was silently empty); a redacted SHA is the same loss by another route |
+| `unique_database()` → `test_<pid>_<uuid4.hex>` | **yes** | lore's own per-test database names, mangled in any log that carries them |
+
+I deliberately did **not** exempt bare hex runs. The asymmetry favours redaction: a redacted
+git SHA costs provenance, an un-redacted 40-hex API key costs a credential. Exempting them
+needs an operator ruling, not a builder's judgement.
+
+### 11.6 Gates (nothing committed)
+
+| gate | result |
+|---|---|
+| `./scripts/typecheck.sh` | **109 errors in 3 files** — zero delta, all packet-03b contract RED |
+| `uv run mypy scripts` | **27 errors** — zero delta vs the `d0ee2be` archive |
+| `uv run ruff check .` | **All checks passed** |
+| `test_logging_setup.py` | **45 passed** |
+| logging + secret-typing + calibration + scripts pins | **128 passed** |
+| full suite | see §11.7 — re-derived after this fix, with its command |
+
+### 11.7 The bare-hex residual — RULED, and now PINNED (#227)
+
+**Lead ruling, 2026-07-26: DO NOT EXEMPT. Accepted as a known bound.** The reasoning, which
+is the part worth keeping: a 40-hex secret and a 40-hex git SHA are **indistinguishable by
+shape**. The only discriminator is surrounding context, and log text is forgeable — so an
+allowlist keyed on a literal like `commit ` is a gate keyed on a string, and this repo has
+six receipts on how those end. The asymmetry decides it: *a redacted SHA costs provenance;
+an un-redacted 40-hex API key costs a credential.*
+
+`TestBareHexRunsStayRedactedKnownBound` pins it: both accepted false positives (a bare git
+SHA in prose, and `unique_database()`'s `test_<pid>_<uuid4.hex>`) are **asserted to still be
+redacted**, and the class goes RED the day someone exempts either — carrying the ruling, the
+reasoning, and the instruction to delete the pin and say so. It records that the case
+**rhymes with #131**, where git provenance sat silently empty in production for months: this
+is the same loss by a different route, and the difference is only that it is written down.
+**Re-open trigger:** if git provenance in logs becomes load-bearing for an investigation —
+and the note says the fix then is *not* a context allowlist but to stop putting bare SHAs
+through the redactor at all.
+
+A second test pins the bound's **narrowness**, so the pin cannot be misread as "hex is always
+redacted": the identical SHA inside a path survives, per §11.3.
+
+**MUTATION PROOFS — and the first one was mis-declared, which is the useful part:**
+- **M13** (exempt pure-hex runs): the `git sha` leg went RED, the `unique_database` leg
+  **stayed GREEN** — because `test_12345_<hex>` is not pure hex, so that mutation never
+  reached it. **My declared set was wrong, not the pin.** One mutation could not cover both
+  members of the bound, and the both-ways diff said so instead of letting me record a clean
+  receipt for a leg I had not actually exercised. It also produced an undeclared RED —
+  `test_the_exemption_is_contextual_not_a_blanket_stand_down` — correctly, since the mutation
+  exempts the 64-hex token outside a path too.
+- **M14** (exempt lowercase identifier-ish runs, the *other* plausible "helpful" fix): reaches
+  **both** members. All 3 declared RED, nothing undeclared. Restored byte-exact.
+
+**That is the third time in this wave the both-ways diff has caught my own declaration rather
+than the code** (M3 under-declared, M12 under-declared, M13 mis-targeted). The pattern is
+consistent and worth naming: **I am reliably worse at predicting which tests a mutation will
+reach than at writing the tests themselves.** Declaring the set up front does not fix that —
+it makes it *visible*, which is the whole value.
+
+
+### 11.8 ⚠ A self-inflicted instrument bug, disclosed because it nearly cost the measurement
+
+My "wait for other runs to finish, then measure" guard was:
+
+```bash
+until ! pgrep -f "bin/pytest -n auto" >/dev/null; do sleep 20; done; uv run pytest -n auto ...
+```
+
+**The `until` loop's own bash command line CONTAINS the string it greps for**, so `pgrep`
+matched the watcher itself and the condition could never become false. It would have waited
+forever, silently, looking exactly like "the other run is still going". A stale watcher from
+another agent — 13 hours old, same self-match — was sitting in the process table making the
+symptom look external and legitimate.
+
+I caught it by asking a question I only ask because this wave has trained me to: *what would
+this look like if it were broken?* The answer was "identical to what I am seeing", so I
+listed the actual `pytest` PROCESSES rather than trusting the guard's own predicate — **zero
+running.** The guard was the only thing blocking.
+
+It is the same shape as everything else this wave caught, one level down in the tooling
+rather than the code: **a check whose negative result is indistinguishable from the condition
+it is checking for.** #225's law, applied to a shell guard. The fix was to drop the guard and
+verify the precondition directly, which is also the honest thing — a measurement gated on a
+predicate I cannot see failing is not a gated measurement.
