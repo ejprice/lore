@@ -7,7 +7,8 @@
   class instrument shipped and mutation-proven; the repo-wide sweep is complete with an
   individual verdict per hit.
 - **Commits (branch `pkt11i-floor-calibration-dark`):** `c32800d` (fix + pins),
-  `8b1343e` (class instrument). Both **path-scoped** — see deviation 1.
+  `8b1343e` (class instrument), `5e99409` (allowlist exemption upgraded from ARGUED to
+  PROBED — §Decision 3). All **path-scoped** — see deviation 1 and §Commit hygiene.
 - **DEVIATION 1 — ⚠ TWO SIBLING BUILDERS SHARE THIS WORKTREE.** Detected independently
   mid-run (the tree was CLEAN at `31d9e58` when I started; by 22:10 **21 tracked files I
   never touched were modified and 3 untracked files appeared**), then confirmed and named
@@ -344,6 +345,40 @@ loremaster/tests/test_anchored_pattern_seam.py
 ```
 
 ---
+
+## Decision 3, answered — the allowlist stays in-test, and one entry needed upgrading
+
+Lead ruling: keep the two exemptions as the in-test record rather than a separate finding,
+**provided each carries an evidence-backed reason inline** — *"if an entry's justification is
+anything weaker than evidence, tell me and it becomes a finding instead."*
+
+Auditing my own entries against that bar, **one passed and one did not**, and I am reporting
+the failure rather than grading myself green:
+
+| entry | justification as first written | verdict |
+|---|---|---|
+| `_HEADING_LINE` | **MEASURED** — 215 files / 65,786 lines, 0 `.match`/`.fullmatch` disagreements | already evidence ✓ |
+| `_TASK_ID_SHAPE_PATTERN` | **ARGUED** — a correct-sounding chain about an inverted guard, but no measurement | **below the bar** → probed (`5e99409`) |
+
+That second entry is exactly the *"it writes no row"* shape `CLAUDE.md` names as a banned
+exemption rationale: plausible reasoning standing in for a measurement. Its load-bearing
+assumption — that `'<32hex>\n'` can actually ARRIVE — was never tested. Now probed, with a
+positive control:
+
+```
+TaskSpecItem.model_fields['key'] -> annotation `str | None`, metadata []      <- genuinely unconstrained
+TaskSpecItem(key=<32hex>+NL) constructs -> '860049...b5de\n'                  <- the value CAN arrive
+shipped .match : real id -> REJECTED as id-shaped | hostile -> REJECTED as id-shaped
+if .fullmatch : real id -> REJECTED as id-shaped | hostile -> ACCEPTED AS KEY   <- the regression
+```
+
+The control is the half that makes it a probe rather than a hope: **a bare `uuid4().hex` is
+REJECTED by BOTH legs**, so the instrument demonstrably discriminates and the divergence is
+scoped to the trailing-newline value alone — it is not a check that simply says "no" to
+everything. The reason string in `_ALLOWED_ANCHORED_MATCH` now carries this receipt inline.
+
+**Neither entry becomes a finding.** Both are now evidence-backed at their one durable
+address, per the ruling.
 
 ## Commit hygiene — the receipt (re-verified after the lead's shared-worktree warning)
 
