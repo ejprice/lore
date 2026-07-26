@@ -187,7 +187,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 08 | astroid-shadow (#24; containerfile roles → 37) | PKT-08 | L ∥ | 0.15 | — | open |
 | 09 | surface-residues (#15, #64, #80, #82, #84–#86, #88, #92, docs truth) | PKT-03 | L ∥ | 0.20 | — | open |
 | 10 | floor-calibration-design (#83, #87, #161, #179) | PKT-01 | L | 0.15 | — | **design DONE 2026-07-24; F3 → client consult** |
-| 10-d | **weak-match DISARM** (#176/#179/#180 — confidence surfaces dark NOW; trust doctrine, Addendum E1) | — | L | 0.05 | — (independent) | **open — ships FIRST** |
+| 10-d | **weak-match DISARM** (#176/#179/#180 — confidence surfaces dark NOW; trust doctrine, Addendum E1) | — | L | 0.05 | — (independent) | **✅ DONE + DEPLOYED 2026-07-26** (built/audited/merged `be4c591` 2026-07-24; deploy RODE 03b's — both containers on `b46bc1d5`). Live receipt from the running artifact: `lore_index()` serves `cosine_floor.state="disabled"` with the note naming #83/#176/#179/#180. ⚠ **The disarm MASKS #176/#179/#180, it does not FIX them** (`d7a1ce5`) — the per-instance calibration that resolves them is 11-i/11-ii; those findings stay OPEN. |
 | 11-i | floor-calibration: DARK MACHINERY (engine + store + in-container runner + R2 lab validation; serving untouched, no deploy) | PKT-02 | L | 0.20 → split 11-i-a ~0.15 / 11-i-b ~0.24 | 10 ruled | **DESIGN RULED 2026-07-26** (23 decisions: RULINGS-2026-07-25.md; Addendum F-r2 §R1–R10; S1 measured NOT DEGENERATE) — **BUILD not started** |
 | 11-ii | floor-calibration: CUTOVER (chokepoint wiring + serving swap + retirement sweep; resolves #83/#87/#161/#179) | PKT-02 | L | 0.15 | 11-i landed | open |
 | 42 | **PREVENT THE LEAK, DELETE THE SANITIZER** — `SecretStr` everywhere + allowlist the 13 `.get_secret_value()` unwraps, then DELETE the entropy catch-all. Kills audit R2 (12.4% of function names erased from tracebacks), #227 and both its accepted bounds. | — | L | 0.20 | — (independent) | **open — SHIPS NEXT (operator, 2026-07-26)** |
@@ -999,3 +999,8 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   (narrows the morning bullet; the compare-verb never + no lore_diff ref mode stand). Meta-finding
   recorded: topology-shaped absolutes ("which topology am I picturing?"). Packets 36/38/39
   inherit their named seams; 23 inherits via 17.
+- 2026-07-26 · **10-d ROW CORRECTED — it was DEPLOYED, the row said "open — ships FIRST"** (operator
+  caught it at 04 kickoff). 10-d merged `be4c591` 2026-07-24 and its deploy RODE 03b's, exactly as
+  the 2026-07-24 Log entry planned; nobody flipped the row. Three instruments agree: the merge
+  commit, both containers on `b46bc1d5`, and the RUNNING artifact's own `lore_index()` serving
+  `cosine_floor.state="disabled"`. ⚠ The disarm MASKS #176/#179/#180 — they stay OPEN for 11-i/11-ii.
