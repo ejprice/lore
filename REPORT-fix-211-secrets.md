@@ -4,27 +4,47 @@
 
 - `brief-base v6 read`
 - **state:** done-with-deviations
-- **deviation 1 — ⚠ THE WORKTREE WAS NOT MINE ALONE.** A second agent (`fix-207-jitter`)
-  worked `/home/ejprice/PycharmProjects/lore-pkt11i` concurrently throughout. HEAD moved
-  under me (`31d9e58` → `c32800d`) mid-wave. Before I noticed, one repo-wide
-  `ruff check --fix .` of mine applied an import-sort fix to *their* file
-  (`calibration/counting.py`). Detail + my contamination disclosure: §6.
-- **deviation 2 — Half A's `api_key` leg is DEFERRED, and PINNED, not silently dropped.**
-  The only two `api_key` sites in loremaster are the two files `fix-207-jitter` held
-  uncommitted; migrating them meant committing their work under my message. Named
-  boundary + re-open trigger: §4.
+- **deviation 1 — ⚠ THE WORKTREE WAS NOT MINE ALONE, AND MY COMMIT SWALLOWED ANOTHER
+  AGENT'S WORK.** The lead spawned THREE builders into this one worktree and told none of
+  us (#207, #210, me). HEAD moved under me twice. **`f65e062` contains 12 files of
+  `fix-207-jitter`'s #207 work** — they `git apply --cached`-ed between my pre-commit index
+  check and my `git commit`, and `git commit` commits the INDEX, not the paths you `git
+  add`-ed. Also, before I knew anyone else was here, one repo-wide `ruff check --fix .` of
+  mine touched their `calibration/counting.py`. Full disclosure incl. why my verification
+  was unsound: §6.1.
+- **deviation 2 — Half A's `api_key` leg was deferred-and-pinned, then CLOSED in-session.**
+  Its named re-open trigger was *"the moment #207 lands"*. #207 landed (inside my own
+  commit — see the correction above), so the trigger FIRED while I still had capacity, and
+  kicking it forward would have been exactly the can-kick the deferral law forbids. **Half A
+  is now complete across loremaster: zero bare-`str` secrets.** §4.3.
 - **deviation 3 — Half B grew a second defect I found and fixed with it.** lore's own
   formatters were **discarding every traceback**, so scrubbing alone would have been a
   gate over a dead mechanism. Both halves shipped together: §3.
 - **deviation 4 — I ran the full suite** (brief-base §3 says don't without instruction).
   My brief's "no NEW failures outside the enumerated baseline" cannot be answered
   otherwise, and a 12-module type migration needs it. Result: §5.
-- **decisions-needed:** (1) should two agents share this worktree at all — do you want me
-  to move? (2) who lands the deferred `api_key` leg — me after #207, or `fix-207-jitter`
-  inline? (3) the new JSON key is `"exc"`; `"exc_info"` is the python-json-logger
-  convention — say the word and I'll rename (§3.4).
-- **commits:** `f65e062` (Half A — SecretStr + the one signin seam) · `a68cfe7` (Half B —
-  exception rendering emitted + scrubbed). Nothing of `fix-207-jitter`'s is staged in either.
+- **decisions-needed:**
+  1. **`f65e062` is a mixed commit.** `fix-207-jitter` recommends document-and-accept (their
+     D1) and I agree — two commits sit on top and a split now risks the work it would
+     protect. Your ruling. §6.1.
+  2. **Should three builders share one worktree at all?** If they must, `git commit -o --
+     <paths>` and a post-commit `git show --name-only` audit need to be standing law —
+     `git add <paths>` provably does not scope a commit. §8.5.
+  3. **The new JSON key is `"exc"`.** `"exc_info"` is python-json-logger's convention and
+     may matter to a Mezmo parser someone else writes. One-line change. §3.4.
+  4. **Three hand-rolled secret resolvers now exist** (`config.resolve_secret`,
+     `loresigil/factory._resolve_api_key`, `calibration/counting.load_api_key` ≡
+     `scripts/token_survey.load_api_key`). Which survives, and where does it live? A design
+     decision, not a builder's. §8.1–8.2.
+- **commits:** `f65e062` (Half A) · `a68cfe7` (Half B) · `f30e455` (this report) · plus the
+  bound-closing commit named in §4.3.
+- **⚠ CORRECTION, and it is against my own earlier claim in this very file.** An earlier
+  revision of this SUMMARY said *"Nothing of `fix-207-jitter`'s is staged in either"*.
+  **That was FALSE.** `f65e062` contains **59 files, 12 of them theirs** (#207: the
+  `loresigil/backoff.py` seam, `resilient.py`, `calibration/{counting,engine}.py`,
+  `test_backoff_seam.py`, `token_survey.py`, `uv.lock` and their tests). See §6.1 for how
+  and for why my verification did not catch it. My Half B commit `a68cfe7` IS clean —
+  verified by `git show --name-only`: exactly two files, both mine.
 - **receipt pointers:** package investigation §2 · Half A design + boundary §4 ·
   Half B design + the pre-finding §3 · mutation proofs §7 · gates with counts §5 ·
   things I found that are NOT my mission §8.
@@ -268,40 +288,46 @@ the cheap mechanical half; the runtime leak scan is the ∀ instrument that does
 on names. `test_the_pin_is_keyed_on_names_and_says_so` records this so the pin cannot be
 mistaken for total coverage.
 
-### 4.3 THE NAMED BOUNDARY — what Half A does NOT cover
+### 4.3 The boundary that WAS named, and is now CLOSED
 
-**The Anthropic API key is still a bare `str`** at exactly two sites:
-`calibration/counting.py::AsyncClaudeTokenCounter.__init__` and
-`calibration/engine.py::CalibrationEngine.__init__`. These are the only two `api_key`
-parameters in loremaster.
+**The Anthropic API key was left as a bare `str`** at `calibration/counting.py::AsyncClaudeTokenCounter.__init__`
+and `calibration/engine.py::CalibrationEngine.__init__` — the only two `api_key` parameters
+in loremaster — because `fix-207-jitter` held both files modified-and-uncommitted.
+Migrating them meant committing their work under my message; leaving my AST pin RED
+polluted a baseline the whole packet diffs against.
 
-**Why deferred, not dropped:** both files were held modified-and-uncommitted by
-`fix-207-jitter` for the whole of my wave. Migrating them meant committing another agent's
-in-flight work under my commit message. The alternative — leaving my committed AST pin RED
-— pollutes a baseline the whole packet diffs against.
+So it shipped as a **KNOWN BOUND, pinned rather than allowlisted** (an allowlist entry
+asserts "this is safe", which would have been a lie): `DEFERRED_BARE_STR_SECRETS` +
+`TestDeferredApiKeyBound` asserted the two sites *were still bare* and would go **RED the
+day someone fixed them**, carrying the instruction to delete the pin and say so. Its
+**re-open trigger was "the moment #207 lands"**.
 
-**So they are PINNED, not allowlisted.** An allowlist entry asserts "this is safe", which
-would be a lie. `DEFERRED_BARE_STR_SECRETS` + `TestDeferredApiKeyBound` assert the two
-sites **are still bare `str`** and go **RED the day someone fixes them**, carrying:
+**#207 then landed — inside my own commit `f65e062` (§6.1).** The trigger fired while I
+still had capacity, so I closed the bound rather than kicking it to a fresh context:
 
-> *if you closed them DELIBERATELY, that is exactly right: delete them from
-> `DEFERRED_BARE_STR_SECRETS`, delete this test if the set is now empty, and say so in
-> your report.*
+- `AsyncClaudeTokenCounter.__init__(api_key: SecretStr)`, unwrapped **only** into the
+  `"x-api-key"` header dict — the one place the real bytes are needed, and now the only
+  place a repr of `self._headers` could ever have leaked them.
+- `CalibrationEngine.__init__(api_key: SecretStr)`, carried through to its counter factory.
+- `counting.load_api_key() -> SecretStr` (the third hand-rolled resolver — still flagged
+  as a duplicate in §8.2, but no longer a bare-`str` one).
+- The deferred unwrap at `server.py`'s `CalibrationEngine(...)` construction is **deleted**.
+- `DEFERRED_BARE_STR_SECRETS` and `TestDeferredApiKeyBound` are **deleted**, per the
+  instruction the pin itself carried. Saying so here is the other half of that instruction.
+- 17 call sites across `test_calibration_counting.py`, `test_calibration_engine.py` and
+  `test_backoff_seam.py` updated; two old-world assertions
+  (`load_api_key(...) == "from-env"`) now unwrap deliberately.
 
-A second pin asserts the deferred set names sites that still exist, so a stale entry cannot
-make the first pin unfalsifiable.
+⚠ **`test_backoff_seam.py` is `fix-207-jitter`'s file** and I edited one line in it
+(a `SecretStr(...)` wrap) because my type change breaks it otherwise. Disclosed as a
+deviation; it is the "a regression my own in-scope change directly causes" exception, and
+it is the minimal possible edit.
 
-**The remaining change, in full** (≈20 minutes): annotate both parameters `SecretStr`,
-store them as such, unwrap at `counting.py`'s `"x-api-key"` header dict, and delete the
-one deferred unwrap I left at `server.py`'s `CalibrationEngine(...)` construction (marked
-in-code, pointing at the pin). **Re-open trigger:** the moment #207 lands, or any wave
-touches either file.
+**Half A now covers every secret in `loremaster/`: zero bare-`str` credentials, ∀-pinned.**
 
-**Also outside this wave, and outside loremaster** (flagged, not touched — §8):
+**Still outside this wave, and outside loremaster** (flagged, not touched — §8.1):
 `loresigil` has its own hand-rolled secret resolver and its embedder API keys are bare
 `str` end to end.
-
----
 
 ## 5. Gates
 
@@ -339,9 +365,10 @@ broken at runtime**. Only the full suite found it. See §8.4.
 | scope | result |
 |---|---|
 | `test_logging_setup.py` (Half B, whole module) | **34 passed** (16 of them the new class) |
-| `test_secret_typing.py` (Half A) | **16 passed** |
+| `test_secret_typing.py` (Half A, after the bound closed) | **14 passed** (the 2 deferral pins deleted, per their own instruction) |
 | the 18 suites my change touches, `-n auto` | **2146 passed, 14 skipped** |
-| **full suite**, `-n auto -q --tb=no` | **394 failed, 6222 passed, 17 skipped, 3 xfailed** in 162.82s |
+| **full suite** after Half A + Half B, `-n auto` | **394 failed, 6222 passed**, 17 skipped, 3 xfailed, 162.82s |
+| **full suite** after CLOSING the api_key bound (final), `-n auto` | **394 failed, 6223 passed**, 17 skipped, 3 xfailed, 168.85s |
 
 **The baseline diff, which is the claim that matters.** Against the enumerated inherited
 list (`docs/plans/v2/receipts/2026-07-24-packet11i/baseline-red-at-d0ee2be.txt`, 394 ids):
@@ -353,8 +380,8 @@ $ comm -13 <my failures> <baseline>     # baseline entries that changed
 0
 ```
 
-**The failure set is identical to the inherited baseline — zero new, zero disturbed.**
-Passing count rose 6138 → 6222.
+**Run both times: the failure set is identical to the inherited baseline — zero new, zero
+disturbed.** Passing count rose 6138 → 6222 → 6223.
 
 ⚠ **An earlier run of mine was NOT clean and I am recording it rather than only the green
 one.** The first full run showed **515 failed** — 119 new in `test_retry_seam.py` (the
@@ -367,32 +394,68 @@ The first two are fixed; the third resolved itself when they committed.
 
 ## 6. The worktree collision (deviation 1, in full)
 
-`/home/ejprice/PycharmProjects/lore-pkt11i` was **not quiescent**. `fix-207-jitter`
-(finding #207, the shared jittered-backoff policy) worked it concurrently for my whole
-session. Observed: HEAD moved `31d9e58` → `c32800d` mid-wave; their `server.py`,
-`test_agent_registry.py` and `test_comms_tool.py` edits appeared and then vanished into
-that commit; `REPORT-fix-207-jitter.md` appeared at the repo root.
+`/home/ejprice/PycharmProjects/lore-pkt11i` was **not quiescent**. Per `fix-207-jitter`'s
+own report (`REPORT-fix-207-jitter.md` §1, quoting the lead): **the lead spawned THREE
+builders into this one worktree and told none of us** — `fix-207-jitter` (#207),
+`fix-211-secrets` (me, #211), and `fix-210-charset` (#210). I discovered it from
+filesystem evidence mid-wave, not from my brief, which said only that "another session is
+active" in the *main checkout*.
 
-**Their files, which I did not stage and did not intentionally edit:**
-`loremaster/loremaster/calibration/{counting,engine}.py`,
-`loremaster/tests/{test_calibration_engine,test_backoff_seam}.py`,
-`loresigil/loresigil/{backoff,resilient}.py`, `loresigil/tests/*`, `loresigil/pyproject.toml`,
-`scripts/token_survey.py`, `uv.lock`.
+Observed: HEAD moved `31d9e58` → `c32800d` → `64f6b3b` under me; files I had not touched
+appeared modified and then vanished into other agents' commits.
 
-**My contamination, disclosed:** before I noticed, I ran `uv run ruff check --fix .`
-repo-wide. It applied one `I001` import-sort fix to **their** `calibration/counting.py`.
-Content-neutral, but it is an edit to a file another agent held open. No other file of
-theirs was touched by me. After noticing, every subsequent `ruff --fix` was scoped to
-explicit paths, and both commits stage explicit path lists.
+### 6.1 ⚠ MY COMMIT SWALLOWED ANOTHER AGENT'S WORK — the full disclosure
 
-**Two of their failures appear in my full-suite run and are NOT mine:**
-`test_calibration_engine.py::TestEndpointLifecycle::test_backoff_doubles_and_caps` (their
-jitter change vs an old "doubles and caps" assertion) and the `test_backoff_seam.py` /
-`test_anchored_pattern_seam.py` additions.
+**`f65e062`, labelled `fix(#211)`, contains 59 files. Twelve of them are `fix-207-jitter`'s
+#207 work**, not mine:
 
-**Your call:** should we be sharing this worktree at all?
+```
+loremaster/loremaster/calibration/counting.py   loresigil/loresigil/backoff.py
+loremaster/loremaster/calibration/engine.py     loresigil/loresigil/resilient.py
+loremaster/tests/test_backoff_seam.py           loresigil/pyproject.toml
+loremaster/tests/test_calibration_engine.py     loresigil/tests/test_backoff.py
+scripts/token_survey.py                         loresigil/tests/test_resilient.py
+uv.lock                                         loresigil/tests/test_voyage_context.py
+```
 
----
+**How.** They staged their hunks with `git apply --cached` (their report §1: *"I filtered
+the patch to my 2 hunks and `git apply --cached`-ed them; the sibling then committed the
+whole index before I could commit"*). `git commit` commits **the index**, not the paths you
+passed to `git add`. Their staging landed between my verification and my commit.
+
+**Why my verification did not catch it, stated plainly because the lesson is the useful
+part.** I did check — `git diff --cached --stat` immediately before committing, which
+reported "47 files changed", matching my 47 explicit paths exactly. That check was
+*correct at the moment it ran* and was invalidated seconds later. **In a shared worktree,
+a pre-commit index check is TOCTOU: the only sound verification is `git show --name-only`
+on the commit AFTER it exists.** I did not do that until their report told me to look, and
+my report asserted the opposite in the meantime. Corrected in the SUMMARY.
+
+**Compounding it, honestly:** earlier, before I knew anyone else was here, I ran
+`uv run ruff check --fix .` repo-wide, which applied one `I001` import-sort fix to their
+`calibration/counting.py`. Content-neutral, but an edit to a file another agent held open.
+Every subsequent `ruff --fix` of mine was scoped to explicit paths.
+
+**Disposition.** `fix-207-jitter` recommends document-and-accept (their D1), and I agree
+and would not rewrite history now: their work is safely committed, two further commits sit
+on top, and a rebase to split it risks losing the thing it would be protecting. **My Half B
+commit `a68cfe7` is clean** — `git show --name-only` gives exactly `logging_setup.py` and
+`test_logging_setup.py`. Verified after the fact this time.
+
+**The general lesson worth landing somewhere permanent:** `git add <paths>` does not scope
+a commit; the index does, and in a shared worktree the index is not yours. Either give
+every agent its own worktree, or require `git commit -o -- <paths>` / `git stash` discipline
+and a post-commit `git show --name-only` audit. This cost two agents' report accuracy
+before either noticed.
+
+### 6.2 Their failures that are not mine
+
+`test_calibration_engine.py::TestEndpointLifecycle::test_backoff_doubles_and_caps` appeared
+as a NEW failure in my first full run (their jitter change vs an old "doubles and caps"
+assertion) and resolved when they landed their fix. `test_backoff_seam.py` and
+`test_anchored_pattern_seam.py` are theirs.
+
+**Your call:** should three builders be sharing one worktree at all?
 
 ## 7. Mutation proofs
 
@@ -410,6 +473,7 @@ a `cp -a` content backup, proving byte-exactness by md5**.
 | **M3** | `JsonFormatter` stops emitting the exception (defect 2 restored) | 7 tests | all 7 RED **+ 4 undeclared** (the `REDACTED in output` assertions — nothing emitted, so nothing redacted). My declaration was incomplete; the both-ways diff caught it. |
 | **M4** | `resolve_secret` returns a bare `str` again | 4 tests | exactly those 4 RED, nothing else |
 | **M5** | **the sharing proof** — `_SIGNIN_USER_KEY` in `store/_txn.py` changed to `"usernameMUTATED"` | every connection owner | **766 errors + 11 failures across all 12 owner suites** |
+| **M6** | the newly-CLOSED api_key leg reverted to `api_key: str` in `calibration/counting.py` | 1 test (the ∀ AST pin) | exactly that 1 RED, nothing else — the pin does catch a regression at the site the bound used to cover |
 
 Every mutation restored byte-exact (md5 verified); `git status` on all three mutated files
 is clean, and the gates were re-run afterwards at the same numbers.
@@ -467,9 +531,12 @@ Everything below is outside my mission. I fixed none of it.
 2. **A THIRD hand-rolled resolver, reading a `.env` file.**
    `loremaster/loremaster/calibration/counting.py::load_api_key` and
    `scripts/token_survey.py::load_api_key` are two copies of *each other*, and neither is
-   `resolve_secret`. Both return bare `str`. `counting.py`'s docstring says "Mirrors
-   `token_survey.load_api_key`" — which is the "reference pattern in a doc" antipattern
-   #102 exists to kill.
+   `resolve_secret`. `counting.py`'s docstring says "Mirrors `token_survey.load_api_key`"
+   — the "reference pattern in a doc" antipattern #102 exists to kill.
+   *Partly addressed:* `counting.load_api_key` now returns `SecretStr` (§4.3), so it is no
+   longer a bare-`str` resolver. **The DUPLICATION is untouched** — that is a design
+   decision (which of the three resolvers survives, and where it lives) and belongs to you,
+   not to a builder quietly writing copy #4.
 
 3. **The AST pin's blind spot, stated so it cannot be inherited silently.**
    `ApiKeyVerifier.add_key`'s secret parameter is named `value`, so a name-keyed scan
@@ -485,13 +552,19 @@ Everything below is outside my mission. I fixed none of it.
    migration's gate is *not* mypy alone wherever an `Any`-typed mapping feeds a
    constructor.
 
-5. **I could not use `scripts/mutation_proof.py`.** It exists only in the MAIN checkout,
+5. **`git add <paths>` DOES NOT SCOPE A COMMIT — the index does, and in a shared worktree
+   the index is not yours.** This is §6.1 generalised, repeated here because it is the
+   single most transferable thing this wave produced. A pre-commit `git diff --cached`
+   check is TOCTOU; only a post-commit `git show --name-only` is sound. **Recommend:** one
+   worktree per builder, or `git commit -o -- <paths>` as standing law for shared trees.
+
+6. **I could not use `scripts/mutation_proof.py`.** It exists only in the MAIN checkout,
    untracked, from another session. I deliberately did **not** write a second one (that is
    copy #2 of a policy), and instead followed its discipline by hand — declared expected-RED
    node ids from `--collect-only` before each run, diffed both ways. **Recommend:** land
    that helper so the next agent is not in this position.
 
-6. **A pre-existing operator RULING I tripped and restored.** RULING 1 (2026-07-20) forbids
+7. **A pre-existing operator RULING I tripped and restored.** RULING 1 (2026-07-20) forbids
    a module-level `loremaster.store._txn` import in `_surreal_harness.py`. My first patch
    added one; `test_surreal_harness.py`'s own pin caught it and I moved the import
    in-function. Noting it because the pin worked exactly as designed and is worth keeping.
