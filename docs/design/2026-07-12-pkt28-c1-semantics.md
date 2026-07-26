@@ -9,6 +9,16 @@
 > is the defect #108 fixed (at 8-way contention its pigeonhole guarantees two
 > racers share a slot and lockstep for the whole ladder). The mint calls
 > `_txn.retry_on_conflict` now and owns no retry mechanics of its own.
+> **SUPERSEDED (ruling E-S5(c), packet 03b, 2026-07-24):** §9.4's served tail
+> `"; surfaces at their next heartbeat"` — stated below at lines 24, 905, 925,
+> 928, 931, 934, 961 and 963 — is **NOT the shipped wording**. Production serves
+> `"; surfaces at their next heartbeat or drain"` (`server.py`, the shared skew
+> constant; receipt `docs/plans/v2/receipts/2026-07-24-packet03b/REPORT-wording-es5c-03b.md`).
+> The prose below is TRUE AS HISTORY — it describes the pre-drain world — but a
+> reader mining this spec for the *served* wording will find a retired sentence.
+> Authority for the current wording: `docs/plans/v2/03b-design-rulings-r2.md` §G
+> row **E-S5(c)**. (Line 1260's END-TO-END sketch is NOT superseded: it names the
+> *action*, not the served string.)
 
 # PKT-28 C1 — SEMANTICS + RENDER SPEC (registry + briefs)
 

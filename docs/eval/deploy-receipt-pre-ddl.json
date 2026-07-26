@@ -1,0 +1,23 @@
+{
+  "database": "lore",
+  "measured_at": "2026-07-25T17:14:52.258265+00:00",
+  "namespace": "lore",
+  "store": "ws://127.0.0.1:18500/rpc",
+  "tables": [
+    {
+      "exists": true,
+      "row_count": 0,
+      "table": "trace"
+    },
+    {
+      "exists": false,
+      "row_count": null,
+      "table": "message"
+    },
+    {
+      "exists": false,
+      "row_count": null,
+      "table": "to"
+    }
+  ]
+}

@@ -89,6 +89,12 @@ from loremaster.store.surreal_schema import (
 from loremaster.store.surreal_schema import (
     MESSAGE_BODY_MAX_CHARS as MESSAGE_BODY_MAX_CHARS,  # noqa: PLC0414 (re-export; landmine #4: never redefined)
 )
+from loremaster.store.surreal_schema import (
+    MESSAGE_POINTER_MAX_CHARS as MESSAGE_POINTER_MAX_CHARS,  # noqa: PLC0414 (re-export; never redefined)
+)
+from loremaster.store.surreal_schema import (
+    MESSAGE_REFS_MAX_COUNT as MESSAGE_REFS_MAX_COUNT,  # noqa: PLC0414 (re-export; never redefined)
+)
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +314,18 @@ class MessageBodyError(MessageLedgerError):
     """Raised when a message body is blank or over :data:`MESSAGE_BODY_MAX_CHARS`."""
 
 
+class MessagePointerError(MessageLedgerError):
+    """Raised when a POINTER field is over its bound — a ref entry, ``thread`` or
+    ``task_id`` past :data:`MESSAGE_POINTER_MAX_CHARS`, or more than
+    :data:`MESSAGE_REFS_MAX_COUNT` refs.
+
+    Its own class rather than a reused :class:`MessageBodyError`: a body over the
+    cap and a ref over the cap need DIFFERENT next moves (shorten the prose vs
+    stop inlining content into an address), and a caller that cannot tell them
+    apart cannot act on either.
+    """
+
+
 class UnknownRecipientError(MessageLedgerError):
     """Raised when a recipient id names no registered ``agent`` row."""
 
@@ -525,9 +543,16 @@ class MessageLedger:
             recipients: The externally-resolved recipient identities; an empty set
                 is a teaching error, never a broadcast (the dispatcher resolves
                 rosters).
-            thread: The conversation thread — defaults to ``session``.
-            task_id: The task this message concerns, or ``None``.
-            refs: The message's pointer list, or ``None`` (⇒ ``[]``).
+            thread: The conversation thread — defaults to ``session``. A pointer
+                LABEL: bounded at :data:`MESSAGE_POINTER_MAX_CHARS`, and
+                deliberately NOT charset-validated (the taught ``q:<topic>`` form
+                contains a ``:`` the identity charset forbids).
+            task_id: The task this message concerns, or ``None``. Same pointer
+                bound as ``thread``.
+            refs: The message's pointer list, or ``None`` (⇒ ``[]``). BOUNDED:
+                at most :data:`MESSAGE_REFS_MAX_COUNT` entries, each at most
+                :data:`MESSAGE_POINTER_MAX_CHARS` chars — refs carry ADDRESSES,
+                and an unbounded one is a body wearing a pointer's name.
             set_status: When ``'input_required'``, marks this message as the
                 question whose thread the derived waiting state reads (ruling 9);
                 any other value is an ordinary status touch (not a question).
@@ -538,6 +563,10 @@ class MessageLedger:
         Raises:
             IllegalMessageGradeError: ``grade`` is outside :data:`MESSAGE_GRADES`.
             MessageBodyError: ``body`` is blank or over the length cap.
+            MessagePointerError: A ``refs`` entry, ``thread`` or ``task_id`` is
+                over :data:`MESSAGE_POINTER_MAX_CHARS`, or ``refs`` carries more
+                than :data:`MESSAGE_REFS_MAX_COUNT` entries. REJECTED, never
+                truncated — a shortened pointer is a broken one.
             EmptyRecipientSetError: ``recipients`` is empty.
             UnknownRecipientError: A recipient id names no registered agent.
             SurrealConnectionError: A transport fault.
@@ -557,6 +586,9 @@ class MessageLedger:
                 f"messages carry POINTERS: put the content in a report or finding and "
                 f"reference it in refs"
             )
+        self._reject_oversize_pointers(
+            thread=thread, task_id=task_id, refs=list(refs) if refs is not None else []
+        )
         if not recipients:
             raise EmptyRecipientSetError(
                 f"a send needs at least one recipient — the ledger never resolves a roster "
@@ -606,6 +638,80 @@ class MessageLedger:
             recipient_names=sorted(ref.name for ref in deduped),
             recipient_count=len(deduped),
         )
+
+    @staticmethod
+    def _reject_oversize_note(note: str | None) -> None:
+        """Bound an ack ``note`` at the BODY cap, not the pointer cap.
+
+        A note is message-grade PROSE recorded on the edges an ack actually won —
+        it is read as content later, so it takes ``body``'s constant. A separate
+        method (rather than an inline check) for the same reason
+        :meth:`_reject_oversize_pointers` is one: it is POLICY, and the fake
+        oracle CALLS it rather than cloning it, so the two enforcements cannot
+        drift into disagreeing about what is legal.
+
+        Raises:
+            MessageBodyError: ``note`` is over :data:`MESSAGE_BODY_MAX_CHARS`.
+        """
+        if note is not None and len(note) > MESSAGE_BODY_MAX_CHARS:
+            raise MessageBodyError(
+                f"note is {len(note)} chars, over the {MESSAGE_BODY_MAX_CHARS}-char cap — "
+                f"an ack note is a short prose receipt; put anything longer in a report or "
+                f"finding and send its pointer"
+            )
+
+    @staticmethod
+    def _reject_oversize_pointers(
+        *, thread: str | None, task_id: str | None, refs: list[str]
+    ) -> None:
+        """Bound the POINTER fields, mirroring ``body``'s teaching reject exactly.
+
+        WHY THE LEDGER AND NOT THE DISPATCHER: this is the ONE writer, and a
+        dispatcher-only check leaves every non-tool caller unbounded. Policy lives
+        with the write, and the store ASSERTs are the backstop underneath it — a
+        writer that bypasses this method fails LOUDLY at the engine rather than
+        landing an unbounded row.
+
+        WHY IT MATTERS AT ALL: the body cap's whole rationale is bounding the
+        worst-case drain render. Five UNBOUNDED refs per row void that arithmetic
+        silently — a 100 KB payload rides one "pointer" straight into a
+        recipient's context, and the cap becomes theatre through a side door.
+
+        REJECT, NEVER TRUNCATE — inherited from ``body``: a silently shortened
+        pointer is a BROKEN pointer, and the caller is the only party that can fix
+        the real one. The message names the offending FIELD, the entry INDEX for a
+        ref, the measured size, the cap, and the fix.
+
+        Args:
+            thread: The conversation thread, or None (the send defaults it).
+            task_id: The task this message concerns, or None.
+            refs: The pointer list, already materialised.
+
+        Raises:
+            MessagePointerError: Any pointer is over its length bound, or the refs
+                list is over its count bound.
+        """
+        if len(refs) > MESSAGE_REFS_MAX_COUNT:
+            raise MessagePointerError(
+                f"refs carries {len(refs)} entries, over the {MESSAGE_REFS_MAX_COUNT}-entry "
+                f"cap — refs are ADDRESSES, not a payload; point at a report or finding that "
+                f"collects them"
+            )
+        for index, ref in enumerate(refs):
+            if len(ref) > MESSAGE_POINTER_MAX_CHARS:
+                raise MessagePointerError(
+                    f"refs[{index}] is {len(ref)} chars, over the "
+                    f"{MESSAGE_POINTER_MAX_CHARS}-char pointer cap — a ref is an ADDRESS "
+                    f"(a report path, a finding id), never content; put the content in a "
+                    f"report or finding and point at it"
+                )
+        for field_name, value in (("thread", thread), ("task_id", task_id)):
+            if value is not None and len(value) > MESSAGE_POINTER_MAX_CHARS:
+                raise MessagePointerError(
+                    f"{field_name} is {len(value)} chars, over the "
+                    f"{MESSAGE_POINTER_MAX_CHARS}-char pointer cap — {field_name} is a LABEL, "
+                    f"not content"
+                )
 
     async def _reject_unknown_recipients(self, recipients: Sequence[AgentRefLike]) -> None:
         """Raise :class:`UnknownRecipientError` naming EVERY recipient id that is
@@ -859,6 +965,12 @@ class MessageLedger:
             SurrealStoreError: The engine rejected a statement.
             TxnContentionExhaustedError: The CAS outlived the shared retry budget.
         """
+        # ``note`` is message-grade PROSE (it is served back later by the history
+        # surface), not a pointer — so it takes the BODY constant, at BOTH layers,
+        # exactly as ``body`` does. Bounded HERE rather than one packet later,
+        # because "unbounded now" is the same bypass discovered by somebody else's
+        # render instead of designed here.
+        self._reject_oversize_note(note)
         requested = list(seqs)
         if not requested:
             return MessageAckResult(entries=[], acked_count=0, already_acked_count=0)
@@ -1077,11 +1189,29 @@ class MessageLedger:
         )
         if not question_rows:
             return None
+        # R3's BOUNDING conjuncts. The deliveries read is narrowed to exactly the
+        # rows that could possibly answer one of THIS agent's outstanding
+        # questions: on one of their threads, and newer than the OLDEST of them.
+        # It is a semantics-identical SUPERSET of what the Python filter below
+        # then matches per question (that filter is unchanged, and it is what
+        # keeps the two in agreement) — so the bound can only ever remove rows
+        # the loop would have rejected anyway. Without it the read is every
+        # delivery edge this agent has EVER received, which grows without bound
+        # while the answer set does not.
+        question_threads = sorted(
+            {str(row.get("thread") or "") for row in question_rows}
+        )
+        oldest_question_seq = min(int(row["seq"]) for row in question_rows)
         delivered_rows = self._as_rows(
             await self._query(
                 f"SELECT in.thread AS thread, in.seq AS seq FROM {TO_RELATION} "
-                f"WHERE out = $agent AND in.sender != $agent",
-                {"agent": agent_rec},
+                f"WHERE out = $agent AND in.sender != $agent "
+                f"AND in.thread IN $threads AND in.seq > $min_seq",
+                {
+                    "agent": agent_rec,
+                    "threads": question_threads,
+                    "min_seq": oldest_question_seq,
+                },
             )
         )
         delivered = [

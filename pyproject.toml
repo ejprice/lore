@@ -123,4 +123,20 @@ testpaths = [
     "lorescribe/tests",
     "loresigil/tests",
     "loremaster/tests",
+    # ``scripts/`` carries the GUARDS — tree_fingerprint (#192, "which tree did
+    # that gate result describe?") and mutation_proof (#196, "did the pin
+    # actually fire?"). Until 2026-07-25 they were outside testpaths, so neither
+    # ran in the standard gate and both were only as green as someone
+    # remembering ``pytest scripts/``.
+    #
+    # A GUARD NOBODY RUNS IS A HOPE WITH A FILENAME — the exact class these two
+    # files exist to instrument, with the two instruments as its victims. They
+    # are lead/agent tooling rather than shipped code, which is why they were
+    # never added; but tooling that silently rots is worse than no tooling,
+    # because its presence is read as coverage.
+    #
+    # NOTE: this adds the PYTEST gate only. ``scripts/`` is still outside
+    # ``scripts/typecheck.sh`` (#188 measured 41 mypy errors there) — a separate
+    # work item, deliberately not conflated with this one.
+    "scripts",
 ]

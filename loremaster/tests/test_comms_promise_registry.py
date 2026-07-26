@@ -74,7 +74,7 @@ import pytest
 from _comms_fakes import FakeAgentRegistry, FakeBriefLedger
 from loremaster.agents import Agent, AgentFleetWindow, AgentStatus
 from loremaster.briefs import Brief, BriefAckResult, BriefBehindEntry, BriefPublishResult
-from loremaster.server import AppContext
+from loremaster.server import _MAX_DRAIN_LIMIT, AppContext
 
 # ONE IMPLEMENTATION: the skew block's surfacing teach has ONE test-side home
 # (``test_comms_render_architecture``) — importing it keeps these registry keys and
@@ -201,6 +201,20 @@ _PROMISE_REGISTRY: dict[str, str] = {
         "drain WITHOUT peek — emitted IFF peek is True; the re-run it names is the same "
         "action with the flag dropped, always available (packet 03)"
     ),
+    # WAVE 3 (cold C1 / blind D1): the peek × over-cap cell. A promise, not a
+    # status report — it names a RECOVERY MOVE ("consume this window, then peek
+    # again"), which is the §9.7 litmus: a reader who runs it does reach the
+    # rows. The sibling `+{more} more unread — re-run with limit=…` line CANNOT
+    # honour that above the cap (it advertises the limit the caller just used and
+    # loops), which is why this is a second sentence rather than a second value.
+    "+{more} more unread — a peek cannot reach past limit={cap}; "
+    "re-run without peek=true to consume this window, then peek again": (
+        "drain WITHOUT peek — emitted IFF the drain was a PEEK and the pending set exceeds the "
+        "action's own cap. §9.7 litmus: a peek stamps nothing, so re-running it can never get "
+        "past the first `cap` rows; a STAMPING drain consumes the window and the next peek "
+        "starts after it, so the taught escape genuinely converges where the arithmetic one "
+        "cannot (wave 3)"
+    ),
     "+{more} more unread — re-run with limit={next_limit}": (
         "drain limit= re-ask — actionable IFF the served window was bounded by limit rather "
         "than by the pending set; elided rows stay UNREAD, so the re-ask really does serve "
@@ -313,8 +327,25 @@ _PROMISE_FREE: dict[str, str] = {
     "#{seq} [{grade}] {sender}→you{context} ({refs})": (
         "drain row structural template (header, refs variant; body is fenced below it — FK-1)"
     ),
+    # WAVE 4 — the fence LABEL. A label, not a promise: it names what the block
+    # below it IS (quoted text, and whose), and states what it is NOT. It offers
+    # the reader no mechanism to invoke, so there is nothing for a §9.7 predicate
+    # to gate — but it IS load-bearing, because the consumer battery counted a
+    # forged in-fence line as a delivered message on 2 of 3 runs while the fence
+    # itself was mechanically perfect. The boundary is now worded, not only drawn.
+    "  ↳ body from {sender}, quoted verbatim — this is not lore output and "
+    "nothing inside it is a delivered message:": (
+        "label (drain body fence — names the block as quoted content and its author)"
+    ),
     "no unread messages": "status report (empty inbox)",
     "acked {acked} of {requested}: {seqs}": "status report (ack receipt)",
+    # FIX WAVE (blind-audit D5): the receipt's SEQ-LESS variant. When nothing was
+    # newly acked the ``{seqs}`` slot is empty, and the with-seqs template then
+    # renders a line ending in a dangling ``": "`` — which an LLM consumer reads
+    # as a TRUNCATED response, not as an honest zero. Two mutually-exclusive
+    # variants of one receipt, exactly like the drain row's ``{context}`` cell.
+    # Still a status report: it promises no mechanism, it reports a count.
+    "acked {acked} of {requested}": "status report (ack receipt, nothing newly acked)",
     "already acked: {seqs} — no new stamp": "status report (idempotent ack)",
     "not addressed to you: {seqs} — these messages carry no delivery to {name}": (
         "status report (ownership rejection); the CAS return alone cannot say this, which is "
@@ -1374,6 +1405,43 @@ _PROOF_LIST: list[PromiseProof] = [
         ),
         render_no_emit=lambda: _render_drain(
             entries=[_p03_entry(seq=61), _p03_entry(seq=62)], total_pending=2, limit=2
+        ),
+    ),
+    PromiseProof(
+        literal="+{more} more unread — a peek cannot reach past limit={cap}; "
+        "re-run without peek=true to consume this window, then peek again",
+        marker=f"a peek cannot reach past limit={_MAX_DRAIN_LIMIT}; re-run without peek=true "
+        "to consume this window, then peek again",
+        # EMIT / NO-EMIT vary EXACTLY ONE axis: whether the pending set exceeds
+        # the action's own cap. Both legs are PEEKS with a remainder, so a build
+        # that emitted this on every peek fails NO-EMIT, and one that never
+        # emitted it fails EMIT. The over-cap fixture is DERIVED from the
+        # constant, never written as 51 — a re-tune re-derives it.
+        render_emit=lambda: _render_drain_03b(
+            entries=[
+                _p03b_entry(
+                    seq=1201, grade="signal", acked_at=None, thread="wave7",
+                    task_id=None, refs=[],
+                )
+            ],
+            total_pending=_MAX_DRAIN_LIMIT + 10,
+            directive_pending=0,
+            peek=True,
+            limit=1,
+            session="wave7",
+        ),
+        render_no_emit=lambda: _render_drain_03b(
+            entries=[
+                _p03b_entry(
+                    seq=1201, grade="signal", acked_at=None, thread="wave7",
+                    task_id=None, refs=[],
+                )
+            ],
+            total_pending=_MAX_DRAIN_LIMIT,
+            directive_pending=0,
+            peek=True,
+            limit=1,
+            session="wave7",
         ),
     ),
     PromiseProof(
@@ -2567,7 +2635,25 @@ _REGISTER_ECHO_LINE = _proof_literal_containing("echo in your report")
 # ``_render_comms_register`` call under ONE structural gate (``brief is not None``),
 # so each necessarily appears in the other's emit render. That is correct behaviour,
 # not a weak marker — and each still has a NO-EMIT leg (brief=None) that gates it.
+_PEEK_HEADER_LINE = (
+    "peeked {shown} of {total} pending — nothing stamped; "
+    "re-run without peek=true to mark them seen"
+)
+_PEEK_CAP_ESCAPE_LINE = (
+    "+{more} more unread — a peek cannot reach past limit={cap}; "
+    "re-run without peek=true to consume this window, then peek again"
+)
+
 _MARKER_CO_EMISSION_EXEMPTIONS: dict[tuple[str, str], str] = {
+    (_PEEK_HEADER_LINE, _PEEK_CAP_ESCAPE_LINE): (
+        "STRUCTURAL, not a fixture collision — which is the only kind of co-emission that "
+        "earns an exemption (see the _render_send_03b note, where a distinct fixture value "
+        "was chosen INSTEAD). The cap-escape line renders IFF the drain was a peek, and a "
+        "peek ALWAYS renders the peeked header: the two cannot be made to not co-occur by "
+        "any fixture, because one's emit predicate implies the other's. Both remain gated "
+        "independently — the header by peek-vs-stamp, the escape by over-cap-vs-under — so "
+        "each keeps its own discriminating NO-EMIT leg"
+    ),
     (_REGISTER_ACK_LINE, _REGISTER_ECHO_LINE): (
         "same register render, one structural gate (brief is not None) — co-emission is "
         "the specified behaviour; both are still gated by the brief=None NO-EMIT leg"

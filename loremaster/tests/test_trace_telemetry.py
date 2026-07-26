@@ -217,9 +217,11 @@ import re
 import tokenize
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager, suppress
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 
+import anyio
 import pytest
 import pytest_asyncio
 from _surreal_fakes import FakeSurrealStore
@@ -233,12 +235,14 @@ from _surreal_harness import (
     run,
     unique_database,
 )
-from loremaster.config import LoreConfig
-from loremaster.server import AppContext, LoreServer, build_mcp_server
+from loremaster.config import DEFAULT_TELEMETRY_WINDOW_DAYS, LoreConfig
+from loremaster.server import AppContext, LoreServer, TraceSummary, build_mcp_server
 from loremaster.store._txn import _ERROR_CLASS_FIELD_COERCION
 from loremaster.store.surreal import SurrealStore, SurrealStoreError
 from loremaster.store.surreal_schema import (
+    TRACE_IDENTITY_MAX_CHARS,
     TRACE_TABLE,
+    TRACE_TS_FIELD,
     _define_field,
     _define_table,
     generate_ddl,
@@ -281,6 +285,10 @@ _TRACE_UNCHANGED_COLUMNS: dict[str, str] = {
 # T3: ONE global native sequence. No BATCH/START clause (a changed one never
 # migrates onto an existing store — #146), and ``IF NOT EXISTS`` because a bare
 # DEFINE SEQUENCE raises on the re-apply ``ensure_ready`` performs every boot.
+# DD-1.b: the aggregate read is WINDOWED, and the window is a REQUIRED argument.
+# Derived from the production default rather than written as 14, so a re-tune
+# re-derives every consumer instead of silently unbinding these reads.
+_TELEMETRY_WINDOW_DAYS = DEFAULT_TELEMETRY_WINDOW_DAYS
 _TRACE_SEQUENCE_NAME = "trace_seq"
 _TRACE_SEQUENCE_STATEMENT = f"DEFINE SEQUENCE IF NOT EXISTS {_TRACE_SEQUENCE_NAME}"
 # T2.1: the 06-read index, shipped inside the free window (the trace table is
@@ -753,6 +761,36 @@ class TestTheDoubleBindsAgainstTheRealSignature:
         )
 
 
+class _SuspendingTraceRecorder(_TraceRecorder):
+    """A recorder that SUSPENDS before recording — the real store's own shape.
+
+    ⚠ THIS CLASS EXISTS BECAUSE ITS ABSENCE MADE A PIN UNFALSIFIABLE, and the
+    mechanism is worth stating once so nobody "simplifies" it away.
+
+    A cancel scope cancels a TASK; the cancellation is delivered at the task's
+    next SUSPENSION POINT. :class:`_TraceRecorder` binds a signature and appends
+    to a list — it never awaits anything — so a dispatch cancelled anywhere
+    still completes its emission, shielded or not. Measured, all four cells:
+
+    | emission suspends | shielded | row |
+    |---|---|---|
+    | no  | no  | WRITTEN |   <- the blind cell: no shield needed, so no pin can see one missing
+    | no  | yes | WRITTEN |
+    | yes | no  | **LOST** |  <- production's shape
+    | yes | yes | WRITTEN |
+
+    ``SurrealStore.record_trace`` is a network round-trip and therefore ALWAYS
+    suspends, so only the bottom two rows describe production. A cancellation
+    pin driven by the non-suspending double asserts a property that holds for
+    reasons that do not exist at runtime.
+    """
+
+    async def record_trace(self, **fields: Any) -> None:
+        """Suspend once, then record exactly as the base recorder does."""
+        await asyncio.sleep(0)
+        await super().record_trace(**fields)
+
+
 class _TransportRequest:
     """A transport request exposing only ``headers`` — the correlator's source.
 
@@ -894,6 +932,34 @@ class TestTheMonotonicityPredicateItself:
         # The regression guard: the original inline form raised ValueError here
         # rather than returning a verdict, so it could never pass.
         assert _is_strictly_increasing([0, 1, 2]) is True
+
+
+def _returning(rows: list[dict[str, Any]]) -> Any:
+    """An async ``trace_aggregates`` stand-in that DEMANDS the window kwarg.
+
+    It accepts ``window_days`` as KEYWORD-ONLY and asserts it was supplied,
+    mirroring the real signature: a caller that dropped the window would
+    otherwise read an unbounded scan against this double and pass.
+    """
+
+    async def _call(*, window_days: int) -> list[dict[str, Any]]:
+        assert window_days > 0, "the aggregate read must carry a positive window"
+        return rows
+
+    return _call
+
+
+def _aggregate_context(rows: list[dict[str, Any]], *, window_days: int) -> Any:
+    """An ``AppContext``-shaped double for the windowed per-tool aggregate."""
+    return cast(
+        Any,
+        SimpleNamespace(
+            write_store=SimpleNamespace(trace_aggregates=_returning(rows)),
+            _config=SimpleNamespace(
+                telemetry=SimpleNamespace(aggregate_window_days=window_days)
+            ),
+        ),
+    )
 
 
 def _expected_params_hash(arguments: dict[str, Any]) -> str:
@@ -1774,6 +1840,53 @@ class TestACancelledDispatchStillRecordsItsRow:
     async def test_cancelling_a_dispatch_mid_flight_still_writes_the_trace_row(
         self, probe_server: tuple[Any, _TraceRecorder]
     ) -> None:
+        """⚠ KNOWN BOUND (blind-audit D1, measured 2026-07-25 at `7574edc`) — this
+        pin is NARROW, not false, and a reader who trusts it broadly is the reason
+        D1 shipped.
+
+        WHAT IT COVERS: the ``asyncio.Task.cancel`` shape. asyncio cancellation is
+        EDGE-triggered — the ``CancelledError`` is delivered once, at the await it
+        interrupts — so a later await inside ``finally`` runs normally, and this
+        pin genuinely proves the write is not placed in an ``except``/success arm.
+
+        WHAT IT PROVABLY DOES NOT COVER, and this is the half that cost a defect:
+        an emission that SUSPENDS, under a LEVEL-triggered anyio cancel scope,
+        which is what MCP actually cancels a request with. Two independent
+        reasons it cannot see that world:
+
+        1. It cancels the wrong way. anyio scopes re-raise at EVERY subsequent
+           await inside the scope; ``Task.cancel`` does not.
+        2. :class:`_TraceRecorder` never awaits — it binds a signature and appends
+           to a list. A cancellation is only delivered at a task's next SUSPENSION
+           POINT, so a non-suspending emission completes whether it is shielded or
+           not. ``SurrealStore.record_trace`` is a network round-trip and ALWAYS
+           suspends, so production is the one shape this double cannot model.
+
+        MEASURED RECEIPT, not inferred: with
+        ``anyio.CancelScope(shield=True)`` REMOVED from ``TracingFastMCP.call_tool``
+        — i.e. against the exact build blind-D1 describes, where a cancelled call
+        writes NO row — this pin stays **GREEN**. The four cells:
+
+        | emission suspends | shielded | row |
+        |---|---|---|
+        | no  | no  | WRITTEN  <- this pin lives here |
+        | no  | yes | WRITTEN |
+        | yes | no  | **LOST**  <- production's shape |
+        | yes | yes | WRITTEN |
+
+        THE DISCRIMINATING PIN is
+        :meth:`TestTheEmissionSurvivesANYIOsLevelTriggeredCancellation.
+        test_a_scope_cancelled_dispatch_STILL_writes_its_row`, which drives a real
+        anyio cancel scope through :class:`_SuspendingTraceRecorder`. Removing the
+        shield turns THAT one RED while leaving this one green — and that
+        asymmetry is the finding, not a flake.
+
+        RE-OPEN TRIGGER: if :class:`_TraceRecorder` ever gains a suspension point,
+        or the emission's placement changes, re-derive this bound — it may then
+        cover more than it does today, and a stale KNOWN BOUND is its own defect.
+        Do not "fix" this pin by pointing it at the suspending recorder: the
+        asyncio-cancel shape is worth keeping pinned on its own.
+        """
         mcp, recorder = probe_server
         with _request_context(_app_context_double(recorder)):
             # The task inherits the current context (including request_ctx) at
@@ -1796,6 +1909,390 @@ class TestACancelledDispatchStillRecordsItsRow:
             f"True here means the flag is being CLEARED by a failure-class name-list "
             f"(`except Exception`) that CancelledError walks straight past, and a timed-out drain "
             f"then counts as one the agent performed."
+        )
+
+
+class TestTheEmissionSurvivesANYIOsLevelTriggeredCancellation:
+    """FIX WAVE — blind-audit D1, the BLOCKING half of the pair.
+
+    The sibling class above cancels through ``asyncio.Task.cancel``, which is
+    EDGE-triggered: the ``CancelledError`` is delivered once, at the await it
+    interrupts, and a later await inside ``finally`` runs normally. That is why
+    it passed against an UNSHIELDED emission — and it is not the mechanism
+    production uses.
+
+    **MCP cancels through an anyio cancel scope** (``RequestResponder.cancel``
+    -> ``self._cancel_scope.cancel()``), and anyio scopes are LEVEL-triggered:
+    once cancelled, EVERY subsequent await inside the scope raises immediately,
+    and a ``finally`` block is not exempt. Under that mechanism an unshielded
+    emission writes NO row for exactly the population ``ok=False`` exists to
+    measure; the ``CancelledError`` is a ``BaseException`` the seam's
+    ``except Exception`` never logs; and it REPLACES whatever exception the tool
+    was already unwinding. The class docstring claimed the opposite as its
+    load-bearing justification.
+
+    So this drives the REAL production mechanism, not a convenient one.
+
+    MUTATION-PROOF OBLIGATION: remove ``anyio.CancelScope(shield=True)`` from
+    the emission -> the cancelled leg goes RED (no row) while the sibling
+    asyncio-cancel pin stays GREEN. That asymmetry IS the finding.
+    """
+
+    async def test_a_scope_cancelled_dispatch_STILL_writes_its_row(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        mcp, _plain = probe_server
+        recorder = _SuspendingTraceRecorder()
+        with _request_context(_app_context_double(recorder)):
+            # ``move_on_after`` is a real anyio cancel scope with a deadline —
+            # the same construct MCP cancels a request with, and it swallows the
+            # cancellation at its own boundary so the assertions below can run.
+            with anyio.move_on_after(_CANCEL_AFTER_SECONDS):
+                await _dispatch(mcp, _SYNTHETIC_BLOCKING, {})
+        assert len(recorder.calls) == 1, (
+            "a dispatch cancelled through an ANYIO cancel scope wrote no trace row. anyio "
+            "scopes are level-triggered, so the `finally`'s own await raises too — the "
+            "emission must be SHIELDED, or the timed-out population (precisely what ok=False "
+            "measures) is silently absent and nothing logs it."
+        )
+        assert recorder.calls[0]["tool"] == _SYNTHETIC_BLOCKING
+        assert recorder.calls[0]["ok"] is False, (
+            f"the scope-cancelled dispatch recorded ok={recorder.calls[0].get('ok')!r}; the "
+            f"success latch must leave it False."
+        )
+
+    async def test_positive_control_the_SAME_scope_uncancelled_records_ok_true(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        """Without this, a build that always wrote ``ok=False`` — or a probe that
+        never actually cancelled — would satisfy the leg above."""
+        mcp, _plain = probe_server
+        recorder = _SuspendingTraceRecorder()
+        with _request_context(_app_context_double(recorder)):
+            with anyio.move_on_after(_BLOCKING_TOOL_SECONDS):
+                result = await _dispatch(mcp, _SYNTHETIC_SILENT, {"marker": "uncancelled"})
+        assert "silent:uncancelled" in _payload_text(result)
+        assert len(recorder.calls) == 1
+        assert recorder.calls[0]["ok"] is True
+
+    async def test_the_shielded_write_is_BOUNDED(self) -> None:
+        """The shield must not be able to hold a dying request open forever. The
+        bound is a named constant, DERIVED here rather than written as a literal,
+        and it must sit above the store's own conflict-retry deadline (a healthy
+        but contended write must not be cut short and silently lost)."""
+        from loremaster.server import _TRACE_EMIT_TIMEOUT_SECONDS
+        from loremaster.store._txn import _TXN_CONFLICT_DEFAULT_DEADLINE_SECONDS
+
+        assert _TRACE_EMIT_TIMEOUT_SECONDS > _TXN_CONFLICT_DEFAULT_DEADLINE_SECONDS, (
+            "the emission's timeout is at or below the shared retry driver's own deadline, so "
+            "a contended-but-healthy trace write is cut short and lost"
+        )
+        assert _TRACE_EMIT_TIMEOUT_SECONDS <= 30, (
+            "an unbounded-in-practice shield defeats the point: a cancelled request would be "
+            "held open by its own telemetry"
+        )
+
+
+class TestTheHotAggregateReadIsWINDOWEDAtTheQueryNotJustTheRender:
+    """DD-1.b. The per-tool aggregate runs on EVERY status call over a table that
+    grows by one row per served tool call, forever. Unwindowed it is a full scan
+    whose cost rises with the table's whole lifetime.
+
+    THE WRONG BUILD THE DESIGN NAMES FIRST, and it is the one no assertion about
+    NUMBERS can see: window the RENDER but not the QUERY. At small N every served
+    figure is identical, so only the QUERY TEXT and the EXPLAIN plan discriminate.
+
+    EXPLAIN RECEIPT (spike-surreal `ws://127.0.0.1:18000`, 3.2.1, throwaway DB —
+    `:18500` never touched), with the pre-change shape as its CONTROL:
+
+        WINDOWED    -> Aggregate / IndexScan{index: trace_ts, access: ">d'…'"}
+        UNWINDOWED  -> Aggregate / TableScan{table: trace}
+
+    The control is what makes it a receipt rather than a claim: the SAME probe
+    shows the scan the window removes.
+    """
+
+    @staticmethod
+    def _statements(store: Any) -> list[str]:
+        """Every statement the store issues, captured at its own query seam."""
+        seen: list[str] = []
+        original = store._query
+
+        async def _spy(statement: str, params: dict[str, Any] | None = None) -> Any:
+            seen.append(statement)
+            return await original(statement, params)
+
+        store._query = _spy
+        return seen
+
+    async def test_the_aggregate_query_carries_the_ts_window_conjunct(
+        self, trace_store: SurrealStore
+    ) -> None:
+        seen = self._statements(trace_store)
+        await trace_store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
+        assert seen, "the spy observed no statement — it is detached from the query seam"
+        aggregate = [text for text in seen if "GROUP BY" in text]
+        assert len(aggregate) == 1, f"expected ONE aggregate statement, got {aggregate!r}"
+        assert "WHERE ts >" in aggregate[0], (
+            f"the aggregate query carries no `WHERE ts >` conjunct, so the SCAN is unbounded "
+            f"however the numbers are rendered — the wrong build DD-1.b names first, and it is "
+            f"invisible to every assertion about the served values: {aggregate[0]!r}"
+        )
+        assert "$cutoff" in aggregate[0], (
+            "the cutoff is not a BOUND PARAM — an interpolated datetime is both an injection "
+            "surface and a value no plan can reuse"
+        )
+
+    async def test_an_OUT_OF_WINDOW_row_is_excluded_from_the_served_numbers(
+        self, trace_store: SurrealStore
+    ) -> None:
+        """The second wrong build: window the QUERY but keep counting everything,
+        or window nothing and claim you did. One in-window row and one row well
+        outside it — a build with no window reports 2."""
+        await _record_trace(trace_store)
+        stale = datetime.now(UTC) - timedelta(days=_TELEMETRY_WINDOW_DAYS + 30)
+        await trace_store._query(
+            f"CREATE {TRACE_TABLE} CONTENT $content",
+            {
+                "content": {
+                    "tool": _SEAM_TOOL,
+                    "params_hash": _SEAM_PARAMS_HASH,
+                    "latency_ms": _SEAM_LATENCY_MS,
+                    "ts": stale,
+                }
+            },
+        )
+        rows = await _trace_rows(trace_store)
+        assert len(rows) == 2, f"fixture check: both rows must EXIST, got {len(rows)}"
+        aggregates = await trace_store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
+        for_tool = [row for row in aggregates if row.get("tool") == _SEAM_TOOL]
+        assert len(for_tool) == 1, f"expected one group for {_SEAM_TOOL}: {aggregates!r}"
+        assert for_tool[0]["calls"] == 1, (
+            f"the aggregate counted {for_tool[0]['calls']} calls where only ONE is inside the "
+            f"{_TELEMETRY_WINDOW_DAYS}-day window — the row exists (asserted above), so this is "
+            f"the window not being applied, not a missing row"
+        )
+
+    async def test_the_cutoff_is_computed_PER_CALL_never_cached(
+        self, trace_store: SurrealStore
+    ) -> None:
+        """The third wrong build: compute the cutoff once and cache it. A stale
+        cutoff silently widens back toward the unbounded scan, and every number
+        stays plausible. Two reads, and their cutoffs must DIFFER."""
+        cutoffs: list[Any] = []
+        original = trace_store._query
+
+        async def _spy(statement: str, params: dict[str, Any] | None = None) -> Any:
+            if params and "cutoff" in params:
+                cutoffs.append(params["cutoff"])
+            return await original(statement, params)
+
+        trace_store._query = _spy  # type: ignore[method-assign]
+        await trace_store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
+        await asyncio.sleep(0.01)
+        await trace_store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
+        assert len(cutoffs) == 2, (
+            f"the spy captured {len(cutoffs)} cutoffs — it is not observing the bound param"
+        )
+        assert cutoffs[0] != cutoffs[1], (
+            "both reads used the SAME cutoff, so it is computed once and cached. A cached "
+            "cutoff ages: the window silently widens back toward a full scan while every "
+            "served number stays plausible"
+        )
+
+    async def test_the_window_the_numbers_are_computed_over_is_SERVED(self) -> None:
+        """Derived prose, made mechanical: the served summary carries the window
+        itself, so a consumer never has to guess whether a count is windowed or
+        lifetime — and the description cannot drift from the value."""
+        from loremaster.server import AppContext
+
+        rows = [{"tool": _SEAM_TOOL, "calls": 3, "latest": None}]
+        summary = await AppContext._trace_summary(
+            _aggregate_context(rows, window_days=_TELEMETRY_WINDOW_DAYS)
+        )
+        assert summary.window_days == _TELEMETRY_WINDOW_DAYS
+        served = " ".join((TraceSummary.__doc__ or "").split())
+        assert "WINDOWED" in served, (
+            "the served model's own docstring does not say its numbers are windowed — a "
+            "consumer reading them as lifetime totals draws the wrong conclusion from a quiet "
+            "week, which is the served-prose class this repo keeps paying for"
+        )
+
+
+class TestTheCallerCONTROLLEDStringsOnTheWritePathAreBounded:
+    """WAVE 3 / blind D4 — the write side of the bound the read side already had.
+
+    Four strings reach a trace row VERBATIM and none of them is ours: the
+    dispatched ``tool`` name and the three declared-identity arguments. The
+    unknown-tool case is reachable and the diff's own comment says so — the
+    dispatch fails INSIDE the funnel and the write sits in a ``finally``, so the
+    row is written before the failure surfaces.
+
+    The design wave bounded message pointers with the argument that *"a 2000-char
+    'ref' is a BODY wearing a pointer's name — without it the body cap is
+    theatre"*. The same argument applies here and the same wave left this side
+    open: the window and the display cap bound the served CARDINALITY and nothing
+    else, so on a quiet instance a 100 KB tool name ranks inside the top 20 and is
+    served straight into the next consumer's status response.
+
+    ⚠ The POLICY differs from the message pointers on purpose — TRUNCATE, not
+    REJECT — and the pins below pin that difference rather than assuming it: a
+    refused trace row would let a caller SUPPRESS ITS OWN MEASUREMENT and would
+    lose a denominator row. A truncated group key is still a usable group key.
+    """
+
+    async def test_an_oversize_TOOL_name_is_truncated_and_the_row_STILL_LANDS(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        mcp, recorder = probe_server
+        oversize = "t" * (TRACE_IDENTITY_MAX_CHARS + 500)
+        with suppress(Exception):
+            await _dispatch_ignoring_tool_failure(mcp, oversize, {})
+        with _request_context(_app_context_double(recorder)):
+            with suppress(Exception):
+                await _dispatch_ignoring_tool_failure(mcp, oversize, {})
+        assert len(recorder.calls) == 1, (
+            "an UNKNOWN tool name wrote no trace row. The dispatch fails inside the funnel and "
+            "the write is in `finally`, so the row must still land — losing it would let a "
+            "caller suppress its own measurement, and errored calls are part of the denominator"
+        )
+        served = recorder.calls[0]["tool"]
+        assert len(served) == TRACE_IDENTITY_MAX_CHARS, (
+            f"the tool name was stored at {len(served)} chars, not bounded to "
+            f"{TRACE_IDENTITY_MAX_CHARS} — one client calling a 100 KB 'tool' writes a "
+            f"full-size row per call, forever"
+        )
+        assert served == oversize[:TRACE_IDENTITY_MAX_CHARS], (
+            "the bound is not a plain prefix, so two different names could collapse "
+            "unpredictably rather than deterministically"
+        )
+
+    async def test_oversize_DECLARED_identities_are_truncated(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        mcp, recorder = probe_server
+        oversize = "a" * (TRACE_IDENTITY_MAX_CHARS + 500)
+        with _request_context(_app_context_double(recorder)):
+            await _dispatch(
+                mcp,
+                _SYNTHETIC_DECLARING,
+                {"agent": oversize, "session": oversize, "action": oversize},
+            )
+        assert len(recorder.calls) == 1
+        row = recorder.calls[0]
+        for key in ("agent", "session", "action"):
+            assert len(str(row[key])) == TRACE_IDENTITY_MAX_CHARS, (
+                f"declared {key!r} was stored unbounded at {len(str(row[key]))} chars — these "
+                f"are RAW ARGUMENT VALUES and the diff stores them plaintext by design"
+            )
+
+    async def test_POSITIVE_CONTROL_a_normal_name_is_stored_UNCHANGED(
+        self, probe_server: tuple[Any, _TraceRecorder]
+    ) -> None:
+        """Without this, a build that truncated everything to one character — or
+        mangled every value — satisfies both legs above."""
+        mcp, recorder = probe_server
+        with _request_context(_app_context_double(recorder)):
+            await _dispatch(
+                mcp,
+                _SYNTHETIC_DECLARING,
+                {"agent": _DECLARED_AGENT, "session": _DECLARED_SESSION, "action": _DECLARED_ACTION},
+            )
+        assert len(recorder.calls) == 1
+        row = recorder.calls[0]
+        assert row["tool"] == _SYNTHETIC_DECLARING
+        assert row["agent"] == _DECLARED_AGENT
+        assert row["session"] == _DECLARED_SESSION
+        assert row["action"] == _DECLARED_ACTION
+
+    @pytest.mark.parametrize(
+        "column", ["tool", "session", "agent", "action", "transport_session"]
+    )
+    def test_each_caller_controlled_column_carries_its_STORE_backstop(self, column: str) -> None:
+        """The writer truncates; the ASSERT is what stops a writer that does not.
+        Pins the EMITTED statement, per the house idiom."""
+        statement = _field_statement(generate_ddl(dim=_DIM), TRACE_TABLE, column)
+        assert f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}" in statement, (
+            f"trace.{column} has no store-level bound, so any writer that skips the "
+            f"truncation stores an unbounded caller-controlled string: {statement!r}"
+        )
+
+    def test_CONTROL_a_NON_caller_controlled_column_carries_NO_such_bound(self) -> None:
+        """The scope is caller-controlled STRINGS. ``params_hash`` is ours — a
+        fixed-width digest — so bounding it would be cargo-culting the rule
+        rather than applying it, and this pin says which columns are in scope by
+        showing one that is not."""
+        statement = _field_statement(generate_ddl(dim=_DIM), TRACE_TABLE, "params_hash")
+        assert "ASSERT" not in statement, (
+            f"params_hash gained a bound it does not need — it is a 64-char digest this code "
+            f"computes, not a caller-supplied string: {statement!r}"
+        )
+
+
+class TestTheServedPerToolAggregateIsCappedAndCounted:
+    """FIX WAVE — blind-audit D6 (the served half; retention is ledgered).
+
+    ``TraceSummary.by_tool`` is returned as STRUCTURED OUTPUT with no display
+    cap, and its group key is the DISPATCHED tool name — which is
+    caller-supplied. An unknown name still reaches the seam (the dispatch fails
+    INSIDE the funnel, so the row is written before the failure surfaces), so a
+    client repeatedly calling one typo permanently grows every future
+    ``lore_index`` response. It was the one list in this packet's blast radius
+    with no cap.
+
+    Capped AND counted: a silent truncation would read as "that is all the
+    tools", and ``total`` deliberately stays the TRUE total, so the disclosure
+    is what keeps the two numbers consistent rather than contradictory.
+    """
+
+    async def test_an_over_cap_aggregate_is_capped_and_the_remainder_COUNTED(self) -> None:
+        from loremaster.server import _TRACE_BY_TOOL_CAP, AppContext
+
+        over = _TRACE_BY_TOOL_CAP + 7
+        rows = [
+            {"tool": f"probe_tool_{index:03d}", "calls": index + 1, "latest": None}
+            for index in range(over)
+        ]
+        context = _aggregate_context(rows, window_days=_TELEMETRY_WINDOW_DAYS)
+        summary = await AppContext._trace_summary(context)
+        assert summary.window_days == _TELEMETRY_WINDOW_DAYS, (
+            "the served summary does not carry the window its numbers were computed over — a "
+            "consumer would read windowed counts as lifetime totals"
+        )
+        assert len(summary.by_tool) == _TRACE_BY_TOOL_CAP, (
+            f"the served per-tool list carried {len(summary.by_tool)} of {over} entries — an "
+            f"uncapped list whose keys a CALLER controls grows every future status response"
+        )
+        assert summary.tools_elided == over - _TRACE_BY_TOOL_CAP, (
+            "the cap did not DISCLOSE its remainder; a silent truncation reads as 'that is all "
+            "the tools'"
+        )
+        assert summary.total == sum(int(cast(int, row["calls"])) for row in rows), (
+            "the total shrank to match the display window — it must stay the TRUE total across "
+            "every tool, which is what tools_elided exists to reconcile"
+        )
+        assert summary.by_tool == sorted(summary.by_tool, key=lambda item: item.tool), (
+            "the served slice is not name-sorted, so the render is not deterministic"
+        )
+        busiest = {f"probe_tool_{index:03d}" for index in range(over - _TRACE_BY_TOOL_CAP, over)}
+        assert {item.tool for item in summary.by_tool} == busiest, (
+            "the cap kept the ALPHABET rather than the SIGNAL — selection is by call count, or "
+            "a busy tool vanishes behind an idle one whose name sorts earlier"
+        )
+
+    async def test_positive_control_an_UNDER_cap_aggregate_elides_nothing(self) -> None:
+        from loremaster.server import _TRACE_BY_TOOL_CAP, AppContext
+
+        under = _TRACE_BY_TOOL_CAP - 2
+        rows = [
+            {"tool": f"probe_tool_{index:03d}", "calls": index + 1, "latest": None}
+            for index in range(under)
+        ]
+        context = _aggregate_context(rows, window_days=_TELEMETRY_WINDOW_DAYS)
+        summary = await AppContext._trace_summary(context)
+        assert len(summary.by_tool) == under
+        assert summary.tools_elided == 0, (
+            "an under-cap aggregate disclosed a remainder it does not have"
         )
 
 
@@ -1967,12 +2464,22 @@ class TestIdentityIsDeclaredNeverGuessed:
 # --------------------------------------------------------------------------- #
 # T6 — params_hash
 # --------------------------------------------------------------------------- #
-class TestParamsHashIsTheRuledRecipeAndLeaksNothing:
-    """T6: one deterministic digest over the RAW arguments; no content stored.
+class TestParamsHashIsTheRuledRecipeAndCarriesFreeTextOnlyAsADigest:
+    """T6: one deterministic digest over the RAW arguments.
 
-    The digest is the ONLY thing that crosses from arguments into the row, so it
-    is also the whole privacy boundary: bodies, briefs, and queries pass through
-    the hash and nowhere else.
+    ⚠ WAVE 5 — THIS CLASS WAS NAMED ``…AndLeaksNothing`` AND THAT NAME WAS FALSE.
+    Three columns cross from arguments into the row in PLAINTEXT by design —
+    ``_TRACE_DECLARED_KEYS`` (``agent``/``session``/``action``) — because an
+    identity that is hashed is an identity packet 06 cannot group by. The
+    docstring said so from wave 3 onward while the NAME went on claiming
+    otherwise, and **the name is what a reader greps**: an agent asking whether
+    the trace row leaks its arguments finds a class asserting it does not.
+
+    A docstring correction under a false name is half a fix. The name now says
+    what the pins below actually assert, which is true and worth keeping: FREE
+    TEXT — bodies, briefs, queries, notes — reaches the row ONLY as this digest.
+    The no-raw-content leg checks hostile BODY fragments specifically, with a
+    present-in-input control, and that is the boundary that matters.
     """
 
     async def test_the_recipe_is_sha256_over_sorted_json(
@@ -2299,6 +2806,41 @@ class TestTheTraceSchemaDelta:
             "and a UNIQUE index would reject the second."
         )
 
+    def test_the_ts_index_ships_in_the_SAME_free_window(self) -> None:
+        """DD-1.a — the one DEPLOY-GATED line in the design wave.
+
+        The trace table is empty exactly once: production holds zero rows today
+        (independently read on the live store before this deploy), and after it
+        the table grows on EVERY served tool call. An index added later BUILDS,
+        blocking, at every store's next boot. Unlike the deliberately-withheld
+        ``transport_session`` index, BOTH consumers are named and designed — the
+        windowed aggregate read that ships with it, and the retention sweep a
+        later packet lands once it has read the curve these rows exist to
+        produce — so the free-window argument is whole rather than speculative.
+
+        It carries no behavioural pin BY DESIGN (an index changes plan, not
+        result), which is exactly why it needs a structural one: without this,
+        deleting the line is invisible until someone measures a boot.
+
+        Rider, obeyed: parse the FIELDS clause, never substring the statement —
+        an index NAMED ``trace_ts`` contains ``ts`` as a substring, so a
+        substring assertion would pass over ANY fields list.
+        """
+        ddl = generate_ddl(dim=_DIM)
+        assert _index_fields(ddl, f"{TRACE_TABLE}_ts") == (TRACE_TS_FIELD,), (
+            f"the ts index must be FIELDS {TRACE_TS_FIELD} exactly — it is what makes the "
+            f"windowed aggregate a range IndexScan instead of a full TableScan"
+        )
+        statement = _index_statement(ddl, f"{TRACE_TABLE}_ts")
+        assert statement.startswith(f"DEFINE INDEX IF NOT EXISTS {TRACE_TABLE}_ts "), (
+            f"the index must be `IF NOT EXISTS` — an INDEX OVERWRITE re-validates and rebuilds "
+            f"a populated index and can raise at boot. Served: {statement!r}"
+        )
+        assert "UNIQUE" not in statement, (
+            "the ts index must be PLAIN: many trace rows legitimately share a timestamp, and a "
+            "UNIQUE index would reject the second one"
+        )
+
     def test_no_transport_session_index_is_shipped(self) -> None:
         # A deliberate NON-shipment with a named decision point: packet 06's join
         # design may not need it, and the free-window argument is weaker for an
@@ -2553,7 +3095,7 @@ class TestTheTraceDeltaMigratesADirtyStore:
         await store.ensure_ready()
         try:
             await _record_trace(store)
-            aggregates = await store.trace_aggregates()
+            aggregates = await store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
             for_tool = [row for row in aggregates if row.get("tool") == _SEAM_TOOL]
             assert len(for_tool) == 1, f"expected one aggregate group for {_SEAM_TOOL}, got {aggregates!r}"
             assert for_tool[0]["calls"] == 2, (
@@ -2668,7 +3210,7 @@ class TestTheOrdinalIsMintedByTheStore:
             f"no gap was created ({ordinals!r}), so this pin cannot discriminate row-counting from "
             f"ordinal arithmetic — the burn did not take."
         )
-        aggregates = await trace_store.trace_aggregates()
+        aggregates = await trace_store.trace_aggregates(window_days=_TELEMETRY_WINDOW_DAYS)
         for_tool = [row for row in aggregates if row.get("tool") == _SEAM_TOOL]
         assert len(for_tool) == 1
         assert for_tool[0]["calls"] == len(rows), (

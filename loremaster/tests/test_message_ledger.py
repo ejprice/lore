@@ -833,6 +833,150 @@ class TestSendValidatesTheBody:
         )
         assert len(result.message.body) == _msg().MESSAGE_BODY_MAX_CHARS
 
+    # --- DD-3: the POINTER bounds, mirroring `body` exactly -------------------
+
+    async def test_an_over_length_ref_is_REJECTED_naming_its_index(
+        self, message_ledger: Any
+    ) -> None:
+        """DD-3.a/c. The body cap's whole rationale is bounding the worst-case
+        drain render — and five UNBOUNDED refs per row void that arithmetic
+        silently, so a 100 KB payload rides one "pointer" into a recipient's
+        context and the cap becomes theatre through a side door.
+
+        REJECT, NEVER TRUNCATE, inherited from ``body``: a silently shortened
+        pointer is a BROKEN pointer, and only the caller can supply the real one.
+        The reject names the ENTRY INDEX because "one of your refs is too long"
+        is not actionable for a caller holding twenty of them.
+        """
+        oversize = "r" * (_msg().MESSAGE_POINTER_MAX_CHARS + 1)
+        with pytest.raises(_msg().MessagePointerError) as excinfo:
+            await message_ledger.send(
+                sender=_ref(SENDER_LEAD),
+                session=SESSION_WAVE7,
+                body="see the ref",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+                recipients=[_ref(AGENT_FIXER_B)],
+                refs=["docs/plans/v2/INDEX.md", oversize],
+            )
+        text = str(excinfo.value)
+        assert "refs[1]" in text, f"the reject must name WHICH ref is over: {text!r}"
+        assert str(_msg().MESSAGE_POINTER_MAX_CHARS) in text, (
+            f"the reject must name the cap it enforced, derived not guessed: {text!r}"
+        )
+        drained = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=20, peek=True)
+        assert drained.entries == [], "an over-length ref was truncated and DELIVERED"
+
+    async def test_an_over_COUNT_refs_list_is_REJECTED(self, message_ledger: Any) -> None:
+        with pytest.raises(_msg().MessagePointerError) as excinfo:
+            await message_ledger.send(
+                sender=_ref(SENDER_LEAD),
+                session=SESSION_WAVE7,
+                body="too many pointers",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+                recipients=[_ref(AGENT_FIXER_B)],
+                refs=[f"docs/r{index}.md" for index in range(_msg().MESSAGE_REFS_MAX_COUNT + 1)],
+            )
+        assert str(_msg().MESSAGE_REFS_MAX_COUNT) in str(excinfo.value)
+
+    async def test_POSITIVE_CONTROL_refs_exactly_at_both_caps_are_accepted(
+        self, message_ledger: Any
+    ) -> None:
+        """The cap-boundary control (cap-1 / cap / cap+1 discipline): a bound that
+        rejected everything would satisfy both pins above."""
+        at_cap = "r" * _msg().MESSAGE_POINTER_MAX_CHARS
+        refs = [at_cap] + [f"docs/r{index}.md" for index in range(_msg().MESSAGE_REFS_MAX_COUNT - 1)]
+        assert len(refs) == _msg().MESSAGE_REFS_MAX_COUNT, "fixture check: exactly at the count cap"
+        result = await message_ledger.send(
+            sender=_ref(SENDER_LEAD),
+            session=SESSION_WAVE7,
+            body="exactly at both bounds",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+            recipients=[_ref(AGENT_FIXER_B)],
+            refs=refs,
+        )
+        assert len(result.message.refs) == _msg().MESSAGE_REFS_MAX_COUNT
+
+    @pytest.mark.parametrize("field_name", ["thread", "task_id"])
+    async def test_an_over_length_pointer_LABEL_is_REJECTED(
+        self, message_ledger: Any, field_name: str
+    ) -> None:
+        """``thread`` and ``task_id`` are the other two members of the pointer
+        CLASS — capping refs alone just moves the payload one field over."""
+        oversize = "t" * (_msg().MESSAGE_POINTER_MAX_CHARS + 1)
+        with pytest.raises(_msg().MessagePointerError) as excinfo:
+            await message_ledger.send(
+                sender=_ref(SENDER_LEAD),
+                session=SESSION_WAVE7,
+                body="label smuggling",
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+                recipients=[_ref(AGENT_FIXER_B)],
+                **{field_name: oversize},
+            )
+        assert field_name in str(excinfo.value)
+
+    async def test_a_thread_carrying_the_TAUGHT_q_topic_form_is_ACCEPTED(
+        self, message_ledger: Any
+    ) -> None:
+        """DD-3.e, pinned so nobody "hardens" it later: ``thread`` takes a LENGTH
+        bound and NO identity charset. The surface's own taught convention is
+        ``q:<topic>``, and the identity pattern forbids ``:`` — applying it would
+        REJECT this packet's own teaching. A thread is a topic LABEL, and it is a
+        bound param at every site, never inlined into a WHERE.
+        """
+        result = await message_ledger.send(
+            sender=_ref(SENDER_LEAD),
+            session=SESSION_WAVE7,
+            body="is the gate green?",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+            recipients=[_ref(AGENT_FIXER_B)],
+            thread="q:gate-status",
+            set_status="input_required",
+        )
+        assert result.message.thread == "q:gate-status"
+
+    async def test_an_over_length_ack_NOTE_is_REJECTED_at_the_BODY_cap(
+        self, message_ledger: Any
+    ) -> None:
+        """DD-3.f. A note is message-grade PROSE, not a pointer, so it takes the
+        BODY constant — and it is bounded HERE rather than one packet later,
+        because "unbounded now" is the same bypass discovered by somebody else's
+        render instead of designed here."""
+        seq = (
+            await message_ledger.send(
+                sender=_ref(SENDER_LEAD),
+                session=SESSION_WAVE7,
+                body="ack me",
+                grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+                recipients=[_ref(AGENT_FIXER_B)],
+            )
+        ).message.seq
+        with pytest.raises(_msg().MessageBodyError) as excinfo:
+            await message_ledger.ack(
+                agent_id=AGENT_FIXER_B[0],
+                seqs=[seq],
+                note="n" * (_msg().MESSAGE_BODY_MAX_CHARS + 1),
+            )
+        assert str(_msg().MESSAGE_BODY_MAX_CHARS) in str(excinfo.value)
+
+    async def test_POSITIVE_CONTROL_a_note_at_the_body_cap_is_accepted(
+        self, message_ledger: Any
+    ) -> None:
+        seq = (
+            await message_ledger.send(
+                sender=_ref(SENDER_LEAD),
+                session=SESSION_WAVE7,
+                body="ack me",
+                grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+                recipients=[_ref(AGENT_FIXER_B)],
+            )
+        ).message.seq
+        result = await message_ledger.ack(
+            agent_id=AGENT_FIXER_B[0],
+            seqs=[seq],
+            note="n" * _msg().MESSAGE_BODY_MAX_CHARS,
+        )
+        assert result.acked_count == 1
+
     async def test_a_hostile_body_is_stored_RAW(self, message_ledger: Any) -> None:
         """Storage is never sanitised — sanitisation is a RENDER concern
         (``sanitise.py``, packet 02's seam). What a recipient acted on must stay

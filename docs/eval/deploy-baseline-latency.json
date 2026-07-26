@@ -1,0 +1,21 @@
+{
+  "measured_at": "2026-07-26T01:29:52.476934+00:00",
+  "per_tool_p50_ms": {
+    "lore_get_symbol": 111.478,
+    "lore_read": 17.215,
+    "lore_verify": 117.245
+  },
+  "per_tool_p90_ms": {
+    "lore_get_symbol": 112.461,
+    "lore_read": 18.18,
+    "lore_verify": 117.781
+  },
+  "per_tool_spread_ms": {
+    "lore_get_symbol": 1.791,
+    "lore_read": 1.009,
+    "lore_verify": 0.925
+  },
+  "pooled_p50_ms_NOT_A_GATE": 111.478,
+  "samples_per_tool": 21,
+  "warmup_calls_discarded_per_tool": 3
+}

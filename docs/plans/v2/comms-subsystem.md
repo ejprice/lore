@@ -77,6 +77,16 @@ Every action carries `agent=` and touches its heartbeat.
 | `fleet` | per-agent status/heartbeat-age/unread/unacked/brief-skew/orphan-impact |
 | `story` | task-anchored lineage in one call: created→blocks→claim→messages→brief versions→transitions→report_path |
 
+> **⚠ THIS TABLE IS A CONDENSED MAP, NOT THE SERVED CONTRACT (lead, 2026-07-25 — rulings §F.4).**
+> For `send` / `drain` / `ack` the authority is **`03b-design-rulings-r2.md`** (§B1–B15), and the
+> served surface is what `server.py`'s `_render_comms_*` helpers actually render. Reconciled at
+> HEAD this session: the `since=` param the §F.4 note remembered is **already absent** from the
+> `drain` row above (it was read at `0223291`; packet **05** owns `since=`/paging). What remains
+> true is that the row **UNDER-describes** the shipped drain — it omits the drain limit and its
+> counted elision, the peek-trailer rule, and the shared brief-skew block that drain now serves
+> (ruling **E-S5(c)**: production teaches *"next heartbeat or drain"*). Do not derive drain
+> behaviour from this row; derive it from §B4 and the renders.
+
 Nudge footer: `lore_tasks`/`lore_claim_task`/`lore_findings` mutations append one line when
 traffic pends (`_comms_footer`). PKT-06 rollup gains messages/fleet/skew sections (built C3).
 

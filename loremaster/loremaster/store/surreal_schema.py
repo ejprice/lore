@@ -113,7 +113,7 @@ ANSWERS_TO_RELATION = "answers_to"
 # placeholder has graduated to a real field-level slice —
 # ``snapshot``/``snapshot_entry``/``command`` in P5-C1b (see
 # ``_snapshot_statements`` / ``_snapshot_entry_statements`` /
-# ``_command_statements``), ``trace`` in P8a (six core + two accounting columns,
+# ``_command_statements``), ``trace`` in P8a and packet 03b (its full column set,
 # ``_trace_statements``), ``meta`` in P3 (the ``SurrealManifest`` port), and
 # ``finding`` in P8b — the FINDING ledger row (``_finding_statements``, its
 # ``finding_counter`` sibling, and :mod:`loremaster.findings`), moved forward from
@@ -565,6 +565,21 @@ _MESSAGE_GRADE_ALLOWED = ", ".join(f"'{grade}'" for grade in _MESSAGE_GRADES)
 # law — 03a must import, never re-declare, 2000).
 MESSAGE_BODY_MAX_CHARS = 2000
 
+# The POINTER-class length bound (DD-3.a), applied to EACH ``refs`` entry, to
+# ``thread`` and to ``task_id``. ONE constant for one class of field: all three
+# are pointers/labels, and three separate constants would be three things to
+# drift. Derivation of 256: the longest legitimate house pointer is a receipts
+# path plus a section cite (~80-100 chars), so 256 is that with headroom — and it
+# refuses content-smuggling outright, because a 2000-char "ref" is a BODY wearing
+# a pointer's name. Without it the body cap is theatre: five unbounded refs per
+# row void the render arithmetic the cap exists to protect.
+MESSAGE_POINTER_MAX_CHARS = 256
+# The ``refs`` COUNT bound (DD-3.b). The drain render already caps the DISPLAY at
+# five with a counted remainder; this bounds STORAGE. 20 admits any real pointer
+# batch and refuses a thousand-entry list. Both constants are strikeable; the
+# mechanism — bounded pointers, REJECT never truncate — is the ruling.
+MESSAGE_REFS_MAX_COUNT = 20
+
 # The ``message`` node table's fields as ``(name, type_expr, constraint)`` triples
 # — the single source of truth :func:`_message_statements` emits one ``DEFINE
 # FIELD`` per, mirroring :data:`_AGENT_FIELD_SPECS`. ``seq`` is the native-sequence
@@ -585,12 +600,41 @@ MESSAGE_BODY_MAX_CHARS = 2000
 _MESSAGE_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("seq", "int", ""),
     ("session", _CHUNK_STRING_TYPE, ""),
-    ("thread", _CHUNK_STRING_TYPE, ""),
+    # REQUIRED and non-``option`` — a load-bearing dependency, not a default.
+    # ``awaiting_answer``'s bounded deliveries read is a semantics-identical
+    # SUPERSET only because every message HAS a thread: a stored NONE would be
+    # silently dropped by the ``IN`` clause and the asker would read "waiting"
+    # forever. Flipping this to ``option<string>`` is a silent semantic change,
+    # which is why a schema pin holds it (DD-2.b).
+    ("thread", _CHUNK_STRING_TYPE, f"ASSERT string::len($value) <= {MESSAGE_POINTER_MAX_CHARS}"),
     ("sender", f"record<{AGENT_TABLE}>", ""),
     ("grade", _CHUNK_STRING_TYPE, f"ASSERT $value IN [{_MESSAGE_GRADE_ALLOWED}]"),
     ("body", _CHUNK_STRING_TYPE, f"ASSERT string::len($value) <= {MESSAGE_BODY_MAX_CHARS}"),
-    ("refs", "array<string>", "DEFAULT []"),
-    ("task_id", "option<string>", ""),
+    (
+        "refs",
+        "array<string>",
+        f"DEFAULT [] ASSERT array::len($value) <= {MESSAGE_REFS_MAX_COUNT}",
+    ),
+    # ⚠ THE ELEMENT ROW, and it is why the pair exists. ``TYPE array<T>``
+    # IMPLICITLY DEFINES ``<field>.*``, so this is ALWAYS a re-definition — the
+    # store reference's §1.1 OVERWRITE-for-fields rule applies to it with no
+    # exception, and ``_define_field`` supplies exactly that (a bare definition
+    # raises "The field 'refs.*' already exists"). The element path is what buys
+    # the per-entry ERROR: a rejection names ``refs.*`` and the offending value,
+    # where a whole-array closure assert dumps the entire array instead.
+    (
+        "refs[*]",
+        _CHUNK_STRING_TYPE,
+        f"ASSERT string::len($value) <= {MESSAGE_POINTER_MAX_CHARS}",
+    ),
+    # ⚠ BARE asserts on the two pointer labels — NO ``$value = NONE OR`` guard.
+    # An ``option<>`` field's ASSERT is NOT evaluated when the value is absent, so
+    # the guard is pure cruft that would teach the next author it is required.
+    # ``thread`` takes the same bound but NO charset: it is a topic LABEL, not an
+    # identity, it is a bound param at every site, and the surface's own taught
+    # ``q:<topic>`` form contains a ``:`` the identity charset forbids — applying
+    # that charset would reject this packet's own teaching.
+    ("task_id", "option<string>", f"ASSERT string::len($value) <= {MESSAGE_POINTER_MAX_CHARS}"),
     ("question", "bool", "DEFAULT false"),
     ("created_at", "datetime", ""),
 )
@@ -608,7 +652,10 @@ _TO_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("created_at", "datetime", ""),
     ("seen_at", "option<datetime>", ""),
     ("acked_at", "option<datetime>", ""),
-    ("ack_note", "option<string>", ""),
+    # ``note`` is message-grade PROSE recorded on the edges an ack actually won —
+    # not a pointer — so it takes the BODY constant, not the pointer one, at both
+    # layers exactly as ``body`` does. Bare assert: NONE is not evaluated.
+    ("ack_note", "option<string>", f"ASSERT string::len($value) <= {MESSAGE_BODY_MAX_CHARS}"),
 )
 
 # The ``to`` UNIQUE(in, out) index — one delivery edge per (message, recipient)
@@ -622,18 +669,19 @@ _TO_IN_OUT_INDEX_FIELDS = ("in", "out")
 # drain SELECT table-scans every delivery edge in the store on every comms call.
 _TO_DRAIN_INDEX_FIELDS = ("out", "seen_at")
 
-# --- P8a ``trace`` table (lore's per-tool-invocation OBSERVABILITY row) --------
+# --- ``trace`` table (lore's per-tool-invocation OBSERVABILITY row) -----------
 #
-# ``trace`` is the row the mcp role writes async on every served tool call: six
-# core columns capturing one invocation, plus the two audited optional accounting
-# columns (:data:`TRACE_TOKEN_COST_FIELD` / :data:`TRACE_MODEL_FIELD`) landed in
-# P2. The field NAMES are public constants (not bare literals) so the store's
-# ``record_trace`` CONTENT keys and this DDL read from ONE source of truth and can
-# never drift — the same discipline :data:`CHUNK_COLUMNS` keeps for ``chunk``.
+# ``trace`` is the row the ONE tracing seam writes on EVERY served tool call
+# (packet 03b T1: a ``FastMCP`` subclass overriding ``call_tool``). The field
+# NAMES are public constants (not bare literals) so the store's ``record_trace``
+# CONTENT keys and this DDL read from ONE source of truth and can never drift —
+# the same discipline :data:`CHUNK_COLUMNS` keeps for ``chunk``.
 #
-# Aggregates over these rows surface in a LATER phase (P8d); P8a defines only the
-# table + its write path. The table carries no HNSW/FULLTEXT index — a trace is an
-# append-only observability event, never retrieved semantically.
+# The table carries no HNSW/FULLTEXT index — a trace is an append-only
+# observability event, never retrieved semantically — but it DOES carry the
+# ``(agent, ordinal)`` plain index packet 06's per-agent decay curve reads
+# (T2.1: an index on a POPULATED table BUILDS, blocking, at the first
+# ``ensure_ready`` carrying it, and this table is empty exactly once — now).
 TRACE_TOOL_FIELD = "tool"
 TRACE_PARAMS_HASH_FIELD = "params_hash"
 TRACE_HIT_COUNT_FIELD = "hit_count"
@@ -642,24 +690,105 @@ TRACE_SESSION_FIELD = "session"
 TRACE_TS_FIELD = "ts"
 TRACE_TOKEN_COST_FIELD = "token_cost"
 TRACE_MODEL_FIELD = "model"
+# Packet 03b's enrichment columns (T2). Every one is ``option<>``: the generic
+# seam cannot know a value for every tool, and the store reference's §1.4 rule
+# for a NEW field on a possibly-populated table is ``option<>`` (a required one
+# poisons every existing row and a DEFAULT does not rescue it).
+TRACE_AGENT_FIELD = "agent"
+TRACE_ACTION_FIELD = "action"
+TRACE_TRANSPORT_SESSION_FIELD = "transport_session"
+TRACE_ORDINAL_FIELD = "ordinal"
+TRACE_OK_FIELD = "ok"
+
+# The native sequence backing :data:`TRACE_ORDINAL_FIELD` (T3). ONE GLOBAL
+# sequence, not one per agent: per-agent order is derivable by filtering, while
+# the global INTERLEAVING — which a per-agent counter destroys — is exactly what
+# "drains against surrounding tool calls" needs. It rides the SHARED
+# :func:`_define_sequence` emitter rather than a hand-rolled counter row, which
+# would be a THIRD mint policy competing with ``finding_counter``/
+# ``brief_counter`` (#102's clone defect). GAPS ARE REAL (an aborted transaction
+# burns a number) — the ordinal is an ORDERING key, never a count.
+TRACE_SEQUENCE_NAME = "trace_seq"
+
+# The bound on every CALLER-CONTROLLED string on the trace write path (wave 3 /
+# blind D4). ``tool`` is the raw dispatched name and the three declared-identity
+# columns are raw argument values — all four reach the row verbatim, and the
+# write sits in a ``finally``, so an UNKNOWN tool name persists too (the dispatch
+# fails INSIDE the funnel, after the row is written). Without a bound, one client
+# calling a 100 KB "tool name" writes a full-size row per call, and on a quiet
+# instance that name ranks inside the served per-tool aggregate.
+#
+# ⚠ The POLICY differs from the message pointers deliberately, and the difference
+# is the point: a message pointer is REJECTED because only the caller can supply
+# the real one. A trace row is telemetry ABOUT a call — refusing it would let a
+# caller suppress its own measurement, and losing the row corrupts the denominator
+# packet 06 reads. So the writer TRUNCATES to this bound and the row still lands;
+# a truncated group key is still a usable group key, an absent row is not. The
+# store ASSERT is the backstop for any writer that skips the truncation.
+TRACE_IDENTITY_MAX_CHARS = 256
+
+# The packet-06 read index (T2.1): filter ``agent``, order by ``ordinal``.
+# PLAIN, never UNIQUE — two rows legitimately share an agent.
+TRACE_AGENT_ORDINAL_INDEX_FIELDS = (TRACE_AGENT_FIELD, TRACE_ORDINAL_FIELD)
 
 # The ``trace`` table's fields as ``(name, type_expr, constraint)`` triples — the
 # single source of truth :func:`_trace_statements` emits one ``DEFINE FIELD`` per,
 # mirroring :data:`_TASK_FIELD_SPECS`. ``latency_ms`` is ``number`` (not ``int``)
 # so a sub-millisecond fractional latency survives intact; ``ts`` self-stamps via
 # ``DEFAULT time::now()`` — the SAME idiom ``snapshot.created_at`` /
-# ``command.created_at`` use — so the async writer never computes the ingestion
-# instant itself; ``token_cost`` / ``model`` stay ``option`` so a writer may omit
-# them and store NONE cleanly.
+# ``command.created_at`` use — so the writer never computes the ingestion instant
+# itself; ``token_cost`` / ``model`` stay ``option`` so a writer may omit them and
+# store NONE cleanly.
+#
+# ``hit_count`` and ``session`` are ``option<>`` (packet 03b T2, WIDENED from
+# ``int``/``string``): the all-tools seam cannot know a hit count for an
+# arbitrary tool — supplying ``0`` would make ``trace_aggregates`` LIE rather
+# than admit an absence — and only a call that DECLARES a fleet session has one.
+# ``agent``/``action``/``transport_session`` record what the CALL DECLARED, never
+# what the server inferred (MP9): a guessed identity in a measurement instrument
+# poisons the curve it exists to produce, invisibly.
+#
+# ``ok`` semantics, VERBATIM per the ESC-1 ruling because a boolean's meaning is
+# not guessable from its name and packet 06 filters on it: True iff the dispatch
+# RETURNED a result; False on any raise, cancellation included. The mechanism is
+# a SUCCESS LATCH (``ok`` starts False and is latched True only after the
+# dispatch returns), never an ``except``-arm flag — a failure-class name-list is
+# what ``CancelledError`` walks straight past, and a timed-out drain counted as a
+# performed one corrupts the very numerator 06 decides on.
 _TRACE_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
-    (TRACE_TOOL_FIELD, _CHUNK_STRING_TYPE, ""),
+    (
+        TRACE_TOOL_FIELD,
+        _CHUNK_STRING_TYPE,
+        f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}",
+    ),
     (TRACE_PARAMS_HASH_FIELD, _CHUNK_STRING_TYPE, ""),
-    (TRACE_HIT_COUNT_FIELD, "int", ""),
+    (TRACE_HIT_COUNT_FIELD, "option<int>", ""),
     (TRACE_LATENCY_MS_FIELD, "number", ""),
-    (TRACE_SESSION_FIELD, _CHUNK_STRING_TYPE, ""),
+    (
+        TRACE_SESSION_FIELD,
+        "option<string>",
+        f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}",
+    ),
     (TRACE_TS_FIELD, "datetime", "DEFAULT time::now()"),
     (TRACE_TOKEN_COST_FIELD, "option<int>", ""),
     (TRACE_MODEL_FIELD, "option<string>", ""),
+    (
+        TRACE_AGENT_FIELD,
+        "option<string>",
+        f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}",
+    ),
+    (
+        TRACE_ACTION_FIELD,
+        "option<string>",
+        f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}",
+    ),
+    (
+        TRACE_TRANSPORT_SESSION_FIELD,
+        "option<string>",
+        f"ASSERT string::len($value) <= {TRACE_IDENTITY_MAX_CHARS}",
+    ),
+    (TRACE_ORDINAL_FIELD, "option<int>", ""),
+    (TRACE_OK_FIELD, "option<bool>", ""),
 )
 
 # ---------------------------------------------------------------------------
@@ -946,23 +1075,37 @@ def _memory_statements(dim: int, analyzer_name: str) -> list[str]:
 
 
 def _trace_statements() -> list[str]:
-    """The ``trace`` observability table: the six core fields + two optional columns.
+    """The ``trace`` observability table: its columns, its sequence, its index.
 
-    Emits, in order: the SCHEMAFULL table, then one ``DEFINE FIELD`` per
-    :data:`_TRACE_FIELD_SPECS` entry — the six core columns capturing one served
-    tool invocation (``tool`` / ``params_hash`` / ``hit_count`` / ``latency_ms`` /
-    ``session`` / ``ts``, ``ts`` carrying the ``DEFAULT time::now()`` self-stamp)
-    plus the two audited optional accounting columns (``token_cost`` / ``model``,
-    Spectron concept-coverage). Mirrors :func:`_task_statements`. UNLIKE ``chunk`` /
-    ``memory`` the table carries no HNSW/FULLTEXT index — a trace is an append-only
-    observability event, never retrieved semantically; aggregates over these rows
-    are a LATER phase (P8d).
+    Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
+    :data:`_TRACE_FIELD_SPECS` entry (``ts`` carrying the ``DEFAULT time::now()``
+    self-stamp, so the writer never computes the ingestion instant itself); the
+    ``DEFINE SEQUENCE IF NOT EXISTS trace_seq`` backing the ordinal
+    (:func:`_define_sequence` — the SHARED emitter, never a hand-rolled counter
+    row); and the plain ``(agent, ordinal)`` index packet 06's per-agent curve
+    reads. Mirrors :func:`_task_statements`. UNLIKE ``chunk`` / ``memory`` the
+    table carries no HNSW/FULLTEXT index — a trace is an append-only
+    observability event, never retrieved semantically.
     """
     statements: list[str] = [_define_table(TRACE_TABLE)]
     statements += [
         _define_field(TRACE_TABLE, name, type_expr, constraint=constraint)
         for name, type_expr, constraint in _TRACE_FIELD_SPECS
     ]
+    statements.append(_define_sequence(TRACE_SEQUENCE_NAME))
+    statements.append(
+        _plain_index(
+            TRACE_TABLE, f"{TRACE_TABLE}_agent_ordinal", TRACE_AGENT_ORDINAL_INDEX_FIELDS
+        )
+    )
+    # The ``ts`` index, shipped in the SAME free window and for the same reason
+    # one column over: the trace table is empty exactly once — now — and after
+    # this deploy it grows on EVERY tool call, so an index added later BUILDS,
+    # blocking, at every store's next boot. Unlike the deliberately-withheld
+    # ``transport_session`` index, BOTH its consumers are named and designed: the
+    # windowed aggregate read below it, and the eventual retention sweep a later
+    # packet lands once it has read the curve these rows exist to produce.
+    statements.append(_plain_index(TRACE_TABLE, f"{TRACE_TABLE}_ts", (TRACE_TS_FIELD,)))
     return statements
 
 
@@ -1245,7 +1388,8 @@ def _message_statements() -> list[str]:
     per :data:`_MESSAGE_FIELD_SPECS` entry (the closed ``grade`` domain, the
     length-bound ``body`` backstop, the ``record<agent>`` ``sender``, the
     ruling-9 ``question`` bool); the native ``DEFINE SEQUENCE`` backing
-    ``message.seq`` (:func:`_define_sequence`); then the ``to`` relation edge —
+    ``message.seq`` (:func:`_define_sequence`); the two R3(1) hot-path indexes
+    over ``(seq)`` and ``(sender, question)``; then the ``to`` relation edge —
     ``DEFINE TABLE OVERWRITE to TYPE RELATION IN message OUT agent ENFORCED
     SCHEMAFULL`` (:func:`_define_relation_table` with ``enforced=True``; ``in``/
     ``out`` auto-defined, never hand-declared) — its edge-local CAS fields
@@ -1266,6 +1410,25 @@ def _message_statements() -> list[str]:
         for name, type_expr, constraint in _MESSAGE_FIELD_SPECS
     ]
     statements.append(_define_sequence(MESSAGE_SEQUENCE_NAME))
+    # The two R3(1) hot-path indexes, shipped INSIDE the free window (03a-2 delta
+    # row 1): production carries ZERO ``message`` rows until packet 03b deploys,
+    # so these builds are free exactly once and the window closes at that deploy.
+    # ``IF NOT EXISTS`` per store reference §1.1's INDEX row (an INDEX OVERWRITE
+    # re-builds over every row and can hard-fail ``ensure_ready`` at boot).
+    #   · (seq) serves ``ack``'s ``WHERE seq IN $seqs`` resolution. PLAIN, not
+    #     UNIQUE — a deliberate, strikeable divergence from the approved design
+    #     (a UNIQUE index would REJECT a second row per seq rather than merely
+    #     failing to speed a read); re-open trigger: the day anything depends on
+    #     seq being unique rather than merely monotonic.
+    #   · (sender, question) serves ``awaiting_answer``'s questions read. The
+    #     ORDER is load-bearing: ``sender`` is the selective prefix, while
+    #     ``question`` is a boolean that halves the table at best.
+    statements.append(_plain_index(MESSAGE_TABLE, f"{MESSAGE_TABLE}_seq", ("seq",)))
+    statements.append(
+        _plain_index(
+            MESSAGE_TABLE, f"{MESSAGE_TABLE}_sender_question", ("sender", "question")
+        )
+    )
     statements.append(
         _define_relation_table(TO_RELATION, MESSAGE_TABLE, AGENT_TABLE, enforced=True)
     )

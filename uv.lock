@@ -704,6 +704,7 @@ name = "loremaster"
 version = "0.1.0"
 source = { editable = "loremaster" }
 dependencies = [
+    { name = "anyio" },
     { name = "httpx" },
     { name = "lorescribe" },
     { name = "loresigil" },
@@ -718,6 +719,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.5" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "lorescribe", editable = "lorescribe" },
     { name = "loresigil", editable = "loresigil" },

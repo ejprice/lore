@@ -452,6 +452,41 @@ class SearchConfig(_StrictModel):
 DEFAULT_COMMS_STALE_HEARTBEAT_S: int = 600
 DEFAULT_COMMS_FLEET_LIMIT: int = 20
 DEFAULT_COMMS_BRIEF_WARN_CHARS: int = 4000
+# Packet 03b (§B6.1): the default ``action=drain`` window, the approved design's
+# own drain-row value. The CONSTANT is the tunable — every derived surface (the
+# tool schema's ``limit`` description, the dispatcher's default) reads it, so a
+# re-tune is one edit here and never a number written twice.
+DEFAULT_COMMS_DRAIN_LIMIT: int = 20
+
+# The telemetry aggregate WINDOW, in days (DD-1.b). The `trace` table grows by one
+# row per served tool call forever, and the per-tool aggregate is read on EVERY
+# status call — so the read is windowed rather than a full-table scan, and this is the ONE
+# value that drives both the query's cutoff and the prose that describes it to a
+# consumer. 14 days covers any plausible "what has this instance been doing"
+# question while keeping the scan proportional to recent traffic instead of to
+# the table's whole lifetime. The CONSTANT is strikeable; the windowing MECHANISM
+# is not.
+DEFAULT_TELEMETRY_WINDOW_DAYS: int = 14
+
+
+class TelemetryConfig(_StrictModel):
+    """Observability-read configuration.
+
+    OPTIONAL on :class:`LoreConfig` with a default instance (the
+    :class:`CommsConfig` idiom), so every existing ``lore.yaml`` keeps validating
+    and transparently gets the documented default.
+
+    Attributes:
+        aggregate_window_days: How many days of ``trace`` rows the per-tool
+            aggregate covers. It bounds the SCAN, not just the display: the read
+            runs on every status call over a table that grows with every served
+            tool call, and it is also what makes a caller-controlled group key
+            (the dispatched tool name) self-limiting — junk names age out of the
+            window rather than accumulating forever. Every served surface that
+            DESCRIBES the window derives its wording from this value.
+    """
+
+    aggregate_window_days: PositiveInt = DEFAULT_TELEMETRY_WINDOW_DAYS
 
 
 class CommsConfig(_StrictModel):
@@ -471,11 +506,16 @@ class CommsConfig(_StrictModel):
         brief_body_warn_chars: The body length, in characters, past which
             ``action=brief_publish`` appends a size-warning line (design doc
             §5.2) — a warning only, never a rejection.
+        drain_limit: The default number of inbox rows ``action=drain`` serves
+            before a counted elision notice (packet 03b §B6.1). Like
+            ``fleet_limit`` it is CONFIG, never a literal buried in the handler,
+            and it is clamped by the action's own ``limit_cap``.
     """
 
     stale_heartbeat_s: PositiveInt = DEFAULT_COMMS_STALE_HEARTBEAT_S
     fleet_limit: PositiveInt = DEFAULT_COMMS_FLEET_LIMIT
     brief_body_warn_chars: PositiveInt = DEFAULT_COMMS_BRIEF_WARN_CHARS
+    drain_limit: PositiveInt = DEFAULT_COMMS_DRAIN_LIMIT
 
 
 # The default model the token-calibration yardstick probes run against.
@@ -579,6 +619,10 @@ class LoreConfig(_StrictModel):
     # ``lore.yaml`` with no ``comms:`` section still validates and gets the
     # documented defaults (PKT-28 C1).
     comms: CommsConfig = CommsConfig()
+    # OPTIONAL with a default instance (like ``comms``): an existing ``lore.yaml``
+    # with no ``telemetry:`` section still validates and gets the documented
+    # aggregate window.
+    telemetry: TelemetryConfig = TelemetryConfig()
     auth: AuthConfig | None = None
     # The opaque extension namespace: a typo'd extension *key* is not catchable
     # by the base (it cannot know every extension's schema), so this is a

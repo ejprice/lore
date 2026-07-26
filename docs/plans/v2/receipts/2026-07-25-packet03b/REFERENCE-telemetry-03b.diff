@@ -1,0 +1,441 @@
+diff --git a/loremaster/loremaster/server.py b/loremaster/loremaster/server.py
+index 44927e9..66709f7 100644
+--- a/loremaster/loremaster/server.py
++++ b/loremaster/loremaster/server.py
+@@ -40,6 +40,7 @@ from __future__ import annotations
+ 
+ import asyncio
+ import contextlib
++import hashlib
+ import importlib.metadata
+ import inspect
+ import json
+@@ -47,6 +48,7 @@ import logging
+ import math
+ import os
+ import re
++import time
+ from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping, Sequence
+ from dataclasses import dataclass
+ from datetime import UTC, datetime
+@@ -1636,11 +1638,9 @@ class ToolTraceCount(BaseModel):
+ class TraceSummary(BaseModel):
+     """The ``trace`` table's aggregate, as surfaced by ``lore_index`` (P8d Wave 3).
+ 
+-    ``total``/``by_tool``/``latest_at`` are ``0``/``[]``/``None`` when nothing has
+-    ever been traced — which is EVERY boot today, since no caller yet wires the
+-    per-invocation :meth:`~loremaster.store.surreal.SurrealStore.record_trace`
+-    emission (that wiring is a later phase per its own docstring; this section
+-    only reads whatever rows already exist).
++    ``total``/``by_tool``/``latest_at`` are ``0``/``[]``/``None`` on a store whose
++    ``trace`` table is still empty; the 03b seam (``TracingFastMCP.call_tool``)
++    writes one row per served tool call, so a live deployment's numbers move.
+ 
+     Attributes:
+         total: The total trace-row count across every tool (the sum of
+@@ -6587,6 +6587,119 @@ class _ProcessLifespanGuard:
+             await client.close()
+ 
+ 
++class TracingFastMCP(FastMCP):
++    """A :class:`FastMCP` that writes ONE ``trace`` row per served tool call.
++
++    The seam (03b T1): ``mcp==1.27.2`` exposes no middleware/hook API, and
++    ``FastMCP.call_tool`` is the SINGLE funnel every dispatch rides (the lowlevel
++    server registers the BOUND method once, in ``_setup_handlers``). Overriding it
++    gives coverage BY CONSTRUCTION — built-in tools, extension-registered tools,
++    and any tool registered in the future — instead of ~20 hand-placed emission
++    call sites, each a forgettable obligation invisible for any tool added later.
++    """
++
++    #: The exactly-three argument keys the emission harvests as DECLARED identity
++    #: (T4.1). A KEY rule, never a tool-name rule: no enumeration exists to go
++    #: stale, any current or future tool declaring ``agent=`` is captured, and a
++    #: tool declaring none is honestly NONE. Heterogeneous ledger-actor params
++    #: (``actor``/``owner``/``created_by``) are deliberately NOT harvested.
++    _DECLARED_IDENTITY_KEYS = ("agent", "session", "action")
++    #: The transport correlator header (streamable-http). Recorded as a
++    #: CORRELATOR, never as an identity.
++    _TRANSPORT_SESSION_HEADER = "mcp-session-id"
++
++    async def call_tool(
++        self, name: str, arguments: dict[str, Any]
++    ) -> Sequence[Any] | dict[str, Any]:
++        """Dispatch through ``super()`` and emit one trace row, whatever happens.
++
++        The SUCCESS LATCH (T5 / ESC-1): ``ok`` starts False and is latched True
++        ONLY after the dispatch RETURNS — there is no ``except`` arm at all, so
++        ANY raise (a tool error, a ``CancelledError``, anything) leaves
++        ``ok=False`` with nothing caught and nothing re-raised. Allowlist the
++        success state; never enumerate failure classes. The write sits in
++        ``finally`` (load-bearing, AC-06-probed: an awaited write in ``finally``
++        COMPLETES when the surrounding task is cancelled, so the cancelled
++        population — a struggling session's timed-out calls — is recorded).
++        """
++        started = time.perf_counter()
++        ok = False
++        try:
++            result = await super().call_tool(name, arguments)
++            ok = True
++            return result
++        finally:
++            latency_ms = (time.perf_counter() - started) * 1000.0
++            try:
++                await self._emit_trace(
++                    tool=name, arguments=arguments, latency_ms=latency_ms, ok=ok
++                )
++            except Exception:
++                # The tool call's outcome ALWAYS wins (T5.1): a telemetry write
++                # never converts a served call into an error. The failure is LOUD
++                # where it can be — the server log — and visible in the flatlined
++                # ``traces`` section lore_index serves.
++                logger.exception("trace.emit.failed", extra={"tool": name})
++
++    async def _emit_trace(
++        self, *, tool: str, arguments: dict[str, Any], latency_ms: float, ok: bool
++    ) -> None:
++        """Write the row: declared identity + transport correlator, never a guess."""
++        request_context = self._request_context()
++        if request_context is None:
++            # No request in flight (a direct in-process dispatch outside a
++            # session): there is no lifespan context to reach a store through.
++            # Degrade honestly — skip, exactly like an absent transport header.
++            return
++        app_context: AppContext = request_context.lifespan_context
++        declared = self._declared_identity(arguments)
++        await app_context.write_store.record_trace(
++            tool=tool,
++            params_hash=self._params_hash(arguments),
++            latency_ms=latency_ms,
++            ok=ok,
++            agent=declared["agent"],
++            session=declared["session"],
++            action=declared["action"],
++            transport_session=self._transport_session(request_context),
++        )
++
++    def _request_context(self) -> Any | None:
++        """The in-flight request context, or ``None`` outside a request."""
++        try:
++            return self._mcp_server.request_context
++        except LookupError:
++            return None
++
++    def _declared_identity(self, arguments: dict[str, Any]) -> dict[str, str | None]:
++        """Harvest the three declared identity keys — a value is kept iff it is a ``str``."""
++        declared: dict[str, str | None] = {}
++        for key in self._DECLARED_IDENTITY_KEYS:
++            value = arguments.get(key)
++            declared[key] = value if isinstance(value, str) else None
++        return declared
++
++    def _transport_session(self, request_context: Any) -> str | None:
++        """The ``mcp-session-id`` header when the transport exposes one, else NONE."""
++        request = getattr(request_context, "request", None)
++        headers = getattr(request, "headers", None)
++        if headers is None:
++            return None
++        value = headers.get(self._TRANSPORT_SESSION_HEADER)
++        return value if isinstance(value, str) else None
++
++    @staticmethod
++    def _params_hash(arguments: dict[str, Any]) -> str:
++        """The stable digest of a call's raw arguments (T6).
++
++        Deterministic (same args ⇒ same hash) and content-free: bodies, briefs and
++        every other raw parameter pass through the hash only — nothing raw is
++        stored.
++        """
++        encoded = json.dumps(arguments, sort_keys=True, default=str).encode()
++        return hashlib.sha256(encoded).hexdigest()
++
++
+ def build_mcp_server(server: LoreServer) -> Any:
+     """Construct the FastMCP server: lifespan + the built-in tools + extension tools.
+ 
+@@ -6666,7 +6779,7 @@ def build_mcp_server(server: LoreServer) -> Any:
+         finally:
+             await guard.release()
+ 
+-    mcp: FastMCP = FastMCP(
++    mcp: FastMCP = TracingFastMCP(
+         name=f"lore-{config.project.slug}",
+         instructions=_INSTRUCTIONS,
+         lifespan=_lifespan,
+diff --git a/loremaster/loremaster/store/surreal.py b/loremaster/loremaster/store/surreal.py
+index 35b3adb..e3adb09 100644
+--- a/loremaster/loremaster/store/surreal.py
++++ b/loremaster/loremaster/store/surreal.py
+@@ -128,14 +128,20 @@ from loremaster.store.surreal_schema import (
+     CHUNK_TABLE,
+     DEFAULT_ANALYZER_NAME,
+     FILE_TEXT_TABLE,
++    TRACE_ACTION_FIELD,
++    TRACE_AGENT_FIELD,
+     TRACE_HIT_COUNT_FIELD,
+     TRACE_LATENCY_MS_FIELD,
+     TRACE_MODEL_FIELD,
++    TRACE_OK_FIELD,
++    TRACE_ORDINAL_FIELD,
+     TRACE_PARAMS_HASH_FIELD,
++    TRACE_SEQUENCE_NAME,
+     TRACE_SESSION_FIELD,
+     TRACE_TABLE,
+     TRACE_TOKEN_COST_FIELD,
+     TRACE_TOOL_FIELD,
++    TRACE_TRANSPORT_SESSION_FIELD,
+     TRACE_TS_FIELD,
+     generate_ddl,
+ )
+@@ -735,18 +741,22 @@ class SurrealStore:
+         *,
+         tool: str,
+         params_hash: str,
+-        hit_count: int,
++        hit_count: int | None = None,
+         latency_ms: float,
+-        session: str,
++        session: str | None = None,
+         token_cost: int | None = None,
+         model: str | None = None,
++        agent: str | None = None,
++        action: str | None = None,
++        transport_session: str | None = None,
++        ok: bool | None = None,
+     ) -> None:
+         """Persist one observability trace row — the mcp role's async write path.
+ 
+         The ``trace`` table is lore's per-tool-invocation OBSERVABILITY row (see
+-        ``surreal_schema._TRACE_FIELD_SPECS``): the six core fields describe one
+-        served request, and the two optional accounting columns
+-        (``token_cost``/``model``) ride alongside when supplied. ``ts`` is stamped
++        ``surreal_schema._TRACE_FIELD_SPECS``): the committed columns describe one
++        served request, and every optional column (accounting, declared identity,
++        the transport correlator, the outcome latch) rides alongside when supplied. ``ts`` is stamped
+         SERVER-SIDE by the schema's ``DEFAULT time::now()`` — this method never
+         computes or sends it — so a caller need only describe the invocation.
+ 
+@@ -760,19 +770,28 @@ class SurrealStore:
+         PROTECTED variable name: a top-level ``$session`` bound param is rejected
+         outright ("'session' is a protected variable and cannot be set"), while
+         ``session`` as a CONTENT object KEY is legal. Each call appends a DISTINCT
+-        row — a trace is an append-only event, never keyed/deduped. The async
+-        fire-and-forget EMISSION that schedules these writes, and the aggregates
+-        over the rows, are a later serving-layer phase (P8d).
++        row — a trace is an append-only event, never keyed/deduped. The emission at
++        the ``FastMCP.call_tool`` seam AWAITS this write INLINE (03b T5.2): the
++        coverage gate must be deterministic — the row exists when the call
++        returns.
+ 
+         Args:
+             tool: The tool name that was served (e.g. ``"lore_search"``).
+             params_hash: A stable digest of the call's parameters.
+-            hit_count: How many results the call returned.
+             latency_ms: The call's wall-clock latency in milliseconds; fractional
+                 is preserved (the column is ``number``, not ``int``).
+-            session: The fleet/session identity that issued the call.
++            hit_count: How many results the call returned, when the caller knows;
++                omitted stores NONE (0 hits is NOT "unknown").
++            session: The fleet/session identity the call DECLARED; omitted stores
++                NONE.
+             token_cost: Optional per-call token accounting; omitted stores NONE.
+             model: Optional model that produced the call; omitted stores NONE.
++            agent: The calling agent the call DECLARED; omitted stores NONE.
++            action: The ``action`` param the call DECLARED; omitted stores NONE.
++            transport_session: The transport correlator (streamable-http's
++                ``mcp-session-id``); omitted stores NONE.
++            ok: True iff the dispatch RETURNED a result; False on any raise,
++                cancellation included. Omitted stores NONE (writer did not supply).
+ 
+         Raises:
+             SurrealConnectionError: The server is unreachable or the socket died.
+@@ -782,24 +801,40 @@ class SurrealStore:
+         content: dict[str, Any] = {
+             TRACE_TOOL_FIELD: tool,
+             TRACE_PARAMS_HASH_FIELD: params_hash,
+-            TRACE_HIT_COUNT_FIELD: hit_count,
+             TRACE_LATENCY_MS_FIELD: latency_ms,
++        }
++        # Omit every optional column when unset so the ``option`` fields store NONE
++        # cleanly (a caller that knows no hit count / declares no identity never
++        # poisons the row with a fabricated 0 or an empty string).
++        optional: dict[str, Any] = {
++            TRACE_HIT_COUNT_FIELD: hit_count,
+             TRACE_SESSION_FIELD: session,
++            TRACE_TOKEN_COST_FIELD: token_cost,
++            TRACE_MODEL_FIELD: model,
++            TRACE_AGENT_FIELD: agent,
++            TRACE_ACTION_FIELD: action,
++            TRACE_TRANSPORT_SESSION_FIELD: transport_session,
++            TRACE_OK_FIELD: ok,
+         }
+-        # Omit the optional accounting columns when unset so the ``option`` fields
+-        # store NONE cleanly (a caller that skips accounting never poisons the row).
+-        if token_cost is not None:
+-            content[TRACE_TOKEN_COST_FIELD] = token_cost
+-        if model is not None:
+-            content[TRACE_MODEL_FIELD] = model
+-        await self._query(f"CREATE {TRACE_TABLE} CONTENT $content", {"content": content})
++        for key, value in optional.items():
++            if value is not None:
++                content[key] = value
++        # The ordinal is minted SERVER-SIDE inside this write (T3): the ONE global
++        # ``trace_seq`` native sequence, composed with the bound payload via
++        # ``object::extend`` — store reference §2: CONTENT composes with NEITHER
++        # SET nor MERGE (both parse errors), and hand-listing the columns would
++        # silently drop any column added later.
++        await self._query(
++            f"CREATE {TRACE_TABLE} CONTENT object::extend($content, "
++            f'{{ {TRACE_ORDINAL_FIELD}: sequence::nextval("{TRACE_SEQUENCE_NAME}") }})',
++            {"content": content},
++        )
+ 
+     async def trace_aggregates(self) -> list[dict[str, Any]]:
+         """Return per-tool call counts + each tool's latest trace timestamp.
+ 
+         ONE bounded ``GROUP BY`` aggregate over the whole ``trace`` table (P8d
+-        Wave 3 — the "later serving-layer phase" the :meth:`record_trace`
+-        docstring flagged): ``count()`` per group is the call count,
++        Wave 3): ``count()`` per group is the call count,
+         ``time::max(ts)`` per group is that tool's most recent trace instant.
+         Live-verified against the project's pinned SurrealDB (3.1.5): ``count()``
+         + ``time::max()`` combine correctly under ``GROUP BY`` for a ``datetime``
+diff --git a/loremaster/loremaster/store/surreal_schema.py b/loremaster/loremaster/store/surreal_schema.py
+index f37bd2a..88af803 100644
+--- a/loremaster/loremaster/store/surreal_schema.py
++++ b/loremaster/loremaster/store/surreal_schema.py
+@@ -113,7 +113,8 @@ ANSWERS_TO_RELATION = "answers_to"
+ # placeholder has graduated to a real field-level slice —
+ # ``snapshot``/``snapshot_entry``/``command`` in P5-C1b (see
+ # ``_snapshot_statements`` / ``_snapshot_entry_statements`` /
+-# ``_command_statements``), ``trace`` in P8a (six core + two accounting columns,
++# ``_command_statements``), ``trace`` in P8a and widened by 03b (every column is
++# emitted from ``_TRACE_FIELD_SPECS``,
+ # ``_trace_statements``), ``meta`` in P3 (the ``SurrealManifest`` port), and
+ # ``finding`` in P8b — the FINDING ledger row (``_finding_statements``, its
+ # ``finding_counter`` sibling, and :mod:`loremaster.findings`), moved forward from
+@@ -642,6 +643,28 @@ TRACE_SESSION_FIELD = "session"
+ TRACE_TS_FIELD = "ts"
+ TRACE_TOKEN_COST_FIELD = "token_cost"
+ TRACE_MODEL_FIELD = "model"
++# 03b (T2): the all-tools telemetry enrichment columns. Every one is ``option<>``
++# — the generic ``FastMCP.call_tool`` seam records only what a call DECLARES or
++# what the transport MEASURES, never a guess, so absence must be representable.
++TRACE_AGENT_FIELD = "agent"
++TRACE_ACTION_FIELD = "action"
++TRACE_TRANSPORT_SESSION_FIELD = "transport_session"
++TRACE_ORDINAL_FIELD = "ordinal"
++TRACE_OK_FIELD = "ok"
++
++# The native sequence backing ``trace.ordinal`` — the ONE global monotonic call
++# ordinal (T3). Same store-reference §1.1 SEQUENCE law as
++# :data:`MESSAGE_SEQUENCE_NAME`: ``DEFINE SEQUENCE IF NOT EXISTS`` (a bare DEFINE
++# RAISES on the every-boot re-apply → boot crash) and NO ``BATCH``/``START``
++# clause (a changed clause never migrates onto an existing store, #146 — whose
++# named re-open trigger this sequence inherits). GAPS ARE REAL: the ordinal is an
++# ORDERING key, never a count.
++TRACE_SEQUENCE_NAME = "trace_seq"
++# The packet-06 read index, landed in 03b's free window (T2.1): the per-agent
++# decay curve filters ``agent`` and orders by ``ordinal``. ``IF NOT EXISTS``
++# (§1.1 INDEX row) — an index DEFINE builds, blocking, so it is free exactly
++# while the table is empty (it is, until 03b deploys).
++TRACE_AGENT_ORDINAL_INDEX_FIELDS = (TRACE_AGENT_FIELD, TRACE_ORDINAL_FIELD)
+ 
+ # The ``trace`` table's fields as ``(name, type_expr, constraint)`` triples — the
+ # single source of truth :func:`_trace_statements` emits one ``DEFINE FIELD`` per,
+@@ -651,15 +674,41 @@ TRACE_MODEL_FIELD = "model"
+ # ``command.created_at`` use — so the async writer never computes the ingestion
+ # instant itself; ``token_cost`` / ``model`` stay ``option`` so a writer may omit
+ # them and store NONE cleanly.
++#
++# ``ok`` (ESC-1, RULED): True iff the dispatch RETURNED a result; False on any raise, cancellation included.
++# The mechanism is a SUCCESS LATCH in ``TracingFastMCP.call_tool`` — ``ok`` starts
++# False and is latched True only after ``super().call_tool`` returns, with no
++# ``except`` arm at all, so a cancelled dispatch's ``finally``-arm row is honest.
+ _TRACE_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+     (TRACE_TOOL_FIELD, _CHUNK_STRING_TYPE, ""),
+     (TRACE_PARAMS_HASH_FIELD, _CHUNK_STRING_TYPE, ""),
+-    (TRACE_HIT_COUNT_FIELD, "int", ""),
++    # T2: the generic seam cannot know a hit count for an arbitrary tool, and
++    # supplying 0 would make the served aggregate LIE (0 hits != unknown).
++    (TRACE_HIT_COUNT_FIELD, "option<int>", ""),
+     (TRACE_LATENCY_MS_FIELD, "number", ""),
+-    (TRACE_SESSION_FIELD, _CHUNK_STRING_TYPE, ""),
++    # T2: only a call that DECLARES a fleet session has one; the transport
++    # correlator gets its own column rather than overloading this vocabulary.
++    (TRACE_SESSION_FIELD, "option<string>", ""),
+     (TRACE_TS_FIELD, "datetime", "DEFAULT time::now()"),
+     (TRACE_TOKEN_COST_FIELD, "option<int>", ""),
+     (TRACE_MODEL_FIELD, "option<string>", ""),
++    # The declared calling agent, when the call declares one (T4) — NONE
++    # otherwise, never guessed.
++    (TRACE_AGENT_FIELD, "option<string>", ""),
++    # The declared ``action`` param, when present: a drain row is
++    # ``tool='lore_comms', action='drain'`` — without it the numerator is
++    # indistinguishable from a heartbeat inside lore_comms' tool count.
++    (TRACE_ACTION_FIELD, "option<string>", ""),
++    # The transport correlator (T4.2): streamable-http's ``mcp-session-id``.
++    # NONE on transports without one. A CORRELATOR, never an identity.
++    (TRACE_TRANSPORT_SESSION_FIELD, "option<string>", ""),
++    # The global monotonic call ordinal (T3). ``option`` in the SCHEMA per §1.4's
++    # humble posture; the emission ALWAYS supplies it.
++    (TRACE_ORDINAL_FIELD, "option<int>", ""),
++    # True iff the dispatch RETURNED a result; False on any raise, cancellation
++    # included (ESC-1 ruling — the success latch). NONE only on rows from writers
++    # that did not supply it.
++    (TRACE_OK_FIELD, "option<bool>", ""),
+ )
+ 
+ # ---------------------------------------------------------------------------
+@@ -946,23 +995,28 @@ def _memory_statements(dim: int, analyzer_name: str) -> list[str]:
+ 
+ 
+ def _trace_statements() -> list[str]:
+-    """The ``trace`` observability table: the six core fields + two optional columns.
++    """The ``trace`` observability table: every column + the ordinal sequence + the 06 index.
+ 
+     Emits, in order: the SCHEMAFULL table, then one ``DEFINE FIELD`` per
+-    :data:`_TRACE_FIELD_SPECS` entry — the six core columns capturing one served
+-    tool invocation (``tool`` / ``params_hash`` / ``hit_count`` / ``latency_ms`` /
+-    ``session`` / ``ts``, ``ts`` carrying the ``DEFAULT time::now()`` self-stamp)
+-    plus the two audited optional accounting columns (``token_cost`` / ``model``,
+-    Spectron concept-coverage). Mirrors :func:`_task_statements`. UNLIKE ``chunk`` /
+-    ``memory`` the table carries no HNSW/FULLTEXT index — a trace is an append-only
+-    observability event, never retrieved semantically; aggregates over these rows
+-    are a LATER phase (P8d).
++    :data:`_TRACE_FIELD_SPECS` entry (the committed columns capturing one served
++    tool invocation, the two audited optional accounting columns, and 03b's five
++    ``option<>`` enrichment columns), then the ``trace_seq`` native sequence
++    backing ``ordinal`` and the ``(agent, ordinal)`` read index packet 06's
++    per-agent decay curve needs. Mirrors :func:`_task_statements`. UNLIKE ``chunk``
++    / ``memory`` the table carries no HNSW/FULLTEXT index — a trace is an
++    append-only observability event, never retrieved semantically.
+     """
+     statements: list[str] = [_define_table(TRACE_TABLE)]
+     statements += [
+         _define_field(TRACE_TABLE, name, type_expr, constraint=constraint)
+         for name, type_expr, constraint in _TRACE_FIELD_SPECS
+     ]
++    # T3: the ONE global ordinal sequence (gaps are real; never a count).
++    statements.append(_define_sequence(TRACE_SEQUENCE_NAME))
++    # T2.1: packet 06's per-agent curve read, landed while the table is empty.
++    statements.append(
++        _plain_index(TRACE_TABLE, "trace_agent_ordinal", TRACE_AGENT_ORDINAL_INDEX_FIELDS)
++    )
+     return statements
+ 
+ 
+@@ -1279,6 +1333,13 @@ def _message_statements() -> list[str]:
+     statements.append(
+         _plain_index(TO_RELATION, f"{TO_RELATION}_out_seen_at", _TO_DRAIN_INDEX_FIELDS)
+     )
++    # 03a-2 R3 (delta row 3): the two message hot-path indexes, landed in 03b's
++    # free window — the drain window orders by ``seq``, and the questions-first
++    # read filters ``(sender, question)``. Plain (non-UNIQUE), IF NOT EXISTS.
++    statements.append(_plain_index(MESSAGE_TABLE, "message_seq", ("seq",)))
++    statements.append(
++        _plain_index(MESSAGE_TABLE, "message_sender_question", ("sender", "question"))
++    )
+     return statements
+ 
+ 
