@@ -8,20 +8,24 @@
   individual verdict per hit.
 - **Commits (branch `pkt11i-floor-calibration-dark`):** `c32800d` (fix + pins),
   `8b1343e` (class instrument). Both **path-scoped** — see deviation 1.
-- **DEVIATION 1 — ⚠ ANOTHER AGENT IS WORKING IN THIS WORKTREE RIGHT NOW.** The brief said
-  the active session was in the MAIN checkout. It is also *here*. The tree was CLEAN at
-  `31d9e58` when I started (22:0x); by 22:10 **21 tracked files I never touched were
-  modified and 3 untracked files appeared**, mid-way through a `SecretStr` migration. I
-  committed **only my 4 files by path**; their work is untouched and still uncommitted.
-  **This is the top decision-needed item.**
+- **DEVIATION 1 — ⚠ TWO SIBLING BUILDERS SHARE THIS WORKTREE.** Detected independently
+  mid-run (the tree was CLEAN at `31d9e58` when I started; by 22:10 **21 tracked files I
+  never touched were modified and 3 untracked files appeared**), then confirmed and named
+  by the lead: `fix-207-jitter` (#207) and `fix-211-secrets` (#211). I committed **only my
+  4 files by explicit path**, before the lead's warning arrived and by the same rule it
+  states. **Both commits verified clean afterwards — see §Commit hygiene for the receipt.**
 - **DEVIATION 2 — the repo-wide gates CANNOT be certified green by me**, because that tree
   is mid-migration: 244 mypy errors, 2 ruff `F821`, 65 test breakages, all in files I never
   touched. My files are individually clean; receipts in §Gates.
 - **DEVIATION 3 —** I changed one pre-existing assertion,
   `test_agent_registry.py::TestAgentNamePatternConstant::test_pattern_accepts_legal_names`,
   from `.match` to `.fullmatch`. It was asserting a function production did not call.
-- **Mutation-proof receipt:** §Mutation proofs — both the behavioural pin and the class
-  gate demonstrated RED on the reverted build and restored byte-exactly.
+- **Mutation-proof receipt (BOTH WAYS):** §Mutation proof — 5 expected-RED node ids declared
+  from `--collect-only` **before** the run; mutation-landed evidence (md5 delta + the changed
+  line); control leg green; result **`0` declared-reds-that-stayed-green, `0` unexpected reds,
+  `0` declared-greens-that-reddened`**. Run in a `scratch_copy.sh` copy with asserted
+  provenance so my siblings never saw a mutated `server.py`; restored byte-exact (`md5sum -c`
+  → OK).
 - **Class-sweep table:** §The class sweep — 5 candidate sites, 5 individual verdicts, 1 defect.
 - **Residual answers:** §Residuals — (1) NO, the row cannot land: the store's Rust-regex
   ASSERT rejects it, so defense-in-depth held; (2) a newline in a SurrealQL literal is an
@@ -84,31 +88,79 @@ Not an import error, not a fixture error, not a collection error.
 10 passed in 0.62s
 ```
 
-### Mutation proofs
+### Mutation proof — BOTH WAYS, against a declared expectation
 
-**(a) The behavioural pin.** Backed up `server.py` by content (`cp -a`), reverted
-`fullmatch` → `match`, re-ran:
+Re-run 2026-07-26 at lead request, under the packet-03b #194 discipline (`CLAUDE.md`,
+*"FILING A RULE DOES NOT INSTALL IT"*), which landed after my first pass. My original proof
+was **one-way** — it showed reds appeared, never that *every* declared red appeared. The
+missing direction is the one that catches a mutation landing in **dead code**, i.e. a proof
+that is vacuous rather than passing. `scripts/mutation_proof.py` does not exist on this
+branch (it is on main at `bdb61c7`), so the discipline was applied by hand.
+
+**Mutation under test:** `_validate_comms_charset`'s `AGENT_NAME_PATTERN.fullmatch` →
+`.match` — i.e. reintroduce #210 exactly.
+
+**1. Expectation declared BEFORE the run, from `pytest --collect-only`** (never transcribed
+from failures — collecting names tests without running them, so the set is fixed before any
+result exists). 49 ids collected → **5 declared RED, 44 declared GREEN**.
+
+Declared RED:
+```
+test_comms_tool.py::TestCommsDispatchCharsetValidation::test_a_trailing_newline_agent_name_is_rejected[scout\n]
+test_comms_tool.py::TestCommsDispatchCharsetValidation::test_a_trailing_newline_session_is_rejected[scout\n]
+test_comms_tool.py::TestCommsDispatchCharsetValidation::test_a_trailing_newline_brief_name_is_rejected[scout\n]
+test_anchored_pattern_seam.py::TestNoAnchoredPatternValidatedWithMatch::test_every_anchored_match_use_is_allowlisted
+test_anchored_pattern_seam.py::TestScanCoverage::test_the_fixed_call_site_is_not_reported
+```
+
+The declared-GREEN 44 are load-bearing, not filler. Three members carry real claims:
+* the three **`[scout\r\n]`** variants — if any reddened, my "negative control" was actually a
+  second demonstration and this report's boundary claim would be wrong;
+* all seven **`TestAgentNamePatternConstant`** ids — they exercise the PATTERN, not the guard,
+  so a call-site mutation must not move them. Their staying green is the **empirical proof of
+  flag F3**: those pre-existing pins are not load-bearing for #210 and could never have caught it;
+* **`test_the_allowlist_carries_no_dead_entries`** — both exemptions must remain live.
+
+**2. Isolation + provenance.** Run in a scratch copy via the blessed
+`./scripts/scratch_copy.sh` — deliberately, because **two siblings share this worktree** and
+mutating `server.py` in place would have handed them spurious failures. Provenance asserted
+by the tool:
 
 ```
-MUTATED: fullmatch -> match
-FAILED ...::test_a_trailing_newline_agent_name_is_rejected[scout\n]
-FAILED ...::test_a_trailing_newline_session_is_rejected[scout\n]
-FAILED ...::test_a_trailing_newline_brief_name_is_rejected[scout\n]
-3 failed, 7 passed in 1.06s
+loremaster  -> /tmp/mp210_scratch_a/loremaster/loremaster/__init__.py
 ```
 
-Restored from the content backup; `git diff` against `HEAD` then showed **exactly** the
-intended docstring paragraph + the one-word change and nothing else; `10 passed`.
+**3. Control leg** (an unmutated scratch must be green, or the diff means nothing):
+`49 passed in 3.39s`.
 
-**(b) The class gate.** Same mutation, run against `test_anchored_pattern_seam.py`:
+**4. Evidence the mutation LANDED** — the #194 requirement itself. The edit asserted exactly
+one target site, then: `md5sum -c` → `WARNING: 1 computed checksum did NOT match`, and
+`server.py:4519` reads `if not AGENT_NAME_PATTERN.match(value):`.
+
+**5. The both-ways diff:**
 
 ```
-loremaster/loremaster/server.py:4519 — AGENT_NAME_PATTERN = '^[a-z0-9][a-z0-9_-]{0,63}$'
-E   AssertionError: assert 'AGENT_NAME_PATTERN' not in {'AGENT_NAME_PATTERN', '_HEADING_LINE', '_TASK_ID_SHAPE_PATTERN'}
-2 failed, 23 passed in 1.27s
+DECLARED RED 5 | ACTUAL RED 5
+
+[A] DECLARED RED THAT STAYED GREEN (vacuous-proof direction): 0
+[B] UNEXPECTED REDS (not declared):                           0
+[C] DECLARED-GREEN THAT REDDENED:                             0
+
+VERDICT: BOTH-WAYS CLEAN — every declared red reddened, nothing else did
 ```
 
-Restored → `25 passed`. **The gate would have caught #210**, naming the file and the pattern.
+**6. Restored and verified byte-exact:** `md5sum -c` → `server.py: OK`; `49 passed in 1.86s`.
+The real worktree was **never mutated** — its `server.py` still reads `.fullmatch` at 4519 and
+its only uncommitted diff remains `fix-211-secrets`' two hunks (`8 insertions, 2 deletions`,
+unchanged across the whole proof).
+
+**Conclusion: no declared pin stayed green. The pins are as strong as they read** — the
+behavioural pins and the class gate both observe the mutation, and the class gate names the
+offender (`loremaster/loremaster/server.py — AGENT_NAME_PATTERN`), so **it would have caught
+#210**.
+
+*(Scratch dir `/tmp/mp210_scratch_a` left in place, not deleted — flagging rather than
+silently removing it. Disposable; `rm -rf` at will.)*
 
 ### Provenance (which tree was tested)
 
@@ -293,6 +345,33 @@ loremaster/tests/test_anchored_pattern_seam.py
 
 ---
 
+## Commit hygiene — the receipt (re-verified after the lead's shared-worktree warning)
+
+**No commit of mine contains a sibling's work. This is measured, not asserted.** Both commits
+were made with `git add <explicit path>` only; `git add -A`/`.`/`-u` and `git commit -a` were
+never used. Full file sets:
+
+```
+c32800d fix(comms): #210 — the charset guard's `$` let a trailing newline through
+ loremaster/loremaster/server.py         |  9 +++++-
+ loremaster/tests/test_agent_registry.py | 31 +++++++++++++++++--
+ loremaster/tests/test_comms_tool.py     | 55 +++++++++++++++++++++++++++++++++
+
+8b1343e test(seam): the #210 CLASS instrument — `$`-anchored patterns are never `.match`ed
+ loremaster/tests/test_anchored_pattern_seam.py | 432 +++++++++++++++++++++++++
+```
+
+**`server.py` — the file the lead flagged — carries exactly ONE hunk in `c32800d`:** the
+docstring paragraph plus `AGENT_NAME_PATTERN.match` → `.fullmatch` at
+`AppContext._validate_comms_charset`. `9 +++++-` = my 8 insertions and 1 deletion, nothing
+else. **The commit is NOT mixed** and needs no disclosure of the kind the lead's rule
+anticipates. `fix-211-secrets`' `server.py` edits (§F2a) landed in the working tree and remain
+uncommitted there.
+
+Sequencing note for the audit: I committed **before** the lead's warning arrived, having
+detected the shared tree myself. The rule was already satisfied — the re-verification above
+was run afterwards specifically to prove it rather than claim it.
+
 ## Flags (scope law — raised, not folded in, not buried)
 
 **F1 — `_validate_comms_charset`'s docstring AND its served error message are FALSE.**
@@ -314,14 +393,30 @@ reword touches the contract. **Recommend: a one-concern follow-up that re-derive
 justification from the actual mechanism** (uuid5 identity + the store ASSERT), rather than
 leaving prose that a future author will trust when deciding whether the guard still matters.
 
-**F2 — the concurrent agent (deviation 1), restated because it is the operational risk.**
+**F2 — the shared worktree (deviation 1), restated because it is the operational risk.**
 Timeline: tree clean at start; `git status` empty. By 22:10:52, 21 tracked files modified and
 3 untracked added, and the set kept growing during my run (`_surreal_harness.py`,
 `scripts/token_survey.py`, `calibration/engine.py` appeared between two consecutive checks).
-They are mid-`SecretStr` migration — half-applied, which is why the tree fails to type-check
-and 65 tests error. I committed by path only; `git status` after my commits confirms all 24
-of their entries intact. **Nobody should run `git checkout --`, `git stash`, or `git commit -a`
-in this worktree** — their work exists only in the working tree.
+Lead-confirmed owners: **`fix-207-jitter`** (#207 shared jittered backoff — `loresigil/backoff.py`,
+`calibration/*`, `scout.py`, `loresigil/resilient.py`, `scripts/token_survey.py`, `uv.lock`)
+and **`fix-211-secrets`** (#211 `SecretStr` + traceback redaction). The half-applied `SecretStr`
+migration is why the tree fails to type-check and 65 tests error. **Nobody should run
+`git checkout --`, `git stash`, or `git commit -a` in this worktree** — their work exists only
+in the working tree.
+
+**⚠ F2a — one correction to the lead's warning, so the cold audit looks in the right place.**
+The lead predicted the `server.py` overlap would be with **`fix-207-jitter`**. Measured at
+`8b1343e`+, the uncommitted `server.py` hunks are **`fix-211-secrets`'** work, not #207's:
+they are `resolve_secret(...).get_secret_value()` unwraps for `surreal_user` and
+`CalibrationEngine.api_key`, whose comments cite `#211` and `test_secret_typing.py`. Neither
+hunk is anywhere near `_validate_comms_charset`. So the predicted collision did not
+materialise from the predicted source, and **did not materialise at all** for my change.
+
+**F2b — I applied no repo-wide auto-fixes.** The lead flagged that `fix-211-secrets` ran
+`ruff check --fix .` before noticing the collision. For the record: every ruff invocation I
+made was **read-only** — `uv run ruff check .` (to see the tree's state, reported in §Gates)
+and `uv run ruff check <my 4 paths>`. I never passed `--fix`, so nothing in this tree was
+reformatted by me.
 
 **F3 — the pre-existing pattern pin tested a function production did not call.**
 `test_pattern_accepts_legal_names` asserted `AGENT_NAME_PATTERN.match(value) is not None`
