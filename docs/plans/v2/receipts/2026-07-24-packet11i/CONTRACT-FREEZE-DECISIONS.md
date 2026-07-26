@@ -100,6 +100,20 @@ index is unsettled and dedupes while a run is queued/running. **No invented cool
 continuously-churning corpus renders `stale_remeasuring` honestly until it settles. (A clock-based
 cooldown is a guessed constant with a failure mode; quiescence is a measured condition.)"*
 
+> ⚠ **THE QUOTED SENTENCE HAS SINCE BEEN AMENDED — banner added 2026-07-26 by `lead-11ia`. The
+> quote above is preserved BYTE-FAITHFUL, because it is evidence of what the design said on
+> 2026-07-25 and editing a receipt is falsification.** Addendum F §F4 renamed `stale_remeasuring`
+> → **`invalidated_remeasuring`** and narrowed its predicate to **leg 1 only** (vector-identity
+> invalidation), which **deletes the churn-staleness waiting state entirely** — so *"a
+> continuously-churning corpus renders it honestly until it settles"* now describes no state that
+> exists. The base design doc carries the same amendment inline.
+>
+> **Nothing about this file's ARGUMENT changes:** the trace to source, and the finding that an
+> anti-wall-clock prohibition was author-asserted rather than operator-ruled (#200), both stand.
+>
+> Placed HERE rather than at the file head deliberately: a retrieved chunk arrives without its
+> header (#160), so a semantic search landing on this quote must meet the correction with it.
+
 That is a design author's rationale about **the TRIGGER's debounce** — when to SCHEDULE a
 re-measurement. **It says nothing about lease expiry, and it is not an operator ruling.**
 
