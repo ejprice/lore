@@ -223,3 +223,85 @@ class TestWindowGrowsAndIsBounded:
             f"a draw exceeded a caller-supplied cap_s of 0.05 "
             f"(max={max(capped_low)}) — the policy is ignoring its arguments"
         )
+
+
+def _additive(count: int, base_s: float, *, width_s: float = 1.0) -> list[float]:
+    """Draw ``count`` additive-jitter delays around the same base."""
+    return [backoff.additive_jitter(base_s, width_s=width_s) for _ in range(count)]
+
+
+class TestAdditiveJitterNeverSubtracts:
+    """The ADDITIVE policy (#207 D2/D3): decorrelate a delay someone else decided.
+
+    Its whole distinction from :func:`jittered_backoff_delay` is DIRECTION. Both
+    decorrelate; only this one is forbidden from returning less than its base. Applied to
+    a server's ``Retry-After``, a downward draw means retrying sooner than a rate limiter
+    instructed — a protocol violation, and a worse bug than the herd it would be fixing.
+
+    So the pins here are the mirror image of :class:`TestJitterIsFullNotAroundAFloor`:
+    there, reaching DOWN to zero is required; here, it is forbidden. A build that confused
+    the two would pass every "is it jittered?" check ever written.
+    """
+
+    def test_no_draw_is_ever_below_the_base(self) -> None:
+        """THE invariant. 500 draws, none below the floor.
+
+        A full-jitter build substituted here scores ~50% below base, so this fails on the
+        first handful; the sample size is for confidence, not sensitivity.
+        """
+        base = 7.0
+        draws = _additive(500, base)
+        assert min(draws) >= base, (
+            f"an additive-jitter draw ({min(draws)}) fell BELOW its base ({base}) — on a "
+            f"Retry-After that is retrying sooner than the server instructed. This is the "
+            f"exponential full-jitter policy wearing the additive one's name (#207 D2)."
+        )
+
+    def test_no_draw_exceeds_base_plus_width(self) -> None:
+        """The upper bound: jitter is a WIDTH, not an unbounded addition."""
+        base, width = 7.0, 1.0
+        draws = _additive(500, base, width_s=width)
+        assert max(draws) <= base + width, (
+            f"a draw ({max(draws)}) exceeded base + width ({base + width})"
+        )
+
+    def test_simultaneous_callers_draw_distinct_delays(self) -> None:
+        """It must still DECORRELATE — the reason it exists at all.
+
+        The bound-only pins above are satisfied by ``return base_s``, which is the exact
+        pre-#207 behaviour and decorrelates nothing. This is the pin that rejects it.
+        Threshold reasoning matches the exponential policy's: continuous draws collide only
+        on float equality, so 64 clients yield 64 distinct values; a deterministic build
+        yields 1.
+        """
+        draws = _additive(64, 7.0)
+        distinct = len(set(draws))
+        assert distinct >= 60, (
+            f"only {distinct} distinct delays across 64 simultaneous callers — the additive "
+            f"jitter is quantised or absent, so every client handed the same Retry-After "
+            f"still wakes in lockstep (#207 D2)."
+        )
+
+    def test_the_jitter_actually_spans_its_width(self) -> None:
+        """POSITIVE CONTROL for the floor pin.
+
+        ``return base_s + 0.0`` would satisfy "never below base" perfectly while adding no
+        jitter at all. Showing draws in BOTH halves of the width proves the floor pin is
+        constraining a real distribution rather than a constant.
+        """
+        base, width = 7.0, 1.0
+        draws = _additive(200, base, width_s=width)
+        midpoint = base + width / 2
+        assert min(draws) < midpoint < max(draws), (
+            f"the additive draws did not span both halves of their width "
+            f"(min={min(draws)}, max={max(draws)}, midpoint={midpoint})"
+        )
+
+    def test_the_width_is_caller_controllable(self) -> None:
+        """A caller-supplied width must actually bound the jitter (monoculture guard)."""
+        draws = _additive(200, 7.0, width_s=0.01)
+        assert max(draws) <= 7.01, (
+            f"a draw ({max(draws)}) exceeded a caller-supplied width of 0.01 — the policy "
+            f"is ignoring its arguments and using a module default"
+        )
+        assert min(draws) >= 7.0

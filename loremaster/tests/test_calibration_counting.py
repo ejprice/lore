@@ -26,6 +26,8 @@ if str(_SCRIPTS_DIR) not in sys.path:
 import token_survey as ts  # type: ignore[import-not-found]  # noqa: E402  (scripts/ is not a package)
 from loremaster.calibration import counting  # noqa: E402
 
+from loresigil import backoff  # noqa: E402
+
 # httpx adds these to every outgoing request itself (host/content-length are derived from
 # the URL and body; connection/accept/accept-encoding/user-agent are httpx client defaults) —
 # they are transport plumbing, not part of the application-level request shape being pinned
@@ -160,7 +162,42 @@ class TestRetryContract:
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         counter = counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client, sleep=fake_sleep)
         await counter.count("hi")
-        assert slept == [7.0]
+        # OLD-WORLD PIN, adjudicated (#207 D2). This read ``slept == [7.0]``, which could
+        # only hold while the Retry-After path was DETERMINISTIC — i.e. it certified the
+        # very lockstep D2 removes (every rate-limited client is handed the same 7).
+        #
+        # Preserved-with-pin, STRENGTHENED: the surviving property is that the server's
+        # value is a FLOOR, and the replacement also asserts the additive-only invariant
+        # the old equality could not see — a downward jitter (retrying sooner than the
+        # server instructed) passes ``== [7.0]`` never, but so does a correct build; only
+        # the range below distinguishes "jittered upward" from "jittered at all".
+        assert len(slept) == 1
+        assert 7.0 <= slept[0] <= 7.0 + backoff.ADDITIVE_JITTER_WIDTH_S, (
+            f"the Retry-After sleep ({slept[0]}) left [7.0, 7.0 + "
+            f"{backoff.ADDITIVE_JITTER_WIDTH_S}]. Below 7.0 means retrying SOONER than the "
+            f"server instructed — a protocol violation and worse than the herd the jitter "
+            f"fixes (#207 D2, additive-only)."
+        )
+
+        # ...and the jitter must actually EXIST, which the range above cannot show on its
+        # own: an un-jittered build sleeps exactly 7.0, which is INSIDE [7.0, 8.0].
+        # Measured — a private-copy mutation (`await self._sleep(capped)`) left this test
+        # GREEN until these lines were added, so the bound alone certified the pre-D2 world
+        # exactly as the `== [7.0]` it replaced did. Repeat draws are the discriminator.
+        draws: list[float] = []
+
+        async def record(delay: float) -> None:
+            draws.append(delay)
+
+        for _ in range(8):
+            probe = counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client, sleep=record)
+            await probe._sleep_backoff(0, "7")
+        assert all(7.0 <= d <= 7.0 + backoff.ADDITIVE_JITTER_WIDTH_S for d in draws)
+        assert len(set(draws)) >= 6, (
+            f"8 Retry-After sleeps produced only {len(set(draws))} distinct values "
+            f"({sorted(set(draws))}) — the path is NOT jittered, so every client handed the "
+            f"same Retry-After still wakes in lockstep (#207 D2)."
+        )
         await counter.aclose()
 
     async def test_non_retryable_4xx_raises_immediately(self) -> None:

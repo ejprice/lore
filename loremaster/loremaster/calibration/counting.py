@@ -167,17 +167,26 @@ class AsyncClaudeTokenCounter:
         429 is by definition something many concurrent counters hit at once, and a
         deterministic ladder would send every one of them back at the same instant.
 
-        The ``Retry-After`` path is deliberately NOT jittered — see the module-level
-        note in the report for #207. The server named a time; sleeping less than it
-        would be a protocol violation, and how much to add above it is an unruled
-        parameter, so that decision is escalated rather than invented here.
+        The ``Retry-After`` path is jittered too (#207 D2), but **ADDITIVELY** — every
+        rate-limited client is handed the SAME ``Retry-After`` by the server, so that
+        path is more perfectly lockstepped than the exponential ladder ever was. The
+        jitter is added on top of the capped value and never subtracts
+        (:func:`loresigil.backoff.additive_jitter`): retrying sooner than a rate
+        limiter instructed is a worse bug than the herd it would fix.
+
+        ⚠ The pre-existing ``min(…, RETRY_MAX_DELAY_S)`` cap is UNCHANGED and can still
+        sleep less than a large ``Retry-After`` asks (a `Retry-After: 120` yields ~30 s).
+        That conflict predates this change and is finding **#223** — it is deliberately
+        NOT settled here, and the additive jitter must not be read as having settled it.
         """
         if retry_after is not None:
             try:
-                await self._sleep(min(float(retry_after), RETRY_MAX_DELAY_S))
-                return
+                capped = min(float(retry_after), RETRY_MAX_DELAY_S)
             except ValueError:
                 pass
+            else:
+                await self._sleep(backoff.additive_jitter(capped))
+                return
         await self._sleep(
             backoff.jittered_backoff_delay(
                 attempt, base_s=RETRY_BASE_DELAY_S, cap_s=RETRY_MAX_DELAY_S

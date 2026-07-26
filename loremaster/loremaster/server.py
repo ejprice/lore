@@ -149,6 +149,7 @@ from loremaster.symbols import (
 )
 from loremaster.tasks import STATUS_DONE
 from loremaster.tasks import TaskSpec as _TaskSpec
+from loresigil import backoff
 
 if TYPE_CHECKING:
     from loresigil.base import Embedder
@@ -8504,7 +8505,14 @@ class _EagerStartupLifespan:
                         },
                     )
                     if self._backoff_base_s > 0:
-                        await asyncio.sleep(self._backoff_base_s)
+                        # ADDITIVE jitter, not an exponential ladder (#207 D3). Several
+                        # containers restarting together against one cold SurrealDB/TEI
+                        # retry in lockstep otherwise. Growth is deliberately NOT added:
+                        # it would move total boot-retry time from ~8s to ~30s and could
+                        # cross a container health-check budget nobody has measured.
+                        # Decorrelation does not require growth, so the shape is
+                        # untouched and the unmeasured trade never arises.
+                        await asyncio.sleep(backoff.additive_jitter(self._backoff_base_s))
         return last_exc
 
     @staticmethod

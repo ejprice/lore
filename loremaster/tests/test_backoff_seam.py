@@ -45,6 +45,7 @@ pinned at the bottom.
 from __future__ import annotations
 
 import ast
+import asyncio
 import sys
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,7 @@ from loresigil.resilient import ResilientEmbedder
 from loresigil.tokens import VoyageTokenCounter
 from pydantic import SecretStr
 
+from loremaster import server
 from loresigil import backoff as backoff_module
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -67,21 +69,56 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 import token_survey as ts  # type: ignore[import-not-found]  # noqa: E402
 
-#: The sentinel the mutated policy returns. Deliberately absurd — no window in the tree
-#: could produce it by chance, so "the site slept this" cannot be a coincidence.
+#: The sentinel the mutated EXPONENTIAL policy returns. Deliberately absurd — no window in
+#: the tree could produce it by chance, so "the site slept this" cannot be a coincidence.
 _SENTINEL_DELAY = 1234.5
 
-#: Every production call site of the shared backoff policy. Declared here so coverage is a
-#: CHECKED variable: :func:`test_EVERY_declared_site_draws_from_the_mutated_policy`
-#: fails if a site is declared but never driven, and the perimeter scan below fails if a new
-#: hand-rolled backoff appears. Adding a sixth backoff means adding it to BOTH.
+#: A DISTINCT sentinel for the mutated ADDITIVE policy. Two values rather than one so a
+#: site cannot pass by calling the wrong policy: an exponential draw where an additive one
+#: belongs would still decorrelate, still look jittered, and still be WRONG — on a
+#: ``Retry-After`` it would return values BELOW the server's floor. Only distinct sentinels
+#: can tell "jittered" from "jittered the right way".
+_SENTINEL_ADDITIVE = 4321.5
+
+#: Every production call site of the shared backoff module — BOTH policies: the full-jitter
+#: exponential draw (#207) and the additive jitter (#207 D2/D3). Declared here so coverage is
+#: a CHECKED variable: :func:`test_EVERY_declared_site_draws_from_the_mutated_policy` fails if
+#: a site is declared but never driven, and the perimeter scan below fails if a new
+#: hand-rolled backoff appears. Adding another backoff means adding it to BOTH.
+#:
+#: ⚠⚠ **DO NOT NARROW THIS SET TO "loremaster ONLY".** It reaches across package and gate
+#: boundaries deliberately, and for one entry that is not tidiness — it is the only thing
+#: standing between a production backoff and zero coverage of any kind.
+#:
+#: ``token_survey.ClaudeTokenCounter._sleep_backoff`` lives in ``scripts/``, where THREE
+#: independently-reasonable decisions intersect:
+#:   1. ``scripts/`` is excluded from ``testpaths``, so its **150** collectable test nodes
+#:      have never run in any gate (finding **#199**; measured 2026-07-25 —
+#:      ``uv run pytest scripts/ --collect-only -q`` → 150, versus ``0`` collected by a bare
+#:      gated run);
+#:   2. ``scripts/test_token_survey.py`` does not cover ``ClaudeTokenCounter`` **at all** —
+#:      by design, not oversight: that module's own docstring declares the live counting
+#:      client *"intentionally test-exempt"* as its only network surface;
+#:   3. therefore the driver in THIS file is not merely the only *gated* coverage of that
+#:      backoff site — it is the only coverage **that exists anywhere, of any kind**.
+#:
+#: No one of those three decisions is wrong. The hole is what they produce jointly, and
+#: nobody owns an intersection. Measured consequence in this same wave: a ``scripts/`` defect
+#: with no equivalent pin reached the branch tip **100% broken with every gate green** (the
+#: cold audit's defect A). If you are here to tidy a cross-package test away, this comment is
+#: the reason not to.
 _DECLARED_SITES = frozenset(
     {
+        # --- full-jitter exponential sites (#207) ---
         "loresigil.resilient.compute_backoff_delay",
         "loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff",
         "loremaster.calibration.engine.CalibrationEngine._probe_loop",
         "loremaster.scout.CommandSubscriber._backoff",
         "token_survey.ClaudeTokenCounter._sleep_backoff",
+        # --- additive-jitter sites (#207 D2/D3), declared at birth, not retrofitted ---
+        "loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff.retry_after",
+        "token_survey.ClaudeTokenCounter._sleep_backoff.retry_after",
+        "loremaster.server._EagerStartupLifespan._acquire_eager_lease_with_retry",
     }
 )
 
@@ -105,6 +142,9 @@ _POW_ALLOWLIST = frozenset({"loremaster/loremaster/store/_txn.py"})
 #: parameters" from "the site ignores them and happens to agree with the default".
 _SCOUT_BASE_S = 0.25
 _SCOUT_CAP_S = 12.0
+
+#: Likewise for the eager-lease driver — NOT ``_DEFAULT_EAGER_BACKOFF_BASE_S``.
+_EAGER_BASE_S = 3.5
 
 #: Production roots the perimeter scans. Tests are excluded: a test may legitimately compute
 #: an expected window to assert against (this file's own siblings do).
@@ -139,23 +179,35 @@ class _PolicyMutation:
 
     def __init__(self) -> None:
         self.draws: list[tuple[int, float, float]] = []
+        self.additive_draws: list[tuple[float, float]] = []
 
     def __call__(self, attempt: int, *, base_s: float, cap_s: float) -> float:
         self.draws.append((attempt, base_s, cap_s))
         return _SENTINEL_DELAY
 
+    def additive(self, base_s: float, *, width_s: float = backoff_module.ADDITIVE_JITTER_WIDTH_S) -> float:
+        self.additive_draws.append((base_s, width_s))
+        return _SENTINEL_ADDITIVE
+
+
+def _apply_mutation(monkeypatch: pytest.MonkeyPatch) -> _PolicyMutation:
+    """Replace BOTH shared policies with recording sentinels."""
+    for name in ("jittered_backoff_delay", "additive_jitter"):
+        assert hasattr(backoff_module, name), (
+            f"the shared policy's named function {name!r} is gone. It must survive under "
+            f"this exact name: identity is the only way a pin can tell 'shares the policy' "
+            f"from 'hand-rolled one that looks like it'."
+        )
+    mutation = _PolicyMutation()
+    monkeypatch.setattr(backoff_module, "jittered_backoff_delay", mutation)
+    monkeypatch.setattr(backoff_module, "additive_jitter", mutation.additive)
+    return mutation
+
 
 @pytest.fixture
 def mutated_policy(monkeypatch: pytest.MonkeyPatch) -> _PolicyMutation:
-    """Mutate the ONE shared policy. Every genuine caller must change with it."""
-    assert hasattr(backoff_module, "jittered_backoff_delay"), (
-        "the shared policy's named function is gone. It must survive under this exact name: "
-        "identity is the only way a pin can tell 'shares the policy' from 'hand-rolled one "
-        "that looks like it'."
-    )
-    mutation = _PolicyMutation()
-    monkeypatch.setattr(backoff_module, "jittered_backoff_delay", mutation)
-    return mutation
+    """Mutate BOTH shared policies. Every genuine caller must change with them."""
+    return _apply_mutation(monkeypatch)
 
 
 def _status_error(status_code: int) -> httpx.HTTPStatusError:
@@ -276,6 +328,74 @@ def _drive_token_survey(monkeypatch: pytest.MonkeyPatch, attempt: int) -> list[f
     return slept
 
 
+# --- additive-jitter drivers (#207 D2/D3) ------------------------------------------------
+#
+# These pass a ``retry_after`` where the exponential drivers above pass ``None``, so they
+# reach the OTHER branch of the same method. That is why the two counters appear twice in
+# _DECLARED_SITES: one method, two policies, and a build could route one branch correctly
+# while hand-rolling the other.
+
+
+async def _drive_token_counter_retry_after(retry_after: str = "7") -> list[float]:
+    """Site 6: ``counting`` on the ``Retry-After`` branch — ADDITIVE jitter."""
+    slept: list[float] = []
+
+    async def sleep_fn(delay: float) -> None:
+        slept.append(delay)
+
+    counter = counting.AsyncClaudeTokenCounter(
+        SecretStr("k"), client=httpx.AsyncClient(), sleep=sleep_fn
+    )
+    await counter._sleep_backoff(0, retry_after)
+    await counter.aclose()
+    return slept
+
+
+def _drive_token_survey_retry_after(
+    monkeypatch: pytest.MonkeyPatch, retry_after: str = "7"
+) -> list[float]:
+    """Site 7: ``token_survey`` on the ``Retry-After`` branch — ADDITIVE jitter."""
+    slept: list[float] = []
+
+    def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(ts.time, "sleep", fake_sleep)
+    ts.ClaudeTokenCounter._sleep_backoff(0, retry_after)
+    return slept
+
+
+async def _drive_eager_lease(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Site 8: the eager-startup lease retry — ADDITIVE jitter, constant ladder.
+
+    Driven through the real method with a guard that always fails, so the retry path is
+    genuinely exercised rather than simulated. ``asyncio.sleep`` is patched at the
+    ``server`` module's own reference, so nothing else in the suite is affected.
+    """
+    slept: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    class _AlwaysFailingGuard:
+        async def acquire(self) -> None:
+            raise RuntimeError("dependency down at boot")
+
+    lifespan = server._EagerStartupLifespan.__new__(server._EagerStartupLifespan)
+    lifespan._guard = _AlwaysFailingGuard()
+    lifespan._max_attempts = 2  # one retry -> exactly one backoff sleep
+    lifespan._backoff_base_s = _EAGER_BASE_S
+
+    # Patch the shared ``asyncio`` module object, which is the same one ``server.py``
+    # resolves its ``asyncio.sleep`` through. Patching ``server.asyncio`` directly is the
+    # obvious spelling but mypy rejects it — ``asyncio`` is an import in that module, not
+    # an explicit re-export. monkeypatch reverts it at teardown.
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    last_exc = await lifespan._acquire_eager_lease_with_retry()
+    assert last_exc is not None, "the driver's guard must fail, or no backoff is reached"
+    return slept
+
+
 class TestEveryBackoffSharesTheOnePolicy:
     """Mutate the shared policy; every declared site must sleep the sentinel.
 
@@ -346,6 +466,68 @@ class TestEveryBackoffSharesTheOnePolicy:
         )
         assert mutated_policy.draws[-1] == (3, ts.RETRY_BASE_DELAY_S, ts.RETRY_MAX_DELAY_S)
 
+    async def test_counting_retry_after_uses_the_ADDITIVE_policy(
+        self, mutated_policy: _PolicyMutation
+    ) -> None:
+        """Site 6 (#207 D2): the ``Retry-After`` branch jitters ADDITIVELY, not exponentially.
+
+        The distinct sentinel is the point. A build that routed this branch to
+        ``jittered_backoff_delay`` would still be "jittered" and would still pass any pin
+        asking merely whether a shared policy was called — while returning values BELOW the
+        server's stated floor, which is the one thing this path must never do.
+        """
+        assert await _drive_token_counter_retry_after("7") == [_SENTINEL_ADDITIVE], (
+            "the Retry-After branch did not draw from the ADDITIVE policy"
+        )
+        assert mutated_policy.additive_draws[-1][0] == 7.0, (
+            "the additive jitter was not centred on the server's Retry-After value"
+        )
+        assert not mutated_policy.draws, (
+            "the Retry-After branch called the EXPONENTIAL policy — that draws from "
+            "[0, window) and can return LESS than the server instructed (#207 D2)"
+        )
+
+    async def test_counting_retry_after_is_capped_before_jittering(
+        self, mutated_policy: _PolicyMutation
+    ) -> None:
+        """The pre-existing cap still applies, and the jitter is added AFTER it (#223).
+
+        A `Retry-After: 120` is capped to RETRY_MAX_DELAY_S before the jitter is added, so
+        the additive base is the CAPPED value. Pinned because the cap-vs-Retry-After
+        conflict is a KNOWN, unsettled bound (#223) and a silent change to which side of
+        the cap the jitter lands on would quietly alter it.
+        """
+        await _drive_token_counter_retry_after("120")
+        assert mutated_policy.additive_draws[-1][0] == counting.RETRY_MAX_DELAY_S
+
+    def test_token_survey_retry_after_uses_the_ADDITIVE_policy(
+        self, mutated_policy: _PolicyMutation, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Site 7 (#207 D2): the survey counter's ``Retry-After`` branch."""
+        assert _drive_token_survey_retry_after(monkeypatch, "7") == [_SENTINEL_ADDITIVE]
+        assert mutated_policy.additive_draws[-1][0] == 7.0
+        assert not mutated_policy.draws
+
+    async def test_eager_lease_uses_the_ADDITIVE_policy(
+        self, mutated_policy: _PolicyMutation, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Site 8 (#207 D3): boot-retry decorrelates WITHOUT growing.
+
+        Asserts both halves of the ruling: the sleep comes from the additive policy, and
+        its base is the UNCHANGED constant — not an exponential ladder. A build that
+        "fixed" this by switching to ``jittered_backoff_delay`` would move total
+        boot-retry time from ~8 s to ~30 s and could cross an unmeasured container
+        health-check budget; ``mutated_policy.draws`` staying empty is what forbids it.
+        """
+        assert await _drive_eager_lease(monkeypatch) == [_SENTINEL_ADDITIVE]
+        assert mutated_policy.additive_draws[-1][0] == _EAGER_BASE_S, (
+            "the eager-lease jitter is not centred on its own constant"
+        )
+        assert not mutated_policy.draws, (
+            "the eager-lease retry grew into an exponential ladder — #207 D3 ruled the "
+            "ladder shape must NOT move (boot-timing budget is unmeasured)"
+        )
+
 
 async def test_EVERY_declared_site_draws_from_the_mutated_policy(
     monkeypatch: pytest.MonkeyPatch,
@@ -367,8 +549,11 @@ async def test_EVERY_declared_site_draws_from_the_mutated_policy(
     wearing a guarantee; an observed site nobody declared means the declaration drifted
     from reality.
     """
-    mutation = _PolicyMutation()
-    monkeypatch.setattr(backoff_module, "jittered_backoff_delay", mutation)
+    # BOTH policies, via the same helper the per-site fixture uses — a second hand-rolled
+    # patch here would be this file's own version of the duplication it exists to forbid,
+    # and its first casualty was this very test (it patched only the exponential policy and
+    # reported the three additive sites as unshared).
+    mutation = _apply_mutation(monkeypatch)
     observed: set[str] = set()
 
     if await _drive_resilient_embedder() == [_SENTINEL_DELAY]:
@@ -381,6 +566,16 @@ async def test_EVERY_declared_site_draws_from_the_mutated_policy(
         observed.add("loremaster.scout.CommandSubscriber._backoff")
     if _drive_token_survey(monkeypatch, 1) == [_SENTINEL_DELAY]:
         observed.add("token_survey.ClaudeTokenCounter._sleep_backoff")
+
+    # --- sites 6-8: the ADDITIVE policy (#207 D2/D3) --------------------------------
+    if await _drive_token_counter_retry_after() == [_SENTINEL_ADDITIVE]:
+        observed.add(
+            "loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff.retry_after"
+        )
+    if _drive_token_survey_retry_after(monkeypatch) == [_SENTINEL_ADDITIVE]:
+        observed.add("token_survey.ClaudeTokenCounter._sleep_backoff.retry_after")
+    if await _drive_eager_lease(monkeypatch) == [_SENTINEL_ADDITIVE]:
+        observed.add("loremaster.server._EagerStartupLifespan._acquire_eager_lease_with_retry")
 
     missing = _DECLARED_SITES - observed
     assert not missing, (
@@ -398,9 +593,16 @@ async def test_EVERY_declared_site_draws_from_the_mutated_policy(
     )
     undeclared = observed - _DECLARED_SITES
     assert not undeclared, f"observed sites missing from _DECLARED_SITES: {sorted(undeclared)}"
-    assert len(mutation.draws) >= len(_DECLARED_SITES), (
-        f"the mutated policy recorded only {len(mutation.draws)} draws for "
-        f"{len(_DECLARED_SITES)} declared sites — the instrument is under-counting"
+    # Both ledgers, because the two policies record separately. Summing only the
+    # exponential one under-counts by exactly the additive sites — which is what this
+    # assertion did on its first draft, reporting 5 draws for 8 sites while every site
+    # had in fact been observed. An instrument that miscounts its own coverage is the
+    # failure mode this whole file exists to prevent, so it is pinned honestly here.
+    total_draws = len(mutation.draws) + len(mutation.additive_draws)
+    assert total_draws >= len(_DECLARED_SITES), (
+        f"the mutated policies recorded only {total_draws} draws "
+        f"({len(mutation.draws)} exponential + {len(mutation.additive_draws)} additive) "
+        f"for {len(_DECLARED_SITES)} declared sites — the instrument is under-counting"
     )
 
 
@@ -537,25 +739,38 @@ class TestKnownBoundsOfThisInstrument:
             "has changed shape. Re-derive the bound (finding #207)."
         )
 
-    def test_KNOWN_BOUND_the_retry_after_path_is_not_jittered(self) -> None:
-        """KNOWN BOUND (#207, raised as R2): ``Retry-After`` sleeps are still deterministic.
+    def test_KNOWN_BOUND_the_retry_after_jitter_WIDTH_is_chosen_not_measured(self) -> None:
+        """KNOWN BOUND (#207 D2): the ``Retry-After`` path IS now jittered — the residual
+        bound is the WIDTH, not the existence.
 
-        Both HTTP counters honour a server-supplied ``Retry-After`` by sleeping it verbatim
-        (clamped). Every rate-limited client receives the SAME value, so that path is more
-        perfectly lockstepped than the exponential ladder ever was. It was left alone
-        deliberately: the correct fix jitters ABOVE the floor (sleeping less than the server
-        asked is a protocol violation) and the jitter width is an unruled parameter — a
-        design decision, escalated rather than invented.
+        The previous bound ("this path is not jittered at all") was CLOSED by D2 and this
+        pin was retargeted rather than deleted, per the ruling. What remains unsettled:
 
-        IF YOU CLOSED THIS DELIBERATELY, delete this pin and say so.
-        RE-OPEN TRIGGER: an operator ruling on the jitter width.
+        1. ``ADDITIVE_JITTER_WIDTH_S = 1.0`` is a **chosen** constant, not a measured one.
+           Nobody has observed how many clients share a rate limiter here or how wide a
+           window actually disperses them; 1 s is a reasoned default, not evidence.
+        2. The pre-existing ``min(…, RETRY_MAX_DELAY_S)`` cap can still sleep LESS than a
+           large ``Retry-After`` asks (`Retry-After: 120` → ~30 s). That conflict predates
+           #207 entirely and is finding **#223**. The additive jitter did NOT settle it,
+           and must not be read as having done so.
+
+        IF YOU CLOSED EITHER DELIBERATELY, delete the corresponding half and say so.
+        RE-OPEN TRIGGERS: (1) a measurement of real concurrent-client counts on this
+        endpoint; (2) an operator ruling on #223.
         """
         source = (
             _REPO_ROOT / "loremaster/loremaster/calibration/counting.py"
         ).read_text(encoding="utf-8")
         assert "min(float(retry_after), RETRY_MAX_DELAY_S)" in source, (
-            "the Retry-After path changed shape. If it was jittered deliberately (R2 ruled), "
-            "delete this pin and say so; if not, the bound needs re-deriving (finding #207)."
+            "the Retry-After CAP is gone. If #223 was ruled and the cap deliberately "
+            "removed, delete this half of the pin and say so; if not, a large Retry-After "
+            "is now honoured in full and a hostile server can park a counter indefinitely."
+        )
+        assert backoff_module.ADDITIVE_JITTER_WIDTH_S == 1.0, (
+            f"the additive jitter width changed to "
+            f"{backoff_module.ADDITIVE_JITTER_WIDTH_S}. That is fine IF it was measured — "
+            f"but this pin exists because 1.0 never was. Update the pin WITH the "
+            f"measurement, so the next reader inherits evidence rather than a second guess."
         )
 
 

@@ -815,14 +815,27 @@ class ClaudeTokenCounter:
         runs its counters through a thread pool, so "several workers hit the same 429
         at the same moment" is its NORMAL operating condition, not an edge case — a
         deterministic ladder would march the whole pool back into the rate limit
-        together. The ``Retry-After`` path is deliberately left un-jittered (see #207).
+        together.
+
+        The ``Retry-After`` path is jittered too (#207 D2), but **ADDITIVELY** — the
+        server hands every client the SAME value, so it is the most perfectly
+        lockstepped path there is, and this survey's thread pool means several workers
+        receive it in the same instant. The jitter is added on top of the capped value
+        and never subtracts (:func:`loresigil.backoff.additive_jitter`): retrying
+        sooner than a rate limiter instructed is worse than the herd it would fix.
+
+        ⚠ The pre-existing ``min(…, RETRY_MAX_DELAY_S)`` cap is UNCHANGED and can still
+        sleep less than a large ``Retry-After`` asks. That conflict predates this change
+        and is finding **#223**; the additive jitter does not settle it.
         """
         if retry_after is not None:
             try:
-                time.sleep(min(float(retry_after), RETRY_MAX_DELAY_S))
-                return
+                capped = min(float(retry_after), RETRY_MAX_DELAY_S)
             except ValueError:
                 pass
+            else:
+                time.sleep(backoff.additive_jitter(capped))
+                return
         time.sleep(
             backoff.jittered_backoff_delay(
                 attempt, base_s=RETRY_BASE_DELAY_S, cap_s=RETRY_MAX_DELAY_S

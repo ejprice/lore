@@ -39,11 +39,18 @@ the failure mode (#102) this module exists to end.
 from __future__ import annotations
 
 from tenacity import AsyncRetrying, RetryCallState
-from tenacity.wait import wait_random_exponential
+from tenacity.wait import wait_random, wait_random_exponential
 
 #: The growth factor of the backoff window. Doubling is the universal convention and
 #: the value every site this module replaced already used.
 BACKOFF_EXP_BASE: float = 2.0
+
+#: Default width of the ADDITIVE jitter, in seconds (#207 D2/D3, operator-ruled).
+#:
+#: One second is enough to scatter a herd across a window far wider than the RTT that
+#: bunched it, and small enough to be invisible against the delays it is added to (a
+#: server's ``Retry-After``, a boot-retry pause). It is a WIDTH, not a delay.
+ADDITIVE_JITTER_WIDTH_S: float = 1.0
 
 #: tenacity's wait strategies read their attempt index off a :class:`RetryCallState`,
 #: which wants the owning retry object. We drive the strategy directly rather than
@@ -84,4 +91,44 @@ def jittered_backoff_delay(attempt: int, *, base_s: float, cap_s: float) -> floa
     # tenacity's strategies are 1-based; our call sites are 0-based.
     state.attempt_number = attempt + 1
     strategy = wait_random_exponential(multiplier=base_s, max=cap_s, exp_base=BACKOFF_EXP_BASE)
+    return strategy(state)
+
+
+def additive_jitter(base_s: float, *, width_s: float = ADDITIVE_JITTER_WIDTH_S) -> float:
+    """Decorrelate a delay someone ELSE decided, by adding a small random amount.
+
+    The companion to :func:`jittered_backoff_delay`, for the case where the delay is
+    **not ours to choose**: a server's ``Retry-After``, or a fixed boot-retry pause. In
+    both, the herd problem is identical — every client receives or computes the SAME
+    number and wakes together — but the cure cannot be a full-jitter draw over ``[0,
+    delay)``, because that would return values BELOW the delay, and the delay is a
+    floor somebody else set for a reason.
+
+    So this jitters **upward only**: the result is always ``>= base_s``, never less.
+    That is the whole distinction from :func:`jittered_backoff_delay`, and it is why
+    the two exist rather than one. Getting it backwards on a ``Retry-After`` means
+    retrying sooner than a rate limiter told you to, which is a worse bug than the
+    herd it would be fixing.
+
+    Both callers pass a delay they did not pick:
+
+    * the two HTTP counters, on a server-supplied ``Retry-After`` — where **every**
+      rate-limited client is handed the identical value, making it the most perfectly
+      lockstepped path in the codebase, more so than the exponential ladder #207 fixed;
+    * the eager-startup lease retry, on its fixed inter-attempt pause — jittered
+      WITHOUT converting it to an exponential ladder, deliberately: growth would move
+      total boot-retry time from ~8 s to ~30 s and could cross a container health-check
+      budget nobody has measured. Decorrelation does not require growth, so this
+      dissolves that trade rather than deferring it.
+
+    Args:
+        base_s: The delay to decorrelate around. Returned value is never below it.
+        width_s: Upper bound of the jitter added on top. The result lies in
+            ``[base_s, base_s + width_s)``.
+
+    Returns:
+        ``base_s`` plus a uniform draw from ``[0, width_s)``.
+    """
+    state = RetryCallState(retry_object=_RETRY_OBJECT, fn=None, args=(), kwargs={})
+    strategy = wait_random(min=base_s, max=base_s + width_s)
     return strategy(state)
