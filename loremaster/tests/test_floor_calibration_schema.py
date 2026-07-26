@@ -60,6 +60,7 @@ from loremaster.store.surreal_schema import (
     generate_floor_calibration_ddl,
     generate_lease_ddl,
 )
+from markdown_it import MarkdownIt
 
 _DEFINE_TABLE = re.compile(r"^\s*DEFINE\s+TABLE\b", re.IGNORECASE)
 _DEFINE_FIELD = re.compile(r"^\s*DEFINE\s+FIELD\b", re.IGNORECASE)
@@ -69,6 +70,107 @@ _DEFINE_INDEX = re.compile(r"^\s*DEFINE\s+INDEX\b", re.IGNORECASE)
 # find this line (repo rename law: sweep patterns carry no structural anchor,
 # because prose mentions carry none either).
 RETIRED_STATE_NAME = "stale_remeasuring"
+
+# What Addendum F §F4 renamed it TO. Load-bearing for the marker rule below, not
+# decoration: a retirement notice that does not say what to use INSTEAD is half a
+# notice, and the reader it exists for is an agent that landed on the corpse via
+# search. Bound to the ruled set by
+# ``test_the_RETIRED_state_is_absent_from_the_ruled_set_and_its_replacement_present``
+# so this stays a DERIVED name rather than a literal nobody rechecks.
+REPLACEMENT_STATE_NAME = "invalidated_remeasuring"
+
+# ⚠ THE BLOCK UNIT IS PARSED BY ``markdown-it-py``, NOT BY A HAND-ROLLED REGEX
+# (packages over hand-rolling — operator directive; the swap is `f052c6d`). The
+# hand-rolled splitter this replaced produced IDENTICAL spans on all six real hit
+# sites, which is what justified adopting the package rather than defending the
+# copy: measured before the recommendation, not asserted after it.
+#
+# ``commonmark`` + ``table``, deliberately NOT the ``gfm-like`` preset — that one
+# enables ``linkify``, whose backing package is not installed, and
+# ``MarkdownIt("gfm-like").parse()`` raises ModuleNotFoundError on any document.
+_MARKDOWN = MarkdownIt("commonmark").enable("table")
+
+# The token types that delimit the span a retrieval chunk carries — which is the
+# whole reason a marker must sit near its corpse (#160: a chunk arrives without
+# its header). A table ROW is one of them on purpose: §7's state table is what
+# 11-ii reads to build its served state projection, so one row retrieved alone
+# must carry its own correction and a marked row must not launder its neighbours.
+_BLOCK_TOKENS = frozenset(
+    {
+        "list_item_open",
+        "tr_open",
+        "paragraph_open",
+        "heading_open",
+        "blockquote_open",
+        "fence",
+        "code_block",
+        "html_block",
+    }
+)
+
+# ALLOWLIST THE SAFE (repo law: the forbidden set is unbounded, the safe set is
+# small and enumerable). These are the words that say "this name is a corpse",
+# not an attempt to enumerate the ways prose can teach one. A marker spelled some
+# other way fails CLOSED — RED, with the convention quoted in the message — which
+# is the correct direction for an allowlist.
+_RETIREMENT_WORD = re.compile(
+    r"\b(?:amend(?:ed|s)|renam(?:ed|es)|retir(?:ed|es)|supersed(?:ed|es)|deprecat(?:ed|es))\b",
+    re.IGNORECASE,
+)
+
+
+def _narrowest_block_spans(text: str) -> dict[int, tuple[int, int]]:
+    """1-based line number -> the ``(start, end)`` of the SMALLEST block holding it.
+
+    Smallest, not outermost: a bullet nested in a list is covered by both its own
+    ``list_item_open`` and the enclosing ``bullet_list_open``, and taking the
+    enclosing one would let a marker excuse every sibling bullet in the list.
+    Narrowing is what keeps the excuse tight.
+    """
+    spans: dict[int, tuple[int, int]] = {}
+    for token in _MARKDOWN.parse(text):
+        if token.map is None or token.type not in _BLOCK_TOKENS:
+            continue
+        start, end = token.map[0] + 1, token.map[1]  # markdown-it: 0-based, end-exclusive
+        for number in range(start, end + 1):
+            held = spans.get(number)
+            if held is None or (end - start) < (held[1] - held[0]):
+                spans[number] = (start, end)
+    return spans
+
+
+def unmarked_retired_name_lines(relative_path: str, text: str) -> list[str]:
+    """Lines of ``text`` carrying the retired name whose block does NOT retire it.
+
+    THE PROPERTY: a line may carry ``stale_remeasuring`` only if the markdown
+    block it sits in also (a) uses a retirement word and (b) names
+    ``invalidated_remeasuring``. Both factors are present at every real marker in
+    the tree; requiring both keeps a block that merely *mentions* a rename from
+    laundering a teaching, and keeps the notice useful to the agent that landed
+    on it.
+
+    Two-factor, block-scoped, and it is the ONE implementation — the tree pin and
+    every discrimination control below call this same function, so a control that
+    passes is evidence about the code the pin runs.
+    """
+    if RETIRED_STATE_NAME not in text:
+        return []  # nothing to adjudicate; also spares every unrelated doc a parse
+    lines = text.splitlines()
+    spans = _narrowest_block_spans(text)
+    offenders: list[str] = []
+    for number, line in enumerate(lines, 1):
+        if RETIRED_STATE_NAME not in line:
+            continue
+        # A line no block token covers (a table's delimiter row, a stray
+        # continuation) is its OWN block: the strictest reading, so an unparsed
+        # shape fails CLOSED rather than inheriting a neighbour's marker.
+        start, end = spans.get(number, (number, number))
+        body = "\n".join(lines[start - 1 : end])
+        if _RETIREMENT_WORD.search(body) and REPLACEMENT_STATE_NAME in body:
+            continue
+        offenders.append(f"{relative_path}:{number}: {line.strip()}")
+    return offenders
+
 
 _PACKAGE_ROOT = Path(surreal_schema.__file__).resolve().parents[1]
 _TESTS_ROOT = Path(__file__).resolve().parent
@@ -248,6 +350,26 @@ class TestTheClosedDomainsAreDerivedIntoTheDdl:
         missing = [state for state in FLOOR_STATES if state not in floor]
         assert not missing, missing
 
+    def test_the_RETIRED_state_is_absent_from_the_ruled_set_and_its_replacement_present(
+        self,
+    ) -> None:
+        """Addendum F §F4, pinned against the ruled set rather than asserted beside it.
+
+        This is what keeps ``REPLACEMENT_STATE_NAME`` a DERIVED name: the doc
+        sweep admits a retirement notice only if it names that string, so a
+        literal nobody rechecks would let the sweep demand a name the ruled set
+        no longer carries. If F4 is ever itself superseded, this goes RED at the
+        constant instead of quietly mis-teaching every future amendment.
+        """
+        assert RETIRED_STATE_NAME not in FLOOR_STATES, (
+            f"{RETIRED_STATE_NAME!r} is in the ruled state set, but Addendum F §F4 RETIRED it"
+        )
+        assert REPLACEMENT_STATE_NAME in FLOOR_STATES, (
+            f"{REPLACEMENT_STATE_NAME!r} is not in FLOOR_STATES={FLOOR_STATES!r} — §F4 renamed "
+            f"{RETIRED_STATE_NAME!r} to it AND re-predicated it to leg 1 (vector-identity "
+            f"invalidation) only"
+        )
+
 
 class TestTheRetiredStateNameIsGoneFromTheTree:
     """Repo rename law. F4.1 renamed ``stale_remeasuring`` to
@@ -262,44 +384,62 @@ class TestTheRetiredStateNameIsGoneFromTheTree:
     instrument that carries the very blind spot it exists to police is worse
     than no instrument, because its green is read as coverage.
 
-    **The choice this fix wave made, stated rather than implied:** WIDEN the
-    reach to the live design + plan-of-record docs, and carry the four known
-    lines in a NAMED, DATED QUARANTINE with the edit each needs. That is the
-    repo's PIN-THE-MISS pattern rather than a scope statement: the sweep is
-    GREEN today, goes RED the moment a FIFTH live doc acquires the corpse, and
-    goes RED AGAIN the day one of the four is fixed (its quarantine entry stops
-    matching and must be deleted). A bound that is pinned is a bound the next
-    engineer meets deliberately, and one that cannot be silently "fixed" either.
+    ⚠ **AND THEN THE FIX FOR O4 WAS ITSELF THE HOLE (2026-07-26, second pass).**
+    Those lines were carried in a named QUARANTINE, whose pin claimed to go RED
+    the day one was repaired. They WERE repaired (``790989f``) and the pin stayed
+    GREEN — because the repair deliberately KEEPS the retired string inside a
+    dated amendment notice, so an agent searching for the corpse lands on the
+    notice explaining it IS one. **The sweep could not tell a RETIREMENT MARKER
+    from a TEACHING**, and while a file sat quarantined it was exempt from the
+    teaching pin entirely, so a genuinely NEW stale line in it was invisible. A
+    quarantine wearing a pin's clothing.
 
-    **The two exclusions are reasoned, not convenient:**
-    - ``docs/plans/v2/receipts/`` — ARCHIVE LAW. Those files are byte-faithful
-      evidence of runs that happened; editing one is falsification, not a
-      refactor, so they can never be swept.
-    - ``2026-07-25-floor-calibration-addendum-F.md`` — the AMENDING doc. F4.1
-      lives there; a rename doc must name what it retires or it cannot say what
-      it did.
+    **THE PROPERTY THAT REPLACED IT** — ``unmarked_retired_name_lines``: a line
+    may carry the retired name only if its markdown BLOCK also uses a retirement
+    word AND names the replacement. That ALLOWLISTS THE SAFE instead of trying to
+    enumerate how prose can teach a name (repo law: the forbidden set is
+    unbounded, the safe set is small). The quarantine is GONE — every live doc,
+    including the amended one, is now swept the same way, and a newly-added
+    teaching line in it goes RED like any other file's.
+
+    ⚠ **THE MARKER IS BLOCK-SCOPED, NOT LINE-SCOPED, AND THE TREE FORCED THAT.**
+    Of the three surviving mentions in the design doc, only §7's table row
+    carries its marker on the same line; the other two sit on the line AFTER
+    ``⚠ **AMENDED by Addendum F §F4 — cited, not re-derived.**``. A same-line
+    rule would have been RED against a correctly-amended tree. The block is also
+    the right unit on its own merits: it is what a retrieval chunk carries, and
+    #160 is precisely that a chunk arrives without its header.
+
+    ⚠ **KNOWN BOUND, pinned rather than hidden:** a NEW stale line added INSIDE
+    an already-marked block is still excused. Block units are small (a table row,
+    a bullet) and every marked block in the tree is an amendment notice, so this
+    needs an author to write a teaching *inside* a notice that says the name is
+    retired — not an honest-developer mistake (threat model: this gate catches
+    the honest author, not a determined one). **Re-open trigger:** if a marked
+    block ever grows beyond its notice, or a second corpse needs the same
+    treatment, replace this with a tripwire on the total marked-mention count.
+
+    ⚠ **THERE IS NO PER-FILE EXEMPTION LEFT.** An earlier revision excused the
+    AMENDING doc wholesale, on the reasoning that a rename doc must be allowed to
+    name what it retires. The marker rule exists *precisely* so it can — so the
+    exemption was buying nothing and costing the same blindness the quarantine
+    did: a brand-new teaching line in the amending doc would have been invisible.
+    Measuring it (rather than eyeballing it) found TWO lines short of the rule,
+    both missing the replacement name; ``f052c6d`` fixed them and the whole-file
+    exemption went with them. Every live doc is now swept identically.
+
+    The ONE remaining exclusion is ``docs/plans/v2/receipts/``, and it is
+    structural rather than a judgement call: ARCHIVE LAW. Those files are
+    byte-faithful evidence of runs that happened, so editing one is falsification,
+    not a refactor. The 2026-07-26 banner in
+    ``receipts/2026-07-24-packet11i/CONTRACT-FREEZE-DECISIONS.md`` is the
+    archive-safe form of the same marker — a notice beside the quote, satisfying
+    both factors — so the convention is consistent across swept and unswept docs
+    even though only the former are enforced.
     """
 
     #: The live docs the sweep reaches. Receipts are excluded by archive law.
     SWEPT_DOC_GLOBS = ("docs/design/*.md", "docs/plans/v2/*.md", "docs/reference/*.md")
-
-    #: Docs that legitimately name the corpse, with the reason.
-    ALLOWED_DOCS = {
-        "2026-07-25-floor-calibration-addendum-F.md": "the amending doc — F4.1 names what it retires",
-    }
-
-    #: ⚠ QUARANTINE — known-stale LIVE lines, dated 2026-07-26, found by the
-    #: contract adversary. Each is (path, the exact edit owed). They are OUTSIDE
-    #: this agent's writable set (docs belong to the lead), so they are pinned
-    #: rather than fixed, and the pin below goes RED when one is repaired.
-    KNOWN_STALE_DOC_LINES = {
-        "docs/design/2026-07-24-floor-calibration.md": (
-            "3 lines (≈336, ≈418, ≈659) teach the retired name as CURRENT behaviour; "
-            "≈418 is §7's state TABLE row, which 11-ii reads to build its served "
-            "state projection. Owed edit: rename to `invalidated_remeasuring` and "
-            "re-predicate to F4.1's 'known-invalid', not 'ageing'."
-        ),
-    }
 
     @staticmethod
     def _hits(root: Path) -> list[str]:
@@ -313,17 +453,32 @@ class TestTheRetiredStateNameIsGoneFromTheTree:
         return found
 
     @classmethod
+    def _swept_docs(cls) -> dict[str, str]:
+        """Repo-relative path -> text, for every LIVE doc the sweep reaches."""
+        texts: dict[str, str] = {}
+        for glob in cls.SWEPT_DOC_GLOBS:
+            for path in sorted(_REPO_ROOT.glob(glob)):
+                texts[path.relative_to(_REPO_ROOT).as_posix()] = path.read_text(encoding="utf-8")
+        return texts
+
+    @classmethod
     def _doc_hits(cls) -> dict[str, list[str]]:
         """Every LIVE doc line carrying the corpse, keyed by repo-relative path."""
         by_path: dict[str, list[str]] = {}
-        for glob in cls.SWEPT_DOC_GLOBS:
-            for path in sorted(_REPO_ROOT.glob(glob)):
-                if path.name in cls.ALLOWED_DOCS:
-                    continue
-                relative = path.relative_to(_REPO_ROOT).as_posix()
-                for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-                    if RETIRED_STATE_NAME in line:
-                        by_path.setdefault(relative, []).append(f"{relative}:{number}: {line.strip()}")
+        for relative, text in cls._swept_docs().items():
+            for number, line in enumerate(text.splitlines(), 1):
+                if RETIRED_STATE_NAME in line:
+                    by_path.setdefault(relative, []).append(f"{relative}:{number}: {line.strip()}")
+        return by_path
+
+    @classmethod
+    def _unmarked_doc_hits(cls) -> dict[str, list[str]]:
+        """The subset of ``_doc_hits`` whose block does NOT retire the name."""
+        by_path: dict[str, list[str]] = {}
+        for relative, text in cls._swept_docs().items():
+            unmarked = unmarked_retired_name_lines(relative, text)
+            if unmarked:
+                by_path[relative] = unmarked
         return by_path
 
     def test_no_production_module_mentions_the_retired_name(self) -> None:
@@ -350,32 +505,185 @@ class TestTheRetiredStateNameIsGoneFromTheTree:
             "was fixed (delete the quarantine) or the globs are broken"
         )
 
-    def test_no_UNQUARANTINED_live_doc_teaches_the_retired_name(self) -> None:
-        """The pin that fires on a FIFTH instance."""
-        unquarantined = {
-            path: hits
-            for path, hits in self._doc_hits().items()
-            if path not in self.KNOWN_STALE_DOC_LINES
-        }
-        assert not unquarantined, (
-            f"live design/plan docs teach the RETIRED state name and are not "
-            f"quarantined: {unquarantined}. Rename to 'invalidated_remeasuring' "
-            f"(F4.1) or add a dated quarantine entry with the edit owed."
-        )
+    def test_no_live_doc_carries_the_retired_name_outside_a_RETIREMENT_MARKER(self) -> None:
+        """THE PIN. Every live doc, every line — no exemptions, no quarantine.
 
-    def test_every_QUARANTINED_doc_is_still_stale(self) -> None:
-        """⚠ THE HALF THAT MAKES A QUARANTINE A PIN RATHER THAN A SHRUG.
-
-        If a quarantined file no longer carries the corpse, somebody FIXED it —
-        good — and the entry is now a lie about the tree. Delete it. A quarantine
-        nobody prunes is how a bound gets silently inherited forever.
+        A hit is admitted ONLY by its own markdown block retiring the name, so
+        this fires on a brand-new teaching line in an already-amended file, which
+        the quarantine it replaced could not see.
         """
-        hits = self._doc_hits()
-        repaired = [path for path in self.KNOWN_STALE_DOC_LINES if path not in hits]
-        assert not repaired, (
-            f"quarantined doc(s) no longer carry the retired name: {repaired}. "
-            f"They were fixed — delete their KNOWN_STALE_DOC_LINES entries."
+        unmarked = self._unmarked_doc_hits()
+        assert not unmarked, (
+            f"live doc line(s) carry the RETIRED state name {RETIRED_STATE_NAME!r} without a "
+            f"retirement marker: {unmarked}\n"
+            f"Fix by EITHER renaming to {REPLACEMENT_STATE_NAME!r} (Addendum F §F4 — which also "
+            f"RE-PREDICATED it to leg 1 only, so check the surrounding claim is still true), OR, "
+            f"if the mention is deliberately preserving the corpse for a searcher, marking it: the "
+            f"same markdown block (bullet, table row, paragraph) must use a retirement word "
+            f"(amended/renamed/retired/superseded/deprecated) AND name {REPLACEMENT_STATE_NAME!r}. "
+            f"Worked example in the tree: the '⚠ **AMENDED by Addendum F §F4 — cited, not "
+            f"re-derived.**' notices in docs/design/2026-07-24-floor-calibration.md."
         )
+
+
+class TestTheRetirementMarkerRuleDiscriminates:
+    """⚠ THE CONTROLS. ``unmarked_retired_name_lines`` ADMITS lines — an allowlist
+    that admits everything is not a gate, and this repo has a receipt of a probe
+    that passed for the wrong reason (it rejected on a PARSE ERROR, not the check
+    it named). So every leg below is interrogated with *"what wrong build would
+    this still pass?"*, and each names the wrong build it kills.
+
+    Every leg calls the SAME function the tree pin calls, so a green control is
+    evidence about the code that actually runs.
+    """
+
+    def test_an_UNMARKED_teaching_line_is_REJECTED(self) -> None:
+        """NON-VACUITY. Kills: a function that returns [] for everything —
+        under which every other leg here, and the tree pin, is silently green."""
+        text = f"# States\n\nThe instance sits in `{RETIRED_STATE_NAME}` until the corpus settles.\n"
+        assert unmarked_retired_name_lines("d.md", text) == [
+            f"d.md:3: The instance sits in `{RETIRED_STATE_NAME}` until the corpus settles."
+        ]
+
+    def test_a_doc_with_no_mention_at_all_is_ACCEPTED(self) -> None:
+        """The good-input leg: the probe is not simply rejecting everything."""
+        assert unmarked_retired_name_lines("d.md", "# States\n\nAll instances are `measured`.\n") == []
+
+    def test_a_marker_on_the_SAME_line_is_ACCEPTED(self) -> None:
+        """Models §7's amended table row. A REAL GFM table (header + delimiter),
+        not two bare pipe lines — under a real parser those are one paragraph, and
+        a fixture that is not the shape it claims proves nothing about the shape
+        it claims."""
+        text = (
+            "| state | verdict |\n"
+            "|---|---|\n"
+            f"| `{REPLACEMENT_STATE_NAME}` (known-invalid) — **renamed by Addendum F §F4**; "
+            f"was `{RETIRED_STATE_NAME}` | disarmed |\n"
+        )
+        assert unmarked_retired_name_lines("d.md", text) == []
+
+    def test_a_marker_EARLIER_IN_THE_SAME_BLOCK_is_ACCEPTED(self) -> None:
+        """⚠ THE LEG THAT DECIDED THE DESIGN. Kills: a same-LINE rule — which is
+        the obvious reading of "the line must carry a marker", and which would be
+        RED against a correctly-amended tree, because two of the three real
+        markers open a notice whose quoted corpse lands on the NEXT line.
+        """
+        text = (
+            "- *Quiescence over clocks:* the trigger defers while the index is unsettled.\n"
+            "  ⚠ **AMENDED by Addendum F §F4 — cited, not re-derived.** This bullet ended\n"
+            f'  *"a churning corpus renders `{RETIRED_STATE_NAME}` honestly until it settles."*\n'
+            f"  The state is now **`{REPLACEMENT_STATE_NAME}`**, predicate leg 1 ONLY.\n"
+        )
+        assert unmarked_retired_name_lines("d.md", text) == []
+
+    def test_a_NEW_teaching_bullet_touching_a_marked_block_is_REJECTED(self) -> None:
+        """⚠ THE HOLE THE QUARANTINE HAD, AS A FIXTURE. Kills: any FILE-scoped or
+        blank-line-scoped marker check. The offending bullet is adjacent to the
+        notice with NO blank line between them, so a build that scoped the marker
+        to the file, or to the contiguous run of non-blank lines, admits it — and
+        that is exactly "a genuinely new stale line is invisible".
+        """
+        text = (
+            "- *Quiescence:* the trigger defers while the index is unsettled.\n"
+            f"  ⚠ **AMENDED by §F4.** was `{RETIRED_STATE_NAME}`, now `{REPLACEMENT_STATE_NAME}`.\n"
+            f"- *Flap bound:* the floor stays `{RETIRED_STATE_NAME}` while the run is queued.\n"
+        )
+        assert unmarked_retired_name_lines("d.md", text) == [
+            f"d.md:3: - *Flap bound:* the floor stays `{RETIRED_STATE_NAME}` while the run is queued."
+        ]
+
+    def test_a_NEW_teaching_TABLE_ROW_touching_a_marked_row_is_REJECTED(self) -> None:
+        """Kills: treating a whole markdown TABLE as one block. §7's state table
+        is what 11-ii reads to build its served state projection, so a stale row
+        re-added beside the amended one is the highest-cost regression available —
+        and one marked row must not launder its neighbours.
+        """
+        text = (
+            "| state | floor served? |\n"
+            "|---|---|\n"
+            f"| `{REPLACEMENT_STATE_NAME}` — **renamed by §F4**; was `{RETIRED_STATE_NAME}` | no |\n"
+            f"| `{RETIRED_STATE_NAME}` (leg fired; run queued/in flight) | no |\n"
+        )
+        assert unmarked_retired_name_lines("d.md", text) == [
+            f"d.md:4: | `{RETIRED_STATE_NAME}` (leg fired; run queued/in flight) | no |"
+        ]
+
+    def test_a_retirement_word_WITHOUT_the_replacement_is_REJECTED(self) -> None:
+        """A DIFFERENTLY-broken input, rejected for a DIFFERENT reason than the
+        non-vacuity leg: factor (a) present, factor (b) missing. Kills: a
+        one-factor build keyed on the retirement word alone, which would admit
+        any teaching that happens to share a block with the word "renamed".
+        """
+        text = f"- The `{RETIRED_STATE_NAME}` row was **renamed** by Addendum F §F4.\n"
+        assert unmarked_retired_name_lines("d.md", text) == [
+            f"d.md:1: - The `{RETIRED_STATE_NAME}` row was **renamed** by Addendum F §F4."
+        ]
+
+    def test_the_replacement_name_WITHOUT_a_retirement_word_is_REJECTED(self) -> None:
+        """The other single factor: (b) present, (a) missing. Kills: a build keyed
+        on the replacement name alone — under which a line teaching BOTH states as
+        live and current reads as a retirement notice.
+        """
+        text = f"- `{RETIRED_STATE_NAME}` and `{REPLACEMENT_STATE_NAME}` are both queued states.\n"
+        assert unmarked_retired_name_lines("d.md", text) == [
+            f"d.md:1: - `{RETIRED_STATE_NAME}` and `{REPLACEMENT_STATE_NAME}` are both queued states."
+        ]
+
+    def test_every_REAL_hit_line_is_MAPPED_so_the_fallback_is_not_load_bearing(self) -> None:
+        """⚠ COVERAGE AS A CHECKED VARIABLE, not an assumption (repo law: a gate is
+        an invariant only over the code it actually RUNS).
+
+        The parser swap introduced a line class the hand-rolled splitter did not
+        have: lines markdown-it consumes WITHOUT emitting a mapped token — thematic
+        breaks and table delimiter rows, 180 of them across the swept docs. For
+        those, ``unmarked_retired_name_lines`` falls back to "the line is its own
+        block", which fails CLOSED. None can carry arbitrary text, so no real hit
+        reaches that branch today — and THAT is the thing worth pinning: if a hit
+        line ever lands unmapped, the fallback stops being dormant insurance and
+        starts deciding verdicts, which is a change nobody would otherwise see.
+        """
+        unmapped: list[str] = []
+        for relative, text in TestTheRetiredStateNameIsGoneFromTheTree._swept_docs().items():
+            if RETIRED_STATE_NAME not in text:
+                continue
+            spans = _narrowest_block_spans(text)
+            unmapped.extend(
+                f"{relative}:{number}"
+                for number, line in enumerate(text.splitlines(), 1)
+                if RETIRED_STATE_NAME in line and number not in spans
+            )
+        assert not unmapped, (
+            f"line(s) carrying the retired name are not covered by any markdown block token, so "
+            f"their verdict now comes from the fail-closed FALLBACK rather than from a parsed "
+            f"block: {unmapped}. That is safe (it rejects) but it is no longer the reviewed path — "
+            f"add the token type to _BLOCK_TOKENS or confirm the fallback is what you want."
+        )
+
+    def test_the_REAL_docs_pass_BECAUSE_of_their_markers_not_by_accident(self) -> None:
+        """⚠ THE LEG THAT BINDS THE SYNTHETIC CONVENTION TO THE ACTUAL TREE.
+
+        Synthetic fixtures prove the parser; they cannot prove the tree's green is
+        EARNED. So mutate the real doc text in memory — strip factor (a), then
+        factor (b) — and require every real hit to become an offender both times.
+        A tree that stayed green under either strip would be passing because the
+        scan cannot see those lines, which is the O4 blind spot returning.
+        """
+        hits = TestTheRetiredStateNameIsGoneFromTheTree._doc_hits()
+        assert hits, "no live doc carries the retired name — this control has nothing to prove"
+        for relative, text in TestTheRetiredStateNameIsGoneFromTheTree._swept_docs().items():
+            expected = len(hits.get(relative, []))
+            if not expected:
+                continue
+            without_word = _RETIREMENT_WORD.sub("", text)
+            assert len(unmarked_retired_name_lines(relative, without_word)) == expected, (
+                f"{relative}: stripping every retirement word left some hit still admitted — "
+                f"its block is being excused by something other than factor (a)"
+            )
+            without_name = text.replace(REPLACEMENT_STATE_NAME, "")
+            assert len(unmarked_retired_name_lines(relative, without_name)) == expected, (
+                f"{relative}: stripping the replacement name left some hit still admitted — "
+                f"its block is being excused by something other than factor (b)"
+            )
 
 
 class TestTheSchemaAppliesToTheLiveEngine:
