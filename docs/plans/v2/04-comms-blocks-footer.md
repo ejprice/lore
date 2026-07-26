@@ -8,12 +8,50 @@ pending-traffic nudge footer, and the dangling-edge hardening.
 
 ## Scope IN
 - `blocks` task DAG edge (`task->blocks->task`), mirrored from `task.blocked_by` inside
-  the existing write txns; invariant tests pin edge≡blocked_by + acyclicity; transitive
-  reads use the recursive idiom (`@.{1..n}->blocks->task`, always TIMEOUT).
+  the existing write txns; invariant tests pin edge≡blocked_by + acyclicity.
+  ⚠ **THE TRANSITIVE-READ IDIOM BELOW WAS WRONG AND IS CORRECTED (P4, PROBED 3.2.1
+  2026-07-26).** This packet formerly prescribed `@.{1..n}->blocks->task, always TIMEOUT`.
+  **Both halves are false and a builder implementing them cannot succeed:**
+  - `@.{1..n}->blocks->task` returns **terminal-depth nodes only**, NOT the closure. The
+    closure operator is **`+collect`** (deduplicated, ordered by proximity — v3.2.0 spec
+    `language/graph/path_collect.surql`): `@.{1..n+collect}`, plus `+inclusive` only where
+    the root itself is wanted.
+  - **`TIMEOUT` is a `SELECT` clause — a PARSE ERROR on a bare idiom** (`Unexpected token
+    `TIMEOUT``). "Always TIMEOUT" is satisfiable ONLY through the
+    `SELECT id, @.{1..n+collect}(->blocks->task).id AS downstream FROM task:x TIMEOUT 5s`
+    form. Reference §4 says "add a `TIMEOUT`" without noting the bare form cannot carry one.
+  - ⚠ **Depth cap TRUNCATES SILENTLY**: `{..256+collect}` on a 299-deep chain returns 256
+    nodes with **no error and no signal**. A served "downstream" set can be short and look
+    complete. Decide deliberately what the packet serves and pin the boundary.
+  - **FIXTURE FLOOR: ≥3 deep AND branching.** A 2-node chain cannot discriminate the correct
+    closure from the terminal-depth read the old text prescribed — the small-N trap.
 - Fleet unread/directive columns (per-agent unread + unacked-directive counts — computed
   over the WHOLE set their label claims, per the spec's counting law).
 - `_comms_footer`: lore_tasks/lore_claim_task/lore_findings mutations append one line
-  when traffic pends.
+  when traffic pends. ⚠ **DESIGN FORK — OPERATOR-RULED 2026-07-26.** There is **no shared
+  render seam**: the three tools are independent `-> str` dispatchers with ~17 return points,
+  so appending at the render sites would be sixteen-plus clones of one policy (the #102 shape
+  repo law forbids).
+  - **RULED SHAPE: ONE `_comms_footer(...)` helper called from the SINGLE exit of each of the
+    three `AppContext` dispatchers.** DRY-legal, mypy-visible, `str`-typed, and
+    **mutation-provable — change the footer text and ALL THREE pins must go RED** (a caller
+    that stays green is a private copy wearing the shared name). Costs a small refactor
+    collapsing `tasks` and `findings` to one return each; `claim_task` is already 1-return.
+    *Rejected: `TracingFastMCP.call_tool` — it returns content blocks not `str`, would need a
+    tool-NAME allowlist its own docstring exists to avoid, and its failure posture
+    deliberately swallows errors, which is wrong for served output.*
+  - **RULED TRIGGER: per-ACTION-OUTCOME — only calls that actually WROTE.** `claim_task`'s
+    LOSING branch writes nothing → no footer. `lore_tasks action=query|rollup` and
+    `lore_findings action=query|get|chain_head` are reads → no footer. (Spec ambiguity
+    escalated by the scout rather than chosen — both readings produce different code.)
+  - ⚠ **TYPE DISCIPLINE (D2):** the comms surface renders through `Rendered`/`SafeLine`/
+    `render_line`; these three return plain f-string `str`. A footer built as `Rendered` and
+    appended to a `str` crosses the render-safety boundary the wrong way; one built as a bare
+    f-string is a NEW un-sanitised served surface. **Choose deliberately and say which.**
+  - ⚠ **`_INSTRUCTIONS` IS PINNED BY EQUALITY.** `test_comms_tool.py::test_the_served_
+    INSTRUCTIONS_are_EXACTLY_the_declared_paragraphs` (CL3, RULED) — and its sibling's
+    docstring **names packet 04 by name** as the likely violator. Any teaching prose the
+    footer adds lands through the declared-paragraph allowlist, never around it.
 - **#105 — THE `ENFORCED` SWEEP.** ⚠ **RE-SCOPED BY OPERATOR RULING 2026-07-26 (kickoff).**
   **The text this replaces was STALE and understated what packet 03 shipped** — it said 03
   landed only "a typed `TYPE RELATION IN message OUT agent` (which catches only wrong-**table**
@@ -49,20 +87,56 @@ pending-traffic nudge footer, and the dangling-edge hardening.
   `ENFORCED` rejects non-existent endpoints on 3.2 with the verbatim error `The record 'x:y'
   does not exist`, confirmed by the engine's own executable spec
   (`tests/language/statements/relate/enforced.surql` @`v3.2.0`, which ships its own positive
-  control), the 3.2 vendor docs, and reference §4 — all three agree. **Still OWED, each
-  load-bearing:**
-  - **P1 — decides the negative fixture's assertion.** Does a dangling edge still read as a
-    **first-class member** (our §6.4, measured on **3.1.5**) or as `[]` (**what the 3.2 vendor
-    docs STILL assert**, `learn/schema-management/tables-and-fields/tables.mdx`)? §6.4 calls the
-    vendor claim FALSE — but that refutation predates the upgrade. Get this wrong and the pin is
-    hollow. **Positive control mandatory** (§4: the original instrument's first run reported the
-    OPPOSITE of the truth, and only the control exposed it).
-  - **P2 — gates the migration for all three tables.** `IF NOT EXISTS` vs `OVERWRITE` for a
-    CHANGED **RELATION CLAUSE** (`IN`/`OUT`/`ENFORCED`) on an EXISTING table, on 3.2.1. The
-    executable spec covers `SCHEMAFULL`, **not** the relation clause.
-  - **P3** — `UNIQUE(in,out)` cascade on 3.2.1. #7061 was fixed in 3.1.0, but the 3.2 release
-    notes carry an **unverified** "duplicate edge record ID" fix (#349) touching this seam (§0).
-  - **P4** — recursive `@.{1..n}` + `TIMEOUT` + cycle handling on 3.2.1.
+  control), the 3.2 vendor docs, and reference §4 — all three agree.
+  **✅ ALL FIVE PROBES ANSWERED 2026-07-26** — receipts:
+  `docs/plans/v2/receipts/2026-07-26-packet04/REPORT-probe-pkt04-store.md` (committed `03241f4`;
+  archived at close-out). **Do NOT re-probe these; DO re-derive any number you rely on.**
+  - **P1 — ✅ §6.4 CONFIRMED on 3.2.1.** A dangling edge is **STILL a first-class member** of the
+    identity traversal; the 3.2 vendor `[]` claim is **still FALSE** (the probe also found *why*
+    their example prints `[]`). **The negative fixture asserts the GHOST-MEMBER reading.**
+  - **P2 — ✅ CONFIRMED.** `IF NOT EXISTS` = silent no-op; **`OVERWRITE` lands the flip and
+    preserves rows, fields, index AND enforcement.** Migration shape settled.
+  - **P3 — ✅ CONFIRMED.** #7061 stays fixed under both compositions. ⚠ #349 is now VERIFIED and
+    **carries a SurrealDB 4.0 BREAK**: if `blocks` uses deterministic edge ids, today's silent
+    overwrite becomes a hard error on 4.0. Ledgered — see the finding.
+  - **P4 — ⚠ THE PACKET TEXT WAS WRONG.** Corrected in the `blocks` bullet above.
+  - **P5/P5b — the flip is SAFE, but NOT uniformly, and it CHANGES A LIVE VERB.**
+    `ENFORCED` **does** resolve endpoints created in the SAME uncommitted transaction (both
+    controls held: committed-endpoint positive leg passed; a genuinely absent endpoint was still
+    rejected, so the guard is **not inert** in transactions). Per-edge:
+    - **`refers` + `answers_to` — SAFE TO FLIP.** No caller-supplied endpoint exists on either;
+      every endpoint is minted by an earlier statement of the same fragment. ⚠ **Conditional on
+      `{edge.src} ⊆ {node.qualified_name}` actually holding** between `_derive_edges` and
+      `_derive_nodes` — FLAGGED, NOT SETTLED. The contract must establish it.
+    - **`briefed` — SAFE ONLY IF `agent_id` IS VALIDATED BEFORE THE FRAGMENT IS COMPOSED.**
+      ⚠ **BEHAVIOUR CHANGE ON A LIVE VERB, MEASURED:** today a publish with an unknown
+      `agent_id` still writes the brief and leaves a dangling ack. **After the flip the txn rolls
+      back and the publish is LOST** (`SELECT id FROM brief WHERE id = brief:b_lost` → `[]`).
+      Correct atomicity — but it is a change, not a silent tightening.
+    - **`to` — already shipped; NOW MEASURED SOUND, not merely inferred. Packet 03 is NOT
+      latently broken.** Live property for the record (deployed today, not introduced here):
+      **one bad recipient in a fan-out loses the WHOLE send** — no partial delivery, no message
+      row.
+  - ⚠⚠ **`ENFORCED` ALONE CANNOT SATISFY THIS PACKET'S OWN EXIT CRITERION.** What a caller
+    actually receives is `statement N of M was rejected (unspecified rejection); see the server
+    log` — the engine's `The record 'agent:x' does not exist` is deliberately withheld by the
+    seam's error-message hygiene (ledger #31). **So "a bogus-recipient publish/send TEACHES
+    instead of dangling" is UNREACHABLE via the engine guard: the app-level check is the ONLY
+    layer that can teach.** It is therefore REQUIRED, not ergonomic garnish.
+  - ⚠ **`BriefLedger._relate_briefed` catches `SurrealStoreError` AS ITS IDEMPOTENT-RE-ACK
+    SIGNAL.** After the flip an `ENFORCED` rejection arrives through that SAME `except`, leaving
+    two distinct failure modes sharing one catch, separated only by a follow-up read. **PIN IT:**
+    a publish to a non-existent agent MUST raise and MUST NOT be reported as `already_acked`.
+  - **Required pins (from P5b), each with its control:** (1) `publish` with an UNREGISTERED
+    `agent_id` → refused by the app check, the bad id NAMED, brief NOT written; (2) `publish`
+    with a registered `agent_id` → brief written AND ack edge written — **the positive control,
+    so pin 1 cannot pass by refusing everything**; (3) `send` to `[real, bogus]` → refused
+    BEFORE the write, asserting no message row exists after, so the pin distinguishes "refused
+    early" from "rolled back late".
+  - **Un-enforcing regression pin (P2 §3(a)):** `OVERWRITE` WITHOUT `ENFORCED` silently
+    un-guards a table, invisibly on a virgin DB. One dirty-store pin per edge, **plus a mutation
+    proof: delete `enforced=True` from the generator call and ALL FOUR pins must go RED** —
+    prove sharing by mutation, never by inspection.
 
 - **#219 (slotted 2026-07-26)** — `_validate_comms_charset`'s docstring AND its SERVED error
   message are FALSE: they claim identities are inlined into WHERE clauses, while every WHERE
