@@ -115,7 +115,7 @@ from loremaster.store.surreal_schema import (
 )
 from loremaster.symbols import _SCROLL_LIMIT  # the real scroll caller's read cap
 from lorescribe.models import Chunk
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
 from surrealdb.errors import ErrorKind, ServerError, SurrealError
 
@@ -801,7 +801,7 @@ class TestResilience:
             database=surreal_env.database,
             dim=surreal_env.dim,
             user=surreal_env.user,
-            password="DELIBERATELY-WRONG-PASSWORD",
+            password=SecretStr("DELIBERATELY-WRONG-PASSWORD"),
         )
         with pytest.raises(SurrealConnectionError):
             await bad_store.ensure_ready()
@@ -4271,7 +4271,7 @@ class TestQueryMessageHygiene:
             database="db",
             dim=PRODUCTION_DIM,
             user="root",
-            password="root",
+            password=SecretStr("root"),
         )
         store._connection = cast("_SurrealConnection", _RejectingConnection(error=error))
         return store

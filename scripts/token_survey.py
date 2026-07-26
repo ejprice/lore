@@ -47,6 +47,8 @@ from threading import Lock
 import httpx
 from loresigil.tokens import VoyageTokenCounter
 
+from loresigil import backoff
+
 # --------------------------------------------------------------------------- #
 # Constants — no magic values
 # --------------------------------------------------------------------------- #
@@ -804,15 +806,26 @@ class ClaudeTokenCounter:
 
     @staticmethod
     def _sleep_backoff(attempt: int, retry_after: str | None) -> None:
-        """Sleep before a retry, honouring ``Retry-After`` when the server sets it."""
+        """Sleep before a retry, honouring ``Retry-After`` when the server sets it.
+
+        The exponential path draws from the shared full-jitter policy
+        (:func:`loresigil.backoff.jittered_backoff_delay`, finding #207). This survey
+        runs its counters through a thread pool, so "several workers hit the same 429
+        at the same moment" is its NORMAL operating condition, not an edge case — a
+        deterministic ladder would march the whole pool back into the rate limit
+        together. The ``Retry-After`` path is deliberately left un-jittered (see #207).
+        """
         if retry_after is not None:
             try:
                 time.sleep(min(float(retry_after), RETRY_MAX_DELAY_S))
                 return
             except ValueError:
                 pass
-        delay = min(RETRY_BASE_DELAY_S * (2**attempt), RETRY_MAX_DELAY_S)
-        time.sleep(delay)
+        time.sleep(
+            backoff.jittered_backoff_delay(
+                attempt, base_s=RETRY_BASE_DELAY_S, cap_s=RETRY_MAX_DELAY_S
+            )
+        )
 
     def close(self) -> None:
         if self._owns_client:

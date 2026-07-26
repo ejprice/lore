@@ -33,6 +33,8 @@ from loremaster.calibration import baseline as bl
 from loremaster.calibration import counting
 from loremaster.calibration import engine as ce
 
+from loresigil import backoff as backoff_module
+
 # --- a tiny synthetic corpus + baseline (control the totals precisely) --------
 
 _FILE_A = b"alpha alpha alpha\n"
@@ -522,7 +524,13 @@ class TestEndpointLifecycle:
         await engine.start()
         # First attempt fails -> cached_retrying; recovery flips to measured.
         await _wait_state(engine, "measured")
-        assert engine_delays == [30.0]  # exactly one backoff before recovery
+        # Exactly one backoff before recovery, drawn from attempt 0's window.
+        # This read ``== [30.0]`` before #207, which certified the OLD deterministic
+        # ladder; the delay is now DRAWN from ``[0, BACKOFF_START_S)``. The doubling
+        # and the cap are pinned deterministically, on the window rather than on a
+        # sampled value, in ``test_backoff_doubles_and_caps`` below.
+        assert len(engine_delays) == 1
+        assert 0.0 <= engine_delays[0] <= ce.BACKOFF_START_S
         assert engine.served_constant == pytest.approx(_COMMITTED)
         await engine.stop()
 
@@ -546,9 +554,34 @@ class TestEndpointLifecycle:
         assert status["served_constant"] == pytest.approx(_COMMITTED)  # keeps serving current
         await engine.stop()  # cancels the task parked in backoff — clean
 
-    async def test_backoff_doubles_and_caps(self, tmp_path: Path) -> None:
+    async def test_backoff_doubles_and_caps(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The retry WINDOW doubles and caps: 30, 60, 120, 240, 480, then 900 (not 960).
+
+        Before #207 this asserted the sampled delays equalled that ladder exactly,
+        which was only possible because the backoff was deterministic — the pin was
+        certifying the very lockstep #207 exists to remove. A sampled full-jitter draw
+        cannot demonstrate a ladder at all.
+
+        So the ladder is now observed where it is actually decided: at the arguments
+        the engine hands the SHARED policy. That is strictly MORE discriminating than
+        the old pin — it fixes the base, the cap, the attempt sequence AND the
+        per-attempt bound, and it is fully deterministic (no distributional margin).
+        A build that passed the wrong ``base_s``/``cap_s``, skipped an attempt, or
+        stopped capping is caught here; the old equality pin could not distinguish a
+        wrong window from a wrong draw.
+        """
         available = {"v": False}
         engine_delays: list[float] = []
+        policy_calls: list[tuple[int, float, float]] = []
+        real_policy = backoff_module.jittered_backoff_delay
+
+        def recording_policy(attempt: int, *, base_s: float, cap_s: float) -> float:
+            policy_calls.append((attempt, base_s, cap_s))
+            return real_policy(attempt, base_s=base_s, cap_s=cap_s)
+
+        monkeypatch.setattr(backoff_module, "jittered_backoff_delay", recording_policy)
 
         async def engine_sleep(delay: float) -> None:
             engine_delays.append(delay)
@@ -571,8 +604,34 @@ class TestEndpointLifecycle:
         )
         await engine.start()
         await _wait_state(engine, "measured")
-        # 30, 60, 120, 240, 480, then capped at 900 (not 960).
-        assert engine_delays == [30.0, 60.0, 120.0, 240.0, 480.0, 900.0]
+
+        # Isolate the ENGINE's own draws. The probe drives a REAL AsyncClaudeTokenCounter,
+        # which shares the same policy for its own 429/5xx retries (finding #207) — so the
+        # recorder sees both populations. They are told apart by their window parameters,
+        # which is only possible because each caller passes its own: the counter's are
+        # (RETRY_BASE_DELAY_S, RETRY_MAX_DELAY_S), the engine's are the two below.
+        engine_calls = [
+            (attempt, base, cap)
+            for attempt, base, cap in policy_calls
+            if (base, cap) == (ce.BACKOFF_START_S, ce.BACKOFF_CAP_S)
+        ]
+        assert engine_calls, "the engine never consulted the shared backoff policy"
+
+        # One draw per failure, with a 0-based attempt index that advances every time.
+        assert [attempt for attempt, _base, _cap in engine_calls] == [0, 1, 2, 3, 4, 5]
+
+        # 30, 60, 120, 240, 480, then capped at 900 (not 960) — the WINDOW ladder
+        # those parameters produce, with every drawn delay inside its own window.
+        expected_windows = [30.0, 60.0, 120.0, 240.0, 480.0, 900.0]
+        actual_windows = [
+            min(base * (2**attempt), cap) for attempt, base, cap in engine_calls
+        ]
+        assert actual_windows == expected_windows
+        assert len(engine_delays) == len(expected_windows)
+        for delay, window in zip(engine_delays, expected_windows, strict=True):
+            assert 0.0 <= delay <= window, (
+                f"a backoff of {delay}s fell outside its window [0, {window}]"
+            )
         await engine.stop()
 
     async def test_terminal_4xx_stops_retrying_and_names_the_cause(
@@ -641,7 +700,11 @@ class TestEndpointLifecycle:
         )
         await engine.start()
         await _wait_state(engine, "measured")
-        assert engine_delays == [30.0]  # exactly one backoff (retryable), then recovery
+        # Exactly one backoff (retryable), then recovery. Bound, not equality: the
+        # delay is drawn from attempt 0's window since #207 (see the note in
+        # ``test_recovers_after_transient_outage``).
+        assert len(engine_delays) == 1
+        assert 0.0 <= engine_delays[0] <= ce.BACKOFF_START_S
         assert engine.served_constant == pytest.approx(_COMMITTED)
         await engine.stop()
 

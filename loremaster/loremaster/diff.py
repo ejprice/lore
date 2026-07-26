@@ -77,7 +77,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 from surrealdb import AsyncSurreal, InvalidRecordIdError, RecordID
 
 from loremaster.index.surreal_manifest import STATE_INDEXED, SurrealManifest
@@ -96,10 +96,9 @@ from loremaster.store._txn import (
     TxnContentionExhaustedError,
     bootstrap_session,
     run_query,
+    signin_credentials,
 )
 from loremaster.store.surreal import (
-    _SIGNIN_PASS_KEY,
-    _SIGNIN_USER_KEY,
     SurrealConnectionError,
     SurrealStore,
     _SurrealConnection,
@@ -488,7 +487,7 @@ class DiffEngine:
         namespace: str,
         database: str,
         user: str,
-        password: str,
+        password: SecretStr,
         store: SurrealStore,
         manifest: SurrealManifest,
     ) -> None:
@@ -535,10 +534,9 @@ class DiffEngine:
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
             connection = AsyncSurreal(self._url)
-            credentials: dict[str, Any] = {
-                _SIGNIN_USER_KEY: self._user,
-                _SIGNIN_PASS_KEY: self._password,
-            }
+            credentials = signin_credentials(
+                user=self._user, password=self._password
+            )
             try:
                 await connection.signin(credentials)
                 await bootstrap_session(connection, self._namespace, self._database, url=self._url)

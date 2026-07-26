@@ -95,6 +95,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import SecretStr
 from surrealdb import (
     AsyncEmbeddedSurrealConnection,
     AsyncHttpSurrealConnection,
@@ -944,6 +945,41 @@ async def retry_on_conflict[T](
 _BOOTSTRAP_DEFINE_NAMESPACE_LABEL = "store.bootstrap.define_namespace.rejected"
 _BOOTSTRAP_SELECT_DATABASE_LABEL = "store.bootstrap.select_database.rejected"
 _BOOTSTRAP_DEFINE_DATABASE_LABEL = "store.bootstrap.define_database.rejected"
+
+# The signin credential keys the SurrealDB SDK expects. Defined ONCE here — the
+# module every connection owner already imports ``bootstrap_session`` from — not
+# re-declared per owner: twelve private copies of one payload shape is twelve
+# places a change reaches eleven of ("a pattern to clone is a defect to clone",
+# #102).
+_SIGNIN_USER_KEY = "username"
+_SIGNIN_PASS_KEY = "password"
+
+
+def signin_credentials(*, user: str, password: SecretStr) -> dict[str, Any]:
+    """Build the SDK ``signin`` payload — THE ONE PLACE A SECRET IS UNWRAPPED.
+
+    Every connection owner in the package holds its password as a
+    :class:`pydantic.SecretStr` (#211) precisely so the raw value cannot render
+    through a ``repr``, an f-string, or a traceback frame. The SDK, however,
+    needs the real bytes on the wire — so ``get_secret_value()`` is called HERE,
+    once, in the narrowest possible scope, and the resulting dict is handed
+    straight to ``connection.signin``. Twelve owners each calling
+    ``get_secret_value()`` inline would be twelve copies of the unwrap policy;
+    this is one (#102 — if two call sites need the same policy, it is a function
+    they call, never a pattern they clone).
+
+    Args:
+        user: The root username to sign in as. Deliberately NOT a secret: it is
+            a public default (named by ``SURREAL_DEFAULT_USER_ENV``), typing it
+            as one would dilute the signal until nothing reads as a secret, and
+            it is interpolated into no log or error message in this package.
+        password: The root password, held as a :class:`SecretStr`.
+
+    Returns:
+        The ``{"username": …, "password": …}`` mapping ``connection.signin``
+        expects, carrying the raw credential the SDK needs on the wire.
+    """
+    return {_SIGNIN_USER_KEY: user, _SIGNIN_PASS_KEY: password.get_secret_value()}
 
 
 async def bootstrap_session(

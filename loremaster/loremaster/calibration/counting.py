@@ -24,6 +24,8 @@ from pathlib import Path
 
 import httpx
 
+from loresigil import backoff
+
 #: Anthropic token-counting endpoint (billed free; no completion generated).
 ANTHROPIC_COUNT_TOKENS_URL: str = "https://api.anthropic.com/v1/messages/count_tokens"
 ANTHROPIC_VERSION: str = "2023-06-01"
@@ -153,15 +155,29 @@ class AsyncClaudeTokenCounter:
         raise RuntimeError(f"count_tokens exhausted retries ({last_error})")
 
     async def _sleep_backoff(self, attempt: int, retry_after: str | None) -> None:
-        """Sleep before a retry, honouring ``Retry-After`` when the server sets it."""
+        """Sleep before a retry, honouring ``Retry-After`` when the server sets it.
+
+        The exponential path draws from the shared full-jitter policy
+        (:func:`loresigil.backoff.jittered_backoff_delay`, finding #207): a rate-limit
+        429 is by definition something many concurrent counters hit at once, and a
+        deterministic ladder would send every one of them back at the same instant.
+
+        The ``Retry-After`` path is deliberately NOT jittered — see the module-level
+        note in the report for #207. The server named a time; sleeping less than it
+        would be a protocol violation, and how much to add above it is an unruled
+        parameter, so that decision is escalated rather than invented here.
+        """
         if retry_after is not None:
             try:
                 await self._sleep(min(float(retry_after), RETRY_MAX_DELAY_S))
                 return
             except ValueError:
                 pass
-        delay = min(RETRY_BASE_DELAY_S * (2**attempt), RETRY_MAX_DELAY_S)
-        await self._sleep(delay)
+        await self._sleep(
+            backoff.jittered_backoff_delay(
+                attempt, base_s=RETRY_BASE_DELAY_S, cap_s=RETRY_MAX_DELAY_S
+            )
+        )
 
     async def aclose(self) -> None:
         """Close the underlying client only if this counter created it."""

@@ -95,7 +95,7 @@ def _slug() -> str:
 async def _surreal_test_env(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
     """Export the harness's root SurrealDB credentials; reap every slug-named database."""
     monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
-    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
+    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
     try:
         yield
     finally:

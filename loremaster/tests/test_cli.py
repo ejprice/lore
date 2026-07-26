@@ -88,7 +88,7 @@ def fake_embedder_cli(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         cli, "make_embedder_from_config", lambda _config: FakeEmbedder(dim=_DIM)
     )
     monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
-    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
+    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
     yield
 
 

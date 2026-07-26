@@ -1,0 +1,609 @@
+"""THE INVARIANT for finding #207 — one backoff policy, provably shared, with a perimeter.
+
+This class of defect has now been audit-caught THREE times — #102 (a 16-slot jitter derived
+from the contended row's id), #108 (a 4-slot table cloned into a sibling), #207 (five
+implementations, none jittered) — and until this file existed it had **no invariant to show
+for it**. Fixing N call sites without a pin guarantees an N+1th; that is the whole lesson.
+
+Two instruments, because one is not enough and this repo has the receipts to prove it:
+
+**1. SHARING, proven by MUTATION with CHECKED COVERAGE.**
+   ``TestEveryBackoffSharesTheOnePolicy`` mutates the shared policy to a sentinel and drives
+   every known call site, asserting each one slept the sentinel. A site that kept a private
+   copy still backs off, still retries, still passes every "does it work?" test — and sleeps
+   its own value here. That is the only test that distinguishes DRY from looks-DRY
+   (``CLAUDE.md``: *"ROUTING IS NOT SHARING"*).
+
+   Coverage is a CHECKED VARIABLE, not a hope: the observed site set must EQUAL the declared
+   site set. A guard is an invariant only over code it actually RUNS, so a site nobody drives
+   is a site this file certifies NOTHING about — that is exactly how this repo's fifth
+   instrument was defeated (``test_retry_seam.py``, finding #120).
+
+**2. THE PERIMETER, allowlisting the SAFE.**
+   ``TestNoNewHandRolledBackoff`` AST-scans production source for exponentiation by a variable
+   and denies it everywhere except one evidence-backed file. This is deliberately NOT a scan
+   for forbidden shapes: ``CLAUDE.md``'s six-defeat table records that every instrument keyed
+   on what is FORBIDDEN was defeated by the next name (a label's literal, a symbol's name,
+   ``async def _query``, 3 SDK method names, 2 receiver names, 4 arming tests). The forbidden
+   set is unbounded; the safe set here is **one file**, enumerable and small.
+
+   Measured 2026-07-25 at the #207 fix: pre-fix the scan returned **6** hits — the five
+   defects plus the fenced ``_txn`` seam — with **zero false positives** across
+   ``loremaster/``, ``loresigil/``, ``lorescribe/``, ``scripts/`` and ``skills/``. No
+   legitimate arithmetic anywhere in production raises anything to a variable power. That is
+   what makes deny-by-default affordable here rather than an insult that gets switched off.
+
+**THE THREAT MODEL, stated IN the instrument** (``CLAUDE.md``: *a gate needs one written down,
+or every auditor is entitled to call a clever evasion a defect*): these pins catch the HONEST
+ENGINEER who adds a retry loop and hand-writes its delay — the #207 defect verbatim, five
+times over. They are NOT a boundary against someone determined to evade them. Therefore
+*"a contributor could write ``delay *= 2`` in a loop and slip past"* is **not** a defect in
+this file; *"an engineer added a backoff and nothing noticed"* **is**. See the KNOWN BOUND
+pinned at the bottom.
+"""
+
+from __future__ import annotations
+
+import ast
+import sys
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+from loremaster.calibration import counting
+from loremaster.calibration import engine as ce
+from loremaster.scout import CommandSubscriber
+from loresigil.resilient import ResilientEmbedder
+from loresigil.tokens import VoyageTokenCounter
+
+from loresigil import backoff as backoff_module
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SCRIPTS_DIR = _REPO_ROOT / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+import token_survey as ts  # type: ignore[import-not-found]  # noqa: E402
+
+#: The sentinel the mutated policy returns. Deliberately absurd — no window in the tree
+#: could produce it by chance, so "the site slept this" cannot be a coincidence.
+_SENTINEL_DELAY = 1234.5
+
+#: Every production call site of the shared backoff policy. Declared here so coverage is a
+#: CHECKED variable: :func:`test_EVERY_declared_site_draws_from_the_mutated_policy`
+#: fails if a site is declared but never driven, and the perimeter scan below fails if a new
+#: hand-rolled backoff appears. Adding a sixth backoff means adding it to BOTH.
+_DECLARED_SITES = frozenset(
+    {
+        "loresigil.resilient.compute_backoff_delay",
+        "loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff",
+        "loremaster.calibration.engine.CalibrationEngine._probe_loop",
+        "loremaster.scout.CommandSubscriber._backoff",
+        "token_survey.ClaudeTokenCounter._sleep_backoff",
+    }
+)
+
+# --- the perimeter's evidence-backed allowlist -------------------------------------------
+#: The ONE production file permitted to raise a value to a VARIABLE power.
+#:
+#: ``_txn.py::_txn_conflict_backoff_seconds`` is the transaction-conflict seam's own
+#: full-jitter policy. It is exempt on EVIDENCE, not opinion: it already draws
+#: ``random.uniform(0, window)`` (the same Full Jitter this module's policy uses), it is
+#: mutation-proven across eleven consumers by ``test_retry_seam.py``, its distribution is
+#: pinned by ``test_surreal_store.py::TestTxnConflictBackoffIsJittered``, and finding #202
+#: deliberately fenced it from being churned.
+#:
+#: RE-OPEN TRIGGER: the day either jitter formula changes, these two implementations of one
+#: policy get consolidated (raised as R4 in ``REPORT-fix-207-jitter.md``, archived under
+#: ``docs/plans/v2/receipts/``). Until then this is a KNOWN, DELIBERATE second copy.
+_POW_ALLOWLIST = frozenset({"loremaster/loremaster/store/_txn.py"})
+
+#: The subscriber window the drivers construct with. Deliberately NOT scout's production
+#: defaults: a fixture reusing the module constant cannot tell "the site forwards MY
+#: parameters" from "the site ignores them and happens to agree with the default".
+_SCOUT_BASE_S = 0.25
+_SCOUT_CAP_S = 12.0
+
+#: Production roots the perimeter scans. Tests are excluded: a test may legitimately compute
+#: an expected window to assert against (this file's own siblings do).
+_SCANNED_ROOTS = (
+    "loremaster/loremaster",
+    "loresigil/loresigil",
+    "lorescribe/lorescribe",
+    "scripts",
+    "skills",
+)
+
+
+def _production_python_files() -> list[Path]:
+    """Every production ``.py`` under the scanned roots, tests excluded."""
+    found: list[Path] = []
+    for root in _SCANNED_ROOTS:
+        for path in (_REPO_ROOT / root).rglob("*.py"):
+            relative = path.relative_to(_REPO_ROOT).as_posix()
+            if "/tests/" in relative or path.name.startswith("test_"):
+                continue
+            found.append(path)
+    return found
+
+
+class _PolicyMutation:
+    """Replaces the shared policy with a sentinel and records which sites drew from it.
+
+    The instrument for pin 1. Returning a SENTINEL rather than delegating is the point: a
+    site that shares the policy sleeps 1234.5; a site with a private copy sleeps whatever
+    its own arithmetic produced. Nothing else can tell those apart.
+    """
+
+    def __init__(self) -> None:
+        self.draws: list[tuple[int, float, float]] = []
+
+    def __call__(self, attempt: int, *, base_s: float, cap_s: float) -> float:
+        self.draws.append((attempt, base_s, cap_s))
+        return _SENTINEL_DELAY
+
+
+@pytest.fixture
+def mutated_policy(monkeypatch: pytest.MonkeyPatch) -> _PolicyMutation:
+    """Mutate the ONE shared policy. Every genuine caller must change with it."""
+    assert hasattr(backoff_module, "jittered_backoff_delay"), (
+        "the shared policy's named function is gone. It must survive under this exact name: "
+        "identity is the only way a pin can tell 'shares the policy' from 'hand-rolled one "
+        "that looks like it'."
+    )
+    mutation = _PolicyMutation()
+    monkeypatch.setattr(backoff_module, "jittered_backoff_delay", mutation)
+    return mutation
+
+
+def _status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://embedder.test/embed")
+    response = httpx.Response(status_code, request=request, text="error body")
+    return httpx.HTTPStatusError("err", request=request, response=response)
+
+
+# --------------------------------------------------------------------------------------
+# ONE driver per call site, shared by the per-site pins AND the set-coverage pin below.
+#
+# Written once rather than twice on purpose: duplicating a driver is how the two pins
+# drift until they are testing different things while appearing to agree — the same
+# defect class (#207/#102) this whole file exists to instrument, reproduced in the
+# instrument. Each driver returns the delays the site actually slept.
+# --------------------------------------------------------------------------------------
+
+
+async def _drive_resilient_embedder() -> list[float]:
+    """Site 1: one 429 then success -> exactly one backoff through the shared policy."""
+    delays: list[float] = []
+    calls = 0
+
+    async def request_fn(texts: list[str]) -> list[list[float]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise _status_error(429)
+        return [[0.1] * 8 for _ in texts]
+
+    async def sleep_fn(delay: float) -> None:
+        delays.append(delay)
+
+    await ResilientEmbedder(
+        request_fn=request_fn,
+        token_counter=VoyageTokenCounter(),
+        max_input_tokens=8192,
+        sleep_fn=sleep_fn,
+    ).embed_texts(["a sentence to embed"])
+    return delays
+
+
+async def _drive_token_counter() -> list[float]:
+    """Site 2: one 503 then success -> exactly one backoff through the shared policy."""
+    slept: list[float] = []
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) < 2:
+            return httpx.Response(503, json={})
+        return httpx.Response(200, json={"input_tokens": 7})
+
+    async def sleep_fn(delay: float) -> None:
+        slept.append(delay)
+
+    counter = counting.AsyncClaudeTokenCounter(
+        "k",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        sleep=sleep_fn,
+    )
+    await counter.count("hi")
+    await counter.aclose()
+    return slept
+
+
+def _drive_calibration_engine(attempt: int) -> float:
+    """Site 3: the engine's named backoff seam, without the probe loop's whole harness.
+
+    The loop needs a corpus, a baseline, an integrity check and a findings port to reach
+    its backoff; a second copy of that harness would be a second thing to keep correct.
+    The window LADDER through the real loop is pinned in
+    ``test_calibration_engine.py::TestEndpointLifecycle::test_backoff_doubles_and_caps``.
+    """
+    engine = ce.CalibrationEngine.__new__(ce.CalibrationEngine)
+    engine._backoff_start_s = ce.BACKOFF_START_S
+    engine._backoff_cap_s = ce.BACKOFF_CAP_S
+    return engine._backoff_delay(attempt)
+
+
+async def _drive_command_subscriber(attempt: int) -> list[float]:
+    """Site 4: the subscriber's reconnect backoff, driven through its named seam.
+
+    Direct rather than through a reconnect storm: the run loop interleaves poll-interval
+    sleeps with reconnect backoffs on the SAME seam (``test_scout.py`` documents that
+    mixing), so an end-to-end drive cannot attribute a recorded delay to the backoff.
+    """
+    slept: list[float] = []
+
+    async def sleep_fn(delay: float) -> None:
+        slept.append(delay)
+
+    async def never_connect() -> Any:  # pragma: no cover - _backoff never connects
+        raise ConnectionResetError("unused")
+
+    async def handler(_row: dict[str, Any]) -> None:  # pragma: no cover - unused
+        return None
+
+    await CommandSubscriber(
+        connect=never_connect,
+        handler=handler,
+        poll_interval_s=0.01,
+        sleep=sleep_fn,
+        backoff_base_s=_SCOUT_BASE_S,
+        max_backoff_s=_SCOUT_CAP_S,
+    )._backoff(attempt)
+    return slept
+
+
+def _drive_token_survey(monkeypatch: pytest.MonkeyPatch, attempt: int) -> list[float]:
+    """Site 5: the survey counter's sync backoff (``time.sleep``, not asyncio)."""
+    slept: list[float] = []
+
+    def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(ts.time, "sleep", fake_sleep)
+    ts.ClaudeTokenCounter._sleep_backoff(attempt, None)
+    return slept
+
+
+class TestEveryBackoffSharesTheOnePolicy:
+    """Mutate the shared policy; every declared site must sleep the sentinel.
+
+    These prove each site INDIVIDUALLY, so a failure names the offender. The SET is
+    proven separately, in one process, by
+    :func:`test_EVERY_declared_site_draws_from_the_mutated_policy` below.
+    """
+
+    def test_the_mutation_is_visible_at_all(self, mutated_policy: _PolicyMutation) -> None:
+        """POSITIVE CONTROL — the mutation instrument can actually be seen.
+
+        Without this, every "the site slept the sentinel" assertion below could be passing
+        for the wrong reason (a broken fixture that silently no-ops looks identical to a
+        perfectly shared policy). This repo has shipped exactly that mistake: a "closed set
+        is enforced" probe that rejected on a PARSE ERROR rather than the ASSERT.
+        """
+        assert (
+            backoff_module.jittered_backoff_delay(0, base_s=1.0, cap_s=2.0) == _SENTINEL_DELAY
+        )
+        assert mutated_policy.draws == [(0, 1.0, 2.0)]
+
+    async def test_resilient_embedder_shares_the_policy(
+        self, mutated_policy: _PolicyMutation
+    ) -> None:
+        """Site 1: ``loresigil.resilient.compute_backoff_delay`` (both embedder backends)."""
+        assert await _drive_resilient_embedder() == [_SENTINEL_DELAY], (
+            "ResilientEmbedder backed off WITHOUT the shared policy — it is hand-rolling "
+            "its own. Five seams each owning a private backoff is finding #207."
+        )
+        assert mutated_policy.draws
+
+    async def test_token_counter_shares_the_policy(
+        self, mutated_policy: _PolicyMutation
+    ) -> None:
+        """Site 2: ``calibration.counting.AsyncClaudeTokenCounter._sleep_backoff``."""
+        assert await _drive_token_counter() == [_SENTINEL_DELAY], (
+            "AsyncClaudeTokenCounter backed off WITHOUT the shared policy"
+        )
+        assert mutated_policy.draws[-1] == (0, counting.RETRY_BASE_DELAY_S, counting.RETRY_MAX_DELAY_S)
+
+    def test_calibration_engine_shares_the_policy(
+        self, mutated_policy: _PolicyMutation
+    ) -> None:
+        """Site 3: ``calibration.engine.CalibrationEngine._backoff_delay``."""
+        assert _drive_calibration_engine(4) == _SENTINEL_DELAY, (
+            "CalibrationEngine._backoff_delay computed its own delay instead of drawing "
+            "from the shared policy"
+        )
+        assert mutated_policy.draws[-1] == (4, ce.BACKOFF_START_S, ce.BACKOFF_CAP_S)
+
+    async def test_command_subscriber_shares_the_policy(
+        self, mutated_policy: _PolicyMutation
+    ) -> None:
+        """Site 4: ``scout.CommandSubscriber._backoff``."""
+        assert await _drive_command_subscriber(2) == [_SENTINEL_DELAY], (
+            "CommandSubscriber._backoff backed off WITHOUT the shared policy"
+        )
+        assert mutated_policy.draws[-1] == (2, _SCOUT_BASE_S, _SCOUT_CAP_S), (
+            "the subscriber passed the wrong window parameters to the shared policy"
+        )
+
+    def test_token_survey_shares_the_policy(
+        self, mutated_policy: _PolicyMutation, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Site 5: ``scripts/token_survey.py::ClaudeTokenCounter._sleep_backoff`` (sync)."""
+        assert _drive_token_survey(monkeypatch, 3) == [_SENTINEL_DELAY], (
+            "token_survey's counter backed off WITHOUT the shared policy"
+        )
+        assert mutated_policy.draws[-1] == (3, ts.RETRY_BASE_DELAY_S, ts.RETRY_MAX_DELAY_S)
+
+
+async def test_EVERY_declared_site_draws_from_the_mutated_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """COVERAGE AS A CHECKED VARIABLE — the half that makes the rest an invariant.
+
+    The per-site tests above prove each site individually. This one proves the SET: it
+    mutates the shared policy ONCE and drives EVERY declared site inside a single test,
+    asserting the observed set equals :data:`_DECLARED_SITES` exactly.
+
+    Why a single test rather than an accumulation across the class: class-level state does
+    not survive ``pytest -n auto``, where xdist distributes tests across worker processes.
+    An accumulator would silently see a PARTIAL set on every parallel run — and this repo
+    runs ``-n auto`` by standing rule. A coverage check that quietly degrades to "some
+    sites" under the project's own default runner is exactly the false-confidence failure
+    this pin exists to prevent, so the drives live together in one process.
+
+    Both directions are asserted. A declared site nothing drives is an unguarded site
+    wearing a guarantee; an observed site nobody declared means the declaration drifted
+    from reality.
+    """
+    mutation = _PolicyMutation()
+    monkeypatch.setattr(backoff_module, "jittered_backoff_delay", mutation)
+    observed: set[str] = set()
+
+    if await _drive_resilient_embedder() == [_SENTINEL_DELAY]:
+        observed.add("loresigil.resilient.compute_backoff_delay")
+    if await _drive_token_counter() == [_SENTINEL_DELAY]:
+        observed.add("loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff")
+    if _drive_calibration_engine(1) == _SENTINEL_DELAY:
+        observed.add("loremaster.calibration.engine.CalibrationEngine._probe_loop")
+    if await _drive_command_subscriber(1) == [_SENTINEL_DELAY]:
+        observed.add("loremaster.scout.CommandSubscriber._backoff")
+    if _drive_token_survey(monkeypatch, 1) == [_SENTINEL_DELAY]:
+        observed.add("token_survey.ClaudeTokenCounter._sleep_backoff")
+
+    missing = _DECLARED_SITES - observed
+    assert not missing, (
+        f"these declared backoff sites did NOT draw from the mutated shared policy: "
+        f"{sorted(missing)}.\n"
+        f"Each one still backs off, still retries, and still passes every 'does it work?' "
+        f"test — while keeping a PRIVATE copy of the delay policy. That is finding #207 "
+        f"(and #102, #108) reproducing: a fix reaches one copy and not the others.\n"
+        f"Route the site through:\n"
+        f"    from loresigil import backoff\n"
+        f"    delay = backoff.jittered_backoff_delay(attempt, base_s=..., cap_s=...)\n"
+        f"NOTE: import the MODULE, not the function — a `from ... import "
+        f"jittered_backoff_delay` binds at import time, so this mutation could not reach it "
+        f"and a private copy would be indistinguishable from the real thing."
+    )
+    undeclared = observed - _DECLARED_SITES
+    assert not undeclared, f"observed sites missing from _DECLARED_SITES: {sorted(undeclared)}"
+    assert len(mutation.draws) >= len(_DECLARED_SITES), (
+        f"the mutated policy recorded only {len(mutation.draws)} draws for "
+        f"{len(_DECLARED_SITES)} declared sites — the instrument is under-counting"
+    )
+
+
+class TestNoNewHandRolledBackoff:
+    """THE PERIMETER: no production module may hand-roll an exponential window.
+
+    Deny-by-default over a rare construct with a one-file allowlist — not a scan for
+    forbidden shapes. See this module's docstring for why that direction is the only one
+    with a track record.
+    """
+
+    def test_no_production_module_outside_the_allowlist_exponentiates_by_a_variable(
+        self,
+    ) -> None:
+        offenders: list[str] = []
+        for path in _production_python_files():
+            relative = path.relative_to(_REPO_ROOT).as_posix()
+            if relative in _POW_ALLOWLIST:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:  # pragma: no cover - archived/none expected
+                continue
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.BinOp)
+                    and isinstance(node.op, ast.Pow)
+                    and not isinstance(node.right, ast.Constant)
+                ):
+                    offenders.append(f"{relative}:{node.lineno}: {ast.unparse(node)}")
+
+        assert not offenders, (
+            "a production module raised a value to a VARIABLE power outside the allowlist:\n  "
+            + "\n  ".join(offenders)
+            + "\n\nIn this tree that shape has only ever been one thing: a hand-rolled "
+            "exponential backoff window. Finding #207 found FIVE of them and none was "
+            "jittered; #102 and #108 were the same class before it. Draw the delay from the "
+            "shared policy instead:\n"
+            "    from loresigil import backoff\n"
+            "    delay = backoff.jittered_backoff_delay(attempt, base_s=..., cap_s=...)\n"
+            "and add the new site to _DECLARED_SITES in this file with a driver.\n"
+            "If this really is unrelated arithmetic, add the file to _POW_ALLOWLIST WITH "
+            "evidence (this scan had ZERO false positives across the whole tree on "
+            "2026-07-25)."
+        )
+
+    def test_the_allowlisted_file_still_contains_what_it_was_exempted_for(self) -> None:
+        """POSITIVE CONTROL for the allowlist — an exemption must still be earning itself.
+
+        Without this, ``_POW_ALLOWLIST`` silently becomes a permanent hole: if
+        ``_txn_conflict_backoff_seconds`` were deleted or rewritten, the exemption would
+        keep waving through any FUTURE hand-rolled backoff added to that file. Pairing the
+        deny with proof that the exempted construct is still present and still jittered is
+        the difference between an allowlist and an unexamined blind spot.
+        """
+        for relative in _POW_ALLOWLIST:
+            source = (_REPO_ROOT / relative).read_text(encoding="utf-8")
+            assert "_txn_conflict_backoff_seconds" in source, (
+                f"{relative} is allowlisted from the exponentiation perimeter because it owns "
+                f"the transaction-conflict full-jitter policy — but that function is gone. "
+                f"Re-derive the exemption or drop it; a stale allowlist entry is a hole."
+            )
+            assert "random.uniform(0, window)" in source, (
+                f"{relative}'s exemption rests on it ALREADY drawing full jitter. That draw is "
+                f"no longer there, so the exemption no longer holds (finding #102)."
+            )
+
+    def test_the_scan_can_actually_see_an_offender(self, tmp_path: Path) -> None:
+        """POSITIVE CONTROL for the scan itself — prove it fires on a known-bad input.
+
+        A perimeter that returns "no offenders" is worthless until it has been shown
+        returning "offender" on something broken. ``CLAUDE.md``: *a probe needs a control —
+        the auditor's instrument can lie the same way the author's did.*
+        """
+        offending = "delay = min(base * (2**attempt), cap)\n"
+        tree = ast.parse(offending)
+        found = [
+            ast.unparse(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Pow)
+            and not isinstance(node.right, ast.Constant)
+        ]
+        assert found == ["2 ** attempt"], (
+            "the perimeter's detection logic did not fire on a verbatim copy of the #207 "
+            "defect — every negative result it produces is meaningless"
+        )
+
+        benign = "area = radius**2\nscaled = value**2.0\n"
+        benign_tree = ast.parse(benign)
+        benign_hits = [
+            node
+            for node in ast.walk(benign_tree)
+            if isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Pow)
+            and not isinstance(node.right, ast.Constant)
+        ]
+        assert not benign_hits, (
+            "the perimeter fires on constant-exponent arithmetic — it would produce false "
+            "positives on ordinary maths, and a gate that insults honest code gets switched off"
+        )
+
+
+class TestKnownBoundsOfThisInstrument:
+    """PIN THE MISS (``CLAUDE.md``: *when you cannot close a hole, pin it*).
+
+    An unpinned known limitation is indistinguishable from an unknown one — the next
+    engineer either rediscovers it from an outage or "helpfully" closes it and re-opens a
+    settled trade. These tests assert the holes EXIST and go RED the day someone closes one.
+    """
+
+    def test_KNOWN_BOUND_a_multiplicative_backoff_evades_the_perimeter(self) -> None:
+        """KNOWN BOUND (#207): the perimeter sees ``2**attempt``, not ``delay *= 2``.
+
+        A backoff accumulated by repeated multiplication, or read from a lookup table, has no
+        ``Pow`` node and is invisible to this scan. That is DELIBERATE and not worth closing:
+        catching it would mean enumerating forbidden shapes, and ``CLAUDE.md``'s six-defeat
+        table records that every instrument keyed on the forbidden set was beaten by the next
+        name. The perimeter is aimed at the honest engineer writing the obvious thing, which
+        is what all five #207 sites and both prior instances actually did.
+
+        IF YOU CLOSED THIS DELIBERATELY, delete this pin and say so in the commit.
+        RE-OPEN TRIGGER: the first backoff found in this tree written multiplicatively.
+        """
+        multiplicative = "delay = 1.0\nfor _ in range(n):\n    delay *= 2\n"
+        tree = ast.parse(multiplicative)
+        pow_nodes = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow)
+        ]
+        assert not pow_nodes, (
+            "a multiplicative backoff now produces a Pow node — the perimeter's known bound "
+            "has changed shape. Re-derive the bound (finding #207)."
+        )
+
+    def test_KNOWN_BOUND_the_retry_after_path_is_not_jittered(self) -> None:
+        """KNOWN BOUND (#207, raised as R2): ``Retry-After`` sleeps are still deterministic.
+
+        Both HTTP counters honour a server-supplied ``Retry-After`` by sleeping it verbatim
+        (clamped). Every rate-limited client receives the SAME value, so that path is more
+        perfectly lockstepped than the exponential ladder ever was. It was left alone
+        deliberately: the correct fix jitters ABOVE the floor (sleeping less than the server
+        asked is a protocol violation) and the jitter width is an unruled parameter — a
+        design decision, escalated rather than invented.
+
+        IF YOU CLOSED THIS DELIBERATELY, delete this pin and say so.
+        RE-OPEN TRIGGER: an operator ruling on the jitter width.
+        """
+        source = (
+            _REPO_ROOT / "loremaster/loremaster/calibration/counting.py"
+        ).read_text(encoding="utf-8")
+        assert "min(float(retry_after), RETRY_MAX_DELAY_S)" in source, (
+            "the Retry-After path changed shape. If it was jittered deliberately (R2 ruled), "
+            "delete this pin and say so; if not, the bound needs re-deriving (finding #207)."
+        )
+
+
+def test_the_shared_policy_is_backed_by_tenacity_not_a_hand_roll() -> None:
+    """The policy is the PACKAGE's, not ours (operator: packages over hand-rolling).
+
+    Pinned structurally because the alternative — re-deriving Full Jitter by hand — is
+    exactly what the rule forbids, and because a future edit could quietly replace the
+    import with three lines of ``random.uniform`` that pass every behavioural pin in
+    ``loresigil/tests/test_backoff.py`` while re-taking on the maintenance burden.
+
+    It also pins WHICH tenacity strategy: ``wait_exponential_jitter`` (equal jitter around a
+    floor) would satisfy the word "jitter" and silently re-ship the policy #102 rejected.
+    """
+    source = (_REPO_ROOT / "loresigil/loresigil/backoff.py").read_text(encoding="utf-8")
+
+    # Inspect the CALL inside the policy function, not the file's text. A substring
+    # check over the whole module cannot tell "uses tenacity" from "still imports
+    # tenacity while hand-rolling the maths underneath" — measured 2026-07-25: a
+    # mutation that replaced this function's entire body with
+    # ``min(base_s * 2**attempt, cap_s)`` left the import and the docstring intact and
+    # this pin STAYED GREEN. The both-ways mutation diff caught it; the pin now reads
+    # the AST so it cannot be fooled the same way.
+    tree = ast.parse(source)
+    policy_fn = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "jittered_backoff_delay"
+        ),
+        None,
+    )
+    assert policy_fn is not None, "the shared policy function jittered_backoff_delay is gone"
+    called_names = {
+        node.func.id
+        for node in ast.walk(policy_fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "wait_random_exponential" in called_names, (
+        f"jittered_backoff_delay does not CALL tenacity's wait_random_exponential — the AWS "
+        f"Full Jitter implementation (it calls: {sorted(called_names)}). If the maths was "
+        f"hand-rolled back into this body, that re-takes a maintenance burden the package "
+        f"already carries (operator: packages over hand-rolling, verified by reading the "
+        f"installed API)."
+    )
+    assert "wait_exponential_jitter" not in source, (
+        "the shared policy switched to tenacity's wait_exponential_jitter. That class is "
+        "EQUAL jitter — 'initial * 2**n + uniform(0, jitter)' with a FIXED 1s jitter width — "
+        "so it never draws below its exponential floor. This repo ruled that insufficient in "
+        "#102; test_surreal_store.py fails such builds as 'wb13-equal-jitter'."
+    )

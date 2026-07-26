@@ -106,7 +106,10 @@ async def _run(config: LoreConfig, args: argparse.Namespace) -> IndexSummary:
     # server reads — shared state by shared database, not shared files) holding
     # chunks + file_text + manifest + code graph, per SurrealConfig. Credentials
     # are resolved by env-var NAME (never inlined), failing loudly when unset.
-    surreal_user = resolve_secret(config.surreal.user_env)
+    # The USERNAME is deliberately not carried as a secret (#211): it is a public
+    # default named by SURREAL_DEFAULT_USER_ENV, so it is unwrapped here while
+    # the password stays a SecretStr all the way to the SDK seam.
+    surreal_user = resolve_secret(config.surreal.user_env).get_secret_value()
     surreal_password = resolve_secret(config.surreal.password_env)
     database = config.effective_surreal_database
 

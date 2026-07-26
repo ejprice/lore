@@ -325,7 +325,10 @@ async def run_gc(args: argparse.Namespace) -> int:
     :class:`KeyError`, :class:`ValueError`) for :func:`main` to launder.
     """
     epoch = parse_epoch(args.epoch)
-    user = resolve_secret(args.user_env)
+    # The USERNAME is deliberately not carried as a secret (#211): it is a public
+    # default named by SURREAL_DEFAULT_USER_ENV, so it is unwrapped here while
+    # the password stays a SecretStr all the way to the SDK seam.
+    user = resolve_secret(args.user_env).get_secret_value()
     password = resolve_secret(args.password_env)
 
     summaries = await _list_snapshots(

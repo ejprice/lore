@@ -111,6 +111,7 @@ from loremaster.store.surreal_schema import (
     SNAPSHOT_ENTRY_TABLE,
     SNAPSHOT_TABLE,
 )
+from pydantic import SecretStr
 from surrealdb.errors import ErrorKind, ServerError
 
 try:
@@ -1047,17 +1048,17 @@ class TestQueryClassifiedErrorPosture:
     def _stamper_rejecting_with(error: BaseException) -> SnapshotStamper:
         store = SurrealStore(
             url=_DEAD_URL, namespace="ns", database="db", dim=PRODUCTION_DIM,
-            user="root", password="root",
+            user="root", password=SecretStr("root"),
         )
         manifest = SurrealManifest(
-            url=_DEAD_URL, namespace="ns", database="db", user="root", password="root",
+            url=_DEAD_URL, namespace="ns", database="db", user="root", password=SecretStr("root"),
         )
         stamper = SnapshotStamper(
             url=_DEAD_URL,
             namespace="ns",
             database="db",
             user="root",
-            password="root",
+            password=SecretStr("root"),
             store=store,
             manifest=manifest,
             project_root=Path(),

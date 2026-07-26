@@ -67,6 +67,7 @@ from loremaster.calibration.counting import (
     AsyncSleep,
     TerminalCountError,
 )
+from loresigil import backoff
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,31 @@ class CalibrationEngine:
 
     # --- probe orchestration --------------------------------------------------
 
+    def _backoff_delay(self, attempt: int) -> float:
+        """Draw this probe's reconnect delay from the SHARED full-jitter policy.
+
+        A named seam rather than an expression inline in :meth:`_probe_loop`, mirroring
+        :meth:`loremaster.scout.CommandSubscriber._backoff`: it is what lets the
+        one-implementation invariant DRIVE this call site directly and prove it shares the
+        policy (``loremaster/tests/test_backoff_seam.py``). A backoff buried inside a loop
+        body can only be reached through the loop's whole harness, and a site a pin cannot
+        drive is a site nothing certifies.
+
+        Finding #207: this used to be ``min(start * 2**attempt, cap)`` — a pure function of
+        ``attempt``. Every lore container calibrating against the same endpoint enters this
+        loop on the same outage, so a deterministic ladder marched all of them back in step,
+        forever. The delay is now DRAWN, so they decorrelate.
+
+        Args:
+            attempt: The zero-based index of the probe attempt that just failed.
+
+        Returns:
+            A delay in seconds from ``[0, min(backoff_cap_s, backoff_start_s * 2**attempt))``.
+        """
+        return backoff.jittered_backoff_delay(
+            attempt, base_s=self._backoff_start_s, cap_s=self._backoff_cap_s
+        )
+
     async def _probe_loop(self) -> None:
         """Run the probe, retrying an unreachable endpoint with bounded backoff, forever.
 
@@ -318,8 +344,7 @@ class CalibrationEngine:
                     return
                 except _ProbeUnavailableError as exc:
                     self._enter_retrying(attempt, exc)
-                    delay = min(self._backoff_start_s * (2**attempt), self._backoff_cap_s)
-                    await self._sleep(delay)
+                    await self._sleep(self._backoff_delay(attempt))
                     attempt += 1
                     continue
                 return  # terminal: measured / drift_adopted / integrity mismatch

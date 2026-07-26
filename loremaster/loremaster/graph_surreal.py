@@ -73,6 +73,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from lorescribe.models import Chunk
+from pydantic import SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.graph import (
@@ -108,8 +109,8 @@ from loremaster.store._txn import (
     compose,
     execute_transaction,
     run_query,
+    signin_credentials,
 )
-from loremaster.store.surreal import _SIGNIN_PASS_KEY, _SIGNIN_USER_KEY
 from loremaster.store.surreal_schema import (
     ANSWERS_TO_RELATION,
     CODE_NODE_TABLE,
@@ -318,7 +319,7 @@ class SurrealCodeGraph:
         namespace: str,
         database: str,
         user: str,
-        password: str,
+        password: SecretStr,
         tier_roots: Mapping[str, str | Path],
         project_roots: Sequence[str | Path],
     ) -> None:
@@ -407,10 +408,9 @@ class SurrealCodeGraph:
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
             connection = AsyncSurreal(self._url)
-            credentials: dict[str, Any] = {
-                _SIGNIN_USER_KEY: self._user,
-                _SIGNIN_PASS_KEY: self._password,
-            }
+            credentials = signin_credentials(
+                user=self._user, password=self._password
+            )
             try:
                 await connection.signin(credentials)
                 await bootstrap_session(connection, self._namespace, self._database, url=self._url)

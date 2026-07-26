@@ -575,7 +575,9 @@ def _surreal_url() -> str:
 def _surreal_env_creds(monkeypatch_or_none: Any = None) -> tuple[str, str]:
     from _surreal_harness import surreal_password, surreal_user
 
-    return surreal_user(), surreal_password()
+    # Both are exported into ``os.environ``, which takes plain strings — so the
+    # password is unwrapped at THIS boundary (#211) and nowhere earlier.
+    return surreal_user(), surreal_password().get_secret_value()
 
 
 def _server_config(slug: str, live_path: Path) -> Any:
@@ -670,7 +672,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
         from loremaster.server import build_app_context
 
         os.environ.setdefault("SURREAL_USER", surreal_user())
-        os.environ.setdefault("SURREAL_PASS", surreal_password())
+        os.environ.setdefault("SURREAL_PASS", surreal_password().get_secret_value())
         return await build_app_context(
             server=server,
             embedder=FakeEmbedder(dim=_DIM),
@@ -973,7 +975,7 @@ class TestRuntimeExtensionContextStoreIsUnifiedSurreal:
         from loremaster.server import build_app_context
 
         os.environ.setdefault("SURREAL_USER", surreal_user())
-        os.environ.setdefault("SURREAL_PASS", surreal_password())
+        os.environ.setdefault("SURREAL_PASS", surreal_password().get_secret_value())
         return await build_app_context(
             server=server,
             embedder=FakeEmbedder(dim=_DIM),

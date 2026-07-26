@@ -450,8 +450,12 @@ class TestResolveSecret:
     """Secret resolution from the environment by variable name."""
 
     def test_returns_value_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The value comes back wrapped in a ``SecretStr`` (#211) — the type IS the
+        # protection, so the assertion unwraps DELIBERATELY, exactly as a caller
+        # must. ``== "s3cr3t-token"`` against the wrapper would be False, which is
+        # the whole point: an accidental comparison/interpolation cannot see it.
         monkeypatch.setenv("LORE_TEI_KEY", "s3cr3t-token")
-        assert resolve_secret("LORE_TEI_KEY") == "s3cr3t-token"
+        assert resolve_secret("LORE_TEI_KEY").get_secret_value() == "s3cr3t-token"
 
     def test_raises_clear_error_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LORE_TEI_KEY", raising=False)
@@ -480,8 +484,10 @@ class TestResolveSecret:
         # A secret may legitimately contain leading/trailing whitespace as part
         # of its actual bytes (e.g. copy-paste padding) — resolve_secret must
         # never strip or otherwise mutate the returned value.
+        # PRESERVED ACROSS THE #211 SecretStr migration: wrapping must not
+        # mutate the bytes, only how they render.
         monkeypatch.setenv("LORE_TEI_KEY", "  s3cr3t-token  ")
-        assert resolve_secret("LORE_TEI_KEY") == "  s3cr3t-token  "
+        assert resolve_secret("LORE_TEI_KEY").get_secret_value() == "  s3cr3t-token  "
 
 
 # ---------------------------------------------------------------------------

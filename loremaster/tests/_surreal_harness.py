@@ -69,6 +69,7 @@ from typing import Any, Protocol
 
 import pytest_asyncio
 from loremaster.index.records import Record, point_id, sha512_hex
+from pydantic import SecretStr
 from surrealdb import (
     AsyncEmbeddedSurrealConnection,
     AsyncHttpSurrealConnection,
@@ -136,9 +137,16 @@ def surreal_user() -> str:
     return os.environ.get(_ENV_USER, DEFAULT_USER)
 
 
-def surreal_password() -> str:
-    """The root password (env override, else the spike default)."""
-    return os.environ.get(_ENV_PASS, DEFAULT_PASS)
+def surreal_password() -> SecretStr:
+    """The root password (env override, else the spike default).
+
+    Returns a :class:`~pydantic.SecretStr` because the production seam
+    (:func:`loremaster.config.resolve_secret`) does (#211): a harness that
+    handed stores a bare ``str`` would be typing the test differently from
+    production, and the fixture would be the one shape where the protection
+    is absent.
+    """
+    return SecretStr(os.environ.get(_ENV_PASS, DEFAULT_PASS))
 
 
 def unique_database() -> str:
@@ -166,7 +174,7 @@ class SurrealEnv:
 
     url: str
     user: str
-    password: str
+    password: SecretStr
     namespace: str
     database: str
     dim: int
@@ -345,7 +353,11 @@ async def connect_admin(env: SurrealEnv) -> SurrealConnection:
     setup-failure rate across the whole suite (finding #150).
     """
     connection = AsyncSurreal(env.url)
-    credentials: dict[str, Any] = {"username": env.user, "password": env.password}
+    # In-function, per RULING 1 (operator, 2026-07-20): no module-level store
+    # import in the harness — see test_surreal_harness.py's import pin.
+    from loremaster.store._txn import signin_credentials
+
+    credentials = signin_credentials(user=env.user, password=env.password)
     await connection.signin(credentials)
 
     from loremaster.store._txn import bootstrap_session
@@ -437,7 +449,11 @@ async def drop_database(env: SurrealEnv) -> None:
     attempts regardless of wall time.
     """
     connection = AsyncSurreal(env.url)
-    credentials: dict[str, Any] = {"username": env.user, "password": env.password}
+    # In-function, per RULING 1 (operator, 2026-07-20): no module-level store
+    # import in the harness — see test_surreal_harness.py's import pin.
+    from loremaster.store._txn import signin_credentials
+
+    credentials = signin_credentials(user=env.user, password=env.password)
     await connection.signin(credentials)
 
     started = time.monotonic()

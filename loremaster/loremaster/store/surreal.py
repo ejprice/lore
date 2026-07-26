@@ -91,6 +91,7 @@ from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Any
 
+from pydantic import SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.index.records import Record
@@ -106,6 +107,7 @@ from loremaster.store._txn import (
     compose,
     execute_transaction,
     run_query,
+    signin_credentials,
 )
 from loremaster.store.candidate import Candidate, CandidateOrigin
 
@@ -169,9 +171,8 @@ __all__ = [
 # et al.) is now made INSIDE those shared functions, not re-derived per seam.
 # See that module's docstring for why.
 
-# The signin credential keys the SDK expects.
-_SIGNIN_USER_KEY = "username"
-_SIGNIN_PASS_KEY = "password"
+# (The signin credential keys moved to the ONE shared
+# ``store._txn.signin_credentials`` seam — #211/#102.)
 
 # Filtered KNN under-returns, so each hybrid arm requests this multiple of the
 # caller's ``k`` before the tier filter thins the result; RRF re-imposes ``k``.
@@ -375,7 +376,7 @@ class SurrealStore:
         database: str,
         dim: int,
         user: str,
-        password: str,
+        password: SecretStr,
         analyzer_name: str = DEFAULT_ANALYZER_NAME,
     ) -> None:
         self._url = url
@@ -447,10 +448,9 @@ class SurrealStore:
             if self._connection is not None:
                 return self._connection  # type: ignore[unreachable]
             connection = AsyncSurreal(self._url)
-            credentials: dict[str, Any] = {
-                _SIGNIN_USER_KEY: self._user,
-                _SIGNIN_PASS_KEY: self._password,
-            }
+            credentials = signin_credentials(
+                user=self._user, password=self._password
+            )
             try:
                 await connection.signin(credentials)
                 await bootstrap_session(connection, self._namespace, self._database, url=self._url)

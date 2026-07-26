@@ -650,7 +650,7 @@ class TestEagerStartupEndToEnd:
         # per-test database (reaped in the finally below), mirroring
         # ``test_cli.py``'s harness-isolation convention.
         monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
-        monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
+        monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
         database = unique_database()
 
         slug = _slug()
@@ -755,7 +755,7 @@ class TestLifespanStartupIsHermetic:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
-        monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
+        monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
         database = unique_database()
 
         slug = _slug()

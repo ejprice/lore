@@ -187,7 +187,7 @@ class TestBuildAppContextCreatesStateDir:
         from loresigil.testing import FakeEmbedder
 
         os.environ.setdefault("SURREAL_USER", surreal_user())
-        os.environ.setdefault("SURREAL_PASS", surreal_password())
+        os.environ.setdefault("SURREAL_PASS", surreal_password().get_secret_value())
         config = _build_realistic_config(tmp_path)
         slug = config.project.slug
 

@@ -43,6 +43,8 @@ from collections.abc import Awaitable, Callable, Iterable, MutableMapping
 from typing import Any
 from urllib.parse import urlsplit
 
+from pydantic import SecretStr
+
 from loremaster.config import AuthConfig, resolve_secret
 
 __all__ = [
@@ -105,15 +107,17 @@ class ApiKeyVerifier(AuthVerifier):
     Args:
         keys: A mapping of identity name → secret key value. Each name labels a
             developer/service so a verified request can be attributed; the value
-            is the bearer token that authenticates as that identity.
+            is the bearer token that authenticates as that identity, held as a
+            :class:`~pydantic.SecretStr` so the live key set cannot render itself
+            into a log line, an exception message, or a traceback (#211).
     """
 
-    def __init__(self, keys: dict[str, str]) -> None:
+    def __init__(self, keys: dict[str, SecretStr]) -> None:
         # name → secret. A copy so a later mutation of the caller's dict cannot
         # silently change the live key set out from under the verifier. Every key
         # is validated non-empty (an empty key value would authenticate an empty
         # token — an un-closable hole), so a verifier can never carry one.
-        self._keys: dict[str, str] = {}
+        self._keys: dict[str, SecretStr] = {}
         for name, value in keys.items():
             self.add_key(name, value)
 
@@ -144,22 +148,27 @@ class ApiKeyVerifier(AuthVerifier):
         token_bytes = token.encode("utf-8")
         matched: str | None = None
         for name, value in self._keys.items():
-            if hmac.compare_digest(token_bytes, value.encode("utf-8")):
+            # The ONE unwrap on this path (#211): the comparison needs the real
+            # bytes, and nothing else in this class ever sees them.
+            if hmac.compare_digest(token_bytes, value.get_secret_value().encode("utf-8")):
                 matched = name
         return matched
 
-    def add_key(self, name: str, value: str) -> None:
+    def add_key(self, name: str, value: SecretStr) -> None:
         """Add (or replace) a named key — it verifies immediately (rotation).
 
         Args:
             name: The identity name to register the key under.
-            value: The secret key value that authenticates as ``name``.
+            value: The secret key value that authenticates as ``name``, wrapped in
+                a :class:`~pydantic.SecretStr` (#211) — the verifier holds it in
+                that form for its whole life and unwraps only inside
+                :meth:`verify`'s constant-time comparison.
 
         Raises:
             ValueError: If ``value`` is empty — an empty key would authenticate an
                 empty token, an un-closable hole; rejecting it keeps the gate sound.
         """
-        if not value:
+        if not value.get_secret_value():
             raise ValueError(f"refusing to register an empty key value for identity {name!r}")
         self._keys[name] = value
 
@@ -190,7 +199,7 @@ def build_api_key_verifier(config: AuthConfig) -> ApiKeyVerifier:
     Raises:
         KeyError: If any configured key's env var is unset or empty.
     """
-    resolved: dict[str, str] = {}
+    resolved: dict[str, SecretStr] = {}
     for key in config.keys:
         resolved[key.name] = resolve_secret(key.key_env)
     return ApiKeyVerifier(resolved)

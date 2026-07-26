@@ -179,7 +179,7 @@ class TestEagerStartupSurvivesUnparseableFile:
         # construction — export the dev-server's harness credentials
         # (idempotent: the same values the harness itself resolves).
         os.environ.setdefault(_SURREAL_USER_ENV, surreal_user())
-        os.environ.setdefault(_SURREAL_PASS_ENV, surreal_password())
+        os.environ.setdefault(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
 
         app_context = await build_app_context(
             server=server,

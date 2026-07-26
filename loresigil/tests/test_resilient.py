@@ -32,7 +32,7 @@ import math
 
 import httpx
 import pytest
-from loresigil.resilient import ResilientEmbedder
+from loresigil.resilient import BACKOFF_BASE_S, BACKOFF_CAP_S, ResilientEmbedder
 from loresigil.tokens import VoyageTokenCounter
 
 # The dotted logger name the resilient wrapper emits under (module ``__name__``).
@@ -153,9 +153,22 @@ class TestRetriesOn5xxAndTransport:
         assert calls == 2
         assert vectors == [GOOD_VECTOR]
 
-    async def test_backoff_is_exponential(self) -> None:
-        # Three transient failures then success -> delays must be non-decreasing
-        # and strictly grow (exponential), so a burst can't hammer the box.
+    async def test_backoff_is_drawn_from_an_exponentially_growing_window(self) -> None:
+        """Three transient failures -> three backoffs, each inside its own window.
+
+        This test used to assert ``delays[0] < delays[1] < delays[2]``. That pinned
+        the OLD world and, worse, would have been FLAKY in the new one: under the full
+        jitter of finding #207 a later attempt draws from a WIDER window but can
+        legitimately return a SHORTER delay than an earlier one — that asymmetry is
+        precisely what breaks a tie between two racing clients. A strict-ordering pin
+        is a pin against jitter, and it would have failed intermittently rather than
+        honestly, which is how a real invariant gets deleted by the next engineer.
+
+        The property that survives is the one that was meant: the WINDOW grows
+        exponentially and is capped, so a burst cannot hammer the box. Growth of the
+        window itself is pinned against the shared policy in
+        ``loresigil/tests/test_backoff.py::TestWindowGrowsAndIsBounded``.
+        """
         calls = 0
 
         async def request_fn(texts: list[str]) -> list[list[float]]:
@@ -168,8 +181,12 @@ class TestRetriesOn5xxAndTransport:
         embedder, delays = _make_resilient(request_fn)
         await embedder.embed_texts([SENTENCE])
         assert len(delays) == 3
-        # Exponential: each delay strictly larger than the previous.
-        assert delays[0] < delays[1] < delays[2]
+        for attempt, delay in enumerate(delays):
+            window = min(BACKOFF_BASE_S * (2**attempt), BACKOFF_CAP_S)
+            assert 0.0 <= delay <= window, (
+                f"backoff {attempt} ({delay}) fell outside its window [0, {window}] — "
+                f"the delay is not being drawn from the attempt's exponential window"
+            )
 
 
 class TestPermanentFailureYieldsNone:

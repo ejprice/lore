@@ -126,6 +126,7 @@ from loremaster.store.surreal import (
     _SurrealConnection,
 )
 from loremaster.store.surreal_schema import FILE_STATES, FILE_TABLE, generate_manifest_ddl
+from pydantic import SecretStr
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
 from surrealdb.errors import ErrorKind, ServerError
 
@@ -947,7 +948,7 @@ class TestResilience:
             namespace=surreal_env.namespace,
             database=surreal_env.database,
             user=surreal_env.user,
-            password="DELIBERATELY-WRONG-PASSWORD",
+            password=SecretStr("DELIBERATELY-WRONG-PASSWORD"),
         )
         with pytest.raises(SurrealConnectionError):
             await bad_manifest.ensure_ready()
@@ -1316,7 +1317,7 @@ class TestQueryClassifiedErrorPosture:
             namespace="ns",
             database="db",
             user="root",
-            password="root",
+            password=SecretStr("root"),
         )
         manifest._connection = cast("_SurrealConnection", _RejectingConnection(error=error))
         return manifest

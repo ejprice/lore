@@ -89,6 +89,7 @@ import _surreal_harness
 import pytest
 from _surreal_harness import SurrealEnv
 from loremaster.store import _txn as txn_module
+from pydantic import SecretStr
 from surrealdb.errors import QueryError
 
 # A fake connection target; the real topology is irrelevant since ``AsyncSurreal``
@@ -96,7 +97,7 @@ from surrealdb.errors import QueryError
 _FAKE_ENV = SurrealEnv(
     url="ws://127.0.0.1:19999/rpc",
     user="root",
-    password="fake",
+    password=SecretStr("fake"),
     namespace="lore_test",
     database="test_fake_db",
     dim=8,
@@ -145,7 +146,7 @@ _DISTINCT_BOOTSTRAP_URL = "ws://198.51.100.77:19998/rpc-151-bootstrap-attributio
 _DISTINCT_URL_ENV = SurrealEnv(
     url=_DISTINCT_BOOTSTRAP_URL,
     user="root",
-    password="fake",
+    password=SecretStr("fake"),
     namespace="lore_test",
     database="test_fake_db",
     dim=8,

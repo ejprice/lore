@@ -45,6 +45,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from pydantic import SecretStr
 from surrealdb import AsyncSurreal
 
 from loremaster.config import (
@@ -66,10 +67,9 @@ from loremaster.store._txn import (
     bootstrap_session,
     is_retryable_conflict_error,
     retry_on_conflict,
+    signin_credentials,
 )
 from loremaster.store.surreal import (
-    _SIGNIN_PASS_KEY,
-    _SIGNIN_USER_KEY,
     SurrealStore,
 )
 from loremaster.store.surreal_schema import (
@@ -78,6 +78,7 @@ from loremaster.store.surreal_schema import (
     _COMMAND_STATUS_PENDING,
     COMMAND_TABLE,
 )
+from loresigil import backoff
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +181,7 @@ async def _scout_query(
 
 
 async def _open_command_connection(
-    *, url: str, namespace: str, database: str, user: str, password: str
+    *, url: str, namespace: str, database: str, user: str, password: SecretStr
 ) -> Any:
     """Open a raw signed-in SDK connection bound to ``namespace`` + ``database``.
 
@@ -227,7 +228,7 @@ async def _open_command_connection(
     second, accidental wrap.
     """
     connection = AsyncSurreal(url)
-    credentials: dict[str, Any] = {_SIGNIN_USER_KEY: user, _SIGNIN_PASS_KEY: password}
+    credentials = signin_credentials(user=user, password=password)
     try:
         await connection.signin(credentials)
         await bootstrap_session(connection, namespace, database, url=url)
@@ -612,8 +613,16 @@ class CommandSubscriber:
             logger.debug("command_subscriber.kill.already_closed")
 
     async def _backoff(self, attempt: int) -> None:
-        """Sleep a bounded exponential backoff before the next reconnect attempt."""
-        delay = min(self._backoff_base_s * (2**attempt), self._max_backoff_s)
+        """Sleep a bounded, full-jittered backoff before the next reconnect attempt.
+
+        Drawn from the shared policy (:func:`loresigil.backoff.jittered_backoff_delay`,
+        finding #207) rather than computed here. A store outage drops EVERY subscriber's
+        connection at once; an un-jittered ladder would reconnect all of them in the
+        same instant, which is the reconnect storm the backoff exists to prevent.
+        """
+        delay = backoff.jittered_backoff_delay(
+            attempt, base_s=self._backoff_base_s, cap_s=self._max_backoff_s
+        )
         await self._sleep(delay)
 
     async def stop(self) -> None:
@@ -710,7 +719,13 @@ class Scout:
         from loremaster.index.cli import _source_providers
         from loremaster.server import LoreServer
 
-        surreal_user = resolve_secret(config.surreal.user_env)
+        # The USERNAME is deliberately not carried as a secret (#211): it is a public
+
+        # default named by SURREAL_DEFAULT_USER_ENV, so it is unwrapped here while
+
+        # the password stays a SecretStr all the way to the SDK seam.
+
+        surreal_user = resolve_secret(config.surreal.user_env).get_secret_value()
         surreal_password = resolve_secret(config.surreal.password_env)
         database = config.effective_surreal_database
         project_root = Path(config.project.root)

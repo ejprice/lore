@@ -5803,7 +5803,10 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
     # holds chunks + file_text + manifest + code graph — the same database a
     # cold `python -m loremaster.index` populates. Credentials resolve by
     # env-var NAME (never inlined), failing loudly when unset.
-    surreal_user = resolve_secret(config.surreal.user_env)
+    # The USERNAME is deliberately not carried as a secret (#211): it is a public
+    # default named by SURREAL_DEFAULT_USER_ENV, so it is unwrapped here while
+    # the password stays a SecretStr all the way to the SDK seam.
+    surreal_user = resolve_secret(config.surreal.user_env).get_secret_value()
     surreal_password = resolve_secret(config.surreal.password_env)
     surreal_database = config.effective_surreal_database
     write_store = SurrealStore(
@@ -6070,7 +6073,10 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         calibration_engine = CalibrationEngine(
             committed_constant=TOKEN_BUDGET_CALIBRATION,
             model=config.anthropic.yardstick_model,
-            api_key=resolve_secret(config.anthropic.api_key_env),
+            # DEFERRED unwrap — see test_secret_typing.py::TestDeferredApiKeyBound.
+            # CalibrationEngine still takes a bare ``str`` api_key (#211 Half A
+            # remainder); this is the one site that pays for it.
+            api_key=resolve_secret(config.anthropic.api_key_env).get_secret_value(),
             state_dir=manifest_path.parent,
             findings_port=_CalibrationFindingsAdapter(finding_ledger),
         )

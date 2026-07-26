@@ -85,7 +85,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.store._txn import (
@@ -99,6 +99,7 @@ from loremaster.store._txn import (
     compose,
     execute_transaction,
     run_query,
+    signin_credentials,
 )
 from loremaster.store.surreal_schema import (
     FINDING_COUNTER_SINGLETON_ID,
@@ -184,10 +185,8 @@ _PROV_TO = "to"
 _PROV_NOTE = "note"
 _ACTION_TRANSITION = "transition"
 
-# The signin credential keys the SDK expects, the record-id table separator, and the
+# The record-id table separator and the
 # row id key.
-_SIGNIN_USER_KEY = "username"
-_SIGNIN_PASS_KEY = "password"
 _TABLE_SEPARATOR = ":"
 _ID_KEY = "id"
 
@@ -392,7 +391,7 @@ class FindingLedger:
         namespace: str,
         database: str,
         user: str,
-        password: str,
+        password: SecretStr,
     ) -> None:
         """Store the ledger's wiring. Does not open any connection yet.
 
@@ -444,10 +443,9 @@ class FindingLedger:
                 # model the cross-coroutine mutation across the ``await`` above.
                 return self._connection  # type: ignore[unreachable]
             connection = AsyncSurreal(self._url)
-            credentials: dict[str, Any] = {
-                _SIGNIN_USER_KEY: self._user,
-                _SIGNIN_PASS_KEY: self._password,
-            }
+            credentials = signin_credentials(
+                user=self._user, password=self._password
+            )
             try:
                 await connection.signin(credentials)
                 await bootstrap_session(connection, self._namespace, self._database, url=self._url)

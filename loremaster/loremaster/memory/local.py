@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from loresigil.base import Embedder
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.extension import DEFAULT_KEY_VERSION
@@ -67,6 +67,7 @@ from loremaster.store._txn import (
     compose,
     execute_transaction,
     run_query,
+    signin_credentials,
 )
 
 # The shared hybrid-search lexical-arm bounding mechanism (finding #69): this
@@ -131,9 +132,8 @@ _INCLUDE_SUPERSEDED = "superseded"
 _LORE_REF_LABEL_PREFIX = "lore_ref="
 _REF_VERSION_SEPARATOR = "@"
 
-# The signin credential keys the SDK expects.
-_SIGNIN_USER_KEY = "username"
-_SIGNIN_PASS_KEY = "password"
+# (The signin credential keys moved to the ONE shared
+# ``store._txn.signin_credentials`` seam — #211/#102.)
 
 # The ``memory`` table columns the backend reads/writes. Named once each so a
 # rename is a single edit, never a hand-copied literal drifting between the write
@@ -272,7 +272,7 @@ class LocalMemoryBackend:
         database: str,
         dim: int,
         user: str,
-        password: str,
+        password: SecretStr,
         embedder: Embedder,
         existing_chunks: ExistingChunksFn,
         ledger: MemoryLedger | None = None,
@@ -355,10 +355,9 @@ class LocalMemoryBackend:
                 # model the cross-coroutine mutation across the ``await`` above.
                 return self._connection  # type: ignore[unreachable]
             connection = AsyncSurreal(self._url)
-            credentials: dict[str, Any] = {
-                _SIGNIN_USER_KEY: self._user,
-                _SIGNIN_PASS_KEY: self._password,
-            }
+            credentials = signin_credentials(
+                user=self._user, password=self._password
+            )
             try:
                 await connection.signin(credentials)
                 await bootstrap_session(connection, self._namespace, self._database, url=self._url)

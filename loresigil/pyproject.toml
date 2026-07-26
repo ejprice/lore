@@ -9,6 +9,13 @@ description = "Voyage AI embedding and tokenization for the lore project."
 dependencies = [
     "httpx>=0.28",
     "pydantic>=2.13",
+    # Full-jitter exponential backoff (loresigil.backoff): tenacity's
+    # wait_random_exponential is the AWS "Full Jitter" algorithm, tested upstream.
+    # DECLARED, not inherited — tenacity was already resolvable in this workspace
+    # only as a TRANSITIVE dependency of langchain-core (pulled in by lorescribe's
+    # langchain-text-splitters). Production code importing it on that basis breaks
+    # the day that chain drops it, with nothing in our own metadata to prevent it.
+    "tenacity>=9.0",
     "tokenizers>=0.23",
 ]
 

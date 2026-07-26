@@ -91,6 +91,7 @@ from loremaster.store._txn import (
     SurrealStoreError,
     _SurrealConnection,
 )
+from pydantic import SecretStr
 from surrealdb.errors import ErrorKind, ServerError
 
 from loremaster import findings
@@ -1159,7 +1160,7 @@ class TestQueryClassifiedErrorPosture:
             namespace="ns",
             database="db",
             user="root",
-            password="root",
+            password=SecretStr("root"),
         )
         ledger._connection = cast("_SurrealConnection", _RejectingConnection(error=error))
         return ledger

@@ -84,6 +84,7 @@ from loremaster.store.surreal import (
     SurrealStoreError,
     _SurrealConnection,
 )
+from pydantic import SecretStr
 from surrealdb.errors import ErrorKind, ServerError
 
 try:
@@ -712,14 +713,14 @@ class TestDiffConnectionLifecycle:
     async def test_diff_against_a_dead_server_raises_connection_error(self) -> None:
         store = SurrealStore(
             url=_DEAD_URL, namespace="ns", database="db", dim=PRODUCTION_DIM,
-            user="root", password="root",
+            user="root", password=SecretStr("root"),
         )
         manifest = SurrealManifest(
-            url=_DEAD_URL, namespace="ns", database="db", user="root", password="root",
+            url=_DEAD_URL, namespace="ns", database="db", user="root", password=SecretStr("root"),
         )
         engine = DiffEngine(
             url=_DEAD_URL, namespace="ns", database="db",
-            user="root", password="root", store=store, manifest=manifest,
+            user="root", password=SecretStr("root"), store=store, manifest=manifest,
         )
         with pytest.raises(SurrealConnectionError):
             await engine.list_snapshots()
@@ -757,14 +758,14 @@ class TestQueryClassifiedErrorPosture:
     def _engine_rejecting_with(error: BaseException) -> DiffEngine:
         store = SurrealStore(
             url=_DEAD_URL, namespace="ns", database="db", dim=PRODUCTION_DIM,
-            user="root", password="root",
+            user="root", password=SecretStr("root"),
         )
         manifest = SurrealManifest(
-            url=_DEAD_URL, namespace="ns", database="db", user="root", password="root",
+            url=_DEAD_URL, namespace="ns", database="db", user="root", password=SecretStr("root"),
         )
         engine = DiffEngine(
             url=_DEAD_URL, namespace="ns", database="db",
-            user="root", password="root", store=store, manifest=manifest,
+            user="root", password=SecretStr("root"), store=store, manifest=manifest,
         )
         engine._connection = cast("_SurrealConnection", _RejectingConnection(error=error))
         return engine

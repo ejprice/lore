@@ -83,6 +83,7 @@ from loremaster.tasks import (
     TaskLedger,
     TaskNotFoundError,
 )
+from pydantic import SecretStr
 from surrealdb.errors import ErrorKind, ServerError
 
 # --- the domain's status vocabulary (the convention this contract decides) ----
@@ -1477,7 +1478,7 @@ class TestQueryClassifiedErrorPosture:
             namespace="ns",
             database="db",
             user="root",
-            password="root",
+            password=SecretStr("root"),
         )
         ledger._connection = cast("_SurrealConnection", _RejectingConnection(error=error))
         return ledger

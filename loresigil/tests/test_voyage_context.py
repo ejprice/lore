@@ -35,8 +35,9 @@ Behavioural conventions are inherited from the existing loresigil embedders
   slot only. The empty list short-circuits without touching the network.
 * The backoff sleep is injectable (``sleep_fn`` constructor keyword, default
   ``asyncio.sleep`` — the exact seam convention of ``ResilientEmbedder``) and
-  follows the shared ``compute_backoff_delay`` ladder; a failed FINAL attempt
-  never pays a parting sleep (sleeping is only a bridge BETWEEN attempts).
+  draws from the shared ``compute_backoff_delay`` full-jitter window (#207); a
+  failed FINAL attempt never pays a parting sleep (sleeping is only a bridge
+  BETWEEN attempts).
 * A doc whose chunk-group total exceeds the 32k window is split into
   OVERLAPPING sub-window requests (OPERATOR DECISION 2026-07-02, superseding
   the original fail-loud pin; live driver: odoo/fields.py-scale files, 4128
@@ -80,7 +81,7 @@ import httpx
 import pytest
 from _contextualized_fixtures import DOC_POLICY, DOC_RUNBOOK, DOC_SINGLE
 from loresigil.base import Embedder, EmbedResult, EmbedUsage
-from loresigil.resilient import BACKOFF_CAP_S, SleepFn, compute_backoff_delay
+from loresigil.resilient import BACKOFF_BASE_S, BACKOFF_CAP_S, SleepFn
 from loresigil.tokens import VoyageTokenCounter
 from loresigil.voyage_context import (
     DEFAULT_API_URL,
@@ -124,9 +125,19 @@ _WINDOWED_CHUNK_COUNT: int = 12
 # Norm tolerance for the independent unit-norm sanity bound (math.hypot).
 NORM_TOLERANCE: float = 1e-6
 
-# Wall-clock ceiling proving an injected fake sleep really replaced the real
-# one: the smallest REAL backoff delay is compute_backoff_delay(0) == 1s, so a
-# retried call finishing well under this budget cannot have slept for real.
+# Wall-clock ceiling for a retried call, as defence in depth behind the RECORDING
+# of the injected sleep (the recording is what actually proves the fake seam was
+# used; a non-empty ``recorded_delays`` cannot happen unless the injected callable
+# ran).
+#
+# ⚠ This budget is NO LONGER a proof on its own, and the comment that used to claim
+# it was has been removed rather than left to rot (#207). It previously argued "the
+# smallest REAL backoff delay is compute_backoff_delay(0) == 1s, so finishing under
+# 0.5s cannot have slept for real". Under the full jitter of #207 that delay is
+# DRAWN from [0, 1.0), so a real sleep can legitimately return in a millisecond and
+# finish well inside this budget. The inference died with the deterministic ladder;
+# the assertion is kept only as a cheap regression bound on wall-clock, not as
+# evidence about which sleep ran.
 FAKE_SLEEP_WALL_BUDGET_S: float = 0.5
 
 
@@ -551,10 +562,21 @@ class TestVoyageContextFailureIsolation:
         elapsed = time.monotonic() - started
         assert calls == 2  # (a) retried, not surfaced as a failure
         _assert_doc_result_matches(results[0], DOC_POLICY, CONTEXT_DIM)
-        # (b) the one backoff delay follows the SHARED canonical ladder — the
-        # same compute_backoff_delay both retry loops document using.
-        assert recorded_delays == [compute_backoff_delay(0)]
-        assert 0 < recorded_delays[0] <= BACKOFF_CAP_S  # independent sanity bound
+        # (b) exactly one backoff, drawn from the SHARED policy's attempt-0 window.
+        #
+        # This used to read ``recorded_delays == [compute_backoff_delay(0)]``. That
+        # assertion certified the OLD world: it could only hold while the backoff was
+        # DETERMINISTIC, because it compares the recorded sleep against a second,
+        # independent call to the same function. Under the full jitter of finding #207
+        # those are two independent draws and the equality is false by construction —
+        # the pin was, in effect, asserting the absence of jitter.
+        #
+        # What survives the change is the property that was actually meant: exactly one
+        # backoff occurred, and it came from attempt 0's window ``[0, BACKOFF_BASE_S)``.
+        # Strict growth and decorrelation are pinned where they belong, against the
+        # shared policy itself, in loresigil/tests/test_backoff.py.
+        assert len(recorded_delays) == 1
+        assert 0.0 <= recorded_delays[0] <= BACKOFF_BASE_S
         # (c) the injected seam means this test no longer pays a real sleep.
         assert elapsed < FAKE_SLEEP_WALL_BUDGET_S
 

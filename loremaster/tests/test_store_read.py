@@ -74,6 +74,7 @@ from loremaster.store_read import (
     StoreReadNotFoundError,
     StoreReadTool,
 )
+from pydantic import SecretStr
 
 # A multi-line source whose every line names its own number, so an off-by-one or
 # a wrong-span read is detectable (mirrors ``test_read_file._LIVE_SOURCE``).
@@ -191,7 +192,7 @@ class ReadBench:
             database="never_reached",
             dim=PRODUCTION_DIM,
             user="root",
-            password="spikeroot",
+            password=SecretStr("spikeroot"),
         )
         return StoreReadTool(store=real_downed, manifest=self.manifest)
 
@@ -216,7 +217,7 @@ class ReadBench:
             namespace="lore_test",
             database="never_reached",
             user="root",
-            password="spikeroot",
+            password=SecretStr("spikeroot"),
         )
         return StoreReadTool(store=self.store, manifest=real_down_manifest)
 

@@ -121,6 +121,7 @@ from loremaster.store.surreal_schema import (  # noqa: E402
 from lorescribe.astroid_parse import clear_resolution_cache, reset_search_path_memo
 from lorescribe.models import Chunk, ChunkContext
 from lorescribe.python_ast import PythonAstChunker
+from pydantic import SecretStr
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
 from surrealdb import RecordID
 from surrealdb.errors import ErrorKind, ServerError
@@ -2520,7 +2521,7 @@ class TestResilience:
             namespace="lore_test",
             database="never_created",
             user="root",
-            password="spikeroot",
+            password=SecretStr("spikeroot"),
             tier_roots={TIER_A: project_root},
             project_roots=[project_root],
         )
@@ -2980,7 +2981,7 @@ class TestQueryClassifiedErrorPosture:
             namespace="ns",
             database="db",
             user="root",
-            password="root",
+            password=SecretStr("root"),
             tier_roots={},
             project_roots=[],
         )

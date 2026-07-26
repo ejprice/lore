@@ -132,7 +132,7 @@ from loremaster.store.query_text import truncate_at_word_boundary
 from loremaster.store.surreal_schema import MEMORY_TABLE
 from loresigil.base import EmbedResult
 from loresigil.testing import FakeEmbedder
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from surrealdb.errors import ErrorKind, ServerError
 
 # ===========================================================================
@@ -1587,7 +1587,7 @@ class TestQueryClassifiedErrorPosture:
             database="db",
             dim=PRODUCTION_DIM,
             user="root",
-            password="root",
+            password=SecretStr("root"),
             embedder=FakeEmbedder(dim=PRODUCTION_DIM),
             existing_chunks=FakeChunkOracle(),
         )
@@ -1864,7 +1864,7 @@ class TestShutdownClosesConnection:
             database="db",
             dim=PRODUCTION_DIM,
             user="root",
-            password="root",
+            password=SecretStr("root"),
             embedder=FakeEmbedder(dim=PRODUCTION_DIM),
             existing_chunks=FakeChunkOracle(),
         )
@@ -1901,7 +1901,7 @@ class TestShutdownClosesConnection:
             database="db",
             dim=PRODUCTION_DIM,
             user="root",
-            password="root",
+            password=SecretStr("root"),
             embedder=FakeEmbedder(dim=PRODUCTION_DIM),
             existing_chunks=FakeChunkOracle(),
         )

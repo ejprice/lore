@@ -129,6 +129,7 @@ from loremaster.store._txn import (
     execute_transaction,
 )
 from loremaster.store.surreal_schema import BRIEF_TABLE, BRIEFED_RELATION
+from pydantic import SecretStr
 from render_injection_scaffold import _ROW_FORGE_PAYLOAD
 from surrealdb.errors import ErrorKind, ServerError
 
@@ -1424,7 +1425,7 @@ class TestBriefLedgerConnectionLifecycle:
             namespace="ns",
             database="db",
             user="root",
-            password="root",
+            password=SecretStr("root"),
         )
 
     async def test_domain_rejection_never_echoes_the_raw_engine_text(

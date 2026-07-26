@@ -175,6 +175,7 @@ from loremaster.store._txn import (
 )
 from loremaster.store.surreal import SurrealStore
 from loremaster.store.surreal_schema import AGENT_TABLE, BRIEF_TABLE, BRIEFED_RELATION
+from pydantic import SecretStr
 from surrealdb import (
     AsyncEmbeddedSurrealConnection,
     AsyncHttpSurrealConnection,
@@ -640,7 +641,7 @@ _CTOR_VALUES: dict[str, Any] = {
     "namespace": "ns",
     "database": "db",
     "user": "root",
-    "password": "root",
+    "password": SecretStr("root"),
     "dim": PRODUCTION_DIM,
     "store": None,
     "manifest": None,

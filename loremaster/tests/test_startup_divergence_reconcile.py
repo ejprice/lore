@@ -510,7 +510,7 @@ async def divergence_harness(
     for exact-name teardown.
     """
     monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
-    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
+    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
 
     created_databases: list[str] = []
     open_contexts: list[Any] = []

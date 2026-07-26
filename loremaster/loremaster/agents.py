@@ -79,7 +79,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, uuid5
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.store._txn import (
@@ -91,6 +91,7 @@ from loremaster.store._txn import (
     bootstrap_session,
     execute_transaction,
     run_query,
+    signin_credentials,
 )
 from loremaster.store.surreal_schema import AGENT_TABLE, generate_agent_ddl
 
@@ -173,9 +174,8 @@ _COL_LAST_NOTE = "last_note"
 _COL_REGISTERED_AT = "registered_at"
 _COL_HEARTBEAT_AT = "heartbeat_at"
 
-# The signin credential keys the SDK expects, and the record-id table separator.
-_SIGNIN_USER_KEY = "username"
-_SIGNIN_PASS_KEY = "password"
+# The record-id table separator. (The signin credential keys moved to the ONE
+# shared ``store._txn.signin_credentials`` seam — #211/#102.)
 _TABLE_SEPARATOR = ":"
 _ID_KEY = "id"
 
@@ -360,7 +360,7 @@ class AgentRegistry:
         namespace: str,
         database: str,
         user: str,
-        password: str,
+        password: SecretStr,
     ) -> None:
         """Store the registry's wiring. Does not open any connection yet."""
         self._url = url
@@ -404,10 +404,9 @@ class AgentRegistry:
                 # ``await`` above.
                 return self._connection  # type: ignore[unreachable]
             connection = AsyncSurreal(self._url)
-            credentials: dict[str, Any] = {
-                _SIGNIN_USER_KEY: self._user,
-                _SIGNIN_PASS_KEY: self._password,
-            }
+            credentials = signin_credentials(
+                user=self._user, password=self._password
+            )
             try:
                 await connection.signin(credentials)
                 await bootstrap_session(connection, self._namespace, self._database, url=self._url)

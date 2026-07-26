@@ -91,6 +91,7 @@ from loremaster.store._txn import (
 # They are aliased apart here so the mistake cannot be made silently again.
 from loremaster.tasks import IllegalTransitionError as TaskIllegalTransitionError
 from loremaster.tasks import TaskLedger
+from pydantic import SecretStr
 
 from loremaster import findings as findings_module
 from loremaster import tasks as tasks_module
@@ -754,7 +755,7 @@ class TestFindingMintSurfacesContentionEndToEnd:
             namespace="ns",
             database="db",
             user="root",
-            password="root",
+            password=SecretStr("root"),
         )
         connection = _SustainedConflictConnection(response=_live_conflict_response())
         ledger._connection = cast("_SurrealConnection", connection)

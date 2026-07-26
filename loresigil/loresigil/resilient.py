@@ -40,6 +40,7 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
+from loresigil import backoff
 from loresigil.tokens import VoyageTokenCounter
 
 logger = logging.getLogger(__name__)
@@ -49,10 +50,12 @@ logger = logging.getLogger(__name__)
 RequestFn = Callable[[list[str]], Awaitable[list[list[float]]]]
 SleepFn = Callable[[float], Awaitable[None]]
 
-# Exponential-backoff base: delay before retry N is ``BACKOFF_BASE ** N`` seconds,
-# capped at BACKOFF_CAP_S so a long outage doesn't produce absurd sleeps.
+# This backend's full-jitter backoff window: the delay before retry N is drawn from
+# ``[0, min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2**N))``. The cap keeps a long outage from
+# producing an absurd sleep. The growth factor itself is NOT a constant here — it lives
+# once, in :data:`loresigil.backoff.BACKOFF_EXP_BASE`, with the policy that uses it
+# (finding #207: a second copy of a policy constant is a second thing to get wrong).
 BACKOFF_BASE_S: float = 1.0
-BACKOFF_GROWTH: float = 2.0
 BACKOFF_CAP_S: float = 30.0
 
 # HTTP statuses with dedicated handling (everything else 4xx is treated as
@@ -86,21 +89,29 @@ def is_retryable_status(status: int) -> bool:
 
 
 def compute_backoff_delay(attempt: int) -> float:
-    """Compute the exponentially growing, capped backoff delay for ``attempt``.
+    """Draw this backend's full-jitter backoff delay for ``attempt``.
 
-    Shared by :class:`ResilientEmbedder` and
+    Binds :func:`loresigil.backoff.jittered_backoff_delay` — the workspace's ONE
+    retry-delay policy — to the embedding backends' window
+    (:data:`BACKOFF_BASE_S` / :data:`BACKOFF_CAP_S`). Shared by
+    :class:`ResilientEmbedder` and
     :class:`~loresigil.voyage_context.VoyageContextEmbedder` so "same backoff
-    schedule" (documented in both) is one formula, not two copies that could
+    schedule" (documented in both) is one policy, not two copies that could
     silently drift apart.
+
+    Finding #207: this used to return ``min(BACKOFF_BASE_S * 2**attempt,
+    BACKOFF_CAP_S)`` — a pure function of ``attempt``, so every embedder client
+    that hit the same TEI 429 rate-limit guard computed the SAME delay and woke
+    together to re-collide. The delay is now DRAWN, not computed.
 
     Args:
         attempt: The zero-based attempt index that just failed.
 
     Returns:
-        The delay in seconds: ``BACKOFF_BASE_S * BACKOFF_GROWTH ** attempt``,
-        capped at ``BACKOFF_CAP_S``.
+        A delay in seconds, drawn uniformly from ``[0, min(BACKOFF_CAP_S,
+        BACKOFF_BASE_S * 2**attempt))``.
     """
-    return min(BACKOFF_BASE_S * (BACKOFF_GROWTH**attempt), BACKOFF_CAP_S)
+    return backoff.jittered_backoff_delay(attempt, base_s=BACKOFF_BASE_S, cap_s=BACKOFF_CAP_S)
 
 
 def quarantine_vector(vector: list[float], dim: int | None) -> list[float] | None:

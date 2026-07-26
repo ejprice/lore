@@ -43,6 +43,7 @@ from pydantic import (
     ConfigDict,
     PositiveFloat,
     PositiveInt,
+    SecretStr,
     StringConstraints,
     model_validator,
 )
@@ -669,10 +670,21 @@ def load_config(path: str | Path) -> LoreConfig:
     return config
 
 
-def resolve_secret(env_var_name: str) -> str:
+def resolve_secret(env_var_name: str) -> SecretStr:
     """Resolve a secret value from the environment by variable name.
 
-    The returned value is never stripped or otherwise mutated — a secret whose
+    Returns a :class:`pydantic.SecretStr`, not a bare ``str`` — the type is the
+    protection (#211). A bare credential renders verbatim through every
+    accidental path: an f-string, a container ``repr`` in an exception message,
+    a frame local in a traceback. ``SecretStr`` renders ``**********`` in all of
+    them BY CONSTRUCTION, so the value can only escape where a caller
+    *deliberately* unwraps it with ``get_secret_value()``. That makes every
+    unwrap a visible, greppable, type-checked decision instead of the default.
+    The redaction filter in :mod:`loremaster.logging_setup` remains the
+    defence-in-depth backstop underneath this; a type that cannot render its
+    value is strictly stronger than a filter that must catch every path.
+
+    The wrapped value is never stripped or otherwise mutated — a secret whose
     real content happens to include leading/trailing whitespace passes through
     byte-exact. Only the *emptiness check* looks past whitespace, to catch a
     variable that was set to nothing but spaces/tabs.
@@ -681,7 +693,7 @@ def resolve_secret(env_var_name: str) -> str:
         env_var_name: The name of the environment variable to read.
 
     Returns:
-        The variable's value, unmodified.
+        The variable's value, unmodified, wrapped in a :class:`SecretStr`.
 
     Raises:
         KeyError: If the variable is unset, set to an empty string, or set to
@@ -695,4 +707,4 @@ def resolve_secret(env_var_name: str) -> str:
             f"Required secret environment variable {env_var_name!r} is unset, empty, "
             f"or whitespace-only; export it before starting lore."
         )
-    return value
+    return SecretStr(value)

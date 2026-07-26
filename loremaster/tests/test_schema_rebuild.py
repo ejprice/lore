@@ -145,7 +145,7 @@ EXPECTED_SCHEMA_VERSION: int = 2
 def _surreal_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     """Export the dev-server root credentials for the duration of every test."""
     monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
-    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
+    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
 
 
 # ---------------------------------------------------------------------------

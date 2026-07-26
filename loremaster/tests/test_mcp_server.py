@@ -362,7 +362,7 @@ async def _surreal_test_env(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[No
     reach ``build_app_context``.
     """
     monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
-    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password())
+    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
     try:
         yield
     finally:

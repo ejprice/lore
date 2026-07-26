@@ -61,6 +61,7 @@ from typing import Any
 
 import pytest
 from loremaster.config import AuthConfig, AuthKey
+from pydantic import SecretStr
 
 
 class TestApiKeyVerifier:
@@ -69,27 +70,27 @@ class TestApiKeyVerifier:
     def test_valid_key_returns_its_identity(self) -> None:
         from loremaster.auth import ApiKeyVerifier
 
-        verifier = ApiKeyVerifier({"alice": "key-aaa", "bob": "key-bbb"})
+        verifier = ApiKeyVerifier({"alice": SecretStr("key-aaa"), "bob": SecretStr("key-bbb")})
         assert verifier.verify("key-aaa") == "alice"
         assert verifier.verify("key-bbb") == "bob"
 
     def test_unknown_key_returns_none(self) -> None:
         from loremaster.auth import ApiKeyVerifier
 
-        verifier = ApiKeyVerifier({"alice": "key-aaa"})
+        verifier = ApiKeyVerifier({"alice": SecretStr("key-aaa")})
         assert verifier.verify("key-zzz") is None
 
     def test_empty_token_returns_none(self) -> None:
         from loremaster.auth import ApiKeyVerifier
 
-        verifier = ApiKeyVerifier({"alice": "key-aaa"})
+        verifier = ApiKeyVerifier({"alice": SecretStr("key-aaa")})
         assert verifier.verify("") is None
 
     def test_near_miss_key_returns_none(self) -> None:
         # A one-character-off key must not verify (no prefix/substring match).
         from loremaster.auth import ApiKeyVerifier
 
-        verifier = ApiKeyVerifier({"alice": "key-aaa"})
+        verifier = ApiKeyVerifier({"alice": SecretStr("key-aaa")})
         assert verifier.verify("key-aa") is None
         assert verifier.verify("key-aaaa") is None
 
@@ -108,7 +109,7 @@ class TestApiKeyVerifier:
             return real(a, b)
 
         monkeypatch.setattr(auth.hmac, "compare_digest", _spy)
-        verifier = auth.ApiKeyVerifier({"alice": "key-aaa"})
+        verifier = auth.ApiKeyVerifier({"alice": SecretStr("key-aaa")})
         verifier.verify("key-aaa")
         assert calls, "the verifier must compare via hmac.compare_digest (timing-safe)"
 
@@ -120,36 +121,36 @@ class TestApiKeyVerifier:
         from loremaster.auth import ApiKeyVerifier
 
         with pytest.raises(ValueError, match="(?i)empty"):
-            ApiKeyVerifier({"ghost": ""})
+            ApiKeyVerifier({"ghost": SecretStr("")})
 
     def test_empty_token_never_authenticates(self) -> None:
         # And an empty PRESENTED token is rejected up front, regardless of keys.
         from loremaster.auth import ApiKeyVerifier
 
-        verifier = ApiKeyVerifier({"alice": "key-aaa"})
+        verifier = ApiKeyVerifier({"alice": SecretStr("key-aaa")})
         assert verifier.verify("") is None
 
     def test_add_empty_key_value_is_rejected(self) -> None:
         from loremaster.auth import ApiKeyVerifier
 
-        verifier = ApiKeyVerifier({"alice": "key-aaa"})
+        verifier = ApiKeyVerifier({"alice": SecretStr("key-aaa")})
         with pytest.raises(ValueError, match="(?i)empty"):
-            verifier.add_key("ghost", "")
+            verifier.add_key("ghost", SecretStr(""))
         # alice still works; no empty hole was opened.
         assert verifier.verify("key-aaa") == "alice"
 
     def test_rotation_add_key_verifies_immediately(self) -> None:
         from loremaster.auth import ApiKeyVerifier
 
-        verifier = ApiKeyVerifier({"alice": "key-aaa"})
+        verifier = ApiKeyVerifier({"alice": SecretStr("key-aaa")})
         assert verifier.verify("key-ccc") is None
-        verifier.add_key("carol", "key-ccc")
+        verifier.add_key("carol", SecretStr("key-ccc"))
         assert verifier.verify("key-ccc") == "carol"
 
     def test_rotation_remove_key_revokes_only_that_identity(self) -> None:
         from loremaster.auth import ApiKeyVerifier
 
-        verifier = ApiKeyVerifier({"alice": "key-aaa", "bob": "key-bbb"})
+        verifier = ApiKeyVerifier({"alice": SecretStr("key-aaa"), "bob": SecretStr("key-bbb")})
         verifier.remove_key("alice")
         # alice is revoked; bob is undisturbed (rotate one identity, not all).
         assert verifier.verify("key-aaa") is None
@@ -231,7 +232,7 @@ class TestBearerAuthMiddleware:
         from loremaster.auth import ApiKeyVerifier, BearerAuthMiddleware
 
         inner = _RecordingApp()
-        app = BearerAuthMiddleware(inner, ApiKeyVerifier({"alice": "key-aaa"}))
+        app = BearerAuthMiddleware(inner, ApiKeyVerifier({"alice": SecretStr("key-aaa")}))
         response = await _drive(app, [(b"authorization", b"Bearer key-aaa")])
         assert response["status"] == 200
         assert inner.called is True
@@ -241,7 +242,7 @@ class TestBearerAuthMiddleware:
         from loremaster.auth import ApiKeyVerifier, BearerAuthMiddleware
 
         inner = _RecordingApp()
-        app = BearerAuthMiddleware(inner, ApiKeyVerifier({"alice": "key-aaa"}))
+        app = BearerAuthMiddleware(inner, ApiKeyVerifier({"alice": SecretStr("key-aaa")}))
         response = await _drive(app, [])
         assert response["status"] == 401
         # The inner protected app must NEVER run for an unauthenticated request.
@@ -254,7 +255,7 @@ class TestBearerAuthMiddleware:
         from loremaster.auth import ApiKeyVerifier, BearerAuthMiddleware
 
         inner = _RecordingApp()
-        app = BearerAuthMiddleware(inner, ApiKeyVerifier({"alice": "key-aaa"}))
+        app = BearerAuthMiddleware(inner, ApiKeyVerifier({"alice": SecretStr("key-aaa")}))
         response = await _drive(app, [(b"authorization", b"Bearer key-wrong")])
         assert response["status"] == 401
         assert inner.called is False
@@ -266,7 +267,7 @@ class TestBearerAuthMiddleware:
         from loremaster.auth import ApiKeyVerifier, BearerAuthMiddleware
 
         inner = _RecordingApp()
-        app = BearerAuthMiddleware(inner, ApiKeyVerifier({"alice": "key-aaa"}))
+        app = BearerAuthMiddleware(inner, ApiKeyVerifier({"alice": SecretStr("key-aaa")}))
         response = await _drive(app, [(b"authorization", b"Basic key-aaa")])
         assert response["status"] == 401
         assert inner.called is False
@@ -280,7 +281,7 @@ class TestBearerAuthMiddleware:
         from loremaster.auth import ApiKeyVerifier, BearerAuthMiddleware
 
         inner = _RecordingApp()
-        app = BearerAuthMiddleware(inner, ApiKeyVerifier({"alice": "key-aaa"}))
+        app = BearerAuthMiddleware(inner, ApiKeyVerifier({"alice": SecretStr("key-aaa")}))
         # ``ééé`` (U+00E9 ×3) encoded latin-1 in the header, as the middleware
         # decodes it: a non-ASCII str token reaches verify().
         non_ascii = "ééé".encode("latin-1")
@@ -293,7 +294,7 @@ class TestBearerAuthMiddleware:
         # a clean ``None``, never a TypeError from str-mode compare_digest.
         from loremaster.auth import ApiKeyVerifier
 
-        verifier = ApiKeyVerifier({"alice": "key-aaa"})
+        verifier = ApiKeyVerifier({"alice": SecretStr("key-aaa")})
         assert verifier.verify("ééé") is None
 
     @pytest.mark.asyncio
@@ -307,7 +308,7 @@ class TestBearerAuthMiddleware:
         async def _lifespan_app(scope: Any, receive: Any, send: Any) -> None:
             seen.append(scope["type"])
 
-        app = BearerAuthMiddleware(_lifespan_app, ApiKeyVerifier({"alice": "key-aaa"}))
+        app = BearerAuthMiddleware(_lifespan_app, ApiKeyVerifier({"alice": SecretStr("key-aaa")}))
 
         async def receive() -> MutableMapping[str, Any]:
             return {"type": "lifespan.startup"}
