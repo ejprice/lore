@@ -7,16 +7,25 @@ this module owns only the *sinks* and the *secret backstop*:
 * :class:`JsonFormatter` renders ONE JSON object per record — ``ts`` (ISO-8601
   UTC), ``level``, ``logger``, ``msg`` (the static event string), plus every key
   the caller passed via ``extra={...}`` flattened to the top level so Mezmo
-  indexes each field. Stdlib :class:`logging.LogRecord` internals (``args``,
-  ``levelno``, ``pathname``, …) are deliberately NOT serialised.
+  indexes each field, plus :data:`EXC_FIELD` carrying the rendered traceback
+  when the caller passed one. Stdlib :class:`logging.LogRecord` internals
+  (``args``, ``levelno``, ``pathname``, …) are deliberately NOT serialised.
 * :class:`KeyValueFormatter` renders a human ``ts level logger event k=v`` line
-  for local development.
+  for local development, with any traceback appended below it.
 * :class:`RedactingFilter` is the CRITICAL secret backstop: it scrubs an
   ``Authorization: Bearer …`` header, an ``api_key``-style assignment, and any
-  long high-entropy token — in BOTH the rendered message and the ``extra``
-  values — to :data:`REDACTED`. The discipline is that callers never log a
-  secret in the first place (counts/statuses only); this filter is the last line
-  of defence if one ever slips through.
+  long high-entropy token — in the rendered message, the ``extra`` values, AND
+  the rendered exception/stack — to :data:`REDACTED`. The discipline is that
+  callers never log a secret in the first place (counts/statuses only); this
+  filter is the last line of defence if one ever slips through.
+
+  ⚠ Until #211 (2026-07-25) the last two of those were FALSE in both
+  directions: the filter never touched ``exc_info``/``exc_text``, and the two
+  formatters above discarded the exception outright — so eight production
+  ``exc_info=True`` call sites logged no traceback at all, and any handler that
+  DID render one rendered it unscrubbed. Both halves were fixed together,
+  because scrubbing a surface nothing renders is a gate over a dead mechanism,
+  and rendering a surface nothing scrubs is the leak the finding named.
 * :func:`configure_logging` attaches exactly one stderr handler (with the chosen
   formatter + the redacting filter) to each lore-namespace logger
   (:data:`LORE_NAMESPACES`) with ``propagate=False`` — it does NOT reconfigure
@@ -32,8 +41,10 @@ import logging
 import math
 import re
 import sys
+import traceback
 from collections import Counter
 from datetime import UTC, datetime
+from types import TracebackType
 from typing import Any
 
 # The logger namespaces this layer owns. Each gets a scoped stderr handler with
@@ -47,6 +58,20 @@ _THIRD_PARTY_WARN_NAMESPACES: tuple[str, ...] = ("httpx",)
 
 # The sentinel a scrubbed secret is replaced with.
 REDACTED = "***REDACTED***"
+
+# The JSON key the rendered (and scrubbed) exception is emitted under (#211).
+# One field rather than several, so a Mezmo query retrieves a whole traceback
+# as a unit; named here rather than inlined so a consumer can import it.
+EXC_FIELD = "exc"
+
+# The stdlib ``sys.exc_info()`` triple, as ``LogRecord.exc_info`` carries it.
+# The all-``None`` arm is REACHABLE, not defensive padding: ``exc_info=True``
+# outside an ``except`` block makes ``Logger._log`` store ``sys.exc_info()``,
+# which is ``(None, None, None)`` — a TRUTHY tuple that names no exception.
+_ExcInfo = (
+    tuple[type[BaseException], BaseException, TracebackType | None]
+    | tuple[None, None, None]
+)
 
 # The format selectors accepted by :func:`configure_logging`.
 FORMAT_JSON = "json"
@@ -131,13 +156,106 @@ def _scrub_value(value: Any) -> Any:
     return value
 
 
-class RedactingFilter(logging.Filter):
-    """Scrub secrets from a record's message + ``extra`` values (never drops it).
+def _render_exception(exc_info: _ExcInfo) -> str | None:
+    """Render ``exc_info`` to traceback text exactly as the stdlib formatter would.
 
-    Mutates the record in place: the ``msg`` (and any positional ``args``) and
-    every caller-supplied ``extra`` attribute are passed through :func:`_scrub_text`
-    / :func:`_scrub_value`. Always returns ``True`` — its job is sanitisation, not
-    filtering — so it composes with any level-based filtering above it.
+    Mirrors :meth:`logging.Formatter.formatException` (including its trailing
+    newline strip) so a record this module pre-renders is byte-identical to one
+    the stdlib would have produced — a foreign handler must not be able to tell
+    the difference, or the pre-render becomes an observable behaviour change.
+
+    Returns ``None`` for the all-``None`` triple. That case is reachable from
+    ordinary code (``exc_info=True`` with no live exception — see
+    :data:`_ExcInfo`), and the stdlib renders it as the useless line
+    ``NoneType: None``; emitting nothing is both truer and quieter.
+    """
+    exception_type, exception, exception_traceback = exc_info
+    if exception_type is None or exception is None:
+        return None
+    rendered = "".join(
+        traceback.format_exception(exception_type, exception, exception_traceback)
+    )
+    if rendered.endswith("\n"):
+        rendered = rendered[:-1]
+    return rendered
+
+
+def scrubbed_exception_text(record: logging.LogRecord) -> str | None:
+    """Return this record's exception + stack text, SCRUBBED — or ``None``.
+
+    THE ONE PLACE exception rendering is turned into log-safe text (#211). Both
+    formatters in this module call it, and :class:`RedactingFilter` calls it to
+    pre-populate ``record.exc_text``, so the scrubbing policy has exactly one
+    implementation rather than one per sink.
+
+    Prefers an already-rendered ``exc_text`` when present — which is what a
+    stdlib formatter on ANOTHER handler will have cached onto this same record —
+    and scrubs it regardless of who produced it, because that other handler had
+    no scrubber. Scrubbing is idempotent (:data:`REDACTED` matches none of the
+    patterns), so a value this filter already cleaned survives a second pass
+    unchanged.
+
+    Args:
+        record: The record being emitted.
+
+    Returns:
+        The scrubbed traceback (plus ``stack_info``, when the caller asked for
+        it), or ``None`` when the record carries no exception and no stack.
+    """
+    sections: list[str] = []
+    if record.exc_text:
+        sections.append(_scrub_text(record.exc_text))
+    elif record.exc_info:
+        rendered = _render_exception(record.exc_info)
+        if rendered is not None:
+            sections.append(_scrub_text(rendered))
+    if record.stack_info:
+        sections.append(_scrub_text(record.stack_info))
+    if not sections:
+        return None
+    return "\n".join(sections)
+
+
+class RedactingFilter(logging.Filter):
+    """Scrub secrets from a record's message, ``extra`` values, AND its traceback.
+
+    Mutates the record in place: the ``msg`` (and any positional ``args``), every
+    caller-supplied ``extra`` attribute, and the rendered EXCEPTION + ``stack_info``
+    are passed through :func:`_scrub_text` / :func:`_scrub_value`. Always returns
+    ``True`` — its job is sanitisation, not filtering — so it composes with any
+    level-based filtering above it.
+
+    It writes ``exc_text`` and ``stack_info`` as SEPARATE attributes (which is why
+    it cannot simply call :func:`scrubbed_exception_text`, whose job is to hand a
+    formatter one joined string) — but both paths render through
+    :func:`_render_exception` and scrub through :func:`_scrub_text`, so the
+    rendering and redaction policies still have exactly one implementation each.
+
+    **Why the exception leg exists (#211).** A traceback is rendered by the
+    FORMATTER from ``exc_info``, never from ``msg`` — so this filter used to see
+    none of it, and a credential in an exception's own message (a connection
+    string, an ``Authorization`` header echoed back by a client, a config repr)
+    reached the sink verbatim. The filter now renders the exception itself,
+    scrubs it, and caches the result in ``record.exc_text``: the attribute
+    :meth:`logging.Formatter.format` checks BEFORE re-rendering
+    (``if not record.exc_text``), so any stdlib-compatible formatter downstream
+    emits the scrubbed text without knowing this filter exists.
+
+    **Two bounds worth meeting deliberately, not discovering (#211):**
+
+    * ``record.exc_info`` is deliberately NOT cleared. It is shared state — the
+      same record object reaches every handler — and other handlers may want the
+      live exception for structured reporting. A formatter that ignores
+      ``exc_text`` and re-renders from ``exc_info`` (``python-json-logger``
+      inverts the stdlib's precedence and does exactly this) therefore still
+      sees raw text. lore's own formatters route through
+      :func:`scrubbed_exception_text` and so are safe regardless.
+    * Handler filters run per handler, in handler order. If a handler WITHOUT
+      this filter formats the record first, it emits raw text and caches it —
+      this filter then repairs ``exc_text`` for everyone after it, but cannot
+      un-emit what already went out. ``configure_logging`` attaches exactly one
+      handler per lore namespace with ``propagate=False``, so that ordering does
+      not arise in lore's own configuration today.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -153,6 +271,17 @@ class RedactingFilter(logging.Filter):
             if key in _LOGRECORD_RESERVED or key.startswith("_"):
                 continue
             record.__dict__[key] = _scrub_value(value)
+        # Render-and-scrub the exception into the attribute the stdlib formatter
+        # honours ahead of ``exc_info``, so a handler that never heard of this
+        # filter still emits scrubbed traceback text.
+        if record.exc_text:
+            record.exc_text = _scrub_text(record.exc_text)
+        elif record.exc_info:
+            rendered = _render_exception(record.exc_info)
+            if rendered is not None:
+                record.exc_text = _scrub_text(rendered)
+        if record.stack_info:
+            record.stack_info = _scrub_text(record.stack_info)
         return True
 
 
@@ -193,6 +322,13 @@ class JsonFormatter(logging.Formatter):
             "msg": record.getMessage(),
         }
         payload.update(_extra_fields(record))
+        # The exception is CALLER INTENT, not stdlib machinery: eight production
+        # sites pass ``exc_info=True``/``exc_info=exc`` and every one of them was
+        # emitting nothing at all before #211. One field, so Mezmo indexes the
+        # whole traceback as a unit rather than smearing it across the line.
+        exception_text = scrubbed_exception_text(record)
+        if exception_text is not None:
+            payload[EXC_FIELD] = exception_text
         return json.dumps(payload, default=str)
 
 
@@ -200,10 +336,19 @@ class KeyValueFormatter(logging.Formatter):
     """Render a record as a human ``ts level logger event k=v k=v`` line."""
 
     def format(self, record: logging.LogRecord) -> str:
-        """Serialise ``record`` to a single readable key=value line."""
+        """Serialise ``record`` to a single readable key=value line.
+
+        An exception is appended BELOW the line, as the stdlib does — a traceback
+        is inherently multi-line and folding it into a ``k=v`` token would make it
+        unreadable in exactly the local-dev case this formatter exists for.
+        """
         head = f"{_iso_utc(record)} {record.levelname} {record.name} {record.getMessage()}"
         pairs = " ".join(f"{key}={value}" for key, value in _extra_fields(record).items())
-        return f"{head} {pairs}".rstrip()
+        line = f"{head} {pairs}".rstrip()
+        exception_text = scrubbed_exception_text(record)
+        if exception_text is not None:
+            return f"{line}\n{exception_text}"
+        return line
 
 
 def _resolve_formatter(fmt: str) -> logging.Formatter:
