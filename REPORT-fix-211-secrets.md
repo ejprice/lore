@@ -527,11 +527,29 @@ builders, not two. Wherever this report says "a second agent", read "two sibling
 
 ## 7. Mutation proofs
 
-`scripts/mutation_proof.py` was unavailable (§8.5), so I followed its discipline by hand
-and mechanised it as a throwaway harness: **declare the expected-RED node ids BEFORE the
-run** (never transcribed from the output), **assert the mutation LANDED** (md5 before/after
-— a no-op patch that "passes" is the failure mode), **diff BOTH ways**, and **restore from
-a `cp -a` content backup, proving byte-exactness by md5**.
+`scripts/mutation_proof.py` was unavailable — it is **TRACKED on `main` at `bdb61c7`** and
+landed after this branch forked at `d0ee2be` (§8 item 6 corrects my first, wrong account of
+why). So I followed its discipline by hand and mechanised it as a throwaway harness:
+
+1. **Declare the expected-RED node ids BEFORE the run** — written from the test SOURCE
+   before any mutation ran, never transcribed from failures I had just watched. M7 and M8
+   additionally took their ids from `pytest --collect-only`.
+2. **Assert the mutation LANDED** — md5 before/after. A patch script that silently matches
+   nothing "passes" and yields a green proof of nothing; that is the failure mode.
+3. **Diff BOTH ways** — unexpected reds, *and* declared reds that stayed GREEN.
+4. **Restore from a `cp -a` content backup, proving byte-exactness by md5.**
+
+⚠ **The harness is deliberately NOT committed.** Committing it would be copy #2 of a policy
+that already has a home on `main` — the exact ONE IMPLEMENTATION sin Half A spent this wave
+removing from the signin seam. The four steps above are the entire procedure and are
+reproducible from this paragraph; once this branch rebases onto `main`, use the committed
+helper rather than re-deriving one. There is deliberately no `/tmp` address to cite here.
+
+⚠ **And step 2 is not hypothetical — it caught me twice while EDITING THIS REPORT.** Two of
+my own `str.replace()` calls in a patch script matched nothing and no-opped silently, and
+the script printed its success line anyway; I only noticed because I re-read the rendered
+section. Same shape as the law, one level up: *if step N silently no-ops, does step N+1 still
+print something that reads like success?* Every subsequent edit asserted its match first.
 
 | # | mutation | declared RED | result |
 |---|---|---|---|
