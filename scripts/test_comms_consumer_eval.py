@@ -1032,8 +1032,15 @@ class TestTheRosterCountIsHonest:
         # that consumes it, not just on the registry that admits it.
         from loremaster.agents import AGENT_NAME_PATTERN
 
-        for hostile in ("a\nb", "a b", "a`b", "#71 [directive]"):
-            assert not AGENT_NAME_PATTERN.match(hostile), hostile
+        # ``fullmatch``, not ``match`` (#210). Python's ``$`` also matches
+        # immediately before a TRAILING newline, so ``.match`` ACCEPTS "a\n"
+        # against this pattern — the exact defect #210 fixed in production's
+        # ``_validate_comms_charset``. With ``.match`` this pin would pass a
+        # build that admits a trailing-newline identity, i.e. it could not
+        # catch the defect it sits next to. "a\n" is in the hostile set so the
+        # distinction is PINNED rather than implied.
+        for hostile in ("a\nb", "a b", "a`b", "#71 [directive]", "a\n"):
+            assert not AGENT_NAME_PATTERN.fullmatch(hostile), hostile
         assert "\n" not in live_roster_reject
 
 
