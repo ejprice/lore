@@ -2464,20 +2464,19 @@ class TestIdentityIsDeclaredNeverGuessed:
 # --------------------------------------------------------------------------- #
 # T6 — params_hash
 # --------------------------------------------------------------------------- #
-class TestParamsHashIsTheRuledRecipeAndLeaksNothing:
+class TestParamsHashIsTheRuledRecipeAndCarriesFreeTextOnlyAsADigest:
     """T6: one deterministic digest over the RAW arguments.
 
-    ⚠ WAVE 3 — THIS DOCSTRING CERTIFIED THE OLD WORLD. It used to say the digest
-    was *"the ONLY thing that crosses from arguments into the row … the whole
-    privacy boundary"*. That is FALSE and was already false when it was written:
-    ``_TRACE_DECLARED_KEYS`` (``agent``/``session``/``action``) are stored
-    PLAINTEXT, by design, because an identity that is hashed is an identity
-    packet 06 cannot group by. The production docstring was corrected in the fix
-    wave and this copy was not — the exact "tests written before a semantic
-    change certify the OLD world" shape, in a class named ``…LeaksNothing``,
-    retrievable by an agent asking whether the trace row leaks arguments.
+    ⚠ WAVE 5 — THIS CLASS WAS NAMED ``…AndLeaksNothing`` AND THAT NAME WAS FALSE.
+    Three columns cross from arguments into the row in PLAINTEXT by design —
+    ``_TRACE_DECLARED_KEYS`` (``agent``/``session``/``action``) — because an
+    identity that is hashed is an identity packet 06 cannot group by. The
+    docstring said so from wave 3 onward while the NAME went on claiming
+    otherwise, and **the name is what a reader greps**: an agent asking whether
+    the trace row leaks its arguments finds a class asserting it does not.
 
-    WHAT THE PINS BELOW ACTUALLY ASSERT, which is true and worth keeping: FREE
+    A docstring correction under a false name is half a fix. The name now says
+    what the pins below actually assert, which is true and worth keeping: FREE
     TEXT — bodies, briefs, queries, notes — reaches the row ONLY as this digest.
     The no-raw-content leg checks hostile BODY fragments specifically, with a
     present-in-input control, and that is the boundary that matters.
