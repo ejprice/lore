@@ -57,6 +57,55 @@ adjudications §7 · gates + testpaths receipt §8 · known bound §10.
 
 ---
 
+## 0b. D2 + D3 LANDED — `776312b` (2026-07-26)
+
+GO'd by the lead after the fix-wave audit. `git show --name-only 776312b` → exactly the
+seven files below, all exclusively mine; no `git add -A`/`.`/`-u` at any point.
+
+```
+loremaster/loremaster/calibration/counting.py   loresigil/loresigil/backoff.py
+loremaster/loremaster/server.py                 loresigil/tests/test_backoff.py
+loremaster/tests/test_backoff_seam.py           scripts/token_survey.py
+loremaster/tests/test_calibration_counting.py
+```
+
+**ONE helper, not two** — `additive_jitter(base_s, *, width_s)`. D2 and D3 are the same
+policy (decorrelating a delay someone ELSE decided) reached by different paths; writing them
+separately would have committed this wave's own sin inside the fix for it. Three call sites,
+both new ones in `_DECLARED_SITES` **at birth**, so the sentinel mutation and coverage check
+cover them from the first commit. Two DISTINCT sentinels now — a site calling the *wrong*
+policy would still look "jittered" while returning values below a server's floor.
+
+**Gates:** ruff clean tree-wide · mypy `lorescribe`/`loresigil` OK with **zero errors in any
+file touched here** (109 pre-existing in `test_comms_*`) · **978 passed, 1 skipped**.
+
+**Mutation proofs — declared from `--collect-only` BEFORE each run, diffed BOTH ways,
+byte-exact restore verified:**
+
+| mutation | declared | observed | verdict |
+|---|---|---|---|
+| **E** jitter removed (returns base) | 2 | 2 | EXACT |
+| **F** jitter inverted (downward) | 3 | 4 | extra red is CORRECT — a downward span also fails the spans-its-width control; my declaration was incomplete, the test was not |
+| **G** one site reverted to a private copy | 4 | 3 | **found a real weakness in MY OWN pin** — see below |
+
+**⚠ Mutation G is the receipt of the session.** My adjudicated replacement
+`7.0 <= slept[0] <= 7.0 + W` **stayed GREEN on an un-jittered build**, because an un-jittered
+build sleeps exactly `7.0` — which is *inside* that range. The bound I had just called
+"strictly stronger" certified the pre-D2 world in exactly the way the `== [7.0]` it replaced
+did. It caught a *downward* jitter and was blind to an *absent* one. Strengthened with repeat
+draws (8 sleeps, ≥6 distinct); re-ran G and it now goes RED naming the defect. **A one-way
+check would have reported "all declared reds fired" and shipped a hollow pin — for the second
+time in this wave, on the same instrument class.**
+
+**Old-world pin adjudicated:** `test_retry_after_header_is_honoured`'s `== [7.0]` could only
+hold while the path was deterministic. Preserved-with-pin-strengthened (floor property +
+the jitter-exists discriminator). The retired KNOWN BOUND was **retargeted, not deleted** —
+the residual bound is now the WIDTH (`1.0s` is chosen, never measured) and **#223**.
+
+**Deviation:** both `_sleep_backoff` bodies narrowed their `try` to the `float()` parse. The
+original wrapped the *sleep* too, so a `ValueError` raised by the sleep seam would have been
+swallowed into the exponential path. Latent, never observed, disclosed here.
+
 ## 0a. THE BOTH-WAYS MUTATION DIFF CAUGHT A DEFECT IN MY OWN PIN — within one wave of adopting it
 
 Surfaced here at the lead's direction as the strongest available argument for the practice.
