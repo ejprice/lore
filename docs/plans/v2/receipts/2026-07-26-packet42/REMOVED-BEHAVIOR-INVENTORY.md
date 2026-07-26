@@ -92,12 +92,45 @@ Operator-ruled 2026-07-26: declare `python-dotenv` and adopt it.
 
 ---
 
-## Open rulings this inventory surfaces (for the Phase 1 approval prompt)
+## Open rulings — RESOLVED by the operator 2026-07-26 (binding)
 
-1. **C2 / C9 — strip-and-emptiness semantics.** Three resolvers, three answers. Consolidation
-   forces ONE. Recommendation: adopt `resolve_secret`'s semantics (never strip the value;
-   treat unset/empty/whitespace-only as fatal) and pin it, because a key whose real bytes
-   include whitespace must survive, while a blank variable is always operator error.
-2. **A18 — the widened exposure.** Accepted by the operator ruling that authored this packet,
-   but it is the packet's central risk and must be met with the strongest available control
-   rather than assumed away.
+**R1 — C2 / C9, strip-and-emptiness semantics. RULED.** `resolve_secret`'s semantics win and
+are the ONE implementation: the value is **never stripped** (a key whose real bytes include
+leading/trailing whitespace survives byte-exact), and unset / empty / whitespace-only are all
+**fatal**, with the error naming the variable. C2's `.strip()` and C9's fall-through-on-empty
+are both retired as drift.
+
+**R2 — the resolver mechanism. RULED (supersedes the earlier "adopt python-dotenv" ruling,
+which is narrowed, not reversed).** `python-decouple` was probed and *works* — it delivers
+env-beats-file precedence, file fallback and byte-exact values once our two-line policy sits
+on top. It was **declined on maintenance grounds, not capability**: latest release 3.8,
+uploaded **2023-03-01**, with **no declared `requires_python`**, against this repo's Python
+3.14. `python-dotenv` is 1.2.2, uploaded 2026-03-01, `requires_python >=3.10`.
+
+The ruled shape takes decouple's *unified lookup* without decouple:
+
+```python
+def resolve_secret(env_var_name: str, env_file: Path | None = None) -> SecretStr:
+    value = os.environ.get(env_var_name)
+    if not value and env_file is not None:
+        value = dotenv_values(env_file).get(env_var_name)
+    if not value or not value.strip():
+        raise KeyError(f"{env_var_name!r} is unset, empty, or whitespace-only")
+    return SecretStr(value)
+```
+
+`dotenv_values()` parses a `.env` into a dict **without mutating `os.environ`**. This gives ONE
+lookup shape across all three former resolvers (the DRY property the split proposal lacked),
+uses the maintained package for the file parsing, and keeps the file consultation **opt-in**.
+
+**R3 — is the `.env` fallback available to the server? RULED: NO.** `server.py`, `scout.py` and
+`index/cli.py` call `resolve_secret(NAME)` with **no** `env_file`, so an unset variable stays
+fatal there exactly as today. Only `calibration/counting.py` and `scripts/token_survey.py` pass
+an `env_file`, which is where a `.env` file is the intended operator workflow. Rationale: the
+container is configured by environment, and a stray `.env` in the working directory must never
+become a production credential source. **This is a pinnable property, not a convention** — a
+test must assert the server-path call sites pass no `env_file`.
+
+**R4 — A18, the widened exposure. ACCEPTED** by the operator ruling that authored this packet.
+It remains the packet's central risk and must be met with the strongest available control
+rather than assumed away — it is not waived by being accepted.
