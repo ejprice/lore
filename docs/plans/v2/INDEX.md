@@ -34,29 +34,19 @@ HERE now** — a packet session must not need to read them.
   design) → 26a+ (onboarding build); 27 (cross-tier compare) rides ∥. Live-DB
   introspection stays with odoo-dev by design.
 
-## State of record (verified 2026-07-23, after packet 03a-2 — DONE, 03a CLOSED)
-- Branch `feat/surreal-unification` @ **0223291** (not pushed).
-- ⚠ **THE SUITE HAS A COMMITTED RED CONTRACT — read this before you run pytest.** The RED
-  contract for packets 03/03a/03b is COMMITTED (`efef2b3`, 400 pins; **+ the one-line #173
-  C-DEF fix** `_seed_agents` CREATE→UPSERT at `42eeedc`; **+ the operator-authorized 03a-2
-  amendments** at `50d65a0`/`f04729c` — see the Log). **Packet 03 (STORE) GREEN** (`df59f76`;
-  `test_comms_schema` + `test_surreal_schema`, scoped 304/0). **Packets 03a-1 (send + drain +
-  `AgentRefLike` home) and 03a-2 (ack + derived waiting state) GREEN + DONE**, so
-  `test_message_ledger.py` is now **180 passed / 0 failed / 12 skipped** (all 12 skips are
-  `[fake]`-leg; **zero `[real]`-leg skips**). Still EXPECTED RED: the dispatch/render pins in
-  `test_comms_tool.py` (**149 failed / 554 passed**, measured `f04729c`) and
-  `test_comms_promise_registry.py` — both are 03b's contract. **A 03b session does NOT start
-  from 0 failures.**
-- typecheck: **36 mypy errors** — all in the RED 03b contract test files (`test_comms_tool.py` 31,
-  `test_comms_promise_registry.py` 3: forward refs to `_render_comms_*` / new `comms(...)` kwargs)
-  + 2 pre-existing frozen-contract `no-any-return` (`test_message_ledger.py:1716/1736`, untouched);
-  **ZERO in any production file** (03a-1's `messages.py`/`agent_ref.py`/`briefs.py` are clean).
-  Global mypy-zero returns when 03b builds its surface — the TEST-ONLY split's structural property,
-  not a regression (operator deferral 2026-07-23). Skill suite **117 passed** (unaffected); ruff clean.
-- **Packet 02a shipped NO deploy and is not owed one — it is TEST-ONLY.** Production was
-  byte-identical throughout (`server.py` md5 `1caac4bd…` unchanged across every probe by
-  three independent parties), so the deployed image below still matches HEAD's production
-  code exactly. Do not read the unchanged image hash as a stale deployment.
+## State of record (verified 2026-07-26, by the findings sweep — after 03b, 10-d, and the 11-i design + security fix wave)
+- Branch `feat/surreal-unification` @ **644ced8** + this sweep's docs commits (not pushed).
+- **The committed-RED era is OVER — the suite is fully green at HEAD.** 03b discharged
+  global mypy-zero (36 → 0, all members); suite **6937/0** at the 03b close; post-11-i-merge
+  honest baseline **7065 passed / 1 failed**, and that single failure (`test_retired_symbols`
+  on three archived reports naming `_BRIEF_PUBLISH_` — main's own, named in
+  `receipts/2026-07-24-packet11i/FIXWAVE-CLOSEOUT.md`) was **CLOSED by this sweep's banner
+  fix** (`a7e6ea9`, scoped 16/16). ruff clean; skill suite 117 (03b close receipts).
+- **Findings ledger after this sweep: ZERO rows in `status=open`** — every finding is
+  resolved, or acknowledged with its destination packet in the ack note AND written into the
+  packet file itself. ⚠ Convention (packet-01 precedent, restated so no entry check
+  false-STOPs): a packet entry check reading "`lore_findings` → #N open" means NOT-RESOLVED
+  (open OR acknowledged); acknowledged = routed, still owed.
 - Deployed: **BOTH containers recreated on an image baking HEAD** — lore-lore (:9202)
   and DI (:9201). The deploy now GATES ITSELF: `verb_start` runs an artifact probe
   (required container binaries, derived from source) + a workspace-honesty probe
@@ -1004,3 +994,13 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   the 2026-07-24 Log entry planned; nobody flipped the row. Three instruments agree: the merge
   commit, both containers on `b46bc1d5`, and the RUNNING artifact's own `lore_index()` serving
   `cosine_floor.state="disabled"`. ⚠ The disarm MASKS #176/#179/#180 — they stay OPEN for 11-i/11-ii.
+- 2026-07-26 · **04 KICKOFF — #105 RE-SCOPED BY OPERATOR RULING; the packet file was STALE.**
+  Its #105 text said 03 shipped only a typed relation catching wrong-TABLE endpoints. Ground
+  truth: 03 shipped `ENFORCED` on `to` (validates BOTH ends, guards the TABLE incl. `INSERT
+  RELATION`) — so `send` was DONE, while `briefed`/`refers`/`answers_to` sat unguarded and the
+  old text never named the last two. RULED: `ENFORCED` on all four (OVERWRITE — `IF NOT EXISTS`
+  is the #107 no-op), app-check kept as the ergonomic layer; ghost CLEANUP out → **#236**
+  (re-open = first non-local deploy). Operator-directed: §4's evidence is 3.1.5 and the stores
+  are 3.2.1 — `ENFORCED` re-confirmed against the engine's executable spec @`v3.2.0`; P1–P4
+  carried as required probes, P1 (does a dangling edge read as a ghost or `[]`?) decides the
+  negative fixture and the 3.2 vendor docs still assert the reading §6.4 refuted.
