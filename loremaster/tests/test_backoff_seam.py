@@ -56,6 +56,7 @@ from loremaster.calibration import engine as ce
 from loremaster.scout import CommandSubscriber
 from loresigil.resilient import ResilientEmbedder
 from loresigil.tokens import VoyageTokenCounter
+from pydantic import SecretStr
 
 from loresigil import backoff as backoff_module
 
@@ -211,8 +212,7 @@ async def _drive_token_counter() -> list[float]:
     async def sleep_fn(delay: float) -> None:
         slept.append(delay)
 
-    counter = counting.AsyncClaudeTokenCounter(
-        "k",
+    counter = counting.AsyncClaudeTokenCounter(SecretStr("k"),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         sleep=sleep_fn,
     )

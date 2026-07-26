@@ -73,34 +73,6 @@ SECRET_PARAM_NAMES: frozenset[str] = frozenset({"password", "api_key"})
 # not through a parameter.)
 SECRET_PARAM_ALLOWLIST: frozenset[str] = frozenset()
 
-# ── KNOWN BOUND (#211 Half A remainder) ────────────────────────────────────────
-# These two sites still carry the Anthropic API key as a bare ``str``. They are
-# NOT allowlisted — an allowlist entry asserts "this is safe", which would be a
-# lie. They are PINNED (see TestDeferredApiKeyBound below) so the bound is met
-# DELIBERATELY by whoever meets it, and can be neither silently inherited nor
-# silently "fixed".
-#
-# WHY, stated with its date so a retrieved chunk carries its own provenance: on
-# 2026-07-25, at branch ``pkt11i-floor-calibration-dark``, a CONCURRENT wave
-# (finding #207, the shared jittered-backoff policy) held BOTH of these files
-# modified-and-uncommitted in the same worktree. Migrating them would have meant
-# committing another agent's in-flight work under this wave's commit, so the
-# password half shipped complete and the api_key half was bounded rather than
-# half-done. The change itself is small: annotate both parameters ``SecretStr``,
-# store them as such, unwrap at ``counting.py``'s ``"x-api-key"`` header dict,
-# and drop the deferred unwrap at ``server.py``'s ``CalibrationEngine(...)``
-# construction.
-#
-# RE-OPEN TRIGGER (a bound without one is a can-kick): the moment #207 lands, or
-# any other wave touches either file. Whoever does it deletes this set and the
-# pin below.
-DEFERRED_BARE_STR_SECRETS: frozenset[str] = frozenset(
-    {
-        str(Path("calibration") / "counting.py") + "::__init__::api_key",
-        str(Path("calibration") / "engine.py") + "::__init__::api_key",
-    }
-)
-
 # The signin payload keys the SurrealDB SDK expects. Read back from the shared
 # seam so this test cannot certify a private copy: mutate ``signin_credentials``
 # and this pin moves with it.
@@ -225,12 +197,11 @@ class TestEverySecretParameterIsTyped:
         )
 
     def test_every_secret_parameter_is_annotated_secretstr(self) -> None:
-        exempt = SECRET_PARAM_ALLOWLIST | DEFERRED_BARE_STR_SECRETS
         offenders = [
             f"{path}::{function}::{parameter} annotated {annotation or '<missing>'!r}"
             for path, function, parameter, annotation in _secret_parameters()
             if "SecretStr" not in annotation
-            and f"{path}::{function}::{parameter}" not in exempt
+            and f"{path}::{function}::{parameter}" not in SECRET_PARAM_ALLOWLIST
         ]
         assert not offenders, (
             "these parameters carry a secret as a bare value — annotate them "
@@ -247,43 +218,6 @@ class TestEverySecretParameterIsTyped:
         # on names is the runtime leak scan in the class below, which constructs
         # the real objects and searches their rendered state.
         assert SECRET_PARAM_NAMES == frozenset({"password", "api_key"})
-
-
-class TestDeferredApiKeyBound:
-    """A KNOWN BOUND, pinned so it is met deliberately (#211 Half A remainder).
-
-    See :data:`DEFERRED_BARE_STR_SECRETS` for the full why, the exact remaining
-    change, and the re-open trigger. This pin goes RED the day someone closes the
-    bound — which is the point: an unpinned known limitation is indistinguishable
-    from an unknown one.
-    """
-
-    def test_the_deferred_sites_still_carry_a_bare_str(self) -> None:
-        still_bare = {
-            f"{path}::{function}::{parameter}"
-            for path, function, parameter, annotation in _secret_parameters()
-            if "SecretStr" not in annotation
-        }
-        closed = DEFERRED_BARE_STR_SECRETS - still_bare
-        assert not closed, (
-            f"These are a KNOWN BOUND (#211 Half A remainder): {sorted(closed)} — "
-            "if you closed them DELIBERATELY, that is exactly right: delete them "
-            "from DEFERRED_BARE_STR_SECRETS, delete this test if the set is now "
-            "empty, and say so in your report. This pin exists so the bound "
-            "cannot be silently inherited OR silently fixed."
-        )
-
-    def test_the_deferred_set_names_only_sites_that_exist(self) -> None:
-        # A stale entry would make the pin above unfalsifiable — it would keep
-        # "passing" for a file that no longer has the parameter at all.
-        every_site = {
-            f"{path}::{function}::{parameter}"
-            for path, function, parameter, _ in _secret_parameters()
-        }
-        assert DEFERRED_BARE_STR_SECRETS <= every_site, (
-            "DEFERRED_BARE_STR_SECRETS names sites that no longer exist: "
-            f"{sorted(DEFERRED_BARE_STR_SECRETS - every_site)}"
-        )
 
 
 class TestSecretsDoNotSurviveAsBareStringsOnInstances:

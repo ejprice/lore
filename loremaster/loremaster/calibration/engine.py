@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
+from pydantic import SecretStr
 
 from loremaster.calibration.baseline import (
     IntegrityResult,
@@ -162,7 +163,7 @@ class CalibrationEngine:
         *,
         committed_constant: float,
         model: str,
-        api_key: str,
+        api_key: SecretStr,
         state_dir: Path,
         findings_port: FindingsPort,
         baseline: Mapping[str, Any] | None = None,

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 # The survey module is the SHAPE REFERENCE. It lives in ``scripts/`` (not a package),
 # so make that directory importable — mirrors ``scripts/test_token_survey.py``.
@@ -70,7 +71,9 @@ class TestRequestShapeParity:
         async_client = httpx.AsyncClient(
             transport=_recording_transport(async_recorded, httpx.Response(200, json={"input_tokens": 11}))
         )
-        async_counter = counting.AsyncClaudeTokenCounter(api_key, model=model, client=async_client)
+        async_counter = counting.AsyncClaudeTokenCounter(
+            SecretStr(api_key), model=model, client=async_client
+        )
         await async_counter.count(text)
         await async_counter.aclose()
 
@@ -106,12 +109,12 @@ class TestCountBehavior:
         client = httpx.AsyncClient(
             transport=_recording_transport(recorded, httpx.Response(200, json={"input_tokens": 123}))
         )
-        counter = counting.AsyncClaudeTokenCounter("k", client=client)
+        counter = counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client)
         assert await counter.count("hello") == 123
         await counter.aclose()
 
     async def test_default_model_is_current_generation_anchor(self) -> None:
-        counter = counting.AsyncClaudeTokenCounter("k")
+        counter = counting.AsyncClaudeTokenCounter(SecretStr("k"))
         assert counter.model == counting.DEFAULT_MODEL == "claude-sonnet-5"
         await counter.aclose()
 
@@ -131,7 +134,7 @@ class TestRetryContract:
             slept.append(delay)
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        counter = counting.AsyncClaudeTokenCounter("k", client=client, sleep=fake_sleep)
+        counter = counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client, sleep=fake_sleep)
         assert await counter.count("hi") == 42
         assert len(attempts) == 3
         assert len(slept) == 2  # slept before each of the two retries
@@ -151,7 +154,7 @@ class TestRetryContract:
             slept.append(delay)
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        counter = counting.AsyncClaudeTokenCounter("k", client=client, sleep=fake_sleep)
+        counter = counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client, sleep=fake_sleep)
         await counter.count("hi")
         assert slept == [7.0]
         await counter.aclose()
@@ -164,7 +167,7 @@ class TestRetryContract:
             return httpx.Response(400, text="bad request")
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        counter = counting.AsyncClaudeTokenCounter("k", client=client)
+        counter = counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client)
         with pytest.raises(RuntimeError):
             await counter.count("hi")
         assert len(attempts) == 1  # no retry on a non-429 4xx
@@ -180,7 +183,7 @@ class TestRetryContract:
             return httpx.Response(401, text="invalid x-api-key")
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        counter = counting.AsyncClaudeTokenCounter("k", client=client)
+        counter = counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client)
         with pytest.raises(counting.TerminalCountError):
             await counter.count("hi")
         await counter.aclose()
@@ -197,7 +200,9 @@ class TestRetryContract:
             return None
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        counter = counting.AsyncClaudeTokenCounter("k", client=client, max_retries=2, sleep=fake_sleep)
+        counter = counting.AsyncClaudeTokenCounter(
+            SecretStr("k"), client=client, max_retries=2, sleep=fake_sleep
+        )
         with pytest.raises(RuntimeError) as exc_info:
             await counter.count("hi")
         assert not isinstance(exc_info.value, counting.TerminalCountError)
@@ -214,7 +219,9 @@ class TestRetryContract:
             return None
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        counter = counting.AsyncClaudeTokenCounter("k", client=client, max_retries=3, sleep=fake_sleep)
+        counter = counting.AsyncClaudeTokenCounter(
+            SecretStr("k"), client=client, max_retries=3, sleep=fake_sleep
+        )
         with pytest.raises(RuntimeError):
             await counter.count("hi")
         assert len(attempts) == 3
@@ -226,13 +233,15 @@ class TestApiKeyAcquisition:
         monkeypatch.setenv(counting.ANTHROPIC_API_KEY_ENV, "from-env")
         env_file = tmp_path / ".env"
         env_file.write_text(f"{counting.ANTHROPIC_API_KEY_ENV}=from-file\n", encoding="utf-8")
-        assert counting.load_api_key(env_file) == "from-env"
+        # Unwrapped DELIBERATELY: ``load_api_key`` returns a ``SecretStr`` (#211),
+        # so a bare ``==`` against the value would be False — which is the point.
+        assert counting.load_api_key(env_file).get_secret_value() == "from-env"
 
     def test_parses_env_file_when_unset(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv(counting.ANTHROPIC_API_KEY_ENV, raising=False)
         env_file = tmp_path / ".env"
         env_file.write_text(f'{counting.ANTHROPIC_API_KEY_ENV}="from-file"\n', encoding="utf-8")
-        assert counting.load_api_key(env_file) == "from-file"
+        assert counting.load_api_key(env_file).get_secret_value() == "from-file"
 
     def test_raises_when_key_absent_everywhere(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -244,7 +253,7 @@ class TestApiKeyAcquisition:
 
 class TestClientOwnershipLifecycle:
     async def test_owned_client_is_closed_on_aclose(self) -> None:
-        counter = counting.AsyncClaudeTokenCounter("k")  # constructs & owns its client
+        counter = counting.AsyncClaudeTokenCounter(SecretStr("k"))  # constructs & owns its client
         internal_client = counter._client
         await counter.aclose()
         assert internal_client.is_closed
@@ -253,7 +262,7 @@ class TestClientOwnershipLifecycle:
         client = httpx.AsyncClient(
             transport=_recording_transport([], httpx.Response(200, json={"input_tokens": 1}))
         )
-        counter = counting.AsyncClaudeTokenCounter("k", client=client)
+        counter = counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client)
         await counter.aclose()
         assert not client.is_closed  # the injector still owns it
         await client.aclose()
@@ -262,7 +271,7 @@ class TestClientOwnershipLifecycle:
         client = httpx.AsyncClient(
             transport=_recording_transport([], httpx.Response(200, json={"input_tokens": 9}))
         )
-        async with counting.AsyncClaudeTokenCounter("k", client=client) as counter:
+        async with counting.AsyncClaudeTokenCounter(SecretStr("k"), client=client) as counter:
             assert await counter.count("x") == 9
         assert not client.is_closed
         await client.aclose()

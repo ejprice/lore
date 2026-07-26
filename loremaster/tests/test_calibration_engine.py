@@ -32,6 +32,7 @@ import pytest
 from loremaster.calibration import baseline as bl
 from loremaster.calibration import counting
 from loremaster.calibration import engine as ce
+from pydantic import SecretStr
 
 from loresigil import backoff as backoff_module
 
@@ -180,7 +181,7 @@ def _real_counter_factory(
     def factory() -> counting.AsyncClaudeTokenCounter:
         client = httpx.AsyncClient(transport=transport)
         return counting.AsyncClaudeTokenCounter(
-            "k", model=_MODEL, client=client, sleep=counter_sleep, max_retries=2
+            SecretStr("k"), model=_MODEL, client=client, sleep=counter_sleep, max_retries=2
         )
 
     return factory
@@ -207,7 +208,7 @@ def _build_engine(
     return ce.CalibrationEngine(
         committed_constant=committed,
         model=_MODEL,
-        api_key="k",
+        api_key=SecretStr("k"),
         state_dir=tmp_path,
         findings_port=port if port is not None else _FakeFindingsPort(),
         baseline=the_baseline,

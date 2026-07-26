@@ -6073,10 +6073,7 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         calibration_engine = CalibrationEngine(
             committed_constant=TOKEN_BUDGET_CALIBRATION,
             model=config.anthropic.yardstick_model,
-            # DEFERRED unwrap — see test_secret_typing.py::TestDeferredApiKeyBound.
-            # CalibrationEngine still takes a bare ``str`` api_key (#211 Half A
-            # remainder); this is the one site that pays for it.
-            api_key=resolve_secret(config.anthropic.api_key_env).get_secret_value(),
+            api_key=resolve_secret(config.anthropic.api_key_env),
             state_dir=manifest_path.parent,
             findings_port=_CalibrationFindingsAdapter(finding_ledger),
         )
