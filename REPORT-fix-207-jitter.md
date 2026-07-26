@@ -48,7 +48,10 @@ adjudications §7 · gates + testpaths receipt §8 · known bound §10.
 - *"Put the tenacity comparison in the report"* — done, §2.
 - *"Declare expected-RED before the run, from `--collect-only`, and diff both ways"* — **already
   applied**, and it caught a real defect in my own pin (§5).
-- *"Confirm your new tests are inside `testpaths`"* — **checked, they are**, §8.
+- *"Confirm your new tests are inside `testpaths`"* — **checked, they are** — but my first
+  *explanation* of why was false and is corrected in §8, along with a re-derived measurement of
+  #199 (**150** ungated `scripts/` test nodes, not the "~50" three reports carried) and its
+  direct consequence for this wave's `token_survey` site.
 - *"Commit only your own paths, explicitly"* — I never ran `git add -A`/`.`/`-u` or `commit -a`
   at any point; every `git add` named explicit paths (§1).
 
@@ -355,13 +358,37 @@ than honestly — the exact shape that gets an invariant deleted by the next eng
   **`953 passed, 1 skipped, 1 warning in 11.79s`**
 - New tests: 8 policy pins (`loresigil/tests/test_backoff.py`) + 13 invariant pins
   (`loremaster/tests/test_backoff_seam.py`).
-- **Both new instruments are actually GATED — checked, not assumed** (the lead flagged that a
-  sibling packet shipped two instruments sitting outside `testpaths`, *"a guard nobody runs is
-  a hope with a filename"*). Receipt: `pyproject.toml`'s `[tool.pytest.ini_options]` sets
-  `asyncio_mode`, `addopts` and `consider_namespace_packages` but **no `testpaths` key at all**,
-  so collection is rootdir-recursive. A bare `uv run pytest --collect-only -q` (no path
-  arguments) collects **8** `test_backoff.py::` nodes and **13** `test_backoff_seam.py::` nodes
-  — 21, matching the 21 that pass. Neither guard is ungated.
+- **Both new instruments are actually GATED — checked empirically** (the lead flagged that a
+  sibling packet shipped two instruments outside `testpaths`, *"a guard nobody runs is a hope
+  with a filename"*). Receipt: a bare `uv run pytest --collect-only -q` (no path arguments)
+  collects **8** `test_backoff.py::` nodes and **13** `test_backoff_seam.py::` nodes — 21,
+  matching the 21 that pass.
+
+  ⚠ **CORRECTION (2026-07-25): my first explanation of WHY they are gated was FALSE.** I wrote
+  that `[tool.pytest.ini_options]` has *"no `testpaths` key at all, so collection is
+  rootdir-recursive."* **`testpaths` exists** — `["lorescribe/tests", "loresigil/tests",
+  "loremaster/tests"]`. My `grep -A6` window ended **exactly one line before it**. The
+  conclusion survived only because both instruments happen to live in covered directories.
+  **The measurement was load-bearing and correct; the mechanism I attached to it was a guess
+  that read like a finding.** Had collection truly been recursive, finding **#199** — which
+  says `scripts/`'s tests have never run in any gate *because* `testpaths` excludes it — would
+  have been false, and my claim would have quietly contradicted three independent reports.
+  **#199 stands.**
+
+- **#199 QUANTIFIED, and it lands on this wave.** Re-derived here rather than inherited:
+  `scripts/` holds **5 test files / 150 collectable test nodes**, and a bare gated run collects
+  **0** of them (`pytest --collect-only -q | grep -c "^scripts/"` → `0`; `pytest scripts/
+  --collect-only -q` → `150 tests collected`). Three reports raised #199 as *"~50 tests"* — the
+  measured figure is **150**.
+
+  **Consequence for #207 specifically:** one of my five fixed sites is
+  `scripts/token_survey.py::ClaudeTokenCounter._sleep_backoff`, whose module's own tests live
+  in the ungated `scripts/` tree — and `grep` confirms `scripts/test_token_survey.py` contains
+  **no** coverage of `_sleep_backoff` or the retry constants anyway. So the ONLY gated coverage
+  of that backoff site is my sharing pin in `loremaster/tests/test_backoff_seam.py`, which
+  drives it as declared site 5. That is not luck — it is the coverage-as-a-checked-variable
+  design doing its job across a gate boundary — but it means **if that pin were ever narrowed
+  to "loremaster only", the token_survey site would silently lose all gated coverage.**
 - **No new failures.** The 6 `test_scout.py` failures I saw mid-session were the other
   session's incomplete #211 migration (`AttributeError: 'str' object has no attribute
   'get_secret_value'` at `_txn.py::signin_credentials`, a symbol that did not exist at
