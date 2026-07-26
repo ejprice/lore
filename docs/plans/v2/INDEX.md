@@ -12,7 +12,11 @@ forward work and reserved for history — the Log, finding notes, memories, and 
 messages cite them, and the table's *was* column is the decoder. Every packet file's
 header carries "(formerly PKT-xx)". Mid-sequence insertions (splits at kickoff, packets
 minted by a design) take LETTER SUFFIXES (13a/13b, 26a/26b) — the top-level 01–41
-sequence is never renumbered again. Completed work keeps its historical id
+sequence is never renumbered again. **Anomaly on record: packet 42** (operator-minted
+2026-07-26) carries a number past the tail while RUNNING in wave L — by this law it would
+have been a letter suffix, but it is already cited by number in the Log/ledger/commits, so
+the number STANDS; its TABLE row position, not the filename sort, is its order of record.
+Completed work keeps its historical id
 (`PKT-06-ledger-verbs.md`; comms C0/C1 are recorded in `comms-subsystem.md` + the Log).
 THIS TABLE is authoritative over any stale wave letter in a packet file's header.
 
@@ -42,25 +46,35 @@ HERE now** — a packet session must not need to read them.
   on three archived reports naming `_BRIEF_PUBLISH_` — main's own, named in
   `receipts/2026-07-24-packet11i/FIXWAVE-CLOSEOUT.md`) was **CLOSED by this sweep's banner
   fix** (`a7e6ea9`, scoped 16/16). ruff clean; skill suite 117 (03b close receipts).
-- **Findings ledger after this sweep: ZERO rows in `status=open`** — every finding is
-  resolved, or acknowledged with its destination packet in the ack note AND written into the
-  packet file itself. ⚠ Convention (packet-01 precedent, restated so no entry check
-  false-STOPs): a packet entry check reading "`lore_findings` → #N open" means NOT-RESOLVED
-  (open OR acknowledged); acknowledged = routed, still owed.
-- Deployed: **BOTH containers recreated on an image baking HEAD** — lore-lore (:9202)
-  and DI (:9201). The deploy now GATES ITSELF: `verb_start` runs an artifact probe
-  (required container binaries, derived from source) + a workspace-honesty probe
-  (a watched root with a `.git` MUST serve a non-null branch), on all three start
-  paths; a failure STOPS the deploy. Live receipt: `container binaries OK (git)` ·
-  `workspace honesty OK (1 watched root(s) served)` on both. `lore_index()` serves
-  `git_branch: feat/surreal-unification` + the real ref.
-  15-tool surface; cosine substrate live; floor **0.50649** (STALE — measured over 214
-  files, now 291; #87, packets 10/11); P7→P8d′, SLATE S1–S7, the closure wave,
-  PKT-06/C0, PKT-28 C1, the #102 retry-substrate chain, **packet 01**, **01a**,
-  **packet 02** (comms render architecture) and **packet 02a** (promise-instrument
-  hardening) all CLOSED.
-  Hashes are as-of-verification snapshots (image `ae0e78d9a504`); the authoritative
-  deployment check is always RELATIVE (protocol, Boot 4).
+- **Findings ledger after this sweep: every PRE-SWEEP row (≤ #235) is resolved or
+  acknowledged**, with its destination packet in the ack note AND written into the packet
+  file itself. Rows filed DURING the sweep by the live WIP sessions (#236+) stay with their
+  sessions to route at close-out. ⚠ Convention (packet-01 precedent, restated so no entry
+  check false-STOPs): a packet entry check reading "`lore_findings` → #N open" means
+  NOT-RESOLVED (open OR acknowledged); acknowledged = routed, still owed.
+- **Live WIP sessions (operator, 2026-07-26): packets 04 (its kickoff re-scoped #105 to the
+  ENFORCED sweep — see its file), 11-i BUILD (ledger row `1586bbc0` claimed), and 42.**
+  Parallel sessions, one packet each. ⚠ The findings-sweep riders added to 04/11-i/42's
+  files mid-flight (#219 · #198/#201 · #221/#226/#235) need each live session POINTED at
+  them — a running session does not re-read its packet file (04 has already absorbed #219).
+- Deployed: **BOTH containers on image `b46bc1d5…` (built 2026-07-25), baking the 03b build
+  + packet 10-d** — 10-d's disarm VERIFIED LIVE in-container 2026-07-26
+  (`search._COSINE_WEAK_MATCH_FLOOR is None`): the confident-wrong weak-match surfaces are
+  dark in production, and `smoke_p8b` check 8 is GREEN against the deployed image (it WAS
+  the deploy gate, as designed). **#147 CLOSED with a production receipt** (trace rows
+  0→664). The deploy gates itself (artifact + workspace-honesty probes on all three start
+  paths — packet 01); `lore_index()` serves the real branch/ref.
+  ⚠ **Commit-only, NOT yet deployed (merged after the image build):** the 11-i security fix
+  wave — #210 charset `fullmatch` + its AST class instrument, #207 one full-jitter backoff
+  policy, #211 `SecretStr` + traceback render-and-scrub (merge `c192cb4`) — and all docs
+  since. It ships with the NEXT deploy: packets **04** and **42** (both WIP) each deploy
+  BOTH containers at close — whichever lands first carries it.
+  15-tool surface; cosine substrate live; the 0.50649 floor constant is RETIRED FROM
+  SERVING (10-d disarm; #161's re-measure rides 11-i, cutover + constant retirement 11-ii).
+  P7→P8d′, SLATE S1–S7, the closure wave, PKT-06/C0, PKT-28 C1, the #102 retry-substrate
+  chain, packets 01, 01a, 02, 02a, 03, 03a-1/03a-2, **03b** and **10-d** all CLOSED.
+  Hashes are as-of-verification snapshots; the authoritative deployment check is always
+  RELATIVE (protocol, Boot 4).
 - Standing eval bar: **35-pair set, pinned claude-sonnet-4-5-20250929, client metrics**
   (accuracy ≥33/35 · tokens-per-correct ≈1375-era · taxed-calls ≈0). 11-pair calls-leg
   retired. Last receipts: 33/35 · 6.46 calls · 1440.8 tok (2026-07-07).
@@ -77,8 +91,10 @@ HERE now** — a packet session must not need to read them.
   17,287 chunks proven non-null + cosine 1.000000 vs fresh re-embeds on all three
   tiers; measured safe-stamp with rollback recorded; restart clean, no re-trigger).
   The durable fixes are the **#171 ruled design → packets 11a/11b** (⊃ #168/#169,
-  adopts #170; certified at scale in 24). Cosine floor legitimately stale
-  post-reconcile (#161 → packets 10/11); traces still serve total=0 (#147 → 03b).
+  adopts #170; certified at scale in 24). The stale-floor tail is handled by the 10-d
+  disarm (DEPLOYED) + 11-i re-measure (WIP) + 11-ii cutover; traces are LIVE (#147
+  closed, 0→664 production rows) with retention owed by 06 (#193). Spectron docs added
+  as static tier `spectron-docs` 2026-07-23 (+143 files atop the 2764).
 
 ## Packet protocol (read once — this is the whole ritual)
 **Boot:** (1) repo CLAUDE.md auto-loads (process law: gates, TDD, orchestration,
@@ -169,28 +185,29 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 03a-1 | **comms ledger SEND + drain** — `messages.py` foundations + `AgentRefLike` home + `send` + drain/peek; ≥8-way send concurrency | — | C | 0.20 | 03 | **DONE 2026-07-23** (2d1f75d→42eeedc; cold-audit GO, [real] leg graded; 140 passed / 31 red=03a-2 stubs; #173 fix; TEST-ONLY, no deploy) |
 | 03a-2 | **comms ledger ACK + WAITING** — ack (4-way disambiguation), derived waiting state; 16-way ack concurrency (**closes 03a**; drain landed in 03a-1) | — | C | 0.15 | 03a-1 | **DONE 2026-07-23** (`853a95b`→`0223291`; cold-audit GO, [real] leg graded 31 pins / 0 silent skips; 180 passed / 12 skipped; 20/20 16-way ack concurrency; **closes 03a**; TEST-ONLY, no deploy) |
 | 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a ✅ | **✅ DONE + DEPLOYED 2026-07-26** (task `b7f89c12`). Suite **6937/0**, typecheck 0 all members (**global mypy-zero DISCHARGED**, 36→0), ruff, skill 117, concurrency 20/20. Both containers on `b46bc1d5`; every deploy receipt green on production. **#147 CLOSED with a production receipt** (traces 0→664, ordinals distinct+increasing). Client battery PASS 3/3 floor + all 3 population models. Inherited 6 design-ruled items all discharged. Residuals routed with named decision points: 05 (#190/#183/#214, DD-2.a, DD-4.c) · 06 (#193 retention, join-quality receipt) · 05-or-06 (#195 injection). |
-| 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
-| 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121 #149) | PKT-28 C3 | C | 0.30 →split | 04 | open |
-| 06 | comms-protocol-drill (brief-base v3 + THE DRILL) | PKT-28 C4 | C | 0.25 | 05 | open |
+| 04 | comms-blocks-footer (blocks edge, fleet cols; #105 ENFORCED sweep + #219) | PKT-28 C2c | C | 0.20 | 03 | **WIP 2026-07-26** (kickoff re-scoped #105 → the ENFORCED sweep — see the file) |
+| 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121 #149 + #174 #183 #190 #214, #195 05-or-06) | PKT-28 C3 | C | 0.30 →split | 04 | open |
+| 06 | comms-protocol-drill (brief-base v3 + THE DRILL; #193 retention, #228 watcher rule) | PKT-28 C4 | C | 0.25 | 05 | open |
 | 07 | store-error-honesty: CLASSIFICATION (#118, #119, #144 — the #124 rediagnosis) | PKT-30 | L ∥ | 0.20 | — | open |
 | 07a | store-error-honesty: RECOVERY + DEGRADATION (#164 reconnect-on-bounce, #128; #126/#127 adjudication) | — | L ∥ | 0.20 | 07 rec. (same seam) | open |
 | 08 | astroid-shadow (#24; containerfile roles → 37) | PKT-08 | L ∥ | 0.15 | — | open |
-| 09 | surface-residues (#15, #64, #80, #82, #84–#86, #88, #92, docs truth) | PKT-03 | L ∥ | 0.20 | — | open |
+| 09 | surface-residues (#15, #64, #80, #82, #84–#86, #88, #92, docs truth; + #197 #208 #230 #231 slotted 2026-07-26 — re-size at kickoff) | PKT-03 | L ∥ | 0.20 →re-size | — | open |
 | 10 | floor-calibration-design (#83, #87, #161, #179) | PKT-01 | L | 0.15 | — | **design DONE 2026-07-24; F3 → client consult** |
 | 10-d | **weak-match DISARM** (#176/#179/#180 — confidence surfaces dark NOW; trust doctrine, Addendum E1) | — | L | 0.05 | — (independent) | **✅ DONE + DEPLOYED 2026-07-26** (built/audited/merged `be4c591` 2026-07-24; deploy RODE 03b's — both containers on `b46bc1d5`). Live receipt from the running artifact: `lore_index()` serves `cosine_floor.state="disabled"` with the note naming #83/#176/#179/#180. ⚠ **The disarm MASKS #176/#179/#180, it does not FIX them** (`d7a1ce5`) — the per-instance calibration that resolves them is 11-i/11-ii; those findings stay OPEN. |
-| 11-i | floor-calibration: DARK MACHINERY (engine + store + in-container runner + R2 lab validation; serving untouched, no deploy) | PKT-02 | L | 0.20 → split 11-i-a ~0.15 / 11-i-b ~0.24 | 10 ruled | **DESIGN RULED 2026-07-26** (23 decisions: RULINGS-2026-07-25.md; Addendum F-r2 §R1–R10; S1 measured NOT DEGENERATE) — **BUILD not started** |
+| 11-i | floor-calibration: DARK MACHINERY (engine + store + in-container runner + R2 lab validation; serving untouched, no deploy) | PKT-02 | L | 0.20 → split 11-i-a ~0.15 / 11-i-b ~0.24 | 10 ruled | **DESIGN RULED 2026-07-26** (23 decisions: RULINGS-2026-07-25.md; Addendum F-r2 §R1–R10; S1 measured NOT DEGENERATE) — **BUILD WIP 2026-07-26** (row `1586bbc0` claimed; #198/#201 ride the build order — see the file's rulings banner) |
 | 11-ii | floor-calibration: CUTOVER (chokepoint wiring + serving swap + retirement sweep; resolves #83/#87/#161/#179) | PKT-02 | L | 0.15 | 11-i landed | open |
-| 42 | **PREVENT THE LEAK, DELETE THE SANITIZER** — `SecretStr` everywhere + allowlist the 13 `.get_secret_value()` unwraps, then DELETE the entropy catch-all. Kills audit R2 (12.4% of function names erased from tracebacks), #227 and both its accepted bounds. | — | L | 0.20 | — (independent) | **open — SHIPS NEXT (operator, 2026-07-26)** |
+| 42 | **PREVENT THE LEAK, DELETE THE SANITIZER** — `SecretStr` everywhere + allowlist the 13 `.get_secret_value()` unwraps, then DELETE the entropy catch-all. Kills audit R2 (12.4% of function names erased from tracebacks), #227 and both its accepted bounds. | — | L | 0.20 | — (independent) | **WIP 2026-07-26** (⚠ riders #221/#226/#235 added mid-flight by the sweep — point the live session at them; #235 is load-bearing: deleting the catch-all without its fix WIDENS a leak) |
 | 11a | embedding-reconciliation CONTRACT (#171 FULLY-RULED design ⊃ #168/#169, adopts #170) | — | L | 0.20 | — (design ruled) | open |
 | 11b | embedding-reconciliation BUILD (reconciler + resolve extraction + #170 hash; `rebuild_all` retires, hard-cutover rename) | — | L | 0.25 →split if 11a measures over | 11a ruled | open |
 | 12 | detection-contract (#10, #11, #27; rides 11b's extracted resolve seam) | PKT-04 | L | 0.15 | 11b rec. | open |
 | 13 | detection-build | PKT-05 | L | →split | 12 ruled | open |
 | 14 | config-derive-excludes (#26, #28, #72 corpus pollution + #162 archive-twin dedup) | PKT-09a | L ∥ | 0.20 | — | open |
 | 15 | config-boot-validation (+ dead fields, #12) | PKT-09b | L ∥ | 0.20 | — | open |
-| 16 | surreal-ops-hardening (#109, #110, #113, #114, #116, #117) | PKT-31 | L ∥ | 0.15 | — | open |
+| 16 | surreal-ops-hardening (#109, #110, #113, #114, #116, #117; + #175 re-probe→reference) | PKT-31 | L ∥ | 0.15 | — | open |
+| 16a | package-seam-hardening (loresigil #205 split-math + #223 Retry-After; #209 watchdog fork bound+canary) | — | L ∥ | 0.15 | — | open — MINTED by the 2026-07-26 sweep (operator may strike/re-home at kickoff) |
 | 17 | worktree-overlay-design (#125; delta-only RULED) | PKT-33 | L | 0.15 | — (#136 FIXED 2026-07-14) | open |
 | 18 | ledger-retirement (singular-store ruling) | PKT-24 | M | 0.20 | — (before 20 finalizes, 22 ships) | open |
-| 19 | **deploy-architecture DESIGN** (#166 one-toolchain ⊃ #165; partitions the old rework — #13, scaffold, verbs — into minted 19b+ builds ≤0.25 each) | PKT-11 | M | 0.15 | — (builds inherit 14/15) | open — REDESIGNATED 2026-07-22 |
+| 19 | **deploy-architecture DESIGN** (#166 one-toolchain ⊃ #165, #186 recurrence; partitions the old rework — #13, scaffold, verbs — into minted 19b+ builds ≤0.25 each) | PKT-11 | M | 0.15 | — (builds inherit 14/15) | open — REDESIGNATED 2026-07-22; urgency ↑ 2026-07-25 (#186: #165 recurred, 3 tiers) |
 | 20 | migration-machinery (Shape D) | PKT-12 | M | 0.30 →split | §8 Q1–Q4 ruled at kickoff; 19; 18 | open |
 | 21 | single-node-drills (§8.6 + watcher skip-path) | PKT-10a | M | 0.15 | — | open |
 | 22 | di-migration + **v1.0 SHIP (single-node)** | PKT-13 | M | 0.25 | 19, 20, 18, GO/NO-GO | open |
@@ -199,7 +216,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 25 | odoo-onboarding-design (XML extractor, MRO capture, tiers, cutover) | PKT-32 | O | 0.15 | 24 receipts | open |
 | 26 | odoo-onboarding-build (26a, 26b, … minted by 25) | PKT-35+ | O | ≤0.25 each | 25 ruled | open |
 | 27 | cross-tier-compare (Odoo 15→19 prep) | PKT-18 | O ∥ | 0.25 | v1.0 | open |
-| 28 | graph-search-v11 (#3, #70, #155; + #20/#37/#40/#41 candidates) | PKT-17 | F | 0.35 →split | v1.0 | open |
+| 28 | graph-search-v11 (#3, #70, #155, #233; + #20/#37/#40/#41 candidates) | PKT-17 | F | 0.35 →split | v1.0 | open |
 | 28a | report/thread serving (#163 ⊃ #160 — section-aware chronological threads + report graph) | — | F ∥ | 0.25 | 14 (#162 first); v1.0 | open |
 | 29 | loresage package | PKT-14 | F | 0.25 | v1.0 | open |
 | 30 | enrichment-worker | PKT-15 | F | 0.30 →split | 29 | open |
@@ -208,7 +225,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 33 | memory-reconciler (det. tier + loresage tier) | PKT-25 | F | 0.35 →split | v1.0; 29 for LLM tier | open |
 | 34 | summary-reuse (5b, promoted) | PKT-26 | F | 0.25 | 29; 35 helpful | open |
 | 35 | trace-deepening + trace_monitor backstop (gates S+G) | PKT-20 | F LAST | 0.30 →split | v1.0 | open |
-| 36 | role-wiring (all\|mcp\|scout + creds; regains role verbs from 19) | PKT-07 | S | 0.30 →split | — | open |
+| 36 | role-wiring (all\|mcp\|scout + creds; regains role verbs from 19; #206 session-binding fix) | PKT-07 | S | 0.30 →split | — | open |
 | 37 | containerfile-roles + image slimming | PKT-08b | S | 0.20 | 36 | open |
 | 38 | split-topology-e2e | PKT-10b | S | 0.20 | 36, 37 | open |
 | 39 | hosted-security (design first; REQUIRED before off-LAN) | PKT-21 | S | 0.30 →split | 35 | open |
@@ -272,15 +289,24 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
 21. **#111 typed conflict check** — switch `_txn`'s substring match to
     `is_transaction_conflict` when surrealdb-py 3.0.0 ships (alphas a1–a4 exist as of
     2026-07-16, NOT adopted — reference §0). Watch the release.
-22. **#154 + #157 — legacy citation debt** (dead SPEC paths + 51 dangling report names +
-    116 line-number cites in the test tree). Recurrence is CLOSED by the archive law;
-    the legacy tail is inert. Decision point: wave-L kickoff — one hygiene mini-packet,
-    or accept-with-trigger.
-23. **#156 — exemption evidence is unexecutable (DESIGN item):** every allowlist can
-    carry a false justification forever ("no assertion can read English"); both
-    adversaries blessed a false one by inspection. The fix is a property to INVENT
-    (executable exemption evidence) — per roster law it needs an Opus design pass that
-    attacks its own design, not a builder. Operator schedules.
+22. **#154 + #157 + #218 — legacy citation debt** (dead SPEC paths + 51 dangling report
+    names + 116 line-number cites in the test tree; **#218 added 2026-07-26**: a RENAME
+    breaks a symbol citation exactly as an edit breaks a line citation — the citation law
+    names no rename mitigation; adjudicate together). Recurrence is CLOSED by the archive
+    law; the legacy tail is inert. Decision point: wave-L kickoff — one hygiene mini-packet,
+    or accept-with-trigger. ⚠ The named decision point has ARRIVED (wave L is running:
+    10/10-d/11-i/42) — the fork is now DUE.
+23. **#156 + #200 + #224 — the process-instrument DESIGN cluster (extended 2026-07-26):**
+    #156, exemption evidence is unexecutable — every allowlist can carry a false
+    justification forever ("no assertion can read English"); both adversaries blessed a
+    false one by inspection. #200, nothing distinguishes operator-RULED from
+    author-ASSERTED once a claim is restated — a phantom prohibition drove a whole lease
+    design (twice in one packet). #224, the count/population class has no instrument —
+    three instances in ONE session, with the law already in CLAUDE.md. All three are
+    properties to INVENT (executable exemption evidence · provenance-of-authority marking ·
+    a count-scope instrument) — per roster law they need an Opus design pass that attacks
+    its own design, not a builder; one design packet could carry all three. Operator
+    schedules.
 24. ~~**Message id form (03a-1 residual):** `uuid4().hex` vs `ulid()`~~ — **RULED (operator,
     2026-07-23): use `ULID`.** Time-sortable for a future pkt-05 `since=` cursor; pre-deployment, so
     no records to migrate. Implemented `13da377`: `message.id = str(ULID())` (python-ulid 4.0.1,
@@ -310,6 +336,20 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
 - **#159** (24 non-passing tests once, unreproduced ×5; evidence destroyed by tail-only
   echo) — watch. Trigger: on ANY anomalous run, preserve the FULL output before
   re-running; a green claim needs the passed-count tail, an anomaly needs the whole body.
+- **#184 — fastmcp standalone migration REFUSED for 03b** (telemetry rides a
+  `TracingFastMCP.call_tool` subclass override). Accepted with a named re-open trigger: an
+  mcp/fastmcp upgrade breaking that seam, or packet 35's trace work. Ledger task
+  `b3fd31cb` is the tracking row.
+- **#202 — `_txn.retry_on_conflict` is the hand-roll pattern's third instance (tenacity)**
+  — raised for the record, deliberately NOT churned (the seam is mutation-proven and
+  stable); re-open trigger named in the finding. Adjacent receipt: #207 consolidated the
+  five OTHER backoffs onto `tenacity.wait_random_exponential`, leaving `_txn` the one
+  fenced hand-roll.
+- ⚠ **#185 LANDMINE — `scratch_copy.sh` does NOT git-isolate a copy made FROM A WORKTREE**
+  (the copied `.git` FILE points at the real worktree; git commands in the copy mutate its
+  metadata while the Python provenance assertion passes). Worktrees are banned for lore
+  work anyway (above), which bounds the exposure; packet 17 dispositions the fix. Until
+  then: NEVER scratch-copy from a worktree.
 - ⚠ **lore-lore runs on a HAND-ROLLED /source mount — NOT restart-durable until the
   packet-19 deploy architecture (#165/#166) lands** (migration lead, 2026-07-22). A
   recreate before then needs the hand mount reapplied; treat any lore-lore restart as
@@ -1004,3 +1044,14 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   are 3.2.1 — `ENFORCED` re-confirmed against the engine's executable spec @`v3.2.0`; P1–P4
   carried as required probes, P1 (does a dangling edge read as a ghost or `[]`?) decides the
   negative fixture and the 3.2 vendor docs still assert the reading §6.4 refuted.
+- 2026-07-26 · **FINDINGS SWEEP + STATE REFRESH (operator-directed).** All 51 pre-sweep open rows
+  → 0: #145/#172 RESOLVED (03b S2 pins landed; memory migration recorded); 49 acknowledged with
+  destinations written INTO the packet files (04 +#219 · 05 +#174/#183/#190/#214, #195 fork settles
+  at 05 kickoff · 06 +#193/#228 · 09 +#197/#208/#230/#231 · 11-i +#198/#201 · 16 +#175 · **16a
+  MINTED** #205/#223/#209 · 17 +#185 · 19 +#186 · 28 +#233 · 36 +#206 (39 cites it) · 42
+  +#221/#226/#235 · pool 22 +#218 (fork now DUE) · pool 23 = #156/#200/#224 design cluster · watch
+  +#184/#202/#185). Acknowledged = routed; entry-check "open" = not-resolved. State of record
+  refreshed (03b/10-d live on `b46bc1d5`; 11-i fix wave commit-only → rides 04/42's deploy); the
+  suite's last red CLOSED (`a7e6ea9`, retired-symbols 16/16); 36's stale "14-tool" fixed;
+  DESIGN-LAW verified current through §15. WIP (operator): 04 · 11-i build · 42 — ⚠ their
+  mid-flight riders need a live-session ping. #236+ (filed during the sweep) stay with their sessions.
