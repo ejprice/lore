@@ -180,5 +180,34 @@ No concurrency re-run — I touched neither the seam nor the schema, as briefed.
 
 ---
 
-*Measured 2026-07-25 on branch `feat/surreal-unification`; gates at HEAD `e6653d4` with an empty
-fingerprint diff, committed as `cad340f` and `a65ccca`.*
+## 5 — ADDENDUM: `scripts` added to `testpaths` (lead-ruled after the report above)
+
+The §3 flag was ruled ADD IT. One line in `pyproject.toml`, with the reasoning beside it so the
+next reader does not have to reconstruct why a tooling directory is gated like shipped code.
+
+```
+full suite BEFORE   6611 passed, 17 skipped, 3 xfailed   in 189.27s
+full suite AFTER    6937 passed, 17 skipped, 3 xfailed   in 197.77s
+                    ^ 6611 + 326 exactly — collection independently confirms 6957 = 6631 + 326
+ruff                All checks passed!
+skill               117 passed — unaffected, as expected: it passes explicit path
+                    arguments, and testpaths applies only when none are given
+```
+
+**Cost, measured rather than asserted: +8.5s on a 189s gate (+4.5%).** That does not change the
+gate's character, so the ruling's assumption holds and there was nothing to stop for. Nothing in
+`scripts/` failed.
+
+⚠ **The fingerprint diff for this step is NOT empty, and that is correct.** `pyproject.toml` moved —
+it is my own one-line edit, made between the BEFORE and AFTER captures. HEAD was stable at `e4ccb7e`
+throughout and no sibling movement appeared. Claiming an empty diff here would require capturing
+around the RUN rather than around the CHANGE, which would be a different (and weaker) receipt.
+
+**Scope held:** this adds the **pytest** gate only. `scripts/` remains outside
+`scripts/typecheck.sh`, where #188 measured 41 mypy errors — a separate work item, not conflated
+here, and noted in the config comment so the omission reads as deliberate rather than forgotten.
+
+---
+
+*Measured 2026-07-25 on branch `feat/surreal-unification`; §1–4 at HEAD `e6653d4` with an empty
+fingerprint diff, committed as `cad340f` and `a65ccca`; §5 at HEAD `e4ccb7e`.*
