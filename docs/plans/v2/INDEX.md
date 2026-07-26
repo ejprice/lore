@@ -982,3 +982,20 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   constraint block in packet 17's doc; unanimous consult positions (no textual re-serve · no
   `lore_diff` ref mode (#232) · ref-vs-ref never + re-open trigger · the three-identity trust
   riders) adopted there as constraints-to-cite. Packet 23 inherits via packet 17's spec.
+- 2026-07-26 · **BRANCH/DIFF CONSULT, SECOND WAVE RULED** (rounds 2–5, same three-model method,
+  lead position committed blind each round; receipts `docs/plans/v2/receipts/2026-07-26-branch-diff-consult/`
+  — FOLLOWUP-*.md verbatim, SYNTHESIS-2.md consolidates). Operator escalated four scenarios
+  (hosted multi-user · agent-worktree fleets · local inotify scouts post-split · two scouts on
+  one branch); each FALSIFIED a stated absolute — incl. the pushed-only bound all three
+  participants asserted — and strengthened the design. **ADOPTED IN FULL into packet 17's second
+  ruled block:** view identity **(parent, ref|path, feed-instance)** · SINGLE WRITER PER VIEW
+  (branch name never a key; the two-dev-on-staging race made inexpressible; lore never merges
+  trees — push/pull is git's channel) · declared agent-granular sessions, no default view or
+  disambiguation · feed-typed honesty (scout-fed requires a POSITIVE heartbeat, designed in 17)
+  · isolation pinned on TWO legs with named discriminating fixtures (same-file three-sibling;
+  same-relative-path ingestion routing + control) · ephemeral-vs-standing lifetimes · ≥8-way
+  pins · 39 seam list named (write grants, base read-only to scouts, content trust, revocation).
+  **Scenario A re-ruled: standing multi-ref visibility IN for the hosted design, build deferred**
+  (narrows the morning bullet; the compare-verb never + no lore_diff ref mode stand). Meta-finding
+  recorded: topology-shaped absolutes ("which topology am I picturing?"). Packets 36/38/39
+  inherit their named seams; 23 inherits via 17.

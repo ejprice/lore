@@ -46,7 +46,10 @@ one is an operator question, not a design call).
   dispositions #232's render-teaching question).
 - **Ref-vs-ref for refs checked out nowhere: NEVER in this design.** Re-open trigger
   (deferral law): a wave needing STRUCTURAL comparison of two sibling worktrees' deltas,
-  or Odoo onboarding demanding it.
+  or Odoo onboarding demanding it. **[NARROWED same day by the second-wave block below:
+  the trigger fired immediately — the hosted deployment IS the planned topology. Standing
+  multi-ref VISIBILITY is ruled-in for the hosted design; what stands of this bullet is
+  its true scope: no ref-vs-ref compare VERB, no git-ref mode on `lore_diff` (#232).]**
 - **Trust riders on every delta render, in the same breath (rider law):** all THREE
   identities — worktree path, branch + HEAD sha, AND merge-base sha (two of three lies by
   omission after a rebase — this is open question 4's consumer face); committed-vs-
@@ -54,6 +57,65 @@ one is an operator question, not a design call).
   loudly when git/merge-base fails or the root is not a checkout (#131's class — an empty
   changed set and a failed enumeration must be indistinguishable to no one); hostile
   fixtures on interpolated branch/path (already a packet 23 invariant).
+
+## Hosted/multi-user riders — ruled 2026-07-26, SECOND WAVE (same consult, rounds 2–5;
+## receipts: docs/plans/v2/receipts/2026-07-26-branch-diff-consult/SYNTHESIS-2.md)
+The operator escalated four scenarios (hosted multi-user · agent-worktree fleets · local
+inotify scouts post-split · two scouts on one branch); each broke a stated absolute and
+strengthened the design. Operator ADOPTED the full rider package — design words, no build;
+the hosted machinery itself stays in packets 36–39.
+- **View identity = (parent, ref|path, feed-instance)** — every component explicit and
+  RENDERED. `parent` defaults to the base index (stacking IDENTITY now; v1 SERVES depth-1
+  only; a leaf MAY bind base directly — requiring its parent view to exist is an ordering
+  dependency and a denial vector). `feed-instance` names the ONE writer: a specific scout,
+  or the fetcher for ref-fed views. Stacked-vs-flattened SERVING is measure-then-tune with
+  the decision point at wave-O fleet-scale measurement.
+- **SINGLE WRITER PER VIEW; a branch NAME is never a view identity.** Two devs on one
+  branch = two scout-fed views (plus optionally the canonical ref-fed view) — the
+  same-branch two-machine race becomes INEXPRESSIBLE rather than arbitrated (the chimera
+  class: a served state existing on no machine and in no commit). Registration seam (here
+  + 23) enforces uniqueness mechanically — a second claimant is REFUSED loudly; the auth
+  half (a scout writes only views it owns) is 39's. lore NEVER merges two machines' states
+  of one branch — that is git's job; push/pull is the reconciliation channel.
+- **Sessions: declared, AGENT-granular, NO default view, NO default disambiguation.** An
+  undeclared session FAILS loudly (defaulting recreates wrong-tree serving — the hosted
+  split's silent class-(c) hazard); a bare branch name with multiple live instances gets
+  refuse-and-teach naming the candidates, canonical ref-fed first; within a bound session,
+  every render names the instance. The lead's session binds BASE explicitly.
+- **Feed-typed honesty in every render:** ref-fed = ref + sha + fetch age + the
+  unpushed-absent line; scout-fed = last-ingest age + POSITIVE-HEARTBEAT liveness — design
+  the heartbeat IN THIS PACKET ("no edits" and "dead scout" are identical ingest silence;
+  liveness cannot be bolted onto a signal nobody collects; refuse-vs-empty depends on it)
+  — and NO unpushed-absent line (an over-caveat is a lie: it teaches distrust of the
+  freshest data). Absence renders with a NAMED CAUSE, never as silent empty.
+- **Isolation has TWO legs, each with its named discriminating fixture:** SERVING — three
+  sibling views touch THE SAME file (modify / modify-differently / delete): one path must
+  yield four view-dependent answers; disjoint-file fixtures discriminate nothing.
+  INGESTION — the SAME relative path edited in base and a worktree simultaneously lands
+  ONLY in its owning view, with a positive control (mis-routed ingestion poisons the store
+  before serving-time shadowing ever runs; routing is by OWNING root, never relative
+  path); include a file MOVED across the boundary.
+- **Lifetime taxonomy:** ephemeral (feature/agent worktrees — auto-reap, idempotent and
+  concurrent-safe at fleet N) vs STANDING (staging/dev — refresh-on-advance, never
+  age-reaped). Reap-trigger set gains scout-disconnected. Merge-base is captured per-view
+  and RE-DERIVED under a continuously advancing base, never assumed stable (OQ4's answer
+  must cover this, not just post-rebase drift).
+- **OQ5 reframed:** N fleet-scale views, not "two worktrees"; concurrency pins ≥8-way.
+- **Scenario A re-dispositioned:** standing multi-ref visibility is RULED-IN for the
+  hosted DESIGN (per-render tree identity is mandatory infrastructure once two users
+  exist — it IS the serving model), build deferred to the hosted packets. See the
+  narrowing note on the first-wave bullet above.
+- **Named for 39, designed in 39 (this packet names the seam, attaches nothing):**
+  per-scout identity · view-scoped write grants · base READ-ONLY to user scouts · content
+  trust (scout-shipped chunk text is served as cited source — cross-user INTEGRITY, not
+  merely tenancy) · poisoning/quota · revocation/eviction. Stays 36/38: embedding
+  locality, wire format, scout resumability.
+- **Meta-finding for this packet's design reviews** (Opus, after its third collapsed
+  absolute; all three consult participants shipped the class once): *"every absolute I
+  offered was an absolute about the topology I happened to be picturing."* Askable form:
+  "which topology am I picturing, and is this claim true of the others?" The identity
+  tuple is the structural fix — it converts silent topology premises into explicit,
+  rendered components.
 
 ## Open design questions (the doc answers each with receipts; operator rules the forks)
 1. Registration surface: lore-deploy verb (worktree slug) vs `lore_index` alternate-root
@@ -71,11 +133,32 @@ one is an operator question, not a design call).
    custom tier only — core/enterprise static tiers never fork).
 6. The graph-caveat contract wording (DESIGN-LAW §1 honesty: a caveat names WHAT is
    unverified, never a vague warning).
+7. **Branch/ref provenance on the EXISTING citations (#234) — the half the second-wave
+   block does NOT cover.** The second wave rules per-render tree identity for VIEWS
+   ("within a bound session, every render names the instance"). That is the multi-view
+   world. It says nothing about what `lore_search` / `lore_read` / `lore_get_symbol`
+   payloads carry TODAY, which is: no branch, no ref — identity is served only by
+   `lore_index()`'s watched-root render (measured 2026-07-26; per-surface table in #234).
+   Two consequences this packet must rule:
+   (a) **Under one root the omission is lossless at query time but not downstream** — a
+   `[SOURCE:file:line]` pasted into a report names no tree, and the repo's citation law
+   (#152/#153) wants durable addresses. Precedent: `lore_read` already carries
+   `stale`/`integrity_verified` because freshness could not be assumed from the payload.
+   (b) **"Overlay-shadows-base PER FILE" makes one result list legitimately MIX trees** with
+   nothing on any hit naming which answered — the §1 confident-wrong, and the single-root
+   condition is exactly what hides it today.
+   Candidate shapes, cheapest first: (i) one response-level provenance line per call, not per
+   hit; (ii) stamp only when >1 view is live (single-root serving pays nothing); (iii) full
+   per-citation `@ref`. **Decide here:** Q5-as-reframed (N fleet-scale views) and the hosted
+   ruling both make multi-view real, after which (ii)'s "pay nothing today" property expires.
+   Same question as Q6 in a different costume — what a render must NAME to avoid a
+   confident-wrong — and constrained by Q2's view-addressing fork.
 
 ## Entry check
 `lore_findings` → #125 open with the full body (the two auditor receipts + the three
-affordance candidates). packet 01's watched-path/branch line already deployed (cite it as the
-floor this design builds above).
+affordance candidates), and **#234** (citation provenance — open question 7's full body:
+the measured per-surface table + the three candidate shapes). packet 01's watched-path/branch
+line already deployed (cite it as the floor this design builds above).
 
 ## Exit
 Design doc at docs/design/2026-07-XX-worktree-overlay.md; forks presented with
