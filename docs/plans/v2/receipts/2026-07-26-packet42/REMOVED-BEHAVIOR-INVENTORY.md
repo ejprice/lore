@@ -134,3 +134,52 @@ test must assert the server-path call sites pass no `env_file`.
 **R4 — A18, the widened exposure. ACCEPTED** by the operator ruling that authored this packet.
 It remains the packet's central risk and must be met with the strongest available control
 rather than assumed away — it is not waived by being accepted.
+
+---
+
+## Second ruling wave — 2026-07-26, on findings raised by `REPORT-contract-pkt42-1.md` §7
+
+The contract author surfaced five open rulings. Two were already answered by R1/R2 above (its
+§7.1 recommendation matches R1 exactly). The other three were genuinely new — the packet did
+not know about them — plus one measured defect. All four are now ruled.
+
+**R5 — C9, the blank-exported-variable case. RULED: the R2 shape as written stands.** A blank
+exported variable **falls through to the `env_file`** when one is supplied, and is fatal only if
+the file also misses. The author's alternative (blank is always fatal, file never consulted) was
+declined: an operator blanking a variable to force the file fallback is a real calibration
+workflow, and breaking it buys uniformity we do not need. **State the resulting rule honestly in
+the pin's own message** — emptiness is fatal *at the end of resolution*, not at each source; a
+pin whose message claims "empty is always fatal" would be a false gate (the P2 2026-07-14 class).
+
+**R6 — `skills/lore-deploy/scripts/probe_embed.py::_resolve_key`. RULED: IN SCOPE.** Migrate it
+to the shared resolver **and extend both AST gates to cover `skills/`**. Rationale: it is the
+FOURTH hand-rolled resolver (the packet says three — re-derive every inherited count), and it
+carries inventory bug **B3 alive in a second home** (`if not key` accepts a whitespace-only
+value). Ledgering it would leave "ONE entry point" true of the workspace but false of the repo.
+⚠ `skills/` is currently outside `testpaths` and outside `scripts/typecheck.sh` — extending a
+gate over ungated ground means **verifying the gate actually RUNS there**, per the 2026-07-26 law
+that a guard nobody runs is a hope with a filename. Both of that packet's instruments sat
+outside `testpaths` and were victims of the class they instrument; do not repeat it.
+
+**R7 — `scripts/comms_consumer_eval.py::_amain`. RULED: MIGRATE** to the shared resolver, and
+delete its allowlist entry. The author's argument is accepted: migrating costs ~3 lines, less
+than maintaining the note explaining the exemption — and it keeps every allowlist entry a real
+client-call unwrap rather than mixing in a presence check, so the list has ONE justification
+shape instead of two.
+
+**R8 — the `Authorization: Bearer` double-redaction. RULED: FIX THE CODE, not the docstring.**
+Measured real output is `Authorization: ***REDACTED*** ***REDACTED***`; the docstring promises
+`Authorization: Bearer ***REDACTED***`. The docstring is right and the code is wrong: `_BEARER_RE`
+fires, then `_ASSIGNMENT_RE` matches its own `authorization` label and eats the scheme word
+`Bearer` as if it were the value. **Preserve the scheme word.** It is non-secret and tells an
+operator WHICH auth mechanism failed — exactly the diagnostic-data-is-worth-protecting argument
+that justifies this entire packet. This is a labelled-pattern behavior and packet 42 already owns
+that surface, so it is in scope rather than a follow-on.
+
+**NOT A RULING — MANDATORY BUILDER SCOPE, no choice involved:**
+`scripts/search_score_survey.py::_make_embedder` is a THIRD production-tree consumer of
+`loresigil.factory.EmbeddingConfig` that `lore_impact` did not report (filed as lore finding
+**#233**). It constructs the model directly, so after the `api_key_env` → `api_key` reshape it
+raises `ValidationError` **at runtime**, and **mypy cannot catch it because `scripts/` is not a
+typecheck member**. It migrates. Any count of that model's consumers inherited from Phase 0 is
+wrong by one — re-derive it.
