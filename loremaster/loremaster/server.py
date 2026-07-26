@@ -4506,10 +4506,17 @@ class AppContext:
         agent.name ... same injection posture") — all three are inlined into
         C3's live WHERE clauses, so all three share one charset.
 
+        ``fullmatch``, never ``match`` (finding #210): Python's ``$`` matches
+        at end-of-string OR immediately before a TRAILING NEWLINE, so
+        ``.match`` accepted ``"scout\\n"`` — a second identity that renders
+        identically to ``"scout"`` wherever a trailing newline is invisible.
+        ``fullmatch`` states the intent in the CALL rather than leaning on an
+        anchor, so a later edit to the pattern cannot silently re-open it.
+
         Raises:
             ValueError: ``value`` does not match ``AGENT_NAME_PATTERN``.
         """
-        if not AGENT_NAME_PATTERN.match(value):
+        if not AGENT_NAME_PATTERN.fullmatch(value):
             raise ValueError(
                 f"{label} {value!r} does not match {AGENT_NAME_PATTERN.pattern} — "
                 f"names are inlined into store queries and must stay in the safe charset"

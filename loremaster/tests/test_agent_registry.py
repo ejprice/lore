@@ -877,11 +877,38 @@ class TestAgentNamePatternConstant:
 
     @pytest.mark.parametrize("value", ["fixer-b", "audit-c2", "a", "wave7", "scout_d"])
     def test_pattern_accepts_legal_names(self, value: str) -> None:
-        assert AGENT_NAME_PATTERN.match(value) is not None
+        assert AGENT_NAME_PATTERN.fullmatch(value) is not None
 
-    @pytest.mark.parametrize("value", ["Fixer-B!", "-leading-hyphen", "", "has space", "a" * 65])
+    @pytest.mark.parametrize(
+        "value",
+        ["Fixer-B!", "-leading-hyphen", "", "has space", "a" * 65, "scout\n", "scout\r\n"],
+    )
     def test_pattern_rejects_illegal_names(self, value: str) -> None:
         assert AGENT_NAME_PATTERN.fullmatch(value) is None
+
+    def test_the_end_anchor_is_lenient_about_a_trailing_newline(self) -> None:
+        """KNOWN BOUND (#210) — the reason every call site must use ``fullmatch``.
+
+        Python's ``$`` matches at end-of-string OR immediately before a trailing
+        newline, so this pattern ALONE does not close the charset: ``.match``
+        accepts ``"scout\\n"``, a second identity that renders identically to
+        ``"scout"`` wherever a trailing newline is invisible. That is not a
+        latent hazard to fix HERE — it is the documented property the guard
+        compensates for by calling ``fullmatch``
+        (:meth:`AppContext._validate_comms_charset`), pinned behaviourally in
+        ``test_comms_tool.py::TestCommsDispatchCharsetValidation::
+        test_a_trailing_newline_agent_name_is_rejected``. The repo-wide class
+        instrument is ``test_anchored_pattern_seam.py``.
+
+        If you change the pattern's anchor (``\\Z`` instead of ``$``) this test
+        goes RED. That is correct and deliberate: the ``fullmatch`` call site
+        would then be belt-and-braces rather than load-bearing, so update this
+        pin and say so — do not silently delete it.
+        """
+        assert AGENT_NAME_PATTERN.match("scout\n") is not None
+        assert AGENT_NAME_PATTERN.fullmatch("scout\n") is None
+        # ``$``'s leniency covers ``\n`` ONLY — a CRLF name was never accepted.
+        assert AGENT_NAME_PATTERN.match("scout\r\n") is None
 
 
 class TestAgentStatusesConstant:

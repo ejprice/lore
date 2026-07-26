@@ -565,6 +565,61 @@ class TestCommsDispatchCharsetValidation:
         harness = _harness()
         await _register(harness, name="fixer-b2", session="wave-7_a", role="builder")
 
+    # finding #210: Python's ``$`` matches at end-of-string OR immediately
+    # before a TRAILING NEWLINE, so ``AGENT_NAME_PATTERN.match`` waved
+    # ``"scout\n"`` through a pattern whose entire job is a closed charset.
+    # ``"scout" != "scout\n"`` — two distinct identities that render
+    # IDENTICALLY anywhere a trailing newline is invisible (a fleet table
+    # cell, a log line, a report), which is the consumer-law failure: the
+    # agent reading the surface cannot tell the two apart. The guard is
+    # ``.fullmatch`` for exactly this reason.
+    #
+    # ``"scout\r\n"`` is the NEGATIVE CONTROL, not a second demonstration:
+    # ``$``'s leniency covers ``\n`` ONLY, so a CRLF name was already
+    # rejected before the fix. It pins the boundary so a later "tidy-up"
+    # that reaches for ``re.MULTILINE`` (under which ``$`` matches before
+    # EVERY newline) goes red here.
+    _TRAILING_NEWLINE_NAMES = ["scout\n", "scout\r\n"]
+
+    @pytest.mark.parametrize("value", _TRAILING_NEWLINE_NAMES)
+    async def test_a_trailing_newline_agent_name_is_rejected(self, value: str) -> None:
+        harness = _harness()
+        with pytest.raises(ValueError) as exc_info:
+            await AppContext.comms(harness, action="heartbeat", agent=value)
+        message = str(exc_info.value)
+        assert "agent name" in message
+        assert repr(value) in message
+        assert "safe charset" in message
+        # THE class invariant, and the load-bearing half of this pin: the
+        # store is never reached for a malformed identity. A value that got
+        # past this guard reaches the ledger and fails there instead — a
+        # different exception type, from the wrong layer, carrying none of
+        # the charset teaching. Asserting the TYPE is what distinguishes
+        # "our guard rejected it" from "something downstream did".
+        assert not isinstance(exc_info.value, AgentRegistryError)
+
+    @pytest.mark.parametrize("value", _TRAILING_NEWLINE_NAMES)
+    async def test_a_trailing_newline_session_is_rejected(self, value: str) -> None:
+        harness = _harness()
+        with pytest.raises(ValueError) as exc_info:
+            await AppContext.comms(
+                harness, action="register", agent="fixer-b", session=value, role="builder"
+            )
+        message = str(exc_info.value)
+        assert "session" in message
+        assert repr(value) in message
+        assert "safe charset" in message
+
+    @pytest.mark.parametrize("value", _TRAILING_NEWLINE_NAMES)
+    async def test_a_trailing_newline_brief_name_is_rejected(self, value: str) -> None:
+        harness = _harness()
+        with pytest.raises(ValueError) as exc_info:
+            await AppContext.comms(harness, action="brief_get", agent="fixer-b", name=value)
+        message = str(exc_info.value)
+        assert "brief name" in message
+        assert repr(value) in message
+        assert "safe charset" in message
+
 
 class TestCommsDispatchStrictParamLaw:
     """Step 3: a foreign (non-None) param is a loud ValueError naming which
