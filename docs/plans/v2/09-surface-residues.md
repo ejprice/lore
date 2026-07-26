@@ -1,5 +1,7 @@
 # 09 — Served-surface + docs-truth residues (formerly PKT-03)
-size ~0.20 wu · wave L (parallel-safe; re-waved 2026-07-14) · depends: none · #92 supersedes the #34/#90 chain this file predates
+size ~0.20 wu → RE-SIZE AT KICKOFF (4 findings added by the 2026-07-26 sweep; the sizing
+law's ≥0.30 split clause applies) · wave L (parallel-safe; re-waved 2026-07-14) · depends:
+none · #92 supersedes the #34/#90 chain this file predates
 law: DESIGN-LAW §1 (client law), §2 (map semantics — read before touching map renders)
 
 ## Mission
@@ -21,6 +23,20 @@ hygiene pass. All are confirmed-filed, none has a home elsewhere in the packet s
   (`loremaster.search._sanitise_line` today; three consumers: search, diff,
   findings-detail — repo CLAUDE.md names this promotion as pending). Hostile fixtures
   mandatory (newlines + row-shaped forgery + backtick runs).
+- **#197** (slotted 2026-07-26) — `capture_git_identity` swallows failure into a silent
+  `(None, None)`: FOUR indistinguishable causes (#131's shape), live in production today.
+  Classify, log loud, serve honest absence.
+- **#208** (slotted 2026-07-26) — XML chunk line spans are element-relative BY DESIGN but
+  served through the same `file:line` citation format as real offsets — an honest local
+  decision became a misleading served byte (trust doctrine). Serve real offsets or label
+  the span honestly; packets 25/26 (Odoo XML at scale) inherit whichever is ruled.
+- **#230** (slotted 2026-07-26) — SIX unfailable isinstance-on-raises assertions remain
+  repo-wide; in test_store_read.py the hollow line is the test's ONLY assertion. Replace
+  each with the property it claimed (`7379b48` is the pattern), both-ways mutation-proven
+  per #229.
+- **#231** (slotted 2026-07-26) — the #210 anchored-pattern gate's allowlist is keyed on
+  the pattern NAME, so exempting one legitimate call site blinds EVERY site using that
+  pattern. Re-key the exemption on (pattern, site).
 - **Docs truth pass:** README stale "still on Qdrant … until P7" prose (~L167) +
   historical mentions refresh; adopt the external review's recommended positioning
   language (operator approves wording); annotate docs/design/2026-07-05-p13 stale

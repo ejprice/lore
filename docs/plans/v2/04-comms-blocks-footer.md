@@ -35,6 +35,11 @@ pending-traffic nudge footer, and the dangling-edge hardening.
   exist must be REJECTED), since a fixture where every endpoint is registered cannot
   discriminate. Widen #105's own text from "latent — we never hard-delete" when resolving it.
 
+- **#219 (slotted 2026-07-26)** — `_validate_comms_charset`'s docstring AND its SERVED error
+  message are FALSE: they claim identities are inlined into WHERE clauses, while every WHERE
+  uses bound parameters. Fix the prose toward the measured truth (served prose is DERIVED
+  from behaviour, never re-stated beside it — repo law); it deploys with this packet.
+
 ## Scope OUT
 - await/story/rollup/hooks (packet 05); protocol + drill (06).
 

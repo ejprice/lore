@@ -67,6 +67,25 @@ rollup extension, CLI, and the idle-gate hook rework.
      requirement, D11 returns to the operator as a fork.** Exposure is MEASURED meanwhile:
      `ok=false` drain trace rows are the loss-rate upper bound 06 reads (DD-4.d).
 
+- **ROUTED FROM 03b's CLOSE (findings sweep 2026-07-26 — the numbers behind the Log line):**
+  - **#183** — drain's pending read is UNBOUNDED. Bound it inside the same reshape that
+    builds `since=`/paging (this packet already reworks that read path).
+  - **#190** — the message ORACLE's error prose diverges from production's, so NO surface
+    pin can see production's wording (it is how the D4 broadcast defect passed
+    certification). Before this packet pins any message-path render, re-establish
+    oracle↔production parity — or pin the divergence as a bound with a named trigger.
+    Otherwise 05's pins inherit the same blindness.
+  - **#214** — DD-4.c's hazard REPRODUCED LIVE within an hour of being documented (a drain
+    stamped, then the caller's parser raised; the message was destroyed with no recovery
+    verb). The live receipt that the seen-rows `since=` requirement above is load-bearing.
+  - **#195** — routed 05-OR-06, UNSETTLED: nothing measures whether an agent OBEYS an
+    instruction embedded in a teammate's message body (the fence makes a forgery LEGIBLE,
+    not INERT). **Settle the home at THIS packet's kickoff**: a drill-battery measurement
+    belongs to 06; a surface affordance belongs here.
+  - **#174** — rides the #89 lore_tasks fold: `supersede` silently DROPS `blocked_by`,
+    minting a falsely-unblocked successor (it bit the 03b dependency rewire live —
+    the Log's `618cd45d` retirement). Fix in the same verb pass.
+
 ## Scope OUT
 - Protocol/brief-base/drill (packet 06). C5 (checkpoint/respawn) stays deferred, no ruling.
 
@@ -74,8 +93,9 @@ rollup extension, CLI, and the idle-gate hook rework.
 **FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
 packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
 outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
-Packet 04 deployed; `lore_findings` → #89, #121 open; LIVE-on-edge spike receipts from
-the probe BEFORE building on it (documented poll fallback if it fails).
+Packet 04 deployed; `lore_findings` → #89, #121 unresolved (+ #174/#183/#190/#214
+acknowledged-here, #195 unsettled 05-or-06 — settle it now); LIVE-on-edge spike receipts
+from the probe BEFORE building on it (documented poll fallback if it fails).
 
 ## Exit
 Full gates + cold audit + deploy BOTH + smoke: an await wakes on a real send inside the

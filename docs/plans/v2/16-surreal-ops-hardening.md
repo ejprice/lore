@@ -27,6 +27,11 @@ risks on this box, plus the minimal observability the #124 watch needs.
   as the honest posture.
 - **#117** — `?sync=never` on the TEST store only (measured-real speedup, deferred at the
   #102 wave). NEVER on :18500.
+- **#175** (slotted 2026-07-26) — 3.2.1 store behaviour: `UPDATE <edge> … WHERE in IN $ids`
+  silently matches ZERO rows while the identical SELECT matches; adding `out = $x` makes it
+  work. Disposition per its filing: re-probe with the UNIQUE index dropped (test store only),
+  then land the CONFIRMED mechanism in the store reference §2/§6.6. Shipped code is
+  unaffected today — the hazard is any future message-scoped edge write.
 
 ## Scope OUT
 - Engine upgrades; any schema/DDL change; any lore-code change. Production data migration.
@@ -35,8 +40,8 @@ risks on this box, plus the minimal observability the #124 watch needs.
 **FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** — this
 packet touches the store/schema/DDL or store-reading code; #107 was a 100% production
 outage whose answer was ALREADY in that file. Cite it, never re-transcribe.
-`lore_findings` → all six open. `systemctl --user status lore-surreal spike-surreal` both
-active. Snapshot both quadlet files BEFORE editing (they are the recovery recipe — memory:
+`lore_findings` → all seven (#109/#110/#113/#114/#116/#117/#175) unresolved. `systemctl
+--user status lore-surreal spike-surreal` both active. Snapshot both quadlet files BEFORE editing (they are the recovery recipe — memory:
 surreal-stores-systemd-managed).
 
 ## Exit

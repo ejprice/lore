@@ -117,6 +117,15 @@ the hosted machinery itself stays in packets 36–39.
   tuple is the structural fix — it converts silent topology premises into explicit,
   rendered components.
 
+## Tooling debt this design must disposition (slotted 2026-07-26)
+- **#185** — `scripts/scratch_copy.sh` does NOT git-isolate a copy made FROM A WORKTREE:
+  the `.git` pointer FILE is copied verbatim, so git commands in the "isolated" copy mutate
+  the REAL worktree's metadata while the Python provenance assertion passes. Part of the
+  "worktrees actually work" bar (#134/#125 family): before packet 23 makes worktrees
+  first-class for agents, the scratch/mutation-proof tooling must either isolate a
+  worktree-sourced copy or REFUSE it loudly (a gate must never return a verdict it cannot
+  substantiate). Until then it rides the INDEX watch list as a live landmine.
+
 ## Open design questions (the doc answers each with receipts; operator rules the forks)
 1. Registration surface: lore-deploy verb (worktree slug) vs `lore_index` alternate-root
    vs a session-scoped view registration on the existing surface (#125 filed all three as

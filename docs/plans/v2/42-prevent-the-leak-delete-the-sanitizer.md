@@ -42,6 +42,11 @@ assume it.
    (`loresigil` cannot import `loremaster`) — see #222 for the three candidate shapes; it needs a
    ruling before code. **Investigate `pydantic-settings` first** — it is already a declared-but-unused
    dependency (pkgscout P9), and the packages rule applies before anything is hand-rolled.
+   **Resolves #226 with it (slotted 2026-07-26):** `resolve_secret` is today used on values that
+   are NOT secrets — the `.get_secret_value()` unwrap exists at those sites only to undo a wrapping
+   that should never have happened (its own author got 1 of 5 sites wrong). The consolidated seam
+   wraps ONLY secrets; non-secret config reads stop routing through it, which also SHRINKS the
+   step-3 allowlist rather than growing it.
 3. **Gate the unwrap surface — ALLOWLIST THE SAFE.** An AST pin over the 13 `.get_secret_value()`
    call sites. Each entry is **evidence-backed**: the unwrapped value goes directly to a client call
    and is not logged, stored, interpolated, or bound to a name that outlives the expression. A new
@@ -52,6 +57,12 @@ assume it.
 5. **THEN DELETE `_TOKEN_RE` AND THE SHANNON-ENTROPY HEURISTIC.** Keep the **labelled** patterns
    (`Authorization: Bearer …`, `api_key=…`) — those are precise, structural, and do not
    false-positive. The catch-all is the entire false-positive engine.
+   ⚠ **#235 RIDER (slotted 2026-07-26 — the rider is part of the ruling):** the labelled
+   Authorization pattern this step KEEPS is itself broken — `_ASSIGNMENT_RE` eats the SCHEME as
+   the value for every non-Bearer scheme, so today the catch-all is what (accidentally) covers
+   `Basic`, and deleting it without the fix WIDENS the leak. Fix the labelled pattern **in the
+   same commit** that deletes the catch-all, with a pin proving `Authorization: Basic <cred>` is
+   scrubbed with the catch-all gone (that pin is the mutation proof for this rider).
 6. **Retire what the catch-all forced.** #227's path-component exemption and its four conditions,
    the bare-hex/SHA bound, the UUID bound, and the audit's R2 — **all become unnecessary code and
    unnecessary bounds.** Delete them with it; do not leave them as vestigial guards.
@@ -79,6 +90,11 @@ vectors still cannot reach a rendered log line — and mutation-prove each pin (
 watch RED, restore). ⚠ Per #229, **any pin here that replaces a deterministic assertion with a bound
 gets a both-ways mutation diff** — this wave produced four hollow pins and two of them were in
 exactly this module.
+⚠ **#221 RIDER (slotted 2026-07-26): the mypy gate is BLIND through `dict[str, Any]`** — the
+SecretStr migration passed the type gate at ZERO DELTA while 119 tests were runtime-broken. Every
+contract pin in this packet therefore needs a RUNTIME red, never a type-gate red; and where the
+config seam can be narrowed from `dict[str, Any]` to a typed model in passing, do it (that is the
+structural fix; #221 stays open for the general instrument if not fully closed here).
 
 **Deploy required** (logs are a served surface). Report the recovered data as a receipt: the same
 traceback rendered before and after.

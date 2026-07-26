@@ -18,6 +18,11 @@ That is an ARCHITECTURE decision plus a build well past this packet's old 0.30 �
 becomes the DESIGN pass and **mints 19b+ build packets, each ≤0.25 with its own
 entry/exit** (the packet-25→26a+ pattern).
 
+**#186 (2026-07-25, slotted 2026-07-26): #165 RECURRED** — lore-lore crash-looped on the
+/source snapshot-mount mismatch AGAIN, now with THREE static tiers affected. Every new
+static tier widens the blast radius until this design lands; the recurrence is the urgency
+receipt, and #186 resolves with #165's dissolution (cite both in the build destination).
+
 ## Scope IN (the design doc answers each; operator rules)
 - **The one-toolchain ruling (#166):** in-container execution for all four shell-outs
   (`podman run --rm <image> … -m loremaster.index --config …`, corpora `:ro`, snapshot
@@ -45,8 +50,8 @@ entry/exit** (the packet-25→26a+ pattern).
 **FIRST READ (repo store law): `docs/reference/surrealdb-31-capabilities.md`** (incl. §0 —
 the engine is 3.2.1). Read finding **#166 in full** (it carries live verification receipts
 for every mechanism claim — cite them, do not re-derive) and **#165**. `lore_findings` →
-#166 #165 #13 states; skill test suite green at HEAD before the design prescribes changes
-to it.
+#166 #165 #186 #13 states; skill test suite green at HEAD before the design prescribes
+changes to it.
 
 ## Exit
 Design doc at docs/design/2026-07-XX-deploy-architecture.md; the author's adversarial

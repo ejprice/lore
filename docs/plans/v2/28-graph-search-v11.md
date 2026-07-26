@@ -20,6 +20,12 @@ pre-registered rule or not at all.
   here with the other graph candidates.
 - **Finding #3** (attribute-access reference granularity — engine-level astroid
   attribute edges): OPERATOR SCOPE GRANT REQUIRED before building; present cost first.
+- **Finding #233** (slotted 2026-07-26): `lore_impact` undercounted a production consumer
+  set — `scripts/` consumers are invisible to the graph (missed
+  `scripts/search_score_survey.py::_make_embedder`, which would break at runtime with no
+  gate to catch it). Same second-class-tree pattern as #188 (scripts/ outside the mypy
+  gate, since fixed) and 03b's testpaths hole. Fix the coverage, or serve the bound LOUDLY —
+  an impact answer that excludes an indexed-but-ungraphed tree must say so (DESIGN-LAW §1).
 - **Relative-score fusion** (Weaviate relativeScoreFusion / Qdrant DBSF analogue) —
   evaluate against the floor machinery under a pre-registered rule (ledgered follow-up
   from the weak-match validation); source-concentration + pool-size signals likewise.
@@ -41,8 +47,8 @@ pre-registered rule or not at all.
 - Reranker adoption without an A/B accuracy win (config seam exists; default off).
 
 ## Entry check
-`lore_findings` → #70, #3 states; re-run the 35-pair bar BEFORE (the packet's own
-baseline) — every adoption here must hold or improve it.
+`lore_findings` → #70, #3, #155, #233 states; re-run the 35-pair bar BEFORE (the packet's
+own baseline) — every adoption here must hold or improve it.
 
 ## Exit
 Full gates + cold audit; deploy BOTH; the 35-pair bar re-run AFTER with receipts

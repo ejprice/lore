@@ -43,7 +43,8 @@ that is the SUBSYSTEM'S acceptance gate. After this packet, the manual mitigatio
   not decay, and the decaying population is precisely the one that stops filling it**); and
   `_meta` plumbing (absent in practice). Design + full reasoning:
   `docs/plans/v2/03b-deferred-design-rulings.md` DD-5.
-- **TRACE RETENTION IS RULED AT THIS PACKET'S CLOSE-OUT, NOT BEFORE (03b DD-1.c).** The `trace`
+- **TRACE RETENTION IS RULED AT THIS PACKET'S CLOSE-OUT, NOT BEFORE (03b DD-1.c; finding
+  #193 — resolve it with the ruling; ledger task `d9395d54` is its tracking row).** The `trace`
   table grows one row per tool call and nothing deletes one. That is DELIBERATE until the curve
   is read: **the rows ARE this packet's instrument, and a retention sweep that runs before 06
   reads them destroys the measurement it exists to serve** (measure-then-tune). 03b shipped the
@@ -70,6 +71,11 @@ that is the SUBSYSTEM'S acceptance gate. After this packet, the manual mitigatio
   3. `Monitor` **auto-stops watchers that emit too many events** — a chatty channel can
      suppress its own delivery. Size the wake rate, and make watcher LIVENESS checkable
      (a dead watcher is silent, and silence looks identical to "no traffic" — #136's shape).
+  4. **#228 (slotted 2026-07-26): a `pgrep -f` watcher whose own command line contains its
+     pattern NEVER TERMINATES** — the observer is inside the corpus it observes, and it fails
+     silently while looking healthy (one waited on ITSELF for 13.5h). brief-base v3 carries
+     the rule: watch a PID or an artifact, never a pattern your own cmdline can match
+     (`pgrep -f '[p]attern'` bracketing at minimum).
 - **The idle-gate needs an artifact contract, not removal (Opus informant, this session).**
   It fired as a FALSE POSITIVE on an agent whose brief forbade tool use and named its final
   message as the deliverable — it demanded an artifact the agent had been told not to
@@ -77,6 +83,11 @@ that is the SUBSYSTEM'S acceptance gate. After this packet, the manual mitigatio
   But *"a gate that fires on compliant agents is a gate the next agent learns to ignore, and
   then it isn't watching anything"* — the repo's own switched-off-scanner law. Let a brief
   DECLARE its expected artifact (or declare it has none).
+- **#195 may land HERE (routed 05-or-06; the home is settled at 05's kickoff):** nothing
+  measures whether an agent OBEYS an instruction embedded in a teammate's message body —
+  the fence makes a forgery legible, not inert. If it lands here, the drill battery gains a
+  keyed hostile-body probe (the 03b client-battery precedent: only a real-LLM probe caught
+  the in-fence forgery counted as delivered).
 - **THE DRILL** (from `comms-subsystem.md` Exit): lead + 2 subagents coordinate solely
   through lore — register → brief_publish → create_many-with-blocks → claim → mid-work
   brief bump + directive → drain shows skew → parked question → kill → orphan surfaces
