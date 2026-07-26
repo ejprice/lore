@@ -47,7 +47,6 @@ from loremaster.agents import (
     Agent,
     AgentFleetWindow,
     AgentIdentityConflictError,
-    AgentRegistryError,
     AgentRosterMember,
     FleetRoster,
     IllegalAgentStatusError,
@@ -293,6 +292,67 @@ async def _register(
     )
 
 
+class _RecordingAgentRegistry(FakeAgentRegistry):
+    """A :class:`FakeAgentRegistry` that records every public call routed to it.
+
+    Exists for finding **R5**: ``TestCommsDispatchCharsetValidation`` is named
+    for — and its comments claimed — the property *"the store is never reached
+    for a malformed identity"*, but nothing in it tested that. Its assertions
+    were ``pytest.raises(ValueError)`` plus ``assert not isinstance(exc_info
+    .value, AgentRegistryError)``, and ``AgentRegistryError`` is a
+    ``RuntimeError``, so ``pytest.raises(ValueError)`` had already excluded it:
+    **the assertion could not fail**, while a build that queried the store and
+    THEN raised the same ``ValueError`` passed both.
+
+    An exception type cannot express "before any store touch" — only an
+    observation of the registry can. Hence this spy: the pin becomes
+    ``registry.calls == []``, which a store-touching build fails.
+
+    REACH IS A CHECKED VARIABLE, not a name list
+    (``TestTheStoreTouchRecorder::test_the_recorder_covers_the_whole_registry_surface``):
+    a spy is an instrument only over the calls it actually observes, so the
+    overrides below are asserted to BE the registry's public surface. A method
+    added to the registry later cannot silently escape observation.
+    """
+
+    #: Every public method on the registry surface, each overridden below.
+    RECORDED_METHODS = frozenset(
+        {"close", "ensure_ready", "fleet", "get_agent", "register", "roster", "touch"}
+    )
+
+    def __init__(self, *, db: FakeAgentDatabase | None = None) -> None:
+        super().__init__(db=db)
+        self.calls: list[str] = []
+
+    async def close(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append("close")
+        return await super().close(*args, **kwargs)
+
+    async def ensure_ready(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append("ensure_ready")
+        return await super().ensure_ready(*args, **kwargs)
+
+    async def fleet(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append("fleet")
+        return await super().fleet(*args, **kwargs)
+
+    async def get_agent(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append("get_agent")
+        return await super().get_agent(*args, **kwargs)
+
+    async def register(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append("register")
+        return await super().register(*args, **kwargs)
+
+    async def roster(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append("roster")
+        return await super().roster(*args, **kwargs)
+
+    async def touch(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append("touch")
+        return await super().touch(*args, **kwargs)
+
+
 def _extract_skew_group_counts(rendered: str) -> list[int]:
     """Every count named inside a skew line's breakdown (``N at vM``, ``N at
     older versions``, ``N unbriefed``) — used to prove the groups SUM to the
@@ -529,9 +589,14 @@ class TestCommsDispatchCharsetValidation:
     _BAD_NAME = "Fixer B!"
 
     async def test_bad_agent_name_is_rejected_before_any_store_touch(self) -> None:
-        # The fake ledger has NO row for this name; if charset validation
-        # ran AFTER the store touch we would see UnknownAgentError instead.
-        harness = _harness()
+        # R5: this test's NAME is the property, so it is the property that gets
+        # asserted. The registry is a recorder and must see ZERO calls — the
+        # previous `assert not isinstance(exc_info.value, AgentRegistryError)`
+        # could not fail (AgentRegistryError is a RuntimeError, already excluded
+        # by pytest.raises(ValueError)) and admitted the exact build it existed
+        # to exclude: one that queries the store, THEN raises the same ValueError.
+        registry = _RecordingAgentRegistry()
+        harness = _harness(agent_registry=registry)
         with pytest.raises(ValueError) as exc_info:
             await AppContext.comms(harness, action="heartbeat", agent=self._BAD_NAME)
         message = str(exc_info.value)
@@ -539,7 +604,9 @@ class TestCommsDispatchCharsetValidation:
         assert repr(self._BAD_NAME) in message
         assert AGENT_NAME_PATTERN.pattern in message
         assert "safe charset" in message
-        assert not isinstance(exc_info.value, AgentRegistryError)
+        assert registry.calls == [], (
+            f"the charset guard reached the store before rejecting: {registry.calls}"
+        )
 
     async def test_bad_session_is_rejected(self) -> None:
         harness = _harness()
@@ -561,9 +628,18 @@ class TestCommsDispatchCharsetValidation:
         assert repr(self._BAD_NAME) in message
 
     async def test_a_legal_charset_name_is_not_rejected_by_charset_validation(self) -> None:
-        # Positive control: hyphens/digits/underscores are legal (spec §0).
-        harness = _harness()
+        # Positive control, two ways: hyphens/digits/underscores are legal
+        # (spec §0), AND — the half that makes every `registry.calls == []`
+        # above meaningful — the recorder demonstrably OBSERVES a store touch.
+        # Without this, an inert spy that recorded nothing would satisfy the
+        # rejection pins vacuously (R5's own failure mode, one level down).
+        registry = _RecordingAgentRegistry()
+        harness = _harness(agent_registry=registry)
         await _register(harness, name="fixer-b2", session="wave-7_a", role="builder")
+        assert registry.calls != [], (
+            "the recorder saw NO calls on a legal register — it cannot observe store "
+            "touches, so the rejection pins that assert calls == [] prove nothing"
+        )
 
     # finding #210: Python's ``$`` matches at end-of-string OR immediately
     # before a TRAILING NEWLINE, so ``AGENT_NAME_PATTERN.match`` waved
@@ -583,20 +659,23 @@ class TestCommsDispatchCharsetValidation:
 
     @pytest.mark.parametrize("value", _TRAILING_NEWLINE_NAMES)
     async def test_a_trailing_newline_agent_name_is_rejected(self, value: str) -> None:
-        harness = _harness()
+        registry = _RecordingAgentRegistry()
+        harness = _harness(agent_registry=registry)
         with pytest.raises(ValueError) as exc_info:
             await AppContext.comms(harness, action="heartbeat", agent=value)
         message = str(exc_info.value)
         assert "agent name" in message
         assert repr(value) in message
         assert "safe charset" in message
-        # THE class invariant, and the load-bearing half of this pin: the
-        # store is never reached for a malformed identity. A value that got
-        # past this guard reaches the ledger and fails there instead — a
-        # different exception type, from the wrong layer, carrying none of
-        # the charset teaching. Asserting the TYPE is what distinguishes
-        # "our guard rejected it" from "something downstream did".
-        assert not isinstance(exc_info.value, AgentRegistryError)
+        # THE class invariant, and the load-bearing half of this pin: the store
+        # is never reached for a malformed identity. #210's pre-fix build
+        # violated exactly this — "scout\n" sailed past the guard into the
+        # ledger — so it is asserted by OBSERVING the registry, not by
+        # inspecting the exception's type (R5: the type assertion this replaces
+        # could not fail, and a store-touching build passed it).
+        assert registry.calls == [], (
+            f"a trailing-newline name reached the store before rejection: {registry.calls}"
+        )
 
     @pytest.mark.parametrize("value", _TRAILING_NEWLINE_NAMES)
     async def test_a_trailing_newline_session_is_rejected(self, value: str) -> None:
@@ -619,6 +698,45 @@ class TestCommsDispatchCharsetValidation:
         assert "brief name" in message
         assert repr(value) in message
         assert "safe charset" in message
+
+
+class TestTheStoreTouchRecorder:
+    """The instrument's own reach — R5's lesson applied to R5's fix.
+
+    ``_RecordingAgentRegistry`` is what makes *"rejected before any store
+    touch"* an assertable property. A spy is an invariant only over the calls
+    it actually observes, so its coverage is CHECKED here rather than trusted:
+    this repo has already been burned six times by a gate keyed on a name list
+    that a later addition walked straight past (CLAUDE.md, "the instrument
+    lesson").
+    """
+
+    def test_the_recorder_covers_the_whole_registry_surface(self) -> None:
+        public_surface = {
+            name
+            for name, member in inspect.getmembers(FakeAgentRegistry, inspect.isfunction)
+            if not name.startswith("_")
+        }
+        assert _RecordingAgentRegistry.RECORDED_METHODS == public_surface, (
+            "the store-touch recorder no longer covers the registry's public surface — an "
+            "unrecorded method is a store touch the charset pins cannot see. Add an "
+            "override for each new method."
+        )
+
+    def test_every_declared_method_is_actually_overridden(self) -> None:
+        """The declaration must match the CODE, not just the registry — a name
+        listed in ``RECORDED_METHODS`` with no override records nothing."""
+        for method_name in sorted(_RecordingAgentRegistry.RECORDED_METHODS):
+            assert method_name in vars(_RecordingAgentRegistry), (
+                f"{method_name!r} is declared recorded but has no override on "
+                "_RecordingAgentRegistry — it would delegate silently, unseen"
+            )
+
+    async def test_the_recorder_records_the_method_that_was_called(self) -> None:
+        """Positive control on the recorder itself: it names the RIGHT call."""
+        registry = _RecordingAgentRegistry()
+        await registry.ensure_ready()
+        assert registry.calls == ["ensure_ready"]
 
 
 class TestCommsDispatchStrictParamLaw:
