@@ -178,7 +178,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 03 | **comms STORE** — message/`to` slices, `DEFINE SEQUENCE`, `ENFORCED`, the relation-table policy flip + dirty-store migration pins; **#146 adjudication + 3.2.1 re-probes** | PKT-28 C2b | C | 0.20 | 02 | **DONE 2026-07-23** (df59f76; scoped 304/0, blast 432/0; cold-audit GO; #146 accept-with-trigger; TEST-ONLY, no deploy; 03a unblocked) |
 | 03a-1 | **comms ledger SEND + drain** — `messages.py` foundations + `AgentRefLike` home + `send` + drain/peek; ≥8-way send concurrency | — | C | 0.20 | 03 | **DONE 2026-07-23** (2d1f75d→42eeedc; cold-audit GO, [real] leg graded; 140 passed / 31 red=03a-2 stubs; #173 fix; TEST-ONLY, no deploy) |
 | 03a-2 | **comms ledger ACK + WAITING** — ack (4-way disambiguation), derived waiting state; 16-way ack concurrency (**closes 03a**; drain landed in 03a-1) | — | C | 0.15 | 03a-1 | **DONE 2026-07-23** (`853a95b`→`0223291`; cold-audit GO, [real] leg graded 31 pins / 0 silent skips; 180 passed / 12 skipped; 20/20 16-way ack concurrency; **closes 03a**; TEST-ONLY, no deploy) |
-| 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a ✅ | **NEXT — RESET 2026-07-24** (task `b7f89c12`; the struck self-certified contract phase reverted at `0941aab`, #181, corpus tagged `pkt03b-tainted-corpus`; trusted RED restored at 149/554). **Inherits 6 design-ruled items** (`03a-2-consume-path-design-rulings.md` delta table): both `message` indexes BEFORE its deploy (free window expires here), the deliveries-SELECT bound, 3 pin classes, the binding render law, the oracle-change rule. **Owns global mypy-zero** (36→0). Reads #175 before any edge write. |
+| 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a ✅ | **✅ DONE + DEPLOYED 2026-07-26** (task `b7f89c12`). Suite **6937/0**, typecheck 0 all members (**global mypy-zero DISCHARGED**, 36→0), ruff, skill 117, concurrency 20/20. Both containers on `b46bc1d5`; every deploy receipt green on production. **#147 CLOSED with a production receipt** (traces 0→664, ordinals distinct+increasing). Client battery PASS 3/3 floor + all 3 population models. Inherited 6 design-ruled items all discharged. Residuals routed with named decision points: 05 (#190/#183/#214, DD-2.a, DD-4.c) · 06 (#193 retention, join-quality receipt) · 05-or-06 (#195 injection). |
 | 04 | comms-blocks-footer (blocks edge, fleet cols, #105) | PKT-28 C2c | C | 0.20 | 03 | open |
 | 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121 #149) | PKT-28 C3 | C | 0.30 →split | 04 | open |
 | 06 | comms-protocol-drill (brief-base v3 + THE DRILL) | PKT-28 C4 | C | 0.25 | 05 | open |
@@ -932,3 +932,14 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   6532/0 · typecheck 0 all members (global mypy-zero PROVEN; RG-R3 settled) · ruff · skill 117.
   Nine 03b reports archived to receipts. Build phase = a FRESH session per the packet file's
   BUILD-PHASE HANDOFF section (fresh Opus builder, withheld set, obligations, battery, deploy).
+- 2026-07-26 · **03b DONE + DEPLOYED.** Build → 2 cold audits + 2 contract-blind reads → 5 fix waves →
+  client battery → deploy BOTH. Suite **6937/0** (scripts/ now in testpaths — both new guards were
+  ungated), global mypy-zero discharged, every production receipt green: round-trip, hostile body
+  fenced (5 forgeries in body, 0 unfenced), broadcast by membership, E-S5(c) skew both paths, 88 trace
+  rows with distinct ordinals, and the elision re-ask **obeyable end-to-end across 54 messages**.
+  **#147 closed with a production receipt** (0→664). **THE BATTERY EARNED ITS KEEP**: it caught a
+  forged in-fence row counted as delivered 2/3 runs — with the fence MECHANICALLY CORRECT, so 6609
+  tests and four cold passes all missed it; every other instrument checked that the fence was
+  APPLIED, only this one asked whether a real LLM was still fooled. Cost $1.50. NEW LAW: the rider is
+  part of the ruling (6 instances); filing a rule does not install it (#194 recurred 3× incl. inside
+  its own instrument). NEXT = 04.
