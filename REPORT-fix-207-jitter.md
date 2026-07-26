@@ -57,6 +57,84 @@ adjudications §7 · gates + testpaths receipt §8 · known bound §10.
 
 ---
 
+## 0c. COLD-AUDIT R4 CLOSED — `eeba286` (2026-07-26). The method, recorded reproducibly.
+
+**The defect:** the auditor reverted the shared policy to the exact pre-#207 build and measured
+which tests redden. **Only 4 — all inside the policy's own unit file.** Every site-level pin
+stayed green, several while their failure messages promised otherwise (*"the delay is not being
+drawn from the attempt's exponential window"*). A false gate by this repo's definition, five
+times. Root cause mine: a deterministic ladder returns EXACTLY the window, and
+`0.0 <= delay <= window` admits exactly that.
+
+**Result after `eeba286`: a revert reddens 12, exact match against a set declared before the
+run.**
+
+| | before | after |
+|---|---|---|
+| tests reddened by reverting `loresigil/backoff.py` to pre-#207 | 4 | **12** |
+
+**The structural insight, which is the durable part:** the sentinel-mutation instrument could
+never have covered this flank. **Under a sentinel every site returns a constant by
+construction**, so that test can prove a site *routes* to the shared policy but is
+*categorically incapable* of proving the policy still *jitters*. Those are two different
+claims and I had been treating them as one. The fix is a second instrument —
+`test_reverting_the_shared_policy_reddens_EVERY_site` — that drives all eight declared sites
+against the **real** policy and requires the delays each actually sleeps to be drawn.
+
+### The method (what the auditor may want) — and why there is NO script committed for it
+
+The procedure, reproducible from this description alone:
+
+1. **Declare the expected-RED node ids BEFORE mutating**, from `pytest <suites> --collect-only
+   -q` filtered by test name. Never transcribed from the failures you are about to read — a
+   set read off the output you are interpreting is a tautology in costume.
+2. **Assert the mutation LANDED in source** (`grep -q` for a marker inserted by the patch) and
+   abort if it did not. A mutation that silently failed to apply produces a green run that
+   reads exactly like a passing proof.
+3. Run, collect observed failures, and **diff BOTH ways** — unexpected reds *and* declared reds
+   that stayed GREEN. The second direction is the one that catches a vacuous proof, and it is
+   the direction that caught three defects in my own pins this wave.
+4. **Restore from a `cp -a` content backup and prove byte-exactness** (`diff -q`), then re-run
+   to confirm green.
+
+⚠ **I hand-rolled this as a shell script and deliberately did NOT commit it.** The repo already
+owns this tool: `scripts/mutation_proof.py`, added by **`cad340f`** on `feat/surreal-unification`.
+It is absent from this branch only because we diverged at `d0ee2be`, which predates it —
+`git log --all -- scripts/mutation_proof.py` finds it from here, `git ls-files` does not
+(that command is branch-scoped). Committing a second implementation would be the exact
+ONE IMPLEMENTATION violation this wave exists to police, so the workaround stayed in scratch
+and dies with the session. **When the branches converge, use `scripts/mutation_proof.py`; do
+not re-derive this.**
+
+### The sweep, and the two hits the audit's hand-list missed
+
+The audit's own lesson — *sweep from the grep, never from a report's hand-list* — is exactly
+what I had failed to do in `776312b` (I fixed the D2 pin's shape and never grepped for its
+siblings, which is why five survived). Applying it here, a bare anchor-free grep for
+bound-shaped delay assertions across all four test trees found **two beyond the audit's five**:
+
+| site | verdict |
+|---|---|
+| `loremaster/tests/test_scout.py:1012` | admits the un-jittered world, but its message promises only a **bound** — honest-but-weak, **not** a false gate. Left as-is; scout is covered as a declared site by the central instrument. |
+| `loresigil/tests/test_voyage_context.py:617` | same shape, a sanity ceiling on windowed sleeps, message honest. Left as-is. |
+
+The operative distinction, worth stating once: **a false gate is an assertion whose MESSAGE
+overclaims relative to what it CHECKS.** A weak bound that admits being a bound is not one.
+
+### Residual also taken
+
+The D2 pin's `8 draws / >= 6 distinct` bar excluded a deterministic build but **tolerated a
+QUANTISED one — a 16-slot table passes it ~70% of the time**, and a 16-slot table is this
+repo's own #102/#108 defect. Raised to `64 / >= 60`, borrowed from the policy's own derived
+pin rather than re-invented.
+
+### NOT mine
+
+**R5 was misassigned to me and is `fix-210-charset`'s.** The unfalsifiable assertion is in
+`loremaster/tests/test_comms_tool.py` (**two** instances, lines 542 and 599 — the audit named
+one), authored by **`c32800d` "fix(comms): #210"**. `test_agent_registry.py`, the file assigned
+to me, contains zero occurrences. Untouched.
+
 ## 0b. D2 + D3 LANDED — `776312b` (2026-07-26)
 
 GO'd by the lead after the fix-wave audit. `git show --name-only 776312b` → exactly the
