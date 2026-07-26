@@ -688,7 +688,12 @@ def _make_store() -> SurrealStore:
         namespace=DEFAULT_SURREAL_NAMESPACE,
         database=DEFAULT_SURREAL_DATABASE,
         dim=DEFAULT_EMBEDDING_DIM,
-        user=resolve_secret(DEFAULT_SURREAL_USER_ENV),
+        # The USERNAME is not a secret and the SDK needs a real ``str`` on the
+        # wire: a ``SecretStr`` here raises ``BufferError: no encoder for type
+        # SecretStr`` at signin (#211 / cold-audit Defect A). ``signin_credentials``
+        # deliberately unwraps only the password, so the username is unwrapped here
+        # exactly as at the other four ``resolve_secret`` user sites.
+        user=resolve_secret(DEFAULT_SURREAL_USER_ENV).get_secret_value(),
         password=resolve_secret(DEFAULT_SURREAL_PASSWORD_ENV),
     )
 

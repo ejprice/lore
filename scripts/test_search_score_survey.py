@@ -559,3 +559,78 @@ class TestSurveyIsReadOnly:
         assert store.scroll_called is True, "identifier sampling must still scroll"
         assert store.hybrid_search_called is True, "queries must still search"
         assert store.closed is True, "the store must still be closed in the finally block"
+
+
+class TestTheRealStoreFactoryBuildsSdkEncodableCredentials:
+    """THE PIN THAT WOULD HAVE CAUGHT COLD-AUDIT DEFECT A.
+
+    ``_make_store`` shipped 100% broken and every gate missed it, because each
+    gate is blind in a different way and the union is still blind:
+
+    * ``scripts/`` was not in ``testpaths`` (#199), so the main suite never ran
+      this module;
+    * ``scripts/`` is not a ``typecheck.sh`` member (#221), so mypy — which DOES
+      diagnose the exact error, ``Argument "user" to "SurrealStore" has
+      incompatible type "SecretStr"`` — was never pointed at it;
+    * and the one test that exercises this area **monkeypatches ``_make_store``
+      away entirely** (``TestRunSurvey``), so the covering test replaced the
+      thing it would have covered.
+
+    So this pin calls the REAL factory. It is safe to do so without a server:
+    ``SurrealStore.__init__`` opens no socket (it sets ``_connection = None`` and
+    connects lazily on first use), which the first assertion below verifies
+    rather than assumes — the module's ``DEFAULT_SURREAL_URL`` points at
+    PRODUCTION lore-surreal (:18500), so "constructing does not connect" is a
+    safety property this test depends on, not a detail.
+
+    What it checks is the property the SDK actually imposes: every value in the
+    signin payload must be CBOR-encodable. A ``SecretStr`` is not — it raises
+    ``BufferError: no encoder for type SecretStr`` at ``signin``, which is a
+    100% failure, not a degradation.
+    """
+
+    @staticmethod
+    def _store_with_env(monkeypatch: pytest.MonkeyPatch) -> Any:
+        monkeypatch.setenv(sss.DEFAULT_SURREAL_USER_ENV, "root")
+        monkeypatch.setenv(sss.DEFAULT_SURREAL_PASSWORD_ENV, "not-a-real-password")
+        return sss._make_store()
+
+    def test_constructing_the_store_opens_no_connection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The safety property this whole class rests on: the module's URL is
+        # PRODUCTION, so if construction dialled, these tests would touch prod.
+        store = self._store_with_env(monkeypatch)
+        assert store._connection is None
+
+    def test_the_signin_payload_is_entirely_sdk_encodable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Reaches for the private credential attributes deliberately: the defect
+        # is invisible at every public surface — the store constructs fine, and
+        # only the SDK's CBOR encoder rejects it, at connect time, in production.
+        from loremaster.store._txn import signin_credentials
+
+        store = self._store_with_env(monkeypatch)
+        payload = signin_credentials(user=store._user, password=store._password)
+        offenders = {key: type(value).__name__ for key, value in payload.items()
+                     if not isinstance(value, str)}
+        assert not offenders, (
+            "these signin values are not plain ``str`` and the SDK's CBOR encoder "
+            f"will refuse them (BufferError) at connect: {offenders}"
+        )
+
+    def test_the_encodability_check_can_actually_see_a_bad_value(self) -> None:
+        # POSITIVE CONTROL: the assertion above is a negative ("nothing wrong"),
+        # which passes just as happily when the check is broken. Prove it fires
+        # on the exact shape the defect had — a SecretStr username.
+        from loremaster.store._txn import signin_credentials
+        from pydantic import SecretStr
+
+        payload = signin_credentials(
+            user=SecretStr("root"),  # type: ignore[arg-type]  # the defect's shape
+            password=SecretStr("pw"),
+        )
+        offenders = {key: type(value).__name__ for key, value in payload.items()
+                     if not isinstance(value, str)}
+        assert offenders == {"username": "SecretStr"}
