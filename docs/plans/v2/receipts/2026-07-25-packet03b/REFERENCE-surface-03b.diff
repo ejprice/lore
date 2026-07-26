@@ -1,0 +1,868 @@
+diff --git a/loremaster/loremaster/config.py b/loremaster/loremaster/config.py
+index 0d96a3f..8d03236 100644
+--- a/loremaster/loremaster/config.py
++++ b/loremaster/loremaster/config.py
+@@ -451,6 +451,9 @@ class SearchConfig(_StrictModel):
+ DEFAULT_COMMS_STALE_HEARTBEAT_S: int = 600
+ DEFAULT_COMMS_FLEET_LIMIT: int = 20
+ DEFAULT_COMMS_BRIEF_WARN_CHARS: int = 4000
++# 03b ruling B6.1: the default number of drain rows ``action=drain`` serves before
++# its counted elision line. The approved design's own drain-row value.
++DEFAULT_COMMS_DRAIN_LIMIT: int = 20
+ 
+ 
+ class CommsConfig(_StrictModel):
+@@ -475,6 +478,7 @@ class CommsConfig(_StrictModel):
+     stale_heartbeat_s: PositiveInt = DEFAULT_COMMS_STALE_HEARTBEAT_S
+     fleet_limit: PositiveInt = DEFAULT_COMMS_FLEET_LIMIT
+     brief_body_warn_chars: PositiveInt = DEFAULT_COMMS_BRIEF_WARN_CHARS
++    drain_limit: PositiveInt = DEFAULT_COMMS_DRAIN_LIMIT
+ 
+ 
+ # The default model the token-calibration yardstick probes run against.
+diff --git a/loremaster/loremaster/server.py b/loremaster/loremaster/server.py
+index 44927e9..390a1ef 100644
+--- a/loremaster/loremaster/server.py
++++ b/loremaster/loremaster/server.py
+@@ -67,9 +67,11 @@ from mcp.types import ToolAnnotations
+ from pydantic import BaseModel, ConfigDict, Field, ValidationError
+ 
+ from loremaster.agents import AGENT_NAME_PATTERN
++from loremaster.agents import STATUS_RETIRED as _AGENT_STATUS_RETIRED
+ from loremaster.agents import UnknownAgentError as _UnknownAgentError
+ from loremaster.briefs import BRIEF_NAME_PROJECT, STANDING_BRIEF
+ from loremaster.briefs import UnknownBriefError as _UnknownBriefError
++from loremaster.config import DEFAULT_COMMS_DRAIN_LIMIT as _DEFAULT_COMMS_DRAIN_LIMIT
+ from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, load_config
+ from loremaster.diff import SnapshotNotFoundError
+ from loremaster.extension import (
+@@ -124,6 +126,13 @@ from loremaster.memory.backend import (
+     MemorySource,
+     TrustLevel,
+ )
++from loremaster.messages import (
++    _ACK_OUTCOME_ACKED,
++    _ACK_OUTCOME_ALREADY_ACKED,
++    _ACK_OUTCOME_NOT_ADDRESSED,
++    _ACK_OUTCOME_UNKNOWN_MESSAGE,
++    MESSAGE_GRADE_DIRECTIVE,
++)
+ from loremaster.render import render_compose, render_fenced, render_join, render_line
+ from loremaster.sanitise import safe_str, sanitise_line
+ from loremaster.search import (
+@@ -174,6 +183,13 @@ if TYPE_CHECKING:
+         MemoryBackend,
+         RecalledMemory,
+     )
++    from loremaster.messages import (
++        InboxEntry,
++        MessageAckResult,
++        MessageDrainResult,
++        MessageLedger,
++        MessageSendResult,
++    )
+     from loremaster.render import Rendered
+     from loremaster.sanitise import SafeLine
+     from loremaster.search import SearchPipeline
+@@ -1103,6 +1119,10 @@ _COMMS_ACTION_BRIEF_GET = "brief_get"
+ _COMMS_ACTION_BRIEF_PUBLISH = "brief_publish"
+ _COMMS_ACTION_BRIEF_ACK = "brief_ack"
+ _COMMS_ACTION_FLEET = "fleet"
++# 03b (design rulings B1): the three message-surface actions.
++_COMMS_ACTION_SEND = "send"
++_COMMS_ACTION_DRAIN = "drain"
++_COMMS_ACTION_ACK = "ack"
+ 
+ # design doc §4: render list caps inside teaching/coverage lines (§5.3, §7) —
+ # the capped+counted active-agent roster an enriched ``UnknownAgentError``
+@@ -1124,6 +1144,18 @@ _HEARTBEAT_SKEW_NAMES_CAP = 3
+ # a counted elision's re-ask value is always honest AND clamped to this
+ # ceiling (DESIGN-LAW §1.2), never an unbounded "ask for everything".
+ _MAX_FLEET_LIMIT = 200
++# 03b ruling B6.2: drain's own limit ceiling. A drain entry costs a header line
++# plus a fenced body, so the drain cap is deliberately far below fleet's.
++_MAX_DRAIN_LIMIT = 50
++# Re-exported so the served default has ONE name the contract and the config
++# both read (the constant is the tunable; the number is never written twice).
++DEFAULT_COMMS_DRAIN_LIMIT = _DEFAULT_COMMS_DRAIN_LIMIT
++# 03b ruling B2.4: the CLOSED set of values ``send``'s ``set_status`` accepts.
++# The ledger is value-keyed (question = set_status == 'input_required'), so a typo
++# would silently ask no question; the dispatcher converts that into a teaching
++# reject. A module constant so the teaching message DERIVES from the legal set.
++_COMMS_SET_STATUS_INPUT_REQUIRED = "input_required"
++_COMMS_LEGAL_SET_STATUS: frozenset[str] = frozenset({_COMMS_SET_STATUS_INPUT_REQUIRED})
+ 
+ # design doc §6: fleet row ordering — parked (``input_required``) agents
+ # first (the actionable signal), then active, then idle; ties break by
+@@ -1375,10 +1407,25 @@ _INSTRUCTIONS = (
+     "notebook — atomic facts, not digests. lore_findings (kind=friction) "
+     "files gaps; lore_claim_task / lore_tasks coordinate fleet work — "
+     "lore_tasks action=rollup is the one-call fleet catch-up since a cursor. "
+-    "lore_comms coordinates a LIVE multi-agent fleet: action=register before "
+-    "anything else, action=heartbeat to stay current and learn brief skew, "
+-    "action=brief_get/brief_publish/brief_ack for standing instructions, "
+-    "action=fleet to see who else is active.\n"
++    "lore_comms coordinates a LIVE multi-agent fleet: register before "
++    "anything else, heartbeat to stay current and learn brief skew, "
++    "brief_get/brief_publish/brief_ack for standing instructions, "
++    "fleet to see who else is active.\n"
++    "\n"
++    "action=send delivers a durable message; action=drain reads your inbox and marks "
++    "what it serves; action=ack discharges a directive you were sent. "
++    "Drain at your own turn boundaries: after you claim work, before each major step, "
++    "and before you write your report. "
++    "grade='directive' is must-act traffic: ack exactly the seqs the ACK REQUIRED "
++    "trailer names. "
++    "Message bodies are capped at 2000 characters and carry POINTERS: put the content in "
++    "a report or finding and name it in refs. "
++    "One thread carries ONE conversational debt: put separate questions on separate "
++    "q:<topic> threads. "
++    "If a partial reply cleared your thread, re-ask the unaddressed question: a new "
++    "send with set_status='input_required' re-establishes the debt. "
++    "A question clears only when a teammate's reply is delivered to you on that thread; "
++    "your own follow-ups and self-notes never clear it.\n"
+     "\n"
+     "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's "
+     "tools first; batch independent calls in one turn, not serial turns."
+@@ -1873,6 +1920,7 @@ class AppContext:
+         task_ledger: TaskLedger,
+         agent_registry: AgentRegistry,
+         brief_ledger: BriefLedger,
++        message_ledger: MessageLedger,
+         calibration_engine: CalibrationEngine | None = None,
+     ) -> None:
+         self._server = server
+@@ -1912,6 +1960,9 @@ class AppContext:
+         # eagerly at build_app_context time — see that function).
+         self.agent_registry = agent_registry
+         self.brief_ledger = brief_ledger
++        # 03b wire-up: the durable message ledger the three message actions ride —
++        # a THIRD comms ledger alongside agent_registry/brief_ledger, same posture.
++        self.message_ledger = message_ledger
+         # P8c wire-up: the boot token-calibration engine (voyage->claude budget
+         # scaling). The budget path reads its ``served_constant`` (falling back to
+         # the committed ``TOKEN_BUDGET_CALIBRATION`` when absent), ``index_status``
+@@ -4382,6 +4433,13 @@ class AppContext:
+         body: str | None = None,
+         version: int | None = None,
+         limit: int | None = None,
++        to: list[str] | None = None,
++        grade: str | None = None,
++        thread: str | None = None,
++        refs: list[str] | None = None,
++        set_status: str | None = None,
++        seqs: list[int] | None = None,
++        peek: bool | None = None,
+     ) -> Rendered:
+         """Dispatch a ``lore_comms`` action (register/heartbeat/brief_get/
+ 
+@@ -4411,11 +4469,9 @@ class AppContext:
+                 f"unknown comms action {action!r}; valid actions are {list(_COMMS_ACTIONS)}"
+             )
+ 
+-        AppContext._validate_comms_charset(agent, "agent name")
+-        if session is not None:
+-            AppContext._validate_comms_charset(session, "session")
+-        if name is not None:
+-            AppContext._validate_comms_charset(name, "brief name")
++        AppContext._validate_comms_identities(
++            agent=agent, session=session, name=name, to=to
++        )
+ 
+         values: dict[str, Any] = {
+             "session": session,
+@@ -4429,6 +4485,13 @@ class AppContext:
+             "body": body,
+             "version": version,
+             "limit": limit,
++            "to": to,
++            "grade": grade,
++            "thread": thread,
++            "refs": refs,
++            "set_status": set_status,
++            "seqs": seqs,
++            "peek": peek,
+         }
+         allowed = spec.params | spec.required
+         for param_name, value in values.items():
+@@ -4451,9 +4514,23 @@ class AppContext:
+         # the valid range; above the display cap is legal here — it clamps inside
+         # the fleet handler, it never raises.
+         if limit is not None and limit < _MIN_COUNT:
++            # 03b ruling B6.2: the range text derives from THIS ACTION's own cap.
++            # Hardcoding fleet's ceiling would teach a drain caller the wrong number
++            # — served prose contradicting typed state.
++            action_cap = spec.limit_cap if spec.limit_cap is not None else _MAX_FLEET_LIMIT
+             raise ValueError(
+                 f"limit={limit} is out of range for action={action!r} — the valid range is "
+-                f"{_MIN_COUNT}..{_MAX_FLEET_LIMIT}; a limit above {_MAX_FLEET_LIMIT} clamps to it"
++                f"{_MIN_COUNT}..{action_cap}; a limit above {action_cap} clamps to it"
++            )
++        # 03b ruling B2.4: set_status is a CLOSED vocabulary. The ledger treats any
++        # other value as an ordinary no-op, so a typo would silently ask NO question
++        # while the sender believes a debt is registered. The message derives its
++        # legal set from the constant (prose-from-typed-state).
++        if set_status is not None and set_status not in _COMMS_LEGAL_SET_STATUS:
++            legal = ', '.join(repr(value) for value in sorted(_COMMS_LEGAL_SET_STATUS))
++            raise ValueError(
++                f"set_status={set_status!r} is not a legal value — the only legal "
++                f"value(s): {legal}; omit it for an ordinary send"
+             )
+ 
+         agent_row: Agent | None = None
+@@ -4482,8 +4559,33 @@ class AppContext:
+             body=body,
+             version=version,
+             limit=limit,
++            to=to,
++            grade=grade,
++            thread=thread,
++            refs=refs,
++            set_status=set_status,
++            seqs=seqs,
++            peek=peek,
+         )
+ 
++    @staticmethod
++    def _validate_comms_identities(
++        *, agent: str, session: str | None, name: str | None, to: list[str] | None
++    ) -> None:
++        """Charset-validate every identity value this call carries, pre-touch.
++
++        03b ruling B2.1 adds the FOURTH member of the one identity class: every
++        ``to[]`` recipient name. All four ride the SAME seam — a recipient name is
++        inlined into the same live WHERE clauses agent/session/brief names are.
++        """
++        AppContext._validate_comms_charset(agent, "agent name")
++        if session is not None:
++            AppContext._validate_comms_charset(session, "session")
++        if name is not None:
++            AppContext._validate_comms_charset(name, "brief name")
++        for recipient_name in to or ():
++            AppContext._validate_comms_charset(recipient_name, "recipient name")
++
+     @staticmethod
+     def _validate_comms_charset(value: str, label: str) -> None:
+         """Charset-validate a comms identity value BEFORE any store touch (§0/§7).
+@@ -4684,6 +4786,132 @@ class AppContext:
+         )
+         return AppContext._render_comms_brief_ack(result)
+ 
++    async def _comms_send(
++        self,
++        *,
++        agent_row: Agent,
++        to: list[str] | None,
++        body: str,
++        grade: str,
++        thread: str | None,
++        task_id: str | None,
++        refs: list[str] | None,
++        set_status: str | None,
++        **_ignored: Any,
++    ) -> Rendered:
++        """send — resolve recipients (or the broadcast roster), then one atomic send.
++
++        Recipient resolution is ALWAYS scoped to the CALLER's OWN resolved session
++        (ruling B2.3): delivery targeting is session-bound by id construction, so an
++        unscoped resolution would make a cross-session delivery reachable through a
++        name collision. A retired recipient is a teaching REJECT (B2.3): retired is
++        terminal, so the delivery would be undrainable forever.
++        """
++        scope = agent_row.session
++        broadcast = not to
++        recipients: list[Any]
++        if broadcast:
++            roster = await self.agent_registry.roster(session=scope)
++            recipients = [member for member in roster.members if member.id != agent_row.id]
++        else:
++            resolved: list[Any] = []
++            for recipient_name in to or ():
++                try:
++                    recipient = await self.agent_registry.get_agent(recipient_name, session=scope)
++                except _UnknownAgentError as error:
++                    raise await AppContext._comms_enrich_unknown_agent(
++                        self, error, session=scope
++                    ) from error
++                if recipient.status == _AGENT_STATUS_RETIRED:
++                    raise ValueError(
++                        f"recipient {recipient_name!r} is retired (terminal) — a message "
++                        f"delivered to a retired agent can never be drained; respawns "
++                        f"register a fresh name"
++                    )
++                resolved.append(recipient)
++            recipients = resolved
++        result = await self.message_ledger.send(
++            sender=agent_row,
++            session=scope,
++            body=body,
++            grade=grade,
++            recipients=recipients,
++            thread=thread,
++            task_id=task_id,
++            refs=refs,
++            set_status=set_status,
++        )
++        return AppContext._render_comms_send(result, broadcast=broadcast, session=scope)
++
++    async def _comms_drain(
++        self,
++        *,
++        agent_row: Agent,
++        limit: int | None,
++        peek: bool | None,
++        **_ignored: Any,
++    ) -> Rendered:
++        """drain — serve this agent's unread window, then the shared brief-skew block.
++
++        The limit defaults from config (never a handler literal) and CLAMPS at
++        ``_MAX_DRAIN_LIMIT`` with the elision line carrying the honest remainder,
++        mirroring fleet's clamp-and-disclose posture (ruling B6).
++        """
++        display_limit = min(
++            limit if limit is not None else self.config.comms.drain_limit, _MAX_DRAIN_LIMIT
++        )
++        result = await self.message_ledger.drain(
++            agent_id=agent_row.id, limit=display_limit, peek=bool(peek)
++        )
++        skew = await AppContext._comms_brief_skew_lines(self, agent_row)
++        return AppContext._render_comms_drain(
++            result,
++            agent_name=agent_row.name,
++            limit=display_limit,
++            session=agent_row.session,
++            skew_lines=skew,
++        )
++
++    async def _comms_ack(
++        self,
++        *,
++        agent_row: Agent,
++        seqs: list[int],
++        note: str | None,
++        **_ignored: Any,
++    ) -> Rendered:
++        """ack — write-once CAS over the requested seqs, reporting every seq's fate."""
++        result = await self.message_ledger.ack(agent_id=agent_row.id, seqs=seqs, note=note)
++        return AppContext._render_comms_ack(result, agent_name=agent_row.name, note=note)
++
++    async def _comms_brief_skew_lines(self, agent_row: Agent) -> list[Rendered]:
++        """The ONE brief-skew block both ``heartbeat`` and ``drain`` serve (B4.1).
++
++        Extracted so the two actions SHARE the assembly rather than cloning it: a
++        caller that kept its own copy would stay green when the shared templates
++        change, which is exactly the routing-is-not-sharing defect this extraction
++        exists to make impossible (the mutation proof is the instrument).
++        """
++        head_version: int | None
++        acked_version: int | None
++        try:
++            head = await self.brief_ledger.get_head(STANDING_BRIEF)
++            head_version = head.version
++            acked_version = await self.brief_ledger.acked_version(
++                agent_id=agent_row.id, name=STANDING_BRIEF
++            )
++        except _UnknownBriefError:
++            head_version = None
++            acked_version = None
++        subscribed_skew = await self.brief_ledger.subscribed_name_skew(
++            agent_id=agent_row.id, exclude=STANDING_BRIEF
++        )
++        return AppContext._render_comms_skew_block(
++            project_head_version=head_version,
++            project_acked_version=acked_version,
++            subscribed_skew=subscribed_skew,
++        )
++
+     async def _comms_fleet(
+         self, *, agent_row: Agent, session: str | None, limit: int | None, **_ignored: Any
+     ) -> Rendered:
+@@ -4823,6 +5051,31 @@ class AppContext:
+                 status=sanitise_line(agent.status),
+             )
+         ]
++        lines.extend(
++            AppContext._render_comms_skew_block(
++                project_head_version=project_head_version,
++                project_acked_version=project_acked_version,
++                subscribed_skew=subscribed_skew,
++            )
++        )
++        return render_compose(*lines)
++
++    @staticmethod
++    def _render_comms_skew_block(
++        *,
++        project_head_version: int | None,
++        project_acked_version: int | None,
++        subscribed_skew: Sequence[tuple[str, int, int]],
++    ) -> list[Rendered]:
++        """The brief-skew block — the ONE assembly heartbeat AND drain both serve.
++
++        03b ruling B4.1: drain is the high-frequency catch-up verb, so a mid-phase
++        brief bump's delivery probability is maximised by serving the SAME block
++        there. ONE implementation, called by both — a second copy in the drain path
++        would stay green when these templates change, and the mutation proof is what
++        distinguishes sharing from looks-like-sharing.
++        """
++        lines: list[Rendered] = []
+         if project_head_version is not None and project_acked_version != project_head_version:
+             if project_acked_version is None:
+                 lines.append(
+@@ -4876,7 +5129,7 @@ class AppContext:
+                         names=render_join(", ", shown),
+                     )
+                 )
+-        return render_compose(*lines)
++        return lines
+ 
+     @staticmethod
+     def _render_comms_behind_entry(entry: BriefBehindEntry) -> SafeLine:
+@@ -5145,6 +5398,258 @@ class AppContext:
+             head=result.head_version,
+         )
+ 
++    @staticmethod
++    def _render_comms_send(
++        result: MessageSendResult, *, broadcast: bool, session: str
++    ) -> Rendered:
++        """send's confirmation (03b rulings B3 + A-GRAFT).
++
++        The receipt line uses the COMMITTED vocabulary; the semantic layer is B3's:
++        deduped+sorted names from the typed result, the SHARED ``_COVERAGE_NAMES_CAP``
++        (never a second name-list cap), a TRUE-count remainder derived from
++        ``recipient_count`` rather than the display window, and the count-form for a
++        broadcast (a thirty-name list is a dump). No body echo — the sender knows what
++        it sent.
++
++        The question teach is gated on ``result.message.question`` — the TYPED fact the
++        ledger minted from ``set_status`` (E-S4), never a re-derived flag.
++        """
++        message = result.message
++        if broadcast:
++            receipt = render_line(
++                "sent #{seq} [{grade}] → broadcast: {count} agents in session {session}",
++                seq=message.seq,
++                grade=sanitise_line(message.grade),
++                count=result.recipient_count,
++                session=sanitise_line(session),
++            )
++        else:
++            shown = [sanitise_line(name) for name in result.recipient_names[:_COVERAGE_NAMES_CAP]]
++            remainder = result.recipient_count - len(shown)
++            if remainder > 0:
++                receipt = render_line(
++                    "sent #{seq} [{grade}] → {recipients} (+{more} more)",
++                    seq=message.seq,
++                    grade=sanitise_line(message.grade),
++                    recipients=render_join(", ", shown),
++                    more=remainder,
++                )
++            else:
++                receipt = render_line(
++                    "sent #{seq} [{grade}] → {recipients}",
++                    seq=message.seq,
++                    grade=sanitise_line(message.grade),
++                    recipients=render_join(", ", shown),
++                )
++        lines: list[Rendered] = [receipt]
++        if message.question:
++            lines.append(
++                render_line(
++                    "question on thread {thread} — clears when a teammate's reply lands "
++                    "on this thread addressed to you; your own follow-ups do not clear it",
++                    thread=sanitise_line(message.thread),
++                )
++            )
++        if message.grade == MESSAGE_GRADE_DIRECTIVE:
++            lines.append(
++                render_line(
++                    "recipients must ack: lore_comms action=ack seqs=[{seq}]",
++                    seq=message.seq,
++                )
++            )
++        return render_compose(*lines)
++
++    @staticmethod
++    def _render_comms_drain_context_cell(entry: InboxEntry, *, session: str) -> SafeLine:
++        """The drain row's ONE ``{context}`` cell (03b ruling B14): task REPLACES
++        thread, and the thread half renders only for a NON-default thread."""
++        if entry.task_id is not None:
++            return safe_str(f" (task {sanitise_line(entry.task_id)})")
++        if entry.thread != session:
++            return safe_str(f" (thread {sanitise_line(entry.thread)})")
++        return safe_str("")
++
++    @staticmethod
++    def _render_comms_drain(
++        result: MessageDrainResult,
++        *,
++        agent_name: str,
++        limit: int,
++        session: str,
++        skew_lines: Sequence[Rendered] = (),
++    ) -> Rendered:
++        """drain's render (03b rulings B4/B13/B14/B15 + A-GRAFT).
++
++        ``session`` is REQUIRED, never defaulted: it is the comparand the row's thread
++        cell branches on, and a defaulted comparand lets any call site silently kill
++        the branch (the fixture-default law, applied at the signature layer).
++
++        Bodies are ALWAYS fenced (FK-1, ruled) — they are stored free text written by
++        OTHER agents, the one render in the subsystem where agent-authored text lands
++        in another agent's context. The ``ACK REQUIRED`` trailer keys on ``acked_at``,
++        never ``seen_at``, and renders on STAMPING drains only (B13).
++        """
++        del agent_name  # the drainer is the addressee of every row served here.
++        shown = len(result.entries)
++        lines: list[Rendered] = []
++        if shown == 0 and result.total_pending == 0:
++            lines.append(render_line("no unread messages"))
++        elif result.peeked:
++            lines.append(
++                render_line(
++                    "peeked {shown} of {total} pending — nothing stamped; "
++                    "re-run without peek=true to mark them seen",
++                    shown=shown,
++                    total=result.total_pending,
++                )
++            )
++        else:
++            lines.append(
++                render_line(
++                    "drained {shown} of {total} pending",
++                    shown=shown,
++                    total=result.total_pending,
++                )
++            )
++        for entry in result.entries:
++            context = AppContext._render_comms_drain_context_cell(entry, session=session)
++            if entry.refs:
++                refs_shown = [safe_str(sanitise_line(ref)) for ref in entry.refs[:_COVERAGE_NAMES_CAP]]
++                refs_over = len(entry.refs) - len(refs_shown)
++                if refs_over > 0:
++                    refs_shown = [*refs_shown, safe_str(f"+{refs_over} more")]
++                refs_cell = render_join(", ", refs_shown)
++                lines.append(
++                    render_line(
++                        "#{seq} [{grade}] {sender}→you{context} ({refs})",
++                        seq=entry.seq,
++                        grade=sanitise_line(entry.grade),
++                        sender=sanitise_line(entry.sender_name),
++                        context=context,
++                        refs=refs_cell,
++                    )
++                )
++            else:
++                lines.append(
++                    render_line(
++                        "#{seq} [{grade}] {sender}→you{context}",
++                        seq=entry.seq,
++                        grade=sanitise_line(entry.grade),
++                        sender=sanitise_line(entry.sender_name),
++                        context=context,
++                    )
++                )
++            lines.append(render_fenced(entry.body))
++        re_served = [entry.seq for entry in result.entries if entry.acked_at is not None]
++        if re_served:
++            lines.append(
++                render_line(
++                    "re-served after ack: {seqs} — informational; these carry your ack "
++                    "stamp and need no new one",
++                    seqs=AppContext._render_comms_seq_list(re_served),
++                )
++            )
++        more = result.total_pending - shown
++        if more > 0:
++            # 03b ruling B15: BOTH slots carry the REMAINDER. A stamping drain stamps
++            # exactly the served window and stamped rows never re-serve, so a
++            # ``shown + more`` re-ask would ask for rows that CANNOT re-serve.
++            lines.append(
++                render_line(
++                    "+{more} more unread — re-run with limit={next_limit}",
++                    more=more,
++                    next_limit=more,
++                )
++            )
++        if not result.peeked:
++            demanded = [
++                entry.seq
++                for entry in result.entries
++                if entry.grade == MESSAGE_GRADE_DIRECTIVE and entry.acked_at is None
++            ]
++            if demanded:
++                lines.append(
++                    render_line(
++                        "ACK REQUIRED: {seqs} — lore_comms action=ack seqs=[{seqs_csv}]",
++                        seqs=render_join(" ", [safe_str(f"#{seq}") for seq in demanded]),
++                        seqs_csv=render_join(", ", [safe_str(str(seq)) for seq in demanded]),
++                    )
++                )
++        lines.extend(skew_lines)
++        del limit  # the served window is already bounded; the re-ask derives from it.
++        return render_compose(*lines)
++
++    @staticmethod
++    def _render_comms_ack(
++        result: MessageAckResult, *, agent_name: str, note: str | None
++    ) -> Rendered:
++        """ack's render (03b ruling B5 + A-GRAFT).
++
++        Prose is DERIVED from typed state: ONE mapping keyed by the ledger's own
++        ``AckOutcome`` constants groups the requested seqs, so a fifth outcome value
++        becomes a RED here rather than silent fallthrough prose. Every requested seq
++        lands in exactly the group(s) its ledger entries name — a duplicate seq
++        contributes to both the acked and already-acked groups with the ONE stored
++        stamp.
++        """
++        grouped: dict[str, list[int]] = {
++            _ACK_OUTCOME_ACKED: [],
++            _ACK_OUTCOME_ALREADY_ACKED: [],
++            _ACK_OUTCOME_UNKNOWN_MESSAGE: [],
++            _ACK_OUTCOME_NOT_ADDRESSED: [],
++        }
++        for entry in result.entries:
++            if entry.seq not in grouped[entry.outcome]:
++                grouped[entry.outcome].append(entry.seq)
++        grouped = {outcome: sorted(seqs) for outcome, seqs in grouped.items()}
++        requested = len({entry.seq for entry in result.entries})
++        lines: list[Rendered] = [
++            render_line(
++                "acked {acked} of {requested}: {seqs}",
++                acked=len(grouped[_ACK_OUTCOME_ACKED]),
++                requested=requested,
++                seqs=AppContext._render_comms_seq_list(grouped[_ACK_OUTCOME_ACKED]),
++            )
++        ]
++        if grouped[_ACK_OUTCOME_ALREADY_ACKED]:
++            lines.append(
++                render_line(
++                    "already acked: {seqs} — no new stamp",
++                    seqs=AppContext._render_comms_seq_list(grouped[_ACK_OUTCOME_ALREADY_ACKED]),
++                )
++            )
++        if grouped[_ACK_OUTCOME_UNKNOWN_MESSAGE]:
++            lines.append(
++                render_line(
++                    "unknown message seq(s): {seqs} — no such message; "
++                    "lore_comms action=drain lists what is addressed to you",
++                    seqs=AppContext._render_comms_seq_list(
++                        grouped[_ACK_OUTCOME_UNKNOWN_MESSAGE]
++                    ),
++                )
++            )
++        if grouped[_ACK_OUTCOME_NOT_ADDRESSED]:
++            lines.append(
++                render_line(
++                    "not addressed to you: {seqs} — these messages carry no delivery to {name}",
++                    seqs=AppContext._render_comms_seq_list(grouped[_ACK_OUTCOME_NOT_ADDRESSED]),
++                    name=sanitise_line(agent_name),
++                )
++            )
++        if note is not None and result.acked_count > 0:
++            lines.append(
++                render_line(
++                    "note recorded on the {acked} newly acked message(s)",
++                    acked=result.acked_count,
++                )
++            )
++        return render_compose(*lines)
++
++    @staticmethod
++    def _render_comms_seq_list(seqs: Sequence[int]) -> SafeLine:
++        """``#a, #b`` — the seq sigil list shared by the ack render's four groups."""
++        return render_join(", ", [safe_str(f"#{seq}") for seq in seqs])
++
+     @staticmethod
+     def _render_comms_fleet_brief_cell(
+         project_head_version: int | None, acked_version: int | None
+@@ -5404,6 +5909,7 @@ class AppContext:
+         # PKT-28 C1: the two comms ledgers each own their OWN connection too.
+         await self.agent_registry.close()
+         await self.brief_ledger.close()
++        await self.message_ledger.close()
+ 
+ 
+ @dataclass(frozen=True)
+@@ -5423,6 +5929,7 @@ class CommsActionSpec:
+     params: frozenset[str]
+     required: frozenset[str] = frozenset()
+     requires_registration: bool = True
++    limit_cap: int | None = None
+ 
+ 
+ # The introspectable dispatch table AppContext.comms() dispatches through and
+@@ -5458,6 +5965,22 @@ _COMMS_ACTIONS: dict[str, CommsActionSpec] = {
+     _COMMS_ACTION_FLEET: CommsActionSpec(
+         AppContext._comms_fleet,
+         params=frozenset({"limit"}),
++        limit_cap=_MAX_FLEET_LIMIT,
++    ),
++    _COMMS_ACTION_SEND: CommsActionSpec(
++        AppContext._comms_send,
++        params=frozenset({"to", "body", "grade", "thread", "task_id", "refs", "set_status"}),
++        required=frozenset({"body", "grade"}),
++    ),
++    _COMMS_ACTION_DRAIN: CommsActionSpec(
++        AppContext._comms_drain,
++        params=frozenset({"limit", "peek"}),
++        limit_cap=_MAX_DRAIN_LIMIT,
++    ),
++    _COMMS_ACTION_ACK: CommsActionSpec(
++        AppContext._comms_ack,
++        params=frozenset({"seqs", "note"}),
++        required=frozenset({"seqs"}),
+     ),
+ }
+ 
+@@ -5753,6 +6276,7 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
+     from loremaster.index.watcher import LiveWatcher
+     from loremaster.memory.ledger import MemoryLedger
+     from loremaster.memory.local import LocalMemoryBackend
++    from loremaster.messages import MessageLedger
+     from loremaster.search import SearchPipeline
+     from loremaster.source.local_directory import LocalDirectorySourceProvider
+     from loremaster.store.surreal import SurrealStore
+@@ -5940,6 +6464,15 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
+         )
+         await brief_ledger.ensure_ready()
+         write_stack_readied.append(brief_ledger)
++        message_ledger = MessageLedger(
++            url=config.surreal.url,
++            namespace=config.surreal.namespace,
++            database=surreal_database,
++            user=surreal_user,
++            password=surreal_password,
++        )
++        await message_ledger.ensure_ready()
++        write_stack_readied.append(message_ledger)
+         # Replay the durable ledger into the backend ONCE at boot (FP-06): the
+         # first boot re-embeds the seeded rows, a second over an in-sync store is a
+         # pure no-op (zero document embeds — the divergence guard). Inside the ready
+@@ -6075,6 +6608,7 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
+         task_ledger=task_ledger,
+         agent_registry=agent_registry,
+         brief_ledger=brief_ledger,
++        message_ledger=message_ledger,
+         calibration_engine=calibration_engine,
+     )
+ 
+@@ -7365,8 +7899,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
+             "the head version of a standing instruction (default 'project') with "
+             "fenced body + coverage, 'brief_publish' a new version (race-safe max+1 "
+             "mint), 'brief_ack' a specific version (legal even if not head — the "
+-            "ledger records what you actually read), or 'fleet' to list the "
+-            "registered fleet (optionally session-scoped). Every agent MUST "
++            "ledger records what you actually read), 'fleet' to list the "
++            "registered fleet (optionally session-scoped), 'send' a durable "
++            "message to teammates (omit to= to broadcast to your session), "
++            "'drain' your unread inbox, or 'ack' the directives you actioned. "
++            "Every agent MUST "
+             "'register' before any other action; every action re-touches the "
+             "caller's heartbeat. Returns a rendered summary, never a raw store dump."
+         ),
+@@ -7382,7 +7919,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
+                     "register required), 'heartbeat' (status/note touch), "
+                     "'brief_get' (read a standing instruction), 'brief_publish' "
+                     "(mint a new version), 'brief_ack' (record you read a version), "
+-                    "or 'fleet' (list registered agents)."
++                    "'fleet' (list registered agents), 'send' (deliver a durable "
++                    "message to teammates), 'drain' (read your unread inbox), or "
++                    "'ack' (record that you actioned directives)."
+                 )
+             ),
+         ],
+@@ -7494,8 +8033,76 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
+             Field(
+                 ge=_MIN_COUNT,
+                 description=(
+-                    f"For 'fleet' ONLY: the max rows to render (default "
+-                    f"comms.fleet_limit, min {_MIN_COUNT}, clamped to {_MAX_FLEET_LIMIT})."
++                    f"For 'fleet' and 'drain': the max rows to render (defaults "
++                    f"from comms.fleet_limit / comms.drain_limit, min {_MIN_COUNT}, "
++                    f"clamped to {_MAX_FLEET_LIMIT} / {_MAX_DRAIN_LIMIT})."
++                )
++            ),
++        ] = None,
++        to: Annotated[
++            list[str] | None,
++            Field(
++                description=(
++                    "For 'send': the recipient agent names — omit it (or pass []) to "
++                    "broadcast to every non-retired teammate in your session, excluding "
++                    "you. A retired recipient is rejected: retired is terminal."
++                )
++            ),
++        ] = None,
++        grade: Annotated[
++            str | None,
++            Field(
++                description=(
++                    "For 'send' ONLY: 'signal' or 'directive' — a 'directive' must be "
++                    "acked; a 'signal' need not be. A directive's recipients see an ACK "
++                    "REQUIRED trailer on their next drain naming the exact call."
++                )
++            ),
++        ] = None,
++        thread: Annotated[
++            str | None,
++            Field(
++                description=(
++                    "For 'send' ONLY: the conversation thread — defaults to your "
++                    "session. Use 'q:<topic>' for a question; ONE thread carries ONE "
++                    "conversational debt, so separate questions take separate threads."
++                )
++            ),
++        ] = None,
++        refs: Annotated[
++            list[str] | None,
++            Field(
++                description=(
++                    "For 'send' ONLY: POINTERS the message references (report paths, "
++                    "finding ids). Bodies carry pointers; content lives in the artifact."
++                )
++            ),
++        ] = None,
++        set_status: Annotated[
++            str | None,
++            Field(
++                description=(
++                    "For 'send' ONLY: exactly 'input_required' — marks this send as a "
++                    "question; it does NOT change your status row (use action=heartbeat "
++                    "status=input_required for that). Any other value is rejected."
++                )
++            ),
++        ] = None,
++        seqs: Annotated[
++            list[int] | None,
++            Field(
++                description=(
++                    "For 'ack' ONLY: the message seqs you are acking — REQUIRED. Take "
++                    "them from the ACK REQUIRED trailer your drain rendered."
++                )
++            ),
++        ] = None,
++        peek: Annotated[
++            bool | None,
++            Field(
++                description=(
++                    "For 'drain' ONLY: read without stamping: what you peek stays unread "
++                    "and WILL be served again; re-run without peek=true to mark it seen."
+                 )
+             ),
+         ] = None,
+@@ -7514,6 +8121,13 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
+             body=body,
+             version=version,
+             limit=limit,
++            to=to,
++            grade=grade,
++            thread=thread,
++            refs=refs,
++            set_status=set_status,
++            seqs=seqs,
++            peek=peek,
+         )
+ 
+     @mcp.tool(
