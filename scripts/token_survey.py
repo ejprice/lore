@@ -45,6 +45,7 @@ from pathlib import Path
 from threading import Lock
 
 import httpx
+from loremaster.stats import nearest_rank_percentile, weighted_nearest_rank_percentile
 from loresigil.tokens import VoyageTokenCounter
 from pydantic import SecretStr
 
@@ -369,31 +370,34 @@ def weighted_percentile(pairs: Sequence[tuple[float, float]], pct: float) -> flo
     count answers "for X% of the token-mass, the ratio is at most this".
 
     Args:
-        pairs: ``(value, weight)`` pairs; every weight must be > 0.
+        pairs: ``(value, weight)`` pairs; every weight must be > 0 — now
+            ENFORCED rather than merely documented (finding #198).
         pct: Percentile in ``[0, 100]``.
 
     Returns:
         The percentile value.
 
     Raises:
-        ValueError: If ``pairs`` is empty.
+        ValueError: If ``pairs`` is empty, or if any weight is <= 0.
     """
     if not pairs:
         raise ValueError("weighted_percentile requires at least one (value, weight)")
-    ordered = sorted(pairs, key=lambda vw: vw[0])
-    total_weight = math.fsum(weight for _value, weight in ordered)
-    threshold = (pct / 100.0) * total_weight
-    cumulative = 0.0
-    for value, weight in ordered:
-        cumulative += weight
-        if cumulative >= threshold:
-            return value
-    return ordered[-1][0]
+    return weighted_nearest_rank_percentile(
+        [value for value, _weight in pairs], [weight for _value, weight in pairs], pct
+    )
 
 
 def percentile(values: Sequence[float], pct: float) -> float:
-    """File-weighted (uniform-weight) percentile — thin wrapper over the weighted one."""
-    return weighted_percentile([(value, 1.0) for value in values], pct)
+    """File-weighted (uniform-weight) percentile — the shared nearest-rank seam.
+
+    Retained as a NAME because ``scripts/search_score_survey.py`` and the
+    committed probe under ``docs/plans/v2/receipts/2026-07-24-packet11i/``
+    import it; the percentile policy itself now lives in
+    :func:`loremaster.stats.nearest_rank_percentile` (finding #198).  Proven
+    equal to the retired hand-roll over the corpus in
+    ``loremaster/tests/test_stats.py``.
+    """
+    return nearest_rank_percentile(values, pct)
 
 
 def summarize(measurements: Sequence[FileMeasurement], label: str = "") -> RatioSummary:

@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import os
 import sys
 import time
@@ -47,6 +46,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "loremaster"))
 
 from loremaster.findings import FindingLedger  # noqa: E402
+from loremaster.stats import nearest_rank_percentile  # noqa: E402
 from loremaster.store._txn import (  # noqa: E402
     TxnContentionExhaustedError,
     _SurrealConnection,
@@ -151,24 +151,6 @@ async def _one_round(database: str, racer_count: int) -> list[MintResult]:
     return list(await asyncio.gather(*(_one_mint(database) for _ in range(racer_count))))
 
 
-def weighted_percentile(values: list[float], percentile: int) -> float:
-    """The nearest-rank percentile over ``values`` (each value already carries
-    equal weight — one observed mint attempt/latency — so "weighted" here means
-    weighted by observation count, i.e. a plain percentile over the pooled
-    per-attempt samples, never a per-round average that would hide the tail).
-
-    Deterministic, no interpolation ambiguity: sorts ascending and picks the
-    ``ceil(percentile/100 * n)``-th value (1-indexed), clamped to the last
-    index — the same nearest-rank method ``numpy.percentile``'s "higher"
-    interpolation and most operational p50/p90/p99 dashboards use.
-    """
-    if not values:
-        raise ValueError("cannot take a percentile of zero observations")
-    ordered = sorted(values)
-    rank = max(1, math.ceil(percentile / 100 * len(ordered)))
-    return ordered[min(rank, len(ordered)) - 1]
-
-
 def summarise(results: list[MintResult]) -> dict[str, Any]:
     attempts = [float(result.attempts) for result in results]
     latencies = [result.elapsed_seconds for result in results]
@@ -178,9 +160,11 @@ def summarise(results: list[MintResult]) -> dict[str, Any]:
         "exhausted": exhausted,
         "attempts_max": max(attempts),
     }
-    for percentile in PERCENTILES:
-        summary[f"attempts_p{percentile}"] = weighted_percentile(attempts, percentile)
-        summary[f"latency_p{percentile}_s"] = round(weighted_percentile(latencies, percentile), 4)
+    # Nearest-rank over the POOLED per-attempt samples — never a per-round
+    # average, which would hide exactly the tail finding #102 exists to measure.
+    for pct in PERCENTILES:
+        summary[f"attempts_p{pct}"] = nearest_rank_percentile(attempts, pct)
+        summary[f"latency_p{pct}_s"] = round(nearest_rank_percentile(latencies, pct), 4)
     # The lockstep signature check: a healthy jittered seam's attempt
     # distribution should NOT cluster multi-modally at the ceiling — report the
     # distinct attempt-count values observed so the receipt can show the shape,
