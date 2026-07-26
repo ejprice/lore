@@ -962,3 +962,17 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   negative search, a `pgrep -f` watcher — all claims whose scope is implicit in the instrument that
   produced it; one watcher had waited on ITSELF for 13.5h). NEXT = **42** (operator: prevent the leak,
   delete the sanitizer — 12.4% of function names are hidden from logs today).
+- 2026-07-26 · **BRANCH/DIFF-AWARENESS CONSULT** (operator question → input to packet 17). Three
+  independent positions (Sonnet 5 · Opus 5 · Fable lead — lead's committed to file before reading
+  either return; receipts `docs/plans/v2/receipts/2026-07-26-branch-diff-consult/`, SYNTHESIS.md
+  carries the forks). Unanimous: never re-serve textual diff (git is the engine; all three, as
+  consumers, would route around a re-serve) · the servable half is GRAPH-over-the-delta ("git
+  answers what did I change; git cannot answer what does what I changed TOUCH"; changed-symbol
+  inventory ~free on the overlay's own merge-base enumeration) · NO git-ref mode on `lore_diff`
+  (two identity spaces under one verb; its snapshot rows already render git_branch@git_ref — a
+  primed misread, filed **#232**) · ref-vs-ref for unchecked-out refs NEVER, re-open trigger named
+  (a wave needing structural comparison of two sibling worktrees' deltas, or Odoo onboarding).
+  Fork awaiting operator ruling: v1 scope — Opus "graph over the delta" (inventory + delta-scoped
+  search + batched BASE-SERVED impact/tests behind the numbered caveat; Fable concurs) vs Sonnet
+  "inventory only, rest inherits the v2 disposition". Packet 17/23 docs untouched — the ruling
+  lands there.
