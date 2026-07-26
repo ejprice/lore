@@ -237,6 +237,59 @@ Therefore, standing law:
   defaulting to `name="project"` MANUFACTURED this blind spot: every render fixture silently
   tested the one value where the lies were true. No default ⇒ every call site must choose.
 
+## THE RIDER IS PART OF THE RULING (packet 03b, SIX instances across three waves, 2026-07-26)
+A ruling usually has two halves: the thing to build, and a clause saying **"and pin / measure /
+verify it like this."** Six times in one packet a builder implemented the first half and dropped
+the second, and every gate stayed green — because the dropped half WAS the gate.
+
+**Five were cheap. The sixth cost a real defect.** DD-3.c said *"the message-slice dirty-store pin
+gains the narrowed-assert leg"* and no dirty-store leg was added — only an offline pin that reads
+generated DDL text and never touches an engine. That missing leg was the instrument that would have
+caught DD-3.c's OWN safety argument being FALSE: *"cannot write-poison (message rows are never
+UPDATEd)"* is true of `message` and **false of `to`**, where `ack_note` lives and which `drain`
+UPDATEs in ONE statement over the whole window — so a single legacy over-cap edge fails that
+statement and the agent **cannot drain ANY of its inbox** (total denial, reproduced with controls;
+`receipts/2026-07-25-packet03b/REPORT-coldaudit-03b-2.md` §3.0). **A false safety claim survived a
+design wave, a builder self-audit and two rounds of review because the instrument naming it was
+never built.** Two more riders were similarly dropped: an accepted KNOWN BOUND with no docstring,
+and a *">5% p50"* re-open trigger with nothing measuring p50 — *"a trigger nobody measures is a
+hope."*
+
+- **THE SELF-CHECK, which is the half that works** (the law alone did not — the builder repeated
+  this twice AFTER writing it down): **the tell is a ruling sentence containing "and pin/measure/
+  verify it like this." If you implemented the clause BEFORE that phrase and not AFTER, you are not
+  done.** Three of the six were caught by asking that retroactively; a fourth needed an auditor.
+- **A ruling's rider is not commentary and not bureaucracy — it is frequently the only thing
+  between a correct build and a silently deletable one.** Two mutation proofs in this packet came
+  back GREEN on first attempt because the ruling was implemented and its rider skipped: the
+  deploy-gated `trace_ts` index line could be DELETED with every gate green, and the `refs` store
+  ASSERT was invisible because the ledger's teaching reject fires first.
+- **Corollary for whoever writes the ruling:** put the rider in the same sentence or the same
+  bullet as the requirement. A rider in a later paragraph is a rider that gets dropped.
+
+## FILING A RULE DOES NOT INSTALL IT (packet 03b, 2026-07-26 — the sharpest instance yet)
+This file already says a diagnosis is not an instrument. Packet 03b produced the cleanest possible
+proof: finding #194 (*"a mutation proof needs evidence the mutation LANDED"*) **recurred within the
+hour, in the session that filed it, by the agent that found it** — after the rule was written down,
+acknowledged AND sharpened. Nothing about writing it changed the shell block about to be typed. It
+then recurred TWICE MORE while that agent was **building the instrument for it**, the second time
+because the helper was piped to `tail` under `set -e`, so the pipe's exit status was `tail`'s and
+the helper's failure code was thrown away.
+- **What worked, all four times, was never the rule — it was a CHECKED EXPECTATION:** knowing which
+  tests should redden and noticing the observed set differed. So `scripts/mutation_proof.py` now
+  takes the expected-RED node ids as an ARGUMENT and diffs them **BOTH WAYS** — unexpected reds, and
+  **declared reds that stayed GREEN**, the direction that catches a mutation landing in DEAD CODE.
+- **Declare the set BEFORE the run, never transcribed from the output** — a "declared" set read off
+  the failures you just watched is the tautology in a new costume. Take ids from `--collect-only`:
+  collecting names tests without running them, so the set is fixed before any result exists.
+- **Ask of any multi-step verification: "if step N silently no-opped, would step N+1 still print
+  something that reads as success?"** If yes, the steps are not one unit. The failure direction is
+  always toward false confidence, because a green measurement after a failed setup looks exactly
+  like the thing you hoped for.
+- **A guard nobody runs is a hope with a filename**, and worse than no guard, because its presence
+  is read as coverage. Both of this packet's new instruments sat outside `testpaths` until
+  2026-07-26 — the guards for #192 and #196, ungated, victims of the class they instrument.
+
 ## ONE IMPLEMENTATION — a pattern to clone is a defect to clone (#102, operator 2026-07-13)
 The operator's question, on reading a design-law line: *"Can this just be written as a helper
 method or decorator? DRY principle."* It was the root cause, one level above the code.
