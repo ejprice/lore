@@ -60,9 +60,17 @@ _THIRD_PARTY_WARN_NAMESPACES: tuple[str, ...] = ("httpx",)
 REDACTED = "***REDACTED***"
 
 # The JSON key the rendered (and scrubbed) exception is emitted under (#211).
-# One field rather than several, so a Mezmo query retrieves a whole traceback
-# as a unit; named here rather than inlined so a consumer can import it.
-EXC_FIELD = "exc"
+# One field rather than several, so a Mezmo query retrieves a whole traceback as
+# a unit; named here rather than inlined so a consumer can import it.
+#
+# The VALUE is ``exc_info`` by lead ruling (2026-07-25), matching
+# python-json-logger's convention rather than a lore-specific spelling: a served
+# field name is a consumer surface, and lore's consumers are agents that learn
+# the contract from what is served. It deliberately coincides with the
+# ``LogRecord`` attribute of the same name — which ``_LOGRECORD_RESERVED``
+# excludes from the flattened ``extra`` keys, so the two can never collide in one
+# payload.
+EXC_FIELD = "exc_info"
 
 # The stdlib ``sys.exc_info()`` triple, as ``LogRecord.exc_info`` carries it.
 # The all-``None`` arm is REACHABLE, not defensive padding: ``exc_info=True``

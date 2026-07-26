@@ -529,6 +529,32 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
         assert FAKE_BEARER_TOKEN not in line
         assert REDACTED in line
 
+    def test_the_wire_field_name_is_exactly_exc_info(self) -> None:
+        """Pin the SERVED NAME as a literal — every other test uses the constant.
+
+        Because all the assertions above index ``parsed[EXC_FIELD]``, they follow
+        the constant wherever it points: renaming its VALUE would change the
+        served surface with the whole suite still green. lore's log consumers are
+        agents and Mezmo queries that key on the literal string, so the literal is
+        what needs pinning. ``exc_info`` is the lead's ruling (2026-07-25) and
+        python-json-logger's convention.
+        """
+        assert EXC_FIELD == "exc_info"
+
+        def action(logger: logging.Logger) -> None:
+            try:
+                raise RuntimeError("store.signin refused")
+            except RuntimeError:
+                logger.exception("store.connect.failed")
+
+        parsed = json.loads(self._emit("json", action))
+        # Asserted against the literal, NOT the constant — the whole point.
+        assert "exc_info" in parsed
+        assert "Traceback" in parsed["exc_info"]
+        # And the old spelling must be gone, so a stale consumer fails loudly
+        # rather than silently reading nothing.
+        assert "exc" not in parsed
+
     def test_a_record_with_no_exception_is_untouched(self) -> None:
         parsed = json.loads(self._emit("json", lambda logger: logger.info("index.file.done")))
         assert EXC_FIELD not in parsed
