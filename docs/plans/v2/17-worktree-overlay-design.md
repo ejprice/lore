@@ -133,32 +133,10 @@ the hosted machinery itself stays in packets 36–39.
    custom tier only — core/enterprise static tiers never fork).
 6. The graph-caveat contract wording (DESIGN-LAW §1 honesty: a caveat names WHAT is
    unverified, never a vague warning).
-7. **Branch/ref provenance on the EXISTING citations (#234) — the half the second-wave
-   block does NOT cover.** The second wave rules per-render tree identity for VIEWS
-   ("within a bound session, every render names the instance"). That is the multi-view
-   world. It says nothing about what `lore_search` / `lore_read` / `lore_get_symbol`
-   payloads carry TODAY, which is: no branch, no ref — identity is served only by
-   `lore_index()`'s watched-root render (measured 2026-07-26; per-surface table in #234).
-   Two consequences this packet must rule:
-   (a) **Under one root the omission is lossless at query time but not downstream** — a
-   `[SOURCE:file:line]` pasted into a report names no tree, and the repo's citation law
-   (#152/#153) wants durable addresses. Precedent: `lore_read` already carries
-   `stale`/`integrity_verified` because freshness could not be assumed from the payload.
-   (b) **"Overlay-shadows-base PER FILE" makes one result list legitimately MIX trees** with
-   nothing on any hit naming which answered — the §1 confident-wrong, and the single-root
-   condition is exactly what hides it today.
-   Candidate shapes, cheapest first: (i) one response-level provenance line per call, not per
-   hit; (ii) stamp only when >1 view is live (single-root serving pays nothing); (iii) full
-   per-citation `@ref`. **Decide here:** Q5-as-reframed (N fleet-scale views) and the hosted
-   ruling both make multi-view real, after which (ii)'s "pay nothing today" property expires.
-   Same question as Q6 in a different costume — what a render must NAME to avoid a
-   confident-wrong — and constrained by Q2's view-addressing fork.
 
 ## Entry check
 `lore_findings` → #125 open with the full body (the two auditor receipts + the three
-affordance candidates), and **#234** (citation provenance — open question 7's full body:
-the measured per-surface table + the three candidate shapes). packet 01's watched-path/branch
-line already deployed (cite it as the floor this design builds above).
+affordance candidates). packet 01's watched-path/branch line already deployed (cite it as the floor this design builds above).
 
 ## Exit
 Design doc at docs/design/2026-07-XX-worktree-overlay.md; forks presented with
