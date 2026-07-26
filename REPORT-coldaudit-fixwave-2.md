@@ -1,10 +1,18 @@
 # REPORT-coldaudit-fixwave-2 — independent grading of the #210 / #207 / #211 fix wave
 
-> Everything here was measured **2026-07-26** against a FROZEN copy of **`13b5659`** (branch
+> ⚠ **REV 1'S VERDICT IS SUPERSEDED — READ REV 2 (at the end of this file) FOR THE CURRENT ONE.**
+> Rev 1 below returned **NO-GO** at `13b5659` on finding R1, and is preserved verbatim as the record
+> of why. **All four remediable findings (R1, R3, R4, R5) were fixed and independently re-verified
+> at `79ceff9`; rev 2's verdict is GO.** R2 remains open by design. Two rev-1 numbers were later
+> corrected by measurement and are marked where they appear: **R1's "38–63%" was an UNDER-statement
+> — the true rate for the defect's own population (base64 CONTAINING a `/`) is 100%** (rev 2 §R2.1),
+> and **R4's "only 4 tests redden" became 12 after the fix** (rev 2 §R2.3).
+>
+> Everything in rev 1 was measured **2026-07-26** against a FROZEN copy of **`13b5659`** (branch
 > `pkt11i-floor-calibration-dark`). Claims are dated and SHA-scoped where they are made, because a
 > retrieved chunk arrives without its header.
 
-## SUMMARY BLOCK
+## SUMMARY BLOCK — REV 1 (SUPERSEDED; see rev 2)
 
 - `brief-base v6 read`
 - **VERDICT: NO-GO — on ONE narrow ground, with everything else GO.**
@@ -490,3 +498,228 @@ wave-touched test files are reachable, 3 of them (`scripts/test_calibration_base
 ---
 
 *Audited by `coldaudit-fixwave-2`, 2026-07-26, against frozen `13b5659`. I built none of this wave.*
+
+---
+
+# REV 2 — verification of the R1/R3/R4/R5 remediations (2026-07-26)
+
+> Appended, not replacing: rev 1 above is the record of the NO-GO and stays as written. This
+> section grades only the remediations, measured against a FROZEN copy of **`79ceff9`**.
+
+## SUMMARY BLOCK — REV 2
+
+- `brief-base v6 read`
+- **VERDICT: GO.** All four remediations verified fixed by independent measurement.
+  **R1 fixed** (0 strict regressions at n=6000; 0 new leak classes over 200,000 strings;
+  all four #227 FP classes preserved) · **R3 fixed** (the positive control demonstrably
+  FAILS on the reverted fixture) · **R4 fixed** (12 reds confirmed; all five site pins
+  among them) · **R5 fixed** (recorder-based property, with a working positive control).
+  **R2 remains open by design and its resolution is NOT foreclosed — claim verified
+  structurally.**
+- **⚠ MY BRIEF'S TARGET WAS NOT THE TIP.** Brief: *"Frozen target: HEAD `7379b48`."*
+  Measured: **HEAD is `79ceff9`** — one commit further on, `docs(fix): #210 — R5 receipts,
+  and six more unfailable assertions found in the sweep`. It is **report-only** (one file,
+  `REPORT-fix-210-charset.md`; `git diff --name-only 7379b48..79ceff9` returns exactly that
+  path), so code and tests are byte-identical to the brief's target. **I graded the TIP**,
+  so a GO names the tip rather than a commit that is already behind. The tree did not move
+  during my run.
+- **Three new residuals (N1–N3), all LOW/documentation** — none blocks the merge. §R2.4.
+
+### Gate results — frozen `79ceff9`, clean tree, provenance-receipted
+| gate | result | vs rev 1 (`13b5659`) |
+|---|---|---|
+| `uv run pytest -n auto -q` | **394 failed, 6264 passed, 17 skipped, 3 xfailed** in 208.85s | **+18 passing**, identical failure set |
+| `./scripts/typecheck.sh` | **109 errors in 3 files** (exit 1) — all packet-03b contract tests; 0 in production | unchanged |
+| `uv run ruff check .` | **All checks passed** | unchanged |
+| `uv run pytest scripts/` | **153 passed** | unchanged |
+| `uv run mypy scripts` | **27 errors in 4 files** — **no SecretStr/str error** | unchanged |
+
+Provenance: **65/65** records (64 workers + master) report `loremaster.__file__` inside the
+copy; **117** collected test modules, **0** outside it.
+`loremaster.__file__ = /home/ejprice/scratch-audit2-rev2/loremaster/loremaster/__init__.py`
+Copy proven byte-identical to `79ceff9` across **496** tracked files.
+
+**This is the clean-tree number the merge goes on.** The builder correctly declined to claim
+one (a sibling was mid-edit on `test_comms_tool.py`); nothing was in flight during mine.
+
+### Failure attribution — both directions
+| direction | count |
+|---|---|
+| observed FAILED | 394 |
+| enumerated baseline | 394 |
+| **only in NOW** (breakage) | **0** |
+| **only in BASELINE** (fixed/deleted) | **0** |
+
+Exactly the enumerated baseline, again. The +18 passes are the remediations' new tests; no
+03b contract test was fixed or deleted.
+
+---
+
+## R2.1 — R1: FIXED, and my rev-1 number WAS an under-statement
+
+**The lead is right and I was low.** Measured against the OLD (`13b5659`) guard:
+
+| population | n | OLD guard strict regressions |
+|---|---|---|
+| 32-byte base64, **`/` forced** | 1500 | **79.7%** |
+| 48-byte base64, **`/` forced** | 1500 | **98.3%** |
+| 32-byte base64, random | 1500 | 38.0% *(my rev-1 figure)* |
+| 48-byte base64, random | 1500 | 63.2% *(my rev-1 figure)* |
+
+and the lead's own framing replicates exactly: **forced-slash, n=200 → the old guard leaked
+200/200 = 100%.** My rev-1 range sampled base64 that did not always contain a `/`, so it
+measured the *unconditional* rate and reported it as the rate for the defect's own
+population. **The ledger should carry 100% of slashed base64, not 38–63%.**
+
+**At HEAD (`79ceff9`), all four populations show 0.0% strict regressions.**
+
+**Did the narrowing open a NEW leak class?** No — and this is answerable structurally rather
+than by sampling. Over **200,000 random strings** drawn from the full path/base64 alphabet,
+there were **0** inputs where the NEW guard exempts something the OLD guard redacted. The
+narrowed exemption is a **strict subset** of the old one, so it *cannot* leak where the old
+did not; it can only over-redact.
+
+**Residual leaks are pre-existing, not regressions.** At HEAD, 78/400 forced-slash 32-byte
+secrets still appear intact — **all 78 also leak under the pre-wave scrubber** (`d0ee2be`),
+because a `/` can split a token into two sub-24-char runs that `_TOKEN_RE` never matches.
+**0/400 leaked at HEAD but not pre-wave.** That is a pre-existing bound of the entropy
+backstop, untouched by this wave in either direction.
+
+**The four #227 false-positive classes are all preserved** at HEAD: uuid workspace dir,
+64-hex container overlay, nix store path, and a real traceback `File "…"` line.
+
+### R2.2 — all four conditions ARE individually load-bearing (and I nearly said otherwise)
+
+The lead warned that condition 2 had been dead as first written, and to assume another.
+**I initially reported conditions 1 AND 2 as DEAD** — over a 5,644-string corpus, disabling
+either changed **no** verdict. **That was my corpus, not the code**, and I caught it before
+reporting: a random corpus cannot prove deadness, only targeted inputs can. Constructing the
+input each condition exists to reject:
+
+| condition | discriminating input | shipped | condition disabled |
+|---|---|---|---|
+| **1** (blob is absolute) | `opened var/data/<40hex>/x.py` — a **relative** path | REDACTED | preserved |
+| **1** | `tmp/ci/<40hex>/app.py` | REDACTED | preserved |
+| **2** (no `+`/`=` in blob) | `/var/data/<40hex>/x=` | REDACTED | preserved |
+| **2** | `/var/data/<40hex>/x+` | REDACTED | preserved |
+| **3** (run is not the first component) | `/73b03ab7…` | REDACTED | preserved |
+| **4** (run is not mixed-case) | `/oTr/YQ85ZADVRBs8C4LtatsNE1pVfEFN` | REDACTED | preserved |
+
+**All four discriminate.** Condition 2 is live because `_PATH_BLOB_CHARS` now *includes*
+`+` and `=` — the builder's fix of its own dead condition works, verified. My corpus lacked
+a relative-path case and a single-case-run-with-`=` case, which is the *fixtures must
+discriminate* law biting the auditor; the builder's "characterise the survivors" method beat
+my sampling method, and that is worth recording.
+
+### R2.3 — R3, R4, R5
+
+**R3 — FIXED, and its positive control demonstrably fails.** Reverting `_leak_from_a_literal_credential`
+to the pre-fix `if`-guard shape (expected-RED set declared from `--collect-only` first, 62
+nodes):
+```
+2 failed, 60 passed
+FAILED …::test_the_literal_actually_reaches_an_unscrubbed_render
+FAILED …::test_secret_in_the_rendered_source_line_is_scrubbed
+```
+The control fires, and the rebuilt pin now reddens too — because it asserts at the POSITION
+the literal occupied, read from the parsed JSON field, rather than "REDACTED somewhere".
+Restored byte-exact (`md5sum -c` OK).
+
+I separately verified the **`stack_info` pin is non-vacuous** by direct measurement, since it
+did *not* get its own control: with the fixture in a real file (a `<stdin>` probe cannot
+render source lines at all — my third broken instrument this round, §R2.5), the literal
+**does** reach the unscrubbed stack render and is redacted **in position**:
+```
+1) CONTROL — literal present in the UNSCRUBBED stack render? True
+2) after scrubbing: literal absent? True   REDACTED present? True
+     logger.error("store.connect.failed", stack_info=True, …)  # noqa: E501  ***REDACTED***
+```
+*Residual (LOW):* that pin has no dedicated positive control of its own, so a future fixture
+edit could re-vacuum it silently — exactly how R3 happened. Its sibling has one; it should too.
+
+**R4 — FIXED, 12 confirmed.** My acceptance criterion was that a revert to the pre-#207 build
+must redden the site pins. Reverting `jittered_backoff_delay` to
+`min(base_s * 2**attempt, cap_s)` (expected set declared from `--collect-only` first):
+
+- On my rev-1 five-file scope: **9 red** — including **all five** site pins I named in rev 1
+  (`test_resilient.py::test_backoff_is_drawn_from_an_exponentially_growing_window`,
+  `test_voyage_context.py::test_429_then_success_is_retried`, and all three
+  `test_calibration_engine.py::TestEndpointLifecycle` pins). Was 4 at `13b5659`.
+- On the wider backoff scope: **12 red**, matching the builder's claim exactly. The extra
+  three are in `test_backoff_seam.py`, including a new
+  `test_reverting_the_shared_policy_reddens_EVERY_site` built for precisely this criterion,
+  plus the two perimeter pins correctly firing on my mutation's `2**attempt`.
+
+**9 vs 12 was my scope, not a discrepancy** — stated because a bare "9" would have read as one.
+Restored byte-exact.
+
+**R5 — FIXED.** Both unfailable assertions are gone from live code in `test_comms_tool.py`
+(the two remaining grep hits are prose documenting the change). The replacement is the
+property the test's name claims — a `_RecordingAgentRegistry` spy with `registry.calls == []`
+— and it ships **three** controls, including the positive one that matters
+(`test_the_recorder_records_the_method_that_was_called`) and a reach check asserting the
+overrides ARE the registry's public surface. All 13 pass.
+
+**R2 — still open, unchanged, and its options are NOT foreclosed.** At HEAD: **202 of 1,617**
+production functions (12.5%) are still erased from every traceback frame (rev 1: 201/1616;
+the +1 is a function the remediations added). The builder's claim that R1's narrowing leaves
+both resolutions open is **correct, and structurally so**: `_is_safe_high_entropy_run` is a
+disjunction (`_is_absolute_path_component(...) or _UUID_RE.fullmatch(...)`), R1's four
+conditions live *inside* `_is_absolute_path_component`, and a function name is rejected by
+conditions 1/3 (not-a-path) — **not** by the new mixed-case condition 4, which does not fire
+on an all-lowercase identifier. An identifier-shaped exemption would be a third disjunct,
+composing without touching either existing predicate.
+
+### R2.4 — three new residuals (all LOW, none merge-blocking)
+
+**N1 — my enumeration of the unfailable-assertion class found ONE the builder's did not.**
+Two independent sweeps, diffed rather than merged:
+
+| | sites | unfailable |
+|---|---|---|
+| builder (`REPORT-fix-210-charset.md`) | 41 | 6 |
+| **mine** (AST, all four test trees) | **39 at HEAD** | **7** |
+
+The 41-vs-39 reconciles exactly: 39 at HEAD **+ the 2 sites R5 removed**. The unfailable sets
+agree on six; **mine adds `test_retry_seam.py:2930`** —
+`pytest.raises((*_CONNECTION_ERRORS, KeyError))` vs `assert not isinstance(…, SurrealStoreError)`.
+Verified against the real symbols: `_CONNECTION_ERRORS = (OSError, SurrealError, WebSocketException)`
+and `SurrealStoreError` is a `RuntimeError`, a subclass of none of them — **the assertion
+cannot fail**. Severity **LOW**: the *line* is hollow, the *test* is not (two sibling
+assertions, `connection.calls == 1` and a positive `isinstance`, both discriminate).
+**Why it was missed is the interesting part:** the builder's analyzer resolves a single `Name`
+as the raised type and cannot read a `Tuple`/`Starred` — *the instrument keyed on a shape,
+defeated by another shape*, inside the sweep built to close exactly that class.
+
+**N2 — `_is_absolute_path_component`'s docstring says "Two conditions, both required" and
+then lists two.** The code enforces **four**; conditions 3 and 4 exist only as inline
+comments in the body. Prose describing behaviour, not derived from it — the class this repo
+files findings about. One-line fix.
+
+**N3 — `_is_safe_high_entropy_run`'s docstring is now STALE.** It still describes the
+*pre-R1* guard: *"**1.** A filesystem path component — the run is **adjacent to a `/`**"*, and
+its threat-model paragraph still states the old bound (*"a secret inside a URL path segment …
+or one that IS a uuid"*) with the old justification (*"an honest credential leak does not
+arrive as `/…/<secret>/…`"*) — **the very sentence R1 proved false.** The callee's docstring
+was rewritten; the caller's was not. A reader who stops at the public function learns the
+guard that leaked.
+
+### R2.5 — my own instruments were wrong three times again; all caught before reporting
+
+Recorded because rev 1 did the same and the discipline is the point.
+1. **A 5,644-string random corpus called conditions 1 and 2 DEAD.** Targeted inputs proved
+   both load-bearing. I would have filed two false findings — the exact "fixtures must
+   discriminate" failure, committed by the auditor hunting it.
+2. **My first AST matcher found 0 unfailable-assertion sites where grep found 10**, because
+   it looked *inside* the `with pytest.raises(...)` body; `exc_info.value` is only populated
+   *after* the block, so every such assertion is a sibling of the with-statement. The
+   count mismatch against grep is what caught it — a control I had only by luck.
+3. **A `<stdin>` probe reported the `stack_info` literal never reaches the render.** False:
+   Python cannot read source lines for `<stdin>` at all. Re-run from a real file, it does.
+
+Each was caught by a disagreement with an independent measurement, never by inspection.
+
+---
+
+*Rev 2 audited by `coldaudit-fixwave-2`, 2026-07-26, against frozen `79ceff9` (code-identical
+to the brief's `7379b48`). I built none of this wave.*
