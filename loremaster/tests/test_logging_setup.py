@@ -50,6 +50,7 @@ from loremaster.logging_setup import (
     JsonFormatter,
     KeyValueFormatter,
     RedactingFilter,
+    _scrub_text,
     configure_logging,
 )
 
@@ -558,6 +559,183 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
     def test_a_record_with_no_exception_is_untouched(self) -> None:
         parsed = json.loads(self._emit("json", lambda logger: logger.info("index.file.done")))
         assert EXC_FIELD not in parsed
+
+
+class TestOrdinaryPathsSurviveRedaction:
+    """Cold-audit DEFECT D: the redactor mangled FILE PATHS in tracebacks.
+
+    A path COMPONENT that is a UUID, a git SHA, a container overlay id or a nix
+    store hash is one unbroken high-entropy run, so the entropy backstop redacted
+    it — turning ``/tmp/ci/<uuid>/app.py`` into ``/tmp/ci/***REDACTED***/app.py``.
+    Half B had just made tracebacks visible for the first time; this made them
+    unreadable in exactly the environments that need them most (CI runners,
+    containers, ephemeral checkouts).
+
+    ⚠ **EVERY PATH HERE IS CONSTRUCTED, NEVER TAKEN FROM THE RUNNING CHECKOUT.**
+    The original defect was invisible because this repo happens to live at
+    ``/home/ejprice/PycharmProjects/lore-pkt11i`` — a path with no high-entropy
+    component. A pin that renders the real ``__file__`` would pass here and fail
+    on a CI runner, which is CLAUDE.md's "THE TEST ENVIRONMENT IS A FICTION"
+    exactly: the fixture would guarantee the one condition under which the bug is
+    invisible. These fixtures are therefore hostile by construction and identical
+    on every machine.
+
+    The provenance note that matters for anyone reading this later: the defect
+    PRE-DATES the #211 wave — ``_TOKEN_RE`` is byte-identical at ``d0ee2be``, and
+    the false positive reproduces there through ``extra=``. Half B did not create
+    it; it routed the path-dense traceback surface through it.
+    """
+
+    # (label, absolute path) — the shapes measured to trip the entropy backstop.
+    HOSTILE_PATHS = [
+        ("uuid workspace", "/tmp/ci/090685cb-2064-498d-8479-e141e4fd4ea5/loremaster/store/surreal.py"),
+        (
+            "container overlay",
+            "/var/lib/containers/storage/overlay/"
+            "3f786850e387550fdab836ed7e6dc881de23001b2b4a3f7a4a5b6c7d8e9f0a1b/merged/app.py",
+        ),
+        ("nix store", "/nix/store/1a2b3c4d5e6f7g8h9i0jklmnopqrstuv-python3-3.14.6/lib/x.py"),
+        ("hashed checkout", "/build/9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c/src/indexer.py"),
+    ]
+
+    @staticmethod
+    def _traceback_text(path: str, message: str) -> str:
+        """A realistic rendered traceback naming ``path`` — built, not captured."""
+        return (
+            "Traceback (most recent call last):\n"
+            f'  File "{path}", line 42, in _ensure_connection\n'
+            "    await connection.signin(credentials)\n"
+            f"RuntimeError: {message}"
+        )
+
+    @pytest.mark.parametrize("label,path", HOSTILE_PATHS, ids=[p[0] for p in HOSTILE_PATHS])
+    def test_a_hostile_path_survives_verbatim_through_the_filter(
+        self, label: str, path: str
+    ) -> None:
+        record = _make_record(msg="store.connect.failed")
+        record.exc_text = self._traceback_text(path, "connection refused")
+        RedactingFilter().filter(record)
+        assert record.exc_text is not None
+        assert path in record.exc_text, (
+            f"the {label} path was mangled by the redactor — a traceback that "
+            f"cannot name its own file is the observability this fix restored:\n"
+            f"  {record.exc_text}"
+        )
+        assert REDACTED not in record.exc_text
+
+    @pytest.mark.parametrize("label,path", HOSTILE_PATHS, ids=[p[0] for p in HOSTILE_PATHS])
+    def test_a_secret_is_still_redacted_in_that_same_traceback(
+        self, label: str, path: str
+    ) -> None:
+        # THE DISCRIMINATOR. Fixing a false positive by weakening the backstop
+        # would pass the test above and silently undo the finding this module
+        # exists for. The path must survive AND the secret must not, in one line.
+        record = _make_record(msg="store.connect.failed")
+        record.exc_text = self._traceback_text(
+            path, f"signin refused for password={FAKE_BEARER_TOKEN}"
+        )
+        RedactingFilter().filter(record)
+        assert record.exc_text is not None
+        assert path in record.exc_text, f"{label}: path mangled"
+        assert FAKE_BEARER_TOKEN not in record.exc_text, f"{label}: SECRET LEAKED"
+        assert REDACTED in record.exc_text
+
+    def test_the_exemption_is_contextual_not_a_blanket_stand_down(self) -> None:
+        """POSITIVE CONTROL for the guard itself: same value, two contexts.
+
+        The fix must exempt a high-entropy run *because it sits in a path*, not
+        because the backstop stopped firing. So take ONE identical token and
+        assert it survives inside a path and is redacted outside one. A build that
+        simply disabled the entropy sweep passes every test above and fails this.
+        """
+        token = "3f786850e387550fdab836ed7e6dc881de23001b2b4a3f7a4a5b6c7d8e9f0a1b"
+        in_path = _scrub_text(f"/var/lib/overlay/{token}/merged/app.py")
+        bare = _scrub_text(f"the value is {token}")
+        assert token in in_path, "path context must exempt the run"
+        assert token not in bare, "the SAME token outside a path must still be redacted"
+        assert REDACTED in bare
+
+    def test_it_survives_end_to_end_through_a_configured_logger(self) -> None:
+        # The pins above drive the filter directly; this proves the property holds
+        # through the real handler + JsonFormatter that production actually uses.
+        path = self.HOSTILE_PATHS[0][1]
+        buffer = io.StringIO()
+        configure_logging(level="DEBUG", fmt="json")
+        handler = logging.getLogger("loremaster").handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
+        handler.setStream(buffer)
+        logger = logging.getLogger("loremaster.pathcase")
+        try:
+            raise RuntimeError(f"signin refused for password={FAKE_BEARER_TOKEN}")
+        except RuntimeError:
+            record = logger.makeRecord(
+                logger.name, logging.ERROR, path, 42, "store.connect.failed", (), None
+            )
+            record.exc_text = self._traceback_text(path, f"password={FAKE_BEARER_TOKEN}")
+            logger.handle(record)
+        parsed = json.loads(buffer.getvalue())
+        assert path in parsed[EXC_FIELD]
+        assert FAKE_BEARER_TOKEN not in parsed[EXC_FIELD]
+
+
+class TestBareHexRunsStayRedactedKnownBound:
+    """A KNOWN BOUND, pinned so it is met deliberately (#227, lead ruling 2026-07-26).
+
+    A bare high-entropy hex run that is NOT inside a filesystem path is still
+    redacted, even when it is plainly not a secret — a git SHA in prose, or lore's
+    own ``unique_database()`` name (``test_<pid>_<uuid4.hex>``). These are FALSE
+    POSITIVES and they are accepted on purpose.
+
+    **THE RULING, and its reasoning, because the next engineer will want to "fix"
+    this:** a 40-hex secret and a 40-hex git SHA are *indistinguishable by shape*.
+    The only discriminator is surrounding context — and log text is forgeable, so
+    an allowlist keyed on a literal like ``commit `` is a gate keyed on a string,
+    which this repo has six separate receipts on the failure of. The asymmetry
+    decides it: **a redacted SHA costs provenance; an un-redacted 40-hex API key
+    costs a credential.** So the bound stands.
+
+    ⚠ **It rhymes with #131**, where git provenance was silently empty in
+    production for months because nothing rendered the field. This is the same
+    loss by a different route — provenance present, then scrubbed at the sink. The
+    difference is that #131 was discovered from an outage and this is written down,
+    which is the entire point of pinning a bound rather than leaving it latent.
+
+    **RE-OPEN TRIGGER (a bound without one is a can-kick):** if git provenance in
+    logs becomes load-bearing for an investigation. At that point the fix is NOT a
+    context allowlist — it is to stop putting bare SHAs through the redactor at
+    all, e.g. by carrying them as a typed field the filter is taught to skip.
+
+    This pin goes RED the day someone exempts either shape. That is intended: the
+    bound cannot be silently inherited, and it cannot be silently removed.
+    """
+
+    # (label, value that must STAY redacted, why it is not actually a secret)
+    ACCEPTED_FALSE_POSITIVES = [
+        ("git sha in prose", "commit 8538303a1b2c3d4e5f60718293a4b5c6d7e8f9a0 landed"),
+        ("unique_database", "test_12345_090685cb206449888879e141e4fd4ea5"),
+    ]
+
+    @pytest.mark.parametrize(
+        "label,value", ACCEPTED_FALSE_POSITIVES, ids=[c[0] for c in ACCEPTED_FALSE_POSITIVES]
+    )
+    def test_the_accepted_false_positive_is_still_redacted(self, label: str, value: str) -> None:
+        scrubbed = _scrub_text(value)
+        assert REDACTED in scrubbed, (
+            f"The {label!r} case is no longer redacted. This is a KNOWN BOUND (#227) "
+            "accepted by operator ruling on 2026-07-26, NOT an oversight — see this "
+            "class's docstring for why shape cannot distinguish a 40-hex SHA from a "
+            "40-hex credential. If you removed it DELIBERATELY: delete the entry from "
+            "ACCEPTED_FALSE_POSITIVES, delete this class if the list is now empty, and "
+            "say so in your report with the ruling that authorised it."
+        )
+
+    def test_the_bound_is_narrow_the_same_value_inside_a_path_survives(self) -> None:
+        # The bound is about BARE runs only. Inside a path the #227 fix exempts the
+        # identical value — so this pin cannot be mistaken for "hex is always
+        # redacted", which would misdescribe the behaviour to its next reader.
+        sha = "8538303a1b2c3d4e5f60718293a4b5c6d7e8f9a0"
+        assert REDACTED in _scrub_text(f"commit {sha} landed")
+        assert sha in _scrub_text(f"/var/lib/build/{sha}/out.log")
 
 
 class TestConfigureLogging:

@@ -106,12 +106,38 @@ _ASSIGNMENT_RE = re.compile(
 
 # A bare high-entropy token (no label) is the catch-all backstop: any UNBROKEN
 # run of >= this many base64/JWT-style characters whose Shannon entropy clears
-# the threshold is scrubbed. The charset deliberately EXCLUDES ``/`` and ``.``
-# so a file path (``src/a/b.py``) or a dotted module name
-# (``loremaster.index.indexer``) splits into short, sub-threshold segments and
-# is NOT matched — only a contiguous secret-shaped blob (a bearer/JWT/key) is.
+# the threshold is scrubbed. The charset excludes ``/`` and ``.`` so a dotted
+# module name (``loremaster.index.indexer``) splits into short, sub-threshold
+# segments and is NOT matched.
+#
+# ⚠ THAT IS NOT SUFFICIENT FOR FILE PATHS, and the comment here used to claim it
+# was (#211 cold-audit Defect D). The charset INCLUDES ``-`` and ``_``, so a
+# single path COMPONENT that is a UUID, a git SHA, a container overlay id or a
+# nix store hash is one unbroken high-entropy run and was redacted — turning
+# ``/tmp/ci/090685cb-2064-498d-8479-e141e4fd4ea5/app.py`` into
+# ``/tmp/ci/***REDACTED***/app.py``. Measured false positives: UUID temp dirs,
+# 64-hex container overlay paths, nix store paths. Tracebacks are DENSE in
+# absolute paths, so the surface that most needs to stay readable was the one
+# most affected — and the environments with hashy paths (CI runners, containers,
+# ephemeral checkouts) are exactly the ones where a traceback matters most.
+# :func:`_is_safe_high_entropy_run` is the guard; see its docstring for the
+# threat model that makes its exemptions sound.
 _TOKEN_RE = re.compile(r"[A-Za-z0-9+=_\-]{24,}")
 _ENTROPY_BITS_THRESHOLD = 3.5
+
+# The filesystem path separator. A high-entropy run ADJACENT to one is a path
+# COMPONENT, not a credential (see :func:`_is_safe_high_entropy_run`).
+_PATH_SEPARATOR = "/"
+
+# The canonical RFC-4122 UUID form. Verified against an independent
+# implementation rather than invented here: ``detect_secrets.filters.heuristic.
+# _get_uuid_regex`` (detect-secrets 1.5.0) uses the identical pattern to decide
+# that a high-entropy string is an id and not a secret. The FORMAT is a spec, so
+# expressing it here is not a duplicated policy — the policy (what lore exempts)
+# lives in the function below, once.
+_UUID_RE = re.compile(
+    r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", re.IGNORECASE
+)
 
 
 def _shannon_entropy_bits(text: str) -> float:
@@ -128,6 +154,55 @@ def _shannon_entropy_bits(text: str) -> float:
     return -sum((n / length) * math.log2(n / length) for n in counts.values())
 
 
+def _is_safe_high_entropy_run(text: str, start: int, end: int) -> bool:
+    """Is the high-entropy run at ``text[start:end]`` a known-safe non-secret?
+
+    An ALLOWLIST of the safe, never a denylist of the forbidden — the forbidden
+    set (what a credential can look like) is unbounded; the safe set is small,
+    enumerable and stated here in full:
+
+    1. **A filesystem path component** — the run is adjacent to a ``/``. This is
+       what fixes Defect D: UUID workspace dirs, 64-hex container overlay ids and
+       nix store hashes are all single path components that clear the entropy bar.
+    2. **A canonical RFC-4122 UUID**, anywhere — a correlation/trace/run id, not a
+       credential.
+
+    **THE THREAT MODEL, stated here because the exemptions are only sound under
+    it** (CLAUDE.md: a gate needs a threat model, written IN the instrument). This
+    filter catches the HONEST developer or dependency that lets a credential reach
+    a log line — an ``Authorization`` header echoed back by a client, a connection
+    string, a config repr. It is **NOT** a boundary against an author deliberately
+    smuggling a secret out: anyone who can write log statements here can log
+    anything in any encoding, and no regex changes that.
+
+    Under that model these exemptions cost little: an honest credential leak does
+    not arrive as ``/…/<secret>/…`` or wearing exact UUID punctuation, while the
+    false positives they remove are constant, and land on tracebacks — the surface
+    whose whole value is being readable.
+
+    **The known bound they buy, met deliberately rather than discovered:** a
+    secret embedded in a URL *path segment* (``https://host/<secret>/x``), or one
+    that is itself a canonical UUID (some services do issue UUID API keys), is not
+    caught by this backstop. The labelled patterns (:data:`_BEARER_RE`,
+    :data:`_ASSIGNMENT_RE`) still catch either when it carries a label, and the
+    real defence is the ``SecretStr`` TYPE at the boundary (#211 Half A), which
+    prevents the value from reaching a log line at all.
+
+    Args:
+        text: The full string being scrubbed.
+        start: Start offset of the candidate run within ``text``.
+        end: End offset (exclusive) of the candidate run within ``text``.
+
+    Returns:
+        ``True`` when the run must be left intact.
+    """
+    before = text[start - 1] if start > 0 else ""
+    after = text[end] if end < len(text) else ""
+    if _PATH_SEPARATOR in (before, after):
+        return True
+    return _UUID_RE.fullmatch(text[start:end]) is not None
+
+
 def _scrub_text(value: str) -> str:
     """Redact secrets from a single string: bearer, labelled assignment, entropy.
 
@@ -140,6 +215,8 @@ def _scrub_text(value: str) -> str:
 
     def _maybe_redact_token(match: re.Match[str]) -> str:
         token = match.group(0)
+        if _is_safe_high_entropy_run(match.string, match.start(), match.end()):
+            return token
         if _shannon_entropy_bits(token) >= _ENTROPY_BITS_THRESHOLD:
             return REDACTED
         return token
