@@ -52,12 +52,14 @@ from loremaster.store._txn import (  # noqa: E402
     _SurrealConnection,
     compose,
     execute_transaction,
+    signin_credentials,  # noqa: E402
 )
+from pydantic import SecretStr  # noqa: E402
 from surrealdb import AsyncSurreal  # noqa: E402
 
 URL = "ws://127.0.0.1:18000/rpc"
 USER = "root"
-PASSWORD = "spikeroot"
+PASSWORD = SecretStr("spikeroot")
 NAMESPACE = "lore_test"
 
 RACER_COUNTS: tuple[int, ...] = (2, 8, 16, 32)
@@ -71,7 +73,8 @@ def _unique_database() -> str:
 
 async def _connect(database: str) -> AsyncSurreal:
     connection = AsyncSurreal(URL)
-    await connection.signin({"username": USER, "password": PASSWORD})
+    # Through the ONE shared seam, not a hand-rolled copy of the payload (#211/#102).
+    await connection.signin(signin_credentials(user=USER, password=PASSWORD))
     await connection.use(NAMESPACE, database)
     return connection
 

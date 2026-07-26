@@ -46,6 +46,7 @@ from threading import Lock
 
 import httpx
 from loresigil.tokens import VoyageTokenCounter
+from pydantic import SecretStr
 
 from loresigil import backoff
 
@@ -716,7 +717,7 @@ def load_baseline_claude_counts(jsonl_path: Path) -> dict[str, int] | None:
 # --------------------------------------------------------------------------- #
 # Live token counting (network surface — test-exempt)
 # --------------------------------------------------------------------------- #
-def load_api_key(env_file: Path = DEFAULT_ENV_FILE) -> str:
+def load_api_key(env_file: Path = DEFAULT_ENV_FILE) -> SecretStr:
     """Resolve the Anthropic API key from the environment or the operator env file.
 
     The key is never logged, printed, or copied.  Prefers an already-exported
@@ -727,14 +728,14 @@ def load_api_key(env_file: Path = DEFAULT_ENV_FILE) -> str:
     """
     from_env = os.environ.get(ANTHROPIC_API_KEY_ENV)
     if from_env:
-        return from_env.strip()
+        return SecretStr(from_env.strip())
     if env_file.is_file():
         for line in env_file.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if stripped.startswith(f"{ANTHROPIC_API_KEY_ENV}="):
                 value = stripped.split("=", 1)[1].strip().strip("'\"")
                 if value:
-                    return value
+                    return SecretStr(value)
     raise RuntimeError(
         f"{ANTHROPIC_API_KEY_ENV} not set and not found in {env_file}"
     )
@@ -750,7 +751,7 @@ class ClaudeTokenCounter:
 
     def __init__(
         self,
-        api_key: str,
+        api_key: SecretStr,
         *,
         model: str = ANTHROPIC_MODEL,
         client: httpx.Client | None = None,
@@ -759,7 +760,8 @@ class ClaudeTokenCounter:
         self._model = model
         self._max_retries = max_retries
         self._headers = {
-            "x-api-key": api_key,
+            # The ONE unwrap on this path (#211) — the header needs real bytes.
+            "x-api-key": api_key.get_secret_value(),
             "anthropic-version": ANTHROPIC_VERSION,
             "content-type": "application/json",
         }
@@ -843,7 +845,7 @@ class MultiModelClaudeCounter:
     """
 
     def __init__(
-        self, api_key: str, models: Sequence[str], *, max_retries: int = MAX_RETRIES
+        self, api_key: SecretStr, models: Sequence[str], *, max_retries: int = MAX_RETRIES
     ) -> None:
         self._client = httpx.Client(timeout=60.0)
         self._counters: dict[str, ClaudeTokenCounter] = {

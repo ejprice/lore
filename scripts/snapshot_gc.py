@@ -52,6 +52,7 @@ from loremaster.diff import DiffEngine, SnapshotSummary
 from loremaster.index.snapshots import SnapshotStamper
 from loremaster.index.surreal_manifest import SurrealManifest
 from loremaster.store.surreal import SurrealConnectionError, SurrealStore
+from pydantic import SecretStr
 
 __all__ = [
     "GcPlan",
@@ -239,7 +240,7 @@ def render_manifest(summaries: Sequence[SnapshotSummary], plan: GcPlan) -> str:
 
 
 def _build_store_and_manifest(
-    *, url: str, namespace: str, database: str, dim: int, user: str, password: str
+    *, url: str, namespace: str, database: str, dim: int, user: str, password: SecretStr
 ) -> tuple[SurrealStore, SurrealManifest]:
     """Construct the store/manifest collaborators the reuse targets require.
 
@@ -261,7 +262,7 @@ def _build_store_and_manifest(
 
 
 async def _list_snapshots(
-    *, url: str, namespace: str, database: str, dim: int, user: str, password: str
+    *, url: str, namespace: str, database: str, dim: int, user: str, password: SecretStr
 ) -> list[SnapshotSummary]:
     """List every snapshot in the store, newest-first (READ-ONLY).
 
@@ -292,7 +293,7 @@ async def _delete_snapshots(
     database: str,
     dim: int,
     user: str,
-    password: str,
+    password: SecretStr,
     project_root: Path,
 ) -> None:
     """Cascade-delete every snapshot in ``plan.delete`` via the stamper.

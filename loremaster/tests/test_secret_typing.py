@@ -91,9 +91,46 @@ def _package_root() -> Path:
     return Path(package_file).resolve().parent
 
 
-def _python_sources() -> list[Path]:
-    """Every ``.py`` file in the installed/mounted ``loremaster`` package."""
-    return sorted(path for path in _package_root().rglob("*.py"))
+def _scripts_root() -> Path | None:
+    """The repo's ``scripts/`` directory, or ``None`` when it is not alongside.
+
+    CONDITIONAL BY DESIGN. In a checkout, ``scripts/`` sits two levels above the
+    package (``<repo>/loremaster/loremaster`` → ``<repo>/scripts``) and MUST be
+    scanned; in the deployed image ``loremaster`` lives in site-packages with no
+    ``scripts/`` anywhere, and the scan simply covers less.
+
+    It must be scanned because ``scripts/`` is **NOT a member of
+    ``scripts/typecheck.sh``** (``MEMBERS=(lorescribe loresigil loremaster)``), so
+    mypy never sees it — and its files construct the very stores this module
+    types. That gap shipped a real defect during #211's own migration:
+    ``survey_txn_contention_102.py`` kept a bare-``str`` ``PASSWORD`` and would
+    have died at the SDK seam, and ``snapshot_gc.py``'s helper annotations still
+    claimed ``str`` while ``main`` handed them a ``SecretStr``. Neither was
+    visible to the type gate OR to the main pytest run (``scripts/`` tests live
+    outside ``testpaths`` and run under their own ``cd scripts`` idiom).
+    """
+    candidate = _package_root().parent.parent / "scripts"
+    return candidate if candidate.is_dir() else None
+
+
+def _python_sources() -> list[tuple[str, Path]]:
+    """Every ``.py`` file this pin governs, as ``(display_path, path)`` pairs.
+
+    Covers the ``loremaster`` package plus the repo's ``scripts/`` when present
+    (see :func:`_scripts_root`).
+    """
+    package_root = _package_root()
+    sources = [
+        (str(path.relative_to(package_root)), path)
+        for path in sorted(package_root.rglob("*.py"))
+    ]
+    scripts_root = _scripts_root()
+    if scripts_root is not None:
+        sources += [
+            (f"scripts/{path.relative_to(scripts_root)}", path)
+            for path in sorted(scripts_root.rglob("*.py"))
+        ]
+    return sources
 
 
 def _annotation_text(annotation: ast.expr | None) -> str:
@@ -111,11 +148,9 @@ def _secret_parameters() -> list[tuple[str, str, str, str]]:
         each parameter whose name is in :data:`SECRET_PARAM_NAMES`, across every
         ``def``/``async def`` in the package.
     """
-    root = _package_root()
     found: list[tuple[str, str, str, str]] = []
-    for source_path in _python_sources():
+    for relative, source_path in _python_sources():
         tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
-        relative = str(source_path.relative_to(root))
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -347,10 +382,8 @@ class TestSigninCredentialsIsTheOneUnwrapSeam:
         # its own ``{"username": ..., "password": ...}`` literal is a private copy
         # wearing the shared name. Scan for the literal payload shape and allow it
         # in exactly one file.
-        root = _package_root()
         offenders: list[str] = []
-        for source_path in _python_sources():
-            relative = str(source_path.relative_to(root))
+        for relative, source_path in _python_sources():
             if relative == str(Path("store") / "_txn.py"):
                 continue
             tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))

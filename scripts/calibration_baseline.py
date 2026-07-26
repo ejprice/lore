@@ -51,6 +51,7 @@ from loremaster.calibration.counting import (
     load_api_key,
 )
 from loresigil.tokens import VoyageTokenCounter
+from pydantic import SecretStr  # noqa: E402
 
 __all__ = ["build_baseline", "canonical_json", "main", "parse_args"]
 
@@ -140,7 +141,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 async def _generate(
     corpus: Mapping[str, bytes],
-    api_key: str,
+    api_key: SecretStr,
     model: str,
     voyage_counter: _SupportsCount | None,
     generated_at: str,

@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest  # noqa: E402
 import snapshot_gc as gc  # type: ignore[import-not-found]  # noqa: E402  (scripts/ is not a package)
 from loremaster.diff import SnapshotSummary  # noqa: E402
+from pydantic import SecretStr  # noqa: E402
 
 _EPOCH = "2026-07-04T22:42:00Z"
 
@@ -168,7 +169,9 @@ def _wire_fakes(
     stamper: _FakeStamper,
 ) -> None:
     """Stub out the two store-touching seams so ``run_gc`` is hermetic."""
-    monkeypatch.setattr(gc, "resolve_secret", lambda name: f"dummy-{name}")
+    # Must return what the REAL ``resolve_secret`` returns — a ``SecretStr`` (#211).
+    # A fake that hands back a bare ``str`` tests a seam production does not have.
+    monkeypatch.setattr(gc, "resolve_secret", lambda name: SecretStr(f"dummy-{name}"))
 
     async def _fake_list(**_kwargs: Any) -> list[SnapshotSummary]:
         return summaries

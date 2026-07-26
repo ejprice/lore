@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import calibration_baseline as cb  # type: ignore[import-not-found]  # noqa: E402  (scripts/ is not a package)
 from loremaster.calibration import baseline as bl  # noqa: E402
+from pydantic import SecretStr  # noqa: E402
 
 _CORPUS = {"b.py.txt": b"def f():\n    return 1\n", "a.md.txt": b"# title\n\nprose here.\n"}
 _ENDPOINT = "https://api.anthropic.com/v1/messages/count_tokens"
@@ -102,7 +103,9 @@ class TestCanonicalJson:
 
 class TestMainWiring:
     def test_main_writes_valid_baseline_quietly(self, tmp_path: Any, monkeypatch: Any, capsys: Any) -> None:
-        monkeypatch.setattr(cb, "load_api_key", lambda *a, **k: "dummy-key")
+        # Returns a SecretStr, as the real ``load_api_key`` does (#211) — a fake that
+        # hands back a bare ``str`` tests a seam production does not have.
+        monkeypatch.setattr(cb, "load_api_key", lambda *a, **k: SecretStr("dummy-key"))
         monkeypatch.setattr(cb, "AsyncClaudeTokenCounter", _FakeClaudeCounter)
         monkeypatch.setattr(cb, "VoyageTokenCounter", _FakeVoyageCounter)
         out = tmp_path / "baseline.json"
