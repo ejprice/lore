@@ -91,7 +91,13 @@ _ALLOWED_ANCHORED_MATCH: dict[str, str] = {
         "``str``, so '<32hex>\\n' can arrive, and accepting it as a batch-local key "
         "re-creates exactly the id/key ambiguity the guard exists to prevent — a "
         "blocked_by of '<32hex>' would pass through as a pre-existing task id while "
-        "'<32hex>\\n' resolved to a sibling's minted id, invisibly."
+        "'<32hex>\\n' resolved to a sibling's minted id, invisibly. "
+        "PROBED 2026-07-26, not merely argued (with a positive control): "
+        "TaskSpecItem.model_fields['key'] carries annotation `str | None` and metadata `[]` "
+        "— genuinely unconstrained — and TaskSpecItem(key=<32hex>+NL) constructs. Against "
+        "that value the shipped `.match` REJECTS it as id-shaped; `.fullmatch` ACCEPTS it as "
+        "a key. Control: a bare uuid4().hex is REJECTED by BOTH, so the probe discriminates "
+        "and the difference is scoped to exactly the trailing-newline value."
     ),
     "_HEADING_LINE": (
         "NOT A VALIDATOR: lorescribe/markdown.py's _parse_sections EXTRACTS a heading's "
