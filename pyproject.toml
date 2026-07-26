@@ -155,4 +155,18 @@ testpaths = [
     # ``scripts/typecheck.sh`` (#188 measured 41 mypy errors there) — a separate
     # work item, deliberately not conflated with this one.
     "scripts",
+    # ``docs/eval/`` carries the DEPLOY SMOKE's own suite — the tests guarding
+    # smoke_p8b.py, the instrument that caught #107 and #131, each time as the
+    # only thing looking. Until 2026-07-26 not one of them ran in any gate.
+    #
+    # This is #238, and it is #199's shape exactly: the same "a guard nobody runs
+    # is a hope with a filename" argument that put ``scripts`` on this list the
+    # day before. A detector whose own tests are ungated is one nobody would know
+    # had rotted.
+    #
+    # It also discharges the named re-open trigger on #198's accepted bound: the
+    # smoke keeps its own fourth copy of the nearest-rank percentile, permitted
+    # only because a pin holds it equal to ``loremaster.stats`` — and that pin is
+    # now gated from both sides.
+    "docs/eval",
 ]

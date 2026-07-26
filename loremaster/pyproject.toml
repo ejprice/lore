@@ -24,6 +24,12 @@ dependencies = [
     "scipy>=1.18.0",
     "scikit-learn>=1.9.0",
     "kubernetes>=36.0.3",
+    # DIRECT, not inherited — same rule as anyio above, and load-bearing in a way
+    # anyio is not: ``orjson.dumps(..., OPT_SORT_KEYS)`` is the canonical pre-image
+    # of ``head_identity``, which MINTS A RECORD IDENTITY. It arrived here only
+    # transitively before packet 11-i-a. An identity frozen in the store must never
+    # rest on a version somebody else's dependency happens to resolve.
+    "orjson>=3.11",
 ]
 
 [tool.uv.sources]
