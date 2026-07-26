@@ -161,6 +161,33 @@ gate over ungated ground means **verifying the gate actually RUNS there**, per t
 that a guard nobody runs is a hope with a filename. Both of that packet's instruments sat
 outside `testpaths` and were victims of the class they instrument; do not repeat it.
 
+**R9 — EXTEND `scripts/typecheck.sh` TO `skills/`. RULED IN SCOPE (operator, 2026-07-26).** The
+contract author flagged as a non-blocking residual that `skills/` sits outside the canonical
+typecheck, so mypy would not see `probe_embed.py` after R6 migrates it — the AST gates cover its
+resolver SHAPE and unwrap SURFACE, not its TYPES. Closed in this wave rather than passed forward.
+
+**The cost was MEASURED before the ruling, not estimated** (lead, at `506e595`):
+
+```
+$ uv run mypy skills/ --ignore-missing-imports
+Found 11 errors in 4 files (checked 12 source files)
+```
+
+**All 11 are in TEST files** — `test_port_probe.py` (1), `test_workspace_probe.py` (2),
+`test_lore_deploy.py` (4), `test_conformance_provenance.py` (4). **The production scripts are
+CLEAN, including `probe_embed.py` itself (0 errors).** So the addition is: add the member to
+`MEMBERS=(…)` in `scripts/typecheck.sh`, and fix 11 test-file errors of four ordinary kinds
+(`no-any-return`, `func-returns-value` on `list.append`, `attr-defined` on a non-re-exported
+`shutil`, `unused-ignore` + a `Callable` variance mismatch).
+
+⚠ **Two things the builder must not assume.** (1) `scripts/typecheck.sh`'s header documents WHY it
+runs one `mypy` per member rather than one combined invocation — a combined run false-errors on
+`tests.conftest` under `explicit_package_bases`, and was measured 2026-07-20 to report **3 errors
+where the true count was 55**, producing a false all-clear for two readers. Add `skills/lore-deploy`
+as its own iteration; do NOT merge invocations. (2) `skills/` is ALSO outside `testpaths` — R6
+already requires proving the AST gate RUNS there; R9 requires the same proof for typecheck (run it,
+show the error count going 11 → 0). A gate nobody runs is a hope with a filename.
+
 **SIZE OVERRUN PRE-APPROVED (operator, 2026-07-26).** R6 takes packet 42 past its stated 0.20 wu,
 because gating `skills/` means bringing ungated ground under a gate for the first time. The
 operator approved this explicitly — *"Include skills/ — consider that approved"*. **No agent
