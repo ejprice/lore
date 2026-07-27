@@ -61,6 +61,14 @@ from typing import Any
 # The logger namespaces this layer owns. Each gets a scoped stderr handler with
 # ``propagate=False`` so lore's structured stream is isolated from uvicorn's root
 # logger. A module's ``getLogger(__name__)`` lands under one of these prefixes.
+#
+# ⚠ A DELIBERATE SUBSET OF THE WORKSPACE, NOT A STALE MIRROR OF IT — said here because
+# ``scripts/registration_sites.py`` reports this line as a member-enumerating site, and
+# the next reader has to be able to tell "subset" from "forgotten". ``lorerunes`` is
+# absent because it emits no logs: it is stdlib-only and holds predicates, so it owns no
+# logger to route. RE-OPEN TRIGGER — the day any ``lorerunes`` module calls
+# ``logging.getLogger``, add it here, or its records propagate to the ROOT logger and
+# bypass both the structured formatter and :class:`RedactingFilter`.
 LORE_NAMESPACES: tuple[str, ...] = ("loremaster", "loresigil", "lorescribe")
 
 # Third-party loggers whose per-request INFO chatter would flood the structured

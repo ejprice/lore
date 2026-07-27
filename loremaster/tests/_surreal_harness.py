@@ -21,7 +21,7 @@ broken). Nothing leaks; a reused PID later harmlessly reaps any prior orphan.
 
 Import isolation: at MODULE level this imports ONLY the ``surrealdb`` SDK and the
 pre-existing ``loremaster.index.records`` helpers, so it always imports cleanly.
-36 test files import this harness, so a module-level import of code still being
+37 test files import this harness, so a module-level import of code still being
 built would turn one mid-TDD breakage into a COLLECTION error across all of them.
 (A SMALLER, DIFFERENT population — 22 test files — calls ``connect_admin``; those two
 numbers are not interchangeable, and committed prose conflated them until fff1382.

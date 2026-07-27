@@ -388,8 +388,13 @@ A rune is the atomic mark a sigil is composed from, so the name states the depen
   a design decision, not a tidying.
 - **Still prove sharing by MUTATION.** A shared package is an address, not a guarantee — routing
   is not sharing (see above). Change the predicate; **every** member's pins must redden.
-- **THE SEVEN PLACES A NEW WORKSPACE MEMBER MUST BE REGISTERED** — and note the count has been
-  wrong TWICE while being written down, so **derive it, do not trust it** (see the warning below):
+- **WHERE A NEW WORKSPACE MEMBER MUST BE REGISTERED — RUN `./scripts/registration_sites.py`,
+  DO NOT READ A LIST.** That script derives the sites from a property (*a registration site is a
+  place where three or more member names co-occur*), so it finds sites nobody has thought of yet;
+  its own docstring states its bounds, and its output is a worklist requiring judgement, never a
+  verdict. **The entries below are the ones whose CONSEQUENCE is worth knowing in advance — they
+  are annotations on the script's output, not a substitute for running it.** No count is stated,
+  deliberately: every count this list has carried has been wrong (see the warning below).
   1. `pyproject.toml` `[tool.uv.workspace] members`
   2. `pyproject.toml` `mypy_path` — a member absent here still type-checks, just against the
      wrong resolution, so the failure is a *wrong answer* rather than an error
@@ -410,13 +415,17 @@ A rune is the atomic mark a sigil is composed from, so the name states the depen
      ORIGINAL tree** while the agent believes it is isolated. That is #140's poison mode, in the
      instrument built to prevent #140.
 
-  ⚠⚠ **THIS LIST HAS BEEN WRONG TWICE, BOTH TIMES WHILE BEING WRITTEN DOWN.** It shipped with five
-  entries (`mypy_path` missed), was corrected to six, and shipped again missing #7 — caught only by
-  a mechanical reconciliation of the deletion diff, after every gate was green and the packet was
-  committed. **Do not trust this list. DERIVE it:** `grep -rn 'lorescribe' --include='*.py'
-  --include='*.toml' --include='*.sh' --include='Containerfile' .` and register the new member
-  everywhere an existing one is named. A list of places to look is exactly the kind of artifact
-  this repo's own instrument lesson says will be incomplete.
+  ⚠⚠ **THIS LIST HAS BEEN WRONG FOUR TIMES, EVERY TIME WHILE THE LAW ABOUT IT WAS BEING WRITTEN.**
+  It shipped with five entries (`mypy_path` missed), was corrected to six (`scratch_provenance.py`
+  missed), was corrected to seven — and then two more sites turned up at `8dc1259`
+  (`test_backoff_seam.py` and `test_anchored_pattern_seam.py`, both silently narrower than the
+  workspace they claimed to govern), while the heading still read *"THE SEVEN PLACES"*. **That is
+  four wrong counts in one section, which is why this section no longer states one.** It is
+  `CLAUDE.md`'s own instrument lesson operating exactly as predicted: an enumeration of places to
+  look is the artifact this repo has the most receipts against. **So do not trust a list — run the
+  derivation** (`./scripts/registration_sites.py`), and prefer converting a hand-list into a
+  derived one, as those two scanners were: a site that reads
+  `[tool.uv.workspace] members` stops being a registration site at all.
 
 ### The instrument lesson (six defeats, one shape — the most expensive thing we learned)
 | instrument | keyed on | defeated by |

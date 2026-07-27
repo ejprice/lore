@@ -184,6 +184,14 @@ class TestFactoryVoyageContextSharedDefaultGuards:
 # unset or empty ``api_key_env``; both the field and the exception are retired
 # (inventory B1/B6/B8) because ``loresigil`` no longer resolves anything. The
 # PROPERTY — a missing or blank credential fails loud and never builds a keyless
-# embedder — is re-established one layer earlier, at the config boundary, and is
-# pinned for all three backends in
+# embedder — is re-established one layer earlier, at the config boundary, in
 # ``test_factory_secret_resolution.py::TestAnAbsentCredentialFailsLoudAndNeverBuildsAKeylessEmbedder``.
+#
+# ⚠ IT HOLDS for every backend BY CONSTRUCTION and is PINNED on one. The new guard is a
+# pydantic ``field_validator`` on ``api_key``, which runs during model validation before
+# any backend arm is selected — so ``backend`` cannot reach it. That is why the deletion
+# is sound. But this comment said the property was *"pinned for all three backends"*, and
+# it is not: every construction in that class passes ``backend="tei"``. The residual is
+# stated rather than claimed away — if the blankness check is ever moved off the field
+# (into ``make_embedder``, or into a per-arm constructor), backend-independence stops
+# being structural and this file's own deleted coverage is what would have caught it.

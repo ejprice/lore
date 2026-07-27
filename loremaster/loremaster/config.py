@@ -756,11 +756,23 @@ def resolve_secret(env_var_name: str, env_file: Path | None = None) -> SecretStr
     (``pw${NOPE}tail`` resolves to ``pwtail``). A credential must arrive
     byte-exact or it authenticates as a different string.
 
-    The value is never stripped or otherwise mutated — a secret whose real
-    content happens to include leading/trailing whitespace passes through
-    byte-exact. Only the *blankness test* looks past whitespace
-    (:func:`lorerunes.is_blank`, the ONE implementation of that rule, shared with
-    ``loresigil``'s ``api_key`` validator so the two cannot disagree).
+    **This function never strips or otherwise mutates the value** — a secret whose
+    real content includes leading/trailing whitespace passes through byte-exact.
+    Only the *blankness test* looks past whitespace (:func:`lorerunes.is_blank`,
+    the ONE implementation of that rule, shared with ``loresigil``'s ``api_key``
+    validator so the two cannot disagree).
+
+    ⚠ **THE SOURCES DIFFER, AND THE CLAIM ABOVE IS ABOUT THIS FUNCTION, NOT ABOUT
+    THE FILE FORMAT.** The environment hands us exactly the bytes that were
+    exported. ``.env`` is a FORMAT, and ``dotenv`` strips an UNQUOTED value's
+    surrounding whitespace before we ever see it — measured with python-dotenv
+    1.2.2: ``KEY=  pad  `` resolves to ``'pad'`` and ``KEY=secret<TAB>`` to
+    ``'secret'``, while ``KEY="  pad  "`` preserves the padding. **So a credential
+    whose real bytes are padded MUST be quoted in the file.** That is dotenv's
+    documented quoting rule, adopted deliberately (inventory C5 — the package owns
+    quote/escape handling and does it more correctly than the hand-rolled
+    ``.strip("'\\"")`` it replaced), and it is pinned from BOTH sources by
+    ``test_secret_resolution_seam.py::test_the_value_is_byte_exact_from_either_source``.
 
     Args:
         env_var_name: The name of the environment variable to read.

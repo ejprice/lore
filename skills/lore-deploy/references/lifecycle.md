@@ -217,8 +217,11 @@ python scripts/lore_deploy.py conform --image localhost/lore:<tag>
   (the deploy's own topology: `--network=host`, `--userns=keep-id --user $(id -u):$(id -g)`,
   repo `:ro` at `/workspace`, `LORE_CONFORMANCE_IN_CONTAINER=1`) and, IN ORDER:
   1. **provenance gate FIRST** — `conformance_provenance.py --mount-root /workspace` asserts
-     every workspace member (`loremaster`/`loresigil`/`lorescribe`) imports the **baked**
-     artifact (`/app/...` or site-packages), NOT the `/workspace` mount. A member grading the
+     every workspace member imports the **baked**
+     artifact (`/app/...` or site-packages), NOT the `/workspace` mount. (The member list is
+     deliberately not spelled out here — it lived in this sentence as
+     `loremaster`/`loresigil`/`lorescribe` and went stale the day `lorerunes` was added;
+     `conformance_provenance.py::WORKSPACE_MEMBERS` is the one place it is written.) A member grading the
      mount aborts the run non-zero and pytest never runs — a green suite over the mount is
      worse than a red one. Provenance-before-pytest is load-bearing.
   2. the **baked pytest** over `/workspace` (`-n auto`, cache redirected to `/tmp` since the

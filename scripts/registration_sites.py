@@ -73,8 +73,12 @@ from pathlib import Path
 _WINDOW_LINES = 4
 
 #: A site must name at least this many DISTINCT members to be a registry rather than an
-#: ordinary consumer. Two is the smallest number that distinguishes "enumerates" from
-#: "imports one thing".
+#: ordinary consumer. TWO would be the smallest number that distinguishes "enumerates"
+#: from "imports one thing" — and it was measured too noisy to read (82 hits, mostly
+#: ordinary prose naming a pair of members), so the threshold is THREE. That is the
+#: trade recorded in this module's docstring under "cannot see a registry that has
+#: fallen TWO members behind": raising the floor buys a readable worklist and pays for
+#: it with a blind spot, deliberately.
 _MIN_MEMBERS_FOR_A_SITE = 3
 
 #: Trees whose hits are archived records rather than live registrations. Receipts are

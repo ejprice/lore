@@ -21,7 +21,11 @@ module is the first thing that goes RED. They define the interface:
   else the reason it is not) and ``.audit(resolver, members=...) -> (failures, receipts)``
   which evaluates EVERY member even after the first failure.
 * ``import_member(name) -> MemberProvenance`` — imports a member in THIS interpreter.
-* ``WORKSPACE_MEMBERS`` — ``("loremaster", "loresigil", "lorescribe")``.
+* ``WORKSPACE_MEMBERS`` — every ``[tool.uv.workspace] members`` entry. The value is
+  NOT restated here: this line said ``("loremaster", "loresigil", "lorescribe")`` and
+  went silently false the day packet 42 added ``lorerunes``, while the constant, the
+  test names and the class docstrings below were all correctly widened. :data:`EXPECTED_MEMBERS`
+  is the one place the expected value is written down.
 * ``main(argv=None) -> int`` — the ``--mount-root``-parameterised CLI: exit 0 when every
   member is baked, non-zero + a loud headline NAMING the mount on a mount hit.
 
