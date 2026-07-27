@@ -725,10 +725,21 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
   covered by the fingerprint rebuild; **the others are covered by nothing.**
 - **[#102, OPEN] The shared `_txn` conflict-retry budget is 2-way-tuned and completely un-jittered**
   (§5). Blocks `-n auto` as the full-suite checkpoint gate.
-- **[#105, OPEN — and NO LONGER LATENT] Dangling `RELATE` edges, on BOTH endpoints** (§4). Goes live
-  the moment any verb accepts a recipient/endpoint identity from a caller rather than resolving it
-  from the store. An application-level existence check is the only guard; a typed
-  `TYPE RELATION IN a OUT b` catches only wrong-*table* endpoints.
+- **[#105, GUARDED on `to` + `briefed`; OPEN elsewhere] Dangling `RELATE` edges, on BOTH endpoints**
+  (§4). Goes live the moment any verb accepts a recipient/endpoint identity from a caller rather than
+  resolving it from the store. **The engine's `ENFORCED` clause guards BOTH endpoints (§4) and is now
+  live on `to` (`df59f76`) and `briefed` (`6f0e03a`); `refers`/`answers_to` remain unguarded pending
+  packet 43.** `ENFORCED` is a **BACKSTOP, not a replacement**: it reports ONE bad endpoint, as
+  untyped prose, only AFTER the write is attempted, aborting the txn — and the seam's error hygiene
+  withholds even that from the caller — **so an application-level check remains the only layer that
+  can TEACH.** A typed `TYPE RELATION IN a OUT b` alone catches only wrong-*table* endpoints.
+  ⚠ **This bullet read *"an application-level existence check is the only guard"* until 2026-07-27** —
+  the very sentence **§6.3 of this file records as FALSE** (*"this one would have made us hand-roll a
+  guard the vendor already ships"*), surviving in the open-hazards summary twelve sections below its
+  own correction. Caught by packet 04a's fix wave, not by any gate. **If you are adding a hazard
+  bullet here, check whether §4 or §6 already settles it** — a summary that contradicts its own
+  authority is worse than no summary, because this is the file every store brief is told to read
+  FIRST.
 - **[UNVERIFIED] Does an edge-table LIVE SELECT fire on `RELATE`?** Never probed. The
   contentless-wake design makes an empty payload harmless (so #5014 cannot bite), but the *firing*
   itself is an assumption.

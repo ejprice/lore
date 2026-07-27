@@ -100,11 +100,18 @@ the DISPATCHER resolves the roster, which is where ruling 1's broadcast
 semantics and ruling 7's exclude-the-sender rule are pinned
 (``test_comms_tool.py``). What the ledger still owns — and what probe 1 makes
 non-negotiable — is that EVERY supplied recipient id must EXIST in the
-``agent`` table before a single ``RELATE`` runs: the engine validates NEITHER
-endpoint, so a bogus ``out`` writes a permanent, silent delivery receipt for an
-agent who does not exist, and ``->to->agent`` traversal reports the ghost as a
-first-class recipient. That check is a raw SELECT over ``agent`` by id — it is
-not an import of the registry module, so the decoupling holds.
+``agent`` table before a single ``RELATE`` runs. That check is a raw SELECT over
+``agent`` by id — it is not an import of the registry module, so the decoupling
+holds.
+
+⚠ CORRECTED 2026-07-27: this paragraph used to justify the check with "the
+engine validates NEITHER endpoint", which was true when probe 1 ran and is FALSE
+since ``to`` gained ``ENFORCED`` in `df59f76`. A dangling ``out`` is now refused
+by the engine too — but as ONE untyped-prose rejection AFTER the write, which
+the store seam's error hygiene then withholds. So the app-level check is not the
+only GUARD; it is the only layer that can TEACH, naming every bad id before
+anything is written (:mod:`loremaster.agent_existence` module docstring; store
+reference §4, the ``ENFORCED`` adoption table's error-ergonomics row).
 
 Expected until the module lands: collection ERROR in THIS FILE —
 ``ModuleNotFoundError: No module named 'loremaster.messages'``.
@@ -673,11 +680,20 @@ class TestSendWritesTheNodeAndOneEdgePerRecipient:
 
 
 class TestSendValidatesEveryRecipientBeforeWritingAnyEdge:
-    """Probe 1 + consequences #1/#2. The engine validates NEITHER ``in`` NOR
-    ``out``: a bogus recipient id writes a permanent, silent delivery receipt
-    for an agent that does not exist, and ``->to->agent`` lists the ghost as a
-    first-class recipient. An application-level existence check is the ONLY
-    guard, so it is a PINNED INVARIANT, not a nicety.
+    """Probe 1 + consequences #1/#2. When probe 1 ran, the engine validated
+    NEITHER ``in`` NOR ``out``: a bogus recipient id wrote a permanent, silent
+    delivery receipt for an agent that does not exist, and ``->to->agent`` listed
+    the ghost as a first-class recipient.
+
+    ⚠ CORRECTED 2026-07-27: *"an application-level existence check is the ONLY
+    guard"* is FALSE since ``to`` gained ``ENFORCED`` in `df59f76` — the engine
+    refuses the dangling edge as well. The app check survives for a DIFFERENT
+    reason, and it is not a weaker one: ``ENFORCED`` reports ONE bad endpoint, as
+    untyped prose, only AFTER the write is attempted, and the store seam's error
+    hygiene withholds even that, so the app layer is the only one that can TEACH —
+    naming EVERY bad recipient BEFORE anything is written
+    (:mod:`loremaster.agent_existence` module docstring). Still a PINNED INVARIANT,
+    not a nicety; still not deletable as redundant.
 
     THE QUANTIFIER LAW (PR93): the property pinned is ∀ recipients — EVERY
     recipient is either delivered-an-edge or rejected-and-reported, never

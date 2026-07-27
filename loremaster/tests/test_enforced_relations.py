@@ -1004,7 +1004,20 @@ class TestPublishRefusesAnUnregisteredAgent:
         Note what this does NOT settle.  After the flip, ``ENFORCED`` alone would ALSO
         leave no brief row — but by ROLLING IT BACK after attempting the write (§10.2 leg
         B: ``SELECT id FROM brief WHERE id = brief:b_lost`` -> ``[]``).  "No row afterwards"
-        cannot tell refused-early from rolled-back-late; the version pin below is what does.
+        cannot tell refused-early from rolled-back-late.  **What does is the absence of the
+        ``brief_counter`` HOT ROW** — a mint-then-release build leaves it behind at
+        ``next = 0``; a refused-early build never creates it (:func:`_version_counter_rows`
+        carries the derivation).  That observation is asserted TWICE on purpose, in
+        :meth:`test_the_refusal_happens_BEFORE_the_version_is_minted` and in
+        :meth:`TestARefusedAgentIdReachesNoWritePathAtAll.test_a_refused_publish_never_TOUCHES_the_version_counter_row`,
+        so deleting either one leaves the discrimination standing.
+
+        ⚠ This paragraph used to delegate to *"the version pin below"* on the strength of
+        its version NUMBER alone.  That was FALSE — MEASURED 2026-07-27 at `6549d53` by the
+        packet-04a cold audit: with the shared policy neutralised (the rolled-back-late
+        build verbatim) the version pin PASSED, and only the counter-row pin failed.  A
+        docstring that names a non-discriminating pin as the discriminator is how the REAL
+        one gets deleted as redundant.
         """
         ledger, _registered, _env = brief_ledger_with_a_real_agent
         with pytest.raises(Exception):  # noqa: B017
@@ -1020,21 +1033,49 @@ class TestPublishRefusesAnUnregisteredAgent:
     async def test_the_refusal_happens_BEFORE_the_version_is_minted(
         self, brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv]
     ) -> None:
-        """THE discriminator between "refused early" and "rolled back late".
+        """THE discriminator between "refused early" and "rolled back late" — **and the
+        discriminating observation is the COUNTER ROW's absence, not the version number.**
 
         ``publish`` mints its version off the per-name counter hot row BEFORE the CREATE,
         and hands it back via ``_release_version`` when the write is rejected — a
         compensating path that is BEST-EFFORT and swallows its own failures.  An app check
-        that runs first never enters that path at all, so the next real publish gets v1.  A
-        build that merely lets ``ENFORCED`` reject would take the release path and this pin
-        would still see v1 only if the release succeeded; forcing the check upstream
-        removes the question.
+        that runs first never enters that path at all, so the hot row is never created AND
+        the next real publish gets v1.
+
+        ⚠ **STRENGTHENED 2026-07-27 (packet-04a cold audit F1), because this pin's own
+        docstring used to promise a check its assertion did not perform** — a FALSE GATE by
+        repo law.  It asserted only *"the next real publish gets v1"*, and the paragraph
+        above it conceded the escape hatch (*"…would still see v1 only if the release
+        succeeded"*) without ever closing it.  MEASURED at `6549d53`: under the neutralising
+        mutation — the shared policy replaced by ``return None``, which IS the
+        rolled-back-late build (``ENFORCED`` rejects the write, ``_release_version``
+        compensates, the release succeeds every time on the live 3.2.1 store) — this pin
+        **PASSED**, while
+        :meth:`TestARefusedAgentIdReachesNoWritePathAtAll.test_a_refused_publish_never_TOUCHES_the_version_counter_row`
+        FAILED.  The sibling pin
+        :meth:`test_the_refused_publish_writes_NO_brief_row` DELEGATED its discrimination
+        here, so the file's only real discriminator was one deletion-as-redundant away from
+        gone, gates green.
+
+        So this pin now makes its own claim TRUE: it asserts the hot row's absence FIRST —
+        the observation that a mint-then-release build cannot satisfy — and keeps the v1 leg
+        as the caller-visible consequence.  The overlap with the counter-row pin above is
+        DELIBERATE: two pins now carry the discrimination, so deleting either leaves it
+        standing.  Do not "simplify" them back into one.
         """
         ledger, registered, _env = brief_ledger_with_a_real_agent
         with pytest.raises(Exception):  # noqa: B017
             await ledger.publish(
                 _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=UNREGISTERED_AGENT_ID
             )
+        assert await _version_counter_rows(ledger) == [], (
+            f"the refusal reached the MINT: a {BRIEF_COUNTER_TABLE} row exists, so this "
+            f"build minted a version, attempted the write, and handed the number back "
+            f"through the BEST-EFFORT _release_version path — 'rolled back late', not "
+            f"'refused early'. This is the assertion the docstring promises; the v1 check "
+            f"below is its consequence, not its proof (a mint-then-release build also "
+            f"yields v1 whenever the release succeeds)"
+        )
         result = await ledger.publish(
             _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=registered
         )
@@ -1074,9 +1115,11 @@ class TestPublishWithARegisteredAgentStillWorks:
     ) -> None:
         """The third input class.  ``None`` means "a ledger-level caller with no agent row
         in play" and must stay a legal, edge-free publish — a check that refused it would
-        break the ~50 call sites that pass no ``agent_id`` at all, and would be the
-        quantifier law violated in the other direction (an invariant conditioned on the
-        failure mode that prompted the work).
+        break every call site that passes no ``agent_id`` at all (74 in this tree, DERIVED
+        2026-07-27 by AST; the count drifts with the suite and no gate pins it — see
+        :func:`~loremaster.agent_existence.reject_unknown_agents`' own note, corrected from
+        *"~50"* the same day), and would be the quantifier law violated in the other
+        direction (an invariant conditioned on the failure mode that prompted the work).
         """
         ledger, _registered, _env = brief_ledger_with_a_real_agent
         result = await ledger.publish(_BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER)
@@ -1111,7 +1154,17 @@ class TestARefusedAgentIdReachesNoWritePathAtAll:
     async def test_a_refused_publish_never_TOUCHES_the_version_counter_row(
         self, brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv]
     ) -> None:
-        """MINT-THEN-RELEASE leaves the hot row behind; refused-early never creates it."""
+        """MINT-THEN-RELEASE leaves the hot row behind; refused-early never creates it.
+
+        ⚠ **NOT REDUNDANT WITH**
+        :meth:`TestPublishRefusesAnUnregisteredAgent.test_the_refusal_happens_BEFORE_the_version_is_minted`,
+        which asserts the same row's absence since 2026-07-27 (cold audit F1).  The overlap
+        is DELIBERATE and is the fix: before it, this was the ONLY pin in the file that
+        could tell refused-early from rolled-back-late, while a sibling docstring pointed a
+        future author at a pin that could not — one deletion-as-redundant from losing the
+        discrimination with every gate green.  Two pins now carry it.  Deleting one is
+        safe; deleting BOTH re-opens F1.
+        """
         ledger, _registered, _env = brief_ledger_with_a_real_agent
         with pytest.raises(Exception):  # noqa: B017
             await ledger.publish(
@@ -1689,6 +1742,125 @@ class TestTheSharedPolicyIsTheSOLEDecisionPoint:
         )
         assert result.brief.version == 1
         assert await _briefed_edge_count(ledger) == 1
+
+
+def _served_refusal(*identities: str) -> str:
+    """The EXACT sentence a refused caller is served, SPELLED OUT HERE.
+
+    ⚠ **DELIBERATELY NOT DERIVED FROM**
+    :func:`loremaster.agent_existence.format_unknown_agent_refusal`.  A pin that asked the
+    production formatter what the text is would agree with it by construction and could
+    never fail — the tautology in a new costume.  This IS the spec of the served surface;
+    production and both fakes are held to it.
+
+    ``identities`` are passed already RENDERED (``name (id)``) and already in the order the
+    served text must show them, so a build that stopped sorting, or that dropped either
+    half of an identity, reddens here.
+    """
+    return (
+        f"unknown agent(s): {', '.join(identities)} — every id must name a registered "
+        f"agent row before a message or a brief can be written in its name"
+    )
+
+
+class TestTheSERVEDRefusalTextHasONEImplementation:
+    """**F3 (packet-04a cold audit, 2026-07-27) — the served surface had NO pin at all.**
+
+    At `6549d53` a ``grep`` of the whole tree for the production refusal's own words
+    returned **exactly one hit: the source line itself**.  Every pin that touched it — here,
+    in ``test_brief_ledger.py``, in ``test_message_ledger.py``, at the ``test_comms_tool.py``
+    tool seam — was an ``id in str(exc)`` / ``name in str(exc)`` SUBSTRING check.  Two
+    consequences, both measured:
+
+    * the served string could be edited to anything containing the id with the FULL suite
+      green (7134 passed at `6549d53`) — and under the TRUST DOCTRINE the served surface IS
+      the contract, because the reader is an agent learning what to do next from it;
+    * the sentence had already been CLONED into both test doubles and had already DIVERGED
+      in both — ``FakeMessageLedger.send`` served names with no ids under a different
+      prefix; ``FakeBriefLedger._reject_unknown_agent`` (shipped by 04a itself) served an id
+      with no name under a third.  A substring pin cannot see that, and a double that
+      teaches a contract production does not serve is the one defect a double cannot have.
+
+    So the text is now ONE function both fakes CALL
+    (:func:`~loremaster.agent_existence.format_unknown_agent_refusal`), and these three legs
+    hold production AND both doubles to ONE literal in :func:`_served_refusal`.
+
+    ⚠ **THIS CLASS IS THE MUTATION PROOF'S TARGET, and that is the point:** change the
+    formatter's sentence and all THREE legs must redden together.  A leg that stays green
+    is a private copy wearing the shared name (repo law: routing is not sharing; prove
+    sharing by MUTATION).  The both-ways run is reproducible from the tree:
+
+        ./scripts/mutation_proof.py --file loremaster/loremaster/agent_existence.py \
+          --anchor 'f"unknown agent(s): ' --replacement 'f"unknown agents: ' \
+          --expect-red <this class's three node ids> -- uv run pytest -q ...
+    """
+
+    #: The identity the production leg refuses — ``created_by`` is the name half, exactly
+    #: as ``BriefLedger.publish`` passes it (``AgentRef(agent_id, created_by)``).
+    _PUBLISH_IDENTITY = f"{_PUBLISHER} ({UNREGISTERED_AGENT_ID})"
+
+    async def test_the_PRODUCTION_refusal_text_is_EXACTLY_the_served_sentence(
+        self, brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv]
+    ) -> None:
+        """The real ledger, on a real store — the text an agent actually receives."""
+        ledger, _registered, _env = brief_ledger_with_a_real_agent
+        with pytest.raises(Exception) as caught:  # noqa: B017 - the TYPE is section E's job
+            await ledger.publish(
+                _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=UNREGISTERED_AGENT_ID
+            )
+        assert str(caught.value) == _served_refusal(self._PUBLISH_IDENTITY), (
+            "the SERVED refusal text changed. It is not a message, it is the contract an "
+            "agent learns from — if you meant to change it, change _served_refusal here in "
+            "the same commit and say so; if you did not, production has drifted"
+        )
+
+    async def test_the_BRIEF_fake_serves_the_SAME_sentence_as_production(self) -> None:
+        """``FakeBriefLedger`` — the double ~55 ``brief_publish`` tool-seam sites ride.
+
+        Its ``agent`` table is MODELLED (it holds a different row), because an EMPTY one is
+        that fake's declared bound and accepts everything.
+        """
+        from _comms_fakes import FakeBriefDatabase, FakeBriefLedger
+
+        fake = FakeBriefLedger(db=FakeBriefDatabase())
+        fake.register_agent(agent_id="some-other-agent-row", name="someone-else")
+        with pytest.raises(Exception) as caught:  # noqa: B017
+            await fake.publish(
+                _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=UNREGISTERED_AGENT_ID
+            )
+        assert str(caught.value) == _served_refusal(self._PUBLISH_IDENTITY), (
+            "the brief fake's refusal text diverged from production's — every suite that "
+            "rides this double is now certifying a sentence no caller will ever receive"
+        )
+
+    async def test_the_MESSAGE_fake_serves_the_SAME_sentence_as_production(self) -> None:
+        """``FakeMessageLedger`` — and the leg that pins the JOIN and the SORT.
+
+        TWO unknown recipients, handed in the order that is NOT the served order: a build
+        that stopped sorting, or that joined with anything but ``", "``, reddens here and
+        nowhere else.  ``send`` also proves the shared text reaches the OTHER ledger's
+        vocabulary (``UnknownRecipientError``), not just the brief ledger's.
+        """
+        from _message_fakes import FakeMessageDatabase, FakeMessageLedger
+
+        fake = FakeMessageLedger(db=FakeMessageDatabase())
+        fake.register_agent(agent_id="some-other-agent-row", name="someone-else")
+        zeta = _Ref(UNREGISTERED_AGENT_ID, "zeta-agent")
+        alpha = _Ref(UNREGISTERED_AGENT_ID_WEARING_THE_REGISTERED_SHAPE, "alpha-agent")
+        with pytest.raises(Exception) as caught:  # noqa: B017
+            await fake.send(
+                sender=_Ref("some-other-agent-row", "someone-else"),
+                session="wave7",
+                body="who are you",
+                grade="signal",
+                recipients=[zeta, alpha],
+            )
+        assert str(caught.value) == _served_refusal(
+            f"{alpha.name} ({alpha.id})", f"{zeta.name} ({zeta.id})"
+        ), (
+            "the message fake's refusal text diverged from production's, or it stopped "
+            "sorting the identities it names"
+        )
 
 
 # =========================================================================== #

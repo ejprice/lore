@@ -36,10 +36,24 @@ DELIBERATE DECOUPLING, inherited from :class:`~loremaster.briefs.BriefLedger`
 identity (anything satisfying :class:`~loremaster.agent_ref.AgentRefLike`); the
 DISPATCHER resolves the roster, which is where broadcast semantics and the
 exclude-the-sender rule live (``test_comms_tool.py``). What the ledger still owns
-— because the engine validates NEITHER RELATE endpoint (store reference §4,
-finding #105) — is that EVERY supplied recipient id must EXIST in the ``agent``
-table before a single ``RELATE`` runs: a raw SELECT over ``agent`` by id, NOT an
-import of the registry module, so the decoupling holds.
+is that EVERY supplied recipient id must EXIST in the ``agent`` table before a
+single ``RELATE`` runs — :func:`~loremaster.agent_existence.reject_unknown_agents`,
+a raw SELECT over ``agent`` by id, NOT an import of the registry module, so the
+decoupling holds.
+
+⚠ **AND THE REASON THAT CHECK IS REQUIRED IS NOT THAT THE ENGINE IS BLIND.** It
+is not: ``to`` has carried ``ENFORCED`` since `df59f76` and ``briefed`` since
+`6f0e03a`, so the engine validates BOTH endpoints on both edges. The rationale
+this paragraph carried until 2026-07-27 — *"because the engine validates NEITHER
+RELATE endpoint"* — was written in `e6b9b81`, invalidated by `df59f76`, and is a
+FALSE RATIONALE FOR A REQUIRED CHECK: an agent reading it would conclude the app
+check is the only guard, and could therefore delete it the day it looks redundant.
+The true reason is stated once, in :mod:`loremaster.agent_existence`'s module
+docstring (with store reference §4, the ``ENFORCED`` adoption table's
+error-ergonomics row): ``ENFORCED`` reports ONE bad endpoint, as untyped prose,
+only AFTER the write is attempted — and the store seam's error hygiene withholds
+even that. The app-level check is the ONLY layer that can TEACH. Neither guard is
+redundant; #105 names the hazard both address.
 
 SCOPE HISTORY (both packets are now landed, so this is provenance, not a caveat):
 packet **03a-1** built the SEND path plus :meth:`~MessageLedger.drain` — drain was

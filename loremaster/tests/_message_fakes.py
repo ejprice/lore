@@ -41,6 +41,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import cast
 
+from loremaster.agent_existence import format_unknown_agent_refusal
 from loremaster.briefs import AgentRefLike
 from loremaster.messages import (
     MESSAGE_BODY_MAX_CHARS,
@@ -95,10 +96,15 @@ def _utc_now() -> datetime:
 #    module owes its caller must be real here too, not inherited from a richer
 #    fake return.
 # 5. Recipient existence is checked against :attr:`FakeMessageDatabase.agents`
-#    BEFORE any edge is written (probe 1: the engine validates NEITHER endpoint
-#    — a bogus ``out`` silently writes a permanent delivery receipt for an
-#    agent who does not exist, and ``->to->agent`` traversal reports the ghost
-#    as a first-class recipient).
+#    BEFORE any edge is written. ⚠ CORRECTED 2026-07-27: this note used to say
+#    "the engine validates NEITHER endpoint" — TRUE when probe 1 ran, FALSE
+#    since ``to`` gained ``ENFORCED`` in `df59f76`. The engine now refuses a
+#    dangling ``out``; what it CANNOT do is teach, because it reports ONE bad
+#    endpoint as untyped prose only AFTER the write, and the store seam's error
+#    hygiene withholds even that (:mod:`loremaster.agent_existence` module
+#    docstring). The app-level check remains the only layer that names EVERY bad
+#    id BEFORE anything is written — which is exactly what this fake models, so
+#    a suite riding it sees production's teaching failure, not the engine's.
 
 
 @dataclass(frozen=True)
@@ -215,12 +221,23 @@ class FakeMessageLedger:
         # EVERY recipient is checked BEFORE any edge is written (probe 1 /
         # consequence #2: a partially-validated fan-out is N-1 good edges plus
         # one permanent, silent dangling receipt).
-        unknown = sorted({ref.name for ref in recipients if ref.id not in self.db.agents})
+        # ⚠ The TEXT is production's own, CALLED not cloned (2026-07-27, cold audit
+        # F3). This fake used to hand-write "unknown recipient(s): <names> — every
+        # recipient must register before it can be sent to": no ids, a different
+        # prefix, a different tail. Every pin over it was a name-substring check that
+        # both strings satisfied, so a fake teaching a contract production does not
+        # serve was invisible — finding #190's shape, which comment #5 above and the
+        # ``_reject_oversize_pointers`` call two blocks up already name. Identities are
+        # collected first-wins per ID exactly as
+        # ``agent_existence.reject_unknown_agents`` collects them: two agents may share
+        # a display name, so a name-keyed set silently merges two bad recipients into
+        # one refusal line.
+        unknown: dict[str, str] = {}
+        for ref in recipients:
+            if ref.id not in self.db.agents:
+                unknown.setdefault(ref.id, ref.name)
         if unknown:
-            raise UnknownRecipientError(
-                f"unknown recipient(s): {', '.join(unknown)} — every recipient must register "
-                f"before it can be sent to"
-            )
+            raise UnknownRecipientError(format_unknown_agent_refusal(unknown))
         # Dedupe BEFORE the fan-out (probe 2: UNIQUE(in, out) makes a repeated
         # recipient a LOUD engine error, never a silent de-duplication).
         deduped: list[AgentRefLike] = []

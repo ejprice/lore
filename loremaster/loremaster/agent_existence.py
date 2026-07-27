@@ -31,7 +31,7 @@ error-ergonomics row):
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from surrealdb import RecordID
@@ -69,6 +69,52 @@ class UnknownAgentRowError(RuntimeError):
     """
 
 
+def format_unknown_agent_refusal(unknown_name_by_id: Mapping[str, str]) -> str:
+    """The ONE served refusal text for *"these ids name no ``agent`` row"*.
+
+    A FUNCTION BOTH THE LEDGERS AND THEIR TEST DOUBLES CALL, never a sentence any of
+    them re-types (repo law #102). It exists because the sentence had already been
+    cloned twice and had already diverged twice: ``_message_fakes.FakeMessageLedger.send``
+    served *"unknown recipient(s): … every recipient must register before it can be sent
+    to"* (names only, no ids) and ``_comms_fakes.FakeBriefLedger._reject_unknown_agent``
+    served *"unknown agent: {id} — every agent must be a registered agent row …"* (id
+    only, no name, singular prefix). Every pin over those doubles was an ``id in
+    str(exc)`` substring check that BOTH strings satisfy, so the divergence was
+    invisible — and the divergence is the fake teaching an agent a contract production
+    does not serve. That is finding #190's shape, which ``_message_fakes.py``'s own
+    comment names and prescribes this cure for.
+
+    ⚠ **THE CONSUMERS OF THIS STRING ARE AGENTS** (the TRUST DOCTRINE): it is the whole
+    of what a refused caller learns, so it names BOTH halves of every unresolved
+    identity — the display label the caller thought it was acting under AND the row id
+    that resolved to nothing — because an id alone teaches less than the label beside
+    it, and a label alone cannot be looked up.
+
+    The served text is pinned by VALUE (never derived from this function, which would be
+    a tautology) in
+    ``test_enforced_relations.py::TestTheSERVEDRefusalTextHasONEImplementation``, whose
+    three legs — production, both fakes — all compare against ONE literal, so changing
+    the sentence here reddens all three and a double that stops CALLING this function
+    reddens its own.
+
+    Args:
+        unknown_name_by_id: The unresolved identities, ``{agent_id: display_name}``.
+            Rendered ``name (id)``, SORTED on the rendered form so one refusal naming
+            several ids is stable rather than dict-ordered.
+
+    Returns:
+        The refusal sentence, with no trailing punctuation and no leading class name —
+        the caller wraps it in its own domain error.
+    """
+    identities = sorted(
+        f"{name} ({agent_id})" for agent_id, name in unknown_name_by_id.items()
+    )
+    return (
+        f"unknown agent(s): {', '.join(identities)} — every id must name a registered "
+        f"agent row before a message or a brief can be written in its name"
+    )
+
+
 async def reject_unknown_agents(
     query: AgentQuery,
     agents: Sequence[AgentRefLike],
@@ -86,9 +132,16 @@ async def reject_unknown_agents(
     cannot do (store reference §4).
 
     An EMPTY ``agents`` short-circuits without touching the wire. That is not an
-    optimisation dressed as a rule: ``publish`` is called with no ``agent_id`` at ~50
-    sites — *"a ledger-level caller with no agent row in play"*, a legal, edge-free
-    publish — and those callers must not each pay a round trip to be told nothing.
+    optimisation dressed as a rule: ``publish`` is routinely called with no ``agent_id``
+    — *"a ledger-level caller with no agent row in play"*, a legal, edge-free publish —
+    and those callers must not each pay a round trip to be told nothing.
+    **74 such call sites** DERIVED 2026-07-27 (AST over ``loremaster/`` + ``scripts/``:
+    attribute calls named ``publish`` carrying no ``agent_id`` keyword; 97 such calls
+    total). ⚠ All 74 are TEST sites — no production caller publishes without an
+    ``agent_id`` today, so the round-trip this branch saves is paid by the suite, not by
+    the server. The figure is a dated MEASUREMENT, not a pinned invariant: it drifts with
+    every test added, and no gate derives it. Re-derive before citing it. (It read
+    *"~50 sites"* until 2026-07-27, when the packet-04a cold audit derived 74.)
 
     Args:
         query: The calling ledger's single-statement query seam.
@@ -141,13 +194,10 @@ async def reject_unknown_agents(
         if rendered in asked_by_render
     }
 
-    unknown = sorted(
-        f"{name} ({agent_id})"
+    unknown = {
+        agent_id: name
         for agent_id, name in name_by_id.items()
         if agent_id not in existing_ids
-    )
+    }
     if unknown:
-        raise error(
-            f"unknown agent(s): {', '.join(unknown)} — every id must name a registered "
-            f"agent row before a message or a brief can be written in its name"
-        )
+        raise error(format_unknown_agent_refusal(unknown))
