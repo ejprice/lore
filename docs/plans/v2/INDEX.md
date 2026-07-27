@@ -185,7 +185,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 03a-1 | **comms ledger SEND + drain** — `messages.py` foundations + `AgentRefLike` home + `send` + drain/peek; ≥8-way send concurrency | — | C | 0.20 | 03 | **DONE 2026-07-23** (2d1f75d→42eeedc; cold-audit GO, [real] leg graded; 140 passed / 31 red=03a-2 stubs; #173 fix; TEST-ONLY, no deploy) |
 | 03a-2 | **comms ledger ACK + WAITING** — ack (4-way disambiguation), derived waiting state; 16-way ack concurrency (**closes 03a**; drain landed in 03a-1) | — | C | 0.15 | 03a-1 | **DONE 2026-07-23** (`853a95b`→`0223291`; cold-audit GO, [real] leg graded 31 pins / 0 silent skips; 180 passed / 12 skipped; 20/20 16-way ack concurrency; **closes 03a**; TEST-ONLY, no deploy) |
 | 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a ✅ | **✅ DONE + DEPLOYED 2026-07-26** (task `b7f89c12`). Suite **6937/0**, typecheck 0 all members (**global mypy-zero DISCHARGED**, 36→0), ruff, skill 117, concurrency 20/20. Both containers on `b46bc1d5`; every deploy receipt green on production. **#147 CLOSED with a production receipt** (traces 0→664, ordinals distinct+increasing). Client battery PASS 3/3 floor + all 3 population models. Inherited 6 design-ruled items all discharged. Residuals routed with named decision points: 05 (#190/#183/#214, DD-2.a, DD-4.c) · 06 (#193 retention, join-quality receipt) · 05-or-06 (#195 injection). |
-| 04a | **comms `ENFORCED` sweep + #105** — `briefed` flip (`OVERWRITE`), the app-level unknown-agent check (the ONLY layer that can teach), `publish(agent_id)` hardening, the `test_brief_ledger.py` agent-seeding fix (D1) | PKT-28 C2c | C | 0.20 | 03 | **WIP — contract WRITTEN 2026-07-26** (`test_enforced_relations.py`, 60 pins, 26 RED; ruff + typecheck clean). Split from 04 at kickoff per the sizing law (the re-scoped #105 grew it past 0.30). |
+| 04a | **comms `ENFORCED` sweep + #105** — `briefed` flip (`OVERWRITE`), the app-level unknown-agent check (the ONLY layer that can teach), `publish(agent_id)` hardening, the `test_brief_ledger.py` agent-seeding fix (D1) | PKT-28 C2c | C | 0.20 | 03 | **✅ DONE 2026-07-27, TEST-ONLY + schema — NOT DEPLOYED (04b carries it).** Suite **7137/0** (EXIT=0, unpiped), typecheck OK ×3 (156 files), ruff clean; contract 50 pins, 0 failed. Cold audit **GO**, 5 defects — all natural-language/instrument, 3 fixed in-wave. #105 **RESOLVED for `to`+`briefed`** (open for `refers`/`answers_to` → 43). Adversary killed **4 wrong builds that survived 38/38**, incl. one GREENER than correct. Findings filed: #236 #239 #240 #243 #244 #245 #246 #247 #248. Ten reports archived → `receipts/2026-07-27-packet04a/`. |
 | 04b | **comms surface** — `blocks` DAG edge (`ENFORCED` from birth) + fleet unread/directive columns + `_comms_footer` + #219 | PKT-28 C2c | C | 0.20 | 04a | open — **DEPLOYS BOTH** (carries 04a's schema). Footer shape + trigger operator-ruled 2026-07-26. ⚠ The packet's transitive-read idiom was **WRONG** and is corrected in the file (P4: `+collect`, and `TIMEOUT` is a `SELECT` clause). |
 | 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121 #149 + #174 #183 #190 #214, #195 05-or-06) | PKT-28 C3 | C | 0.30 →split | 04 | open |
 | 06 | comms-protocol-drill (brief-base v3 + THE DRILL; #193 retention, #228 watcher rule) | PKT-28 C4 | C | 0.25 | 05 | open |
@@ -1070,3 +1070,16 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   error hygiene, so the app check is the only layer that can TEACH). Findings #236/#239/#240 +
   #243/#244/#245 filed; 197 probe-created databases reaped from the TEST store (814→617, delta
   exact). Ghost cleanup OUT (#236). NEXT = 04a build.
+- 2026-07-27 · **04a DONE (TEST-ONLY + schema; 04b deploys).** Suite **7137/0** EXIT=0 · typecheck ×3
+  · ruff · contract 50/0 · cold audit **GO**. **The adversary earned the packet:** 4 wrong builds
+  survived 38/38 pins — incl. **W-D, GREENER repo-wide than correct (2077 vs 2073)** — all killed by
+  7 added pins. Two stale-packet defects caught before a builder saw them: #105's scope was INVERTED
+  (03 had already shipped `ENFORCED` on `to`; the unnamed edges were the unguarded ones) and the
+  transitive-read idiom was WRONG in both halves (P4). Two more found by grading, not gates:
+  `test_brief_ledger.py` had been writing dangling edges since it was written (its fixture never
+  created an `agent` table), and D2's premise held for 56 modules but is NOT structural → operator
+  ruled the ROOT fix → **packet 43 minted**. Cold audit's 5 defects were ALL natural-language, and
+  its best find was **the same defect class inside `surrealdb-31-capabilities.md` itself** — §8
+  teaching the claim §6.3 records as FALSE, in the file every store brief reads FIRST (`04da8bd`).
+  #105 resolved for `to`+`briefed`. NEXT = **04b** (blocks/fleet/footer/#219; DEPLOYS BOTH, and will
+  be first to ship the 11-i security wave).
