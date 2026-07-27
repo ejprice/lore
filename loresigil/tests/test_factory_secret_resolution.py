@@ -279,7 +279,13 @@ class TestTheConfigCarriesAResolvedSecretNotAnEnvVarName:
         # reason). An unknown BACKEND must fail on ``backend``, not on extras.
         with pytest.raises(ValidationError) as excinfo:
             EmbeddingConfig(backend="qdrant-magic", api_key=SecretStr(TEI_KEY))  # type: ignore[arg-type]
-        assert any(error["loc"] == ("backend",) for error in excinfo.value.errors())
+        # Swept under R30: this asserted ``loc`` only, the same shape as the pin
+        # above. An unknown backend must fail the Literal, not something else.
+        at_backend = [e for e in excinfo.value.errors() if e["loc"] == ("backend",)]
+        assert at_backend, f"not rejected at ('backend',): {excinfo.value.errors()}"
+        assert all(e["type"] != "extra_forbidden" for e in at_backend), (
+            f"rejected at ('backend',) as an unknown FIELD rather than an invalid VALUE: {at_backend}"
+        )
 
 
 class TestAnAbsentCredentialFailsLoudAndNeverBuildsAKeylessEmbedder:
@@ -314,10 +320,28 @@ class TestAnAbsentCredentialFailsLoudAndNeverBuildsAKeylessEmbedder:
         with pytest.raises(ValidationError) as excinfo:
             EmbeddingConfig(backend="tei", base_url=TEI_BASE_URL, api_key=SecretStr(value))
         errors = excinfo.value.errors()
-        # REJECTED FOR THE RIGHT REASON, again: the failure must be attributed to
-        # ``api_key``, not to a missing sibling field.
-        assert any(error["loc"] == ("api_key",) for error in errors), (
+        at_api_key = [error for error in errors if error["loc"] == ("api_key",)]
+        assert at_api_key, (
             f"the {label} credential was rejected, but not because of ``api_key``: {errors}"
+        )
+        # ⚠ **RULING R30 — THIS PIN WAS GREEN FOR THE WRONG REASON AND THE ``type``
+        # LEG IS THE FIX.** Before the field existed, ``api_key`` was an UNKNOWN
+        # field, so ``extra="forbid"`` raised ``extra_forbidden`` — **whose ``loc``
+        # is ALSO ``('api_key',)``**. Asserting only ``loc`` therefore passed on a
+        # rejection that had nothing to do with blankness, and five adversary
+        # passes could not see it: the contract was never graded against a tree
+        # where the field existed. *A contract graded against the OLD world can
+        # hold a pin that only the NEW world falsifies.*
+        #
+        # The sibling pin ``test_api_key_env_is_rejected_AS_AN_UNKNOWN_FIELD``
+        # already carried this leg and its comment names this exact class. One pin
+        # got the guard; its neighbour did not.
+        assert all(error["type"] != "extra_forbidden" for error in at_api_key), (
+            f"the {label} credential was rejected at ('api_key',) but as an UNKNOWN FIELD, not "
+            f"for being blank. That is R30's false pass: {at_api_key}"
+        )
+        assert all(error["type"] != "missing" for error in at_api_key), (
+            f"rejected for the field being ABSENT rather than blank: {at_api_key}"
         )
 
     def test_no_embedder_is_constructed_when_the_credential_is_blank(self) -> None:

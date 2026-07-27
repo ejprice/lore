@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -46,7 +47,7 @@ from typing import Any, cast
 import pytest
 from loremaster.config import resolve_secret
 from loremaster.store._txn import signin_credentials
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 import loremaster
 
@@ -99,6 +100,24 @@ def _package_root() -> Path:
 # still bare ``str``"* — a gap that existed precisely because the #211 ∀ pin
 # stopped at the package boundary. A structural pin that does not cover a
 # package is a pin that package is exempt from, silently.
+# ⚠ THE SHARED-PREDICATE PACKAGE'S NAME LIVES HERE, ONCE — and the single-constant
+# shape earned its keep within the hour: the operator ruled a different name from
+# the one first proposed WHILE this contract was being written, and adopting it
+# cost exactly one line instead of a sweep across four files.
+#
+# **``lorerunes``, PLURAL, and the plural IS the ruling** (operator, 2026-07-27).
+# Per the global naming convention — *"once a name is chosen for a concept, use
+# that exact name everywhere"* — a stray singular is a bug, not a typo. Ruling R29
+# mints it to hold the blankness predicate that BOTH
+# ``loremaster.config.resolve_secret`` and ``loresigil``'s ``api_key`` validator
+# call.
+SHARED_PREDICATE_PACKAGE = "lorerunes"
+
+# The predicate itself: ONE implementation of "what counts as blank", so the two
+# callers cannot disagree. Pinned by name because the mutation proof below has to
+# be able to find and patch it.
+BLANKNESS_PREDICATE = "is_blank"
+
 _SCANNED_MEMBERS: tuple[tuple[str, str], ...] = (
     ("loremaster", "loremaster/loremaster"),
     ("loresigil", "loresigil/loresigil"),
@@ -109,6 +128,12 @@ _SCANNED_MEMBERS: tuple[tuple[str, str], ...] = (
     # leaving them out would make "ONE entry point" true of the workspace and
     # false of the repo.
     ("skills", "skills"),
+    # ⚠ Ruling R29 — THE NEW MEMBER, and consequence 3 of five. **A package
+    # outside this scan is a package exempt from every ∀ pin in this packet,
+    # silently** — which is the exact reason this list was widened from
+    # ``loremaster`` alone in the first place (see the note above). Its absence
+    # here would not fail anything; it would quietly govern less.
+    (SHARED_PREDICATE_PACKAGE, f"{SHARED_PREDICATE_PACKAGE}/{SHARED_PREDICATE_PACKAGE}"),
 )
 
 # ``scripts/`` is scanned even though it is NOT a member of
@@ -1152,3 +1177,174 @@ class TestTheSeamGateWasAttackedByItsOwnAuthor:
             f"?{spelling}= coverage changed. This table is the measured residual for S8; if a "
             "label was added or removed, update it and say so."
         )
+
+
+class TestTheBlanknessPredicateIsGENUINELYSHARED:
+    """**RULING R29 — one implementation of "blank", provable by MUTATION.**
+
+    The operator overturned a local-validator-plus-drift-pin proposal and minted a
+    shared workspace member instead, and the reasoning is the part worth keeping:
+    **a drift pin is a mechanism for detecting that two copies disagree; one
+    implementation cannot disagree with itself.**
+
+    So the pin that matters is not "both callers reject a blank value" — two
+    private copies pass that. It is **change the shared predicate and watch BOTH
+    callers move**. A caller that stays green is a private copy wearing the shared
+    name (#102, and this repo's "prove sharing by mutation" law).
+
+    ⚠ **THE RESOLVER DOES NOT MOVE.** A shared package makes it *possible* for
+    ``loresigil`` to resolve secrets again and it must not: R3, the
+    composition-root ruling and
+    ``test_no_loresigil_module_reads_an_environment_variable`` all stand. **The
+    package holds the PREDICATE, not the ENTRY POINT** — pinned below.
+    """
+
+    @staticmethod
+    def _patch_everywhere(patcher: pytest.MonkeyPatch, replacement: object) -> int:
+        """Patch the predicate in EVERY module exposing it; return how many.
+
+        Import-style agnostic ON PURPOSE. ``from lorerunes import is_blank``
+        binds at import time, so patching only the defining module would prove
+        nothing about a caller that imported the name. Patching every module that
+        exposes it covers both styles — and a caller with a genuinely PRIVATE
+        implementation (an inline copy, or its own differently-named helper) is
+        not patched, does not change, and is therefore caught.
+        """
+        import sys as _sys
+
+        patched = 0
+        for module in list(_sys.modules.values()):
+            if module is None or not hasattr(module, BLANKNESS_PREDICATE):
+                continue
+            patcher.setattr(module, BLANKNESS_PREDICATE, replacement, raising=False)
+            patched += 1
+        return patched
+
+    def test_the_shared_package_exists_and_owns_the_predicate(self) -> None:
+        import importlib
+
+        package = importlib.import_module(SHARED_PREDICATE_PACKAGE)
+        predicate = getattr(package, BLANKNESS_PREDICATE, None)
+        assert callable(predicate), (
+            f"{SHARED_PREDICATE_PACKAGE} does not export {BLANKNESS_PREDICATE}(). R29 mints this "
+            "member to hold ONE implementation of 'what counts as blank'."
+        )
+        # It must actually answer the question both callers ask, over all three
+        # blank shapes — this is the semantics ``Field(min_length=1)`` could not
+        # provide (it measures LENGTH, so ' ' has length 1 and is accepted).
+        for blank in ("", " ", " \t ", "\n"):
+            assert predicate(blank) is True, f"{blank!r} must count as blank"
+        assert predicate(FAKE_SECRET) is False
+        assert predicate(f"  {FAKE_SECRET}  ") is False, (
+            "a credential with real leading/trailing whitespace is NOT blank — R1's "
+            "byte-exactness rule depends on this distinction"
+        )
+
+    def test_the_shared_package_depends_on_nothing_but_the_stdlib(self) -> None:
+        # R29: "It depends on nothing but the stdlib." A shared leaf that imports
+        # a sibling re-creates the dependency tangle the split exists to avoid —
+        # and would make it importable from ``loresigil`` only by dragging
+        # ``loremaster`` behind it, re-opening #222.
+        package_file = loremaster.__file__
+        assert package_file is not None
+        workspace_root = Path(package_file).resolve().parent.parent.parent
+        root = workspace_root / SHARED_PREDICATE_PACKAGE / SHARED_PREDICATE_PACKAGE
+        assert root.is_dir(), f"{SHARED_PREDICATE_PACKAGE} is not a workspace member yet"
+        offenders: list[str] = []
+        for source_path in sorted(root.rglob("*.py")):
+            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+            for node in ast.walk(tree):
+                roots: set[str] = set()
+                if isinstance(node, ast.Import):
+                    roots = {alias.name.split(".")[0] for alias in node.names}
+                elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                    roots = {node.module.split(".")[0]}
+                else:
+                    continue
+                line = node.lineno
+                for name in roots - set(sys.stdlib_module_names) - {SHARED_PREDICATE_PACKAGE}:
+                    offenders.append(f"{source_path.name}:{line} imports {name}")
+        assert not offenders, (
+            f"{SHARED_PREDICATE_PACKAGE} must depend on the stdlib only: {offenders}"
+        )
+
+    def test_the_shared_package_does_NOT_resolve_secrets(self) -> None:
+        # ⚠ The guard on the ruling's own risk. R29 is explicit that a shared
+        # package makes it POSSIBLE for loresigil to resolve again. It holds the
+        # PREDICATE, not the ENTRY POINT.
+        package_file = loremaster.__file__
+        assert package_file is not None
+        workspace_root = Path(package_file).resolve().parent.parent.parent
+        root = workspace_root / SHARED_PREDICATE_PACKAGE / SHARED_PREDICATE_PACKAGE
+        assert root.is_dir(), f"{SHARED_PREDICATE_PACKAGE} is not a workspace member yet"
+        offenders = [
+            f"{path.name}:{node.lineno}"
+            for path in sorted(root.rglob("*.py"))
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            if isinstance(node, ast.Attribute)
+            and node.attr in {"environ", "getenv"}
+            and isinstance(node, ast.expr)
+        ]
+        assert not offenders, (
+            f"{SHARED_PREDICATE_PACKAGE} reads the environment. It holds the PREDICATE, never "
+            f"the ENTRY POINT — R3 and the composition-root ruling stand: {offenders}"
+        )
+
+    def test_MUTATING_the_predicate_moves_BOTH_callers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # **THE PIN THE OPERATOR'S RULING IS WORTH MORE THAN A DRIFT PIN FOR.**
+        #
+        # ⚠ TWO LEGS, AND THE FIRST ONE IS NOT DECORATION. An earlier draft asserted
+        # only the second — that both callers STOP rejecting once the shared
+        # predicate is inverted — and building the reference implementation proved
+        # that non-discriminating: a caller that **never rejected in the first
+        # place** also "stops rejecting", so ``loresigil`` passed this pin while
+        # using no shared predicate at all. (That is R29's own defect wearing my
+        # pin as camouflage: ``Field(min_length=1)`` accepts ``'   '``.)
+        #
+        # So the baseline is established HERE, in the same test, before the
+        # mutation. A caller that never rejects fails leg 1; a caller with a
+        # private copy fails leg 2. Neither leg alone is enough.
+        from loresigil.factory import EmbeddingConfig
+
+        blank = "   "
+
+        # LEG 1 — BASELINE, unpatched: both callers reject a blank credential.
+        monkeypatch.setenv("LORE_PKT42_SHARED_PREDICATE", blank)
+        with pytest.raises(KeyError):
+            resolve_secret("LORE_PKT42_SHARED_PREDICATE")
+        with pytest.raises(ValidationError):
+            EmbeddingConfig(backend="tei", base_url="http://x", api_key=SecretStr(blank))
+
+        # LEG 2 — MUTATION: invert the SHARED predicate so nothing is blank. Both
+        # callers must now accept. A caller that still rejects has its own copy.
+        patched = self._patch_everywhere(monkeypatch, lambda _value: False)
+        assert patched >= 1, "the predicate was not found in any imported module"
+
+        resolved = resolve_secret("LORE_PKT42_SHARED_PREDICATE")
+        assert resolved.get_secret_value() == blank, (
+            "resolve_secret still rejected a blank value after the SHARED predicate was "
+            "inverted — it is using a private copy of the blankness rule (#102)"
+        )
+        config = EmbeddingConfig(backend="tei", base_url="http://x", api_key=SecretStr(blank))
+        assert config.api_key.get_secret_value() == blank, (
+            "loresigil's api_key validator still rejected a blank value after the SHARED "
+            "predicate was inverted — it is using a private copy (#102)"
+        )
+
+    def test_the_mutation_probe_can_actually_SEE_a_change(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # POSITIVE CONTROL for the mutation pin above, which asserts that things
+        # STOP failing — a state a broken probe reaches by never having patched
+        # anything. Invert the other way: everything is blank, and both callers
+        # must now reject a perfectly good credential.
+        from loresigil.factory import EmbeddingConfig
+
+        self._patch_everywhere(monkeypatch, lambda _value: True)
+        monkeypatch.setenv("LORE_PKT42_SHARED_PREDICATE", FAKE_SECRET)
+        with pytest.raises(KeyError):
+            resolve_secret("LORE_PKT42_SHARED_PREDICATE")
+        with pytest.raises(ValidationError):
+            EmbeddingConfig(backend="tei", base_url="http://x", api_key=SecretStr(FAKE_SECRET))
