@@ -1873,23 +1873,28 @@ _LEASE_RECORD_STRING_COLUMNS: tuple[str, ...] = (
 def _floor_measurement_statements() -> list[str]:
     """The append-only ``floor_measurement`` table: fields + the history index.
 
-    ⚠ **EVERY COLUMN BUT ``state`` AND ``created_at`` IS ``option<>``**, and that
-    is forced rather than chosen: store reference §1.4 requires a NEW field on a
-    possibly-populated table to be ``option<>`` (a required one poisons every
-    existing row, and a ``DEFAULT`` does NOT rescue it), and
-    ``TestTheSchemaMigratesAnEXISTINGStore`` stands in for an older deployment by
-    creating a row that carries ``state`` alone.
+    ⚠ **EVERY COLUMN BUT ``head_identity``, ``state`` AND ``created_at`` IS
+    ``option<>``**, and that is forced rather than chosen: store reference §1.4
+    requires a NEW field on a possibly-populated table to be ``option<>`` (a
+    required one poisons every existing row, and a ``DEFAULT`` does NOT rescue
+    it), and ``TestTheSchemaMigratesAnEXISTINGStore`` stands in for an older
+    deployment by creating a row that carries only the REQUIRED columns.
 
-    ⚠ **``head_identity`` IS ``option<string>`` AND RULING O7 ASKED FOR REQUIRED.**
-    The ruling ("a measurement row MUST name its head … and the migration fixture
-    supplies it") cannot be satisfied against the FROZEN contract: the fixture at
-    `d6c0dd4`/`2f22314` creates ``floor_measurement:legacy`` with ``{ state:
-    'measured' }`` and no ``head_identity``, so a required column reddens that pin
-    and a builder may not edit it. The ledger enforces the ruling at the layer it
-    can: :meth:`~loremaster.floor_calibration.store.FloorCalibrationStore.record_measurement`
-    DERIVES ``head_identity`` from the axes on every write, so no lore-written row
-    can lack it — only a raw writer can, which is exactly the gap the store ASSERT
-    was meant to backstop. Escalated in ``REPORT-builder-11ia-1.md``.
+    ⚠ **``head_identity`` IS REQUIRED — RULING O7 (2026-07-26), and the trade was
+    stated before it was taken.** The history is APPEND-ONLY, so a measurement row
+    that cannot name its own scope is unattributable FOREVER: no later read can
+    recover which axes it measured, and both the head mint and the exact-skip
+    scheduler are keyed on exactly that. There is no state in which a row
+    legitimately lacks a head — the axes are INPUTS, fixed before a measurement
+    begins, so even ``measurement_failed`` and ``insufficient_corpus`` rows know
+    their scope at creation time. The §1.4 objection does not apply here because
+    this table has never been deployed; O7's re-open trigger is a genuine legacy
+    corpus found with head-less rows in it, which is a DATA migration with a
+    stated backfill, not a loosened column. Pinned by
+    ``test_a_measurement_row_with_NO_head_identity_is_REFUSED`` (with a positive
+    control) in ``test_floor_calibration_schema.py``. The ledger's own derivation
+    in :meth:`~loremaster.floor_calibration.store.FloorCalibrationStore.record_measurement`
+    stays the ergonomic layer; this column is the backstop for a raw writer.
 
     The ``ASSERT``s on ``state`` / ``non_adoption_cause`` are generated FROM
     :data:`FLOOR_STATES` / :data:`FLOOR_NON_ADOPTION_CAUSES` at call time, never
@@ -1901,7 +1906,10 @@ def _floor_measurement_statements() -> list[str]:
     # ``(name, type_expr, constraint)`` — the ORDER matches
     # :data:`FLOOR_MEASUREMENT_COLUMNS`, which is what the ledger projects.
     specs: tuple[tuple[str, str, str], ...] = (
-        (FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN, "option<string>", ""),
+        # REQUIRED (ruling O7) — see the docstring. Not ``option<>``, and not
+        # ``DEFAULT``-rescued either: a default would FABRICATE an identity, which
+        # is the opposite of what the ruling is for.
+        (FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN, "string", ""),
         (FLOOR_MEASUREMENT_HEAD_REVISION_COLUMN, "option<int>", ""),
         ("state", "string", f"ASSERT $value IN [{allowed_states}]"),
         # A BARE assert: an ``option<>`` field's ASSERT is not evaluated when the

@@ -39,6 +39,7 @@ adopted-N rule exists to prevent.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
@@ -55,12 +56,14 @@ from _surreal_harness import (
     unit_vector,
 )
 from loremaster.floor_calibration import domain as floor_domain
+from loremaster.floor_calibration import store as floor_store_module
 from loremaster.floor_calibration.domain import corpus_content_digest, head_identity
 from loremaster.floor_calibration.store import (
     FenceLostError,
     FloorCalibrationStore,
     LeaseFence,
 )
+from loremaster.store import surreal as surreal_module
 from loremaster.store._txn import SurrealStoreError
 from loremaster.store.surreal import (
     CALIBRATION_POOL_COLUMNS,
@@ -68,6 +71,12 @@ from loremaster.store.surreal import (
     CalibrationPoolTruncatedError,
     SurrealStore,
 )
+from loremaster.store.surreal_schema import (
+    FLOOR_MEASUREMENT_COLUMNS,
+    FLOOR_MEASUREMENT_CREATED_AT_COLUMN,
+    FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN,
+)
+from pydantic import SecretStr
 from test_floor_calibration_domain import EXPECTED_FLOOR_STATES
 
 POOLED: Mapping[str, str] = {"scope": "pooled", "statistic": "cosine_floor"}
@@ -1463,3 +1472,325 @@ class TestTheDigestOverARealCorpus:
             "datum would pass this pin too and it would prove nothing"
         )
         assert corpus_content_digest(after_pool.rows) != before
+
+
+# =============================================================================
+# THE DERIVATION PINS (closure wave, 2026-07-26).
+#
+# ``builder-11ia-1`` introduced four derivations, proved each with a MANUAL
+# mutation receipt, and could not write the invariant — a builder pinning its own
+# derivation is grading itself (escalation E-7). A fix without an invariant is
+# half a fix, and the class WILL recur at the next column added. Derivation (a)
+# (``floor_head``'s axis columns) lives in ``test_floor_calibration_schema.py``
+# because it is DDL; the three below are the ledger's and the pool's statements.
+#
+# ⚠ THE TRAP EVERY ONE OF THESE IS BUILT AGAINST: "the emitted text moved" is
+# satisfied by a build that merely INTERPOLATES the registry somewhere harmless
+# while keeping a hand-typed list, and an ADD-only leg is satisfied by a build
+# that appends the registry to a hardcoded one. So every pin below asserts the
+# emitted structure EXACTLY, and every pin carries a REMOVE leg — with a
+# hand-typed list, un-registering an entry changes nothing at all — plus an
+# UNPATCHED control, so a broken parser cannot make the legs agree by accident.
+#
+# None of them dials: ``FloorCalibrationStore``/``SurrealStore`` constructors open
+# nothing (that is itself contract, so ``test_retry_seam.py`` can construct every
+# seam), and the seam that WOULD dial is monkeypatched out.
+# =============================================================================
+
+_NEVER_DIALLED_URL = "ws://127.0.0.1:1/rpc"  # port 1: a connect attempt is a loud bug
+_PROBE_COLUMN = "probe_column"
+_PROBE_AXIS = "probe_axis"
+
+
+class _CapturedTransaction(Exception):
+    """Carries a composed transaction out of a monkeypatched ``execute_transaction``.
+
+    An exception rather than a list append: it aborts ``record_measurement``
+    BEFORE the post-commit read-back, so the pin needs exactly one monkeypatch and
+    cannot accidentally assert against a half-faked write path. It is deliberately
+    NOT a ``SurrealStoreError`` — the ledger's own ``except`` ladder would
+    otherwise swallow it into a fence verdict.
+    """
+
+    def __init__(self, statement: str, params: Mapping[str, Any]) -> None:
+        super().__init__("transaction captured")
+        self.statement = statement
+        self.params = dict(params)
+
+
+async def _capture_transaction(statement: str, params: Mapping[str, Any], **_: Any) -> None:
+    raise _CapturedTransaction(statement, params)
+
+
+def _offline_floor_store() -> FloorCalibrationStore:
+    """A ledger wired to a port nothing listens on. Its constructor opens nothing."""
+    return FloorCalibrationStore(
+        url=_NEVER_DIALLED_URL,
+        namespace="probe_ns",
+        database="probe_db",
+        user="probe_user",
+        password=SecretStr("probe_pass"),
+    )
+
+
+def _select_list(statement: str) -> str:
+    """The projection between ``SELECT`` and ``FROM`` — the list under test."""
+    assert statement.count(" FROM ") == 1, f"ambiguous statement to parse: {statement!r}"
+    return statement.split("SELECT ", 1)[1].split(" FROM ", 1)[0]
+
+
+class TestTheHeadMintsAxisAssignmentsAreDerivedFromTheRegistry:
+    """DERIVATION (b) — the head mint assigns EXACTLY the registered axes.
+
+    Pinned on the COMPOSED TRANSACTION, not on the private statement builder, so
+    the assignment and its BOUND PARAMETER are checked together: a build that
+    derived the SET clause from the registry while binding params from a
+    hand-typed list would emit ``$fc_axis_probe_axis`` with nothing bound to it —
+    green under a statement-only pin, and a runtime error in production.
+    """
+
+    @staticmethod
+    async def _captured(
+        monkeypatch: pytest.MonkeyPatch,
+        registry: tuple[str, ...],
+        axes: Mapping[str, str],
+    ) -> _CapturedTransaction:
+        monkeypatch.setattr(floor_domain, "FLOOR_HEAD_ALWAYS_SERIALISED_AXES", registry)
+        monkeypatch.setattr(floor_store_module, "execute_transaction", _capture_transaction)
+        store = _offline_floor_store()
+        with pytest.raises(_CapturedTransaction) as caught:
+            await store.record_measurement(
+                axes=axes, measurement=_measurement(), adopt=True
+            )
+        return caught.value
+
+    @staticmethod
+    def _axis_assignments(statement: str) -> dict[str, str]:
+        """``{column: bound-param-suffix}`` for every axis assignment in the mint."""
+        prefix = re.escape(floor_store_module._AXIS_PARAM_PREFIX)
+        return {
+            column: suffix
+            for column, suffix in re.findall(
+                rf"(\w+) = \${prefix}(\w+)", statement
+            )
+        }
+
+    async def test_the_UNPATCHED_mint_assigns_exactly_the_registered_axes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The CONTROL — without it, a parser that finds nothing passes both legs."""
+        registry = tuple(floor_domain.FLOOR_HEAD_ALWAYS_SERIALISED_AXES)
+        captured = await self._captured(monkeypatch, registry, POOLED)
+        assert self._axis_assignments(captured.statement) == {
+            axis: axis for axis in registry
+        }
+
+    async def test_REGISTERING_an_axis_adds_its_assignment_AND_its_bound_param(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        registry = (*floor_domain.FLOOR_HEAD_ALWAYS_SERIALISED_AXES, _PROBE_AXIS)
+        axes = {**POOLED, _PROBE_AXIS: "probe_value"}
+        captured = await self._captured(monkeypatch, registry, axes)
+        assert self._axis_assignments(captured.statement) == {
+            axis: axis for axis in registry
+        }, (
+            "registering an always-serialised axis did not add its assignment to the "
+            "head mint — the mint carries a hand-typed axis list, not a derivation of "
+            "FLOOR_HEAD_ALWAYS_SERIALISED_AXES"
+        )
+        bound = f"{floor_store_module._AXIS_PARAM_PREFIX}{_PROBE_AXIS}"
+        assert captured.params.get(bound) == "probe_value", (
+            f"the mint references ${bound} but nothing bound it — the SET clause and "
+            f"the parameter dict read from DIFFERENT lists"
+        )
+
+    async def test_UNREGISTERING_an_axis_removes_its_assignment_AND_its_param(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE LEG THAT DISCRIMINATES: a hardcoded list survives every ADD leg."""
+        registry = floor_domain.FLOOR_HEAD_ALWAYS_SERIALISED_AXES[:1]
+        dropped = floor_domain.FLOOR_HEAD_ALWAYS_SERIALISED_AXES[1:]
+        assert registry and dropped, "the registry must hold >= 2 axes for this leg"
+        axes = {axis: POOLED[axis] for axis in registry}
+        captured = await self._captured(monkeypatch, registry, axes)
+        assignments = self._axis_assignments(captured.statement)
+        assert assignments == {axis: axis for axis in registry}, (
+            f"un-registering {list(dropped)} left the mint's assignments unchanged "
+            f"({assignments}) — they are hand-typed"
+        )
+        for axis in dropped:
+            assert f"{floor_store_module._AXIS_PARAM_PREFIX}{axis}" not in captured.params
+
+
+class TestTheHistoryProjectionIsDerivedFromTheColumnRegistry:
+    """DERIVATION (c) — ``measurement_history`` projects FLOOR_MEASUREMENT_COLUMNS.
+
+    The projection is EXPLICIT on purpose (store reference §2: ``SELECT *`` omits a
+    ``NONE``-valued column entirely, so every ``option<>`` reader would take a
+    ``KeyError``). That only holds if the list is DERIVED — a hand-typed twin
+    silently stops projecting the next column somebody declares, and the consumer
+    reads ``None`` for a column that is really populated.
+    """
+
+    @staticmethod
+    async def _projection(
+        monkeypatch: pytest.MonkeyPatch, columns: tuple[str, ...]
+    ) -> str:
+        monkeypatch.setattr(floor_store_module, "FLOOR_MEASUREMENT_COLUMNS", columns)
+        store = _offline_floor_store()
+        captured: list[str] = []
+
+        async def _fake_query(statement: str, params: dict[str, Any] | None = None) -> Any:
+            captured.append(statement)
+            return []
+
+        monkeypatch.setattr(store, "_query", _fake_query)
+        assert await store.measurement_history(POOLED, limit=3) == []
+        assert len(captured) == 1, f"expected ONE history read, got {captured}"
+        return _select_list(captured[0])
+
+    @staticmethod
+    def _expected(columns: tuple[str, ...]) -> str:
+        return ", ".join(("record::id(id) AS measurement_id", *columns))
+
+    async def test_the_UNPATCHED_projection_matches_the_registry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The CONTROL for the two legs below."""
+        columns = tuple(FLOOR_MEASUREMENT_COLUMNS)
+        assert await self._projection(monkeypatch, columns) == self._expected(columns)
+
+    async def test_DECLARING_a_column_adds_it_to_the_projection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        columns = (*FLOOR_MEASUREMENT_COLUMNS, _PROBE_COLUMN)
+        assert await self._projection(monkeypatch, columns) == self._expected(columns), (
+            "declaring a measurement column did not reach the history projection — it "
+            "is a hand-typed twin of FLOOR_MEASUREMENT_COLUMNS, so the next column "
+            "added would read None for every consumer while the store holds a value"
+        )
+
+    async def test_RETIRING_a_column_removes_it_from_the_projection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE DISCRIMINATING LEG. The retired column is chosen structurally:
+        ``head_identity`` is the WHERE key and ``created_at`` is the ORDER BY key,
+        so dropping either would change the statement for a reason that has
+        nothing to do with the projection."""
+        structural = (
+            FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN,
+            FLOOR_MEASUREMENT_CREATED_AT_COLUMN,
+        )
+        retired = next(
+            column
+            for column in FLOOR_MEASUREMENT_COLUMNS
+            if column not in structural
+        )
+        columns = tuple(
+            column
+            for column in FLOOR_MEASUREMENT_COLUMNS
+            if column != retired
+        )
+        projection = await self._projection(monkeypatch, columns)
+        assert projection == self._expected(columns), (
+            f"retiring {retired!r} left the history projection unchanged "
+            f"({projection!r}) — it is hand-typed"
+        )
+        assert retired not in projection.split(", ")
+
+
+class TestTheCalibrationPoolProjectionIsDerivedFromItsColumnRegistry:
+    """DERIVATION (d) — the C8 walk projects CALIBRATION_POOL_COLUMNS.
+
+    ``set(row) == set(CALIBRATION_POOL_COLUMNS)`` is asserted over LIVE rows
+    elsewhere in this file, but that pin passes for a build whose statement and
+    whose constant were BOTH hand-typed and happen to agree today — which is
+    exactly the state 11-i-b walks into when it extends the constant and expects
+    the read to follow. This pin is the one that makes "11-i-b extends THIS
+    constant rather than issuing a second read" true rather than hoped.
+    """
+
+    @staticmethod
+    def _offline_chunk_store() -> SurrealStore:
+        return SurrealStore(
+            url=_NEVER_DIALLED_URL,
+            namespace="probe_ns",
+            database="probe_db",
+            dim=PRODUCTION_DIM,
+            user="probe_user",
+            password=SecretStr("probe_pass"),
+        )
+
+    @staticmethod
+    async def _projection(
+        monkeypatch: pytest.MonkeyPatch, columns: tuple[str, ...]
+    ) -> str:
+        monkeypatch.setattr(surreal_module, "CALIBRATION_POOL_COLUMNS", columns)
+        store = TestTheCalibrationPoolProjectionIsDerivedFromItsColumnRegistry._offline_chunk_store()
+        captured: list[str] = []
+
+        async def _fake_query(statement: str, params: dict[str, Any] | None = None) -> Any:
+            captured.append(statement)
+            # An EMPTY corpus: the count read answers 0, so the walk's limit is 1
+            # and its zero rows are neither a truncation nor a mismatch.
+            return [{"count": 0}] if "count()" in statement else []
+
+        monkeypatch.setattr(store, "_query", _fake_query)
+        pool = await store.enumerate_calibration_pool()
+        assert pool.counted_total == 0 and pool.rows == ()
+        assert len(captured) == 2, f"expected a count read then a walk, got {captured}"
+        return _select_list(captured[1])
+
+    @staticmethod
+    def _expected(columns: tuple[str, ...]) -> str:
+        """The walk's projection, RESTATED independently of the production helper.
+
+        ``record::id(id) AS point_id`` is spelled out here rather than read off
+        ``surreal``'s own private constants on purpose: an expectation derived from
+        the same source as the code under test agrees with it by construction and
+        can never catch a change to it.
+        """
+        return ", ".join(
+            "record::id(id) AS point_id" if column == "point_id" else column
+            for column in columns
+        )
+
+    async def test_the_UNPATCHED_projection_matches_the_registry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The CONTROL for the two legs below."""
+        columns = tuple(surreal_module.CALIBRATION_POOL_COLUMNS)
+        assert await self._projection(monkeypatch, columns) == self._expected(columns)
+
+    async def test_DECLARING_a_pool_column_adds_it_to_the_walk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        columns = (*surreal_module.CALIBRATION_POOL_COLUMNS, _PROBE_COLUMN)
+        assert await self._projection(monkeypatch, columns) == self._expected(columns), (
+            "extending CALIBRATION_POOL_COLUMNS did not extend the C8 walk's "
+            "projection — 11-i-b's probe-derivation columns would be declared and "
+            "never read"
+        )
+
+    async def test_RETIRING_a_pool_column_removes_it_from_the_walk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE DISCRIMINATING LEG. ``point_id`` is kept because it is the walk's
+        ORDER BY key (a column ordered by but not projected is a PARSE ERROR on
+        3.2.1 — store reference §7), so retiring it would move the statement for a
+        reason unrelated to the projection."""
+        order_column = surreal_module._CALIBRATION_POOL_ORDER_COLUMN
+        kept = (order_column,)
+        retired = [
+            column
+            for column in surreal_module.CALIBRATION_POOL_COLUMNS
+            if column != order_column
+        ]
+        assert retired, "the pool registry must hold more than its order column"
+        projection = await self._projection(monkeypatch, kept)
+        assert projection == self._expected(kept), (
+            f"retiring {retired} left the C8 walk's projection unchanged "
+            f"({projection!r}) — it is hand-typed"
+        )
+        for column in retired:
+            assert column not in projection.split(", ")

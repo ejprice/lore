@@ -370,9 +370,11 @@ class FloorCalibrationStore:
         """
         self._validate_domain(measurement)
         # The head id is DERIVED, through the domain MODULE, on every write: one
-        # implementation of the identity (F6), and the reason a lore-written row
-        # can never lack a ``head_identity`` even though the column is
-        # ``option<>`` (see the schema module's O7 note).
+        # implementation of the identity (F6). The column itself is REQUIRED
+        # (ruling O7 — see the schema module's note), so this derivation is the
+        # ergonomic layer and the store ASSERT is the backstop; neither is
+        # redundant, and a caller cannot forge the value either (the computed key
+        # wins inside ``object::extend``).
         head_identity = floor_domain.head_identity(axes)
         measurement_id = str(uuid4())
         params: dict[str, Any] = {

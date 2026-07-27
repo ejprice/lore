@@ -49,9 +49,15 @@ from _surreal_harness import (
     admin_db,  # noqa: F401 - re-exported pytest fixture
     run,
 )
+from loremaster.floor_calibration import domain as floor_domain
 from loremaster.store import surreal_schema
 from loremaster.store.surreal_schema import (
+    FLOOR_HEAD_ADOPTED_AT_COLUMN,
+    FLOOR_HEAD_AXES_COLUMN,
+    FLOOR_HEAD_MEASUREMENT_COLUMN,
+    FLOOR_HEAD_REVISION_COLUMN,
     FLOOR_HEAD_TABLE,
+    FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN,
     FLOOR_MEASUREMENT_TABLE,
     FLOOR_NON_ADOPTION_CAUSES,
     FLOOR_STATES,
@@ -70,6 +76,17 @@ _DEFINE_INDEX = re.compile(r"^\s*DEFINE\s+INDEX\b", re.IGNORECASE)
 # find this line (repo rename law: sweep patterns carry no structural anchor,
 # because prose mentions carry none either).
 RETIRED_STATE_NAME = "stale_remeasuring"
+
+# The head this file's raw-SQL rows claim to measure. ⚠ RULING O7 MADE
+# ``head_identity`` REQUIRED, so EVERY raw ``floor_measurement`` CREATE below must
+# carry it — including the ones that are EXPECTED TO FAIL, or they would fail on
+# the missing column instead of on the constraint they are named for. It is the
+# ONE column these fixtures supply beyond the one under test: O7's reach argument
+# is that the migration row stays minimal over the OPTIONAL columns, and adding an
+# optional one here would quietly narrow that reach. Any string is legal (the
+# column carries no ASSERT); it is deliberately NOT a real digest, because these
+# pins test the SCHEMA and must not couple to the domain's identity function.
+_LEGACY_HEAD_IDENTITY = "legacy_head_identity"
 
 # What Addendum F §F4 renamed it TO. Load-bearing for the marker rule below, not
 # decoration: a retirement notice that does not say what to use INSTEAD is half a
@@ -686,6 +703,96 @@ class TestTheRetirementMarkerRuleDiscriminates:
             )
 
 
+def _defined_field_names(ddl: str, table: str) -> list[str]:
+    """The field names ``ddl`` defines on ``table``, IN EMITTED ORDER.
+
+    Reads the emitted statements rather than the constants, which is the whole
+    point: a pin that compared two constants to each other could never see a DDL
+    generator that ignored both.
+    """
+    pattern = re.compile(
+        rf"^\s*DEFINE\s+FIELD\s+(?:OVERWRITE\s+|IF\s+NOT\s+EXISTS\s+)?"
+        rf"(?P<name>\S+)\s+ON\s+{re.escape(table)}\b",
+        re.IGNORECASE,
+    )
+    names = [
+        match.group("name")
+        for line in ddl.splitlines()
+        if (match := pattern.match(line)) is not None
+    ]
+    assert names, f"no DEFINE FIELD statements found for {table!r} — the parser is blind"
+    return names
+
+
+class TestTheHeadTablesAxisColumnsAreDerivedFromTheRegistry:
+    """DERIVATION (a) — ``floor_head``'s axis columns follow the F6 registry.
+
+    ``builder-11ia-1`` proved this by a manual mutation receipt and could not
+    write the invariant (a builder pinning its own derivation is grading itself).
+    A fix without an invariant is half a fix, so here it is.
+
+    ⚠ **WHY BOTH LEGS, AND WHY EXACT EQUALITY.** "the emitted DDL changed" is
+    satisfied by a build that merely INTERPOLATES the registry somewhere harmless
+    (a comment, an unrelated clause) while keeping a hand-typed column list — and
+    an ADD-only leg is satisfied by a build that appends the registry to a
+    hardcoded list. The REMOVE leg is what kills both: with a hand-typed list,
+    un-registering ``statistic`` changes nothing at all. Exact equality on the
+    emitted NAME SEQUENCE is what makes the assertion about the columns
+    themselves rather than about the text around them.
+    """
+
+    #: The axis this class registers to move the DDL. Deliberately not a real
+    #: axis name — a probe that collided with one would pass on a build that
+    #: emitted the real column and ignored the registry.
+    PROBE_AXIS = "probe_axis"
+
+    @staticmethod
+    def _expected(axes: tuple[str, ...]) -> list[str]:
+        """The head table's full field sequence for a given axis registry."""
+        return [
+            *axes,
+            FLOOR_HEAD_REVISION_COLUMN,
+            FLOOR_HEAD_MEASUREMENT_COLUMN,
+            FLOOR_HEAD_ADOPTED_AT_COLUMN,
+            FLOOR_HEAD_AXES_COLUMN,
+        ]
+
+    def test_the_UNPATCHED_ddl_matches_the_registry(self) -> None:
+        """The CONTROL. Without it, both legs below could be passing because the
+        parser or the expectation is broken in a way that happens to agree."""
+        assert _defined_field_names(
+            generate_floor_calibration_ddl(), FLOOR_HEAD_TABLE
+        ) == self._expected(floor_domain.FLOOR_HEAD_ALWAYS_SERIALISED_AXES)
+
+    def test_REGISTERING_an_axis_adds_its_column_in_registry_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        registry = (*floor_domain.FLOOR_HEAD_ALWAYS_SERIALISED_AXES, self.PROBE_AXIS)
+        monkeypatch.setattr(floor_domain, "FLOOR_HEAD_ALWAYS_SERIALISED_AXES", registry)
+        assert _defined_field_names(
+            generate_floor_calibration_ddl(), FLOOR_HEAD_TABLE
+        ) == self._expected(registry), (
+            "registering an always-serialised axis did not add its column to "
+            "`floor_head` in registry order — the head table's axis columns are a "
+            "hand-typed twin of FLOOR_HEAD_ALWAYS_SERIALISED_AXES, not a derivation"
+        )
+
+    def test_UNREGISTERING_an_axis_removes_its_column(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE LEG THAT DISCRIMINATES. A hardcoded column list passes every
+        ADD-shaped pin; only removal proves the list is not there at all."""
+        registry = floor_domain.FLOOR_HEAD_ALWAYS_SERIALISED_AXES[:1]
+        dropped = floor_domain.FLOOR_HEAD_ALWAYS_SERIALISED_AXES[1:]
+        assert registry and dropped, "the registry must hold >= 2 axes for this leg"
+        monkeypatch.setattr(floor_domain, "FLOOR_HEAD_ALWAYS_SERIALISED_AXES", registry)
+        names = _defined_field_names(generate_floor_calibration_ddl(), FLOOR_HEAD_TABLE)
+        assert names == self._expected(registry), (
+            f"un-registering {list(dropped)} left the `floor_head` columns unchanged "
+            f"({names}) — the DDL carries a hand-typed axis list"
+        )
+
+
 class TestTheSchemaAppliesToTheLiveEngine:
     """The generated DDL against the real 3.2.1 engine."""
 
@@ -719,19 +826,55 @@ class TestTheSchemaAppliesToTheLiveEngine:
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
     ) -> None:
         """The ledger's own validation is the ergonomic layer; THIS is the
-        backstop for any writer that skips it."""
+        backstop for any writer that skips it.
+
+        ⚠ THE ROW SUPPLIES ``head_identity`` SO THE REJECTION IS ATTRIBUTABLE.
+        The column is REQUIRED (ruling O7), so a row omitting it is rejected for
+        THAT reason — and ``pytest.raises(Exception)`` cannot tell the two apart.
+        A pin that passes because a *different* column was missing would green-light
+        a broken closed set, which is this repo's own receipt of a probe passing on
+        a parse error. The positive-control leg
+        (``test_a_KNOWN_state_string_is_ACCEPTED_by_the_store``) proves the same
+        CONTENT minus the bad value is accepted, so the probe can see a success.
+        """
         connection, _ = admin_db
         await run(connection, generate_floor_calibration_ddl())
         with pytest.raises(Exception):  # noqa: B017 - any engine rejection is the pin
             await run(
                 connection,
                 f"CREATE type::record('{FLOOR_MEASUREMENT_TABLE}', 'bad') "
-                f"CONTENT {{ state: 'not_a_real_state' }}",
+                f"CONTENT {{ state: 'not_a_real_state', "
+                f"{FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN}: '{_LEGACY_HEAD_IDENTITY}' }}",
             )
+
+    async def test_a_KNOWN_state_string_with_the_same_shape_is_ACCEPTED(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """THE POSITIVE CONTROL for the two rejection pins above.
+
+        Same CONTENT shape, same required columns, only the closed-domain value
+        changed to a legal one. Without this, "the engine rejected it" is worthless
+        — a schema that rejected EVERYTHING would pass both rejection pins.
+        """
+        connection, _ = admin_db
+        await run(connection, generate_floor_calibration_ddl())
+        await run(
+            connection,
+            f"CREATE type::record('{FLOOR_MEASUREMENT_TABLE}', 'good') "
+            f"CONTENT {{ state: 'measured_not_adopted', "
+            f"non_adoption_cause: '{FLOOR_NON_ADOPTION_CAUSES[0]}', "
+            f"{FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN}: '{_LEGACY_HEAD_IDENTITY}' }}",
+        )
+        rows = await run(
+            connection,
+            f"SELECT state FROM type::record('{FLOOR_MEASUREMENT_TABLE}', 'good')",
+        )
+        assert rows and rows[0]["state"] == "measured_not_adopted"
 
     async def test_an_UNKNOWN_non_adoption_cause_is_rejected_by_the_store(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
     ) -> None:
+        """``head_identity`` is supplied for the reason the state pin above states."""
         connection, _ = admin_db
         await run(connection, generate_floor_calibration_ddl())
         with pytest.raises(Exception):  # noqa: B017
@@ -739,8 +882,49 @@ class TestTheSchemaAppliesToTheLiveEngine:
                 connection,
                 f"CREATE type::record('{FLOOR_MEASUREMENT_TABLE}', 'bad2') "
                 f"CONTENT {{ state: 'measured_not_adopted', "
-                f"non_adoption_cause: 'not_a_real_cause' }}",
+                f"non_adoption_cause: 'not_a_real_cause', "
+                f"{FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN}: '{_LEGACY_HEAD_IDENTITY}' }}",
             )
+
+    async def test_a_measurement_row_with_NO_head_identity_is_REFUSED(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """RULING O7's invariant, at the layer the ruling names: the STORE.
+
+        O7: *"a measurement row MUST name its head"* — the history is append-only,
+        so a row that cannot say which axes it measured is unattributable FOREVER,
+        and both the head mint and the exact-skip scheduler are keyed on exactly
+        that. The ledger deriving ``head_identity`` on every write is the ergonomic
+        layer; this is the backstop for any writer that skips the ledger, and it is
+        what goes RED if the column is ever loosened back to ``option<string>``.
+
+        Re-open trigger (O7, verbatim): a genuine legacy corpus discovered with
+        head-less rows in it — at which point the answer is a DATA migration with a
+        stated backfill, not a loosened column.
+        """
+        connection, _ = admin_db
+        await run(connection, generate_floor_calibration_ddl())
+        with pytest.raises(Exception):  # noqa: B017 - any engine rejection is the pin
+            await run(
+                connection,
+                f"CREATE type::record('{FLOOR_MEASUREMENT_TABLE}', 'headless') "
+                f"CONTENT {{ state: 'measured' }}",
+            )
+        # POSITIVE CONTROL — the SAME row plus the head identity is accepted, so the
+        # rejection above is attributable to the missing column and not to the
+        # engine refusing this CONTENT shape for some unrelated reason.
+        await run(
+            connection,
+            f"CREATE type::record('{FLOOR_MEASUREMENT_TABLE}', 'headed') "
+            f"CONTENT {{ state: 'measured', "
+            f"{FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN}: '{_LEGACY_HEAD_IDENTITY}' }}",
+        )
+        rows = await run(
+            connection,
+            f"SELECT {FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN} FROM "
+            f"type::record('{FLOOR_MEASUREMENT_TABLE}', 'headed')",
+        )
+        assert rows and rows[0][FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN] == _LEGACY_HEAD_IDENTITY
 
     async def test_the_lease_holder_column_accepts_NONE(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
@@ -820,13 +1004,15 @@ class TestTheSchemaMigratesAnEXISTINGStore:
         await run(
             connection,
             f"CREATE type::record('{FLOOR_MEASUREMENT_TABLE}', 'legacy') "
-            f"CONTENT {{ state: 'measured' }}",
+            f"CONTENT {{ state: 'measured', "
+            f"{FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN}: '{_LEGACY_HEAD_IDENTITY}' }}",
         )
         with pytest.raises(Exception):  # noqa: B017 - the narrow schema is really in force
             await run(
                 connection,
                 f"CREATE type::record('{FLOOR_MEASUREMENT_TABLE}', 'blocked') "
-                f"CONTENT {{ state: 'disabled' }}",
+                f"CONTENT {{ state: 'disabled', "
+                f"{FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN}: '{_LEGACY_HEAD_IDENTITY}' }}",
             )
 
         # Re-apply the REAL slice, exactly as ``ensure_ready`` does at boot.
@@ -836,7 +1022,8 @@ class TestTheSchemaMigratesAnEXISTINGStore:
         await run(
             connection,
             f"CREATE type::record('{FLOOR_MEASUREMENT_TABLE}', 'now_allowed') "
-            f"CONTENT {{ state: 'disabled' }}",
+            f"CONTENT {{ state: 'disabled', "
+            f"{FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN}: '{_LEGACY_HEAD_IDENTITY}' }}",
         )
         # … and the pre-existing row is intact, not rewritten and not dropped.
         rows = await run(

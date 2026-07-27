@@ -127,7 +127,29 @@ LEASE_LOCK_NAMESPACE = "lore"
 
 
 class LeaseError(SurrealStoreError):
-    """Base for the lease adapter's typed failures."""
+    """Base for the lease adapter's typed failures.
+
+    ⚠ **NOTHING RAISES THIS AS OF PACKET 11-i-a (2026-07-26), AND THAT IS A
+    DELIBERATE KNOWN BOUND, NOT AN OVERSIGHT** (lead ruling on ``builder-11ia-1``'s
+    escalation E-5, ``docs/plans/v2/receipts/2026-07-26-packet11i-build/``).
+    :class:`SurrealLeaseStore` raises the shared ``_txn`` types directly
+    (:class:`~loremaster.store._txn.SurrealConnectionError`,
+    :class:`~loremaster.store._txn.TxnContentionExhaustedError`,
+    :class:`~loremaster.store._txn.SurrealStoreError`) and
+    :class:`SurrealLeaderLock` reports failure through the library's boolean /
+    :class:`LockAbsent` channel, so no code path constructs this class today.
+
+    It is kept because it is a member of the contract's FROZEN interface and
+    because packet **11-ii**'s election thread is its intended raiser: that loop
+    runs outside any caller's stack, so it needs a lease-specific type for a lease
+    failure that belongs to no request.
+
+    **NAMED RE-OPEN TRIGGER — if 11-ii ships without raising ``LeaseError``,
+    DELETE it.** An unpinned known limitation is indistinguishable from an unknown
+    one; worse, an unraised base class reads as a supported error contract, and a
+    consumer writing ``except LeaseError`` would catch nothing while believing it
+    had covered the lease.
+    """
 
 
 @dataclass(frozen=True)
