@@ -335,6 +335,61 @@ appear to comply, but the contract must **state the compliance explicitly per pi
 leave it inferred. Where a `dict[str, Any]` config seam can be narrowed to a typed model in
 passing, do it; #221 stays open for the general instrument if not fully closed here.
 
+---
+
+## Fourth ruling wave — 2026-07-27, on the adversary RE-RUN (verdict: still INSUFFICIENT)
+
+Round 1's four findings are **genuinely closed** — independently verified, not taken on the
+author's word. The re-run found a new BLOCKER and, answering the lead's frontier question,
+**falsified the rationale the lead had written into R10 itself.**
+
+**R19 — MP5, the new BLOCKER. RULED: MANDATE SHAPE B (per-request headers).**
+The wrong build `W-R10a` applies R10's fix to the **injected** client arm only, leaving the
+**owned** `httpx.AsyncClient` completely unauthenticated — and produces a **byte-identical failure
+set to the correct build** (`diff` empty). Every production construction of the Anthropic counter
+uses the **owned** arm (`calibration/engine.py:686`, `scripts/calibration_baseline.py:149`) while
+the contract's only wire pin **injects** one. **That is the #107 shape exactly: green everywhere,
+100% broken in production.**
+
+The ruled fix is structural, not a pin: **build no auth headers at construction at all; attach them
+per request.** One code path, so there is no owned-vs-injected arm to fix-one-and-forget-the-other.
+The adversary measured shape B **immune** to W-R10a. **The owned-arm wire pin (MP5) is ALSO
+required** — it outlives the shape decision and catches a future refactor back to client-level
+headers dropping auth on one arm.
+
+**R20 — MP7 + MP8, the `x-api-key` asymmetry. RULED: correct the rationale AND pin the pattern.**
+Two parts, both required:
+1. **R10's stated rationale is now FALSE and must be corrected.** It claims the source fix *"removes
+   the only object in the tree that held a labelled credential as a bare `str`"*. After R10,
+   `httpx.Headers` holds exactly that — and httpx obfuscates **only** `authorization` /
+   `proxy-authorization`, **not** `x-api-key` (read from `httpx.Headers.__repr__` →
+   `_obfuscate_sensitive_headers`, httpx 0.28.1). **R10 cited `tei.py` as precedent; that
+   precedent's residual protection does not transfer**, because `tei.py` authenticates with
+   `Authorization: Bearer` and the counter with `x-api-key`. A false rationale in a docstring is
+   the served-English-contradicting-code class this repo calls its most expensive — fix it.
+2. **Pin `x-api-key` against the surviving labelled patterns.** `_ASSIGNMENT_RE` matches
+   `\bapi[_-]?key\b`, which fires inside `x-api-key` — so a rendered `Headers` repr **would** be
+   scrubbed by a pattern this packet keeps. That is currently **incidental**, and *"it happens to
+   match"* is not a guarantee: pin it explicitly, so a future narrowing of the pattern goes RED
+   instead of silently un-covering the one header our production credential travels in.
+   ⚠ Keep the bound's **measured trigger** from the adversary: *the day a lore client authenticates
+   with a header httpx does not obfuscate* — which is **TODAY**, for `x-api-key`.
+
+**R21 — MP6, the C-DEF trap R17 created. FIX THE SCOPE LIST.** The allowlist shrink 10 → 5 changes
+three call sites whose §9 rows do not exist, so the builder would meet red tests whose fix is not in
+its authorised set. Add them. ⚠ And carry the author's own independent find: `snapshot_gc.py:332` is
+the ONLY one of the five whose `KeyError` is **caught** and rendered into a clean `_EXIT_ERROR`
+message — de-wrapping there must keep raising a **naming** error or the CLI's diagnostics silently
+degrade.
+
+**Verified and closed, recorded so they are not re-litigated:** R17's re-derivation is confirmed
+independently (*"1 of 5 sites wrong"* does **not** reproduce; all five are username round-trips, all
+five password siblings stay wrapped). R18 verified structurally (337 collected, **0 collection
+errors**, 103 runtime reds; base RED 103/234 matches §10.1 exactly). R16's commit boundary has no
+mechanical enforcement, but `W-DEL` = 16 RED means a split commit has a red suite — **adequate**,
+reported not a defect. The injected-client pin is **sound**: shape A passes, shape B passes,
+bare-dict retention fails.
+
 **Raised and NOT actioned (operator's call, out of packet scope):** residual R12 — the base scrubber
 mangles adjacent structure (`Bearer <k>'}` eats the closing quote/brace, because the pattern ends
 `(\S+)`). Pre-existing, cosmetic, unrelated to the deletion.
