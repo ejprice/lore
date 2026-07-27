@@ -48,10 +48,16 @@ import json
 import logging
 import sys
 import traceback
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from datetime import datetime
 
 import pytest
+from _logging_fixtures import (
+    SILENCED_THIRD_PARTY,
+    emit_through_configured_logger,
+    make_record,
+    restored_lore_logger_state,
+)
 from loremaster.logging_setup import (
     EXC_FIELD,
     LORE_NAMESPACES,
@@ -71,10 +77,6 @@ from loremaster.logging_setup import (
 # deleted, not weakened.
 FAKE_BEARER_TOKEN = "sk-deadbeefcafef00d1234567890abcdef0123456789abcdef"
 FAKE_API_KEY = "AbCdEf0123456789AbCdEf0123456789AbCdEf01"
-
-# The third-party loggers configure_logging must pin to WARNING (their per-request
-# INFO chatter would otherwise flood the structured stream).
-SILENCED_THIRD_PARTY = ("httpx",)
 
 # A credential written as a LITERAL in source. A traceback quotes each frame's
 # source LINE, so this value reaches the log through a path that has nothing to do
@@ -130,26 +132,6 @@ def _emit_with_stack(logger: logging.Logger, **_credentials: str) -> None:
     logger.error("store.connect.failed", stack_info=True)
 
 
-def _make_record(
-    *, name: str = "loremaster.demo", level: int = logging.INFO, msg: str = "event.demo",
-    extra: dict[str, object] | None = None,
-) -> logging.LogRecord:
-    """Build a real :class:`logging.LogRecord` with ``extra`` keys attached.
-
-    Mirrors what ``logger.info(msg, extra={...})`` produces: each extra key is set
-    as an attribute on the record (which is exactly how the stdlib threads
-    ``extra`` through), so the formatter sees the same shape it would in
-    production.
-    """
-    record = logging.LogRecord(
-        name=name, level=level, pathname=__file__, lineno=1,
-        msg=msg, args=(), exc_info=None,
-    )
-    for key, value in (extra or {}).items():
-        setattr(record, key, value)
-    return record
-
-
 @pytest.fixture(autouse=True)
 def _restore_lore_loggers() -> Iterator[None]:
     """Snapshot + restore the lore-namespace + third-party loggers around each test.
@@ -158,30 +140,21 @@ def _restore_lore_loggers() -> Iterator[None]:
     ``propagate``) on the ``loremaster``/``loresigil``/``lorescribe`` namespace
     loggers and on ``httpx``. Without a restore, a configure in
     one test leaks its handler into the next (cross-contamination of shared
-    global state — the exact state-leakage the lifecycle rule forbids). This
-    fixture records each affected logger's handlers/level/propagate before the
-    test and restores them after, so every test starts from the same baseline.
+    global state — the exact state-leakage the lifecycle rule forbids).
+
+    The snapshot/restore itself lives in ``_logging_fixtures`` because
+    ``test_secret_leak_vectors.py`` needs the identical policy; a second copy here
+    is how the two would drift.
     """
-    names = (*LORE_NAMESPACES, *SILENCED_THIRD_PARTY)
-    saved: dict[str, tuple[list[logging.Handler], int, bool]] = {}
-    for name in names:
-        logger = logging.getLogger(name)
-        saved[name] = (list(logger.handlers), logger.level, logger.propagate)
-    try:
+    with restored_lore_logger_state():
         yield
-    finally:
-        for name, (handlers, level, propagate) in saved.items():
-            logger = logging.getLogger(name)
-            logger.handlers = list(handlers)
-            logger.setLevel(level)
-            logger.propagate = propagate
 
 
 class TestJsonFormatter:
     """One JSON object per record: ts/level/logger/msg + flattened extra."""
 
     def test_emits_parseable_json_with_core_fields(self) -> None:
-        record = _make_record(level=logging.WARNING, msg="watcher.in_q_overflow")
+        record = make_record(level=logging.WARNING, msg="watcher.in_q_overflow")
         line = JsonFormatter().format(record)
         # Independent oracle: the stdlib JSON parser, not the formatter's logic.
         parsed = json.loads(line)
@@ -190,7 +163,7 @@ class TestJsonFormatter:
         assert parsed["msg"] == "watcher.in_q_overflow"
 
     def test_ts_is_iso8601_utc(self) -> None:
-        line = JsonFormatter().format(_make_record())
+        line = JsonFormatter().format(make_record())
         parsed = json.loads(line)
         # Independent oracle: fromisoformat parses it AND it must be UTC-aware.
         when = datetime.fromisoformat(parsed["ts"])
@@ -198,7 +171,7 @@ class TestJsonFormatter:
         assert when.utcoffset().total_seconds() == 0  # type: ignore[union-attr]
 
     def test_extra_fields_are_flattened_to_top_level(self) -> None:
-        record = _make_record(
+        record = make_record(
             msg="index.file.done",
             extra={"tier": "custom", "file_path": "src/a.py", "n_chunks": 7, "duration_ms": 12},
         )
@@ -212,7 +185,7 @@ class TestJsonFormatter:
     def test_does_not_leak_stdlib_logrecord_internals(self) -> None:
         # The JSON must be a clean structured event, not a dump of every LogRecord
         # attribute (args/levelno/pathname/… would bloat Mezmo and confuse fields).
-        parsed = json.loads(JsonFormatter().format(_make_record()))
+        parsed = json.loads(JsonFormatter().format(make_record()))
         for noise in ("args", "levelno", "msecs", "relativeCreated", "pathname"):
             assert noise not in parsed
 
@@ -221,7 +194,7 @@ class TestKeyValueFormatter:
     """Human-readable ``ts level logger event k=v`` line."""
 
     def test_contains_level_logger_event_and_kv_pairs(self) -> None:
-        record = _make_record(
+        record = make_record(
             level=logging.INFO, msg="reconcile.summary",
             extra={"files_indexed": 3, "files_purged": 1},
         )
@@ -235,17 +208,26 @@ class TestKeyValueFormatter:
 
 
 class TestRedactingFilter:
-    """The secret backstop: bearer / api_key / high-entropy tokens are scrubbed."""
+    """The secret backstop: a bearer token and an ``api_key``-style assignment are scrubbed.
+
+    ⚠ LABELLED SHAPES ONLY. This docstring used to end "``/ high-entropy tokens``",
+    which packet 42 made false — the catch-all that scrubbed an UNLABELLED run is
+    deleted, and that is now an operator-ruled accepted bound pinned in
+    ``test_secret_leak_vectors.TestTheDeletionsResidualBoundsArePinned``. The
+    ``logging_setup`` module has a prose blocklist guarding exactly this class of
+    staleness; nothing guards a TEST file's prose, which is how this sentence
+    survived the deletion it describes.
+    """
 
     def test_redacts_bearer_in_message(self) -> None:
-        record = _make_record(msg=f"Authorization: Bearer {FAKE_BEARER_TOKEN}")
+        record = make_record(msg=f"Authorization: Bearer {FAKE_BEARER_TOKEN}")
         assert RedactingFilter().filter(record) is True  # never drops the record
         rendered = record.getMessage()
         assert FAKE_BEARER_TOKEN not in rendered
         assert REDACTED in rendered
 
     def test_redacts_api_key_assignment_in_extra_value(self) -> None:
-        record = _make_record(
+        record = make_record(
             msg="embed.probe.ok",
             extra={"detail": f"api_key={FAKE_API_KEY}"},
         )
@@ -264,7 +246,7 @@ class TestRedactingFilter:
 
     def test_does_not_redact_ordinary_short_values(self) -> None:
         # False-positive guard: normal short structured fields survive untouched.
-        record = _make_record(msg="index.file.done", extra={"tier": "custom", "n_chunks": 5})
+        record = make_record(msg="index.file.done", extra={"tier": "custom", "n_chunks": 5})
         RedactingFilter().filter(record)
         assert record.tier == "custom"  # type: ignore[attr-defined]
         assert record.n_chunks == 5  # type: ignore[attr-defined]
@@ -272,10 +254,11 @@ class TestRedactingFilter:
     def test_does_not_redact_realistic_paths_and_identifiers(self) -> None:
         # Critical false-positive guard: the events log file paths, dotted module
         # names, version stamps, and event strings. These are NOT secrets and must
-        # survive the entropy backstop verbatim — a redacted ``file_path`` would
-        # gut the observability the catalog exists to provide. (The original
-        # entropy heuristic wrongly nuked these because ``/`` and ``.`` inflated a
-        # path's apparent entropy; the fix splits on those separators.)
+        # reach the sink verbatim — a redacted ``file_path`` would gut the
+        # observability the catalog exists to provide. Since packet 42 they survive
+        # because nothing inspects an unlabelled run at all; before it, they
+        # survived only because a heuristic had been tuned not to nuke them, which
+        # it had done twice. The property is the pin; the mechanism never was.
         survivors = [
             "src/loremaster/index/watcher.py",
             "loremaster.loremaster.index.indexer",
@@ -285,7 +268,7 @@ class TestRedactingFilter:
             "voyageai/voyage-4-nano",
         ]
         for value in survivors:
-            record = _make_record(msg="index.file.done", extra={"field": value})
+            record = make_record(msg="index.file.done", extra={"field": value})
             RedactingFilter().filter(record)
             assert record.field == value, f"{value!r} must not be redacted"  # type: ignore[attr-defined]
 
@@ -295,7 +278,7 @@ class TestRedactingFilter:
         # credential is redacted in the same record whose path fields survive
         # untouched. A build that deleted the catch-all AND broke the labelled
         # patterns passes nothing here.
-        record = _make_record(
+        record = make_record(
             msg="event", extra={"path": "src/a.py", "detail": f"api_key={FAKE_BEARER_TOKEN}"}
         )
         RedactingFilter().filter(record)
@@ -331,18 +314,6 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
     documented way this class stays green.
     """
 
-    @staticmethod
-    def _emit(fmt: str, action: Callable[[logging.Logger], None]) -> str:
-        """Run ``action`` against a real configured lore logger; return the stream."""
-        buffer = io.StringIO()
-        configure_logging(level="DEBUG", fmt=fmt)
-        namespace_logger = logging.getLogger("loremaster")
-        handler = namespace_logger.handlers[0]
-        assert isinstance(handler, logging.StreamHandler)
-        handler.setStream(buffer)
-        action(logging.getLogger("loremaster.exc"))
-        return buffer.getvalue()
-
     def test_the_traceback_is_emitted_at_all(self) -> None:
         # The observability half. Without this the scrubbing half is untestable
         # in production: there is nothing to scrub because nothing is rendered.
@@ -352,7 +323,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
             except RuntimeError:
                 logger.exception("store.connect.failed")
 
-        output = self._emit("json", action)
+        output = emit_through_configured_logger("json", action)
         parsed = json.loads(output)
         assert EXC_FIELD in parsed, "logger.exception emitted no exception field at all"
         assert "RuntimeError" in parsed[EXC_FIELD]
@@ -367,7 +338,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
                 logger.exception("store.connect.failed")
 
         for fmt in ("json", "keyvalue"):
-            output = self._emit(fmt, action)
+            output = emit_through_configured_logger(fmt, action)
             assert FAKE_BEARER_TOKEN not in output, f"{fmt}: secret survived in the traceback"
             assert REDACTED in output, f"{fmt}: nothing was scrubbed — the pin proved nothing"
 
@@ -383,7 +354,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
             except RuntimeError:
                 logger.exception("embed.probe.failed")
 
-        output = self._emit("json", action)
+        output = emit_through_configured_logger("json", action)
         assert "direct cause" in output, "the fixture did not actually chain"
         assert FAKE_BEARER_TOKEN not in output
         assert REDACTED in output
@@ -400,7 +371,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
             except RuntimeError:
                 logger.exception("store.connect.failed")
 
-        output = self._emit("json", action)
+        output = emit_through_configured_logger("json", action)
         assert "During handling" in output, "the fixture did not produce a context chain"
         assert FAKE_API_KEY not in output
         assert REDACTED in output
@@ -416,7 +387,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
             except RuntimeError:
                 logger.exception("embed.request.failed")
 
-        output = self._emit("json", action)
+        output = emit_through_configured_logger("json", action)
         assert "sent header" in output, "the fixture's note did not reach the render"
         assert FAKE_BEARER_TOKEN not in output
         assert REDACTED in output
@@ -452,17 +423,18 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
             except RuntimeError:
                 logger.exception("store.connect.failed")
 
-        output = self._emit("json", action)
+        output = emit_through_configured_logger("json", action)
         assert LITERAL_IN_SOURCE not in output, "the credential in the source line survived"
         # Asserted at the POSITION the literal occupied, not merely "somewhere in
         # the output" — the old form was satisfied by the redactor eating an
         # unrelated function name (R2) at a 0.023-bit entropy margin. Read from the
         # PARSED field, since the raw line is JSON-escaped.
         rendered = json.loads(output)[EXC_FIELD]
-        # ``token=`` is a LABELLED assignment, so ``_ASSIGNMENT_RE`` fires before the
-        # entropy sweep and consumes the closing quote/paren with the value — hence
-        # the open-ended form. Still positional: REDACTED must sit immediately where
-        # the credential was.
+        # ``token=`` is a LABELLED assignment, so ``_ASSIGNMENT_RE`` fires and its
+        # ``(\S+)`` consumes the closing quote/paren along with the value — hence the
+        # open-ended form. (That over-consumption is residual R12, ruled pre-existing
+        # and out of packet 42's scope.) Still positional: REDACTED must sit
+        # immediately where the credential was.
         assert f"_refuse(token={REDACTED}" in rendered, (
             "REDACTED must appear where the credential was, not incidentally "
             f"elsewhere. Rendered:\n{rendered}"
@@ -477,7 +449,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
             except RuntimeError:
                 logger.error("index.file.failed", exc_info=True)
 
-        output = self._emit("json", action)
+        output = emit_through_configured_logger("json", action)
         assert FAKE_BEARER_TOKEN not in output
         assert REDACTED in output
 
@@ -488,7 +460,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
             error = RuntimeError(f"api_key={FAKE_API_KEY}")
             logger.warning("calibration.probe.unreachable", exc_info=error)
 
-        output = self._emit("json", action)
+        output = emit_through_configured_logger("json", action)
         assert FAKE_API_KEY not in output
         assert REDACTED in output
 
@@ -498,7 +470,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
         def action(logger: logging.Logger) -> None:
             _log_with_stack_info_from_a_literal_credential(logger)
 
-        parsed = json.loads(self._emit("json", action))
+        parsed = json.loads(emit_through_configured_logger("json", action))
         # POSITIVE CONTROL: before #211 this assertion passed VACUOUSLY, because
         # the formatters emitted no stack at all — "the secret is absent" and
         # "everything is absent" are the same string. Prove the stack is there
@@ -523,7 +495,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
         def action(logger: logging.Logger) -> None:
             logger.error("index.file.failed", exc_info=True)
 
-        parsed = json.loads(self._emit("json", action))
+        parsed = json.loads(emit_through_configured_logger("json", action))
         assert EXC_FIELD not in parsed
         assert "NoneType" not in json.dumps(parsed)
 
@@ -590,7 +562,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
             except RuntimeError:
                 logger.exception("store.connect.failed")
 
-        parsed = json.loads(self._emit("json", action))
+        parsed = json.loads(emit_through_configured_logger("json", action))
         assert REDACTED not in parsed[EXC_FIELD], "a clean traceback must not be redacted"
         assert "test_logging_setup.py" in parsed[EXC_FIELD]
         assert "RuntimeError: no secret here at all" in parsed[EXC_FIELD]
@@ -646,7 +618,7 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
             except RuntimeError:
                 logger.exception("store.connect.failed")
 
-        parsed = json.loads(self._emit("json", action))
+        parsed = json.loads(emit_through_configured_logger("json", action))
         # Asserted against the literal, NOT the constant — the whole point.
         assert "exc_info" in parsed
         assert "Traceback" in parsed["exc_info"]
@@ -655,7 +627,10 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
         assert "exc" not in parsed
 
     def test_a_record_with_no_exception_is_untouched(self) -> None:
-        parsed = json.loads(self._emit("json", lambda logger: logger.info("index.file.done")))
+        emitted = emit_through_configured_logger(
+            "json", lambda logger: logger.info("index.file.done")
+        )
+        parsed = json.loads(emitted)
         assert EXC_FIELD not in parsed
 
 
@@ -715,7 +690,7 @@ class TestOrdinaryPathsSurviveRedaction:
     def test_a_hostile_path_survives_verbatim_through_the_filter(
         self, label: str, path: str
     ) -> None:
-        record = _make_record(msg="store.connect.failed")
+        record = make_record(msg="store.connect.failed")
         record.exc_text = self._traceback_text(path, "connection refused")
         RedactingFilter().filter(record)
         assert record.exc_text is not None
@@ -733,7 +708,7 @@ class TestOrdinaryPathsSurviveRedaction:
         # THE DISCRIMINATOR. Fixing a false positive by weakening the backstop
         # would pass the test above and silently undo the finding this module
         # exists for. The path must survive AND the secret must not, in one line.
-        record = _make_record(msg="store.connect.failed")
+        record = make_record(msg="store.connect.failed")
         record.exc_text = self._traceback_text(
             path, f"signin refused for password={FAKE_BEARER_TOKEN}"
         )

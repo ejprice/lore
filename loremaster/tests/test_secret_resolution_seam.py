@@ -1059,11 +1059,14 @@ def _scanned_python_sources() -> list[tuple[str, Path]]:
     alive in a second home). The operator ruled it IN SCOPE: *"ledgering it would
     leave 'ONE entry point' true of the workspace but false of the repo."*
 
-    ⚠ **AND THE RIDER, which is the half that gets dropped:** ``skills/`` is outside
-    ``testpaths`` and outside ``scripts/typecheck.sh``, so extending a gate over it
-    means proving the gate RUNS there. It does — this scanner lives in
-    ``loremaster/tests/``, which IS collected, and it READS ``skills/`` rather than
-    importing it. :meth:`TestSecretResolutionHasExactlyOneEntryPoint.
+    ⚠ **AND THE RIDER, which is the half that gets dropped:** when R6 was written
+    ``skills/`` was outside ``testpaths`` AND outside ``scripts/typecheck.sh``, so
+    extending a gate over it means proving the gate RUNS there. It does — this
+    scanner lives in ``loremaster/tests/``, which IS collected, and it READS
+    ``skills/`` rather than importing it. (Ruling R9 later closed the typecheck
+    half within this same packet — ``skills`` is now its own ``MEMBERS``
+    iteration — so the standing residual is ``testpaths`` alone.)
+    :meth:`TestSecretResolutionHasExactlyOneEntryPoint.
     test_the_scan_reaches_the_skills_tree` is the receipt, and it fails loudly if
     the directory ever stops being reached. A guard nobody runs is a hope with a
     filename, and both of packet 03b's instruments were victims of exactly that.
@@ -1132,7 +1135,8 @@ class TestSecretResolutionHasExactlyOneEntryPoint:
 
     def test_the_scan_reaches_the_skills_tree(self) -> None:
         # ⚠ R6's RIDER, and the reason it is a test rather than a claim in a report.
-        # ``skills/`` is outside ``testpaths`` and outside ``scripts/typecheck.sh``.
+        # ``skills/`` is outside ``testpaths`` (ruling R9 brought it INSIDE
+        # ``scripts/typecheck.sh`` in this same packet, but not inside pytest).
         # Extending a gate over ungated ground is worthless unless the gate RUNS
         # there — a guard nobody runs is a hope with a filename (2026-07-26 law;
         # both of packet 03b's instruments were victims of the class they

@@ -42,11 +42,12 @@ WORKDIR /app
 # editable path — the image must be self-contained and reproducible).
 #
 # The workspace ROOT pyproject.toml + uv.lock are copied alongside the members:
-# loremaster/pyproject.toml declares its intra-repo deps as
-# `lorescribe = { workspace = true }` / `loresigil = { workspace = true }`, which
-# uv can ONLY resolve when the install runs inside a uv workspace — i.e. with the
-# root pyproject's `[tool.uv.workspace] members = [...]` present at the install
-# CWD. Installing the members in isolation (no root) fails with
+# a member that depends on a sibling declares it as `<sibling> = { workspace =
+# true }` (stated as a shape, not an enumeration — the enumeration that used to
+# sit here named two members and went stale the moment packet 42 added a
+# fourth), which uv can ONLY resolve when the install runs inside a uv workspace
+# — i.e. with the root pyproject's `[tool.uv.workspace] members = [...]` present
+# at the install CWD. Installing the members in isolation (no root) fails with
 # "references a workspace ... but is not a workspace member". Copying the root +
 # uv.lock makes the install workspace-aware; `uv sync --locked` (below) then
 # installs the EXACT locked dependency set — the developer's `uv sync`, byte for

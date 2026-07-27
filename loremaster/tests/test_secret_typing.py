@@ -136,21 +136,24 @@ _SCANNED_MEMBERS: tuple[tuple[str, str], ...] = (
     (SHARED_PREDICATE_PACKAGE, f"{SHARED_PREDICATE_PACKAGE}/{SHARED_PREDICATE_PACKAGE}"),
 )
 
-# ``scripts/`` is scanned even though it is NOT a member of
-# ``scripts/typecheck.sh`` (``MEMBERS=(lorescribe loresigil loremaster)``), so
-# mypy never sees it — and its files construct the very stores this module types.
-# That gap shipped a real defect during #211's own migration:
-# ``survey_txn_contention_102.py`` kept a bare-``str`` ``PASSWORD`` and would have
-# died at the SDK seam, and ``snapshot_gc.py``'s helper annotations still claimed
-# ``str`` while ``main`` handed them a ``SecretStr``. Neither was visible to the
-# type gate OR to the main pytest run.
+# ``scripts/`` is scanned even though it is NOT one of ``scripts/typecheck.sh``'s
+# ``MEMBERS``, so mypy never sees it — and its files construct the very stores
+# this module types. (The MEMBERS list is deliberately not quoted here: packet 42
+# changed it, and a comment quoting a list it does not own goes stale the next
+# time somebody does.) That gap shipped a real defect during #211's own
+# migration: ``survey_txn_contention_102.py`` kept a bare-``str`` ``PASSWORD``
+# and would have died at the SDK seam, and ``snapshot_gc.py``'s helper
+# annotations still claimed ``str`` while ``main`` handed them a ``SecretStr``.
+# Neither was visible to the type gate OR to the main pytest run.
 #
-# ⚠ ``skills/`` IS SCANNED (ruling R6) AND IT IS UNGATED GROUND — it sits outside
-# ``testpaths`` AND outside ``scripts/typecheck.sh``. Extending a gate over ground
-# nothing else checks is only worth anything if the gate RUNS there, so that is
-# asserted rather than assumed: these scanners live in ``loremaster/tests/``,
-# which IS collected, and they READ the tree rather than importing it.
-# ``test_the_scan_reaches_every_workspace_member`` is the receipt.
+# ⚠ ``skills/`` IS SCANNED (ruling R6), and it was ungated ground when that
+# ruling was written — outside ``testpaths`` AND outside ``scripts/typecheck.sh``.
+# Ruling R9 closed the second half IN THIS PACKET (``skills`` is now its own
+# ``MEMBERS`` iteration), so today the residual is ``testpaths`` alone. Extending
+# a gate over ground nothing else checks is only worth anything if the gate RUNS
+# there, so that is asserted rather than assumed: these scanners live in
+# ``loremaster/tests/``, which IS collected, and they READ the tree rather than
+# importing it. ``test_the_scan_reaches_every_workspace_member`` is the receipt.
 
 
 def _python_sources() -> list[tuple[str, Path]]:

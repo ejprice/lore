@@ -13,12 +13,14 @@ this module owns only the *sinks* and the *secret backstop*:
 * :class:`KeyValueFormatter` renders a human ``ts level logger event k=v`` line
   for local development, with any traceback appended below it.
 * :class:`RedactingFilter` is the secret backstop: it scrubs an
-  ``Authorization`` header and an ``api_key``-style assignment — in the rendered
-  message, the ``extra`` values, AND the rendered exception/stack — to
-  :data:`REDACTED`. The discipline is that callers never log a secret in the
-  first place (counts/statuses only); this filter is defence in depth beneath
-  the real control, which is the ``SecretStr`` TYPE at every resolution seam
-  (#211): a value that cannot render itself cannot reach a log line at all.
+  ``Authorization`` header (keeping a recognised scheme word), a bare
+  ``Bearer …`` token wherever one appears without that header, and an
+  ``api_key``-style assignment — in the rendered message, the ``extra`` values,
+  AND the rendered exception/stack — to :data:`REDACTED`. The discipline is
+  that callers never log a secret in the first place (counts/statuses only);
+  this filter is defence in depth beneath the real control, which is the
+  ``SecretStr`` TYPE at every resolution seam (#211): a value that cannot
+  render itself cannot reach a log line at all.
 
   ⚠ **It matches only LABELLED shapes, deliberately (packet 42).** An earlier
   version also swept any long unlabelled run that "looked random". That guess
@@ -150,9 +152,9 @@ _KNOWN_AUTH_SCHEMES: tuple[str, ...] = ("Bearer", "Basic", "Digest", "Token", "A
 # value token, 5 the rest of the LINE (never across a newline — a traceback is
 # scrubbed as one string, and the header value ends where the line does).
 _AUTH_HEADER_RE = re.compile(
-    r"(?i)(\bauthorization\b\s*[=:]\s*)"
-    r"(?:(" + "|".join(_KNOWN_AUTH_SCHEMES) + r")(\s+))?"
-    r"(\S+)([^\n]*)"
+    rf"(?i)(\bauthorization\b\s*[=:]\s*)"
+    rf"(?:({'|'.join(_KNOWN_AUTH_SCHEMES)})(\s+))?"
+    rf"(\S+)([^\n]*)"
 )
 
 

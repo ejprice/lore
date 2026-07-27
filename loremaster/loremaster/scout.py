@@ -721,15 +721,10 @@ class Scout:
         from loremaster.server import LoreServer
 
         # The USERNAME is not a secret (#211/#226): it is a public default named
-
         # by SURREAL_DEFAULT_USER_ENV, so it is read as a plain config value while
-
         # the password stays a SecretStr all the way to the SDK seam. It used to be
-
         # wrapped and unwrapped again in the same expression — a round-trip that
-
         # protected nothing and put a non-credential on the audited unwrap surface.
-
         surreal_user = resolve_config_value(config.surreal.user_env)
         surreal_password = resolve_secret(config.surreal.password_env)
         database = config.effective_surreal_database

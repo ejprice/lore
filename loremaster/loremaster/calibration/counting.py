@@ -11,8 +11,14 @@ request body is byte-identical; the URL and method are identical; and the full
 application-level header set (every header minus httpx's own transport-injected ones,
 e.g. ``host``, ``content-length``) is identical in both keys and values.
 
-This module does NOT import from ``scripts/`` (not a package); it replicates the shape and
-the constants, and the parity test is what guarantees they stay in lock-step.
+The dependency runs ONE WAY, and packet 42 is what made it run at all: this module still
+imports nothing from ``scripts/`` (not a package), but ``token_survey.py`` now imports
+:func:`build_auth_headers` and :func:`load_api_key` FROM here — so the outgoing header set
+and the credential lookup are ONE implementation instead of two that merely agree today.
+What remains REPLICATED is the endpoint/version/env-var/env-file constants (pinned by
+``TestConstantsParity``) and the counter class itself with its payload wrapping (pinned by
+``TestRequestShapeParity``); those parity tests are what guarantee the replicas stay in
+lock-step.
 """
 
 from __future__ import annotations
