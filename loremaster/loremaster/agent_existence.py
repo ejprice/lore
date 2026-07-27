@@ -172,7 +172,9 @@ async def reject_unknown_agents(
     # a uuid-shaped component in angle brackets (``agent:⟨0199c4f1-…⟩``), so a
     # hand-rolled ``str(row["id"]).split(":", 1)[-1]`` is right for ``agent:abc`` and
     # WRONG for every uuid-shaped id — measured, and it costs ~130 red pins across the
-    # two ledger suites (``REPORT-contract-04a-enforced-3.md`` §7 D-d). Matching the
+    # two ledger suites
+    # (``docs/plans/v2/receipts/2026-07-27-packet04a/REPORT-contract-04a-enforced-3.md`` §7 D-d).
+    # Matching the
     # engine's echo against our own renderings is symmetric BY CONSTRUCTION: both sides
     # are produced by the same SDK function, so there is no derivation to get wrong.
     asked_by_render: dict[str, str] = {}

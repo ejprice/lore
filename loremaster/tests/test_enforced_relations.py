@@ -5,7 +5,9 @@ pinned all three deferred edges.  The ``refers`` / ``answers_to`` flip **moved t
 ``test_derivation_source_unification.py``** because it is blocked on a root fix that is
 not 04a's: ``CodeGraph._derive_nodes`` reads the CHUNK SET while ``_derive_edges``
 re-reads the FILE, and a divergence makes ``build_file_graph_fragment`` RELATE from a
-``code_node`` it never created (``REPORT-contract-04a-enforced.md`` §4.D2).  A 04a builder
+``code_node`` it never created
+(``docs/plans/v2/receipts/2026-07-27-packet04a/REPORT-contract-04a-enforced.md`` §4.D2).
+A 04a builder
 must be able to reach GREEN with 04a's scope alone — a permanently-RED pin is a broken
 gate, and a builder facing one is a builder tempted to weaken the flip.
 
@@ -61,7 +63,7 @@ weaken the flip rather than fix the fixture.**
    serve"*.  **Operator/lead RULING: widen the fake, honestly** — it now models the
    ``agent`` table (deny-by-default preserved for every other statement) and the
    retry-seam pins it exists to catch were re-proven RED under their own mutation after
-   the widening (``REPORT-contract-04a-enforced-3.md`` §3).
+   the widening (``docs/plans/v2/receipts/2026-07-27-packet04a/REPORT-contract-04a-enforced-3.md`` §3).
 """
 
 from __future__ import annotations

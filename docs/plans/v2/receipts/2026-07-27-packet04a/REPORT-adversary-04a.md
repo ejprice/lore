@@ -1,5 +1,15 @@
 # REPORT-adversary-04a — grading the packet-04a `ENFORCED` sweep contract
 
+> ⚠ **DATED RECORD — archived 2026-07-27 at packet 04a's close-out. Kept verbatim; do not rewrite.**
+> Its findings were acted on: all four surviving wrong builds were killed and the seven missing pins
+> built (`bbada6a`), and its residuals R1/R2 were fixed (`369db57`).
+> **SUPERSEDED NAME:** this report mentions **`_BRIEF_PUBLISH_`**, a symbol that **no longer exists**.
+> It appears here as a *quotation of a defect this report found* — residual R1, a retired symbol that
+> commit `b539bbf` had written into `INDEX.md`. The corpse is named because naming it was the
+> finding; nothing in the live tree should name it. Banner added to satisfy
+> `test_retired_symbols.py`, which correctly distinguishes a LIVE document (rewrite it) from a DATED
+> RECORD (keep the prose, declare the corpse).
+
 brief-base v7 read
 
 *Every measurement below was taken **2026-07-26/27** against `feat/surreal-unification` @ **`dfb5cd0`**

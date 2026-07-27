@@ -6,7 +6,8 @@ pins state what must become true, not how.  Unskipping them is packet 43's entry
 condition.
 
 **Provenance — why these pins are here and not in packet 04a.**  They were authored as
-part of 04a's `ENFORCED` sweep contract (``REPORT-contract-04a-enforced.md`` §4.D2) and
+part of 04a's `ENFORCED` sweep contract
+(``docs/plans/v2/receipts/2026-07-27-packet04a/REPORT-contract-04a-enforced.md`` §4.D2) and
 SPLIT out on 2026-07-26 by operator ruling.  04a flips ``briefed``; the ``refers`` /
 ``answers_to`` flip cannot land with it, because:
 
@@ -40,7 +41,7 @@ The five pins that are GREEN today and must STAY green **run**: four of them exe
 helper nobody runs between now and packet 43 is a helper that can rot into a false green
 the day everything is unskipped.  *A guard nobody runs is a hope with a filename.*  This
 is a deliberate deviation from "skip every moved pin", disclosed in
-``REPORT-contract-04a-enforced.md`` §SPLIT.
+``docs/plans/v2/receipts/2026-07-27-packet04a/REPORT-contract-04a-enforced.md`` §SPLIT.
 """
 
 from __future__ import annotations
@@ -87,7 +88,8 @@ from surrealdb import RecordID
 SKIP_REASON = (
     "packet 43 (derivation-source unification, docs/plans/v2/43-derivation-source-"
     "unification.md): the refers/answers_to ENFORCED flip is BLOCKED until _derive_edges "
-    "and _derive_nodes read ONE source — see REPORT-contract-04a-enforced.md §4.D2. "
+    "and _derive_nodes read ONE source — see "
+    "docs/plans/v2/receipts/2026-07-27-packet04a/REPORT-contract-04a-enforced.md §4.D2. "
     "UNSKIPPING THESE IS PACKET 43'S ENTRY CONDITION."
 )
 
@@ -636,7 +638,7 @@ class TestTheCodeGraphFragmentNeverRelatesFromAnUncreatedEndpoint:
         """**THE HEADLINE PIN OF PACKET 43.**  RED until the derivation sources are
         unified; do not delete it, do not weaken it, and do not satisfy it by dropping
         every ``refers`` edge (see the anti-vacuity assertion below, and
-        ``REPORT-contract-04a-enforced.md`` §3 survivor 6).
+        ``docs/plans/v2/receipts/2026-07-27-packet04a/REPORT-contract-04a-enforced.md`` §3 survivor 6).
 
         The two derivations read DIFFERENT inputs: ``_derive_nodes`` reads the CHUNK SET
         the caller supplies, while ``_derive_edges``' reference half re-reads the FILE off

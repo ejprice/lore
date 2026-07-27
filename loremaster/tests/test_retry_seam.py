@@ -3892,7 +3892,9 @@ class _AckConnection:
     * **IT CAN STILL FAIL FOR ITS OWN REASONS.**  Proven, not asserted: after the widening
       the pins riding this fake were re-run under the mutation they were written for (drop
       ``_relate_briefed``'s ``except TxnContentionExhaustedError`` guard) and went RED —
-      receipts in ``REPORT-contract-04a-enforced-3.md`` §3.  *A fake widened until nothing
+      receipts in
+      ``docs/plans/v2/receipts/2026-07-27-packet04a/REPORT-contract-04a-enforced-3.md`` §3.
+      *A fake widened until nothing
       fails is worse than a red gate.*
 
     ``registered_agent_ids`` is what the modelled ``agent`` table CONTAINS; a test that
