@@ -60,13 +60,27 @@ for i in $(seq 1 "$ITERS"); do
         echo "ABORT at run $i: TREE MOVED (head=$H dirt=$D). Result discarded." >> "$TL"; exit 2
     fi
 
-    N=$(grep -oE "[0-9]+ (passed|failed)" "$RUN" | awk '{s+=$1} END {print s}')
+    # The collected count is this loop's headline CHECKED VARIABLE — a moving
+    # count is exactly how the first hunt lied — so it must come from an
+    # authority, not from scraping the run's own prose. Derived here by an
+    # independent `--collect-only`, which NAMES tests without running them.
+    # (It used to be summed from `N passed`/`N failed` regex matches in the
+    # output file; a traceback containing such a string corrupts that, so the
+    # detector could be fooled by the very failure it exists to catch — cold
+    # audit residual R12b.)
+    N=$(uv run --no-sync pytest --collect-only -q $CONTRACT 2>/dev/null | grep -cE "^loremaster/tests/.*::")
     [ -z "$BASE_COLLECTED" ] && BASE_COLLECTED="$N"
     if [ "$N" != "$BASE_COLLECTED" ]; then
         echo "ABORT at run $i: COLLECTED COUNT MOVED ($N vs $BASE_COLLECTED)." >> "$TL"; exit 3
     fi
 
-    if grep -qE "^[0-9]+ failed|error" "$RUN"; then
+    # Both alternatives ANCHORED at line start. The `error` alternative used to
+    # be unanchored, so the substring "error" anywhere in a --tb=long capture
+    # marked the run FAILED (cold audit residual R12a). That errs toward
+    # over-reporting — it would inflate a failure count, never hide one — but a
+    # detector that cries wolf on its own tracebacks is a detector people stop
+    # believing, which is how an instrument dies.
+    if grep -qE "^[0-9]+ (failed|error)|^[0-9]+ errors? in " "$RUN"; then
         fails=$((fails + 1))
         echo "run $i: FAILED  $(grep -E '^[0-9]+ failed|^[0-9]+ error' "$RUN" | tail -1)  [collected=$N]" >> "$TL"
         podman logs --since 3m spike-surreal > "$OUT/run-$(printf '%02d' "$i")-storelog.txt" 2>&1
