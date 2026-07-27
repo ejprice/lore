@@ -33,6 +33,9 @@ asserted ABSENT here, with a bare pattern, and swept across the tree in
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import orjson
 import pytest
 from loremaster.floor_calibration import domain as floor_domain
@@ -310,6 +313,34 @@ class TestHeadIdentityIsAFrozenFunctionOfItsAxes:
         with pytest.raises((ValueError, TypeError)):
             head_identity({"scope": "pooled", "statistic": 3})  # type: ignore[dict-item]
 
+    def test_the_non_string_refusal_is_a_ValueError_that_NAMES_the_axis(self) -> None:
+        """⚠ **F6b (cold audit 11-i-a): the DOCUMENTED fate, pinned as documented.**
+
+        The sibling above accepts ``ValueError`` OR ``TypeError`` — it was written before
+        a builder existed and deliberately left the spelling open. Now that
+        :func:`head_identity`'s public ``Raises:`` names ``ValueError`` (it did not, which
+        is the audit finding), the promise and the pin must be the same thing: a consumer
+        told to catch ``ValueError`` and handed a ``TypeError`` has an uncaught exception,
+        and the loose pin cannot tell those two builds apart.
+
+        The message must also NAME the offending axis. Not decoration: the raise this pins
+        must be the registry's OWN refusal, not an incidental serializer failure from
+        somewhere downstream — a build that deleted the ``isinstance`` check and let
+        ``orjson`` decide would produce a DIFFERENT exception for a DIFFERENT reason, and a
+        bare ``pytest.raises(ValueError)`` would happily accept a lookalike. This repo has
+        the receipt for a probe that passed on a ``ParseError``.
+        """
+        with pytest.raises(ValueError, match="statistic") as exc_info:
+            head_identity({"scope": "pooled", "statistic": 3})  # type: ignore[dict-item]
+        assert "non-string" in str(exc_info.value), (
+            f"the refusal does not say WHY it refused: {str(exc_info.value)!r}. A caller "
+            f"reading this needs to know its value was rejected for its TYPE, not its name."
+        )
+
+        # POSITIVE CONTROL: the same mapping with a str value is ACCEPTED, so the pin above
+        # is discriminating on the VALUE TYPE and not on something else about the fixture.
+        assert len(head_identity({"scope": "pooled", "statistic": "3"})) == 128
+
 
 class TestCorpusContentDigest:
     """C10's exact-skip datum. 11-i-a owns the row 11-ii will compare against;
@@ -402,6 +433,79 @@ class TestCorpusContentDigest:
             corpus_content_digest([{"point_id": "a"}])
         with pytest.raises(KeyError):
             corpus_content_digest([{"content_hash": "h"}])
+
+
+class TestThePreImageEncodingIsUsedInExactlyOnePlace:
+    """⚠ **THE F3 INSTRUMENT (cold audit 11-i-a) — and it MUST be structural.**
+
+    ``domain.py`` declares the pre-image encoding "in ONE place" (``_PREIMAGE_OPTIONS``,
+    operator ruling O1) and states that BOTH pre-images use it. ``corpus_content_digest``
+    called ``orjson.dumps(pairs)`` with no ``option=`` at all — a second encoding site
+    bypassing the named single place, which is the ONE-IMPLEMENTATION law's *routing is not
+    sharing* in miniature.
+
+    ⚠ **NO BEHAVIOURAL TEST CAN CATCH IT, and that is the whole argument for this class.**
+    The corpus pre-image is a LIST of pairs; a list has no keys, so ``OPT_SORT_KEYS`` is
+    byte-neutral there. Both spellings produce identical bytes and identical digests today,
+    so every digest pin in :class:`TestCorpusContentDigest` stays green either way. The
+    divergence only becomes visible on the day someone adds an option to
+    ``_PREIMAGE_OPTIONS`` (``OPT_NON_STR_KEYS``, a future sort flag) or reshapes the
+    corpus pre-image into a mapping — i.e. on the day the head id and the corpus digest
+    silently stop agreeing about what encoding this module uses.
+
+    So the invariant is over the SOURCE: every ``orjson.dumps`` call in the module passes
+    ``option=_PREIMAGE_OPTIONS``, by NAME. It is an ALLOWLIST (what a call must look like),
+    never a list of forbidden spellings.
+    """
+
+    @staticmethod
+    def _dumps_calls() -> list[ast.Call]:
+        """Every ``orjson.dumps(...)`` call in the production domain module."""
+        source = Path(floor_domain.__file__).read_text(encoding="utf-8")
+        return [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Attribute) and node.func.attr == "dumps")
+                or (isinstance(node.func, ast.Name) and node.func.id == "dumps")
+            )
+        ]
+
+    def test_the_scan_actually_finds_the_encoding_calls(self) -> None:
+        """THE REACH CONTROL. A scan that matched nothing would certify this module
+        forever, which is this repo's documented way for a mechanical gate to pass while
+        proving nothing."""
+        calls = self._dumps_calls()
+        assert len(calls) >= 2, (
+            f"the AST scan found {len(calls)} `orjson.dumps` call(s) in "
+            f"{Path(floor_domain.__file__).name} — this pin was written against the TWO "
+            f"pre-images O1 names (the head identity and the corpus digest). Either they "
+            f"were consolidated (good — lower this floor deliberately, in a diff a reviewer "
+            f"can see) or the SCANNER broke and the assertion below just went vacuously green."
+        )
+
+    def test_every_pre_image_passes_the_ONE_encoding_constant_BY_NAME(self) -> None:
+        offenders: list[tuple[int, str]] = []
+        for call in self._dumps_calls():
+            option = next((kw for kw in call.keywords if kw.arg == "option"), None)
+            if option is None:
+                offenders.append((call.lineno, "no `option=` at all"))
+            elif not (isinstance(option.value, ast.Name) and option.value.id == "_PREIMAGE_OPTIONS"):
+                offenders.append((call.lineno, f"option={ast.unparse(option.value)}"))
+
+        assert not offenders, (
+            "an `orjson.dumps` pre-image in "
+            f"{Path(floor_domain.__file__).name} does not go through `_PREIMAGE_OPTIONS`:\n  "
+            + "\n  ".join(f"line {lineno}: {why}" for lineno, why in offenders)
+            + "\n\nThe module declares the pre-image encoding 'in ONE place' (O1) and says "
+            "BOTH pre-images use it. A call that spells the options itself — or omits them — "
+            "is a SECOND encoding site wearing the shared name, and no behavioural pin can "
+            "see it while the two spellings happen to agree byte-for-byte (they do today: "
+            "a list has no keys to sort). Pass `option=_PREIMAGE_OPTIONS`; if a pre-image "
+            "genuinely needs different options, that is a DESIGN decision about record "
+            "identity — escalate it, do not write the second spelling."
+        )
 
 
 class TestTheValidityFloorsArePreRegistered:

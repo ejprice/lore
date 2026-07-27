@@ -266,6 +266,101 @@ class TestTheNodeIdParserDoesNotMangleRealOutput:
         )
 
 
+class TestCapturedOutputIsNotMistakenForASummaryLine:
+    """⚠ **COLD AUDIT 11-i-a R8, met live.** An auditor's proof exited 4, reporting two
+    "unexpected reds" that were not node ids at all:
+
+        ERROR    loremaster.floor_calibration.store:_txn.py:1199 floor_calibration.query.rejected
+
+    That is a ``Captured log call`` line. It begins with ``ERROR `` — one of the summary
+    prefixes — so the parser took the rest of it as a node id, and a PERFECTLY CORRECT
+    mutation proof reported a two-way mismatch. The failure direction is loud rather than
+    silent, which is why it only cost an adjudication step; but this tool exists precisely
+    so nobody has to adjudicate, and **any test that logs at ERROR or above triggers it** —
+    which in this repo is every rejection-path pin there is.
+
+    ⚠ THE FIX IS AN ALLOWLIST, NOT A DENY-LIST, and that is the whole point. Enumerating
+    the forbidden prefixes (``ERROR``, ``CRITICAL``, ``WARNING``, a user's own ``print``)
+    is the instrument shape this repo has watched fail six times — the forbidden set is
+    unbounded. The SAFE set is one line long: **pytest's ``short test summary info``
+    section**, which contains summary lines and nothing else.
+
+    The bound this MOVES rather than closes: a command that emits no summary section at
+    all now yields no node ids. That is not silent — an empty observed set with a non-zero
+    exit is already the tool's loud ``_EXIT_UNPARSEABLE``, and an empty set against a
+    non-empty declared set is a loud two-way mismatch.
+    """
+
+    _LOGGING_TEST = '''\
+import logging
+
+from target import value
+
+
+def test_alpha():
+    logging.getLogger("seam").error("floor_calibration.query.rejected")
+    assert value() == "alpha"
+'''
+
+    def test_an_ERROR_log_line_does_not_become_a_phantom_node_id(self, sandbox: Path) -> None:
+        """RED before this fix: the proof exits 4 with the log line listed as an
+        unexpected red, even though the mutation reddened EXACTLY the declared test."""
+        (sandbox / "test_target.py").write_text(self._LOGGING_TEST)
+        result = _prove(sandbox, anchor='"alpha"', replacement='"mutated"')
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, (
+            f"a test that logged at ERROR turned a correct mutation proof into a "
+            f"mismatch.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+        assert "WENT RED but was NOT DECLARED" not in combined, (
+            f"captured log output was parsed as a summary node id:\n{combined}"
+        )
+
+    def test_a_captured_FAILED_line_in_test_OUTPUT_is_also_ignored(self, sandbox: Path) -> None:
+        """The sibling case the docstring already warned about, now closed by the same
+        section-scoping rather than merely documented: a test that PRINTS something
+        beginning with ``FAILED `` must not invent a node id either."""
+        (sandbox / "test_target.py").write_text(
+            "from target import value\n\n\n"
+            "def test_alpha():\n"
+            '    print("FAILED tests/not_a_real_test.py::test_phantom - invented")\n'
+            '    assert value() == "alpha"\n'
+        )
+        result = _prove(sandbox, anchor='"alpha"', replacement='"mutated"')
+        combined = result.stdout + result.stderr
+        assert result.returncode == 0, (
+            f"a printed line beginning with 'FAILED ' was parsed as a node id.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+        assert "not_a_real_test.py::test_phantom" not in combined.split("PROOF")[-1], (
+            f"the phantom node id reached the verdict:\n{combined}"
+        )
+
+    def test_a_REAL_collection_ERROR_is_still_reported(self, sandbox: Path) -> None:
+        """⚠ THE CONTROL, and it is what stops the fix from being "parse nothing".
+
+        pytest reports a collection failure as ``ERROR <nodeid>`` in the SAME summary
+        section. Scoping to that section must keep those, or the fix trades a loud false
+        positive for a silent blind spot — which is strictly worse.
+        """
+        (sandbox / "test_broken.py").write_text("import nonexistent_module_xyz\n")
+        args = [
+            sys.executable, str(_HELPER),
+            "--file", "target.py",
+            "--anchor", '"alpha"',
+            "--replacement", '"mutated"',
+            "--expect-red", "test_target.py::test_alpha",
+            "--", sys.executable, "-m", "pytest", "-q", "test_target.py", "test_broken.py",
+        ]
+        result = subprocess.run(args, cwd=sandbox, capture_output=True, text=True, check=False)
+        combined = result.stdout + result.stderr
+        assert result.returncode != 0, "a real collection ERROR was not reported at all"
+        assert "test_broken.py" in combined, (
+            f"the real ERROR summary line was dropped along with the noise — the parser "
+            f"has gone blind rather than precise:\n{combined}"
+        )
+
+
 class TestTheHelperStatesItsBounds:
     def test_help_states_the_BOUNDS(self) -> None:
         """The bounds are load-bearing and must be readable FROM THE TOOL. The

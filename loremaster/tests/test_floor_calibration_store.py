@@ -418,6 +418,93 @@ class TestTheHeadIsAddressedByHeadIdentity:
         )
 
 
+class TestACallerCannotForgeTheComputedColumns:
+    """⚠ **F6a (cold audit 11-i-a): a LOAD-BEARING CLAIM THAT NOTHING ASSERTED.**
+
+    ``_measurement_create_statement``'s docstring states outright that *"the computed keys
+    WIN over a caller-supplied key of the same name … so a caller cannot forge
+    ``head_identity``"*. That is a claim about a RECORD IDENTITY, and it rests entirely on
+    ``object::extend``'s second-object-wins precedence — an ENGINE property, verified once
+    by a probe and then written into prose. Nothing in the suite held it: the statement
+    could be reshaped (the two objects swapped, ``CONTENT`` re-listed column by column, the
+    computed dict merged first) and every other pin here stays green while a caller
+    silently decides which head its row belongs to.
+
+    A forged ``head_identity`` is not cosmetic. The history is APPEND-ONLY and 11-ii's
+    exact-skip scheduler is keyed on it, so a row filed under a head its axes did not mint
+    is unattributable forever, and it pollutes the tuning record of whatever head it names.
+
+    Both legs carry a POSITIVE CONTROL that the payload passthrough still works — without
+    it, a build that simply DROPPED the caller's payload would satisfy the forge assertions
+    for entirely the wrong reason.
+    """
+
+    async def test_a_caller_supplied_head_identity_is_OVERRIDDEN_by_the_derived_one(
+        self, floor_store: FloorCalibrationStore
+    ) -> None:
+        forged = "f" * 128
+        derived = head_identity(POOLED)
+        assert forged != derived, "the fixture's forgery equals the real id — it proves nothing"
+
+        await floor_store.record_measurement(
+            axes=POOLED,
+            measurement={
+                **_measurement(state="measured", adopted_n=137),
+                FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN: forged,
+            },
+            adopt=False,
+        )
+
+        rows = await floor_store.measurement_history(POOLED, limit=5)
+        assert rows, (
+            f"no row is filed under the DERIVED head {derived[:12]}… — the caller's "
+            f"{FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN!r} won, so the measurement was filed "
+            f"under a head of the caller's choosing and this axis mapping's history has a "
+            f"hole in it. `object::extend`'s computed object must come SECOND."
+        )
+        assert rows[0][FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN] == derived
+        assert rows[0][FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN] != forged
+        # CONTROL: the rest of the caller's payload DID land, so the override above is
+        # precedence and not a build that discards what the caller sent.
+        assert int(rows[0]["adopted_n"]) == 137, (
+            "the caller's own payload did not survive the write, so the forge assertions "
+            "above passed for the wrong reason"
+        )
+
+    async def test_a_caller_supplied_head_revision_is_OVERRIDDEN_by_the_minted_one(
+        self, floor_store: FloorCalibrationStore
+    ) -> None:
+        """The SECOND computed key, and the one carrying a number a caller could pick.
+
+        ``head_revision`` is minted store-side inside the adopting transaction. A caller
+        that supplies it must not be able to stamp a row with a revision it did not win —
+        that is the tuning record's ordering key.
+        """
+        forged_revision = 999_999
+        await floor_store.record_measurement(
+            axes=POOLED,
+            measurement={
+                **_measurement(state="measured", adopted_n=137),
+                "head_revision": forged_revision,
+            },
+            adopt=True,
+        )
+
+        rows = await floor_store.measurement_history(POOLED, limit=1)
+        assert rows, "the adopted row is not filed under the derived head"
+        assert int(rows[0]["head_revision"]) == 1, (
+            f"the row records head_revision={rows[0]['head_revision']!r}; this was the "
+            f"FIRST adoption for this head, so the mint owed it 1. A caller-supplied "
+            f"revision won, which lets any writer stamp a row for a revision it never "
+            f"minted."
+        )
+        assert int(rows[0]["head_revision"]) != forged_revision
+        assert int(rows[0]["adopted_n"]) == 137, (
+            "the caller's own payload did not survive the write, so the assertion above "
+            "passed for the wrong reason"
+        )
+
+
 class TestRowsAreAppendOnly:
     """B4: rows are append-only MEASUREMENTS; history carries the F6 tuning data."""
 

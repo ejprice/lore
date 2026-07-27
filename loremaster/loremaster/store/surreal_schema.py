@@ -1953,10 +1953,31 @@ def _floor_head_statements() -> list[str]:
     therefore adds its column here and its bound value at the ledger's write in
     ONE change, instead of leaving a column list to drift.
 
-    ``revision`` is the monotonic counter every adopting run contends on (the hot
-    row, B4). Everything except the axis columns' own ``scope`` is optional for
-    the §1.4 reason ``floor_measurement``'s columns are, and ``M14``'s head leg
-    stands in for an older deployment with a ``scope``-only row.
+    ⚠ **THE AXIS COLUMNS ARE ``option<string>`` — INCLUDING ``scope``** — for the
+    §1.4 reason ``floor_measurement``'s columns are, and that is what lets
+    ``M14``'s head leg stand in for an older deployment with a ``scope``-only row.
+
+    ⚠ **``revision`` IS THE ONE REQUIRED COLUMN HERE: ``int DEFAULT 0``, NOT
+    ``option<>``** — it is the monotonic counter every adopting run contends on
+    (the hot row, B4), and a head whose revision could be NONE is a head no
+    contender can compare against. **Store reference §1.4 applies to it in full,
+    and a ``DEFAULT`` does NOT rescue an existing row that lacks the field.**
+    Measured 2026-07-26 on the 3.2.1 test store, with a control: a ``floor_head``
+    row written before this column existed SURVIVES the migration and stays
+    readable, but an ``UPDATE`` that does not itself set ``revision`` is
+    REJECTED (*"Couldn't coerce value for field `revision` … Expected `int` but
+    found `NONE`"*) — and the SAME statement is accepted once the column is
+    populated, so the refusal is the missing column and not the write. Nothing
+    breaks today for exactly one reason: **every production write to this table
+    is the mint, and the mint sets it** (``revision = (revision ?? 0) + 1`` in
+    ``FloorCalibrationStore._head_mint_statement`` — the ``??`` is what covers a
+    legacy row, not the ``DEFAULT``). A future writer that touches a head row
+    WITHOUT setting ``revision`` re-opens this; keep the mint the only writer, or
+    backfill.
+
+    (This docstring previously claimed the opposite in both directions —
+    "everything except ``scope`` is optional" — while ``scope`` was optional and
+    ``revision`` was not. Cold audit 11-i-a F2.)
     """
     from loremaster.floor_calibration.domain import (  # noqa: PLC0415 - see the docstring
         FLOOR_HEAD_ALWAYS_SERIALISED_AXES,

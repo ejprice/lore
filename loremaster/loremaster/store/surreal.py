@@ -1658,7 +1658,13 @@ class SurrealStore:
     # =========================================================================
     # ⚠ PACKET 11-i-a — the C8 narrowed calibration-pool projection.
     #
-    # WRITTEN BY THE CONTRACT AUTHOR (`contract-11ia-1`), NOT BY A BUILDER.
+    # The SIGNATURE was frozen by the contract author (`contract-11ia-1`); the
+    # BODY below was written by `builder-11ia-1` against that contract, like every
+    # other body in this packet. (This banner said "WRITTEN BY THE CONTRACT
+    # AUTHOR, NOT BY A BUILDER" long after the builder wrote the 40 lines under
+    # it — the word STUB was deleted two lines above and this sentence was left.
+    # Cold audit 11-i-a F4; the other four banners were rewritten correctly.)
+    #
     # RULED DECISION 8 authorises this as an 11-i-a addition: a new UNSERVED
     # read alters no served byte, so it is inside `DEPLOY: no` on intent.
     # =========================================================================
@@ -1704,7 +1710,10 @@ class SurrealStore:
         # and is therefore reported as a truncation (``measurement_failed``)
         # rather than as the gentler count mismatch (discard-requeue). A wider
         # margin would route small growth to the mismatch branch — see
-        # ``REPORT-builder-11ia-1.md``; nothing in the contract decides it, and
+        # ``docs/plans/v2/receipts/2026-07-26-packet11i-build/REPORT-builder-11ia-1.md``
+        # (a TRACKED path: a bare ``REPORT-*.md`` at the repo root is the address
+        # form #152/#153 forbids, because it stops resolving the moment the wave
+        # closes); nothing in the contract decides it, and
         # widening it to fit a fixture is not a derivation.
         limit = counted_total + _CALIBRATION_POOL_LIMIT_MARGIN
         rows = self._as_rows(
@@ -1735,19 +1744,23 @@ class SurrealStore:
 # ⚠ PACKET 11-i-a (continued) — the calibration pool's types.
 # =============================================================================
 
-# The NARROWED projection the calibration pool reads: the digest inputs
-# (``point_id`` + ``content_hash``), the stratification/hold-out/self-retrieval
-# keys, and the probe-derivable text. ``embedding`` is deliberately absent, and
-# so is every ``option<>`` column (store reference §2's ``SELECT *`` trap cuts
-# the other way for an explicit projection: a missing column reads ``None``
-# silently, so the pool declares exactly what it needs). 11-i-b extends THIS
-# constant rather than issuing a second read.
+# The NARROWED projection the calibration pool reads. ⚠ TODAY IT IS THE C10 DIGEST
+# INPUTS AND NOTHING ELSE — ``point_id`` + ``content_hash`` — by ruling E6:
+# "membership beyond ``point_id`` + ``content_hash`` is 11-i-b's to fix, because
+# the probe-derivation columns are its requirement". The stratification /
+# hold-out / self-retrieval keys and the probe-derivable text are 11-i-b's to add
+# and are NOT here yet. (This comment claimed they were shipping, and the
+# correction was APPENDED below it rather than applied to it, leaving two adjacent
+# paragraphs contradicting each other — cold audit 11-i-a R5. The false half is
+# now gone rather than annotated.)
 #
-# ⚠ IT SHIPS AS THE C10 DIGEST INPUTS AND NOTHING ELSE, by ruling E6: "membership
-# beyond ``point_id`` + ``content_hash`` is 11-i-b's to fix, because the
-# probe-derivation columns are its requirement". Adding a column here is all it
-# takes — the projection below is DERIVED from this tuple, so the constant and the
-# statement cannot drift, and the returned row keys equal it by construction.
+# ``embedding`` is deliberately absent, and so is every ``option<>`` column (store
+# reference §2's ``SELECT *`` trap cuts the other way for an explicit projection:
+# a missing column reads ``None`` silently, so the pool declares exactly what it
+# needs). 11-i-b extends THIS constant rather than issuing a second read: adding a
+# column here is all it takes — the projection below is DERIVED from this tuple,
+# so the constant and the statement cannot drift, and the returned row keys equal
+# it by construction.
 CALIBRATION_POOL_COLUMNS: tuple[str, ...] = ("point_id", "content_hash")
 
 # The chunk's record id IS its point id, and a RecordID's string component cannot
@@ -1757,8 +1770,17 @@ _CALIBRATION_POOL_POINT_ID_COLUMN = "point_id"
 # The column the walk is ORDERED by — the ALIAS, not ``id``. Probed 2026-07-26 on
 # the 3.2.1 test store: ``ORDER BY id`` under an EXPLICIT projection that does not
 # select ``id`` is a PARSE ERROR (*"Missing order idiom `id` in statement
-# selection"*, store reference §7), while ordering by the projected alias works and
-# is the same order — the table prefix is constant across every chunk.
+# selection"*, store reference §7), while ordering by the projected alias works.
+#
+# ⚠ WHY THE TWO ORDERS AGREE, stated correctly because the obvious reason is the
+# wrong one: it is NOT "the table prefix is constant" (that would only explain why
+# the prefix cannot reorder anything). A RecordID sorts by its TYPED ``Id``
+# component, and a chunk's id is ``records.point_id`` — a ``uuid5`` STRING — so
+# ``id`` sorts as a string and ``record::id(id)`` is that same string. Equal
+# orders, probed on a deliberately adversarial mixed set. The claim is therefore
+# scoped to THIS table: a table whose ids were ints or arrays would sort by TYPE
+# first and the alias order would diverge. (Cold audit 11-i-a R9 — the conclusion
+# held; the stated reason did not.)
 _CALIBRATION_POOL_ORDER_COLUMN = _CALIBRATION_POOL_POINT_ID_COLUMN
 # How far the issued limit exceeds the counted total. ONE is the minimum that
 # makes a truncation detectable at all (see ``enumerate_calibration_pool``).

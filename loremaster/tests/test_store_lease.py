@@ -92,6 +92,7 @@ from loremaster.store.lease import (
     LEASE_LOCK_NAMESPACE,
     LEASE_RENEW_DEADLINE_SECONDS,
     LEASE_RETRY_PERIOD_SECONDS,
+    LeaseError,
     LockAbsent,
     SurrealLeaderLock,
     SurrealLeaseStore,
@@ -1378,3 +1379,79 @@ class TestNoPrivateRetryPolicyLivesInThisPackage:
             and node.func.attr == "sleep"
         ]
         assert not sleeps, "a private sleep ladder in the lease package is a private backoff"
+
+
+class TestLeaseErrorIsAKnownBoundNotAnAccident:
+    """⚠ **F6c (cold audit 11-i-a): THE BOUND WITH NO INSTRUMENT.**
+
+    ``LeaseError`` is a member of the contract's FROZEN interface that **nothing raises**
+    as of 11-i-a. The lead ruled that DELIBERATE (escalation E-5) and gave it a named
+    re-open trigger: *if 11-ii ships without raising it, DELETE it.* The audit then found
+    the class had **zero test references of any kind** — so:
+
+      * "a trigger nobody measures is a hope" (repo law, verbatim). Nothing would notice
+        11-ii wiring it up, and nothing would notice 11-ii NOT wiring it up either;
+      * a frozen-interface member with no reference can be DELETED with every gate green.
+        Its absence would surface as an ``ImportError`` in 11-ii, at which point somebody
+        re-invents it and the ruling is lost;
+      * repo law on known bounds: *"WHEN YOU CANNOT CLOSE A HOLE, PIN IT"* — a test that
+        ASSERTS the hole and goes RED the day someone closes it.
+
+    This is that pin, in BOTH directions. It is EXPECTED to go red when 11-ii lands. That
+    is not a failure: raise it, then delete this class and update ``LeaseError``'s
+    docstring in the same diff.
+    """
+
+    @staticmethod
+    def _raise_sites() -> list[int]:
+        """Line numbers of every ``raise LeaseError(...)`` in the lease module."""
+        tree = ast.parse(TestNoPrivateRetryPolicyLivesInThisPackage._source())
+        sites: list[int] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Raise) or node.exc is None:
+                continue
+            raised = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+            if isinstance(raised, ast.Name) and raised.id == LeaseError.__name__:
+                sites.append(node.lineno)
+        return sites
+
+    def test_the_scan_can_actually_SEE_a_raise_of_this_class(self) -> None:
+        """THE POSITIVE CONTROL. The pin below asserts an ABSENCE, and an absence found by
+        a broken scanner is worthless — this repo has the receipt for a probe that passed
+        on a ``ParseError``. So the same walk is run over a source that DOES raise it.
+        """
+        tree = ast.parse(f"raise {LeaseError.__name__}('x')\nraise ValueError('y')\n")
+        seen: list[int] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Raise) or node.exc is None:
+                continue
+            raised = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+            if isinstance(raised, ast.Name) and raised.id == LeaseError.__name__:
+                seen.append(node.lineno)
+        assert seen == [1], (
+            f"the raise-site walk found {seen} in a source with exactly one "
+            f"`raise {LeaseError.__name__}` on line 1 — the absence it reports elsewhere "
+            f"means nothing"
+        )
+
+    def test_nothing_in_the_lease_module_raises_LeaseError_TODAY(self) -> None:
+        sites = self._raise_sites()
+        assert not sites, (
+            f"`{LeaseError.__name__}` is now raised at line(s) {sites} — **and that is "
+            f"probably GOOD NEWS.** This pin exists because the class was kept as a "
+            f"deliberate KNOWN BOUND (lead ruling E-5) with a named re-open trigger: "
+            f"11-ii's election thread is its intended raiser. If that is what just landed: "
+            f"DELETE this class and rewrite `{LeaseError.__name__}`'s docstring — the bound "
+            f"is closed, and a pin asserting a closed hole is a pin that lies. If it is NOT "
+            f"what landed, you have raised a type no caller was told to expect."
+        )
+
+    def test_LeaseError_still_exists_and_is_still_a_store_error(self) -> None:
+        """The other direction, and the one the audit's finding is actually about: the
+        class is DELETABLE today with every gate green, because nothing references it.
+        This reference is what makes a deletion a RED, in a diff a reviewer can see."""
+        assert issubclass(LeaseError, SurrealStoreError), (
+            f"`{LeaseError.__name__}` no longer derives from `SurrealStoreError`. 11-ii's "
+            f"election loop needs a lease failure that a store-error handler still catches; "
+            f"re-parenting it silently narrows what every existing handler sees."
+        )

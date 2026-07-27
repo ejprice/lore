@@ -40,7 +40,6 @@ legs.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import json
 import logging
 from collections.abc import Callable, Coroutine
@@ -119,6 +118,17 @@ LEASE_DURATION_SECONDS = 15
 LEASE_RENEW_DEADLINE_SECONDS = 10
 LEASE_RETRY_PERIOD_SECONDS = 2
 
+# What a SYNCHRONOUS lock call absorbs and reports as "this tick did not win".
+# ONE tuple, not four clones: error classification is POLICY, and four hand-written
+# copies of it are four places a future class can be added to three of.
+#
+# ⚠ ``asyncio.run_coroutine_threadsafe(...).result(timeout=)`` raises
+# ``concurrent.futures.TimeoutError``, which **IS** the builtin ``TimeoutError`` — the
+# same class object, not a subclass — since Python 3.11 (verified on this interpreter;
+# this project's floor is ``requires-python = ">=3.14"``). Naming both, as all four
+# sites did, reads as two distinct fates and is one. (Cold audit 11-i-a R10.)
+_LOCK_CALL_ERRORS = (SurrealStoreError, TimeoutError)
+
 # The lock's k8s-shaped coordinates. Our store has no namespaces in the k8s
 # sense; the algorithm passes these straight back to the lock, so they are
 # identity labels, not addressing.
@@ -147,8 +157,23 @@ class LeaseError(SurrealStoreError):
     **NAMED RE-OPEN TRIGGER — if 11-ii ships without raising ``LeaseError``,
     DELETE it.** An unpinned known limitation is indistinguishable from an unknown
     one; worse, an unraised base class reads as a supported error contract, and a
-    consumer writing ``except LeaseError`` would catch nothing while believing it
-    had covered the lease.
+    consumer that CATCHES this type would catch nothing while believing it had
+    covered the lease.
+
+    ⚠ **AND THE TRIGGER IS NOW MEASURED** —
+    ``test_store_lease.TestLeaseErrorIsAKnownBoundNotAnAccident`` asserts, from the
+    AST of this package, that nothing raises it and that it stays a
+    ``SurrealStoreError`` subclass. Before that pin this class had ZERO test
+    references of any kind: a frozen-interface member that could be DELETED with
+    every gate green, carrying a re-open trigger nothing measured — "a trigger
+    nobody measures is a hope" (cold audit 11-i-a F6c). The pin goes RED the day
+    11-ii raises it, which is the day this docstring must be rewritten.
+
+    (This paragraph deliberately does NOT spell the two-token catch clause: a bare,
+    anchor-free grep for that clause is how this repo sweeps for real handler sites,
+    and prose containing it makes the sweep return a hit in the very file whose
+    receipt is "no such site exists anywhere" — cold audit 11-i-a R13, the
+    retired-name-sweep trap pointed the other way.)
     """
 
 
@@ -555,9 +580,13 @@ class SurrealLeaderLock:
         """Wire the lock. ``identity`` is this process's per-run uuid4.
 
         The three ATTRIBUTE members of the six-member interface are set here —
-        the algorithm reads ``lock.identity`` / ``lock.name`` /
-        ``lock.namespace`` directly on every tick — so they are real even in
-        the stub; the three METHOD members are stubbed below.
+        the algorithm reads ``lock.identity`` / ``lock.name`` / ``lock.namespace``
+        directly on every tick, not through an accessor — which is why they are
+        plain attributes rather than properties.
+
+        (This said "they are real even in the stub; the three METHOD members are
+        stubbed below" long after the builder implemented ``get`` / ``create`` /
+        ``update``. Nothing in this module is stubbed. Cold audit 11-i-a F5.)
         """
         self._store = store
         self._loop = loop
@@ -613,7 +642,7 @@ class SurrealLeaderLock:
         """
         try:
             observation = self._call(self._store.read())
-        except (SurrealStoreError, concurrent.futures.TimeoutError, TimeoutError) as error:
+        except _LOCK_CALL_ERRORS as error:
             logger.warning(
                 "lease.lock.read_failed",
                 extra={"lock_identity": self.identity, "error": str(error)},
@@ -643,7 +672,7 @@ class SurrealLeaderLock:
                     renew_time=election_record.renew_time,
                 )
             )
-        except (SurrealStoreError, concurrent.futures.TimeoutError, TimeoutError) as error:
+        except _LOCK_CALL_ERRORS as error:
             logger.warning(
                 "lease.lock.create_failed",
                 extra={"lock_identity": self.identity, "error": str(error)},
@@ -678,7 +707,7 @@ class SurrealLeaderLock:
                     renew_time=updated_record.renew_time,
                 )
             )
-        except (SurrealStoreError, concurrent.futures.TimeoutError, TimeoutError) as error:
+        except _LOCK_CALL_ERRORS as error:
             logger.warning(
                 "lease.lock.update_failed",
                 extra={"lock_identity": self.identity, "error": str(error)},
@@ -733,7 +762,7 @@ class SurrealLeaderLock:
                     holder_identity=self.identity, fence_epoch=fence_epoch
                 )
             )
-        except (SurrealStoreError, concurrent.futures.TimeoutError, TimeoutError) as error:
+        except _LOCK_CALL_ERRORS as error:
             logger.warning(
                 "lease.lock.release_failed",
                 extra={"lock_identity": self.identity, "error": str(error)},
@@ -791,10 +820,15 @@ def lease_election_config(
     one is a required positional), so "use the upstream defaults" means naming
     client-go's documented 15/10/2 — and it VALIDATES them by calling
     ``sys.exit``, i.e. an illegal triple raises ``SystemExit`` at construction,
-    not ``ValueError``. Both callbacks are passed explicitly too: ``Config``
-    silently substitutes its own no-op ``onstopped_leading`` for ``None``, so a
-    build that forgot to wire abdication would look identical and the run would
-    never learn it had lost the lease.
+    not ``ValueError``. Both callbacks are passed explicitly too: for a ``None``
+    ``onstopped_leading``, ``Config`` silently substitutes its OWN
+    ``on_stoppedleading_callback`` — which is not a no-op, it logs
+    ``"stopped leading"`` at INFO on the library's ``leaderelection`` logger, and
+    does nothing else (read out of the installed ``electionconfig.py``, kubernetes
+    36.0.3, 2026-07-26). Operationally that is the same trap either way: a build
+    that forgot to wire abdication looks identical, keeps running, and the run
+    never LEARNS it lost the lease — only a log line nobody is alerting on says
+    so. (Cold audit 11-i-a R10: the substitute was described as a no-op.)
 
     Returns:
         ``kubernetes.leaderelection.electionconfig.Config`` carrying

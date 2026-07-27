@@ -365,8 +365,16 @@ class FloorCalibrationStore:
             FenceLostError: ``fence`` was supplied and no longer holds.
             ValueError: The row's state/cause/note fields violate the F4/F5/§7
                 domain (an unknown state, an unknown cause, a
-                ``measured_not_adopted`` row with no cause, an adopted row
-                carrying one, or a non-``measured`` row with no ``note``).
+                ``measured_not_adopted`` row with no cause, **a cause on a row in
+                ANY OTHER STATE**, or a non-``measured`` row with no ``note``).
+                ⚠ That fourth fate is keyed on ``state``, NOT on ``adopt`` — this
+                clause used to say "an adopted row carrying one", which is both
+                narrower and wrong: a ``measuring`` row carrying a cause is
+                refused whether or not it is being adopted, and a
+                ``measured_not_adopted`` row carrying one is accepted even when
+                ``adopt`` is false. The private helper's docstring was correct;
+                this one — the CONSUMER-FACING surface — was not (cold audit
+                11-i-a R4).
         """
         self._validate_domain(measurement)
         # The head id is DERIVED, through the domain MODULE, on every write: one
@@ -410,10 +418,13 @@ class FloorCalibrationStore:
             # NEITHER is a fence verdict, and neither may be re-dressed as one: a
             # dead socket says nothing about who holds the lease, and exhausted
             # contention is a genuine write-write conflict the shared driver gave
-            # up on. Both propagate UNTOUCHED (the stub's own warning: a
-            # ``FenceLostError`` must never be confused with
-            # ``TxnContentionExhaustedError``, which "means something entirely
-            # different").
+            # up on. Both propagate UNTOUCHED — see :class:`FenceLostError`'s own
+            # class docstring, which states that a lost fence is "never retried,
+            # never silently swallowed, and never reported as
+            # ``TxnContentionExhaustedError`` (which means something entirely
+            # different)". (This cited "the stub's own warning"; that text lives in
+            # a class which was never a stub and still exists — cold audit 11-i-a
+            # R11, a pointer into a category that no longer exists.)
             raise
         except SurrealStoreError as error:
             if fence is None:
@@ -638,9 +649,21 @@ class FloorCalibrationStore:
         )
         revision = rows[0].get(FLOOR_MEASUREMENT_HEAD_REVISION_COLUMN) if rows else None
         if revision is None:
+            # BOTH fates are named, because BOTH reach this branch and they are
+            # DIFFERENT failures: an absent row means the measurement CREATE never
+            # landed, while a present row with no revision means the CREATE landed
+            # and the head mint did not. The docstring named both; the SERVED
+            # message named only the second, so half the readers of this error were
+            # told the wrong thing about their own store (cold audit 11-i-a R7).
+            fate = (
+                "its row is ABSENT — the measurement CREATE never landed"
+                if not rows
+                else "its row carries no minted head revision — the CREATE landed "
+                "but the head mint did not"
+            )
             raise FloorCalibrationError(
-                f"measurement {measurement_id!r} committed without a minted head revision — "
-                f"the adopting transaction did not land as one unit"
+                f"adopting measurement {measurement_id!r} cannot report a head revision: "
+                f"{fate}. Either way the adopting transaction did not land as ONE unit."
             )
         return int(revision)
 

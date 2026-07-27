@@ -41,21 +41,25 @@ THE CONTRACT THIS MODULE DECIDES (the builder builds FROM this)::
   * raising :class:`TxnContentionExhaustedError` on exhaustion.
 
 Everything the attempt raises that is NOT the signal propagates UNTOUCHED, with ZERO
-retries. ``execute_transaction`` (multi-statement) and **all TEN single-statement
-``_query`` seams** CALL it. ``briefs.py`` deletes its loop, its 4-slot jitter, its budget
-constants and its label import.
+retries. ``execute_transaction`` (multi-statement) and **EVERY single-statement
+``_query`` seam the scan discovers** CALL it. ``briefs.py`` deletes its loop, its 4-slot
+jitter, its budget constants and its label import.
 
-**TEN, not two — and the ten are DISCOVERED, not listed** (operator ruling). ``_query``
-is not one seam; it is ten hand-rolled copies of one seam, in ``store/surreal.py``,
-``briefs.py``, ``agents.py``, ``tasks.py``, ``findings.py``, ``diff.py``,
-``index/snapshots.py``, ``graph_surreal.py``, ``index/surreal_manifest.py`` and
-``memory/local.py``. That is the DRY defect one level ABOVE the retry: what
-``DESIGN-LAW.md:75`` invited a clone of was the seam itself. The first version of this
-contract pinned two of them — the two the brief named — because nobody knew the other
-eight existed. **A pin over a hand-written list is only as complete as the list, and the
-list is exactly what nobody can be trusted to keep.** So the seams are enumerated from
-the AST (see ``_discover_query_seams``) and every seam pin is parametrised over what is
-FOUND: an eleventh clone is pinned the day it is written, by nobody's memory.
+**MANY, not two — and they are DISCOVERED, not listed** (operator ruling). At the #120
+fix (``9d29111``) ``_query`` was TEN hand-rolled copies of one seam, in
+``store/surreal.py``, ``briefs.py``, ``agents.py``, ``tasks.py``, ``findings.py``,
+``diff.py``, ``index/snapshots.py``, ``graph_surreal.py``, ``index/surreal_manifest.py``
+and ``memory/local.py``. **That population has GROWN since, and no current count is
+written into this prose on purpose** — ``_discover_query_seams()`` is the only thing that
+knows it and ``_MIN_KNOWN_SEAMS`` is the only literal that tracks it, so a reader is
+never taught a number a later packet silently falsified (this docstring said "ten" three
+packets after it stopped being true). That is the DRY defect one level ABOVE the retry:
+what ``DESIGN-LAW.md:75`` invited a clone of was the seam itself. The first version of
+this contract pinned two of them — the two the brief named — because nobody knew the
+other eight existed. **A pin over a hand-written list is only as complete as the list,
+and the list is exactly what nobody can be trusted to keep.** So the seams are enumerated
+from the AST (see ``_discover_query_seams``) and every seam pin is parametrised over what
+is FOUND: a NEW clone is pinned the day it is written, by nobody's memory.
 
 A HELPER, NOT A DECORATOR (design ruling, upheld): the deadline is per-call and the
 conflict DETECTION differs per path — the transactional path reads the returned
@@ -276,7 +280,7 @@ def _mutate_shared_marker(monkeypatch: pytest.MonkeyPatch) -> None:
     """Move the ONE conflict-detection authority. Every seam must follow it."""
     assert hasattr(txn_module, "_RETRYABLE_CONFLICT_MARKER"), (
         "the shared conflict marker is gone — detection has no single authority left, "
-        "and nothing can pin that eleven callers agree on what a conflict IS"
+        "and nothing can pin that every caller agrees on what a conflict IS"
     )
     monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_MARKER", _MUTATED_MARKER)
 
@@ -626,9 +630,18 @@ def _ledger_on(connection: Any) -> BriefLedger:
 #   * ``_MIN_KNOWN_SEAMS`` guards the scan against silently finding nothing: a
 #     parametrised suite over an empty list is vacuously green, which is the failure mode
 #     of every "mechanical" gate ever written.
+#   * ⚠ AND A FLOOR IS ONLY A GUARD WHILE IT IS TIGHT. This one sat at 10 while the scan
+#     found 13 (measured 2026-07-26 at ``2b23862``), so THREE seams could have vanished
+#     from the enumeration with every gate green — the exact vacuity it exists to stop,
+#     wearing the floor's own name. Moving a floor in EITHER direction is the deliberate,
+#     reviewable diff its failure message asks for: RAISE it when the population grows,
+#     lower it when seams are genuinely consolidated. Never leave slack behind.
 # ===========================================================================
 
-_MIN_KNOWN_SEAMS = 10
+# 13 = ``len(_discover_query_seams())`` at ``2b23862``, re-derived 2026-07-26 (it was 10
+# at ``9d29111`` and already 13 at ``71ead8c``; packet 11-i-a contributed the last two
+# ENTRIES, not the drift).
+_MIN_KNOWN_SEAMS = 13
 
 # The values the discovered constructors are fed, BY PARAMETER NAME. Nothing here is used
 # by ``_query`` — the connection is injected — so a collaborator can be ``None``; these
@@ -1093,9 +1106,9 @@ class TestEverySingleStatementSeamRetriesAConflict:
     async def test_the_seam_backs_off_through_the_SHARED_jitter(
         self, monkeypatch: pytest.MonkeyPatch, module_path: str, seam: type
     ) -> None:
-        """**THE DISCRIMINATING PIN, now ten times over** (lead's requirement 2).
+        """**THE DISCRIMINATING PIN, once per DISCOVERED seam** (lead's requirement 2).
 
-        CATCHES THE TEN-PRIVATE-COPIES BUILD: ten seams that each retry, each back off,
+        CATCHES THE PRIVATE-COPIES BUILD: seams that each retry, each back off,
         each raise the typed error — and each hand-roll the mechanics. It satisfies every
         behavioural pin above and is not DRY at all; it is finding #102 industrialised.
 
@@ -1112,9 +1125,9 @@ class TestEverySingleStatementSeamRetriesAConflict:
 
         assert recorder.draws, (
             f"{seam.__name__}._query ({module_path}) backed off WITHOUT calling the "
-            f"shared jitter — it is hand-rolling its own. Ten seams that each own a "
-            f"private copy of the retry mechanics are not DRY; they are finding #102, "
-            f"ten times, each free to get the jitter wrong in its own way (findings did: "
+            f"shared jitter — it is hand-rolling its own. Seams that each own a "
+            f"private copy of the retry mechanics are not DRY; they are finding #102 "
+            f"once per seam, each free to get the jitter wrong in its own way (findings did: "
             f"16 slots; briefs did: 4)."
         )
 
@@ -1133,7 +1146,7 @@ class TestEverySingleStatementSeamRetriesAConflict:
         A domain rejection can never succeed on retry; a TRANSPORT fault may already have
         COMMITTED (the driver's at-most-once rule). Both must surface on the FIRST
         occurrence, unretried — and the transport one must still self-heal and still
-        raise ``SurrealConnectionError``, exactly as all ten do today.
+        raise ``SurrealConnectionError``, exactly as every seam does today.
 
         Green today (no seam retries anything), so it is MUTATION-PROVEN rather than
         merely asserted: see the report's §C.1/C.1b.
@@ -1171,14 +1184,14 @@ class TestEverySingleStatementSeamRetriesAConflict:
 
 
 class TestDetectionFollowsTheOneSharedMarker:
-    """**BLOCKER 1, closed.** Eleven callers must agree on what a conflict IS — and
+    """**BLOCKER 1, closed.** EVERY caller must agree on what a conflict IS — and
     "agree" is proven by MOVING the definition and watching them all follow.
 
     THE WRONG BUILD (the adversary built it; it scored 839 passed / 0 failed / ruff
     clean / mypy 0): every seam routes through the shared driver for POLICY and matches
     ``"Resource busy"`` in the engine text LOCALLY for DETECTION. Reword the engine's
-    message and all ten stop retrying, silently. That is the #93 → #102 coupling, eleven
-    times over, inside the fix for #102.
+    message and every seam stops retrying, silently. That is the #93 → #102 coupling,
+    once per caller, inside the fix for #102.
 
     Both directions are needed, and each kills a different build:
 
@@ -1270,7 +1283,7 @@ class TestTheRetryIsNotGatedOnTheStatementShape:
     CATCHES: a build that retries only what LOOKS like a write (``UPSERT``/``CREATE``/…)
     and leaves reads — or any shape its author did not picture — unretried.
 
-    Driven through ONE seam deliberately: the ten share a single driver (pinned by
+    Driven through ONE seam deliberately: they all share a single driver (pinned by
     identity in :class:`TestEverySeamHoldsTheOneDriver`), so a shape heuristic can only
     live in the driver or in one seam's detection — and both are reachable from here.
     Running 5 shapes × 10 seams would be 50 tests that all re-prove the same branch.
@@ -1475,7 +1488,7 @@ async def _txn_attempts_until_exhaustion() -> int:
 
 
 class TestEveryCallerRunsTheSameRetryPolicy:
-    """ELEVEN callers — the ten discovered ``_query`` seams plus ``execute_transaction``
+    """EVERY caller — the discovered ``_query`` seams plus ``execute_transaction``
     — and not one of them may carry a budget of its own.
 
     Both budget BOUNDARIES are driven through every caller, on the DEFAULT deadline
@@ -1524,7 +1537,7 @@ class TestEveryCallerRunsTheSameRetryPolicy:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``execute_transaction`` is the ELEVENTH caller, and it is held to the same
-        budget as the ten — otherwise the seam has two policies and the extraction
+        budget as the seams — otherwise it has two policies and the extraction
         achieved nothing.
         """
         _silence_sleep(monkeypatch)
@@ -2861,8 +2874,8 @@ class TestScoutCommandClaimRidesTheSeam:
     async def test_detection_follows_the_shared_marker(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Scout is held to the SAME detection authority as the other ten — otherwise it
-        is an eleventh copy of the prose coupling, which is how it got here.
+        """Scout is held to the SAME detection authority as every other seam — otherwise
+        it is one more copy of the prose coupling, which is how it got here.
 
         NOTE the expected type: scout raises the SDK error RAW (see the transport pin
         below). It is not a ledger and its error contract is not a ledger's.
@@ -2904,7 +2917,7 @@ class TestScoutCommandClaimRidesTheSeam:
             except (*_CONNECTION_ERRORS, KeyError):
                 await self._drop_connection(); await self._backoff(attempt); continue
 
-        — it is built on the **RAW SDK TYPES**. The ten ledgers wrap a transport fault as
+        — it is built on the **RAW SDK TYPES**. The ledger seams wrap a transport fault as
         ``SurrealConnectionError``, which is a ``RuntimeError`` and therefore NOT in
         ``_CONNECTION_ERRORS``. Wrap scout's the same way and the socket drop flies
         straight past the ladder: no drop, no backoff, no reconnect, subscriber dead.
@@ -4138,8 +4151,8 @@ class TestExhaustionIsLoggedExactlyOnceOnBothPaths:
         assert len(exhausted) == 1, (
             f"execute_transaction exhausted and emitted {len(exhausted)} "
             f"`{_EXHAUSTION_EVENT}` record(s). Both paths share ONE driver, so both get "
-            f"the same one record — a driver that logs for the ten seams and not for the "
-            f"eleventh caller has two policies again."
+            f"the same one record — a driver that logs for the `_query` seams and not for "
+            f"`execute_transaction` has two policies again."
         )
         assert getattr(exhausted[0], "attempts", None) == exc_info.value.attempts
         assert getattr(exhausted[0], "elapsed_seconds", None) == pytest.approx(
@@ -4605,8 +4618,9 @@ _BOOTSTRAP_MOVED_FAILURES = 3
 _MISSING_SHARED_HELPER = (
     "loremaster.store._txn.{name} does not exist. The bootstrap and the single-statement "
     "attempt body are POLICY — error classification, signal-raising, the DDL shape — and "
-    "policy is a FUNCTION CALLERS CALL, never a pattern they clone. Thirty closures and ten "
-    "attempt bodies is finding #108 one altitude up: the thing DESIGN-LAW.md:75 invited a "
+    "policy is a FUNCTION CALLERS CALL, never a pattern they clone. The thirty closures and "
+    "ten attempt bodies this wave deleted (the population at `9d29111`) are finding #108 one "
+    "altitude up: the thing DESIGN-LAW.md:75 invited a "
     "clone of was the seam itself."
 )
 
@@ -4648,11 +4662,18 @@ _BOOTSTRAP_OWNERS = [
     for module_path, class_name in _discover_bootstrap_owners()
 ]
 
-# The store seams are ten; scout owns an ``_ensure_connection`` too (it delegates to the
-# module-level ``_open_command_connection``, which carries the ELEVENTH copy of the same
-# three closures — the copy no `_query`-keyed enumeration can see, exactly as scout was the
-# copy no `_query`-keyed enumeration could see the first time).
-_MIN_KNOWN_BOOTSTRAP_OWNERS = 11
+# The store seams, PLUS scout — which owns an ``_ensure_connection`` too (it delegates to
+# the module-level ``_open_command_connection``, carrying one more copy of the same three
+# closures: the copy no `_query`-keyed enumeration can see, exactly as scout was the copy
+# no `_query`-keyed enumeration could see the first time).
+# 14 = ``len(_discover_bootstrap_owners())`` at ``2b23862``, re-derived 2026-07-26 (the
+# set is exactly the ``_query`` seams plus ``CommandSubscriber``, measured). It had sat at
+# 11 across two population growths — see ``_MIN_KNOWN_SEAMS`` for why slack is the bug.
+# ⚠ A LITERAL, deliberately, and NOT ``_MIN_KNOWN_SEAMS + 1``: this floor and
+# ``_MIN_KNOWN_BOOTSTRAP_CALL_SITES`` are asserted EQUAL below as two independent
+# enumerations agreeing, and a floor defined in terms of another turns that pin into
+# ``X == X`` — a pin that cannot fail.
+_MIN_KNOWN_BOOTSTRAP_OWNERS = 14
 
 # The bootstrap DDL, in the engine's OWN words — not ours. These are SurrealQL keywords, so
 # unlike a symbol name they cannot be renamed out from under the scan.
@@ -4737,7 +4758,7 @@ class TestTheSessionBootstrapLivesInExactlyOnePlace:
             + "\n  ".join(
                 f"{key}:{lineno}  {what}" for key, sites in held.items() for lineno, what in sites
             )
-            + "\n\nThirty closures and eleven copies. It is ONE function — "
+            + "\n\nThirty closures and eleven copies at `9d29111`. It is ONE function — "
             "`_txn.bootstrap_session` — and every `_ensure_connection` CALLS it. A pattern "
             "to clone is a defect to clone: DESIGN-LAW.md invited a clone of the mint and "
             "got findings #102 AND #108; the thing that got cloned underneath BOTH of them "
@@ -4769,8 +4790,8 @@ class Ledger:
 
         assert [what for _, what in found] == ["connection.use()", "DEFINE NAMESPACE"], (
             f"the scan saw {found} in a textbook hand-rolled bootstrap. It must see BOTH "
-            f"shapes — the f-string DDL and the use() call — or the ten it is hunting are "
-            f"invisible to it."
+            f"shapes — the f-string DDL and the use() call — or the bootstraps it is hunting "
+            f"are invisible to it."
         )
 
     def test_the_scan_SPARES_a_module_that_merely_talks_to_the_engine(self) -> None:
@@ -5476,7 +5497,7 @@ class TestOneBootstrapImplementationAndOneQueryImplementation:
     questions and neither is sufficient alone:
 
       * IDENTITY cannot be faked by a copy. ``module.bootstrap_session is
-        _txn.bootstrap_session`` is False for ten private re-implementations wearing one
+        _txn.bootstrap_session`` is False for private re-implementations wearing one
         name — the exact build a cold adversary writes, which passes every behavioural pin
         because every module "has" the helper.
       * The SPY proves the seam actually CALLS it. A module can import a name and hand-roll
@@ -5496,8 +5517,8 @@ class TestOneBootstrapImplementationAndOneQueryImplementation:
 
         assert held is not None, (
             f"{module_path} ({class_name}) does not hold the shared session bootstrap — so "
-            f"whatever DDL its `_ensure_connection` runs is its own private copy, and there "
-            f"are eleven of them. " + _MISSING_SHARED_HELPER.format(name="bootstrap_session")
+            f"whatever DDL its `_ensure_connection` runs is its own private copy — one per "
+            f"connection owner. " + _MISSING_SHARED_HELPER.format(name="bootstrap_session")
         )
         assert held is _shared("bootstrap_session"), (
             f"{module_path}.bootstrap_session is NOT _txn.bootstrap_session — it is a "
@@ -5589,7 +5610,7 @@ class TestOneBootstrapImplementationAndOneQueryImplementation:
 
         assert seen, (
             f"{seam.__name__}._query ran a statement WITHOUT going through the shared attempt "
-            f"body — it is still one of ten hand-written copies of the same ladder"
+            f"body — it is still a hand-written copy of the same ladder"
         )
         assert result == [{"next": 3}]
         assert connection.calls == 3, "the conflict was not retried to success through the helper"
@@ -5859,15 +5880,15 @@ class TestTheAntiVacuityControlStillFires:
 # ---------------------------------------------------------------------------
 # THE REJECTION-EVENT EXACT SET (lead ruling, R3).
 #
-# Each of the ten ``_query`` bodies logs a rejected write under its OWN event name. Those
-# names are an OPERATOR-FACING SERVED SURFACE — log greps and dashboards key on them — and
-# section 7d routes all ten through ONE ``run_query`` with a ``label`` parameter. **That is
-# precisely the moment a silent rename ships**: ten literals become one argument, and no
+# Each ``_query`` body logs a rejected write under its OWN event name. Those names are an
+# OPERATOR-FACING SERVED SURFACE — log greps and dashboards key on them — and section 7d
+# routes every seam through ONE ``run_query`` with a ``label`` parameter. **That is
+# precisely the moment a silent rename ships**: N literals become one argument, and no
 # gate in this repo can see an English string change value.
 #
 # So they are pinned the way this repo pins every served set: **ONE canonical list, in ONE
 # place** (the exact-set idiom — cf. the tool-registration pin in test_mcp_server.py), not
-# ten literals scattered across ten parametrised cases. A DELIBERATE rename then edits this
+# a literal scattered through each parametrised case. A DELIBERATE rename then edits this
 # list, in a diff a reviewer can see. An ACCIDENTAL one goes red.
 #
 # The pin below compares this list against what the code ACTUALLY EMITS (driven, captured
@@ -5877,15 +5898,19 @@ class TestTheAntiVacuityControlStillFires:
 # THE SEAM'S SERVED SURFACE IS THREE THINGS, NOT ONE (audit-fix-1 A2 · blindreader-dry-2 F6),
 # and the collapse threatens each of them differently:
 #
-#   1. the rejection EVENT  (`_SEAM_REJECTION_EVENTS`) — ten literals become one `label`
-#      argument: the moment a silent rename ships.
-#   2. the raised-message NOUN (`_SEAM_REJECTION_NOUNS`) — five seams say plain "query" and
-#      five say "brief query" / "agent query" / "task query" / "finding query" /
-#      "memory query". Preserved from HEAD by the builder, and (until now) pinned by NOTHING:
-#      a bare grep of the whole test tree found ZERO assertions on it, while this contract's
-#      own illustrative signature omitted the parameter. A builder cleaning up to match the
-#      sketch drops five seams' operator-facing wording and passes every gate.
-#   3. the emitting LOGGER (`record.name`) — the ten records used to come from
+#   1. the rejection EVENT  (`_SEAM_REJECTION_EVENTS`) — one literal per seam becomes one
+#      `label` argument: the moment a silent rename ships.
+#   2. the raised-message NOUN (`_SEAM_REJECTION_NOUNS`) — SOME seams say plain "query" and
+#      the rest NAME THEIR DOMAIN ("brief query", "agent query", …). ⚠ The split is DERIVED
+#      from the map below (`_plain_noun_seams` / `_domain_naming_seams`) and never restated
+#      as a count in prose: this comment said "five and five" for three packets after it
+#      became five and eight, and its twin inside a served ASSERT MESSAGE handed a reader a
+#      list that omitted three seams entirely. Preserved from HEAD by the builder, and
+#      (until the pin below) asserted by NOTHING: a bare grep of the whole test tree found
+#      ZERO assertions on it, while this contract's own illustrative signature omitted the
+#      parameter. A builder cleaning up to match that sketch drops the domain-naming seams'
+#      operator-facing wording and passes every gate.
+#   3. the emitting LOGGER (`record.name`) — the records used to come from
 #      `loremaster.tasks` / `loremaster.briefs` / …; after the collapse they are emitted by
 #      `_txn`'s module logger. `JsonFormatter` writes `"logger": record.name`, so **every
 #      Mezmo query or alert keyed on `logger:loremaster.tasks` silently returns nothing.**
@@ -5917,11 +5942,15 @@ _SEAM_REJECTION_EVENTS = {
 
 # What each seam CALLS the statement it ran, in the message it raises: "SurrealDB {noun}
 # rejected against {url} ({error_class})". Derived from HEAD (`git show HEAD:<file>`) and
-# re-verified against the built tree — five plain "query", five that name their domain.
+# re-verified against the built tree.
 #
 # THE MONOCULTURE TRAP THIS AVOIDS: a mapping in which every value were "query" would be
-# satisfied by a build that hardcoded "query" and dropped the parameter — the exact regression
-# audit-fix-1 A2 predicts. Five of the ten values differ, so no single hardcoded noun can pass.
+# satisfied by a build that hardcoded "query" and dropped the parameter — the exact
+# regression audit-fix-1 A2 predicts. The map must therefore keep BOTH populations
+# non-empty — and that is now a PIN
+# (``TestTheSeamsRejectionLogSurvivesTheCollapse::test_the_canonical_noun_map_is_not_a_MONOCULTURE``),
+# not a sentence, because the sentence beside it counted "five and five" for three packets
+# after it became five and eight.
 _SEAM_REJECTION_NOUNS = {
     "AgentRegistry": "agent query",
     "BriefLedger": "brief query",
@@ -5940,24 +5969,45 @@ _SEAM_REJECTION_NOUNS = {
 
 # The seam's OWN logger — the `logger:` field every Mezmo query keys on. NOT a hand-list: it
 # IS the module path, because every seam does `logger = logging.getLogger(__name__)`. Derived
-# from the discovered seams, so an eleventh is covered without anyone editing anything.
+# from the discovered seams, so a NEW one is covered without anyone editing anything.
+
+# The noun a seam raises when it does NOT name its domain. The split between the two
+# populations is COMPUTED from `_SEAM_REJECTION_NOUNS` below and never typed beside it —
+# a restated count is a bug waiting for the next seam, and this file has the receipt.
+_PLAIN_QUERY_NOUN = "query"
+
+
+def _plain_noun_seams() -> tuple[str, ...]:
+    """The seams whose raised-message noun is the bare :data:`_PLAIN_QUERY_NOUN`."""
+    return tuple(
+        sorted(name for name, noun in _SEAM_REJECTION_NOUNS.items() if noun == _PLAIN_QUERY_NOUN)
+    )
+
+
+def _domain_naming_seams() -> tuple[str, ...]:
+    """The seams whose raised-message noun NAMES their domain ("brief query", …)."""
+    return tuple(
+        sorted(name for name, noun in _SEAM_REJECTION_NOUNS.items() if noun != _PLAIN_QUERY_NOUN)
+    )
+
+
 _REJECTION_NOUN_PATTERN = re.compile(r"SurrealDB (?P<noun>.+?) rejected against")
 _TRANSPORT_NOUN_PATTERN = re.compile(r"SurrealDB (?P<noun>.+?) failed against")
 
 
 class TestTheSeamsRejectionLogSurvivesTheCollapse:
-    """**REMOVED-BEHAVIOUR PRESERVATION for section 7d.** Ten ``_query`` bodies become one
-    ``run_query`` — and each of those ten bodies carries a ``logger.error`` that is the ONLY
-    place a domain rejection's full engine text is ever written.
+    """**REMOVED-BEHAVIOUR PRESERVATION for section 7d.** Every ``_query`` body becomes one
+    shared ``run_query`` — and each of those bodies carried a ``logger.error`` that is the
+    ONLY place a domain rejection's full engine text is ever written.
 
     Ledger #31 keeps the raw text OUT of the raised exception (it can echo a bound VALUE
     back verbatim, and that text flows to MCP clients), so the log line is not a nicety: it
-    is the entire diagnostic path for a rejected write. A collapse that folds ten bodies
+    is the entire diagnostic path for a rejected write. A collapse that folds those bodies
     into one and drops the logging leaves an operator with a classified label and nothing
     else — and no gate would see it, because every behavioural pin in this module asserts on
     the raised TYPE.
 
-    Green today, x10. It is here to still be green tomorrow.
+    Green today, once per DISCOVERED seam. It is here to still be green tomorrow.
     """
 
     @pytest.mark.parametrize(("module_path", "seam"), _QUERY_SEAMS)
@@ -5983,7 +6033,7 @@ class TestTheSeamsRejectionLogSurvivesTheCollapse:
             f"{len(carriers)} log record(s) carrying the engine's own text. Ledger #31 keeps "
             f"that text OUT of the raised message, so this line is the ONLY place it is ever "
             f"written — an operator holding the classified label has nowhere else to look. "
-            f"Ten bodies collapsing into one must carry their logging with them, not lose it."
+            f"N bodies collapsing into one must carry their logging with them, not lose it."
         )
         assert _SENSITIVE_MARKER not in str(exc_info.value), (
             "ledger #31: the raised message echoed the bound value back verbatim"
@@ -5998,16 +6048,16 @@ class TestTheSeamsRejectionLogSurvivesTheCollapse:
         Three wrong builds, three failure modes, and a per-seam parametrised pin catches none
         of them as a set:
 
-          * **the silent rename.** ``run_query(label=…)`` turns ten literals into one
-            argument. A builder who tidies ``brief.query.rejected`` into
+          * **the silent rename.** ``run_query(label=…)`` turns one literal per seam into
+            one argument. A builder who tidies ``brief.query.rejected`` into
             ``briefs.query.rejected`` breaks every operator log-grep and dashboard keyed on
             it, and no gate in this repo can see an English string change value. -> the
             value comparison.
           * **the HOMOGENISED event.** A collapse that logs ONE generic
-            ``store.query.rejected`` for all ten is the easiest thing to write and destroys
-            the operator's ability to tell WHICH ledger rejected a write. -> the
-            distinctness assertion (ten seams, ten distinct events).
-          * **the seam that quietly falls out.** An eleventh ledger, or one whose logging is
+            ``store.query.rejected`` for every seam is the easiest thing to write and
+            destroys the operator's ability to tell WHICH ledger rejected a write. -> the
+            distinctness assertion (one distinct event per seam, however many there are).
+          * **the seam that quietly falls out.** A NEW ledger, or one whose logging is
             dropped in the collapse, must not slip past by simply not being in anyone's
             list. -> the KEY-set comparison, driven from the DISCOVERED seams, so the
             observed side is the ALL set and the canonical list is only the expectation.
@@ -6074,12 +6124,21 @@ class TestTheSeamsRejectionLogSurvivesTheCollapse:
                 for name in sorted(observed_nouns)
                 if observed_nouns.get(name) != _SEAM_REJECTION_NOUNS.get(name)
             )
-            + "\n\nFive of the ten seams name their domain ('brief query', 'agent query', "
-            "'task query', 'finding query', 'memory query') and five say plain 'query'. That "
-            "wording is OPERATOR-FACING and was preserved from HEAD through the collapse — but "
-            "it survives only as a `noun=` argument now, and until this pin NOTHING in the "
-            "whole test tree asserted it. A builder tidying its code to match a signature "
-            "sketch that omitted the parameter regresses five seams and passes every gate."
+            + f"\n\n{len(_domain_naming_seams())} of the {len(_SEAM_REJECTION_NOUNS)} seams "
+            f"name their domain ("
+            + ", ".join(
+                f"{name} -> {_SEAM_REJECTION_NOUNS[name]!r}" for name in _domain_naming_seams()
+            )
+            + f") and {len(_plain_noun_seams())} say plain {_PLAIN_QUERY_NOUN!r} "
+            f"({', '.join(_plain_noun_seams())}). That wording is OPERATOR-FACING and was "
+            f"preserved from HEAD through the collapse — but it survives only as a `noun=` "
+            f"argument now, and until this pin NOTHING in the whole test tree asserted it. A "
+            f"builder tidying its code to match a signature sketch that omitted the parameter "
+            f"regresses every domain-naming seam and passes every gate.\n\n(This split is "
+            f"COMPUTED from the canonical map, never transcribed: the sentence that used to "
+            f"live here said 'five of the ten' and hand-listed five names, and it stayed "
+            f"green — and wrong — through three seam additions, handing whoever read this "
+            f"red a population that excluded three of the seams it was describing.)"
         )
 
         # -- the emitting LOGGER (blindreader-dry-2 F6) ---------------------------------
@@ -6120,15 +6179,44 @@ class TestTheSeamsRejectionLogSurvivesTheCollapse:
                 if observed[name] != _SEAM_REJECTION_EVENTS[name]
             )
             + "\n\nThese are OPERATOR-FACING: log greps and dashboards key on them. The "
-            "`run_query` collapse turns ten literals into one `label` argument, which is "
-            "exactly where a rename ships silently. If the rename is intended, edit the "
-            "canonical list above."
+            "`run_query` collapse turns one literal per seam into one `label` argument, "
+            "which is exactly where a rename ships silently. If the rename is intended, "
+            "edit the canonical list above."
         )
         assert len(set(observed.values())) == len(observed), (
             f"two or more seams now log the SAME rejection event "
             f"({sorted(observed.values())}). The collapse HOMOGENISED them — an operator "
             f"reading the log can no longer tell which ledger rejected the write, which is "
             f"the entire reason each seam carried its own event name."
+        )
+
+    def test_the_canonical_noun_map_is_not_a_MONOCULTURE(self) -> None:
+        """**THE FIXTURE'S OWN DISCRIMINATION GUARD**, and it is not decoration.
+
+        The exact-mapping assertion above catches a build that hardcodes ``noun="query"``
+        and drops the parameter — but ONLY while the canonical map actually holds two
+        populations. Homogenise :data:`_SEAM_REJECTION_NOUNS` to all-``"query"`` (an easy
+        "tidy-up" the day someone decides the domain nouns are noise) and that pin becomes
+        satisfiable by the exact regression it exists to catch, in silence.
+
+        This is the repo's "what WRONG build would still pass this?" law aimed at the
+        FIXTURE rather than the code, and it is the mechanical form of a sentence that used
+        to sit beside the map claiming "five of the ten values differ" — a claim that was
+        both unchecked and, for three packets, wrong.
+        """
+        plain, domain = _plain_noun_seams(), _domain_naming_seams()
+
+        assert plain and domain, (
+            f"`_SEAM_REJECTION_NOUNS` no longer holds BOTH populations: "
+            f"{len(plain)} seam(s) say plain {_PLAIN_QUERY_NOUN!r} and {len(domain)} name "
+            f"their domain. With either side empty, a single hardcoded noun satisfies the "
+            f"exact-mapping pin above and audit-fix-1 A2's regression ships green. If the "
+            f"nouns were deliberately unified, DELETE this pin and say so in the diff — do "
+            f"not leave it passing over a map it can no longer discriminate."
+        )
+        assert set(plain) | set(domain) == set(_SEAM_REJECTION_NOUNS), (
+            "the two derived populations do not partition the canonical map — the split "
+            "helpers and the map have diverged"
         )
 
 
@@ -6313,7 +6401,7 @@ class TestScoutsConnectFailureReachesTheReconnectLadder:
             f"TxnContentionExhaustedError) — RAW SDK types. `SurrealConnectionError` is a "
             f"RuntimeError and is NOT among them. A shared `bootstrap_session` that wraps its "
             f"own failure (the obvious DRY reading: one helper, one disposition) satisfies "
-            f"§7c for all ten ledgers and flies straight past this ladder: no backoff, no "
+            f"§7c for every ledger and flies straight past this ladder: no backoff, no "
             f"reconnect, the command channel dead until the process restarts.\n\n"
             f"THE WRAP GOES AT THE SEAM, not inside the shared bootstrap. One helper; the "
             f"DISPOSITION stays with the caller that owns the fate."
@@ -6407,7 +6495,11 @@ _SOCKET_OWNERS = [
     pytest.param(module_path, class_name, id=class_name)
     for module_path, class_name in _discover_socket_owners()
 ]
-_MIN_KNOWN_SOCKET_OWNERS = 10
+# 13 = ``len(_discover_socket_owners())`` at ``2b23862``, re-derived 2026-07-26 — the set
+# is exactly the ``_query`` seams (measured; ``CommandSubscriber`` is out, because scout
+# RECEIVES its connection rather than constructing one). It had sat at 10 across two
+# population growths: see ``_MIN_KNOWN_SEAMS`` for why a slack floor is the bug.
+_MIN_KNOWN_SOCKET_OWNERS = 13
 
 
 @dataclass
@@ -6446,7 +6538,7 @@ class TestEveryConnectionOwnerOpensExactlyOneSocket:
         self, monkeypatch: pytest.MonkeyPatch, module_path: str, class_name: str
     ) -> None:
         """GREEN today, x10 — this is a REMOVED-BEHAVIOUR pin, and the behaviour it guards is
-        the double-checked connect lock the wave rewrites in all ten owners.
+        the double-checked connect lock the wave rewrites in EVERY owner.
 
         The wrong build (the adversary's `W7b`): drop the lock in the seven owners no pin
         covers. Every concurrent first-caller opens its own socket; N−1 are abandoned and N
@@ -6862,7 +6954,7 @@ class TestTheExhaustionRecordIsATTRIBUTABLE:
             f"that does not exist and ledger #31's contract (generic message, FULL detail "
             f"server-side) is unsatisfiable on this path.\n\n"
             f"`execute_transaction` KEPT its receipt on exhaustion (it stashes `last_conflict` "
-            f"and logs the rollback detail on the way out) — for exactly this reason. The ten "
+            f"and logs the rollback detail on the way out) — for exactly this reason. The "
             f"single-statement seams got no counterpart. That asymmetry is the defect."
         )
         assert str(getattr(record, "label", "")) == _SEAM_REJECTION_EVENTS[seam.__name__], (
@@ -6976,7 +7068,7 @@ class TestScoutsFailedConnectClosesItsSocketWithoutChangingTheType:
             f"scout's `_open_command_connection` LEAKED its socket on a failed bootstrap "
             f"({type(exc_info.value).__name__}). `run()`'s ladder backs off and constructs a "
             f"NEW connection — forever — so under sustained store contention this leaks one "
-            f"socket per failed connect in a long-running process. All TEN ledger seams close "
+            f"socket per failed connect in a long-running process. EVERY ledger seam closes "
             f"theirs; the one bootstrap owner the wave also rewrote closes nothing."
         )
         assert not isinstance(exc_info.value, SurrealConnectionError), (
@@ -7578,7 +7670,7 @@ class TestAttributingTheBootstrapDoesNotChangeItsDisposition:
             f"INTO the driver, never by catching anything here."
         )
         assert not isinstance(exc_info.value, SurrealConnectionError), (
-            "`bootstrap_session` raised a `SurrealConnectionError`. The ten ledger seams "
+            "`bootstrap_session` raised a `SurrealConnectionError`. The ledger seams "
             "wrap what this raises, in their OWN `_ensure_connection`; scout deliberately "
             "does not wrap at all. Wrapping here takes that choice away from both."
         )
@@ -7619,12 +7711,15 @@ _BOOTSTRAP_ATTRIBUTED_BY_ANOTHER_MECHANISM: dict[tuple[str, str], _Exemption] = 
 # characters; this is set well below them so a genuinely terse real citation still passes.
 _MIN_EVIDENCE_CHARACTERS = 60
 
-# The eleven production connection owners: ten `_query` seams plus scout's
-# `_open_command_connection`. A FLOOR, not an equality — a twelfth owner must not have to
-# edit this number — but a scan finding FEWER has gone blind and every pin below it would
-# go vacuously green. This is the same count `_MIN_KNOWN_BOOTSTRAP_OWNERS` pins from the
-# `_ensure_connection` side; the two are derived independently and must agree.
-_MIN_KNOWN_BOOTSTRAP_CALL_SITES = 11
+# The production connection owners: every `_query` seam plus scout's
+# `_open_command_connection`. A FLOOR, not an equality — a NEW owner must not have to edit
+# this number to be covered — but a scan finding FEWER has gone blind and every pin below
+# it would go vacuously green. This is the same count `_MIN_KNOWN_BOOTSTRAP_OWNERS` pins
+# from the `_ensure_connection` side; the two SCANS are independent and must agree, which
+# is why both are literals (see that constant).
+# 14 = ``len(_all_bootstrap_call_sites())`` at ``2b23862``, re-derived 2026-07-26; it had
+# sat at 11 across two population growths.
+_MIN_KNOWN_BOOTSTRAP_CALL_SITES = 14
 
 
 def _bootstrap_call_sites_in(source: str) -> list[tuple[int, str, bool]]:
@@ -7666,7 +7761,7 @@ class TestEveryBootstrapCallThreadsItsOwnUrl:
         assert len(sites) >= _MIN_KNOWN_BOOTSTRAP_CALL_SITES, (
             f"the scan found {len(sites)} call(s) to `{_SESSION_BOOTSTRAP_NAME}` "
             f"({[(module, lineno) for module, lineno, _, _ in sites]}) — this contract was "
-            f"written against {_MIN_KNOWN_BOOTSTRAP_CALL_SITES} (ten `_query` seams + "
+            f"written against {_MIN_KNOWN_BOOTSTRAP_CALL_SITES} (every `_query` seam + "
             f"scout's `_open_command_connection`). Either owners were consolidated (good — "
             f"lower this floor deliberately, in a diff a reviewer can see) or the SCANNER "
             f"broke and the gate below just went vacuously green."
@@ -7674,15 +7769,19 @@ class TestEveryBootstrapCallThreadsItsOwnUrl:
 
     def test_the_two_independent_owner_counts_AGREE(self) -> None:
         """The `_ensure_connection` side and the `bootstrap_session` side are enumerated by
-        two different scans over two different properties. They describe the same eleven
-        owners, so they must agree — and a disagreement means one of them has gone blind,
-        which is precisely the failure neither can detect about itself.
+        two different scans over two different properties. They describe the SAME owners,
+        so they must agree — and a disagreement means one of them has gone blind, which is
+        precisely the failure neither can detect about itself.
+
+        ⚠ Both floors are LITERALS on purpose. Defining either in terms of the other (or of
+        `_MIN_KNOWN_SEAMS`) would make this assertion `X == X`: a pin that cannot fail,
+        wearing the name of the pin that catches a blind scanner.
         """
         assert _MIN_KNOWN_BOOTSTRAP_CALL_SITES == _MIN_KNOWN_BOOTSTRAP_OWNERS, (
             f"the bootstrap CALL-SITE floor ({_MIN_KNOWN_BOOTSTRAP_CALL_SITES}) and the "
             f"connection-OWNER floor ({_MIN_KNOWN_BOOTSTRAP_OWNERS}) disagree. They count "
-            f"the same eleven owners from opposite ends; if one moved deliberately, move "
-            f"the other in the same diff and say why."
+            f"the same owners from opposite ends; if one moved deliberately, move the "
+            f"other in the same diff and say why."
         )
 
     def test_every_bootstrap_exemption_is_EVIDENCE_BACKED_and_REAL(self) -> None:
@@ -7746,13 +7845,13 @@ class TestEveryBootstrapCallThreadsItsOwnUrl:
             "(`label`), WHICH server (`url`), and WHAT THE ENGINE SAID (`engine_error`). "
             "A bootstrap that is labelled but not addressed tells an operator that "
             "DEFINE NAMESPACE exhausted somewhere. Every owner listed above has its url "
-            "in hand at the call site: the ten `_query` seams hold `self._url`, and "
+            "in hand at the call site: the `_query` seams hold `self._url`, and "
             "scout's `_open_command_connection` takes `url` as a parameter. Pass it.\n\n"
             "⚠ DO NOT satisfy this by hardcoding a url inside `bootstrap_session` or by "
             "defaulting the parameter. That build passes 489/0 and adds a plausible-looking "
             "WRONG server name to every exhaustion record — worse than the absent url #151 "
-            "set out to fix. `TestEveryProductionOwnerThreadsITSOWNUrl` drives all eleven "
-            "owners at eleven DIFFERENT urls and will catch it."
+            "set out to fix. `TestEveryProductionOwnerThreadsITSOWNUrl` drives EVERY owner "
+            "at a DIFFERENT url and will catch it."
         )
 
     def test_the_bootstrap_scan_SEES_a_url_less_call(self) -> None:
@@ -7980,7 +8079,7 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
         parametrized over `_QUERY_SEAMS` alone would leave it exactly as unpinned as before.
 
         Note the disposition differs and MUST: scout's ladder needs the RAW exhaustion type,
-        so this raises `TxnContentionExhaustedError` where the ten seams wrap.
+        so this raises `TxnContentionExhaustedError` where the `_query` seams wrap.
         """
         _silence_sleep(monkeypatch)
         _set_default_deadline(monkeypatch, 0.0)
@@ -8004,7 +8103,7 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
             f"scout's `{_SCOUT_BOOTSTRAP_FUNCTION}` exhausted its session bootstrap and "
             f"logged url={getattr(record, 'url', None)!r}; it was connecting to {url!r}. "
             f"The url is a PARAMETER of this function — it is in hand at the call site, "
-            f"exactly as `self._url` is for the ten seams. Pass it: "
+            f"exactly as `self._url` is for the `_query` seams. Pass it: "
             f"`await bootstrap_session(connection, namespace, database, url=url)`."
         )
 
@@ -8045,8 +8144,8 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
         assert first[1] != second[1], (
             f"{first[0]} and {second[0]} were connecting to two DIFFERENT servers and both "
             f"exhaustion records name {first[1]!r}. Whatever the record's url is being read "
-            f"from, it is not this owner's — it is one shared value wearing eleven owners' "
-            f"names. This assertion compares the two OBSERVED urls to each other, so it "
+            f"from, it is not this owner's — it is one shared value wearing every owner's "
+            f"name. This assertion compares the two OBSERVED urls to each other, so it "
             f"holds no opinion about what the right value is: it only requires that two "
             f"different callers cannot report the same server."
         )
@@ -8225,7 +8324,7 @@ class TestScoutsQuerySeamIsAttributedByLabelOnly:
 
         **NAMED RE-OPEN TRIGGER:** the day `_scout_query` (or its caller chain) gains a url —
         e.g. `CommandSubscriber` taking a url alongside its `connect` factory, or the command
-        channel joining the ten `_query` seams' shape. At that point the bound has no reason
+        channel joining the `_query` seams' shape. At that point the bound has no reason
         left to exist and this pin is what makes closing it a DECISION rather than a drift.
 
         ⚠ DISCLOSED (HISTORICAL — closed at 352db0e): this assertion did not discriminate on
@@ -9093,7 +9192,7 @@ class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
         pinned-partial to unpinned-complete.
 
         **NAMED RE-OPEN TRIGGER:** the day `CommandSubscriber` takes a url alongside its
-        `connect` factory, or the command channel joins the ten `_query` seams' shape. It is
+        `connect` factory, or the command channel joins the `_query` seams' shape. It is
         the SAME trigger §10d names, and both pins must be retired together.
 
         ⚠ DISCLOSED, exactly as §10d disclosed it: on the UNFIXED tree this assertion does

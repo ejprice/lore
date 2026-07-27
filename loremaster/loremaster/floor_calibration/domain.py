@@ -125,10 +125,16 @@ def head_identity(axes: Mapping[str, str]) -> str:
         The 128-character lowercase hex digest that is the head's record id.
 
     Raises:
-        ValueError: A required axis is missing, or an unregistered axis name was
-            supplied. There is deliberately NO separator-refusal clause: the
-            JSON pre-image escapes NUL, so the forgery the old guard existed to
-            stop is impossible by construction rather than by a check (O1).
+        ValueError: A required axis is missing, an unregistered axis name was
+            supplied, **or an axis value is not a ``str``** — three fates, not
+            two. The third was implemented and pinned but absent from this public
+            docstring (cold audit 11-i-a F6b), and it is the one a consumer is
+            most likely to trip: an ``int`` axis value would serialize perfectly
+            well, so the refusal is the only thing standing between ``1`` and
+            ``"1"`` being decided by whoever writes the caller. There is
+            deliberately NO separator-refusal clause: the JSON pre-image escapes
+            NUL, so the forgery the old guard existed to stop is impossible by
+            construction rather than by a check (O1).
     """
     return sha512_hex(orjson.dumps(_serialised_axes(axes), option=_PREIMAGE_OPTIONS))
 
@@ -221,4 +227,15 @@ def corpus_content_digest(rows: Iterable[Mapping[str, Any]]) -> str:
     # what makes a row missing either field a loud ``KeyError`` instead of an
     # empty-string substitution that would digest-equal a corpus without the row.
     pairs = [[row["point_id"], row["content_hash"]] for row in rows]
-    return sha512_hex(orjson.dumps(pairs))
+    # ⚠ ``option=_PREIMAGE_OPTIONS``, exactly as :func:`head_identity` does, and it is NOT
+    # cosmetic even though this pre-image is a LIST (a list has no keys, so ``OPT_SORT_KEYS``
+    # is byte-neutral here — verified: the two encodings are identical, and this digest did
+    # not move). That byte-neutrality is precisely WHY the omission was invisible and why it
+    # had to be closed rather than noted: the module declares the encoding "in ONE place" and
+    # says "BOTH pre-images" use it, and a call that reaches for ``orjson.dumps`` directly is
+    # a second encoding site wearing the shared name. Nothing could ever go red on the
+    # divergence, so the guard is structural instead —
+    # ``test_floor_calibration_domain.TestThePreImageEncodingIsUsedInExactlyOnePlace``
+    # AST-scans this module and fails any ``orjson.dumps`` call that does not pass it.
+    # (Cold audit 11-i-a F3; the ONE-IMPLEMENTATION law: routing is not sharing.)
+    return sha512_hex(orjson.dumps(pairs, option=_PREIMAGE_OPTIONS))
