@@ -24,8 +24,11 @@ Source: packet 42 / finding #222; the law itself is repo CLAUDE.md "ONE IMPLEMEN
 - **`lorerunes` importing a sibling is a design defect, not a lint error**: the moment it
   does, the packages that depend on it can no longer import it, and it stops being an
   address at all.
-- Adding any workspace member touches **six** registration sites — see repo CLAUDE.md
-  (`lorerunes` section) for the enumerated list and which one reaches production.
+- Adding any workspace member touches several registration sites — **derive them with
+  `./scripts/registration_sites.py`, never from a list.** Repo CLAUDE.md (`lorerunes`
+  section) annotates the consequential ones, including which reaches production. This
+  line said *"**six**"* while that section said *"seven"* and the true count had already
+  moved to nine: a stated count here is a fifth wrong count, so none is stated.
 
 ## 1. Client design law (three-model consult, 2026-07-06 — binds ALL surface work)
 Source: docs/design/2026-07-06-client-needs-consult.md:449-473,490-495.

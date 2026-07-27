@@ -701,6 +701,63 @@ there are, ask — *"which pins were written against the old shape, and has the 
 been re-run since?"* If the answer to the second half is no, the contract's green-on-a-correct-build
 claim has expired. **Re-running it is cheap; discovering it in the builder is a stalled wave.**
 
+---
+
+## Tenth ruling wave — 2026-07-27, the CONTRACT-BLIND READER — **a regression THIS PACKET introduced**
+
+The blind reader found what nine gates, five adversary passes, a builder and a refactor did not —
+because it asked the one question the frame does not contain: *what did the old code do that this
+does not?*
+
+**R33 — F1 🔴 REMOVE `Digest` FROM `_KNOWN_AUTH_SCHEMES`. This is a leak we CAUSED.**
+`_AUTH_HEADER_RE` redacts group 4 — **the first whitespace-delimited token after the scheme** — and
+copies the rest of the line through. An RFC 7616 `Digest` value is a comma-separated auth-param
+list, so the redactor destroys the *username* and logs the *response hash* — the value that actually
+authenticates. Reproduced by the lead at `8dc1259`:
+
+```
+Authorization: Digest username="u", realm="r", nonce="abc", uri="/x", response="a1b2c3…f90"
+  ->           Digest ***REDACTED*** realm="r", nonce="abc", uri="/x", response="a1b2c3…f90"
+control, UNKNOWN scheme:  Authorization: ***REDACTED***          <- correct
+```
+
+⚠ **At `6a21fb6` the entropy sweep caught that 32-hex response** (≥24 chars, entropy ≈3.9). So this
+is not an inherited bound — **`Digest` was added to the allowlist BY THIS CHANGE**, and the packet
+deleted the thing that was covering it. It is the R8 leak *"the non-secret word redacted and the
+credential left in the log"* — quoted verbatim in the comment above `_AUTH_HEADER_RE` as the reason
+the two patterns were split — reintroduced for the one allowlisted scheme whose value is not a
+single token.
+
+**It is THE QUANTIFIER LAW again**: "one token after the scheme" was derived on `Bearer` and stated
+over the whole allowlist. **RULED: drop `Digest`** (lore authenticates with `Bearer` and
+`x-api-key`; an unrecognised scheme already redacts the whole value, which is the safe direction),
+**and pin that every allowlisted scheme's value is a SINGLE TOKEN** — otherwise the next engineer
+adding `Digest`, `Negotiate` or `HOBA` inherits it silently.
+
+**R34 — F2 🟠 the unknown-scheme branch drops the rest of the line, and `%`-style logging can lose
+its placeholders.** `_redact_auth_header` returns `f"{label}{REDACTED}"` for an unrecognised scheme,
+discarding group 5 entirely — so `authorization: denied user=bob reason=policy` renders as
+`authorization: ***REDACTED***`. Worse, `RedactingFilter.filter` mutates `record.msg` **before**
+`getMessage()` interpolates, so a `%`-style call whose message trips this branch can lose every
+placeholder on the line. Adjudicate: the redaction is right, the *collateral* is not documented
+anywhere a reader will look, and the `%`-interpolation interaction is a real defect. ⚠ Note
+`first_token` (group 4) is bound and **never used in either branch**, which is part of why the drop
+is easy to miss.
+
+**R35 — F5/F6 🟠 `CLAUDE.md` at `8dc1259` is STALE ABOUT ITS OWN FIX.** It still says SEVEN sites,
+still teaches the hand-grep, and cites a symbol that does not exist — while `scripts/registration_sites.py`
+now derives them and the true count reached nine. **The doc half of the fix was dropped.** This is
+the served-English class, in the file that names it.
+
+**R36 — F14 🟢 prose overclaim, low severity.** `loresigil/factory.py` names *"a consumer (lore,
+odoo-code)"*. Verified by the lead: `odoo-code` is a **donor** (`batching.py`, `voyage_cloud.py` say
+"ported from the odoo-code donor"), there is no sibling project importing `loresigil`, and odoo is
+not yet on lore at all. The `EmbeddingConfig` reshape breaks no live consumer — but the prose reads
+as though it might. Correct the prose; do not treat it as a compatibility constraint.
+
+**F4 — the deleted `.strip()` on the env-sourced Anthropic key: OPERATOR RULING NEEDED**, surfaced
+in the close-out rather than decided here.
+
 **Raised and NOT actioned (operator's call, out of packet scope):** residual R12 — the base scrubber
 mangles adjacent structure (`Bearer <k>'}` eats the closing quote/brace, because the pattern ends
 `(\S+)`). Pre-existing, cosmetic, unrelated to the deletion.
