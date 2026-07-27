@@ -40,6 +40,12 @@ readonly STORE_DIR="${HOME}/.local/state/lore/spike-surreal-data"
 readonly STORE_DB="${STORE_DIR}/store.db"
 readonly TEST_PORT=18000
 readonly PROD_PORT=18500
+readonly SECRETS_ENV="/home/ejprice/docker/mcp/lore-secrets/lore.env"
+# _surreal_harness.DEFAULT_USER / DEFAULT_PASS -- the credentials the whole suite signs in with.
+# These are TEST-store credentials for a store we deliberately do not care about; production
+# rejects them (measured, finding #240 investigation).
+readonly HARNESS_USER="root"
+readonly HARNESS_PASS="spikeroot"
 
 force=0
 [[ "${1:-}" == "--force" ]] && force=1
@@ -52,9 +58,23 @@ if ! systemctl --user cat "${UNIT}" 2>/dev/null | grep -q "127.0.0.1:${TEST_PORT
     exit 1
 fi
 
-# The guard. A live suite is minting and reaping databases in this store right now; wiping it
+# THE GUARD. A live suite is minting and reaping databases in this store right now; wiping it
 # mid-run destroys that session's work and produces failures nobody can explain later.
-if (( ! force )) && pgrep -f "bin/pytest" >/dev/null 2>&1; then
+#
+# ⚠ THIS GUARD WAS `pgrep -f "bin/pytest"` AND IT WAS WRONG (caught on its first real run,
+# 2026-07-27). `pgrep -f` matches the whole COMMAND LINE, so it fired on: a sibling session's
+# watcher (`bash -c while pgrep -f "bin/pytest -n auto -q" ...`), and on shell wrappers that
+# merely MENTION pytest -- including the very command checking it. Result: the script exited 0,
+# silently, having done NOTHING, and the liveness check below still passed because the store had
+# never gone down. A guard keyed on a SUBSTRING OF A NAME, defeated by a string that is not the
+# thing -- the repo's own six-times-over instrument lesson (CLAUDE.md, "the forbidden set is
+# unbounded").
+#
+# The fix is not a cleverer pattern; that is the same trap. MEASURE THE ACTUAL HAZARD: is anything
+# CONNECTED to the store? A suite that could lose work necessarily holds a socket.
+connections=$(ss -tn state established "( sport = :${TEST_PORT} or dport = :${TEST_PORT} )" \
+              2>/dev/null | tail -n +2 | wc -l)
+if (( ! force )) && (( connections > 0 )); then
     exit 0
 fi
 
@@ -64,18 +84,78 @@ systemctl --user stop "${UNIT}"
 # must survive for the container to start.
 rm -rf "${STORE_DB}"
 
+# ⚠ ASSERT THE REMOVAL LANDED. This is the line whose absence made the original failure silent:
+# every later step (restart, liveness) succeeds just as happily over a store that was never
+# touched. Ask of any multi-step verification: "if step N silently no-opped, would step N+1 still
+# print something that reads as success?" Here it did.
+if [[ -e "${STORE_DB}" ]]; then
+    echo "FAILED: ${STORE_DB} still exists after rm -rf. The store was NOT zeroed." >&2
+    systemctl --user start "${UNIT}"
+    exit 1
+fi
+
 systemctl --user start "${UNIT}"
 
 # Prove the store came back. Without this the script would report success for a store that
 # failed to restart -- a green measurement after a failed setup looks exactly like the thing
 # you hoped for.
+#
+# ⚠ LIVENESS IS NECESSARY, NOT SUFFICIENT: a store that never got wiped also accepts connections.
+# That is why the removal is ASSERTED above rather than inferred from this check passing. This
+# loop answers "did it come back?", never "did it get zeroed?" -- two different questions that
+# the original version conflated, which is exactly how it reported success for a no-op.
+up=0
 for _ in {1..30}; do
     if timeout 1 bash -c "</dev/tcp/127.0.0.1/${TEST_PORT}" 2>/dev/null; then
-        exit 0
+        up=1
+        break
     fi
     sleep 1
 done
 
-echo "FAILED: ${UNIT} did not accept connections on :${TEST_PORT} within 30s after zeroing." >&2
-echo "The store directory WAS removed. Check: systemctl --user status ${UNIT}" >&2
-exit 1
+if (( ! up )); then
+    echo "FAILED: ${UNIT} did not accept connections on :${TEST_PORT} within 30s after zeroing." >&2
+    echo "The store directory WAS removed. Check: systemctl --user status ${UNIT}" >&2
+    exit 1
+fi
+
+# ⚠ RE-PROVISION THE HARNESS ROOT USER. Without this the script is a FOOTGUN: it leaves a
+# perfectly healthy store that the entire test suite cannot authenticate against.
+#
+# MEASURED 2026-07-27, on this script's first real run. A fresh store bootstraps ONLY the user in
+# SURREAL_USER (the container log says so verbatim: "no root users were found. The root user
+# 'lore' will be created"). But `_surreal_harness.DEFAULT_USER`/`DEFAULT_PASS` are `root` /
+# `spikeroot` -- a user that existed only because it had once been DEFINEd INTO the old store and
+# PERSISTED there. Zeroing removed it, and every test then failed to sign in.
+#
+# That is the exact assumption finding #246 flagged as unverified ("whether anything depends on
+# store persistence -- the one thing that would break"). It was not a test. It was the credentials
+# every test uses.
+if [[ -r "${SECRETS_ENV}" ]]; then
+    (
+        set -a; . "${SECRETS_ENV}"; set +a
+        curl -fsS -u "${SURREAL_USER}:${SURREAL_PASS}" -X POST \
+             -H "Accept: application/json" -H "surreal-ns: main" -H "surreal-db: main" \
+             --data-binary "DEFINE USER IF NOT EXISTS ${HARNESS_USER} ON ROOT PASSWORD '${HARNESS_PASS}' ROLES OWNER;" \
+             "http://127.0.0.1:${TEST_PORT}/sql" >/dev/null
+    ) || {
+        echo "FAILED: store was zeroed and restarted, but re-provisioning the harness root user" >&2
+        echo "('${HARNESS_USER}') failed. The suite will NOT authenticate until this is fixed." >&2
+        exit 1
+    }
+else
+    echo "FAILED: cannot read ${SECRETS_ENV}, so the harness root user was NOT re-provisioned." >&2
+    echo "The store is zeroed and running, but the suite will NOT authenticate." >&2
+    exit 1
+fi
+
+# ASSERT the re-provisioning actually took -- same law as the removal assert above. A DEFINE that
+# silently no-ops leaves a store that looks fine and fails every test.
+if ! curl -fsS -u "${HARNESS_USER}:${HARNESS_PASS}" -X POST \
+        -H "Accept: application/json" -H "surreal-ns: main" -H "surreal-db: main" \
+        --data-binary "INFO FOR ROOT;" "http://127.0.0.1:${TEST_PORT}/sql" >/dev/null; then
+    echo "FAILED: harness user '${HARNESS_USER}' still cannot authenticate after re-provisioning." >&2
+    exit 1
+fi
+
+exit 0
