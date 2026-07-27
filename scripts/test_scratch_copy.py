@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pytest  # noqa: E402
 from scratch_provenance import (  # type: ignore[import-not-found]  # noqa: E402  (scripts/ is not a package)
+    WORKSPACE_MEMBERS,
     MemberProvenance,
     ProvenanceGuard,
 )
@@ -117,19 +118,39 @@ def test_unimportable_member_is_rejected(tmp_path: Path) -> None:
 
 
 def test_audit_reports_every_dishonest_member_not_just_the_first(tmp_path: Path) -> None:
-    """A partial answer would let an agent fix one member and walk into the next surprise."""
+    """A partial answer would let an agent fix one member and walk into the next surprise.
+
+    ``observed`` must carry an entry for EVERY member in
+    :data:`~scratch_provenance.WORKSPACE_MEMBERS`: ``audit`` resolves them all, so a
+    member added to the guard without a fixture here is a ``KeyError``, not a red
+    assertion.  That is exactly how this test broke when ``lorerunes`` was registered
+    (lore **#251**) — the fixture enumerates members BY HAND, which is a different
+    question from "does it pin the tuple", and only the first one matters here.
+
+    Two HONEST members rather than one, deliberately: with a single honest member,
+    ``len(receipts)`` and *"the honest member"* are indistinguishable, so a build that
+    returned only the FIRST receipt would pass.
+    """
     honest = str(tmp_path / "lorescribe" / "lorescribe" / "__init__.py")
+    honest_runes = str(tmp_path / "lorerunes" / "lorerunes" / "__init__.py")
     original = str(REPO_ROOT / "loremaster" / "loremaster" / "__init__.py")
     observed = {
         "loremaster": MemberProvenance(name="loremaster", module_file=original),
         "loresigil": MemberProvenance(name="loresigil", module_file=None),
         "lorescribe": MemberProvenance(name="lorescribe", module_file=honest),
+        "lorerunes": MemberProvenance(name="lorerunes", module_file=honest_runes),
     }
+
+    assert set(observed) == set(WORKSPACE_MEMBERS), (
+        "this fixture enumerates the workspace members BY HAND, so it must be widened with "
+        f"the guard. Missing: {sorted(set(WORKSPACE_MEMBERS) - set(observed))}; "
+        f"stale: {sorted(set(observed) - set(WORKSPACE_MEMBERS))}"
+    )
 
     failures, receipts = ProvenanceGuard(tmp_path).audit(lambda name: observed[name])
 
     assert len(failures) == 2
-    assert [receipt.name for receipt in receipts] == ["lorescribe"]
+    assert [receipt.name for receipt in receipts] == ["lorescribe", "lorerunes"]
 
 
 # ---------------------------------------------------------------------------

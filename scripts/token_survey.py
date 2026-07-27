@@ -78,8 +78,16 @@ ANTHROPIC_MODEL: str = "claude-sonnet-5"
 #: (see docs/design/2026-07-04-token-survey-results.md). Order is preserved
 #: through probing/reporting so the report reads in this priority order.
 DEFAULT_MODELS: tuple[str, ...] = ("claude-sonnet-5", "claude-opus-4-8", "claude-fable-5")
-ANTHROPIC_VERSION: str = "2023-06-01"
-ANTHROPIC_API_KEY_ENV: str = "ANTHROPIC_API_KEY"
+# ``ANTHROPIC_VERSION`` and ``ANTHROPIC_API_KEY_ENV`` were DELETED here by packet 42.
+# They were replicas of ``loremaster.calibration.counting``'s, and this module stopped
+# reading either one when its counter began calling that module's ``build_auth_headers``
+# and ``load_api_key``: the version header and the env-var name now come from the shared
+# seam, so the wire shape is identical BY CONSTRUCTION rather than because two constants
+# happened to agree. Their last remaining consumer was the parity assertion that compared
+# them — a constant kept alive only by the test that mentions it, which is the shape this
+# packet spent a wave removing (#102). The two constants that ARE still duplicated
+# (``ANTHROPIC_COUNT_TOKENS_URL``, ``DEFAULT_ENV_FILE``) are read here and keep their
+# parity legs.
 #: The operator-authorised env file the key is sourced from when not already set.
 DEFAULT_ENV_FILE: Path = Path.home() / "docker" / "mcp" / ".env"
 

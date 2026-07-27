@@ -28,10 +28,15 @@ Two instruments, because one is not enough and this repo has the receipts to pro
    set is unbounded; the safe set here is **one file**, enumerable and small.
 
    Measured 2026-07-25 at the #207 fix: pre-fix the scan returned **6** hits — the five
-   defects plus the fenced ``_txn`` seam — with **zero false positives** across
-   ``loremaster/``, ``loresigil/``, ``lorescribe/``, ``scripts/`` and ``skills/``. No
-   legitimate arithmetic anywhere in production raises anything to a variable power. That is
-   what makes deny-by-default affordable here rather than an insult that gets switched off.
+   defects plus the fenced ``_txn`` seam — with **zero false positives** across every
+   workspace member plus ``scripts/`` and ``skills/``. No legitimate arithmetic anywhere in
+   production raises anything to a variable power. That is what makes deny-by-default
+   affordable here rather than an insult that gets switched off.
+
+   ⚠ That sentence used to NAME three members, and the scan used to hold its own list of
+   them. Both went stale when ``lorerunes`` was minted (lore **#251**). The roots are now
+   DERIVED from ``[tool.uv.workspace] members`` — see :func:`_production_python_files` — and
+   this prose is count-free and member-free on purpose, so it cannot go stale again.
 
 **THE THREAT MODEL, stated IN the instrument** (``CLAUDE.md``: *a gate needs one written down,
 or every auditor is entitled to call a clever evasion a defect*): these pins catch the HONEST
@@ -147,27 +152,27 @@ _SCOUT_CAP_S = 12.0
 #: Likewise for the eager-lease driver — NOT ``_DEFAULT_EAGER_BACKOFF_BASE_S``.
 _EAGER_BASE_S = 3.5
 
-#: Production roots the perimeter scans. Tests are excluded: a test may legitimately compute
-#: an expected window to assert against (this file's own siblings do).
-_SCANNED_ROOTS = (
-    "loremaster/loremaster",
-    "loresigil/loresigil",
-    "lorescribe/lorescribe",
-    "scripts",
-    "skills",
-)
-
-
 def _production_python_files() -> list[Path]:
-    """Every production ``.py`` under the scanned roots, tests excluded."""
-    found: list[Path] = []
-    for root in _SCANNED_ROOTS:
-        for path in (_REPO_ROOT / root).rglob("*.py"):
-            relative = path.relative_to(_REPO_ROOT).as_posix()
-            if "/tests/" in relative or path.name.startswith("test_"):
-                continue
-            found.append(path)
-    return found
+    """Every production ``.py`` under the scanned roots, tests excluded.
+
+    ⚠ **THE ROOT LIST IS DERIVED, NOT HELD HERE (lore #251).** This function used to
+    carry its own ``_SCANNED_ROOTS`` tuple naming three workspace members by hand. When
+    ``lorerunes`` was minted, that tuple was not widened — so the deny-by-default
+    perimeter below silently stopped covering a workspace member, and nothing said so.
+    It is the same shape four sibling scanners had (`3fd0fee`), and the same shape that
+    left the #140 provenance guard blind (#251): four call sites needing one POLICY —
+    *"which roots does this repo govern?"* — each keeping a private copy.
+
+    :func:`_logging_fixtures.workspace_roots` reads ``[tool.uv.workspace] members`` from
+    ``pyproject.toml``, so member #5 is covered by running the suite rather than by
+    someone remembering this file exists.
+
+    Tests are still excluded: a test may legitimately compute an expected window to
+    assert against (this file's own siblings do).
+    """
+    from _logging_fixtures import production_sources
+
+    return [path for _label, path in production_sources()]
 
 
 class _PolicyMutation:

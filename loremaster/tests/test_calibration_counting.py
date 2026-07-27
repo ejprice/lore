@@ -48,10 +48,23 @@ def _recording_transport(recorded: list[httpx.Request], response: httpx.Response
 
 
 class TestConstantsParity:
-    def test_endpoint_version_key_env_match_survey(self) -> None:
+    def test_the_still_duplicated_constants_match_the_survey(self) -> None:
+        """The constants BOTH modules still define independently must agree.
+
+        ⚠ **Two legs were DELETED by packet 42, with the constants they compared.**
+        ``ANTHROPIC_VERSION`` and ``ANTHROPIC_API_KEY_ENV`` no longer exist in
+        ``token_survey``: its counter calls this module's ``build_auth_headers`` and
+        ``load_api_key``, so the version header and the env-var name reach the wire from
+        ONE definition. Comparing a live constant to a replica nothing read did not
+        protect the wire — it could only ever have reported a divergence that could no
+        longer occur, and it was the sole thing keeping two dead constants alive.
+
+        The two below are still genuinely defined in both modules and still reach the
+        wire from both, so parity over them is real. **The day either one is consolidated
+        too, delete its leg WITH the constant** — in one commit, so no tree exists with a
+        dead constant and a live assertion about it.
+        """
         assert counting.ANTHROPIC_COUNT_TOKENS_URL == ts.ANTHROPIC_COUNT_TOKENS_URL
-        assert counting.ANTHROPIC_VERSION == ts.ANTHROPIC_VERSION
-        assert counting.ANTHROPIC_API_KEY_ENV == ts.ANTHROPIC_API_KEY_ENV
         assert counting.DEFAULT_ENV_FILE == ts.DEFAULT_ENV_FILE
 
 

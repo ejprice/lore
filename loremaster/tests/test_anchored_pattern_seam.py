@@ -69,16 +69,32 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Every production tree the gate covers. Test trees are excluded deliberately:
-# a test may legitimately assert ``.match`` behaviour ABOUT a pattern (e.g.
-# ``test_agent_registry.py``'s hazard pin, which exists precisely to document
-# that ``.match`` is insufficient here).
-_SCANNED_ROOTS: tuple[Path, ...] = (
-    _REPO_ROOT / "loremaster" / "loremaster",
-    _REPO_ROOT / "lorescribe" / "lorescribe",
-    _REPO_ROOT / "loresigil" / "loresigil",
-    _REPO_ROOT / "scripts",
-)
+def _scanned_roots() -> tuple[Path, ...]:
+    """Every production tree the gate covers, DERIVED from the workspace.
+
+    ⚠ **THIS WAS A HAND-WRITTEN TUPLE NAMING THREE MEMBERS, AND IT WENT STALE (lore
+    #251).** When ``lorerunes`` was minted, this list was not widened, so the gate
+    silently stopped covering a workspace member while its own coverage pin — which
+    asserted a hardcoded four-name set — went on passing. A ∀ instrument narrower than
+    the property it claims is the failure this file's ``TestScanCoverage`` exists to
+    prevent, and it happened to this file.
+
+    ``workspace_roots`` reads ``[tool.uv.workspace] members`` from ``pyproject.toml``,
+    so member #5 is covered by running the suite rather than by anyone remembering.
+
+    ``skills/`` is excluded (``include_skills=False``) — the deploy skill's scripts are
+    stdlib-only by ruling R14 and are not part of this gate's population; that is a
+    deliberate scope, not an oversight. Test trees are excluded deliberately too: a test
+    may legitimately assert ``.match`` behaviour ABOUT a pattern (e.g.
+    ``test_agent_registry.py``'s hazard pin, which exists precisely to document that
+    ``.match`` is insufficient here).
+    """
+    from _logging_fixtures import workspace_roots
+
+    return tuple(path for _label, path in workspace_roots(include_skills=False))
+
+
+_SCANNED_ROOTS: tuple[Path, ...] = _scanned_roots()
 
 # The SAFE set. Keyed by the compiled pattern's NAME; the value is the
 # evidence-backed reason ``.match`` is correct there — never "it looked fine".
@@ -301,8 +317,41 @@ class TestScanCoverage:
     def test_the_scan_reaches_every_production_tree(
         self, production_trees: dict[str, ast.Module]
     ) -> None:
+        """Every DECLARED workspace member is actually scanned — not merely listed.
+
+        ⚠ **THE EXPECTATION IS READ INDEPENDENTLY OF THE ROOTS, ON PURPOSE.**
+        :func:`_scanned_roots` derives the roots from ``pyproject.toml`` and **silently
+        skips a root that is not a directory** — which is correct in the deployed image
+        (``loremaster`` lives in site-packages with no siblings) and is a SILENT
+        COVERAGE LOSS in a checkout. Asserting the scanned set against the same derived
+        list would be ``derived == derived``: green forever, including on the day a
+        member is renamed on disk and quietly stops being scanned.
+
+        So the oracle here is the DECLARED member list, read straight from
+        ``[tool.uv.workspace] members``, and the subject is what the walk actually
+        parsed. This pin fails exactly when those diverge.
+        """
+        import tomllib
+
+        manifest = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        declared: set[str] = set(manifest["tool"]["uv"]["workspace"]["members"])
+        expected = declared | {"scripts"}
+
         scanned_packages = {path.split("/", 1)[0] for path in production_trees}
-        assert scanned_packages == {"loremaster", "lorescribe", "loresigil", "scripts"}
+
+        assert scanned_packages == expected, (
+            "this gate's REACH no longer matches the workspace it claims to govern.\n"
+            f"  declared in pyproject.toml but NOT scanned: {sorted(expected - scanned_packages)}\n"
+            f"  scanned but not declared:                   {sorted(scanned_packages - expected)}\n"
+            "WHAT TO DO: a package missing from the left-hand list is EXEMPT from this gate "
+            "and from every other pin keyed on the same roots — silently, and forever "
+            "(lore #251, where exactly that happened to `lorerunes`). If the member is new, "
+            "nothing here needs editing: `_scanned_roots()` derives from the workspace, so "
+            "check the member directory is `<member>/<member>/` on disk. If a member was "
+            "REMOVED from the workspace deliberately, this goes green on its own. If you are "
+            "about to delete this assertion to make it pass, you are removing the only thing "
+            "that notices a ∀ gate has gone narrower than the property it asserts."
+        )
 
     def test_the_scan_resolves_the_known_anchored_constants(
         self, production_trees: dict[str, ast.Module]
