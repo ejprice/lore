@@ -388,8 +388,8 @@ A rune is the atomic mark a sigil is composed from, so the name states the depen
   a design decision, not a tidying.
 - **Still prove sharing by MUTATION.** A shared package is an address, not a guarantee — routing
   is not sharing (see above). Change the predicate; **every** member's pins must redden.
-- **THE SIX PLACES A NEW WORKSPACE MEMBER MUST BE REGISTERED.** Five are enumerable by grep; the
-  sixth is not, and it is the one that reaches production:
+- **THE SEVEN PLACES A NEW WORKSPACE MEMBER MUST BE REGISTERED** — and note the count has been
+  wrong TWICE while being written down, so **derive it, do not trust it** (see the warning below):
   1. `pyproject.toml` `[tool.uv.workspace] members`
   2. `pyproject.toml` `mypy_path` — a member absent here still type-checks, just against the
      wrong resolution, so the failure is a *wrong answer* rather than an error
@@ -399,13 +399,24 @@ A rune is the atomic mark a sigil is composed from, so the name states the depen
   4. the AST scans' `_SCANNED_MEMBERS` — **a package outside the scan is silently exempt from
      every ∀ pin in the repo**
   5. `testpaths` — or its own guards are hopes with filenames
-  6. **the CONTAINERFILE.** A member missing from the image is an `ImportError` at boot, **in
-     production only, invisible to every test on this host** — #131/#139 verbatim. Packet 01a's
-     in-image conformance run is the instrument that proves it.
+  6. **the CONTAINERFILE — and the IN-IMAGE CONFORMANCE GUARD that proves the COPY worked.**
+     A member missing from the image is an `ImportError` at boot, **in production only, invisible
+     to every test on this host** — #131/#139 verbatim. Both halves are required: `COPY` puts it
+     in the image, `conformance_provenance.py::EXPECTED_MEMBERS` proves it arrived. A `COPY` with
+     no guard entry is a deployment nobody checks.
+  7. **`scripts/scratch_provenance.py::WORKSPACE_MEMBERS`** — the #140 guard that `scratch_copy.sh`
+     runs. Its own comment says it *"mirrors `[tool.uv.workspace] members`"*, and a stale mirror
+     means **every mutation proof in a scratch copy silently resolves the missing member from the
+     ORIGINAL tree** while the agent believes it is isolated. That is #140's poison mode, in the
+     instrument built to prevent #140.
 
-  ⚠ **This list was written with five entries and `mypy_path` was the one missed** — by the lead,
-  in the same hour, while writing the law about registering members. Grep for the *existing*
-  members by name before trusting any list of registration sites, including this one.
+  ⚠⚠ **THIS LIST HAS BEEN WRONG TWICE, BOTH TIMES WHILE BEING WRITTEN DOWN.** It shipped with five
+  entries (`mypy_path` missed), was corrected to six, and shipped again missing #7 — caught only by
+  a mechanical reconciliation of the deletion diff, after every gate was green and the packet was
+  committed. **Do not trust this list. DERIVE it:** `grep -rn 'lorescribe' --include='*.py'
+  --include='*.toml' --include='*.sh' --include='Containerfile' .` and register the new member
+  everywhere an existing one is named. A list of places to look is exactly the kind of artifact
+  this repo's own instrument lesson says will be incomplete.
 
 ### The instrument lesson (six defeats, one shape — the most expensive thing we learned)
 | instrument | keyed on | defeated by |
