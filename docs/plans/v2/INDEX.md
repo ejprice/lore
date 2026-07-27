@@ -185,7 +185,8 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 03a-1 | **comms ledger SEND + drain** — `messages.py` foundations + `AgentRefLike` home + `send` + drain/peek; ≥8-way send concurrency | — | C | 0.20 | 03 | **DONE 2026-07-23** (2d1f75d→42eeedc; cold-audit GO, [real] leg graded; 140 passed / 31 red=03a-2 stubs; #173 fix; TEST-ONLY, no deploy) |
 | 03a-2 | **comms ledger ACK + WAITING** — ack (4-way disambiguation), derived waiting state; 16-way ack concurrency (**closes 03a**; drain landed in 03a-1) | — | C | 0.15 | 03a-1 | **DONE 2026-07-23** (`853a95b`→`0223291`; cold-audit GO, [real] leg graded 31 pins / 0 silent skips; 180 passed / 12 skipped; 20/20 16-way ack concurrency; **closes 03a**; TEST-ONLY, no deploy) |
 | 03b | **comms SURFACE** — `lore_comms` dispatch + renders/promises + drain telemetry; **#145/#147 kickoff probes, #143 adjudication; DEPLOYS BOTH** | — | C | 0.30 →split | 03a ✅ | **✅ DONE + DEPLOYED 2026-07-26** (task `b7f89c12`). Suite **6937/0**, typecheck 0 all members (**global mypy-zero DISCHARGED**, 36→0), ruff, skill 117, concurrency 20/20. Both containers on `b46bc1d5`; every deploy receipt green on production. **#147 CLOSED with a production receipt** (traces 0→664, ordinals distinct+increasing). Client battery PASS 3/3 floor + all 3 population models. Inherited 6 design-ruled items all discharged. Residuals routed with named decision points: 05 (#190/#183/#214, DD-2.a, DD-4.c) · 06 (#193 retention, join-quality receipt) · 05-or-06 (#195 injection). |
-| 04 | comms-blocks-footer (blocks edge, fleet cols; #105 ENFORCED sweep + #219) | PKT-28 C2c | C | 0.20 | 03 | **WIP 2026-07-26** (kickoff re-scoped #105 → the ENFORCED sweep — see the file) |
+| 04a | **comms `ENFORCED` sweep + #105** — `briefed` flip (`OVERWRITE`), the app-level unknown-agent check (the ONLY layer that can teach), `publish(agent_id)` hardening, the `test_brief_ledger.py` agent-seeding fix (D1) | PKT-28 C2c | C | 0.20 | 03 | **WIP — contract WRITTEN 2026-07-26** (`test_enforced_relations.py`, 60 pins, 26 RED; ruff + typecheck clean). Split from 04 at kickoff per the sizing law (the re-scoped #105 grew it past 0.30). |
+| 04b | **comms surface** — `blocks` DAG edge (`ENFORCED` from birth) + fleet unread/directive columns + `_comms_footer` + #219 | PKT-28 C2c | C | 0.20 | 04a | open — **DEPLOYS BOTH** (carries 04a's schema). Footer shape + trigger operator-ruled 2026-07-26. ⚠ The packet's transitive-read idiom was **WRONG** and is corrected in the file (P4: `+collect`, and `TIMEOUT` is a `SELECT` clause). |
 | 05 | comms-await-story (await, story, CLI, idle-gate v2; #89 #121 #149 + #174 #183 #190 #214, #195 05-or-06) | PKT-28 C3 | C | 0.30 →split | 04 | open |
 | 06 | comms-protocol-drill (brief-base v3 + THE DRILL; #193 retention, #228 watcher rule) | PKT-28 C4 | C | 0.25 | 05 | open |
 | 07 | store-error-honesty: CLASSIFICATION (#118, #119, #144 — the #124 rediagnosis) | PKT-30 | L ∥ | 0.20 | — | open |
@@ -197,6 +198,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 11-i | floor-calibration: DARK MACHINERY (engine + store + in-container runner + R2 lab validation; serving untouched, no deploy) | PKT-02 | L | 0.20 → split 11-i-a ~0.15 / 11-i-b ~0.24 | 10 ruled | **DESIGN RULED 2026-07-26** (23 decisions: RULINGS-2026-07-25.md; Addendum F-r2 §R1–R10; S1 measured NOT DEGENERATE) — **BUILD WIP 2026-07-26** (row `1586bbc0` claimed; #198/#201 ride the build order — see the file's rulings banner) |
 | 11-ii | floor-calibration: CUTOVER (chokepoint wiring + serving swap + retirement sweep; resolves #83/#87/#161/#179) | PKT-02 | L | 0.15 | 11-i landed | open |
 | 42 | **PREVENT THE LEAK, DELETE THE SANITIZER** — `SecretStr` everywhere + allowlist the 13 `.get_secret_value()` unwraps, then DELETE the entropy catch-all. Kills audit R2 (12.4% of function names erased from tracebacks), #227 and both its accepted bounds. | — | L | 0.20 | — (independent) | **WIP 2026-07-26** (⚠ riders #221/#226/#235 added mid-flight by the sweep — point the live session at them; #235 is load-bearing: deleting the catch-all without its fix WIDENS a leak) |
+| 43 | **DERIVATION-SOURCE UNIFICATION** (design pass FIRST) — `_derive_nodes` reads the caller's chunk set while `_derive_edges` re-reads the file fresh; a save between them makes the fragment RELATE from a node it never created. **Then** the `refers`/`answers_to` `ENFORCED` flip, which was blocked ONLY on this. | — | L | 0.20 | — (independent) | **open — minted 2026-07-26** (operator ruled the ROOT fix over the two local patches). Split out of 04; store facts already measured on 3.2.1 — do NOT re-probe. **DESIGN problem → Opus author who attacks its own design, never a builder.** |
 | 11a | embedding-reconciliation CONTRACT (#171 FULLY-RULED design ⊃ #168/#169, adopts #170) | — | L | 0.20 | — (design ruled) | open |
 | 11b | embedding-reconciliation BUILD (reconciler + resolve extraction + #170 hash; `rebuild_all` retires, hard-cutover rename) | — | L | 0.25 →split if 11a measures over | 11a ruled | open |
 | 12 | detection-contract (#10, #11, #27; rides 11b's extracted resolve seam) | PKT-04 | L | 0.15 | 11b rec. | open |
@@ -1055,3 +1057,16 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   suite's last red CLOSED (`a7e6ea9`, retired-symbols 16/16); 36's stale "14-tool" fixed;
   DESIGN-LAW verified current through §15. WIP (operator): 04 · 11-i build · 42 — ⚠ their
   mid-flight riders need a live-session ping. #236+ (filed during the sweep) stay with their sessions.
+- 2026-07-26 · **04 SPLIT → 04a/04b, AND PACKET 43 MINTED (operator rulings, kickoff+discovery).**
+  Discovery found two defects a builder would have inherited: the packet's `#105` scope was
+  INVERTED (03 already shipped `ENFORCED` on `to`; the unguarded edges were `refers`/`answers_to`,
+  which the text never named) and its transitive-read idiom was WRONG in both halves (P4:
+  `@.{1..n}` is terminal-depth not the closure; `TIMEOUT` is a `SELECT` clause). Contract written
+  (60 pins, 26 RED) then escalated TWO measured blockers: **D1** — `test_brief_ledger.py` never
+  creates an `agent` table, so every `briefed` edge it writes is ALREADY dangling (≥29 reds on the
+  flip); **D2** — `{edge.src} ⊆ {node.qualified_name}` holds for 56 modules + 8 adversarial shapes
+  but is NOT STRUCTURAL. Operator ruled the ROOT fix → **packet 43**; 04a keeps `briefed` + the app
+  check (P5b: `ENFORCED` CANNOT satisfy the Exit criterion — its message is withheld by the seam's
+  error hygiene, so the app check is the only layer that can TEACH). Findings #236/#239/#240 +
+  #243/#244/#245 filed; 197 probe-created databases reaped from the TEST store (814→617, delta
+  exact). Ghost cleanup OUT (#236). NEXT = 04a build.
