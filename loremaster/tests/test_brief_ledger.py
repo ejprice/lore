@@ -89,11 +89,13 @@ Expected until the module lands: collection ERROR in THIS FILE —
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast, get_args
 from uuid import NAMESPACE_URL, uuid5
 
@@ -128,7 +130,7 @@ from loremaster.store._txn import (
     _SurrealConnection,
     execute_transaction,
 )
-from loremaster.store.surreal_schema import BRIEF_TABLE, BRIEFED_RELATION
+from loremaster.store.surreal_schema import BRIEF_TABLE, BRIEFED_RELATION, generate_agent_ddl
 from pydantic import SecretStr
 from render_injection_scaffold import _ROW_FORGE_PAYLOAD
 from surrealdb.errors import ErrorKind, ServerError
@@ -185,6 +187,101 @@ class _AgentRef:
     name: str
 
 
+# --------------------------------------------------------------------------- #
+# THE ``agent`` ROWS EVERY ``briefed`` EDGE POINTS AT.
+#
+# ⚠ WHY THIS EXISTS (packet 04a, D1 — operator-ruled 2026-07-26).  This file's real
+# backend applied ``generate_brief_ddl()`` and NOTHING ELSE, so the ``agent`` table
+# never existed and **every ``briefed`` edge this suite wrote was a DANGLING edge to
+# an agent row that was never created.**  The whole brief-ledger contract ran in a
+# world where agent existence could not be violated because agents could not exist —
+# a fixture guaranteeing the one condition under which the bug is invisible (repo
+# CLAUDE.md, THE TEST ENVIRONMENT IS A FICTION).  Packet 04a flips ``briefed`` to
+# ``TYPE RELATION … ENFORCED``, at which point the engine validates BOTH endpoints and
+# ≥29 of this file's ``[real]`` ids would fail for a reason that has nothing to do
+# with what they pin.  Its sibling ``test_message_ledger.py`` already seeds real rows
+# (``_seed_agents``) precisely because ``to`` has been ``ENFORCED`` since packet 03.
+#
+# ⚠ THE SEEDING IS ONE FUNCTION THREE CALLERS CALL, never a pattern cloned three
+# times (repo law #102).  Deriving the id set from this file — rather than typing a
+# list — is what revealed that the factory alone is INSUFFICIENT: the two query-count
+# helpers below build their OWN ``BriefLedger`` on their OWN env and ack agents this
+# fixture has never heard of.  A seeded factory plus two unseeded helpers is exactly
+# the "fix reached one copy and not the other" shape.
+# --------------------------------------------------------------------------- #
+
+#: Every STATICALLY-KNOWN agent id this file uses as a ``briefed`` edge endpoint: the
+#: three named identities plus the eight the concurrency pin mints.  Derived from the
+#: module's own constants (never re-typed), and its completeness is a CHECKED variable
+#: — see ``TestEveryAgentIdThisFileUsesIsSeeded``.
+_SEEDED_AGENT_IDS: tuple[str, ...] = (
+    AGENT_FIXER_B_ID,
+    AGENT_SCOUT_C_ID,
+    AGENT_AUDIT_D_ID,
+    *(f"agent-{index}-opaque-id" for index in range(_CONCURRENT_PUBLISHERS)),
+)
+
+
+async def _seed_agent_rows(env: SurrealEnv, agent_ids: Sequence[str]) -> None:
+    """Make every id in ``agent_ids`` a REAL ``agent`` row on ``env``'s database.
+
+    The schema comes from the PRODUCTION emitter ``generate_agent_ddl()`` — never a
+    hand-written ``DEFINE TABLE agent``, for the same reason the packet-04a migration
+    pins derive their old-world DDL from ``_define_relation_table`` rather than a
+    literal: a hand-written seed tests a COPY of the schema and stays green while the
+    real one drifts.
+
+    ``CONTENT`` rather than ``SET session = $session``: ``session`` is a SurrealDB
+    PROTECTED variable name and a top-level bound ``$session`` is rejected outright
+    (store reference §2).  ``UPSERT`` rather than ``CREATE`` so a caller may seed the
+    same id twice without the second call raising.
+
+    THE ONE seeding implementation in this file.  Three call sites share it —
+    :func:`brief_ledger_factory`, ``TestCoverageQueryCountIsBounded._coverage_query_count``
+    and ``TestAckedVersionsForIdsQueryCountIsBounded._query_count`` — because they need
+    the same POLICY (what a registered agent row IS), and a policy with three copies is
+    a policy that will be fixed in one of them.
+    """
+    connection = await connect_admin(env)
+    try:
+        await execute_transaction(
+            f"BEGIN;\n{generate_agent_ddl()}COMMIT;\n",
+            {},
+            acquire=lambda: _already_open(connection),
+            drop=_refuse_to_drop,
+            url=env.url,
+        )
+        now = datetime.now(UTC)
+        for agent_id in agent_ids:
+            await run(
+                connection,
+                "UPSERT type::record('agent', $id) CONTENT $content",
+                {
+                    "id": agent_id,
+                    "content": {
+                        "name": agent_id,
+                        "session": "wave7",
+                        "role": "builder",
+                        "status": "active",
+                        "registered_at": now,
+                        "heartbeat_at": now,
+                    },
+                },
+            )
+    finally:
+        await connection.close()
+
+
+async def _already_open(connection: _SurrealConnection) -> _SurrealConnection:
+    """The ``acquire`` callback for a connection this helper already owns."""
+    return connection
+
+
+async def _refuse_to_drop(_connection: _SurrealConnection) -> None:
+    """The ``drop`` callback: a DDL rejection must never be mistaken for a dead socket."""
+    raise AssertionError("a DDL rejection must never drop the connection")
+
+
 # A factory that builds one more ready ``BriefLedger`` on the SAME database —
 # the second (and Nth) live connection the concurrency pin needs.
 BriefLedgerFactory = Callable[[], Awaitable[BriefLedger]]
@@ -195,6 +292,11 @@ async def brief_ledger_factory(request: pytest.FixtureRequest) -> AsyncIterator[
     """Clones ``task_ledger_factory``'s shape (see that fixture's docstring for
     the pytest-asyncio 1.4 ``Runner``-reentrancy rationale for NOT depending
     on ``surreal_env``).
+
+    The REAL branch seeds :data:`_SEEDED_AGENT_IDS` as live ``agent`` rows before any
+    ledger is built (see the block above this fixture for why).  The FAKE branch needs
+    nothing: ``FakeBriefLedger`` is an independent in-memory implementation with no
+    ``agent`` table and no endpoint validation to satisfy.
     """
     created: list[BriefLedger] = []
 
@@ -202,6 +304,7 @@ async def brief_ledger_factory(request: pytest.FixtureRequest) -> AsyncIterator[
         env: SurrealEnv = make_env(database=unique_database(), dim=PRODUCTION_DIM)
         setup_connection = await connect_admin(env)
         await setup_connection.close()
+        await _seed_agent_rows(env, _SEEDED_AGENT_IDS)
 
         async def make() -> BriefLedger:
             ledger = BriefLedger(
@@ -553,6 +656,7 @@ class TestPublishSelfAckIsWrittenInTheSameTransaction:
         env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
         setup_connection = await connect_admin(env)
         await setup_connection.close()
+        await _seed_agent_rows(env, _SEEDED_AGENT_IDS)
         ledger = BriefLedger(
             url=env.url,
             namespace=env.namespace,
@@ -1044,6 +1148,11 @@ class TestCoverageQueryCountIsBounded:
             roster = [
                 _AgentRef(f"agent-{index:03d}-id", f"agent-{index:03d}") for index in range(agent_count)
             ]
+            # This helper MINTS its roster (N is a parameter), so its ids cannot live
+            # in the module-level ``_SEEDED_AGENT_IDS`` — it seeds its own, through the
+            # SAME shared function. The generated ids are the seed set, derived from
+            # the roster rather than re-listed, so the two can never drift.
+            await _seed_agent_rows(env, [ref.id for ref in roster])
             for ref in roster:
                 await ledger.ack(
                     agent_id=ref.id,
@@ -1268,6 +1377,11 @@ class TestAckedVersionsForIdsQueryCountIsBounded:
             await ledger.ensure_ready()
             await ledger.publish(BRIEF_NAME_PROJECT, BODY_V1, created_by=PUBLISHER_LEAD)
             agent_ids = [f"agent-{index:03d}-id" for index in range(agent_count)]
+            # Mints its own N-sized roster, so it seeds its own ids through the SAME
+            # shared function (see the sibling helper in
+            # ``TestCoverageQueryCountIsBounded``). Seeded FROM ``agent_ids`` rather
+            # than from a re-listed copy, so the two can never drift.
+            await _seed_agent_rows(env, agent_ids)
             for agent_id in agent_ids:
                 await ledger.ack(
                     agent_id=agent_id,
@@ -1466,6 +1580,7 @@ class TestBriefLedgerConnectionLifecycle:
         env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
         setup_connection = await connect_admin(env)
         await setup_connection.close()
+        await _seed_agent_rows(env, _SEEDED_AGENT_IDS)
         ledger = BriefLedger(
             url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
         )
@@ -1726,6 +1841,7 @@ class TestSubscribedNameSkewQueryPlans:
     async def test_acked_by_id_fetch_is_direct_record_access_not_a_brief_tablescan(self) -> None:
         env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
         setup_connection = await connect_admin(env)
+        await _seed_agent_rows(env, _SEEDED_AGENT_IDS)
         ledger = BriefLedger(
             url=env.url,
             namespace=env.namespace,
@@ -1824,3 +1940,117 @@ class TestSubscribedNameSkewQueryPlans:
             await ledger.close()
             await setup_connection.close()
             await drop_database(env)
+
+
+# ===========================================================================
+# packet 04a / D1 — THE SEEDING'S OWN COVERAGE GATE.
+#
+# The seeding above has FIVE call sites, and deriving them (rather than typing a
+# list) is what found the last four: the factory alone was insufficient because
+# four helpers build their OWN ``BriefLedger`` on their OWN env. Five hand-placed
+# calls are five forgettable obligations, and the sixth site — written months from
+# now by someone who never read this comment — is the one that reddens mysteriously
+# the day ``briefed`` is ENFORCED.
+#
+# So COVERAGE IS A CHECKED VARIABLE, not a hope (repo CLAUDE.md: enumerate every
+# call site and assert each was observed). The pin below AST-enumerates every
+# function in THIS file that constructs a real ``BriefLedger`` and asserts each one
+# also seeds. It is a deny-by-default sweep over the file's own source, so it cannot
+# be defeated by a site nobody told it about — which is the whole point.
+# ===========================================================================
+
+
+class TestEveryRealLedgerSiteSeedsItsAgentRows:
+    """``briefed`` is ``agent -> briefed -> brief``. Once packet 04a lands
+    ``ENFORCED`` on it, the engine validates BOTH endpoints, and any site that builds
+    a real ``BriefLedger`` without seeding ``agent`` rows writes edges the engine
+    will refuse.
+
+    GREEN today (the seeding is in place and inert — an un-enforced edge does not
+    care whether its endpoint exists) and GREEN after the flip. Its job is to stay
+    green *by forcing new sites to seed*, not to catch anything today.
+    """
+
+    #: The gate's own class is excluded from its sweep. Its assertion messages MENTION
+    #: ``BriefLedger(`` and ``make_env(``, so a substring sweep matched the gate itself —
+    #: an instrument counting itself as coverage, which is the exact non-discrimination
+    #: it exists to hunt in others.
+    _EXCLUDED = "TestEveryRealLedgerSiteSeedsItsAgentRows"
+
+    @staticmethod
+    def _called_names(node: ast.AST) -> set[str]:
+        """Every function NAME actually CALLED anywhere inside ``node``.
+
+        AST, never a substring scan: a substring sweep is satisfied by the name appearing
+        in a comment, a docstring or an error message, so a site could "seed" by TALKING
+        about seeding. Only a real ``Call`` counts.
+        """
+        called: set[str] = set()
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            func = child.func
+            if isinstance(func, ast.Name):
+                called.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                called.add(func.attr)
+        return called
+
+    @classmethod
+    def _real_ledger_builders(cls) -> dict[str, set[str]]:
+        """``{qualified function name: the names it calls}`` for every function in this
+        file that CONSTRUCTS a real ``BriefLedger`` on a freshly-made env."""
+        tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+        builders: dict[str, set[str]] = {}
+
+        def walk(node: ast.AST, prefix: str) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.ClassDef):
+                    if child.name != cls._EXCLUDED:
+                        walk(child, f"{prefix}{child.name}.")
+                    continue
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    name = f"{prefix}{child.name}"
+                    called = cls._called_names(child)
+                    if {"BriefLedger", "make_env"} <= called:
+                        builders[name] = called
+                    walk(child, f"{name}.")
+
+        walk(tree, "")
+        return builders
+
+    def test_every_function_that_builds_a_real_BriefLedger_also_seeds_agent_rows(self) -> None:
+        builders = self._real_ledger_builders()
+        assert len(builders) >= 5, (
+            f"the sweep found only {len(builders)} real-ledger builders; there were SIX at "
+            f"the packet-04a D1 edit. A shrunken sweep reads exactly like full coverage — "
+            f"if sites were genuinely removed, lower this floor deliberately"
+        )
+        unseeded = sorted(name for name, called in builders.items() if "_seed_agent_rows" not in called)
+        assert unseeded == [], (
+            f"these functions build a REAL BriefLedger on a fresh database but never CALL "
+            f"_seed_agent_rows: {unseeded}. Once packet 04a lands ENFORCED on `briefed`, every "
+            f"`briefed` edge they write is refused by the engine — the failure looks like a "
+            f"broken contract and is really a missing fixture. Call "
+            f"`await _seed_agent_rows(env, <the ids this function acks>)` after the env is "
+            f"made; seed FROM the ids the function already builds, never from a re-typed list."
+        )
+
+    def test_the_seeded_id_set_covers_every_module_level_agent_id_constant(self) -> None:
+        """The static half: a new ``AGENT_*_ID`` constant must be seeded too.
+
+        DERIVED from the module's own namespace rather than a second hand-list — the
+        failure this prevents is precisely a constant added later that nobody added
+        here, which reddens one test on the flip and leaves the next agent a mystery.
+        """
+        declared = {
+            value
+            for name, value in globals().items()
+            if name.startswith("AGENT_") and name.endswith("_ID") and isinstance(value, str)
+        }
+        assert declared, "no AGENT_*_ID constants found — the derivation is broken"
+        assert declared <= set(_SEEDED_AGENT_IDS), (
+            f"these agent-id constants are not seeded: {sorted(declared - set(_SEEDED_AGENT_IDS))}. "
+            f"Add them to _SEEDED_AGENT_IDS — after packet 04a's ENFORCED flip an unseeded id "
+            f"makes every test using it fail for a fixture reason, not a contract one"
+        )

@@ -558,3 +558,143 @@ Two items from §6 are *narrowed* by the split and one is *unchanged*, so nobody
 - **§6.5 (has the D2 save-race ever fired in production?)** — unchanged and unmeasured. Packet 43's
   design pass is the natural place to settle it; a sweep for `failed` manifest rows would answer it
   cheaply.
+
+---
+
+# S7 — the D1 fixture edit (`test_brief_ledger.py` agent seeding)
+
+*Measured **2026-07-26** against `feat/surreal-unification` @ `a8516b4`. Live legs: spike-surreal
+`ws://127.0.0.1:18000` only. No production module touched.*
+
+## S7.1 Counts — and the one that moved
+
+```
+BEFORE  test_brief_ledger.py -n auto -q  ->  120 passed in 5.79s
+BEFORE  test_brief_ledger.py         -q  ->  120 passed in 12.53s   (second, independent reading)
+AFTER   test_brief_ledger.py -n auto -q  ->  122 passed in 6.97s
+```
+
+**The count moved, +2, and it is fully accounted for.** Rather than assert that, I derived it: I
+restored the pre-edit file from `git show HEAD:` into a scratch tree and diffed the two
+`--collect-only -q` node-id listings.
+
+```
+before ids: 120   after ids: 122
+ONLY IN AFTER (added):
+  TestEveryRealLedgerSiteSeedsItsAgentRows::test_every_function_that_builds_a_real_BriefLedger_also_seeds_agent_rows
+  TestEveryRealLedgerSiteSeedsItsAgentRows::test_the_seeded_id_set_covers_every_module_level_agent_id_constant
+ONLY IN BEFORE (removed):   <none>
+```
+
+**Zero pre-existing node ids were added, removed, renamed or re-parametrised, and all 120 still
+pass.** The delta is exactly the two pins I added (S7.3). So: *no pre-existing test changed status* —
+which is the property you actually asked about — and the seeded rows are inert today, as predicted
+(an un-enforced edge does not care whether its endpoint exists).
+
+Wider gates after the edit:
+
+```
+test_enforced_relations.py             -> 17 failed, 21 passed          (unchanged by this edit)
+test_derivation_source_unification.py  ->  7 passed, 19 skipped         (unchanged)
++ comms_schema, comms_tool, comms_wiring, message_ledger, surreal_schema
+                                       -> 17 failed, 1595 passed, 33 skipped in 29.10s
+uv run ruff check .                    -> All checks passed!
+./scripts/typecheck.sh                 -> loremaster OK (155 files) / lorescribe OK / loresigil OK
+```
+
+## S7.2 ⚠ THE FINDING: the fixture alone was NOT sufficient — there are FIVE seeding sites
+
+**This is what requirement #2 bought, and it is why "derive, don't type" was the right instruction.**
+My §4.D1 spec said *"~15 lines, one fixture, no test edits"*. That was **wrong**, and an AST
+derivation of every agent-id expression in the file found out why in one pass:
+
+| expression | where | covered by the factory? |
+|---|---|---|
+| `AGENT_FIXER_B_ID`, `AGENT_SCOUT_C_ID`, `AGENT_AUDIT_D_ID` | module constants | yes |
+| `f"agent-{index}-opaque-id"` × 8 | `test_every_one_of_eight_concurrent_publishers_self_acks…` | yes (uses the factory) |
+| `_AgentRef(f"agent-{index:03d}-id", …)` × N | `TestCoverageQueryCountIsBounded._coverage_query_count` | **NO — builds its own ledger on its own env** |
+| `f"agent-{index:03d}-id"` × N | `TestAckedVersionsForIdsQueryCountIsBounded._query_count` | **NO — same** |
+| `AGENT_FIXER_B_ID` via `_publish_as` | `TestPublishSelfAckIsWrittenInTheSameTransaction._real_ledger` | **NO — same** |
+| `AGENT_FIXER_B_ID` via `_subscribe` | `TestSubscribedNameSkewQueryPlans::test_acked_by_id_fetch_…` | **NO — same** |
+
+**Six functions in this file construct a real `BriefLedger`; only one of them is the factory.** A
+seeded factory plus five unseeded helpers is precisely the "a fix reached one copy and not the
+other" shape — and it maps exactly onto the 7 unparametrized edge-writing functions §4.D1 flagged as
+*"I did not classify their backends"*. They are now classified: four of them build real ledgers.
+
+**So the seeding is ONE FUNCTION with SIX call sites, never a pattern cloned six times** (repo law
+#102). `_seed_agent_rows(env, agent_ids)` applies `generate_agent_ddl()` — the **production
+emitter**, per requirement #1, never a hand-written `DEFINE TABLE agent`, for the same reason the
+04a migration pins derive their old-world DDL from `_define_relation_table` rather than a literal —
+then `UPSERT`s one row per id with `CONTENT` (`session` is a SurrealDB PROTECTED variable name,
+store reference §2) and `UPSERT` rather than `CREATE` so double-seeding is safe.
+
+**The two N-parameterised helpers seed FROM the ids they already build** (`[ref.id for ref in
+roster]`, `agent_ids`), never from a re-listed copy — so their seed set and their ack set cannot
+drift.
+
+## S7.3 Requirement #2, answered by an instrument rather than a promise
+
+You asked me to derive the constants and not leave a mystery if one is added later. A derivation I
+perform once is still a list I typed, so I made **coverage a CHECKED VARIABLE** (repo CLAUDE.md:
+*enumerate every call site, assert each was observed*). Two new pins, and they are the +2 above:
+
+1. **`test_every_function_that_builds_a_real_BriefLedger_also_seeds_agent_rows`** — AST-sweeps this
+   file for every function that CALLS both `BriefLedger` and `make_env`, and asserts each also CALLS
+   `_seed_agent_rows`. A seventh site written months from now reddens here, with a message naming
+   the function and the exact call to add — rather than reddening mysteriously the day `briefed` is
+   `ENFORCED`.
+2. **`test_the_seeded_id_set_covers_every_module_level_agent_id_constant`** — reads the module's own
+   namespace for `AGENT_*_ID` constants and asserts each is in `_SEEDED_AGENT_IDS`. A new constant
+   that nobody seeds reddens immediately.
+
+**⚠ The first version of pin 1 was a substring sweep, and it matched ITSELF** — its assertion message
+mentions `BriefLedger(` and `make_env(`, so the gate counted itself as a covered site, and worse, a
+future author could have satisfied it by *mentioning* `_seed_agent_rows` in a comment. That is the
+non-discrimination it exists to hunt in others, committed by the instrument. Rewritten to AST
+`Call`-node detection on both sides, with the gate's own class excluded by name. Caught by printing
+what the sweep saw instead of trusting that it saw the right things.
+
+The sweep also carries a floor (`len(builders) >= 5`): **a shrunken sweep reads exactly like full
+coverage**, so a sweep that silently stopped finding sites must fail rather than pass.
+
+## S7.4 The gate is mutation-proven, and the first attempt was a live #194
+
+**Control:** removed one `_seed_agent_rows` call from `_real_ledger`, ran the gate, restored.
+
+```
+MUTATION LANDED (anchor matched exactly once)
+E   AssertionError: these functions build a REAL BriefLedger on a fresh database but never CALL
+    _seed_agent_rows: ['TestPublishSelfAckIsWrittenInTheSameTransaction._real_ledger']. …
+1 failed, 121 deselected in 0.23s
+RESTORED byte-exact          (cmp against a cp -a content backup)
+```
+
+**⚠ My first attempt at this control was finding #194, live, in the session that has been writing
+about #194 all packet.** The anchor I chose matched **twice**, so the mutation never landed — and the
+next command in the same shell block ran anyway and printed `1 passed`, which reads exactly like a
+successful control. What caught it was not the rule; it was a **checked expectation**: I had asserted
+`count == 1` inside the mutating step, and the assertion fired. The `1 passed` beneath it was still
+printed and still meaningless.
+
+The re-run used a unique anchor, asserted exactly-once matching *before* writing, and echoed the
+mutation step's exit code. **Ask of any multi-step verification: "if step N silently no-opped, would
+step N+1 still print something that reads as success?"** — here it did, in the direction of false
+confidence, which is always the direction.
+
+## S7.5 Deviations and what remains
+
+- **Deviation: this is more than "one fixture, no test edits".** Six call sites + one shared seeder +
+  two coverage pins + five imports, because the derivation you asked for proved the one-fixture spec
+  insufficient. No existing test body was altered — the node-id diff in S7.1 is the receipt.
+- **Not verified, and it cannot be yet:** that these seeded rows actually satisfy `ENFORCED`. The
+  flip has not landed, so today they are inert. The claim "≥29 reds become 0" is a **prediction**
+  until the contract-adversary's reference build exists. What *is* verified is that the rows are
+  real (`generate_agent_ddl()` applied, `UPSERT`ed via the same `CONTENT` shape
+  `test_message_ledger.py::_seed_agents` uses against the already-`ENFORCED` `to` edge) and that
+  nothing regressed today.
+- **§4.D1's "≥29" floor is now retired as a floor:** the 7 unclassified unparametrized functions are
+  classified (S7.2). I did not re-derive the total that will redden without the seeding, because the
+  seeding now exists and the number is no longer actionable.
+- **The `fake` branch was left alone**, as specified: `FakeBriefLedger` is an independent in-memory
+  implementation with no `agent` table and no endpoint validation to satisfy.
